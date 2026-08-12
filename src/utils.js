@@ -158,4 +158,3 @@ export const attendanceHelpers = {
   calculateWorkedHours,
   normalizeLocation,
 }
-

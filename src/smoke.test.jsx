@@ -100,4 +100,3 @@ describe('IDOSI page smoke tests', () => {
     expect(screen.getByRole('heading', { name: 'Quản lý cửa hàng' })).toBeTruthy()
   })
 })
-

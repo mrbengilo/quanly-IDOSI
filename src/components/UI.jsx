@@ -345,4 +345,3 @@ export function StoreIllustration({ name = 'IDOSI', accent = '#076a3d' }) {
 export function EmptyState({ title = 'Chưa có dữ liệu', description = 'Dữ liệu sẽ hiển thị tại đây.' }) {
   return <div className="empty"><Info size={28} /><strong>{title}</strong><span>{description}</span></div>
 }
-

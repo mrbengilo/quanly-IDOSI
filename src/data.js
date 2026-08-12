@@ -286,4 +286,3 @@ export const demoAccounts = [
   { username: 'office', password: 'idosi123', role: 'employee', accountType: 'employee', unit: 'office', name: 'Đỗ Thu Trang', code: 'VP001', employeeId: 'VP001', storeId: 'OFFICE' },
   { username: 'employee', password: 'idosi123', role: 'employee', accountType: 'employee', unit: 'store', name: 'Nguyễn Minh Anh', code: 'NV001', employeeId: 'NV001', storeId: 'CH001', employmentType: 'Full-time' },
 ]
-

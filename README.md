@@ -46,4 +46,3 @@ Vị trí điểm danh dùng quyền định vị của trình duyệt và hoạ
 ## Triển khai
 
 Workflow GitHub Actions trong `.github/workflows/deploy-pages.yml` tự động kiểm tra và triển khai GitHub Pages khi nhánh `main` được cập nhật.
-

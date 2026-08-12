@@ -140,4 +140,3 @@ export function ProtectedRoute({ children, roles }) {
   if (!session || (roles && !roles.includes(session.role))) return null
   return children
 }
-
