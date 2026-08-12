@@ -43,6 +43,7 @@ import {
 } from './utils'
 
 beforeAll(() => {
+  globalThis.scrollTo = () => {}
   globalThis.ResizeObserver = class {
     observe() {}
     unobserve() {}
@@ -108,7 +109,7 @@ describe('IDOSI page smoke tests', () => {
     expect(screen.getByRole('link', { name: /Tài khoản quản lý/i })).toBeTruthy()
   })
 
-  it('lets a manager view and switch all stores without super-admin controls', () => {
+  it('lets a global manager enter one store workspace and return to the system overview', () => {
     render(
       <MemoryRouter initialEntries={['/login']}>
         <AppProvider>
@@ -119,11 +120,35 @@ describe('IDOSI page smoke tests', () => {
     fireEvent.click(screen.getByRole('button', { name: /Quản lý manager/i }))
     expect(screen.getByRole('link', { name: /Danh sách cửa hàng/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /Tài khoản quản lý/i })).toBeNull()
-    const storeSwitcher = screen.getByRole('combobox', { name: /9 cửa hàng/i })
-    expect(storeSwitcher.querySelectorAll('option')).toHaveLength(9)
+    expect(screen.queryByRole('link', { name: /Khối văn phòng/i })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /cửa hàng/i })).toBeNull()
+    const storeButtons = screen.getAllByRole('button', { name: /Xem cửa hàng/i })
+    expect(storeButtons).toHaveLength(9)
+    fireEvent.click(storeButtons[0])
+    expect(screen.getByRole('heading', { name: 'Tổng quan cửa hàng' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Quay về trang quản lý chính/i })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Danh sách cửa hàng/i })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Quay về trang quản lý chính/i }))
+    expect(screen.getByRole('heading', { name: 'Quản lý cửa hàng' })).toBeTruthy()
     fireEvent.click(screen.getByRole('link', { name: /Danh sách cửa hàng/i }))
     expect(screen.getByRole('heading', { name: 'Quản lý cửa hàng' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Thêm cửa hàng' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Thêm cửa hàng' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Xóa Idosi/i })).toBeNull()
+  })
+
+  it('keeps a store employee inside the employee portal of their assigned store', () => {
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <AppProvider>
+          <App />
+        </AppProvider>
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Cửa hàng employee/i }))
+    expect(screen.getByRole('heading', { name: 'SecondMall SM234' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Lịch sử ca làm/i })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Danh sách cửa hàng/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Nhân viên cửa hàng/i })).toBeNull()
   })
 })
 

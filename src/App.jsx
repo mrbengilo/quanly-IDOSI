@@ -36,7 +36,7 @@ import { useApp } from './state/AppContext'
 
 const homeByRole = {
   admin: '/admin/overview',
-  store: '/store/overview',
+  store: '/admin/overview',
   employee: '/employee/home',
 }
 
@@ -69,10 +69,6 @@ export default function App() {
         <Route path="/admin/cashflow" element={<AdminCashflow />} />
         <Route path="/admin/reports" element={<AdminReports />} />
 
-        <Route path="/office" element={<OfficeManagement />} />
-        <Route path="/admin/office" element={<Navigate to="/office" replace />} />
-        <Route path="/store/office" element={<Navigate to="/office" replace />} />
-
         <Route path="/store/overview" element={<StoreOverview />} />
         <Route path="/store/shifts" element={<StoreShifts />} />
         <Route path="/store/schedule" element={<StoreSchedule />} />
@@ -86,6 +82,8 @@ export default function App() {
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
+        <Route path="/office" element={<OfficeManagement />} />
+        <Route path="/admin/office" element={<Navigate to="/office" replace />} />
         <Route path="/admin/managers" element={<ManagerAccounts />} />
         <Route path="/admin/manager-payroll" element={<ManagerPayroll />} />
         <Route path="/admin/settings" element={<AdminSettings />} />

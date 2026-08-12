@@ -121,11 +121,15 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
   }
 }
 
-const normalizeManager = (payload = {}, fallbackStoreId = storesSeed[0]?.id) => {
+const normalizeManager = (payload = {}, fallbackStoreId = '') => {
   const details = addressDetailsFrom(payload)
   const id = String(payload.id || payload.code || payload.managerCode || uid('QL')).trim()
   const cccdImage = payload.cccdImage || payload.identityImage || ''
   const cccdImageName = payload.cccdImageName || payload.identityImageName || ''
+  const storeScope = payload.storeScope || 'global'
+  const scopedStoreId = storeScope === 'global'
+    ? ''
+    : String(payload.storeId || payload.assignedStoreId || fallbackStoreId || '').trim()
   return {
     ...payload,
     id,
@@ -148,8 +152,9 @@ const normalizeManager = (payload = {}, fallbackStoreId = storesSeed[0]?.id) => 
     username: String(payload.username || '').trim(),
     password: String(payload.password || ''),
     status: payload.status || 'Đang hoạt động',
-    storeId: String(payload.storeId || payload.assignedStoreId || fallbackStoreId || '').trim(),
-    assignedStoreId: String(payload.assignedStoreId || payload.storeId || fallbackStoreId || '').trim(),
+    storeId: scopedStoreId,
+    assignedStoreId: scopedStoreId,
+    storeScope,
     role: 'store',
     accountType: 'manager',
   }
@@ -246,7 +251,7 @@ const toSession = (account, source) => {
     accountType: source,
   }
   if (source === 'admin') return { ...common, role: 'admin' }
-  if (source === 'manager') return { ...common, role: 'store', managerId: account.id || account.code }
+  if (source === 'manager') return { ...common, role: 'store', managerId: account.id || account.code, storeScope: account.storeScope || 'global' }
   return {
     ...common,
     role: 'employee',
@@ -315,7 +320,9 @@ export function AppProvider({ children }) {
     setState((current) => ({
       ...current,
       session,
-      activeStoreId: session.storeId && session.storeId !== 'OFFICE' ? session.storeId : current.activeStoreId,
+      activeStoreId: matched.source === 'manager'
+        ? current.activeStoreId
+        : session.storeId && session.storeId !== 'OFFICE' ? session.storeId : current.activeStoreId,
       activeAttendanceId: recent && !recent.checkOutAt && !recent.checkOut ? recent.id : null,
       checkedInAt: recent?.checkIn || recent?.checkInTime || null,
       finishedShift: Boolean(recent?.checkOutAt || recent?.checkOut),
@@ -403,7 +410,7 @@ export function AppProvider({ children }) {
       notify('Tên đăng nhập hoặc số CCCD đã tồn tại.', 'info')
       return { ok: false }
     }
-    const manager = normalizeManager(payload, state.activeStoreId)
+    const manager = normalizeManager(payload, '')
     updateCollection('managerAccounts', (items) => [manager, ...items])
     notify('Đã tạo tài khoản quản lý.')
     return { ok: true, manager }
@@ -416,7 +423,7 @@ export function AppProvider({ children }) {
     }
     const previous = state.managerAccounts.find((manager) => accountKey(manager) === String(id))
     if (!previous) return { ok: false }
-    const manager = normalizeManager({ ...previous, ...payload }, previous.storeId || state.activeStoreId)
+    const manager = normalizeManager({ ...previous, ...payload }, '')
     setState((current) => ({
       ...current,
       managerAccounts: current.managerAccounts.map((item) => accountKey(item) === String(id) ? manager : item),
@@ -771,7 +778,8 @@ export function AppProvider({ children }) {
   const selectedStoreId = state.session?.role === 'employee'
     ? state.session.storeId
     : state.activeStoreId || state.session?.storeId
-  const activeStore = state.stores.find((store) => store.id === selectedStoreId) || state.stores[0] || null
+  const activeStore = state.stores.find((store) => store.id === selectedStoreId)
+    || (state.session?.role === 'employee' ? null : state.stores[0] || null)
   const currentEmployee = state.session?.employeeId ? state.employees.find((employee) => employee.id === state.session.employeeId) || null : null
   const currentManager = state.session?.managerId ? state.managerAccounts.find((manager) => manager.id === state.session.managerId) || null : null
 

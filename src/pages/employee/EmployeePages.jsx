@@ -346,7 +346,7 @@ export function EmployeeHome() {
   const currentTime = new Date().toLocaleTimeString('vi-VN', { hour12: false })
   const workShift = getShift(currentShiftId)
   const stores = Array.isArray(app.stores) ? app.stores : []
-  const store = stores.find((item) => String(item.id) === String(employee.storeId || app.session?.storeId || app.activeStoreId)) || stores[0]
+  const store = stores.find((item) => String(item.id) === String(employee.storeId || app.session?.storeId))
   const type = employeeType(employee)
   const payBasis = getPayBasis(employee)
   const rate = payBasis === 'hourly' ? getHourlyRate(employee) : getMonthlySalary(employee)

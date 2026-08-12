@@ -124,9 +124,10 @@ export const managerAccountsSeed = [
     password: 'idosi123',
     role: 'store',
     accountType: 'manager',
+    storeScope: 'global',
     status: 'Đang hoạt động',
-    storeId: 'CH001',
-    assignedStoreId: 'CH001',
+    storeId: '',
+    assignedStoreId: '',
   },
 ]
 
@@ -290,7 +291,7 @@ export const managerPayrollSeed = [
 
 export const demoAccounts = [
   { username: 'admin', password: 'idosi123', role: 'admin', accountType: 'admin', name: 'Quản trị cấp cao', code: 'ADMIN' },
-  { username: 'manager', password: 'idosi123', role: 'store', accountType: 'manager', name: 'Trần Minh Quân', code: 'QL001', storeId: 'CH001' },
+  { username: 'manager', password: 'idosi123', role: 'store', accountType: 'manager', storeScope: 'global', name: 'Trần Minh Quân', code: 'QL001', storeId: '' },
   { username: 'office', password: 'idosi123', role: 'employee', accountType: 'employee', unit: 'office', name: 'Đỗ Thu Trang', code: 'VP001', employeeId: 'VP001', storeId: 'OFFICE' },
   { username: 'employee', password: 'idosi123', role: 'employee', accountType: 'employee', unit: 'store', name: 'Nguyễn Minh Anh', code: 'NV001', employeeId: 'NV001', storeId: 'CH001', employmentType: 'Full-time' },
 ]

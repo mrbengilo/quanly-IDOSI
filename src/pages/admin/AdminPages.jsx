@@ -89,30 +89,36 @@ function AdminMetrics({ stores, compact = false }) {
 }
 
 export function AdminOverview() {
-  const { stores, setActiveStoreId } = useApp()
+  const { stores, setActiveStoreId, session } = useApp()
   const navigate = useNavigate()
+  const activeStores = stores.filter((store) => store.status !== 'Tạm ngưng' && store.status !== 'Ngừng hoạt động')
+  const openStore = (store) => {
+    if (setActiveStoreId?.(store.id) !== false) navigate('/store/overview')
+  }
   return (
     <div className="page">
       <PageHeader
         title="Tổng quan"
-        subtitle="Xin chào, Quản trị viên! Đây là tổng quan hoạt động của tất cả cửa hàng."
+        subtitle={`Xin chào, ${session?.name || (session?.role === 'admin' ? 'Quản trị viên' : 'Quản lý')}! Đây là tổng quan hoạt động của tất cả cửa hàng.`}
         actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
       <AdminMetrics stores={stores} />
       <div className="section-heading">
-        <div><h2>Quản lý cửa hàng</h2><p>Chọn cửa hàng để xem và quản lý chi tiết.</p></div>
-        <Button variant="ghost" onClick={() => navigate('/admin/stores')}>Xem tất cả</Button>
+        <div><h2>Quản lý cửa hàng</h2><p>Chọn cửa hàng để mở không gian quản lý độc lập.</p></div>
+        <div className="section-heading__actions"><Badge tone="green">{activeStores.length} cửa hàng hoạt động</Badge><Button variant="ghost" onClick={() => navigate('/admin/stores')}>Xem tất cả</Button></div>
       </div>
       <div className="store-card-grid">
         {stores.map((store) => (
           <Card key={store.id} className="store-card">
             <StoreIllustration name={store.name} accent={store.accent} />
             <div className="store-card__body">
-              <h3>{store.name}</h3>
+              <div className="store-card__title"><h3>{store.name}</h3><Badge tone={store.status === 'Đang hoạt động' ? 'green' : 'orange'}>{store.status || 'Đang hoạt động'}</Badge></div>
               <p><MapPin size={17} /> {store.location}</p>
-              <p><BarChart3 size={17} /> Doanh thu kỳ này</p>
-              <strong>{money(store.revenue)}</strong>
-              <Button onClick={() => { setActiveStoreId?.(store.id); navigate('/store/overview') }}>Quản lý cửa hàng <span>→</span></Button>
+              <div className="store-card__finance">
+                <span><small>Doanh thu kỳ này</small><strong>{money(store.revenue)}</strong></span>
+                <span><small>Lợi nhuận kỳ này</small><strong>{money(Number(store.revenue) - Number(store.expense))}</strong></span>
+              </div>
+              <Button onClick={() => openStore(store)}>Xem cửa hàng <span>→</span></Button>
             </div>
           </Card>
         ))}
@@ -132,7 +138,8 @@ export function AdminStores() {
   const filtered = stores.filter((item) => `${item.name} ${item.location}`.toLowerCase().includes(query.toLowerCase()))
   const revenue = sum(stores, 'revenue')
   const expense = sum(stores, 'expense')
-  const canManageStoreDirectory = session?.role === 'admin'
+  const canManageStoreDirectory = session?.role === 'admin' || session?.role === 'store'
+  const canDeleteStore = session?.role === 'admin'
 
   const openCreate = () => {
     setEditingStore(null)
@@ -206,7 +213,7 @@ export function AdminStores() {
                 <td className="orange-text"><strong>{money(store.expense)}</strong></td>
                 <td><strong>{money(store.revenue - store.expense)}</strong><small className="green-text table-sub">({percent(store.revenue - store.expense, store.revenue)})</small></td>
                 <td><Badge>{store.status}</Badge></td>
-                <td><div className="row-actions">{canManageStoreDirectory && <button onClick={() => openEdit(store)} aria-label={`Sửa ${store.name}`}><Edit3 size={17} /></button>}{canManageStoreDirectory && <button className="danger" onClick={() => window.confirm(`Xóa ${store.name}?`) && deleteStore?.(store.id)} aria-label={`Xóa ${store.name}`}><Trash2 size={17} /></button>}<button onClick={() => setViewingStore(store)} aria-label={`Xem ${store.name}`}><Eye size={17} /></button></div></td>
+                <td><div className="row-actions">{canManageStoreDirectory && <button onClick={() => openEdit(store)} aria-label={`Sửa ${store.name}`}><Edit3 size={17} /></button>}{canDeleteStore && <button className="danger" onClick={() => window.confirm(`Xóa ${store.name}?`) && deleteStore?.(store.id)} aria-label={`Xóa ${store.name}`}><Trash2 size={17} /></button>}<button onClick={() => setViewingStore(store)} aria-label={`Xem ${store.name}`}><Eye size={17} /></button></div></td>
               </tr>
             ))}
           </tbody>
@@ -387,7 +394,7 @@ export function ManagerPayroll() {
   const rowYear = (row) => monthInputValue(row.month).slice(0, 4)
   const years = [...new Set(payrollRows.map(rowYear).filter(Boolean))].sort((a, b) => b.localeCompare(a))
   const filteredPayroll = historyYear === 'all' ? payrollRows : payrollRows.filter((row) => rowYear(row) === historyYear)
-  const managersForStore = accounts.filter((manager) => !form.storeId || manager.storeId === form.storeId)
+  const managersForStore = accounts
 
   const resetForm = () => {
     setEditingSourceId(null)
@@ -425,7 +432,7 @@ export function ManagerPayroll() {
     setEditingSourceId(row.id)
     setForm({
       storeId: store?.id || defaultStoreId,
-      managerId: row.managerId || accounts.find((manager) => manager.storeId === store?.id)?.id || '',
+      managerId: row.managerId || accounts[0]?.id || '',
       month: monthInputValue(row.month),
       salary: Number(row.salary) || 0,
       bonus: Number(row.bonus) || 0,
@@ -447,7 +454,7 @@ export function ManagerPayroll() {
         <div className="payroll-form-layout">
           <div>
             <div className="form-grid form-grid--payroll">
-              <Field label="Cửa hàng"><Select icon={Store} value={form.storeId} onChange={(event) => { const storeId = event.target.value; const manager = accounts.find((item) => item.storeId === storeId); setForm({ ...form, storeId, managerId: manager?.id || '' }) }}>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
+              <Field label="Cửa hàng"><Select icon={Store} value={form.storeId} onChange={(event) => setForm({ ...form, storeId: event.target.value })}>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
               <Field label="Tháng / Năm"><Input icon={CalendarDays} type="month" value={form.month} onChange={(event) => setForm({ ...form, month: event.target.value })} /></Field>
               {accounts.length > 0 && <Field label="Quản lý"><Select value={form.managerId} onChange={(event) => setForm({ ...form, managerId: event.target.value })}><option value="">Chọn quản lý</option>{managersForStore.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}</Select></Field>}
               <Field label="Lương (VNĐ)"><Input type="number" value={form.salary} onChange={(event) => setForm({ ...form, salary: event.target.value })} /></Field>

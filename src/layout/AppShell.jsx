@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
+  ArrowLeft,
   Banknote,
   BarChart3,
   Bell,
@@ -48,17 +49,16 @@ const storeOperations = [
 
 const officeOperation = { label: 'Khối văn phòng', path: '/office', icon: Building2, badge: 'Mới' }
 
-const menus = {
+const systemMenus = {
   admin: [
     ...systemOperations.slice(0, 2),
     { label: 'Tài khoản quản lý', path: '/admin/managers', icon: UserCog, badge: 'Mới' },
     officeOperation,
     ...systemOperations.slice(2),
     { label: 'Lương thưởng quản lý', path: '/admin/manager-payroll', icon: WalletCards },
-    ...storeOperations,
     { label: 'Cài đặt hệ thống', path: '/admin/settings', icon: Settings },
   ],
-  store: [...systemOperations, officeOperation, ...storeOperations],
+  store: [...systemOperations],
   employee: [
     { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
     { label: 'Lịch sử ca làm', path: '/employee/shifts', icon: CalendarCheck },
@@ -67,23 +67,30 @@ const menus = {
   ],
 }
 
-const canUseStoreSwitcher = (role) => role === 'admin' || role === 'store'
-
 export default function AppShell() {
-  const { session, logout, toast, notify, stores = [], activeStoreId, setActiveStoreId } = useApp()
+  const { session, logout, toast, notify, stores = [], activeStoreId } = useApp()
   const [mobileOpen, setMobileOpen] = useState(false)
   const navigate = useNavigate()
+  const location = useLocation()
   const role = session?.role || 'employee'
   const isAdmin = role === 'admin'
   const isEmployee = role === 'employee'
   const isOfficeEmployee = isEmployee && session?.unit === 'office'
-  const roleMenus = isOfficeEmployee ? menus.employee.filter((item) => item.path !== '/employee/cashflow') : menus[role] || menus.employee
-  const selectedStoreId = stores.some((store) => store.id === activeStoreId)
-    ? activeStoreId
-    : stores.some((store) => store.id === session?.storeId)
-      ? session.storeId
-      : stores[0]?.id || ''
-  const activeStore = stores.find((store) => store.id === selectedStoreId) || stores[0]
+  const isStoreWorkspace = !isEmployee && location.pathname.startsWith('/store/')
+  const isSystemWorkspace = !isEmployee && !isStoreWorkspace
+  const roleMenus = isOfficeEmployee
+    ? systemMenus.employee.filter((item) => item.path !== '/employee/cashflow')
+    : isStoreWorkspace
+      ? storeOperations
+      : systemMenus[role] || systemMenus.employee
+  const selectedStoreId = isEmployee
+    ? (stores.some((store) => store.id === session?.storeId) ? session.storeId : '')
+    : stores.some((store) => store.id === activeStoreId)
+      ? activeStoreId
+      : stores.some((store) => store.id === session?.storeId)
+        ? session.storeId
+        : stores[0]?.id || ''
+  const activeStore = stores.find((store) => store.id === selectedStoreId) || (!isEmployee ? stores[0] : null)
 
   const handleLogout = () => {
     logout()
@@ -91,21 +98,32 @@ export default function AppShell() {
   }
 
   const accountSubtitle = isAdmin
-    ? `Super Admin${activeStore?.short ? ` • ${activeStore.short}` : ''}`
+    ? isStoreWorkspace ? `Quản trị cấp cao • ${activeStore?.short || activeStore?.name || ''}` : 'Quản trị cấp cao'
     : role === 'store'
-      ? `${session?.code || 'Quản lý'}${activeStore?.short ? ` • ${activeStore.short}` : ''}`
+      ? isStoreWorkspace ? `${session?.code || 'Quản lý'} • ${activeStore?.short || activeStore?.name || ''}` : 'Quản lý hệ thống'
       : session?.code
 
+  const returnToSystemOverview = () => {
+    setMobileOpen(false)
+    navigate('/admin/overview')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   return (
-    <div className={`app-shell app-shell--${role}`}>
+    <div className={`app-shell app-shell--${role} ${isStoreWorkspace ? 'app-shell--store-workspace' : ''} ${isSystemWorkspace ? 'app-shell--system-workspace' : ''}`}>
       {mobileOpen && <button className="sidebar-scrim" onClick={() => setMobileOpen(false)} aria-label="Đóng menu" />}
       <aside className={`sidebar ${mobileOpen ? 'sidebar--open' : ''}`}>
         <button className="sidebar__close" onClick={() => setMobileOpen(false)} aria-label="Đóng menu"><X size={20} /></button>
         <div className="sidebar__brand">
-          {isAdmin ? <Brand compact /> : isEmployee ? <Brand /> : (
-            <div className="store-logo"><span>I</span><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>Quản lý toàn chuỗi</small></div></div>
-          )}
+          {isEmployee ? <Brand /> : isStoreWorkspace ? (
+            <div className="store-logo"><span>I</span><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>{isAdmin ? 'Quản trị cấp cao' : 'Quản lý cửa hàng'}</small></div></div>
+          ) : <Brand subtitle="Quản lý toàn hệ thống" />}
         </div>
+        {isStoreWorkspace && (
+          <button className="back-system" onClick={returnToSystemOverview}>
+            <ArrowLeft size={18} /> <span>Quay về trang quản lý chính</span>
+          </button>
+        )}
         <nav>
           {roleMenus.map(({ label, path, icon: Icon, badge }) => (
             <NavLink key={path} to={path} onClick={() => setMobileOpen(false)} className={({ isActive }) => isActive ? 'active' : ''}>
@@ -116,19 +134,6 @@ export default function AppShell() {
           ))}
         </nav>
         <div className="sidebar__footer">
-          {canUseStoreSwitcher(role) && stores.length > 0 && (
-            <label className="store-switcher">
-              <Store size={18} />
-              <select
-                aria-label={`Chọn cửa hàng vận hành trong ${stores.length} cửa hàng`}
-                value={selectedStoreId}
-                onChange={(event) => setActiveStoreId?.(event.target.value)}
-              >
-                {stores.map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}
-              </select>
-              <ChevronDown size={16} />
-            </label>
-          )}
           <div className="sidebar__profile">
             <Avatar name={session?.name} size={38} />
             <div><strong>{session?.name}</strong><small>{accountSubtitle}</small></div>
@@ -150,7 +155,7 @@ export default function AppShell() {
             <div className="topbar-user"><strong>{session?.name}</strong><small>{accountSubtitle}</small></div>
             <button
               className="icon-button"
-              onClick={() => navigate(isAdmin ? '/admin/settings' : role === 'store' ? '/store/settings' : '/employee/home')}
+              onClick={() => navigate(isStoreWorkspace ? '/store/settings' : isAdmin ? '/admin/settings' : role === 'store' ? '/admin/overview' : '/employee/home')}
               aria-label="Mở trang tài khoản"
             ><ChevronDown size={17} /></button>
           </div>

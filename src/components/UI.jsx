@@ -31,12 +31,12 @@ import {
 } from 'recharts'
 import { money } from '../utils'
 
-export function Brand({ compact = false, blue = false }) {
+export function Brand({ compact = false, blue = false, subtitle = 'hệ thống quản lý' }) {
   return (
     <div className={`brand ${compact ? 'brand--compact' : ''} ${blue ? 'brand--blue' : ''}`}>
       <span className="brand__mark" aria-hidden="true">I</span>
       <span className="brand__word">IDOSI</span>
-      {!compact && <small>hệ thống quản lý</small>}
+      {!compact && <small>{subtitle}</small>}
     </div>
   )
 }

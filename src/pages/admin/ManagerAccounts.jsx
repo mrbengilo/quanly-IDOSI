@@ -6,7 +6,6 @@ import {
   Plus,
   Save,
   ShieldCheck,
-  Store,
   Trash2,
   UserCheck,
   Users,
@@ -113,7 +112,6 @@ function validateManager(form, managers, employees, editingKey) {
     ['Lương', form.salary],
     ['Tuổi', form.age],
     ['Tên đăng nhập', form.username],
-    ['Cửa hàng phụ trách', form.storeId],
   ]
 
   required.forEach(([label, value]) => {
@@ -150,7 +148,6 @@ export function ManagerAccounts() {
   const app = useApp()
   const managers = Array.isArray(app.managerAccounts) ? app.managerAccounts : []
   const employees = Array.isArray(app.employees) ? app.employees : []
-  const stores = Array.isArray(app.stores) ? app.stores : []
   const { addManager, updateManager, deleteManager, notify } = app
   const [query, setQuery] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
@@ -160,7 +157,6 @@ export function ManagerAccounts() {
   const [form, setForm] = useState(emptyForm)
   const [errors, setErrors] = useState([])
 
-  const storeName = (storeId) => stores.find((store) => String(store.id) === String(storeId))?.name || 'Chưa phân công'
   const normalizedQuery = normalizeText(query)
   const filtered = managers.filter((manager) => {
     const haystack = [
@@ -170,7 +166,7 @@ export function ManagerAccounts() {
       manager.phone,
       manager.username,
       addressLabel(manager),
-      storeName(manager.storeId || manager.assignedStoreId),
+      'Toàn bộ hệ thống',
     ].join(' ').toLowerCase()
     const matchesQuery = !normalizedQuery || haystack.includes(normalizedQuery)
     const matchesStatus = statusFilter === 'all' || manager.status === statusFilter
@@ -180,7 +176,7 @@ export function ManagerAccounts() {
   const openCreate = () => {
     setEditing(null)
     setErrors([])
-    setForm({ ...emptyForm, storeId: stores[0]?.id || '' })
+    setForm(emptyForm)
     setDrawerOpen(true)
   }
 
@@ -257,8 +253,9 @@ export function ManagerAccounts() {
       password: form.password,
       role: 'store',
       status: form.status,
-      storeId: form.storeId,
-      assignedStoreId: form.storeId,
+      storeId: '',
+      assignedStoreId: '',
+      storeScope: 'global',
     }
 
     if (editing) {
@@ -283,13 +280,11 @@ export function ManagerAccounts() {
 
   const activeCount = managers.filter((item) => item.status === ACTIVE_STATUS || item.status === 'Đang làm việc').length
   const pausedCount = managers.filter((item) => item.status === 'Tạm ngưng' || item.status === 'Tạm nghỉ').length
-  const assignedStores = new Set(managers.map((item) => item.storeId || item.assignedStoreId).filter(Boolean)).size
-
   return (
     <div className="page">
       <PageHeader
         title="TÀI KHOẢN QUẢN LÝ"
-        subtitle="Tạo tài khoản, phân công cửa hàng và quản lý hồ sơ người quản lý."
+        subtitle="Tạo tài khoản và quản lý hồ sơ người quản lý toàn bộ hệ thống cửa hàng."
         icon={ShieldCheck}
         actions={<><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." /><Button icon={Plus} onClick={openCreate}>Thêm quản lý</Button></>}
       />
@@ -298,7 +293,7 @@ export function ManagerAccounts() {
         <MetricCard label="Tổng tài khoản" value={managers.length} suffix="quản lý" icon={Users} tone="green" compact />
         <MetricCard label="Đang hoạt động" value={activeCount} suffix="tài khoản" icon={UserCheck} tone="teal" compact />
         <MetricCard label="Tạm ngưng" value={pausedCount} suffix="tài khoản" icon={Clock3} tone="orange" compact />
-        <MetricCard label="Cửa hàng đã phân công" value={assignedStores} suffix={`/ ${stores.length} cửa hàng`} icon={Store} tone="blue" compact />
+        <MetricCard label="Phạm vi quản lý" value="Toàn bộ" suffix="hệ thống cửa hàng" icon={ShieldCheck} tone="blue" compact />
       </div>
 
       <div className="filter-pills">
@@ -308,13 +303,13 @@ export function ManagerAccounts() {
 
       <Card>
         <TableWrap>
-          <thead><tr><th>Mã quản lý</th><th>Quản lý</th><th>Cửa hàng</th><th>CCCD</th><th>Liên hệ</th><th>Địa chỉ</th><th>Lương</th><th>Tài khoản</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>Mã quản lý</th><th>Quản lý</th><th>Phạm vi</th><th>CCCD</th><th>Liên hệ</th><th>Địa chỉ</th><th>Lương</th><th>Tài khoản</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>
             {filtered.map((manager) => (
               <tr key={manager.id || recordCode(manager)}>
                 <td><strong>{recordCode(manager)}</strong></td>
                 <td><div className="person-cell"><Avatar name={manager.name} color={manager.color} /><span><strong>{manager.name}</strong><small>{manager.age ? `${manager.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
-                <td><strong>{storeName(manager.storeId || manager.assignedStoreId)}</strong></td>
+                <td><strong>Toàn bộ hệ thống</strong></td>
                 <td>{manager.cccd || manager.citizenId || '—'}<small className="table-sub">{manager.cccdImageName || manager.identityImageName || 'Chưa có tên ảnh'}</small></td>
                 <td>{manager.phone || '—'}</td>
                 <td className="address-cell">{addressLabel(manager)}</td>
@@ -346,7 +341,7 @@ export function ManagerAccounts() {
             <Field label="Số điện thoại" required><Input type="tel" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field>
             <Field label="Lương" required><Input type="number" min="1" value={form.salary} onChange={updateField('salary')} placeholder="Nhập mức lương" /></Field>
             <Field label="Tuổi" required><Input inputMode="numeric" min="18" max="100" value={form.age} onChange={updateField('age')} placeholder="Ví dụ: 28" /></Field>
-            <Field label="Cửa hàng phụ trách" required><Select value={form.storeId} onChange={updateField('storeId')}><option value="">Chọn cửa hàng</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
+            <Field label="Phạm vi quản lý"><Input value="Toàn bộ cửa hàng trong hệ thống" disabled /></Field>
             <Field label="Trạng thái" required><Select value={form.status} onChange={updateField('status')}>{MANAGER_STATUSES.map((status) => <option key={status}>{status}</option>)}</Select></Field>
           </div>
 

@@ -439,7 +439,8 @@ export function StoreEmployees() {
   const save = (event) => {
     event?.preventDefault()
     const editingId = editing?.id || editing?.code || ''
-    const validationErrors = validateEmployee(form, employees, editingId)
+    const scopedForm = { ...form, storeId: scopedStoreId }
+    const validationErrors = validateEmployee(scopedForm, employees, editingId)
     if (validationErrors.length) {
       setErrors(validationErrors)
       notify?.('Vui lòng kiểm tra lại thông tin nhân viên.', 'info')
@@ -481,7 +482,7 @@ export function StoreEmployees() {
       cccdImageName: form.cccdImageName,
       username: form.username.trim(),
       status: form.status,
-      storeId: form.storeId,
+      storeId: scopedStoreId,
       unit: 'store',
       ...(form.password ? { password: form.password } : {}),
     }
@@ -550,7 +551,7 @@ export function StoreEmployees() {
             <Field label="Tuổi" required><Input inputMode="numeric" min="16" max="100" value={form.age} onChange={updateField('age')} placeholder="Ví dụ: 22" /></Field>
             <Field label="Vị trí công việc" required><Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select></Field>
             <Field label="Trạng thái" required><Select value={form.status} onChange={updateField('status')}>{EMPLOYEE_STATUSES.map((item) => <option key={item}>{item}</option>)}</Select></Field>
-            <Field label="Cửa hàng" required><Select value={form.storeId} onChange={updateField('storeId')} disabled={session?.role === 'employee'}><option value="">Chọn cửa hàng</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
+            <Field label="Cửa hàng" required hint="Nhân viên được lưu vào cửa hàng đang mở"><Select value={scopedStoreId} disabled><option value={scopedStoreId}>{stores.find((store) => String(store.id) === String(scopedStoreId))?.name || scopedStoreId}</option></Select></Field>
           </div>
           <h3>Địa chỉ</h3>
           <div className="form-grid">
