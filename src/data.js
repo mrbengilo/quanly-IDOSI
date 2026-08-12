@@ -56,6 +56,14 @@ const employeeSeed = ({
   addressDetails: address(province, ward, street),
   address: [street, ward, province].filter(Boolean).join(', '),
   salary,
+  payBasis: employmentType === 'Part-time' ? 'hourly' : 'monthly',
+  salaryBasis: employmentType === 'Part-time' ? 'hourly' : 'monthly',
+  salaryUnit: employmentType === 'Part-time' ? 'hour' : 'month',
+  monthlySalary: employmentType === 'Part-time' ? null : salary,
+  hourlyRate: employmentType === 'Part-time' ? salary : null,
+  compensationVersion: 2,
+  standardWorkDays: 26,
+  currency: 'VND',
   position,
   workPosition: position,
   role: position,
@@ -81,12 +89,12 @@ const employeeSeed = ({
 
 export const employeesSeed = [
   employeeSeed({ id: 'NV001', name: 'Nguyễn Minh Anh', cccd: '079203000001', phone: '0901000001', province: 'TP. Hồ Chí Minh', ward: 'Phường Linh Tây', street: '234 Đường số 9', salary: 8000000, position: 'Nhân viên bán hàng', age: 23, username: 'employee', storeId: 'CH001', employmentType: 'Full-time', color: '#b6d2df' }),
-  employeeSeed({ id: 'NV002', name: 'Trần Gia Bảo', cccd: '079202000002', phone: '0901000002', province: 'TP. Hồ Chí Minh', ward: 'Phường Tam Phú', street: 'Tô Ngọc Vân', salary: 4500000, position: 'Nhân viên bán hàng', age: 24, username: 'nv.tongocvan', storeId: 'CH002', employmentType: 'Part-time', color: '#f1c4ae' }),
+  employeeSeed({ id: 'NV002', name: 'Trần Gia Bảo', cccd: '079202000002', phone: '0901000002', province: 'TP. Hồ Chí Minh', ward: 'Phường Tam Phú', street: 'Tô Ngọc Vân', salary: 43000, position: 'Nhân viên bán hàng', age: 24, username: 'nv.tongocvan', storeId: 'CH002', employmentType: 'Part-time', color: '#f1c4ae' }),
   employeeSeed({ id: 'NV003', name: 'Lê Hoàng Chi', cccd: '074204000003', phone: '0901000003', province: 'Bình Dương', ward: 'Phường Dĩ An', street: 'Đường Nguyễn An Ninh', salary: 7800000, position: 'Nhân viên thu ngân', age: 22, username: 'nv.dian', storeId: 'CH003', color: '#f4d0b7' }),
   employeeSeed({ id: 'NV004', name: 'Phạm Đức Duy', cccd: '079201000004', phone: '0901000004', province: 'TP. Hồ Chí Minh', ward: 'Phường Linh Đông', street: 'Kha Vạn Cân', salary: 7600000, position: 'Nhân viên kho', age: 25, username: 'nv.khavan', storeId: 'CH004', color: '#c5d3de' }),
-  employeeSeed({ id: 'NV005', name: 'Võ Ngọc Hà', cccd: '079205000005', phone: '0901000005', province: 'TP. Hồ Chí Minh', ward: 'Phường Phước Long A', street: 'Tây Hòa', salary: 4300000, position: 'Nhân viên bán hàng', age: 21, username: 'nv.tayhoa', storeId: 'CH005', employmentType: 'Part-time', color: '#f0bda9' }),
+  employeeSeed({ id: 'NV005', name: 'Võ Ngọc Hà', cccd: '079205000005', phone: '0901000005', province: 'TP. Hồ Chí Minh', ward: 'Phường Phước Long A', street: 'Tây Hòa', salary: 41000, position: 'Nhân viên bán hàng', age: 21, username: 'nv.tayhoa', storeId: 'CH005', employmentType: 'Part-time', color: '#f0bda9' }),
   employeeSeed({ id: 'NV006', name: 'Đặng Minh Khang', cccd: '079200000006', phone: '0901000006', province: 'TP. Hồ Chí Minh', ward: 'Phường 25', street: 'Nguyễn Văn Thương', salary: 7900000, position: 'Nhân viên bán hàng', age: 26, username: 'nv.nguyenvanthuong', storeId: 'CH006', color: '#a8cad8' }),
-  employeeSeed({ id: 'NV007', name: 'Huỳnh Như Ý', cccd: '079204000007', phone: '0901000007', province: 'TP. Hồ Chí Minh', ward: 'Phường 13', street: 'Nơ Trang Long', salary: 4400000, position: 'Nhân viên thu ngân', age: 22, username: 'nv.notranglong', storeId: 'CH007', employmentType: 'Part-time', color: '#edc5b5' }),
+  employeeSeed({ id: 'NV007', name: 'Huỳnh Như Ý', cccd: '079204000007', phone: '0901000007', province: 'TP. Hồ Chí Minh', ward: 'Phường 13', street: 'Nơ Trang Long', salary: 42000, position: 'Nhân viên thu ngân', age: 22, username: 'nv.notranglong', storeId: 'CH007', employmentType: 'Part-time', color: '#edc5b5' }),
   employeeSeed({ id: 'NV008', name: 'Bùi Quang Huy', cccd: '079199000008', phone: '0901000008', province: 'TP. Hồ Chí Minh', ward: 'Phường 11', street: 'Lê Văn Thọ', salary: 7700000, position: 'Nhân viên kho', age: 27, username: 'nv.levantho', storeId: 'CH008', color: '#c5d0d7' }),
   employeeSeed({ id: 'NV009', name: 'Ngô Thanh Lam', cccd: '066203000009', phone: '0901000009', province: 'Đắk Lắk', ward: 'Phường Tân Lợi', street: 'Đường Phan Chu Trinh', salary: 7500000, position: 'Nhân viên bán hàng', age: 23, username: 'nv.buonmathuoc', storeId: 'CH009', color: '#c9d8b6' }),
   employeeSeed({ id: 'VP001', name: 'Đỗ Thu Trang', cccd: '079197000010', phone: '0901000010', province: 'TP. Hồ Chí Minh', ward: 'Phường 25', street: '12 Nguyễn Văn Thương', salary: 12000000, position: 'Nhân viên hành chính', age: 29, username: 'office', storeId: 'OFFICE', unit: 'office', color: '#ccd9ef' }),
@@ -271,7 +279,7 @@ export const adminSeries = [
 
 export const payRows = [
   { employeeId: 'NV001', hours: 208.5, base: 8000000, tiktokAllowance: 500000, tiktokBonus: 1000000, other: 300000, bonus: 500000 },
-  { employeeId: 'NV002', hours: 104, base: 4500000, tiktokAllowance: 200000, tiktokBonus: 500000, other: 200000, bonus: 250000 },
+  { employeeId: 'NV002', hours: 104, base: 4472000, tiktokAllowance: 200000, tiktokBonus: 500000, other: 200000, bonus: 250000 },
   { employeeId: 'NV003', hours: 202, base: 7800000, tiktokAllowance: 300000, tiktokBonus: 700000, other: 250000, bonus: 400000 },
 ]
 

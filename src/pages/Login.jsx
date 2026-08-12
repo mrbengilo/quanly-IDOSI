@@ -11,6 +11,25 @@ const destinations = {
   employee: '/employee/home',
 }
 
+const REMEMBERED_USER_KEY = 'idosi-remembered-username'
+
+const rememberedUsername = () => {
+  try {
+    return window.localStorage.getItem(REMEMBERED_USER_KEY) || 'admin'
+  } catch {
+    return 'admin'
+  }
+}
+
+const saveRememberedUsername = (username, remember) => {
+  try {
+    if (remember) window.localStorage.setItem(REMEMBERED_USER_KEY, username)
+    else window.localStorage.removeItem(REMEMBERED_USER_KEY)
+  } catch {
+    // Đăng nhập vẫn hoạt động nếu trình duyệt chặn lưu trữ cục bộ.
+  }
+}
+
 function ClothingScene() {
   return (
     <div className="clothing-scene" aria-hidden="true">
@@ -25,28 +44,39 @@ function ClothingScene() {
 export default function Login() {
   const { login } = useApp()
   const navigate = useNavigate()
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState(rememberedUsername)
   const [password, setPassword] = useState('idosi123')
   const [showPassword, setShowPassword] = useState(false)
   const [remember, setRemember] = useState(true)
   const [error, setError] = useState('')
+  const [recoveryMessage, setRecoveryMessage] = useState('')
   const [loading, setLoading] = useState(false)
 
   const submit = (event) => {
     event.preventDefault()
     setLoading(true)
     setError('')
+    setRecoveryMessage('')
     window.setTimeout(() => {
       const result = login(username, password)
       setLoading(false)
       if (!result.ok) return setError(result.message)
+      saveRememberedUsername(username, remember)
       navigate(destinations[result.account.role])
     }, 380)
   }
 
   const demoLogin = (account) => {
     const result = login(account.username, account.password)
-    if (result.ok) navigate(destinations[result.account.role])
+    if (result.ok) {
+      saveRememberedUsername(account.username, remember)
+      navigate(destinations[result.account.role])
+    }
+  }
+
+  const showRecoveryHelp = () => {
+    setError('')
+    setRecoveryMessage('Vui lòng liên hệ quản trị cấp cao IDOSI để được xác minh và cấp lại mật khẩu. Không cung cấp CCCD hoặc mật khẩu qua kênh không chính thức.')
   }
 
   return (
@@ -82,9 +112,10 @@ export default function Login() {
 
           <div className="login-options">
             <label><input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} /> Ghi nhớ đăng nhập</label>
-            <button type="button">Quên mật khẩu?</button>
+            <button type="button" onClick={showRecoveryHelp}>Quên mật khẩu?</button>
           </div>
           {error && <div className="login-error">{error}</div>}
+          {recoveryMessage && <div className="login-security" role="status"><ShieldCheck size={20} /> {recoveryMessage}</div>}
           <Button type="submit" loading={loading} className="login-submit" icon={LockKeyhole}>Đăng nhập</Button>
 
           <div className="login-divider"><span>hoặc đăng nhập nhanh</span></div>

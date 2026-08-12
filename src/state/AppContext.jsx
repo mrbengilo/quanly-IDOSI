@@ -16,6 +16,10 @@ import {
 import {
   buildAddress,
   calculateWorkedHours,
+  getEmployeeType,
+  getPayBasis,
+  getHourlyRate,
+  getMonthlySalary,
   getArrivalTag,
   getDepartureTag,
   normalizeLocation,
@@ -57,6 +61,16 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
   const cccdImageName = payload.cccdImageName || payload.identityImageName || ''
   const phone = normalizePhone(payload.phone)
   const storeId = unit === 'office' ? 'OFFICE' : String(payload.storeId || fallbackStoreId || '').trim()
+  const employmentType = getEmployeeType(payload)
+  const rawSalary = Math.max(0, Number(payload.salary) || 0)
+  const hasExplicitBasis = Boolean(payload.payBasis || payload.salaryBasis || payload.salaryType || payload.salaryUnit || payload.compensationVersion >= 2)
+  let payBasis = getPayBasis({ ...payload, employmentType })
+  if (employmentType === 'Part-time' && !hasExplicitBasis && !Number(payload.hourlyRate) && rawSalary > 500000) {
+    payBasis = 'legacy'
+  }
+  const monthlySalary = payBasis === 'monthly' ? getMonthlySalary({ ...payload, salary: rawSalary, payBasis }) : 0
+  const hourlyRate = payBasis === 'hourly' ? getHourlyRate({ ...payload, salary: rawSalary, payBasis }) : 0
+  const normalizedSalary = payBasis === 'monthly' ? monthlySalary : payBasis === 'hourly' ? hourlyRate : rawSalary
 
   return {
     ...payload,
@@ -72,7 +86,16 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
     street: details.street,
     addressDetails: details,
     address: buildAddress(details),
-    salary: Number(payload.salary) || 0,
+    salary: normalizedSalary,
+    payBasis,
+    salaryBasis: payBasis,
+    salaryUnit: payBasis === 'monthly' ? 'month' : payBasis === 'hourly' ? 'hour' : 'legacy',
+    monthlySalary: monthlySalary || null,
+    hourlyRate: hourlyRate || null,
+    legacySalary: payBasis === 'legacy' ? rawSalary : null,
+    compensationVersion: payBasis === 'legacy' ? 1 : 2,
+    standardWorkDays: Math.max(1, Number(payload.standardWorkDays) || 26),
+    currency: payload.currency || 'VND',
     position,
     workPosition: position,
     role: position,
@@ -89,7 +112,8 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
     department: unit,
     isOffice: unit === 'office',
     storeId,
-    employmentType: payload.employmentType || (unit === 'office' ? 'Full-time' : 'Full-time'),
+    employmentType,
+    employeeType: employmentType,
     color: payload.color || '#d9c2b6',
     roleType: 'employee',
     workStart: payload.workStart || (unit === 'office' ? '08:00' : '07:00'),
@@ -136,6 +160,17 @@ const countStoreEmployees = (stores, employees) => stores.map((store) => ({
   employees: employees.filter((employee) => employee.unit === 'store' && employee.storeId === store.id && employee.status !== 'Đã nghỉ việc').length,
 }))
 
+const normalizeTask = (task = {}, fallbackStoreId = storesSeed[0]?.id) => ({
+  ...task,
+  id: task.id || uid('CV'),
+  storeId: task.storeId || fallbackStoreId,
+  shiftId: task.shiftId || task.shift || 'ca1',
+  date: task.date || task.workDate || today(),
+  title: String(task.title || '').trim(),
+  detail: String(task.detail || '').trim(),
+  done: Boolean(task.done),
+})
+
 const createInitialState = () => {
   const employees = employeesSeed.map((employee) => normalizeEmployee(clone(employee)))
   return {
@@ -146,7 +181,7 @@ const createInitialState = () => {
     imports: clone(importsSeed),
     attendance: clone(attendanceSeed),
     schedule: clone(scheduleSeed),
-    tasks: clone(tasksSeed),
+    tasks: clone(tasksSeed).map((task) => normalizeTask(task)),
     managerPayroll: clone(managerPayrollSeed),
     officeAdjustments: clone(officeAdjustmentsSeed),
     activeStoreId: storesSeed[0]?.id || null,
@@ -183,6 +218,9 @@ const hydrateState = (stored) => {
       ? stored.managerAccounts.map((manager) => normalizeManager(manager, stored.activeStoreId || base.activeStoreId))
       : base.managerAccounts,
     officeAdjustments: Array.isArray(stored.officeAdjustments) ? stored.officeAdjustments : base.officeAdjustments,
+    tasks: Array.isArray(stored.tasks)
+      ? stored.tasks.map((task) => normalizeTask(task, stored.activeStoreId || base.activeStoreId))
+      : base.tasks,
     activeStoreId: stores.some((store) => store.id === stored.activeStoreId) ? stored.activeStoreId : stores[0]?.id || null,
   }
 }
@@ -216,6 +254,9 @@ const toSession = (account, source) => {
     unit: account.unit || 'store',
     unitType: account.unit || 'store',
     employmentType: account.employmentType,
+    payBasis: account.payBasis,
+    monthlySalary: account.monthlySalary,
+    hourlyRate: account.hourlyRate,
     position: account.position,
   }
 }
@@ -486,23 +527,58 @@ export function AppProvider({ children }) {
     notify('Đã xóa mặt hàng.', 'info')
   }
 
-  const setTaskDone = (id, done) => {
-    updateCollection('tasks', (items) => items.map((item) => item.id === id ? { ...item, done } : item))
+  const updateImport = (id, payload) => {
+    updateCollection('imports', (items) => items.map((item) => item.id === id ? {
+      ...item,
+      ...payload,
+      quantity: Number(payload.quantity ?? item.quantity) || 0,
+      weight: Number(payload.weight ?? item.weight) || 0,
+      price: Number(payload.price ?? item.price) || 0,
+      shipping: Number(payload.shipping ?? item.shipping) || 0,
+      updatedAt: new Date().toLocaleString('vi-VN'),
+    } : item))
+    notify('Đã cập nhật mặt hàng nhập kho.')
+    return true
+  }
+
+  const setTaskDone = (id, done, employeeId = state.session?.employeeId || state.session?.code) => {
+    updateCollection('tasks', (items) => items.map((item) => item.id === id ? {
+      ...item,
+      ...(employeeId
+        ? { completedBy: { ...(item.completedBy || {}), [employeeId]: Boolean(done) } }
+        : { done: Boolean(done) }),
+    } : item))
   }
 
   const replaceTasks = (tasks) => {
-    setState((current) => ({ ...current, tasks }))
+    const nextTasks = (Array.isArray(tasks) ? tasks : []).map((task) => normalizeTask(task, state.activeStoreId))
+    const scope = nextTasks[0]
+    setState((current) => ({
+      ...current,
+      tasks: scope
+        ? [
+            ...nextTasks,
+            ...current.tasks.filter((task) => !(
+              String(task.storeId) === String(scope.storeId)
+              && String(task.shiftId || task.shift) === String(scope.shiftId)
+              && String(task.date || task.workDate) === String(scope.date)
+            )),
+          ]
+        : current.tasks,
+    }))
     notify('Đã lưu và gửi danh sách công việc.')
   }
 
-  const saveSchedule = (employeeIds, shiftId) => {
+  const saveSchedule = (employeeIds, shiftId, details = {}) => {
     updateCollection('schedule', (items) => {
-      const schedule = new Map(items.map((item) => [item.employeeId, { ...item, shiftIds: [...item.shiftIds] }]))
+      const scheduleDate = details.date || today()
+      const schedule = new Map(items.map((item) => [`${item.employeeId}:${item.date || scheduleDate}`, { ...item, shiftIds: [...(item.shiftIds || [])] }]))
       employeeIds.forEach((employeeId) => {
         const employee = state.employees.find((item) => item.id === employeeId)
-        const item = schedule.get(employeeId) || { employeeId, storeId: employee?.storeId || state.activeStoreId, shiftIds: [] }
+        const key = `${employeeId}:${scheduleDate}`
+        const item = schedule.get(key) || { employeeId, storeId: employee?.storeId || state.activeStoreId, date: scheduleDate, shiftIds: [] }
         if (!item.shiftIds.includes(shiftId)) item.shiftIds.push(shiftId)
-        schedule.set(employeeId, item)
+        schedule.set(key, { ...item, note: details.note ?? item.note ?? '' })
       })
       return [...schedule.values()]
     })
@@ -512,6 +588,34 @@ export function AppProvider({ children }) {
   const saveManagerPayroll = (record) => {
     updateCollection('managerPayroll', (items) => [{ id: Date.now(), updatedAt: new Date().toLocaleString('vi-VN'), ...record }, ...items])
     notify('Đã lưu lương thưởng quản lý.')
+  }
+
+  const updateManagerPayroll = (id, record) => {
+    updateCollection('managerPayroll', (items) => items.map((item) => item.id === id ? {
+      ...item,
+      ...record,
+      id,
+      updatedAt: new Date().toLocaleString('vi-VN'),
+    } : item))
+    notify('Đã cập nhật lương thưởng quản lý.')
+  }
+
+  const deleteManagerPayroll = (id) => {
+    updateCollection('managerPayroll', (items) => items.filter((item) => item.id !== id))
+    notify('Đã xóa bản ghi lương thưởng.', 'info')
+  }
+
+  const changeAdminPassword = (id, password) => {
+    const accountExists = state.adminAccounts.some((account) => account.id === id || account.username === id)
+    if (!accountExists) {
+      notify('Không tìm thấy tài khoản quản trị.', 'info')
+      return false
+    }
+    updateCollection('adminAccounts', (items) => items.map((account) =>
+      account.id === id || account.username === id ? { ...account, password } : account,
+    ))
+    notify('Đã đổi mật khẩu quản trị.')
+    return true
   }
 
   const saveSettings = (settings) => {
@@ -572,6 +676,11 @@ export function AppProvider({ children }) {
       unit: employee.unit,
       unitType: employee.unit,
       department: employee.unit,
+      employmentTypeSnapshot: employee.employmentType,
+      payBasisSnapshot: employee.payBasis,
+      monthlySalarySnapshot: employee.monthlySalary,
+      hourlyRateSnapshot: employee.hourlyRate,
+      standardWorkDaysSnapshot: employee.standardWorkDays,
       shift: shiftId,
       shiftStart,
       shiftEnd,
@@ -659,7 +768,10 @@ export function AppProvider({ children }) {
     notify('Đã khôi phục dữ liệu mẫu IDOSI.', 'info')
   }
 
-  const activeStore = state.stores.find((store) => store.id === (state.session?.storeId || state.activeStoreId)) || state.stores[0] || null
+  const selectedStoreId = state.session?.role === 'employee'
+    ? state.session.storeId
+    : state.activeStoreId || state.session?.storeId
+  const activeStore = state.stores.find((store) => store.id === selectedStoreId) || state.stores[0] || null
   const currentEmployee = state.session?.employeeId ? state.employees.find((employee) => employee.id === state.session.employeeId) || null : null
   const currentManager = state.session?.managerId ? state.managerAccounts.find((manager) => manager.id === state.session.managerId) || null : null
 
@@ -691,11 +803,15 @@ export function AppProvider({ children }) {
     updateOfficeAdjustment,
     deleteOfficeAdjustment,
     addImport,
+    updateImport,
     deleteImport,
     setTaskDone,
     replaceTasks,
     saveSchedule,
     saveManagerPayroll,
+    updateManagerPayroll,
+    deleteManagerPayroll,
+    changeAdminPassword,
     saveSettings,
     addAttendanceRecord,
     updateAttendance,

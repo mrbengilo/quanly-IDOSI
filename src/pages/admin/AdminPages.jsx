@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   BadgeDollarSign,
   BarChart3,
@@ -47,9 +47,33 @@ import {
 } from '../../components/UI'
 import { adminSeries } from '../../data'
 import { useApp } from '../../state/AppContext'
-import { downloadCsv, money } from '../../utils'
+import { downloadCsv, money, today, validateVietnamPhone } from '../../utils'
 
 const sum = (items, key) => items.reduce((total, item) => total + (Number(item[key]) || 0), 0)
+const percent = (value, total) => total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '0.00%'
+const emptyStoreForm = { name: '', location: '', address: '' }
+
+const monthInputValue = (value = '') => {
+  const match = String(value).match(/^(\d{2})\/(\d{4})$/)
+  return match ? `${match[2]}-${match[1]}` : String(value).slice(0, 7)
+}
+
+const monthDisplayValue = (value = '') => {
+  const match = String(value).match(/^(\d{4})-(\d{2})$/)
+  return match ? `${match[2]}/${match[1]}` : value
+}
+
+const seriesDate = (day, year = new Date().getFullYear()) => {
+  const [date, month] = String(day).split('/')
+  return `${year}-${String(month).padStart(2, '0')}-${String(date).padStart(2, '0')}`
+}
+
+const parseRange = (value = '') => {
+  const dates = String(value).match(/\d{2}\/\d{2}\/\d{4}/g) || []
+  if (dates.length !== 2) return null
+  const toIso = (date) => date.split('/').reverse().join('-')
+  return [toIso(dates[0]), toIso(dates[1])]
+}
 
 function AdminMetrics({ stores, compact = false }) {
   const revenue = sum(stores, 'revenue')
@@ -59,7 +83,7 @@ function AdminMetrics({ stores, compact = false }) {
       <MetricCard label="TỔNG DOANH THU" value={money(revenue)} icon={BadgeDollarSign} trend={12.45} helper=" so với kỳ trước" tone="green" compact={compact} />
       <MetricCard label="TỔNG CHI PHÍ" value={money(expense)} icon={ShoppingCart} trend={8.32} helper=" so với kỳ trước" tone="orange" compact={compact} />
       <MetricCard label="TỔNG LỢI NHUẬN" value={money(revenue - expense)} icon={TrendingUp} trend={16.78} helper=" so với kỳ trước" tone="blue" compact={compact} />
-      {compact && <MetricCard label="TỶ LỆ LỢI NHUẬN" value={`${(((revenue - expense) / revenue) * 100).toFixed(2)}%`} icon={BarChart3} trend={2.14} helper=" so với kỳ trước" tone="teal" compact />}
+      {compact && <MetricCard label="TỶ LỆ LỢI NHUẬN" value={percent(revenue - expense, revenue)} icon={BarChart3} trend={2.14} helper=" so với kỳ trước" tone="teal" compact />}
     </div>
   )
 }
@@ -72,7 +96,7 @@ export function AdminOverview() {
       <PageHeader
         title="Tổng quan"
         subtitle="Xin chào, Quản trị viên! Đây là tổng quan hoạt động của tất cả cửa hàng."
-        actions={<DateRange value="20/05/2025 - 26/05/2025" />}
+        actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
       <AdminMetrics stores={stores} />
       <div className="section-heading">
@@ -98,20 +122,56 @@ export function AdminOverview() {
 }
 
 export function AdminStores() {
-  const { stores, addStore, deleteStore, notify } = useApp()
+  const { stores, addStore, updateStore, deleteStore, setActiveStoreId, notify, session } = useApp()
+  const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState({ name: '', location: '', address: '' })
+  const [editingStore, setEditingStore] = useState(null)
+  const [viewingStore, setViewingStore] = useState(null)
+  const [form, setForm] = useState(emptyStoreForm)
   const filtered = stores.filter((item) => `${item.name} ${item.location}`.toLowerCase().includes(query.toLowerCase()))
   const revenue = sum(stores, 'revenue')
   const expense = sum(stores, 'expense')
+  const canManageStoreDirectory = session?.role === 'admin'
+
+  const openCreate = () => {
+    setEditingStore(null)
+    setForm(emptyStoreForm)
+    setOpen(true)
+  }
+
+  const openEdit = (store) => {
+    setEditingStore(store)
+    setForm({ name: store.name || '', location: store.location || '', address: store.address || '' })
+    setOpen(true)
+  }
+
+  const closeForm = () => {
+    setOpen(false)
+    setEditingStore(null)
+    setForm(emptyStoreForm)
+  }
 
   const save = (event) => {
-    event.preventDefault()
-    if (!form.name || !form.location) return notify('Vui lòng nhập tên và khu vực cửa hàng.', 'info')
-    addStore({ ...form, name: form.name.trim() })
-    setForm({ name: '', location: '', address: '' })
-    setOpen(false)
+    event?.preventDefault()
+    const payload = {
+      name: form.name.trim(),
+      location: form.location.trim(),
+      address: form.address.trim(),
+    }
+    if (!payload.name || !payload.location || !payload.address) return notify('Vui lòng nhập đầy đủ tên, khu vực và địa chỉ cửa hàng.', 'info')
+    const duplicate = stores.some((store) => store.id !== editingStore?.id && store.name.trim().toLowerCase() === payload.name.toLowerCase())
+    if (duplicate) return notify('Tên cửa hàng đã tồn tại.', 'info')
+    if (editingStore) updateStore?.(editingStore.id, payload)
+    else addStore?.(payload)
+    closeForm()
+  }
+
+  const manageStore = (store) => {
+    const selected = setActiveStoreId?.(store.id)
+    if (selected === false) return notify('Không thể mở cửa hàng đã chọn.', 'info')
+    setViewingStore(null)
+    navigate('/store/overview')
   }
 
   return (
@@ -119,11 +179,11 @@ export function AdminStores() {
       <PageHeader
         title="Quản lý cửa hàng"
         subtitle="Quản lý thông tin cửa hàng, nhân sự và kết quả hoạt động của từng cửa hàng."
-        actions={<DateRange value="20/05/2025 - 26/05/2025" />}
+        actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
       <div className="toolbar toolbar--right">
         <SearchInput value={query} onChange={setQuery} placeholder="Tìm kiếm cửa hàng..." />
-        <Button icon={Plus} onClick={() => setOpen(true)}>Thêm cửa hàng</Button>
+        {canManageStoreDirectory && <Button icon={Plus} onClick={openCreate}>Thêm cửa hàng</Button>}
       </div>
       <div className="metric-grid metric-grid--five">
         <MetricCard label="Tổng số cửa hàng" value={stores.length} suffix="cửa hàng" icon={Store} tone="green" compact />
@@ -144,9 +204,9 @@ export function AdminStores() {
                 <td><strong className="green-text">{store.employees}</strong><small className="table-sub">nhân viên</small></td>
                 <td className="green-text"><strong>{money(store.revenue)}</strong></td>
                 <td className="orange-text"><strong>{money(store.expense)}</strong></td>
-                <td><strong>{money(store.revenue - store.expense)}</strong><small className="green-text table-sub">({(((store.revenue - store.expense) / store.revenue) * 100).toFixed(2)}%)</small></td>
+                <td><strong>{money(store.revenue - store.expense)}</strong><small className="green-text table-sub">({percent(store.revenue - store.expense, store.revenue)})</small></td>
                 <td><Badge>{store.status}</Badge></td>
-                <td><div className="row-actions"><button onClick={() => notify('Chế độ chỉnh sửa đã sẵn sàng.', 'info')}><Edit3 size={17} /></button><button className="danger" onClick={() => window.confirm(`Xóa ${store.name}?`) && deleteStore(store.id)}><Trash2 size={17} /></button><button><Eye size={17} /></button></div></td>
+                <td><div className="row-actions">{canManageStoreDirectory && <button onClick={() => openEdit(store)} aria-label={`Sửa ${store.name}`}><Edit3 size={17} /></button>}{canManageStoreDirectory && <button className="danger" onClick={() => window.confirm(`Xóa ${store.name}?`) && deleteStore?.(store.id)} aria-label={`Xóa ${store.name}`}><Trash2 size={17} /></button>}<button onClick={() => setViewingStore(store)} aria-label={`Xem ${store.name}`}><Eye size={17} /></button></div></td>
               </tr>
             ))}
           </tbody>
@@ -154,12 +214,25 @@ export function AdminStores() {
         <TableFooter shown={filtered.length} total={filtered.length} />
       </Card>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Thêm cửa hàng mới" footer={<><Button variant="outline" onClick={() => setOpen(false)}>Hủy</Button><Button icon={Save} onClick={save}>Lưu cửa hàng</Button></>}>
+      <Modal open={open} onClose={closeForm} title={editingStore ? 'Cập nhật cửa hàng' : 'Thêm cửa hàng mới'} footer={<><Button variant="outline" onClick={closeForm}>Hủy</Button><Button icon={Save} onClick={save}>{editingStore ? 'Lưu thay đổi' : 'Lưu cửa hàng'}</Button></>}>
         <form className="form-grid" onSubmit={save}>
           <Field label="Tên cửa hàng" required><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ví dụ: Idosi Tô Ngọc Vân" /></Field>
           <Field label="Khu vực" required><Input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="Quận/Huyện, Tỉnh/Thành" /></Field>
-          <Field label="Địa chỉ chi tiết" className="span-2"><textarea value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} placeholder="Nhập địa chỉ..." /></Field>
+          <Field label="Địa chỉ chi tiết" required className="span-2"><textarea value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} placeholder="Nhập địa chỉ..." /></Field>
         </form>
+      </Modal>
+
+      <Modal open={Boolean(viewingStore)} onClose={() => setViewingStore(null)} title="Chi tiết cửa hàng" footer={<><Button variant="outline" onClick={() => setViewingStore(null)}>Đóng</Button><Button onClick={() => viewingStore && manageStore(viewingStore)}>Quản lý cửa hàng</Button></>}>
+        {viewingStore && <div className="form-stack">
+          <InfoNote><strong>{viewingStore.name}</strong><br />{viewingStore.address || viewingStore.location}</InfoNote>
+          <div className="summary-list">
+            <p><span>Mã cửa hàng</span><strong>{viewingStore.id}</strong></p>
+            <p><span>Nhân viên</span><strong>{viewingStore.employees || 0}</strong></p>
+            <p><span>Doanh thu</span><strong>{money(viewingStore.revenue)}</strong></p>
+            <p><span>Chi phí</span><strong>{money(viewingStore.expense)}</strong></p>
+            <p className="total"><span>Lợi nhuận</span><strong>{money(Number(viewingStore.revenue) - Number(viewingStore.expense))}</strong></p>
+          </div>
+        </div>}
       </Modal>
     </div>
   )
@@ -167,27 +240,47 @@ export function AdminStores() {
 
 export function AdminTasks() {
   const { stores, tasks, replaceTasks, notify } = useApp()
-  const [storeId, setStoreId] = useState('')
-  const [shiftId, setShiftId] = useState('ca1')
-  const [date, setDate] = useState('2025-05-20')
-  const [rows, setRows] = useState(tasks.map(({ id, title, detail }) => ({ id, title, detail })))
+  const initialStoreId = tasks[0]?.storeId || stores[0]?.id || ''
+  const initialShiftId = tasks[0]?.shiftId || 'ca1'
+  const initialDate = tasks[0]?.date || today()
+  const rowsForScope = (nextStoreId, nextShiftId, nextDate) => tasks
+    .filter((task) => task.storeId === nextStoreId && task.shiftId === nextShiftId && task.date === nextDate)
+    .map(({ id, title, detail }) => ({ id, title, detail }))
+  const [storeId, setStoreId] = useState(initialStoreId)
+  const [shiftId, setShiftId] = useState(initialShiftId)
+  const [date, setDate] = useState(initialDate)
+  const [rows, setRows] = useState(() => rowsForScope(initialStoreId, initialShiftId, initialDate))
 
   const update = (index, key, value) => setRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, [key]: value } : item))
   const remove = (index) => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))
   const send = () => {
     if (!storeId) return notify('Vui lòng chọn cửa hàng trước khi gửi.', 'info')
+    if (!date) return notify('Vui lòng chọn ngày áp dụng.', 'info')
     if (!rows.some((item) => item.title.trim())) return notify('Danh sách công việc đang trống.', 'info')
-    replaceTasks(rows.filter((item) => item.title.trim()).map((item, index) => ({ ...item, id: index + 1, done: false })))
+    const store = stores.find((item) => item.id === storeId)
+    const nextTasks = rows.filter((item) => item.title.trim()).map((item, index) => ({
+      ...item,
+      id: item.id || `CV-${Date.now()}-${index + 1}`,
+      title: item.title.trim(),
+      detail: item.detail.trim(),
+      storeId,
+      storeName: store?.name || '',
+      shiftId,
+      date,
+      done: false,
+    }))
+    replaceTasks?.(nextTasks)
+    setRows(nextTasks.map(({ id, title, detail }) => ({ id, title, detail })))
   }
 
   return (
     <div className="page admin-task-page">
-      <PageHeader title="Giao việc" subtitle="Danh sách công việc cho từng ca làm – giúp nhân viên dễ dàng theo dõi và thực hiện." icon={ClipboardCheck} actions={<DateRange value="20/05/2025 - 26/05/2025" />} />
+      <PageHeader title="Giao việc" subtitle="Danh sách công việc cho từng ca làm – giúp nhân viên dễ dàng theo dõi và thực hiện." icon={ClipboardCheck} />
       <Card className="task-toolbar-card">
         <div className="task-toolbar-grid">
-          <Field label="Cửa hàng" required><Select value={storeId} onChange={(event) => setStoreId(event.target.value)} icon={Store}><option value="">Chọn cửa hàng</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
-          <Field label="Ca làm" required><Select value={shiftId} onChange={(event) => setShiftId(event.target.value)}><option value="ca1">Ca sáng (07:00 – 12:00)</option><option value="ca2">Ca chiều (12:00 – 17:00)</option><option value="ca3">Ca tối (17:00 – 23:00)</option></Select></Field>
-          <Field label="Ngày áp dụng" required><Input icon={CalendarDays} type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field>
+          <Field label="Cửa hàng" required><Select value={storeId} onChange={(event) => { const next = event.target.value; setStoreId(next); setRows(rowsForScope(next, shiftId, date)) }} icon={Store}><option value="">Chọn cửa hàng</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
+          <Field label="Ca làm" required><Select value={shiftId} onChange={(event) => { const next = event.target.value; setShiftId(next); setRows(rowsForScope(storeId, next, date)) }}><option value="ca1">Ca sáng (07:00 – 12:00)</option><option value="ca2">Ca chiều (12:00 – 17:00)</option><option value="ca3">Ca tối (17:00 – 23:00)</option></Select></Field>
+          <Field label="Ngày áp dụng" required><Input icon={CalendarDays} type="date" value={date} onChange={(event) => { const next = event.target.value; setDate(next); setRows(rowsForScope(storeId, shiftId, next)) }} /></Field>
           <Button icon={Send} onClick={send} className="task-send">Lưu và gửi</Button>
         </div>
       </Card>
@@ -199,10 +292,10 @@ export function AdminTasks() {
               <b>{index + 1}</b>
               <input value={item.title} onChange={(event) => update(index, 'title', event.target.value)} placeholder="Nhập nội dung công việc" />
               <textarea value={item.detail} onChange={(event) => update(index, 'detail', event.target.value)} placeholder="Chi tiết thực hiện" />
-              <button onClick={() => remove(index)}><Trash2 size={18} /></button>
+              <button type="button" onClick={() => remove(index)} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>
             </div>
           ))}
-          <button className="add-row" onClick={() => setRows((current) => [...current, { id: Date.now(), title: '', detail: '' }])}><Plus size={18} /> Thêm công việc</button>
+          <button type="button" className="add-row" onClick={() => setRows((current) => [...current, { id: `CV-${Date.now()}`, title: '', detail: '' }])}><Plus size={18} /> Thêm công việc</button>
         </Card>
         <Card className="guide-card">
           <h2><Info size={22} /> Hướng dẫn</h2>
@@ -216,16 +309,37 @@ export function AdminTasks() {
 }
 
 export function AdminCashflow() {
-  const { stores } = useApp()
-  const [storeId, setStoreId] = useState(stores[0]?.id)
+  const { stores, notify } = useApp()
+  const seriesYear = new Date().getFullYear()
+  const defaultRange = adminSeries.length ? `${adminSeries[0].day}/${seriesYear} - ${adminSeries[adminSeries.length - 1].day}/${seriesYear}` : ''
+  const [storeId, setStoreId] = useState(stores[0]?.id || '')
+  const [dateRange, setDateRange] = useState(defaultRange)
+  const [chartType, setChartType] = useState('line')
   const selected = stores.find((store) => store.id === storeId) || stores[0]
-  const revenue = selected?.revenue || 0
-  const expense = selected?.expense || 0
-  const rows = adminSeries.map((item) => ({
-    date: item.day,
-    revenue: Math.round((revenue / 7) * (item.revenue / 95)),
-    expense: Math.round((expense / 7) * (item.expense / 55)),
-  }))
+  const selectedRevenue = Number(selected?.revenue) || 0
+  const selectedExpense = Number(selected?.expense) || 0
+  const revenueWeight = sum(adminSeries, 'revenue') || 1
+  const expenseWeight = sum(adminSeries, 'expense') || 1
+  const range = parseRange(dateRange)
+  const rows = adminSeries.map((item) => {
+    const revenue = Math.round(selectedRevenue * ((Number(item.revenue) || 0) / revenueWeight))
+    const expense = Math.round(selectedExpense * ((Number(item.expense) || 0) / expenseWeight))
+    return { day: item.day, date: seriesDate(item.day, seriesYear), revenue, expense, profit: revenue - expense }
+  }).filter((row) => !range || (row.date >= range[0] && row.date <= range[1]))
+  const revenue = sum(rows, 'revenue')
+  const expense = sum(rows, 'expense')
+
+  const exportReport = () => {
+    if (!rows.length) return notify('Không có dữ liệu trong khoảng thời gian đã chọn.', 'info')
+    downloadCsv(`dong-tien-${selected?.id || 'idosi'}.csv`, rows.map((row) => ({
+      cửa_hàng: selected?.name || '',
+      ngày: row.date,
+      doanh_thu: row.revenue,
+      chi_phí: row.expense,
+      lợi_nhuận: row.profit,
+    })))
+    notify('Đã xuất báo cáo dòng tiền CSV.')
+  }
 
   return (
     <div className="page">
@@ -233,8 +347,8 @@ export function AdminCashflow() {
       <Card className="filter-card">
         <div className="filter-grid">
           <Field label="Chọn cửa hàng"><Select icon={Store} value={storeId} onChange={(event) => setStoreId(event.target.value)}>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
-          <Field label="Chọn thời gian"><DateRange value="20/05/2025 - 26/05/2025" /></Field>
-          <ExportButton label="Xuất báo cáo" onClick={() => downloadCsv('dong-tien-idosi.csv', rows)} />
+          <Field label="Chọn thời gian"><DateRange value={dateRange} onChange={setDateRange} /></Field>
+          <ExportButton label="Xuất báo cáo" onClick={exportReport} />
         </div>
       </Card>
       <div className="metric-grid">
@@ -243,7 +357,7 @@ export function AdminCashflow() {
         <MetricCard label="LỢI NHUẬN" value={money(revenue - expense)} icon={BarChart3} trend={16.78} helper=" so với kỳ trước" tone="blue" />
       </div>
       <div className="chart-grid chart-grid--wide">
-        <Card title="Biểu đồ dòng tiền" action={<Select defaultValue="day"><option value="day">Theo ngày</option></Select>}><FinancialChart data={adminSeries} /></Card>
+        <Card title="Biểu đồ dòng tiền" action={<Select value={chartType} onChange={(event) => setChartType(event.target.value)}><option value="line">Biểu đồ đường</option><option value="bar">Biểu đồ cột</option></Select>}><FinancialChart data={rows} type={chartType} /></Card>
         <Card title="Tỷ lệ cơ cấu">
           <div className="donut-with-legend">
             <DonutChart data={[{ name: 'Doanh thu', value: revenue }, { name: 'Chi phí', value: expense }, { name: 'Lợi nhuận', value: revenue - expense }]} center={money(revenue)} subcenter="Tổng" />
@@ -252,7 +366,7 @@ export function AdminCashflow() {
         </Card>
       </div>
       <Card title="Chi tiết dòng tiền">
-        <TableWrap><thead><tr><th>Ngày</th><th>Doanh thu</th><th>Chi phí</th><th>Lợi nhuận</th><th>Ghi chú</th></tr></thead><tbody>{rows.map((row) => <tr key={row.date}><td>{row.date}/2025</td><td>{money(row.revenue)}</td><td>{money(row.expense)}</td><td className="green-text"><strong>{money(row.revenue - row.expense)}</strong></td><td>–</td></tr>)}</tbody></TableWrap>
+        <TableWrap><thead><tr><th>Ngày</th><th>Doanh thu</th><th>Chi phí</th><th>Lợi nhuận</th><th>Ghi chú</th></tr></thead><tbody>{rows.map((row) => <tr key={row.date}><td>{row.day}/{seriesYear}</td><td>{money(row.revenue)}</td><td>{money(row.expense)}</td><td className="green-text"><strong>{money(row.profit)}</strong></td><td>–</td></tr>)}{!rows.length && <tr><td colSpan="5">Không có dữ liệu trong khoảng thời gian đã chọn.</td></tr>}</tbody></TableWrap>
         <TableFooter shown={rows.length} total={rows.length} />
       </Card>
     </div>
@@ -260,59 +374,157 @@ export function AdminCashflow() {
 }
 
 export function ManagerPayroll() {
-  const { stores, managerPayroll, saveManagerPayroll, notify } = useApp()
-  const [form, setForm] = useState({ store: stores[1]?.name || stores[0]?.name, month: '05/2025', salary: 15000000, bonus: 3000000, allowance: 1500000 })
+  const { stores, managerAccounts, managerPayroll, saveManagerPayroll, updateManagerPayroll, deleteManagerPayroll, notify } = useApp()
+  const accounts = Array.isArray(managerAccounts) ? managerAccounts : []
+  const payrollRows = Array.isArray(managerPayroll) ? managerPayroll : []
+  const defaultStoreId = stores[0]?.id || ''
+  const defaultManager = accounts.find((manager) => manager.storeId === defaultStoreId) || accounts[0]
+  const initialForm = { storeId: defaultStoreId, managerId: defaultManager?.id || '', month: today().slice(0, 7), salary: defaultManager?.salary || 0, bonus: 0, allowance: 0 }
+  const [form, setForm] = useState(initialForm)
+  const [editingSourceId, setEditingSourceId] = useState(null)
+  const [historyYear, setHistoryYear] = useState('all')
   const total = Number(form.salary) + Number(form.bonus) + Number(form.allowance)
-  const save = () => saveManagerPayroll({ ...form, salary: Number(form.salary), bonus: Number(form.bonus), allowance: Number(form.allowance) })
+  const rowYear = (row) => monthInputValue(row.month).slice(0, 4)
+  const years = [...new Set(payrollRows.map(rowYear).filter(Boolean))].sort((a, b) => b.localeCompare(a))
+  const filteredPayroll = historyYear === 'all' ? payrollRows : payrollRows.filter((row) => rowYear(row) === historyYear)
+  const managersForStore = accounts.filter((manager) => !form.storeId || manager.storeId === form.storeId)
+
+  const resetForm = () => {
+    setEditingSourceId(null)
+    setForm(initialForm)
+  }
+
+  const save = () => {
+    const salary = Number(form.salary)
+    const bonus = Number(form.bonus)
+    const allowance = Number(form.allowance)
+    if (!form.storeId || !form.month) return notify('Vui lòng chọn cửa hàng và tháng áp dụng.', 'info')
+    if (accounts.length && !form.managerId) return notify('Vui lòng chọn tài khoản quản lý.', 'info')
+    if (!Number.isFinite(salary) || salary <= 0 || !Number.isFinite(bonus) || bonus < 0 || !Number.isFinite(allowance) || allowance < 0) {
+      return notify('Lương phải lớn hơn 0; thưởng và phụ cấp không được âm.', 'info')
+    }
+    const store = stores.find((item) => item.id === form.storeId)
+    const manager = accounts.find((item) => item.id === form.managerId)
+    const record = {
+      storeId: form.storeId,
+      store: store?.name || '',
+      managerId: form.managerId,
+      managerName: manager?.name || '',
+      month: monthDisplayValue(form.month),
+      salary,
+      bonus,
+      allowance,
+    }
+    if (editingSourceId) updateManagerPayroll?.(editingSourceId, record)
+    else saveManagerPayroll?.(record)
+    resetForm()
+  }
+
+  const editPayroll = (row) => {
+    const store = stores.find((item) => item.id === row.storeId || item.name === row.store)
+    setEditingSourceId(row.id)
+    setForm({
+      storeId: store?.id || defaultStoreId,
+      managerId: row.managerId || accounts.find((manager) => manager.storeId === store?.id)?.id || '',
+      month: monthInputValue(row.month),
+      salary: Number(row.salary) || 0,
+      bonus: Number(row.bonus) || 0,
+      allowance: Number(row.allowance) || 0,
+    })
+    notify('Đã nạp dữ liệu lương thưởng để chỉnh sửa.', 'info')
+  }
+
+  const exportPayroll = () => {
+    if (!filteredPayroll.length) return notify('Không có lịch sử lương thưởng để xuất.', 'info')
+    downloadCsv('luong-thuong-quan-ly.csv', filteredPayroll)
+    notify('Đã xuất lịch sử lương thưởng quản lý CSV.')
+  }
 
   return (
     <div className="page">
-      <PageHeader title="LƯƠNG THƯỞNG QUẢN LÝ" subtitle="Nhập và quản lý lương thưởng của quản lý theo cửa hàng và từng tháng." actions={<DateRange value="20/05/2025 - 26/05/2025" />} />
+      <PageHeader title="LƯƠNG THƯỞNG QUẢN LÝ" subtitle="Nhập và quản lý lương thưởng của quản lý theo cửa hàng và từng tháng." />
       <Card className="payroll-form-card">
         <div className="payroll-form-layout">
           <div>
             <div className="form-grid form-grid--payroll">
-              <Field label="Cửa hàng"><Select icon={Store} value={form.store} onChange={(event) => setForm({ ...form, store: event.target.value })}>{stores.map((store) => <option key={store.id}>{store.name}</option>)}</Select></Field>
-              <Field label="Tháng / Năm"><Input icon={CalendarDays} value={form.month} onChange={(event) => setForm({ ...form, month: event.target.value })} /></Field>
+              <Field label="Cửa hàng"><Select icon={Store} value={form.storeId} onChange={(event) => { const storeId = event.target.value; const manager = accounts.find((item) => item.storeId === storeId); setForm({ ...form, storeId, managerId: manager?.id || '' }) }}>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
+              <Field label="Tháng / Năm"><Input icon={CalendarDays} type="month" value={form.month} onChange={(event) => setForm({ ...form, month: event.target.value })} /></Field>
+              {accounts.length > 0 && <Field label="Quản lý"><Select value={form.managerId} onChange={(event) => setForm({ ...form, managerId: event.target.value })}><option value="">Chọn quản lý</option>{managersForStore.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}</Select></Field>}
               <Field label="Lương (VNĐ)"><Input type="number" value={form.salary} onChange={(event) => setForm({ ...form, salary: event.target.value })} /></Field>
-              <Field label="Thưởng (VNĐ)"><Input type="number" value={form.bonus} onChange={(event) => setForm({ ...form, bonus: event.target.value })} /></Field>
-              <Field label="Phụ cấp (VNĐ)"><Input type="number" value={form.allowance} onChange={(event) => setForm({ ...form, allowance: event.target.value })} /></Field>
+              <Field label="Thưởng (VNĐ)"><Input type="number" min="0" value={form.bonus} onChange={(event) => setForm({ ...form, bonus: event.target.value })} /></Field>
+              <Field label="Phụ cấp (VNĐ)"><Input type="number" min="0" value={form.allowance} onChange={(event) => setForm({ ...form, allowance: event.target.value })} /></Field>
             </div>
           </div>
           <InfoNote><h3>Hướng dẫn</h3><ul><li>Nhập số tiền lương, thưởng và phụ cấp cho quản lý.</li><li>Tổng nhận được tính tự động.</li><li>Có thể chỉnh sửa và lưu lại bất cứ lúc nào.</li></ul></InfoNote>
         </div>
         <div className="payroll-total-row">
           <div><span>Tổng nhận</span><strong>{money(total)}</strong><small>(Lương + Thưởng + Phụ cấp)</small></div>
-          <div><Button variant="outline" icon={RefreshCcw} onClick={() => setForm({ ...form, salary: 0, bonus: 0, allowance: 0 })}>Hủy</Button><Button icon={Save} onClick={save}>Lưu</Button></div>
+          <div><Button variant="outline" icon={RefreshCcw} onClick={resetForm}>{editingSourceId ? 'Hủy chỉnh sửa' : 'Đặt lại'}</Button><Button icon={Save} onClick={save}>{editingSourceId ? 'Lưu thay đổi' : 'Lưu'}</Button></div>
         </div>
       </Card>
-      <Card title="Lịch sử lương thưởng" action={<Select defaultValue="year"><option value="year">Xem lịch sử theo năm</option></Select>}>
-        <TableWrap><thead><tr><th>STT</th><th>Tháng / Năm</th><th>Cửa hàng</th><th>Lương</th><th>Thưởng</th><th>Phụ cấp</th><th>Tổng nhận</th><th>Cập nhật lúc</th><th>Thao tác</th></tr></thead><tbody>{managerPayroll.map((row, index) => <tr key={row.id}><td>{index + 1}</td><td>{row.month}</td><td>{row.store}</td><td>{money(row.salary)}</td><td>{money(row.bonus)}</td><td>{money(row.allowance)}</td><td className="green-text"><strong>{money(row.salary + row.bonus + row.allowance)}</strong></td><td>{row.updatedAt}</td><td><div className="row-actions"><button onClick={() => notify('Bạn có thể tạo bản ghi điều chỉnh mới.', 'info')}><Edit3 size={17} /></button><button className="danger" onClick={() => notify('Dữ liệu mẫu được bảo vệ.', 'info')}><Trash2 size={17} /></button></div></td></tr>)}</tbody></TableWrap>
-        <TableFooter shown={Math.min(managerPayroll.length, 8)} total={managerPayroll.length} />
+      <Card title="Lịch sử lương thưởng" action={<><Select value={historyYear} onChange={(event) => setHistoryYear(event.target.value)}><option value="all">Tất cả năm</option>{years.map((year) => <option key={year} value={year}>{year}</option>)}</Select><ExportButton label="Xuất lịch sử" onClick={exportPayroll} /></>}>
+        <TableWrap><thead><tr><th>STT</th><th>Tháng / Năm</th><th>Cửa hàng</th><th>Quản lý</th><th>Lương</th><th>Thưởng</th><th>Phụ cấp</th><th>Tổng nhận</th><th>Cập nhật lúc</th><th>Thao tác</th></tr></thead><tbody>{filteredPayroll.map((row, index) => <tr key={row.id}><td>{index + 1}</td><td>{row.month}</td><td>{row.store}</td><td>{row.managerName || accounts.find((manager) => manager.id === row.managerId)?.name || '—'}</td><td>{money(row.salary)}</td><td>{money(row.bonus)}</td><td>{money(row.allowance)}</td><td className="green-text"><strong>{money(Number(row.salary) + Number(row.bonus) + Number(row.allowance))}</strong></td><td>{row.updatedAt}</td><td><div className="row-actions"><button onClick={() => editPayroll(row)} aria-label="Chỉnh sửa lương thưởng"><Edit3 size={17} /></button><button className="danger" onClick={() => window.confirm('Xóa bản ghi lương thưởng này?') && deleteManagerPayroll?.(row.id)} aria-label="Xóa lương thưởng"><Trash2 size={17} /></button></div></td></tr>)}{!filteredPayroll.length && <tr><td colSpan="10">Không có lịch sử trong năm đã chọn.</td></tr>}</tbody></TableWrap>
+        <TableFooter shown={filteredPayroll.length} total={filteredPayroll.length} />
       </Card>
     </div>
   )
 }
 
 export function AdminReports() {
-  const { stores } = useApp()
+  const { stores, notify } = useApp()
   const [view, setView] = useState('all')
-  const revenue = sum(stores, 'revenue')
-  const expense = sum(stores, 'expense')
+  const [period, setPeriod] = useState('day')
+  const [storeId, setStoreId] = useState(stores[0]?.id || '')
+  const reportYear = new Date().getFullYear()
+  const defaultRange = adminSeries.length ? `${adminSeries[0].day}/${reportYear} - ${adminSeries[adminSeries.length - 1].day}/${reportYear}` : ''
+  const [dateRange, setDateRange] = useState(defaultRange)
+  const range = parseRange(dateRange)
+  const filteredSeries = adminSeries.filter((item) => {
+    const date = seriesDate(item.day, reportYear)
+    return !range || (date >= range[0] && date <= range[1])
+  })
+  const revenueRatio = sum(adminSeries, 'revenue') ? sum(filteredSeries, 'revenue') / sum(adminSeries, 'revenue') : 0
+  const expenseRatio = sum(adminSeries, 'expense') ? sum(filteredSeries, 'expense') / sum(adminSeries, 'expense') : 0
+  const baseStores = view === 'single' ? stores.filter((store) => store.id === storeId) : stores
+  const reportStores = baseStores.map((store) => ({
+    ...store,
+    revenue: Math.round((Number(store.revenue) || 0) * revenueRatio),
+    expense: Math.round((Number(store.expense) || 0) * expenseRatio),
+  }))
+  const revenue = sum(reportStores, 'revenue')
+  const expense = sum(reportStores, 'expense')
   const profit = revenue - expense
-  const donut = stores.map((store) => ({ name: store.name, value: store.revenue }))
+  const donut = reportStores.map((store) => ({ name: store.name, value: store.revenue }))
+  const reportMonth = adminSeries[0]?.day?.split('/')[1] || String(new Date().getMonth() + 1).padStart(2, '0')
+  const chartData = period === 'month'
+    ? [{ day: `${reportMonth}/${reportYear}`, revenue: sum(filteredSeries, 'revenue'), expense: sum(filteredSeries, 'expense'), profit: sum(filteredSeries, 'profit') }]
+    : filteredSeries
+
+  const reportRows = reportStores.map((store) => ({
+    cửa_hàng: store.name,
+    doanh_thu: store.revenue,
+    chi_phí: store.expense,
+    lợi_nhuận: store.revenue - store.expense,
+    tỷ_lệ_lợi_nhuận: percent(store.revenue - store.expense, store.revenue),
+  }))
+
+  const exportReport = () => {
+    if (!reportRows.length) return notify('Không có dữ liệu báo cáo để xuất.', 'info')
+    downloadCsv('bao-cao-he-thong-idosi.csv', reportRows)
+    notify('Đã xuất báo cáo hệ thống CSV; tệp có thể mở bằng Excel.')
+  }
 
   return (
     <div className="page">
-      <PageHeader title="Báo cáo" subtitle="Theo dõi và phân tích kết quả hoạt động của hệ thống." actions={<><div className="segmented"><button className="active">Theo ngày</button><button>Theo tháng</button></div><DateRange value="20/05/2025 - 26/05/2025" /><div className="export-pair"><Button icon={FileDown}>File Excel</Button><Button variant="danger" icon={FileDown}>File PDF</Button></div></>} />
-      <div className="tabs"><button className={view === 'all' ? 'active' : ''} onClick={() => setView('all')}><BarChart3 />Tổng tất cả cửa hàng</button><button className={view === 'single' ? 'active' : ''} onClick={() => setView('single')}><Store />Theo từng cửa hàng</button></div>
-      <AdminMetrics stores={view === 'single' ? [stores[0]] : stores} compact />
+      <PageHeader title="Báo cáo" subtitle="Theo dõi và phân tích kết quả hoạt động của hệ thống." actions={<><div className="segmented"><button className={period === 'day' ? 'active' : ''} onClick={() => setPeriod('day')}>Theo ngày</button><button className={period === 'month' ? 'active' : ''} onClick={() => setPeriod('month')}>Theo tháng</button></div><DateRange value={dateRange} onChange={setDateRange} /><div className="export-pair"><Button icon={FileDown} onClick={exportReport}>File Excel</Button><Button variant="danger" icon={FileDown} onClick={() => notify('Xuất PDF chưa có dịch vụ tạo tệp; vui lòng dùng File Excel/CSV.', 'info')}>File PDF</Button></div></>} />
+      <div className="tabs"><button className={view === 'all' ? 'active' : ''} onClick={() => setView('all')}><BarChart3 />Tổng tất cả cửa hàng</button><button className={view === 'single' ? 'active' : ''} onClick={() => setView('single')}><Store />Theo từng cửa hàng</button>{view === 'single' && <Select value={storeId} onChange={(event) => setStoreId(event.target.value)}>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select>}</div>
+      <AdminMetrics stores={reportStores} compact />
       <div className="chart-grid">
-        <Card title="Biểu đồ tổng theo 7 ngày"><FinancialChart data={adminSeries} type="bar" /></Card>
-        <Card title="Cơ cấu doanh thu theo cửa hàng"><div className="donut-with-legend"><DonutChart data={donut} center={money(revenue)} subcenter="Tổng" /><div className="legend-list">{stores.map((store) => <p key={store.id}><i className="dot" style={{ background: store.accent }} />{store.name}<strong>{((store.revenue / revenue) * 100).toFixed(1)}%</strong></p>)}</div></div></Card>
+        <Card title={period === 'day' ? 'Biểu đồ tổng theo ngày' : 'Biểu đồ tổng theo tháng'}><FinancialChart data={chartData} type="bar" /></Card>
+        <Card title="Cơ cấu doanh thu theo cửa hàng"><div className="donut-with-legend"><DonutChart data={donut} center={money(revenue)} subcenter="Tổng" /><div className="legend-list">{reportStores.map((store) => <p key={store.id}><i className="dot" style={{ background: store.accent }} />{store.name}<strong>{revenue > 0 ? `${((store.revenue / revenue) * 100).toFixed(1)}%` : '0.0%'}</strong></p>)}</div></div></Card>
       </div>
       <Card title="Chi tiết doanh thu – chi phí – lợi nhuận từng cửa hàng">
-        <TableWrap><thead><tr><th>STT</th><th>Cửa hàng</th><th>Tổng doanh thu</th><th>Tổng chi phí</th><th>Lợi nhuận</th><th>Tỷ lệ lợi nhuận</th></tr></thead><tbody>{stores.map((store, index) => <tr key={store.id}><td>{index + 1}</td><td><strong>{store.name}</strong></td><td>{money(store.revenue)}</td><td>{money(store.expense)}</td><td>{money(store.revenue - store.expense)}</td><td className="green-text"><strong>{(((store.revenue - store.expense) / store.revenue) * 100).toFixed(2)}%</strong></td></tr>)}<tr className="total-row"><td colSpan="2">Tổng cộng</td><td>{money(revenue)}</td><td>{money(expense)}</td><td>{money(profit)}</td><td>{((profit / revenue) * 100).toFixed(2)}%</td></tr></tbody></TableWrap>
+        <TableWrap><thead><tr><th>STT</th><th>Cửa hàng</th><th>Tổng doanh thu</th><th>Tổng chi phí</th><th>Lợi nhuận</th><th>Tỷ lệ lợi nhuận</th></tr></thead><tbody>{reportStores.map((store, index) => <tr key={store.id}><td>{index + 1}</td><td><strong>{store.name}</strong></td><td>{money(store.revenue)}</td><td>{money(store.expense)}</td><td>{money(store.revenue - store.expense)}</td><td className="green-text"><strong>{percent(store.revenue - store.expense, store.revenue)}</strong></td></tr>)}{reportStores.length > 0 && <tr className="total-row"><td colSpan="2">Tổng cộng</td><td>{money(revenue)}</td><td>{money(expense)}</td><td>{money(profit)}</td><td>{percent(profit, revenue)}</td></tr>}{!reportStores.length && <tr><td colSpan="6">Không có dữ liệu phù hợp với bộ lọc.</td></tr>}</tbody></TableWrap>
         <InfoNote><strong>Xu hướng:</strong> Doanh thu và lợi nhuận tăng ổn định, đạt mức cao nhất trong tuần.</InfoNote>
       </Card>
     </div>
@@ -320,10 +532,58 @@ export function AdminReports() {
 }
 
 export function AdminSettings() {
-  const { settings, saveSettings, resetDemo, notify } = useApp()
+  const { settings, session, adminAccounts, saveSettings, changeAdminPassword, resetDemo, notify } = useApp()
   const [tab, setTab] = useState('profile')
-  const [form, setForm] = useState(settings)
+  const [form, setForm] = useState(settings || {})
+  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' })
+  const [notifications, setNotifications] = useState(() => ({
+    tasks: settings?.notifications?.tasks ?? true,
+    dailyReport: settings?.notifications?.dailyReport ?? true,
+    expenseAlert: settings?.notifications?.expenseAlert ?? false,
+  }))
+  const photoInput = useRef(null)
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
+
+  const saveProfile = () => {
+    if (!String(form.name || '').trim() || !String(form.email || '').trim()) return notify('Họ tên và email là trường bắt buộc.', 'info')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(form.email))) return notify('Email không đúng định dạng.', 'info')
+    if (form.phone && !validateVietnamPhone(form.phone)) return notify('Số điện thoại Việt Nam không đúng định dạng.', 'info')
+    saveSettings?.({ ...settings, ...form, notifications })
+  }
+
+  const choosePhoto = (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    if (!['image/jpeg', 'image/png'].includes(file.type)) {
+      notify('Ảnh đại diện chỉ hỗ trợ JPG hoặc PNG.', 'info')
+      event.target.value = ''
+      return
+    }
+    if (file.size > 2 * 1024 * 1024) {
+      notify('Ảnh đại diện không được vượt quá 2MB.', 'info')
+      event.target.value = ''
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = () => setForm((current) => ({ ...current, avatar: String(reader.result || '') }))
+    reader.readAsDataURL(file)
+  }
+
+  const requestPasswordChange = () => {
+    if (!passwordForm.current || !passwordForm.next || !passwordForm.confirm) return notify('Vui lòng nhập đầy đủ ba trường mật khẩu.', 'info')
+    const account = (Array.isArray(adminAccounts) ? adminAccounts : []).find((item) => item.id === session?.id || item.username === session?.username)
+    if (account?.password && account.password !== passwordForm.current) return notify('Mật khẩu hiện tại chưa đúng.', 'info')
+    if (passwordForm.next.length < 6) return notify('Mật khẩu mới phải có ít nhất 6 ký tự.', 'info')
+    if (passwordForm.next !== passwordForm.confirm) return notify('Xác nhận mật khẩu mới không khớp.', 'info')
+    const changed = changeAdminPassword?.(session?.id || session?.username, passwordForm.next)
+    if (changed) setPasswordForm({ current: '', next: '', confirm: '' })
+  }
+
+  const saveNotifications = () => saveSettings?.({ ...settings, notifications })
+
+  const restoreDemo = () => {
+    if (window.confirm('Khôi phục dữ liệu mẫu sẽ thay thế các thay đổi đang lưu. Bạn có chắc chắn?')) resetDemo?.()
+  }
 
   return (
     <div className="page settings-page">
@@ -333,26 +593,26 @@ export function AdminSettings() {
           <button className={tab === 'profile' ? 'active' : ''} onClick={() => setTab('profile')}><UserRound />Thông tin cá nhân</button>
           <button className={tab === 'password' ? 'active' : ''} onClick={() => setTab('password')}><ShieldCheck />Đổi mật khẩu</button>
           <button className={tab === 'notifications' ? 'active' : ''} onClick={() => setTab('notifications')}><Info />Thông báo</button>
-          <button onClick={resetDemo}><RefreshCcw />Khôi phục dữ liệu mẫu</button>
+          <button onClick={restoreDemo}><RefreshCcw />Khôi phục dữ liệu mẫu</button>
         </Card>
         {tab === 'profile' ? (
           <Card className="settings-content">
             <h2>Thông tin cá nhân</h2><p>Cập nhật thông tin tài khoản của bạn.</p>
             <div className="profile-form">
-              <div className="profile-photo"><div>QT</div><Button variant="outline">Đổi ảnh</Button><small>Định dạng JPG, PNG<br />Tối đa 2MB</small></div>
+              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện quản trị" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : 'QT'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png" hidden onChange={choosePhoto} /><Button variant="outline" onClick={() => photoInput.current?.click()}>Đổi ảnh</Button><small>Định dạng JPG, PNG<br />Tối đa 2MB</small></div>
               <div className="form-grid">
                 <Field label="Họ và tên"><Input value={form.name} onChange={set('name')} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} /></Field>
-                <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Select defaultValue="admin"><option value="admin">Quản lý hệ thống</option></Select></Field>
+                <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Select value="admin" disabled><option value="admin">Quản lý hệ thống</option></Select></Field>
                 <Field label="Ngày sinh"><Input type="date" value={form.birthday} onChange={set('birthday')} /></Field><Field label="Giới tính"><Select value={form.gender} onChange={set('gender')}><option>Nam</option><option>Nữ</option><option>Khác</option></Select></Field>
                 <Field label="Địa chỉ" className="span-2"><Input value={form.address} onChange={set('address')} /></Field>
-                <Field label="Giới thiệu" className="span-2"><textarea value={form.bio} onChange={set('bio')} maxLength={200} /><small>{form.bio.length}/200</small></Field>
+                <Field label="Giới thiệu" className="span-2"><textarea value={form.bio || ''} onChange={set('bio')} maxLength={200} /><small>{String(form.bio || '').length}/200</small></Field>
               </div>
             </div>
-            <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value="admin" disabled /></Field><Field label="Vai trò"><Input value="Quản trị viên" disabled /></Field></div></div>
-            <div className="card-actions"><Button icon={Save} onClick={() => saveSettings(form)}>Lưu thay đổi</Button></div>
+            <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || 'admin'} disabled /></Field><Field label="Vai trò"><Input value="Quản trị viên" disabled /></Field></div></div>
+            <div className="card-actions"><Button icon={Save} onClick={saveProfile}>Lưu thay đổi</Button></div>
           </Card>
         ) : (
-          <Card className="settings-content settings-placeholder"><ShieldCheck size={48} /><h2>{tab === 'password' ? 'Đổi mật khẩu' : 'Thiết lập thông báo'}</h2><p>{tab === 'password' ? 'Nhập mật khẩu mới để tăng cường bảo mật tài khoản.' : 'Chọn loại thông báo bạn muốn nhận từ hệ thống.'}</p><div className="form-stack">{tab === 'password' ? <><Field label="Mật khẩu hiện tại"><Input type="password" /></Field><Field label="Mật khẩu mới"><Input type="password" /></Field><Field label="Xác nhận mật khẩu"><Input type="password" /></Field></> : <><label className="switch-row"><span>Thông báo công việc mới</span><input type="checkbox" defaultChecked /></label><label className="switch-row"><span>Báo cáo doanh thu hàng ngày</span><input type="checkbox" defaultChecked /></label><label className="switch-row"><span>Cảnh báo chi phí</span><input type="checkbox" /></label></>}<Button onClick={() => notify('Đã lưu thiết lập.')}>Lưu thiết lập</Button></div></Card>
+          <Card className="settings-content settings-placeholder"><ShieldCheck size={48} /><h2>{tab === 'password' ? 'Đổi mật khẩu' : 'Thiết lập thông báo'}</h2><p>{tab === 'password' ? 'Nhập mật khẩu mới để tăng cường bảo mật tài khoản.' : 'Chọn loại thông báo bạn muốn nhận từ hệ thống.'}</p><div className="form-stack">{tab === 'password' ? <><Field label="Mật khẩu hiện tại"><Input type="password" value={passwordForm.current} onChange={(event) => setPasswordForm({ ...passwordForm, current: event.target.value })} /></Field><Field label="Mật khẩu mới"><Input type="password" value={passwordForm.next} onChange={(event) => setPasswordForm({ ...passwordForm, next: event.target.value })} /></Field><Field label="Xác nhận mật khẩu"><Input type="password" value={passwordForm.confirm} onChange={(event) => setPasswordForm({ ...passwordForm, confirm: event.target.value })} /></Field></> : <><label className="switch-row"><span>Thông báo công việc mới</span><input type="checkbox" checked={notifications.tasks} onChange={(event) => setNotifications({ ...notifications, tasks: event.target.checked })} /></label><label className="switch-row"><span>Báo cáo doanh thu hàng ngày</span><input type="checkbox" checked={notifications.dailyReport} onChange={(event) => setNotifications({ ...notifications, dailyReport: event.target.checked })} /></label><label className="switch-row"><span>Cảnh báo chi phí</span><input type="checkbox" checked={notifications.expenseAlert} onChange={(event) => setNotifications({ ...notifications, expenseAlert: event.target.checked })} /></label></>}<Button onClick={tab === 'password' ? requestPasswordChange : saveNotifications}>Lưu thiết lập</Button></div></Card>
         )}
       </div>
     </div>

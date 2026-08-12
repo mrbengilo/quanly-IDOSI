@@ -34,6 +34,13 @@ import {
   EmployeePayroll,
   EmployeeShiftHistory,
 } from './pages/employee/EmployeePages'
+import {
+  calculateEmployeeBasePay,
+  getHourlyRate,
+  getMonthlySalary,
+  validateCccd,
+  validateVietnamPhone,
+} from './utils'
 
 beforeAll(() => {
   globalThis.ResizeObserver = class {
@@ -98,5 +105,47 @@ describe('IDOSI page smoke tests', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /Quản trị admin/i }))
     expect(screen.getByRole('heading', { name: 'Quản lý cửa hàng' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Tài khoản quản lý/i })).toBeTruthy()
+  })
+
+  it('lets a manager view and switch all stores without super-admin controls', () => {
+    render(
+      <MemoryRouter initialEntries={['/login']}>
+        <AppProvider>
+          <App />
+        </AppProvider>
+      </MemoryRouter>,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Quản lý manager/i }))
+    expect(screen.getByRole('link', { name: /Danh sách cửa hàng/i })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Tài khoản quản lý/i })).toBeNull()
+    const storeSwitcher = screen.getByRole('combobox', { name: /9 cửa hàng/i })
+    expect(storeSwitcher.querySelectorAll('option')).toHaveLength(9)
+    fireEvent.click(screen.getByRole('link', { name: /Danh sách cửa hàng/i }))
+    expect(screen.getByRole('heading', { name: 'Quản lý cửa hàng' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Thêm cửa hàng' })).toBeNull()
+  })
+})
+
+describe('IDOSI business rules', () => {
+  it('validates Vietnamese identity and phone formats', () => {
+    expect(validateCccd('079203001234')).toBe(true)
+    expect(validateCccd('07920300123')).toBe(false)
+    expect(validateVietnamPhone('0901234567')).toBe(true)
+    expect(validateVietnamPhone('12345')).toBe(false)
+  })
+
+  it('uses monthly salary for full-time employees', () => {
+    const employee = { employmentType: 'Full-time', monthlySalary: 12000000 }
+    expect(getMonthlySalary(employee)).toBe(12000000)
+    expect(getHourlyRate(employee)).toBe(0)
+    expect(calculateEmployeeBasePay(employee, { hours: 160 })).toBe(12000000)
+  })
+
+  it('uses worked hours for part-time employees', () => {
+    const employee = { employmentType: 'Part-time', hourlyRate: 42000 }
+    expect(getHourlyRate(employee)).toBe(42000)
+    expect(getMonthlySalary(employee)).toBe(0)
+    expect(calculateEmployeeBasePay(employee, { hours: 80 })).toBe(3360000)
   })
 })

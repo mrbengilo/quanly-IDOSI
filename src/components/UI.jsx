@@ -75,9 +75,9 @@ export function PageHeader({ title, subtitle, icon: Icon, actions, onMenu }) {
   )
 }
 
-export function NotificationButton({ count = 3 }) {
+export function NotificationButton({ count = 3, onClick }) {
   return (
-    <button className="icon-button notification" aria-label="Thông báo">
+    <button className="icon-button notification" aria-label="Thông báo" onClick={onClick} disabled={!onClick}>
       <Bell size={23} />
       {count > 0 && <span>{count}</span>}
     </button>
@@ -197,15 +197,22 @@ export function TableWrap({ children, className = '' }) {
   )
 }
 
-export function TableFooter({ shown, total, page = 1 }) {
+export function TableFooter({ shown, total, page = 1, onPageChange }) {
+  const totalPages = Math.max(1, Math.ceil(Number(total || 0) / Math.max(1, Number(shown || total || 1))))
   return (
     <div className="table-footer">
       <span>Hiển thị 1 - {shown} của {total} bản ghi</span>
       <div className="pagination">
-        <button disabled>‹</button>
-        <button className="active">{page}</button>
-        {total > shown && <button>2</button>}
-        <button disabled={total <= shown}>›</button>
+        <button disabled={!onPageChange || page <= 1} onClick={() => onPageChange?.(page - 1)}>‹</button>
+        {Array.from({ length: totalPages }, (_, index) => index + 1).map((pageNumber) => (
+          <button
+            key={pageNumber}
+            className={pageNumber === page ? 'active' : ''}
+            disabled={!onPageChange}
+            onClick={() => onPageChange?.(pageNumber)}
+          >{pageNumber}</button>
+        ))}
+        <button disabled={!onPageChange || page >= totalPages} onClick={() => onPageChange?.(page + 1)}>›</button>
       </div>
     </div>
   )

@@ -3,6 +3,44 @@ export const money = (value) => `${new Intl.NumberFormat('vi-VN').format(Number(
 export const number = (value, digits = 0) =>
   new Intl.NumberFormat('vi-VN', { maximumFractionDigits: digits }).format(Number(value) || 0)
 
+export const getEmployeeType = (employee = {}) =>
+  employee.employmentType || employee.employeeType || employee.type || 'Full-time'
+
+export const getPayBasis = (employee = {}) => {
+  const value = String(employee.payBasis || employee.salaryBasis || employee.salaryType || employee.salaryUnit || '').toLowerCase()
+  if (['hourly', 'hour', 'gio', 'giờ'].includes(value)) return 'hourly'
+  if (['monthly', 'month', 'thang', 'tháng'].includes(value)) return 'monthly'
+  if (value === 'legacy') return 'legacy'
+  return getEmployeeType(employee) === 'Part-time' ? 'hourly' : 'monthly'
+}
+
+export const getMonthlySalary = (employee = {}) => {
+  const explicit = Number(employee.monthlySalary)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  return getPayBasis(employee) === 'monthly' ? Math.max(0, Number(employee.salary) || 0) : 0
+}
+
+export const getHourlyRate = (employee = {}) => {
+  const explicit = Number(employee.hourlyRate)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  return getPayBasis(employee) === 'hourly' ? Math.max(0, Number(employee.salary) || 0) : 0
+}
+
+export const calculateEmployeeBasePay = (employee = {}, { hours = 0, workedDays = 0, prorateMonthly = false } = {}) => {
+  if (getPayBasis(employee) === 'hourly') return Math.round(Math.max(0, Number(hours) || 0) * getHourlyRate(employee))
+  const monthlySalary = getMonthlySalary(employee)
+  if (!prorateMonthly) return monthlySalary
+  const standardWorkDays = Math.max(1, Number(employee.standardWorkDays) || 26)
+  return Math.round((monthlySalary / standardWorkDays) * Math.max(0, Number(workedDays) || 0))
+}
+
+export const salaryBasisLabel = (employee = {}) => {
+  const basis = getPayBasis(employee)
+  if (basis === 'hourly') return 'Theo giờ'
+  if (basis === 'monthly') return 'Theo tháng'
+  return 'Chưa thiết lập'
+}
+
 export const downloadCsv = (name, rows) => {
   if (!rows?.length) return
   const headers = Object.keys(rows[0])

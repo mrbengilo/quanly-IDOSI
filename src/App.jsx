@@ -40,17 +40,19 @@ const homeByRole = {
   employee: '/employee/home',
 }
 
-function RoleGuard({ role, children }) {
+const homeFor = (session) => homeByRole[session?.role] || '/login'
+
+function RoleGuard({ roles, children }) {
   const { session } = useApp()
   if (!session) return <Navigate to="/login" replace />
-  const allowedRoles = Array.isArray(role) ? role : role === 'store' ? ['store', 'admin'] : [role]
-  if (!allowedRoles.includes(session.role)) return <Navigate to={homeByRole[session.role]} replace />
+  const allowedRoles = Array.isArray(roles) ? roles : [roles]
+  if (!allowedRoles.includes(session.role)) return <Navigate to={homeFor(session)} replace />
   return children
 }
 
 function EntryRedirect() {
   const { session } = useApp()
-  return <Navigate to={session ? homeByRole[session.role] : '/login'} replace />
+  return <Navigate to={homeFor(session)} replace />
 }
 
 export default function App() {
@@ -58,23 +60,20 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<EntryRedirect />} />
-      <Route path="/login" element={session ? <Navigate to={homeByRole[session.role]} replace /> : <Login />} />
+      <Route path="/login" element={session ? <Navigate to={homeFor(session)} replace /> : <Login />} />
 
-      <Route element={<RoleGuard role="admin"><AppShell /></RoleGuard>}>
+      <Route element={<RoleGuard roles={['admin', 'store']}><AppShell /></RoleGuard>}>
         <Route path="/admin/overview" element={<AdminOverview />} />
         <Route path="/admin/stores" element={<AdminStores />} />
-        <Route path="/admin/managers" element={<ManagerAccounts />} />
-        <Route path="/admin/office" element={<OfficeManagement />} />
         <Route path="/admin/tasks" element={<AdminTasks />} />
         <Route path="/admin/cashflow" element={<AdminCashflow />} />
-        <Route path="/admin/manager-payroll" element={<ManagerPayroll />} />
         <Route path="/admin/reports" element={<AdminReports />} />
-        <Route path="/admin/settings" element={<AdminSettings />} />
-      </Route>
 
-      <Route element={<RoleGuard role="store"><AppShell /></RoleGuard>}>
+        <Route path="/office" element={<OfficeManagement />} />
+        <Route path="/admin/office" element={<Navigate to="/office" replace />} />
+        <Route path="/store/office" element={<Navigate to="/office" replace />} />
+
         <Route path="/store/overview" element={<StoreOverview />} />
-        <Route path="/store/office" element={<OfficeManagement />} />
         <Route path="/store/shifts" element={<StoreShifts />} />
         <Route path="/store/schedule" element={<StoreSchedule />} />
         <Route path="/store/employees" element={<StoreEmployees />} />
@@ -86,7 +85,13 @@ export default function App() {
         <Route path="/store/settings" element={<StoreSettings />} />
       </Route>
 
-      <Route element={<RoleGuard role="employee"><AppShell /></RoleGuard>}>
+      <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
+        <Route path="/admin/managers" element={<ManagerAccounts />} />
+        <Route path="/admin/manager-payroll" element={<ManagerPayroll />} />
+        <Route path="/admin/settings" element={<AdminSettings />} />
+      </Route>
+
+      <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
         <Route path="/employee/home" element={<EmployeeHome />} />
         <Route path="/employee/shifts" element={<EmployeeShiftHistory />} />
         <Route path="/employee/payroll" element={<EmployeePayroll />} />
