@@ -7,8 +7,17 @@ import { useApp } from '../state/AppContext'
 
 const destinations = {
   admin: '/admin/overview',
+  business_support: '/admin/overview',
   manager: '/admin/overview',
+  store_manager: '/store/overview',
   employee: '/employee/home',
+}
+
+const accountRoleLabel = (account) => {
+  if (account.role === 'admin') return 'Admin'
+  if (['business_support', 'manager'].includes(account.role)) return 'Hỗ trợ KD'
+  if (account.role === 'store_manager') return 'Quản lý cửa hàng'
+  return account.unit === 'office' ? 'Nhân viên văn phòng' : 'Nhân viên cửa hàng'
 }
 
 const REMEMBERED_USER_KEY = 'idosi-remembered-username'
@@ -61,7 +70,7 @@ export default function Login() {
     setLoading(false)
     if (!result.ok) return setError(result.message)
     saveRememberedUsername(username, remember)
-    navigate(destinations[result.account.role])
+    navigate(destinations[result.account.role] || '/login')
   }
 
   const showRecoveryHelp = () => {
@@ -112,7 +121,7 @@ export default function Login() {
           <div className="demo-accounts">
             {demoAccounts.map((account) => (
               <button key={account.username} type="button" onClick={() => { setUsername(account.username); setPassword('') }}>
-                <b>{account.role === 'admin' ? 'Admin' : account.role === 'manager' ? 'Quản lý' : account.unit === 'office' ? 'Nhân viên văn phòng' : 'Nhân viên cửa hàng'}</b>
+                <b>{accountRoleLabel(account)}</b>
                 <small>{account.username}</small>
               </button>
             ))}

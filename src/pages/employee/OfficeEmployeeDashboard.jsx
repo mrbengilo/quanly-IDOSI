@@ -32,6 +32,7 @@ import {
   officeAttendanceStats,
   officeEmployeeKey,
   officeLocationLabel,
+  officePayrollStoreId,
   officePayrollSummary,
   officeRecordDate,
   officeSalaryAdjustments,
@@ -119,9 +120,11 @@ const statusTone = (label) => label === 'Đi trễ' ? 'red' : label === 'Đi s�
 const ratingTone = (label) => label === 'Chuyên cần tốt' ? 'green' : label === 'Cần cải thiện' ? 'red' : label === 'Cần duy trì' ? 'orange' : 'blue'
 
 function OfficePayrollCard({ app, employee, period, rows, showHeader = false, onPeriodChange }) {
+  const isBusinessSupport = app.session?.role === 'business_support' || employee.unit === 'business_support'
+  const payrollStoreId = officePayrollStoreId(app.session, employee)
   const currentMonth = vietnamDateKey().slice(0, 7)
   const closedPeriod = (Array.isArray(app.payrollPeriods) ? app.payrollPeriods : []).find((item) => (
-    String(item.storeId || '') === 'OFFICE'
+    String(item.storeId || '') === payrollStoreId
     && String(item.period || '') === period
     && !item.needsReclose
   ))
@@ -149,7 +152,7 @@ function OfficePayrollCard({ app, employee, period, rows, showHeader = false, on
     <section className={showHeader ? 'office-payroll-page-section' : ''} aria-labelledby="office-payroll-title">
       {showHeader && (
         <PageHeader
-          title="BẢNG LƯƠNG VĂN PHÒNG CỦA TÔI"
+          title={isBusinessSupport ? 'BẢNG LƯƠNG HỖ TRỢ KINH DOANH CỦA TÔI' : 'BẢNG LƯƠNG VĂN PHÒNG CỦA TÔI'}
           subtitle="Lương tỷ lệ theo số ngày làm thực tế và ngày công chuẩn do Admin thiết lập."
           icon={Wallet}
           actions={<Field label="Tháng lương"><Input type="month" value={period} onChange={(event) => onPeriodChange?.(event.target.value)} /></Field>}
@@ -179,6 +182,8 @@ function OfficePayrollCard({ app, employee, period, rows, showHeader = false, on
 export function OfficeEmployeeDashboard() {
   const app = useApp()
   const employee = currentOfficeEmployee(app)
+  const isBusinessSupport = app.session?.role === 'business_support' || employee.unit === 'business_support'
+  const unitLabel = isBusinessSupport ? 'Hỗ trợ kinh doanh' : 'Văn Phòng'
   const employeeId = officeEmployeeKey(employee)
   const [now, setNow] = useState(() => new Date())
   const [filterMode, setFilterMode] = useState('month')
@@ -210,7 +215,7 @@ export function OfficeEmployeeDashboard() {
   const runLocatedAction = async (action) => {
     setLocationError('')
     if (!employeeId) {
-      const message = 'Tài khoản chưa được liên kết với hồ sơ nhân viên Văn Phòng.'
+      const message = `Tài khoản chưa được liên kết với hồ sơ nhân viên ${unitLabel}.`
       setLocationError(message)
       app.notify?.(message, 'info')
       return
@@ -223,7 +228,7 @@ export function OfficeEmployeeDashboard() {
           employeeId,
           date: dateKey,
           shiftId: '',
-          shiftName: 'Giờ làm Văn Phòng',
+          shiftName: `Giờ làm ${unitLabel}`,
           shiftStart: employee.workStart || '08:00',
           shiftEnd: employee.workEnd || '17:00',
           location,
@@ -249,7 +254,7 @@ export function OfficeEmployeeDashboard() {
 
   return (
     <div className="page office-employee-dashboard">
-      <PageHeader title="NHÂN VIÊN VĂN PHÒNG" subtitle={`${employee.name || 'Nhân viên'} • ${employee.position || 'Khối Văn Phòng'}`} icon={Fingerprint} />
+      <PageHeader title={isBusinessSupport ? 'NHÂN VIÊN HỖ TRỢ KINH DOANH' : 'NHÂN VIÊN VĂN PHÒNG'} subtitle={`${employee.name || 'Nhân viên'} • ${employee.position || (isBusinessSupport ? 'Khối Hỗ trợ kinh doanh' : 'Khối Văn Phòng')}`} icon={Fingerprint} />
 
       <div className="office-attendance-hero">
         <Card className="office-live-clock">
@@ -262,7 +267,7 @@ export function OfficeEmployeeDashboard() {
         </Card>
         <Card className="office-attendance-action">
           <div className="office-attendance-action__heading">
-            <div><span>CHẤM CÔNG HÔM NAY</span><strong>Giờ làm Văn Phòng</strong><small>{employee.workStart || '08:00'} – {employee.workEnd || '17:00'}</small></div>
+            <div><span>CHẤM CÔNG HÔM NAY</span><strong>Giờ làm {unitLabel}</strong><small>{employee.workStart || '08:00'} – {employee.workEnd || '17:00'}</small></div>
             <Badge tone={statusTone(todayStatus)}>{todayStatus}</Badge>
           </div>
           <div className="office-attendance-action__times">
@@ -310,7 +315,7 @@ export function OfficeEmployeeDashboard() {
               const label = officeArrivalStatus(record)
               const minutes = officeArrivalMinutes(record)
               const difference = label === 'Đi sớm' ? `${minutes.earlyMinutes} phút sớm` : label === 'Đi trễ' ? `${minutes.lateMinutes} phút trễ` : 'Đúng quy định'
-              return <tr key={record.id || `${officeRecordDate(record)}-${record.checkIn}`}><td><strong>{shortDate(officeRecordDate(record))}</strong></td><td>{record.shiftName || record.shift || 'Ca Văn Phòng'}<small className="table-note">{record.shiftStart || employee.workStart || '08:00'}–{record.shiftEnd || employee.workEnd || '17:00'}</small></td><td className="green-text"><strong>{timeOnly(record.checkIn || record.checkInAt)}</strong></td><td><Badge tone={statusTone(label)}>{label}</Badge></td><td>{difference}</td><td className="address-cell">{officeLocationLabel(record.checkInLocation || record.location)}</td><td><strong>{timeOnly(record.checkOut || record.checkOutAt)}</strong></td><td className="address-cell">{officeLocationLabel(record.checkOutLocation)}</td><td>{workedHours(record).toFixed(2)} giờ</td></tr>
+              return <tr key={record.id || `${officeRecordDate(record)}-${record.checkIn}`}><td><strong>{shortDate(officeRecordDate(record))}</strong></td><td>{record.shiftName || record.shift || `Ca ${unitLabel}`}<small className="table-note">{record.shiftStart || employee.workStart || '08:00'}–{record.shiftEnd || employee.workEnd || '17:00'}</small></td><td className="green-text"><strong>{timeOnly(record.checkIn || record.checkInAt)}</strong></td><td><Badge tone={statusTone(label)}>{label}</Badge></td><td>{difference}</td><td className="address-cell">{officeLocationLabel(record.checkInLocation || record.location)}</td><td><strong>{timeOnly(record.checkOut || record.checkOutAt)}</strong></td><td className="address-cell">{officeLocationLabel(record.checkOutLocation)}</td><td>{workedHours(record).toFixed(2)} giờ</td></tr>
             })}
             {!filteredRows.length && <tr><td colSpan="9">Chưa có lịch sử chấm công trong thời gian đã chọn.</td></tr>}
           </tbody>

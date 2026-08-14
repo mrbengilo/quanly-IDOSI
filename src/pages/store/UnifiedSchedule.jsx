@@ -102,10 +102,12 @@ export function UnifiedSchedule() {
   const shiftDefinitions = Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : []
   const schedule = Array.isArray(app.schedule) ? app.schedule : []
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
-  const storeId = activeStore?.id || activeStoreId || session?.storeId || ''
+  const storeId = session?.role === 'store_manager'
+    ? session.storeId
+    : activeStore?.id || activeStoreId || session?.storeId || ''
   const employees = allEmployees
     .filter((employee) => (
-      employee.unit !== 'office'
+      String(employee.unit || 'store') === 'store'
       && employee.status !== 'Đã nghỉ việc'
       && (!storeId || String(employee.storeId) === String(storeId))
     ))

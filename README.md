@@ -1,6 +1,6 @@
 # HỆ THỐNG QUẢN LÝ IDOSI
 
-Ứng dụng quản lý tập trung cho 9 cửa hàng IDOSI và Khối Văn Phòng. Hệ thống có ba vai trò đăng nhập: Admin, Quản lý và Nhân viên; nhân viên được gán vào cửa hàng hoặc Khối Văn Phòng.
+Ứng dụng quản lý tập trung cho chuỗi cửa hàng IDOSI, Khối Văn Phòng và đội Hỗ trợ kinh doanh. Hệ thống dùng bốn mã quyền đăng nhập (`admin`, `business_support`, `store_manager`, `employee`) cho năm nhóm hiển thị: Admin, Nhân viên hỗ trợ KD, Quản lý cửa hàng, Nhân viên cửa hàng và Nhân viên văn phòng.
 
 ## Chạy dự án
 
@@ -24,17 +24,15 @@ npm run build
 | Vai trò | Tên đăng nhập | Mật khẩu |
 | --- | --- | --- |
 | Admin | `admin` | `idosi123` |
-| Quản lý | `manager` | `idosi123` |
-| Nhân viên văn phòng | `office` | `idosi123` |
-| Nhân viên cửa hàng | `employee` | `idosi123` |
 
-Các tài khoản nhân viên được Admin tạo trong ứng dụng cũng có thể đăng nhập bằng thông tin đã khai báo.
+Hệ thống chỉ khởi tạo sẵn tài khoản Admin. Admin tạo tài khoản Hỗ trợ KD, Quản lý cửa hàng và Nhân viên văn phòng. Quản lý cửa hàng được gán bắt buộc vào một cửa hàng và tạo tài khoản Nhân viên cửa hàng trong đúng phạm vi đó. Các tài khoản được tạo trong ứng dụng đăng nhập bằng thông tin đã khai báo.
 Production được khởi tạo bằng biến môi trường riêng; không sử dụng các mật khẩu mẫu trong bảng trên.
 
 ## Phân hệ
 
 - Admin: toàn quyền quản lý chuỗi, cửa hàng, nhân viên, Khối Văn Phòng, chính sách, đơn hàng, chấm công và dữ liệu hệ thống.
-- Quản lý: vận hành cửa hàng, nhân viên, ca/lịch, giao việc, tài chính và báo cáo; chỉ xem đơn hàng, không truy cập Khối Văn Phòng, chính sách hoặc Reset dữ liệu.
+- Nhân viên hỗ trợ KD: dùng workspace vận hành ngoài Khối Văn Phòng, chỉ xem đơn hàng và có màn chấm công, lịch sử, thống kê chuyên cần riêng.
+- Quản lý cửa hàng: chỉ truy cập cửa hàng được Admin gán; quản lý nhân viên, ca/lịch, giao việc, nhập hàng, tài chính và báo cáo của cửa hàng đó; chỉ xem đơn hàng.
 - Nhân viên cửa hàng: điểm danh, công việc, kết ca, lịch sử, bảng lương và dòng tiền; hiển thị loại Full-Time hoặc Part-Time.
 - Nhân viên văn phòng: điểm danh và ra về có vị trí, lịch sử chấm công, trạng thái sớm/đúng giờ/trễ và bảng lương.
 

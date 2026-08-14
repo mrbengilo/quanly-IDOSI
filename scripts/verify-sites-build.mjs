@@ -10,6 +10,7 @@ const coreMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0000_idos
 const managerMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0001_manager_role.sql')
 const attendancePolicyMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0002_attendance_evaluation_policies.sql')
 const stateEntitiesMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0003_state_entities.sql')
+const operationalRolesMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0004_operational_roles.sql')
 const migrationJournalPath = resolve(root, 'dist', '.openai', 'drizzle', 'meta', '_journal.json')
 
 await access(workerPath)
@@ -18,6 +19,7 @@ await access(coreMigrationPath)
 await access(managerMigrationPath)
 await access(attendancePolicyMigrationPath)
 await access(stateEntitiesMigrationPath)
+await access(operationalRolesMigrationPath)
 await access(migrationJournalPath)
 
 const hosting = JSON.parse(await readFile(hostingPath, 'utf8'))
@@ -26,6 +28,7 @@ const coreMigration = await readFile(coreMigrationPath, 'utf8')
 const managerMigration = await readFile(managerMigrationPath, 'utf8')
 const attendancePolicyMigration = await readFile(attendancePolicyMigrationPath, 'utf8')
 const stateEntitiesMigration = await readFile(stateEntitiesMigrationPath, 'utf8')
+const operationalRolesMigration = await readFile(operationalRolesMigrationPath, 'utf8')
 const migrationJournal = JSON.parse(await readFile(migrationJournalPath, 'utf8'))
 const workerSource = await readFile(workerPath, 'utf8')
 assert.equal(migrationJournal.dialect, 'sqlite')
@@ -34,6 +37,7 @@ assert.deepEqual(migrationJournal.entries.map(({ tag }) => tag), [
   '0001_manager_role',
   '0002_attendance_evaluation_policies',
   '0003_state_entities',
+  '0004_operational_roles',
 ])
 for (const table of ['system_metadata', 'users', 'app_state', 'policies', 'audit_log', 'counters', 'sessions', 'command_receipts']) {
   assert.match(coreMigration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`))
@@ -57,6 +61,14 @@ assert.doesNotMatch(stateEntitiesMigration, /(?:UPDATE|DELETE\s+FROM)\s+app_stat
 assert.match(workerSource, /FROM state_entities/u)
 assert.match(workerSource, /INSERT INTO command_receipt_chunks/u)
 assert.doesNotMatch(workerSource, /MAX_STATE_BYTES/u)
+assert.match(operationalRolesMigration, /role IN \('admin', 'business_support', 'store_manager', 'employee'\)/u)
+assert.match(operationalRolesMigration, /WHERE source\.role = 'admin'/u)
+assert.doesNotMatch(operationalRolesMigration, /WHEN 'manager' THEN 'business_support'/u)
+assert.match(operationalRolesMigration, /users_roles_receipt_chunks_backup/u)
+assert.match(operationalRolesMigration, /json_remove\(/u)
+assert.match(operationalRolesMigration, /'\$\.authUserId'/u)
+assert.match(operationalRolesMigration, /admin-only-credentials/u)
+assert.match(operationalRolesMigration, /PRAGMA foreign_key_check/u)
 
 const { default: worker } = await import(`${new URL(`file:///${workerPath.replaceAll('\\', '/')}`).href}?v=${Date.now()}`)
 const contentTypes = {

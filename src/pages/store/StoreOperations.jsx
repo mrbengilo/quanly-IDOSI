@@ -130,11 +130,11 @@ const nextStoreEmployeeCode = (store, employees = []) => {
 const useStoreScope = () => {
   const app = useApp()
   const stores = Array.isArray(app.stores) ? app.stores : []
-  const storeId = app.session?.role === 'employee'
+  const storeId = ['employee', 'store_manager'].includes(app.session?.role)
     ? app.session.storeId
     : app.activeStoreId || app.session?.storeId || stores[0]?.id || ''
   const employees = (Array.isArray(app.employees) ? app.employees : []).filter((employee) =>
-    employee.unit !== 'office' && String(employee.storeId || stores[0]?.id || '') === String(storeId),
+    String(employee.unit || 'store') === 'store' && String(employee.storeId || stores[0]?.id || '') === String(storeId),
   )
   const employeeIds = new Set(employees.map((employee) => String(employee.id)))
   const attendance = (Array.isArray(app.attendance) ? app.attendance : []).filter((record) =>
@@ -195,7 +195,7 @@ const employeeStatusTone = (status) => {
   return 'orange'
 }
 
-function validateEmployee(form, employees, editingId) {
+function validateEmployee(form, employees, editingId, requiresPassword = !editingId) {
   const errors = []
   const required = [
     ['Mã nhân viên', form.id],
@@ -223,7 +223,7 @@ function validateEmployee(form, employees, editingId) {
   if (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100) {
     errors.push('Tuổi phải là số nguyên từ 16 đến 100.')
   }
-  if (!editingId && !form.password) errors.push('Mật khẩu là trường bắt buộc.')
+  if (requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
 
   const others = employees.filter((employee) => String(employee.id || employee.code || '') !== String(editingId || ''))
   if (others.some((employee) => normalizeText(employee.id || employee.code || employee.employeeCode) === normalizeText(form.id))) {
@@ -409,9 +409,12 @@ export function StoreEmployees() {
   const [errors, setErrors] = useState([])
   const [showPassword, setShowPassword] = useState(false)
   const canDeleteEmployee = session?.role === 'admin'
+  const editingRequiresPassword = Boolean(editing) && !(
+    editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
+  )
 
   const scopedEmployees = employees.filter((employee) => {
-    if (employee.unit === 'office') return false
+    if (String(employee.unit || 'store') !== 'store') return false
     if (!scopedStoreId) return true
     if (!employee.storeId) return String(scopedStoreId) === String(stores[0]?.id || scopedStoreId)
     return String(employee.storeId) === String(scopedStoreId)
@@ -475,7 +478,7 @@ export function StoreEmployees() {
     event?.preventDefault()
     const editingId = editing?.id || editing?.code || ''
     const scopedForm = { ...form, storeId: scopedStoreId }
-    const validationErrors = validateEmployee(scopedForm, employees, editingId)
+    const validationErrors = validateEmployee(scopedForm, employees, editingId, !editing || editingRequiresPassword)
     if (validationErrors.length) {
       setErrors(validationErrors)
       notify?.('Vui lòng kiểm tra lại thông tin nhân viên.', 'info')
@@ -595,7 +598,7 @@ export function StoreEmployees() {
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
             <Field label="Tên đăng nhập" required><Input autoComplete="username" value={form.username} onChange={updateField('username')} placeholder="Ví dụ: nguyenvana" /></Field>
-            <Field label="Mật khẩu" required={!editing} hint={editing ? 'Để trống nếu không muốn đổi mật khẩu' : ''}>
+            <Field label="Mật khẩu" required={!editing || editingRequiresPassword} hint={editing && !editingRequiresPassword ? 'Để trống nếu không muốn đổi mật khẩu' : 'Bắt buộc để cấp tài khoản đăng nhập'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={updateField('password')} placeholder={editing ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} />
                 <button type="button" className="icon-button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>

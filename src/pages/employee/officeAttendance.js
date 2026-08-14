@@ -2,6 +2,12 @@ const normalize = (value) => String(value ?? '').trim().toLocaleLowerCase('vi-VN
 
 export const officeEmployeeKey = (employee = {}) => String(employee.id || employee.code || employee.employeeCode || '')
 
+export const officePayrollStoreId = (session = {}, employee = {}) => (
+  normalize(session?.role) === 'business_support' || normalize(employee?.unit) === 'business_support'
+    ? 'BUSINESS_SUPPORT'
+    : 'OFFICE'
+)
+
 export const officeLocationLabel = (location) => {
   if (!location) return 'Chưa ghi nhận'
   if (typeof location === 'string') return location

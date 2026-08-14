@@ -12,11 +12,9 @@ import { createDomainState } from '../src/state/initialDomainState.js'
 const baseUrl = String(process.env.IDOSI_BASE_URL || '').replace(/\/$/u, '')
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN
 const adminPassword = process.env.IDOSI_ADMIN_PASSWORD
-const employeePassword = process.env.IDOSI_EMPLOYEE_PASSWORD
-const managerPassword = process.env.IDOSI_MANAGER_PASSWORD
 
-if (!baseUrl || !bootstrapToken || !adminPassword || !employeePassword) {
-  throw new Error('Cần IDOSI_BASE_URL, BOOTSTRAP_TOKEN, IDOSI_ADMIN_PASSWORD và IDOSI_EMPLOYEE_PASSWORD.')
+if (!baseUrl || !bootstrapToken || !adminPassword) {
+  throw new Error('Cần IDOSI_BASE_URL, BOOTSTRAP_TOKEN và IDOSI_ADMIN_PASSWORD.')
 }
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
@@ -97,46 +95,9 @@ const login = await call('/api/login', {
 })
 const token = login.token
 const usersPayload = await call('/api/users', { token })
-const existingEmployeeIds = new Set((usersPayload.users || []).map((user) => String(user.employeeId || '')))
-let createdUsers = 0
-let createdManagers = 0
-
-if (managerPassword && !(usersPayload.users || []).some((user) => user.role === 'manager' && user.username === 'manager')) {
-  await call('/api/command', {
-    method: 'POST',
-    token,
-    headers: { 'idempotency-key': 'provision:manager:v1' },
-    body: {
-      type: 'user.create',
-      payload: {
-        role: 'manager',
-        username: 'manager',
-        password: managerPassword,
-        displayName: 'Quản lý',
-      },
-    },
-  })
-  createdManagers = 1
-}
-
-for (const employee of employees) {
-  if (!employee.username || existingEmployeeIds.has(String(employee.id))) continue
-  await call('/api/command', {
-    method: 'POST',
-    token,
-    headers: { 'idempotency-key': `provision:${employee.id}:v1` },
-    body: {
-      type: 'user.create',
-      payload: {
-        username: employee.username,
-        password: employeePassword,
-        displayName: employee.name,
-        storeId: employee.storeId,
-        employeeId: employee.id,
-      },
-    },
-  })
-  createdUsers += 1
+const nonAdminUsers = usersPayload.users || []
+if (nonAdminUsers.length) {
+  throw new Error(`Sau khởi tạo chỉ được phép có tài khoản Admin; phát hiện ${nonAdminUsers.length} tài khoản khác.`)
 }
 
 const state = await call('/api/state?scope=global', { token })
@@ -144,8 +105,7 @@ await call('/api/logout', { method: 'POST', token })
 
 console.log(JSON.stringify({
   initialized,
-  createdUsers,
-  createdManagers,
+  nonAdminUsers: nonAdminUsers.length,
   stateVersion: state.version,
   stores: Array.isArray(state.state?.stores) ? state.state.stores.length : 0,
   employees: Array.isArray(state.state?.employees) ? state.state.employees.length : 0,

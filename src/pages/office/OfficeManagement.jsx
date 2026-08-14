@@ -191,7 +191,7 @@ const hoursWorked = (record) => {
 const adjustmentEmployeeId = (adjustment = {}) => adjustment.employeeId || adjustment.staffId || ''
 const adjustmentDate = (adjustment = {}) => adjustment.date || adjustment.createdDate || String(adjustment.createdAt || '').slice(0, 10)
 
-function validateEmployee(form, employees, editingKey) {
+function validateEmployee(form, employees, editingKey, requiresPassword = !editingKey) {
   const errors = []
   const required = [
     ['Mã nhân viên', form.code],
@@ -222,7 +222,7 @@ function validateEmployee(form, employees, editingKey) {
   if (!/^\d{2}:\d{2}$/u.test(form.workStart) || !/^\d{2}:\d{2}$/u.test(form.workEnd) || minutesFromTime(form.workStart) >= minutesFromTime(form.workEnd)) errors.push('Giờ làm phải đúng định dạng 24 giờ và giờ kết thúc phải sau giờ bắt đầu.')
   if (!/^\d{4}-\d{2}$/u.test(form.standardWorkDaysPeriod)) errors.push('Tháng quy định ngày công không hợp lệ.')
   if (!Number.isInteger(Number(form.standardWorkDays)) || Number(form.standardWorkDays) < 1 || Number(form.standardWorkDays) > 31) errors.push('Số ngày công quy định phải từ 1 đến 31.')
-  if (!editingKey && !form.password) errors.push('Mật khẩu là trường bắt buộc.')
+  if (requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
 
   const others = [
     ...employees.filter((item) => String(item.id || employeeCode(item)) !== String(editingKey || '')),
@@ -254,6 +254,9 @@ export function OfficeManagement() {
   const [employeeForm, setEmployeeForm] = useState(emptyEmployee)
   const [employeeErrors, setEmployeeErrors] = useState([])
   const [showPassword, setShowPassword] = useState(false)
+  const editingRequiresPassword = Boolean(editingEmployee) && !(
+    editingEmployee.authUserId || editingEmployee.authVersion || editingEmployee.passwordHash || editingEmployee.legacyPassword
+  )
   const [adjustmentModal, setAdjustmentModal] = useState(false)
   const [adjustmentType, setAdjustmentType] = useState('Thưởng')
   const [adjustmentForm, setAdjustmentForm] = useState(emptyAdjustment)
@@ -326,7 +329,7 @@ export function OfficeManagement() {
   const saveEmployee = async (event) => {
     event?.preventDefault()
     const editingKey = editingEmployee?.id || (editingEmployee ? employeeCode(editingEmployee) : '')
-    const errors = validateEmployee(employeeForm, allEmployees, editingKey)
+    const errors = validateEmployee(employeeForm, allEmployees, editingKey, !editingEmployee || editingRequiresPassword)
     if (errors.length) {
       setEmployeeErrors(errors)
       notify?.('Vui lòng kiểm tra lại hồ sơ nhân viên văn phòng.', 'info')
@@ -434,7 +437,7 @@ export function OfficeManagement() {
   const onTimeCount = attendanceRows.filter((row) => row.label === 'Đúng giờ').length
   const lateCount = attendanceRows.filter((row) => row.label === 'Đi trễ').length
 
-  if (app.session?.role === 'manager') {
+  if (['manager', 'business_support', 'store_manager'].includes(app.session?.role)) {
     return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản Quản lý không được truy cập Khối văn phòng." icon={Users} /></div>
   }
 
@@ -558,7 +561,7 @@ export function OfficeManagement() {
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
             <Field label="Tên đăng nhập" required><Input autoComplete="username" value={employeeForm.username} onChange={updateEmployeeField('username')} placeholder="Nhập tên đăng nhập" /></Field>
-            <Field label="Mật khẩu" required={!editingEmployee} hint={editingEmployee ? 'Để nguyên nếu không muốn đổi mật khẩu' : ''}><span className="password-input"><Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={employeeForm.password} onChange={updateEmployeeField('password')} placeholder={editingEmployee ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} /><button type="button" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>{showPassword ? <EyeOff size={20} /> : <Eye size={20} />}</button></span></Field>
+            <Field label="Mật khẩu" required={!editingEmployee || editingRequiresPassword} hint={editingEmployee && !editingRequiresPassword ? 'Để nguyên nếu không muốn đổi mật khẩu' : 'Bắt buộc để cấp tài khoản đăng nhập'}><span className="password-input"><Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={employeeForm.password} onChange={updateEmployeeField('password')} placeholder={editingEmployee && !editingRequiresPassword ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu để cấp tài khoản'} /><button type="button" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>{showPassword ? <EyeOff size={20} /> : <Eye size={20} />}</button></span></Field>
           </div>
           <InfoNote>Vì an toàn dữ liệu, hệ thống chỉ lưu số CCCD và không lưu tệp ảnh CCCD.</InfoNote>
         </form>

@@ -73,7 +73,9 @@ const importVoucherPreview = (vouchers = []) => {
 
 function useStoreData() {
   const app = useApp()
-  const storeId = app.activeStore?.id || app.activeStoreId || app.session?.storeId
+  const storeId = app.session?.role === 'store_manager'
+    ? app.session.storeId
+    : app.activeStore?.id || app.activeStoreId || app.session?.storeId
   return { ...app, storeId, store: app.stores.find((item) => item.id === storeId) || app.activeStore }
 }
 
@@ -83,7 +85,7 @@ export function StoreOverviewV2() {
   const { storeId, store, employees = [], orders = [], attendance = [], schedule = [] } = app
   const [period, setPeriod] = useState(today().slice(0, 7))
   const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
-  const storeEmployees = employees.filter((employee) => employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
+  const storeEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
   const todayOrders = orders.filter((order) => order.storeId === storeId && !order.deletedAt && businessDate(order.createdAt) === today())
   const openAttendance = attendance.filter((record) => record.storeId === storeId && !record.deletedAt && !record.checkOutAt && !record.checkOut)
   const todayAssignments = schedule.filter((record) => record.storeId === storeId && (!record.date || record.date === today()))
@@ -174,7 +176,7 @@ export function StoreOrdersPage() {
   const requestedOrderId = String(searchParams.get('order') || '')
   const requestedOrder = storeOrders.find((order) => [order.id, order.code].map(String).includes(requestedOrderId))
   const requestedOrderKey = String(requestedOrder?.id || '')
-  const employeeOptions = employees.filter((employee) => employee.storeId === storeId)
+  const employeeOptions = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId)
   const shiftOptions = [...new Map(storeOrders.filter((order) => order.shiftId).map((order) => [order.shiftId, { id: order.shiftId, name: order.shiftName || order.shiftId }])).values()]
   const filtered = storeOrders.filter((order) => {
     if (requestedOrderKey && String(order.id) === requestedOrderKey) return true
@@ -384,7 +386,7 @@ export function StoreAttendanceV2() {
   const [query, setQuery] = useState('')
   const [shift, setShift] = useState('all')
   const [employeeId, setEmployeeId] = useState('all')
-  const scopedEmployees = employees.filter((employee) => employee.storeId === storeId)
+  const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId)
   const rows = attendance.filter((record) => !record.deletedAt && record.storeId === storeId && recordInMonth(record, period) && (shift === 'all' || record.shift === shift) && (employeeId === 'all' || record.employeeId === employeeId) && (!query || [record.employeeId, scopedEmployees.find((employee) => employee.id === record.employeeId)?.name, record.shiftName].some((value) => String(value || '').toLowerCase().includes(query.toLowerCase()))))
   const uniqueTiktokEmployees = new Set(rows.filter((record) => scopedEmployees.find((employee) => employee.id === record.employeeId)?.tiktokAllowance > 0).map((record) => record.employeeId))
   const totalTiktok = [...uniqueTiktokEmployees].reduce((sum, id) => sum + Number(scopedEmployees.find((employee) => employee.id === id)?.tiktokAllowance || 0), 0)
@@ -421,7 +423,7 @@ export function StorePayrollV2() {
   const [period, setPeriod] = useState(today().slice(0, 7))
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState({ employeeId: '', type: 'Thưởng khác', amount: '', note: '' })
-  const scopedEmployees = employees.filter((employee) => employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
+  const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
   const scopedAttendance = attendance.filter((record) => !record.deletedAt && record.storeId === storeId && recordInMonth(record, period))
   const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
   const participants = [

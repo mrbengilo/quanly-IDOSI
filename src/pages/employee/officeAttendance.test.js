@@ -6,6 +6,7 @@ import {
   officeAttendanceRows,
   officeAttendanceStats,
   officeLocationLabel,
+  officePayrollStoreId,
   officePayrollSummary,
   officeSalaryAdjustments,
   requiredOfficeWorkingDays,
@@ -16,6 +17,12 @@ describe('office employee attendance helpers', () => {
     expect(isOfficeProfile({ storeId: 'OFFICE' }, {})).toBe(true)
     expect(isOfficeProfile({}, { unit: 'office' })).toBe(true)
     expect(isOfficeProfile({ storeId: 'CH001' }, { unit: 'store' })).toBe(false)
+  })
+
+  it('selects the authoritative payroll unit for Office and business support profiles', () => {
+    expect(officePayrollStoreId({ role: 'business_support' }, {})).toBe('BUSINESS_SUPPORT')
+    expect(officePayrollStoreId({}, { unit: 'business_support' })).toBe('BUSINESS_SUPPORT')
+    expect(officePayrollStoreId({ role: 'employee' }, { unit: 'office' })).toBe('OFFICE')
   })
 
   it('formats GPS objects safely for attendance tables', () => {

@@ -59,10 +59,20 @@ const officeEmployeeMenu = [
   { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
 ]
 
+const businessSupportMenu = [
+  ...systemOperations.slice(0, 2),
+  { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
+  ...systemOperations.slice(2, 5),
+  { label: 'Chấm công', path: '/support/attendance', icon: Clock3 },
+  systemOperations[5],
+]
+
 const systemMenus = {
   admin: [
     ...systemOperations.slice(0, 2),
     { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
+    { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users },
+    { label: 'Quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
     ...systemOperations.slice(2, 5),
     { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
@@ -70,12 +80,8 @@ const systemMenus = {
     { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },
     { label: 'Lịch sử sửa/xóa đơn hàng', path: '/admin/order-audit', icon: ClipboardCheck },
   ],
-  manager: [
-    ...systemOperations.slice(0, 2),
-    { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
-    ...systemOperations.slice(2, 5),
-    systemOperations[5],
-  ],
+  business_support: businessSupportMenu,
+  manager: businessSupportMenu,
   employee: [
     { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
     { label: 'Đơn hàng', path: '/employee/orders', icon: ShoppingCart },
@@ -96,26 +102,32 @@ export default function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
   const role = session?.role || 'employee'
+  const canonicalRole = role === 'manager' ? 'business_support' : role
   const isAdmin = role === 'admin'
-  const isManager = role === 'manager'
-  const isSystemOperator = isAdmin || isManager
+  const isBusinessSupport = canonicalRole === 'business_support'
+  const isStoreManager = canonicalRole === 'store_manager'
+  const isSystemOperator = isAdmin || isBusinessSupport
+  const isStoreOperator = isSystemOperator || isStoreManager
   const isEmployee = role === 'employee'
   const isOfficeEmployee = isEmployee && isOfficeProfile(session, app.currentEmployee)
-  const isStoreWorkspace = isSystemOperator && location.pathname.startsWith('/store/')
+  const isStoreWorkspace = isStoreOperator && location.pathname.startsWith('/store/')
   const isSystemWorkspace = isSystemOperator && !isStoreWorkspace
   const roleMenus = isOfficeEmployee
     ? officeEmployeeMenu
     : isStoreWorkspace
       ? storeOperations
-      : systemMenus[role] || systemMenus.employee
-  const selectedStoreId = isEmployee
-    ? (stores.some((store) => store.id === session?.storeId) ? session.storeId : '')
+      : systemMenus[canonicalRole] || systemMenus.employee
+  const assignedStoreId = [session?.assignedStoreId, session?.storeId]
+    .find((storeId) => stores.some((store) => store.id === storeId)) || ''
+  const isStoreBoundRole = isEmployee || isStoreManager
+  const selectedStoreId = isStoreBoundRole
+    ? (stores.some((store) => store.id === assignedStoreId) ? assignedStoreId : '')
     : stores.some((store) => store.id === activeStoreId)
       ? activeStoreId
-      : stores.some((store) => store.id === session?.storeId)
-        ? session.storeId
+      : stores.some((store) => store.id === assignedStoreId)
+        ? assignedStoreId
         : stores[0]?.id || ''
-  const activeStore = stores.find((store) => store.id === selectedStoreId) || (!isEmployee ? stores[0] : null)
+  const activeStore = stores.find((store) => store.id === selectedStoreId) || (!isStoreBoundRole ? stores[0] : null)
   const notificationItems = Array.isArray(app.notifications)
     ? app.notifications
     : Array.isArray(app.orderNotifications)
@@ -156,8 +168,8 @@ export default function AppShell() {
     navigate('/login')
   }
 
-  const systemRoleLabel = isAdmin ? 'Admin' : 'Quản lý'
-  const accountSubtitle = isSystemOperator
+  const systemRoleLabel = isAdmin ? 'Admin' : isBusinessSupport ? 'Hỗ trợ KD' : 'Quản lý cửa hàng'
+  const accountSubtitle = isStoreOperator
     ? isStoreWorkspace ? `${systemRoleLabel} • ${activeStore?.short || activeStore?.name || ''}` : systemRoleLabel
     : session?.code
 
@@ -213,9 +225,9 @@ export default function AppShell() {
         <div className="sidebar__brand">
           {isEmployee ? <Brand /> : isStoreWorkspace ? (
             <div className="store-logo"><span>I</span><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>{systemRoleLabel}</small></div></div>
-          ) : <Brand subtitle="Quản lý toàn hệ thống" />}
+          ) : <Brand subtitle={isBusinessSupport ? 'Hỗ trợ KD' : 'Quản lý toàn hệ thống'} />}
         </div>
-        {isStoreWorkspace && (
+        {isStoreWorkspace && isSystemOperator && (
           <button className="back-system" onClick={returnToSystemOverview}>
             <ArrowLeft size={18} /> <span>Quay về trang quản lý chính</span>
           </button>
@@ -305,6 +317,8 @@ export default function AppShell() {
 
 export function ProtectedRoute({ children, roles }) {
   const { session } = useApp()
-  if (!session || (roles && !roles.includes(session.role))) return null
+  const canonicalRole = session?.role === 'manager' ? 'business_support' : session?.role
+  const allowedRoles = roles ? (Array.isArray(roles) ? roles : [roles]) : null
+  if (!session || (allowedRoles && !allowedRoles.includes(canonicalRole))) return null
   return children
 }

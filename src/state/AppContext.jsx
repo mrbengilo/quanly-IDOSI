@@ -49,6 +49,13 @@ import {
 const AppContext = createContext(null)
 export const STORAGE_KEY = 'idosi-state-v2'
 const LEGACY_STORAGE_KEY = 'idosi-manager-state-v1'
+const ACCOUNT_CREDENTIAL_EPOCH = 1
+const LOCAL_CACHE_PRIVACY_EPOCH = 1
+const LOCAL_PROFILE_CREDENTIAL_KEYS = new Set([
+  'password', 'passwordHash', 'password_hash', 'passwordSalt', 'password_salt',
+  'passwordIterations', 'legacyPassword', 'authUserId', 'authVersion', 'username',
+  'token', 'accessToken', 'refreshToken',
+])
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const REMOTE_ARRAY_KEYS = [
@@ -104,10 +111,47 @@ const mergeSharedState = (remoteState = {}, localState = {}) => {
 export const mergeLegacyCredentialMigration = (current, migratedAccounts, remoteEnabled) => (
   remoteEnabled ? current : { ...current, ...migratedAccounts }
 )
+
+export const mergeEmployeeAuthUsers = (employees = [], users = []) => {
+  const authByEmployee = new Map(users.map((user) => [String(user.employeeId || ''), user]))
+  const statuses = { active: 'Đang làm việc', locked: 'Tạm ngưng', inactive: 'Đã nghỉ việc' }
+  return employees.map((employee) => {
+    const user = authByEmployee.get(String(employee.id || employee.code || ''))
+    return user ? {
+      ...employee,
+      username: user.username || employee.username,
+      authUserId: user.id,
+      authVersion: user.version,
+      lastLoginAt: user.lastLoginAt,
+      status: statuses[user.status] || employee.status,
+    } : employee
+  })
+}
+
+const stripLocalProfileCredentials = (profiles = []) => profiles.map((profile) => Object.fromEntries(
+  Object.entries(profile).filter(([key]) => !LOCAL_PROFILE_CREDENTIAL_KEYS.has(key)),
+))
+
+export const purgeLegacyLocalCredentials = (stored = {}) => ({
+  ...stored,
+  accountCredentialEpoch: ACCOUNT_CREDENTIAL_EPOCH,
+  managerAccounts: [],
+  employees: stripLocalProfileCredentials(Array.isArray(stored.employees) ? stored.employees : []),
+  deletedEmployees: stripLocalProfileCredentials(Array.isArray(stored.deletedEmployees) ? stored.deletedEmployees : []),
+})
+
+export const isCurrentLocalCache = (stored) => (
+  stored?.storageMode === 'local' && Number(stored?.cachePrivacyEpoch) >= LOCAL_CACHE_PRIVACY_EPOCH
+)
 const normalizeText = (value) => String(value ?? '').trim().toLowerCase()
 const isOfficeUnit = (value) => ['office', 'văn phòng', 'van phong', 'khối văn phòng', 'khoi van phong', 'vp'].includes(normalizeText(value))
+const isBusinessSupportUnit = (value) => ['business_support', 'business support', 'support', 'hỗ trợ kinh doanh', 'ho tro kinh doanh', 'htkd'].includes(normalizeText(value))
+const isStoreManagerUnit = (value) => ['store_manager', 'store manager', 'quản lý cửa hàng', 'quan ly cua hang', 'qlch'].includes(normalizeText(value))
+const normalizeAuthRole = (role) => normalizeText(role) === 'manager' ? 'business_support' : normalizeText(role)
 const isActiveAccount = (status) => !['tạm ngưng', 'tạm nghỉ', 'đã nghỉ việc', 'inactive', 'disabled'].includes(normalizeText(status))
-const isSystemRole = (role) => ['admin', 'manager'].includes(role)
+const isSystemRole = (role) => ['admin', 'business_support', 'manager'].includes(normalizeText(role))
+const isStoreWorkspaceRole = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
+const canListAccounts = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
 const isValidEmployeePhone = (value) => /^0\d{9}$/.test(normalizePhone(value))
 
 const addressDetailsFrom = (payload = {}) => {
@@ -128,13 +172,26 @@ const normalizeCccdImages = (payload = {}) => {
 const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) => {
   const details = addressDetailsFrom(payload)
   const proposedUnit = payload.unit ?? payload.unitType ?? payload.department ?? payload.employeeGroup
-  const unit = payload.isOffice || isOfficeUnit(proposedUnit) || isOfficeUnit(payload.storeId) ? 'office' : 'store'
+  const requestedRole = normalizeAuthRole(payload.roleType || payload.accountRole || payload.authRole)
+  const unit = isBusinessSupportUnit(proposedUnit) || requestedRole === 'business_support'
+    ? 'business_support'
+    : isStoreManagerUnit(proposedUnit) || requestedRole === 'store_manager'
+      ? 'store_manager'
+      : payload.isOffice || isOfficeUnit(proposedUnit) || isOfficeUnit(payload.storeId)
+        ? 'office'
+        : 'store'
+  const officeLike = unit !== 'store'
   const position = String(payload.position ?? payload.workPosition ?? payload.role ?? 'Nhân viên bán hàng').trim()
-  const id = String(payload.id || payload.code || payload.employeeCode || uid(unit === 'office' ? 'VP' : 'NV')).trim()
+  const fallbackPrefix = unit === 'office' ? 'VP' : unit === 'business_support' ? 'HTKD' : unit === 'store_manager' ? 'QL' : 'NV'
+  const id = String(payload.id || payload.code || payload.employeeCode || uid(fallbackPrefix)).trim()
   const cccdImage = payload.cccdImage || payload.identityImage || ''
   const cccdImageName = payload.cccdImageName || payload.identityImageName || ''
   const phone = normalizePhone(payload.phone)
-  const storeId = unit === 'office' ? 'OFFICE' : String(payload.storeId || fallbackStoreId || '').trim()
+  const storeId = unit === 'office'
+    ? 'OFFICE'
+    : unit === 'business_support'
+      ? 'BUSINESS_SUPPORT'
+      : String(payload.storeId || fallbackStoreId || '').trim()
   const employmentType = getEmployeeType(payload)
   const rawSalary = Math.max(0, Number(payload.salary) || 0)
   const hasExplicitBasis = Boolean(payload.payBasis || payload.salaryBasis || payload.salaryType || payload.salaryUnit || payload.compensationVersion >= 2)
@@ -150,7 +207,7 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
   const monthlyWorkdayTargets = payload.monthlyWorkdayTargets && typeof payload.monthlyWorkdayTargets === 'object'
     ? { ...payload.monthlyWorkdayTargets }
     : {}
-  if (unit === 'office' && /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(standardWorkDaysPeriod)) {
+  if (officeLike && /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(standardWorkDaysPeriod)) {
     monthlyWorkdayTargets[standardWorkDaysPeriod] = standardWorkDays
   }
 
@@ -202,9 +259,11 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
     employmentType,
     employeeType: employmentType,
     color: payload.color || '#d9c2b6',
-    roleType: 'employee',
-    workStart: payload.workStart || (unit === 'office' ? '08:00' : '07:00'),
-    workEnd: payload.workEnd || (unit === 'office' ? '17:00' : '12:00'),
+    roleType: unit === 'business_support' ? 'business_support' : unit === 'store_manager' ? 'store_manager' : 'employee',
+    accountRole: unit === 'business_support' ? 'business_support' : unit === 'store_manager' ? 'store_manager' : 'employee',
+    startDate: String(payload.startDate || payload.employmentStartDate || '').slice(0, 10),
+    workStart: payload.workStart || (officeLike ? '08:00' : '07:00'),
+    workEnd: payload.workEnd || (officeLike ? '17:00' : '12:00'),
   }
 }
 
@@ -229,8 +288,8 @@ const normalizeManager = (payload = {}) => ({
   passwordHash: String(payload.passwordHash || ''),
   legacyPassword: payload.passwordHash ? '' : String(payload.password || ''),
   password: undefined,
-  role: 'manager',
-  accountType: 'manager',
+  role: 'business_support',
+  accountType: 'business_support',
   status: payload.status || 'Đang hoạt động',
 })
 
@@ -254,6 +313,9 @@ export const createInitialState = () => {
   const employees = employeesSeed.map((employee) => normalizeEmployee(clone(employee)))
   const stores = countStoreEmployees(clone(storesSeed), employees)
   return {
+    accountCredentialEpoch: ACCOUNT_CREDENTIAL_EPOCH,
+    cachePrivacyEpoch: LOCAL_CACHE_PRIVACY_EPOCH,
+    storageMode: 'local',
     stores,
     adminAccounts: adminAccountsSeed.map((account) => normalizeAdmin(clone(account))),
     managerAccounts: managerAccountsSeed.map((account) => normalizeManager(clone(account))),
@@ -284,7 +346,10 @@ export const createInitialState = () => {
 const hydrateState = (stored) => {
   const base = createInitialState()
   if (!stored || typeof stored !== 'object') return base
-  const safeStored = Object.fromEntries(Object.entries(stored).filter(([key]) => !['managerPayroll', 'profitShares'].includes(key)))
+  const filteredStored = Object.fromEntries(Object.entries(stored).filter(([key]) => !['managerPayroll', 'profitShares'].includes(key)))
+  const safeStored = Number(filteredStored.accountCredentialEpoch) >= ACCOUNT_CREDENTIAL_EPOCH
+    ? filteredStored
+    : purgeLegacyLocalCredentials(filteredStored)
   const employees = Array.isArray(safeStored.employees)
     ? safeStored.employees.map((employee) => normalizeEmployee(employee, safeStored.activeStoreId || base.activeStoreId))
     : base.employees
@@ -313,22 +378,23 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = []) => {
     ...emptyCollections,
     ...(remoteState && typeof remoteState === 'object' ? remoteState : {}),
   }
+  const remoteRole = normalizeAuthRole(remoteUser?.role)
   const employeeId = remoteUser?.employeeId || remoteUser?.employee_id
   const remoteEmployee = safeRemote.employees.find((employee) => String(employee.id || employee.code) === String(employeeId))
-  const isSystemAccount = ['admin', 'manager'].includes(remoteUser?.role)
-  const session = isSystemAccount
-    ? { id: remoteUser.id, code: remoteUser.role === 'admin' ? 'ADMIN' : 'MANAGER', name: remoteUser.displayName || remoteUser.username, username: remoteUser.username, role: remoteUser.role, accountType: remoteUser.role, authVersion: remoteUser.version }
+  const isAdminAccount = remoteRole === 'admin'
+  const session = isAdminAccount
+    ? { id: remoteUser.id, code: 'ADMIN', name: remoteUser.displayName || remoteUser.username, username: remoteUser.username, role: 'admin', accountType: 'admin', authVersion: remoteUser.version }
     : {
         id: employeeId || remoteUser?.id,
         code: employeeId || remoteUser?.id,
         name: remoteEmployee?.name || remoteUser?.displayName || remoteUser?.username,
         username: remoteUser?.username,
-        role: 'employee',
-        accountType: 'employee',
-        employeeId: employeeId || remoteUser?.id,
-        storeId: remoteUser?.storeId || remoteEmployee?.storeId,
-        unit: remoteEmployee?.unit || 'store',
-        unitType: remoteEmployee?.unit || 'store',
+        role: ['business_support', 'store_manager'].includes(remoteRole) ? remoteRole : 'employee',
+        accountType: ['business_support', 'store_manager'].includes(remoteRole) ? remoteRole : 'employee',
+        employeeId: employeeId || remoteEmployee?.id || remoteEmployee?.code || (remoteRole === 'business_support' ? null : remoteUser?.id),
+        storeId: remoteUser?.storeId || remoteUser?.store_id || remoteEmployee?.storeId || (remoteRole === 'business_support' ? 'BUSINESS_SUPPORT' : undefined),
+        unit: remoteEmployee?.unit || (remoteRole === 'business_support' ? 'business_support' : remoteRole === 'store_manager' ? 'store_manager' : 'store'),
+        unitType: remoteEmployee?.unit || (remoteRole === 'business_support' ? 'business_support' : remoteRole === 'store_manager' ? 'store_manager' : 'store'),
         authUserId: remoteUser?.id,
         authVersion: remoteUser?.version,
       }
@@ -357,7 +423,9 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = []) => {
   return {
     ...hydrated,
     session,
-    activeStoreId: session.role === 'employee' ? session.storeId : hydrated.activeStoreId,
+    activeStoreId: session.role === 'store_manager' || (session.role === 'employee' && session.unit !== 'office')
+      ? session.storeId
+      : hydrated.activeStoreId,
   }
 }
 
@@ -365,7 +433,14 @@ const readState = () => {
   try {
     if (typeof localStorage === 'undefined') return createInitialState()
     const serialized = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY)
-    return hydrateState(serialized ? JSON.parse(serialized) : null)
+    if (!serialized) return createInitialState()
+    const parsed = JSON.parse(serialized)
+    if (!isCurrentLocalCache(parsed)) {
+      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(LEGACY_STORAGE_KEY)
+      return createInitialState()
+    }
+    return hydrateState(parsed)
   } catch {
     return createInitialState()
   }
@@ -383,10 +458,13 @@ const toSession = (account, source) => {
     accountType: source,
   }
   if (source === 'admin') return { ...common, role: 'admin' }
-  if (source === 'manager') return { ...common, role: 'manager' }
+  if (source === 'manager') return { ...common, role: 'business_support', accountType: 'business_support', employeeId: account.employeeId || null, unit: 'business_support', unitType: 'business_support' }
+  const accountRole = normalizeAuthRole(account.roleType || account.accountRole || account.authRole)
+  const sessionRole = ['business_support', 'store_manager'].includes(accountRole) ? accountRole : 'employee'
   return {
     ...common,
-    role: 'employee',
+    role: sessionRole,
+    accountType: sessionRole,
     employeeId: account.id || account.code,
     unit: account.unit || 'store',
     unitType: account.unit || 'store',
@@ -481,12 +559,22 @@ const storeCode = (store = {}) => String(store.short || store.code || store.id |
   .slice(0, 12) || 'CH'
 
 const nextEmployeeCode = (payload, state) => {
+  const requestedRole = normalizeAuthRole(payload.roleType || payload.accountRole || payload.authRole)
+  const businessSupport = isBusinessSupportUnit(payload.unit) || requestedRole === 'business_support'
+  const storeManager = isStoreManagerUnit(payload.unit) || requestedRole === 'store_manager'
   const officeEmployee = payload.isOffice || isOfficeUnit(payload.unit) || isOfficeUnit(payload.storeId)
   const store = state.stores.find((item) => String(item.id) === String(payload.storeId || state.activeStoreId))
-  const prefix = officeEmployee ? 'VP' : String(store?.employeePrefix || storeCode(store)).toUpperCase()
-  const separator = officeEmployee ? '' : '-'
+  const prefix = businessSupport
+    ? 'HTKD'
+    : storeManager
+      ? `QL-${String(store?.employeePrefix || storeCode(store)).toUpperCase()}`
+      : officeEmployee
+        ? 'VP'
+        : String(store?.employeePrefix || storeCode(store)).toUpperCase()
+  const separator = officeEmployee || businessSupport ? '' : '-'
   const pattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${separator}(\\d+)$`, 'i')
-  const highest = state.employees.reduce((current, employee) => {
+  const knownEmployees = [...(state.employees || []), ...(state.deletedEmployees || [])]
+  const highest = knownEmployees.reduce((current, employee) => {
     const match = String(employee.id || employee.code || employee.employeeCode || '').match(pattern)
     return match ? Math.max(current, Number(match[1]) || 0) : current
   }, 0)
@@ -516,12 +604,16 @@ export function AppProvider({ children }) {
     const hydrated = hydrateRemoteState(payload.state, remoteUser, payload.policies)
     const remote = apiRef.current
     remote.enabled = true
-    remote.role = remoteUser.role
-    remote.user = remoteUser
+    remote.role = normalizeAuthRole(remoteUser.role)
+    remote.user = { ...remoteUser, role: normalizeAuthRole(remoteUser.role) }
     remote.version = Number(payload.version || 0)
     remote.policyVersions = Object.fromEntries((payload.policies || []).map((policy) => [policy.key, Number(policy.version || 0)]))
     remote.suppressNext = true
     remote.lastSerialized = JSON.stringify(sharedStateSnapshot(hydrated))
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(LEGACY_STORAGE_KEY)
+    }
     setApiStatus('connected')
     setState(hydrated)
     return hydrated.session
@@ -563,14 +655,9 @@ export function AppProvider({ children }) {
     if (!hasApiSession()) return undefined
     let active = true
     apiBootstrapState('global').then(async (payload) => {
-      if (['admin', 'manager'].includes(payload.user?.role)) {
+      if (canListAccounts(payload.user?.role)) {
         const users = await apiListUsers()
-        const authByEmployee = new Map((users.users || []).map((user) => [String(user.employeeId), user]))
-        payload.state.employees = (payload.state.employees || []).map((employee) => {
-          const user = authByEmployee.get(String(employee.id || employee.code))
-          const statuses = { active: 'Đang làm việc', locked: 'Tạm ngưng', inactive: 'Đã nghỉ việc' }
-          return user ? { ...employee, authUserId: user.id, authVersion: user.version, lastLoginAt: user.lastLoginAt, status: statuses[user.status] || employee.status } : employee
-        })
+        payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
       }
       if (active) activateRemotePayload(payload)
     }).catch(() => {
@@ -606,8 +693,15 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     if (!credentialsReady || typeof localStorage === 'undefined') return
+    if (apiRef.current.enabled) {
+      localStorage.removeItem(STORAGE_KEY)
+      localStorage.removeItem(LEGACY_STORAGE_KEY)
+      return
+    }
     const safeState = {
       ...state,
+      cachePrivacyEpoch: LOCAL_CACHE_PRIVACY_EPOCH,
+      storageMode: 'local',
       session: null,
       adminAccounts: state.adminAccounts.map(({ password: _password, legacyPassword: _legacyPassword, ...account }) => account),
       managerAccounts: state.managerAccounts.map(({ password: _password, legacyPassword: _legacyPassword, ...account }) => account),
@@ -685,18 +779,13 @@ export function AppProvider({ children }) {
     try {
       setApiStatus('connecting')
       const authenticated = await apiLogin(username, password)
-      const isSystemOperator = ['admin', 'manager'].includes(authenticated.user.role)
+      const isSystemOperator = canListAccounts(authenticated.user.role)
       const [bootstrap, users] = await Promise.all([
         apiBootstrapState('global'),
         isSystemOperator ? apiListUsers() : Promise.resolve(null),
       ])
       if (users) {
-        const authByEmployee = new Map((users.users || []).map((user) => [String(user.employeeId), user]))
-        bootstrap.state.employees = (bootstrap.state.employees || []).map((employee) => {
-          const user = authByEmployee.get(String(employee.id || employee.code))
-          const statuses = { active: 'Đang làm việc', locked: 'Tạm ngưng', inactive: 'Đã nghỉ việc' }
-          return user ? { ...employee, authUserId: user.id, authVersion: user.version, lastLoginAt: user.lastLoginAt, status: statuses[user.status] || employee.status } : employee
-        })
+        bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       const session = activateRemotePayload(bootstrap, authenticated.user)
       return { ok: true, account: session }
@@ -735,7 +824,9 @@ export function AppProvider({ children }) {
     setState((current) => ({
       ...current,
       session,
-      activeStoreId: session.storeId && session.storeId !== 'OFFICE' ? session.storeId : current.activeStoreId,
+      activeStoreId: (session.role === 'store_manager' || (session.role === 'employee' && session.unit !== 'office')) && session.storeId
+        ? session.storeId
+        : current.activeStoreId,
       activeAttendanceId: recent && !recent.checkOutAt && !recent.checkOut ? recent.id : null,
       checkedInAt: recent?.checkIn || recent?.checkInTime || null,
       finishedShift: Boolean(recent?.checkOutAt || recent?.checkOut),
@@ -749,26 +840,30 @@ export function AppProvider({ children }) {
   const quickLogin = () => null
 
   const logout = () => {
-    if (apiRef.current.enabled) apiLogout().catch(() => clearApiSession())
+    const wasRemote = apiRef.current.enabled
+    if (wasRemote) apiLogout().catch(() => clearApiSession())
     apiRef.current.enabled = false
     apiRef.current.role = null
     apiRef.current.user = null
     apiRef.current.pending = null
     window.clearTimeout(apiRef.current.timer)
     setApiStatus('local')
-    setState((current) => ({
-      ...current,
-      session: null,
-      activeAttendanceId: null,
-      checkedInAt: null,
-      finishedShift: false,
-    }))
+    if (wasRemote) {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(STORAGE_KEY)
+        localStorage.removeItem(LEGACY_STORAGE_KEY)
+      }
+      setState(createInitialState())
+      return
+    }
+    setState((current) => ({ ...current, session: null, activeAttendanceId: null, checkedInAt: null, finishedShift: false }))
   }
 
   const updateCollection = (key, updater) =>
     setState((current) => ({ ...current, [key]: updater(Array.isArray(current[key]) ? current[key] : []) }))
 
   const setActiveStoreId = (id) => {
+    if (state.session?.role === 'store_manager' && String(id) !== String(state.session.storeId)) return false
     if (!state.stores.some((store) => store.id === id)) return false
     setState((current) => ({ ...current, activeStoreId: id }))
     return true
@@ -812,7 +907,10 @@ export function AppProvider({ children }) {
   }
 
   const updateStore = async (id, payload) => {
-    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được cập nhật cửa hàng.' }
+    if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền cập nhật cửa hàng.' }
+    if (state.session?.role === 'store_manager' && String(id) !== String(state.session.storeId)) {
+      return { ok: false, message: 'Quản lý cửa hàng chỉ được cập nhật cửa hàng được phân công.' }
+    }
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('store.update', { storeId: id, ...payload })
@@ -882,11 +980,22 @@ export function AppProvider({ children }) {
   }
 
   const addEmployee = async (payload) => {
-    const generatedCode = String(payload.id || payload.code || payload.employeeCode || nextEmployeeCode(payload, state)).trim()
-    const employeePayload = { ...payload, id: generatedCode, code: generatedCode, employeeCode: generatedCode }
-    const officeEmployee = employeePayload.isOffice || isOfficeUnit(employeePayload.unit) || isOfficeUnit(employeePayload.storeId)
-    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được tạo tài khoản nhân viên.' }
-    if (state.session?.role === 'manager' && officeEmployee) return { ok: false, message: 'Tài khoản Quản lý không có quyền truy cập khối văn phòng.' }
+    const actorRole = normalizeAuthRole(state.session?.role)
+    const requestedUnit = isBusinessSupportUnit(payload.unit)
+      ? 'business_support'
+      : isStoreManagerUnit(payload.unit)
+        ? 'store_manager'
+        : payload.isOffice || isOfficeUnit(payload.unit) || isOfficeUnit(payload.storeId)
+          ? 'office'
+          : 'store'
+    if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền tạo nhân viên.' }
+    if (['business_support', 'store_manager'].includes(requestedUnit) && actorRole !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo tài khoản cho vai trò này.' }
+    if (requestedUnit === 'office' && actorRole !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo nhân viên Văn Phòng.' }
+    const scopedStoreId = actorRole === 'store_manager' ? state.session.storeId : payload.storeId
+    const normalizedPayload = { ...payload, unit: requestedUnit, storeId: requestedUnit === 'store' ? scopedStoreId || state.activeStoreId : scopedStoreId }
+    const generatedCode = String(payload.id || payload.code || payload.employeeCode || nextEmployeeCode(normalizedPayload, state)).trim()
+    const employeePayload = { ...normalizedPayload, id: generatedCode, code: generatedCode, employeeCode: generatedCode }
+    const officeLikeEmployee = requestedUnit !== 'store'
     if (!isValidEmployeePhone(employeePayload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
     if (hasDuplicateAccount(employeePayload)) {
       notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
@@ -899,11 +1008,12 @@ export function AppProvider({ children }) {
           id: undefined,
           code: undefined,
           employeeCode: undefined,
-          employmentType: officeEmployee
+          employmentType: officeLikeEmployee
             ? employeePayload.officeEmployeeType || employeePayload.officeEmploymentType || 'Chính thức'
             : employeePayload.employmentType,
           passwordHash: undefined,
           legacyPassword: undefined,
+          monthlyWorkdayTargets: undefined,
         })
         notify('Đã tạo hồ sơ và tài khoản đăng nhập nhân viên.')
         return { ok: true, employee: result.employee, user: result.user }
@@ -924,14 +1034,18 @@ export function AppProvider({ children }) {
   }
 
   const updateEmployee = async (id, payload) => {
-    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được cập nhật nhân viên.' }
+    const actorRole = normalizeAuthRole(state.session?.role)
+    if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền cập nhật nhân viên.' }
     if (hasDuplicateAccount(payload, id)) {
       notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
       return { ok: false }
     }
     const previous = state.employees.find((employee) => accountKey(employee) === String(id))
     if (!previous) return { ok: false }
-    if (state.session?.role === 'manager' && previous.unit === 'office') return { ok: false, message: 'Tài khoản Quản lý không có quyền truy cập khối văn phòng.' }
+    if (actorRole !== 'admin' && previous.unit !== 'store') return { ok: false, message: 'Chỉ Admin được cập nhật hồ sơ nhân sự khối này.' }
+    if (actorRole === 'store_manager' && String(previous.storeId) !== String(state.session.storeId)) {
+      return { ok: false, message: 'Quản lý cửa hàng chỉ được cập nhật nhân viên thuộc cửa hàng được phân công.' }
+    }
     if (payload.phone !== undefined && !isValidEmployeePhone(payload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
     let authVersion = previous.authVersion
     if (apiRef.current.enabled) {
@@ -942,11 +1056,12 @@ export function AppProvider({ children }) {
           id: undefined,
           code: undefined,
           employeeCode: undefined,
-          employmentType: previous.unit === 'office'
+          employmentType: previous.unit !== 'store'
             ? payload.officeEmployeeType || payload.officeEmploymentType || previous.officeEmployeeType || previous.employmentType || 'Chính thức'
             : payload.employmentType ?? previous.employmentType,
           passwordHash: undefined,
           legacyPassword: undefined,
+          monthlyWorkdayTargets: undefined,
         })
         notify('Đã cập nhật nhân viên.')
         return { ok: true, employee: result.employee, user: result.user }
@@ -1004,6 +1119,37 @@ export function AppProvider({ children }) {
     notify('Đã xóa nhân viên.', 'info')
     return true
   }
+
+  const addBusinessSupport = (payload = {}) => addEmployee({
+    ...payload,
+    unit: 'business_support',
+    storeId: 'BUSINESS_SUPPORT',
+    roleType: 'business_support',
+  })
+
+  const updateBusinessSupport = (id, payload = {}) => updateEmployee(id, {
+    ...payload,
+    unit: undefined,
+    storeId: undefined,
+    roleType: undefined,
+  })
+
+  const deleteBusinessSupport = (id) => deleteEmployee(id)
+
+  const addStoreManager = (payload = {}) => addEmployee({
+    ...payload,
+    unit: 'store_manager',
+    roleType: 'store_manager',
+  })
+
+  const updateStoreManager = (id, payload = {}) => updateEmployee(id, {
+    ...payload,
+    unit: undefined,
+    storeId: undefined,
+    roleType: undefined,
+  })
+
+  const deleteStoreManager = (id) => deleteEmployee(id)
 
   const addOfficeAdjustment = (payload) => {
     const adjustment = {
@@ -1167,7 +1313,11 @@ export function AppProvider({ children }) {
         return false
       }
     }
-    const accountCollection = state.session?.role === 'manager' ? 'managerAccounts' : 'adminAccounts'
+    const accountCollection = state.session?.role === 'admin'
+      ? 'adminAccounts'
+      : state.employees.some((account) => accountKey(account) === accountKey(state.session) || account.username === state.session?.username)
+        ? 'employees'
+        : 'managerAccounts'
     const accountExists = state[accountCollection].some((account) => account.id === id || account.username === id)
     if (!accountExists) {
       notify('Không tìm thấy tài khoản quản trị.', 'info')
@@ -1185,9 +1335,9 @@ export function AppProvider({ children }) {
     if (apiRef.current.enabled) return Boolean(password)
     const collection = state.session?.role === 'admin'
       ? state.adminAccounts
-      : state.session?.role === 'manager'
-        ? state.managerAccounts
-        : state.employees
+      : state.employees.some((account) => accountKey(account) === accountKey(state.session) || account.username === state.session?.username)
+        ? state.employees
+        : state.managerAccounts
     const account = collection.find((item) => accountKey(item) === accountKey(state.session) || item.username === state.session?.username)
     if (!account) return false
     if (account.passwordHash) return verifyPassword(password, account.passwordHash)
@@ -1212,7 +1362,11 @@ export function AppProvider({ children }) {
       const displayName = String(user?.displayName || persistedSettings.name || state.session?.name || '').trim()
       if (user && apiRef.current.user) apiRef.current.user = { ...apiRef.current.user, ...user, displayName }
       setState((current) => {
-        const accountCollection = current.session?.role === 'manager' ? 'managerAccounts' : 'adminAccounts'
+        const accountCollection = current.session?.role === 'admin'
+          ? 'adminAccounts'
+          : current.employees.some((account) => accountKey(account) === accountKey(current.session) || account.username === current.session?.username)
+            ? 'employees'
+            : 'managerAccounts'
         return {
           ...current,
           settings: { ...current.settings, ...persistedSettings },
@@ -1486,7 +1640,7 @@ export function AppProvider({ children }) {
   }
 
   const addFixedExpense = async (payload = {}) => {
-    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được tạo chi phí.' }
+    if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền tạo chi phí.' }
     const storeId = payload.storeId || state.activeStoreId || state.session?.storeId
     const amount = nonNegativeInteger(payload.amount)
     if (!storeId || amount <= 0) return { ok: false, message: 'Cửa hàng hoặc số tiền chưa hợp lệ.' }
@@ -1516,7 +1670,7 @@ export function AppProvider({ children }) {
   }
 
   const addSalaryAdjustment = async (payload = {}) => {
-    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được tạo khoản lương thưởng.' }
+    if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền tạo khoản lương thưởng.' }
     const employee = state.employees.find((item) => item.id === payload.employeeId)
     const amount = nonNegativeInteger(payload.amount)
     const period = payload.period || monthKey()
@@ -1556,7 +1710,7 @@ export function AppProvider({ children }) {
   const getAvailableSalary = (employeeId, period = monthKey()) => Math.max(0, employeeGrossFor(state, employeeId, period) - advancePaidFor(state, employeeId, period))
 
   const createSalaryAdvance = async (payload = {}) => {
-    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được tạo ứng lương.' }
+    if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền tạo ứng lương.' }
     const employee = state.employees.find((item) => item.id === payload.employeeId)
     const period = payload.period || monthKey()
     const amount = nonNegativeInteger(payload.amount)
@@ -1651,7 +1805,7 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const employees = state.employees.filter((item) => item.storeId === storeId && item.status !== 'Đã nghỉ việc')
+    const employees = state.employees.filter((item) => String(item.unit || 'store') === 'store' && item.storeId === storeId && item.status !== 'Đã nghỉ việc')
     const employeeHours = employees.map((employee) => ({
       id: employee.id,
       role: 'employee',
@@ -2261,11 +2415,11 @@ export function AppProvider({ children }) {
     return { ok: true, state: demoState }
   }
 
-  const selectedStoreId = state.session?.role === 'employee'
+  const selectedStoreId = state.session?.role === 'store_manager' || state.session?.role === 'employee'
     ? state.session.storeId
     : state.activeStoreId || state.session?.storeId
   const activeStore = state.stores.find((store) => store.id === selectedStoreId)
-    || (state.session?.role === 'employee' ? null : state.stores[0] || null)
+    || (state.session?.role === 'store_manager' || state.session?.role === 'employee' ? null : state.stores[0] || null)
   const currentEmployee = state.session?.employeeId ? state.employees.find((employee) => employee.id === state.session.employeeId) || null : null
 
   const value = {
@@ -2286,6 +2440,12 @@ export function AppProvider({ children }) {
     addEmployee,
     updateEmployee,
     deleteEmployee,
+    addBusinessSupport,
+    updateBusinessSupport,
+    deleteBusinessSupport,
+    addStoreManager,
+    updateStoreManager,
+    deleteStoreManager,
     addOfficeAdjustment,
     updateOfficeAdjustment,
     deleteOfficeAdjustment,

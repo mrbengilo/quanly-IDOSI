@@ -82,11 +82,11 @@ const currentRange = (dates) => {
 const useStoreScope = () => {
   const app = useApp()
   const stores = Array.isArray(app.stores) ? app.stores : []
-  const storeId = app.session?.role === 'employee'
+  const storeId = ['employee', 'store_manager'].includes(app.session?.role)
     ? app.session.storeId
     : app.activeStoreId || app.session?.storeId || stores[0]?.id || ''
   const employees = (Array.isArray(app.employees) ? app.employees : []).filter((employee) =>
-    employee.unit !== 'office' && String(employee.storeId || stores[0]?.id || '') === String(storeId),
+    String(employee.unit || 'store') === 'store' && String(employee.storeId || stores[0]?.id || '') === String(storeId),
   )
   const employeeIds = new Set(employees.map((employee) => String(employee.id)))
   const attendance = (Array.isArray(app.attendance) ? app.attendance : []).filter((record) =>

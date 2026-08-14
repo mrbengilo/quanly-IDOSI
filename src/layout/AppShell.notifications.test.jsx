@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShell from './AppShell'
 
 const mocked = vi.hoisted(() => ({
+  session: { role: 'admin', name: 'Admin' },
+  activeStoreId: 'CH001',
   readNotification: vi.fn(),
   clearNotifications: vi.fn(),
   setActiveStoreId: vi.fn(),
@@ -11,12 +13,12 @@ const mocked = vi.hoisted(() => ({
 
 vi.mock('../state/AppContext', () => ({
   useApp: () => ({
-    session: { role: 'admin', name: 'Admin' },
+    session: mocked.session,
     stores: [
       { id: 'CH001', name: 'Cua hang 1', short: 'CH1' },
       { id: 'CH002', name: 'Cua hang 2', short: 'CH2' },
     ],
-    activeStoreId: 'CH001',
+    activeStoreId: mocked.activeStoreId,
     notifications: [
       { id: 'N1', storeId: 'CH001', title: 'Don moi 1' },
       { id: 'N2', storeId: 'CH001', title: 'Don moi 2' },
@@ -35,6 +37,8 @@ describe('AppShell notifications', () => {
   afterEach(cleanup)
 
   beforeEach(() => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.activeStoreId = 'CH001'
     mocked.readNotification.mockReset()
     mocked.clearNotifications.mockReset().mockResolvedValue({ ok: true, updatedCount: 2 })
     mocked.setActiveStoreId.mockReset()
@@ -60,5 +64,37 @@ describe('AppShell notifications', () => {
 
     expect(mocked.setActiveStoreId).toHaveBeenCalledWith('CH002')
     await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N3'))
+  })
+
+  it('shows the Admin-only account management menus', () => {
+    render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
+
+    expect(screen.getByRole('link', { name: /Nhân viên hỗ trợ KD/i }).getAttribute('href')).toBe('/admin/business-support')
+    expect(screen.getByRole('link', { name: /^Quản lý cửa hàng$/i }).getAttribute('href')).toBe('/admin/store-managers')
+  })
+
+  it('gives business support the system workspace and self-attendance without Admin menus', () => {
+    mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001' }
+    render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
+
+    expect(screen.getByRole('link', { name: /^Cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Chấm công$/i }).getAttribute('href')).toBe('/support/attendance')
+    expect(screen.getAllByText('Hỗ trợ KD').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('link', { name: /Khối văn phòng/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
+  })
+
+  it('locks a store manager to the assigned store workspace', () => {
+    mocked.session = { role: 'store_manager', name: 'Quản lý CH2', storeId: 'CH002' }
+    mocked.activeStoreId = 'CH001'
+    render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
+
+    expect(screen.getByRole('link', { name: /^Tổng quan cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
+    expect(screen.getAllByText('Cua hang 2').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Cửa hàng$/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Quản lý nhân viên/i })).toBeNull()
   })
 })

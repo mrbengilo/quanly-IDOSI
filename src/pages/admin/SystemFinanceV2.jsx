@@ -47,6 +47,12 @@ const totalsFrom = (rows) => rows.reduce((totals, row) => ({
   profit: totals.profit + row.summary.profit,
 }), { revenue: 0, expense: 0, profit: 0 })
 
+const storeEmployeeCount = (employees = [], storeId) => employees.filter((employee) => (
+  String(employee.unit || 'store') === 'store'
+  && String(employee.storeId || '') === String(storeId || '')
+  && employee.status !== 'Đã nghỉ việc'
+)).length
+
 function SystemMetrics({ rows }) {
   const totals = totalsFrom(rows)
   const margin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : 0
@@ -151,7 +157,7 @@ export function AdminReportsV2() {
   const exportRows = rows.map(({ store, summary }) => ({
     'Mã cửa hàng': store.id,
     'Tên cửa hàng': store.name,
-    'Nhân viên': app.employees.filter((employee) => employee.storeId === store.id && employee.status !== 'Đã nghỉ việc').length,
+    'Nhân viên': storeEmployeeCount(app.employees, store.id),
     'Số đơn': summary.transactions.filter((transaction) => transaction.sourceType === 'order').length,
     'Doanh thu': summary.revenue,
     'Chi phí': summary.expense,
@@ -163,7 +169,7 @@ export function AdminReportsV2() {
       <PageHeader title="BÁO CÁO TOÀN HỆ THỐNG" subtitle="Báo cáo đối chiếu theo từng cửa hàng trên cùng một nguồn dữ liệu tài chính." icon={ReceiptText} actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /><ExportButton onClick={() => downloadCsv(`bao-cao-idosi-${period}.csv`, exportRows)} /></>} />
       <SystemMetrics rows={rows} />
       <Card title="Kết quả theo cửa hàng">
-        <TableWrap><thead><tr><th>#</th><th>Cửa hàng</th><th>Nhân viên</th><th>Số đơn</th><th>Doanh thu</th><th>Chi phí</th><th>Lợi nhuận</th><th>Biên lợi nhuận</th></tr></thead><tbody>{rows.map(({ store, summary }, index) => <tr key={store.id}><td>{index + 1}</td><td><strong>{store.name}</strong><small className="table-note">{store.id}</small></td><td><Users size={15} /> {app.employees.filter((employee) => employee.storeId === store.id && employee.status !== 'Đã nghỉ việc').length}</td><td>{summary.transactions.filter((transaction) => transaction.sourceType === 'order').length}</td><td className="green-text"><strong>{money(summary.revenue)}</strong></td><td className="orange-text"><strong>{money(summary.expense)}</strong></td><td><strong>{money(summary.profit)}</strong></td><td>{summary.marginPercent.toFixed(2)}%</td></tr>)}<tr className="total-row"><td colSpan="4">Tổng cộng</td><td>{money(totals.revenue)}</td><td>{money(totals.expense)}</td><td>{money(totals.profit)}</td><td>{totals.revenue ? `${((totals.profit / totals.revenue) * 100).toFixed(2)}%` : '0.00%'}</td></tr></tbody></TableWrap>
+        <TableWrap><thead><tr><th>#</th><th>Cửa hàng</th><th>Nhân viên</th><th>Số đơn</th><th>Doanh thu</th><th>Chi phí</th><th>Lợi nhuận</th><th>Biên lợi nhuận</th></tr></thead><tbody>{rows.map(({ store, summary }, index) => <tr key={store.id}><td>{index + 1}</td><td><strong>{store.name}</strong><small className="table-note">{store.id}</small></td><td><Users size={15} /> {storeEmployeeCount(app.employees, store.id)}</td><td>{summary.transactions.filter((transaction) => transaction.sourceType === 'order').length}</td><td className="green-text"><strong>{money(summary.revenue)}</strong></td><td className="orange-text"><strong>{money(summary.expense)}</strong></td><td><strong>{money(summary.profit)}</strong></td><td>{summary.marginPercent.toFixed(2)}%</td></tr>)}<tr className="total-row"><td colSpan="4">Tổng cộng</td><td>{money(totals.revenue)}</td><td>{money(totals.expense)}</td><td>{money(totals.profit)}</td><td>{totals.revenue ? `${((totals.profit / totals.revenue) * 100).toFixed(2)}%` : '0.00%'}</td></tr></tbody></TableWrap>
       </Card>
     </div>
   )

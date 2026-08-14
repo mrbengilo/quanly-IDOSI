@@ -39,7 +39,6 @@ const employeeSeed = ({
   salary,
   position,
   age,
-  username,
   storeId,
   employmentType = 'Full-Time',
   unit = 'store',
@@ -75,8 +74,6 @@ const employeeSeed = ({
   cccdImage: '',
   cccdImageName: '',
   cccdImages: [],
-  username,
-  passwordHash: DEMO_PASSWORD_HASH,
   status,
   unit,
   unitType: unit,
@@ -117,18 +114,7 @@ export const adminAccountsSeed = [
   },
 ]
 
-export const managerAccountsSeed = [
-  {
-    id: 'MANAGER',
-    code: 'MANAGER',
-    username: 'manager',
-    passwordHash: DEMO_PASSWORD_HASH,
-    role: 'manager',
-    accountType: 'manager',
-    name: 'Quản lý',
-    status: 'Đang hoạt động',
-  },
-]
+export const managerAccountsSeed = []
 
 export const shifts = [
   { id: 'ca1', name: 'Ca 1', time: '07:00 - 12:00', start: '07:00', end: '12:00', color: '#07873d', tint: '#e9f8ee' },
@@ -272,7 +258,4 @@ export const payRows = [
 
 export const demoAccounts = [
   { username: 'admin', role: 'admin', accountType: 'admin', name: 'Admin', code: 'ADMIN' },
-  { username: 'manager', role: 'manager', accountType: 'manager', name: 'Quản lý', code: 'MANAGER' },
-  { username: 'office', role: 'employee', accountType: 'employee', unit: 'office', name: 'Đỗ Thu Trang', code: 'VP001', employeeId: 'VP001', storeId: 'OFFICE' },
-  { username: 'employee', role: 'employee', accountType: 'employee', unit: 'store', name: 'Nguyễn Minh Anh', code: 'NV001', employeeId: 'NV001', storeId: 'CH001', employmentType: 'Full-Time' },
 ]

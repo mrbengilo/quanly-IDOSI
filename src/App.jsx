@@ -5,6 +5,7 @@ import {
   AdminSettings,
   AdminStores,
 } from './pages/admin/AdminPages'
+import { BusinessSupportManagement, StoreManagerManagement } from './pages/admin/RoleManagement'
 import {
   AdminCashflowV2,
   AdminOverviewV2,
@@ -47,19 +48,22 @@ import {
 import UnifiedSchedule from './pages/store/UnifiedSchedule'
 import { useApp } from './state/AppContext'
 
+const canonicalRole = (role) => role === 'manager' ? 'business_support' : role
+
 const homeByRole = {
   admin: '/admin/overview',
-  manager: '/admin/overview',
+  business_support: '/admin/overview',
+  store_manager: '/store/overview',
   employee: '/employee/home',
 }
 
-const homeFor = (session) => homeByRole[session?.role] || '/login'
+const homeFor = (session) => homeByRole[canonicalRole(session?.role)] || '/login'
 
 function RoleGuard({ roles, children }) {
   const { session } = useApp()
   if (!session) return <Navigate to="/login" replace />
   const allowedRoles = Array.isArray(roles) ? roles : [roles]
-  if (!allowedRoles.includes(session.role)) return <Navigate to={homeFor(session)} replace />
+  if (!allowedRoles.includes(canonicalRole(session.role))) return <Navigate to={homeFor(session)} replace />
   return children
 }
 
@@ -103,13 +107,18 @@ export default function App() {
       <Route path="/" element={<EntryRedirect />} />
       <Route path="/login" element={session ? <Navigate to={homeFor(session)} replace /> : <Login />} />
 
-      <Route element={<RoleGuard roles={['admin', 'manager']}><AppShell /></RoleGuard>}>
+      <Route element={<RoleGuard roles={['admin', 'business_support']}><AppShell /></RoleGuard>}>
         <Route path="/admin/overview" element={<AdminOverviewV2 />} />
         <Route path="/admin/stores" element={<AdminStores />} />
         <Route path="/admin/tasks" element={<Navigate to="/store/tasks" replace />} />
         <Route path="/admin/cashflow" element={<AdminCashflowV2 />} />
         <Route path="/admin/reports" element={<AdminReportsV2 />} />
+        <Route path="/admin/employees" element={<SystemEmployees />} />
+        <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
+        <Route path="/admin/settings" element={<AdminSettings />} />
+      </Route>
 
+      <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager']}><AppShell /></RoleGuard>}>
         <Route path="/store/overview" element={<StoreOverviewV2 />} />
         <Route path="/store/shifts" element={<Navigate to="/store/schedule" replace />} />
         <Route path="/store/schedule" element={<UnifiedSchedule />} />
@@ -124,13 +133,13 @@ export default function App() {
         <Route path="/store/settings" element={<StoreSettings />} />
       </Route>
 
-      <Route element={<RoleGuard roles={['admin', 'manager']}><AppShell /></RoleGuard>}>
-        <Route path="/admin/employees" element={<SystemEmployees />} />
-        <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
-        <Route path="/admin/settings" element={<AdminSettings />} />
+      <Route element={<RoleGuard roles="business_support"><AppShell /></RoleGuard>}>
+        <Route path="/support/attendance" element={<OfficeEmployeeDashboard />} />
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
+        <Route path="/admin/business-support" element={<BusinessSupportManagement />} />
+        <Route path="/admin/store-managers" element={<StoreManagerManagement />} />
         <Route path="/office" element={<OfficeManagement />} />
         <Route path="/admin/office" element={<Navigate to="/office" replace />} />
         <Route path="/admin/policies" element={<PolicySettings />} />

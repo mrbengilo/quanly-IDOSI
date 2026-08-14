@@ -7,7 +7,7 @@
  * ORM to the static Vite application.
  */
 
-export type UserRole = 'admin' | 'manager' | 'employee'
+export type UserRole = 'admin' | 'business_support' | 'store_manager' | 'employee'
 export type AccountStatus = 'active' | 'locked' | 'inactive'
 
 export const schema = {
@@ -132,4 +132,5 @@ export const migrations = [
   'drizzle/0001_manager_role.sql',
   'drizzle/0002_attendance_evaluation_policies.sql',
   'drizzle/0003_state_entities.sql',
+  'drizzle/0004_operational_roles.sql',
 ] as const

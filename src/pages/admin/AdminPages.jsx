@@ -90,7 +90,7 @@ export function AdminOverview() {
     <div className="page">
       <PageHeader
         title="Tổng quan"
-        subtitle={`Xin chào, ${session?.name || (session?.role === 'admin' ? 'Admin' : session?.role === 'manager' ? 'Quản lý' : 'Nhân viên')}! Đây là tổng quan hoạt động của tất cả cửa hàng.`}
+        subtitle={`Xin chào, ${session?.name || (session?.role === 'admin' ? 'Admin' : ['manager', 'business_support'].includes(session?.role) ? 'Hỗ trợ KD' : 'Nhân viên')}! Đây là tổng quan hoạt động của tất cả cửa hàng.`}
         actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
       <AdminMetrics stores={stores} />
@@ -131,7 +131,7 @@ export function AdminStores() {
   const financeByStore = new Map(stores.map((store) => [store.id, financeSummaryFromState(app, { storeId: store.id })]))
   const revenue = [...financeByStore.values()].reduce((total, summary) => total + summary.revenue, 0)
   const expense = [...financeByStore.values()].reduce((total, summary) => total + summary.expense, 0)
-  const canManageStoreDirectory = session?.role === 'admin' || session?.role === 'manager'
+  const canManageStoreDirectory = session?.role === 'admin' || ['manager', 'business_support'].includes(session?.role)
   const canDeleteStore = session?.role === 'admin'
 
   const setStoreStatus = async (store, active) => {
@@ -557,7 +557,7 @@ export function AdminSettings() {
                 <Field label="Giới thiệu" className="span-2"><textarea value={form.bio || ''} onChange={set('bio')} maxLength={200} /><small>{String(form.bio || '').length}/200</small></Field>
               </div>
             </div>
-            <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || 'admin'} disabled /></Field><Field label="Vai trò"><Input value={session?.role === 'manager' ? 'Quản lý' : 'Admin'} disabled /></Field></div></div>
+            <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || 'admin'} disabled /></Field><Field label="Vai trò"><Input value={['manager', 'business_support'].includes(session?.role) ? 'Nhân viên hỗ trợ KD' : 'Admin'} disabled /></Field></div></div>
             <div className="card-actions"><Button icon={Save} onClick={saveProfile}>Lưu thay đổi</Button></div>
           </Card>
         ) : (
