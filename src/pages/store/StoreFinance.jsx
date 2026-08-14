@@ -383,22 +383,53 @@ export function StoreReports() {
   )
 }
 
+const storeSettingsForm = (store = {}) => ({
+  name: store.name || 'IDOSI',
+  phone: store.phone ?? '',
+  email: store.email ?? 'cuahang@idosi.vn',
+  address: store.address ?? '',
+  tax: store.tax ?? store.taxCode ?? '',
+  opening: store.opening ?? store.openingTime ?? '07:00',
+  closing: store.closing ?? store.closingTime ?? '23:00',
+})
+
 export function StoreSettings() {
   const { notify, stores = [], activeStoreId, session, updateStore } = useApp()
   const selectedStoreId = session?.role === 'employee' ? session.storeId : activeStoreId || session?.storeId
   const activeStore = stores.find((item) => item.id === selectedStoreId) || stores[0]
   const [tab, setTab] = useState('info')
-  const [form, setForm] = useState({ name: activeStore?.name || 'IDOSI', phone: activeStore?.phone || '', email: activeStore?.email || 'cuahang@idosi.vn', address: activeStore?.address || '', tax: activeStore?.tax || '', opening: activeStore?.opening || '07:00', closing: activeStore?.closing || '23:00' })
+  const [form, setForm] = useState(() => storeSettingsForm(activeStore))
   useEffect(() => {
     // Đồng bộ biểu mẫu khi quản trị viên chuyển sang một cửa hàng khác.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setForm({ name: activeStore?.name || 'IDOSI', phone: activeStore?.phone || '', email: activeStore?.email || 'cuahang@idosi.vn', address: activeStore?.address || '', tax: activeStore?.tax || '', opening: activeStore?.opening || '07:00', closing: activeStore?.closing || '23:00' })
-  }, [activeStore?.id, activeStore?.name, activeStore?.phone, activeStore?.email, activeStore?.address, activeStore?.tax, activeStore?.opening, activeStore?.closing])
+    setForm(storeSettingsForm(activeStore))
+  }, [activeStore])
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
-  const save = () => {
+  const save = async () => {
+    if (!activeStore?.id) return notify('Không tìm thấy cửa hàng cần cập nhật.', 'info')
     if (!form.name.trim()) return notify('Tên cửa hàng không được để trống.', 'info')
     if (form.email && !/^\S+@\S+\.\S+$/.test(form.email)) return notify('Email cửa hàng chưa đúng định dạng.', 'info')
-    updateStore?.(activeStore.id, { ...form })
+    if (!form.opening || !form.closing) return notify('Vui lòng nhập đầy đủ giờ mở cửa và đóng cửa.', 'info')
+    if (typeof updateStore !== 'function') return notify('Chức năng cập nhật cửa hàng chưa sẵn sàng.', 'info')
+    const payload = {
+      name: form.name.trim(),
+      phone: form.phone.trim(),
+      email: form.email.trim(),
+      address: form.address.trim(),
+      tax: form.tax.trim(),
+      taxCode: form.tax.trim(),
+      opening: form.opening,
+      openingTime: form.opening,
+      closing: form.closing,
+      closingTime: form.closing,
+    }
+    const result = await updateStore(activeStore.id, payload)
+    if (!result?.ok || !result.store) return notify(result?.message || 'Máy chủ chưa ghi nhận cài đặt cửa hàng.', 'info')
+    const persisted = storeSettingsForm(result.store)
+    if (Object.keys(form).some((key) => String(persisted[key] ?? '') !== String(form[key] ?? '').trim())) {
+      return notify('Máy chủ chưa ghi nhận đầy đủ cài đặt cửa hàng.', 'info')
+    }
+    setForm(persisted)
   }
   return (
     <div className="page settings-page">

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Banknote,
   CalendarDays,
@@ -12,7 +12,7 @@ import {
   ShoppingCart,
   Wallet,
 } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Badge,
   Button,
@@ -31,9 +31,10 @@ import {
 import { resolveShiftCandidates } from '../../domain'
 import { useApp } from '../../state/AppContext'
 import { businessDate, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, today } from '../../utils'
+import { employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
 
 const parseMoney = (value) => Math.max(0, Math.trunc(Number(String(value ?? '').replace(/[^\d-]/gu, '')) || 0))
-const moneyInput = (value) => String(value ?? '').replace(/\D/gu, '').replace(/\B(?=(\d{3})+(?!\d))/gu, '.')
+const moneyInput = (value) => String(value ?? '').replace(/\D/gu, '').replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
 const recordDate = (record = {}) => String(record.date || record.workDate || record.createdAt || '').slice(0, 10)
 const employeeKey = (employee = {}) => String(employee?.id || employee?.code || employee?.employeeCode || '')
 const timestamp = (value) => value ? new Date(value).toLocaleString('vi-VN', { hour12: false }) : '—'
@@ -107,20 +108,42 @@ const geolocate = () => new Promise((resolve, reject) => {
 export function EmployeeDashboardV2() {
   const app = useApp()
   const navigate = useNavigate()
-  const { currentEmployee: employee, attendance = [], orders = [], tasks = [] } = app
+  const {
+    currentEmployee: employee,
+    attendance = [],
+    orders = [],
+    schedule = [],
+    tasks = [],
+    setTaskDone,
+    notify,
+  } = app
+  const [pendingTaskId, setPendingTaskId] = useState(null)
   const employeeId = employeeKey(employee)
   const workDate = today()
   const ownAttendance = employeeAttendance(attendance, employeeId)
   const activeRecord = ownAttendance.find((record) => !record.checkOutAt && !record.checkOut)
   const todayRecords = ownAttendance.filter((record) => recordDate(record) === workDate)
   const monthOrders = orders.filter((order) => String(order.employeeId) === employeeId && !order.deletedAt && businessDate(order.createdAt).startsWith(workDate.slice(0, 7)))
-  const todayTasks = tasks.filter((task) => (
-    (!task.storeId || String(task.storeId) === String(employee?.storeId))
-    && (!task.employeeId || String(task.employeeId) === employeeId)
-    && (!task.date || task.date === workDate)
-  ))
-  const completedTasks = todayTasks.filter((task) => task.done).length
+  const todayTasks = employeeTasksForDate({ tasks, schedule, attendance, employee, workDate })
+  const completedTasks = todayTasks.filter((task) => taskCompletedByEmployee(task, employeeId)).length
   const shifts = findScheduledShifts(app, employee || {}, workDate)
+
+  const toggleTask = async (task) => {
+    if (typeof setTaskDone !== 'function') {
+      notify?.('Chức năng cập nhật công việc chưa sẵn sàng.', 'info')
+      return
+    }
+    const done = taskCompletedByEmployee(task, employeeId)
+    setPendingTaskId(task.id)
+    try {
+      const result = await setTaskDone(task.id, !done, employeeId)
+      if (!result?.ok) notify?.(result?.message || 'Không thể cập nhật công việc.', 'info')
+    } catch (error) {
+      notify?.(error.message || 'Không thể cập nhật công việc.', 'info')
+    } finally {
+      setPendingTaskId(null)
+    }
+  }
 
   return (
     <div className="page">
@@ -149,13 +172,38 @@ export function EmployeeDashboardV2() {
           </div>
         </Card>
       </div>
-      <Card title="Công việc hôm nay"><div className="task-checklist">{todayTasks.map((task) => <div key={task.id} className={task.done ? 'done' : ''}><CheckCircle2 size={18} /><div><strong>{task.title}</strong><small>{task.detail}</small></div><Badge tone={task.done ? 'green' : 'orange'}>{task.done ? 'Đã hoàn thành' : 'Chưa hoàn thành'}</Badge></div>)}{!todayTasks.length && <InfoNote>Chưa có công việc được giao hôm nay.</InfoNote>}</div></Card>
+      <Card title="Công việc hôm nay">
+        <div className="task-checklist">
+          {todayTasks.map((task) => {
+            const done = taskCompletedByEmployee(task, employeeId)
+            const pending = String(pendingTaskId) === String(task.id)
+            return (
+              <div key={task.id} className={done ? 'done' : ''}>
+                <button
+                  type="button"
+                  className="icon-button"
+                  onClick={() => toggleTask(task)}
+                  disabled={pending}
+                  aria-label={done ? `Mở lại công việc ${task.title}` : `Hoàn thành công việc ${task.title}`}
+                  aria-pressed={done}
+                >
+                  <CheckCircle2 size={18} />
+                </button>
+                <div><strong>{task.title}</strong><small>{task.detail}</small></div>
+                <Badge tone={done ? 'green' : 'orange'}>{pending ? 'Đang cập nhật...' : done ? 'Đã hoàn thành' : 'Chưa hoàn thành'}</Badge>
+              </div>
+            )
+          })}
+          {!todayTasks.length && <InfoNote>Chưa có công việc đúng ca làm hôm nay.</InfoNote>}
+        </div>
+      </Card>
     </div>
   )
 }
 
 export function EmployeeOrdersPage() {
   const app = useApp()
+  const [searchParams] = useSearchParams()
   const { currentEmployee: employee, orders = [], attendance = [], createOrder, notify } = app
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -165,7 +213,18 @@ export function EmployeeOrdersPage() {
     .filter((order) => !order.deletedAt && String(order.employeeId) === employeeId && order.source !== 'legacy-opening-balance')
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
   const total = rows.reduce((sum, order) => sum + Number(order.amount || 0), 0)
+  const requestedOrderId = String(searchParams.get('order') || '')
+  const requestedOrder = rows.find((order) => [order.id, order.code].map(String).includes(requestedOrderId))
+  const requestedOrderKey = String(requestedOrder?.id || '')
   const openAttendance = attendance.find((record) => String(record.employeeId) === employeeId && !record.deletedAt && !record.checkOutAt && !record.checkOut)
+
+  useEffect(() => {
+    if (!requestedOrderKey) return undefined
+    const scrollTimer = window.setTimeout(() => {
+      document.getElementById(`order-${requestedOrderKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 0)
+    return () => window.clearTimeout(scrollTimer)
+  }, [requestedOrderKey])
 
   const save = async () => {
     if (!form.customerName.trim() || parseMoney(form.amount) <= 0) {
@@ -212,7 +271,7 @@ export function EmployeeOrdersPage() {
           <>
             <TableWrap>
               <thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Điện thoại</th><th>Tuổi</th><th>Ca làm việc</th><th>Thanh toán</th><th>Số tiền</th></tr></thead>
-              <tbody>{rows.map((order) => <tr key={order.id}><td><strong>{order.code}</strong></td><td>{timestamp(order.createdAt)}</td><td>{order.customerName || 'Khách lẻ'}</td><td>{order.customerPhone || '—'}</td><td>{order.customerAge ?? '—'}</td><td>{order.shiftName || 'Chưa gắn ca'}</td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
+              <tbody>{rows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td><strong>{order.code}</strong></td><td>{timestamp(order.createdAt)}</td><td>{order.customerName || 'Khách lẻ'}</td><td>{order.customerPhone || '—'}</td><td>{order.customerAge ?? '—'}</td><td>{order.shiftName || 'Chưa gắn ca'}</td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
             </TableWrap>
             <TableFooter shown={rows.length} total={rows.length} />
           </>

@@ -34,11 +34,13 @@ import { useApp } from '../../state/AppContext'
 import {
   calculateEmployeeBasePay,
   downloadCsv,
+  formatMoneyInput,
   getEmployeeType,
   getHourlyRate,
   getMonthlySalary,
   getPayBasis,
   money,
+  parseMoneyInput,
   shortDate,
 } from '../../utils'
 
@@ -339,7 +341,7 @@ export function EmployeeHome() {
     && String(task.date || task.workDate || localDateIso()) === localDateIso(),
   )
   const taskIsDone = (task) => task.completedBy?.[employeeId(employee)] ?? task.done
-  const totalRevenue = Number(cash || 0) + Number(transfer || 0)
+  const totalRevenue = parseMoneyInput(cash) + parseMoneyInput(transfer)
   const allDone = tasks.every(taskIsDone)
   const finishedShift = Boolean(checkedOutAt || app.finishedShift)
   const canFinish = checkedInAt && allDone && totalRevenue > 0 && !finishedShift
@@ -354,7 +356,7 @@ export function EmployeeHome() {
   const handleFinish = () => {
     if (!canFinish) return app.notify?.('Hoàn thành công việc và nhập doanh thu trước khi kết ca.', 'info')
     captureLocation('out', (location) => {
-      const payload = { expense: Number(expense || 0), cash: Number(cash), transfer: Number(transfer), tiktok, location }
+      const payload = { expense: parseMoneyInput(expense), cash: parseMoneyInput(cash), transfer: parseMoneyInput(transfer), tiktok, location }
       if (typeof app.finishShift === 'function') return app.finishShift(payload)
       if (typeof app.checkOut === 'function') return app.checkOut(payload)
       throw new Error('Chức năng kết ca đang được kết nối.')
@@ -366,7 +368,7 @@ export function EmployeeHome() {
       <div className="employee-hero-title"><span>‹</span><h1>{store?.name || 'IDOSI'}</h1><span>›</span><p>HỆ THỐNG LÀM VIỆC NHÂN VIÊN</p></div>
       <div className="employee-top-grid">
         <Card className="checkin-card"><h2>ĐIỂM DANH</h2><p>{new Date().toLocaleDateString('vi-VN')}</p><strong>{formatTime(checkedInAt || currentTime)}</strong><Button icon={Fingerprint} loading={locatingAction === 'in'} onClick={handleCheckIn} disabled={Boolean(checkedInAt) || Boolean(locatingAction)}>{checkedInAt ? 'ĐÃ ĐIỂM DANH' : 'ĐIỂM DANH'}</Button><small>{checkedInAt ? `Đã vào ca lúc ${formatTime(checkedInAt)}` : 'Thời gian và vị trí sẽ được ghi nhận'}</small></Card>
-        <Card className="employee-info-card"><h2>THÔNG TIN NHÂN VIÊN</h2><dl><div><dt>Mã nhân viên</dt><dd>{employeeId(employee) || '—'}</dd></div><div><dt>Họ và tên</dt><dd>{employee.name || '—'}</dd></div><div><dt>Vị trí</dt><dd>{employeePosition(employee)}</dd></div><div><dt>Loại nhân viên</dt><dd><Badge tone={type === 'Full-time' ? 'blue' : 'green'}>{type}</Badge></dd></div><div><dt>Số điện thoại</dt><dd>{employee.phone || '—'}</dd></div></dl></Card>
+        <Card className="employee-info-card"><h2>THÔNG TIN NHÂN VIÊN</h2><dl><div><dt>Mã nhân viên</dt><dd>{employeeId(employee) || '—'}</dd></div><div><dt>Họ và tên</dt><dd>{employee.name || '—'}</dd></div><div><dt>Vị trí</dt><dd>{employeePosition(employee)}</dd></div><div><dt>Loại nhân viên</dt><dd><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></dd></div><div><dt>Số điện thoại</dt><dd>{employee.phone || '—'}</dd></div></dl></Card>
         <Card className="current-shift-card"><h2>CA LÀM VIỆC HÔM NAY</h2><div><Badge tone="green">{workShift.name.toUpperCase()}</Badge><strong>{workShift.time}</strong><small>({Number(employee.shiftHours) || 5} tiếng)</small></div><p><span>Giờ vào: <b>{formatTime(checkedInAt)}</b></span><span>Giờ kết ca: <b>{formatTime(checkedOutAt)}</b></span></p><div className={checkedInAt ? 'status-ok' : 'status-pending'}>{finishedShift ? 'Đã kết ca' : checkedInAt ? 'Đang làm việc' : 'Chưa điểm danh'}</div></Card>
       </div>
       {locationError && <InfoNote tone="orange">{locationError}</InfoNote>}
@@ -376,13 +378,13 @@ export function EmployeeHome() {
       </Card>
       <Card className="finish-shift" title="THÔNG TIN KẾT CA">
         <div className="finish-shift__grid">
-          <div><Field label="Chi phí trong ca (nếu có)"><Input type="number" min="0" value={expense} onChange={(event) => setExpense(event.target.value)} placeholder="Nhập chi phí phát sinh" /></Field><div className="expected-pay"><span>Số giờ làm dự kiến: <b>5 tiếng</b></span><span>{payBasis === 'hourly' ? 'Lương ca dự kiến' : 'Mức lương tháng'}: <b>{money(payBasis === 'hourly' ? rate * 5 : rate)}</b></span><small>{payBasis === 'hourly' ? `(${money(rate)}/giờ)` : 'Full-time hưởng lương theo tháng'}</small></div></div>
-          <div><h3>Doanh thu ca <b>(bắt buộc)</b></h3><div className="revenue-entry"><Field label="Tiền mặt"><Input type="number" min="0" value={cash} onChange={(event) => setCash(event.target.value)} placeholder="Nhập số tiền" /></Field><Field label="Chuyển khoản"><Input type="number" min="0" value={transfer} onChange={(event) => setTransfer(event.target.value)} placeholder="Nhập số tiền" /></Field><div><span>Tổng tiền</span><strong>{money(totalRevenue)}</strong></div></div><Button className="finish-button" icon={LockKeyhole} loading={locatingAction === 'out'} disabled={!canFinish || Boolean(locatingAction)} onClick={handleFinish}>{finishedShift ? 'ĐÃ KẾT CA' : 'KẾT CA'}</Button>{!canFinish && !finishedShift && <small className="finish-warning">Vui lòng hoàn thành công việc và nhập doanh thu để kết ca</small>}</div>
+          <div><Field label="Chi phí trong ca (nếu có)"><Input inputMode="numeric" value={expense} onChange={(event) => setExpense(formatMoneyInput(event.target.value))} placeholder="2,000" /></Field><div className="expected-pay"><span>Số giờ làm dự kiến: <b>5 tiếng</b></span><span>{payBasis === 'hourly' ? 'Lương ca dự kiến' : 'Mức lương tháng'}: <b>{money(payBasis === 'hourly' ? rate * 5 : rate)}</b></span><small>{payBasis === 'hourly' ? `(${money(rate)}/giờ)` : 'Full-time hưởng lương theo tháng'}</small></div></div>
+          <div><h3>Doanh thu ca <b>(bắt buộc)</b></h3><div className="revenue-entry"><Field label="Tiền mặt"><Input inputMode="numeric" value={cash} onChange={(event) => setCash(formatMoneyInput(event.target.value))} placeholder="2,000" /></Field><Field label="Chuyển khoản"><Input inputMode="numeric" value={transfer} onChange={(event) => setTransfer(formatMoneyInput(event.target.value))} placeholder="2,000" /></Field><div><span>Tổng tiền</span><strong>{money(totalRevenue)}</strong></div></div><Button className="finish-button" icon={LockKeyhole} loading={locatingAction === 'out'} disabled={!canFinish || Boolean(locatingAction)} onClick={handleFinish}>{finishedShift ? 'ĐÃ KẾT CA' : 'KẾT CA'}</Button>{!canFinish && !finishedShift && <small className="finish-warning">Vui lòng hoàn thành công việc và nhập doanh thu để kết ca</small>}</div>
           <div className="tiktok-box"><h3>♪ CLIP TIKTOK</h3><p>Nếu ca này có làm clip TikTok, vui lòng tick vào ô bên dưới.</p><label><input type="checkbox" checked={tiktok} onChange={(event) => setTiktok(event.target.checked)} /> Ca này có làm clip TikTok</label></div>
         </div>
       </Card>
       <Card title="LỊCH SỬ CA LÀM" action={<><DateRange value={historyRange} onChange={setHistoryRange} /><Select value={historyShift} onChange={(event) => setHistoryShift(event.target.value)} aria-label="Lọc ca làm"><option value="all">Tất cả ca</option>{shifts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</Select></>}>
-        <TableWrap><thead><tr><th>STT</th><th>Mã NV</th><th>Tên nhân viên</th><th>Loại NV</th><th>Ca làm</th><th>Ngày</th><th>Giờ vào</th><th>Giờ ra</th><th>Vị trí</th><th>Số giờ</th><th>Lương</th><th>Trạng thái</th></tr></thead><tbody>{historyRows.slice(0, 7).map((row, index) => { const shift = getShift(row.shift); const hours = workedHours(row); return <tr key={row.id || index}><td>{index + 1}</td><td>{employeeId(employee)}</td><td>{employee.name}</td><td><Badge tone={type === 'Full-time' ? 'blue' : 'green'}>{type}</Badge></td><td><Badge tone={row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{shift.name}</Badge></td><td>{shortDate(recordDate(row))}</td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td>{locationLabel(row.checkInLocation || row.location)}</td><td>{hours.toFixed(2)}</td><td>{payBasis === 'hourly' ? money(hours * rate) : 'Theo lương tháng'}</td><td><Badge tone={attendanceTone(checkInStatus(row, employee))}>{checkInStatus(row, employee)}</Badge></td></tr>})}{!historyRows.length && <tr><td colSpan="12">Không có ca làm phù hợp với bộ lọc.</td></tr>}</tbody></TableWrap>
+        <TableWrap><thead><tr><th>STT</th><th>Mã NV</th><th>Tên nhân viên</th><th>Loại NV</th><th>Ca làm</th><th>Ngày</th><th>Giờ vào</th><th>Giờ ra</th><th>Vị trí</th><th>Số giờ</th><th>Lương</th><th>Trạng thái</th></tr></thead><tbody>{historyRows.slice(0, 7).map((row, index) => { const shift = getShift(row.shift); const hours = workedHours(row); return <tr key={row.id || index}><td>{index + 1}</td><td>{employeeId(employee)}</td><td>{employee.name}</td><td><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></td><td><Badge tone={row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{shift.name}</Badge></td><td>{shortDate(recordDate(row))}</td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td>{locationLabel(row.checkInLocation || row.location)}</td><td>{hours.toFixed(2)}</td><td>{payBasis === 'hourly' ? money(hours * rate) : 'Theo lương tháng'}</td><td><Badge tone={attendanceTone(checkInStatus(row, employee))}>{checkInStatus(row, employee)}</Badge></td></tr>})}{!historyRows.length && <tr><td colSpan="12">Không có ca làm phù hợp với bộ lọc.</td></tr>}</tbody></TableWrap>
         <TableFooter shown={Math.min(7, historyRows.length)} total={historyRows.length} />
       </Card>
     </div>
@@ -408,7 +410,7 @@ export function EmployeePayroll() {
   const type = employeeType(employee)
   return (
     <div className="page">
-      <PageHeader title="BẢNG LƯƠNG" subtitle={`Thống kê lương + thưởng của ${employee.name || 'nhân viên'}.`} actions={<><Select value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Kỳ lương"><option value="all">Tất cả kỳ lương</option>{periods.map((item) => <option key={item} value={item}>{item.split('-').reverse().join('/')}</option>)}</Select><Badge tone={type === 'Full-time' ? 'blue' : 'green'}>{type}</Badge></>} />
+      <PageHeader title="BẢNG LƯƠNG" subtitle={`Thống kê lương + thưởng của ${employee.name || 'nhân viên'}.`} actions={<><Select value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Kỳ lương"><option value="all">Tất cả kỳ lương</option>{periods.map((item) => <option key={item} value={item}>{item.split('-').reverse().join('/')}</option>)}</Select><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></>} />
       <div className="metric-grid metric-grid--four">
         <MetricCard label="TỔNG THU NHẬP" value={money(total)} helper="Tính theo dữ liệu chấm công" icon={Wallet} tone="green" />
         <MetricCard label="TỔNG LƯƠNG" value={money(base)} helper={payBasis === 'hourly' ? `${rows.length} ca × ${money(hourlyRate)}/giờ` : `Lương tháng ${money(monthlySalary)}`} icon={Banknote} tone="blue" />
@@ -485,10 +487,10 @@ export function EmployeeShiftHistory() {
   const type = employeeType(employee)
   return (
     <div className="page">
-      <PageHeader title="LỊCH SỬ CA LÀM" subtitle={`Xem lịch sử ca làm của ${employee.name || 'nhân viên'}.`} icon={Clock3} actions={<Badge tone={type === 'Full-time' ? 'blue' : 'green'}>{type}</Badge>} />
+      <PageHeader title="LỊCH SỬ CA LÀM" subtitle={`Xem lịch sử ca làm của ${employee.name || 'nhân viên'}.`} icon={Clock3} actions={<Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge>} />
       {filterPanel}
       <Card action={<ExportButton onClick={() => downloadCsv('lich-su-ca-lam.csv', rows)} />}>
-        <TableWrap><thead><tr><th>STT</th><th>Ngày làm việc</th><th>Mã nhân viên</th><th>Tên nhân viên</th><th>Loại</th><th>Ca làm</th><th>Thời gian vào</th><th>Thời gian kết ca</th><th>Số giờ</th><th>Lương dự tính</th></tr></thead><tbody>{rows.map((row, index) => { const hours = workedHours(row); return <tr key={row.id || index}><td>{index + 1}</td><td><strong>{shortDate(recordDate(row))}</strong></td><td>{employeeId(employee)}</td><td><strong>{employee.name}</strong></td><td><Badge tone={type === 'Full-time' ? 'blue' : 'green'}>{type}</Badge></td><td><Badge tone={row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{getShift(row.shift).name}</Badge></td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td className="green-text"><strong>{hours.toFixed(2)} giờ</strong></td><td className="green-text"><strong>{payBasis === 'hourly' ? money(hours * hourlyRate) : 'Theo lương tháng'}</strong></td></tr>})}{!rows.length && <tr><td colSpan="10">Không có lịch sử ca làm phù hợp với bộ lọc.</td></tr>}</tbody></TableWrap>
+        <TableWrap><thead><tr><th>STT</th><th>Ngày làm việc</th><th>Mã nhân viên</th><th>Tên nhân viên</th><th>Loại</th><th>Ca làm</th><th>Thời gian vào</th><th>Thời gian kết ca</th><th>Số giờ</th><th>Lương dự tính</th></tr></thead><tbody>{rows.map((row, index) => { const hours = workedHours(row); return <tr key={row.id || index}><td>{index + 1}</td><td><strong>{shortDate(recordDate(row))}</strong></td><td>{employeeId(employee)}</td><td><strong>{employee.name}</strong></td><td><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></td><td><Badge tone={row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{getShift(row.shift).name}</Badge></td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td className="green-text"><strong>{hours.toFixed(2)} giờ</strong></td><td className="green-text"><strong>{payBasis === 'hourly' ? money(hours * hourlyRate) : 'Theo lương tháng'}</strong></td></tr>})}{!rows.length && <tr><td colSpan="10">Không có lịch sử ca làm phù hợp với bộ lọc.</td></tr>}</tbody></TableWrap>
         <TableFooter shown={rows.length} total={rows.length} />
       </Card>
     </div>

@@ -82,7 +82,7 @@ function AdminMetrics({ stores, compact = false }) {
 export function AdminOverview() {
   const { stores, setActiveStoreId, session } = useApp()
   const navigate = useNavigate()
-  const activeStores = stores.filter((store) => store.status !== 'Tạm ngưng' && store.status !== 'Ngừng hoạt động')
+  const activeStores = stores.filter((store) => !['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status))
   const openStore = (store) => {
     if (setActiveStoreId?.(store.id) !== false) navigate('/store/overview')
   }
@@ -90,7 +90,7 @@ export function AdminOverview() {
     <div className="page">
       <PageHeader
         title="Tổng quan"
-        subtitle={`Xin chào, ${session?.name || (session?.role === 'admin' ? 'Quản trị viên' : 'Nhân viên')}! Đây là tổng quan hoạt động của tất cả cửa hàng.`}
+        subtitle={`Xin chào, ${session?.name || (session?.role === 'admin' ? 'Admin' : session?.role === 'manager' ? 'Quản lý' : 'Nhân viên')}! Đây là tổng quan hoạt động của tất cả cửa hàng.`}
         actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
       <AdminMetrics stores={stores} />
@@ -103,7 +103,7 @@ export function AdminOverview() {
           <Card key={store.id} className="store-card">
             <StoreIllustration name={store.name} accent={store.accent} />
             <div className="store-card__body">
-              <div className="store-card__title"><h3>{store.name}</h3><Badge tone={store.status === 'Đang hoạt động' ? 'green' : 'orange'}>{store.status || 'Đang hoạt động'}</Badge></div>
+              <div className="store-card__title"><h3>{store.name}</h3><Badge tone={!['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'green' : 'orange'}>{!['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'Đang hoạt động' : 'Ngưng hoạt động'}</Badge></div>
               <p><MapPin size={17} /> {store.location}</p>
               <div className="store-card__finance">
                 <span><small>Doanh thu kỳ này</small><strong>{money(store.revenue)}</strong></span>
@@ -131,8 +131,19 @@ export function AdminStores() {
   const financeByStore = new Map(stores.map((store) => [store.id, financeSummaryFromState(app, { storeId: store.id })]))
   const revenue = [...financeByStore.values()].reduce((total, summary) => total + summary.revenue, 0)
   const expense = [...financeByStore.values()].reduce((total, summary) => total + summary.expense, 0)
-  const canManageStoreDirectory = session?.role === 'admin'
+  const canManageStoreDirectory = session?.role === 'admin' || session?.role === 'manager'
   const canDeleteStore = session?.role === 'admin'
+
+  const setStoreStatus = async (store, active) => {
+    if (!canManageStoreDirectory) return
+    if (typeof updateStore !== 'function') return notify('Chức năng cập nhật cửa hàng chưa sẵn sàng.', 'info')
+    try {
+      const result = await updateStore(store.id, { status: active ? 'Đang hoạt động' : 'Ngưng hoạt động' })
+      if (!result?.ok) notify(result?.message || 'Không thể cập nhật trạng thái cửa hàng.', 'info')
+    } catch (error) {
+      notify(error.message || 'Không thể cập nhật trạng thái cửa hàng.', 'info')
+    }
+  }
 
   const openCreate = () => {
     setEditingStore(null)
@@ -152,7 +163,7 @@ export function AdminStores() {
     setForm(emptyStoreForm)
   }
 
-  const save = (event) => {
+  const save = async (event) => {
     event?.preventDefault()
     const payload = {
       name: form.name.trim(),
@@ -162,9 +173,27 @@ export function AdminStores() {
     if (!payload.name || !payload.location || !payload.address) return notify('Vui lòng nhập đầy đủ tên, khu vực và địa chỉ cửa hàng.', 'info')
     const duplicate = stores.some((store) => store.id !== editingStore?.id && store.name.trim().toLowerCase() === payload.name.toLowerCase())
     if (duplicate) return notify('Tên cửa hàng đã tồn tại.', 'info')
-    if (editingStore) updateStore?.(editingStore.id, payload)
-    else addStore?.(payload)
-    closeForm()
+    const action = editingStore ? updateStore : addStore
+    if (typeof action !== 'function') return notify('Chức năng lưu cửa hàng chưa sẵn sàng.', 'info')
+    try {
+      const result = editingStore ? await action(editingStore.id, payload) : await action(payload)
+      if (!result?.ok) return notify(result?.message || 'Không thể lưu thông tin cửa hàng.', 'info')
+      closeForm()
+    } catch (error) {
+      notify(error.message || 'Không thể lưu thông tin cửa hàng.', 'info')
+    }
+  }
+
+  const removeStore = async (store) => {
+    if (!canDeleteStore || !window.confirm(`Xóa ${store.name}?`)) return
+    if (typeof deleteStore !== 'function') return notify('Chức năng xóa cửa hàng chưa sẵn sàng.', 'info')
+    try {
+      const result = await deleteStore(store.id)
+      if (!result?.ok) return notify(result?.message || 'Không thể xóa cửa hàng.', 'info')
+      if (viewingStore?.id === store.id) setViewingStore(null)
+    } catch (error) {
+      notify(error.message || 'Không thể xóa cửa hàng.', 'info')
+    }
   }
 
   const manageStore = (store) => {
@@ -202,13 +231,13 @@ export function AdminStores() {
               <tr key={store.id}>
                 <td>{index + 1}</td>
                 <td><div className="store-cell"><StoreIllustration name={store.name} accent={store.accent} /><strong>{store.name}</strong></div></td>
-                <td><span className="cell-muted"><MapPin size={15} />{store.location}</span></td>
+                <td className="address-cell"><strong>{store.address || store.location}</strong>{store.address && store.location && <small className="table-note">{store.location}</small>}</td>
                 <td><strong className="green-text">{store.employees}</strong><small className="table-sub">nhân viên</small></td>
                 <td className="green-text"><strong>{money(storeFinance.revenue)}</strong></td>
                 <td className="orange-text"><strong>{money(storeFinance.expense)}</strong></td>
                 <td><strong>{money(storeFinance.profit)}</strong><small className="green-text table-sub">({storeFinance.marginPercent.toFixed(2)}%)</small></td>
-                <td><Badge>{store.status}</Badge></td>
-                <td><div className="row-actions">{canManageStoreDirectory && <button onClick={() => openEdit(store)} aria-label={`Sửa ${store.name}`}><Edit3 size={17} /></button>}{canDeleteStore && <button className="danger" onClick={() => window.confirm(`Xóa ${store.name}?`) && deleteStore?.(store.id)} aria-label={`Xóa ${store.name}`}><Trash2 size={17} /></button>}<button onClick={() => setViewingStore(store)} aria-label={`Xem ${store.name}`}><Eye size={17} /></button></div></td>
+                <td><div className="filter-pills"><button type="button" className={!['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'active' : ''} onClick={() => setStoreStatus(store, true)} disabled={!canManageStoreDirectory}>Đang hoạt động</button><button type="button" className={['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'active' : ''} onClick={() => setStoreStatus(store, false)} disabled={!canManageStoreDirectory}>Ngưng hoạt động</button></div></td>
+                <td><div className="row-actions">{canManageStoreDirectory && <button onClick={() => openEdit(store)} aria-label={`Sửa ${store.name}`}><Edit3 size={17} /></button>}{canDeleteStore && <button className="danger" onClick={() => removeStore(store)} aria-label={`Xóa ${store.name}`}><Trash2 size={17} /></button>}<button onClick={() => setViewingStore(store)} aria-label={`Xem ${store.name}`}><Eye size={17} /></button></div></td>
               </tr>
               )
             })}
@@ -450,11 +479,14 @@ export function AdminSettings() {
   const photoInput = useRef(null)
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
 
-  const saveProfile = () => {
+  const saveProfile = async () => {
     if (!String(form.name || '').trim() || !String(form.email || '').trim()) return notify('Họ tên và email là trường bắt buộc.', 'info')
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(form.email))) return notify('Email không đúng định dạng.', 'info')
     if (form.phone && !validateVietnamPhone(form.phone)) return notify('Số điện thoại Việt Nam không đúng định dạng.', 'info')
-    saveSettings?.({ ...settings, ...form, notifications })
+    if (typeof saveSettings !== 'function') return notify('Chức năng lưu cài đặt chưa sẵn sàng.', 'info')
+    const result = await saveSettings({ ...settings, ...form, notifications })
+    if (!result?.ok) return notify(result?.message || 'Không thể lưu thông tin tài khoản.', 'info')
+    setForm((current) => ({ ...current, ...(result.settings || {}) }))
   }
 
   const choosePhoto = (event) => {
@@ -465,13 +497,17 @@ export function AdminSettings() {
       event.target.value = ''
       return
     }
-    if (file.size > 2 * 1024 * 1024) {
-      notify('Ảnh đại diện không được vượt quá 2MB.', 'info')
+    if (file.size > 95 * 1024) {
+      notify('Tệp ảnh đại diện không được vượt quá 95KB để dữ liệu ảnh sau mã hóa không vượt 128KB.', 'info')
       event.target.value = ''
       return
     }
     const reader = new FileReader()
-    reader.onload = () => setForm((current) => ({ ...current, avatar: String(reader.result || '') }))
+    reader.onload = () => {
+      const avatar = String(reader.result || '')
+      if (avatar.length > 128 * 1024) return notify('Dữ liệu ảnh sau mã hóa vượt quá 128KB.', 'info')
+      setForm((current) => ({ ...current, avatar }))
+    }
     reader.readAsDataURL(file)
   }
 
@@ -484,10 +520,18 @@ export function AdminSettings() {
     if (changed) setPasswordForm({ current: '', next: '', confirm: '' })
   }
 
-  const saveNotifications = () => saveSettings?.({ ...settings, notifications })
+  const saveNotifications = async () => {
+    if (typeof saveSettings !== 'function') return notify('Chức năng lưu cài đặt chưa sẵn sàng.', 'info')
+    const result = await saveSettings({ ...settings, ...form, notifications })
+    if (!result?.ok) return notify(result?.message || 'Không thể lưu thiết lập thông báo.', 'info')
+    if (result.settings?.notifications) setNotifications(result.settings.notifications)
+  }
 
-  const restoreDemo = () => {
-    if (window.confirm('Khôi phục dữ liệu mẫu sẽ thay thế các thay đổi đang lưu. Bạn có chắc chắn?')) resetDemo?.()
+  const restoreDemo = async () => {
+    if (!window.confirm('Khôi phục dữ liệu mẫu sẽ thay thế các thay đổi đang lưu. Bạn có chắc chắn?')) return
+    if (typeof resetDemo !== 'function') return notify('Chức năng khôi phục dữ liệu chưa sẵn sàng.', 'info')
+    const result = await resetDemo()
+    if (!result?.ok) notify(result?.message || 'Không thể khôi phục dữ liệu mẫu.', 'info')
   }
 
   return (
@@ -498,13 +542,13 @@ export function AdminSettings() {
           <button className={tab === 'profile' ? 'active' : ''} onClick={() => setTab('profile')}><UserRound />Thông tin cá nhân</button>
           <button className={tab === 'password' ? 'active' : ''} onClick={() => setTab('password')}><ShieldCheck />Đổi mật khẩu</button>
           <button className={tab === 'notifications' ? 'active' : ''} onClick={() => setTab('notifications')}><Info />Thông báo</button>
-          <button onClick={restoreDemo}><RefreshCcw />Khôi phục dữ liệu mẫu</button>
+          {session?.role === 'admin' && <button onClick={restoreDemo}><RefreshCcw />Khôi phục dữ liệu mẫu</button>}
         </Card>
         {tab === 'profile' ? (
           <Card className="settings-content">
             <h2>Thông tin cá nhân</h2><p>Cập nhật thông tin tài khoản của bạn.</p>
             <div className="profile-form">
-              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện quản trị" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : 'QT'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png" hidden onChange={choosePhoto} /><Button variant="outline" onClick={() => photoInput.current?.click()}>Đổi ảnh</Button><small>Định dạng JPG, PNG<br />Tối đa 2MB</small></div>
+              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện quản trị" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : 'QT'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png" hidden onChange={choosePhoto} /><Button variant="outline" onClick={() => photoInput.current?.click()}>Đổi ảnh</Button><small>Định dạng JPG, PNG<br />Tệp tối đa 95KB</small></div>
               <div className="form-grid">
                 <Field label="Họ và tên"><Input value={form.name} onChange={set('name')} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} /></Field>
                 <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Select value="admin" disabled><option value="admin">Quản lý hệ thống</option></Select></Field>
@@ -513,7 +557,7 @@ export function AdminSettings() {
                 <Field label="Giới thiệu" className="span-2"><textarea value={form.bio || ''} onChange={set('bio')} maxLength={200} /><small>{String(form.bio || '').length}/200</small></Field>
               </div>
             </div>
-            <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || 'admin'} disabled /></Field><Field label="Vai trò"><Input value="Quản trị viên" disabled /></Field></div></div>
+            <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || 'admin'} disabled /></Field><Field label="Vai trò"><Input value={session?.role === 'manager' ? 'Quản lý' : 'Admin'} disabled /></Field></div></div>
             <div className="card-actions"><Button icon={Save} onClick={saveProfile}>Lưu thay đổi</Button></div>
           </Card>
         ) : (

@@ -34,10 +34,10 @@ const displayDateTime = (value) => {
   return Number.isNaN(date.getTime()) ? String(value || '—') : date.toLocaleString('vi-VN', { hour12: false })
 }
 
-const statusTone = (status) => status === 'Đang làm việc' || status === 'Đang hoạt động' ? 'green' : status === 'Đã nghỉ việc' ? 'red' : 'orange'
+const employeeTypeLabel = (employee = {}) => String(employee.employmentType || employee.employeeType || employee.type || 'Full-Time').toLowerCase().includes('part') ? 'Part-Time' : 'Full-Time'
 
 export function PolicySettings() {
-  const { policies, policyHistory = [], savePolicies, notify } = useApp()
+  const { policies, policyHistory = [], savePolicies, notify, session } = useApp()
   const [form, setForm] = useState(() => ({
     lateToleranceMinutes: policies.lateToleranceMinutes,
     earlyCheckInLimitMinutes: policies.earlyCheckInLimitMinutes,
@@ -50,6 +50,10 @@ export function PolicySettings() {
     effectiveFrom: policies.effectiveFrom || today(),
   }))
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
+
+  if (session?.role === 'manager') {
+    return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản Quản lý không được truy cập Cài đặt chính sách." icon={LockKeyhole} /></div>
+  }
 
   const save = async () => {
     const result = await savePolicies({
@@ -102,7 +106,7 @@ export function PolicySettings() {
 }
 
 export function SystemEmployees() {
-  const { employees = [], stores = [], updateEmployee, deleteEmployee, notify } = useApp()
+  const { employees = [], stores = [], updateEmployee, deleteEmployee, notify, session } = useApp()
   const [query, setQuery] = useState('')
   const [storeId, setStoreId] = useState('all')
   const [status, setStatus] = useState('all')
@@ -110,6 +114,7 @@ export function SystemEmployees() {
   const [newPassword, setNewPassword] = useState('')
   const normalized = query.trim().toLowerCase()
   const rows = employees.filter((employee) => (storeId === 'all' || employee.storeId === storeId) && (status === 'all' || employee.status === status) && (!normalized || [employee.id, employee.name, employee.phone, employee.cccd, employee.username].some((value) => String(value || '').toLowerCase().includes(normalized))))
+  const canDeleteEmployee = session?.role === 'admin'
 
   const changeStatus = async (employee, nextStatus) => {
     const result = await updateEmployee(employee.id, { status: nextStatus })
@@ -133,10 +138,10 @@ export function SystemEmployees() {
         <MetricCard label="TẠM NGƯNG" value={employees.filter((item) => item.status === 'Tạm ngưng').length} icon={LockKeyhole} tone="orange" />
         <MetricCard label="ĐÃ NGHỈ VIỆC" value={employees.filter((item) => item.status === 'Đã nghỉ việc').length} icon={UserCog} tone="red" />
       </div>
-      <Card title="Danh sách nhân viên" action={<div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." /><Select value={storeId} onChange={(event) => setStoreId(event.target.value)}><option value="all">Tất cả cửa hàng</option><option value="OFFICE">Khối văn phòng</option>{stores.map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</Select><Select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Tất cả trạng thái</option><option>Đang làm việc</option><option>Tạm ngưng</option><option>Đã nghỉ việc</option></Select></div>}>
-        <TableWrap><thead><tr><th>Mã</th><th>Họ và tên</th><th>Cửa hàng</th><th>Liên hệ / CCCD</th><th>Lương cứng</th><th>Phụ cấp TikTok</th><th>Tài khoản</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{rows.map((employee) => <tr key={employee.id}><td><strong>{employee.id}</strong></td><td><strong>{employee.name}</strong><small className="table-note">{employee.position}</small></td><td>{employee.storeId === 'OFFICE' ? 'Khối văn phòng' : stores.find((store) => store.id === employee.storeId)?.name || employee.storeId}</td><td>{employee.phone}<small className="table-note">CCCD: {employee.cccd}</small></td><td>{money(employee.monthlySalary || employee.hourlyRate || employee.salary)}<small className="table-note">{employee.payBasis === 'hourly' ? 'Theo giờ' : 'Theo tháng'}</small></td><td>{money(employee.tiktokAllowance)}</td><td><strong>{employee.username}</strong><small className="table-note">Đăng nhập gần nhất: {displayDateTime(employee.lastLoginAt)}</small></td><td><Badge tone={statusTone(employee.status)}>{employee.status}</Badge></td><td><div className="row-actions row-actions--wrap"><Select aria-label={`Trạng thái ${employee.name}`} value={employee.status} onChange={(event) => changeStatus(employee, event.target.value)}><option>Đang làm việc</option><option>Tạm ngưng</option><option>Đã nghỉ việc</option></Select><Button variant="outline" icon={KeyRound} onClick={() => setResetTarget(employee)}>Đặt lại mật khẩu</Button><Button variant="danger" icon={Trash2} onClick={() => window.confirm(`Xóa ${employee.name} khỏi hệ thống? Lịch sử vẫn được giữ.`) && deleteEmployee(employee.id)}>Xóa</Button></div></td></tr>)}{!rows.length && <tr><td colSpan="9">Không có nhân viên phù hợp.</td></tr>}</tbody></TableWrap>
+      <Card title="Danh sách nhân viên" action={<div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." /><Select value={storeId} onChange={(event) => setStoreId(event.target.value)}><option value="all">Tất cả cửa hàng</option>{session?.role === 'admin' && <option value="OFFICE">Khối văn phòng</option>}{stores.map((store) => <option value={store.id} key={store.id}>{store.name}</option>)}</Select><Select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Tất cả trạng thái</option><option>Đang làm việc</option><option>Tạm ngưng</option>{session?.role === 'admin' && <option>Đã nghỉ việc</option>}</Select></div>}>
+        <TableWrap><thead><tr><th>Mã</th><th>Họ và tên</th><th>Cửa hàng</th><th>Loại nhân viên</th><th>Liên hệ / CCCD</th><th>Lương cứng</th><th>Phụ cấp TikTok</th><th>Tài khoản</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{rows.map((employee) => <tr key={employee.id}><td><strong>{employee.id}</strong></td><td><strong>{employee.name}</strong><small className="table-note">{employee.position}</small></td><td>{employee.storeId === 'OFFICE' ? 'Khối văn phòng' : stores.find((store) => store.id === employee.storeId)?.name || employee.storeId}</td><td><Badge tone={employeeTypeLabel(employee) === 'Part-Time' ? 'orange' : 'blue'}>{employeeTypeLabel(employee)}</Badge></td><td>{employee.phone}<small className="table-note">CCCD: {employee.cccd}</small></td><td>{money(employee.monthlySalary || employee.hourlyRate || employee.salary)}<small className="table-note">{employee.payBasis === 'hourly' ? 'Theo giờ' : 'Theo tháng'}</small></td><td>{money(employee.tiktokAllowance)}</td><td><strong>{employee.username}</strong><small className="table-note">Đăng nhập gần nhất: {displayDateTime(employee.lastLoginAt)}</small></td><td>{session?.role === 'manager' && employee.status === 'Đã nghỉ việc' ? <Badge tone="red">Đã nghỉ việc</Badge> : <Select aria-label={`Trạng thái ${employee.name}`} value={employee.status} onChange={(event) => changeStatus(employee, event.target.value)}><option>Đang làm việc</option><option>Tạm ngưng</option>{session?.role === 'admin' && <option>Đã nghỉ việc</option>}</Select>}</td><td><div className="row-actions"><button type="button" onClick={() => setResetTarget(employee)} aria-label={`Đặt lại mật khẩu ${employee.name}`} title="Đặt lại mật khẩu"><KeyRound size={17} /></button>{canDeleteEmployee && <button type="button" className="danger" onClick={() => window.confirm(`Xóa ${employee.name} khỏi hệ thống? Lịch sử vẫn được giữ.`) && deleteEmployee(employee.id)} aria-label={`Xóa ${employee.name}`} title="Xóa nhân viên"><Trash2 size={17} /></button>}</div></td></tr>)}{!rows.length && <tr><td colSpan="10">Không có nhân viên phù hợp.</td></tr>}</tbody></TableWrap>
       </Card>
-      <Modal open={Boolean(resetTarget)} onClose={() => setResetTarget(null)} title={`Đặt lại mật khẩu — ${resetTarget?.name || ''}`} footer={<><Button variant="outline" onClick={() => setResetTarget(null)}>Hủy</Button><Button icon={KeyRound} onClick={resetPassword}>ĐẶT LẠI</Button></>}><InfoNote>Quản trị viên chỉ đặt mật khẩu mới; hệ thống không thể đọc lại mật khẩu hiện tại.</InfoNote><Field label="Mật khẩu mới" required><Input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field></Modal>
+      <Modal open={Boolean(resetTarget)} onClose={() => setResetTarget(null)} title={`Đặt lại mật khẩu — ${resetTarget?.name || ''}`} footer={<><Button variant="outline" onClick={() => setResetTarget(null)}>Hủy</Button><Button icon={KeyRound} onClick={resetPassword}>ĐẶT LẠI</Button></>}><InfoNote>Admin chỉ đặt mật khẩu mới; hệ thống không thể đọc lại mật khẩu hiện tại.</InfoNote><Field label="Mật khẩu mới" required><Input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></Field></Modal>
     </div>
   )
 }
@@ -149,27 +154,42 @@ export function OrderAuditPage() {
 }
 
 export function ResetDataPage() {
-  const { attendance = [], employees = [], stores = [], updateAttendance, resetDemo, auditLogs = [], notify } = useApp()
+  const { attendance = [], employees = [], stores = [], updateAttendance, resetDemo, auditLogs = [], notify, session } = useApp()
   const [query, setQuery] = useState('')
   const [editing, setEditing] = useState(null)
-  const [form, setForm] = useState({ checkIn: '', checkOut: '' })
+  const [form, setForm] = useState({ checkIn: '', checkOut: '', reason: '' })
   const rows = attendance.filter((item) => !item.deletedAt && (!query || [item.employeeId, employees.find((employee) => employee.id === item.employeeId)?.name, item.shiftName].some((value) => String(value || '').toLowerCase().includes(query.toLowerCase()))))
-  const openEdit = (record) => { setEditing(record); setForm({ checkIn: record.checkIn || '', checkOut: record.checkOut || '' }) }
-  const save = () => {
-    const result = updateAttendance(editing.id, { checkIn: form.checkIn, checkInTime: form.checkIn, checkOut: form.checkOut, checkOutTime: form.checkOut })
-    if (!result) return notify('Không thể cập nhật chấm công.', 'info')
+  const openEdit = (record) => { setEditing(record); setForm({ checkIn: record.checkIn || '', checkOut: record.checkOut || '', reason: '' }) }
+  const save = async () => {
+    if (!editing) return
+    if (!form.reason.trim()) return notify('Vui lòng nhập lý do chỉnh sửa chấm công.', 'info')
+    if (typeof updateAttendance !== 'function') return notify('Chức năng cập nhật chấm công chưa sẵn sàng.', 'info')
+    const result = await updateAttendance(editing.id, { date: editing.date || editing.workDate, checkIn: form.checkIn, checkOut: form.checkOut, reason: form.reason.trim() })
+    if (!result?.ok) return notify(result?.message || 'Không thể cập nhật chấm công.', 'info')
     setEditing(null)
   }
-  return <div className="page"><PageHeader title="RESET DỮ LIỆU" subtitle="Công cụ quản trị có kiểm toán; mọi chỉnh sửa chấm công đều lưu giá trị cũ và mới." icon={RefreshCcw} actions={<Button variant="danger" icon={RefreshCcw} onClick={() => window.confirm('Khôi phục toàn bộ dữ liệu mẫu?') && resetDemo()}>KHÔI PHỤC DỮ LIỆU MẪU</Button>} /><Card title="Chấm công theo ca" action={<SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên hoặc ca..." />}><TableWrap><thead><tr><th>Nhân viên</th><th>Cửa hàng</th><th>Ca</th><th>Ngày</th><th>Giờ vào / Kết</th><th>Số giờ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{rows.map((record) => <tr key={record.id}><td><strong>{employees.find((employee) => employee.id === record.employeeId)?.name || record.employeeId}</strong><small className="table-note">{record.employeeId}</small></td><td>{stores.find((store) => store.id === record.storeId)?.name || record.storeId}</td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td>{record.checkIn || '—'} / {record.checkOut || '—'}</td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={record.status === 'Đi trễ' ? 'red' : record.status === 'Đi sớm' ? 'green' : 'blue'}>{record.status}</Badge></td><td><Button variant="outline" onClick={() => openEdit(record)}>Chỉnh sửa</Button></td></tr>)}</tbody></TableWrap></Card><Card title="Nhật ký chỉnh sửa gần nhất"><TableWrap><thead><tr><th>Thời gian</th><th>Đối tượng</th><th>Hành động</th><th>Người thực hiện</th></tr></thead><tbody>{auditLogs.slice(0, 20).map((item) => <tr key={item.id}><td>{displayDateTime(item.createdAt)}</td><td>{item.entity} — {item.entityId}</td><td>{item.action}</td><td>{item.actor?.name}</td></tr>)}</tbody></TableWrap></Card><Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Chỉnh sửa giờ chấm công" footer={<><Button variant="outline" onClick={() => setEditing(null)}>Hủy</Button><Button icon={Save} onClick={save}>LƯU</Button></>}><div className="form-grid"><Field label="Giờ vào"><Input type="time" value={form.checkIn} onChange={(event) => setForm({ ...form, checkIn: event.target.value })} /></Field><Field label="Giờ kết"><Input type="time" value={form.checkOut} onChange={(event) => setForm({ ...form, checkOut: event.target.value })} /></Field></div></Modal></div>
+  const restoreDemo = async () => {
+    if (!window.confirm('Khôi phục toàn bộ dữ liệu mẫu?')) return
+    if (typeof resetDemo !== 'function') return notify('Chức năng khôi phục dữ liệu chưa sẵn sàng.', 'info')
+    const result = await resetDemo()
+    if (!result?.ok) notify(result?.message || 'Không thể khôi phục dữ liệu mẫu.', 'info')
+  }
+  if (session?.role === 'manager') {
+    return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản Quản lý không được truy cập Reset dữ liệu hoặc chỉnh sửa chấm công." icon={LockKeyhole} /></div>
+  }
+  return <div className="page"><PageHeader title="RESET DỮ LIỆU" subtitle="Công cụ quản trị có kiểm toán; mọi chỉnh sửa chấm công đều lưu giá trị cũ và mới." icon={RefreshCcw} actions={<Button variant="danger" icon={RefreshCcw} onClick={restoreDemo}>KHÔI PHỤC DỮ LIỆU MẪU</Button>} /><Card title="Chấm công theo ca" action={<SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên hoặc ca..." />}><TableWrap><thead><tr><th>Nhân viên</th><th>Cửa hàng</th><th>Ca</th><th>Ngày</th><th>Giờ vào / Kết</th><th>Số giờ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{rows.map((record) => <tr key={record.id}><td><strong>{employees.find((employee) => employee.id === record.employeeId)?.name || record.employeeId}</strong><small className="table-note">{record.employeeId}</small></td><td>{stores.find((store) => store.id === record.storeId)?.name || record.storeId}</td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td>{record.checkIn || '—'} / {record.checkOut || '—'}</td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={record.status === 'Đi trễ' ? 'red' : record.status === 'Đi sớm' ? 'green' : 'blue'}>{record.status}</Badge></td><td><Button variant="outline" onClick={() => openEdit(record)}>Chỉnh sửa</Button></td></tr>)}</tbody></TableWrap></Card><Card title="Nhật ký chỉnh sửa gần nhất"><TableWrap><thead><tr><th>Thời gian</th><th>Đối tượng</th><th>Hành động</th><th>Người thực hiện</th></tr></thead><tbody>{auditLogs.slice(0, 20).map((item) => <tr key={item.id}><td>{displayDateTime(item.createdAt)}</td><td>{item.entity} — {item.entityId}</td><td>{item.action}</td><td>{item.actor?.name}</td></tr>)}</tbody></TableWrap></Card><Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Chỉnh sửa giờ chấm công" footer={<><Button variant="outline" onClick={() => setEditing(null)}>Hủy</Button><Button icon={Save} onClick={save}>LƯU</Button></>}><div className="form-grid"><Field label="Giờ vào" required><Input type="time" value={form.checkIn} onChange={(event) => setForm({ ...form, checkIn: event.target.value })} /></Field><Field label="Giờ kết"><Input type="time" value={form.checkOut} onChange={(event) => setForm({ ...form, checkOut: event.target.value })} /></Field><Field label="Lý do chỉnh sửa" required className="span-2"><textarea maxLength={500} value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder="Nhập lý do để lưu nhật ký kiểm toán" /></Field></div></Modal></div>
 }
 
 export function SupportTransfersPage() {
   const { stores = [], employees = [], supportTransfers = [], saveSupportTransfer, notify } = useApp()
   const [form, setForm] = useState({ employeeId: '', fromStoreId: '', toStoreId: '', fromDate: today(), toDate: today(), note: '' })
   const employee = useMemo(() => employees.find((item) => item.id === form.employeeId), [employees, form.employeeId])
-  const save = () => {
+  const save = async () => {
     if (!form.employeeId || !form.toStoreId || form.toStoreId === employee?.storeId) return notify('Vui lòng chọn nhân viên và cửa hàng hỗ trợ khác cửa hàng hiện tại.', 'info')
-    saveSupportTransfer({ ...form, fromStoreId: employee.storeId })
+    if (!form.fromDate || !form.toDate || form.fromDate > form.toDate) return notify('Khoảng thời gian điều chuyển chưa hợp lệ.', 'info')
+    if (typeof saveSupportTransfer !== 'function') return notify('Chức năng điều chuyển chưa sẵn sàng.', 'info')
+    const result = await saveSupportTransfer({ employeeId: form.employeeId, toStoreId: form.toStoreId, fromDate: form.fromDate, toDate: form.toDate, note: form.note })
+    if (!result?.ok) return notify(result?.message || 'Không thể lưu điều chuyển hỗ trợ.', 'info')
     setForm({ employeeId: '', fromStoreId: '', toStoreId: '', fromDate: today(), toDate: today(), note: '' })
   }
   return <div className="page"><PageHeader title="ĐIỀU CHUYỂN NHÂN SỰ HỖ TRỢ" subtitle="Theo dõi nhân sự hỗ trợ giữa các cửa hàng mà không thay đổi hồ sơ gốc." icon={CalendarClock} /><Card title="Tạo điều chuyển"><div className="form-grid form-grid--3"><Field label="Nhân viên"><Select value={form.employeeId} onChange={(event) => setForm({ ...form, employeeId: event.target.value })}><option value="">Chọn nhân viên</option>{employees.filter((item) => item.unit === 'store').map((item) => <option key={item.id} value={item.id}>{item.name} — {item.id}</option>)}</Select></Field><Field label="Cửa hàng hiện tại"><Input value={stores.find((store) => store.id === employee?.storeId)?.name || ''} readOnly /></Field><Field label="Cửa hàng hỗ trợ"><Select value={form.toStoreId} onChange={(event) => setForm({ ...form, toStoreId: event.target.value })}><option value="">Chọn cửa hàng</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field><Field label="Từ ngày"><Input type="date" value={form.fromDate} onChange={(event) => setForm({ ...form, fromDate: event.target.value })} /></Field><Field label="Đến ngày"><Input type="date" value={form.toDate} onChange={(event) => setForm({ ...form, toDate: event.target.value })} /></Field><Field label="Ghi chú"><Input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field></div><Button icon={Save} onClick={save}>LƯU ĐIỀU CHUYỂN</Button></Card><Card title="Lịch sử điều chuyển"><TableWrap><thead><tr><th>Nhân viên</th><th>Từ cửa hàng</th><th>Đến cửa hàng</th><th>Thời gian</th><th>Ghi chú</th><th>Trạng thái</th></tr></thead><tbody>{supportTransfers.map((item) => <tr key={item.id}><td>{employees.find((employeeItem) => employeeItem.id === item.employeeId)?.name}<small className="table-note">{item.employeeId}</small></td><td>{stores.find((store) => store.id === item.fromStoreId)?.name}</td><td>{stores.find((store) => store.id === item.toStoreId)?.name}</td><td>{shortDate(item.fromDate)} – {shortDate(item.toDate)}</td><td>{item.note || '—'}</td><td><Badge>{item.status}</Badge></td></tr>)}</tbody></TableWrap></Card></div>

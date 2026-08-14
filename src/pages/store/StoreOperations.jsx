@@ -4,14 +4,17 @@ import {
   Box,
   CalendarDays,
   Check,
+  ClipboardCheck,
   Clock3,
-  Download,
   Edit3,
   Eye,
+  EyeOff,
   Filter,
+  Info,
   Package,
   Plus,
   Save,
+  Send,
   Store,
   Trash2,
   UserCheck,
@@ -49,13 +52,15 @@ import {
   getPayBasis,
   money,
   salaryBasisLabel,
+  today,
 } from '../../utils'
+import { selectTaskShiftForDate, taskShiftOptionsForDate } from './taskScope'
 
 const shiftById = (id) => shifts.find((shift) => shift.id === id)
 
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
-const EMPLOYMENT_TYPES = ['Full-time', 'Part-time']
-const PHONE_PATTERN = /^(?:\+84|84|0)(?:3|5|7|8|9)\d{8}$/
+const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time']
+const PHONE_PATTERN = /^0\d{9}$/
 const CCCD_PATTERN = /^\d{12}$/
 const emptyEmployeeForm = {
   id: '',
@@ -66,11 +71,9 @@ const emptyEmployeeForm = {
   ward: '',
   street: '',
   salary: '',
-  employmentType: 'Full-time',
+  employmentType: 'Full-Time',
   position: 'Nhân viên bán hàng',
   age: '',
-  cccdImage: '',
-  cccdImageName: '',
   username: '',
   password: '',
   status: 'Đang làm việc',
@@ -79,6 +82,50 @@ const emptyEmployeeForm = {
 
 const normalizePhone = (value = '') => String(value).replace(/[\s.()-]/g, '')
 const normalizeText = (value = '') => String(value).trim().toLowerCase()
+const parseMoneyInput = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
+const formatMoneyInput = (value) => {
+  const amount = parseMoneyInput(value)
+  return amount ? new Intl.NumberFormat('en-US').format(amount) : ''
+}
+const isPartTime = (value) => String(value || '').toLowerCase() === 'part-time'
+const normalizeEmploymentType = (value) => isPartTime(value) ? 'Part-Time' : 'Full-Time'
+const employmentTypeLabel = normalizeEmploymentType
+
+const normalizeStoreKey = (value = '') => String(value)
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/[Đđ]/g, 'D')
+  .toUpperCase()
+
+const storeEmployeePrefix = (store = {}) => {
+  const source = normalizeStoreKey(`${store.short || ''} ${store.name || ''} ${store.id || ''}`)
+  const rules = [
+    ['SM234', 'SM234'],
+    ['TO NGOC VAN', 'TNV'],
+    ['TAY HOA', 'TH'],
+    ['DI AN', 'DIAN'],
+    ['NO TRANG LONG', 'NTL'],
+    ['BUON MA THU', 'BMT'],
+    ['LE VAN THO', 'LVT'],
+    ['NGUYEN VAN THUONG', 'NVT'],
+    ['KHA VAN CAN', 'KVC'],
+    ['CAN THO', 'CT'],
+  ]
+  const matched = rules.find(([keyword]) => source.includes(keyword))
+  if (matched) return matched[1]
+  const shortCode = normalizeStoreKey(store.short || store.id || 'NV').replace(/[^A-Z0-9]/g, '').slice(0, 8)
+  return shortCode || 'NV'
+}
+
+const nextStoreEmployeeCode = (store, employees = []) => {
+  const prefix = storeEmployeePrefix(store)
+  const matcher = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d+)$`, 'i')
+  const highest = employees.reduce((value, employee) => {
+    const match = String(employee.id || employee.code || employee.employeeCode || '').match(matcher)
+    return match ? Math.max(value, Number(match[1]) || 0) : value
+  }, 0)
+  return `${prefix}-${String(highest + 1).padStart(3, '0')}`
+}
 
 const useStoreScope = () => {
   const app = useApp()
@@ -131,12 +178,10 @@ const employeeToForm = (employee = {}, storeId = '') => {
     province: address.province,
     ward: address.ward,
     street: address.street,
-    salary: employeeSalary(employee) || '',
-    employmentType: employeeType(employee),
+    salary: formatMoneyInput(employeeSalary(employee)),
+    employmentType: normalizeEmploymentType(employeeType(employee)),
     position: employeePosition(employee),
     age: employee.age ?? '',
-    cccdImage: employee.cccdImage || employee.identityImage || '',
-    cccdImageName: employee.cccdImageName || employee.identityImageName || '',
     username: employee.username || '',
     password: '',
     status: employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc'),
@@ -160,7 +205,7 @@ function validateEmployee(form, employees, editingId) {
     ['Tỉnh/Thành phố', form.province],
     ['Phường/Xã', form.ward],
     ['Đường, số nhà', form.street],
-    [form.employmentType === 'Part-time' ? 'Lương theo giờ' : 'Lương theo tháng', form.salary],
+    [isPartTime(form.employmentType) ? 'Lương theo giờ' : 'Lương theo tháng', form.salary],
     ['Vị trí công việc', form.position],
     ['Tuổi', form.age],
     ['Tên đăng nhập', form.username],
@@ -171,15 +216,14 @@ function validateEmployee(form, employees, editingId) {
     if (!String(value ?? '').trim()) errors.push(`${label} là trường bắt buộc.`)
   })
   if (!CCCD_PATTERN.test(form.cccd)) errors.push('Số CCCD phải gồm đúng 12 chữ số.')
-  if (!PHONE_PATTERN.test(normalizePhone(form.phone))) errors.push('Số điện thoại Việt Nam không đúng định dạng.')
-  if (!Number.isFinite(Number(form.salary)) || Number(form.salary) <= 0) {
-    errors.push(`${form.employmentType === 'Part-time' ? 'Lương theo giờ' : 'Lương theo tháng'} phải là số lớn hơn 0.`)
+  if (!PHONE_PATTERN.test(normalizePhone(form.phone))) errors.push('Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.')
+  if (!Number.isFinite(parseMoneyInput(form.salary)) || parseMoneyInput(form.salary) <= 0) {
+    errors.push(`${isPartTime(form.employmentType) ? 'Lương theo giờ' : 'Lương theo tháng'} phải là số lớn hơn 0.`)
   }
   if (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100) {
     errors.push('Tuổi phải là số nguyên từ 16 đến 100.')
   }
   if (!editingId && !form.password) errors.push('Mật khẩu là trường bắt buộc.')
-  if (!editingId && !form.cccdImage) errors.push('Vui lòng chọn hình ảnh CCCD.')
 
   const others = employees.filter((employee) => String(employee.id || employee.code || '') !== String(editingId || ''))
   if (others.some((employee) => normalizeText(employee.id || employee.code || employee.employeeCode) === normalizeText(form.id))) {
@@ -351,12 +395,20 @@ export function StoreEmployees() {
   const scopedStoreId = session?.role === 'employee'
     ? session.storeId
     : activeStoreId || session?.storeId || stores[0]?.id || ''
+  const scopedStore = stores.find((store) => String(store.id) === String(scopedStoreId)) || stores[0]
+  const createEmployeeForm = () => ({
+    ...emptyEmployeeForm,
+    id: nextStoreEmployeeCode(scopedStore, employees),
+    storeId: scopedStoreId,
+  })
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('all')
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState(null)
-  const [form, setForm] = useState({ ...emptyEmployeeForm, storeId: scopedStoreId })
+  const [form, setForm] = useState(createEmployeeForm)
   const [errors, setErrors] = useState([])
+  const [showPassword, setShowPassword] = useState(false)
+  const canDeleteEmployee = session?.role === 'admin'
 
   const scopedEmployees = employees.filter((employee) => {
     if (employee.unit === 'office') return false
@@ -384,13 +436,15 @@ export function StoreEmployees() {
   const openCreate = () => {
     setEditing(null)
     setErrors([])
-    setForm({ ...emptyEmployeeForm, storeId: scopedStoreId })
+    setShowPassword(false)
+    setForm(createEmployeeForm())
     setOpen(true)
   }
 
   const openEdit = (employee) => {
     setEditing(employee)
     setErrors([])
+    setShowPassword(false)
     setForm(employeeToForm(employee, scopedStoreId))
     setOpen(true)
   }
@@ -399,12 +453,15 @@ export function StoreEmployees() {
     setOpen(false)
     setEditing(null)
     setErrors([])
+    setShowPassword(false)
   }
 
   const updateField = (field) => (event) => {
     let value = event.target.value
     if (field === 'cccd') value = value.replace(/\D/g, '').slice(0, 12)
+    if (field === 'phone') value = value.replace(/\D/g, '').slice(0, 10)
     if (field === 'age') value = value.replace(/\D/g, '').slice(0, 3)
+    if (field === 'salary') value = formatMoneyInput(value)
     setForm((current) => ({ ...current, [field]: value }))
   }
 
@@ -412,28 +469,6 @@ export function StoreEmployees() {
     const employmentType = event.target.value
     setForm((current) => ({ ...current, employmentType, salary: '' }))
     setErrors([])
-  }
-
-  const chooseImage = (event) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-    if (!['image/jpeg', 'image/png'].includes(file.type)) {
-      notify?.('Ảnh CCCD chỉ hỗ trợ định dạng JPG hoặc PNG.', 'info')
-      event.target.value = ''
-      return
-    }
-    if (file.size > 5 * 1024 * 1024) {
-      notify?.('Ảnh CCCD không được vượt quá 5MB.', 'info')
-      event.target.value = ''
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => setForm((current) => ({
-      ...current,
-      cccdImage: String(reader.result || ''),
-      cccdImageName: file.name,
-    }))
-    reader.readAsDataURL(file)
   }
 
   const save = async (event) => {
@@ -463,12 +498,12 @@ export function StoreEmployees() {
       ...addressDetails,
       addressDetails,
       address: [addressDetails.street, addressDetails.ward, addressDetails.province].join(', '),
-      salary: Number(form.salary),
-      payBasis: form.employmentType === 'Part-time' ? 'hourly' : 'monthly',
-      salaryBasis: form.employmentType === 'Part-time' ? 'hourly' : 'monthly',
-      salaryUnit: form.employmentType === 'Part-time' ? 'hour' : 'month',
-      monthlySalary: form.employmentType === 'Full-time' ? Number(form.salary) : null,
-      hourlyRate: form.employmentType === 'Part-time' ? Number(form.salary) : null,
+      salary: parseMoneyInput(form.salary),
+      payBasis: isPartTime(form.employmentType) ? 'hourly' : 'monthly',
+      salaryBasis: isPartTime(form.employmentType) ? 'hourly' : 'monthly',
+      salaryUnit: isPartTime(form.employmentType) ? 'hour' : 'month',
+      monthlySalary: isPartTime(form.employmentType) ? null : parseMoneyInput(form.salary),
+      hourlyRate: isPartTime(form.employmentType) ? parseMoneyInput(form.salary) : null,
       compensationVersion: 2,
       standardWorkDays: 26,
       currency: 'VND',
@@ -478,8 +513,6 @@ export function StoreEmployees() {
       role: form.position.trim(),
       shortRole: form.position.replace(/^Nhân viên\s*/i, '') || form.position,
       age: Number(form.age),
-      cccdImage: form.cccdImage,
-      cccdImageName: form.cccdImageName,
       username: form.username.trim(),
       status: form.status,
       storeId: scopedStoreId,
@@ -523,15 +556,15 @@ export function StoreEmployees() {
               return <tr key={employee.id}>
                 <td><strong>{employee.id}</strong></td>
                 <td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.age ? `${employee.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
-                <td><Badge tone={type === 'Full-time' ? 'blue' : 'green'}>{type}</Badge></td>
+                <td><Badge tone={isPartTime(type) ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
                 <td>{employeePosition(employee)}</td>
-                <td>{employee.cccd || employee.citizenId || '—'}<small className="table-sub">{employee.cccdImageName || employee.identityImageName || 'Chưa có ảnh'}</small></td>
+                <td>{employee.cccd || employee.citizenId || '—'}</td>
                 <td>{employee.phone || '—'}</td>
                 <td className="address-cell">{employeeAddressLabel(employee)}</td>
                 <td>{employeeSalary(employee) > 0 ? <><strong>{money(employeeSalary(employee))}</strong><small className="table-sub">{employeeSalarySuffix(employee)} · {salaryBasisLabel(employee)}</small></> : <span className="orange-text">Chưa thiết lập</span>}</td>
                 <td>{employee.username || '—'}</td>
                 <td><Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge></td>
-                <td><div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button><button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button></div></td>
+                <td><div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>
               </tr>
             })}
             {!filtered.length && <tr><td colSpan="11">Không có nhân viên phù hợp.</td></tr>}
@@ -544,16 +577,14 @@ export function StoreEmployees() {
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
           <div className="form-grid">
-            <Field label="Mã nhân viên" required hint={editing ? 'Mã nhân viên không thay đổi sau khi tạo' : ''}><Input value={form.id} onChange={updateField('id')} disabled={Boolean(editing)} placeholder="Ví dụ: NV009" /></Field>
+            <Field label="Mã nhân viên" required hint="Hệ thống phát sinh tự động theo mã viết tắt của cửa hàng"><Input value={form.id} readOnly aria-readonly="true" /></Field>
             <Field label="Tên nhân viên" required><Input value={form.name} onChange={updateField('name')} placeholder="Nhập họ và tên" /></Field>
             <Field label="Số CCCD" required hint="Chỉ gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={updateField('cccd')} placeholder="012345678901" /></Field>
-            <Field label="Số điện thoại" required><Input type="tel" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field>
-            <Field label="Loại nhân viên" required hint="Full-time hưởng lương tháng, Part-time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type}>{type}</option>)}</Select></Field>
-            <Field label={form.employmentType === 'Part-time' ? 'Lương theo giờ (đ/giờ)' : 'Lương theo tháng (đ/tháng)'} required hint={form.employmentType === 'Part-time' ? 'Dùng để tính lương theo tổng giờ chấm công' : 'Mức lương cố định của kỳ lương tháng'}><Input type="number" inputMode="numeric" min="1" step="1000" value={form.salary} onChange={updateField('salary')} placeholder={form.employmentType === 'Part-time' ? 'Ví dụ: 30.000' : 'Ví dụ: 8.000.000'} /></Field>
+            <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng số 0"><Input type="tel" inputMode="numeric" maxLength={10} pattern="0[0-9]{9}" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field>
+            <Field label="Loại nhân viên" required hint="Full-Time hưởng lương tháng, Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
+            <Field label={isPartTime(form.employmentType) ? 'Lương mặc định theo giờ (đ/giờ)' : 'Lương mặc định theo tháng (đ/tháng)'} required hint={isPartTime(form.employmentType) ? 'Dùng để tính lương theo tổng giờ chấm công' : 'Mức lương cố định của kỳ lương tháng'}><Input inputMode="numeric" value={form.salary} onChange={updateField('salary')} placeholder={isPartTime(form.employmentType) ? '30,000' : '8,000,000'} /></Field>
             <Field label="Tuổi" required><Input inputMode="numeric" min="16" max="100" value={form.age} onChange={updateField('age')} placeholder="Ví dụ: 22" /></Field>
             <Field label="Vị trí công việc" required><Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select></Field>
-            <Field label="Trạng thái" required><Select value={form.status} onChange={updateField('status')}>{EMPLOYEE_STATUSES.map((item) => <option key={item}>{item}</option>)}</Select></Field>
-            <Field label="Cửa hàng" required hint="Nhân viên được lưu vào cửa hàng đang mở"><Select value={scopedStoreId} disabled><option value={scopedStoreId}>{stores.find((store) => String(store.id) === String(scopedStoreId))?.name || scopedStoreId}</option></Select></Field>
           </div>
           <h3>Địa chỉ</h3>
           <div className="form-grid">
@@ -564,18 +595,128 @@ export function StoreEmployees() {
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
             <Field label="Tên đăng nhập" required><Input autoComplete="username" value={form.username} onChange={updateField('username')} placeholder="Ví dụ: nguyenvana" /></Field>
-            <Field label="Mật khẩu" required={!editing} hint={editing ? 'Để trống nếu không muốn đổi mật khẩu' : ''}><Input type="password" autoComplete="new-password" value={form.password} onChange={updateField('password')} placeholder={editing ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} /></Field>
+            <Field label="Mật khẩu" required={!editing} hint={editing ? 'Để trống nếu không muốn đổi mật khẩu' : ''}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={updateField('password')} placeholder={editing ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} />
+                <button type="button" className="icon-button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>
+                  {showPassword ? <EyeOff size={19} /> : <Eye size={19} />}
+                </button>
+              </div>
+            </Field>
           </div>
-          <Field label="Hình ảnh CCCD" required={!editing} hint="JPG hoặc PNG, tối đa 5MB">
-            <label className="upload-box">
-              {form.cccdImage ? <img src={form.cccdImage} alt="Xem trước CCCD" style={{ maxWidth: '100%', maxHeight: 120, borderRadius: 8 }} /> : <Download />}
-              <b>{form.cccdImageName || 'Chọn ảnh CCCD'}</b>
-              <small>{form.cccdImageName ? 'Bấm để chọn ảnh khác' : 'Chỉ hỗ trợ JPG, PNG. Tối đa 5MB'}</small>
-              <input type="file" accept="image/jpeg,image/png" onChange={chooseImage} />
-            </label>
-          </Field>
+          <InfoNote>Vì an toàn dữ liệu, hệ thống chỉ lưu số CCCD và không lưu tệp ảnh CCCD.</InfoNote>
         </form>
       </Drawer>
+    </div>
+  )
+}
+
+export function StoreTasks() {
+  const {
+    activeStore,
+    storeId,
+    tasks = [],
+    shiftDefinitions = [],
+    replaceTasks,
+    notify,
+  } = useStoreScope()
+  const initialDate = today()
+  const optionsForDate = (nextDate) => taskShiftOptionsForDate({
+    shiftDefinitions,
+    fallbackShifts: shifts,
+    storeId,
+    date: nextDate,
+  })
+  const [date, setDate] = useState(initialDate)
+  const shiftOptions = optionsForDate(date)
+  const [shiftId, setShiftId] = useState(() => selectTaskShiftForDate({
+    tasks,
+    storeId,
+    date: initialDate,
+    shiftOptions: optionsForDate(initialDate),
+  }))
+  const rowsForScope = (nextShiftId, nextDate) => tasks
+    .filter((task) => (
+      String(task.storeId) === String(storeId)
+      && String(task.shiftId || task.shift) === String(nextShiftId)
+      && String(task.date || task.workDate) === String(nextDate)
+    ))
+    .map(({ id, title, detail }) => ({ id, title, detail }))
+  const [rows, setRows] = useState(() => rowsForScope(shiftId, date))
+
+  const changeShift = (nextShiftId) => {
+    if (!shiftOptions.some((shift) => String(shift.id) === String(nextShiftId))) return
+    setShiftId(nextShiftId)
+    setRows(rowsForScope(nextShiftId, date))
+  }
+  const changeDate = (nextDate) => {
+    const nextShiftOptions = optionsForDate(nextDate)
+    const nextShiftId = selectTaskShiftForDate({ tasks, storeId, date: nextDate, shiftOptions: nextShiftOptions })
+    setDate(nextDate)
+    setShiftId(nextShiftId)
+    setRows(nextShiftId ? rowsForScope(nextShiftId, nextDate) : [])
+  }
+  const updateRow = (index, key, value) => setRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, [key]: value } : item))
+  const removeRow = (index) => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))
+  const send = async () => {
+    if (!date || !shiftId) return notify?.('Vui lòng chọn ngày và ca làm việc.', 'info')
+    if (!shiftOptions.some((shift) => String(shift.id) === String(shiftId))) {
+      return notify?.('Ca làm việc không hợp lệ cho ngày đã chọn. Vui lòng chọn lại ca.', 'info')
+    }
+    const validRows = rows.filter((item) => item.title.trim())
+    if (!validRows.length) return notify?.('Danh sách công việc đang trống.', 'info')
+    const nextTasks = validRows.map((item, index) => ({
+      ...item,
+      id: item.id || `CV-${Date.now()}-${index + 1}`,
+      title: item.title.trim(),
+      detail: item.detail.trim(),
+      storeId,
+      storeName: activeStore?.name || '',
+      shiftId,
+      date,
+      done: false,
+    }))
+    const result = await replaceTasks?.(nextTasks)
+    if (result?.ok === false) return notify?.(result.message || 'Chưa thể lưu danh sách công việc.', 'info')
+    const savedTasks = Array.isArray(result?.tasks) ? result.tasks : nextTasks
+    setRows(savedTasks.map(({ id, title, detail }) => ({ id, title, detail })))
+  }
+
+  return (
+    <div className="page admin-task-page">
+      <PageHeader title="Giao việc" subtitle={`Tạo danh sách công việc theo ca tại ${activeStore?.name || 'cửa hàng đang chọn'}.`} icon={ClipboardCheck} />
+      <Card className="task-toolbar-card">
+        <div className="task-toolbar-grid">
+          <Field label="Cửa hàng"><Input icon={Store} value={activeStore?.name || storeId} readOnly /></Field>
+          <Field label="Ca làm" required>
+            <Select value={shiftId} onChange={(event) => changeShift(event.target.value)} disabled={!shiftOptions.length}>
+              {!shiftOptions.length && <option value="">Chưa có ca hợp lệ cho ngày này</option>}
+              {shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} ({shift.start || '--:--'}–{shift.end || '--:--'})</option>)}
+            </Select>
+          </Field>
+          <Field label="Ngày áp dụng" required><Input icon={CalendarDays} type="date" value={date} onChange={(event) => changeDate(event.target.value)} /></Field>
+          <Button icon={Send} onClick={send} className="task-send">LƯU VÀ GỬI</Button>
+        </div>
+      </Card>
+      <div className="split-layout split-layout--tasks">
+        <Card title="Danh sách công việc" className="task-editor">
+          <div className="task-editor__head"><span>STT</span><span>Nội dung công việc *</span><span>Chi tiết / Ghi chú</span><span /></div>
+          {rows.map((item, index) => (
+            <div className="task-editor__row" key={item.id || index}>
+              <b>{index + 1}</b>
+              <input value={item.title} onChange={(event) => updateRow(index, 'title', event.target.value)} placeholder="Nhập nội dung công việc" />
+              <textarea value={item.detail} onChange={(event) => updateRow(index, 'detail', event.target.value)} placeholder="Chi tiết thực hiện" />
+              <button type="button" onClick={() => removeRow(index)} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>
+            </div>
+          ))}
+          <button type="button" className="add-row" onClick={() => setRows((current) => [...current, { id: `CV-${Date.now()}`, title: '', detail: '' }])}><Plus size={18} /> Thêm công việc</button>
+        </Card>
+        <Card className="guide-card">
+          <h2><Info size={22} /> Giao việc theo cửa hàng</h2>
+          <ol><li>Chọn ca làm và ngày áp dụng.</li><li>Nhập từng công việc và hướng dẫn cần thiết.</li><li>Nhấn “Lưu và gửi” để nhân viên trong ca nhận việc.</li></ol>
+          <InfoNote><strong>Phạm vi được giới hạn tự động</strong><br />Công việc chỉ được gửi đến cửa hàng đang quản lý.</InfoNote>
+        </Card>
+      </div>
     </div>
   )
 }

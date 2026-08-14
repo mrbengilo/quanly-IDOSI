@@ -4,7 +4,6 @@ import Login from './pages/Login'
 import {
   AdminSettings,
   AdminStores,
-  AdminTasks,
 } from './pages/admin/AdminPages'
 import {
   AdminCashflowV2,
@@ -29,7 +28,12 @@ import {
   EmployeeOrdersPage,
   EmployeePayrollDetails,
 } from './pages/employee/EmployeeV2Pages'
-import { StoreEmployees } from './pages/store/StoreOperations'
+import {
+  OfficeEmployeeDashboard,
+  OfficeEmployeePayrollPage,
+} from './pages/employee/OfficeEmployeeDashboard'
+import { isOfficeProfile } from './pages/employee/officeAttendance'
+import { StoreEmployees, StoreTasks } from './pages/store/StoreOperations'
 import { StoreSettings } from './pages/store/StoreFinance'
 import {
   StoreAttendanceV2,
@@ -45,6 +49,7 @@ import { useApp } from './state/AppContext'
 
 const homeByRole = {
   admin: '/admin/overview',
+  manager: '/admin/overview',
   employee: '/employee/home',
 }
 
@@ -63,6 +68,34 @@ function EntryRedirect() {
   return <Navigate to={homeFor(session)} replace />
 }
 
+function EmployeeHomePage() {
+  const { session, currentEmployee } = useApp()
+  return isOfficeProfile(session, currentEmployee)
+    ? <OfficeEmployeeDashboard />
+    : <EmployeeDashboardV2 />
+}
+
+function EmployeePayrollPage() {
+  const { session, currentEmployee } = useApp()
+  return isOfficeProfile(session, currentEmployee)
+    ? <OfficeEmployeePayrollPage />
+    : <EmployeePayrollDetails />
+}
+
+function EmployeeAttendanceRoute() {
+  const { session, currentEmployee } = useApp()
+  return isOfficeProfile(session, currentEmployee)
+    ? <OfficeEmployeeDashboard />
+    : <EmployeeAttendancePage />
+}
+
+function StoreEmployeeRoute({ children }) {
+  const { session, currentEmployee } = useApp()
+  return isOfficeProfile(session, currentEmployee)
+    ? <Navigate to="/employee/home" replace />
+    : children
+}
+
 export default function App() {
   const { session } = useApp()
   return (
@@ -70,10 +103,10 @@ export default function App() {
       <Route path="/" element={<EntryRedirect />} />
       <Route path="/login" element={session ? <Navigate to={homeFor(session)} replace /> : <Login />} />
 
-      <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
+      <Route element={<RoleGuard roles={['admin', 'manager']}><AppShell /></RoleGuard>}>
         <Route path="/admin/overview" element={<AdminOverviewV2 />} />
         <Route path="/admin/stores" element={<AdminStores />} />
-        <Route path="/admin/tasks" element={<AdminTasks />} />
+        <Route path="/admin/tasks" element={<Navigate to="/store/tasks" replace />} />
         <Route path="/admin/cashflow" element={<AdminCashflowV2 />} />
         <Route path="/admin/reports" element={<AdminReportsV2 />} />
 
@@ -82,6 +115,7 @@ export default function App() {
         <Route path="/store/schedule" element={<UnifiedSchedule />} />
         <Route path="/store/employees" element={<StoreEmployees />} />
         <Route path="/store/orders" element={<StoreOrdersPage />} />
+        <Route path="/store/tasks" element={<StoreTasks />} />
         <Route path="/store/imports" element={<StoreImportsV2 />} />
         <Route path="/store/attendance" element={<StoreAttendanceV2 />} />
         <Route path="/store/payroll" element={<StorePayrollV2 />} />
@@ -90,25 +124,28 @@ export default function App() {
         <Route path="/store/settings" element={<StoreSettings />} />
       </Route>
 
-      <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
-        <Route path="/office" element={<OfficeManagement />} />
-        <Route path="/admin/office" element={<Navigate to="/office" replace />} />
+      <Route element={<RoleGuard roles={['admin', 'manager']}><AppShell /></RoleGuard>}>
         <Route path="/admin/employees" element={<SystemEmployees />} />
-        <Route path="/admin/policies" element={<PolicySettings />} />
-        <Route path="/admin/reset" element={<ResetDataPage />} />
-        <Route path="/admin/order-audit" element={<OrderAuditPage />} />
         <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
         <Route path="/admin/settings" element={<AdminSettings />} />
       </Route>
 
+      <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
+        <Route path="/office" element={<OfficeManagement />} />
+        <Route path="/admin/office" element={<Navigate to="/office" replace />} />
+        <Route path="/admin/policies" element={<PolicySettings />} />
+        <Route path="/admin/reset" element={<ResetDataPage />} />
+        <Route path="/admin/order-audit" element={<OrderAuditPage />} />
+      </Route>
+
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
-        <Route path="/employee/home" element={<EmployeeDashboardV2 />} />
-        <Route path="/employee/orders" element={<EmployeeOrdersPage />} />
-        <Route path="/employee/attendance" element={<EmployeeAttendancePage />} />
+        <Route path="/employee/home" element={<EmployeeHomePage />} />
+        <Route path="/employee/orders" element={<StoreEmployeeRoute><EmployeeOrdersPage /></StoreEmployeeRoute>} />
+        <Route path="/employee/attendance" element={<EmployeeAttendanceRoute />} />
         <Route path="/employee/shifts" element={<Navigate to="/employee/work-history" replace />} />
         <Route path="/employee/work-history" element={<EmployeeShiftHistory />} />
-        <Route path="/employee/payroll" element={<EmployeePayrollDetails />} />
-        <Route path="/employee/cashflow" element={<EmployeeCashflow />} />
+        <Route path="/employee/payroll" element={<EmployeePayrollPage />} />
+        <Route path="/employee/cashflow" element={<StoreEmployeeRoute><EmployeeCashflow /></StoreEmployeeRoute>} />
       </Route>
 
       <Route path="*" element={<EntryRedirect />} />

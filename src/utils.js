@@ -1,17 +1,28 @@
-export const money = (value) => `${new Intl.NumberFormat('vi-VN').format(Number(value) || 0)} đ`
+export const money = (value) => `${new Intl.NumberFormat('en-US').format(Number(value) || 0)} đ`
+
+export const parseMoneyInput = (value) => Number(String(value ?? '').replace(/\D/gu, '')) || 0
+
+export const formatMoneyInput = (value) => {
+  const amount = parseMoneyInput(value)
+  return amount ? new Intl.NumberFormat('en-US').format(amount) : ''
+}
 
 export const number = (value, digits = 0) =>
   new Intl.NumberFormat('vi-VN', { maximumFractionDigits: digits }).format(Number(value) || 0)
 
-export const getEmployeeType = (employee = {}) =>
-  employee.employmentType || employee.employeeType || employee.type || 'Full-time'
+export const getEmployeeType = (employee = {}) => {
+  const value = String(employee.employmentType || employee.employeeType || employee.type || 'Full-Time').trim()
+  if (/part[- ]?time/iu.test(value)) return 'Part-Time'
+  if (/full[- ]?time/iu.test(value)) return 'Full-Time'
+  return value
+}
 
 export const getPayBasis = (employee = {}) => {
   const value = String(employee.payBasis || employee.salaryBasis || employee.salaryType || employee.salaryUnit || '').toLowerCase()
   if (['hourly', 'hour', 'gio', 'giờ'].includes(value)) return 'hourly'
   if (['monthly', 'month', 'thang', 'tháng'].includes(value)) return 'monthly'
   if (value === 'legacy') return 'legacy'
-  return getEmployeeType(employee) === 'Part-time' ? 'hourly' : 'monthly'
+  return getEmployeeType(employee) === 'Part-Time' ? 'hourly' : 'monthly'
 }
 
 export const getMonthlySalary = (employee = {}) => {

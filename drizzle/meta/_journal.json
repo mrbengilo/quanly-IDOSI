@@ -8,6 +8,27 @@
       "when": 1786665600000,
       "tag": "0000_idosi_core",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786752000000,
+      "tag": "0001_manager_role",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786838400000,
+      "tag": "0002_attendance_evaluation_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1786924800000,
+      "tag": "0003_state_entities",
+      "breakpoints": true
     }
   ]
 }

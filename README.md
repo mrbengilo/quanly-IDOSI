@@ -1,6 +1,6 @@
 # HỆ THỐNG QUẢN LÝ IDOSI
 
-Ứng dụng quản lý tập trung cho 9 cửa hàng IDOSI và Khối Văn Phòng. Hệ thống chỉ có hai vai trò đăng nhập: quản trị viên và nhân viên; nhân viên được gán vào cửa hàng hoặc Khối Văn Phòng.
+Ứng dụng quản lý tập trung cho 9 cửa hàng IDOSI và Khối Văn Phòng. Hệ thống có ba vai trò đăng nhập: Admin, Quản lý và Nhân viên; nhân viên được gán vào cửa hàng hoặc Khối Văn Phòng.
 
 ## Chạy dự án
 
@@ -23,7 +23,8 @@ npm run build
 
 | Vai trò | Tên đăng nhập | Mật khẩu |
 | --- | --- | --- |
-| Quản trị cấp cao | `admin` | `idosi123` |
+| Admin | `admin` | `idosi123` |
+| Quản lý | `manager` | `idosi123` |
 | Nhân viên văn phòng | `office` | `idosi123` |
 | Nhân viên cửa hàng | `employee` | `idosi123` |
 
@@ -32,8 +33,9 @@ Production được khởi tạo bằng biến môi trường riêng; không s�
 
 ## Phân hệ
 
-- Quản trị cấp cao: tổng quan toàn chuỗi, 9 cửa hàng, tài khoản nhân viên, Khối Văn Phòng, giao việc, dòng tiền, lương thưởng và báo cáo.
-- Nhân viên cửa hàng: điểm danh, công việc, kết ca, lịch sử, bảng lương và dòng tiền; hiển thị tag Full-time hoặc Part-time.
+- Admin: toàn quyền quản lý chuỗi, cửa hàng, nhân viên, Khối Văn Phòng, chính sách, đơn hàng, chấm công và dữ liệu hệ thống.
+- Quản lý: vận hành cửa hàng, nhân viên, ca/lịch, giao việc, tài chính và báo cáo; chỉ xem đơn hàng, không truy cập Khối Văn Phòng, chính sách hoặc Reset dữ liệu.
+- Nhân viên cửa hàng: điểm danh, công việc, kết ca, lịch sử, bảng lương và dòng tiền; hiển thị loại Full-Time hoặc Part-Time.
 - Nhân viên văn phòng: điểm danh và ra về có vị trí, lịch sử chấm công, trạng thái sớm/đúng giờ/trễ và bảng lương.
 
 ## Dữ liệu và bảo mật

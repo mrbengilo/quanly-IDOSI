@@ -13,6 +13,7 @@ const baseUrl = String(process.env.IDOSI_BASE_URL || '').replace(/\/$/u, '')
 const bootstrapToken = process.env.BOOTSTRAP_TOKEN
 const adminPassword = process.env.IDOSI_ADMIN_PASSWORD
 const employeePassword = process.env.IDOSI_EMPLOYEE_PASSWORD
+const managerPassword = process.env.IDOSI_MANAGER_PASSWORD
 
 if (!baseUrl || !bootstrapToken || !adminPassword || !employeePassword) {
   throw new Error('Cần IDOSI_BASE_URL, BOOTSTRAP_TOKEN, IDOSI_ADMIN_PASSWORD và IDOSI_EMPLOYEE_PASSWORD.')
@@ -44,7 +45,7 @@ const initialState = {
   officeAdjustments: clone(officeAdjustmentsSeed),
   activeStoreId: stores[0]?.id || null,
   settings: {
-    name: 'Quản trị cấp cao',
+    name: 'Admin',
     email: 'admin@idosi.vn',
     phone: '0901000000',
     bio: 'Quản trị HỆ THỐNG QUẢN LÝ IDOSI.',
@@ -81,7 +82,7 @@ try {
     body: {
       username: 'admin',
       password: adminPassword,
-      displayName: 'Quản trị cấp cao',
+      displayName: 'Admin',
       initialState,
     },
   })
@@ -98,6 +99,25 @@ const token = login.token
 const usersPayload = await call('/api/users', { token })
 const existingEmployeeIds = new Set((usersPayload.users || []).map((user) => String(user.employeeId || '')))
 let createdUsers = 0
+let createdManagers = 0
+
+if (managerPassword && !(usersPayload.users || []).some((user) => user.role === 'manager' && user.username === 'manager')) {
+  await call('/api/command', {
+    method: 'POST',
+    token,
+    headers: { 'idempotency-key': 'provision:manager:v1' },
+    body: {
+      type: 'user.create',
+      payload: {
+        role: 'manager',
+        username: 'manager',
+        password: managerPassword,
+        displayName: 'Quản lý',
+      },
+    },
+  })
+  createdManagers = 1
+}
 
 for (const employee of employees) {
   if (!employee.username || existingEmployeeIds.has(String(employee.id))) continue
@@ -125,6 +145,7 @@ await call('/api/logout', { method: 'POST', token })
 console.log(JSON.stringify({
   initialized,
   createdUsers,
+  createdManagers,
   stateVersion: state.version,
   stores: Array.isArray(state.state?.stores) ? state.state.stores.length : 0,
   employees: Array.isArray(state.state?.employees) ? state.state.employees.length : 0,

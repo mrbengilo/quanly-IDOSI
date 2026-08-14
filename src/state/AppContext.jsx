@@ -5,6 +5,7 @@ import {
   attendanceSeed,
   employeesSeed,
   importsSeed,
+  managerAccountsSeed,
   officeAdjustmentsSeed,
   scheduleSeed,
   shifts,
@@ -23,10 +24,12 @@ import {
   getDepartureTag,
   normalizeLocation,
   normalizePhone,
+  timeToMinutes,
   today,
   uid,
 } from '../utils'
 import { createDomainState, defaultPolicies, migrateDomainState } from './initialDomainState'
+import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateKpiBonuses, financeSummaryFromState } from '../domain'
 import {
@@ -97,9 +100,15 @@ const mergeSharedState = (remoteState = {}, localState = {}) => {
   merged.stateVersion = Math.max(Number(remoteState.stateVersion) || 0, Number(localState.stateVersion) || 0) + 1
   return merged
 }
+
+export const mergeLegacyCredentialMigration = (current, migratedAccounts, remoteEnabled) => (
+  remoteEnabled ? current : { ...current, ...migratedAccounts }
+)
 const normalizeText = (value) => String(value ?? '').trim().toLowerCase()
 const isOfficeUnit = (value) => ['office', 'văn phòng', 'van phong', 'khối văn phòng', 'khoi van phong', 'vp'].includes(normalizeText(value))
 const isActiveAccount = (status) => !['tạm ngưng', 'tạm nghỉ', 'đã nghỉ việc', 'inactive', 'disabled'].includes(normalizeText(status))
+const isSystemRole = (role) => ['admin', 'manager'].includes(role)
+const isValidEmployeePhone = (value) => /^0\d{9}$/.test(normalizePhone(value))
 
 const addressDetailsFrom = (payload = {}) => {
   const nested = payload.addressDetails || (typeof payload.address === 'object' ? payload.address : {}) || {}
@@ -130,12 +139,20 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
   const rawSalary = Math.max(0, Number(payload.salary) || 0)
   const hasExplicitBasis = Boolean(payload.payBasis || payload.salaryBasis || payload.salaryType || payload.salaryUnit || payload.compensationVersion >= 2)
   let payBasis = getPayBasis({ ...payload, employmentType })
-  if (employmentType === 'Part-time' && !hasExplicitBasis && !Number(payload.hourlyRate) && rawSalary > 500000) {
+  if (employmentType === 'Part-Time' && !hasExplicitBasis && !Number(payload.hourlyRate) && rawSalary > 500000) {
     payBasis = 'legacy'
   }
   const monthlySalary = payBasis === 'monthly' ? getMonthlySalary({ ...payload, salary: rawSalary, payBasis }) : 0
   const hourlyRate = payBasis === 'hourly' ? getHourlyRate({ ...payload, salary: rawSalary, payBasis }) : 0
   const normalizedSalary = payBasis === 'monthly' ? monthlySalary : payBasis === 'hourly' ? hourlyRate : rawSalary
+  const standardWorkDays = Math.max(1, Math.min(31, Number(payload.standardWorkDays) || 26))
+  const standardWorkDaysPeriod = String(payload.standardWorkDaysPeriod || '').trim()
+  const monthlyWorkdayTargets = payload.monthlyWorkdayTargets && typeof payload.monthlyWorkdayTargets === 'object'
+    ? { ...payload.monthlyWorkdayTargets }
+    : {}
+  if (unit === 'office' && /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(standardWorkDaysPeriod)) {
+    monthlyWorkdayTargets[standardWorkDaysPeriod] = standardWorkDays
+  }
 
   return {
     ...payload,
@@ -159,7 +176,9 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
     hourlyRate: hourlyRate || null,
     legacySalary: payBasis === 'legacy' ? rawSalary : null,
     compensationVersion: payBasis === 'legacy' ? 1 : 2,
-    standardWorkDays: Math.max(1, Number(payload.standardWorkDays) || 26),
+    standardWorkDays,
+    standardWorkDaysPeriod,
+    monthlyWorkdayTargets,
     tiktokAllowance: nonNegativeInteger(payload.tiktokAllowance),
     currency: payload.currency || 'VND',
     position,
@@ -202,6 +221,19 @@ const normalizeAdmin = (payload = {}) => ({
   status: payload.status || 'Đang hoạt động',
 })
 
+const normalizeManager = (payload = {}) => ({
+  ...payload,
+  id: payload.id || payload.code || 'MANAGER',
+  code: payload.code || payload.id || 'MANAGER',
+  username: String(payload.username || '').trim(),
+  passwordHash: String(payload.passwordHash || ''),
+  legacyPassword: payload.passwordHash ? '' : String(payload.password || ''),
+  password: undefined,
+  role: 'manager',
+  accountType: 'manager',
+  status: payload.status || 'Đang hoạt động',
+})
+
 const countStoreEmployees = (stores, employees) => stores.map((store) => ({
   ...store,
   employees: employees.filter((employee) => employee.unit === 'store' && employee.storeId === store.id && employee.status !== 'Đã nghỉ việc').length,
@@ -224,6 +256,7 @@ export const createInitialState = () => {
   return {
     stores,
     adminAccounts: adminAccountsSeed.map((account) => normalizeAdmin(clone(account))),
+    managerAccounts: managerAccountsSeed.map((account) => normalizeManager(clone(account))),
     employees,
     imports: clone(importsSeed),
     attendance: clone(attendanceSeed),
@@ -236,7 +269,7 @@ export const createInitialState = () => {
     checkedInAt: null,
     finishedShift: false,
     settings: {
-      name: 'Quản trị cấp cao',
+      name: 'Admin',
       email: 'admin@idosi.vn',
       phone: '0901000000',
       birthday: '1990-05-15',
@@ -251,7 +284,7 @@ export const createInitialState = () => {
 const hydrateState = (stored) => {
   const base = createInitialState()
   if (!stored || typeof stored !== 'object') return base
-  const safeStored = Object.fromEntries(Object.entries(stored).filter(([key]) => !['managerAccounts', 'managerPayroll', 'profitShares'].includes(key)))
+  const safeStored = Object.fromEntries(Object.entries(stored).filter(([key]) => !['managerPayroll', 'profitShares'].includes(key)))
   const employees = Array.isArray(safeStored.employees)
     ? safeStored.employees.map((employee) => normalizeEmployee(employee, safeStored.activeStoreId || base.activeStoreId))
     : base.employees
@@ -263,6 +296,7 @@ const hydrateState = (stored) => {
     stores: countStoreEmployees(stores, employees),
     employees,
     adminAccounts: Array.isArray(safeStored.adminAccounts) ? safeStored.adminAccounts.map(normalizeAdmin) : base.adminAccounts,
+    managerAccounts: Array.isArray(safeStored.managerAccounts) ? safeStored.managerAccounts.map(normalizeManager) : base.managerAccounts,
     officeAdjustments: Array.isArray(safeStored.officeAdjustments) ? safeStored.officeAdjustments : base.officeAdjustments,
     tasks: Array.isArray(safeStored.tasks)
       ? safeStored.tasks.map((task) => normalizeTask(task, safeStored.activeStoreId || base.activeStoreId))
@@ -281,8 +315,9 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = []) => {
   }
   const employeeId = remoteUser?.employeeId || remoteUser?.employee_id
   const remoteEmployee = safeRemote.employees.find((employee) => String(employee.id || employee.code) === String(employeeId))
-  const session = remoteUser?.role === 'admin'
-    ? { id: remoteUser.id, code: 'ADMIN', name: remoteUser.displayName || remoteUser.username, username: remoteUser.username, role: 'admin', accountType: 'admin', authVersion: remoteUser.version }
+  const isSystemAccount = ['admin', 'manager'].includes(remoteUser?.role)
+  const session = isSystemAccount
+    ? { id: remoteUser.id, code: remoteUser.role === 'admin' ? 'ADMIN' : 'MANAGER', name: remoteUser.displayName || remoteUser.username, username: remoteUser.username, role: remoteUser.role, accountType: remoteUser.role, authVersion: remoteUser.version }
     : {
         id: employeeId || remoteUser?.id,
         code: employeeId || remoteUser?.id,
@@ -302,6 +337,7 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = []) => {
   const normalized = {
     ...safeRemote,
     adminAccounts: [],
+    managerAccounts: [],
     employees,
     stores,
     session: null,
@@ -347,6 +383,7 @@ const toSession = (account, source) => {
     accountType: source,
   }
   if (source === 'admin') return { ...common, role: 'admin' }
+  if (source === 'manager') return { ...common, role: 'manager' }
   return {
     ...common,
     role: 'employee',
@@ -433,7 +470,7 @@ const advancePaidFor = (state, employeeId, period = monthKey()) => state.salaryA
 
 const voucherDate = (value = new Date()) => {
   const date = resolveDate(value)
-  return `${String(date.getDate()).padStart(2, '0')}${String(date.getMonth() + 1).padStart(2, '0')}${date.getFullYear()}`
+  return `${String(date.getDate()).padStart(2, '0')}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getFullYear()).slice(-2)}`
 }
 
 const storeCode = (store = {}) => String(store.short || store.code || store.id || 'CH')
@@ -442,6 +479,19 @@ const storeCode = (store = {}) => String(store.short || store.code || store.id |
   .replace(/[^A-Za-z0-9]/g, '')
   .toUpperCase()
   .slice(0, 12) || 'CH'
+
+const nextEmployeeCode = (payload, state) => {
+  const officeEmployee = payload.isOffice || isOfficeUnit(payload.unit) || isOfficeUnit(payload.storeId)
+  const store = state.stores.find((item) => String(item.id) === String(payload.storeId || state.activeStoreId))
+  const prefix = officeEmployee ? 'VP' : String(store?.employeePrefix || storeCode(store)).toUpperCase()
+  const separator = officeEmployee ? '' : '-'
+  const pattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${separator}(\\d+)$`, 'i')
+  const highest = state.employees.reduce((current, employee) => {
+    const match = String(employee.id || employee.code || employee.employeeCode || '').match(pattern)
+    return match ? Math.max(current, Number(match[1]) || 0) : current
+  }, 0)
+  return `${prefix}${separator}${String(highest + 1).padStart(3, '0')}`
+}
 
 export function AppProvider({ children }) {
   const [state, setState] = useState(readState)
@@ -513,7 +563,7 @@ export function AppProvider({ children }) {
     if (!hasApiSession()) return undefined
     let active = true
     apiBootstrapState('global').then(async (payload) => {
-      if (payload.user?.role === 'admin') {
+      if (['admin', 'manager'].includes(payload.user?.role)) {
         const users = await apiListUsers()
         const authByEmployee = new Map((users.users || []).map((user) => [String(user.employeeId), user]))
         payload.state.employees = (payload.state.employees || []).map((employee) => {
@@ -537,17 +587,22 @@ export function AppProvider({ children }) {
       const migrateAccounts = async (accounts) => Promise.all(accounts.map(async (account) => account.legacyPassword
         ? { ...account, passwordHash: await hashPassword(account.legacyPassword), legacyPassword: '', password: undefined }
         : { ...account, password: undefined }))
-      const [adminAccounts, employees] = await Promise.all([
+      const [adminAccounts, managerAccounts, employees] = await Promise.all([
         migrateAccounts(state.adminAccounts),
+        migrateAccounts(state.managerAccounts),
         migrateAccounts(state.employees),
       ])
       if (!active) return
-      setState((current) => ({ ...current, adminAccounts, employees }))
+      setState((current) => mergeLegacyCredentialMigration(
+        current,
+        { adminAccounts, managerAccounts, employees },
+        apiRef.current.enabled,
+      ))
       setCredentialsReady(true)
     }
     migrate()
     return () => { active = false }
-  }, [credentialsReady, state.adminAccounts, state.employees])
+  }, [credentialsReady, state.adminAccounts, state.managerAccounts, state.employees])
 
   useEffect(() => {
     if (!credentialsReady || typeof localStorage === 'undefined') return
@@ -555,6 +610,7 @@ export function AppProvider({ children }) {
       ...state,
       session: null,
       adminAccounts: state.adminAccounts.map(({ password: _password, legacyPassword: _legacyPassword, ...account }) => account),
+      managerAccounts: state.managerAccounts.map(({ password: _password, legacyPassword: _legacyPassword, ...account }) => account),
       employees: state.employees.map(({ password: _password, legacyPassword: _legacyPassword, ...account }) => account),
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(safeState))
@@ -629,9 +685,12 @@ export function AppProvider({ children }) {
     try {
       setApiStatus('connecting')
       const authenticated = await apiLogin(username, password)
-      const bootstrap = await apiBootstrapState('global')
-      if (authenticated.user.role === 'admin') {
-        const users = await apiListUsers()
+      const isSystemOperator = ['admin', 'manager'].includes(authenticated.user.role)
+      const [bootstrap, users] = await Promise.all([
+        apiBootstrapState('global'),
+        isSystemOperator ? apiListUsers() : Promise.resolve(null),
+      ])
+      if (users) {
         const authByEmployee = new Map((users.users || []).map((user) => [String(user.employeeId), user]))
         bootstrap.state.employees = (bootstrap.state.employees || []).map((employee) => {
           const user = authByEmployee.get(String(employee.id || employee.code))
@@ -654,6 +713,7 @@ export function AppProvider({ children }) {
     const normalizedUsername = normalizeText(username)
     const sources = [
       ...state.adminAccounts.map((account) => ({ account, source: 'admin' })),
+      ...state.managerAccounts.map((account) => ({ account, source: 'manager' })),
       ...state.employees.map((account) => ({ account, source: 'employee' })),
     ]
     const matched = sources.find(({ account }) => normalizeText(account.username) === normalizedUsername)
@@ -680,6 +740,7 @@ export function AppProvider({ children }) {
       checkedInAt: recent?.checkIn || recent?.checkInTime || null,
       finishedShift: Boolean(recent?.checkOutAt || recent?.checkOut),
       adminAccounts: matched.source === 'admin' ? current.adminAccounts.map((account) => accountKey(account) === accountKey(matched.account) ? { ...account, passwordHash: migratedPasswordHash, legacyPassword: '', password: undefined, lastLoginAt: loginTimestamp } : account) : current.adminAccounts,
+      managerAccounts: matched.source === 'manager' ? current.managerAccounts.map((account) => accountKey(account) === accountKey(matched.account) ? { ...account, passwordHash: migratedPasswordHash, legacyPassword: '', password: undefined, lastLoginAt: loginTimestamp } : account) : current.managerAccounts,
       employees: matched.source === 'employee' ? current.employees.map((account) => accountKey(account) === accountKey(matched.account) ? { ...account, passwordHash: migratedPasswordHash, legacyPassword: '', password: undefined, lastLoginAt: loginTimestamp } : account) : current.employees,
     }))
     return { ok: true, account: session }
@@ -713,15 +774,26 @@ export function AppProvider({ children }) {
     return true
   }
 
-  const addStore = (payload) => {
+  const addStore = async (payload) => {
     const name = String(payload.name || '').trim().replace(/^DORE\s+/i, 'IDOSI ')
     if (!name) {
       notify('Vui lòng nhập tên cửa hàng.', 'info')
-      return null
+      return { ok: false, message: 'Vui lòng nhập tên cửa hàng.' }
     }
     if (state.stores.some((item) => normalizeText(item.name) === normalizeText(name))) {
       notify('Tên cửa hàng đang hoạt động đã tồn tại.', 'info')
-      return null
+      return { ok: false, message: 'Tên cửa hàng đang hoạt động đã tồn tại.' }
+    }
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được thêm cửa hàng.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('store.create', { ...payload, name })
+        notify('Đã thêm cửa hàng mới.')
+        return { ok: true, store: result.store }
+      } catch (error) {
+        notify(error.message || 'Không thể thêm cửa hàng.', 'info')
+        return { ok: false, message: error.message }
+      }
     }
     const store = {
       id: payload.id || uid('CH'),
@@ -736,21 +808,50 @@ export function AppProvider({ children }) {
     }
     updateCollection('stores', (items) => [store, ...items])
     notify('Đã thêm cửa hàng mới.')
-    return store
+    return { ok: true, store }
   }
 
-  const updateStore = (id, payload) => {
-    updateCollection('stores', (items) => items.map((store) => store.id === id ? { ...store, ...payload } : store))
+  const updateStore = async (id, payload) => {
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được cập nhật cửa hàng.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('store.update', { storeId: id, ...payload })
+        notify('Đã cập nhật cửa hàng.')
+        return { ok: true, store: result.store }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật cửa hàng.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const previous = state.stores.find((store) => store.id === id)
+    if (!previous) return { ok: false, message: 'Không tìm thấy cửa hàng.' }
+    const store = { ...previous, ...payload }
+    updateCollection('stores', (items) => items.map((item) => item.id === id ? store : item))
     notify('Đã cập nhật cửa hàng.')
+    return { ok: true, store }
   }
 
-  const deleteStore = (id) => {
+  const deleteStore = async (id) => {
+    if (state.session?.role !== 'admin') {
+      notify('Chỉ Admin được xóa cửa hàng khỏi hệ thống.', 'info')
+      return { ok: false, message: 'Chỉ Admin được xóa cửa hàng khỏi hệ thống.' }
+    }
     const store = state.stores.find((item) => item.id === id)
-    if (!store) return false
+    if (!store) return { ok: false, message: 'Không tìm thấy cửa hàng.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('store.delete', { storeId: id })
+        notify('Đã xóa cửa hàng.', 'info')
+        return { ok: true, store: result.store }
+      } catch (error) {
+        notify(error.message || 'Không thể xóa cửa hàng.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
     const orderCount = visibleOrders(state.orders).filter((order) => order.storeId === id && order.source !== 'legacy-opening-balance').length
     if (orderCount > 0) {
       notify(`Không thể xóa vì cửa hàng đã phát sinh ${orderCount} đơn hàng.`, 'info')
-      return false
+      return { ok: false, message: `Không thể xóa vì cửa hàng đã phát sinh ${orderCount} đơn hàng.` }
     }
     setState((current) => {
       const stores = current.stores.filter((store) => store.id !== id)
@@ -765,55 +866,55 @@ export function AppProvider({ children }) {
       }
     })
     notify('Đã xóa cửa hàng.', 'info')
-    return true
+    return { ok: true, store }
   }
 
   const hasDuplicateAccount = (payload, ignoredKey = '') => {
-    const records = [...state.adminAccounts, ...state.employees].filter((account) => accountKey(account) !== String(ignoredKey))
+    const records = [...state.adminAccounts, ...state.managerAccounts, ...state.employees].filter((account) => accountKey(account) !== String(ignoredKey))
     const username = normalizeText(payload.username)
     const cccd = String(payload.cccd || payload.citizenId || '').trim()
+    const phone = normalizePhone(payload.phone)
     return records.some((account) =>
       (username && normalizeText(account.username) === username)
-      || (cccd && String(account.cccd || account.citizenId || '') === cccd),
+      || (cccd && String(account.cccd || account.citizenId || '') === cccd)
+      || (phone && normalizePhone(account.phone) === phone),
     )
   }
 
   const addEmployee = async (payload) => {
-    if (hasDuplicateAccount(payload)) {
-      notify('Tên đăng nhập hoặc số CCCD đã tồn tại.', 'info')
+    const generatedCode = String(payload.id || payload.code || payload.employeeCode || nextEmployeeCode(payload, state)).trim()
+    const employeePayload = { ...payload, id: generatedCode, code: generatedCode, employeeCode: generatedCode }
+    const officeEmployee = employeePayload.isOffice || isOfficeUnit(employeePayload.unit) || isOfficeUnit(employeePayload.storeId)
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được tạo tài khoản nhân viên.' }
+    if (state.session?.role === 'manager' && officeEmployee) return { ok: false, message: 'Tài khoản Quản lý không có quyền truy cập khối văn phòng.' }
+    if (!isValidEmployeePhone(employeePayload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
+    if (hasDuplicateAccount(employeePayload)) {
+      notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
       return { ok: false }
     }
     if (apiRef.current.enabled) {
-      if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo tài khoản nhân viên.' }
       try {
-        const result = await apiCommand('user.create', {
-          username: payload.username,
-          password: payload.password,
-          displayName: payload.name,
-          storeId: payload.storeId,
-          employeeId: payload.id || payload.code || payload.employeeCode,
-        }, { expectedVersion: 0, idempotencyKey: `user-create:${crypto.randomUUID()}` })
-        const employee = normalizeEmployee({
-          ...payload,
-          password: undefined,
-          passwordHash: '',
-          authUserId: result.user.id,
-          authVersion: result.user.version,
-        }, state.activeStoreId)
-        setState((current) => {
-          const employees = [employee, ...current.employees]
-          return { ...current, employees, stores: countStoreEmployees(current.stores, employees), stateVersion: current.stateVersion + 1 }
+        const result = await runRemoteDomainCommand('employee.create', {
+          ...employeePayload,
+          id: undefined,
+          code: undefined,
+          employeeCode: undefined,
+          employmentType: officeEmployee
+            ? employeePayload.officeEmployeeType || employeePayload.officeEmploymentType || 'Chính thức'
+            : employeePayload.employmentType,
+          passwordHash: undefined,
+          legacyPassword: undefined,
         })
         notify('Đã tạo hồ sơ và tài khoản đăng nhập nhân viên.')
-        return { ok: true, employee }
+        return { ok: true, employee: result.employee, user: result.user }
       } catch (error) {
         notify(error.message || 'Không thể tạo tài khoản nhân viên.', 'info')
         return { ok: false, message: error.message }
       }
     }
-    const passwordHash = payload.password ? await hashPassword(payload.password) : ''
+    const passwordHash = employeePayload.password ? await hashPassword(employeePayload.password) : ''
     if (!passwordHash) return { ok: false, message: 'Mật khẩu là bắt buộc.' }
-    const employee = normalizeEmployee({ ...payload, password: undefined, passwordHash }, state.activeStoreId)
+    const employee = normalizeEmployee({ ...employeePayload, password: undefined, passwordHash }, state.activeStoreId)
     setState((current) => {
       const employees = [employee, ...current.employees]
       return { ...current, employees, stores: countStoreEmployees(current.stores, employees) }
@@ -823,53 +924,32 @@ export function AppProvider({ children }) {
   }
 
   const updateEmployee = async (id, payload) => {
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được cập nhật nhân viên.' }
     if (hasDuplicateAccount(payload, id)) {
-      notify('Tên đăng nhập hoặc số CCCD đã tồn tại.', 'info')
+      notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
       return { ok: false }
     }
     const previous = state.employees.find((employee) => accountKey(employee) === String(id))
     if (!previous) return { ok: false }
+    if (state.session?.role === 'manager' && previous.unit === 'office') return { ok: false, message: 'Tài khoản Quản lý không có quyền truy cập khối văn phòng.' }
+    if (payload.phone !== undefined && !isValidEmployeePhone(payload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
     let authVersion = previous.authVersion
-    if (apiRef.current.enabled && previous.authUserId) {
+    if (apiRef.current.enabled) {
       try {
-        if (
-          (payload.username !== undefined && payload.username !== previous.username)
-          || (payload.name !== undefined && payload.name !== previous.name)
-          || (payload.storeId !== undefined && payload.storeId !== previous.storeId)
-        ) {
-          const updatedUser = await apiCommand('user.update', {
-            userId: previous.authUserId,
-            employeeId: previous.id,
-            username: payload.username ?? previous.username,
-            displayName: payload.name ?? previous.name,
-            storeId: payload.storeId ?? previous.storeId,
-          }, {
-            expectedVersion: Number(authVersion || 1),
-            idempotencyKey: `user-update:${crypto.randomUUID()}`,
-          })
-          authVersion = updatedUser.user.version
-        }
-        if (payload.password) {
-          const reset = await apiCommand('user.reset_password', {
-            userId: previous.authUserId,
-            password: payload.password,
-          }, {
-            expectedVersion: Number(authVersion || 1),
-            idempotencyKey: `user-password:${crypto.randomUUID()}`,
-          })
-          authVersion = reset.user.version
-        }
-        if (payload.status && payload.status !== previous.status) {
-          const statuses = { 'Đang làm việc': 'active', 'Đang hoạt động': 'active', 'Tạm ngưng': 'locked', 'Đã nghỉ việc': 'inactive' }
-          const status = await apiCommand('user.set_status', {
-            userId: previous.authUserId,
-            status: statuses[payload.status] || 'locked',
-          }, {
-            expectedVersion: Number(authVersion || 1),
-            idempotencyKey: `user-status:${crypto.randomUUID()}`,
-          })
-          authVersion = status.user.version
-        }
+        const result = await runRemoteDomainCommand('employee.update', {
+          employeeId: previous.id,
+          ...payload,
+          id: undefined,
+          code: undefined,
+          employeeCode: undefined,
+          employmentType: previous.unit === 'office'
+            ? payload.officeEmployeeType || payload.officeEmploymentType || previous.officeEmployeeType || previous.employmentType || 'Chính thức'
+            : payload.employmentType ?? previous.employmentType,
+          passwordHash: undefined,
+          legacyPassword: undefined,
+        })
+        notify('Đã cập nhật nhân viên.')
+        return { ok: true, employee: result.employee, user: result.user }
       } catch (error) {
         notify(error.message || 'Không thể cập nhật tài khoản đăng nhập.', 'info')
         return { ok: false, message: error.message }
@@ -891,22 +971,21 @@ export function AppProvider({ children }) {
   }
 
   const deleteEmployee = async (id) => {
+    if (state.session?.role !== 'admin') {
+      notify('Chỉ Admin được xóa nhân viên khỏi hệ thống.', 'info')
+      return false
+    }
     const previous = state.employees.find((employee) => accountKey(employee) === String(id))
     if (!previous) return false
-    let deletedAuthVersion = previous.authVersion
-    if (apiRef.current.enabled && previous.authUserId) {
+    const deletedAuthVersion = previous.authVersion
+    if (apiRef.current.enabled) {
       try {
-        const result = await apiCommand('user.set_status', {
-          userId: previous.authUserId,
-          status: 'inactive',
-        }, {
-          expectedVersion: Number(previous.authVersion || 1),
-          idempotencyKey: `user-delete:${crypto.randomUUID()}`,
-        })
-        deletedAuthVersion = result.user.version
+        const result = await runRemoteDomainCommand('employee.delete', { employeeId: id })
+        notify('Đã xóa nhân viên.', 'info')
+        return { ok: true, employee: result.employee }
       } catch (error) {
         notify(error.message || 'Không thể vô hiệu hóa tài khoản nhân viên.', 'info')
-        return false
+        return { ok: false, message: error.message }
       }
     }
     setState((current) => {
@@ -1013,12 +1092,29 @@ export function AppProvider({ children }) {
         ? { completedBy: { ...(item.completedBy || {}), [employeeId]: Boolean(done) } }
         : { done: Boolean(done) }),
     } : item))
+    notify(done ? 'Đã hoàn thành công việc.' : 'Đã mở lại công việc.', 'success')
     return { ok: true }
   }
 
-  const replaceTasks = (tasks) => {
+  const replaceTasks = async (tasks) => {
     const nextTasks = (Array.isArray(tasks) ? tasks : []).map((task) => normalizeTask(task, state.activeStoreId))
     const scope = nextTasks[0]
+    if (!scope) return { ok: false, message: 'Cần có ít nhất một công việc để lưu.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('tasks.replace_scope', {
+          storeId: scope.storeId,
+          date: scope.date,
+          shiftId: scope.shiftId,
+          tasks: nextTasks.map(({ title, detail }) => ({ title, detail })),
+        })
+        notify('Đã lưu và gửi danh sách công việc.')
+        return { ok: true, tasks: result.tasks || [] }
+      } catch (error) {
+        notify(error.message || 'Không thể lưu danh sách công việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
     setState((current) => ({
       ...current,
       tasks: scope
@@ -1033,6 +1129,7 @@ export function AppProvider({ children }) {
         : current.tasks,
     }))
     notify('Đã lưu và gửi danh sách công việc.')
+    return { ok: true, tasks: nextTasks }
   }
 
   const saveSchedule = (employeeIds, shiftId, details = {}) => {
@@ -1070,13 +1167,14 @@ export function AppProvider({ children }) {
         return false
       }
     }
-    const accountExists = state.adminAccounts.some((account) => account.id === id || account.username === id)
+    const accountCollection = state.session?.role === 'manager' ? 'managerAccounts' : 'adminAccounts'
+    const accountExists = state[accountCollection].some((account) => account.id === id || account.username === id)
     if (!accountExists) {
       notify('Không tìm thấy tài khoản quản trị.', 'info')
       return false
     }
     const passwordHash = await hashPassword(password)
-    updateCollection('adminAccounts', (items) => items.map((account) =>
+    updateCollection(accountCollection, (items) => items.map((account) =>
       account.id === id || account.username === id ? { ...account, passwordHash, legacyPassword: '', password: undefined } : account,
     ))
     notify('Đã đổi mật khẩu quản trị.')
@@ -1085,16 +1183,64 @@ export function AppProvider({ children }) {
 
   const verifyCurrentPassword = async (password) => {
     if (apiRef.current.enabled) return Boolean(password)
-    const collection = state.session?.role === 'admin' ? state.adminAccounts : state.employees
+    const collection = state.session?.role === 'admin'
+      ? state.adminAccounts
+      : state.session?.role === 'manager'
+        ? state.managerAccounts
+        : state.employees
     const account = collection.find((item) => accountKey(item) === accountKey(state.session) || item.username === state.session?.username)
     if (!account) return false
     if (account.passwordHash) return verifyPassword(password, account.passwordHash)
     return Boolean(account.legacyPassword) && account.legacyPassword === password
   }
 
-  const saveSettings = (settings) => {
-    setState((current) => ({ ...current, settings }))
+  const saveSettings = async (settings = {}) => {
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được cập nhật cài đặt tài khoản.' }
+    const allowedKeys = ['name', 'email', 'phone', 'birthday', 'gender', 'address', 'bio', 'avatar']
+    const payload = Object.fromEntries(allowedKeys
+      .filter((key) => settings[key] !== undefined)
+      .map((key) => [key, settings[key]]))
+    if (settings.notifications && typeof settings.notifications === 'object') {
+      payload.notifications = {
+        tasks: Boolean(settings.notifications.tasks),
+        dailyReport: Boolean(settings.notifications.dailyReport),
+        expenseAlert: Boolean(settings.notifications.expenseAlert),
+      }
+    }
+
+    const applyPersistedSettings = (persistedSettings, user = null) => {
+      const displayName = String(user?.displayName || persistedSettings.name || state.session?.name || '').trim()
+      if (user && apiRef.current.user) apiRef.current.user = { ...apiRef.current.user, ...user, displayName }
+      setState((current) => {
+        const accountCollection = current.session?.role === 'manager' ? 'managerAccounts' : 'adminAccounts'
+        return {
+          ...current,
+          settings: { ...current.settings, ...persistedSettings },
+          session: current.session ? { ...current.session, name: displayName || current.session.name } : current.session,
+          [accountCollection]: (current[accountCollection] || []).map((account) =>
+            accountKey(account) === accountKey(current.session) || account.username === current.session?.username
+              ? { ...account, name: displayName || account.name }
+              : account,
+          ),
+        }
+      })
+    }
+
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('account_settings.update', payload)
+        const persistedSettings = { ...payload, ...(result.settings || {}) }
+        applyPersistedSettings(persistedSettings, result.user)
+        notify('Đã lưu thay đổi tài khoản.')
+        return { ok: true, settings: persistedSettings, user: result.user }
+      } catch (error) {
+        notify(error.message || 'Không thể lưu cài đặt tài khoản.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    applyPersistedSettings(payload)
     notify('Đã lưu thay đổi tài khoản.')
+    return { ok: true, settings: payload }
   }
 
   const createOrder = async (payload = {}) => {
@@ -1237,19 +1383,53 @@ export function AppProvider({ children }) {
     return { ok: true }
   }
 
-  const readNotification = (id) => {
+  const readNotification = async (id) => {
+    if (id == null) return { ok: false, message: 'Không tìm thấy thông báo.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('notification.mark_read', { notificationId: id })
+        setState((current) => ({
+          ...current,
+          notifications: applyNotificationCommandResult(current.notifications, result),
+        }))
+        return { ok: true, ...result }
+      } catch (error) {
+        notify(error.message || 'Không thể đánh dấu thông báo đã đọc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
     const timestamp = new Date().toISOString()
-    updateCollection('notifications', (items) => items.map((item) => item.id === id ? { ...item, readAt: item.readAt || timestamp } : item))
+    updateCollection('notifications', (items) => items.map((item) => String(item.id) === String(id) ? { ...item, readAt: item.readAt || timestamp } : item))
+    return { ok: true }
   }
 
-  const clearNotifications = () => {
+  const clearNotifications = async (storeId = null) => {
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('notification.mark_all_read', storeId ? { storeId } : {})
+        setState((current) => ({
+          ...current,
+          notifications: applyNotificationCommandResult(current.notifications, result),
+        }))
+        notify('Đã đánh dấu tất cả thông báo là đã đọc.', 'info')
+        return { ok: true, ...result }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật danh sách thông báo.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
     const timestamp = new Date().toISOString()
-    updateCollection('notifications', (items) => items.map((item) => !item.readAt ? { ...item, readAt: timestamp } : item))
-    notify('Đã xóa danh sách thông báo chưa đọc.', 'info')
+    updateCollection('notifications', (items) => items.map((item) => (
+      !item.readAt && (!storeId || !item.storeId || String(item.storeId) === String(storeId))
+        ? { ...item, readAt: timestamp }
+        : item
+    )))
+    notify('Đã đánh dấu tất cả thông báo là đã đọc.', 'info')
+    return { ok: true }
   }
 
   const savePolicies = async (payload = {}) => {
-    if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Quản trị viên cấp cao được thay đổi chính sách.' }
+    if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Admin được thay đổi chính sách.' }
     const next = {
       ...state.policies,
       ...payload,
@@ -1306,7 +1486,7 @@ export function AppProvider({ children }) {
   }
 
   const addFixedExpense = async (payload = {}) => {
-    if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo chi phí.' }
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được tạo chi phí.' }
     const storeId = payload.storeId || state.activeStoreId || state.session?.storeId
     const amount = nonNegativeInteger(payload.amount)
     if (!storeId || amount <= 0) return { ok: false, message: 'Cửa hàng hoặc số tiền chưa hợp lệ.' }
@@ -1336,7 +1516,7 @@ export function AppProvider({ children }) {
   }
 
   const addSalaryAdjustment = async (payload = {}) => {
-    if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo khoản lương thưởng.' }
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được tạo khoản lương thưởng.' }
     const employee = state.employees.find((item) => item.id === payload.employeeId)
     const amount = nonNegativeInteger(payload.amount)
     const period = payload.period || monthKey()
@@ -1376,7 +1556,7 @@ export function AppProvider({ children }) {
   const getAvailableSalary = (employeeId, period = monthKey()) => Math.max(0, employeeGrossFor(state, employeeId, period) - advancePaidFor(state, employeeId, period))
 
   const createSalaryAdvance = async (payload = {}) => {
-    if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo ứng lương.' }
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được tạo ứng lương.' }
     const employee = state.employees.find((item) => item.id === payload.employeeId)
     const period = payload.period || monthKey()
     const amount = nonNegativeInteger(payload.amount)
@@ -1555,33 +1735,84 @@ export function AppProvider({ children }) {
     return { ok: true, period: locked }
   }
 
-  const createShiftDefinition = (payload = {}) => {
+  const createShiftDefinition = async (payload = {}) => {
     const name = String(payload.name || '').trim()
     if (!name || !payload.start || !payload.end || !payload.date) return { ok: false, message: 'Vui lòng nhập đủ tên, thời gian và ngày áp dụng.' }
-    const definition = { id: uid('SHIFT'), storeId: payload.storeId || state.activeStoreId, name, start: payload.start, end: payload.end, time: `${payload.start} - ${payload.end}`, date: payload.date, effectiveFrom: payload.date, color: payload.color || '#075fba', tint: '#edf5ff', active: true, version: 1, createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
+    const storeId = payload.storeId || state.activeStoreId
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('shift_definition.create', { storeId, name, date: payload.date, start: payload.start, end: payload.end })
+        notify('Đã tạo ca làm việc theo ngày.')
+        return { ok: true, shift: result.shift }
+      } catch (error) {
+        notify(error.message || 'Không thể tạo ca làm việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const colors = ['#22C55E', '#3B82F6', '#F97316', '#A855F7', '#EC4899', '#06B6D4', '#EAB308', '#EF4444']
+    const durationMinutes = Math.max(0, Number(timeToMinutes(payload.end)) - Number(timeToMinutes(payload.start)))
+    const definition = { id: uid('SHIFT'), storeId, name, start: payload.start, end: payload.end, time: `${payload.start} - ${payload.end}`, date: payload.date, effectiveFrom: payload.date, color: colors[state.shiftDefinitions.filter((shift) => shift.storeId === storeId && !shift.deletedAt).length % colors.length], tint: '#edf5ff', durationMinutes, durationHours: durationMinutes / 60, active: true, version: 1, createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
     updateCollection('shiftDefinitions', (items) => [definition, ...items])
     notify('Đã tạo ca làm việc theo ngày.')
     return { ok: true, shift: definition }
   }
 
-  const updateShiftDefinition = (id, payload = {}) => {
+  const updateShiftDefinition = async (id, payload = {}) => {
     const previous = state.shiftDefinitions.find((item) => item.id === id)
     if (!previous) return { ok: false, message: 'Không tìm thấy ca làm việc.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('shift_definition.update', { shiftId: id, storeId: previous.storeId, ...payload })
+        notify('Đã cập nhật ca; dữ liệu lịch sử giữ nguyên bản chụp cũ.')
+        return { ok: true, shift: result.shift }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật ca làm việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
     const next = { ...previous, ...payload, time: `${payload.start || previous.start} - ${payload.end || previous.end}`, version: Number(previous.version || 1) + 1, updatedAt: new Date().toISOString(), updatedBy: actorSnapshot(state.session) }
     updateCollection('shiftDefinitions', (items) => items.map((item) => item.id === id ? next : item))
     notify('Đã cập nhật ca; dữ liệu lịch sử giữ nguyên bản chụp cũ.')
     return { ok: true, shift: next }
   }
 
-  const deleteShiftDefinition = (id) => {
+  const deleteShiftDefinition = async (id) => {
+    const previous = state.shiftDefinitions.find((item) => item.id === id)
+    if (!previous) return { ok: false, message: 'Không tìm thấy ca làm việc.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('shift_definition.delete', { shiftId: id, storeId: previous.storeId })
+        notify('Đã ngừng sử dụng ca làm việc.', 'info')
+        return { ok: true, shift: result.shift }
+      } catch (error) {
+        notify(error.message || 'Không thể ngừng sử dụng ca làm việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
     updateCollection('shiftDefinitions', (items) => items.map((item) => item.id === id ? { ...item, active: false, deletedAt: new Date().toISOString(), deletedBy: actorSnapshot(state.session) } : item))
     notify('Đã ngừng sử dụng ca làm việc.', 'info')
-    return true
+    return { ok: true }
   }
 
-  const saveScheduleMultiple = (employeeIds = [], shiftIds = [], details = {}) => {
+  const saveScheduleMultiple = async (employeeIds = [], shiftIds = [], details = {}) => {
     const date = details.date || today()
     if (!employeeIds.length || !shiftIds.length) return { ok: false, message: 'Vui lòng chọn ca và nhân viên.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('schedule.assign', {
+          storeId: details.storeId || state.activeStoreId,
+          date,
+          employeeIds,
+          shiftIds,
+          note: details.note || '',
+        })
+        notify('Đã lưu lịch phân ca.')
+        return { ok: true, assignments: result.assignments || [] }
+      } catch (error) {
+        notify(error.message || 'Không thể lưu lịch phân ca.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
     updateCollection('schedule', (items) => {
       const next = [...items]
       employeeIds.forEach((employeeId) => {
@@ -1626,8 +1857,8 @@ export function AppProvider({ children }) {
     }
     const sequence = Math.max(1, Number(state.importCounter) + 1)
     const timestamp = new Date().toISOString()
-    const goodsAmount = items.reduce((sum, item) => sum + Math.round((Number(item.quantity) || Number(item.weight) || 0) * (Number(item.price) || 0)), 0)
-    const voucher = { id: uid('PV'), code: `PN-${voucherDate(timestamp)}-${String(sequence).padStart(5, '0')}`, storeId, items, goodsAmount, shippingAmount, relatedAmount, totalAmount: goodsAmount + shippingAmount + relatedAmount, status: 'Đã lưu', createdAt: timestamp, createdBy: actorSnapshot(state.session), idempotencyKey: payload.idempotencyKey || null }
+    const goodsAmount = items.reduce((sum, item) => sum + Math.round((Number(item.weight) || 0) * (Number(item.price) || 0)), 0)
+    const voucher = { id: uid('PV'), code: `PN-${voucherDate(timestamp)}-${String(sequence).padStart(4, '0')}`, storeId, items, goodsAmount, shippingAmount, relatedAmount, totalAmount: goodsAmount + shippingAmount + relatedAmount, status: 'Đã lưu', createdAt: timestamp, createdBy: actorSnapshot(state.session), idempotencyKey: payload.idempotencyKey || null }
     const expense = { id: uid('EXP'), storeId, type: 'Nhập hàng', category: 'inventory', amount: voucher.totalAmount, description: `Phiếu nhập ${voucher.code}`, sourceType: 'import-voucher', sourceId: voucher.id, recognized: true, occurredAt: timestamp, createdAt: timestamp, createdBy: state.session?.id || state.session?.code }
     setState((current) => ({ ...current, importVouchers: [voucher, ...current.importVouchers], importCounter: sequence, expenseEntries: [expense, ...current.expenseEntries], stateVersion: current.stateVersion + 1 }))
     notify(`Đã lưu phiếu nhập ${voucher.code}.`)
@@ -1658,7 +1889,7 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const goodsAmount = items.reduce((sum, item) => sum + Math.round((Number(item.quantity) || Number(item.weight) || 0) * (Number(item.price) || 0)), 0)
+    const goodsAmount = items.reduce((sum, item) => sum + Math.round((Number(item.weight) || 0) * (Number(item.price) || 0)), 0)
     const timestamp = new Date().toISOString()
     const actor = actorSnapshot(state.session)
     const voucher = { ...previous, items, goodsAmount, shippingAmount, relatedAmount, totalAmount: goodsAmount + shippingAmount + relatedAmount, updatedAt: timestamp, updatedBy: actor, updateReason: reason }
@@ -1704,11 +1935,45 @@ export function AppProvider({ children }) {
     return { ok: true, voucher }
   }
 
-  const saveSupportTransfer = (payload = {}) => {
-    const record = { id: uid('SUP'), employeeId: payload.employeeId, fromStoreId: payload.fromStoreId, toStoreId: payload.toStoreId, fromDate: payload.fromDate, toDate: payload.toDate, note: String(payload.note || '').trim(), status: 'Đã duyệt', createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
-    updateCollection('supportTransfers', (items) => [record, ...items])
+  const saveSupportTransfer = async (payload = {}) => {
+    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được điều chuyển nhân sự.' }
+    const employee = state.employees.find((item) => String(item.id || item.code) === String(payload.employeeId))
+    const toStore = state.stores.find((store) => String(store.id) === String(payload.toStoreId))
+    if (!employee || !toStore || String(employee.storeId) === String(toStore.id)) {
+      return { ok: false, message: 'Nhân viên hoặc cửa hàng hỗ trợ chưa hợp lệ.' }
+    }
+    if (!payload.fromDate || !payload.toDate || payload.fromDate > payload.toDate) {
+      return { ok: false, message: 'Khoảng thời gian điều chuyển chưa hợp lệ.' }
+    }
+    const commandPayload = {
+      employeeId: employee.id || employee.code,
+      toStoreId: toStore.id,
+      fromDate: payload.fromDate,
+      toDate: payload.toDate,
+      note: String(payload.note || '').trim(),
+    }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('support_transfer.create', commandPayload)
+        const transfer = result.transfer
+        if (!transfer) return { ok: false, message: 'Máy chủ không trả về phiếu điều chuyển.' }
+        setState((current) => ({
+          ...current,
+          supportTransfers: current.supportTransfers.some((item) => item.id === transfer.id)
+            ? current.supportTransfers.map((item) => item.id === transfer.id ? transfer : item)
+            : [transfer, ...current.supportTransfers],
+        }))
+        notify('Đã lưu điều chuyển hỗ trợ.')
+        return { ok: true, transfer }
+      } catch (error) {
+        notify(error.message || 'Không thể lưu điều chuyển hỗ trợ.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const transfer = { id: uid('SUP'), ...commandPayload, fromStoreId: employee.storeId, status: 'Đã duyệt', createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
+    updateCollection('supportTransfers', (items) => [transfer, ...items])
     notify('Đã lưu điều chuyển hỗ trợ.')
-    return record
+    return { ok: true, transfer }
   }
 
   const addAttendanceRecord = (payload) => {
@@ -1717,25 +1982,73 @@ export function AppProvider({ children }) {
     return record
   }
 
-  const updateAttendance = (id, payload) => {
+  const updateAttendance = async (id, payload = {}) => {
     if (state.session?.role !== 'admin') {
-      notify('Chỉ Quản trị viên cấp cao được chỉnh sửa chấm công.', 'info')
-      return false
+      notify('Chỉ Admin được chỉnh sửa chấm công.', 'info')
+      return { ok: false, message: 'Chỉ Admin được chỉnh sửa chấm công.' }
     }
     const previous = state.attendance.find((record) => record.id === id)
-    if (!previous) return false
-    const next = { ...previous, ...payload }
-    next.hours = calculateWorkedHours(next.checkInAt || next.checkIn, next.checkOutAt || next.checkOut)
-    next.arrivalTag = getArrivalTag(next.checkIn || next.checkInTime, next.shiftStart, state.policies.lateToleranceMinutes)
+    if (!previous) return { ok: false, message: 'Không tìm thấy bản ghi chấm công.' }
+    const reason = String(payload.reason || '').trim()
+    if (!reason || reason.length > 500) return { ok: false, message: 'Lý do chỉnh sửa phải có từ 1 đến 500 ký tự.' }
+    const date = String(payload.date || payload.workDate || previous.date || previous.workDate || previous.checkInAt || '').trim().slice(0, 10)
+    const checkIn = String(payload.checkIn ?? previous.checkIn ?? previous.checkInTime ?? '').slice(0, 5)
+    const checkOut = String(payload.checkOut ?? previous.checkOut ?? previous.checkOutTime ?? '').slice(0, 5)
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { ok: false, message: 'Ngày chấm công không hợp lệ.' }
+    if (!/^\d{2}:\d{2}$/.test(checkIn) || timeToMinutes(checkIn) == null) return { ok: false, message: 'Giờ vào không hợp lệ.' }
+    if (checkOut && (!/^\d{2}:\d{2}$/.test(checkOut) || timeToMinutes(checkOut) == null)) return { ok: false, message: 'Giờ kết không hợp lệ.' }
+    if ((previous.checkOut || previous.checkOutAt) && !checkOut) return { ok: false, message: 'Giờ kết không được để trống với ca đã kết thúc.' }
+
+    const commandPayload = { attendanceId: id, date, checkIn, checkOut, reason }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('attendance.update', commandPayload)
+        if (!result.attendance) return { ok: false, message: 'Máy chủ không trả về bản ghi chấm công.' }
+        setState((current) => ({
+          ...current,
+          attendance: current.attendance.map((record) => record.id === id ? result.attendance : record),
+        }))
+        notify('Đã cập nhật chấm công và tính lại số giờ.')
+        return { ok: true, attendance: result.attendance }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật chấm công.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const nextDate = (source) => {
+      const parsed = new Date(`${source}T00:00:00.000Z`)
+      parsed.setUTCDate(parsed.getUTCDate() + 1)
+      return parsed.toISOString().slice(0, 10)
+    }
+    const checkInAt = `${date}T${checkIn}:00+07:00`
+    const checkOutDate = checkOut && timeToMinutes(checkOut) < timeToMinutes(checkIn) ? nextDate(date) : date
+    const checkOutAt = checkOut ? `${checkOutDate}T${checkOut}:00+07:00` : null
+    const next = {
+      ...previous,
+      date,
+      workDate: date,
+      checkIn,
+      checkInTime: checkIn,
+      checkInAt,
+      checkOut: checkOut || null,
+      checkOutTime: checkOut || null,
+      checkOutAt,
+      editReason: reason,
+      updatedAt: new Date().toISOString(),
+    }
+    next.hours = calculateWorkedHours(checkInAt, checkOutAt)
+    next.arrivalTag = getArrivalTag(checkIn, next.shiftStart, state.policies.lateToleranceMinutes)
+    next.departureTag = checkOut ? getDepartureTag(checkOut, next.shiftEnd, state.policies.lateToleranceMinutes) : 'Đang làm việc'
     next.punctuality = next.arrivalTag
     next.status = next.arrivalTag
-    next.minutesLate = minutesLate(next.checkIn || next.checkInTime, next.shiftStart)
+    next.minutesLate = minutesLate(checkIn, next.shiftStart)
     const timestamp = new Date().toISOString()
     const actor = actorSnapshot(state.session)
-    const audit = { id: uid('AUD'), entity: 'attendance', entityId: id, action: 'update', before: previous, after: next, actor, createdAt: timestamp }
+    const audit = { id: uid('AUD'), entity: 'attendance', entityId: id, action: 'update', reason, before: previous, after: next, actor, createdAt: timestamp }
     setState((current) => ({ ...current, attendance: current.attendance.map((record) => record.id === id ? next : record), auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
     notify('Đã cập nhật chấm công và tính lại số giờ.')
-    return true
+    return { ok: true, attendance: next }
   }
 
   const deleteAttendance = (id) => {
@@ -1815,7 +2128,8 @@ export function AppProvider({ children }) {
       payBasisSnapshot: employee.payBasis,
       monthlySalarySnapshot: employee.monthlySalary,
       hourlyRateSnapshot: employee.hourlyRate,
-      standardWorkDaysSnapshot: employee.standardWorkDays,
+      requiredWorkingDaysSnapshot: Number(employee.monthlyWorkdayTargets?.[workDate.slice(0, 7)] || employee.standardWorkDays || 26),
+      standardWorkDaysSnapshot: Number(employee.monthlyWorkdayTargets?.[workDate.slice(0, 7)] || employee.standardWorkDays || 26),
       shift: shiftId,
       shiftName: scheduled?.name || payload.shiftName || shiftId,
       shiftStart,
@@ -1836,6 +2150,7 @@ export function AppProvider({ children }) {
       status: arrivalTag,
       minutesLate: minutesLate(checkInTime, shiftStart),
       hours: 0,
+      workdayCredit: 0,
       note: arrivalTag === 'Đi trễ' ? 'Đi trễ so với giờ bắt đầu' : '',
     }
     setState((current) => ({
@@ -1897,6 +2212,7 @@ export function AppProvider({ children }) {
       checkOutLocation: location,
       departureTag,
       hours,
+      workdayCredit: openRecord.unit === 'office' || openRecord.storeId === 'OFFICE' ? 1 : openRecord.workdayCredit,
       revenue: Number(payload.revenue ?? payload.totalRevenue ?? (Number(payload.cash || 0) + Number(payload.transfer || 0))) || Number(openRecord.revenue) || 0,
       expense: Number(payload.expense) || Number(openRecord.expense) || 0,
       cash: Number(payload.cash) || Number(openRecord.cash) || 0,
@@ -1924,9 +2240,25 @@ export function AppProvider({ children }) {
   const checkOut = (payload = {}) => closeAttendance(payload, false)
   const finishShift = (payload = {}) => closeAttendance(payload, true)
 
-  const resetDemo = () => {
-    setState(createInitialState())
+  const resetDemo = async () => {
+    if (state.session?.role !== 'admin') {
+      notify('Chỉ Admin được Reset dữ liệu.', 'info')
+      return { ok: false, message: 'Chỉ Admin được Reset dữ liệu.' }
+    }
+    const demoState = createInitialState()
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('system.reset_demo', { state: sharedStateSnapshot(demoState) })
+        notify('Đã khôi phục dữ liệu mẫu IDOSI.', 'info')
+        return { ok: true, state: result.state }
+      } catch (error) {
+        notify(error.message || 'Không thể khôi phục dữ liệu mẫu.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    setState(demoState)
     notify('Đã khôi phục dữ liệu mẫu IDOSI.', 'info')
+    return { ok: true, state: demoState }
   }
 
   const selectedStoreId = state.session?.role === 'employee'

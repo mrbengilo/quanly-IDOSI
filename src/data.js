@@ -1,6 +1,6 @@
 import { DEMO_PASSWORD_HASH } from './security/passwords.js'
 
-const storeSeed = (id, name, short, revenue, expense, employees = 1) => ({
+const storeSeed = (id, name, short, revenue, expense, employees = 1, employeePrefix = '') => ({
   id,
   name,
   short,
@@ -11,18 +11,19 @@ const storeSeed = (id, name, short, revenue, expense, employees = 1) => ({
   expense,
   status: 'Hoạt động',
   accent: '#075fba',
+  employeePrefix,
 })
 
 export const storesSeed = [
-  storeSeed('CH001', 'SecondMall SM234', 'SM234', 518000000, 286000000, 2),
-  storeSeed('CH002', 'Idosi Tô Ngọc Vân', 'Tô Ngọc Vân', 476000000, 249000000),
-  storeSeed('CH003', 'Idosi Dĩ An', 'Dĩ An', 442000000, 231000000),
-  storeSeed('CH004', 'Idosi Kha Vạn Cân', 'Kha Vạn Cân', 421000000, 225000000),
-  storeSeed('CH005', 'Idosi Tây Hòa', 'Tây Hòa', 405000000, 214000000),
-  storeSeed('CH006', 'Idosi Nguyễn Văn Thương', 'Nguyễn Văn Thương', 397000000, 207000000),
-  storeSeed('CH007', 'Idosi Nơ Trang Long', 'Nơ Trang Long', 382000000, 198000000),
-  storeSeed('CH008', 'Idosi Lê Văn Thọ', 'Lê Văn Thọ', 369000000, 193000000),
-  storeSeed('CH009', 'Idosi Buôn Ma Thuộc', 'Buôn Ma Thuộc', 351000000, 184000000),
+  storeSeed('CH001', 'SecondMall SM234', 'SM234', 518000000, 286000000, 2, 'SM234'),
+  storeSeed('CH002', 'Idosi Tô Ngọc Vân', 'Tô Ngọc Vân', 476000000, 249000000, 1, 'TNV'),
+  storeSeed('CH003', 'Idosi Dĩ An', 'Dĩ An', 442000000, 231000000, 1, 'DIAN'),
+  storeSeed('CH004', 'Idosi Kha Vạn Cân', 'Kha Vạn Cân', 421000000, 225000000, 1, 'KVC'),
+  storeSeed('CH005', 'Idosi Tây Hòa', 'Tây Hòa', 405000000, 214000000, 1, 'TH'),
+  storeSeed('CH006', 'Idosi Nguyễn Văn Thương', 'Nguyễn Văn Thương', 397000000, 207000000, 1, 'NVT'),
+  storeSeed('CH007', 'Idosi Nơ Trang Long', 'Nơ Trang Long', 382000000, 198000000, 1, 'NTL'),
+  storeSeed('CH008', 'Idosi Lê Văn Thọ', 'Lê Văn Thọ', 369000000, 193000000, 1, 'LVT'),
+  storeSeed('CH009', 'Idosi Buôn Ma Thuộc', 'Buôn Ma Thuộc', 351000000, 184000000, 1, 'BMT'),
 ]
 
 const address = (province, ward, street) => ({ province, ward, street })
@@ -40,7 +41,7 @@ const employeeSeed = ({
   age,
   username,
   storeId,
-  employmentType = 'Full-time',
+  employmentType = 'Full-Time',
   unit = 'store',
   status = 'Đang làm việc',
   color = '#d9c2b6',
@@ -58,11 +59,11 @@ const employeeSeed = ({
   addressDetails: address(province, ward, street),
   address: [street, ward, province].filter(Boolean).join(', '),
   salary,
-  payBasis: employmentType === 'Part-time' ? 'hourly' : 'monthly',
-  salaryBasis: employmentType === 'Part-time' ? 'hourly' : 'monthly',
-  salaryUnit: employmentType === 'Part-time' ? 'hour' : 'month',
-  monthlySalary: employmentType === 'Part-time' ? null : salary,
-  hourlyRate: employmentType === 'Part-time' ? salary : null,
+  payBasis: employmentType === 'Part-Time' ? 'hourly' : 'monthly',
+  salaryBasis: employmentType === 'Part-Time' ? 'hourly' : 'monthly',
+  salaryUnit: employmentType === 'Part-Time' ? 'hour' : 'month',
+  monthlySalary: employmentType === 'Part-Time' ? null : salary,
+  hourlyRate: employmentType === 'Part-Time' ? salary : null,
   compensationVersion: 2,
   standardWorkDays: 26,
   currency: 'VND',
@@ -90,13 +91,13 @@ const employeeSeed = ({
 })
 
 export const employeesSeed = [
-  employeeSeed({ id: 'NV001', name: 'Nguyễn Minh Anh', cccd: '079203000001', phone: '0901000001', province: 'TP. Hồ Chí Minh', ward: 'Phường Linh Tây', street: '234 Đường số 9', salary: 8000000, position: 'Nhân viên bán hàng', age: 23, username: 'employee', storeId: 'CH001', employmentType: 'Full-time', color: '#b6d2df' }),
-  employeeSeed({ id: 'NV002', name: 'Trần Gia Bảo', cccd: '079202000002', phone: '0901000002', province: 'TP. Hồ Chí Minh', ward: 'Phường Tam Phú', street: 'Tô Ngọc Vân', salary: 43000, position: 'Nhân viên bán hàng', age: 24, username: 'nv.tongocvan', storeId: 'CH002', employmentType: 'Part-time', color: '#f1c4ae' }),
+  employeeSeed({ id: 'NV001', name: 'Nguyễn Minh Anh', cccd: '079203000001', phone: '0901000001', province: 'TP. Hồ Chí Minh', ward: 'Phường Linh Tây', street: '234 Đường số 9', salary: 8000000, position: 'Nhân viên bán hàng', age: 23, username: 'employee', storeId: 'CH001', employmentType: 'Full-Time', color: '#b6d2df' }),
+  employeeSeed({ id: 'NV002', name: 'Trần Gia Bảo', cccd: '079202000002', phone: '0901000002', province: 'TP. Hồ Chí Minh', ward: 'Phường Tam Phú', street: 'Tô Ngọc Vân', salary: 43000, position: 'Nhân viên bán hàng', age: 24, username: 'nv.tongocvan', storeId: 'CH002', employmentType: 'Part-Time', color: '#f1c4ae' }),
   employeeSeed({ id: 'NV003', name: 'Lê Hoàng Chi', cccd: '074204000003', phone: '0901000003', province: 'Bình Dương', ward: 'Phường Dĩ An', street: 'Đường Nguyễn An Ninh', salary: 7800000, position: 'Nhân viên thu ngân', age: 22, username: 'nv.dian', storeId: 'CH003', color: '#f4d0b7' }),
   employeeSeed({ id: 'NV004', name: 'Phạm Đức Duy', cccd: '079201000004', phone: '0901000004', province: 'TP. Hồ Chí Minh', ward: 'Phường Linh Đông', street: 'Kha Vạn Cân', salary: 7600000, position: 'Nhân viên kho', age: 25, username: 'nv.khavan', storeId: 'CH004', color: '#c5d3de' }),
-  employeeSeed({ id: 'NV005', name: 'Võ Ngọc Hà', cccd: '079205000005', phone: '0901000005', province: 'TP. Hồ Chí Minh', ward: 'Phường Phước Long A', street: 'Tây Hòa', salary: 41000, position: 'Nhân viên bán hàng', age: 21, username: 'nv.tayhoa', storeId: 'CH005', employmentType: 'Part-time', color: '#f0bda9' }),
+  employeeSeed({ id: 'NV005', name: 'Võ Ngọc Hà', cccd: '079205000005', phone: '0901000005', province: 'TP. Hồ Chí Minh', ward: 'Phường Phước Long A', street: 'Tây Hòa', salary: 41000, position: 'Nhân viên bán hàng', age: 21, username: 'nv.tayhoa', storeId: 'CH005', employmentType: 'Part-Time', color: '#f0bda9' }),
   employeeSeed({ id: 'NV006', name: 'Đặng Minh Khang', cccd: '079200000006', phone: '0901000006', province: 'TP. Hồ Chí Minh', ward: 'Phường 25', street: 'Nguyễn Văn Thương', salary: 7900000, position: 'Nhân viên bán hàng', age: 26, username: 'nv.nguyenvanthuong', storeId: 'CH006', color: '#a8cad8' }),
-  employeeSeed({ id: 'NV007', name: 'Huỳnh Như Ý', cccd: '079204000007', phone: '0901000007', province: 'TP. Hồ Chí Minh', ward: 'Phường 13', street: 'Nơ Trang Long', salary: 42000, position: 'Nhân viên thu ngân', age: 22, username: 'nv.notranglong', storeId: 'CH007', employmentType: 'Part-time', color: '#edc5b5' }),
+  employeeSeed({ id: 'NV007', name: 'Huỳnh Như Ý', cccd: '079204000007', phone: '0901000007', province: 'TP. Hồ Chí Minh', ward: 'Phường 13', street: 'Nơ Trang Long', salary: 42000, position: 'Nhân viên thu ngân', age: 22, username: 'nv.notranglong', storeId: 'CH007', employmentType: 'Part-Time', color: '#edc5b5' }),
   employeeSeed({ id: 'NV008', name: 'Bùi Quang Huy', cccd: '079199000008', phone: '0901000008', province: 'TP. Hồ Chí Minh', ward: 'Phường 11', street: 'Lê Văn Thọ', salary: 7700000, position: 'Nhân viên kho', age: 27, username: 'nv.levantho', storeId: 'CH008', color: '#c5d0d7' }),
   employeeSeed({ id: 'NV009', name: 'Ngô Thanh Lam', cccd: '066203000009', phone: '0901000009', province: 'Đắk Lắk', ward: 'Phường Tân Lợi', street: 'Đường Phan Chu Trinh', salary: 7500000, position: 'Nhân viên bán hàng', age: 23, username: 'nv.buonmathuoc', storeId: 'CH009', color: '#c9d8b6' }),
   employeeSeed({ id: 'VP001', name: 'Đỗ Thu Trang', cccd: '079197000010', phone: '0901000010', province: 'TP. Hồ Chí Minh', ward: 'Phường 25', street: '12 Nguyễn Văn Thương', salary: 12000000, position: 'Nhân viên hành chính', age: 29, username: 'office', storeId: 'OFFICE', unit: 'office', color: '#ccd9ef' }),
@@ -111,7 +112,20 @@ export const adminAccountsSeed = [
     passwordHash: DEMO_PASSWORD_HASH,
     role: 'admin',
     accountType: 'admin',
-    name: 'Quản trị cấp cao',
+    name: 'Admin',
+    status: 'Đang hoạt động',
+  },
+]
+
+export const managerAccountsSeed = [
+  {
+    id: 'MANAGER',
+    code: 'MANAGER',
+    username: 'manager',
+    passwordHash: DEMO_PASSWORD_HASH,
+    role: 'manager',
+    accountType: 'manager',
+    name: 'Quản lý',
     status: 'Đang hoạt động',
   },
 ]
@@ -257,7 +271,8 @@ export const payRows = [
 ]
 
 export const demoAccounts = [
-  { username: 'admin', role: 'admin', accountType: 'admin', name: 'Quản trị cấp cao', code: 'ADMIN' },
+  { username: 'admin', role: 'admin', accountType: 'admin', name: 'Admin', code: 'ADMIN' },
+  { username: 'manager', role: 'manager', accountType: 'manager', name: 'Quản lý', code: 'MANAGER' },
   { username: 'office', role: 'employee', accountType: 'employee', unit: 'office', name: 'Đỗ Thu Trang', code: 'VP001', employeeId: 'VP001', storeId: 'OFFICE' },
-  { username: 'employee', role: 'employee', accountType: 'employee', unit: 'store', name: 'Nguyễn Minh Anh', code: 'NV001', employeeId: 'NV001', storeId: 'CH001', employmentType: 'Full-time' },
+  { username: 'employee', role: 'employee', accountType: 'employee', unit: 'store', name: 'Nguyễn Minh Anh', code: 'NV001', employeeId: 'NV001', storeId: 'CH001', employmentType: 'Full-Time' },
 ]

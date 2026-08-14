@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   BadgeDollarSign,
   Banknote,
@@ -20,7 +20,7 @@ import {
   Users,
   Wallet,
 } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   Badge,
   Button,
@@ -52,7 +52,24 @@ const monthBounds = (period) => ({
 const recordInMonth = (record, period) => businessDate(record.date || record.workDate || record.createdAt || record.occurredAt).slice(0, 7) === period
 const statusTone = (status) => status === 'Đi trễ' ? 'red' : status === 'Đi sớm' ? 'green' : 'blue'
 const normalizedStatus = (status) => status === 'Đúng giờ' ? 'Đi đúng giờ' : status === 'Trễ' ? 'Đi trễ' : status || 'Chưa xác định'
-const newImportForm = () => ({ name: '', category: 'Thời trang', quantity: 1, price: '', shippingAmount: '', relatedAmount: '', note: '', reason: '' })
+const newImportForm = () => ({ name: '', quantity: 1, weight: '', price: '', shippingAmount: '', reason: '' })
+const importVoucherCode = (value) => {
+  const code = String(value || '')
+  const compact = code.match(/^PN-(\d{2})(\d{2})(\d{2}(?:\d{2})?)-(\d+)$/i)
+  if (!compact) return code || 'Hệ thống tạo khi lưu'
+  return `PN-${compact[1]}/${compact[2]}/${compact[3].slice(-2)}-${compact[4].slice(-4).padStart(4, '0')}`
+}
+const importVoucherPreview = (vouchers = []) => {
+  const now = new Date()
+  const day = String(now.getDate()).padStart(2, '0')
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const year = String(now.getFullYear()).slice(-2)
+  const nextSequence = vouchers.reduce((maximum, voucher) => {
+    const match = String(voucher.code || '').match(/-(\d+)$/u)
+    return match ? Math.max(maximum, Number(match[1]) || 0) : maximum
+  }, 0) + 1
+  return `PN-${day}/${month}/${year}-${String(nextSequence).padStart(4, '0')}`
+}
 
 function useStoreData() {
   const app = useApp()
@@ -142,26 +159,39 @@ export function StoreReportsV2() {
 
 export function StoreOrdersPage() {
   const app = useStoreData()
+  const [searchParams] = useSearchParams()
   const { storeId, store, orders = [], employees = [], updateOrder, deleteOrder, notify } = app
+  const canManageOrders = app.session?.role === 'admin'
   const [view, setView] = useState('shift')
   const [query, setQuery] = useState('')
   const [date, setDate] = useState('')
+  const [month, setMonth] = useState('')
   const [employeeId, setEmployeeId] = useState('all')
   const [shiftId, setShiftId] = useState('all')
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAge: '', amount: '', paymentMethod: 'Chuyển khoản', reason: '' })
   const storeOrders = orders.filter((order) => order.storeId === storeId && order.source !== 'legacy-opening-balance' && !order.deletedAt)
+  const requestedOrderId = String(searchParams.get('order') || '')
+  const requestedOrder = storeOrders.find((order) => [order.id, order.code].map(String).includes(requestedOrderId))
+  const requestedOrderKey = String(requestedOrder?.id || '')
   const employeeOptions = employees.filter((employee) => employee.storeId === storeId)
   const shiftOptions = [...new Map(storeOrders.filter((order) => order.shiftId).map((order) => [order.shiftId, { id: order.shiftId, name: order.shiftName || order.shiftId }])).values()]
   const filtered = storeOrders.filter((order) => {
-    if (date && businessDate(order.createdAt) !== date) return false
+    if (requestedOrderKey && String(order.id) === requestedOrderKey) return true
+    const orderDate = businessDate(order.createdAt)
+    if (date && orderDate !== date) return false
+    if (month && !orderDate.startsWith(month)) return false
     if (employeeId !== 'all' && order.employeeId !== employeeId) return false
     if (shiftId !== 'all' && order.shiftId !== shiftId) return false
     const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName].join(' ').toLowerCase()
     return !query || haystack.includes(query.toLowerCase())
   })
   const groups = useMemo(() => {
-    const keyOf = view === 'employee' ? (order) => order.employeeId || 'system' : (order) => `${String(order.createdAt).slice(0, 10)}:${order.shiftId || 'none'}`
+    const keyOf = view === 'employee'
+      ? (order) => order.employeeId || 'system'
+      : view === 'day'
+        ? (order) => businessDate(order.createdAt)
+        : (order) => `${businessDate(order.createdAt)}:${order.shiftId || 'none'}`
     return [...filtered.reduce((map, order) => {
       const key = keyOf(order)
       if (!map.has(key)) map.set(key, [])
@@ -170,6 +200,14 @@ export function StoreOrdersPage() {
     }, new Map()).entries()]
   }, [filtered, view])
   const total = filtered.reduce((sum, order) => sum + Number(order.amount || 0), 0)
+
+  useEffect(() => {
+    if (!requestedOrderKey) return undefined
+    const scrollTimer = window.setTimeout(() => {
+      document.getElementById(`order-${requestedOrderKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 0)
+    return () => window.clearTimeout(scrollTimer)
+  }, [requestedOrderKey])
 
   const openEdit = (order) => {
     setEditing(order)
@@ -189,22 +227,27 @@ export function StoreOrdersPage() {
 
   return (
     <div className="page store-orders-page">
-      <PageHeader title="ĐƠN HÀNG" subtitle={`Quản lý đơn hàng của ${store?.name || 'cửa hàng'}; doanh thu cập nhật trực tiếp từ nguồn này.`} icon={ReceiptText} />
+      <PageHeader title="ĐƠN HÀNG" subtitle={`Danh sách đơn do nhân viên nhập tại ${store?.name || 'cửa hàng'}, thống kê theo ca, nhân viên và ngày tháng.`} icon={ReceiptText} />
       <div className="metrics-grid metrics-grid--3">
         <MetricCard label="TỔNG SỐ ĐƠN" value={filtered.length} suffix="đơn" icon={FileText} tone="blue" />
         <MetricCard label="TỔNG DOANH THU" value={money(total)} icon={TrendingUp} tone="green" />
         <MetricCard label="GIÁ TRỊ TRUNG BÌNH" value={money(filtered.length ? Math.floor(total / filtered.length) : 0)} icon={BadgeDollarSign} tone="orange" />
       </div>
-      <Card title="Bộ lọc đơn hàng" className="filter-card"><div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, khách hàng..." /><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} /><Select value={shiftId} onChange={(event) => setShiftId(event.target.value)}><option value="all">Tất cả ca</option>{shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name}</option>)}</Select><Select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{employeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select><Button variant="outline" onClick={() => { setQuery(''); setDate(''); setShiftId('all'); setEmployeeId('all') }}>Đặt lại</Button></div></Card>
-      <div className="tabs"><button className={view === 'shift' ? 'active' : ''} onClick={() => setView('shift')}>Theo ca</button><button className={view === 'employee' ? 'active' : ''} onClick={() => setView('employee')}>Theo nhân viên</button></div>
+      <Card title="Bộ lọc đơn hàng" className="filter-card"><div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, khách hàng..." /><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} aria-label="Lọc theo ngày" /><Input type="month" value={month} onChange={(event) => setMonth(event.target.value)} aria-label="Lọc theo tháng" /><Select value={shiftId} onChange={(event) => setShiftId(event.target.value)}><option value="all">Tất cả ca</option>{shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name}</option>)}</Select><Select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{employeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select><Button variant="outline" onClick={() => { setQuery(''); setDate(''); setMonth(''); setShiftId('all'); setEmployeeId('all') }}>Đặt lại</Button></div></Card>
+      {!canManageOrders && <InfoNote>Chế độ chỉ xem: tài khoản Quản lý không thể chỉnh sửa hoặc xóa đơn hàng.</InfoNote>}
+      <div className="tabs"><button className={view === 'shift' ? 'active' : ''} onClick={() => setView('shift')}>Theo ca</button><button className={view === 'employee' ? 'active' : ''} onClick={() => setView('employee')}>Theo nhân viên</button><button className={view === 'day' ? 'active' : ''} onClick={() => setView('day')}>Theo ngày</button></div>
       {groups.map(([key, group]) => {
         const first = group[0]
         const groupTotal = group.reduce((sum, order) => sum + Number(order.amount || 0), 0)
-        const title = view === 'employee' ? `${first.employeeName || 'Dữ liệu hệ thống'} — ${first.employeeId || ''}` : `${first.shiftName || 'Chưa gắn ca'} — ${first.shiftStart || '--:--'}–${first.shiftEnd || '--:--'} — ${shortDate(String(first.createdAt).slice(0, 10))}`
-        return <Card key={key} className="order-group" title={title} action={<div className="order-group__totals"><strong>{money(groupTotal)}</strong><span>{group.length} đơn</span></div>}><TableWrap><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} key={order.id}><td>{timestamp(order.updatedAt || order.createdAt)}</td><td><strong>{order.code}</strong></td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td><strong>{money(order.amount)}</strong></td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td>{order.employeeName}<small className="table-note">{order.employeeId || '—'}</small></td><td><Badge>{order.status}</Badge></td><td><div className="row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button><Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button></div></td></tr>)}</tbody></TableWrap></Card>
+        const title = view === 'employee'
+          ? `${first.employeeName || 'Dữ liệu hệ thống'} — ${first.employeeId || ''}`
+          : view === 'day'
+            ? `Ngày ${shortDate(businessDate(first.createdAt))}`
+            : `${first.shiftName || 'Chưa gắn ca'} — ${first.shiftStart || '--:--'}–${first.shiftEnd || '--:--'} — ${shortDate(businessDate(first.createdAt))}`
+        return <Card key={key} className="order-group" title={title} action={<div className="order-group__totals"><strong>{money(groupTotal)}</strong><span>{group.length} đơn</span></div>}><TableWrap><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canManageOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td>{timestamp(order.updatedAt || order.createdAt)}</td><td><strong>{order.code}</strong></td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td><strong>{money(order.amount)}</strong></td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td>{order.employeeName}<small className="table-note">{order.employeeId || '—'}</small></td><td><Badge>{order.status}</Badge></td>{canManageOrders && <td><div className="row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button><Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button></div></td>}</tr>)}</tbody></TableWrap></Card>
       })}
       {!groups.length && <InfoNote>Chưa có đơn hàng phù hợp bộ lọc.</InfoNote>}
-      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={`Sửa đơn hàng ${editing?.code || ''}`} footer={<><Button variant="outline" onClick={() => setEditing(null)}>Hủy</Button><Button icon={Save} onClick={save}>LƯU THAY ĐỔI</Button></>}><div className="form-grid"><Field label="Tên khách hàng"><Input value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} /></Field><Field label="Số điện thoại"><Input value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} /></Field><Field label="Tuổi"><Input type="number" min="0" value={form.customerAge} onChange={(event) => setForm({ ...form, customerAge: event.target.value })} /></Field><Field label="Số tiền"><Input inputMode="numeric" value={form.amount} onChange={(event) => setForm({ ...form, amount: moneyInput(event.target.value) })} /></Field><Field label="Hình thức thanh toán"><Select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })}><option>Tiền mặt</option><option>Chuyển khoản</option></Select></Field><Field label="Lý do chỉnh sửa" required><Input value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} /></Field></div></Modal>
+      {canManageOrders && <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={`Sửa đơn hàng ${editing?.code || ''}`} footer={<><Button variant="outline" onClick={() => setEditing(null)}>Hủy</Button><Button icon={Save} onClick={save}>LƯU THAY ĐỔI</Button></>}><div className="form-grid"><Field label="Tên khách hàng"><Input value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} /></Field><Field label="Số điện thoại"><Input value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} /></Field><Field label="Tuổi"><Input type="number" min="0" value={form.customerAge} onChange={(event) => setForm({ ...form, customerAge: event.target.value })} /></Field><Field label="Số tiền"><Input inputMode="numeric" value={form.amount} onChange={(event) => setForm({ ...form, amount: moneyInput(event.target.value) })} /></Field><Field label="Hình thức thanh toán"><Select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })}><option>Tiền mặt</option><option>Chuyển khoản</option></Select></Field><Field label="Lý do chỉnh sửa" required><Input value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} /></Field></div></Modal>}
     </div>
   )
 }
@@ -435,19 +478,39 @@ export function StoreImportsV2() {
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(newImportForm)
   const vouchers = importVouchers.filter((item) => item.storeId === storeId && !item.deletedAt && item.status !== 'Đã xóa')
-  const totals = vouchers.reduce((value, item) => ({ goods: value.goods + Number(item.goodsAmount || 0), shipping: value.shipping + Number(item.shippingAmount || 0), related: value.related + Number(item.relatedAmount || 0), total: value.total + Number(item.totalAmount ?? (Number(item.goodsAmount || 0) + Number(item.shippingAmount || 0) + Number(item.relatedAmount || 0))) }), { goods: 0, shipping: 0, related: 0, total: 0 })
+  const totals = vouchers.reduce((value, item) => ({ goods: value.goods + Number(item.goodsAmount || 0), shipping: value.shipping + Number(item.shippingAmount || 0), total: value.total + Number(item.totalAmount ?? (Number(item.goodsAmount || 0) + Number(item.shippingAmount || 0))) }), { goods: 0, shipping: 0, total: 0 })
   const closeModal = () => { setOpen(false); setEditing(null); setForm(newImportForm()) }
   const openCreate = () => { setEditing(null); setForm(newImportForm()); setOpen(true) }
   const openEdit = (voucher) => {
     const item = voucher.items?.[0] || {}
     setEditing(voucher)
-    setForm({ name: item.name || '', category: item.category || 'Thời trang', quantity: item.quantity || 1, price: moneyInput(item.price), shippingAmount: moneyInput(voucher.shippingAmount), relatedAmount: moneyInput(voucher.relatedAmount), note: item.note || '', reason: '' })
+    setForm({
+      name: item.name || '',
+      quantity: item.packageQuantity || item.bagQuantity || item.quantity || 1,
+      weight: item.weight || item.quantity || '',
+      price: moneyInput(item.price),
+      shippingAmount: moneyInput(voucher.shippingAmount),
+      reason: '',
+    })
     setOpen(true)
   }
   const save = async () => {
-    const firstItem = { name: form.name, category: form.category, quantity: Number(form.quantity), price: parseMoney(form.price), note: form.note }
+    const quantity = Number(form.quantity)
+    const weight = Number(form.weight)
+    const price = parseMoney(form.price)
+    if (!form.name.trim() || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(weight) || weight <= 0 || price <= 0) {
+      return notify('Vui lòng nhập đủ tên hàng, số bao, cân nặng và đơn giá.', 'info')
+    }
+    const firstItem = {
+      name: form.name.trim(),
+      category: 'Hàng hóa',
+      quantity,
+      packageQuantity: quantity,
+      weight,
+      price,
+    }
     const items = editing ? [firstItem, ...(editing.items || []).slice(1)] : [firstItem]
-    const payload = { storeId, items, shippingAmount: parseMoney(form.shippingAmount), relatedAmount: parseMoney(form.relatedAmount) }
+    const payload = { storeId, items, shippingAmount: parseMoney(form.shippingAmount), relatedAmount: 0 }
     const result = editing
       ? await updateImportVoucher(editing.id, { ...payload, reason: form.reason })
       : await createImportVoucher({ ...payload, idempotencyKey: `import:${storeId}:${Date.now()}` })
@@ -460,33 +523,39 @@ export function StoreImportsV2() {
     const result = await deleteImportVoucher(voucher.id, reason)
     if (!result.ok) notify(result.message, 'info')
   }
+  const formTotal = Number(form.weight || 0) * parseMoney(form.price) + parseMoney(form.shippingAmount)
   return (
     <div className="page">
-      <PageHeader title="NHẬP HÀNG VÀ HÀNG HÓA" subtitle="Mỗi lần lưu tạo một phiếu nhập có mã tuần tự, không ghi đè lịch sử." icon={PackageCheck} />
-      <div className="metrics-grid metrics-grid--4">
+      <PageHeader title="NHẬP HÀNG" subtitle="Mỗi lần lưu tạo một phiếu nhập tự động theo ngày và giữ đầy đủ thời gian ghi nhận." icon={PackageCheck} actions={<Button icon={Plus} onClick={openCreate}>THÊM PHIẾU NHẬP</Button>} />
+      <div className="metrics-grid metrics-grid--3">
         <MetricCard label="TỔNG TIỀN NHẬP HÀNG" value={money(totals.goods)} icon={PackageCheck} tone="blue" />
         <MetricCard label="CHI PHÍ VẬN CHUYỂN" value={money(totals.shipping)} icon={TrendingDown} tone="orange" />
-        <MetricCard label="CHI PHÍ LIÊN QUAN" value={money(totals.related)} icon={Wallet} tone="orange" />
         <MetricCard label="TỔNG TIỀN PHIẾU NHẬP" value={money(totals.total)} icon={Banknote} tone="green" />
       </div>
-      <Card title="Danh sách phiếu nhập">
+      <Card title="Lịch sử nhập hàng">
         <TableWrap>
-          <thead><tr><th>Mã phiếu</th><th>Ngày lưu</th><th>Hàng hóa</th><th>Tiền hàng</th><th>Vận chuyển</th><th>Liên quan</th><th>Tổng phiếu</th><th>Người tạo</th><th>Hành động</th></tr></thead>
-          <tbody>{vouchers.map((item) => <tr key={item.id}><td><strong>{item.code}</strong></td><td>{timestamp(item.createdAt)}</td><td>{item.items?.map((product) => product.name).join(', ')}</td><td>{money(item.goodsAmount)}</td><td>{money(item.shippingAmount)}</td><td>{money(item.relatedAmount)}</td><td><strong>{money(item.totalAmount ?? Number(item.goodsAmount || 0) + Number(item.shippingAmount || 0) + Number(item.relatedAmount || 0))}</strong></td><td>{item.createdBy?.name || item.createdBy || '—'}</td><td><div className="row-actions"><button onClick={() => openEdit(item)} aria-label={`Sửa ${item.code}`}><Edit3 /></button><button className="danger" onClick={() => remove(item)} aria-label={`Xóa ${item.code}`}><Trash2 /></button></div></td></tr>)}</tbody>
+          <thead><tr><th>Mã phiếu</th><th>Thời gian ghi nhận</th><th>Tên hàng hóa</th><th>Số lượng (bao)</th><th>Cân nặng (kg)</th><th>Đơn giá (/kg)</th><th>Vận chuyển</th><th>Tổng tiền</th><th>Người tạo</th><th>Thao tác</th></tr></thead>
+          <tbody>{vouchers.map((voucher) => {
+            const item = voucher.items?.[0] || {}
+            const weight = Number(item.weight ?? item.quantity ?? 0)
+            const quantity = Number(item.packageQuantity ?? item.bagQuantity ?? item.quantity ?? 0)
+            const total = Number(voucher.totalAmount ?? (weight * Number(item.price || 0) + Number(voucher.shippingAmount || 0)))
+            return <tr key={voucher.id}><td><strong>{importVoucherCode(voucher.code)}</strong></td><td>{timestamp(voucher.createdAt)}</td><td>{item.name || '—'}</td><td>{quantity}</td><td>{weight}</td><td>{money(item.price)}/kg</td><td>{money(voucher.shippingAmount)}</td><td><strong>{money(total)}</strong></td><td>{voucher.createdBy?.name || voucher.createdBy || '—'}</td><td><div className="row-actions"><button onClick={() => openEdit(voucher)} aria-label={`Sửa ${voucher.code}`}><Edit3 /></button><button className="danger" onClick={() => remove(voucher)} aria-label={`Xóa ${voucher.code}`}><Trash2 /></button></div></td></tr>
+          })}{!vouchers.length && <tr><td colSpan="10">Chưa có phiếu nhập hàng.</td></tr>}</tbody>
         </TableWrap>
-        <div className="card-actions card-actions--below"><Button icon={Plus} onClick={openCreate}>THÊM HÀNG HÓA</Button></div>
       </Card>
       <Modal open={open} onClose={closeModal} title={editing ? `Sửa phiếu ${editing.code}` : 'Tạo phiếu nhập hàng'} footer={<><Button variant="outline" onClick={closeModal}>Hủy</Button><Button icon={Save} onClick={save}>{editing ? 'CẬP NHẬT' : 'LƯU PHIẾU'}</Button></>}>
         <div className="form-grid">
-          <Field label="Tên hàng hóa"><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
-          <Field label="Danh mục"><Input value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })} /></Field>
-          <Field label="Số lượng"><Input type="number" min="1" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field>
-          <Field label="Đơn giá"><Input inputMode="numeric" value={form.price} onChange={(event) => setForm({ ...form, price: moneyInput(event.target.value) })} /></Field>
+          <Field label="Mã phiếu"><Input value={editing ? importVoucherCode(editing.code) : importVoucherPreview(importVouchers)} readOnly /></Field>
+          <Field label="Tên hàng hóa" required><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
+          <Field label="Số lượng (bao)" required><Input type="number" min="1" step="1" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field>
+          <Field label="Cân nặng (kg)" required><Input type="number" min="0.01" step="0.01" value={form.weight} onChange={(event) => setForm({ ...form, weight: event.target.value })} /></Field>
+          <Field label="Đơn giá (/kg)" required><Input inputMode="numeric" value={form.price} onChange={(event) => setForm({ ...form, price: moneyInput(event.target.value) })} /></Field>
           <Field label="Vận chuyển"><Input inputMode="numeric" value={form.shippingAmount} onChange={(event) => setForm({ ...form, shippingAmount: moneyInput(event.target.value) })} /></Field>
-          <Field label="Chi phí liên quan"><Input inputMode="numeric" value={form.relatedAmount} onChange={(event) => setForm({ ...form, relatedAmount: moneyInput(event.target.value) })} /></Field>
-          <Field label="Ghi chú" className="span-2"><Input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field>
+          <Field label="Tổng tiền" className="span-2"><Input value={money(formTotal)} readOnly /></Field>
           {editing && <Field label="Lý do chỉnh sửa" className="span-2"><Input value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder="Bắt buộc để lưu lịch sử kiểm toán" /></Field>}
         </div>
+        <InfoNote>Tổng tiền = Đơn giá × Cân nặng + Vận chuyển.</InfoNote>
       </Modal>
     </div>
   )

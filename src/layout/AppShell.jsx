@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { useApp } from '../state/AppContext'
 import { Avatar, Brand, Toast } from '../components/UI'
+import { isOfficeProfile } from '../pages/employee/officeAttendance'
 
 const systemOperations = [
   { label: 'Tổng quan', path: '/admin/overview', icon: LayoutDashboard },
@@ -38,6 +39,7 @@ const systemOperations = [
 const storeOperations = [
   { label: 'Tổng quan cửa hàng', path: '/store/overview', icon: LayoutDashboard },
   { label: 'Đơn hàng', path: '/store/orders', icon: ShoppingCart },
+  { label: 'Giao việc', path: '/store/tasks', icon: ClipboardCheck },
   { label: 'Lịch phân ca', path: '/store/schedule', icon: CalendarCheck },
   { label: 'Nhân viên cửa hàng', path: '/store/employees', icon: Users },
   { label: 'Nhập hàng', path: '/store/imports', icon: PackagePlus },
@@ -50,17 +52,29 @@ const storeOperations = [
 
 const officeOperation = { label: 'Khối văn phòng', path: '/office', icon: Building2, badge: 'Mới' }
 
+const officeEmployeeMenu = [
+  { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
+  { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
+  { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
+  { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
+]
+
 const systemMenus = {
   admin: [
     ...systemOperations.slice(0, 2),
     { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
     officeOperation,
-    { label: 'Giao việc toàn hệ thống', path: '/admin/tasks', icon: ClipboardCheck },
     ...systemOperations.slice(2, 5),
     { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
     systemOperations[5],
     { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },
     { label: 'Lịch sử sửa/xóa đơn hàng', path: '/admin/order-audit', icon: ClipboardCheck },
+  ],
+  manager: [
+    ...systemOperations.slice(0, 2),
+    { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
+    ...systemOperations.slice(2, 5),
+    systemOperations[5],
   ],
   employee: [
     { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
@@ -77,17 +91,20 @@ export default function AppShell() {
   const { session, logout, toast, notify, stores = [], activeStoreId } = app
   const [mobileOpen, setMobileOpen] = useState(false)
   const [notificationOpen, setNotificationOpen] = useState(false)
+  const [notificationBusy, setNotificationBusy] = useState(false)
   const notificationRef = useRef(null)
   const navigate = useNavigate()
   const location = useLocation()
   const role = session?.role || 'employee'
   const isAdmin = role === 'admin'
+  const isManager = role === 'manager'
+  const isSystemOperator = isAdmin || isManager
   const isEmployee = role === 'employee'
-  const isOfficeEmployee = isEmployee && session?.unit === 'office'
-  const isStoreWorkspace = !isEmployee && location.pathname.startsWith('/store/')
-  const isSystemWorkspace = !isEmployee && !isStoreWorkspace
+  const isOfficeEmployee = isEmployee && isOfficeProfile(session, app.currentEmployee)
+  const isStoreWorkspace = isSystemOperator && location.pathname.startsWith('/store/')
+  const isSystemWorkspace = isSystemOperator && !isStoreWorkspace
   const roleMenus = isOfficeEmployee
-    ? systemMenus.employee.filter((item) => item.path !== '/employee/cashflow')
+    ? officeEmployeeMenu
     : isStoreWorkspace
       ? storeOperations
       : systemMenus[role] || systemMenus.employee
@@ -139,8 +156,9 @@ export default function AppShell() {
     navigate('/login')
   }
 
-  const accountSubtitle = isAdmin
-    ? isStoreWorkspace ? `Quản trị cấp cao • ${activeStore?.short || activeStore?.name || ''}` : 'Quản trị cấp cao'
+  const systemRoleLabel = isAdmin ? 'Admin' : 'Quản lý'
+  const accountSubtitle = isSystemOperator
+    ? isStoreWorkspace ? `${systemRoleLabel} • ${activeStore?.short || activeStore?.name || ''}` : systemRoleLabel
     : session?.code
 
   const returnToSystemOverview = () => {
@@ -151,21 +169,40 @@ export default function AppShell() {
 
   const openNotification = (item) => {
     const id = item?.id || item?.notificationId || item?.orderId
-    if (id != null) readNotification?.(id)
+    if (id != null && readNotification) {
+      Promise.resolve().then(() => readNotification(id)).then((result) => {
+        if (result?.ok === false) notify?.(result.message || 'Không thể cập nhật thông báo.', 'info')
+      }).catch((error) => notify?.(error.message || 'Không thể cập nhật thông báo.', 'info'))
+    }
     app.onNotificationOpen?.(item)
     const orderId = item?.orderId || item?.data?.orderId
+    const notificationStoreId = String(item?.storeId || item?.data?.storeId || '')
+    if (isSystemOperator
+      && notificationStoreId
+      && stores.some((store) => String(store.id) === notificationStoreId)) {
+      const changeActiveStore = app.setActiveStoreId || app.setActiveStore
+      changeActiveStore?.(notificationStoreId)
+    }
     const ordersPath = isEmployee ? '/employee/orders' : '/store/orders'
     const destination = item?.path || item?.href || item?.url || (orderId ? `${ordersPath}?order=${encodeURIComponent(orderId)}` : ordersPath)
     setNotificationOpen(false)
     navigate(destination)
   }
 
-  const clearAllNotifications = () => {
-    if (readNotification && unreadNotifications.length) {
-      unreadNotifications.forEach((item) => readNotification(item?.id || item?.notificationId || item?.orderId))
-      notify?.('Đã xóa danh sách thông báo đang hiển thị.', 'info')
-    } else if (clearNotifications) clearNotifications(scopedNotificationStoreId)
-    else notify?.('Chưa có thông báo để xóa.', 'info')
+  const clearAllNotifications = async () => {
+    if (!clearNotifications || !unreadNotifications.length) {
+      notify?.('Chưa có thông báo để cập nhật.', 'info')
+      return
+    }
+    setNotificationBusy(true)
+    try {
+      const result = await clearNotifications(scopedNotificationStoreId)
+      if (result?.ok === false) notify?.(result.message || 'Không thể cập nhật danh sách thông báo.', 'info')
+    } catch (error) {
+      notify?.(error.message || 'Không thể cập nhật danh sách thông báo.', 'info')
+    } finally {
+      setNotificationBusy(false)
+    }
   }
 
   return (
@@ -175,7 +212,7 @@ export default function AppShell() {
         <button className="sidebar__close" onClick={() => setMobileOpen(false)} aria-label="Đóng menu"><X size={20} /></button>
         <div className="sidebar__brand">
           {isEmployee ? <Brand /> : isStoreWorkspace ? (
-            <div className="store-logo"><span>I</span><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>Quản trị cấp cao</small></div></div>
+            <div className="store-logo"><span>I</span><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>{systemRoleLabel}</small></div></div>
           ) : <Brand subtitle="Quản lý toàn hệ thống" />}
         </div>
         {isStoreWorkspace && (
@@ -224,8 +261,8 @@ export default function AppShell() {
                       type="button"
                       className="notification-clear"
                       onClick={clearAllNotifications}
-                      disabled={!unreadNotifications.length}
-                    ><X size={15} /> Xóa tất cả thông báo</button>
+                      disabled={!unreadNotifications.length || notificationBusy}
+                    ><X size={15} /> {notificationBusy ? 'Đang cập nhật...' : 'Xóa tất cả thông báo'}</button>
                   </header>
                   <div className="notification-list">
                     {unreadNotifications.map((item, index) => (
@@ -254,7 +291,7 @@ export default function AppShell() {
             <div className="topbar-user"><strong>{session?.name}</strong><small>{accountSubtitle}</small></div>
             <button
               className="icon-button"
-              onClick={() => navigate(isStoreWorkspace ? '/store/settings' : isAdmin ? '/admin/settings' : '/employee/home')}
+              onClick={() => navigate(isStoreWorkspace ? '/store/settings' : isSystemOperator ? '/admin/settings' : '/employee/home')}
               aria-label="Mở trang tài khoản"
             ><ChevronDown size={17} /></button>
           </div>

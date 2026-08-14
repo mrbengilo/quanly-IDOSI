@@ -7,6 +7,7 @@ import { useApp } from '../state/AppContext'
 
 const destinations = {
   admin: '/admin/overview',
+  manager: '/admin/overview',
   employee: '/employee/home',
 }
 
@@ -56,7 +57,6 @@ export default function Login() {
     setLoading(true)
     setError('')
     setRecoveryMessage('')
-    await new Promise((resolve) => window.setTimeout(resolve, 280))
     const result = await login(username, password)
     setLoading(false)
     if (!result.ok) return setError(result.message)
@@ -66,7 +66,7 @@ export default function Login() {
 
   const showRecoveryHelp = () => {
     setError('')
-    setRecoveryMessage('Vui lòng liên hệ quản trị cấp cao IDOSI để được xác minh và cấp lại mật khẩu. Không cung cấp CCCD hoặc mật khẩu qua kênh không chính thức.')
+    setRecoveryMessage('Vui lòng liên hệ Admin IDOSI để được xác minh và cấp lại mật khẩu. Không cung cấp CCCD hoặc mật khẩu qua kênh không chính thức.')
   }
 
   return (
@@ -112,7 +112,7 @@ export default function Login() {
           <div className="demo-accounts">
             {demoAccounts.map((account) => (
               <button key={account.username} type="button" onClick={() => { setUsername(account.username); setPassword('') }}>
-                <b>{account.role === 'admin' ? 'Quản trị' : account.unit === 'office' ? 'Nhân viên văn phòng' : 'Nhân viên cửa hàng'}</b>
+                <b>{account.role === 'admin' ? 'Admin' : account.role === 'manager' ? 'Quản lý' : account.unit === 'office' ? 'Nhân viên văn phòng' : 'Nhân viên cửa hàng'}</b>
                 <small>{account.username}</small>
               </button>
             ))}

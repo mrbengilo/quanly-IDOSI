@@ -2,12 +2,12 @@
  * Logical D1 schema catalog for the IDOSI Worker.
  *
  * Runtime access intentionally uses prepared D1 statements in server/worker.js.
- * The executable schema is the inspected SQL migration in
- * drizzle/0000_idosi_core.sql; this file keeps the data contract typed without
- * adding a runtime ORM to the static Vite application.
+ * The executable schema is defined by the inspected SQL migrations in
+ * drizzle/; this file keeps the data contract typed without adding a runtime
+ * ORM to the static Vite application.
  */
 
-export type UserRole = 'admin' | 'employee'
+export type UserRole = 'admin' | 'manager' | 'employee'
 export type AccountStatus = 'active' | 'locked' | 'inactive'
 
 export const schema = {
@@ -101,6 +101,35 @@ export const schema = {
     primaryKey: ['actor_id', 'idempotency_key'],
     columns: ['actor_id', 'idempotency_key', 'request_hash', 'response_json', 'status_code', 'created_at'],
   },
+  stateCollections: {
+    table: 'state_collections',
+    primaryKey: ['scope_key', 'collection_key'],
+    columns: ['scope_key', 'collection_key', 'created_at', 'updated_at'],
+  },
+  stateEntities: {
+    table: 'state_entities',
+    primaryKey: ['scope_key', 'collection_key', 'entity_key'],
+    columns: [
+      'scope_key',
+      'collection_key',
+      'entity_key',
+      'entity_order',
+      'value_json',
+      'value_bytes',
+      'created_at',
+      'updated_at',
+    ],
+  },
+  commandReceiptChunks: {
+    table: 'command_receipt_chunks',
+    primaryKey: ['actor_id', 'idempotency_key', 'chunk_index'],
+    columns: ['actor_id', 'idempotency_key', 'chunk_index', 'chunk_text', 'chunk_bytes', 'created_at'],
+  },
 } as const
 
-export const migrations = ['drizzle/0000_idosi_core.sql'] as const
+export const migrations = [
+  'drizzle/0000_idosi_core.sql',
+  'drizzle/0001_manager_role.sql',
+  'drizzle/0002_attendance_evaluation_policies.sql',
+  'drizzle/0003_state_entities.sql',
+] as const

@@ -116,6 +116,11 @@ export const apiPolicyMap = (records = []) => {
   if (values.employee_kpi_percent_15000 != null) employeeKpiRates.from15000 = Number(values.employee_kpi_percent_15000)
   if (values.employee_kpi_percent_7000 != null) employeeKpiRates.from7000 = Number(values.employee_kpi_percent_7000)
   if (Object.keys(employeeKpiRates).length) mapped.employeeKpiRates = employeeKpiRates
+  const attendanceEvaluation = {}
+  if (values.attendance_maintain_max_late_count != null) attendanceEvaluation.maintainMaxLateCount = Number(values.attendance_maintain_max_late_count)
+  if (values.attendance_improve_min_late_count != null) attendanceEvaluation.improveMinLateCount = Number(values.attendance_improve_min_late_count)
+  if (values.attendance_improve_min_late_minutes != null) attendanceEvaluation.improveMinLateMinutes = Number(values.attendance_improve_min_late_minutes)
+  if (Object.keys(attendanceEvaluation).length) mapped.attendanceEvaluation = attendanceEvaluation
   return mapped
 }
 
@@ -125,6 +130,9 @@ export const apiPolicyEntries = (policies = {}) => [
   ['employee_kpi_percent_30000', Number(policies.employeeKpiRates?.from30000)],
   ['employee_kpi_percent_15000', Number(policies.employeeKpiRates?.from15000)],
   ['employee_kpi_percent_7000', Number(policies.employeeKpiRates?.from7000)],
+  ['attendance_maintain_max_late_count', Number(policies.attendanceEvaluation?.maintainMaxLateCount)],
+  ['attendance_improve_min_late_count', Number(policies.attendanceEvaluation?.improveMinLateCount)],
+  ['attendance_improve_min_late_minutes', Number(policies.attendanceEvaluation?.improveMinLateMinutes)],
 ]
 
 export const isLocalApiFallbackAllowed = () => import.meta.env.DEV || import.meta.env.MODE === 'test'

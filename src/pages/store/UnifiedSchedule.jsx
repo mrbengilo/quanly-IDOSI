@@ -58,12 +58,31 @@ const durationLabel = (shift) => {
   return remainder ? `${hours} giờ ${remainder} phút` : `${hours} giờ`
 }
 
-const blankShift = (date) => ({
+const BRIGHT_SHIFT_COLORS = [
+  '#ff3d71',
+  '#7c3aed',
+  '#00a6fb',
+  '#00b894',
+  '#ff8a00',
+  '#e84393',
+  '#3a86ff',
+  '#8ac926',
+  '#ff595e',
+  '#00c2d1',
+]
+
+const nextShiftColor = (shifts = []) => {
+  const used = new Set(shifts.filter((shift) => shift.active !== false).map((shift) => String(shift.color || '').toLowerCase()))
+  return BRIGHT_SHIFT_COLORS.find((color) => !used.has(color.toLowerCase()))
+    || BRIGHT_SHIFT_COLORS[shifts.length % BRIGHT_SHIFT_COLORS.length]
+}
+
+const blankShift = (date, color = BRIGHT_SHIFT_COLORS[0]) => ({
   name: '',
   start: '07:00',
   end: '12:00',
   date,
-  color: '#07873d',
+  color,
 })
 
 const employeeRole = (employee = {}) => employee.position || employee.shortRole || employee.role || 'Nhân viên'
@@ -99,7 +118,7 @@ export function UnifiedSchedule() {
   const [note, setNote] = useState('')
   const [shiftModalOpen, setShiftModalOpen] = useState(false)
   const [editingShift, setEditingShift] = useState(null)
-  const [shiftForm, setShiftForm] = useState(() => blankShift(localDate()))
+  const [shiftForm, setShiftForm] = useState(() => blankShift(localDate(), nextShiftColor(shiftDefinitions)))
 
   const dayShifts = shiftDefinitions
     .filter((shift) => (
@@ -143,7 +162,7 @@ export function UnifiedSchedule() {
 
   const openCreateShift = () => {
     setEditingShift(null)
-    setShiftForm(blankShift(date))
+    setShiftForm(blankShift(date, nextShiftColor(shiftDefinitions.filter((shift) => !storeId || !shift.storeId || String(shift.storeId) === String(storeId)))))
     setShiftModalOpen(true)
   }
 
@@ -162,10 +181,10 @@ export function UnifiedSchedule() {
   const closeShiftModal = () => {
     setShiftModalOpen(false)
     setEditingShift(null)
-    setShiftForm(blankShift(date))
+    setShiftForm(blankShift(date, nextShiftColor(shiftDefinitions)))
   }
 
-  const saveShift = () => {
+  const saveShift = async () => {
     const payload = {
       ...shiftForm,
       name: shiftForm.name.trim(),
@@ -176,8 +195,8 @@ export function UnifiedSchedule() {
       return
     }
     const result = editingShift
-      ? updateShiftDefinition?.(editingShift.id, payload)
-      : createShiftDefinition?.(payload)
+      ? await updateShiftDefinition?.(editingShift.id, payload)
+      : await createShiftDefinition?.(payload)
     if (!result?.ok) {
       notify?.(result?.message || 'Chưa thể lưu ca làm việc.', 'info')
       return
@@ -187,9 +206,9 @@ export function UnifiedSchedule() {
     closeShiftModal()
   }
 
-  const removeShift = (shift) => {
+  const removeShift = async (shift) => {
     if (!window.confirm(`Ngừng sử dụng ${shift.name} ngày ${displayDate(shift.date)}? Lịch sử đã ghi nhận sẽ được giữ nguyên.`)) return
-    const result = deleteShiftDefinition?.(shift.id)
+    const result = await deleteShiftDefinition?.(shift.id)
     if (result === false || result?.ok === false) {
       notify?.(result?.message || 'Chưa thể xóa ca làm việc.', 'info')
       return
@@ -213,8 +232,8 @@ export function UnifiedSchedule() {
       : [...new Set([...current, ...visibleIds])])
   }
 
-  const saveAssignments = () => {
-    const result = saveScheduleMultiple?.(selectedEmployeeIds, selectedShiftIds, { date, note, storeId })
+  const saveAssignments = async () => {
+    const result = await saveScheduleMultiple?.(selectedEmployeeIds, selectedShiftIds, { date, note, storeId })
     if (!result?.ok) {
       notify?.(result?.message || 'Vui lòng chọn ít nhất một ca và một nhân viên.', 'info')
       return
@@ -279,7 +298,10 @@ export function UnifiedSchedule() {
         </Card>
 
         <Card title={`Tạo lịch phân ca · ${displayDate(date)}`}>
-          <Field label={`1. Chọn ca · Đã chọn ${selectedShiftIds.length}`}>
+          <Field label="1. Chọn ngày" required>
+            <Input icon={CalendarDays} type="date" value={date} onChange={changeDate} />
+          </Field>
+          <Field label={`2. Chọn ca (có thể chọn nhiều) · Đã chọn ${selectedShiftIds.length}`}>
             {dayShifts.length ? (
               <div className="shift-selector">
                 {dayShifts.map((shift) => (
@@ -300,7 +322,7 @@ export function UnifiedSchedule() {
           </Field>
 
           <div className="card__subheader">
-            <strong>2. Chọn nhân viên · Đã chọn {selectedEmployeeIds.length}</strong>
+            <strong>3. Chọn nhân viên (có thể chọn nhiều) · Đã chọn {selectedEmployeeIds.length}</strong>
             <Button variant="ghost" onClick={toggleAllEmployees} disabled={!visibleEmployees.length}>
               {visibleEmployees.length && visibleEmployees.every((employee) => selectedEmployeeIds.includes(employee.id)) ? 'Bỏ chọn hiển thị' : 'Chọn tất cả hiển thị'}
             </Button>
@@ -317,12 +339,12 @@ export function UnifiedSchedule() {
             ))}
             {!visibleEmployees.length && <EmptyState title="Không tìm thấy nhân viên" description="Thử một từ khóa khác." />}
           </div>
-          <Field label="3. Ghi chú (tùy chọn)">
+          <Field label="4. Ghi chú (tùy chọn)">
             <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ghi chú cho lịch phân ca..." />
           </Field>
           <div className="panel-actions">
             <Button variant="outline" onClick={() => { setSelectedShiftIds([]); setSelectedEmployeeIds([]); setNote('') }}>Làm lại</Button>
-            <Button icon={Save} onClick={saveAssignments} disabled={!selectedShiftIds.length || !selectedEmployeeIds.length}>Lưu lịch phân ca</Button>
+            <Button icon={Save} onClick={saveAssignments} disabled={!selectedShiftIds.length || !selectedEmployeeIds.length}>LƯU</Button>
           </div>
         </Card>
       </div>
@@ -374,7 +396,7 @@ export function UnifiedSchedule() {
         footer={(
           <>
             <Button variant="outline" onClick={closeShiftModal}>Hủy</Button>
-            <Button icon={Save} onClick={saveShift}>{editingShift ? 'Lưu thay đổi' : 'Tạo ca'}</Button>
+            <Button icon={Save} onClick={saveShift}>LƯU</Button>
           </>
         )}
       >
@@ -385,14 +407,17 @@ export function UnifiedSchedule() {
           <Field label="Ngày áp dụng" required>
             <Input type="date" value={shiftForm.date} onChange={(event) => setShiftForm({ ...shiftForm, date: event.target.value })} />
           </Field>
-          <Field label="Thời gian bắt đầu" required>
+          <Field label="Giờ bắt đầu (24 giờ)" required>
             <Input type="time" value={shiftForm.start} onChange={(event) => setShiftForm({ ...shiftForm, start: event.target.value })} />
           </Field>
-          <Field label="Thời gian kết thúc" required>
+          <Field label="Giờ kết thúc (24 giờ)" required>
             <Input type="time" value={shiftForm.end} onChange={(event) => setShiftForm({ ...shiftForm, end: event.target.value })} />
           </Field>
-          <Field label="Màu nhận diện">
-            <Input type="color" value={shiftForm.color} onChange={(event) => setShiftForm({ ...shiftForm, color: event.target.value })} />
+          <Field label="Màu nhận diện (hệ thống tự chọn)">
+            <div className="input-wrap" aria-label={`Màu ca ${shiftForm.color}`}>
+              <span aria-hidden="true" style={{ width: 24, height: 24, borderRadius: 999, background: shiftForm.color, boxShadow: `0 0 0 4px ${shiftForm.color}22` }} />
+              <strong>{shiftForm.color.toUpperCase()}</strong>
+            </div>
           </Field>
           <Field label="Thời lượng dự kiến">
             <Input value={durationLabel(shiftForm)} readOnly />
