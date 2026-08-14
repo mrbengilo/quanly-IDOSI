@@ -1,3 +1,5 @@
+import { DEMO_PASSWORD_HASH } from './security/passwords'
+
 const storeSeed = (id, name, short, revenue, expense, employees = 1) => ({
   id,
   name,
@@ -73,7 +75,7 @@ const employeeSeed = ({
   cccdImageName: '',
   cccdImages: [],
   username,
-  password: 'idosi123',
+  passwordHash: DEMO_PASSWORD_HASH,
   status,
   unit,
   unitType: unit,
@@ -101,42 +103,12 @@ export const employeesSeed = [
   employeeSeed({ id: 'VP002', name: 'Trương Quốc Việt', cccd: '079195000011', phone: '0901000011', province: 'TP. Hồ Chí Minh', ward: 'Phường 25', street: '18 Nguyễn Văn Thương', salary: 15000000, position: 'Kế toán', age: 31, username: 'office.accounting', storeId: 'OFFICE', unit: 'office', color: '#d8cceb' }),
 ]
 
-export const managerAccountsSeed = [
-  {
-    id: 'QL001',
-    code: 'QL001',
-    managerCode: 'QL001',
-    name: 'Trần Minh Quân',
-    cccd: '079190000101',
-    citizenId: '079190000101',
-    phone: '0902000001',
-    province: 'TP. Hồ Chí Minh',
-    ward: 'Phường Linh Tây',
-    street: '234 Đường số 9',
-    addressDetails: address('TP. Hồ Chí Minh', 'Phường Linh Tây', '234 Đường số 9'),
-    address: '234 Đường số 9, Phường Linh Tây, TP. Hồ Chí Minh',
-    salary: 18000000,
-    age: 36,
-    cccdImage: '',
-    cccdImageName: '',
-    cccdImages: [],
-    username: 'manager',
-    password: 'idosi123',
-    role: 'store',
-    accountType: 'manager',
-    storeScope: 'global',
-    status: 'Đang hoạt động',
-    storeId: '',
-    assignedStoreId: '',
-  },
-]
-
 export const adminAccountsSeed = [
   {
     id: 'ADMIN',
     code: 'ADMIN',
     username: 'admin',
-    password: 'idosi123',
+    passwordHash: DEMO_PASSWORD_HASH,
     role: 'admin',
     accountType: 'admin',
     name: 'Quản trị cấp cao',
@@ -237,7 +209,7 @@ export const tasksSeed = [
   { id: 1, title: 'Mở cửa hàng, kiểm tra vệ sinh', detail: 'Mở cửa đúng giờ, bật đèn, kiểm tra khu vực trưng bày', done: false },
   { id: 2, title: 'Sắp xếp, trưng bày sản phẩm', detail: 'Sắp xếp quần áo, phụ kiện gọn gàng, đẹp mắt', done: false },
   { id: 3, title: 'Tư vấn & hỗ trợ khách hàng', detail: 'Tư vấn sản phẩm, hỗ trợ khách thử đồ', done: false },
-  { id: 4, title: 'Báo cáo doanh thu đầu ca', detail: 'Báo cáo doanh thu đầu ca cho quản lý', done: false },
+  { id: 4, title: 'Kiểm tra đơn hàng đầu ca', detail: 'Đối chiếu các đơn đầu ca trên hệ thống', done: false },
   { id: 5, title: 'Kiểm tra & báo cáo tồn kho', detail: 'Kiểm tra hàng hóa, báo cáo sản phẩm sắp hết', done: false },
   { id: 6, title: 'Vệ sinh & dọn dẹp cuối ca', detail: 'Dọn dẹp khu vực làm việc, sản phẩm gọn gàng', done: false },
 ]
@@ -284,14 +256,8 @@ export const payRows = [
   { employeeId: 'NV003', hours: 202, base: 7800000, tiktokAllowance: 300000, tiktokBonus: 700000, other: 250000, bonus: 400000 },
 ]
 
-export const managerPayrollSeed = [
-  { id: 1, managerId: 'QL001', month: '08/2026', store: 'SecondMall SM234', salary: 18000000, bonus: 3000000, allowance: 1500000, updatedAt: '12/08/2026 14:30' },
-  { id: 2, managerId: 'QL001', month: '07/2026', store: 'SecondMall SM234', salary: 18000000, bonus: 2500000, allowance: 1000000, updatedAt: '20/07/2026 10:15' },
-]
-
 export const demoAccounts = [
-  { username: 'admin', password: 'idosi123', role: 'admin', accountType: 'admin', name: 'Quản trị cấp cao', code: 'ADMIN' },
-  { username: 'manager', password: 'idosi123', role: 'store', accountType: 'manager', storeScope: 'global', name: 'Trần Minh Quân', code: 'QL001', storeId: '' },
-  { username: 'office', password: 'idosi123', role: 'employee', accountType: 'employee', unit: 'office', name: 'Đỗ Thu Trang', code: 'VP001', employeeId: 'VP001', storeId: 'OFFICE' },
-  { username: 'employee', password: 'idosi123', role: 'employee', accountType: 'employee', unit: 'store', name: 'Nguyễn Minh Anh', code: 'NV001', employeeId: 'NV001', storeId: 'CH001', employmentType: 'Full-time' },
+  { username: 'admin', role: 'admin', accountType: 'admin', name: 'Quản trị cấp cao', code: 'ADMIN' },
+  { username: 'office', role: 'employee', accountType: 'employee', unit: 'office', name: 'Đỗ Thu Trang', code: 'VP001', employeeId: 'VP001', storeId: 'OFFICE' },
+  { username: 'employee', role: 'employee', accountType: 'employee', unit: 'store', name: 'Nguyễn Minh Anh', code: 'NV001', employeeId: 'NV001', storeId: 'CH001', employmentType: 'Full-time' },
 ]

@@ -7,7 +7,6 @@ import { useApp } from '../state/AppContext'
 
 const destinations = {
   admin: '/admin/overview',
-  store: '/admin/overview',
   employee: '/employee/home',
 }
 
@@ -45,33 +44,24 @@ export default function Login() {
   const { login } = useApp()
   const navigate = useNavigate()
   const [username, setUsername] = useState(rememberedUsername)
-  const [password, setPassword] = useState('idosi123')
+  const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [remember, setRemember] = useState(true)
   const [error, setError] = useState('')
   const [recoveryMessage, setRecoveryMessage] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const submit = (event) => {
+  const submit = async (event) => {
     event.preventDefault()
     setLoading(true)
     setError('')
     setRecoveryMessage('')
-    window.setTimeout(() => {
-      const result = login(username, password)
-      setLoading(false)
-      if (!result.ok) return setError(result.message)
-      saveRememberedUsername(username, remember)
-      navigate(destinations[result.account.role])
-    }, 380)
-  }
-
-  const demoLogin = (account) => {
-    const result = login(account.username, account.password)
-    if (result.ok) {
-      saveRememberedUsername(account.username, remember)
-      navigate(destinations[result.account.role])
-    }
+    await new Promise((resolve) => window.setTimeout(resolve, 280))
+    const result = await login(username, password)
+    setLoading(false)
+    if (!result.ok) return setError(result.message)
+    saveRememberedUsername(username, remember)
+    navigate(destinations[result.account.role])
   }
 
   const showRecoveryHelp = () => {
@@ -94,7 +84,7 @@ export default function Login() {
 
       <section className="login-panel-wrap">
         <form className="login-panel" onSubmit={submit}>
-          <div className="login-round-logo">IDOSI<small>hệ thống quản lý</small></div>
+          <img className="login-round-logo" src="/logo.jpg?v=20260814" alt="Biểu trưng IDOSI" />
           <h2>Chào mừng bạn quay trở lại!</h2>
           <p>Vui lòng đăng nhập để tiếp tục vào hệ thống</p>
 
@@ -118,11 +108,11 @@ export default function Login() {
           {recoveryMessage && <div className="login-security" role="status"><ShieldCheck size={20} /> {recoveryMessage}</div>}
           <Button type="submit" loading={loading} className="login-submit" icon={LockKeyhole}>Đăng nhập</Button>
 
-          <div className="login-divider"><span>hoặc đăng nhập nhanh</span></div>
+          <div className="login-divider"><span>chọn nhanh tên tài khoản</span></div>
           <div className="demo-accounts">
             {demoAccounts.map((account) => (
-              <button key={account.username} type="button" onClick={() => demoLogin(account)}>
-                <b>{account.role === 'admin' ? 'Quản trị' : account.role === 'store' ? 'Quản lý' : account.unit === 'office' ? 'Văn phòng' : 'Cửa hàng'}</b>
+              <button key={account.username} type="button" onClick={() => { setUsername(account.username); setPassword('') }}>
+                <b>{account.role === 'admin' ? 'Quản trị' : account.unit === 'office' ? 'Nhân viên văn phòng' : 'Nhân viên cửa hàng'}</b>
                 <small>{account.username}</small>
               </button>
             ))}

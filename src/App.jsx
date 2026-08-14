@@ -2,41 +2,49 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './layout/AppShell'
 import Login from './pages/Login'
 import {
-  AdminCashflow,
-  AdminOverview,
-  AdminReports,
   AdminSettings,
   AdminStores,
   AdminTasks,
-  ManagerPayroll,
 } from './pages/admin/AdminPages'
-import { ManagerAccounts } from './pages/admin/ManagerAccounts'
+import {
+  AdminCashflowV2,
+  AdminOverviewV2,
+  AdminReportsV2,
+} from './pages/admin/SystemFinanceV2'
+import {
+  OrderAuditPage,
+  PolicySettings,
+  ResetDataPage,
+  SupportTransfersPage,
+  SystemEmployees,
+} from './pages/admin/GovernancePages'
 import { OfficeManagement } from './pages/office/OfficeManagement'
 import {
   EmployeeCashflow,
-  EmployeeHome,
-  EmployeePayroll,
   EmployeeShiftHistory,
 } from './pages/employee/EmployeePages'
 import {
-  StoreEmployees,
-  StoreImports,
-  StoreOverview,
-  StoreSchedule,
-  StoreShifts,
-} from './pages/store/StoreOperations'
+  EmployeeAttendancePage,
+  EmployeeDashboardV2,
+  EmployeeOrdersPage,
+  EmployeePayrollDetails,
+} from './pages/employee/EmployeeV2Pages'
+import { StoreEmployees } from './pages/store/StoreOperations'
+import { StoreSettings } from './pages/store/StoreFinance'
 import {
-  StoreAttendance,
-  StoreCashflow,
-  StorePayroll,
-  StoreReports,
-  StoreSettings,
-} from './pages/store/StoreFinance'
+  StoreAttendanceV2,
+  StoreCashflowV2,
+  StoreImportsV2,
+  StoreOverviewV2,
+  StoreOrdersPage,
+  StorePayrollV2,
+  StoreReportsV2,
+} from './pages/store/StoreV2Pages'
+import UnifiedSchedule from './pages/store/UnifiedSchedule'
 import { useApp } from './state/AppContext'
 
 const homeByRole = {
   admin: '/admin/overview',
-  store: '/admin/overview',
   employee: '/employee/home',
 }
 
@@ -62,37 +70,44 @@ export default function App() {
       <Route path="/" element={<EntryRedirect />} />
       <Route path="/login" element={session ? <Navigate to={homeFor(session)} replace /> : <Login />} />
 
-      <Route element={<RoleGuard roles={['admin', 'store']}><AppShell /></RoleGuard>}>
-        <Route path="/admin/overview" element={<AdminOverview />} />
+      <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
+        <Route path="/admin/overview" element={<AdminOverviewV2 />} />
         <Route path="/admin/stores" element={<AdminStores />} />
         <Route path="/admin/tasks" element={<AdminTasks />} />
-        <Route path="/admin/cashflow" element={<AdminCashflow />} />
-        <Route path="/admin/reports" element={<AdminReports />} />
+        <Route path="/admin/cashflow" element={<AdminCashflowV2 />} />
+        <Route path="/admin/reports" element={<AdminReportsV2 />} />
 
-        <Route path="/store/overview" element={<StoreOverview />} />
-        <Route path="/store/shifts" element={<StoreShifts />} />
-        <Route path="/store/schedule" element={<StoreSchedule />} />
+        <Route path="/store/overview" element={<StoreOverviewV2 />} />
+        <Route path="/store/shifts" element={<Navigate to="/store/schedule" replace />} />
+        <Route path="/store/schedule" element={<UnifiedSchedule />} />
         <Route path="/store/employees" element={<StoreEmployees />} />
-        <Route path="/store/imports" element={<StoreImports />} />
-        <Route path="/store/attendance" element={<StoreAttendance />} />
-        <Route path="/store/payroll" element={<StorePayroll />} />
-        <Route path="/store/cashflow" element={<StoreCashflow />} />
-        <Route path="/store/reports" element={<StoreReports />} />
+        <Route path="/store/orders" element={<StoreOrdersPage />} />
+        <Route path="/store/imports" element={<StoreImportsV2 />} />
+        <Route path="/store/attendance" element={<StoreAttendanceV2 />} />
+        <Route path="/store/payroll" element={<StorePayrollV2 />} />
+        <Route path="/store/cashflow" element={<StoreCashflowV2 />} />
+        <Route path="/store/reports" element={<StoreReportsV2 />} />
         <Route path="/store/settings" element={<StoreSettings />} />
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/office" element={<OfficeManagement />} />
         <Route path="/admin/office" element={<Navigate to="/office" replace />} />
-        <Route path="/admin/managers" element={<ManagerAccounts />} />
-        <Route path="/admin/manager-payroll" element={<ManagerPayroll />} />
+        <Route path="/admin/employees" element={<SystemEmployees />} />
+        <Route path="/admin/policies" element={<PolicySettings />} />
+        <Route path="/admin/reset" element={<ResetDataPage />} />
+        <Route path="/admin/order-audit" element={<OrderAuditPage />} />
+        <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
         <Route path="/admin/settings" element={<AdminSettings />} />
       </Route>
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
-        <Route path="/employee/home" element={<EmployeeHome />} />
-        <Route path="/employee/shifts" element={<EmployeeShiftHistory />} />
-        <Route path="/employee/payroll" element={<EmployeePayroll />} />
+        <Route path="/employee/home" element={<EmployeeDashboardV2 />} />
+        <Route path="/employee/orders" element={<EmployeeOrdersPage />} />
+        <Route path="/employee/attendance" element={<EmployeeAttendancePage />} />
+        <Route path="/employee/shifts" element={<Navigate to="/employee/work-history" replace />} />
+        <Route path="/employee/work-history" element={<EmployeeShiftHistory />} />
+        <Route path="/employee/payroll" element={<EmployeePayrollDetails />} />
         <Route path="/employee/cashflow" element={<EmployeeCashflow />} />
       </Route>
 

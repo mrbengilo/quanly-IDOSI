@@ -5,9 +5,24 @@ import { extname, resolve } from 'node:path'
 const root = process.cwd()
 const client = resolve(root, 'dist', 'client')
 const workerPath = resolve(root, 'dist', 'server', 'index.js')
+const hostingPath = resolve(root, 'dist', '.openai', 'hosting.json')
+const migrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0000_idosi_core.sql')
+const migrationJournalPath = resolve(root, 'dist', '.openai', 'drizzle', 'meta', '_journal.json')
 
 await access(workerPath)
-await access(resolve(root, 'dist', '.openai', 'hosting.json'))
+await access(hostingPath)
+await access(migrationPath)
+await access(migrationJournalPath)
+
+const hosting = JSON.parse(await readFile(hostingPath, 'utf8'))
+assert.equal(hosting.d1, 'DB')
+const migration = await readFile(migrationPath, 'utf8')
+const migrationJournal = JSON.parse(await readFile(migrationJournalPath, 'utf8'))
+assert.equal(migrationJournal.dialect, 'sqlite')
+assert.equal(migrationJournal.entries.at(-1)?.tag, '0000_idosi_core')
+for (const table of ['system_metadata', 'users', 'app_state', 'policies', 'audit_log', 'counters', 'sessions', 'command_receipts']) {
+  assert.match(migration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`))
+}
 
 const { default: worker } = await import(`${new URL(`file:///${workerPath.replaceAll('\\', '/')}`).href}?v=${Date.now()}`)
 const contentTypes = {
@@ -34,5 +49,9 @@ const response = await worker.fetch(new Request('https://idosi.example/quan-ly')
 assert.equal(response.status, 200)
 assert.match(response.headers.get('content-type') || '', /^text\/html/)
 assert.match(await response.text(), /<div id="root"><\/div>/)
+
+const healthResponse = await worker.fetch(new Request('https://idosi.example/api/health'), env)
+assert.equal(healthResponse.status, 200)
+assert.deepEqual((await healthResponse.json()).service, 'idosi-api')
 
 console.log('Sites build verified.')

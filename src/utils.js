@@ -59,21 +59,41 @@ export const downloadCsv = (name, rows) => {
 
 let uidSequence = 0
 
+const vietnamDateFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Ho_Chi_Minh',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+const formatVietnamDate = (date) => {
+  const parts = Object.fromEntries(vietnamDateFormatter.formatToParts(date).map((part) => [part.type, part.value]))
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
+
 export const uid = (prefix = 'ID') => {
   uidSequence = (uidSequence + 1) % 1000
   return `${prefix}${Date.now().toString(36).toUpperCase()}${String(uidSequence).padStart(3, '0')}`
 }
 
-export const today = (date = new Date()) => {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+export const businessDate = (value) => {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? '' : formatVietnamDate(value)
+  const source = String(value ?? '').trim()
+  if (!source) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(source)) return source
+  const explicitZone = /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/iu.test(source)
+  if (explicitZone) {
+    const parsed = new Date(source)
+    if (!Number.isNaN(parsed.getTime())) return formatVietnamDate(parsed)
+  }
+  return source.match(/^\d{4}-\d{2}-\d{2}/u)?.[0] || ''
 }
+
+export const today = (date = new Date()) => businessDate(date)
 
 export const shortDate = (iso) => {
   if (!iso) return ''
-  const [year, month, day] = String(iso).slice(0, 10).split('-')
+  const [year, month, day] = businessDate(iso).split('-')
   return year && month && day ? `${day}/${month}/${year}` : String(iso)
 }
 
@@ -119,8 +139,8 @@ export const getArrivalTag = (actualTime, scheduledTime, toleranceMinutes = 5) =
   const scheduled = timeToMinutes(scheduledTime)
   if (actual == null || scheduled == null) return 'Chưa xác định'
   const difference = actual - scheduled
-  if (difference < -Math.abs(toleranceMinutes)) return 'Đi sớm'
-  if (difference <= Math.abs(toleranceMinutes)) return 'Đúng giờ'
+  if (difference < 0) return 'Đi sớm'
+  if (difference <= Math.abs(toleranceMinutes)) return 'Đi đúng giờ'
   return 'Đi trễ'
 }
 

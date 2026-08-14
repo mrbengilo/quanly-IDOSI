@@ -46,22 +46,13 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { adminSeries } from '../../data'
+import { financeSummaryFromState } from '../../domain'
 import { useApp } from '../../state/AppContext'
 import { downloadCsv, money, today, validateVietnamPhone } from '../../utils'
 
 const sum = (items, key) => items.reduce((total, item) => total + (Number(item[key]) || 0), 0)
 const percent = (value, total) => total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '0.00%'
 const emptyStoreForm = { name: '', location: '', address: '' }
-
-const monthInputValue = (value = '') => {
-  const match = String(value).match(/^(\d{2})\/(\d{4})$/)
-  return match ? `${match[2]}-${match[1]}` : String(value).slice(0, 7)
-}
-
-const monthDisplayValue = (value = '') => {
-  const match = String(value).match(/^(\d{4})-(\d{2})$/)
-  return match ? `${match[2]}/${match[1]}` : value
-}
 
 const seriesDate = (day, year = new Date().getFullYear()) => {
   const [date, month] = String(day).split('/')
@@ -99,7 +90,7 @@ export function AdminOverview() {
     <div className="page">
       <PageHeader
         title="Tổng quan"
-        subtitle={`Xin chào, ${session?.name || (session?.role === 'admin' ? 'Quản trị viên' : 'Quản lý')}! Đây là tổng quan hoạt động của tất cả cửa hàng.`}
+        subtitle={`Xin chào, ${session?.name || (session?.role === 'admin' ? 'Quản trị viên' : 'Nhân viên')}! Đây là tổng quan hoạt động của tất cả cửa hàng.`}
         actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
       <AdminMetrics stores={stores} />
@@ -128,7 +119,8 @@ export function AdminOverview() {
 }
 
 export function AdminStores() {
-  const { stores, addStore, updateStore, deleteStore, setActiveStoreId, notify, session } = useApp()
+  const app = useApp()
+  const { stores, addStore, updateStore, deleteStore, setActiveStoreId, notify, session } = app
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -136,9 +128,10 @@ export function AdminStores() {
   const [viewingStore, setViewingStore] = useState(null)
   const [form, setForm] = useState(emptyStoreForm)
   const filtered = stores.filter((item) => `${item.name} ${item.location}`.toLowerCase().includes(query.toLowerCase()))
-  const revenue = sum(stores, 'revenue')
-  const expense = sum(stores, 'expense')
-  const canManageStoreDirectory = session?.role === 'admin' || session?.role === 'store'
+  const financeByStore = new Map(stores.map((store) => [store.id, financeSummaryFromState(app, { storeId: store.id })]))
+  const revenue = [...financeByStore.values()].reduce((total, summary) => total + summary.revenue, 0)
+  const expense = [...financeByStore.values()].reduce((total, summary) => total + summary.expense, 0)
+  const canManageStoreDirectory = session?.role === 'admin'
   const canDeleteStore = session?.role === 'admin'
 
   const openCreate = () => {
@@ -203,19 +196,22 @@ export function AdminStores() {
         <TableWrap>
           <thead><tr><th>#</th><th>Tên cửa hàng</th><th>Địa chỉ</th><th>Nhân viên</th><th>Doanh thu</th><th>Chi phí</th><th>Lợi nhuận</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>
-            {filtered.map((store, index) => (
+            {filtered.map((store, index) => {
+              const storeFinance = financeByStore.get(store.id) || { revenue: 0, expense: 0, profit: 0, marginPercent: 0 }
+              return (
               <tr key={store.id}>
                 <td>{index + 1}</td>
                 <td><div className="store-cell"><StoreIllustration name={store.name} accent={store.accent} /><strong>{store.name}</strong></div></td>
                 <td><span className="cell-muted"><MapPin size={15} />{store.location}</span></td>
                 <td><strong className="green-text">{store.employees}</strong><small className="table-sub">nhân viên</small></td>
-                <td className="green-text"><strong>{money(store.revenue)}</strong></td>
-                <td className="orange-text"><strong>{money(store.expense)}</strong></td>
-                <td><strong>{money(store.revenue - store.expense)}</strong><small className="green-text table-sub">({percent(store.revenue - store.expense, store.revenue)})</small></td>
+                <td className="green-text"><strong>{money(storeFinance.revenue)}</strong></td>
+                <td className="orange-text"><strong>{money(storeFinance.expense)}</strong></td>
+                <td><strong>{money(storeFinance.profit)}</strong><small className="green-text table-sub">({storeFinance.marginPercent.toFixed(2)}%)</small></td>
                 <td><Badge>{store.status}</Badge></td>
                 <td><div className="row-actions">{canManageStoreDirectory && <button onClick={() => openEdit(store)} aria-label={`Sửa ${store.name}`}><Edit3 size={17} /></button>}{canDeleteStore && <button className="danger" onClick={() => window.confirm(`Xóa ${store.name}?`) && deleteStore?.(store.id)} aria-label={`Xóa ${store.name}`}><Trash2 size={17} /></button>}<button onClick={() => setViewingStore(store)} aria-label={`Xem ${store.name}`}><Eye size={17} /></button></div></td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </TableWrap>
         <TableFooter shown={filtered.length} total={filtered.length} />
@@ -235,9 +231,9 @@ export function AdminStores() {
           <div className="summary-list">
             <p><span>Mã cửa hàng</span><strong>{viewingStore.id}</strong></p>
             <p><span>Nhân viên</span><strong>{viewingStore.employees || 0}</strong></p>
-            <p><span>Doanh thu</span><strong>{money(viewingStore.revenue)}</strong></p>
-            <p><span>Chi phí</span><strong>{money(viewingStore.expense)}</strong></p>
-            <p className="total"><span>Lợi nhuận</span><strong>{money(Number(viewingStore.revenue) - Number(viewingStore.expense))}</strong></p>
+            <p><span>Doanh thu</span><strong>{money(financeByStore.get(viewingStore.id)?.revenue || 0)}</strong></p>
+            <p><span>Chi phí</span><strong>{money(financeByStore.get(viewingStore.id)?.expense || 0)}</strong></p>
+            <p className="total"><span>Lợi nhuận</span><strong>{money(financeByStore.get(viewingStore.id)?.profit || 0)}</strong></p>
           </div>
         </div>}
       </Modal>
@@ -380,103 +376,6 @@ export function AdminCashflow() {
   )
 }
 
-export function ManagerPayroll() {
-  const { stores, managerAccounts, managerPayroll, saveManagerPayroll, updateManagerPayroll, deleteManagerPayroll, notify } = useApp()
-  const accounts = Array.isArray(managerAccounts) ? managerAccounts : []
-  const payrollRows = Array.isArray(managerPayroll) ? managerPayroll : []
-  const defaultStoreId = stores[0]?.id || ''
-  const defaultManager = accounts.find((manager) => manager.storeId === defaultStoreId) || accounts[0]
-  const initialForm = { storeId: defaultStoreId, managerId: defaultManager?.id || '', month: today().slice(0, 7), salary: defaultManager?.salary || 0, bonus: 0, allowance: 0 }
-  const [form, setForm] = useState(initialForm)
-  const [editingSourceId, setEditingSourceId] = useState(null)
-  const [historyYear, setHistoryYear] = useState('all')
-  const total = Number(form.salary) + Number(form.bonus) + Number(form.allowance)
-  const rowYear = (row) => monthInputValue(row.month).slice(0, 4)
-  const years = [...new Set(payrollRows.map(rowYear).filter(Boolean))].sort((a, b) => b.localeCompare(a))
-  const filteredPayroll = historyYear === 'all' ? payrollRows : payrollRows.filter((row) => rowYear(row) === historyYear)
-  const managersForStore = accounts
-
-  const resetForm = () => {
-    setEditingSourceId(null)
-    setForm(initialForm)
-  }
-
-  const save = () => {
-    const salary = Number(form.salary)
-    const bonus = Number(form.bonus)
-    const allowance = Number(form.allowance)
-    if (!form.storeId || !form.month) return notify('Vui lòng chọn cửa hàng và tháng áp dụng.', 'info')
-    if (accounts.length && !form.managerId) return notify('Vui lòng chọn tài khoản quản lý.', 'info')
-    if (!Number.isFinite(salary) || salary <= 0 || !Number.isFinite(bonus) || bonus < 0 || !Number.isFinite(allowance) || allowance < 0) {
-      return notify('Lương phải lớn hơn 0; thưởng và phụ cấp không được âm.', 'info')
-    }
-    const store = stores.find((item) => item.id === form.storeId)
-    const manager = accounts.find((item) => item.id === form.managerId)
-    const record = {
-      storeId: form.storeId,
-      store: store?.name || '',
-      managerId: form.managerId,
-      managerName: manager?.name || '',
-      month: monthDisplayValue(form.month),
-      salary,
-      bonus,
-      allowance,
-    }
-    if (editingSourceId) updateManagerPayroll?.(editingSourceId, record)
-    else saveManagerPayroll?.(record)
-    resetForm()
-  }
-
-  const editPayroll = (row) => {
-    const store = stores.find((item) => item.id === row.storeId || item.name === row.store)
-    setEditingSourceId(row.id)
-    setForm({
-      storeId: store?.id || defaultStoreId,
-      managerId: row.managerId || accounts[0]?.id || '',
-      month: monthInputValue(row.month),
-      salary: Number(row.salary) || 0,
-      bonus: Number(row.bonus) || 0,
-      allowance: Number(row.allowance) || 0,
-    })
-    notify('Đã nạp dữ liệu lương thưởng để chỉnh sửa.', 'info')
-  }
-
-  const exportPayroll = () => {
-    if (!filteredPayroll.length) return notify('Không có lịch sử lương thưởng để xuất.', 'info')
-    downloadCsv('luong-thuong-quan-ly.csv', filteredPayroll)
-    notify('Đã xuất lịch sử lương thưởng quản lý CSV.')
-  }
-
-  return (
-    <div className="page">
-      <PageHeader title="LƯƠNG THƯỞNG QUẢN LÝ" subtitle="Nhập và quản lý lương thưởng của quản lý theo cửa hàng và từng tháng." />
-      <Card className="payroll-form-card">
-        <div className="payroll-form-layout">
-          <div>
-            <div className="form-grid form-grid--payroll">
-              <Field label="Cửa hàng"><Select icon={Store} value={form.storeId} onChange={(event) => setForm({ ...form, storeId: event.target.value })}>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
-              <Field label="Tháng / Năm"><Input icon={CalendarDays} type="month" value={form.month} onChange={(event) => setForm({ ...form, month: event.target.value })} /></Field>
-              {accounts.length > 0 && <Field label="Quản lý"><Select value={form.managerId} onChange={(event) => setForm({ ...form, managerId: event.target.value })}><option value="">Chọn quản lý</option>{managersForStore.map((manager) => <option key={manager.id} value={manager.id}>{manager.name}</option>)}</Select></Field>}
-              <Field label="Lương (VNĐ)"><Input type="number" value={form.salary} onChange={(event) => setForm({ ...form, salary: event.target.value })} /></Field>
-              <Field label="Thưởng (VNĐ)"><Input type="number" min="0" value={form.bonus} onChange={(event) => setForm({ ...form, bonus: event.target.value })} /></Field>
-              <Field label="Phụ cấp (VNĐ)"><Input type="number" min="0" value={form.allowance} onChange={(event) => setForm({ ...form, allowance: event.target.value })} /></Field>
-            </div>
-          </div>
-          <InfoNote><h3>Hướng dẫn</h3><ul><li>Nhập số tiền lương, thưởng và phụ cấp cho quản lý.</li><li>Tổng nhận được tính tự động.</li><li>Có thể chỉnh sửa và lưu lại bất cứ lúc nào.</li></ul></InfoNote>
-        </div>
-        <div className="payroll-total-row">
-          <div><span>Tổng nhận</span><strong>{money(total)}</strong><small>(Lương + Thưởng + Phụ cấp)</small></div>
-          <div><Button variant="outline" icon={RefreshCcw} onClick={resetForm}>{editingSourceId ? 'Hủy chỉnh sửa' : 'Đặt lại'}</Button><Button icon={Save} onClick={save}>{editingSourceId ? 'Lưu thay đổi' : 'Lưu'}</Button></div>
-        </div>
-      </Card>
-      <Card title="Lịch sử lương thưởng" action={<><Select value={historyYear} onChange={(event) => setHistoryYear(event.target.value)}><option value="all">Tất cả năm</option>{years.map((year) => <option key={year} value={year}>{year}</option>)}</Select><ExportButton label="Xuất lịch sử" onClick={exportPayroll} /></>}>
-        <TableWrap><thead><tr><th>STT</th><th>Tháng / Năm</th><th>Cửa hàng</th><th>Quản lý</th><th>Lương</th><th>Thưởng</th><th>Phụ cấp</th><th>Tổng nhận</th><th>Cập nhật lúc</th><th>Thao tác</th></tr></thead><tbody>{filteredPayroll.map((row, index) => <tr key={row.id}><td>{index + 1}</td><td>{row.month}</td><td>{row.store}</td><td>{row.managerName || accounts.find((manager) => manager.id === row.managerId)?.name || '—'}</td><td>{money(row.salary)}</td><td>{money(row.bonus)}</td><td>{money(row.allowance)}</td><td className="green-text"><strong>{money(Number(row.salary) + Number(row.bonus) + Number(row.allowance))}</strong></td><td>{row.updatedAt}</td><td><div className="row-actions"><button onClick={() => editPayroll(row)} aria-label="Chỉnh sửa lương thưởng"><Edit3 size={17} /></button><button className="danger" onClick={() => window.confirm('Xóa bản ghi lương thưởng này?') && deleteManagerPayroll?.(row.id)} aria-label="Xóa lương thưởng"><Trash2 size={17} /></button></div></td></tr>)}{!filteredPayroll.length && <tr><td colSpan="10">Không có lịch sử trong năm đã chọn.</td></tr>}</tbody></TableWrap>
-        <TableFooter shown={filteredPayroll.length} total={filteredPayroll.length} />
-      </Card>
-    </div>
-  )
-}
-
 export function AdminReports() {
   const { stores, notify } = useApp()
   const [view, setView] = useState('all')
@@ -539,7 +438,7 @@ export function AdminReports() {
 }
 
 export function AdminSettings() {
-  const { settings, session, adminAccounts, saveSettings, changeAdminPassword, resetDemo, notify } = useApp()
+  const { settings, session, saveSettings, changeAdminPassword, verifyCurrentPassword, resetDemo, notify } = useApp()
   const [tab, setTab] = useState('profile')
   const [form, setForm] = useState(settings || {})
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' })
@@ -576,13 +475,12 @@ export function AdminSettings() {
     reader.readAsDataURL(file)
   }
 
-  const requestPasswordChange = () => {
+  const requestPasswordChange = async () => {
     if (!passwordForm.current || !passwordForm.next || !passwordForm.confirm) return notify('Vui lòng nhập đầy đủ ba trường mật khẩu.', 'info')
-    const account = (Array.isArray(adminAccounts) ? adminAccounts : []).find((item) => item.id === session?.id || item.username === session?.username)
-    if (account?.password && account.password !== passwordForm.current) return notify('Mật khẩu hiện tại chưa đúng.', 'info')
-    if (passwordForm.next.length < 6) return notify('Mật khẩu mới phải có ít nhất 6 ký tự.', 'info')
+    if (!await verifyCurrentPassword?.(passwordForm.current)) return notify('Mật khẩu hiện tại chưa đúng.', 'info')
+    if (passwordForm.next.length < 8) return notify('Mật khẩu mới phải có ít nhất 8 ký tự.', 'info')
     if (passwordForm.next !== passwordForm.confirm) return notify('Xác nhận mật khẩu mới không khớp.', 'info')
-    const changed = changeAdminPassword?.(session?.id || session?.username, passwordForm.next)
+    const changed = await changeAdminPassword?.(session?.id || session?.username, passwordForm.next, passwordForm.current)
     if (changed) setPasswordForm({ current: '', next: '', confirm: '' })
   }
 

@@ -34,7 +34,7 @@ import { money } from '../utils'
 export function Brand({ compact = false, blue = false, subtitle = 'hệ thống quản lý' }) {
   return (
     <div className={`brand ${compact ? 'brand--compact' : ''} ${blue ? 'brand--blue' : ''}`}>
-      <span className="brand__mark" aria-hidden="true">I</span>
+      <img className="brand__mark" src="/logo.jpg?v=20260814" alt="" aria-hidden="true" />
       <span className="brand__word">IDOSI</span>
       {!compact && <small>{subtitle}</small>}
     </div>

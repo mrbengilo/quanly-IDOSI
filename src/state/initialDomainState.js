@@ -1,0 +1,147 @@
+import { shifts } from '../data'
+
+export const DOMAIN_SCHEMA_VERSION = 2
+
+const pad = (value, length = 5) => String(value).padStart(length, '0')
+
+const openingOrder = (store, index) => ({
+  id: `ORD-OPEN-${pad(index + 1)}`,
+  code: `${store.short || store.id}-${pad(index + 1)}`,
+  storeId: store.id,
+  customerName: 'Số dư doanh thu chuyển tiếp',
+  customerPhone: '',
+  customerAge: null,
+  amount: Math.max(0, Number(store.revenue) || 0),
+  paymentMethod: 'Chuyển khoản',
+  employeeId: null,
+  employeeName: 'Dữ liệu hệ thống',
+  shiftId: null,
+  shiftName: 'Dữ liệu chuyển tiếp',
+  shiftStart: null,
+  shiftEnd: null,
+  status: 'Hoàn tất',
+  source: 'legacy-opening-balance',
+  createdAt: '2026-08-01T00:00:00+07:00',
+  updatedAt: '2026-08-01T00:00:00+07:00',
+  deletedAt: null,
+})
+
+const openingExpense = (store, index) => ({
+  id: `EXP-OPEN-${pad(index + 1)}`,
+  storeId: store.id,
+  type: 'Chi phí chuyển tiếp',
+  category: 'legacy',
+  amount: Math.max(0, Number(store.expense) || 0),
+  description: 'Số dư chi phí trước khi nâng cấp nguồn dữ liệu thống nhất',
+  sourceType: 'legacy-opening-balance',
+  sourceId: `OPEN-${store.id}`,
+  recognized: true,
+  occurredAt: '2026-08-01T00:00:00+07:00',
+  createdAt: '2026-08-01T00:00:00+07:00',
+  createdBy: 'SYSTEM',
+})
+
+export const defaultPolicies = {
+  lateToleranceMinutes: 10,
+  earlyCheckInLimitMinutes: 120,
+  employeeKpiRates: {
+    from30000: 5,
+    from15000: 3,
+    from7000: 1,
+  },
+  attendanceEvaluation: {
+    maintainMaxLateCount: 2,
+    improveMinLateCount: 3,
+    improveMinLateMinutes: 30,
+  },
+  effectiveFrom: '2026-08-01',
+  version: 1,
+}
+
+export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
+  schemaVersion: DOMAIN_SCHEMA_VERSION,
+  stateVersion: 1,
+  orders: stores.map(openingOrder),
+  orderCounters: Object.fromEntries(stores.map((store) => [store.id, 1])),
+  orderAudit: [],
+  notifications: [],
+  expenseEntries: stores.map(openingExpense),
+  fixedExpenses: [],
+  cashTransactions: [],
+  policies: defaultPolicies,
+  policyHistory: [],
+  salaryAdjustments: [],
+  salaryAdvances: [],
+  payrollPeriods: [],
+  payrollPayments: [],
+  shiftDefinitions: shifts.map((shift) => ({
+    ...shift,
+    date: null,
+    effectiveFrom: '2026-08-01',
+    active: true,
+    version: 1,
+  })),
+  importVouchers: imports.map((item, index) => ({
+    id: `PV-${pad(index + 1)}`,
+    code: `PN-${String(item.createdAt || '01082026').slice(8, 10)}${String(item.createdAt || '01082026').slice(5, 7)}${String(item.createdAt || '01082026').slice(0, 4)}-${pad(index + 1)}`,
+    storeId: item.storeId,
+    items: [{ ...item }],
+    goodsAmount: Math.round((Number(item.weight) || 0) * (Number(item.price) || 0)),
+    shippingAmount: Math.round(Number(item.shipping) || 0),
+    relatedAmount: 0,
+    status: 'Đã lưu',
+    createdAt: String(item.createdAt || '2026-08-01T00:00:00+07:00'),
+    createdBy: item.creator || 'Dữ liệu hệ thống',
+  })),
+  importCounter: imports.length,
+  auditLogs: [],
+  deletedStores: [],
+  deletedEmployees: [],
+  supportTransfers: [],
+  idempotencyKeys: [],
+})
+
+const mergeArray = (stored, defaults, key) => Array.isArray(stored?.[key]) ? stored[key] : defaults[key]
+
+export const migrateDomainState = (stored, context) => {
+  const defaults = createDomainState(context)
+  if (!stored || typeof stored !== 'object') return defaults
+  const storedPolicies = Object.fromEntries(Object.entries(stored.policies || {}).filter(([key]) => !['managerMonthlySalary', 'managerKpiRate'].includes(key)))
+
+  return {
+    ...defaults,
+    ...stored,
+    schemaVersion: DOMAIN_SCHEMA_VERSION,
+    stateVersion: Math.max(1, Number(stored.stateVersion) || 1),
+    orders: mergeArray(stored, defaults, 'orders'),
+    orderAudit: mergeArray(stored, defaults, 'orderAudit'),
+    notifications: mergeArray(stored, defaults, 'notifications'),
+    expenseEntries: mergeArray(stored, defaults, 'expenseEntries'),
+    fixedExpenses: mergeArray(stored, defaults, 'fixedExpenses'),
+    cashTransactions: mergeArray(stored, defaults, 'cashTransactions'),
+    policyHistory: mergeArray(stored, defaults, 'policyHistory'),
+    salaryAdjustments: mergeArray(stored, defaults, 'salaryAdjustments'),
+    salaryAdvances: mergeArray(stored, defaults, 'salaryAdvances'),
+    payrollPeriods: mergeArray(stored, defaults, 'payrollPeriods'),
+    payrollPayments: mergeArray(stored, defaults, 'payrollPayments'),
+    shiftDefinitions: mergeArray(stored, defaults, 'shiftDefinitions'),
+    importVouchers: mergeArray(stored, defaults, 'importVouchers'),
+    auditLogs: mergeArray(stored, defaults, 'auditLogs'),
+    deletedStores: mergeArray(stored, defaults, 'deletedStores'),
+    deletedEmployees: mergeArray(stored, defaults, 'deletedEmployees'),
+    supportTransfers: mergeArray(stored, defaults, 'supportTransfers'),
+    idempotencyKeys: mergeArray(stored, defaults, 'idempotencyKeys'),
+    policies: {
+      ...defaultPolicies,
+      ...storedPolicies,
+      employeeKpiRates: {
+        ...defaultPolicies.employeeKpiRates,
+        ...(stored.policies?.employeeKpiRates || {}),
+      },
+      attendanceEvaluation: {
+        ...defaultPolicies.attendanceEvaluation,
+        ...(stored.policies?.attendanceEvaluation || {}),
+      },
+    },
+  }
+}

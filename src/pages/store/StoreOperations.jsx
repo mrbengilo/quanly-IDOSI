@@ -436,7 +436,7 @@ export function StoreEmployees() {
     reader.readAsDataURL(file)
   }
 
-  const save = (event) => {
+  const save = async (event) => {
     event?.preventDefault()
     const editingId = editing?.id || editing?.code || ''
     const scopedForm = { ...form, storeId: scopedStoreId }
@@ -489,10 +489,12 @@ export function StoreEmployees() {
 
     if (editing) {
       if (typeof updateEmployee !== 'function') return notify?.('Chức năng cập nhật nhân viên đang được kết nối.', 'info')
-      updateEmployee(editingId, payload)
+      const result = await updateEmployee(editingId, payload)
+      if (!result?.ok) return notify?.(result?.message || 'Không thể cập nhật nhân viên.', 'info')
     } else {
       if (typeof addEmployee !== 'function') return notify?.('Chức năng thêm nhân viên đang được kết nối.', 'info')
-      addEmployee(payload)
+      const result = await addEmployee(payload)
+      if (!result?.ok) return notify?.(result?.message || 'Không thể thêm nhân viên.', 'info')
     }
     closeDrawer()
   }

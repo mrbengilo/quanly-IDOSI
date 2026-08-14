@@ -106,7 +106,7 @@ const employeeToForm = (employee = {}) => {
     cccdImage: employee.cccdImage || employee.identityImage || '',
     cccdImageName: employee.cccdImageName || employee.identityImageName || '',
     username: employee.username || '',
-    password: employee.password || '',
+    password: '',
     status: employee.status || EMPLOYEE_STATUSES[0],
   }
 }
@@ -162,7 +162,7 @@ const adjustmentKind = (adjustment = {}) => adjustment.type || adjustment.kind |
 const adjustmentEmployeeId = (adjustment = {}) => adjustment.employeeId || adjustment.staffId || ''
 const adjustmentDate = (adjustment = {}) => adjustment.date || adjustment.createdDate || String(adjustment.createdAt || '').slice(0, 10)
 
-function validateEmployee(form, employees, managers, editingKey) {
+function validateEmployee(form, employees, editingKey) {
   const errors = []
   const required = [
     ['Mã nhân viên', form.code],
@@ -190,7 +190,6 @@ function validateEmployee(form, employees, managers, editingKey) {
 
   const others = [
     ...employees.filter((item) => String(item.id || employeeCode(item)) !== String(editingKey || '')),
-    ...managers,
   ]
   if (others.some((item) => normalizeText(employeeCode(item)) === normalizeText(form.code))) errors.push('Mã nhân viên đã tồn tại.')
   if (others.some((item) => String(item.cccd || item.citizenId || '') === form.cccd)) errors.push('Số CCCD đã được sử dụng.')
@@ -204,7 +203,6 @@ export function OfficeManagement() {
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
   const allAttendance = Array.isArray(app.attendance) ? app.attendance : []
   const adjustments = Array.isArray(app.officeAdjustments) ? app.officeAdjustments : []
-  const managers = Array.isArray(app.managerAccounts) ? app.managerAccounts : []
   const { addEmployee, updateEmployee, deleteEmployee, addOfficeAdjustment, notify } = app
   const officeEmployees = allEmployees.filter(isOfficeEmployee)
   const officeEmployeeIds = new Set(officeEmployees.flatMap((employee) => [String(employee.id || ''), String(employeeCode(employee))]).filter(Boolean))
@@ -282,10 +280,10 @@ export function OfficeManagement() {
     reader.readAsDataURL(file)
   }
 
-  const saveEmployee = (event) => {
+  const saveEmployee = async (event) => {
     event?.preventDefault()
     const editingKey = editingEmployee?.id || (editingEmployee ? employeeCode(editingEmployee) : '')
-    const errors = validateEmployee(employeeForm, allEmployees, managers, editingKey)
+    const errors = validateEmployee(employeeForm, allEmployees, editingKey)
     if (errors.length) {
       setEmployeeErrors(errors)
       notify?.('Vui lòng kiểm tra lại hồ sơ nhân viên văn phòng.', 'info')
@@ -323,10 +321,12 @@ export function OfficeManagement() {
 
     if (editingEmployee) {
       if (typeof updateEmployee !== 'function') return notify?.('Chức năng cập nhật nhân viên đang được kết nối.', 'info')
-      updateEmployee(editingKey, payload)
+      const result = await updateEmployee(editingKey, payload)
+      if (!result?.ok) return notify?.(result?.message || 'Không thể cập nhật nhân viên.', 'info')
     } else {
       if (typeof addEmployee !== 'function') return notify?.('Chức năng thêm nhân viên đang được kết nối.', 'info')
-      addEmployee(payload)
+      const result = await addEmployee(payload)
+      if (!result?.ok) return notify?.(result?.message || 'Không thể thêm nhân viên.', 'info')
     }
     closeEmployeeDrawer()
   }

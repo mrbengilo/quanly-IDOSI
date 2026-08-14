@@ -4,36 +4,22 @@ import { MemoryRouter } from 'react-router-dom'
 import { AppProvider } from './state/AppContext'
 import App from './App'
 import {
-  AdminCashflow,
-  AdminOverview,
-  AdminReports,
   AdminSettings,
   AdminStores,
   AdminTasks,
-  ManagerPayroll,
 } from './pages/admin/AdminPages'
-import { ManagerAccounts } from './pages/admin/ManagerAccounts'
+import { AdminCashflowV2, AdminOverviewV2, AdminReportsV2 } from './pages/admin/SystemFinanceV2'
+import { OrderAuditPage, PolicySettings, ResetDataPage, SupportTransfersPage, SystemEmployees } from './pages/admin/GovernancePages'
 import { OfficeManagement } from './pages/office/OfficeManagement'
-import {
-  StoreEmployees,
-  StoreImports,
-  StoreOverview,
-  StoreSchedule,
-  StoreShifts,
-} from './pages/store/StoreOperations'
-import {
-  StoreAttendance,
-  StoreCashflow,
-  StorePayroll,
-  StoreReports,
-  StoreSettings,
-} from './pages/store/StoreFinance'
+import { StoreEmployees } from './pages/store/StoreOperations'
+import { StoreSettings } from './pages/store/StoreFinance'
+import { StoreAttendanceV2, StoreCashflowV2, StoreImportsV2, StoreOrdersPage, StoreOverviewV2, StorePayrollV2, StoreReportsV2 } from './pages/store/StoreV2Pages'
+import UnifiedSchedule from './pages/store/UnifiedSchedule'
 import {
   EmployeeCashflow,
-  EmployeeHome,
-  EmployeePayroll,
   EmployeeShiftHistory,
 } from './pages/employee/EmployeePages'
+import { EmployeeAttendancePage, EmployeeDashboardV2, EmployeeOrdersPage, EmployeePayrollDetails } from './pages/employee/EmployeeV2Pages'
 import {
   calculateEmployeeBasePay,
   getHourlyRate,
@@ -57,27 +43,32 @@ afterEach(() => {
 })
 
 const pages = {
-  AdminOverview,
+  AdminOverviewV2,
   AdminStores,
   AdminTasks,
-  AdminCashflow,
-  ManagerPayroll,
-  AdminReports,
+  AdminCashflowV2,
+  AdminReportsV2,
   AdminSettings,
-  ManagerAccounts,
+  SystemEmployees,
+  PolicySettings,
+  ResetDataPage,
+  OrderAuditPage,
+  SupportTransfersPage,
   OfficeManagement,
-  StoreOverview,
-  StoreShifts,
-  StoreSchedule,
+  StoreOverviewV2,
+  UnifiedSchedule,
   StoreEmployees,
-  StoreImports,
-  StoreAttendance,
-  StorePayroll,
-  StoreCashflow,
-  StoreReports,
+  StoreOrdersPage,
+  StoreImportsV2,
+  StoreAttendanceV2,
+  StorePayrollV2,
+  StoreCashflowV2,
+  StoreReportsV2,
   StoreSettings,
-  EmployeeHome,
-  EmployeePayroll,
+  EmployeeDashboardV2,
+  EmployeeOrdersPage,
+  EmployeeAttendancePage,
+  EmployeePayrollDetails,
   EmployeeCashflow,
   EmployeeShiftHistory,
 }
@@ -96,7 +87,7 @@ describe('IDOSI page smoke tests', () => {
     })
   })
 
-  it('logs in with the administrator demo and opens the admin dashboard', () => {
+  it('logs in with the administrator account and exposes no manager features', async () => {
     render(
       <MemoryRouter initialEntries={['/login']}>
         <AppProvider>
@@ -104,12 +95,16 @@ describe('IDOSI page smoke tests', () => {
         </AppProvider>
       </MemoryRouter>,
     )
-    fireEvent.click(screen.getByRole('button', { name: /Quản trị admin/i }))
-    expect(screen.getByRole('heading', { name: 'Quản lý cửa hàng' })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Tài khoản quản lý/i })).toBeTruthy()
+    fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Tài khoản quản lý/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Lương thưởng quản lý/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Chia lợi nhuận/i })).toBeNull()
   })
 
-  it('lets a global manager enter one store workspace and return to the system overview', () => {
+  it('lets admin enter one store workspace and return to the system overview', async () => {
     render(
       <MemoryRouter initialEntries={['/login']}>
         <AppProvider>
@@ -117,26 +112,25 @@ describe('IDOSI page smoke tests', () => {
         </AppProvider>
       </MemoryRouter>,
     )
-    fireEvent.click(screen.getByRole('button', { name: /Quản lý manager/i }))
-    expect(screen.getByRole('link', { name: /Danh sách cửa hàng/i })).toBeTruthy()
-    expect(screen.queryByRole('link', { name: /Tài khoản quản lý/i })).toBeNull()
-    expect(screen.queryByRole('link', { name: /Khối văn phòng/i })).toBeNull()
-    expect(screen.queryByRole('combobox', { name: /cửa hàng/i })).toBeNull()
-    const storeButtons = screen.getAllByRole('button', { name: /Xem cửa hàng/i })
+    fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'admin' } })
+    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
+    expect(await screen.findByRole('link', { name: /^Cửa hàng$/i })).toBeTruthy()
+    const storeButtons = screen.getAllByRole('button', { name: /Mở cửa hàng/i })
     expect(storeButtons).toHaveLength(9)
     fireEvent.click(storeButtons[0])
-    expect(screen.getByRole('heading', { name: 'Tổng quan cửa hàng' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'SecondMall SM234' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Quay về trang quản lý chính/i })).toBeTruthy()
-    expect(screen.queryByRole('link', { name: /Danh sách cửa hàng/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Cửa hàng$/i })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Quay về trang quản lý chính/i }))
-    expect(screen.getByRole('heading', { name: 'Quản lý cửa hàng' })).toBeTruthy()
-    fireEvent.click(screen.getByRole('link', { name: /Danh sách cửa hàng/i }))
+    expect(screen.getByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: /^Cửa hàng$/i }))
     expect(screen.getByRole('heading', { name: 'Quản lý cửa hàng' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Thêm cửa hàng' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Xóa Idosi/i })).toBeNull()
+    expect(screen.getAllByRole('button', { name: /Xóa Idosi/i }).length).toBeGreaterThan(0)
   })
 
-  it('keeps a store employee inside the employee portal of their assigned store', () => {
+  it('keeps an employee inside the employee portal of their assigned store', async () => {
     render(
       <MemoryRouter initialEntries={['/login']}>
         <AppProvider>
@@ -144,10 +138,12 @@ describe('IDOSI page smoke tests', () => {
         </AppProvider>
       </MemoryRouter>,
     )
-    fireEvent.click(screen.getByRole('button', { name: /Cửa hàng employee/i }))
-    expect(screen.getByRole('heading', { name: 'SecondMall SM234' })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Lịch sử ca làm/i })).toBeTruthy()
-    expect(screen.queryByRole('link', { name: /Danh sách cửa hàng/i })).toBeNull()
+    fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'employee' } })
+    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
+    expect(await screen.findByRole('heading', { name: /XIN CHÀO, NGUYỄN MINH ANH/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Lịch sử làm việc/i })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /^Cửa hàng$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Nhân viên cửa hàng/i })).toBeNull()
   })
 })
