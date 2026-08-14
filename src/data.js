@@ -1,4 +1,4 @@
-import { DEMO_PASSWORD_HASH } from './security/passwords'
+import { DEMO_PASSWORD_HASH } from './security/passwords.js'
 
 const storeSeed = (id, name, short, revenue, expense, employees = 1) => ({
   id,

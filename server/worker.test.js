@@ -80,6 +80,7 @@ describe('IDOSI Worker security primitives', () => {
     const record = await hashPassword('idosi-test-password', { iterations: 100_000 })
 
     expect(record.algorithm).toBe('PBKDF2-SHA256')
+    expect(record.iterations).toBe(100_000)
     expect(record.hash).not.toContain('idosi-test-password')
     expect(record.salt).toBeTruthy()
     await expect(verifyPassword('idosi-test-password', record)).resolves.toBe(true)

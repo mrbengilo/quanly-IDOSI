@@ -1,4 +1,4 @@
-import { shifts } from '../data'
+import { shifts } from '../data.js'
 
 export const DOMAIN_SCHEMA_VERSION = 2
 
