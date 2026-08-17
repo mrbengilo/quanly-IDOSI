@@ -71,6 +71,9 @@ const emptyEmployeeForm = {
   ward: '',
   street: '',
   salary: '',
+  baseSalary: '',
+  standardWorkDays: '26',
+  requiredMonthlyHours: '',
   employmentType: 'Full-Time',
   position: 'Nhân viên bán hàng',
   age: '',
@@ -169,6 +172,7 @@ const employeeSalarySuffix = (employee = {}) => getPayBasis(employee) === 'hourl
 
 const employeeToForm = (employee = {}, storeId = '') => {
   const address = employeeAddressParts(employee)
+  const employmentType = normalizeEmploymentType(employeeType(employee))
   return {
     ...emptyEmployeeForm,
     id: employee.id || employee.code || employee.employeeCode || '',
@@ -178,8 +182,11 @@ const employeeToForm = (employee = {}, storeId = '') => {
     province: address.province,
     ward: address.ward,
     street: address.street,
-    salary: formatMoneyInput(employeeSalary(employee)),
-    employmentType: normalizeEmploymentType(employeeType(employee)),
+    salary: isPartTime(employmentType) ? formatMoneyInput(employeeSalary(employee)) : '',
+    baseSalary: isPartTime(employmentType) ? '' : formatMoneyInput(employee.baseSalary || employeeSalary(employee)),
+    standardWorkDays: String(employee.standardWorkDays || 26),
+    requiredMonthlyHours: String(employee.requiredMonthlyHours || ''),
+    employmentType,
     position: employeePosition(employee),
     age: employee.age ?? '',
     username: employee.username || '',
@@ -205,7 +212,7 @@ function validateEmployee(form, employees, editingId, requiresPassword = !editin
     ['Tỉnh/Thành phố', form.province],
     ['Phường/Xã', form.ward],
     ['Đường, số nhà', form.street],
-    [isPartTime(form.employmentType) ? 'Lương theo giờ' : 'Lương theo tháng', form.salary],
+    [isPartTime(form.employmentType) ? 'Lương theo giờ' : 'Lương cơ bản', isPartTime(form.employmentType) ? form.salary : form.baseSalary],
     ['Vị trí công việc', form.position],
     ['Tuổi', form.age],
     ['Tên đăng nhập', form.username],
@@ -218,7 +225,16 @@ function validateEmployee(form, employees, editingId, requiresPassword = !editin
   if (!CCCD_PATTERN.test(form.cccd)) errors.push('Số CCCD phải gồm đúng 12 chữ số.')
   if (!PHONE_PATTERN.test(normalizePhone(form.phone))) errors.push('Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.')
   if (!Number.isFinite(parseMoneyInput(form.salary)) || parseMoneyInput(form.salary) <= 0) {
-    errors.push(`${isPartTime(form.employmentType) ? 'Lương theo giờ' : 'Lương theo tháng'} phải là số lớn hơn 0.`)
+    if (isPartTime(form.employmentType)) errors.push('Lương theo giờ phải là số lớn hơn 0.')
+  }
+  if (!isPartTime(form.employmentType)) {
+    if (parseMoneyInput(form.baseSalary) <= 0) errors.push('Lương cơ bản phải là số lớn hơn 0.')
+    if (!Number.isInteger(Number(form.standardWorkDays)) || Number(form.standardWorkDays) < 1 || Number(form.standardWorkDays) > 31) {
+      errors.push('Số ngày công quy định phải là số nguyên từ 1 đến 31.')
+    }
+    if (!Number.isFinite(Number(form.requiredMonthlyHours)) || Number(form.requiredMonthlyHours) <= 0 || Number(form.requiredMonthlyHours) > 744) {
+      errors.push('Tổng giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
+    }
   }
   if (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100) {
     errors.push('Tuổi phải là số nguyên từ 16 đến 100.')
@@ -408,6 +424,7 @@ export function StoreEmployees() {
   const [form, setForm] = useState(createEmployeeForm)
   const [errors, setErrors] = useState([])
   const [showPassword, setShowPassword] = useState(false)
+  const canManageStore = ['admin', 'store_manager'].includes(session?.role)
   const canDeleteEmployee = session?.role === 'admin'
   const editingRequiresPassword = Boolean(editing) && !(
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
@@ -437,6 +454,7 @@ export function StoreEmployees() {
   })
 
   const openCreate = () => {
+    if (!canManageStore) return
     setEditing(null)
     setErrors([])
     setShowPassword(false)
@@ -445,6 +463,7 @@ export function StoreEmployees() {
   }
 
   const openEdit = (employee) => {
+    if (!canManageStore) return
     setEditing(employee)
     setErrors([])
     setShowPassword(false)
@@ -464,18 +483,21 @@ export function StoreEmployees() {
     if (field === 'cccd') value = value.replace(/\D/g, '').slice(0, 12)
     if (field === 'phone') value = value.replace(/\D/g, '').slice(0, 10)
     if (field === 'age') value = value.replace(/\D/g, '').slice(0, 3)
-    if (field === 'salary') value = formatMoneyInput(value)
+    if (field === 'salary' || field === 'baseSalary') value = formatMoneyInput(value)
+    if (field === 'standardWorkDays') value = value.replace(/\D/g, '').slice(0, 2)
+    if (field === 'requiredMonthlyHours') value = value.replace(/[^\d.]/g, '').slice(0, 6)
     setForm((current) => ({ ...current, [field]: value }))
   }
 
   const updateEmploymentType = (event) => {
     const employmentType = event.target.value
-    setForm((current) => ({ ...current, employmentType, salary: '' }))
+    setForm((current) => ({ ...current, employmentType, salary: '', baseSalary: '' }))
     setErrors([])
   }
 
   const save = async (event) => {
     event?.preventDefault()
+    if (!canManageStore) return
     const editingId = editing?.id || editing?.code || ''
     const scopedForm = { ...form, storeId: scopedStoreId }
     const validationErrors = validateEmployee(scopedForm, employees, editingId, !editing || editingRequiresPassword)
@@ -490,6 +512,9 @@ export function StoreEmployees() {
       ward: form.ward.trim(),
       street: form.street.trim(),
     }
+    const partTime = isPartTime(form.employmentType)
+    const baseSalary = partTime ? 0 : parseMoneyInput(form.baseSalary)
+    const usesMonthlyHours = !partTime && storeEmployeePrefix(scopedStore) === 'SM234'
     const payload = {
       id: form.id.trim(),
       code: form.id.trim(),
@@ -501,14 +526,17 @@ export function StoreEmployees() {
       ...addressDetails,
       addressDetails,
       address: [addressDetails.street, addressDetails.ward, addressDetails.province].join(', '),
-      salary: parseMoneyInput(form.salary),
-      payBasis: isPartTime(form.employmentType) ? 'hourly' : 'monthly',
-      salaryBasis: isPartTime(form.employmentType) ? 'hourly' : 'monthly',
-      salaryUnit: isPartTime(form.employmentType) ? 'hour' : 'month',
-      monthlySalary: isPartTime(form.employmentType) ? null : parseMoneyInput(form.salary),
-      hourlyRate: isPartTime(form.employmentType) ? parseMoneyInput(form.salary) : null,
+      salary: partTime ? parseMoneyInput(form.salary) : baseSalary,
+      payBasis: partTime ? 'hourly' : 'monthly',
+      salaryBasis: partTime ? 'hourly' : 'monthly',
+      salaryUnit: partTime ? 'hour' : 'month',
+      monthlySalary: partTime ? null : baseSalary,
+      baseSalary: partTime ? null : baseSalary,
+      hourlyRate: partTime ? parseMoneyInput(form.salary) : null,
+      standardWorkDays: partTime ? null : Number(form.standardWorkDays),
+      requiredMonthlyHours: partTime ? null : Number(form.requiredMonthlyHours),
+      payFormula: usesMonthlyHours ? 'monthly-hours' : 'monthly',
       compensationVersion: 2,
-      standardWorkDays: 26,
       currency: 'VND',
       employmentType: form.employmentType,
       employeeType: form.employmentType,
@@ -541,7 +569,8 @@ export function StoreEmployees() {
 
   return (
     <div className="page">
-      <PageHeader title="Quản lý nhân viên" subtitle="Thêm, sửa, xóa và quản lý hồ sơ nhân viên theo cửa hàng." actions={<><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." /><Button icon={Plus} onClick={openCreate}>Thêm nhân viên</Button></>} />
+      <PageHeader title="Quản lý nhân viên" subtitle={canManageStore ? 'Thêm, sửa và quản lý hồ sơ nhân viên theo cửa hàng.' : 'Danh sách nhân viên theo cửa hàng — chế độ chỉ xem.'} actions={<><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." />{canManageStore && <Button icon={Plus} onClick={openCreate}>Thêm nhân viên</Button>}</>} />
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể thêm, sửa, xóa hoặc cấp lại tài khoản nhân viên cửa hàng.</InfoNote>}
       <div className="metric-grid metric-grid--four">
         <MetricCard label="Tổng nhân viên" value={scopedEmployees.length} helper="Thuộc cửa hàng đang chọn" icon={Users} tone="green" compact />
         <MetricCard label="Đang làm việc" value={activeCount} helper="Theo trạng thái" icon={UserCheck} tone="green" compact />
@@ -551,7 +580,7 @@ export function StoreEmployees() {
       <div className="filter-pills"><button className={status === 'all' ? 'active' : ''} onClick={() => setStatus('all')}>Tất cả ({scopedEmployees.length})</button>{EMPLOYEE_STATUSES.map((item) => <button key={item} className={status === item ? 'active' : ''} onClick={() => setStatus(item)}>{item}</button>)}</div>
       <Card>
         <TableWrap>
-          <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại</th><th>Vị trí</th><th>CCCD</th><th>Liên hệ</th><th>Địa chỉ</th><th>Lương</th><th>Tài khoản</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại</th><th>Vị trí</th><th>CCCD</th><th>Liên hệ</th><th>Địa chỉ</th><th>Lương</th><th>Tài khoản</th><th>Trạng thái</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
           <tbody>
             {filtered.map((employee) => {
               const normalizedStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc')
@@ -564,18 +593,18 @@ export function StoreEmployees() {
                 <td>{employee.cccd || employee.citizenId || '—'}</td>
                 <td>{employee.phone || '—'}</td>
                 <td className="address-cell">{employeeAddressLabel(employee)}</td>
-                <td>{employeeSalary(employee) > 0 ? <><strong>{money(employeeSalary(employee))}</strong><small className="table-sub">{employeeSalarySuffix(employee)} · {salaryBasisLabel(employee)}</small></> : <span className="orange-text">Chưa thiết lập</span>}</td>
+                <td>{employeeSalary(employee) > 0 ? <><strong>{money(employeeSalary(employee))}</strong><small className="table-sub">{employeeSalarySuffix(employee)} · {salaryBasisLabel(employee)}</small>{!isPartTime(type) && <small className="table-sub">{employee.standardWorkDays || 26} ngày · {employee.requiredMonthlyHours || '—'} giờ/tháng</small>}</> : <span className="orange-text">Chưa thiết lập</span>}</td>
                 <td>{employee.username || '—'}</td>
                 <td><Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge></td>
-                <td><div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>
+                {canManageStore && <td><div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>}
               </tr>
             })}
-            {!filtered.length && <tr><td colSpan="11">Không có nhân viên phù hợp.</td></tr>}
+            {!filtered.length && <tr><td colSpan={canManageStore ? 11 : 10}>Không có nhân viên phù hợp.</td></tr>}
           </tbody>
         </TableWrap>
         <TableFooter shown={filtered.length} total={filtered.length} />
       </Card>
-      <Drawer open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
+      {canManageStore && <Drawer open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
         <form className="form-stack" onSubmit={save}>
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
@@ -584,8 +613,14 @@ export function StoreEmployees() {
             <Field label="Tên nhân viên" required><Input value={form.name} onChange={updateField('name')} placeholder="Nhập họ và tên" /></Field>
             <Field label="Số CCCD" required hint="Chỉ gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={updateField('cccd')} placeholder="012345678901" /></Field>
             <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng số 0"><Input type="tel" inputMode="numeric" maxLength={10} pattern="0[0-9]{9}" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field>
-            <Field label="Loại nhân viên" required hint="Full-Time hưởng lương tháng, Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
-            <Field label={isPartTime(form.employmentType) ? 'Lương mặc định theo giờ (đ/giờ)' : 'Lương mặc định theo tháng (đ/tháng)'} required hint={isPartTime(form.employmentType) ? 'Dùng để tính lương theo tổng giờ chấm công' : 'Mức lương cố định của kỳ lương tháng'}><Input inputMode="numeric" value={form.salary} onChange={updateField('salary')} placeholder={isPartTime(form.employmentType) ? '30,000' : '8,000,000'} /></Field>
+            <Field label="Loại nhân viên" required hint="Full-Time dùng định mức ngày, giờ và lương cơ bản; Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
+            {isPartTime(form.employmentType)
+              ? <Field label="Lương mặc định theo giờ (đ/giờ)" required hint="Dùng để tính lương theo tổng giờ chấm công"><Input inputMode="numeric" value={form.salary} onChange={updateField('salary')} placeholder="30,000" /></Field>
+              : <>
+                  <Field label="Số ngày công quy định/tháng" required hint="Từ 1 đến 31 ngày"><Input type="number" inputMode="numeric" min="1" max="31" step="1" value={form.standardWorkDays} onChange={updateField('standardWorkDays')} placeholder="26" /></Field>
+                  <Field label="Tổng giờ làm quy định/tháng" required hint="Dùng làm mẫu số tính lương theo giờ thực tế"><Input type="number" inputMode="decimal" min="0.01" max="744" step="0.01" value={form.requiredMonthlyHours} onChange={updateField('requiredMonthlyHours')} placeholder="208" /></Field>
+                  <Field label="Lương cơ bản (đ/tháng)" required hint={storeEmployeePrefix(scopedStore) === 'SM234' ? 'SecondMall: giờ thực tế ÷ giờ quy định × lương cơ bản' : 'Mức lương cơ bản của kỳ lương tháng'}><Input inputMode="numeric" value={form.baseSalary} onChange={updateField('baseSalary')} placeholder="8,000,000" /></Field>
+                </>}
             <Field label="Tuổi" required><Input inputMode="numeric" min="16" max="100" value={form.age} onChange={updateField('age')} placeholder="Ví dụ: 22" /></Field>
             <Field label="Vị trí công việc" required><Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select></Field>
           </div>
@@ -609,7 +644,7 @@ export function StoreEmployees() {
           </div>
           <InfoNote>Vì an toàn dữ liệu, hệ thống chỉ lưu số CCCD và không lưu tệp ảnh CCCD.</InfoNote>
         </form>
-      </Drawer>
+      </Drawer>}
     </div>
   )
 }
@@ -622,7 +657,9 @@ export function StoreTasks() {
     shiftDefinitions = [],
     replaceTasks,
     notify,
+    session,
   } = useStoreScope()
+  const canManageStore = ['admin', 'store_manager'].includes(session?.role)
   const initialDate = today()
   const optionsForDate = (nextDate) => taskShiftOptionsForDate({
     shiftDefinitions,
@@ -662,6 +699,7 @@ export function StoreTasks() {
   const updateRow = (index, key, value) => setRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, [key]: value } : item))
   const removeRow = (index) => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))
   const send = async () => {
+    if (!canManageStore) return
     if (!date || !shiftId) return notify?.('Vui lòng chọn ngày và ca làm việc.', 'info')
     if (!shiftOptions.some((shift) => String(shift.id) === String(shiftId))) {
       return notify?.('Ca làm việc không hợp lệ cho ngày đã chọn. Vui lòng chọn lại ca.', 'info')
@@ -687,7 +725,8 @@ export function StoreTasks() {
 
   return (
     <div className="page admin-task-page">
-      <PageHeader title="Giao việc" subtitle={`Tạo danh sách công việc theo ca tại ${activeStore?.name || 'cửa hàng đang chọn'}.`} icon={ClipboardCheck} />
+      <PageHeader title="Giao việc" subtitle={canManageStore ? `Tạo danh sách công việc theo ca tại ${activeStore?.name || 'cửa hàng đang chọn'}.` : `Xem danh sách công việc theo ca tại ${activeStore?.name || 'cửa hàng đang chọn'}.`} icon={ClipboardCheck} />
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể tạo, sửa, xóa hoặc gửi công việc.</InfoNote>}
       <Card className="task-toolbar-card">
         <div className="task-toolbar-grid">
           <Field label="Cửa hàng"><Input icon={Store} value={activeStore?.name || storeId} readOnly /></Field>
@@ -698,25 +737,26 @@ export function StoreTasks() {
             </Select>
           </Field>
           <Field label="Ngày áp dụng" required><Input icon={CalendarDays} type="date" value={date} onChange={(event) => changeDate(event.target.value)} /></Field>
-          <Button icon={Send} onClick={send} className="task-send">LƯU VÀ GỬI</Button>
+          {canManageStore && <Button icon={Send} onClick={send} className="task-send">LƯU VÀ GỬI</Button>}
         </div>
       </Card>
       <div className="split-layout split-layout--tasks">
         <Card title="Danh sách công việc" className="task-editor">
-          <div className="task-editor__head"><span>STT</span><span>Nội dung công việc *</span><span>Chi tiết / Ghi chú</span><span /></div>
+          <div className="task-editor__head"><span>STT</span><span>Nội dung công việc</span><span>Chi tiết / Ghi chú</span><span /></div>
           {rows.map((item, index) => (
             <div className="task-editor__row" key={item.id || index}>
               <b>{index + 1}</b>
-              <input value={item.title} onChange={(event) => updateRow(index, 'title', event.target.value)} placeholder="Nhập nội dung công việc" />
-              <textarea value={item.detail} onChange={(event) => updateRow(index, 'detail', event.target.value)} placeholder="Chi tiết thực hiện" />
-              <button type="button" onClick={() => removeRow(index)} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>
+              {canManageStore ? <input value={item.title} onChange={(event) => updateRow(index, 'title', event.target.value)} placeholder="Nhập nội dung công việc" /> : <strong>{item.title || '—'}</strong>}
+              {canManageStore ? <textarea value={item.detail} onChange={(event) => updateRow(index, 'detail', event.target.value)} placeholder="Chi tiết thực hiện" /> : <span>{item.detail || '—'}</span>}
+              {canManageStore && <button type="button" onClick={() => removeRow(index)} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>}
             </div>
           ))}
-          <button type="button" className="add-row" onClick={() => setRows((current) => [...current, { id: `CV-${Date.now()}`, title: '', detail: '' }])}><Plus size={18} /> Thêm công việc</button>
+          {canManageStore && <button type="button" className="add-row" onClick={() => setRows((current) => [...current, { id: `CV-${Date.now()}`, title: '', detail: '' }])}><Plus size={18} /> Thêm công việc</button>}
+          {!rows.length && <InfoNote>Chưa có công việc cho ca và ngày đã chọn.</InfoNote>}
         </Card>
         <Card className="guide-card">
           <h2><Info size={22} /> Giao việc theo cửa hàng</h2>
-          <ol><li>Chọn ca làm và ngày áp dụng.</li><li>Nhập từng công việc và hướng dẫn cần thiết.</li><li>Nhấn “Lưu và gửi” để nhân viên trong ca nhận việc.</li></ol>
+          {canManageStore ? <ol><li>Chọn ca làm và ngày áp dụng.</li><li>Nhập từng công việc và hướng dẫn cần thiết.</li><li>Nhấn “Lưu và gửi” để nhân viên trong ca nhận việc.</li></ol> : <p>Chọn ngày và ca làm để xem công việc đã giao.</p>}
           <InfoNote><strong>Phạm vi được giới hạn tự động</strong><br />Công việc chỉ được gửi đến cửa hàng đang quản lý.</InfoNote>
         </Card>
       </div>

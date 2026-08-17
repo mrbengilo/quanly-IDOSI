@@ -6,8 +6,10 @@ file tĩnh và **không chạy** Worker/D1.
 ## Khởi tạo môi trường mới
 
 1. Tạo D1 binding logic tên `DB` và chạy migration trong `drizzle/`.
-2. Đặt secret runtime `BOOTSTRAP_TOKEN` đủ dài và ngẫu nhiên.
-3. Deploy bằng Sites, sau đó gọi đúng một lần:
+2. Tạo R2 binding riêng tư tên `IDENTITY_IMAGES` cho ảnh CCCD; bucket không
+   được public trực tiếp.
+3. Đặt secret runtime `BOOTSTRAP_TOKEN` đủ dài và ngẫu nhiên.
+4. Deploy bằng Sites, sau đó gọi đúng một lần:
 
 ```bash
 curl -X POST https://<site>/api/bootstrap \
@@ -41,26 +43,33 @@ Các lệnh chính:
 - Worker chỉ lưu bốn role code: `admin`, `business_support`, `store_manager`,
   `employee`. Role `employee` được tách nhóm hiển thị bằng `employees.unit`
   (`store` hoặc `office`), nên hệ thống có năm nhóm nhân sự trên giao diện.
-  `business_support` kế thừa projection vận hành toàn hệ thống ngoài `OFFICE`;
+  `business_support` kế thừa projection đọc toàn hệ thống giống Admin, gồm cả
+  `OFFICE`, tài chính và lịch sử, nhưng chỉ nhận account settings của chính họ
+  và không nhận credential/secret. Đây là role chỉ đọc: ngoài đăng xuất, họ chỉ
+  được chấm công vào/ra, đổi mật khẩu/thiết lập tài khoản và đánh dấu thông báo;
   `store_manager` bắt buộc có `store_id` thật và chỉ nhận/ghi dữ liệu đúng cửa
   hàng đó. Cả hai không thể gọi `state.merge|replace`, sửa/xóa/tạo đơn hàng,
   đổi chính sách, xóa cửa hàng/nhân viên hoặc thay giờ chấm công.
-- `store.create`: admin/business_support; `store.update`: admin/business_support
-  hoặc store_manager của đúng cửa hàng; `store.delete`: chỉ admin. `store.update`
+- `store.create`: chỉ admin; `store.update`: admin hoặc store_manager của đúng
+  cửa hàng; `store.delete`: chỉ admin. `store.update`
   nhận `storeId` cùng `name`, `short`, `location`, `address`, `phone`, `email`,
   `tax`, `opening`, `closing`, `accent`, `status` cần đổi. Giờ mở/đóng theo 24
   giờ; server cũng chấp nhận alias `taxCode`, `openingTime`, `closingTime` và trả
   về cả hai tên để tương thích state hiện tại.
-- `employee.create|update`: admin/business_support cho nhân viên cửa hàng;
-  store_manager chỉ cho nhân viên `unit: store` thuộc đúng cửa hàng. Admin tạo
+- `employee.create|update`: admin cho mọi nhóm; store_manager chỉ cho nhân viên
+  `unit: store` thuộc đúng cửa hàng. Admin tạo
   mọi nhóm. Create nhận hồ sơ trực tiếp cùng `username`, `password`; Worker
   tự sinh mã cửa hàng, kiểm tra điện thoại `0` + 9 số và commit hồ sơ + tài khoản
   đăng nhập trong cùng transaction. `employee.delete` chỉ admin. Update có thể
   nhận `username`, `password` để cập nhật credential nguyên tử với hồ sơ.
   Hồ sơ `unit: business_support` tự nhận `storeId: BUSINESS_SUPPORT`, role
-  `business_support`, mã `HTKD001...`; hồ sơ `unit: store_manager` bắt buộc
-  `storeId` thật, role `store_manager`, mã `QL-<store-short>-001...`. Cả hai
-  bắt buộc `startDate: YYYY-MM-DD` và credential khi tạo mới.
+  `business_support`, mã toàn cục `HTKD-001...`; hồ sơ `unit: store_manager`
+  bắt buộc `storeId` thật, role `store_manager`, mã toàn cục `QLCH-001...`.
+  Cả hai chỉ nhận `name`, điện thoại `0` + 9 số, `cccd` đúng 12 số, `address`,
+  `startDate: YYYY-MM-DD`, `employmentType` (`Full-Time`, `Part-Time`,
+  `Thực Tập Sinh`), vị trí đúng vai trò, `username`/`password` và ảnh CCCD.
+  Giờ chấm công của hai vai trò do server cố định `08:00-17:00`, không nhận
+  cấu hình ngày công/giờ làm/lương tùy biến.
   Sau migration xóa credential, `employee.update` có thể nhận lại cặp
   `username`/`password` để phát hành tài khoản mới nguyên tử cho đúng
   profile hiện hữu; mã profile và lịch sử nghiệp vụ không thay đổi.
@@ -68,22 +77,29 @@ Các lệnh chính:
   giờ vào trong cùng ngày) và cặp `standardWorkDaysPeriod: YYYY-MM`,
   `standardWorkDays: 1..31`. Server gộp cặp này vào
   `monthlyWorkdayTargets[period]` của riêng nhân viên.
-- `shift_definition.create|update|delete`: các role vận hành, payload `storeId`,
+  Hồ sơ Full-Time cửa hàng nhận `standardWorkDays: 1..31`,
+  `requiredMonthlyHours: >0..744` và `baseSalary` là số nguyên VND. Full-Time
+  SecondMall SM234 bắt buộc đủ ba trường và lưu `payFormula: monthly-hours`.
+  `identityImages.front|back` nhận data URL JPEG/PNG/WebP tối đa 2 MiB/ảnh;
+  Worker chỉ lưu metadata/key trong D1 và byte ảnh trong R2. Ảnh được lấy qua
+  `GET /api/identity-images/:employeeId/:side` có Bearer token; Admin và Hỗ trợ
+  KD xem được toàn bộ, Quản lý cửa hàng chỉ xem ảnh của chính mình.
+- `shift_definition.create|update|delete`: admin/store_manager, payload `storeId`,
   `name`, `date?`, `start`, `end` theo 24 giờ; màu sáng và thời lượng do server
   tạo. `schedule.assign` nhận `storeId`, `date`, `employeeIds[]`, `shiftIds[]`;
   `schedule.replace_day` nhận `assignments[]` để thay toàn bộ một ngày. Server
   kiểm tra ca theo đúng ngày áp dụng và lưu `shiftSnapshots[]` bất biến trong
   từng phân công để sửa/xóa định nghĩa ca không làm đổi lịch sử.
-- `tasks.replace_scope`: các role vận hành, payload `storeId`, `date`, `shiftId`,
+- `tasks.replace_scope`: admin/store_manager, payload `storeId`, `date`, `shiftId`,
   `tasks[{id?,title,detail?}]`; thay đúng phạm vi cửa hàng/ngày/ca. `shiftId`
   có thể rỗng cho việc chung; nếu có thì ca phải đang hoạt động, thuộc đúng cửa
   hàng và ngày áp dụng phải khớp `date`.
-- `support_transfer.create`: admin/business_support, payload `employeeId`, `toStoreId`,
+- `support_transfer.create`: chỉ admin, payload `employeeId`, `toStoreId`,
   `fromDate`, `toDate`, `note?`; cửa hàng đi được lấy từ hồ sơ nhân viên.
   `support_transfer.update` nhận `transferId` và các trường cần đổi (`toStoreId`,
   ngày, ghi chú, trạng thái); `support_transfer.delete` nhận `transferId`,
-  `reason` và xóa mềm. Business support không được điều chuyển Khối văn phòng. Kỳ lương
-  liên quan đã khóa sẽ chặn thay đổi.
+  `reason` và xóa mềm. Cả update/delete cũng chỉ Admin; kỳ lương liên quan đã
+  khóa sẽ chặn thay đổi.
 - `account_settings.update`: admin/business_support/store_manager tự cập nhật tài khoản hiện tại với
   payload `name`, `email`, `phone`, `birthday`, `gender`, `address`, `bio`,
   `avatar?`, `notifications {tasks,dailyReport,expenseAlert}`. Ảnh là data URL
@@ -92,8 +108,7 @@ Các lệnh chính:
   `{ notificationId }`; chỉ đánh dấu thông báo nằm trong projection của actor.
   `notification.mark_all_read` nhận `{ storeId? }` và đánh dấu toàn bộ thông báo
   chưa đọc trong phạm vi đó. Employee luôn bị cố định vào cửa hàng/tài khoản của
-  mình; business_support không bao giờ chạm dữ liệu `OFFICE`, store_manager bị
-  cố định vào `store_id` của session. `notification.clear` và
+  mình; store_manager bị cố định vào `store_id` của session. `notification.clear` và
   `notification.clear_all` là alias tương thích, chỉ đánh dấu đã đọc chứ không
   xóa bản ghi. Response trả `notificationIds`, `notifications`, `updatedCount`,
   `version`; lệnh không có gì để đổi trả `existing: true` và không tăng version.
@@ -115,7 +130,7 @@ Các lệnh chính:
   `OFFICE_DEFAULT` do server suy ra từ hồ sơ; record snapshot ngày công
   chuẩn của tháng, `minutesEarly`, `minutesLate` và chỉ cho một lượt/ngày.
   Role `business_support` và `store_manager` cũng được chấm công khi tài khoản
-  đã liên kết profile; server dùng giờ làm office-like của chính profile.
+  đã liên kết profile; server dùng ca mặc định `08:00-17:00` cho hai vai trò.
 - `attendance.check_out`: payload `attendanceId?`, `location`, `expense?`,
   `tiktok?`. Server tự tính thời lượng và doanh thu đơn gắn với lượt
   chấm công; chi phí ca nếu có được ghi cùng transaction.
@@ -131,28 +146,33 @@ Các lệnh chính:
   nhận `orderId`, `reason` và chỉ xóa mềm. Cả hai tính lại tổng ca.
 - `task.done` (alias `task.set_done`): employee, payload `taskId`, `done`.
   Server lấy nhân viên/cửa hàng từ session và chỉ đổi cờ của chính actor.
-- `fixed_expense.create|update|delete`: các role vận hành theo phạm vi cửa hàng; create nhận `storeId`, `type`,
+- `fixed_expense.create|update|delete`: admin/store_manager theo phạm vi cửa hàng; create nhận `storeId`, `type`,
   `amount`, `note?`, `occurredAt?`; update/delete dùng `expenseId` và `reason`.
   Lệnh `expense.create|update|delete` có cùng envelope cho chi phí thủ công.
-- `import.create`: các role vận hành theo phạm vi cửa hàng, payload `storeId`, `items[{name,category,
+- `import.create`: admin/store_manager theo phạm vi cửa hàng, payload `storeId`, `items[{name,category,
   quantity,weight,price,shippingAmount?,note?}]`, `shippingAmount?`,
   `relatedAmount?`. `quantity` là số bao; tiền hàng tính bằng `weight * price`.
   Server sinh mã `PN-dd/mm/yy-0001` theo giờ Việt Nam bằng counter toàn cục. `import.update`
   và `import.delete` nhận `voucherId`, `reason`; xóa là xóa mềm và void
   expense liên kết. Có alias `import_voucher.*`.
-- `salary_advance.create`: các role vận hành theo phạm vi cửa hàng, payload `employeeId`, `period` (`YYYY-MM`),
+- `salary_advance.create`: admin/store_manager theo phạm vi cửa hàng, payload `employeeId`, `period` (`YYYY-MM`),
   `amount`, `note?`; update dùng `advanceId`, `amount?`, `note?`; confirm dùng
   `advanceId` và cùng lúc ghi cash-out + expense.
-- `salary_adjustment.create`: các role vận hành theo phạm vi cửa hàng, payload `employeeId`, `period`, `type`
+- `salary_adjustment.create`: admin/store_manager theo phạm vi cửa hàng, payload `employeeId`, `period`, `type`
   (`Thưởng khác`, `Phụ cấp khác` hoặc `Khấu trừ`), `amount`, `note?`.
-- `payroll.close|pay|lock`: các role vận hành theo phạm vi cửa hàng, payload `storeId`, `period`. Server tự chốt
+- `payroll.close|pay|lock`: admin/store_manager theo phạm vi cửa hàng, payload `storeId`, `period`. Server tự chốt
   attendance, lương, KPI, ứng lương và finance; `pay` chỉ chi phần còn
   lại, `lock` chỉ áp dụng sau khi đã chi. Nếu nguồn tài chính/lương
   đổi sau khi chốt, `pay` trả `PAYROLL_NEEDS_RECLOSE` cho đến khi chốt lại.
   Lương tháng `OFFICE` và `BUSINESS_SUPPORT` được chia theo ngày hoàn
   tất chấm công trên ngày công chuẩn đã snapshot. Admin chốt lương
-  `BUSINESS_SUPPORT`; business_support/store_manager không thể thao tác payroll
-  đơn vị nội bộ hoặc nhận projection `OFFICE`.
+  `BUSINESS_SUPPORT`; business_support không thể thao tác payroll, còn
+  store_manager không thể thao tác đơn vị nội bộ. Với Full-Time SecondMall
+  SM234, lương cơ bản kỳ bằng
+  `floor(actualHours / requiredMonthlyHours * baseSalary)` và không áp trần;
+  thưởng/phụ cấp/khấu trừ vẫn cộng sau đó. Thiếu cấu hình trả
+  `SM234_PAYROLL_CONFIG_REQUIRED`; đổi cấu hình làm kỳ đã chốt cần chốt lại,
+  còn kỳ hiện tại đã chi/khóa chặn cập nhật.
   Profile `unit: store_manager` bị loại khỏi lịch phân ca và bảng lương/KPI của
   nhân viên cửa hàng.
 - `policy.set`: admin, payload `key`, `value`, dùng version riêng của policy.
@@ -165,9 +185,9 @@ Các lệnh chính:
   quản lý credential business_support/store_manager/employee. `user.create`
   luôn bắt buộc `storeId`/`employeeId` khớp một profile hiện hữu, nên không
   thể tạo tài khoản Hỗ trợ KD “mồ côi”; luồng tạo Hỗ trợ KD/Quản lý
-  cửa hàng mới phải dùng `employee.create` nguyên tử. Business support chỉ
-  quản lý credential employee cửa hàng ngoài `OFFICE`; store manager chỉ
-  employee đúng cửa hàng. Hai role vận hành không được đặt `inactive`.
+  cửa hàng mới phải dùng `employee.create` nguyên tử. Business support không
+  được quản lý credential; store manager chỉ quản lý employee đúng cửa hàng
+  và không được đặt `inactive`.
   `role`, `employeeId` và đơn vị là bất biến; cập nhật mật khẩu/phạm vi
   thu hồi session liên quan.
 - `user.change_password`: chính người dùng, payload `currentPassword`,

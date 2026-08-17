@@ -37,7 +37,7 @@ import {
 } from '../../components/UI'
 import { calculateKpiBonuses, financeSummaryFromState } from '../../domain'
 import { useApp } from '../../state/AppContext'
-import { businessDate, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, today } from '../../utils'
+import { businessDate, calculateEmployeeBasePay, getMonthlySalary, getPayBasis, money, shortDate, today, usesMonthlyHoursFormula } from '../../utils'
 
 const parseMoney = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
 const moneyInput = (value) => new Intl.NumberFormat('en-US').format(parseMoney(value))
@@ -52,6 +52,7 @@ const monthBounds = (period) => ({
 const recordInMonth = (record, period) => businessDate(record.date || record.workDate || record.createdAt || record.occurredAt).slice(0, 7) === period
 const statusTone = (status) => status === 'Đi trễ' ? 'red' : status === 'Đi sớm' ? 'green' : 'blue'
 const normalizedStatus = (status) => status === 'Đúng giờ' ? 'Đi đúng giờ' : status === 'Trễ' ? 'Đi trễ' : status || 'Chưa xác định'
+const canManageStoreOperations = (role) => ['admin', 'store_manager'].includes(role)
 const newImportForm = () => ({ name: '', quantity: 1, weight: '', price: '', shippingAmount: '', reason: '' })
 const importVoucherCode = (value) => {
   const code = String(value || '')
@@ -236,7 +237,7 @@ export function StoreOrdersPage() {
         <MetricCard label="GIÁ TRỊ TRUNG BÌNH" value={money(filtered.length ? Math.floor(total / filtered.length) : 0)} icon={BadgeDollarSign} tone="orange" />
       </div>
       <Card title="Bộ lọc đơn hàng" className="filter-card"><div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, khách hàng..." /><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} aria-label="Lọc theo ngày" /><Input type="month" value={month} onChange={(event) => setMonth(event.target.value)} aria-label="Lọc theo tháng" /><Select value={shiftId} onChange={(event) => setShiftId(event.target.value)}><option value="all">Tất cả ca</option>{shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name}</option>)}</Select><Select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{employeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select><Button variant="outline" onClick={() => { setQuery(''); setDate(''); setMonth(''); setShiftId('all'); setEmployeeId('all') }}>Đặt lại</Button></div></Card>
-      {!canManageOrders && <InfoNote>Chế độ chỉ xem: tài khoản Quản lý không thể chỉnh sửa hoặc xóa đơn hàng.</InfoNote>}
+      {!canManageOrders && <InfoNote>Chế độ chỉ xem: tài khoản hiện tại không thể chỉnh sửa hoặc xóa đơn hàng.</InfoNote>}
       <div className="tabs"><button className={view === 'shift' ? 'active' : ''} onClick={() => setView('shift')}>Theo ca</button><button className={view === 'employee' ? 'active' : ''} onClick={() => setView('employee')}>Theo nhân viên</button><button className={view === 'day' ? 'active' : ''} onClick={() => setView('day')}>Theo ngày</button></div>
       {groups.map(([key, group]) => {
         const first = group[0]
@@ -261,6 +262,7 @@ export function StoreCashflowV2() {
   const [view, setView] = useState('shift')
   const [expenseOpen, setExpenseOpen] = useState(false)
   const [expenseForm, setExpenseForm] = useState({ type: 'Điện', amount: '', note: '', occurredAt: today() })
+  const canManageStore = canManageStoreOperations(app.session?.role)
   const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
   const scopedAttendance = attendance.filter((record) => record.storeId === storeId && !record.deletedAt && recordInMonth(record, period))
   const profitTone = summary.profit >= 0 ? 'green' : 'red'
@@ -344,6 +346,7 @@ export function StoreCashflowV2() {
   const expenseBreakdown = Object.entries(summary.expenseByType).sort((left, right) => right[1] - left[1])
 
   const saveExpense = async () => {
+    if (!canManageStore) return
     const result = await addFixedExpense({ ...expenseForm, storeId, amount: parseMoney(expenseForm.amount), occurredAt: `${expenseForm.occurredAt}T12:00:00+07:00` })
     if (!result.ok) return notify(result.message, 'info')
     setExpenseOpen(false)
@@ -352,7 +355,8 @@ export function StoreCashflowV2() {
 
   return (
     <div className="page">
-      <PageHeader title="DÒNG TIỀN CỬA HÀNG" subtitle={`Nguồn dữ liệu thống nhất của ${store?.name || 'cửa hàng'} trong kỳ đã chọn.`} icon={Banknote} actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /><Button icon={Plus} onClick={() => setExpenseOpen(true)}>NHẬP CHI PHÍ CỐ ĐỊNH</Button></>} />
+      <PageHeader title="DÒNG TIỀN CỬA HÀNG" subtitle={`Nguồn dữ liệu thống nhất của ${store?.name || 'cửa hàng'} trong kỳ đã chọn.`} icon={Banknote} actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />{canManageStore && <Button icon={Plus} onClick={() => setExpenseOpen(true)}>NHẬP CHI PHÍ CỐ ĐỊNH</Button>}</>} />
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể ghi nhận chi phí hoặc thay đổi dữ liệu dòng tiền.</InfoNote>}
       <div className="metrics-grid metrics-grid--4"><MetricCard label="DOANH THU" value={money(summary.revenue)} icon={TrendingUp} tone="green" /><MetricCard label="CHI PHÍ" value={money(summary.expense)} icon={TrendingDown} tone="orange" /><MetricCard label="LỢI NHUẬN" value={money(summary.profit)} icon={Wallet} tone={profitTone} /><MetricCard label="BIÊN LỢI NHUẬN" value={`${summary.marginPercent.toFixed(2)}%`} icon={BadgeDollarSign} tone="blue" /></div>
       <div className="two-column-layout">
         <Card title="Cơ cấu tổng chi phí cửa hàng"><div className="cost-structure-list">{expenseBreakdown.map(([type, amount]) => <div key={type}><span>{type}</span><strong>{money(amount)}</strong><b>{summary.expense ? `${((amount / summary.expense) * 100).toFixed(1)}%` : '0%'}</b></div>)}{!expenseBreakdown.length && <p>Chưa có chi phí trong kỳ.</p>}</div></Card>
@@ -374,7 +378,7 @@ export function StoreCashflowV2() {
         return <tr key={row.key}><td><strong>{label}</strong></td><td>{row.orders}</td><td><strong>{money(row.revenue)}</strong></td><td>{money(row.cash)}</td><td>{money(row.transfer)}</td><td>{money(row.otherPayment)}</td><td>{money(row.linkedExpense)}</td><td>{checkOut}</td></tr>
       })}{!groupedRevenue.length && <tr><td colSpan="8">Chưa có giao dịch doanh thu trong kỳ.</td></tr>}{Boolean(groupedRevenue.length) && <tr className="total-row"><td>TỔNG KHỚP DOANH THU</td><td>{revenueTotals.orders}</td><td>{money(revenueTotals.revenue)}</td><td>{money(revenueTotals.cash)}</td><td>{money(revenueTotals.transfer)}</td><td>{money(revenueTotals.otherPayment)}</td><td>{money(revenueTotals.linkedExpense)}</td><td /></tr>}</tbody></TableWrap></Card>
       <Card title="Sổ giao dịch chi phí"><TableWrap><thead><tr><th>Thời gian</th><th>Loại</th><th>Nguồn</th><th>Số tiền</th><th>Trạng thái</th></tr></thead><tbody>{expenseTransactions.map((transaction) => <tr key={transaction.id}><td>{timestamp(transaction.occurredAt)}</td><td>{transaction.type}</td><td>{transaction.sourceType}</td><td><strong>{money(transaction.amount)}</strong></td><td><Badge>Đã ghi nhận</Badge></td></tr>)}{!expenseTransactions.length && <tr><td colSpan="5">Chưa có giao dịch chi phí trong kỳ.</td></tr>}{Boolean(expenseTransactions.length) && <tr className="total-row"><td colSpan="3">TỔNG KHỚP CHI PHÍ</td><td>{money(expenseTransactions.reduce((total, transaction) => total + Number(transaction.amount || 0), 0))}</td><td /></tr>}</tbody></TableWrap></Card>
-      <Modal open={expenseOpen} onClose={() => setExpenseOpen(false)} title="Nhập chi phí cố định" footer={<><Button variant="outline" onClick={() => setExpenseOpen(false)}>Hủy</Button><Button icon={Save} onClick={saveExpense}>LƯU</Button></>}><div className="form-grid"><Field label="Ngày phát sinh"><Input type="date" value={expenseForm.occurredAt} onChange={(event) => setExpenseForm({ ...expenseForm, occurredAt: event.target.value })} /></Field><Field label="Loại chi phí"><Select value={expenseForm.type} onChange={(event) => setExpenseForm({ ...expenseForm, type: event.target.value })}><option>Điện</option><option>Nước</option><option>Wi-Fi</option><option>Rác</option><option>Marketing</option><option>Chi phí thiết lập cửa hàng</option><option>Chi phí khác</option></Select></Field><Field label="Số tiền"><Input inputMode="numeric" value={expenseForm.amount} onChange={(event) => setExpenseForm({ ...expenseForm, amount: moneyInput(event.target.value) })} /></Field><Field label="Ghi chú"><Input value={expenseForm.note} onChange={(event) => setExpenseForm({ ...expenseForm, note: event.target.value })} /></Field></div></Modal>
+      {canManageStore && <Modal open={expenseOpen} onClose={() => setExpenseOpen(false)} title="Nhập chi phí cố định" footer={<><Button variant="outline" onClick={() => setExpenseOpen(false)}>Hủy</Button><Button icon={Save} onClick={saveExpense}>LƯU</Button></>}><div className="form-grid"><Field label="Ngày phát sinh"><Input type="date" value={expenseForm.occurredAt} onChange={(event) => setExpenseForm({ ...expenseForm, occurredAt: event.target.value })} /></Field><Field label="Loại chi phí"><Select value={expenseForm.type} onChange={(event) => setExpenseForm({ ...expenseForm, type: event.target.value })}><option>Điện</option><option>Nước</option><option>Wi-Fi</option><option>Rác</option><option>Marketing</option><option>Chi phí thiết lập cửa hàng</option><option>Chi phí khác</option></Select></Field><Field label="Số tiền"><Input inputMode="numeric" value={expenseForm.amount} onChange={(event) => setExpenseForm({ ...expenseForm, amount: moneyInput(event.target.value) })} /></Field><Field label="Ghi chú"><Input value={expenseForm.note} onChange={(event) => setExpenseForm({ ...expenseForm, note: event.target.value })} /></Field></div></Modal>}
     </div>
   )
 }
@@ -394,7 +398,7 @@ export function StoreAttendanceV2() {
   const totalPay = rows.reduce((sum, record) => {
     const employee = scopedEmployees.find((item) => item.id === record.employeeId)
     if (!employee) return sum
-    if (getPayBasis(employee) === 'hourly') return sum + Number(record.hours || 0) * getHourlyRate(employee)
+    if (getPayBasis(employee) === 'hourly' || usesMonthlyHoursFormula(employee)) return sum + calculateEmployeeBasePay(employee, { hours: Number(record.hours || 0) })
     return sum + getMonthlySalary(employee) / Number(employee.standardWorkDays || 26)
   }, 0)
   const shifts = [...new Map(attendance.filter((record) => record.storeId === storeId).map((record) => [record.shift, record.shiftName || record.shift])).entries()]
@@ -411,7 +415,7 @@ export function StoreAttendanceV2() {
 
   return <div className="page"><PageHeader title="CHẤM CÔNG CỬA HÀNG" subtitle="Mỗi lượt chấm công là một bản ghi độc lập, có ca, vị trí và thời gian thực tế." icon={Clock3} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} /><Card title="Lịch sử chấm công của nhân viên" action={<div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." /><Select value={shift} onChange={(event) => setShift(event.target.value)}><option value="all">Tất cả ca</option>{shifts.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</Select><Select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{scopedEmployees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select></div>}><TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Ca làm việc</th><th>Ngày</th><th>Giờ vào / Kết</th><th>Giờ thực tế</th><th>Trạng thái</th><th>Phút trễ</th><th>Phụ cấp TikTok</th><th>Lương thực nhận</th><th>Vị trí</th></tr></thead><tbody>{rows.map((record, index) => {
     const employee = scopedEmployees.find((item) => item.id === record.employeeId)
-    const pay = employee ? getPayBasis(employee) === 'hourly' ? Number(record.hours || 0) * getHourlyRate(employee) : getMonthlySalary(employee) / Number(employee.standardWorkDays || 26) : 0
+    const pay = employee ? getPayBasis(employee) === 'hourly' || usesMonthlyHoursFormula(employee) ? calculateEmployeeBasePay(employee, { hours: Number(record.hours || 0) }) : getMonthlySalary(employee) / Number(employee.standardWorkDays || 26) : 0
     const status = normalizedStatus(record.status || record.arrivalTag)
     return <tr key={record.id}><td>{index + 1}</td><td><strong>{employee?.name || record.employeeName}</strong><small className="table-note">{record.employeeId}</small></td><td><strong>{record.shiftName || record.shift}</strong><small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td>{record.checkIn || '—'} / {record.checkOut || 'Đang làm'}</td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={statusTone(status)}>{status}</Badge></td><td>{Number(record.minutesLate || 0)} phút</td><td>{uniqueTiktokEmployees.has(record.employeeId) ? money(employee?.tiktokAllowance) : money(0)}</td><td>{money(Math.floor(pay))}</td><td>{record.location?.label || record.locationName || '—'}<small className="table-note">{record.location?.latitude != null ? `${record.location.latitude}, ${record.location.longitude}` : ''}</small></td></tr>
   })}<tr className="total-row"><td colSpan="5">TỔNG</td><td>{totalHours.toFixed(2)} giờ</td><td colSpan="2" /><td>{money(totalTiktok)}</td><td>{money(Math.floor(totalPay))}</td><td /></tr></tbody></TableWrap></Card><Card title="THỐNG KÊ ĐI LÀM ĐÚNG GIỜ"><TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Đi trễ</th><th>Đi đúng giờ</th><th>Đi sớm</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody>{stats.map((item, index) => <tr key={item.employee.id}><td>{index + 1}</td><td><strong>{item.employee.name}</strong><small className="table-note">{item.employee.id}</small></td><td className="red-text">{item.late}</td><td className="blue-text">{item.onTime}</td><td className="green-text">{item.early}</td><td>{item.lateMinutes}</td><td>{item.records}</td><td><strong>{item.rate.toFixed(1)}%</strong></td><td><Badge tone={item.evaluation === 'Chuyên cần tốt' ? 'green' : item.evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{item.evaluation}</Badge></td></tr>)}</tbody></TableWrap></Card></div>
@@ -423,6 +427,7 @@ export function StorePayrollV2() {
   const [period, setPeriod] = useState(today().slice(0, 7))
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState({ employeeId: '', type: 'Thưởng khác', amount: '', note: '' })
+  const canManageStore = canManageStoreOperations(app.session?.role)
   const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
   const scopedAttendance = attendance.filter((record) => !record.deletedAt && record.storeId === storeId && recordInMonth(record, period))
   const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
@@ -434,7 +439,7 @@ export function StorePayrollV2() {
   const rows = scopedEmployees.map((employee) => {
     const records = scopedAttendance.filter((record) => record.employeeId === employee.id)
     const hours = records.reduce((sum, record) => sum + Number(record.hours || 0), 0)
-    const base = getPayBasis(employee) === 'hourly' ? Math.floor(hours * getHourlyRate(employee)) : getMonthlySalary(employee)
+    const base = calculateEmployeeBasePay(employee, { hours })
     const adjustments = salaryAdjustments.filter((item) => item.employeeId === employee.id && item.period === period && item.status !== 'Đã hủy')
     const otherBonus = adjustments.filter((item) => item.type === 'Thưởng khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
     const otherAllowance = adjustments.filter((item) => item.type === 'Phụ cấp khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
@@ -446,31 +451,40 @@ export function StorePayrollV2() {
   })
   const totals = rows.reduce((value, row) => ({ gross: value.gross + row.gross, advances: value.advances + row.advances, net: value.net + row.net, kpi: value.kpi + row.kpiBonus }), { gross: 0, advances: 0, net: 0, kpi: 0 })
 
-  const openAdjustment = (type) => { setModal(type === 'Ứng lương' ? 'advance' : 'adjustment'); setForm({ employeeId: scopedEmployees[0]?.id || '', type, amount: '', note: '' }) }
+  const openAdjustment = (type) => {
+    if (!canManageStore) return
+    setModal(type === 'Ứng lương' ? 'advance' : 'adjustment')
+    setForm({ employeeId: scopedEmployees[0]?.id || '', type, amount: '', note: '' })
+  }
   const saveAdjustment = async () => {
+    if (!canManageStore) return
     const payload = { ...form, storeId, period, amount: parseMoney(form.amount), idempotencyKey: `${form.type}:${form.employeeId}:${period}:${Date.now()}` }
     const result = modal === 'advance' ? await createSalaryAdvance(payload) : await addSalaryAdjustment(payload)
     if (!result.ok) return notify(result.message, 'info')
     setModal(null)
   }
   const handleConfirmAdvance = async (advanceId) => {
+    if (!canManageStore) return
     const result = await confirmSalaryAdvance(advanceId)
     if (!result.ok) notify(result.message, 'info')
   }
   const handleClosePayroll = async () => {
+    if (!canManageStore) return
     const result = await closePayrollPeriod(storeId, period)
     if (!result.ok) notify(result.message, 'info')
   }
   const handleConfirmPayroll = async () => {
+    if (!canManageStore) return
     const result = await confirmPayrollPayment(storeId, period)
     if (!result.ok) notify(result.message, 'info')
   }
   const handleLockPayroll = async () => {
+    if (!canManageStore) return
     const result = await lockPayrollPeriod(storeId, period)
     if (!result.ok) notify(result.message, 'info')
   }
 
-  return <div className="page"><PageHeader title="LƯƠNG THƯỞNG NHÂN VIÊN" subtitle={`Kỳ ${period} — ${store?.name || ''}. KPI chỉ dùng tổng giờ thực tế của nhân viên và chính sách đang hiệu lực.`} icon={Banknote} actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /><Button icon={Gift} onClick={() => openAdjustment('Thưởng khác')}>TẠO THƯỞNG</Button><Button icon={Plus} onClick={() => openAdjustment('Phụ cấp khác')}>TẠO PHỤ CẤP</Button><Button variant="outline" icon={Wallet} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button></>} /><div className="metrics-grid metrics-grid--4"><MetricCard label="TỔNG THU NHẬP" value={money(totals.gross)} icon={TrendingUp} tone="green" /><MetricCard label="THƯỞNG KPI NHÂN VIÊN" value={money(totals.kpi)} helper={`${kpi.totalHours.toFixed(2)} giờ • ${money(Math.floor(kpi.profitPerHour))}/giờ`} icon={BadgeDollarSign} tone="blue" /><MetricCard label="ĐÃ ỨNG" value={money(totals.advances)} icon={Wallet} tone="orange" /><MetricCard label="CÒN PHẢI CHI" value={money(totals.net)} icon={Banknote} tone="green" /></div><Card title="Chi tiết lương thưởng"><TableWrap><thead><tr><th>Nhân viên</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng KPI</th><th>Thưởng khác</th><th>Phụ cấp TikTok</th><th>Phụ cấp khác</th><th>Khấu trừ</th><th>Đã ứng</th><th>Thực nhận</th></tr></thead><tbody>{rows.map((row) => <tr key={row.employee.id}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td>{money(row.base)}</td><td>{money(row.kpiBonus)}</td><td>{money(row.otherBonus)}</td><td>{money(row.employee.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.deductions)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}<tr className="total-row"><td colSpan="9">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr></tbody></TableWrap></Card><Card title="Lịch sử ứng lương của nhân viên" action={<Button icon={Plus} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button>}><TableWrap><thead><tr><th>Thời gian</th><th>Nhân viên</th><th>Số tiền ứng</th><th>Lương khả dụng lúc tạo</th><th>Còn lại</th><th>Người tạo</th><th>Ghi chú</th><th>Trạng thái</th><th>Hành động</th></tr></thead><tbody>{salaryAdvances.filter((item) => item.storeId === storeId && item.period === period).map((item) => <tr key={item.id}><td>{timestamp(item.createdAt)}</td><td><strong>{item.employeeName}</strong><small className="table-note">{item.employeeId}</small></td><td>{money(item.amount)}</td><td>{money(item.availableAtCreation)}</td><td>{money(item.remainingAfter)}</td><td>{item.createdBy?.name}</td><td>{item.note || '—'}</td><td><Badge tone={item.status === 'Đã chi' ? 'green' : 'orange'}>{item.status}</Badge></td><td>{item.status === 'Mới tạo' ? <Button icon={CheckCircle2} onClick={() => handleConfirmAdvance(item.id)}>XÁC NHẬN CHI</Button> : <span>{timestamp(item.confirmedAt)}</span>}</td></tr>)}{!salaryAdvances.some((item) => item.storeId === storeId && item.period === period) && <tr><td colSpan="9">Chưa có khoản ứng lương.</td></tr>}</tbody></TableWrap></Card><Card title="Xử lý cuối kỳ" action={<Badge tone={currentPeriod?.status === 'Đã khóa' ? 'red' : currentPeriod?.confirmedAt ? 'green' : 'orange'}>{currentPeriod?.needsReclose ? 'Cần chốt lại' : currentPeriod?.status || 'Chưa chốt'}</Badge>}><div className="period-actions"><Button variant="outline" icon={FileText} onClick={handleClosePayroll} disabled={currentPeriod?.status === 'Đã khóa'}>{currentPeriod?.needsReclose ? 'CHỐT LẠI SỔ' : 'CHỐT SỔ'}</Button><Button icon={Banknote} onClick={handleConfirmPayroll} disabled={Boolean(currentPeriod?.confirmedAt) || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>XÁC NHẬN CHI LƯƠNG</Button><Button variant="danger" icon={ShieldCheck} onClick={handleLockPayroll} disabled={!currentPeriod || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>KHÓA KỲ CHI LƯƠNG THƯỞNG</Button></div></Card><Modal open={Boolean(modal)} onClose={() => setModal(null)} title={modal === 'advance' ? 'Tạo ứng lương' : `Tạo ${form.type.toLowerCase()}`} footer={<><Button variant="outline" onClick={() => setModal(null)}>Hủy</Button><Button icon={Save} onClick={saveAdjustment}>TẠO</Button></>}><div className="form-grid"><Field label="Nhân viên"><Select value={form.employeeId} onChange={(event) => setForm({ ...form, employeeId: event.target.value })}>{scopedEmployees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} — {employee.id}</option>)}</Select></Field>{modal !== 'advance' && <Field label="Loại"><Select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}><option>Thưởng khác</option><option>Phụ cấp khác</option><option>Khấu trừ</option></Select></Field>}<Field label="Số tiền"><Input inputMode="numeric" value={form.amount} onChange={(event) => setForm({ ...form, amount: moneyInput(event.target.value) })} /></Field>{modal === 'advance' && <InfoNote>Lương khả dụng hiện tại: <strong>{money(getAvailableSalary(form.employeeId, period))}</strong>. Khoản ứng phải nhỏ hơn mức này.</InfoNote>}<Field label="Ghi chú" className="span-2"><Input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field></div></Modal></div>
+  return <div className="page"><PageHeader title="LƯƠNG THƯỞNG NHÂN VIÊN" subtitle={`Kỳ ${period} — ${store?.name || ''}. KPI chỉ dùng tổng giờ thực tế của nhân viên và chính sách đang hiệu lực.`} icon={Banknote} actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />{canManageStore && <><Button icon={Gift} onClick={() => openAdjustment('Thưởng khác')}>TẠO THƯỞNG</Button><Button icon={Plus} onClick={() => openAdjustment('Phụ cấp khác')}>TẠO PHỤ CẤP</Button><Button variant="outline" icon={Wallet} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button></>}</>} />{!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể tạo khoản lương, xác nhận chi, chốt sổ hoặc khóa kỳ lương.</InfoNote>}<div className="metrics-grid metrics-grid--4"><MetricCard label="TỔNG THU NHẬP" value={money(totals.gross)} icon={TrendingUp} tone="green" /><MetricCard label="THƯỞNG KPI NHÂN VIÊN" value={money(totals.kpi)} helper={`${kpi.totalHours.toFixed(2)} giờ • ${money(Math.floor(kpi.profitPerHour))}/giờ`} icon={BadgeDollarSign} tone="blue" /><MetricCard label="ĐÃ ỨNG" value={money(totals.advances)} icon={Wallet} tone="orange" /><MetricCard label="CÒN PHẢI CHI" value={money(totals.net)} icon={Banknote} tone="green" /></div><Card title="Chi tiết lương thưởng"><TableWrap><thead><tr><th>Nhân viên</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng KPI</th><th>Thưởng khác</th><th>Phụ cấp TikTok</th><th>Phụ cấp khác</th><th>Khấu trừ</th><th>Đã ứng</th><th>Thực nhận</th></tr></thead><tbody>{rows.map((row) => <tr key={row.employee.id}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td>{money(row.base)}</td><td>{money(row.kpiBonus)}</td><td>{money(row.otherBonus)}</td><td>{money(row.employee.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.deductions)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}<tr className="total-row"><td colSpan="9">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr></tbody></TableWrap></Card><Card title="Lịch sử ứng lương của nhân viên" action={canManageStore ? <Button icon={Plus} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button> : null}><TableWrap><thead><tr><th>Thời gian</th><th>Nhân viên</th><th>Số tiền ứng</th><th>Lương khả dụng lúc tạo</th><th>Còn lại</th><th>Người tạo</th><th>Ghi chú</th><th>Trạng thái</th>{canManageStore && <th>Hành động</th>}</tr></thead><tbody>{salaryAdvances.filter((item) => item.storeId === storeId && item.period === period).map((item) => <tr key={item.id}><td>{timestamp(item.createdAt)}</td><td><strong>{item.employeeName}</strong><small className="table-note">{item.employeeId}</small></td><td>{money(item.amount)}</td><td>{money(item.availableAtCreation)}</td><td>{money(item.remainingAfter)}</td><td>{item.createdBy?.name}</td><td>{item.note || '—'}</td><td><Badge tone={item.status === 'Đã chi' ? 'green' : 'orange'}>{item.status}</Badge></td>{canManageStore && <td>{item.status === 'Mới tạo' ? <Button icon={CheckCircle2} onClick={() => handleConfirmAdvance(item.id)}>XÁC NHẬN CHI</Button> : <span>{timestamp(item.confirmedAt)}</span>}</td>}</tr>)}{!salaryAdvances.some((item) => item.storeId === storeId && item.period === period) && <tr><td colSpan={canManageStore ? 9 : 8}>Chưa có khoản ứng lương.</td></tr>}</tbody></TableWrap></Card><Card title="Xử lý cuối kỳ" action={<Badge tone={currentPeriod?.status === 'Đã khóa' ? 'red' : currentPeriod?.confirmedAt ? 'green' : 'orange'}>{currentPeriod?.needsReclose ? 'Cần chốt lại' : currentPeriod?.status || 'Chưa chốt'}</Badge>}>{canManageStore ? <div className="period-actions"><Button variant="outline" icon={FileText} onClick={handleClosePayroll} disabled={currentPeriod?.status === 'Đã khóa'}>{currentPeriod?.needsReclose ? 'CHỐT LẠI SỔ' : 'CHỐT SỔ'}</Button><Button icon={Banknote} onClick={handleConfirmPayroll} disabled={Boolean(currentPeriod?.confirmedAt) || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>XÁC NHẬN CHI LƯƠNG</Button><Button variant="danger" icon={ShieldCheck} onClick={handleLockPayroll} disabled={!currentPeriod || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>KHÓA KỲ CHI LƯƠNG THƯỞNG</Button></div> : <InfoNote>Trạng thái kỳ lương chỉ được xem.</InfoNote>}</Card>{canManageStore && <Modal open={Boolean(modal)} onClose={() => setModal(null)} title={modal === 'advance' ? 'Tạo ứng lương' : `Tạo ${form.type.toLowerCase()}`} footer={<><Button variant="outline" onClick={() => setModal(null)}>Hủy</Button><Button icon={Save} onClick={saveAdjustment}>TẠO</Button></>}><div className="form-grid"><Field label="Nhân viên"><Select value={form.employeeId} onChange={(event) => setForm({ ...form, employeeId: event.target.value })}>{scopedEmployees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} — {employee.id}</option>)}</Select></Field>{modal !== 'advance' && <Field label="Loại"><Select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}><option>Thưởng khác</option><option>Phụ cấp khác</option><option>Khấu trừ</option></Select></Field>}<Field label="Số tiền"><Input inputMode="numeric" value={form.amount} onChange={(event) => setForm({ ...form, amount: moneyInput(event.target.value) })} /></Field>{modal === 'advance' && <InfoNote>Lương khả dụng hiện tại: <strong>{money(getAvailableSalary(form.employeeId, period))}</strong>. Khoản ứng phải nhỏ hơn mức này.</InfoNote>}<Field label="Ghi chú" className="span-2"><Input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field></div></Modal>}</div>
 }
 
 export function StoreImportsV2() {
@@ -479,11 +493,18 @@ export function StoreImportsV2() {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(newImportForm)
+  const canManageStore = canManageStoreOperations(app.session?.role)
   const vouchers = importVouchers.filter((item) => item.storeId === storeId && !item.deletedAt && item.status !== 'Đã xóa')
   const totals = vouchers.reduce((value, item) => ({ goods: value.goods + Number(item.goodsAmount || 0), shipping: value.shipping + Number(item.shippingAmount || 0), total: value.total + Number(item.totalAmount ?? (Number(item.goodsAmount || 0) + Number(item.shippingAmount || 0))) }), { goods: 0, shipping: 0, total: 0 })
   const closeModal = () => { setOpen(false); setEditing(null); setForm(newImportForm()) }
-  const openCreate = () => { setEditing(null); setForm(newImportForm()); setOpen(true) }
+  const openCreate = () => {
+    if (!canManageStore) return
+    setEditing(null)
+    setForm(newImportForm())
+    setOpen(true)
+  }
   const openEdit = (voucher) => {
+    if (!canManageStore) return
     const item = voucher.items?.[0] || {}
     setEditing(voucher)
     setForm({
@@ -497,6 +518,7 @@ export function StoreImportsV2() {
     setOpen(true)
   }
   const save = async () => {
+    if (!canManageStore) return
     const quantity = Number(form.quantity)
     const weight = Number(form.weight)
     const price = parseMoney(form.price)
@@ -520,6 +542,7 @@ export function StoreImportsV2() {
     closeModal()
   }
   const remove = async (voucher) => {
+    if (!canManageStore) return
     const reason = window.prompt(`Lý do xóa phiếu ${voucher.code}:`)
     if (reason == null) return
     const result = await deleteImportVoucher(voucher.id, reason)
@@ -528,7 +551,8 @@ export function StoreImportsV2() {
   const formTotal = Number(form.weight || 0) * parseMoney(form.price) + parseMoney(form.shippingAmount)
   return (
     <div className="page">
-      <PageHeader title="NHẬP HÀNG" subtitle="Mỗi lần lưu tạo một phiếu nhập tự động theo ngày và giữ đầy đủ thời gian ghi nhận." icon={PackageCheck} actions={<Button icon={Plus} onClick={openCreate}>THÊM PHIẾU NHẬP</Button>} />
+      <PageHeader title="NHẬP HÀNG" subtitle="Mỗi phiếu nhập được lưu theo ngày và giữ đầy đủ thời gian ghi nhận." icon={PackageCheck} actions={canManageStore ? <Button icon={Plus} onClick={openCreate}>THÊM PHIẾU NHẬP</Button> : null} />
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể thêm, sửa hoặc xóa phiếu nhập.</InfoNote>}
       <div className="metrics-grid metrics-grid--3">
         <MetricCard label="TỔNG TIỀN NHẬP HÀNG" value={money(totals.goods)} icon={PackageCheck} tone="blue" />
         <MetricCard label="CHI PHÍ VẬN CHUYỂN" value={money(totals.shipping)} icon={TrendingDown} tone="orange" />
@@ -536,17 +560,17 @@ export function StoreImportsV2() {
       </div>
       <Card title="Lịch sử nhập hàng">
         <TableWrap>
-          <thead><tr><th>Mã phiếu</th><th>Thời gian ghi nhận</th><th>Tên hàng hóa</th><th>Số lượng (bao)</th><th>Cân nặng (kg)</th><th>Đơn giá (/kg)</th><th>Vận chuyển</th><th>Tổng tiền</th><th>Người tạo</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>Mã phiếu</th><th>Thời gian ghi nhận</th><th>Tên hàng hóa</th><th>Số lượng (bao)</th><th>Cân nặng (kg)</th><th>Đơn giá (/kg)</th><th>Vận chuyển</th><th>Tổng tiền</th><th>Người tạo</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
           <tbody>{vouchers.map((voucher) => {
             const item = voucher.items?.[0] || {}
             const weight = Number(item.weight ?? item.quantity ?? 0)
             const quantity = Number(item.packageQuantity ?? item.bagQuantity ?? item.quantity ?? 0)
             const total = Number(voucher.totalAmount ?? (weight * Number(item.price || 0) + Number(voucher.shippingAmount || 0)))
-            return <tr key={voucher.id}><td><strong>{importVoucherCode(voucher.code)}</strong></td><td>{timestamp(voucher.createdAt)}</td><td>{item.name || '—'}</td><td>{quantity}</td><td>{weight}</td><td>{money(item.price)}/kg</td><td>{money(voucher.shippingAmount)}</td><td><strong>{money(total)}</strong></td><td>{voucher.createdBy?.name || voucher.createdBy || '—'}</td><td><div className="row-actions"><button onClick={() => openEdit(voucher)} aria-label={`Sửa ${voucher.code}`}><Edit3 /></button><button className="danger" onClick={() => remove(voucher)} aria-label={`Xóa ${voucher.code}`}><Trash2 /></button></div></td></tr>
-          })}{!vouchers.length && <tr><td colSpan="10">Chưa có phiếu nhập hàng.</td></tr>}</tbody>
+            return <tr key={voucher.id}><td><strong>{importVoucherCode(voucher.code)}</strong></td><td>{timestamp(voucher.createdAt)}</td><td>{item.name || '—'}</td><td>{quantity}</td><td>{weight}</td><td>{money(item.price)}/kg</td><td>{money(voucher.shippingAmount)}</td><td><strong>{money(total)}</strong></td><td>{voucher.createdBy?.name || voucher.createdBy || '—'}</td>{canManageStore && <td><div className="row-actions"><button onClick={() => openEdit(voucher)} aria-label={`Sửa ${voucher.code}`}><Edit3 /></button><button className="danger" onClick={() => remove(voucher)} aria-label={`Xóa ${voucher.code}`}><Trash2 /></button></div></td>}</tr>
+          })}{!vouchers.length && <tr><td colSpan={canManageStore ? 10 : 9}>Chưa có phiếu nhập hàng.</td></tr>}</tbody>
         </TableWrap>
       </Card>
-      <Modal open={open} onClose={closeModal} title={editing ? `Sửa phiếu ${editing.code}` : 'Tạo phiếu nhập hàng'} footer={<><Button variant="outline" onClick={closeModal}>Hủy</Button><Button icon={Save} onClick={save}>{editing ? 'CẬP NHẬT' : 'LƯU PHIẾU'}</Button></>}>
+      {canManageStore && <Modal open={open} onClose={closeModal} title={editing ? `Sửa phiếu ${editing.code}` : 'Tạo phiếu nhập hàng'} footer={<><Button variant="outline" onClick={closeModal}>Hủy</Button><Button icon={Save} onClick={save}>{editing ? 'CẬP NHẬT' : 'LƯU PHIẾU'}</Button></>}>
         <div className="form-grid">
           <Field label="Mã phiếu"><Input value={editing ? importVoucherCode(editing.code) : importVoucherPreview(importVouchers)} readOnly /></Field>
           <Field label="Tên hàng hóa" required><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></Field>
@@ -558,7 +582,7 @@ export function StoreImportsV2() {
           {editing && <Field label="Lý do chỉnh sửa" className="span-2"><Input value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder="Bắt buộc để lưu lịch sử kiểm toán" /></Field>}
         </div>
         <InfoNote>Tổng tiền = Đơn giá × Cân nặng + Vận chuyển.</InfoNote>
-      </Modal>
+      </Modal>}
     </div>
   )
 }

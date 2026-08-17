@@ -37,7 +37,7 @@ const systemOperations = [
 ]
 
 const storeOperations = [
-  { label: 'Tổng quan cửa hàng', path: '/store/overview', icon: LayoutDashboard },
+  { label: 'Tổng quan', path: '/store/overview', icon: LayoutDashboard },
   { label: 'Đơn hàng', path: '/store/orders', icon: ShoppingCart },
   { label: 'Giao việc', path: '/store/tasks', icon: ClipboardCheck },
   { label: 'Lịch phân ca', path: '/store/schedule', icon: CalendarCheck },
@@ -60,11 +60,16 @@ const officeEmployeeMenu = [
 ]
 
 const businessSupportMenu = [
-  ...systemOperations.slice(0, 2),
+  { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
+  { label: 'Tổng quan hệ thống', path: '/admin/overview', icon: BarChart3 },
+  systemOperations[1],
   { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
+  { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users },
+  { label: 'Quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
+  officeOperation,
   ...systemOperations.slice(2, 5),
-  { label: 'Chấm công', path: '/support/attendance', icon: Clock3 },
   systemOperations[5],
+  { label: 'Lịch sử sửa/xóa đơn hàng', path: '/admin/order-audit', icon: ClipboardCheck },
 ]
 
 const systemMenus = {

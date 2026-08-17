@@ -119,6 +119,32 @@ const requestLocation = () => new Promise((resolve, reject) => {
 const statusTone = (label) => label === 'Đi trễ' ? 'red' : label === 'Đi sớm' ? 'green' : label === 'Đi đúng giờ' ? 'blue' : 'orange'
 const ratingTone = (label) => label === 'Chuyên cần tốt' ? 'green' : label === 'Cần cải thiện' ? 'red' : label === 'Cần duy trì' ? 'orange' : 'blue'
 
+const attendanceRoleDetails = (session = {}, employee = {}) => {
+  const role = session?.role === 'manager' ? 'business_support' : session?.role
+  if (role === 'business_support' || employee.unit === 'business_support') {
+    return {
+      isOperationalRole: true,
+      title: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD',
+      unitLabel: 'Nhân viên hỗ trợ KD',
+      defaultPosition: 'NV hỗ trợ KD',
+    }
+  }
+  if (role === 'store_manager' || employee.unit === 'store_manager') {
+    return {
+      isOperationalRole: true,
+      title: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG',
+      unitLabel: 'Quản lý cửa hàng',
+      defaultPosition: 'Quản lý cửa hàng',
+    }
+  }
+  return {
+    isOperationalRole: false,
+    title: 'NHÂN VIÊN VĂN PHÒNG',
+    unitLabel: 'Văn Phòng',
+    defaultPosition: 'Khối Văn Phòng',
+  }
+}
+
 function OfficePayrollCard({ app, employee, period, rows, showHeader = false, onPeriodChange }) {
   const isBusinessSupport = app.session?.role === 'business_support' || employee.unit === 'business_support'
   const payrollStoreId = officePayrollStoreId(app.session, employee)
@@ -182,8 +208,8 @@ function OfficePayrollCard({ app, employee, period, rows, showHeader = false, on
 export function OfficeEmployeeDashboard() {
   const app = useApp()
   const employee = currentOfficeEmployee(app)
-  const isBusinessSupport = app.session?.role === 'business_support' || employee.unit === 'business_support'
-  const unitLabel = isBusinessSupport ? 'Hỗ trợ kinh doanh' : 'Văn Phòng'
+  const roleDetails = attendanceRoleDetails(app.session, employee)
+  const { isOperationalRole, title, unitLabel, defaultPosition } = roleDetails
   const employeeId = officeEmployeeKey(employee)
   const [now, setNow] = useState(() => new Date())
   const [filterMode, setFilterMode] = useState('month')
@@ -254,7 +280,7 @@ export function OfficeEmployeeDashboard() {
 
   return (
     <div className="page office-employee-dashboard">
-      <PageHeader title={isBusinessSupport ? 'NHÂN VIÊN HỖ TRỢ KINH DOANH' : 'NHÂN VIÊN VĂN PHÒNG'} subtitle={`${employee.name || 'Nhân viên'} • ${employee.position || (isBusinessSupport ? 'Khối Hỗ trợ kinh doanh' : 'Khối Văn Phòng')}`} icon={Fingerprint} />
+      <PageHeader title={title} subtitle={`${employee.name || 'Nhân viên'} • ${employee.position || defaultPosition}`} icon={Fingerprint} />
 
       <div className="office-attendance-hero">
         <Card className="office-live-clock">
@@ -276,7 +302,7 @@ export function OfficeEmployeeDashboard() {
           </div>
           <div className="card-actions">
             <Button icon={Fingerprint} loading={busy === 'in'} disabled={Boolean(openRecord || todayRecord?.checkOut || busy)} onClick={() => runLocatedAction('in')}>BẤM ĐIỂM DANH</Button>
-            <Button variant="danger" icon={LogOut} loading={busy === 'out'} disabled={!openRecord || Boolean(busy)} onClick={() => runLocatedAction('out')}>GHI NHẬN RA VỀ</Button>
+            <Button variant="danger" icon={LogOut} loading={busy === 'out'} disabled={!openRecord || Boolean(busy)} onClick={() => runLocatedAction('out')}>RA VỀ</Button>
           </div>
           <small className="office-location-hint"><MapPin aria-hidden="true" /> Hệ thống chỉ ghi nhận sau khi bạn chủ động bật và cho phép truy cập vị trí.</small>
         </Card>
@@ -323,7 +349,7 @@ export function OfficeEmployeeDashboard() {
         <TableFooter shown={filteredRows.length} total={filteredRows.length} />
       </Card>
 
-      <OfficePayrollCard app={app} employee={employee} period={selectedMonth} rows={monthRows} />
+      {!isOperationalRole && <OfficePayrollCard app={app} employee={employee} period={selectedMonth} rows={monthRows} />}
     </div>
   )
 }

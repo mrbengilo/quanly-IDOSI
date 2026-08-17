@@ -86,6 +86,7 @@ function DirectRouteProbe() {
     <output data-testid="current-route">{location.pathname}</output>
     <button type="button" onClick={() => navigate('/admin/overview')}>Mở trực tiếp trang hệ thống</button>
     <button type="button" onClick={() => navigate('/admin/policies')}>Mở trực tiếp chính sách</button>
+    <button type="button" onClick={() => navigate('/admin/reset')}>Mở trực tiếp reset dữ liệu</button>
     <button type="button" onClick={() => navigate('/support/attendance')}>Mở trực tiếp chấm công hỗ trợ</button>
     <button type="button" onClick={() => navigate('/store/orders')}>Mở trực tiếp đơn hàng cửa hàng</button>
   </aside>
@@ -190,17 +191,21 @@ describe('IDOSI page smoke tests', () => {
     fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'manager' } })
     fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
     fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
-    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Tổng quan$/i }).getAttribute('href')).toBe('/support/overview')
+    expect(screen.getByRole('link', { name: /^Tổng quan hệ thống$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Cửa hàng$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Quản lý nhân viên/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /^Chấm công$/i })).toBeTruthy()
     expect(screen.getAllByText('Hỗ trợ KD').length).toBeGreaterThan(0)
-    expect(screen.queryByRole('link', { name: /Khối văn phòng/i })).toBeNull()
-    expect(screen.queryByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /Khối văn phòng/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Quản lý cửa hàng$/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /Cài đặt chính sách/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
-    expect(screen.queryByRole('link', { name: /Lịch sử sửa\/xóa đơn hàng/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /Lịch sử sửa\/xóa đơn hàng/i })).toBeTruthy()
 
+    fireEvent.click(screen.getByRole('link', { name: /^Tổng quan hệ thống$/i }))
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
     fireEvent.click(screen.getAllByRole('button', { name: /Mở cửa hàng/i })[0])
     fireEvent.click(screen.getByRole('link', { name: /^Đơn hàng$/i }))
     expect(screen.getByRole('heading', { name: 'ĐƠN HÀNG' })).toBeTruthy()
@@ -213,14 +218,17 @@ describe('IDOSI page smoke tests', () => {
     seedBusinessSupportAccount()
     renderAppWithRouteProbe()
     loginAs('manager')
-    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
 
     fireEvent.click(screen.getByText('Mở trực tiếp chính sách'))
-    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/overview'))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
+
+    fireEvent.click(screen.getByText('Mở trực tiếp reset dữ liệu'))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
 
     fireEvent.click(screen.getByText('Mở trực tiếp chấm công hỗ trợ'))
-    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/attendance'))
-    expect(screen.getByRole('heading', { name: /NHÂN VIÊN HỖ TRỢ KINH DOANH|NHÂN VIÊN VĂN PHÒNG/i })).toBeTruthy()
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
+    expect(screen.getByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
   })
 
   it('keeps a store manager on the assigned store and rejects direct system routes', async () => {
@@ -248,6 +256,9 @@ describe('IDOSI page smoke tests', () => {
     renderAppWithRouteProbe()
     loginAs('store.manager')
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
+    expect(screen.getByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^RA VỀ$/i }).disabled).toBe(true)
     expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()
 

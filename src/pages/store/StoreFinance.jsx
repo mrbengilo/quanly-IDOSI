@@ -46,11 +46,12 @@ import {
   getPayBasis,
   money,
   salaryBasisLabel,
+  usesMonthlyHoursFormula,
 } from '../../utils'
 
 const findShift = (id) => shifts.find((shift) => shift.id === id)
 
-const attendancePay = (employee, hours) => getPayBasis(employee) === 'hourly'
+const attendancePay = (employee, hours) => getPayBasis(employee) === 'hourly' || usesMonthlyHoursFormula(employee)
   ? calculateEmployeeBasePay(employee, { hours })
   : null
 
@@ -150,7 +151,7 @@ export function StoreAttendance() {
           const pay = attendancePay(employee, hours)
           const payLabel = pay == null ? 'Theo lương tháng' : money(pay)
           return <tr key={item.id}><td>{index + 1}</td><td><div className="person-cell"><Avatar name={employee?.name} color={employee?.color} /><span><strong>{employee?.name}</strong><small>{employee?.shortRole}</small></span></div></td><td><strong style={{ color: workShift?.color }}>{workShift?.name || item.shift}</strong><small className="table-sub">({workShift?.time || `${item.shiftStart || '—'} - ${item.shiftEnd || '—'}`})</small></td><td className="green-text"><strong>{item.checkIn}</strong></td><td className={item.status === 'Trễ' ? 'orange-text' : 'red-text'}><strong>{item.checkOut || '—'}</strong></td><td><strong>{hours.toFixed(2)}</strong><small className="table-sub">giờ</small></td><td>{payLabel}</td><td className="green-text"><strong>{payLabel}</strong></td><td><Badge tone={item.status === 'Trễ' ? 'orange' : 'green'}>{item.status}</Badge></td><td>{item.note || '–'}</td></tr>
-        })}{!filtered.length && <tr><td colSpan="10" style={{ textAlign: 'center' }}>Không có dữ liệu chấm công phù hợp.</td></tr>}<tr className="total-row"><td colSpan="5">TỔNG CỘNG</td><td>{totalHours.toFixed(2)} giờ</td><td>{money(totalHourlyPay)}</td><td>{money(totalHourlyPay)}</td><td colSpan="2">Chưa gồm lương tháng Full-time</td></tr></tbody></TableWrap>
+        })}{!filtered.length && <tr><td colSpan="10" style={{ textAlign: 'center' }}>Không có dữ liệu chấm công phù hợp.</td></tr>}<tr className="total-row"><td colSpan="5">TỔNG CỘNG</td><td>{totalHours.toFixed(2)} giờ</td><td>{money(totalHourlyPay)}</td><td>{money(totalHourlyPay)}</td><td colSpan="2">Chưa gồm lương tháng cố định</td></tr></tbody></TableWrap>
       </Card>
       <div className="bottom-info-grid">
         <Card title="Giải thích"><ul className="plain-list"><li>Số giờ làm = Giờ kết ca - Giờ vào</li><li>Full-time được thiết lập và tổng hợp theo lương tháng</li><li>Part-time = Số giờ làm × mức lương theo giờ</li></ul></Card>
@@ -395,7 +396,8 @@ const storeSettingsForm = (store = {}) => ({
 
 export function StoreSettings() {
   const { notify, stores = [], activeStoreId, session, updateStore } = useApp()
-  const selectedStoreId = session?.role === 'employee' ? session.storeId : activeStoreId || session?.storeId
+  const canManageStore = ['admin', 'store_manager'].includes(session?.role)
+  const selectedStoreId = ['employee', 'store_manager'].includes(session?.role) ? session.storeId : activeStoreId || session?.storeId
   const activeStore = stores.find((item) => item.id === selectedStoreId) || stores[0]
   const [tab, setTab] = useState('info')
   const [form, setForm] = useState(() => storeSettingsForm(activeStore))
@@ -406,6 +408,7 @@ export function StoreSettings() {
   }, [activeStore])
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
   const save = async () => {
+    if (!canManageStore) return
     if (!activeStore?.id) return notify('Không tìm thấy cửa hàng cần cập nhật.', 'info')
     if (!form.name.trim()) return notify('Tên cửa hàng không được để trống.', 'info')
     if (form.email && !/^\S+@\S+\.\S+$/.test(form.email)) return notify('Email cửa hàng chưa đúng định dạng.', 'info')
@@ -433,10 +436,11 @@ export function StoreSettings() {
   }
   return (
     <div className="page settings-page">
-      <PageHeader title="Cài đặt cửa hàng" subtitle={`Quản lý thông tin và cấu hình hoạt động của ${form.name}`} icon={Settings} />
+      <PageHeader title="Cài đặt cửa hàng" subtitle={canManageStore ? `Quản lý thông tin và cấu hình hoạt động của ${form.name}` : `Xem thông tin và cấu hình hoạt động của ${form.name}`} icon={Settings} />
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể thay đổi cài đặt cửa hàng.</InfoNote>}
       <div className="settings-layout">
         <Card className="settings-nav" title="Cài đặt"><button className={tab === 'info' ? 'active' : ''} onClick={() => setTab('info')}><Store />Thông tin cửa hàng</button><button className={tab === 'hours' ? 'active' : ''} onClick={() => setTab('hours')}><Clock3 />Giờ hoạt động</button><button className={tab === 'payroll' ? 'active' : ''} onClick={() => setTab('payroll')}><Banknote />Thiết lập lương</button></Card>
-        <Card className="settings-content"><h2>{tab === 'hours' ? 'Giờ hoạt động' : tab === 'payroll' ? 'Thiết lập lương nhân viên' : 'Thông tin cửa hàng'}</h2><p>{tab === 'payroll' ? 'Mức lương được thiết lập trực tiếp trong hồ sơ từng nhân viên.' : 'Cập nhật thông tin hiển thị và dữ liệu vận hành.'}</p><div className="store-settings-hero"><Store size={42} /><div><strong>{form.name}</strong><small>Đang hoạt động</small></div><Badge>Hoạt động</Badge></div>{tab === 'info' && <div className="form-grid"><Field label="Tên cửa hàng"><Input value={form.name} onChange={set('name')} /></Field><Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} /></Field><Field label="Mã số thuế"><Input value={form.tax} onChange={set('tax')} /></Field><Field label="Địa chỉ" className="span-2"><Input value={form.address} onChange={set('address')} /></Field></div>}{tab === 'hours' && <div className="form-grid"><Field label="Giờ mở cửa"><Input type="time" value={form.opening} onChange={set('opening')} /></Field><Field label="Giờ đóng cửa"><Input type="time" value={form.closing} onChange={set('closing')} /></Field></div>}{tab === 'payroll' && <InfoNote>Full-time được thiết lập lương theo tháng; Part-time được thiết lập lương theo giờ tại danh mục Nhân viên. Bảng lương sẽ tự động áp dụng đúng cơ chế.</InfoNote>}<div className="card-actions"><Button icon={Save} onClick={save}>Lưu thay đổi</Button></div></Card>
+        <Card className="settings-content"><h2>{tab === 'hours' ? 'Giờ hoạt động' : tab === 'payroll' ? 'Thiết lập lương nhân viên' : 'Thông tin cửa hàng'}</h2><p>{tab === 'payroll' ? 'Mức lương được thiết lập trực tiếp trong hồ sơ từng nhân viên.' : canManageStore ? 'Cập nhật thông tin hiển thị và dữ liệu vận hành.' : 'Thông tin hiển thị và dữ liệu vận hành.'}</p><div className="store-settings-hero"><Store size={42} /><div><strong>{form.name}</strong><small>Đang hoạt động</small></div><Badge>Hoạt động</Badge></div>{tab === 'info' && <div className="form-grid"><Field label="Tên cửa hàng"><Input value={form.name} onChange={set('name')} readOnly={!canManageStore} /></Field><Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} readOnly={!canManageStore} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} readOnly={!canManageStore} /></Field><Field label="Mã số thuế"><Input value={form.tax} onChange={set('tax')} readOnly={!canManageStore} /></Field><Field label="Địa chỉ" className="span-2"><Input value={form.address} onChange={set('address')} readOnly={!canManageStore} /></Field></div>}{tab === 'hours' && <div className="form-grid"><Field label="Giờ mở cửa"><Input type="time" value={form.opening} onChange={set('opening')} readOnly={!canManageStore} /></Field><Field label="Giờ đóng cửa"><Input type="time" value={form.closing} onChange={set('closing')} readOnly={!canManageStore} /></Field></div>}{tab === 'payroll' && <InfoNote>Full-time được thiết lập lương theo tháng; Part-time được thiết lập lương theo giờ tại danh mục Nhân viên. Bảng lương sẽ tự động áp dụng đúng cơ chế.</InfoNote>}{canManageStore && <div className="card-actions"><Button icon={Save} onClick={save}>Lưu thay đổi</Button></div>}</Card>
       </div>
     </div>
   )

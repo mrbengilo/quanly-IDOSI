@@ -102,6 +102,7 @@ export function UnifiedSchedule() {
   const shiftDefinitions = Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : []
   const schedule = Array.isArray(app.schedule) ? app.schedule : []
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
+  const canManageStore = ['admin', 'store_manager'].includes(session?.role)
   const storeId = session?.role === 'store_manager'
     ? session.storeId
     : activeStore?.id || activeStoreId || session?.storeId || ''
@@ -163,12 +164,14 @@ export function UnifiedSchedule() {
   }
 
   const openCreateShift = () => {
+    if (!canManageStore) return
     setEditingShift(null)
     setShiftForm(blankShift(date, nextShiftColor(shiftDefinitions.filter((shift) => !storeId || !shift.storeId || String(shift.storeId) === String(storeId)))))
     setShiftModalOpen(true)
   }
 
   const openEditShift = (shift) => {
+    if (!canManageStore) return
     setEditingShift(shift)
     setShiftForm({
       name: shift.name || '',
@@ -187,6 +190,7 @@ export function UnifiedSchedule() {
   }
 
   const saveShift = async () => {
+    if (!canManageStore) return
     const payload = {
       ...shiftForm,
       name: shiftForm.name.trim(),
@@ -209,6 +213,7 @@ export function UnifiedSchedule() {
   }
 
   const removeShift = async (shift) => {
+    if (!canManageStore) return
     if (!window.confirm(`Ngừng sử dụng ${shift.name} ngày ${displayDate(shift.date)}? Lịch sử đã ghi nhận sẽ được giữ nguyên.`)) return
     const result = await deleteShiftDefinition?.(shift.id)
     if (result === false || result?.ok === false) {
@@ -235,6 +240,7 @@ export function UnifiedSchedule() {
   }
 
   const saveAssignments = async () => {
+    if (!canManageStore) return
     const result = await saveScheduleMultiple?.(selectedEmployeeIds, selectedShiftIds, { date, note, storeId })
     if (!result?.ok) {
       notify?.(result?.message || 'Vui lòng chọn ít nhất một ca và một nhân viên.', 'info')
@@ -254,10 +260,11 @@ export function UnifiedSchedule() {
         actions={(
           <>
             <Input icon={CalendarDays} type="date" value={date} onChange={changeDate} aria-label="Ngày phân ca" />
-            <Button icon={Plus} onClick={openCreateShift}>Tạo ca làm việc</Button>
+            {canManageStore && <Button icon={Plus} onClick={openCreateShift}>Tạo ca làm việc</Button>}
           </>
         )}
       />
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể tạo, sửa, xóa ca hoặc thay đổi lịch phân ca.</InfoNote>}
 
       <div className="metric-grid metric-grid--four">
         <MetricCard label="Ca trong ngày" value={dayShifts.length} suffix="ca" icon={Clock3} tone="blue" compact />
@@ -269,12 +276,12 @@ export function UnifiedSchedule() {
       <div className="chart-grid">
         <Card
           title={`Ca làm việc ngày ${displayDate(date)}`}
-          action={<Button variant="outline" icon={Plus} onClick={openCreateShift}>Tạo ca</Button>}
+          action={canManageStore ? <Button variant="outline" icon={Plus} onClick={openCreateShift}>Tạo ca</Button> : null}
         >
           {dayShifts.length ? (
             <>
               <TableWrap>
-                <thead><tr><th>Tên ca</th><th>Thời gian</th><th>Thời lượng</th><th>Phiên bản</th><th>Thao tác</th></tr></thead>
+                <thead><tr><th>Tên ca</th><th>Thời gian</th><th>Thời lượng</th><th>Phiên bản</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
                 <tbody>
                   {dayShifts.map((shift) => (
                     <tr key={shift.id}>
@@ -282,12 +289,12 @@ export function UnifiedSchedule() {
                       <td><strong>{timeLabel(shift.start, shift.end)}</strong></td>
                       <td>{durationLabel(shift)}</td>
                       <td>v{shift.version || 1}</td>
-                      <td>
+                      {canManageStore && <td>
                         <div className="row-actions">
                           <button type="button" onClick={() => openEditShift(shift)} aria-label={`Sửa ${shift.name}`}><Edit3 /></button>
                           <button type="button" className="danger" onClick={() => removeShift(shift)} aria-label={`Xóa ${shift.name}`}><Trash2 /></button>
                         </div>
-                      </td>
+                      </td>}
                     </tr>
                   ))}
                 </tbody>
@@ -295,11 +302,11 @@ export function UnifiedSchedule() {
               <InfoNote>Dữ liệu chấm công và lịch cũ dùng bản chụp tên, giờ bắt đầu và giờ kết thúc; sửa ca hôm nay không đổi lịch sử.</InfoNote>
             </>
           ) : (
-            <EmptyState title="Chưa có ca trong ngày" description="Tạo ca làm việc trước khi phân lịch cho nhân viên." />
+            <EmptyState title="Chưa có ca trong ngày" description={canManageStore ? 'Tạo ca làm việc trước khi phân lịch cho nhân viên.' : 'Chưa có dữ liệu ca làm việc trong ngày đã chọn.'} />
           )}
         </Card>
 
-        <Card title={`Tạo lịch phân ca · ${displayDate(date)}`}>
+        {canManageStore && <Card title={`Tạo lịch phân ca · ${displayDate(date)}`}>
           <Field label="1. Chọn ngày" required>
             <Input icon={CalendarDays} type="date" value={date} onChange={changeDate} />
           </Field>
@@ -348,7 +355,7 @@ export function UnifiedSchedule() {
             <Button variant="outline" onClick={() => { setSelectedShiftIds([]); setSelectedEmployeeIds([]); setNote('') }}>Làm lại</Button>
             <Button icon={Save} onClick={saveAssignments} disabled={!selectedShiftIds.length || !selectedEmployeeIds.length}>LƯU</Button>
           </div>
-        </Card>
+        </Card>}
       </div>
 
       <Card title={`Danh sách lịch phân ca · ${displayDate(date)}`}>
@@ -391,7 +398,7 @@ export function UnifiedSchedule() {
         )}
       </Card>
 
-      <Modal
+      {canManageStore && <Modal
         open={shiftModalOpen}
         onClose={closeShiftModal}
         title={editingShift ? `Sửa ${editingShift.name}` : 'Tạo ca làm việc'}
@@ -426,7 +433,7 @@ export function UnifiedSchedule() {
           </Field>
         </div>
         <InfoNote>Ca được quản lý độc lập theo ngày. Hệ thống lưu bản chụp thời gian khi phân ca để không làm sai lịch sử.</InfoNote>
-      </Modal>
+      </Modal>}
     </div>
   )
 }

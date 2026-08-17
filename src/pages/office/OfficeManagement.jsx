@@ -263,6 +263,7 @@ export function OfficeManagement() {
   const [adjustmentErrors, setAdjustmentErrors] = useState([])
   const [adjustmentSaving, setAdjustmentSaving] = useState(false)
   const [payrollMonth, setPayrollMonth] = useState(today().slice(0, 7))
+  const canManageOffice = app.session?.role === 'admin'
 
   const employeeById = (id) => officeEmployees.find((employee) => String(employee.id) === String(id) || String(employeeCode(employee)) === String(id))
   const normalizedQuery = normalizeText(query)
@@ -328,6 +329,7 @@ export function OfficeManagement() {
 
   const saveEmployee = async (event) => {
     event?.preventDefault()
+    if (!canManageOffice) return
     const editingKey = editingEmployee?.id || (editingEmployee ? employeeCode(editingEmployee) : '')
     const errors = validateEmployee(employeeForm, allEmployees, editingKey, !editingEmployee || editingRequiresPassword)
     if (errors.length) {
@@ -383,7 +385,7 @@ export function OfficeManagement() {
   }
 
   const confirmDelete = async () => {
-    if (!pendingDelete) return
+    if (!canManageOffice || !pendingDelete) return
     if (typeof deleteEmployee !== 'function') return notify?.('Chức năng xóa nhân viên đang được kết nối.', 'info')
     const result = await deleteEmployee(pendingDelete.id || employeeCode(pendingDelete))
     if (result?.ok === false) return notify?.(result.message || 'Không thể xóa nhân viên.', 'info')
@@ -400,7 +402,7 @@ export function OfficeManagement() {
 
   const saveAdjustment = async (event) => {
     event?.preventDefault()
-    if (adjustmentSaving) return
+    if (!canManageOffice || adjustmentSaving) return
     const errors = []
     if (!adjustmentForm.date) errors.push('Vui lòng chọn ngày.')
     if (!adjustmentForm.employeeId) errors.push('Vui lòng chọn nhân viên.')
@@ -437,7 +439,7 @@ export function OfficeManagement() {
   const onTimeCount = attendanceRows.filter((row) => row.label === 'Đúng giờ').length
   const lateCount = attendanceRows.filter((row) => row.label === 'Đi trễ').length
 
-  if (['manager', 'business_support', 'store_manager'].includes(app.session?.role)) {
+  if (['manager', 'store_manager'].includes(app.session?.role)) {
     return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản Quản lý không được truy cập Khối văn phòng." icon={Users} /></div>
   }
 
@@ -447,8 +449,9 @@ export function OfficeManagement() {
         title="KHỐI VĂN PHÒNG"
         subtitle="Quản lý nhân sự, chấm công, thưởng, phụ cấp và lương văn phòng."
         icon={Users}
-        actions={<><Button variant="outline" icon={Gift} onClick={() => openAdjustment('Thưởng')}>Tạo thưởng</Button><Button icon={Wallet} onClick={() => openAdjustment('Phụ cấp')}>Tạo phụ cấp</Button></>}
+        actions={canManageOffice ? <><Button variant="outline" icon={Gift} onClick={() => openAdjustment('Thưởng')}>Tạo thưởng</Button><Button icon={Wallet} onClick={() => openAdjustment('Phụ cấp')}>Tạo phụ cấp</Button></> : null}
       />
+      {!canManageOffice && <InfoNote>Chế độ chỉ xem. Chỉ Admin được thêm, sửa, xóa nhân viên hoặc tạo khoản lương thưởng.</InfoNote>}
 
       <div className="tabs">
         <button className={tab === 'employees' ? 'active' : ''} onClick={() => setTab('employees')}><Users />Nhân viên</button>
@@ -466,13 +469,13 @@ export function OfficeManagement() {
         <Card>
           <div className="card__subheader">
             <div className="filter-pills"><button className={statusFilter === 'all' ? 'active' : ''} onClick={() => setStatusFilter('all')}>Tất cả ({officeEmployees.length})</button>{EMPLOYEE_STATUSES.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status}</button>)}</div>
-            <div><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." /><Button icon={Plus} onClick={openEmployeeCreate}>Thêm nhân viên</Button></div>
+            <div><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." />{canManageOffice && <Button icon={Plus} onClick={openEmployeeCreate}>Thêm nhân viên</Button>}</div>
           </div>
           <TableWrap>
-            <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>CCCD</th><th>Số điện thoại</th><th>Địa chỉ</th><th>Vị trí</th><th>Giờ làm / ngày công</th><th>Lương</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+            <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>CCCD</th><th>Số điện thoại</th><th>Địa chỉ</th><th>Vị trí</th><th>Giờ làm / ngày công</th><th>Lương</th><th>Trạng thái</th>{canManageOffice && <th>Thao tác</th>}</tr></thead>
             <tbody>
-              {filteredEmployees.map((employee) => <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={officeEmployeeType(employee) === 'Chính thức' ? 'green' : officeEmployeeType(employee) === 'Thử việc' ? 'orange' : 'blue'}>{officeEmployeeType(employee)}</Badge></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><strong>{employee.workStart || '08:00'}–{employee.workEnd || '17:00'}</strong><small className="table-note">{employeeTargetPeriod(employee).split('-').reverse().join('/')}: {employeeTargetDays(employee)} ngày</small></td><td><strong>{money(employee.salary)}</strong></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td><td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button><button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button></div></td></tr>)}
-              {!filteredEmployees.length && <tr><td colSpan="11">Chưa có nhân viên văn phòng phù hợp.</td></tr>}
+              {filteredEmployees.map((employee) => <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={officeEmployeeType(employee) === 'Chính thức' ? 'green' : officeEmployeeType(employee) === 'Thử việc' ? 'orange' : 'blue'}>{officeEmployeeType(employee)}</Badge></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><strong>{employee.workStart || '08:00'}–{employee.workEnd || '17:00'}</strong><small className="table-note">{employeeTargetPeriod(employee).split('-').reverse().join('/')}: {employeeTargetDays(employee)} ngày</small></td><td><strong>{money(employee.salary)}</strong></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button><button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button></div></td>}</tr>)}
+              {!filteredEmployees.length && <tr><td colSpan={canManageOffice ? 11 : 10}>Chưa có nhân viên văn phòng phù hợp.</td></tr>}
             </tbody>
           </TableWrap>
           <TableFooter shown={filteredEmployees.length} total={filteredEmployees.length} />

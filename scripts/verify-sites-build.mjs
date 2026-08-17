@@ -24,6 +24,7 @@ await access(migrationJournalPath)
 
 const hosting = JSON.parse(await readFile(hostingPath, 'utf8'))
 assert.equal(hosting.d1, 'DB')
+assert.equal(hosting.r2, 'IDENTITY_IMAGES')
 const coreMigration = await readFile(coreMigrationPath, 'utf8')
 const managerMigration = await readFile(managerMigrationPath, 'utf8')
 const attendancePolicyMigration = await readFile(attendancePolicyMigrationPath, 'utf8')

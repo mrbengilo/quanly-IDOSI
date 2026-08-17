@@ -73,15 +73,19 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /^Quản lý cửa hàng$/i }).getAttribute('href')).toBe('/admin/store-managers')
   })
 
-  it('gives business support the system workspace and self-attendance without Admin menus', () => {
+  it('gives business support the complete read workspace without policy and reset menus', () => {
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001' }
-    render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
+    render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
 
+    expect(screen.getByRole('link', { name: /^Tổng quan$/i }).getAttribute('href')).toBe('/support/overview')
+    expect(screen.getByRole('link', { name: /^Tổng quan hệ thống$/i }).getAttribute('href')).toBe('/admin/overview')
     expect(screen.getByRole('link', { name: /^Cửa hàng$/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /^Chấm công$/i }).getAttribute('href')).toBe('/support/attendance')
     expect(screen.getAllByText('Hỗ trợ KD').length).toBeGreaterThan(0)
-    expect(screen.queryByRole('link', { name: /Khối văn phòng/i })).toBeNull()
-    expect(screen.queryByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /Khối văn phòng/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Quản lý cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Lịch sử sửa\/xóa đơn hàng/i })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Cài đặt chính sách/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
   })
 
@@ -90,7 +94,7 @@ describe('AppShell notifications', () => {
     mocked.activeStoreId = 'CH001'
     render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
 
-    expect(screen.getByRole('link', { name: /^Tổng quan cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Tổng quan$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
     expect(screen.getAllByText('Cua hang 2').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()

@@ -131,7 +131,7 @@ export function AdminStores() {
   const financeByStore = new Map(stores.map((store) => [store.id, financeSummaryFromState(app, { storeId: store.id })]))
   const revenue = [...financeByStore.values()].reduce((total, summary) => total + summary.revenue, 0)
   const expense = [...financeByStore.values()].reduce((total, summary) => total + summary.expense, 0)
-  const canManageStoreDirectory = session?.role === 'admin' || ['manager', 'business_support'].includes(session?.role)
+  const canManageStoreDirectory = session?.role === 'admin'
   const canDeleteStore = session?.role === 'admin'
 
   const setStoreStatus = async (store, active) => {
@@ -146,12 +146,14 @@ export function AdminStores() {
   }
 
   const openCreate = () => {
+    if (!canManageStoreDirectory) return
     setEditingStore(null)
     setForm(emptyStoreForm)
     setOpen(true)
   }
 
   const openEdit = (store) => {
+    if (!canManageStoreDirectory) return
     setEditingStore(store)
     setForm({ name: store.name || '', location: store.location || '', address: store.address || '' })
     setOpen(true)
@@ -165,6 +167,7 @@ export function AdminStores() {
 
   const save = async (event) => {
     event?.preventDefault()
+    if (!canManageStoreDirectory) return
     const payload = {
       name: form.name.trim(),
       location: form.location.trim(),
@@ -210,6 +213,7 @@ export function AdminStores() {
         subtitle="Quản lý thông tin cửa hàng, nhân sự và kết quả hoạt động của từng cửa hàng."
         actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
+      {session?.role === 'business_support' && <InfoNote>Chế độ chỉ xem. Chỉ Admin được thêm, sửa, xóa hoặc thay đổi trạng thái cửa hàng.</InfoNote>}
       <div className="toolbar toolbar--right">
         <SearchInput value={query} onChange={setQuery} placeholder="Tìm kiếm cửa hàng..." />
         {canManageStoreDirectory && <Button icon={Plus} onClick={openCreate}>Thêm cửa hàng</Button>}
@@ -236,7 +240,7 @@ export function AdminStores() {
                 <td className="green-text"><strong>{money(storeFinance.revenue)}</strong></td>
                 <td className="orange-text"><strong>{money(storeFinance.expense)}</strong></td>
                 <td><strong>{money(storeFinance.profit)}</strong><small className="green-text table-sub">({storeFinance.marginPercent.toFixed(2)}%)</small></td>
-                <td><div className="filter-pills"><button type="button" className={!['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'active' : ''} onClick={() => setStoreStatus(store, true)} disabled={!canManageStoreDirectory}>Đang hoạt động</button><button type="button" className={['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'active' : ''} onClick={() => setStoreStatus(store, false)} disabled={!canManageStoreDirectory}>Ngưng hoạt động</button></div></td>
+                <td>{canManageStoreDirectory ? <div className="filter-pills"><button type="button" className={!['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'active' : ''} onClick={() => setStoreStatus(store, true)}>Đang hoạt động</button><button type="button" className={['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'active' : ''} onClick={() => setStoreStatus(store, false)}>Ngưng hoạt động</button></div> : <Badge tone={['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'orange' : 'green'}>{['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status) ? 'Ngưng hoạt động' : 'Đang hoạt động'}</Badge>}</td>
                 <td><div className="row-actions">{canManageStoreDirectory && <button onClick={() => openEdit(store)} aria-label={`Sửa ${store.name}`}><Edit3 size={17} /></button>}{canDeleteStore && <button className="danger" onClick={() => removeStore(store)} aria-label={`Xóa ${store.name}`}><Trash2 size={17} /></button>}<button onClick={() => setViewingStore(store)} aria-label={`Xem ${store.name}`}><Eye size={17} /></button></div></td>
               </tr>
               )
@@ -246,13 +250,13 @@ export function AdminStores() {
         <TableFooter shown={filtered.length} total={filtered.length} />
       </Card>
 
-      <Modal open={open} onClose={closeForm} title={editingStore ? 'Cập nhật cửa hàng' : 'Thêm cửa hàng mới'} footer={<><Button variant="outline" onClick={closeForm}>Hủy</Button><Button icon={Save} onClick={save}>{editingStore ? 'Lưu thay đổi' : 'Lưu cửa hàng'}</Button></>}>
+      {canManageStoreDirectory && <Modal open={open} onClose={closeForm} title={editingStore ? 'Cập nhật cửa hàng' : 'Thêm cửa hàng mới'} footer={<><Button variant="outline" onClick={closeForm}>Hủy</Button><Button icon={Save} onClick={save}>{editingStore ? 'Lưu thay đổi' : 'Lưu cửa hàng'}</Button></>}>
         <form className="form-grid" onSubmit={save}>
           <Field label="Tên cửa hàng" required><Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Ví dụ: Idosi Tô Ngọc Vân" /></Field>
           <Field label="Khu vực" required><Input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} placeholder="Quận/Huyện, Tỉnh/Thành" /></Field>
           <Field label="Địa chỉ chi tiết" required className="span-2"><textarea value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} placeholder="Nhập địa chỉ..." /></Field>
         </form>
-      </Modal>
+      </Modal>}
 
       <Modal open={Boolean(viewingStore)} onClose={() => setViewingStore(null)} title="Chi tiết cửa hàng" footer={<><Button variant="outline" onClick={() => setViewingStore(null)}>Đóng</Button><Button onClick={() => viewingStore && manageStore(viewingStore)}>Quản lý cửa hàng</Button></>}>
         {viewingStore && <div className="form-stack">

@@ -15,6 +15,7 @@ import {
 import {
   buildAddress,
   businessDate,
+  calculateEmployeeBasePay,
   calculateWorkedHours,
   getEmployeeType,
   getPayBasis,
@@ -169,6 +170,18 @@ const normalizeCccdImages = (payload = {}) => {
   return image ? [image] : []
 }
 
+const normalizeIdentityImages = (payload = {}) => {
+  const images = payload.identityImages
+  if (images && typeof images === 'object' && !Array.isArray(images)) {
+    return {
+      ...(images.front ? { front: images.front } : {}),
+      ...(images.back ? { back: images.back } : {}),
+    }
+  }
+  const [front, back] = normalizeCccdImages(payload)
+  return { ...(front ? { front } : {}), ...(back ? { back } : {}) }
+}
+
 const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) => {
   const details = addressDetailsFrom(payload)
   const proposedUnit = payload.unit ?? payload.unitType ?? payload.department ?? payload.employeeGroup
@@ -203,6 +216,8 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
   const hourlyRate = payBasis === 'hourly' ? getHourlyRate({ ...payload, salary: rawSalary, payBasis }) : 0
   const normalizedSalary = payBasis === 'monthly' ? monthlySalary : payBasis === 'hourly' ? hourlyRate : rawSalary
   const standardWorkDays = Math.max(1, Math.min(31, Number(payload.standardWorkDays) || 26))
+  const requiredMonthlyHours = Math.max(0, Number(payload.requiredMonthlyHours) || 0)
+  const baseSalary = Math.max(0, Number(payload.baseSalary) || monthlySalary || 0)
   const standardWorkDaysPeriod = String(payload.standardWorkDaysPeriod || '').trim()
   const monthlyWorkdayTargets = payload.monthlyWorkdayTargets && typeof payload.monthlyWorkdayTargets === 'object'
     ? { ...payload.monthlyWorkdayTargets }
@@ -234,6 +249,9 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
     legacySalary: payBasis === 'legacy' ? rawSalary : null,
     compensationVersion: payBasis === 'legacy' ? 1 : 2,
     standardWorkDays,
+    requiredMonthlyHours: requiredMonthlyHours || null,
+    baseSalary: baseSalary || null,
+    payFormula: String(payload.payFormula || '').trim() || null,
     standardWorkDaysPeriod,
     monthlyWorkdayTargets,
     tiktokAllowance: nonNegativeInteger(payload.tiktokAllowance),
@@ -246,6 +264,7 @@ const normalizeEmployee = (payload = {}, fallbackStoreId = storesSeed[0]?.id) =>
     cccdImage,
     cccdImageName,
     cccdImages: normalizeCccdImages(payload),
+    identityImages: normalizeIdentityImages(payload),
     username: String(payload.username || '').trim(),
     passwordHash: String(payload.passwordHash || ''),
     legacyPassword: payload.passwordHash ? '' : String(payload.password || ''),
@@ -532,9 +551,13 @@ const employeeGrossFor = (state, employeeId, period = monthKey()) => {
   if (!employee) return 0
   const attendance = state.attendance.filter((item) => item.employeeId === employeeId && isInMonth(item, period))
   const hours = attendance.reduce((sum, item) => sum + Math.max(0, Number(item.hours) || 0), 0)
-  const base = getPayBasis(employee) === 'hourly'
-    ? Math.floor(hours * getHourlyRate(employee))
-    : getMonthlySalary(employee)
+  const employeeStore = state.stores.find((store) => String(store.id) === String(employee.storeId))
+  const salaryEmployee = isSecondMallStore(employeeStore)
+    && getEmployeeType(employee) === 'Full-Time'
+    && Number(employee.requiredMonthlyHours) > 0
+    ? { ...employee, payFormula: 'monthly-hours' }
+    : employee
+  const base = calculateEmployeeBasePay(salaryEmployee, { hours })
   const adjustments = state.salaryAdjustments
     .filter((item) => item.employeeId === employeeId && isInMonth(item, period) && item.status !== 'Đã hủy')
     .reduce((sum, item) => sum + (normalizeText(item.type).includes('khấu trừ') ? -1 : 1) * nonNegativeInteger(item.amount), 0)
@@ -558,6 +581,14 @@ const storeCode = (store = {}) => String(store.short || store.code || store.id |
   .toUpperCase()
   .slice(0, 12) || 'CH'
 
+const isSecondMallStore = (store = {}) => {
+  const key = `${store.id || ''} ${store.short || ''} ${store.name || ''} ${store.employeePrefix || ''}`
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/gu, '')
+    .toUpperCase()
+  return String(store.id || '') === 'CH001' || key.includes('SM234') || key.includes('SECOND MALL')
+}
+
 const nextEmployeeCode = (payload, state) => {
   const requestedRole = normalizeAuthRole(payload.roleType || payload.accountRole || payload.authRole)
   const businessSupport = isBusinessSupportUnit(payload.unit) || requestedRole === 'business_support'
@@ -567,11 +598,11 @@ const nextEmployeeCode = (payload, state) => {
   const prefix = businessSupport
     ? 'HTKD'
     : storeManager
-      ? `QL-${String(store?.employeePrefix || storeCode(store)).toUpperCase()}`
+      ? 'QLCH'
       : officeEmployee
         ? 'VP'
         : String(store?.employeePrefix || storeCode(store)).toUpperCase()
-  const separator = officeEmployee || businessSupport ? '' : '-'
+  const separator = officeEmployee ? '' : '-'
   const pattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${separator}(\\d+)$`, 'i')
   const knownEmployees = [...(state.employees || []), ...(state.deletedEmployees || [])]
   const highest = knownEmployees.reduce((current, employee) => {
@@ -994,8 +1025,18 @@ export function AppProvider({ children }) {
     const scopedStoreId = actorRole === 'store_manager' ? state.session.storeId : payload.storeId
     const normalizedPayload = { ...payload, unit: requestedUnit, storeId: requestedUnit === 'store' ? scopedStoreId || state.activeStoreId : scopedStoreId }
     const generatedCode = String(payload.id || payload.code || payload.employeeCode || nextEmployeeCode(normalizedPayload, state)).trim()
-    const employeePayload = { ...normalizedPayload, id: generatedCode, code: generatedCode, employeeCode: generatedCode }
-    const officeLikeEmployee = requestedUnit !== 'store'
+    const employeeStore = state.stores.find((store) => String(store.id) === String(normalizedPayload.storeId))
+    const monthlyHoursFormula = requestedUnit === 'store'
+      && getEmployeeType(normalizedPayload) === 'Full-Time'
+      && isSecondMallStore(employeeStore)
+    const employeePayload = {
+      ...normalizedPayload,
+      id: generatedCode,
+      code: generatedCode,
+      employeeCode: generatedCode,
+      ...(monthlyHoursFormula ? { payFormula: 'monthly-hours' } : {}),
+    }
+    const officeEmployee = requestedUnit === 'office'
     if (!isValidEmployeePhone(employeePayload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
     if (hasDuplicateAccount(employeePayload)) {
       notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
@@ -1008,7 +1049,7 @@ export function AppProvider({ children }) {
           id: undefined,
           code: undefined,
           employeeCode: undefined,
-          employmentType: officeLikeEmployee
+          employmentType: officeEmployee
             ? employeePayload.officeEmployeeType || employeePayload.officeEmploymentType || 'Chính thức'
             : employeePayload.employmentType,
           passwordHash: undefined,
@@ -1056,7 +1097,7 @@ export function AppProvider({ children }) {
           id: undefined,
           code: undefined,
           employeeCode: undefined,
-          employmentType: previous.unit !== 'store'
+          employmentType: isOfficeUnit(previous.unit) || isOfficeUnit(previous.storeId)
             ? payload.officeEmployeeType || payload.officeEmploymentType || previous.officeEmployeeType || previous.employmentType || 'Chính thức'
             : payload.employmentType ?? previous.employmentType,
           passwordHash: undefined,
@@ -1124,30 +1165,26 @@ export function AppProvider({ children }) {
     ...payload,
     unit: 'business_support',
     storeId: 'BUSINESS_SUPPORT',
-    roleType: 'business_support',
   })
 
-  const updateBusinessSupport = (id, payload = {}) => updateEmployee(id, {
-    ...payload,
-    unit: undefined,
-    storeId: undefined,
-    roleType: undefined,
-  })
+  const immutableRoleProfileUpdate = (payload = {}) => {
+    const { unit, storeId, assignedStoreId, ...profile } = payload
+    void unit
+    void storeId
+    void assignedStoreId
+    return profile
+  }
+
+  const updateBusinessSupport = (id, payload = {}) => updateEmployee(id, immutableRoleProfileUpdate(payload))
 
   const deleteBusinessSupport = (id) => deleteEmployee(id)
 
   const addStoreManager = (payload = {}) => addEmployee({
     ...payload,
     unit: 'store_manager',
-    roleType: 'store_manager',
   })
 
-  const updateStoreManager = (id, payload = {}) => updateEmployee(id, {
-    ...payload,
-    unit: undefined,
-    storeId: undefined,
-    roleType: undefined,
-  })
+  const updateStoreManager = (id, payload = {}) => updateEmployee(id, immutableRoleProfileUpdate(payload))
 
   const deleteStoreManager = (id) => deleteEmployee(id)
 
@@ -1829,7 +1866,7 @@ export function AppProvider({ children }) {
       const kpiBonus = kpi.results.find((result) => result.id === employee.id)?.amount || 0
       const gross = employeeGrossFor(state, employee.id, period) + kpiBonus
       const advancesPaid = advancePaidFor(state, employee.id, period)
-      return { employeeId: employee.id, employeeName: employee.name, hours: employeeHours.find((item) => item.id === employee.id)?.hours || 0, gross, kpiBonus, advancesPaid, remaining: Math.max(0, gross - advancesPaid), salarySnapshot: { salary: employee.salary, monthlySalary: employee.monthlySalary, hourlyRate: employee.hourlyRate, tiktokAllowance: employee.tiktokAllowance } }
+      return { employeeId: employee.id, employeeName: employee.name, hours: employeeHours.find((item) => item.id === employee.id)?.hours || 0, gross, kpiBonus, advancesPaid, remaining: Math.max(0, gross - advancesPaid), salarySnapshot: { salary: employee.salary, monthlySalary: employee.monthlySalary, hourlyRate: employee.hourlyRate, baseSalary: employee.baseSalary, requiredMonthlyHours: employee.requiredMonthlyHours, standardWorkDays: employee.standardWorkDays, payFormula: employee.payFormula, tiktokAllowance: employee.tiktokAllowance } }
     })
     const timestamp = new Date().toISOString()
     const periodRecord = { id: existing?.id || uid('PAY'), storeId, period, rows, kpiSnapshot: kpi, financeSnapshot: summary, policySnapshot: clone(state.policies), status: 'Đã chốt', closedAt: timestamp, closedBy: actorSnapshot(state.session), confirmedAt: existing?.confirmedAt || null, lockedAt: null }

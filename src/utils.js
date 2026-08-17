@@ -28,6 +28,8 @@ export const getPayBasis = (employee = {}) => {
 export const getMonthlySalary = (employee = {}) => {
   const explicit = Number(employee.monthlySalary)
   if (Number.isFinite(explicit) && explicit > 0) return explicit
+  const baseSalary = Number(employee.baseSalary)
+  if (Number.isFinite(baseSalary) && baseSalary > 0) return baseSalary
   return getPayBasis(employee) === 'monthly' ? Math.max(0, Number(employee.salary) || 0) : 0
 }
 
@@ -37,9 +39,18 @@ export const getHourlyRate = (employee = {}) => {
   return getPayBasis(employee) === 'hourly' ? Math.max(0, Number(employee.salary) || 0) : 0
 }
 
+export const usesMonthlyHoursFormula = (employee = {}) => (
+  getEmployeeType(employee) === 'Full-Time'
+  && String(employee.payFormula || '').trim().toLowerCase() === 'monthly-hours'
+  && Number(employee.requiredMonthlyHours) > 0
+)
+
 export const calculateEmployeeBasePay = (employee = {}, { hours = 0, workedDays = 0, prorateMonthly = false } = {}) => {
   if (getPayBasis(employee) === 'hourly') return Math.round(Math.max(0, Number(hours) || 0) * getHourlyRate(employee))
   const monthlySalary = getMonthlySalary(employee)
+  if (usesMonthlyHoursFormula(employee)) {
+    return Math.floor((Math.max(0, Number(hours) || 0) / Number(employee.requiredMonthlyHours)) * monthlySalary)
+  }
   if (!prorateMonthly) return monthlySalary
   const standardWorkDays = Math.max(1, Number(employee.standardWorkDays) || 26)
   return Math.round((monthlySalary / standardWorkDays) * Math.max(0, Number(workedDays) || 0))

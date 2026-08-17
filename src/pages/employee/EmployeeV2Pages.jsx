@@ -30,7 +30,7 @@ import {
 } from '../../components/UI'
 import { resolveShiftCandidates } from '../../domain'
 import { useApp } from '../../state/AppContext'
-import { businessDate, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, today } from '../../utils'
+import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, today, usesMonthlyHoursFormula } from '../../utils'
 import { employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
 
 const parseMoney = (value) => Math.max(0, Math.trunc(Number(String(value ?? '').replace(/[^\d-]/gu, '')) || 0))
@@ -432,7 +432,7 @@ export function EmployeePayrollDetails() {
   const snapshotRow = snapshot?.rows.find((row) => String(row.employeeId) === employeeId)
   const hours = rows.reduce((sum, record) => sum + workedHours(record), 0)
   const basis = getPayBasis(employee || {})
-  const base = basis === 'hourly' ? Math.floor(hours * getHourlyRate(employee || {})) : getMonthlySalary(employee || {})
+  const base = calculateEmployeeBasePay(employee || {}, { hours })
   const adjustments = salaryAdjustments.filter((item) => String(item.employeeId) === employeeId && item.period === period && item.status !== 'Đã hủy')
   const bonus = adjustments.filter((item) => item.type === 'Thưởng khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const allowance = adjustments.filter((item) => item.type === 'Phụ cấp khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
@@ -457,7 +457,7 @@ export function EmployeePayrollDetails() {
     <div className="page">
       <PageHeader title="BẢNG LƯƠNG CỦA TÔI" subtitle="Dữ liệu cá nhân theo kỳ; các kỳ đã khóa dùng đúng bản chụp lương, KPI và chính sách." icon={Wallet} actions={<Select value={period} onChange={(event) => setPeriod(event.target.value)}><option value={period}>{periodLabel(period)}</option>{periods.filter((item) => item !== period).map((item) => <option key={item} value={item}>{periodLabel(item)}</option>)}</Select>} />
       <div className="metric-grid metric-grid--four">
-        <MetricCard label="LƯƠNG CỨNG" value={money(base)} helper={basis === 'hourly' ? `${hours.toFixed(2)} giờ × ${money(getHourlyRate(employee || {}))}` : 'Theo mức lương tháng'} icon={Banknote} tone="blue" />
+        <MetricCard label="LƯƠNG CỨNG" value={money(base)} helper={basis === 'hourly' ? `${hours.toFixed(2)} giờ × ${money(getHourlyRate(employee || {}))}` : usesMonthlyHoursFormula(employee || {}) ? `${hours.toFixed(2)} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || getMonthlySalary(employee || {}))}` : 'Theo mức lương tháng'} icon={Banknote} tone="blue" />
         <MetricCard label="THƯỞNG KPI" value={money(kpi)} helper={snapshot ? 'Theo snapshot kỳ lương' : 'Chỉ có sau khi chốt kỳ'} icon={CheckCircle2} tone="green" />
         <MetricCard label="ĐÃ ỨNG" value={money(advances)} icon={Wallet} tone="orange" />
         <MetricCard label="THỰC NHẬN" value={money(net)} helper={snapshot?.status || 'Tạm tính'} icon={Banknote} tone="green" />

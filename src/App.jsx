@@ -52,7 +52,7 @@ const canonicalRole = (role) => role === 'manager' ? 'business_support' : role
 
 const homeByRole = {
   admin: '/admin/overview',
-  business_support: '/admin/overview',
+  business_support: '/support/overview',
   store_manager: '/store/overview',
   employee: '/employee/home',
 }
@@ -100,6 +100,13 @@ function StoreEmployeeRoute({ children }) {
     : children
 }
 
+function StoreOverviewRoute() {
+  const { session } = useApp()
+  return canonicalRole(session?.role) === 'store_manager'
+    ? <OfficeEmployeeDashboard />
+    : <StoreOverviewV2 />
+}
+
 export default function App() {
   const { session } = useApp()
   return (
@@ -114,12 +121,17 @@ export default function App() {
         <Route path="/admin/cashflow" element={<AdminCashflowV2 />} />
         <Route path="/admin/reports" element={<AdminReportsV2 />} />
         <Route path="/admin/employees" element={<SystemEmployees />} />
+        <Route path="/admin/business-support" element={<BusinessSupportManagement />} />
+        <Route path="/admin/store-managers" element={<StoreManagerManagement />} />
+        <Route path="/office" element={<OfficeManagement />} />
+        <Route path="/admin/office" element={<Navigate to="/office" replace />} />
         <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
         <Route path="/admin/settings" element={<AdminSettings />} />
+        <Route path="/admin/order-audit" element={<OrderAuditPage />} />
       </Route>
 
       <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager']}><AppShell /></RoleGuard>}>
-        <Route path="/store/overview" element={<StoreOverviewV2 />} />
+        <Route path="/store/overview" element={<StoreOverviewRoute />} />
         <Route path="/store/shifts" element={<Navigate to="/store/schedule" replace />} />
         <Route path="/store/schedule" element={<UnifiedSchedule />} />
         <Route path="/store/employees" element={<StoreEmployees />} />
@@ -134,17 +146,13 @@ export default function App() {
       </Route>
 
       <Route element={<RoleGuard roles="business_support"><AppShell /></RoleGuard>}>
-        <Route path="/support/attendance" element={<OfficeEmployeeDashboard />} />
+        <Route path="/support/overview" element={<OfficeEmployeeDashboard />} />
+        <Route path="/support/attendance" element={<Navigate to="/support/overview" replace />} />
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
-        <Route path="/admin/business-support" element={<BusinessSupportManagement />} />
-        <Route path="/admin/store-managers" element={<StoreManagerManagement />} />
-        <Route path="/office" element={<OfficeManagement />} />
-        <Route path="/admin/office" element={<Navigate to="/office" replace />} />
         <Route path="/admin/policies" element={<PolicySettings />} />
         <Route path="/admin/reset" element={<ResetDataPage />} />
-        <Route path="/admin/order-audit" element={<OrderAuditPage />} />
       </Route>
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
