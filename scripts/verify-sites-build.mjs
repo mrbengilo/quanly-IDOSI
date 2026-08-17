@@ -11,6 +11,7 @@ const managerMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0001_m
 const attendancePolicyMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0002_attendance_evaluation_policies.sql')
 const stateEntitiesMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0003_state_entities.sql')
 const operationalRolesMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0004_operational_roles.sql')
+const adminOnlyAccountsMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0005_admin_only_accounts.sql')
 const migrationJournalPath = resolve(root, 'dist', '.openai', 'drizzle', 'meta', '_journal.json')
 
 await access(workerPath)
@@ -20,6 +21,7 @@ await access(managerMigrationPath)
 await access(attendancePolicyMigrationPath)
 await access(stateEntitiesMigrationPath)
 await access(operationalRolesMigrationPath)
+await access(adminOnlyAccountsMigrationPath)
 await access(migrationJournalPath)
 
 const hosting = JSON.parse(await readFile(hostingPath, 'utf8'))
@@ -30,6 +32,7 @@ const managerMigration = await readFile(managerMigrationPath, 'utf8')
 const attendancePolicyMigration = await readFile(attendancePolicyMigrationPath, 'utf8')
 const stateEntitiesMigration = await readFile(stateEntitiesMigrationPath, 'utf8')
 const operationalRolesMigration = await readFile(operationalRolesMigrationPath, 'utf8')
+const adminOnlyAccountsMigration = await readFile(adminOnlyAccountsMigrationPath, 'utf8')
 const migrationJournal = JSON.parse(await readFile(migrationJournalPath, 'utf8'))
 const workerSource = await readFile(workerPath, 'utf8')
 assert.equal(migrationJournal.dialect, 'sqlite')
@@ -39,6 +42,7 @@ assert.deepEqual(migrationJournal.entries.map(({ tag }) => tag), [
   '0002_attendance_evaluation_policies',
   '0003_state_entities',
   '0004_operational_roles',
+  '0005_admin_only_accounts',
 ])
 for (const table of ['system_metadata', 'users', 'app_state', 'policies', 'audit_log', 'counters', 'sessions', 'command_receipts']) {
   assert.match(coreMigration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`))
@@ -70,6 +74,13 @@ assert.match(operationalRolesMigration, /json_remove\(/u)
 assert.match(operationalRolesMigration, /'\$\.authUserId'/u)
 assert.match(operationalRolesMigration, /admin-only-credentials/u)
 assert.match(operationalRolesMigration, /PRAGMA foreign_key_check/u)
+assert.match(adminOnlyAccountsMigration, /PRAGMA defer_foreign_keys = ON/u)
+assert.match(adminOnlyAccountsMigration, /DELETE FROM users\s+WHERE role <> 'admin'/u)
+assert.match(adminOnlyAccountsMigration, /collection_key IN \('employees', 'deletedEmployees'\)/u)
+assert.match(adminOnlyAccountsMigration, /lower\(field\.key\) NOT LIKE 'password%'/u)
+assert.match(adminOnlyAccountsMigration, /'\$\.accountSettings'/u)
+assert.match(adminOnlyAccountsMigration, /migration:0005:admin-only-accounts/u)
+assert.match(adminOnlyAccountsMigration, /PRAGMA foreign_key_check/u)
 
 const { default: worker } = await import(`${new URL(`file:///${workerPath.replaceAll('\\', '/')}`).href}?v=${Date.now()}`)
 const contentTypes = {

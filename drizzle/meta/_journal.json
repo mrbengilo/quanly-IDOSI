@@ -36,6 +36,13 @@
       "when": 1787011200000,
       "tag": "0004_operational_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787097600000,
+      "tag": "0005_admin_only_accounts",
+      "breakpoints": true
     }
   ]
 }

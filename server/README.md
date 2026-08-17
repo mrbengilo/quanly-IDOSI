@@ -254,12 +254,24 @@ profile. Account settings chỉ còn của Admin. Sau deploy, Admin cấp lại
 tài khoản bằng `employee.update` hoặc tạo hồ sơ/tài khoản mới bằng
 `employee.create`.
 
+## Xóa lại tài khoản production ngoài Admin (migration 0005)
+
+`drizzle/0005_admin_only_accounts.sql` xử lý các tài khoản ngoài Admin đã được
+tạo lại sau migration vai trò đầu tiên. Migration chỉ xóa credential
+`business_support`, `store_manager`, `employee`; khóa ngoại tự cascade session,
+idempotency receipt/chunk và đặt các tham chiếu lịch sử trong app state, policy,
+audit thành `NULL`. Hồ sơ đang làm/đã xóa cùng toàn bộ lịch sử nghiệp vụ vẫn
+được giữ, nhưng `username`, `authUserId`, `authVersion` và mọi thuộc tính bắt
+đầu bằng `password` bị gỡ ở cả `state_entities` lẫn compact JSON cũ. Account
+settings chỉ còn của Admin; phiên bản global state được tăng một lần với request
+id `migration:0005:admin-only-accounts`. Sau migration, chỉ Admin có thể phát
+hành lại tài khoản theo đúng luồng quản trị.
+
 ## Giới hạn cần xử lý trước tải lớn
 
 - Compact shell và mỗi entity/chunk giới hạn 1.500.000 byte; request JSON
-  giới hạn 16 MiB. Ảnh CCCD không
-  được đưa vào state; avatar data URL tối đa 128 KiB. Cần object storage có kiểm
-  soát quyền trước khi bật upload ảnh lớn.
+  giới hạn 16 MiB. Byte ảnh CCCD nằm trong R2 private binding
+  `IDENTITY_IMAGES`, không nằm trong state; avatar data URL tối đa 128 KiB.
 - Cần rate-limit/WAF cho `/api/login` và smoke-test chi phí PBKDF2 trên plan chạy.
 - Cần đặt retention cho audit/command receipts và theo dõi quota D1 trước khi
   vận hành dữ liệu rất lớn.

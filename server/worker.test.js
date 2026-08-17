@@ -53,6 +53,7 @@ class MemoryD1 {
       'drizzle/0002_attendance_evaluation_policies.sql',
       'drizzle/0003_state_entities.sql',
       'drizzle/0004_operational_roles.sql',
+      'drizzle/0005_admin_only_accounts.sql',
     ]) {
       const migration = readFileSync(file, 'utf8').replaceAll('--> statement-breakpoint', '')
       this.database.exec(migration)
@@ -494,6 +495,199 @@ describe('IDOSI Worker security primitives', () => {
     expect(database.prepare("SELECT role, employee_id FROM users WHERE username_normalized = 'support.reissued'").get()).toEqual({
       role: 'business_support', employee_id: 'HTKD777',
     })
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    database.close()
+  })
+
+  it('re-purges live non-admin accounts while preserving profiles and history', () => {
+    const database = new DatabaseSync(':memory:')
+    for (const file of [
+      'drizzle/0000_idosi_core.sql',
+      'drizzle/0001_manager_role.sql',
+      'drizzle/0002_attendance_evaluation_policies.sql',
+      'drizzle/0003_state_entities.sql',
+      'drizzle/0004_operational_roles.sql',
+    ]) {
+      database.exec(readFileSync(file, 'utf8').replaceAll('--> statement-breakpoint', ''))
+    }
+
+    const timestamp = '2026-08-17T12:00:00.000Z'
+    const insertUser = database.prepare(`
+      INSERT INTO users (
+        id, username, username_normalized, display_name, password_hash, password_salt,
+        password_iterations, password_algorithm, role, status, version, store_id,
+        employee_id, password_updated_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'hash', 'salt', 100000, 'PBKDF2-SHA256', ?, 'active', 1, ?, ?, ?, ?, ?)
+    `)
+    insertUser.run('admin-live', 'admin', 'admin', 'Admin', 'admin', null, null, timestamp, timestamp, timestamp)
+    insertUser.run(
+      'support-live', 'htkd-ben', 'htkd-ben', 'Hỗ trợ Bến', 'business_support',
+      'BUSINESS_SUPPORT', 'HTKD-002', timestamp, timestamp, timestamp,
+    )
+    insertUser.run(
+      'manager-live', 'clct-diemthuy', 'clct-diemthuy', 'Quản lý Diễm Thúy', 'store_manager',
+      'CH001', 'QLCH-002', timestamp, timestamp, timestamp,
+    )
+    insertUser.run(
+      'employee-live', 'employee-live', 'employee-live', 'Nhân viên', 'employee',
+      'CH001', 'SM234-099', timestamp, timestamp, timestamp,
+    )
+
+    for (const [id, userId] of [
+      ['SESSION-ADMIN', 'admin-live'],
+      ['SESSION-SUPPORT', 'support-live'],
+      ['SESSION-MANAGER', 'manager-live'],
+      ['SESSION-EMPLOYEE', 'employee-live'],
+    ]) {
+      database.prepare(`
+        INSERT INTO sessions (id, token_hash, user_id, created_at, last_seen_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, '2026-08-18T12:00:00.000Z')
+      `).run(id, `hash-${id}`, userId, timestamp, timestamp)
+    }
+    for (const [actorId, key] of [
+      ['admin-live', 'receipt-admin'],
+      ['support-live', 'receipt-support'],
+      ['manager-live', 'receipt-manager'],
+    ]) {
+      database.prepare(`
+        INSERT INTO command_receipts (
+          actor_id, idempotency_key, request_hash, response_json, status_code, created_at
+        ) VALUES (?, ?, 'request-hash', '{"chunked":true,"chunkCount":1,"totalBytes":2}', 200, ?)
+      `).run(actorId, key, timestamp)
+      database.prepare(`
+        INSERT INTO command_receipt_chunks (
+          actor_id, idempotency_key, chunk_index, chunk_text, chunk_bytes, created_at
+        ) VALUES (?, ?, 0, '{}', 2, ?)
+      `).run(actorId, key, timestamp)
+    }
+
+    const liveProfiles = [{
+      id: 'HTKD-002', name: 'Hỗ trợ Bến', phone: '0900000002', unit: 'business_support',
+      username: 'htkd-ben', authUserId: 'support-live', authVersion: 1,
+      password: 'plain', passwordHash: 'hash', passwordResetToken: 'reset',
+    }, {
+      id: 'QLCH-002', name: 'Quản lý Diễm Thúy', phone: '0900000003', unit: 'store_manager',
+      Username: 'clct-diemthuy', auth_user_id: 'manager-live', auth_version: 1,
+      passwordSalt: 'salt', password_hint: 'hint',
+    }]
+    const deletedProfiles = [{
+      id: 'SM234-099', name: 'Nhân viên đã nghỉ', storeId: 'CH001', unit: 'store',
+      username: 'employee-live', authUserId: 'employee-live', authVersion: 1,
+      passwordLegacy: 'legacy',
+    }]
+    const compactState = {
+      stateVersion: 12,
+      employees: liveProfiles,
+      deletedEmployees: deletedProfiles,
+      attendance: [{ id: 'ATT-HISTORY', employeeId: 'HTKD-002', checkInAt: timestamp }],
+      accountSettings: {
+        'admin-live': { name: 'Admin preference' },
+        'support-live': { name: 'Support private preference' },
+        'manager-live': { name: 'Manager private preference' },
+        orphan: { name: 'Orphan private preference' },
+      },
+    }
+    database.prepare(`
+      INSERT INTO app_state (
+        scope_key, value_json, version, updated_at, updated_by, last_request_id
+      ) VALUES ('global', ?, 12, ?, 'support-live', 'live-request')
+    `).run(JSON.stringify(compactState), timestamp)
+    replaceStateCollection(database, 'employees', liveProfiles)
+    replaceStateCollection(database, 'deletedEmployees', deletedProfiles)
+    replaceStateCollection(database, 'attendance', compactState.attendance)
+
+    database.exec(`
+      INSERT INTO policies (
+        policy_key, value_json, version, effective_at, updated_at, updated_by, last_request_id
+      ) VALUES
+        ('live_support_policy', '1', 1, '${timestamp}', '${timestamp}', 'support-live', 'policy-support'),
+        ('live_admin_policy', '2', 1, '${timestamp}', '${timestamp}', 'admin-live', 'policy-admin');
+      INSERT INTO audit_log (
+        request_id, actor_id, actor_role, action, entity_type, entity_id, server_timestamp
+      ) VALUES
+        ('audit-live-employee', 'employee-live', 'employee', 'history.employee', 'employee', 'SM234-099', '${timestamp}'),
+        ('audit-live-admin', 'admin-live', 'admin', 'history.admin', 'state', 'global', '${timestamp}');
+    `)
+
+    database.exec('BEGIN IMMEDIATE')
+    try {
+      database.exec(readFileSync('drizzle/0005_admin_only_accounts.sql', 'utf8').replaceAll('--> statement-breakpoint', ''))
+      database.exec('COMMIT')
+    } catch (error) {
+      database.exec('ROLLBACK')
+      throw error
+    }
+
+    expect(database.prepare('SELECT id, username, role FROM users ORDER BY id').all()).toEqual([
+      { id: 'admin-live', username: 'admin', role: 'admin' },
+    ])
+    expect(database.prepare('SELECT id, user_id FROM sessions ORDER BY id').all()).toEqual([
+      { id: 'SESSION-ADMIN', user_id: 'admin-live' },
+    ])
+    expect(database.prepare('SELECT actor_id, idempotency_key FROM command_receipts ORDER BY actor_id').all()).toEqual([
+      { actor_id: 'admin-live', idempotency_key: 'receipt-admin' },
+    ])
+    expect(database.prepare('SELECT actor_id, idempotency_key FROM command_receipt_chunks ORDER BY actor_id').all()).toEqual([
+      { actor_id: 'admin-live', idempotency_key: 'receipt-admin' },
+    ])
+    expect(database.prepare(`
+      SELECT policy_key, updated_by FROM policies
+      WHERE policy_key LIKE 'live_%' ORDER BY policy_key
+    `).all()).toEqual([
+      { policy_key: 'live_admin_policy', updated_by: 'admin-live' },
+      { policy_key: 'live_support_policy', updated_by: null },
+    ])
+    expect(database.prepare(`
+      SELECT request_id, actor_id FROM audit_log
+      WHERE request_id LIKE 'audit-live-%' ORDER BY request_id
+    `).all()).toEqual([
+      { request_id: 'audit-live-admin', actor_id: 'admin-live' },
+      { request_id: 'audit-live-employee', actor_id: null },
+    ])
+
+    const migratedCompactRow = database.prepare(`
+      SELECT value_json, version, updated_by, last_request_id
+      FROM app_state WHERE scope_key = 'global'
+    `).get()
+    expect({
+      version: migratedCompactRow.version,
+      updated_by: migratedCompactRow.updated_by,
+      last_request_id: migratedCompactRow.last_request_id,
+    }).toEqual({
+      version: 13,
+      updated_by: null,
+      last_request_id: 'migration:0005:admin-only-accounts',
+    })
+    const migratedCompact = JSON.parse(migratedCompactRow.value_json)
+    expect(migratedCompact.employees.map(({ id }) => id)).toEqual(['HTKD-002', 'QLCH-002'])
+    expect(migratedCompact.deletedEmployees.map(({ id }) => id)).toEqual(['SM234-099'])
+    expect(migratedCompact.attendance).toEqual(compactState.attendance)
+    expect(migratedCompact.accountSettings).toEqual({ 'admin-live': { name: 'Admin preference' } })
+    expect(JSON.stringify([migratedCompact.employees, migratedCompact.deletedEmployees]))
+      .not.toMatch(/username|auth_?user_?id|auth_?version|password/iu)
+
+    const migratedProfiles = database.prepare(`
+      SELECT collection_key, value_json, value_bytes
+      FROM state_entities
+      WHERE scope_key = 'global' AND collection_key IN ('employees', 'deletedEmployees')
+      ORDER BY collection_key, entity_order
+    `).all()
+    expect(migratedProfiles.map(({ collection_key: collectionKey, value_json: valueJson }) => ({
+      collectionKey, id: JSON.parse(valueJson).id,
+    }))).toEqual([
+      { collectionKey: 'deletedEmployees', id: 'SM234-099' },
+      { collectionKey: 'employees', id: 'HTKD-002' },
+      { collectionKey: 'employees', id: 'QLCH-002' },
+    ])
+    expect(JSON.stringify(migratedProfiles.map(({ value_json: valueJson }) => JSON.parse(valueJson))))
+      .not.toMatch(/username|auth_?user_?id|auth_?version|password/iu)
+    expect(migratedProfiles.every(({ value_json: valueJson, value_bytes: valueBytes }) => (
+      Buffer.byteLength(valueJson) === valueBytes
+    ))).toBe(true)
+    expect(database.prepare(`
+      SELECT json_extract(value_json, '$.id') AS id
+      FROM state_entities WHERE collection_key = 'attendance'
+    `).all()).toEqual([{ id: 'ATT-HISTORY' }])
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
     database.close()
   })
