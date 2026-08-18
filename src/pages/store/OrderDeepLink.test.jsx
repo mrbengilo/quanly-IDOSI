@@ -54,4 +54,52 @@ describe('order notification deep links', () => {
 
     expect(screen.getByText('S01-00002').closest('tr')?.classList.contains('order-row--highlight')).toBe(true)
   })
+
+  it('blocks employee order creation until an attendance shift is open', () => {
+    const notify = vi.fn()
+    mocked.app = {
+      currentEmployee: { id: 'E01', storeId: 'S01', name: 'Nhân viên 01' },
+      orders: [],
+      attendance: [],
+      createOrder: vi.fn(),
+      notify,
+    }
+    render(<MemoryRouter initialEntries={['/employee/orders']}><EmployeeOrdersPage /></MemoryRouter>)
+
+    const createButton = screen.getByRole('button', { name: 'TẠO ĐƠN HÀNG' })
+    expect(createButton.disabled).toBe(true)
+    expect(screen.getByText('Bạn chưa có ca đang mở. Hãy điểm danh vào ca trước khi tạo đơn hàng.')).toBeTruthy()
+    createButton.click()
+    expect(mocked.app.createOrder).not.toHaveBeenCalled()
+  })
+
+  it('enables employee order creation during an open attendance shift', () => {
+    mocked.app = {
+      currentEmployee: { id: 'E01', storeId: 'S01', name: 'Nhân viên 01' },
+      orders: [],
+      attendance: [{ id: 'ATT-01', employeeId: 'E01', shift: 'CA-01', shiftName: 'Ca sáng', checkIn: '08:00' }],
+      createOrder: vi.fn(),
+      notify: vi.fn(),
+    }
+    render(<MemoryRouter initialEntries={['/employee/orders']}><EmployeeOrdersPage /></MemoryRouter>)
+
+    expect(screen.getByRole('button', { name: 'TẠO ĐƠN HÀNG' }).disabled).toBe(false)
+  })
+
+  it('shows edit and delete order controls to Business Support', () => {
+    mocked.app = {
+      session: { role: 'business_support' },
+      activeStoreId: 'S01',
+      stores: [{ id: 'S01', name: 'Cửa hàng 01' }],
+      orders: [targetOrder],
+      employees: [{ id: 'E01', storeId: 'S01', name: 'Nhân viên 01' }],
+      updateOrder: vi.fn(),
+      deleteOrder: vi.fn(),
+      notify: vi.fn(),
+    }
+    render(<MemoryRouter initialEntries={['/store/orders']}><StoreOrdersPage /></MemoryRouter>)
+
+    expect(screen.getByRole('button', { name: /^Sửa$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Xóa$/i })).toBeTruthy()
+  })
 })

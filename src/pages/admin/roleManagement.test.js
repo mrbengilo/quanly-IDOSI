@@ -164,6 +164,19 @@ describe('admin role management helpers', () => {
     expect(payload).not.toHaveProperty('identityImages')
     expect(payload).not.toHaveProperty('password')
   })
+
+  it('keeps the structured province, ward and street while also sending the full address', () => {
+    const payload = roleProfilePayload({
+      ...validForm(),
+      address: '',
+      province: 'Hồ Chí Minh',
+      ward: 'Hiệp Bình',
+      street: '12 Phạm Văn Đồng',
+    }, ROLE_KEYS.businessSupport)
+
+    expect(payload.address).toBe('12 Phạm Văn Đồng, Hiệp Bình, Hồ Chí Minh')
+    expect(payload.addressDetails).toEqual({ province: 'Hồ Chí Minh', ward: 'Hiệp Bình', street: '12 Phạm Văn Đồng' })
+  })
 })
 
 describe('role management permissions and form', () => {
@@ -211,6 +224,23 @@ describe('role management permissions and form', () => {
     expect(labels).not.toContain('Số ngày công quy định')
     expect(labels).not.toContain('Giới tính')
     expect(labels).not.toContain('Ngày sinh')
+  })
+
+  it('lets Business Support create a store manager but hides edit and delete controls', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      storeManagers: [{ id: 'QLCH-001', unit: 'store_manager', storeId: 'CH001', name: 'Quản lý một', employmentType: 'Full-Time' }],
+      addStoreManager: vi.fn(),
+    }
+    render(createElement(StoreManagerManagement))
+
+    expect(screen.getAllByRole('button', { name: /Thêm tài khoản/i }).length).toBeGreaterThan(0)
+    expect(screen.getByText(/Hỗ trợ KD được thêm tài khoản Quản lý cửa hàng/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Sửa Quản lý một/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Xóa Quản lý một/i })).toBeNull()
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Thêm tài khoản/i })[0])
+    expect(screen.getByRole('dialog')).toBeTruthy()
   })
 })
 

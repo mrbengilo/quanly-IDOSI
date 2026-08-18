@@ -8,6 +8,7 @@ import {
   AdminStores,
 } from './pages/admin/AdminPages'
 import { BusinessSupportManagement, StoreManagerManagement } from './pages/admin/RoleManagement'
+import { AdminSupportWorkPage, SupportAssignedWorkPage } from './pages/admin/SupportWorkPages'
 import { AdminCashflowV2, AdminOverviewV2, AdminReportsV2 } from './pages/admin/SystemFinanceV2'
 import { OrderAuditPage, PolicySettings, ResetDataPage, SupportTransfersPage, SystemEmployees } from './pages/admin/GovernancePages'
 import { OfficeManagement } from './pages/office/OfficeManagement'
@@ -52,6 +53,8 @@ const pages = {
   AdminSettings,
   BusinessSupportManagement,
   StoreManagerManagement,
+  AdminSupportWorkPage,
+  SupportAssignedWorkPage,
   SystemEmployees,
   PolicySettings,
   ResetDataPage,
@@ -127,6 +130,22 @@ const seedBusinessSupportAccount = () => {
     accountRole: 'business_support',
     storeId: 'BUSINESS_SUPPORT',
   })
+  storedState.orders.unshift({
+    id: 'ORDER-SUPPORT-SMOKE',
+    code: 'DH-SMOKE-001',
+    storeId: 'CH001',
+    employeeId: 'NV001',
+    employeeName: 'Nguyễn Minh Anh',
+    customerName: 'Khách kiểm thử',
+    customerPhone: '0900000000',
+    customerAge: 28,
+    amount: 250000,
+    paymentMethod: 'Chuyển khoản',
+    status: 'Đã ghi nhận',
+    source: 'employee-order',
+    createdAt: '2026-08-18T09:00:00+07:00',
+    updatedAt: '2026-08-18T09:00:00+07:00',
+  })
   localStorage.setItem(STORAGE_KEY, JSON.stringify(storedState))
 }
 
@@ -193,25 +212,25 @@ describe('IDOSI page smoke tests', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
     expect(await screen.findByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Tổng quan$/i }).getAttribute('href')).toBe('/support/overview')
-    expect(screen.getByRole('link', { name: /^Tổng quan hệ thống$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Cửa hàng$/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Quản lý nhân viên/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Quản lý nhân viên hệ thống/i })).toBeTruthy()
     expect(screen.getAllByText('Hỗ trợ KD').length).toBeGreaterThan(0)
     expect(screen.getByRole('link', { name: /Khối văn phòng/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Quản lý cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Công việc được giao/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /Cài đặt chính sách/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
-    expect(screen.getByRole('link', { name: /Lịch sử sửa\/xóa đơn hàng/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Lịch sử chỉnh sửa đơn hàng/i })).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('link', { name: /^Tổng quan hệ thống$/i }))
-    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
-    fireEvent.click(screen.getAllByRole('button', { name: /Mở cửa hàng/i })[0])
+    fireEvent.click(screen.getByRole('link', { name: /^Cửa hàng$/i }))
+    expect(await screen.findByRole('heading', { name: /Quản lý cửa hàng/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Xem SecondMall SM234$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Quản lý cửa hàng$/i }))
     fireEvent.click(screen.getByRole('link', { name: /^Đơn hàng$/i }))
     expect(screen.getByRole('heading', { name: 'ĐƠN HÀNG' })).toBeTruthy()
-    expect(screen.getByText(/Chế độ chỉ xem/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /^Sửa$/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Xóa$/i })).toBeNull()
+    expect(screen.queryByText(/Chế độ chỉ xem/i)).toBeNull()
+    expect(screen.getAllByRole('button', { name: /^Sửa$/i }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: /^Xóa$/i }).length).toBeGreaterThan(0)
   })
 
   it('guards direct system routes while allowing business support to self-attend', async () => {

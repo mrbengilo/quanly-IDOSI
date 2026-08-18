@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Banknote,
   CalendarDays,
@@ -20,7 +20,6 @@ import {
   Badge,
   Button,
   Card,
-  Drawer,
   Field,
   InfoNote,
   Input,
@@ -32,21 +31,27 @@ import {
   TableFooter,
   TableWrap,
 } from '../../components/UI'
+import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
+import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { formatMoneyInput, money, parseMoneyInput, shortDate, today } from '../../utils'
 import {
-  editableOfficeWorkdayTarget,
   officeAdjustmentTotals,
   officeLocationLabel,
   officePayrollSummary,
   officeSalaryAdjustments,
 } from '../employee/officeAttendance'
 import { submitOfficeSalaryAdjustment } from './officeSalaryAdjustment'
+import {
+  nextOfficeEmployeeCodeFromState,
+  OFFICE_EMPLOYEE_TYPES,
+  OFFICE_POSITIONS,
+  validateOfficeEmployee,
+} from './officeEmployeeForm'
 
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
-const OFFICE_EMPLOYEE_TYPES = ['Chính thức', 'Thực tập sinh', 'Thử việc']
-const PHONE_PATTERN = /^0\d{9}$/
-const CCCD_PATTERN = /^\d{12}$/
+const IDENTITY_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+const MAX_IDENTITY_IMAGE_SIZE = 2 * 1024 * 1024
 
 const emptyEmployee = {
   code: '',
@@ -56,17 +61,12 @@ const emptyEmployee = {
   province: '',
   ward: '',
   street: '',
-  salary: '',
-  position: '',
-  age: '',
+  startDate: today(),
+  employmentType: OFFICE_EMPLOYEE_TYPES[0],
+  position: OFFICE_POSITIONS[0],
+  identityImages: { front: '', back: '' },
   username: '',
   password: '',
-  status: EMPLOYEE_STATUSES[0],
-  officeEmployeeType: OFFICE_EMPLOYEE_TYPES[0],
-  workStart: '08:00',
-  workEnd: '17:00',
-  standardWorkDaysPeriod: today().slice(0, 7),
-  standardWorkDays: '26',
 }
 
 const emptyAdjustment = {
@@ -77,23 +77,14 @@ const emptyAdjustment = {
 }
 
 const normalizeText = (value = '') => String(value).trim().toLowerCase()
-const normalizePhone = (value = '') => value.replace(/[\s.()-]/g, '')
 const employeeCode = (employee = {}) => employee.code || employee.employeeCode || employee.id || ''
-const officeEmployeeType = (employee = {}) => employee.officeEmployeeType || employee.officeEmploymentType || employee.contractType || OFFICE_EMPLOYEE_TYPES[0]
-const employeeTargetPeriod = (employee = {}) => employee.standardWorkDaysPeriod || today().slice(0, 7)
-const employeeTargetDays = (employee = {}) => {
-  const period = employeeTargetPeriod(employee)
-  return Number(employee.monthlyWorkdayTargets?.[period] || employee.standardWorkDays || 26)
+const officeEmployeeType = (employee = {}) => {
+  const value = employee.employmentType || employee.officeEmployeeType || employee.officeEmploymentType || employee.contractType || OFFICE_EMPLOYEE_TYPES[0]
+  if (['Chính thức', 'Chinh thuc'].includes(value)) return 'Full-Time'
+  if (['Thực tập sinh', 'Thực Tập Sinh', 'Thuc tap sinh'].includes(value)) return 'Thực Tập Sinh'
+  if (['Thử việc', 'Thu viec'].includes(value)) return 'Part-Time'
+  return OFFICE_EMPLOYEE_TYPES.includes(value) ? value : OFFICE_EMPLOYEE_TYPES[0]
 }
-
-const nextOfficeEmployeeCode = (employees = []) => {
-  const largestNumber = employees.reduce((largest, employee) => {
-    const match = /^VP(\d+)$/i.exec(employeeCode(employee))
-    return match ? Math.max(largest, Number(match[1])) : largest
-  }, 0)
-  return `VP${String(largestNumber + 1).padStart(3, '0')}`
-}
-
 const addressParts = (employee = {}) => {
   const nested = typeof employee.address === 'object' && employee.address ? employee.address : {}
   return {
@@ -117,7 +108,6 @@ const isOfficeEmployee = (employee = {}) => Boolean(
 
 const employeeToForm = (employee = {}) => {
   const address = addressParts(employee)
-  const targetPeriod = today().slice(0, 7)
   return {
     ...emptyEmployee,
     code: employeeCode(employee),
@@ -127,17 +117,17 @@ const employeeToForm = (employee = {}) => {
     province: address.province,
     ward: address.ward,
     street: address.street,
-    salary: formatMoneyInput(employee.salary),
-    position: employee.position || employee.workPosition || employee.role || '',
-    age: employee.age ?? '',
+    startDate: String(employee.startDate || employee.joinDate || '').slice(0, 10),
+    employmentType: officeEmployeeType(employee),
+    position: OFFICE_POSITIONS.includes(employee.position || employee.workPosition || employee.role)
+      ? (employee.position || employee.workPosition || employee.role)
+      : OFFICE_POSITIONS[0],
+    identityImages: {
+      front: employee.identityImages?.front || employee.cccdFrontImage || '',
+      back: employee.identityImages?.back || employee.cccdBackImage || '',
+    },
     username: employee.username || '',
     password: '',
-    status: employee.status || EMPLOYEE_STATUSES[0],
-    officeEmployeeType: officeEmployeeType(employee),
-    workStart: employee.workStart || '08:00',
-    workEnd: employee.workEnd || '17:00',
-    standardWorkDaysPeriod: targetPeriod,
-    standardWorkDays: String(editableOfficeWorkdayTarget({ employee, period: targetPeriod })),
   }
 }
 
@@ -191,52 +181,30 @@ const hoursWorked = (record) => {
 const adjustmentEmployeeId = (adjustment = {}) => adjustment.employeeId || adjustment.staffId || ''
 const adjustmentDate = (adjustment = {}) => adjustment.date || adjustment.createdDate || String(adjustment.createdAt || '').slice(0, 10)
 
-function validateEmployee(form, employees, editingKey, requiresPassword = !editingKey) {
-  const errors = []
-  const required = [
-    ['Mã nhân viên', form.code],
-    ['Tên nhân viên', form.name],
-    ['Loại nhân viên', form.officeEmployeeType],
-    ['Số CCCD', form.cccd],
-    ['Số điện thoại', form.phone],
-    ['Tỉnh/Thành phố', form.province],
-    ['Phường/Xã', form.ward],
-    ['Đường, số nhà', form.street],
-    ['Lương', form.salary],
-    ['Vị trí công việc', form.position],
-    ['Tuổi', form.age],
-    ['Tên đăng nhập', form.username],
-    ['Giờ bắt đầu', form.workStart],
-    ['Giờ kết thúc', form.workEnd],
-    ['Tháng quy định ngày công', form.standardWorkDaysPeriod],
-    ['Số ngày công quy định', form.standardWorkDays],
-  ]
-
-  required.forEach(([label, value]) => {
-    if (!String(value ?? '').trim()) errors.push(`${label} là trường bắt buộc.`)
-  })
-  if (!CCCD_PATTERN.test(form.cccd)) errors.push('Số CCCD phải gồm đúng 12 chữ số.')
-  if (!PHONE_PATTERN.test(normalizePhone(form.phone))) errors.push('Số điện thoại phải gồm đúng 10 chữ số và bắt đầu bằng số 0.')
-  if (parseMoneyInput(form.salary) <= 0) errors.push('Lương phải là số lớn hơn 0.')
-  if (!Number.isInteger(Number(form.age)) || Number(form.age) < 18 || Number(form.age) > 100) errors.push('Tuổi phải là số nguyên từ 18 đến 100.')
-  if (!/^\d{2}:\d{2}$/u.test(form.workStart) || !/^\d{2}:\d{2}$/u.test(form.workEnd) || minutesFromTime(form.workStart) >= minutesFromTime(form.workEnd)) errors.push('Giờ làm phải đúng định dạng 24 giờ và giờ kết thúc phải sau giờ bắt đầu.')
-  if (!/^\d{4}-\d{2}$/u.test(form.standardWorkDaysPeriod)) errors.push('Tháng quy định ngày công không hợp lệ.')
-  if (!Number.isInteger(Number(form.standardWorkDays)) || Number(form.standardWorkDays) < 1 || Number(form.standardWorkDays) > 31) errors.push('Số ngày công quy định phải từ 1 đến 31.')
-  if (requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
-
-  const others = [
-    ...employees.filter((item) => String(item.id || employeeCode(item)) !== String(editingKey || '')),
-  ]
-  if (others.some((item) => normalizeText(employeeCode(item)) === normalizeText(form.code))) errors.push('Mã nhân viên đã tồn tại.')
-  if (others.some((item) => String(item.cccd || item.citizenId || '') === form.cccd)) errors.push('Số CCCD đã được sử dụng.')
-  if (others.some((item) => normalizeText(item.username) === normalizeText(form.username))) errors.push('Tên đăng nhập đã tồn tại.')
-  if (others.some((item) => normalizePhone(item.phone) === normalizePhone(form.phone))) errors.push('Số điện thoại đã được sử dụng.')
-  return [...new Set(errors)]
+const shortYearDate = (value) => {
+  if (!value) return '—'
+  const parsed = new Date(`${String(value).slice(0, 10)}T00:00:00`)
+  return Number.isNaN(parsed.getTime())
+    ? '—'
+    : parsed.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: '2-digit' })
 }
+
+const imagePreview = (value) => typeof value === 'string' && value.startsWith('data:image/') ? value : ''
+
+const readIdentityImage = (file) => new Promise((resolve, reject) => {
+  if (!file) return resolve('')
+  if (!IDENTITY_IMAGE_TYPES.has(file.type)) return reject(new Error('Ảnh CCCD phải là tệp JPG, PNG hoặc WEBP.'))
+  if (file.size > MAX_IDENTITY_IMAGE_SIZE) return reject(new Error('Mỗi ảnh CCCD không được vượt quá 2 MB.'))
+  const reader = new FileReader()
+  reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh CCCD.'))
+  reader.onload = () => resolve(String(reader.result || ''))
+  reader.readAsDataURL(file)
+})
 
 export function OfficeManagement() {
   const app = useApp()
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
+  const deletedEmployees = Array.isArray(app.deletedEmployees) ? app.deletedEmployees : []
   const allAttendance = Array.isArray(app.attendance) ? app.attendance : []
   const salaryAdjustments = Array.isArray(app.salaryAdjustments) ? app.salaryAdjustments : []
   const legacyOfficeAdjustments = Array.isArray(app.officeAdjustments) ? app.officeAdjustments : []
@@ -254,6 +222,9 @@ export function OfficeManagement() {
   const [employeeForm, setEmployeeForm] = useState(emptyEmployee)
   const [employeeErrors, setEmployeeErrors] = useState([])
   const [showPassword, setShowPassword] = useState(false)
+  const [imageBusy, setImageBusy] = useState('')
+  const [viewingImage, setViewingImage] = useState(null)
+  const [viewingSide, setViewingSide] = useState('')
   const editingRequiresPassword = Boolean(editingEmployee) && !(
     editingEmployee.authUserId || editingEmployee.authVersion || editingEmployee.passwordHash || editingEmployee.legacyPassword
   )
@@ -264,6 +235,13 @@ export function OfficeManagement() {
   const [adjustmentSaving, setAdjustmentSaving] = useState(false)
   const [payrollMonth, setPayrollMonth] = useState(today().slice(0, 7))
   const canManageOffice = app.session?.role === 'admin'
+
+  useEffect(() => {
+    const url = viewingImage?.url
+    return () => {
+      if (url?.startsWith('blob:')) URL.revokeObjectURL(url)
+    }
+  }, [viewingImage?.url])
 
   const employeeById = (id) => officeEmployees.find((employee) => String(employee.id) === String(id) || String(employeeCode(employee)) === String(id))
   const normalizedQuery = normalizeText(query)
@@ -290,9 +268,10 @@ export function OfficeManagement() {
 
   const openEmployeeCreate = () => {
     setEditingEmployee(null)
-    setEmployeeForm({ ...emptyEmployee, code: nextOfficeEmployeeCode(allEmployees) })
+    setEmployeeForm({ ...emptyEmployee, code: nextOfficeEmployeeCodeFromState({ employees: allEmployees, deletedEmployees }) })
     setEmployeeErrors([])
     setShowPassword(false)
+    setImageBusy('')
     setEmployeeDrawer(true)
   }
 
@@ -301,6 +280,7 @@ export function OfficeManagement() {
     setEmployeeForm(employeeToForm(employee))
     setEmployeeErrors([])
     setShowPassword(false)
+    setImageBusy('')
     setEmployeeDrawer(true)
   }
 
@@ -309,35 +289,81 @@ export function OfficeManagement() {
     setEditingEmployee(null)
     setEmployeeErrors([])
     setShowPassword(false)
+    setImageBusy('')
   }
 
   const updateEmployeeField = (field) => (event) => {
     let value = event.target.value
     if (field === 'cccd') value = value.replace(/\D/g, '').slice(0, 12)
     if (field === 'phone') value = value.replace(/\D/g, '').slice(0, 10)
-    if (field === 'age') value = value.replace(/\D/g, '').slice(0, 3)
-    if (field === 'standardWorkDays') value = value.replace(/\D/g, '').slice(0, 2)
-    if (field === 'salary') value = formatMoneyInput(value)
-    setEmployeeForm((current) => ({
-      ...current,
-      [field]: value,
-      ...(field === 'standardWorkDaysPeriod'
-        ? { standardWorkDays: String(editableOfficeWorkdayTarget({ employee: editingEmployee || {}, period: value })) }
-        : {}),
-    }))
+    setEmployeeForm((current) => ({ ...current, [field]: value }))
+  }
+
+  const updateEmployeeAddress = (address) => {
+    setEmployeeForm((current) => ({ ...current, ...address }))
+  }
+
+  const updateIdentityImage = (side) => async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setImageBusy(side)
+    try {
+      const value = await readIdentityImage(file)
+      setEmployeeForm((current) => ({
+        ...current,
+        identityImages: { ...current.identityImages, [side]: value },
+      }))
+      setEmployeeErrors((current) => current.filter((error) => !error.includes(side === 'front' ? 'mặt trước CCCD' : 'mặt sau CCCD')))
+    } catch (error) {
+      notify?.(error.message, 'info')
+    } finally {
+      setImageBusy('')
+      event.target.value = ''
+    }
+  }
+
+  const viewSavedIdentityImage = async (side, employee = editingEmployee) => {
+    if (!employee) return
+    const id = employee.id || employeeCode(employee)
+    const busyKey = `${id}:${side}`
+    const storedImage = employee.identityImages?.[side]
+      || (side === 'front' ? employee.cccdFrontImage : employee.cccdBackImage)
+    if (typeof storedImage === 'string' && storedImage.startsWith('data:image/')) {
+      setViewingImage({
+        url: storedImage,
+        label: `${employee.name || id} · ${side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'}`,
+      })
+      return
+    }
+    setViewingSide(busyKey)
+    try {
+      const blob = await apiGetIdentityImage(id, side)
+      setViewingImage({
+        url: URL.createObjectURL(blob),
+        label: `${employee.name || id} · ${side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'}`,
+      })
+    } catch (error) {
+      notify?.(error.message || 'Không thể tải ảnh CCCD.', 'info')
+    } finally {
+      setViewingSide('')
+    }
   }
 
   const saveEmployee = async (event) => {
     event?.preventDefault()
     if (!canManageOffice) return
     const editingKey = editingEmployee?.id || (editingEmployee ? employeeCode(editingEmployee) : '')
-    const errors = validateEmployee(employeeForm, allEmployees, editingKey, !editingEmployee || editingRequiresPassword)
+    const errors = validateOfficeEmployee(employeeForm, allEmployees, editingKey, !editingEmployee || editingRequiresPassword)
     if (errors.length) {
       setEmployeeErrors(errors)
       notify?.('Vui lòng kiểm tra lại hồ sơ nhân viên văn phòng.', 'info')
       return
     }
     const address = [employeeForm.street.trim(), employeeForm.ward.trim(), employeeForm.province.trim()].join(', ')
+    const identityImages = Object.fromEntries(['front', 'back'].flatMap((side) => {
+      const value = employeeForm.identityImages?.[side]
+      return typeof value === 'string' && value.startsWith('data:image/') ? [[side, value]] : []
+    }))
     const payload = {
       id: employeeForm.code.trim(),
       code: employeeForm.code.trim(),
@@ -350,23 +376,20 @@ export function OfficeManagement() {
       street: employeeForm.street.trim(),
       address,
       addressDetails: { province: employeeForm.province.trim(), ward: employeeForm.ward.trim(), street: employeeForm.street.trim() },
-      salary: parseMoneyInput(employeeForm.salary),
+      startDate: employeeForm.startDate,
+      joinDate: employeeForm.startDate,
+      employmentType: employeeForm.employmentType,
+      officeEmployeeType: employeeForm.employmentType,
+      officeEmploymentType: employeeForm.employmentType,
       position: employeeForm.position.trim(),
       workPosition: employeeForm.position.trim(),
       role: employeeForm.position.trim(),
       shortRole: employeeForm.position.trim(),
-      age: Number(employeeForm.age),
       username: employeeForm.username.trim(),
-      password: employeeForm.password,
-      status: employeeForm.status,
-      officeEmployeeType: employeeForm.officeEmployeeType,
-      officeEmploymentType: employeeForm.officeEmployeeType,
-      contractType: employeeForm.officeEmployeeType,
-      workStart: employeeForm.workStart,
-      workEnd: employeeForm.workEnd,
-      standardWorkDays: Number(employeeForm.standardWorkDays),
-      standardWorkDaysPeriod: employeeForm.standardWorkDaysPeriod,
+      ...(employeeForm.password ? { password: employeeForm.password } : {}),
+      ...(Object.keys(identityImages).length ? { identityImages } : {}),
       department: 'office',
+      unit: 'office',
       unitType: 'office',
       storeId: 'OFFICE',
       isOffice: true,
@@ -472,9 +495,17 @@ export function OfficeManagement() {
             <div><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." />{canManageOffice && <Button icon={Plus} onClick={openEmployeeCreate}>Thêm nhân viên</Button>}</div>
           </div>
           <TableWrap>
-            <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>CCCD</th><th>Số điện thoại</th><th>Địa chỉ</th><th>Vị trí</th><th>Giờ làm / ngày công</th><th>Lương</th><th>Trạng thái</th>{canManageOffice && <th>Thao tác</th>}</tr></thead>
+            <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th><th>CCCD</th><th>Số điện thoại</th><th>Địa chỉ</th><th>Vị trí</th><th>Ảnh CCCD</th><th>Trạng thái</th>{canManageOffice && <th>Thao tác</th>}</tr></thead>
             <tbody>
-              {filteredEmployees.map((employee) => <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={officeEmployeeType(employee) === 'Chính thức' ? 'green' : officeEmployeeType(employee) === 'Thử việc' ? 'orange' : 'blue'}>{officeEmployeeType(employee)}</Badge></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><strong>{employee.workStart || '08:00'}–{employee.workEnd || '17:00'}</strong><small className="table-note">{employeeTargetPeriod(employee).split('-').reverse().join('/')}: {employeeTargetDays(employee)} ngày</small></td><td><strong>{money(employee.salary)}</strong></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button><button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button></div></td>}</tr>)}
+              {filteredEmployees.map((employee) => {
+                const type = officeEmployeeType(employee)
+                const images = {
+                  front: employee.identityImages?.front || employee.cccdFrontImage,
+                  back: employee.identityImages?.back || employee.cccdBackImage,
+                }
+                const imageCount = Object.values(images).filter(Boolean).length
+                return <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={type === 'Full-Time' ? 'green' : type === 'Part-Time' ? 'blue' : 'orange'}>{type}</Badge></td><td><strong>{shortYearDate(employee.startDate || employee.joinDate)}</strong></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><div className="identity-image-actions"><Badge tone={imageCount === 2 ? 'green' : 'orange'}>{imageCount}/2 ảnh</Badge>{Object.entries(images).map(([side, image]) => image ? <button key={side} type="button" onClick={() => viewSavedIdentityImage(side, employee)} disabled={Boolean(viewingSide)} aria-label={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD của ${employee.name}`} title={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD`}><Eye size={16} /><span>{side === 'front' ? 'Trước' : 'Sau'}</span></button> : null)}</div></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button><button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button></div></td>}</tr>
+              })}
               {!filteredEmployees.length && <tr><td colSpan={canManageOffice ? 11 : 10}>Chưa có nhân viên văn phòng phù hợp.</td></tr>}
             </tbody>
           </TableWrap>
@@ -529,46 +560,57 @@ export function OfficeManagement() {
         </Card>
       </>}
 
-      <Drawer
+      <Modal
+        wide
         open={employeeDrawer}
         onClose={closeEmployeeDrawer}
         title={editingEmployee ? 'Cập nhật nhân viên văn phòng' : 'Thêm nhân viên văn phòng'}
-        footer={<><Button variant="outline" onClick={closeEmployeeDrawer}>Hủy bỏ</Button><Button icon={Save} onClick={saveEmployee}>{editingEmployee ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}
+        footer={<><Button variant="outline" onClick={closeEmployeeDrawer} disabled={Boolean(imageBusy)}>Hủy bỏ</Button><Button icon={Save} onClick={saveEmployee} disabled={Boolean(imageBusy)}>{editingEmployee ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}
       >
-        <form className="form-stack" onSubmit={saveEmployee}>
+        <form className="form-stack employee-profile-form" onSubmit={saveEmployee}>
           {employeeErrors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{employeeErrors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
           <div className="form-grid">
-            <Field label="Mã nhân viên" required hint="Hệ thống tự phát sinh theo thứ tự VP001, VP002, ..."><Input value={employeeForm.code} readOnly /></Field>
+            <Field label="Mã nhân viên" required hint="Hệ thống tự phát sinh theo thứ tự VP-001, VP-002, ..."><Input value={employeeForm.code} readOnly /></Field>
             <Field label="Tên nhân viên" required><Input value={employeeForm.name} onChange={updateEmployeeField('name')} placeholder="Nhập họ và tên" /></Field>
-            <Field label="Loại nhân viên" required><Select value={employeeForm.officeEmployeeType} onChange={updateEmployeeField('officeEmployeeType')}>{OFFICE_EMPLOYEE_TYPES.map((type) => <option key={type}>{type}</option>)}</Select></Field>
-            <Field label="Số CCCD" required hint="Chỉ gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={employeeForm.cccd} onChange={updateEmployeeField('cccd')} placeholder="012345678901" /></Field>
             <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng 0"><Input type="tel" inputMode="numeric" maxLength={10} value={employeeForm.phone} onChange={updateEmployeeField('phone')} placeholder="0901234567" /></Field>
-            <Field label="Lương" required><Input inputMode="numeric" value={employeeForm.salary} onChange={updateEmployeeField('salary')} placeholder="8,000,000" /></Field>
-            <Field label="Vị trí công việc" required><Input value={employeeForm.position} onChange={updateEmployeeField('position')} placeholder="Ví dụ: Kế toán" /></Field>
-            <Field label="Tuổi" required><Input inputMode="numeric" min="18" max="100" value={employeeForm.age} onChange={updateEmployeeField('age')} placeholder="Ví dụ: 26" /></Field>
-          </div>
-          <h3>Giờ làm và ngày công quy định</h3>
-          <div className="form-grid">
-            <Field label="Giờ bắt đầu" required hint="Định dạng 24 giờ"><Input type="time" value={employeeForm.workStart} onChange={updateEmployeeField('workStart')} /></Field>
-            <Field label="Giờ kết thúc" required hint="Định dạng 24 giờ"><Input type="time" value={employeeForm.workEnd} onChange={updateEmployeeField('workEnd')} /></Field>
-            <Field label="Tháng áp dụng" required><Input type="month" value={employeeForm.standardWorkDaysPeriod} onChange={updateEmployeeField('standardWorkDaysPeriod')} /></Field>
-            <Field label="Số ngày công quy định" required hint="Từ 1 đến 31 ngày"><Input type="number" inputMode="numeric" min="1" max="31" step="1" value={employeeForm.standardWorkDays} onChange={updateEmployeeField('standardWorkDays')} /></Field>
+            <Field label="CCCD" required hint="CCCD phải gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={employeeForm.cccd} onChange={updateEmployeeField('cccd')} placeholder="012345678901" /></Field>
+            <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={employeeForm.startDate} onChange={updateEmployeeField('startDate')} /></Field>
+            <Field label="Loại nhân viên" required><Select value={employeeForm.employmentType} onChange={updateEmployeeField('employmentType')}>{OFFICE_EMPLOYEE_TYPES.map((type) => <option key={type}>{type}</option>)}</Select></Field>
+            <Field label="Vị trí công việc" required><Select value={employeeForm.position} onChange={updateEmployeeField('position')}>{OFFICE_POSITIONS.map((position) => <option key={position}>{position}</option>)}</Select></Field>
           </div>
           <h3>Địa chỉ</h3>
-          <div className="form-grid">
-            <Field label="Tỉnh / Thành phố" required><Input value={employeeForm.province} onChange={updateEmployeeField('province')} placeholder="Nhập tỉnh/thành phố" /></Field>
-            <Field label="Phường / Xã" required><Input value={employeeForm.ward} onChange={updateEmployeeField('ward')} placeholder="Nhập phường/xã" /></Field>
-            <Field label="Đường, số nhà" required className="span-2"><Input value={employeeForm.street} onChange={updateEmployeeField('street')} placeholder="Nhập số nhà và tên đường" /></Field>
+          <AddressAutocomplete
+            value={{ province: employeeForm.province, ward: employeeForm.ward, street: employeeForm.street }}
+            onChange={updateEmployeeAddress}
+          />
+          <h3>Hình ảnh CCCD</h3>
+          <div className="form-grid identity-image-grid">
+            {['front', 'back'].map((side) => {
+              const label = side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'
+              const image = employeeForm.identityImages?.[side]
+              const preview = imagePreview(image)
+              return <Field key={side} label={label} required hint="JPG, PNG hoặc WEBP; tối đa 2 MB">
+                <Input type="file" accept="image/jpeg,image/png,image/webp" aria-label={label} onChange={updateIdentityImage(side)} disabled={Boolean(imageBusy)} />
+                {image && <small>{preview ? 'Đã chọn ảnh mới' : 'Ảnh đã được lưu riêng tư'}</small>}
+                {preview && <img className="identity-image-preview" src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} />}
+                {image && !preview && editingEmployee && <Button type="button" variant="outline" icon={Eye} loading={viewingSide === `${editingEmployee.id || employeeCode(editingEmployee)}:${side}`} disabled={Boolean(viewingSide)} onClick={() => viewSavedIdentityImage(side)}>Xem ảnh đã lưu</Button>}
+              </Field>
+            })}
           </div>
+          {imageBusy && <InfoNote>Đang đọc ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
             <Field label="Tên đăng nhập" required><Input autoComplete="username" value={employeeForm.username} onChange={updateEmployeeField('username')} placeholder="Nhập tên đăng nhập" /></Field>
             <Field label="Mật khẩu" required={!editingEmployee || editingRequiresPassword} hint={editingEmployee && !editingRequiresPassword ? 'Để nguyên nếu không muốn đổi mật khẩu' : 'Bắt buộc để cấp tài khoản đăng nhập'}><span className="password-input"><Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={employeeForm.password} onChange={updateEmployeeField('password')} placeholder={editingEmployee && !editingRequiresPassword ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu để cấp tài khoản'} /><button type="button" onClick={() => setShowPassword((current) => !current)} aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>{showPassword ? <EyeOff size={20} /> : <Eye size={20} />}</button></span></Field>
           </div>
-          <InfoNote>Vì an toàn dữ liệu, hệ thống chỉ lưu số CCCD và không lưu tệp ảnh CCCD.</InfoNote>
+          <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư và chỉ tài khoản có quyền mới truy cập được. Hệ thống không hiển thị lại mật khẩu hiện tại.</InfoNote>
         </form>
-      </Drawer>
+      </Modal>
+
+      <Modal open={Boolean(viewingImage)} onClose={() => setViewingImage(null)} title={viewingImage?.label || 'Ảnh CCCD'}>
+        {viewingImage && <img className="identity-image-viewer" src={viewingImage.url} alt={viewingImage.label} />}
+      </Modal>
 
       <Modal
         open={adjustmentModal}

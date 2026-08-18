@@ -61,15 +61,15 @@ const officeEmployeeMenu = [
 
 const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
-  { label: 'Tổng quan hệ thống', path: '/admin/overview', icon: BarChart3 },
   systemOperations[1],
-  { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
-  { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users },
+  { label: 'Quản lý nhân viên hệ thống', path: '/admin/employees', icon: Users },
   { label: 'Quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
   officeOperation,
-  ...systemOperations.slice(2, 5),
-  systemOperations[5],
-  { label: 'Lịch sử sửa/xóa đơn hàng', path: '/admin/order-audit', icon: ClipboardCheck },
+  systemOperations[2],
+  systemOperations[3],
+  { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
+  { label: 'Công việc được giao', path: '/support/tasks', icon: ClipboardCheck },
+  { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
 ]
 
 const systemMenus = {
@@ -77,6 +77,7 @@ const systemMenus = {
     ...systemOperations.slice(0, 2),
     { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
     { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users },
+    { label: 'Giao Việc', path: '/admin/tasks', icon: ClipboardCheck, badge: 'Mới' },
     { label: 'Quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
     ...systemOperations.slice(2, 5),
@@ -95,6 +96,15 @@ const systemMenus = {
     { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
     { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
   ],
+}
+
+const notificationTime24 = (value) => {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value || '')
+  return new Intl.DateTimeFormat('vi-VN', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).format(date)
 }
 
 export default function AppShell() {
@@ -143,12 +153,18 @@ export default function AppShell() {
     : isEmployee
       ? session?.storeId
       : null
-  const unreadNotifications = notificationItems.filter((item) => (
-    (!scopedNotificationStoreId || !item?.storeId || String(item.storeId) === String(scopedNotificationStoreId))
+  const sessionEmployeeId = String(session?.employeeId || session?.code || '')
+  const unreadNotifications = notificationItems.filter((item) => {
+    const targetEmployeeId = String(item?.targetEmployeeId || item?.target?.employeeId || item?.data?.employeeId || (item?.type === 'support-work-assigned' ? item?.employeeId : '') || '')
+    const belongsToAccount = targetEmployeeId
+      ? (!isAdmin && targetEmployeeId === sessionEmployeeId)
+      : true
+    return belongsToAccount
+    && (!scopedNotificationStoreId || !item?.storeId || String(item.storeId) === String(scopedNotificationStoreId))
     && !item?.read
     && !item?.isRead
     && !item?.readAt
-  ))
+  })
   const readNotification = app.readNotification || app.markNotificationRead || app.dismissNotification
   const clearNotifications = app.clearNotifications || app.clearAllNotifications || app.deleteAllNotifications
 
@@ -201,7 +217,15 @@ export default function AppShell() {
       changeActiveStore?.(notificationStoreId)
     }
     const ordersPath = isEmployee ? '/employee/orders' : '/store/orders'
-    const destination = item?.path || item?.href || item?.url || (orderId ? `${ordersPath}?order=${encodeURIComponent(orderId)}` : ordersPath)
+    const assignmentId = item?.assignmentId || item?.data?.assignmentId
+    const requestedDestination = item?.route || item?.path || item?.href || item?.url || ''
+    const explicitDestination = requestedDestination === '/admin/support-employees'
+      ? '/admin/business-support'
+      : requestedDestination
+    const destination = assignmentId && (!explicitDestination || String(explicitDestination).startsWith('/support/tasks'))
+      ? `/support/tasks?assignment=${encodeURIComponent(assignmentId)}`
+      : explicitDestination
+      || (orderId ? `${ordersPath}?order=${encodeURIComponent(orderId)}` : ordersPath)
     setNotificationOpen(false)
     navigate(destination)
   }
@@ -289,16 +313,16 @@ export default function AppShell() {
                         key={item?.id || item?.notificationId || `${item?.orderId || 'notification'}-${index}`}
                         onClick={() => openNotification(item)}
                       >
-                        <span className="notification-item__icon"><ShoppingCart size={17} /></span>
+                        <span className="notification-item__icon">{item?.type === 'support-work-assigned' ? <ClipboardCheck size={17} /> : <ShoppingCart size={17} />}</span>
                         <span className="notification-item__body">
-                          <strong>{item?.title || item?.message || 'Đơn hàng mới'}</strong>
+                          <strong>{item?.title || item?.message || 'Thông báo mới'}</strong>
                           <small>{item?.description || item?.content || item?.message || item?.orderCode || item?.data?.orderCode || 'Mở để xem chi tiết'}</small>
-                          {(item?.createdAt || item?.time || item?.updatedAt) && <time>{String(item.createdAt || item.time || item.updatedAt)}</time>}
+                          {(item?.createdAt || item?.time || item?.updatedAt) && <time>{notificationTime24(item.createdAt || item.time || item.updatedAt)}</time>}
                         </span>
                       </button>
                     ))}
                     {!unreadNotifications.length && (
-                      <div className="notification-empty"><Bell size={24} /><strong>Không có thông báo mới</strong><span>Các đơn hàng mới sẽ hiển thị tại đây.</span></div>
+                      <div className="notification-empty"><Bell size={24} /><strong>Không có thông báo mới</strong><span>Công việc và đơn hàng mới sẽ hiển thị tại đây.</span></div>
                     )}
                   </div>
                 </section>

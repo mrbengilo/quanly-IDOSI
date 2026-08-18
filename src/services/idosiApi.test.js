@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiGetIdentityImage, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
+import { apiAddressSuggestions, apiGetIdentityImage, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
 
 afterEach(() => {
   clearApiSession()
@@ -37,5 +37,18 @@ describe('IDOSI private identity images', () => {
       method: 'GET',
       headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
     }))
+  })
+})
+
+describe('IDOSI address suggestions', () => {
+  it('requests dependent Google Maps-backed suggestions with encoded context', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, suggestions: ['Hiệp Bình'] }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiAddressSuggestions({
+      type: 'ward', query: 'hiệp', province: 'Hồ Chí Minh', ward: '',
+    })).resolves.toMatchObject({ suggestions: ['Hiệp Bình'] })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/address-suggestions?type=ward&query=hi%E1%BB%87p&province=H%E1%BB%93+Ch%C3%AD+Minh')
   })
 })

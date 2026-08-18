@@ -48,6 +48,26 @@ const identityImagesFromProfile = (profile = {}) => {
   }
 }
 
+const profileAddressParts = (profile = {}) => {
+  const nested = profile.addressDetails && typeof profile.addressDetails === 'object'
+    ? profile.addressDetails
+    : profile.address && typeof profile.address === 'object'
+      ? profile.address
+      : {}
+  const explicit = {
+    province: String(profile.province || profile.addressProvince || nested.province || nested.provinceCity || '').trim(),
+    ward: String(profile.ward || profile.addressWard || nested.ward || '').trim(),
+    street: String(profile.street || profile.addressStreet || nested.street || '').trim(),
+  }
+  if (explicit.province || explicit.ward || explicit.street) return explicit
+  const parts = String(profile.address || '').split(',').map((part) => part.trim()).filter(Boolean)
+  return {
+    province: parts.length >= 2 ? parts.at(-1) : '',
+    ward: parts.length >= 3 ? parts.at(-2) : '',
+    street: parts.length >= 3 ? parts.slice(0, -2).join(', ') : parts.join(', '),
+  }
+}
+
 export const roleProfileCode = profileCode
 
 export const profileMatchesRole = (profile = {}, roleKey = '') => {
@@ -102,6 +122,9 @@ export const emptyRoleProfile = (roleKey = ROLE_KEYS.businessSupport) => ({
   phone: '',
   cccd: '',
   address: '',
+  province: '',
+  ward: '',
+  street: '',
   startDate: today(),
   employmentType: EMPLOYMENT_TYPES[0],
   position: ROLE_POSITIONS[roleKey],
@@ -111,23 +134,27 @@ export const emptyRoleProfile = (roleKey = ROLE_KEYS.businessSupport) => ({
   storeId: '',
 })
 
-export const roleProfileToForm = (profile = {}, roleKey = ROLE_KEYS.businessSupport) => ({
-  ...emptyRoleProfile(roleKey),
-  code: profileCode(profile),
-  name: profile.name || '',
-  phone: String(profile.phone || ''),
-  cccd: String(profile.cccd || profile.citizenId || ''),
-  address: roleProfileAddress(profile) === '—' ? '' : roleProfileAddress(profile),
-  startDate: profile.startDate || profile.joinDate || profile.employmentStartDate || profile.hireDate || '',
-  employmentType: roleEmploymentType(profile),
-  position: ROLE_POSITIONS[roleKey],
-  identityImages: identityImagesFromProfile(profile),
-  username: profile.username || '',
-  password: '',
-  storeId: profile.storeId === 'OFFICE' || profile.storeId === 'BUSINESS_SUPPORT'
-    ? ''
-    : profile.storeId || profile.assignedStoreId || '',
-})
+export const roleProfileToForm = (profile = {}, roleKey = ROLE_KEYS.businessSupport) => {
+  const address = roleProfileAddress(profile) === '—' ? '' : roleProfileAddress(profile)
+  return {
+    ...emptyRoleProfile(roleKey),
+    ...profileAddressParts(profile),
+    code: profileCode(profile),
+    name: profile.name || '',
+    phone: String(profile.phone || ''),
+    cccd: String(profile.cccd || profile.citizenId || ''),
+    address,
+    startDate: profile.startDate || profile.joinDate || profile.employmentStartDate || profile.hireDate || '',
+    employmentType: roleEmploymentType(profile),
+    position: ROLE_POSITIONS[roleKey],
+    identityImages: identityImagesFromProfile(profile),
+    username: profile.username || '',
+    password: '',
+    storeId: profile.storeId === 'OFFICE' || profile.storeId === 'BUSINESS_SUPPORT'
+      ? ''
+      : profile.storeId || profile.assignedStoreId || '',
+  }
+}
 
 export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requiresPassword = !editingKey, roleKey = ROLE_KEYS.businessSupport } = {}) => {
   const errors = []
@@ -136,7 +163,9 @@ export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requ
     ['Tên nhân viên', form?.name],
     ['Số điện thoại', form?.phone],
     ['CCCD', form?.cccd],
-    ['Địa chỉ', form?.address],
+    ['Tỉnh / Thành phố', form?.province || form?.address],
+    ['Phường / Xã', form?.ward || form?.address],
+    ['Đường, số nhà', form?.street || form?.address],
     ['Ngày bắt đầu làm', form?.startDate],
     ['Loại nhân viên', form?.employmentType],
     ['Vị trí công việc', form?.position],
@@ -170,11 +199,18 @@ export const roleProfilePayload = (form = {}, roleKey = ROLE_KEYS.businessSuppor
     const value = form.identityImages?.[side]
     return typeof value === 'string' && /^data:image\//u.test(value) ? [[side, value]] : []
   }))
+  const addressDetails = {
+    province: String(form.province || '').trim(),
+    ward: String(form.ward || '').trim(),
+    street: String(form.street || '').trim(),
+  }
+  const structuredAddress = [addressDetails.street, addressDetails.ward, addressDetails.province].filter(Boolean).join(', ')
   return {
     name: form.name.trim(),
     phone: form.phone,
     cccd: form.cccd,
-    address: form.address.trim(),
+    address: structuredAddress || String(form.address || '').trim(),
+    ...(structuredAddress ? { addressDetails } : {}),
     startDate: form.startDate,
     employmentType: form.employmentType,
     position,

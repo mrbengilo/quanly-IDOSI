@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   BriefcaseBusiness,
   CalendarDays,
+  ClipboardCheck,
   Clock3,
   Edit3,
   Eye,
@@ -21,7 +22,6 @@ import {
   Badge,
   Button,
   Card,
-  Drawer,
   Field,
   InfoNote,
   Input,
@@ -33,6 +33,7 @@ import {
   TableFooter,
   TableWrap,
 } from '../../components/UI'
+import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { useApp } from '../../state/AppContext'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { shortDate, today } from '../../utils'
@@ -58,6 +59,7 @@ import {
   roleProfilesFromApp,
   validateRoleProfile,
 } from './roleManagementUtils'
+import { SupportWorkEvaluationTable } from './SupportWorkPages'
 
 const ROLE_CONFIG = Object.freeze({
   [ROLE_KEYS.businessSupport]: {
@@ -147,6 +149,7 @@ function RoleProfileDrawer({
   imageBusy,
   isSaving,
   onChange,
+  onAddressChange,
   onClose,
   onImageChange,
   onSave,
@@ -158,7 +161,8 @@ function RoleProfileDrawer({
   togglePassword,
 }) {
   return (
-    <Drawer
+    <Modal
+      wide
       open={open}
       onClose={onClose}
       title={editingProfile ? `Cập nhật ${config.singular}` : `Thêm ${config.singular}`}
@@ -183,11 +187,13 @@ function RoleProfileDrawer({
           <Field label="Tên nhân viên" required><Input value={form.name} onChange={onChange('name')} placeholder="Nhập họ và tên" /></Field>
           <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng 0"><Input type="tel" inputMode="numeric" maxLength={10} value={form.phone} onChange={onChange('phone')} placeholder="0901234567" /></Field>
           <Field label="CCCD" required hint="CCCD phải gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={onChange('cccd')} placeholder="012345678901" /></Field>
-          <Field label="Địa chỉ" required className="span-2"><Input value={form.address} onChange={onChange('address')} placeholder="Nhập địa chỉ đầy đủ" /></Field>
           <Field label="Ngày bắt đầu làm" required hint="Hiển thị trong danh sách theo dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={onChange('startDate')} /></Field>
           <Field label="Loại nhân viên" required><Select value={form.employmentType} onChange={onChange('employmentType')}>{EMPLOYMENT_TYPES.map((type) => <option key={type}>{type}</option>)}</Select></Field>
           <Field label="Vị trí công việc" required hint="Vị trí cố định theo vai trò tài khoản"><Input value={form.position} readOnly /></Field>
         </div>
+
+        <h3>Địa chỉ</h3>
+        <AddressAutocomplete value={{ province: form.province, ward: form.ward, street: form.street }} onChange={onAddressChange} />
 
         <h3>Hình ảnh CCCD</h3>
         <div className="form-grid">
@@ -213,11 +219,11 @@ function RoleProfileDrawer({
         </div>
         <InfoNote>Tài khoản chỉ được cấp quyền theo vai trò và phạm vi đã gán. Hệ thống không hiển thị lại mật khẩu hiện tại.</InfoNote>
       </form>
-    </Drawer>
+    </Modal>
   )
 }
 
-function ProfileList({ canManage, config, imageBusyKey, onCreate, onDelete, onEdit, onViewImage, profiles, roleKey, stores }) {
+function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDelete, onEdit, onViewImage, profiles, roleKey, stores }) {
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
   const [storeFilter, setStoreFilter] = useState('all')
@@ -240,11 +246,11 @@ function ProfileList({ canManage, config, imageBusyKey, onCreate, onDelete, onEd
         <div>
           <SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." />
           {roleKey === ROLE_KEYS.storeManager && <Select aria-label="Lọc theo cửa hàng" value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}><option value="all">Tất cả cửa hàng</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select>}
-          {canManage && <Button icon={Plus} onClick={onCreate}>Thêm tài khoản</Button>}
+          {canCreate && <Button icon={Plus} onClick={onCreate}>Thêm tài khoản</Button>}
         </div>
       </div>
       <TableWrap>
-        <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th>{roleKey === ROLE_KEYS.storeManager && <th>Cửa hàng quản lý</th>}<th>Liên hệ / CCCD</th><th>Địa chỉ</th><th>Vị trí</th><th>Hình CCCD</th>{canManage && <th>Thao tác</th>}</tr></thead>
+        <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th>{roleKey === ROLE_KEYS.storeManager && <th>Cửa hàng quản lý</th>}<th>Liên hệ / CCCD</th><th>Địa chỉ</th><th>Vị trí</th><th>Hình CCCD</th>{canEdit && <th>Thao tác</th>}</tr></thead>
         <tbody>
           {rows.map((profile) => {
             const storeId = profile.storeId === 'OFFICE' ? '' : profile.storeId || profile.assignedStoreId
@@ -267,10 +273,10 @@ function ProfileList({ canManage, config, imageBusyKey, onCreate, onDelete, onEd
                   ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'back')} aria-label={`Xem mặt sau CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:back` ? 'Đang tải…' : 'Mặt sau'}</button>
                   : <small>Chưa có mặt sau</small>}
               </div></td>
-              {canManage && <td><div className="row-actions"><button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button><button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button></div></td>}
+              {canEdit && <td><div className="row-actions"><button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button><button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button></div></td>}
             </tr>
           })}
-          {!rows.length && <tr><td colSpan={(roleKey === ROLE_KEYS.storeManager ? 9 : 8) + (canManage ? 1 : 0)}>Chưa có {config.singular} phù hợp.</td></tr>}
+          {!rows.length && <tr><td colSpan={(roleKey === ROLE_KEYS.storeManager ? 9 : 8) + (canEdit ? 1 : 0)}>Chưa có {config.singular} phù hợp.</td></tr>}
         </tbody>
       </TableWrap>
       <TableFooter shown={rows.length} total={rows.length} />
@@ -356,8 +362,9 @@ function RoleManagement({ roleKey }) {
   const [imageViewer, setImageViewer] = useState(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const canManage = app.session?.role === 'admin'
-  const canView = canManage || app.session?.role === ROLE_KEYS.businessSupport
+  const canEdit = app.session?.role === 'admin'
+  const canCreate = canEdit || (app.session?.role === ROLE_KEYS.businessSupport && roleKey === ROLE_KEYS.storeManager)
+  const canView = canEdit || app.session?.role === ROLE_KEYS.businessSupport
   const requiresPassword = !editingProfile || !(
     editingProfile.authUserId || editingProfile.authVersion || editingProfile.passwordHash || editingProfile.legacyPassword
   )
@@ -433,6 +440,12 @@ function RoleManagement({ roleKey }) {
     }))
   }
 
+  const updateAddress = (address) => setForm((current) => ({
+    ...current,
+    ...address,
+    address: [address.street, address.ward, address.province].map((part) => String(part || '').trim()).filter(Boolean).join(', '),
+  }))
+
   const updateIdentityImage = async (side, event) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -455,7 +468,8 @@ function RoleManagement({ roleKey }) {
 
   const saveProfile = async (event) => {
     event?.preventDefault()
-    if (!canManage || isSaving || imageBusy) return
+    const canSave = editingProfile ? canEdit : canCreate
+    if (!canSave || isSaving || imageBusy) return
     const editingKey = editingProfile?.id || (editingProfile ? roleProfileCode(editingProfile) : '')
     const validationErrors = validateRoleProfile({ form, profiles: allProfiles, editingKey, requiresPassword, roleKey })
     if (validationErrors.length) {
@@ -491,7 +505,7 @@ function RoleManagement({ roleKey }) {
   }
 
   const confirmDelete = async () => {
-    if (!canManage || !pendingDelete || isDeleting) return
+    if (!canEdit || !pendingDelete || isDeleting) return
     const specificAction = app[config.deleteMethod]
     const action = typeof specificAction === 'function' ? specificAction : app.deleteEmployee
     if (typeof action !== 'function') return app.notify?.(`Chức năng xóa ${config.singular} đang được kết nối.`, 'info')
@@ -512,15 +526,17 @@ function RoleManagement({ roleKey }) {
   }
 
   return <div className="page">
-    <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={canManage ? <Button icon={Plus} onClick={openCreate}>Thêm tài khoản</Button> : null} />
-    {!canManage && <InfoNote>Chế độ chỉ xem. Chỉ Admin được thêm, sửa, xóa hoặc cấp lại tài khoản.</InfoNote>}
-    {roleKey === ROLE_KEYS.businessSupport && <div className="tabs"><button type="button" className={tab === 'profiles' ? 'active' : ''} onClick={() => setTab('profiles')}><Users />Danh sách nhân viên</button><button type="button" className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button><button type="button" className={tab === 'evaluation' ? 'active' : ''} onClick={() => setTab('evaluation')}><ShieldCheck />Chuyên cần</button></div>}
-    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList canManage={canManage} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
+    <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={canCreate ? <Button icon={Plus} onClick={openCreate}>Thêm tài khoản</Button> : null} />
+    {!canCreate && <InfoNote>Chế độ chỉ xem. Chỉ Admin được thêm, sửa, xóa hoặc cấp lại tài khoản.</InfoNote>}
+    {canCreate && !canEdit && <InfoNote>Nhân viên Hỗ trợ KD được thêm tài khoản Quản lý cửa hàng; chỉ Admin được sửa hoặc xóa tài khoản.</InfoNote>}
+    {roleKey === ROLE_KEYS.businessSupport && <div className="tabs"><button type="button" className={tab === 'profiles' ? 'active' : ''} onClick={() => setTab('profiles')}><Users />Danh sách nhân viên</button><button type="button" className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button><button type="button" className={tab === 'evaluation' ? 'active' : ''} onClick={() => setTab('evaluation')}><ShieldCheck />Chuyên cần</button>{canEdit && <button type="button" className={tab === 'work' ? 'active' : ''} onClick={() => setTab('work')}><ClipboardCheck />Công việc</button>}</div>}
+    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList canCreate={canCreate} canEdit={canEdit} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'attendance' && <BusinessSupportAttendance attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'evaluation' && <BusinessSupportEvaluation attendance={attendance} policies={app.policies} profiles={profiles} />}
-    {canManage && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} stores={stores} togglePassword={() => setShowPassword((current) => !current)} />}
+    {roleKey === ROLE_KEYS.businessSupport && tab === 'work' && canEdit && <SupportWorkEvaluationTable assignments={app.supportWorkAssignments || []} profiles={profiles} />}
+    {canCreate && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onAddressChange={updateAddress} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} stores={stores} togglePassword={() => setShowPassword((current) => !current)} />}
     <Modal open={Boolean(imageViewer)} onClose={closeImageViewer} title={imageViewer?.title || 'Hình ảnh CCCD'} footer={<Button variant="outline" onClick={closeImageViewer}>Đóng</Button>}><img src={imageViewer?.url || ''} alt={imageViewer?.title || 'Hình ảnh CCCD'} style={{ display: 'block', width: '100%', maxHeight: '65vh', objectFit: 'contain', borderRadius: 12 }} /></Modal>
-    {canManage && <Modal open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} title={`Xóa ${config.singular}`} footer={<><Button variant="outline" onClick={() => setPendingDelete(null)} disabled={isDeleting}>Hủy</Button><Button variant="danger" icon={Trash2} loading={isDeleting} disabled={isDeleting} onClick={confirmDelete}>XÓA TÀI KHOẢN</Button></>}><InfoNote tone="orange">Xóa <strong>{pendingDelete?.name}</strong> khỏi danh sách? Lịch sử chấm công và nhật ký hệ thống vẫn được giữ lại.</InfoNote></Modal>}
+    {canEdit && <Modal open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} title={`Xóa ${config.singular}`} footer={<><Button variant="outline" onClick={() => setPendingDelete(null)} disabled={isDeleting}>Hủy</Button><Button variant="danger" icon={Trash2} loading={isDeleting} disabled={isDeleting} onClick={confirmDelete}>XÓA TÀI KHOẢN</Button></>}><InfoNote tone="orange">Xóa <strong>{pendingDelete?.name}</strong> khỏi danh sách? Lịch sử chấm công và nhật ký hệ thống vẫn được giữ lại.</InfoNote></Modal>}
   </div>
 }
 

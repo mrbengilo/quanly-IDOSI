@@ -32,10 +32,11 @@ import { resolveShiftCandidates } from '../../domain'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, today, usesMonthlyHoursFormula } from '../../utils'
 import { employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
+import { ordersForOpenAttendance } from './employeeShiftOrders'
 
 const parseMoney = (value) => Math.max(0, Math.trunc(Number(String(value ?? '').replace(/[^\d-]/gu, '')) || 0))
 const moneyInput = (value) => String(value ?? '').replace(/\D/gu, '').replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
-const recordDate = (record = {}) => String(record.date || record.workDate || record.createdAt || '').slice(0, 10)
+const recordDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
 const employeeKey = (employee = {}) => String(employee?.id || employee?.code || employee?.employeeCode || '')
 const timestamp = (value) => value ? new Date(value).toLocaleString('vi-VN', { hour12: false }) : '—'
 const periodLabel = (value) => value ? value.split('-').reverse().join('/') : '—'
@@ -218,6 +219,14 @@ export function EmployeeOrdersPage() {
   const requestedOrderKey = String(requestedOrder?.id || '')
   const openAttendance = attendance.find((record) => String(record.employeeId) === employeeId && !record.deletedAt && !record.checkOutAt && !record.checkOut)
 
+  const openCreate = () => {
+    if (!openAttendance) {
+      notify('Bạn cần điểm danh vào ca trước khi tạo đơn hàng.', 'info')
+      return
+    }
+    setOpen(true)
+  }
+
   useEffect(() => {
     if (!requestedOrderKey) return undefined
     const scrollTimer = window.setTimeout(() => {
@@ -227,6 +236,11 @@ export function EmployeeOrdersPage() {
   }, [requestedOrderKey])
 
   const save = async () => {
+    if (!openAttendance) {
+      notify('Ca làm việc đã kết thúc hoặc chưa được mở. Vui lòng điểm danh lại trước khi tạo đơn hàng.', 'info')
+      setOpen(false)
+      return
+    }
     if (!form.customerName.trim() || parseMoney(form.amount) <= 0) {
       notify('Vui lòng nhập tên khách hàng và số tiền hợp lệ.', 'info')
       return
@@ -259,8 +273,9 @@ export function EmployeeOrdersPage() {
         title="ĐƠN HÀNG CỦA TÔI"
         subtitle="Nhân viên chỉ được tạo và xem đơn do chính mình lập. Mã đơn được cấp tự động."
         icon={ShoppingCart}
-        actions={<Button icon={Plus} onClick={() => setOpen(true)}>TẠO ĐƠN HÀNG</Button>}
+        actions={<Button icon={Plus} onClick={openCreate} disabled={!openAttendance}>TẠO ĐƠN HÀNG</Button>}
       />
+      {!openAttendance && <InfoNote tone="orange">Bạn chưa có ca đang mở. Hãy điểm danh vào ca trước khi tạo đơn hàng.</InfoNote>}
       <div className="metric-grid metric-grid--four">
         <MetricCard label="TỔNG ĐƠN" value={rows.length} helper="Đơn chưa bị xóa" icon={ShoppingCart} tone="blue" />
         <MetricCard label="TỔNG DOANH THU" value={money(total)} helper="Từ đơn hàng thực tế" icon={Banknote} tone="green" />
@@ -284,7 +299,7 @@ export function EmployeeOrdersPage() {
           <Field label="Tuổi"><Input type="number" min="0" max="120" value={form.customerAge} onChange={(event) => setForm({ ...form, customerAge: event.target.value })} /></Field>
           <Field label="Số tiền" required><Input inputMode="numeric" value={form.amount} onChange={(event) => setForm({ ...form, amount: moneyInput(event.target.value) })} /></Field>
           <Field label="Hình thức thanh toán"><Select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })}><option>Chuyển khoản</option><option>Tiền mặt</option></Select></Field>
-          <InfoNote>{openAttendance ? `Đơn sẽ tự gắn với ${openAttendance.shiftName || openAttendance.shift}.` : 'Bạn chưa có ca đang mở; đơn vẫn được lưu và hiển thị là chưa gắn ca.'}</InfoNote>
+          <InfoNote>Đơn sẽ tự gắn với {openAttendance?.shiftName || openAttendance?.shift} và thời gian tạo thực tế.</InfoNote>
         </div>
       </Modal>
     </div>
@@ -293,7 +308,7 @@ export function EmployeeOrdersPage() {
 
 export function EmployeeAttendancePage() {
   const app = useApp()
-  const { currentEmployee: employee, attendance = [], policies, checkIn, checkOut, notify } = app
+  const { currentEmployee: employee, attendance = [], orders = [], policies, checkIn, checkOut, notify } = app
   const employeeId = employeeKey(employee)
   const rows = employeeAttendance(attendance, employeeId)
   const openRecord = rows.find((record) => !record.checkOut && !record.checkOutAt)
@@ -301,6 +316,8 @@ export function EmployeeAttendancePage() {
   const [locating, setLocating] = useState('')
   const workDate = today()
   const scheduledShifts = useMemo(() => findScheduledShifts(app, employee || {}, workDate), [app, employee, workDate])
+  const currentShiftOrders = ordersForOpenAttendance(orders, employeeId, openRecord)
+  const currentShiftRevenue = currentShiftOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
 
   const captureAndCheckIn = async (shift) => {
     setLocating('in')
@@ -395,10 +412,21 @@ export function EmployeeAttendancePage() {
         <MetricCard label="ĐI ĐÚNG GIỜ" value={stats.onTime} icon={CheckCircle2} tone="blue" />
         <MetricCard label="ĐI TRỄ" value={stats.late} helper={`${stats.lateMinutes} phút trễ`} icon={Clock3} tone="red" />
       </div>
+      <Card title="Đơn hàng trong ca hiện tại" action={openRecord ? <Badge tone="green">{currentShiftOrders.length} đơn • {money(currentShiftRevenue)}</Badge> : null}>
+        {!openRecord
+          ? <InfoNote>Bạn cần điểm danh vào ca để hệ thống nhóm đơn hàng theo đúng ca làm việc.</InfoNote>
+          : currentShiftOrders.length
+            ? <TableWrap><thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Thanh toán</th><th>Số tiền</th></tr></thead><tbody>{currentShiftOrders.map((order) => <tr key={order.id || order.code}><td><strong>{order.code || order.id}</strong></td><td>{timestamp(order.createdAt)}</td><td>{order.customerName || 'Khách lẻ'}</td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod || '—'}</Badge></td><td><strong>{money(order.amount)}</strong></td></tr>)}</tbody></TableWrap>
+            : <EmptyState title="Chưa có đơn hàng trong ca" description="Đơn hàng bạn tạo sau khi vào ca sẽ tự động hiển thị tại đây." />}
+      </Card>
       <Card title="Lịch sử chấm công chi tiết">
         <TableWrap>
-          <thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ vào</th><th>Vị trí vào</th><th>Giờ ra</th><th>Vị trí ra</th><th>Số giờ</th><th>Trạng thái</th><th>Phút trễ</th></tr></thead>
-          <tbody>{rows.map((record) => <tr key={record.id}><td><strong>{shortDate(recordDate(record))}</strong></td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{record.checkIn || '—'}</td><td>{record.checkInLocation?.label || record.location?.label || 'Đã ghi tọa độ'}</td><td>{record.checkOut || 'Đang làm'}</td><td>{record.checkOutLocation?.label || (record.checkOut ? 'Đã ghi tọa độ' : '—')}</td><td>{workedHours(record).toFixed(2)}</td><td><Badge tone={statusTone(record.arrivalTag || record.status)}>{statusLabel(record.arrivalTag || record.status)}</Badge></td><td>{Number(record.minutesLate || 0)}</td></tr>)}{!rows.length && <tr><td colSpan="9">Chưa có lịch sử chấm công.</td></tr>}</tbody>
+          <thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ vào</th><th>Vị trí vào</th><th>Giờ ra</th><th>Vị trí ra</th><th>Số giờ</th><th>Số đơn</th><th>Doanh thu ca</th><th>Trạng thái</th><th>Phút trễ</th></tr></thead>
+          <tbody>{rows.map((record) => {
+            const shiftOrders = ordersForOpenAttendance(orders, employeeId, record)
+            const shiftRevenue = shiftOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
+            return <tr key={record.id}><td><strong>{shortDate(recordDate(record))}</strong></td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{record.checkIn || '—'}</td><td>{record.checkInLocation?.label || record.location?.label || 'Đã ghi tọa độ'}</td><td>{record.checkOut || 'Đang làm'}</td><td>{record.checkOutLocation?.label || (record.checkOut ? 'Đã ghi tọa độ' : '—')}</td><td>{workedHours(record).toFixed(2)}</td><td><strong>{shiftOrders.length}</strong></td><td><strong>{money(shiftRevenue)}</strong></td><td><Badge tone={statusTone(record.arrivalTag || record.status)}>{statusLabel(record.arrivalTag || record.status)}</Badge></td><td>{Number(record.minutesLate || 0)}</td></tr>
+          })}{!rows.length && <tr><td colSpan="11">Chưa có lịch sử chấm công.</td></tr>}</tbody>
         </TableWrap>
         <TableFooter shown={rows.length} total={rows.length} />
       </Card>

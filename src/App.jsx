@@ -6,6 +6,7 @@ import {
   AdminStores,
 } from './pages/admin/AdminPages'
 import { BusinessSupportManagement, StoreManagerManagement } from './pages/admin/RoleManagement'
+import { AdminSupportWorkPage, SupportAssignedWorkPage } from './pages/admin/SupportWorkPages'
 import {
   AdminCashflowV2,
   AdminOverviewV2,
@@ -117,7 +118,6 @@ export default function App() {
       <Route element={<RoleGuard roles={['admin', 'business_support']}><AppShell /></RoleGuard>}>
         <Route path="/admin/overview" element={<AdminOverviewV2 />} />
         <Route path="/admin/stores" element={<AdminStores />} />
-        <Route path="/admin/tasks" element={<Navigate to="/store/tasks" replace />} />
         <Route path="/admin/cashflow" element={<AdminCashflowV2 />} />
         <Route path="/admin/reports" element={<AdminReportsV2 />} />
         <Route path="/admin/employees" element={<SystemEmployees />} />
@@ -148,9 +148,11 @@ export default function App() {
       <Route element={<RoleGuard roles="business_support"><AppShell /></RoleGuard>}>
         <Route path="/support/overview" element={<OfficeEmployeeDashboard />} />
         <Route path="/support/attendance" element={<Navigate to="/support/overview" replace />} />
+        <Route path="/support/tasks" element={<SupportAssignedWorkPage />} />
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
+        <Route path="/admin/tasks" element={<AdminSupportWorkPage />} />
         <Route path="/admin/policies" element={<PolicySettings />} />
         <Route path="/admin/reset" element={<ResetDataPage />} />
       </Route>

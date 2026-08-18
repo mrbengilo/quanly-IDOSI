@@ -9,7 +9,9 @@ file tĩnh và **không chạy** Worker/D1.
 2. Tạo R2 binding riêng tư tên `IDENTITY_IMAGES` cho ảnh CCCD; bucket không
    được public trực tiếp.
 3. Đặt secret runtime `BOOTSTRAP_TOKEN` đủ dài và ngẫu nhiên.
-4. Deploy bằng Sites, sau đó gọi đúng một lần:
+4. Nếu bật gợi ý địa chỉ Google Maps, đặt secret runtime
+   `GOOGLE_MAPS_API_KEY`; tuyệt đối không đưa khóa này vào mã frontend.
+5. Deploy bằng Sites, sau đó gọi đúng một lần:
 
 ```bash
 curl -X POST https://<site>/api/bootstrap \
@@ -44,12 +46,15 @@ Các lệnh chính:
   `employee`. Role `employee` được tách nhóm hiển thị bằng `employees.unit`
   (`store` hoặc `office`), nên hệ thống có năm nhóm nhân sự trên giao diện.
   `business_support` kế thừa projection đọc toàn hệ thống giống Admin, gồm cả
-  `OFFICE`, tài chính và lịch sử, nhưng chỉ nhận account settings của chính họ
-  và không nhận credential/secret. Đây là role chỉ đọc: ngoài đăng xuất, họ chỉ
-  được chấm công vào/ra, đổi mật khẩu/thiết lập tài khoản và đánh dấu thông báo;
+  `OFFICE`, tài chính, đơn hàng và lịch sử, nhưng chỉ nhận account settings của
+  chính họ và không nhận credential/secret. Ngoài thao tác tự phục vụ, role này
+  được tạo mới duy nhất hồ sơ+tài khoản `store_manager`, sửa/xóa đơn hàng và
+  cập nhật công việc Admin giao cho chính mình; họ không được sửa/xóa/khóa/reset
+  mật khẩu Quản lý cửa hàng hoặc tạo nhóm nhân sự khác;
   `store_manager` bắt buộc có `store_id` thật và chỉ nhận/ghi dữ liệu đúng cửa
-  hàng đó. Cả hai không thể gọi `state.merge|replace`, sửa/xóa/tạo đơn hàng,
-  đổi chính sách, xóa cửa hàng/nhân viên hoặc thay giờ chấm công.
+  hàng đó. Cả hai không thể gọi `state.merge|replace`, đổi chính sách, xóa cửa
+  hàng/nhân viên hoặc thay giờ chấm công. `store_manager` không được sửa/xóa
+  đơn hàng; hai thao tác này chỉ dành cho Admin và Hỗ trợ KD.
 - `store.create`: chỉ admin; `store.update`: admin hoặc store_manager của đúng
   cửa hàng; `store.delete`: chỉ admin. `store.update`
   nhận `storeId` cùng `name`, `short`, `location`, `address`, `phone`, `email`,
@@ -57,8 +62,9 @@ Các lệnh chính:
   giờ; server cũng chấp nhận alias `taxCode`, `openingTime`, `closingTime` và trả
   về cả hai tên để tương thích state hiện tại.
 - `employee.create|update`: admin cho mọi nhóm; store_manager chỉ cho nhân viên
-  `unit: store` thuộc đúng cửa hàng. Admin tạo
-  mọi nhóm. Create nhận hồ sơ trực tiếp cùng `username`, `password`; Worker
+  `unit: store` thuộc đúng cửa hàng; business_support chỉ được
+  `employee.create` với `unit: store_manager`. Admin tạo mọi nhóm. Create nhận
+  hồ sơ trực tiếp cùng `username`, `password`; Worker
   tự sinh mã cửa hàng, kiểm tra điện thoại `0` + 9 số và commit hồ sơ + tài khoản
   đăng nhập trong cùng transaction. `employee.delete` chỉ admin. Update có thể
   nhận `username`, `password` để cập nhật credential nguyên tử với hồ sơ.
@@ -70,6 +76,12 @@ Các lệnh chính:
   `Thực Tập Sinh`), vị trí đúng vai trò, `username`/`password` và ảnh CCCD.
   Giờ chấm công của hai vai trò do server cố định `08:00-17:00`, không nhận
   cấu hình ngày công/giờ làm/lương tùy biến.
+  Hồ sơ `unit: office` tự sinh mã `VP-001...`, điện thoại `0` + 9 số, CCCD đúng
+  12 số, bắt buộc địa chỉ, ngày bắt đầu, loại nhân viên (`Full-Time`,
+  `Part-Time`, `Thực Tập Sinh`), vị trí (`Kế Toán`, `Marketing`) và cặp
+  `username`/`password`; create hồ sơ+tài khoản trong một transaction.
+  `addressDetails` tùy chọn có cấu trúc `{province,ward,street}` để lưu đúng ba
+  tầng địa chỉ mà giao diện đã chọn.
   Sau migration xóa credential, `employee.update` có thể nhận lại cặp
   `username`/`password` để phát hành tài khoản mới nguyên tử cho đúng
   profile hiện hữu; mã profile và lịch sử nghiệp vụ không thay đổi.
@@ -83,7 +95,8 @@ Các lệnh chính:
   `identityImages.front|back` nhận data URL JPEG/PNG/WebP tối đa 2 MiB/ảnh;
   Worker chỉ lưu metadata/key trong D1 và byte ảnh trong R2. Ảnh được lấy qua
   `GET /api/identity-images/:employeeId/:side` có Bearer token; Admin và Hỗ trợ
-  KD xem được toàn bộ, Quản lý cửa hàng chỉ xem ảnh của chính mình.
+  KD xem được toàn bộ, Quản lý cửa hàng và Nhân viên văn phòng chỉ xem ảnh của
+  chính mình.
 - `shift_definition.create|update|delete`: admin/store_manager, payload `storeId`,
   `name`, `date?`, `start`, `end` theo 24 giờ; màu sáng và thời lượng do server
   tạo. `schedule.assign` nhận `storeId`, `date`, `employeeIds[]`, `shiftIds[]`;
@@ -94,6 +107,21 @@ Các lệnh chính:
   `tasks[{id?,title,detail?}]`; thay đúng phạm vi cửa hàng/ngày/ca. `shiftId`
   có thể rỗng cho việc chung; nếu có thì ca phải đang hoạt động, thuộc đúng cửa
   hàng và ngày áp dụng phải khớp `date`.
+- `support_work.assign`: chỉ Admin, payload
+  `{date,employeeId,tasks:[{id?,name,description}]}`; nhân viên đích phải là
+  `business_support`. Mỗi lần gửi tạo một lượt mới, kể cả cùng nhân viên/ngày,
+  để không ghi đè lịch sử. Chỉ khi Admin truyền `assignmentId` rõ ràng, một lượt
+  chưa nộp mới được thay atomically; history giữ snapshot task trước/sau. State
+  canonical là `supportWorkAssignments[]`; mỗi lượt có metrics, trạng thái,
+  `assignedAt`, `updatedAt`, `submittedAt` và `history[]` đầy đủ task/timestamp.
+  Server đồng thời tạo notification `support-work-assigned` trỏ tới
+  `/support/tasks` chỉ cho đúng nhân viên.
+- `support_work.update`: chỉ business_support của chính lượt được giao, payload
+  `{assignmentId,tasks:[{id,completed}],submit?,incompleteReason?}`. Khi
+  `submit:true` mà còn item chưa hoàn thành, `incompleteReason` là bắt buộc;
+  lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và
+  thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
+  bảo vệ, không thể sửa qua `state.merge|replace`.
 - `support_transfer.create`: chỉ admin, payload `employeeId`, `toStoreId`,
   `fromDate`, `toDate`, `note?`; cửa hàng đi được lấy từ hồ sơ nhân viên.
   `support_transfer.update` nhận `transferId` và các trường cần đổi (`toStoreId`,
@@ -141,9 +169,12 @@ Các lệnh chính:
   dựng timestamp giờ Việt Nam, tính lại thời lượng/đi sớm-trễ nhưng giữ nguyên
   liên kết nhân viên/cửa hàng/ca và số liệu đơn hàng. Kỳ lương đã chi/khóa chặn
   sửa; kỳ đã chốt được đánh dấu cần chốt lại.
-- `order.update`: admin, payload `orderId`, các trường khách hàng/
+- `order.update`: Admin hoặc Hỗ trợ KD, payload `orderId`, các trường khách hàng/
   `amount`/`paymentMethod` cần sửa và `reason` bắt buộc. `order.delete`
-  nhận `orderId`, `reason` và chỉ xóa mềm. Cả hai tính lại tổng ca.
+  nhận `orderId`, `reason` và chỉ xóa mềm. Cả hai tính lại tổng ca và ghi
+  `orderAudit`. Hỗ trợ KD đọc lịch sử này trong shared-state projection; nếu gọi
+  `GET /api/audit` thì chỉ nhận audit `order.update|order.delete`, không nhận
+  nhật ký hệ thống khác.
 - `task.done` (alias `task.set_done`): employee, payload `taskId`, `done`.
   Server lấy nhân viên/cửa hàng từ session và chỉ đổi cờ của chính actor.
 - `fixed_expense.create|update|delete`: admin/store_manager theo phạm vi cửa hàng; create nhận `storeId`, `type`,
@@ -186,7 +217,8 @@ Các lệnh chính:
   luôn bắt buộc `storeId`/`employeeId` khớp một profile hiện hữu, nên không
   thể tạo tài khoản Hỗ trợ KD “mồ côi”; luồng tạo Hỗ trợ KD/Quản lý
   cửa hàng mới phải dùng `employee.create` nguyên tử. Business support không
-  được quản lý credential; store manager chỉ quản lý employee đúng cửa hàng
+  được gọi trực tiếp `user.*`; quyền tạo tài khoản Quản lý cửa hàng chỉ đi qua
+  `employee.create` nguyên tử. Store manager chỉ quản lý employee đúng cửa hàng
   và không được đặt `inactive`.
   `role`, `employeeId` và đơn vị là bất biến; cập nhật mật khẩu/phạm vi
   thu hồi session liên quan.
@@ -204,6 +236,24 @@ Gửi lại cùng idempotency key và cùng body nhận lại response cũ kèm 
 `state.replace` được lọc đệ quy trước khi lưu: password, token, API key,
 secret, cookie/authorization và credential envelope không được phép đi vào
 shared state. Client không được coi shared state là kho credential.
+
+### Gợi ý địa chỉ Google Maps
+
+`GET /api/address-suggestions` bắt buộc Bearer token và nhận query:
+`type=province|ward|street`, `query`, `province?`, `ward?`, `sessionToken?`.
+Response luôn theo dạng
+`{ok,configured,suggestions:[{label,value,province?,ward?,street?,placeId?}]}`.
+Nếu chưa đặt `GOOGLE_MAPS_API_KEY`, endpoint trả 200 với
+`configured:false,suggestions:[]` để giao diện tiếp tục cho nhập thủ công.
+
+Worker gọi server-side Places API (New)
+`POST https://places.googleapis.com/v1/places:autocomplete` với tiếng Việt,
+vùng Việt Nam và field mask tối thiểu. Khóa chỉ đi trong header upstream,
+không được trả về client/log/state. Query tối đa 120 ký tự, tối thiểu 2 ký tự để
+gọi upstream, tối đa 8 gợi ý và giới hạn best-effort 30 request/phút cho mỗi
+tài khoản+IP trong một Worker isolate. Nên cấu hình thêm quota/restriction theo
+API và project trong Google Cloud vì giới hạn trong isolate không thay thế quota
+phía nhà cung cấp.
 
 ## Lược đồ collection tách dòng (migration 0003)
 

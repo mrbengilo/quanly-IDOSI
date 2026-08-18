@@ -2392,7 +2392,7 @@ describe('IDOSI Worker security primitives', () => {
         'state.merge', 'store.update', 'employee.create', 'shift_definition.create',
         'schedule.assign', 'tasks.replace_scope', 'import.create', 'expense.create',
         'salary_adjustment.create', 'salary_advance.create', 'payroll.close',
-        'support_transfer.create', 'order.update', 'attendance.update',
+        'support_transfer.create', 'attendance.update',
         'system.reset_demo', 'policy.set', 'user.create', 'task.done',
       ].entries()) {
         const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -3815,5 +3815,366 @@ describe('IDOSI Worker security primitives', () => {
       'payroll.pay',
       'payroll.lock',
     ]))
+  })
+
+  it('lets business support create only store managers, mutate orders, and complete Admin assignments', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-support-work' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'support-work-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'IDOSI Tô Ngọc Vân', short: 'TNV', status: 'Đang hoạt động' }],
+        employees: [], attendance: [], schedule: [], tasks: [], supportWorkAssignments: [],
+        orders: [{
+          id: 'ORDER-SUPPORT-01', code: 'S01-00001', storeId: 'S01', employeeId: 'E01',
+          amount: 500_000, customerName: 'Khách hàng', paymentMethod: 'Tiền mặt',
+          status: 'Hoàn tất', source: 'order', createdAt: '2026-08-18T01:00:00.000Z',
+        }],
+        orderAudit: [], auditLogs: [], notifications: [], shiftDefinitions: [],
+        expenseEntries: [], fixedExpenses: [], cashTransactions: [], importVouchers: [],
+        salaryAdjustments: [], salaryAdvances: [], payrollPeriods: [], payrollPayments: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'support-work-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+
+    const supportCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1,
+      payload: {
+        unit: 'business_support', name: 'Hỗ trợ Kinh doanh', phone: '0901111111',
+        cccd: '079123456711', address: 'TP. Hồ Chí Minh', startDate: '2026-08-01',
+        employmentType: 'Full-Time', position: 'NV hỗ trợ KD',
+        username: 'support.work', password: 'support-work-account-password',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-work-profile-create-0001' }), env)
+    expect(supportCreated.status).toBe(201)
+    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'support.work', password: 'support-work-account-password',
+    }), env)
+    const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+
+    const managerCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 2,
+      payload: {
+        unit: 'store_manager', storeId: 'S01', name: 'Quản lý do Hỗ trợ tạo', phone: '0902222222',
+        cccd: '079123456722', address: 'TP. Hồ Chí Minh', startDate: '2026-08-18',
+        employmentType: 'Full-Time', position: 'Quản lý cửa hàng',
+        username: 'manager.by.support', password: 'manager-by-support-password',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-create-store-manager-0001' }), env)
+    expect(managerCreated.status).toBe(201)
+    expect(await managerCreated.json()).toMatchObject({
+      version: 3,
+      employee: { id: 'QLCH-001', unit: 'store_manager', storeId: 'S01' },
+      user: { role: 'store_manager', employeeId: 'QLCH-001', storeId: 'S01' },
+    })
+
+    const forbiddenStoreEmployee = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 3,
+      payload: { unit: 'store', storeId: 'S01', name: 'Không được tạo', phone: '0903333333' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-create-store-employee-denied-0001' }), env)
+    expect(forbiddenStoreEmployee.status).toBe(403)
+    expect(await forbiddenStoreEmployee.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+    const forbiddenManagerEdit = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 3,
+      payload: { employeeId: 'QLCH-001', name: 'Không được sửa' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-edit-manager-denied-0001' }), env)
+    expect(forbiddenManagerEdit.status).toBe(403)
+
+    const orderUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 3,
+      payload: { orderId: 'ORDER-SUPPORT-01', amount: 600_000, reason: 'Đối soát lại đơn hàng' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-order-update-0001' }), env)
+    expect(orderUpdated.status).toBe(200)
+    expect(await orderUpdated.json()).toMatchObject({
+      version: 4,
+      order: { id: 'ORDER-SUPPORT-01', amount: 600_000 },
+      audit: { actor: { role: 'business_support' }, reason: 'Đối soát lại đơn hàng' },
+    })
+
+    const assigned = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.assign', expectedVersion: 4,
+      payload: {
+        date: '2026-08-18', employeeId: 'HTKD-001',
+        tasks: [
+          { id: 'WORK-01', name: 'Kiểm tra báo cáo', description: 'Đối chiếu doanh thu' },
+          { id: 'WORK-02', name: 'Liên hệ cửa hàng', description: 'Xác nhận tồn kho' },
+        ],
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-work-assign-0001' }), env)
+    expect(assigned.status).toBe(201)
+    const assignedBody = await assigned.json()
+    expect(assignedBody).toMatchObject({
+      version: 5,
+      assignment: { employeeId: 'HTKD-001', totalTasks: 2, completionRate: 0, status: 'assigned' },
+      notification: { type: 'support-work-assigned', employeeId: 'HTKD-001', route: '/support/tasks' },
+    })
+    const assignmentId = assignedBody.assignment.id
+
+    const secondAssigned = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.assign', expectedVersion: 5,
+      payload: {
+        date: '2026-08-18', employeeId: 'HTKD-001',
+        tasks: [{ id: 'WORK-03', name: 'Kiểm tra cửa hàng', description: 'Ghi nhận hiện trạng' }],
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-work-assign-same-day-0001' }), env)
+    expect(secondAssigned.status).toBe(201)
+    const secondAssignedBody = await secondAssigned.json()
+    expect(secondAssignedBody).toMatchObject({ version: 6, assignment: { status: 'assigned', totalTasks: 1 } })
+    expect(secondAssignedBody.assignment.id).not.toBe(assignmentId)
+
+    const replaced = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.assign', expectedVersion: 6,
+      payload: {
+        assignmentId: secondAssignedBody.assignment.id,
+        date: '2026-08-18', employeeId: 'HTKD-001',
+        tasks: [{ id: 'WORK-03', name: 'Kiểm tra cửa hàng cập nhật', description: 'Chụp và ghi nhận hiện trạng' }],
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-work-replace-explicit-0001' }), env)
+    expect(replaced.status).toBe(200)
+    expect(await replaced.json()).toMatchObject({
+      version: 7,
+      assignment: {
+        id: secondAssignedBody.assignment.id,
+        history: [
+          expect.objectContaining({
+            action: 'assigned',
+            details: { taskCount: 1, tasks: [expect.objectContaining({ name: 'Kiểm tra cửa hàng' })] },
+          }),
+          expect.objectContaining({
+            action: 'replaced',
+            details: {
+              taskCount: 1,
+              beforeTasks: [expect.objectContaining({ name: 'Kiểm tra cửa hàng' })],
+              afterTasks: [expect.objectContaining({ name: 'Kiểm tra cửa hàng cập nhật' })],
+            },
+          }),
+        ],
+      },
+    })
+
+    const supportStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: supportAuthorization,
+    }), env)
+    const supportState = (await supportStateResponse.json()).state
+    expect(supportState.supportWorkAssignments).toHaveLength(2)
+    expect(supportState.supportWorkAssignments).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: assignmentId, employeeId: 'HTKD-001' }),
+      expect.objectContaining({ id: secondAssignedBody.assignment.id, employeeId: 'HTKD-001' }),
+    ]))
+    expect(supportState.orderAudit).toEqual([
+      expect.objectContaining({
+        orderId: 'ORDER-SUPPORT-01', action: 'Sửa', actor: expect.objectContaining({ role: 'business_support' }),
+      }),
+    ])
+    expect(supportState.notifications).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'support-work-assigned', assignmentId }),
+    ]))
+
+    const missingReason = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.update', expectedVersion: 7,
+      payload: { assignmentId, tasks: [{ id: 'WORK-01', completed: true }], submit: true },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-work-missing-reason-0001' }), env)
+    expect(missingReason.status).toBe(400)
+    expect(await missingReason.json()).toMatchObject({ error: { code: 'SUPPORT_WORK_REASON_REQUIRED' } })
+
+    const submitted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.update', expectedVersion: 7,
+      payload: {
+        assignmentId,
+        tasks: [{ id: 'WORK-01', completed: true }, { id: 'WORK-02', completed: false }],
+        submit: true,
+        incompleteReason: 'Cửa hàng chưa phản hồi tồn kho.',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-work-submit-0001' }), env)
+    expect(submitted.status).toBe(200)
+    expect(await submitted.json()).toMatchObject({
+      version: 8,
+      assignment: {
+        id: assignmentId, status: 'incomplete', completedTasks: 1, totalTasks: 2,
+        completionRate: 50, incompleteReason: 'Cửa hàng chưa phản hồi tồn kho.',
+        submittedAt: expect.any(String),
+      },
+      notification: { type: 'support-work-submitted', route: '/admin/business-support' },
+    })
+
+    const orderDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.delete', expectedVersion: 8,
+      payload: { orderId: 'ORDER-SUPPORT-01', reason: 'Đơn hàng nhập trùng' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-order-delete-0001' }), env)
+    expect(orderDeleted.status).toBe(200)
+    expect(await orderDeleted.json()).toMatchObject({ version: 9, order: { status: 'Đã xóa' } })
+
+    const supportAudit = await worker.fetch(new Request('https://idosi.example/api/audit?limit=100', {
+      headers: supportAuthorization,
+    }), env)
+    expect(supportAudit.status).toBe(200)
+    expect((await supportAudit.json()).audit.map(({ action }) => action)).toEqual(['order.delete', 'order.update'])
+    const adminState = (await (await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: adminAuthorization,
+    }), env)).json()).state
+    const completedAssignment = adminState.supportWorkAssignments.find((record) => record.id === assignmentId)
+    expect(completedAssignment).toMatchObject({
+      id: assignmentId, employeeId: 'HTKD-001', status: 'incomplete', completionRate: 50,
+      history: [
+        expect.objectContaining({
+          action: 'assigned', at: expect.any(String),
+          details: {
+            taskCount: 2,
+            tasks: expect.arrayContaining([
+              expect.objectContaining({ id: 'WORK-01', name: 'Kiểm tra báo cáo', description: 'Đối chiếu doanh thu' }),
+              expect.objectContaining({ id: 'WORK-02', name: 'Liên hệ cửa hàng', description: 'Xác nhận tồn kho' }),
+            ]),
+          },
+        }),
+        expect.objectContaining({ action: 'submitted', at: expect.any(String) }),
+      ],
+    })
+  })
+
+  it('creates complete office accounts with VP hyphen codes and private identity images', async () => {
+    const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+    const pngDataUrl = `data:image/png;base64,${Buffer.from(pngBytes).toString('base64')}`
+    const env = {
+      DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-office-profile', IDENTITY_IMAGES: new MemoryR2(),
+    }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'office-profile-admin-password',
+      initialState: {
+        stores: [],
+        employees: [{
+          id: 'VP001', code: 'VP001', storeId: 'OFFICE', unit: 'office',
+          name: 'Hồ sơ cũ', phone: '0900000001', status: 'Đang làm việc',
+        }],
+        attendance: [], orders: [], notifications: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'office-profile-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const invalidCccd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1,
+      payload: {
+        unit: 'office', storeId: 'OFFICE', name: 'CCCD sai', phone: '0904444444', cccd: '123',
+        address: 'TP. Hồ Chí Minh', startDate: '2026-08-18', employmentType: 'Full-Time',
+        position: 'Kế Toán', username: 'office.invalid', password: 'office-invalid-password',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'office-invalid-cccd-0001' }), env)
+    expect(invalidCccd.status).toBe(400)
+    expect(await invalidCccd.json()).toMatchObject({ error: { code: 'CCCD_INVALID' } })
+
+    const officeCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1,
+      payload: {
+        unit: 'office', storeId: 'OFFICE', name: 'Nhân viên Kế Toán', phone: '0904444444',
+        cccd: '079123456744', address: '12 Đường IDOSI, Phường Hiệp Bình, TP. Hồ Chí Minh',
+        addressDetails: { province: 'TP. Hồ Chí Minh', ward: 'Phường Hiệp Bình', street: '12 Đường IDOSI' },
+        startDate: '2026-08-18', employmentType: 'Full-Time', position: 'Kế Toán',
+        identityImages: { front: pngDataUrl }, username: 'office.accounting', password: 'office-accounting-password',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'office-profile-create-0001' }), env)
+    expect(officeCreated.status).toBe(201)
+    const officeBody = await officeCreated.json()
+    expect(officeBody).toMatchObject({
+      version: 2,
+      employee: {
+        id: 'VP-002', code: 'VP-002', unit: 'office', storeId: 'OFFICE',
+        employmentType: 'Full-Time', position: 'Kế Toán', cccd: '079123456744',
+        addressDetails: { province: 'TP. Hồ Chí Minh', ward: 'Phường Hiệp Bình', street: '12 Đường IDOSI' },
+        identityImages: { front: { contentType: 'image/png', size: pngBytes.byteLength } },
+      },
+      user: { role: 'employee', employeeId: 'VP-002', storeId: 'OFFICE' },
+    })
+    expect(JSON.stringify(officeBody)).not.toContain(pngDataUrl)
+    const officeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'office.accounting', password: 'office-accounting-password',
+    }), env)
+    const officeAuthorization = { authorization: `Bearer ${(await officeLogin.json()).token}` }
+    const ownImage = await worker.fetch(new Request('https://idosi.example/api/identity-images/VP-002/front', {
+      headers: officeAuthorization,
+    }), env)
+    expect(ownImage.status).toBe(200)
+    expect(ownImage.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await ownImage.arrayBuffer())).toEqual(pngBytes)
+  })
+
+  it('proxies authenticated Vietnamese address suggestions without exposing the Google key', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-address-suggestions' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'address-suggestions-admin-password',
+      initialState: { stores: [], employees: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'address-suggestions-admin-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const unavailable = await worker.fetch(new Request(
+      'https://idosi.example/api/address-suggestions?type=province&query=ho', { headers: authorization },
+    ), env)
+    expect(unavailable.status).toBe(200)
+    expect(await unavailable.json()).toMatchObject({ configured: false, suggestions: [] })
+
+    const upstreamFetch = vi.fn(async () => new Response(JSON.stringify({
+      suggestions: [{
+        placePrediction: {
+          placeId: 'place-hcm', text: { text: 'Thành phố Hồ Chí Minh, Việt Nam' },
+          structuredFormat: {
+            mainText: { text: 'Thành phố Hồ Chí Minh' }, secondaryText: { text: 'Việt Nam' },
+          },
+        },
+      }],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    vi.stubGlobal('fetch', upstreamFetch)
+    try {
+      env.GOOGLE_MAPS_API_KEY = 'google-maps-test-key-never-return'
+      const suggested = await worker.fetch(new Request(
+        'https://idosi.example/api/address-suggestions?type=ward&query=hiep&province=TP.%20Ho%20Chi%20Minh',
+        { headers: authorization },
+      ), env)
+      expect(suggested.status).toBe(200)
+      const suggestedBody = await suggested.json()
+      expect(suggestedBody).toMatchObject({
+        configured: true,
+        suggestions: [{
+          label: 'Thành phố Hồ Chí Minh, Việt Nam', value: 'Thành phố Hồ Chí Minh',
+          placeId: 'place-hcm', province: 'TP. Ho Chi Minh', ward: 'Thành phố Hồ Chí Minh',
+        }],
+      })
+      expect(JSON.stringify(suggestedBody)).not.toContain(env.GOOGLE_MAPS_API_KEY)
+      expect(upstreamFetch).toHaveBeenCalledWith(
+        'https://places.googleapis.com/v1/places:autocomplete',
+        expect.objectContaining({ method: 'POST' }),
+      )
+      const upstreamOptions = upstreamFetch.mock.calls[0][1]
+      expect(upstreamOptions.headers['X-Goog-Api-Key']).toBe(env.GOOGLE_MAPS_API_KEY)
+      expect(upstreamOptions.headers['X-Goog-FieldMask']).toContain('suggestions.placePrediction.placeId')
+      expect(JSON.parse(upstreamOptions.body)).toMatchObject({
+        input: 'hiep, TP. Ho Chi Minh, Việt Nam', languageCode: 'vi', regionCode: 'vn',
+        includedRegionCodes: ['vn'],
+      })
+
+      for (let index = 1; index < 30; index += 1) {
+        const response = await worker.fetch(new Request(
+          `https://idosi.example/api/address-suggestions?type=province&query=ho${index}`,
+          { headers: authorization },
+        ), env)
+        expect(response.status).toBe(200)
+      }
+      const limited = await worker.fetch(new Request(
+        'https://idosi.example/api/address-suggestions?type=province&query=limit',
+        { headers: authorization },
+      ), env)
+      expect(limited.status).toBe(429)
+      expect(await limited.json()).toMatchObject({ error: { code: 'ADDRESS_SUGGESTION_RATE_LIMITED' } })
+      expect(upstreamFetch).toHaveBeenCalledTimes(30)
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })

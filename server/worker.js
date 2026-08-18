@@ -31,6 +31,16 @@ const BUSINESS_SUPPORT_SELF_SERVICE_COMMANDS = new Set([
   'notification.clear_all',
   'user.change_password',
 ])
+const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
+  'employee.create',
+  'order.update',
+  'order.delete',
+  'support_work.update',
+])
+const ADDRESS_SUGGESTION_TYPES = new Set(['province', 'ward', 'street'])
+const ADDRESS_SUGGESTION_RATE_LIMIT = 30
+const ADDRESS_SUGGESTION_RATE_WINDOW_MS = 60_000
+const addressSuggestionRateWindows = new Map()
 
 const DEFAULT_POLICIES = Object.freeze({
   late_tolerance_minutes: 10,
@@ -535,7 +545,13 @@ const projectPayrollPeriodForEmployees = (period, visibleEmployeeIds, { stripKpi
 const canAccessNotification = (state, actor, record) => {
   if (!isPlainRecord(record)) return false
   if (actor.role === 'admin') return true
-  if (actor.role === 'business_support') return true
+  if (actor.role === 'business_support') {
+    if (String(record.type || '') === 'support-work-submitted') return false
+    if (String(record.type || '') === 'support-work-assigned') {
+      return belongsToEmployee(record, String(actor.employee_id || actor.user_id || ''))
+    }
+    return true
+  }
   const recordStoreId = String(record.storeId || '')
   if (actor.role === 'store_manager') {
     const storeId = String(actor.store_id || '')
@@ -636,7 +652,10 @@ export const projectSharedState = (rawState, user) => {
     void accountSettings
     return {
       ...operationalState,
-      notifications: filterArray(state, 'notifications', () => true)
+      supportWorkAssignments: filterArray(state, 'supportWorkAssignments', (record) => (
+        belongsToEmployee(record, ownEmployeeId)
+      )),
+      notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
         .map((record) => projectNotificationForActor(record, user)),
       settings: ownAccountSettings(state, user),
       activeAttendanceId: ownOpenAttendance?.id || null,
@@ -1836,6 +1855,7 @@ const getState = async (request, env, context, url) => {
 const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
   'orders',
   'orderAudit',
+  'supportWorkAssignments',
   'expenseEntries',
   'fixedExpenses',
   'cashTransactions',
@@ -2255,6 +2275,11 @@ const assertOperationsRole = (actor, message = 'Tài khoản không có quyền 
   if (!OPERATIONS_ROLES.has(actor.role)) throw new ApiError(403, 'ROLE_FORBIDDEN', message)
 }
 
+const businessSupportCommandAllowed = (body) => {
+  const type = String(body?.type || '')
+  return BUSINESS_SUPPORT_SELF_SERVICE_COMMANDS.has(type) || BUSINESS_SUPPORT_DOMAIN_COMMANDS.has(type)
+}
+
 const assertOperationalStoreAccess = (actor, storeId) => {
   const normalizedStoreId = String(storeId || '')
   if (actor.role === 'business_support'
@@ -2599,7 +2624,7 @@ const nextEmployeeCode = (state, store, unit = null) => {
   const normalizedUnit = unit || (String(store?.id || '') === OFFICE_STORE_ID ? 'office' : 'store')
   const prefix = storeEmployeePrefix(store)
   const pattern = normalizedUnit === 'office'
-    ? /^VP(\d+)$/u
+    ? /^VP-?(\d+)$/u
     : (normalizedUnit === 'business_support'
       ? /^HTKD-?(\d+)$/u
       : (normalizedUnit === 'store_manager'
@@ -2613,7 +2638,7 @@ const nextEmployeeCode = (state, store, unit = null) => {
     const match = String(employee.id || employee.code || employee.employeeCode || '').toUpperCase().match(pattern)
     return match ? Math.max(maximum, Number(match[1])) : maximum
   }, 0) + 1
-  if (normalizedUnit === 'office') return `VP${String(next).padStart(3, '0')}`
+  if (normalizedUnit === 'office') return `VP-${String(next).padStart(3, '0')}`
   if (normalizedUnit === 'business_support') return `HTKD-${String(next).padStart(3, '0')}`
   if (normalizedUnit === 'store_manager') return `QLCH-${String(next).padStart(3, '0')}`
   return `${prefix}-${String(next).padStart(3, '0')}`
@@ -2645,7 +2670,7 @@ const normalizeEmployeeUnitRequest = (payload, previous = null) => {
 const OPERATIONAL_PROFILE_FIELDS = new Set([
   'employeeId', 'id', 'code', 'employeeCode',
   'unit', 'unitType', 'department', 'role', 'storeId',
-  'name', 'phone', 'cccd', 'citizenId', 'address', 'startDate', 'joinDate',
+  'name', 'phone', 'cccd', 'citizenId', 'address', 'addressDetails', 'startDate', 'joinDate',
   'employmentType', 'position', 'jobPosition', 'username', 'password', 'authUserId',
   'identityImages', 'cccdImages', 'identityCardImages', 'cccdFront', 'cccdBack',
 ])
@@ -2656,6 +2681,35 @@ const operationalEmploymentType = (value) => {
   if (normalized === 'part-time') return 'Part-Time'
   if (normalized === 'thuc-tap-sinh') return 'Thực Tập Sinh'
   throw new ApiError(400, 'EMPLOYMENT_TYPE_INVALID', 'Loại nhân viên phải là Full-Time, Part-Time hoặc Thực Tập Sinh.')
+}
+
+const officeEmploymentType = (value) => {
+  const normalized = normalizeTextKey(value).replace(/[ _]+/gu, '-')
+  if (['full-time', 'chinh-thuc', 'thu-viec'].includes(normalized)) return 'Full-Time'
+  if (normalized === 'part-time') return 'Part-Time'
+  if (['thuc-tap-sinh', 'thuc-tap'].includes(normalized)) return 'Thực Tập Sinh'
+  throw new ApiError(400, 'EMPLOYMENT_TYPE_INVALID', 'Loại nhân viên Khối văn phòng phải là Full-Time, Part-Time hoặc Thực Tập Sinh.')
+}
+
+const officePosition = (value) => {
+  const normalized = normalizeTextKey(value)
+  if (normalized === 'ke toan') return 'Kế Toán'
+  if (normalized === 'marketing') return 'Marketing'
+  throw new ApiError(400, 'POSITION_INVALID', 'Vị trí công việc Khối văn phòng phải là Kế Toán hoặc Marketing.')
+}
+
+const normalizeAddressDetails = (value) => {
+  if (value === undefined || value === null) return null
+  if (!isPlainRecord(value)) {
+    throw new ApiError(400, 'ADDRESS_DETAILS_INVALID', 'Thông tin địa chỉ chi tiết không hợp lệ.')
+  }
+  const province = String(value.province || '').trim()
+  const ward = String(value.ward || '').trim()
+  const street = String(value.street || '').trim()
+  if ([province, ward, street].some((part) => part.length > 200)) {
+    throw new ApiError(400, 'ADDRESS_DETAILS_INVALID', 'Mỗi phần địa chỉ không được vượt quá 200 ký tự.')
+  }
+  return { province, ward, street }
 }
 
 const operationalPosition = (value, unit) => {
@@ -2788,6 +2842,7 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
     ? String(previous.address || '')
     : String(payload.address || '').trim().slice(0, 500)
   if (!address) throw new ApiError(400, 'EMPLOYEE_ADDRESS_INVALID', 'Địa chỉ nhân viên không được để trống.')
+  const addressDetails = normalizeAddressDetails(payload.addressDetails ?? previous?.addressDetails)
   const rawStartDate = payload.startDate ?? payload.joinDate ?? previous?.startDate ?? previous?.joinDate ?? ''
   const startDate = optionalCalendarDate(rawStartDate, 'Ngày bắt đầu làm')
   if (!startDate) throw new ApiError(400, 'START_DATE_REQUIRED', 'Ngày bắt đầu làm là bắt buộc.')
@@ -2806,6 +2861,7 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
     cccd,
     citizenId: cccd,
     address,
+    ...(addressDetails ? { addressDetails } : {}),
     startDate,
     joinDate: startDate,
     employmentType,
@@ -2833,7 +2889,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
   const officeLike = ['office', 'business_support', 'store_manager'].includes(normalizedUnit)
   const id = previous
     ? String(previous.id || previous.code || previous.employeeCode || '')
-    : String(['business_support', 'store_manager'].includes(normalizedUnit)
+    : String(['business_support', 'store_manager', 'office'].includes(normalizedUnit)
       ? nextEmployeeCode(state, store, normalizedUnit)
       : (payload.id || payload.code || payload.employeeCode || nextEmployeeCode(state, store, normalizedUnit))).trim().toUpperCase()
   if (!/^[A-Za-z0-9_-]{2,80}$/u.test(id)) throw new ApiError(400, 'EMPLOYEE_ID_INVALID', 'Mã nhân viên không hợp lệ.')
@@ -2844,16 +2900,16 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
     throw new ApiError(400, 'PHONE_INVALID', 'Số điện thoại phải có đúng 10 số và bắt đầu bằng số 0.')
   }
   const rawEmploymentType = String(payload.employmentType ?? previous?.employmentType ?? (officeLike ? 'Chính thức' : 'Full-Time')).trim()
-  const employmentType = officeLike
-    ? rawEmploymentType
+  const employmentType = normalizedUnit === 'office'
+    ? officeEmploymentType(rawEmploymentType)
     : (/^part[- ]?time$/u.test(normalizeTextKey(rawEmploymentType)) ? 'Part-Time' : 'Full-Time')
-  const allowedTypes = officeLike
-    ? ['Chính thức', 'Thực tập sinh', 'Thử việc']
+  const allowedTypes = normalizedUnit === 'office'
+    ? ['Full-Time', 'Part-Time', 'Thực Tập Sinh']
     : ['Full-Time', 'Part-Time']
   if (!allowedTypes.includes(employmentType)) {
     throw new ApiError(400, 'EMPLOYMENT_TYPE_INVALID', 'Loại nhân viên không hợp lệ.')
   }
-  const payBasis = officeLike || employmentType === 'Full-Time' ? 'monthly' : 'hourly'
+  const payBasis = employmentType === 'Part-Time' ? 'hourly' : 'monthly'
   const salarySource = payBasis === 'monthly'
     ? (payload.baseSalary ?? payload.monthlySalary ?? payload.salary
       ?? previous?.baseSalary ?? previous?.monthlySalary ?? previous?.salary ?? 0)
@@ -2876,8 +2932,18 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
     && (!validRequiredWorkingDays(requestedStoreWorkDays) || !validRequiredMonthlyHours(requestedMonthlyHours))) {
     throw new ApiError(400, 'SM234_PAYROLL_FIELDS_REQUIRED', 'Nhân viên Full-Time SecondMall SM234 cần số ngày công và tổng giờ làm quy định mỗi tháng.')
   }
-  const cccd = String(payload.cccd ?? payload.citizenId ?? previous?.cccd ?? previous?.citizenId ?? '').trim().slice(0, 20)
+  const cccd = normalizedUnit === 'office'
+    ? String(payload.cccd ?? payload.citizenId ?? previous?.cccd ?? previous?.citizenId ?? '').replace(/\D/gu, '')
+    : String(payload.cccd ?? payload.citizenId ?? previous?.cccd ?? previous?.citizenId ?? '').trim().slice(0, 20)
+  if (normalizedUnit === 'office' && (!previous || payload.cccd !== undefined || payload.citizenId !== undefined)
+    && !/^\d{12}$/u.test(cccd)) {
+    throw new ApiError(400, 'CCCD_INVALID', 'CCCD phải có đúng 12 chữ số.')
+  }
   const address = String(payload.address ?? previous?.address ?? '').trim().slice(0, 500)
+  if (normalizedUnit === 'office' && !previous && !address) {
+    throw new ApiError(400, 'EMPLOYEE_ADDRESS_INVALID', 'Địa chỉ nhân viên không được để trống.')
+  }
+  const addressDetails = normalizeAddressDetails(payload.addressDetails ?? previous?.addressDetails)
   const requestedWorkStart = payload.workStart ?? previous?.workStart ?? (officeLike ? '08:00' : undefined)
   const requestedWorkEnd = payload.workEnd ?? previous?.workEnd ?? (officeLike ? '17:00' : undefined)
   const workStart = officeLike ? parseShiftTime(requestedWorkStart) : null
@@ -2918,9 +2984,14 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
   if (requestedStandardWorkDaysPeriod) monthlyWorkdayTargets[requestedStandardWorkDaysPeriod] = requestedStandardWorkDays
   const requestedStartDate = payload.startDate ?? payload.joinDate ?? previous?.startDate ?? previous?.joinDate ?? ''
   const startDate = requestedStartDate ? optionalCalendarDate(requestedStartDate, 'Ngày bắt đầu làm') : ''
-  if (!previous && ['business_support', 'store_manager'].includes(normalizedUnit) && !startDate) {
+  if (!previous && ['business_support', 'store_manager', 'office'].includes(normalizedUnit) && !startDate) {
     throw new ApiError(400, 'START_DATE_REQUIRED', 'Ngày bắt đầu làm là bắt buộc.')
   }
+  const position = normalizedUnit === 'office'
+    ? (payload.position !== undefined || previous?.position
+        ? officePosition(payload.position ?? previous.position)
+        : (previous ? '' : officePosition(payload.position)))
+    : String(payload.position ?? previous?.position ?? '').trim().slice(0, 160)
   const profile = sanitizeStateValue({
     ...(previous || {}),
     ...payload,
@@ -2932,6 +3003,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
     cccd,
     citizenId: cccd,
     address,
+    ...(addressDetails ? { addressDetails } : {}),
     storeId: store.id,
     unit: normalizedUnit,
     unitType: normalizedUnit,
@@ -2939,6 +3011,8 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
     isOffice: normalizedUnit === 'office',
     isOfficeLike: officeLike,
     employmentType,
+    position,
+    jobPosition: position,
     payBasis,
     salaryBasis: payBasis,
     salaryUnit: payBasis === 'monthly' ? 'month' : 'hour',
@@ -3010,9 +3084,12 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : employees.find((employee) => String(employee.id || employee.code || '') === employeeId && !employee.deletedAt)
   if (operation !== 'create' && !previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
   const unit = normalizeEmployeeUnitRequest(profilePayload, previous)
+  if (actor.role === 'business_support' && !(operation === 'create' && unit === 'store_manager')) {
+    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm mới tài khoản Quản lý cửa hàng.')
+  }
   const hasIdentityImagePayload = Object.values(identityImageInputs(profilePayload)).some((input) => input.provided)
-  if (hasIdentityImagePayload && !['business_support', 'store_manager'].includes(unit)) {
-    throw new ApiError(400, 'IDENTITY_IMAGE_ROLE_INVALID', 'Ảnh CCCD riêng tư chỉ áp dụng cho Hỗ trợ KD và Quản lý cửa hàng.')
+  if (hasIdentityImagePayload && !['business_support', 'store_manager', 'office'].includes(unit)) {
+    throw new ApiError(400, 'IDENTITY_IMAGE_ROLE_INVALID', 'Ảnh CCCD riêng tư chỉ áp dụng cho Hỗ trợ KD, Quản lý cửa hàng và Khối văn phòng.')
   }
   if (previous && ['unit', 'unitType', 'department', 'role'].some((field) => profilePayload[field] !== undefined)) {
     const requestedUnit = normalizeEmployeeUnitRequest(profilePayload)
@@ -3021,7 +3098,12 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     }
   }
   if (['business_support', 'store_manager', 'office'].includes(unit) && actor.role !== 'admin') {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được quản lý hồ sơ Hỗ trợ KD, Quản lý cửa hàng và Nhân viên văn phòng.')
+    const supportCreatingStoreManager = actor.role === 'business_support'
+      && operation === 'create'
+      && unit === 'store_manager'
+    if (!supportCreatingStoreManager) {
+      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Hỗ trợ KD chỉ được thêm mới Quản lý cửa hàng; các hồ sơ nội bộ khác chỉ Admin được quản lý.')
+    }
   }
   if (previous && unit === 'store') assertOperationalStoreAccess(actor, String(previous.storeId || ''))
   if (actor.role !== 'admin' && previous && ['da nghi viec', 'inactive'].includes(normalizeTextKey(previous.status))) {
@@ -3171,8 +3253,8 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const expectedAuthRole = roleForEmployeeUnit(unit)
 
   if (operation === 'create') {
-    if (requestedAuthUserId && !['business_support', 'store_manager'].includes(unit)) {
-      throw new ApiError(400, 'AUTH_LINK_INVALID', 'Chỉ hồ sơ Hỗ trợ KD hoặc Quản lý cửa hàng được liên kết tài khoản có sẵn.')
+    if (requestedAuthUserId && !['business_support', 'store_manager', 'office'].includes(unit)) {
+      throw new ApiError(400, 'AUTH_LINK_INVALID', 'Chỉ hồ sơ Hỗ trợ KD, Quản lý cửa hàng hoặc Khối văn phòng được liên kết tài khoản có sẵn.')
     }
     const linkedTarget = requestedAuthUserId
       ? await first(db, 'SELECT * FROM users WHERE id = ? LIMIT 1', requestedAuthUserId)
@@ -3254,7 +3336,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         saved.id,
       ))
     } else {
-      const credentialsRequired = ['business_support', 'store_manager'].includes(unit)
+      const credentialsRequired = ['business_support', 'store_manager', 'office'].includes(unit)
       if (credentialsRequired && (!requestedUsername || !requestedPassword)) {
         throw new ApiError(400, 'EMPLOYEE_CREDENTIALS_REQUIRED', 'Tên đăng nhập và mật khẩu là bắt buộc cho vai trò này.')
       }
@@ -3513,7 +3595,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       }
     }
   }
-  const identityImageUpdate = ['business_support', 'store_manager'].includes(unit)
+  const identityImageUpdate = ['business_support', 'store_manager', 'office'].includes(unit)
     ? await prepareIdentityImageUpdate(env, profilePayload, previous, saved.id, commandContext.now)
     : { identityImages: {}, uploadedKeys: [], retiredKeys: [] }
   if (Object.keys(identityImageUpdate.identityImages).length) saved.identityImages = identityImageUpdate.identityImages
@@ -4182,6 +4264,7 @@ const RESET_ARRAY_COLLECTIONS = Object.freeze([
   'deletedStores',
   'deletedEmployees',
   'supportTransfers',
+  'supportWorkAssignments',
 ])
 
 const resetStateSummary = (state) => ({
@@ -5347,7 +5430,9 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
 }
 
 const orderMutationCommand = async (db, actor, body, commandContext) => {
-  assertAdmin(actor, 'Chỉ quản trị viên được sửa hoặc xóa đơn hàng.')
+  if (!['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được sửa hoặc xóa đơn hàng.')
+  }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const reason = String(payload.reason || '').trim()
   if (!reason || reason.length > 500) {
@@ -5465,6 +5550,293 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
     after: next,
     metadata: { reason, changedFields, attendanceId: previous.attendanceId || null },
     response: { command: body.type, order: next, audit: auditRecord },
+  }, commandContext)
+}
+
+const supportWorkMetrics = (tasks) => {
+  const totalTasks = tasks.length
+  const completedTasks = tasks.filter((task) => task.completed === true).length
+  return {
+    totalTasks,
+    completedTasks,
+    completionRate: totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0,
+  }
+}
+
+const supportWorkTaskHistorySnapshot = (tasks) => (Array.isArray(tasks) ? tasks : []).map((task) => ({
+  id: String(task.id || ''),
+  name: String(task.name || task.title || ''),
+  description: String(task.description || task.detail || ''),
+  completed: task.completed === true,
+  completedAt: task.completedAt || null,
+  completedBy: task.completedBy || null,
+}))
+
+const normalizeAssignedSupportTasks = (rawTasks, previousTasks, actor, timestamp) => {
+  if (!Array.isArray(rawTasks) || rawTasks.length < 1 || rawTasks.length > 100) {
+    throw new ApiError(400, 'SUPPORT_WORK_TASKS_INVALID', 'Danh sách công việc phải có từ 1 đến 100 mục.')
+  }
+  const priorById = new Map((Array.isArray(previousTasks) ? previousTasks : [])
+    .map((task) => [String(task.id || ''), task]))
+  const ids = new Set()
+  return rawTasks.map((rawTask, index) => {
+    if (!isPlainRecord(rawTask)) {
+      throw new ApiError(400, 'SUPPORT_WORK_TASK_INVALID', `Công việc thứ ${index + 1} không hợp lệ.`)
+    }
+    const id = String(rawTask.id || `swt_${crypto.randomUUID()}`).trim()
+    if (!/^[A-Za-z0-9_-]{1,160}$/u.test(id) || ids.has(id)) {
+      throw new ApiError(400, 'SUPPORT_WORK_TASK_ID_INVALID', 'Mã công việc phải hợp lệ và không được trùng.')
+    }
+    ids.add(id)
+    const name = String(rawTask.name ?? rawTask.title ?? '').trim()
+    const description = String(rawTask.description ?? rawTask.detail ?? '').trim()
+    if (!name || name.length > 200) {
+      throw new ApiError(400, 'SUPPORT_WORK_TASK_NAME_INVALID', 'Tên công việc là bắt buộc và không quá 200 ký tự.')
+    }
+    if (description.length > 2_000) {
+      throw new ApiError(400, 'SUPPORT_WORK_TASK_DESCRIPTION_INVALID', 'Mô tả công việc không được vượt quá 2.000 ký tự.')
+    }
+    const prior = priorById.get(id)
+    return {
+      id,
+      name,
+      title: name,
+      description,
+      detail: description,
+      completed: Boolean(prior?.completed),
+      completedAt: prior?.completedAt || null,
+      completedBy: prior?.completedBy || null,
+      completedByActor: prior?.completedByActor || null,
+      assignedAt: prior?.assignedAt || timestamp,
+      assignedBy: prior?.assignedBy || serverActorSnapshot(actor),
+    }
+  })
+}
+
+const supportWorkCommand = async (db, actor, body, commandContext) => {
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const assignments = Array.isArray(state.supportWorkAssignments) ? state.supportWorkAssignments : []
+
+  if (body.type === 'support_work.assign') {
+    assertAdmin(actor, 'Chỉ Admin được giao việc cho Nhân viên hỗ trợ KD.')
+    const date = optionalCalendarDate(payload.date, 'Ngày giao việc')
+    if (!date) throw new ApiError(400, 'SUPPORT_WORK_DATE_REQUIRED', 'Ngày giao việc là bắt buộc.')
+    const employeeId = String(payload.employeeId || '').trim()
+    const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+      !record.deletedAt
+      && [record.id, record.code, record.employeeId].map(String).includes(employeeId)
+      && employeeUnit(record) === 'business_support'
+      && !['da nghi viec', 'inactive'].includes(normalizeTextKey(record.status))
+    ))
+    if (!employee) {
+      throw new ApiError(404, 'SUPPORT_EMPLOYEE_NOT_FOUND', 'Không tìm thấy Nhân viên hỗ trợ KD đang hoạt động.')
+    }
+    const requestedAssignmentId = String(payload.assignmentId || '').trim()
+    if (requestedAssignmentId && !/^[A-Za-z0-9_-]{1,160}$/u.test(requestedAssignmentId)) {
+      throw new ApiError(400, 'SUPPORT_WORK_ID_INVALID', 'Mã lượt giao việc không hợp lệ.')
+    }
+    const previous = requestedAssignmentId
+      ? assignments.find((record) => String(record.id || '') === requestedAssignmentId && !record.deletedAt)
+      : null
+    if (requestedAssignmentId && !previous) {
+      throw new ApiError(404, 'SUPPORT_WORK_NOT_FOUND', 'Không tìm thấy lượt giao việc cần cập nhật.')
+    }
+    if (previous && (String(previous.employeeId || '') !== employeeId || String(previous.date || '') !== date)) {
+      throw new ApiError(400, 'SUPPORT_WORK_SCOPE_IMMUTABLE', 'Không thể đổi nhân viên hoặc ngày của lượt giao việc đã tạo.')
+    }
+    if (previous?.submittedAt) {
+      throw new ApiError(409, 'SUPPORT_WORK_SUBMITTED', 'Công việc đã được nhân viên gửi kết quả và không thể thay thế.')
+    }
+    const tasks = normalizeAssignedSupportTasks(payload.tasks, previous?.tasks, actor, commandContext.now)
+    const metrics = supportWorkMetrics(tasks)
+    const assignmentId = previous?.id || `swa_${crypto.randomUUID()}`
+    const historyEntry = {
+      action: previous ? 'replaced' : 'assigned',
+      at: commandContext.now,
+      actor: serverActorSnapshot(actor),
+      details: previous
+        ? {
+            taskCount: tasks.length,
+            beforeTasks: supportWorkTaskHistorySnapshot(previous.tasks),
+            afterTasks: supportWorkTaskHistorySnapshot(tasks),
+          }
+        : {
+            taskCount: tasks.length,
+            tasks: supportWorkTaskHistorySnapshot(tasks),
+          },
+    }
+    const assignment = {
+      ...(previous || {}),
+      id: assignmentId,
+      date,
+      employeeId,
+      employeeName: employee.name || employeeId,
+      tasks,
+      ...metrics,
+      status: metrics.completedTasks ? 'in_progress' : 'assigned',
+      incompleteReason: null,
+      submittedAt: null,
+      assignedAt: previous?.assignedAt || commandContext.now,
+      assignedBy: previous?.assignedBy || serverActorSnapshot(actor),
+      updatedAt: commandContext.now,
+      updatedBy: serverActorSnapshot(actor),
+      history: [...(Array.isArray(previous?.history) ? previous.history : []), historyEntry],
+    }
+    const notification = {
+      id: `notif_${crypto.randomUUID()}`,
+      type: 'support-work-assigned',
+      storeId: BUSINESS_SUPPORT_STORE_ID,
+      employeeId,
+      assignmentId,
+      route: '/support/tasks',
+      title: 'Công việc mới từ Admin',
+      message: `Bạn có ${tasks.length} công việc được giao cho ngày ${date}.`,
+      createdAt: commandContext.now,
+      createdBy: serverActorSnapshot(actor),
+      readAt: null,
+    }
+    const nextState = {
+      ...state,
+      supportWorkAssignments: previous
+        ? assignments.map((record) => String(record.id || '') === assignmentId ? assignment : record)
+        : [assignment, ...assignments],
+      notifications: [notification, ...(Array.isArray(state.notifications) ? state.notifications : [])],
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'support-work-assignment',
+      entityId: assignmentId,
+      before: previous,
+      after: assignment,
+      metadata: { employeeId, date, taskCount: tasks.length, replaced: Boolean(previous) },
+      response: { command: body.type, assignment, notification },
+      status: previous ? 200 : 201,
+    }, commandContext)
+  }
+
+  if (body.type !== 'support_work.update') {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh giao việc Hỗ trợ KD không được hỗ trợ.')
+  }
+  if (actor.role !== 'business_support') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Nhân viên hỗ trợ KD được cập nhật tiến độ công việc của mình.')
+  }
+  const assignmentId = String(payload.assignmentId || payload.id || '').trim()
+  const previous = assignments.find((record) => String(record.id || '') === assignmentId && !record.deletedAt)
+  if (!previous) throw new ApiError(404, 'SUPPORT_WORK_NOT_FOUND', 'Không tìm thấy công việc được giao.')
+  const employeeId = String(actor.employee_id || actor.user_id || '')
+  if (!belongsToEmployee(previous, employeeId)) {
+    throw new ApiError(403, 'SUPPORT_WORK_FORBIDDEN', 'Bạn chỉ được cập nhật công việc được giao cho chính mình.')
+  }
+  if (previous.submittedAt) {
+    throw new ApiError(409, 'SUPPORT_WORK_SUBMITTED', 'Kết quả công việc đã được gửi và không thể thay đổi.')
+  }
+  const updates = payload.tasks === undefined ? [] : payload.tasks
+  if (!Array.isArray(updates) || updates.length > 100) {
+    throw new ApiError(400, 'SUPPORT_WORK_PROGRESS_INVALID', 'Tiến độ công việc phải là một danh sách không quá 100 mục.')
+  }
+  const updateById = new Map()
+  for (const update of updates) {
+    const id = String(update?.id || '').trim()
+    if (!id || typeof update?.completed !== 'boolean' || updateById.has(id)) {
+      throw new ApiError(400, 'SUPPORT_WORK_PROGRESS_INVALID', 'Mỗi tiến độ phải có mã duy nhất và trạng thái completed dạng boolean.')
+    }
+    updateById.set(id, update.completed)
+  }
+  const knownIds = new Set((Array.isArray(previous.tasks) ? previous.tasks : []).map((task) => String(task.id || '')))
+  const unknownIds = [...updateById.keys()].filter((id) => !knownIds.has(id))
+  if (unknownIds.length) {
+    throw new ApiError(400, 'SUPPORT_WORK_TASK_NOT_FOUND', 'Tiến độ chứa công việc không thuộc lượt giao việc này.', { taskIds: unknownIds })
+  }
+  const changedTaskIds = []
+  const tasks = (Array.isArray(previous.tasks) ? previous.tasks : []).map((task) => {
+    const id = String(task.id || '')
+    if (!updateById.has(id) || Boolean(task.completed) === updateById.get(id)) return task
+    changedTaskIds.push(id)
+    const completed = updateById.get(id)
+    return {
+      ...task,
+      completed,
+      completedAt: completed ? commandContext.now : null,
+      completedBy: completed ? String(actor.user_id || '') : null,
+      completedByActor: completed ? serverActorSnapshot(actor) : null,
+    }
+  })
+  const submit = payload.submit === true
+  if (payload.submit !== undefined && typeof payload.submit !== 'boolean') {
+    throw new ApiError(400, 'SUPPORT_WORK_SUBMIT_INVALID', 'Trạng thái gửi kết quả phải là boolean.')
+  }
+  const metrics = supportWorkMetrics(tasks)
+  const reason = String(payload.incompleteReason || '').trim()
+  if (reason.length > 1_000) {
+    throw new ApiError(400, 'SUPPORT_WORK_REASON_INVALID', 'Lý do chưa hoàn thành không được vượt quá 1.000 ký tự.')
+  }
+  if (submit && metrics.completedTasks < metrics.totalTasks && !reason) {
+    throw new ApiError(400, 'SUPPORT_WORK_REASON_REQUIRED', 'Cần nhập lý do khi gửi kết quả chưa hoàn thành hết công việc.')
+  }
+  if (!changedTaskIds.length && !submit) {
+    return recordNoopCommand(db, actor, {
+      command: body.type,
+      version: Number(current.version),
+      assignment: previous,
+      existing: true,
+    }, 200, commandContext)
+  }
+  const status = submit
+    ? (metrics.completedTasks === metrics.totalTasks ? 'completed' : 'incomplete')
+    : (metrics.completedTasks ? 'in_progress' : 'assigned')
+  const historyEntry = {
+    action: submit ? 'submitted' : 'progress-updated',
+    at: commandContext.now,
+    actor: serverActorSnapshot(actor),
+    details: {
+      changedTaskIds,
+      ...metrics,
+      tasks: supportWorkTaskHistorySnapshot(tasks),
+      ...(submit && reason ? { incompleteReason: reason } : {}),
+    },
+  }
+  const assignment = {
+    ...previous,
+    tasks,
+    ...metrics,
+    status,
+    incompleteReason: submit && metrics.completedTasks < metrics.totalTasks ? reason : null,
+    submittedAt: submit ? commandContext.now : null,
+    updatedAt: commandContext.now,
+    updatedBy: serverActorSnapshot(actor),
+    history: [...(Array.isArray(previous.history) ? previous.history : []), historyEntry],
+  }
+  const notification = submit ? {
+    id: `notif_${crypto.randomUUID()}`,
+    type: 'support-work-submitted',
+    storeId: BUSINESS_SUPPORT_STORE_ID,
+    audienceRoles: ['admin'],
+    assignmentId,
+    route: '/admin/business-support',
+    title: 'Hỗ trợ KD đã gửi kết quả công việc',
+    message: `${previous.employeeName || employeeId} hoàn thành ${metrics.completedTasks}/${metrics.totalTasks} công việc ngày ${previous.date}.`,
+    createdAt: commandContext.now,
+    createdBy: serverActorSnapshot(actor),
+    readAt: null,
+  } : null
+  const nextState = {
+    ...state,
+    supportWorkAssignments: assignments.map((record) => String(record.id || '') === assignmentId ? assignment : record),
+    notifications: notification
+      ? [notification, ...(Array.isArray(state.notifications) ? state.notifications : [])]
+      : state.notifications,
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'support-work-assignment',
+    entityId: assignmentId,
+    before: previous,
+    after: assignment,
+    metadata: { employeeId, changedTaskIds, submitted: submit, ...metrics },
+    response: { command: body.type, assignment, ...(notification ? { notification } : {}) },
   }, commandContext)
 }
 
@@ -7400,8 +7772,8 @@ const executeCommand = async (request, env, context) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context)
   const body = await readJson(request)
-  if (user.role === 'business_support' && !BUSINESS_SUPPORT_SELF_SERVICE_COMMANDS.has(String(body.type || ''))) {
-    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được xem dữ liệu và thực hiện thao tác trên tài khoản/chấm công của chính mình.')
+  if (user.role === 'business_support' && !businessSupportCommandAllowed(body)) {
+    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD không có quyền thực hiện thao tác này.')
   }
   const idempotencyKey = validateIdempotencyKey(request, body)
   const hash = await requestHash({ ...body, idempotencyKey: undefined })
@@ -7457,6 +7829,9 @@ const executeCommand = async (request, env, context) => {
     if (body.type === 'order.create') return await orderCreateCommand(db, user, body, commandContext)
     if (body.type === 'order.update' || body.type === 'order.delete') {
       return await orderMutationCommand(db, user, body, commandContext)
+    }
+    if (String(body.type || '').startsWith('support_work.')) {
+      return await supportWorkCommand(db, user, body, commandContext)
     }
     if (body.type === 'task.done' || body.type === 'task.set_done') {
       return await taskDoneCommand(db, user, body, commandContext)
@@ -7552,8 +7927,8 @@ const getIdentityImage = async (request, env, context, employeeId, side) => {
   ].find((record) => String(record.id || record.code || record.employeeCode || '') === normalizedEmployeeId)
   const authorized = actor.role === 'admin'
     || actor.role === 'business_support'
-    || (actor.role === 'store_manager' && String(actor.employee_id || '') === normalizedEmployeeId)
-  if (!profile || !['business_support', 'store_manager'].includes(employeeUnit(profile)) || !authorized) {
+    || (['store_manager', 'employee'].includes(actor.role) && String(actor.employee_id || '') === normalizedEmployeeId)
+  if (!profile || !['business_support', 'store_manager', 'office'].includes(employeeUnit(profile)) || !authorized) {
     throw new ApiError(403, 'IDENTITY_IMAGE_FORBIDDEN', 'Bạn không có quyền xem ảnh CCCD này.')
   }
   const metadata = isPlainRecord(profile.identityImages?.[side]) ? profile.identityImages[side] : null
@@ -7588,14 +7963,27 @@ const getIdentityImage = async (request, env, context, employeeId, side) => {
 const listAudit = async (request, env, context, url) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context)
-  if (user.role !== 'admin') throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ quản trị viên được xem nhật ký hệ thống.')
+  if (!['admin', 'business_support'].includes(user.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem nhật ký hệ thống.')
+  }
   const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 50))
   const beforeId = Number(url.searchParams.get('beforeId'))
-  const rows = Number.isInteger(beforeId) && beforeId > 0
-    ? await all(db, `
-        SELECT * FROM audit_log WHERE id < ? ORDER BY id DESC LIMIT ?
-      `, beforeId, limit)
-    : await all(db, 'SELECT * FROM audit_log ORDER BY id DESC LIMIT ?', limit)
+  const orderOnly = user.role === 'business_support'
+  const rows = orderOnly
+    ? (Number.isInteger(beforeId) && beforeId > 0
+        ? await all(db, `
+            SELECT * FROM audit_log
+            WHERE entity_type = 'order' AND action IN ('order.update', 'order.delete') AND id < ?
+            ORDER BY id DESC LIMIT ?
+          `, beforeId, limit)
+        : await all(db, `
+            SELECT * FROM audit_log
+            WHERE entity_type = 'order' AND action IN ('order.update', 'order.delete')
+            ORDER BY id DESC LIMIT ?
+          `, limit))
+    : (Number.isInteger(beforeId) && beforeId > 0
+        ? await all(db, 'SELECT * FROM audit_log WHERE id < ? ORDER BY id DESC LIMIT ?', beforeId, limit)
+        : await all(db, 'SELECT * FROM audit_log ORDER BY id DESC LIMIT ?', limit))
   return jsonResponse(apiPayload(context, {
     audit: rows.map((row) => ({
       id: Number(row.id),
@@ -7613,6 +8001,121 @@ const listAudit = async (request, env, context, url) => {
   }))
 }
 
+const addressSuggestionRateKey = (request, actor) => {
+  const forwarded = String(request.headers.get('cf-connecting-ip') || '').trim().slice(0, 64)
+  return `${String(actor.user_id || actor.id || '')}:${forwarded}`
+}
+
+const enforceAddressSuggestionRate = (request, actor, context) => {
+  const now = Number.isFinite(Date.parse(context.now)) ? Date.parse(context.now) : Date.now()
+  const key = addressSuggestionRateKey(request, actor)
+  const previous = addressSuggestionRateWindows.get(key)
+  const entry = !previous || now - previous.startedAt >= ADDRESS_SUGGESTION_RATE_WINDOW_MS
+    ? { startedAt: now, count: 0 }
+    : previous
+  entry.count += 1
+  addressSuggestionRateWindows.set(key, entry)
+  if (addressSuggestionRateWindows.size > 2_000) {
+    for (const [candidateKey, window] of addressSuggestionRateWindows) {
+      if (now - window.startedAt >= ADDRESS_SUGGESTION_RATE_WINDOW_MS) addressSuggestionRateWindows.delete(candidateKey)
+    }
+  }
+  if (entry.count > ADDRESS_SUGGESTION_RATE_LIMIT) {
+    throw new ApiError(429, 'ADDRESS_SUGGESTION_RATE_LIMITED', 'Bạn đã gửi quá nhiều yêu cầu gợi ý địa chỉ. Vui lòng thử lại sau.', {
+      retryAfterSeconds: Math.max(1, Math.ceil((entry.startedAt + ADDRESS_SUGGESTION_RATE_WINDOW_MS - now) / 1_000)),
+    })
+  }
+}
+
+const safeAddressContextPart = (value, label) => {
+  const text = [...String(value || '').trim()]
+    .filter((character) => character.codePointAt(0) >= 32 && character.codePointAt(0) !== 127)
+    .join('')
+  if (text.length > 120) throw new ApiError(400, 'ADDRESS_QUERY_TOO_LONG', `${label} không được vượt quá 120 ký tự.`)
+  return text
+}
+
+const getAddressSuggestions = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const actor = await requireSession(request, db, context)
+  const apiKey = String(env?.GOOGLE_MAPS_API_KEY || '').trim()
+  if (!apiKey) {
+    return jsonResponse(apiPayload(context, { configured: false, suggestions: [] }))
+  }
+  const type = String(url.searchParams.get('type') || '').trim().toLowerCase()
+  if (!ADDRESS_SUGGESTION_TYPES.has(type)) {
+    throw new ApiError(400, 'ADDRESS_TYPE_INVALID', 'Loại gợi ý địa chỉ phải là province, ward hoặc street.')
+  }
+  const query = safeAddressContextPart(url.searchParams.get('query'), 'Nội dung tìm kiếm')
+  const province = safeAddressContextPart(url.searchParams.get('province'), 'Tỉnh/thành phố')
+  const ward = safeAddressContextPart(url.searchParams.get('ward'), 'Phường/xã')
+  if (query.length < 2) {
+    return jsonResponse(apiPayload(context, { configured: true, suggestions: [] }))
+  }
+  enforceAddressSuggestionRate(request, actor, context)
+  const contextParts = type === 'province'
+    ? ['Việt Nam']
+    : (type === 'ward' ? [province, 'Việt Nam'] : [ward, province, 'Việt Nam'])
+  const input = [query, ...contextParts.filter(Boolean)].join(', ').slice(0, 400)
+  const sessionToken = String(url.searchParams.get('sessionToken') || '').trim()
+  if (sessionToken && !/^[A-Za-z0-9_-]{8,80}$/u.test(sessionToken)) {
+    throw new ApiError(400, 'ADDRESS_SESSION_TOKEN_INVALID', 'Mã phiên gợi ý địa chỉ không hợp lệ.')
+  }
+  const upstreamBody = {
+    input,
+    languageCode: 'vi',
+    regionCode: 'vn',
+    includedRegionCodes: ['vn'],
+    ...(sessionToken ? { sessionToken } : {}),
+  }
+  let upstream
+  try {
+    upstream = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': [
+          'suggestions.placePrediction.placeId',
+          'suggestions.placePrediction.text.text',
+          'suggestions.placePrediction.structuredFormat.mainText.text',
+          'suggestions.placePrediction.structuredFormat.secondaryText.text',
+        ].join(','),
+      },
+      body: JSON.stringify(upstreamBody),
+      ...(typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+        ? { signal: AbortSignal.timeout(5_000) }
+        : {}),
+    })
+  } catch {
+    throw new ApiError(502, 'ADDRESS_PROVIDER_UNAVAILABLE', 'Dịch vụ gợi ý địa chỉ tạm thời không khả dụng.')
+  }
+  if (!upstream.ok) {
+    throw new ApiError(502, 'ADDRESS_PROVIDER_ERROR', 'Dịch vụ gợi ý địa chỉ không thể xử lý yêu cầu.')
+  }
+  let result
+  try {
+    result = await upstream.json()
+  } catch {
+    throw new ApiError(502, 'ADDRESS_PROVIDER_INVALID_RESPONSE', 'Dịch vụ gợi ý địa chỉ trả về dữ liệu không hợp lệ.')
+  }
+  const suggestions = (Array.isArray(result?.suggestions) ? result.suggestions : []).flatMap((entry) => {
+    const prediction = entry?.placePrediction
+    const label = String(prediction?.text?.text || '').trim()
+    if (!label) return []
+    const value = String(prediction?.structuredFormat?.mainText?.text || label).trim()
+    return [{
+      label: label.slice(0, 500),
+      value: value.slice(0, 200),
+      placeId: String(prediction?.placeId || '').slice(0, 200),
+      ...(type === 'province' ? { province: value.slice(0, 200) } : {}),
+      ...(type === 'ward' ? { province, ward: value.slice(0, 200) } : {}),
+      ...(type === 'street' ? { province, ward, street: value.slice(0, 200) } : {}),
+    }]
+  }).slice(0, 8)
+  return jsonResponse(apiPayload(context, { configured: true, suggestions }))
+}
+
 const methodNotAllowed = (allowed) => {
   throw new ApiError(405, 'METHOD_NOT_ALLOWED', 'Phương thức không được hỗ trợ.', { allowed })
 }
@@ -7625,6 +8128,7 @@ const handleApi = async (request, env, context, url) => {
       service: 'idosi-api',
       databaseConfigured: Boolean(env?.DB?.prepare && env?.DB?.batch),
       identityImageStorageConfigured: Boolean(env?.IDENTITY_IMAGES?.get && env?.IDENTITY_IMAGES?.put),
+      addressSuggestionsConfigured: Boolean(String(env?.GOOGLE_MAPS_API_KEY || '').trim()),
     }))
   }
   if (path === '/api/bootstrap') {
@@ -7651,6 +8155,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/users') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return listUsers(request, env, context)
+  }
+  if (path === '/api/address-suggestions') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getAddressSuggestions(request, env, context, url)
   }
   const identityImageMatch = path.match(/^\/api\/identity-images\/([^/]+)\/(front|back)$/u)
   if (identityImageMatch) {

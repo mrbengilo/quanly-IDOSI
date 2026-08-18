@@ -107,7 +107,7 @@ const makeApp = () => {
 
 const renderPage = (Page) => render(<MemoryRouter><Page /></MemoryRouter>)
 
-describe('business-support store workspace is read-only', () => {
+describe('business-support store workspace permits only the required order controls', () => {
   beforeEach(() => {
     mocked.app = makeApp()
   })
@@ -138,11 +138,11 @@ describe('business-support store workspace is read-only', () => {
     expect(screen.queryByRole('button', { name: /^LƯU$/i })).toBeNull()
   })
 
-  it('shows orders, cashflow and payroll without financial mutation controls', () => {
+  it('allows order correction while keeping cashflow and payroll mutations read-only', () => {
     const orderView = renderPage(StoreOrdersPage)
     expect(screen.getByText('DH-001')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /^Sửa$/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Xóa$/i })).toBeNull()
+    expect(screen.getAllByRole('button', { name: /^Sửa$/i }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: /^Xóa$/i }).length).toBeGreaterThan(0)
     orderView.unmount()
 
     const cashflowView = renderPage(StoreCashflowV2)

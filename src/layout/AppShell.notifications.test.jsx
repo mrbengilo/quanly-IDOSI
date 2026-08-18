@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AppShell from './AppShell'
 
@@ -23,6 +23,9 @@ vi.mock('../state/AppContext', () => ({
       { id: 'N1', storeId: 'CH001', title: 'Don moi 1' },
       { id: 'N2', storeId: 'CH001', title: 'Don moi 2' },
       { id: 'N3', storeId: 'CH002', orderId: 'ORDER-CH002', title: 'Don moi cua hang 2' },
+      { id: 'N4', type: 'support-work-assigned', employeeId: 'HTKD001', assignmentId: 'SWA-1', route: '/support/tasks?assignment=SWA-1', title: 'Cong viec cua toi' },
+      { id: 'N5', type: 'support-work-assigned', employeeId: 'HTKD002', assignmentId: 'SWA-2', route: '/support/tasks?assignment=SWA-2', title: 'Cong viec nguoi khac' },
+      { id: 'N6', type: 'support-work-submitted', assignmentId: 'SWA-3', route: '/admin/support-employees', title: 'Ho tro KD da gui ket qua' },
     ],
     readNotification: mocked.readNotification,
     clearNotifications: mocked.clearNotifications,
@@ -32,6 +35,11 @@ vi.mock('../state/AppContext', () => ({
     toast: null,
   }),
 }))
+
+function CurrentRoute() {
+  const location = useLocation()
+  return <output data-testid="current-route">{location.pathname}{location.search}</output>
+}
 
 describe('AppShell notifications', () => {
   afterEach(cleanup)
@@ -78,15 +86,48 @@ describe('AppShell notifications', () => {
     render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
 
     expect(screen.getByRole('link', { name: /^Tổng quan$/i }).getAttribute('href')).toBe('/support/overview')
-    expect(screen.getByRole('link', { name: /^Tổng quan hệ thống$/i }).getAttribute('href')).toBe('/admin/overview')
     expect(screen.getByRole('link', { name: /^Cửa hàng$/i })).toBeTruthy()
     expect(screen.getAllByText('Hỗ trợ KD').length).toBeGreaterThan(0)
     expect(screen.getByRole('link', { name: /Khối văn phòng/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Quản lý nhân viên hệ thống/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Quản lý cửa hàng$/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Lịch sử sửa\/xóa đơn hàng/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Công việc được giao/i }).getAttribute('href')).toBe('/support/tasks')
+    expect(screen.getByRole('link', { name: /Lịch sử chỉnh sửa đơn hàng/i })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Cài đặt$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Cài đặt chính sách/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
+  })
+
+  it('shows a support-work notification only to its assigned support employee', async () => {
+    mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001', code: 'HTKD001' }
+    mocked.readNotification.mockResolvedValue({ ok: true })
+    render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    expect(screen.getByText('Cong viec cua toi')).toBeTruthy()
+    expect(screen.queryByText('Cong viec nguoi khac')).toBeNull()
+    fireEvent.click(screen.getByText('Cong viec cua toi'))
+    await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N4'))
+  })
+
+  it('normalizes a submitted-work notification to the existing Admin support route', async () => {
+    mocked.readNotification.mockResolvedValue({ ok: true })
+    render(
+      <MemoryRouter initialEntries={['/admin/overview']}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="*" element={<CurrentRoute />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    fireEvent.click(screen.getByText('Ho tro KD da gui ket qua'))
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/business-support'))
+    expect(mocked.readNotification).toHaveBeenCalledWith('N6')
   })
 
   it('locks a store manager to the assigned store workspace', () => {

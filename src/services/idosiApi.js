@@ -97,6 +97,14 @@ export const apiCommand = (type, payload, {
 
 export const apiListUsers = () => request('/api/users')
 
+export const apiAddressSuggestions = (params = {}) => {
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && String(value).trim()) query.set(key, String(value).trim())
+  })
+  return request(`/api/address-suggestions?${query.toString()}`)
+}
+
 export const apiGetIdentityImage = async (employeeId, side, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
   const normalizedSide = side === 'back' ? 'back' : 'front'
   const controller = new AbortController()

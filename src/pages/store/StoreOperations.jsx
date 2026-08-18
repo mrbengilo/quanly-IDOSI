@@ -42,6 +42,7 @@ import {
   TableFooter,
   TableWrap,
 } from '../../components/UI'
+import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { cashSeries, shifts } from '../../data'
 import { useApp } from '../../state/AppContext'
 import {
@@ -604,7 +605,7 @@ export function StoreEmployees() {
         </TableWrap>
         <TableFooter shown={filtered.length} total={filtered.length} />
       </Card>
-      {canManageStore && <Drawer open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
+      {canManageStore && <Modal wide open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
         <form className="form-stack" onSubmit={save}>
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
@@ -625,11 +626,10 @@ export function StoreEmployees() {
             <Field label="Vị trí công việc" required><Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select></Field>
           </div>
           <h3>Địa chỉ</h3>
-          <div className="form-grid">
-            <Field label="Tỉnh / Thành phố" required><Input value={form.province} onChange={updateField('province')} placeholder="Ví dụ: TP. Hồ Chí Minh" /></Field>
-            <Field label="Phường / Xã" required><Input value={form.ward} onChange={updateField('ward')} placeholder="Nhập phường/xã" /></Field>
-            <Field label="Đường, số nhà" required className="span-2"><Input value={form.street} onChange={updateField('street')} placeholder="Nhập số nhà và tên đường" /></Field>
-          </div>
+          <AddressAutocomplete
+            value={{ province: form.province, ward: form.ward, street: form.street }}
+            onChange={(address) => setForm((current) => ({ ...current, ...address }))}
+          />
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
             <Field label="Tên đăng nhập" required><Input autoComplete="username" value={form.username} onChange={updateField('username')} placeholder="Ví dụ: nguyenvana" /></Field>
@@ -644,7 +644,7 @@ export function StoreEmployees() {
           </div>
           <InfoNote>Vì an toàn dữ liệu, hệ thống chỉ lưu số CCCD và không lưu tệp ảnh CCCD.</InfoNote>
         </form>
-      </Drawer>}
+      </Modal>}
     </div>
   )
 }

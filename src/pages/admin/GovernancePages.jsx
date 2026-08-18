@@ -28,6 +28,7 @@ import {
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
 import { money, shortDate, today } from '../../utils'
+import { orderAuditChanges } from './orderAuditUtils'
 
 const displayDateTime = (value) => {
   const date = new Date(value)
@@ -35,6 +36,12 @@ const displayDateTime = (value) => {
 }
 
 const employeeTypeLabel = (employee = {}) => String(employee.employmentType || employee.employeeType || employee.type || 'Full-Time').toLowerCase().includes('part') ? 'Part-Time' : 'Full-Time'
+
+function OrderAuditChangeList({ record }) {
+  const changes = orderAuditChanges(record)
+  if (!changes.length) return <span>—</span>
+  return <div className="audit-change-list">{changes.map((change) => <div className="audit-change-item" key={change.field}><strong>{change.label}</strong><span><del>{change.before}</del><b aria-hidden="true">→</b><ins>{change.after}</ins></span></div>)}</div>
+}
 
 export function PolicySettings() {
   const { policies, policyHistory = [], savePolicies, notify, session } = useApp()
@@ -154,7 +161,7 @@ export function OrderAuditPage() {
   const { orderAudit = [], stores = [] } = useApp()
   const [query, setQuery] = useState('')
   const rows = orderAudit.filter((item) => !query || [item.orderCode, item.actor?.name, item.reason].some((value) => String(value || '').toLowerCase().includes(query.toLowerCase())))
-  return <div className="page"><PageHeader title="LỊCH SỬ SỬA VÀ XÓA ĐƠN HÀNG" subtitle="Đối soát dữ liệu trước/sau của mọi thao tác ảnh hưởng doanh thu." icon={History} /><Card title="Nhật ký đơn hàng" action={<SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, người thao tác..." />}><TableWrap><thead><tr><th>Thời gian</th><th>Người thao tác</th><th>Cửa hàng</th><th>Mã đơn</th><th>Thao tác</th><th>Trường thay đổi</th><th>Doanh thu trước</th><th>Doanh thu sau</th><th>Lý do</th></tr></thead><tbody>{rows.map((item) => <tr key={item.id}><td>{displayDateTime(item.createdAt)}</td><td><strong>{item.actor?.name}</strong><small className="table-note">{item.actor?.role}</small></td><td>{stores.find((store) => store.id === item.storeId)?.name || item.storeId}</td><td><strong>{item.orderCode}</strong></td><td><Badge tone={item.action === 'Xóa' ? 'red' : 'orange'}>{item.action}</Badge></td><td>{item.changedFields?.join(', ') || '—'}</td><td>{money(item.revenueBefore)}</td><td>{money(item.revenueAfter)}</td><td>{item.reason || '—'}</td></tr>)}{!rows.length && <tr><td colSpan="9">Chưa có lịch sử sửa hoặc xóa đơn hàng.</td></tr>}</tbody></TableWrap></Card></div>
+  return <div className="page"><PageHeader title="LỊCH SỬ SỬA VÀ XÓA ĐƠN HÀNG" subtitle="Đối soát dữ liệu trước/sau của mọi thao tác ảnh hưởng doanh thu." icon={History} /><Card title="Nhật ký đơn hàng" action={<SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, người thao tác..." />}><TableWrap><thead><tr><th>Thời gian</th><th>Người thao tác</th><th>Cửa hàng</th><th>Mã đơn</th><th>Thao tác</th><th>Chi tiết thay đổi (trước → sau)</th><th>Doanh thu trước</th><th>Doanh thu sau</th><th>Lý do</th></tr></thead><tbody>{rows.map((item) => <tr key={item.id}><td>{displayDateTime(item.createdAt)}</td><td><strong>{item.actor?.name}</strong><small className="table-note">{item.actor?.role}</small></td><td>{stores.find((store) => store.id === item.storeId)?.name || item.storeId}</td><td><strong>{item.orderCode}</strong></td><td><Badge tone={item.action === 'Xóa' ? 'red' : 'orange'}>{item.action}</Badge></td><td><OrderAuditChangeList record={item} /></td><td>{money(item.revenueBefore)}</td><td>{money(item.revenueAfter)}</td><td>{item.reason || '—'}</td></tr>)}{!rows.length && <tr><td colSpan="9">Chưa có lịch sử sửa hoặc xóa đơn hàng.</td></tr>}</tbody></TableWrap></Card></div>
 }
 
 export function ResetDataPage() {

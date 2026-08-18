@@ -60,7 +60,7 @@ const LOCAL_PROFILE_CREDENTIAL_KEYS = new Set([
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const REMOTE_ARRAY_KEYS = [
-  'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'officeAdjustments',
+  'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'supportWorkAssignments', 'officeAdjustments',
   'orders', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
   'importVouchers', 'auditLogs', 'deletedStores', 'deletedEmployees', 'supportTransfers',
@@ -343,6 +343,7 @@ export const createInitialState = () => {
     attendance: clone(attendanceSeed),
     schedule: clone(scheduleSeed),
     tasks: clone(tasksSeed).map((task) => normalizeTask(task, storesSeed[0]?.id)),
+    supportWorkAssignments: [],
     officeAdjustments: clone(officeAdjustmentsSeed),
     activeStoreId: storesSeed[0]?.id || null,
     activeAttendanceId: null,
@@ -1020,7 +1021,9 @@ export function AppProvider({ children }) {
           ? 'office'
           : 'store'
     if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền tạo nhân viên.' }
-    if (['business_support', 'store_manager'].includes(requestedUnit) && actorRole !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo tài khoản cho vai trò này.' }
+    if (actorRole === 'business_support' && requestedUnit !== 'store_manager') return { ok: false, message: 'Nhân viên Hỗ trợ KD chỉ được tạo tài khoản Quản lý cửa hàng.' }
+    if (requestedUnit === 'business_support' && actorRole !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo tài khoản Hỗ trợ KD.' }
+    if (requestedUnit === 'store_manager' && !['admin', 'business_support'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền tạo Quản lý cửa hàng.' }
     if (requestedUnit === 'office' && actorRole !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo nhân viên Văn Phòng.' }
     const scopedStoreId = actorRole === 'store_manager' ? state.session.storeId : payload.storeId
     const normalizedPayload = { ...payload, unit: requestedUnit, storeId: requestedUnit === 'store' ? scopedStoreId || state.activeStoreId : scopedStoreId }
@@ -1077,6 +1080,7 @@ export function AppProvider({ children }) {
   const updateEmployee = async (id, payload) => {
     const actorRole = normalizeAuthRole(state.session?.role)
     if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền cập nhật nhân viên.' }
+    if (actorRole === 'business_support') return { ok: false, message: 'Nhân viên Hỗ trợ KD không được sửa tài khoản nhân viên.' }
     if (hasDuplicateAccount(payload, id)) {
       notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
       return { ok: false }
@@ -1315,6 +1319,126 @@ export function AppProvider({ children }) {
     return { ok: true, tasks: nextTasks }
   }
 
+  const assignSupportWork = async (payload = {}) => {
+    if (normalizeAuthRole(state.session?.role) !== 'admin') return { ok: false, message: 'Chỉ Admin được giao việc cho nhân viên hỗ trợ kinh doanh.' }
+    const date = String(payload.date || '').trim()
+    const employeeId = String(payload.employeeId || '').trim()
+    const employee = state.employees.find((item) => accountKey(item) === employeeId && isBusinessSupportUnit(item.unit))
+    const tasks = (Array.isArray(payload.tasks) ? payload.tasks : [])
+      .map((task) => ({ id: String(task.id || uid('CVHT')), name: String(task.name || '').trim(), description: String(task.description || '').trim() }))
+      .filter((task) => task.name)
+    if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) return { ok: false, message: 'Ngày giao việc không hợp lệ.' }
+    if (!employee) return { ok: false, message: 'Không tìm thấy nhân viên hỗ trợ kinh doanh.' }
+    if (!tasks.length) return { ok: false, message: 'Cần có ít nhất một công việc.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('support_work.assign', { date, employeeId, tasks })
+        notify(`Đã gửi ${tasks.length} công việc đến ${employee.name}.`)
+        return { ok: true, assignment: result.assignment, notification: result.notification }
+      } catch (error) {
+        notify(error.message || 'Không thể giao việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const assignment = {
+      id: uid('CVHT'),
+      date,
+      employeeId,
+      employeeName: employee.name,
+      tasks: tasks.map((task) => ({ ...task, completed: false, completedAt: null, completedBy: null })),
+      status: 'assigned',
+      incompleteReason: '',
+      assignedAt: timestamp,
+      assignedBy: actor,
+      updatedAt: timestamp,
+      submittedAt: null,
+      history: [{
+        action: 'Giao việc',
+        at: timestamp,
+        actor,
+        details: { tasks: tasks.map((task) => ({ ...task, completed: false })) },
+      }],
+    }
+    const notification = {
+      id: uid('NTF'),
+      type: 'support-work-assigned',
+      targetEmployeeId: employeeId,
+      employeeId,
+      assignmentId: assignment.id,
+      route: `/support/tasks?assignment=${encodeURIComponent(assignment.id)}`,
+      title: `Công việc mới ngày ${date}`,
+      message: `Admin đã giao ${tasks.length} công việc cho bạn.`,
+      createdAt: timestamp,
+      readAt: null,
+    }
+    setState((current) => ({
+      ...current,
+      supportWorkAssignments: [assignment, ...(current.supportWorkAssignments || [])],
+      notifications: [notification, ...current.notifications],
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify(`Đã gửi ${tasks.length} công việc đến ${employee.name}.`)
+    return { ok: true, assignment, notification }
+  }
+
+  const updateSupportWork = async (payload = {}) => {
+    const actorRole = normalizeAuthRole(state.session?.role)
+    if (actorRole !== 'business_support') return { ok: false, message: 'Chỉ nhân viên hỗ trợ kinh doanh được cập nhật công việc được giao.' }
+    const assignmentId = String(payload.assignmentId || '').trim()
+    const assignment = (state.supportWorkAssignments || []).find((item) => String(item.id) === assignmentId)
+    const employeeId = String(state.session?.employeeId || state.session?.code || '')
+    if (!assignment || String(assignment.employeeId) !== employeeId) return { ok: false, message: 'Không tìm thấy công việc thuộc tài khoản này.' }
+    const completedById = new Map((Array.isArray(payload.tasks) ? payload.tasks : []).map((task) => [String(task.id), Boolean(task.completed)]))
+    const timestamp = new Date().toISOString()
+    const nextTasks = (assignment.tasks || []).map((task) => {
+      if (!completedById.has(String(task.id))) return task
+      const completed = completedById.get(String(task.id))
+      return {
+        ...task,
+        completed,
+        completedAt: completed ? task.completedAt || timestamp : null,
+        completedBy: completed ? state.session?.name || employeeId : null,
+      }
+    })
+    const incomplete = nextTasks.some((task) => !task.completed)
+    const reason = String(payload.incompleteReason || '').trim()
+    if (payload.submit && incomplete && !reason) return { ok: false, message: 'Vui lòng nhập lý do khi chưa hoàn thành hết công việc.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('support_work.update', {
+          assignmentId,
+          tasks: nextTasks.map((task) => ({ id: task.id, completed: Boolean(task.completed) })),
+          submit: Boolean(payload.submit),
+          incompleteReason: incomplete ? reason : '',
+        })
+        notify(payload.submit ? 'Đã gửi kết quả công việc.' : 'Đã lưu tiến độ công việc.')
+        return { ok: true, assignment: result.assignment }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật công việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const actor = actorSnapshot(state.session)
+    const updated = {
+      ...assignment,
+      tasks: nextTasks,
+      status: payload.submit ? (incomplete ? 'incomplete' : 'completed') : nextTasks.some((task) => task.completed) ? 'in_progress' : 'assigned',
+      incompleteReason: incomplete ? reason : '',
+      updatedAt: timestamp,
+      submittedAt: payload.submit ? timestamp : assignment.submittedAt || null,
+      history: [...(assignment.history || []), { action: payload.submit ? 'Gửi kết quả' : 'Lưu tiến độ', at: timestamp, actor }],
+    }
+    setState((current) => ({
+      ...current,
+      supportWorkAssignments: (current.supportWorkAssignments || []).map((item) => item.id === assignment.id ? updated : item),
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify(payload.submit ? 'Đã gửi kết quả công việc.' : 'Đã lưu tiến độ công việc.')
+    return { ok: true, assignment: updated }
+  }
+
   const saveSchedule = (employeeIds, shiftId, details = {}) => {
     updateCollection('schedule', (items) => {
       const scheduleDate = details.date || today()
@@ -1513,7 +1637,7 @@ export function AppProvider({ children }) {
   }
 
   const updateOrder = async (id, payload = {}) => {
-    if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Admin được sửa đơn hàng.' }
+    if (!['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))) return { ok: false, message: 'Tài khoản không có quyền sửa đơn hàng.' }
     const previous = state.orders.find((item) => item.id === id && !item.deletedAt)
     if (!previous) return { ok: false, message: 'Không tìm thấy đơn hàng.' }
     const reason = String(payload.reason || '').trim()
@@ -1550,7 +1674,7 @@ export function AppProvider({ children }) {
   }
 
   const deleteOrder = async (id, reason = '') => {
-    if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Admin được xóa đơn hàng.' }
+    if (!['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))) return { ok: false, message: 'Tài khoản không có quyền xóa đơn hàng.' }
     const previous = state.orders.find((item) => item.id === id && !item.deletedAt)
     if (!previous || previous.source === 'legacy-opening-balance') return { ok: false, message: 'Không thể xóa bản ghi doanh thu chuyển tiếp.' }
     const normalizedReason = String(reason || '').trim()
@@ -2491,6 +2615,8 @@ export function AppProvider({ children }) {
     deleteImport,
     setTaskDone,
     replaceTasks,
+    assignSupportWork,
+    updateSupportWork,
     saveSchedule,
     changeAdminPassword,
     verifyCurrentPassword,

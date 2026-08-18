@@ -164,7 +164,7 @@ export function StoreOrdersPage() {
   const app = useStoreData()
   const [searchParams] = useSearchParams()
   const { storeId, store, orders = [], employees = [], updateOrder, deleteOrder, notify } = app
-  const canManageOrders = app.session?.role === 'admin'
+  const canManageOrders = ['admin', 'business_support', 'manager'].includes(app.session?.role)
   const [view, setView] = useState('shift')
   const [query, setQuery] = useState('')
   const [date, setDate] = useState('')
