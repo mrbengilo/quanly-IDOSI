@@ -36,7 +36,7 @@ import {
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { useApp } from '../../state/AppContext'
 import { apiGetIdentityImage } from '../../services/idosiApi'
-import { shortDate, today } from '../../utils'
+import { formatMoneyInput, money, shortDate, today } from '../../utils'
 import {
   officeArrivalMinutes,
   officeArrivalStatus,
@@ -46,7 +46,6 @@ import {
   officeRecordDate,
 } from '../employee/officeAttendance'
 import {
-  EMPLOYMENT_TYPES,
   ROLE_KEYS,
   emptyRoleProfile,
   formatRoleDate,
@@ -54,6 +53,7 @@ import {
   roleProfileAddress,
   roleProfileCode,
   roleEmploymentType,
+  roleEmploymentTypes,
   roleProfilePayload,
   roleProfileToForm,
   roleProfilesFromApp,
@@ -160,6 +160,7 @@ function RoleProfileDrawer({
   stores,
   togglePassword,
 }) {
+  const employmentTypes = roleEmploymentTypes(roleKey)
   return (
     <Modal
       wide
@@ -188,7 +189,12 @@ function RoleProfileDrawer({
           <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng 0"><Input type="tel" inputMode="numeric" maxLength={10} value={form.phone} onChange={onChange('phone')} placeholder="0901234567" /></Field>
           <Field label="CCCD" required hint="CCCD phải gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={onChange('cccd')} placeholder="012345678901" /></Field>
           <Field label="Ngày bắt đầu làm" required hint="Hiển thị trong danh sách theo dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={onChange('startDate')} /></Field>
-          <Field label="Loại nhân viên" required><Select value={form.employmentType} onChange={onChange('employmentType')}>{EMPLOYMENT_TYPES.map((type) => <option key={type}>{type}</option>)}</Select></Field>
+          <Field label="Loại nhân viên" required><Select value={form.employmentType} onChange={onChange('employmentType')}>{employmentTypes.map((type) => <option key={type}>{type}</option>)}</Select></Field>
+          {roleKey === ROLE_KEYS.storeManager && <>
+            <Field label="Lương cơ bản" required hint={form.employmentType === 'Part-Time' ? 'Đơn vị đồng/giờ' : 'Đơn vị đồng/tháng'}><Input inputMode="numeric" value={form.baseSalary} onChange={onChange('baseSalary')} placeholder={form.employmentType === 'Part-Time' ? '35,000' : '8,000,000'} /></Field>
+            <Field label="Số ngày công quy định/tháng" required hint="Từ 1 đến 31 ngày"><Input type="number" inputMode="numeric" min="1" max="31" step="1" value={form.standardWorkDays} onChange={onChange('standardWorkDays')} placeholder="26" /></Field>
+            <Field label="Số giờ làm quy định/tháng" required hint="Lớn hơn 0 và không vượt quá 744 giờ"><Input type="number" inputMode="decimal" min="0.01" max="744" step="0.01" value={form.requiredMonthlyHours} onChange={onChange('requiredMonthlyHours')} placeholder="208" /></Field>
+          </>}
           <Field label="Vị trí công việc" required hint="Vị trí cố định theo vai trò tài khoản"><Input value={form.position} readOnly /></Field>
         </div>
 
@@ -228,6 +234,7 @@ function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDel
   const [typeFilter, setTypeFilter] = useState('all')
   const [storeFilter, setStoreFilter] = useState('all')
   const normalizedQuery = normalize(query)
+  const employmentTypes = roleEmploymentTypes(roleKey)
   const rows = profiles.filter((profile) => {
     const searchable = [roleProfileCode(profile), profile.name, profile.username, profile.phone, profile.cccd, profile.position, roleProfileAddress(profile)].join(' ').toLocaleLowerCase('vi-VN')
     return (!normalizedQuery || searchable.includes(normalizedQuery))
@@ -238,11 +245,11 @@ function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDel
   return <>
     <div className="metric-grid metric-grid--four">
       <MetricCard label="Tổng nhân sự" value={profiles.length} suffix="nhân viên" icon={Users} tone="blue" compact />
-      {EMPLOYMENT_TYPES.map((type) => <MetricCard key={type} label={type} value={profiles.filter((profile) => profileType(profile) === type).length} suffix="nhân viên" icon={UserCheck} tone={employmentTypeTone(type)} compact />)}
+      {employmentTypes.map((type) => <MetricCard key={type} label={type} value={profiles.filter((profile) => profileType(profile) === type).length} suffix="nhân viên" icon={UserCheck} tone={employmentTypeTone(type)} compact />)}
     </div>
     <Card>
       <div className="card__subheader">
-        <div className="filter-pills"><button type="button" className={typeFilter === 'all' ? 'active' : ''} onClick={() => setTypeFilter('all')}>Tất cả ({profiles.length})</button>{EMPLOYMENT_TYPES.map((type) => <button type="button" key={type} className={typeFilter === type ? 'active' : ''} onClick={() => setTypeFilter(type)}>{type}</button>)}</div>
+        <div className="filter-pills"><button type="button" className={typeFilter === 'all' ? 'active' : ''} onClick={() => setTypeFilter('all')}>Tất cả ({profiles.length})</button>{employmentTypes.map((type) => <button type="button" key={type} className={typeFilter === type ? 'active' : ''} onClick={() => setTypeFilter(type)}>{type}</button>)}</div>
         <div>
           <SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." />
           {roleKey === ROLE_KEYS.storeManager && <Select aria-label="Lọc theo cửa hàng" value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)}><option value="all">Tất cả cửa hàng</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select>}
@@ -250,7 +257,7 @@ function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDel
         </div>
       </div>
       <TableWrap>
-        <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th>{roleKey === ROLE_KEYS.storeManager && <th>Cửa hàng quản lý</th>}<th>Liên hệ / CCCD</th><th>Địa chỉ</th><th>Vị trí</th><th>Hình CCCD</th>{canEdit && <th>Thao tác</th>}</tr></thead>
+        <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th>{roleKey === ROLE_KEYS.storeManager && <><th>Cửa hàng quản lý</th><th>Lương & định mức</th></>}<th>Liên hệ / CCCD</th><th>Địa chỉ</th><th>Vị trí</th><th>Hình CCCD</th>{canEdit && <th>Thao tác</th>}</tr></thead>
         <tbody>
           {rows.map((profile) => {
             const storeId = profile.storeId === 'OFFICE' ? '' : profile.storeId || profile.assignedStoreId
@@ -262,6 +269,7 @@ function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDel
               <td><Badge tone={employmentTypeTone(type)}>{type}</Badge></td>
               <td><strong>{formatRoleDate(profile.startDate || profile.joinDate || profile.employmentStartDate || profile.hireDate)}</strong></td>
               {roleKey === ROLE_KEYS.storeManager && <td><strong>{store?.name || storeId || '—'}</strong><small className="table-note">{store?.id || ''}</small></td>}
+              {roleKey === ROLE_KEYS.storeManager && <td><strong>{money(profile.baseSalary || profile.monthlySalary || profile.salary)}{type === 'Part-Time' ? '/giờ' : '/tháng'}</strong><small className="table-note">{Number(profile.standardWorkDays || 0)} ngày · {Number(profile.requiredMonthlyHours || 0)} giờ/tháng</small></td>}
               <td>{profile.phone || '—'}<small className="table-note">CCCD: {profile.cccd || profile.citizenId || '—'}</small></td>
               <td className="address-cell">{roleProfileAddress(profile)}</td>
               <td>{profile.position || profile.workPosition || '—'}</td>
@@ -276,7 +284,7 @@ function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDel
               {canEdit && <td><div className="row-actions"><button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button><button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button></div></td>}
             </tr>
           })}
-          {!rows.length && <tr><td colSpan={(roleKey === ROLE_KEYS.storeManager ? 9 : 8) + (canEdit ? 1 : 0)}>Chưa có {config.singular} phù hợp.</td></tr>}
+          {!rows.length && <tr><td colSpan={(roleKey === ROLE_KEYS.storeManager ? 10 : 8) + (canEdit ? 1 : 0)}>Chưa có {config.singular} phù hợp.</td></tr>}
         </tbody>
       </TableWrap>
       <TableFooter shown={rows.length} total={rows.length} />
@@ -431,6 +439,7 @@ function RoleManagement({ roleKey }) {
     let value = event.target.value
     if (field === 'cccd') value = value.replace(/\D/gu, '').slice(0, 12)
     if (field === 'phone') value = value.replace(/\D/gu, '').slice(0, 10)
+    if (field === 'baseSalary') value = formatMoneyInput(value)
     setForm((current) => ({
       ...current,
       [field]: value,

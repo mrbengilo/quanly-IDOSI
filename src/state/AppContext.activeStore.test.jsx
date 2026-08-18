@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { createRef, forwardRef, useImperativeHandle } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AppProvider, createInitialState, useApp } from './AppContext'
+import { AppProvider, createInitialState, SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY, useApp } from './AppContext'
 
 const api = vi.hoisted(() => ({
   apiBootstrapState: vi.fn(),
@@ -37,6 +37,15 @@ const supportUser = {
   version: 1,
 }
 
+const adminUser = {
+  id: 'USER-ADMIN',
+  username: 'admin',
+  displayName: 'Admin',
+  role: 'admin',
+  status: 'active',
+  version: 1,
+}
+
 const makeRemoteState = (activeStoreId = 'STORE-A') => ({
   ...createInitialState(),
   stores: [
@@ -67,6 +76,7 @@ const renderProvider = () => render(<AppProvider><AppProbe ref={appRef} /></AppP
 describe('remote command active-store preservation', () => {
   beforeEach(() => {
     appRef = createRef()
+    sessionStorage.clear()
     const bootstrap = () => ({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
     api.apiLogin.mockResolvedValue({ user: supportUser })
     api.apiBootstrapState.mockImplementation(async () => bootstrap())
@@ -77,6 +87,8 @@ describe('remote command active-store preservation', () => {
 
   afterEach(() => {
     cleanup()
+    sessionStorage.clear()
+    vi.useRealTimers()
     vi.clearAllMocks()
   })
 
@@ -110,5 +122,74 @@ describe('remote command active-store preservation', () => {
     })
 
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+  })
+
+  it('retries pending reset cleanup with the exact payload and same idempotency key', async () => {
+    const adminBootstrap = () => ({ user: adminUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
+    api.apiLogin.mockResolvedValue({ user: adminUser })
+    api.apiBootstrapState.mockImplementation(async () => adminBootstrap())
+    api.apiGetState.mockImplementation(async () => adminBootstrap())
+    api.apiListUsers.mockResolvedValue({ users: [adminUser] })
+    api.apiCommand
+      .mockRejectedValueOnce(Object.assign(new Error('cleanup pending'), { code: 'RESET_CLEANUP_PENDING' }))
+      .mockResolvedValueOnce({ version: 2, state: makeRemoteState('STORE-A') })
+
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('admin', 'password')).ok).toBe(true)
+    })
+    await act(async () => {
+      expect((await appRef.current.resetAllData()).ok).toBe(true)
+    })
+
+    const resetCalls = api.apiCommand.mock.calls.filter(([type]) => type === 'system.reset_all')
+    expect(resetCalls).toHaveLength(2)
+    expect(resetCalls[0][1]).toEqual({ confirmation: 'RESET_ALL_DATA' })
+    expect(resetCalls[1][1]).toEqual({ confirmation: 'RESET_ALL_DATA' })
+    expect(resetCalls[0][2].idempotencyKey).toBe(resetCalls[1][2].idempotencyKey)
+    expect(sessionStorage.getItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY)).toBeNull()
+  })
+
+  it('reuses a pending reset key after retries are exhausted and the provider reloads', async () => {
+    vi.useFakeTimers()
+    const adminBootstrap = () => ({ user: adminUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
+    api.apiLogin.mockResolvedValue({ user: adminUser })
+    api.apiBootstrapState.mockImplementation(async () => adminBootstrap())
+    api.apiGetState.mockImplementation(async () => adminBootstrap())
+    api.apiListUsers.mockResolvedValue({ users: [adminUser] })
+    const pending = Object.assign(new Error('cleanup pending'), { code: 'RESET_CLEANUP_PENDING' })
+    api.apiCommand.mockRejectedValue(pending)
+
+    const firstRender = renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('admin', 'password')).ok).toBe(true)
+    })
+    let firstResult
+    await act(async () => {
+      const resetPromise = appRef.current.resetAllData()
+      await vi.runAllTimersAsync()
+      firstResult = await resetPromise
+    })
+    expect(firstResult.ok).toBe(false)
+    const persistedKey = sessionStorage.getItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY)
+    expect(persistedKey).toMatch(/^system\.reset_all:/)
+    const exhaustedCalls = api.apiCommand.mock.calls.filter(([type]) => type === 'system.reset_all')
+    expect(exhaustedCalls).toHaveLength(4)
+    expect(new Set(exhaustedCalls.map(([, , options]) => options.idempotencyKey))).toEqual(new Set([persistedKey]))
+
+    firstRender.unmount()
+    appRef = createRef()
+    api.apiCommand.mockResolvedValue({ version: 2, state: makeRemoteState('STORE-A') })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('admin', 'password')).ok).toBe(true)
+    })
+    await act(async () => {
+      expect((await appRef.current.resetAllData()).ok).toBe(true)
+    })
+
+    const allResetCalls = api.apiCommand.mock.calls.filter(([type]) => type === 'system.reset_all')
+    expect(allResetCalls.at(-1)[2].idempotencyKey).toBe(persistedKey)
+    expect(sessionStorage.getItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY)).toBeNull()
   })
 })

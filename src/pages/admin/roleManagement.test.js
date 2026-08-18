@@ -9,6 +9,7 @@ import { BusinessSupportManagement, StoreManagerManagement } from './RoleManagem
 import {
   EMPLOYMENT_TYPES,
   ROLE_KEYS,
+  STORE_MANAGER_EMPLOYMENT_TYPES,
   emptyRoleProfile,
   formatRoleDate,
   nextRoleCode,
@@ -47,6 +48,9 @@ const validForm = (roleKey = ROLE_KEYS.businessSupport) => ({
   username: roleKey === ROLE_KEYS.storeManager ? 'ql_ch_01' : 'support_an',
   password: 'SafePass123',
   storeId: roleKey === ROLE_KEYS.storeManager ? 'CH001' : '',
+  baseSalary: roleKey === ROLE_KEYS.storeManager ? '12,000,000' : '',
+  standardWorkDays: '26',
+  requiredMonthlyHours: roleKey === ROLE_KEYS.storeManager ? '208' : '',
 })
 
 const baseApp = (role) => ({
@@ -118,6 +122,26 @@ describe('admin role management helpers', () => {
     expect(errors).toContain('CCCD phải gồm đúng 12 chữ số.')
     expect(errors).toContain('Loại nhân viên không hợp lệ.')
     expect(EMPLOYMENT_TYPES).toEqual(['Full-Time', 'Part-Time', 'Thực Tập Sinh'])
+    expect(STORE_MANAGER_EMPLOYMENT_TYPES).toEqual(['Full-Time', 'Part-Time'])
+  })
+
+  it('validates every store-manager compensation target', () => {
+    const errors = validateRoleProfile({
+      form: {
+        ...validForm(ROLE_KEYS.storeManager),
+        employmentType: 'Thực Tập Sinh',
+        baseSalary: '0',
+        standardWorkDays: '32',
+        requiredMonthlyHours: '0',
+      },
+      profiles: [],
+      roleKey: ROLE_KEYS.storeManager,
+    })
+
+    expect(errors).toContain('Loại nhân viên không hợp lệ.')
+    expect(errors).toContain('Lương cơ bản phải là số lớn hơn 0.')
+    expect(errors).toContain('Số ngày công quy định/tháng phải là số nguyên từ 1 đến 31.')
+    expect(errors).toContain('Số giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
   })
 
   it('requires a fresh password when reissuing a purged login for an existing profile', () => {
@@ -144,7 +168,14 @@ describe('admin role management helpers', () => {
       position: 'NV hỗ trợ KD',
       identityImages: { front: 'data:image/png;base64,front', back: 'data:image/png;base64,back' },
     })
-    expect(managerPayload).toMatchObject({ unit: 'store_manager', storeId: 'CH001', position: 'Quản lý cửa hàng' })
+    expect(managerPayload).toMatchObject({
+      unit: 'store_manager',
+      storeId: 'CH001',
+      position: 'Quản lý cửa hàng',
+      baseSalary: 12_000_000,
+      standardWorkDays: 26,
+      requiredMonthlyHours: 208,
+    })
     expect(supportPayload).not.toHaveProperty('id')
     expect(supportPayload).not.toHaveProperty('code')
     expect(supportPayload).not.toHaveProperty('salary')
@@ -210,7 +241,7 @@ describe('role management permissions and form', () => {
     expect(screen.queryByRole('button', { name: /Xóa Nguyễn An/i })).toBeNull()
   })
 
-  it('shows Admin the minimal store-manager form with assignment first and no removed fields', () => {
+  it('shows Admin the store-manager assignment and compensation form', () => {
     mocked.app = baseApp('admin')
     render(createElement(StoreManagerManagement))
 
@@ -223,10 +254,12 @@ describe('role management permissions and form', () => {
     expect(screen.getByDisplayValue('Quản lý cửa hàng').readOnly).toBe(true)
     expect(screen.getByLabelText('Mặt trước CCCD')).toBeTruthy()
     expect(screen.getByLabelText('Mặt sau CCCD')).toBeTruthy()
-    expect(labels).not.toContain('Lương')
+    expect(labels).toContain('Lương cơ bản')
+    expect(labels).toContain('Số ngày công quy định/tháng')
+    expect(labels).toContain('Số giờ làm quy định/tháng')
+    expect([...screen.getByLabelText(/Loại nhân viên/i).options].map((option) => option.textContent)).toEqual(['Full-Time', 'Part-Time'])
     expect(labels).not.toContain('Trạng thái')
     expect(labels).not.toContain('Giờ bắt đầu')
-    expect(labels).not.toContain('Số ngày công quy định')
     expect(labels).not.toContain('Giới tính')
     expect(labels).not.toContain('Ngày sinh')
   })
@@ -245,7 +278,12 @@ describe('role management permissions and form', () => {
     expect(screen.queryByRole('button', { name: /Xóa Quản lý một/i })).toBeNull()
 
     fireEvent.click(screen.getAllByRole('button', { name: /Thêm tài khoản/i })[0])
-    expect(screen.getByRole('dialog')).toBeTruthy()
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toBeTruthy()
+    expect(screen.getByLabelText(/Lương cơ bản/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Số ngày công quy định\/tháng/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Số giờ làm quy định\/tháng/i)).toBeTruthy()
+    expect([...screen.getByLabelText(/Loại nhân viên/i).options].map((option) => option.textContent)).toEqual(['Full-Time', 'Part-Time'])
   })
 })
 

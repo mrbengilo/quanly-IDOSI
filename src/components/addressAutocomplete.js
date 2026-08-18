@@ -5,6 +5,7 @@ export const ADDRESS_SUGGESTION_TYPES = Object.freeze({
 })
 
 const clean = (value) => String(value ?? '').trim()
+const raw = (value) => String(value ?? '')
 
 export const normalizeAddressSuggestion = (suggestion, type) => {
   if (typeof suggestion === 'string') {
@@ -46,28 +47,30 @@ export const normalizeAddressSuggestions = (payload, type) => {
   return [...unique.values()].slice(0, 8)
 }
 
-export const applyAddressSuggestion = (current, type, input, suggestion) => {
-  const value = clean(input)
+export const applyAddressSuggestion = (current, type, input, suggestion, options = {}) => {
+  const isCommitted = Boolean(suggestion || options.commit)
+  const value = isCommitted ? clean(input) : raw(input)
   const next = {
-    province: clean(current?.province),
-    ward: clean(current?.ward),
-    street: clean(current?.street),
+    province: raw(current?.province),
+    ward: raw(current?.ward),
+    street: raw(current?.street),
   }
+  const previousValue = clean(options.previousValue ?? current?.[type])
 
   if (type === ADDRESS_SUGGESTION_TYPES.province) {
-    next.province = clean(suggestion?.province || suggestion?.value || value)
-    if (next.province !== clean(current?.province)) {
+    next.province = suggestion ? clean(suggestion.province || suggestion.value || value) : value
+    if (isCommitted && clean(next.province) !== previousValue) {
       next.ward = ''
       next.street = ''
     }
   } else if (type === ADDRESS_SUGGESTION_TYPES.ward) {
-    next.province = clean(suggestion?.province || next.province)
-    next.ward = clean(suggestion?.ward || suggestion?.value || value)
-    if (next.ward !== clean(current?.ward)) next.street = ''
+    if (suggestion?.province) next.province = clean(suggestion.province)
+    next.ward = suggestion ? clean(suggestion.ward || suggestion.value || value) : value
+    if (isCommitted && clean(next.ward) !== previousValue) next.street = ''
   } else {
-    next.province = clean(suggestion?.province || next.province)
-    next.ward = clean(suggestion?.ward || next.ward)
-    next.street = clean(suggestion?.street || suggestion?.value || value)
+    if (suggestion?.province) next.province = clean(suggestion.province)
+    if (suggestion?.ward) next.ward = clean(suggestion.ward)
+    next.street = suggestion ? clean(suggestion.street || suggestion.value || value) : value
   }
 
   return next

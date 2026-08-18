@@ -17,12 +17,15 @@ describe('address autocomplete helpers', () => {
     ])
   })
 
-  it('resets dependent fields when a parent address field changes', () => {
+  it('preserves spaces and dependent fields while typing, then commits on blur', () => {
     const current = { province: 'Hà Nội', ward: 'Ba Đình', street: 'Kim Mã' }
-    expect(applyAddressSuggestion(current, 'province', 'Hồ Chí Minh')).toEqual({
+    expect(applyAddressSuggestion(current, 'province', 'Hồ ')).toEqual({
+      province: 'Hồ ', ward: 'Ba Đình', street: 'Kim Mã',
+    })
+    expect(applyAddressSuggestion(current, 'province', 'Hồ Chí Minh', null, { commit: true, previousValue: 'Hà Nội' })).toEqual({
       province: 'Hồ Chí Minh', ward: '', street: '',
     })
-    expect(applyAddressSuggestion(current, 'ward', 'Cửa Nam')).toEqual({
+    expect(applyAddressSuggestion(current, 'ward', 'Cửa Nam', null, { commit: true, previousValue: 'Ba Đình' })).toEqual({
       province: 'Hà Nội', ward: 'Cửa Nam', street: '',
     })
   })

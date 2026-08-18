@@ -49,6 +49,7 @@ import {
 
 const AppContext = createContext(null)
 export const STORAGE_KEY = 'idosi-state-v2'
+export const SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY = 'idosi-system-reset-all-idempotency-key'
 const LEGACY_STORAGE_KEY = 'idosi-manager-state-v1'
 const ACCOUNT_CREDENTIAL_EPOCH = 1
 const LOCAL_CACHE_PRIVACY_EPOCH = 1
@@ -422,7 +423,7 @@ export const createInitialState = () => {
   }
 }
 
-const hydrateState = (stored) => {
+export const hydrateState = (stored) => {
   const base = createInitialState()
   if (!stored || typeof stored !== 'object') return base
   const filteredStored = Object.fromEntries(Object.entries(stored).filter(([key]) => !['managerPayroll', 'profitShares'].includes(key)))
@@ -432,7 +433,9 @@ const hydrateState = (stored) => {
   const employees = Array.isArray(safeStored.employees)
     ? safeStored.employees.map((employee) => normalizeEmployee(employee, safeStored.activeStoreId || base.activeStoreId))
     : base.employees
-  const stores = Array.isArray(safeStored.stores) && safeStored.stores.length ? safeStored.stores : base.stores
+  const stores = Array.isArray(safeStored.stores) && (safeStored.stores.length || safeStored.systemResetCompletedAt)
+    ? safeStored.stores
+    : base.stores
   const hydrated = {
     ...base,
     ...safeStored,
@@ -448,6 +451,28 @@ const hydrateState = (stored) => {
     activeStoreId: stores.some((store) => store.id === safeStored.activeStoreId) ? safeStored.activeStoreId : stores[0]?.id || null,
   }
   return migrateDomainState(hydrated, { stores: hydrated.stores, imports: hydrated.imports })
+}
+
+export const createLocalSystemResetState = (current = {}) => {
+  const clearedState = createInitialState()
+  REMOTE_ARRAY_KEYS.forEach((key) => { clearedState[key] = [] })
+  clearedState.policyHistory = []
+  clearedState.idempotencyKeys = []
+  clearedState.orderCounters = {}
+  clearedState.importCounter = 0
+  clearedState.systemResetCompletedAt = new Date().toISOString()
+  const retainedAdmins = (Array.isArray(current.adminAccounts) ? current.adminAccounts : [])
+    .filter((account) => normalizeAuthRole(account.role) === 'admin')
+    .map(normalizeAdmin)
+  clearedState.adminAccounts = retainedAdmins.length ? retainedAdmins : clearedState.adminAccounts
+  clearedState.managerAccounts = []
+  clearedState.settings = current.settings && typeof current.settings === 'object' ? { ...current.settings } : clearedState.settings
+  clearedState.session = current.session?.role === 'admin' ? current.session : null
+  clearedState.activeStoreId = null
+  clearedState.activeAttendanceId = null
+  clearedState.checkedInAt = null
+  clearedState.finishedShift = false
+  return clearedState
 }
 
 export const resolveRemoteActiveStoreId = ({ stores = [], session, remoteActiveStoreId, preferredActiveStoreId }) => {
@@ -537,6 +562,34 @@ const readState = () => {
     return hydrateState(parsed)
   } catch {
     return createInitialState()
+  }
+}
+
+const getOrCreateSystemResetIdempotencyKey = (inMemoryKey) => {
+  if (inMemoryKey) return inMemoryKey
+  let persistedKey = ''
+  try {
+    if (typeof sessionStorage !== 'undefined') persistedKey = String(sessionStorage.getItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY) || '')
+  } catch {
+    persistedKey = ''
+  }
+  const key = persistedKey || `system.reset_all:${crypto.randomUUID()}`
+  try {
+    if (typeof sessionStorage !== 'undefined') sessionStorage.setItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY, key)
+  } catch {
+    // The in-memory ref still preserves the key when browser storage is unavailable.
+  }
+  return key
+}
+
+const clearSystemResetIdempotencyKey = (completedKey) => {
+  try {
+    if (typeof sessionStorage === 'undefined') return
+    if (sessionStorage.getItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY) === completedKey) {
+      sessionStorage.removeItem(SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY)
+    }
+  } catch {
+    // A completed reset remains successful even when browser storage is unavailable.
   }
 }
 
@@ -703,6 +756,7 @@ export function AppProvider({ children }) {
     pending: null,
     timer: null,
     lastSerialized: '',
+    systemResetIdempotencyKey: null,
   })
 
   const activateRemotePayload = (payload, loginUser, preferredActiveStoreId = null) => {
@@ -2799,6 +2853,43 @@ export function AppProvider({ children }) {
     return { ok: true, state: demoState }
   }
 
+  const resetAllData = async () => {
+    if (state.session?.role !== 'admin') {
+      notify('Chỉ Admin được xóa toàn bộ dữ liệu hệ thống.', 'info')
+      return { ok: false, message: 'Chỉ Admin được xóa toàn bộ dữ liệu hệ thống.' }
+    }
+    if (apiRef.current.enabled) {
+      const payload = { confirmation: 'RESET_ALL_DATA' }
+      const idempotencyKey = getOrCreateSystemResetIdempotencyKey(apiRef.current.systemResetIdempotencyKey)
+      apiRef.current.systemResetIdempotencyKey = idempotencyKey
+      const retryDelays = [250, 750, 1500]
+      try {
+        let result
+        for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+          try {
+            result = await runRemoteDomainCommand('system.reset_all', payload, idempotencyKey)
+            break
+          } catch (error) {
+            if (error.code !== 'RESET_CLEANUP_PENDING' || attempt === retryDelays.length) throw error
+            await new Promise((resolve) => window.setTimeout(resolve, retryDelays[attempt]))
+          }
+        }
+        clearSystemResetIdempotencyKey(idempotencyKey)
+        apiRef.current.systemResetIdempotencyKey = null
+        notify('Đã xóa toàn bộ dữ liệu và tài khoản; tài khoản Admin được giữ lại.')
+        return { ok: true, ...result }
+      } catch (error) {
+        notify(error.message || 'Không thể xóa toàn bộ dữ liệu hệ thống.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const clearedState = createLocalSystemResetState(state)
+    setState(clearedState)
+    notify('Đã xóa toàn bộ dữ liệu và tài khoản; tài khoản Admin được giữ lại.')
+    return { ok: true, state: clearedState }
+  }
+
   const selectedStoreId = state.session?.role === 'store_manager' || state.session?.role === 'employee'
     ? state.session.storeId
     : state.activeStoreId || state.session?.storeId
@@ -2877,6 +2968,7 @@ export function AppProvider({ children }) {
     clockOut: checkOut,
     finishShift,
     resetDemo,
+    resetAllData,
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

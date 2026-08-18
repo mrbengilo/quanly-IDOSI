@@ -254,7 +254,7 @@ export default function AppShell() {
         <button className="sidebar__close" onClick={() => setMobileOpen(false)} aria-label="Đóng menu"><X size={20} /></button>
         <div className="sidebar__brand">
           {isEmployee ? <Brand /> : isStoreWorkspace ? (
-            <div className="store-logo"><span>I</span><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>{systemRoleLabel}</small></div></div>
+            <div className="store-logo"><img src="/favicon.png" alt="Logo IDOSI" /><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>{systemRoleLabel}</small></div></div>
           ) : <Brand subtitle={isBusinessSupport ? 'Hỗ trợ KD' : 'Quản lý toàn hệ thống'} />}
         </div>
         {isStoreWorkspace && isSystemOperator && (

@@ -2745,6 +2745,7 @@ const OPERATIONAL_PROFILE_FIELDS = new Set([
   'unit', 'unitType', 'department', 'role', 'storeId',
   'name', 'phone', 'cccd', 'citizenId', 'address', 'addressDetails', 'startDate', 'joinDate',
   'employmentType', 'position', 'jobPosition', 'username', 'password', 'authUserId',
+  'baseSalary', 'standardWorkDays', 'requiredMonthlyHours',
   'identityImages', 'cccdImages', 'identityCardImages', 'cccdFront', 'cccdBack',
 ])
 
@@ -2920,6 +2921,38 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
   const startDate = optionalCalendarDate(rawStartDate, 'Ngày bắt đầu làm')
   if (!startDate) throw new ApiError(400, 'START_DATE_REQUIRED', 'Ngày bắt đầu làm là bắt buộc.')
   const employmentType = operationalEmploymentType(payload.employmentType ?? previous?.employmentType ?? 'Full-Time')
+  if (unit === 'store_manager' && !['Full-Time', 'Part-Time'].includes(employmentType)) {
+    throw new ApiError(400, 'EMPLOYMENT_TYPE_INVALID', 'Loại nhân viên Quản lý cửa hàng phải là Full-Time hoặc Part-Time.')
+  }
+  const compensationProvided = ['employmentType', 'baseSalary', 'standardWorkDays', 'requiredMonthlyHours']
+    .some((field) => payload[field] !== undefined)
+  const requiresManagerCompensation = unit === 'store_manager' && (!previous || compensationProvided)
+  const rawManagerBaseSalary = payload.baseSalary ?? previous?.baseSalary
+  const rawManagerStandardWorkDays = payload.standardWorkDays ?? previous?.standardWorkDays
+  const rawManagerRequiredMonthlyHours = payload.requiredMonthlyHours ?? previous?.requiredMonthlyHours
+  if (requiresManagerCompensation && [
+    rawManagerBaseSalary, rawManagerStandardWorkDays, rawManagerRequiredMonthlyHours,
+  ].some((value) => value === undefined || value === null || value === '')) {
+    throw new ApiError(400, 'STORE_MANAGER_PAYROLL_FIELDS_REQUIRED', 'Quản lý cửa hàng cần đủ Lương cơ bản, Số ngày công và Số giờ làm quy định mỗi tháng.', {
+      requiredFields: ['baseSalary', 'standardWorkDays', 'requiredMonthlyHours'],
+    })
+  }
+  const managerBaseSalary = unit === 'store_manager'
+    && rawManagerBaseSalary !== undefined
+    ? asVnd(rawManagerBaseSalary, 'Lương cơ bản', { positive: true })
+    : null
+  const managerStandardWorkDays = unit === 'store_manager'
+    ? Number(rawManagerStandardWorkDays)
+    : null
+  const managerRequiredMonthlyHours = unit === 'store_manager'
+    ? Number(rawManagerRequiredMonthlyHours)
+    : null
+  if (requiresManagerCompensation && !validRequiredWorkingDays(managerStandardWorkDays)) {
+    throw new ApiError(400, 'STORE_MANAGER_WORK_DAYS_INVALID', 'Số ngày công quy định mỗi tháng của Quản lý cửa hàng phải là số nguyên từ 1 đến 31.')
+  }
+  if (requiresManagerCompensation && !validRequiredMonthlyHours(managerRequiredMonthlyHours)) {
+    throw new ApiError(400, 'STORE_MANAGER_MONTHLY_HOURS_INVALID', `Số giờ làm quy định mỗi tháng của Quản lý cửa hàng phải lớn hơn 0 và không quá ${MAX_REQUIRED_MONTHLY_HOURS} giờ.`)
+  }
   const position = operationalPosition(payload.position ?? payload.jobPosition ?? previous?.position, unit)
   const preservedMetadata = previous ? Object.fromEntries(Object.entries(previous).filter(([key]) => [
     'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'authUserId', 'authVersion', 'identityImages',
@@ -2938,6 +2971,22 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
     startDate,
     joinDate: startDate,
     employmentType,
+    ...(unit === 'store_manager' ? {
+      payBasis: employmentType === 'Part-Time' ? 'hourly' : 'monthly',
+      salaryBasis: employmentType === 'Part-Time' ? 'hourly' : 'monthly',
+      salaryUnit: employmentType === 'Part-Time' ? 'hour' : 'month',
+      salary: managerBaseSalary,
+      baseSalary: managerBaseSalary,
+      monthlySalary: employmentType === 'Full-Time' ? managerBaseSalary : null,
+      hourlyRate: employmentType === 'Part-Time' ? managerBaseSalary : null,
+      standardWorkDays: validRequiredWorkingDays(managerStandardWorkDays)
+        ? managerStandardWorkDays
+        : null,
+      requiredMonthlyHours: validRequiredMonthlyHours(managerRequiredMonthlyHours)
+        ? managerRequiredMonthlyHours
+        : null,
+      payFormula: employmentType === 'Part-Time' ? 'hourly' : 'monthly-workdays',
+    } : {}),
     position,
     jobPosition: position,
     storeId: store.id,
@@ -4426,6 +4475,7 @@ const RESET_ARRAY_COLLECTIONS = Object.freeze([
   'supportTransfers',
   'operationalResetHistory',
   'supportWorkAssignments',
+  'policyHistory',
 ])
 
 const resetStateSummary = (state) => ({
@@ -4517,6 +4567,357 @@ const systemResetDemoCommand = async (db, actor, body, commandContext) => {
       `).bind(nextStateVersion, commandContext.requestId),
     ],
   }, commandContext)
+}
+
+const RESET_ALL_PENDING_METADATA_KEY = 'system:reset_all_pending'
+const IDENTITY_IMAGE_KEY_PREFIX = 'identity-images/'
+
+const identityImageKeysFromState = (state) => {
+  const keys = new Set()
+  for (const collection of ['employees', 'deletedEmployees']) {
+    for (const profile of Array.isArray(state?.[collection]) ? state[collection] : []) {
+      if (!isPlainRecord(profile?.identityImages)) continue
+      for (const metadata of Object.values(profile.identityImages)) {
+        const key = String(metadata?.key || '')
+        if (key.startsWith(IDENTITY_IMAGE_KEY_PREFIX)) keys.add(key)
+      }
+    }
+  }
+  return keys
+}
+
+const listIdentityImageKeysForReset = async (bucket, state = null) => {
+  if (!bucket?.list || !bucket?.delete) {
+    throw new ApiError(503, 'IDENTITY_IMAGE_STORAGE_UNAVAILABLE', 'Reset toàn bộ dữ liệu cần kho ảnh CCCD có quyền liệt kê và xóa.')
+  }
+  const keys = identityImageKeysFromState(state)
+  let cursor
+  const seenCursors = new Set()
+  try {
+    for (let pageIndex = 0; pageIndex < 10_000; pageIndex += 1) {
+      const page = await bucket.list({ prefix: IDENTITY_IMAGE_KEY_PREFIX, ...(cursor ? { cursor } : {}) })
+      for (const object of Array.isArray(page?.objects) ? page.objects : []) {
+        const key = String(object?.key || '')
+        if (key.startsWith(IDENTITY_IMAGE_KEY_PREFIX)) keys.add(key)
+      }
+      if (!page?.truncated) return [...keys].sort()
+      const nextCursor = String(page.cursor || '')
+      if (!nextCursor || seenCursors.has(nextCursor)) {
+        throw new Error('R2 pagination cursor is missing or repeated')
+      }
+      seenCursors.add(nextCursor)
+      cursor = nextCursor
+    }
+    throw new Error('R2 pagination exceeded the safety limit')
+  } catch (error) {
+    throw new ApiError(503, 'IDENTITY_IMAGE_LIST_FAILED', 'Không thể kiểm kê đầy đủ kho ảnh CCCD trước khi Reset toàn bộ dữ liệu.', {
+      cause: String(error),
+    })
+  }
+}
+
+const purgeAndVerifyIdentityImages = async (bucket, initialKeys = null) => {
+  let keys = Array.isArray(initialKeys) ? [...new Set(initialKeys)].sort() : await listIdentityImageKeysForReset(bucket)
+  try {
+    for (let pass = 0; pass < 3; pass += 1) {
+      for (const key of keys) await bucket.delete(key)
+      keys = await listIdentityImageKeysForReset(bucket)
+      if (!keys.length) return
+    }
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'RESET_CLEANUP_PENDING') throw error
+    throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Dữ liệu D1 đã được Reset nhưng kho ảnh CCCD chưa xóa xong; hãy gửi lại đúng lệnh để tiếp tục.', {
+      cause: String(error),
+    })
+  }
+  throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Dữ liệu D1 đã được Reset nhưng vẫn còn ảnh CCCD; hãy gửi lại đúng lệnh để tiếp tục.', {
+    remainingIdentityImageObjects: keys.length,
+  })
+}
+
+const loadPendingSystemResetAll = (db) => first(db, `
+  SELECT value_json FROM system_metadata WHERE meta_key = ? LIMIT 1
+`, RESET_ALL_PENDING_METADATA_KEY)
+
+const finalizeSystemResetAll = async (db, pendingRow) => {
+  const markerJson = String(pendingRow?.value_json || '')
+  const marker = parseStoredJson(markerJson, null)
+  if (!isPlainRecord(marker) || !isPlainRecord(marker.responseBody) || !isPlainRecord(marker.audit)) {
+    throw new ApiError(500, 'RESET_MARKER_INVALID', 'Trạng thái tiếp tục Reset toàn bộ dữ liệu không hợp lệ.')
+  }
+  const markerGuardSql = `
+    SELECT 1 FROM system_metadata WHERE meta_key = ? AND value_json = ?
+  `
+  const responseJson = JSON.stringify(marker.responseBody)
+  try {
+    await db.batch([
+      db.prepare(`
+        INSERT INTO audit_log (
+          request_id, actor_id, actor_role, action, entity_type, entity_id,
+          before_json, after_json, metadata_json, server_timestamp
+        )
+        SELECT ?, ?, ?, 'system.reset_all', 'system', 'all-application-data', ?, ?, ?, ?
+        WHERE EXISTS (${markerGuardSql})
+      `).bind(
+        marker.requestId,
+        marker.actorId,
+        marker.actorRole,
+        boundedAuditJson(marker.audit.before),
+        boundedAuditJson(marker.audit.after),
+        boundedAuditJson(marker.audit.metadata),
+        marker.serverTime,
+        RESET_ALL_PENDING_METADATA_KEY,
+        markerJson,
+      ),
+      ...receiptStatements(db, {
+        actorId: marker.actorId,
+        idempotencyKey: marker.idempotencyKey,
+        requestHash: marker.requestHash,
+        responseJson,
+        status: 200,
+        createdAt: marker.serverTime,
+        successSql: markerGuardSql,
+        successBindings: [RESET_ALL_PENDING_METADATA_KEY, markerJson],
+      }),
+      db.prepare(`
+        DELETE FROM system_metadata
+        WHERE meta_key = ? AND value_json = ?
+          AND EXISTS (
+            SELECT 1 FROM command_receipts
+            WHERE actor_id = ? AND idempotency_key = ? AND request_hash = ?
+          )
+      `).bind(
+        RESET_ALL_PENDING_METADATA_KEY,
+        markerJson,
+        marker.actorId,
+        marker.idempotencyKey,
+        marker.requestHash,
+      ),
+    ])
+  } catch (error) {
+    const receipt = await loadReceipt(db, marker.actorId, marker.idempotencyKey)
+    const replay = replayReceipt(receipt, marker.requestHash)
+    if (replay) return replay
+    throw new ApiError(500, 'RESET_FINALIZE_FAILED', 'Kho ảnh đã được xóa nhưng không thể hoàn tất biên nhận Reset.', {
+      cause: String(error),
+    })
+  }
+  const receipt = await loadReceipt(db, marker.actorId, marker.idempotencyKey)
+  if (!receipt || await loadPendingSystemResetAll(db)) {
+    throw new ApiError(500, 'RESET_FINALIZE_FAILED', 'Không thể xác nhận hoàn tất Reset toàn bộ dữ liệu.')
+  }
+  return jsonResponse(marker.responseBody)
+}
+
+const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
+  assertAdmin(actor, 'Chỉ Admin được Reset toàn bộ dữ liệu hệ thống.')
+  if (body.type !== 'system.reset_all') {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh hệ thống không được hỗ trợ.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const unsupportedFields = Object.keys(payload).filter((key) => key !== 'confirmation')
+  if (unsupportedFields.length) {
+    throw new ApiError(400, 'RESET_PAYLOAD_INVALID', 'Reset toàn bộ dữ liệu chỉ nhận trường xác nhận.', {
+      fields: unsupportedFields,
+    })
+  }
+  if (payload.confirmation !== 'RESET_ALL_DATA') {
+    throw new ApiError(400, 'RESET_CONFIRMATION_REQUIRED', 'Cần xác nhận chính xác RESET_ALL_DATA để Reset toàn bộ dữ liệu.')
+  }
+
+  const pendingRow = await loadPendingSystemResetAll(db)
+  if (pendingRow) {
+    const pending = parseStoredJson(pendingRow.value_json, null)
+    if (!isPlainRecord(pending)
+      || pending.actorId !== actor.user_id) {
+      throw new ApiError(409, 'RESET_ALREADY_PENDING', 'Một lệnh Reset toàn bộ dữ liệu của Admin khác đang chờ xóa ảnh CCCD.')
+    }
+    await purgeAndVerifyIdentityImages(env?.IDENTITY_IMAGES)
+    return finalizeSystemResetAll(db, pendingRow)
+  }
+
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const [
+    adminAccounts,
+    nonAdminAccounts,
+    removableSessions,
+    receipts,
+    receiptChunks,
+    audits,
+    policies,
+    counters,
+    privateStateScopes,
+    stateCollections,
+    stateEntities,
+  ] = await Promise.all([
+    all(db, "SELECT id FROM users WHERE role = 'admin' ORDER BY id"),
+    first(db, "SELECT COUNT(*) AS count FROM users WHERE role <> 'admin'"),
+    first(db, 'SELECT COUNT(*) AS count FROM sessions WHERE id <> ?', actor.session_id),
+    first(db, 'SELECT COUNT(*) AS count FROM command_receipts'),
+    first(db, 'SELECT COUNT(*) AS count FROM command_receipt_chunks'),
+    first(db, 'SELECT COUNT(*) AS count FROM audit_log'),
+    first(db, 'SELECT COUNT(*) AS count FROM policies'),
+    first(db, 'SELECT COUNT(*) AS count FROM counters'),
+    first(db, "SELECT COUNT(*) AS count FROM app_state WHERE scope_key <> 'global'"),
+    first(db, 'SELECT COUNT(*) AS count FROM state_collections'),
+    first(db, 'SELECT COUNT(*) AS count FROM state_entities'),
+  ])
+  const adminAccountIds = adminAccounts.map(({ id }) => String(id)).sort()
+  const adminIdSet = new Set(adminAccountIds)
+  const preservedAccountSettings = Object.fromEntries(Object.entries(
+    isPlainRecord(state.accountSettings) ? state.accountSettings : {},
+  ).filter(([userId, settings]) => adminIdSet.has(String(userId)) && isPlainRecord(settings)))
+  if (!preservedAccountSettings[actor.user_id] && isPlainRecord(state.settings)) {
+    preservedAccountSettings[actor.user_id] = ownAccountSettings(state, actor)
+  }
+  const identityImageKeys = await listIdentityImageKeysForReset(env?.IDENTITY_IMAGES, state)
+  const nextState = {
+    schemaVersion: Number.isInteger(Number(state.schemaVersion)) && Number(state.schemaVersion) > 0
+      ? Number(state.schemaVersion)
+      : 2,
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    accountSettings: preservedAccountSettings,
+    ...Object.fromEntries(RESET_ARRAY_COLLECTIONS.map((key) => [key, []])),
+  }
+  const purged = {
+    nonAdminAccounts: Number(nonAdminAccounts?.count || 0),
+    sessions: Number(removableSessions?.count || 0),
+    commandReceipts: Number(receipts?.count || 0),
+    commandReceiptChunks: Number(receiptChunks?.count || 0),
+    audits: Number(audits?.count || 0),
+    policies: Number(policies?.count || 0),
+    counters: Number(counters?.count || 0),
+    privateStateScopes: Number(privateStateScopes?.count || 0),
+    stateCollections: Number(stateCollections?.count || 0),
+    stateEntities: Number(stateEntities?.count || 0),
+    identityImageObjectsTargeted: identityImageKeys.length,
+  }
+  const nextStateVersion = Number(current.version) + 1
+  const responseBody = apiPayload(commandContext, {
+    command: body.type,
+    state: projectSharedState(nextState, actor),
+    reset: {
+      purged,
+      preservedAdminAccountIds: adminAccountIds,
+      preservedCurrentAdminSession: true,
+      preservedAdminAccountSettings: Object.keys(preservedAccountSettings).sort(),
+      defaultPolicyCount: Object.keys(DEFAULT_POLICIES).length,
+      identityImagePrefix: IDENTITY_IMAGE_KEY_PREFIX,
+      identityImageStorageVerifiedEmpty: true,
+    },
+    version: nextStateVersion,
+  })
+  const marker = {
+    schema: 1,
+    actorId: actor.user_id,
+    actorRole: actor.role,
+    idempotencyKey: commandContext.idempotencyKey,
+    requestHash: commandContext.hash,
+    requestId: commandContext.requestId,
+    serverTime: commandContext.now,
+    responseBody,
+    audit: {
+      before: resetStateSummary(state),
+      after: resetStateSummary(nextState),
+      metadata: {
+        confirmation: 'RESET_ALL_DATA',
+        purged,
+        preservedAdminAccountIds: adminAccountIds,
+        preservedCurrentAdminSession: true,
+        preservedAdminAccountSettings: Object.keys(preservedAccountSettings).sort(),
+        defaultPoliciesRestored: Object.keys(DEFAULT_POLICIES).sort(),
+        identityImagePrefix: IDENTITY_IMAGE_KEY_PREFIX,
+      },
+    },
+  }
+  const markerJson = JSON.stringify(marker)
+  const guardSql = `
+    EXISTS (
+      SELECT 1 FROM app_state
+      WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+    )
+  `
+  const stateCommit = prepareStateCommit(db, {
+    current,
+    nextState,
+    scope: 'global',
+    currentVersion: Number(current.version),
+    nextVersion: nextStateVersion,
+    now: commandContext.now,
+    actorId: actor.user_id,
+    requestId: commandContext.requestId,
+  })
+  const additionalStatements = [
+    db.prepare(`DELETE FROM app_state WHERE scope_key <> 'global' AND ${guardSql}`)
+      .bind(nextStateVersion, commandContext.requestId),
+    db.prepare(`DELETE FROM audit_log WHERE ${guardSql}`)
+      .bind(nextStateVersion, commandContext.requestId),
+    db.prepare(`DELETE FROM command_receipt_chunks WHERE ${guardSql}`)
+      .bind(nextStateVersion, commandContext.requestId),
+    db.prepare(`DELETE FROM command_receipts WHERE ${guardSql}`)
+      .bind(nextStateVersion, commandContext.requestId),
+    db.prepare(`DELETE FROM sessions WHERE id <> ? AND ${guardSql}`)
+      .bind(actor.session_id, nextStateVersion, commandContext.requestId),
+    db.prepare(`DELETE FROM users WHERE role <> 'admin' AND ${guardSql}`)
+      .bind(nextStateVersion, commandContext.requestId),
+    db.prepare(`DELETE FROM policies WHERE ${guardSql}`)
+      .bind(nextStateVersion, commandContext.requestId),
+    ...Object.entries(DEFAULT_POLICIES).map(([key, value]) => db.prepare(`
+      INSERT INTO policies (
+        policy_key, value_json, version, effective_at, updated_at, updated_by, last_request_id
+      )
+      SELECT ?, ?, 1, ?, ?, ?, ?
+      WHERE ${guardSql}
+    `).bind(
+      key,
+      JSON.stringify(value),
+      commandContext.now,
+      commandContext.now,
+      actor.user_id,
+      commandContext.requestId,
+      nextStateVersion,
+      commandContext.requestId,
+    )),
+    db.prepare(`DELETE FROM counters WHERE ${guardSql}`)
+      .bind(nextStateVersion, commandContext.requestId),
+    db.prepare(`
+      INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
+      SELECT ?, ?, 1, ?
+      WHERE ${guardSql}
+      ON CONFLICT(meta_key) DO UPDATE SET
+        value_json = excluded.value_json,
+        version = system_metadata.version + 1,
+        updated_at = excluded.updated_at
+    `).bind(
+      RESET_ALL_PENDING_METADATA_KEY,
+      markerJson,
+      commandContext.now,
+      nextStateVersion,
+      commandContext.requestId,
+    ),
+  ]
+  let results
+  try {
+    results = await db.batch([
+      stateCommit.mutation,
+      ...stateCommit.externalStatements,
+      ...additionalStatements,
+    ])
+  } catch (error) {
+    const latest = await loadState(db, 'global')
+    throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ trước khi Reset.', {
+      currentVersion: Number(latest?.version || 0),
+      cause: String(error),
+    })
+  }
+  if (changes(results?.[0]) !== 1) {
+    const latest = await loadState(db, 'global')
+    throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ trước khi Reset.', {
+      currentVersion: Number(latest?.version || 0),
+    })
+  }
+  await purgeAndVerifyIdentityImages(env?.IDENTITY_IMAGES, identityImageKeys)
+  return finalizeSystemResetAll(db, await loadPendingSystemResetAll(db))
 }
 
 const asVnd = (value, field, { positive = false } = {}) => {
@@ -8376,6 +8777,9 @@ const executeCommand = async (request, env, context) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context)
   const body = await readJson(request)
+  if (body.type !== 'system.reset_all' && await loadPendingSystemResetAll(db)) {
+    throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Hệ thống đang hoàn tất xóa ảnh CCCD của lần Reset toàn bộ dữ liệu; các lệnh ghi tạm thời bị khóa.')
+  }
   if (user.role === 'business_support' && !businessSupportCommandAllowed(body)) {
     throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD không có quyền thực hiện thao tác này.')
   }
@@ -8421,6 +8825,9 @@ const executeCommand = async (request, env, context) => {
     }
     if (String(body.type || '').startsWith('operational_reset.')) {
       return await operationalResetCommand(db, user, body, commandContext)
+    }
+    if (body.type === 'system.reset_all') {
+      return await systemResetAllCommand(db, user, body, commandContext, env)
     }
     if (body.type === 'system.reset_demo') {
       return await systemResetDemoCommand(db, user, body, commandContext)
@@ -8477,6 +8884,9 @@ const executeCommand = async (request, env, context) => {
 const logout = async (request, env, context) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context)
+  if (await loadPendingSystemResetAll(db)) {
+    throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Không thể đăng xuất phiên Admin đang dùng để hoàn tất Reset toàn bộ dữ liệu.')
+  }
   await db.batch([
     db.prepare('UPDATE sessions SET revoked_at = ?, last_seen_at = ? WHERE id = ? AND revoked_at IS NULL')
       .bind(context.now, context.now, user.session_id),

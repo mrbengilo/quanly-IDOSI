@@ -165,11 +165,14 @@ export function OrderAuditPage() {
 }
 
 export function ResetDataPage() {
-  const { attendance = [], employees = [], stores = [], updateAttendance, restoreOperationalData, resetDemo, auditLogs = [], attendanceAudit = [], operationalResetHistory = [], notify, session } = useApp()
+  const { attendance = [], employees = [], stores = [], updateAttendance, restoreOperationalData, resetAllData, auditLogs = [], attendanceAudit = [], operationalResetHistory = [], notify, session } = useApp()
   const [query, setQuery] = useState('')
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ checkIn: '', checkOut: '', reason: '' })
   const [resetForm, setResetForm] = useState({ dataType: 'orders', storeId: '', fromDate: today(), toDate: today(), employeeId: '', reason: '' })
+  const [systemResetOpen, setSystemResetOpen] = useState(false)
+  const [systemResetConfirmation, setSystemResetConfirmation] = useState('')
+  const [systemResetBusy, setSystemResetBusy] = useState(false)
   const canonicalRole = session?.role === 'manager' ? 'business_support' : session?.role
   const isAdmin = canonicalRole === 'admin'
   const isBusinessSupport = canonicalRole === 'business_support'
@@ -204,11 +207,24 @@ export function ResetDataPage() {
     if (!result?.ok) return notify(result?.message || 'Không thể cập nhật chấm công.', 'info')
     setEditing(null)
   }
-  const restoreDemo = async () => {
-    if (!window.confirm('Khôi phục toàn bộ dữ liệu mẫu?')) return
-    if (typeof resetDemo !== 'function') return notify('Chức năng khôi phục dữ liệu chưa sẵn sàng.', 'info')
-    const result = await resetDemo()
-    if (!result?.ok) notify(result?.message || 'Không thể khôi phục dữ liệu mẫu.', 'info')
+  const closeSystemReset = () => {
+    if (systemResetBusy) return
+    setSystemResetOpen(false)
+    setSystemResetConfirmation('')
+  }
+  const executeSystemReset = async () => {
+    if (!isAdmin || systemResetBusy) return
+    if (systemResetConfirmation !== 'RESET_ALL_DATA') return notify('Vui lòng nhập đúng RESET_ALL_DATA để xác nhận.', 'info')
+    if (typeof resetAllData !== 'function') return notify('Chức năng xóa toàn bộ dữ liệu chưa sẵn sàng.', 'info')
+    setSystemResetBusy(true)
+    try {
+      const result = await resetAllData()
+      if (!result?.ok) return notify(result?.message || 'Không thể xóa toàn bộ dữ liệu hệ thống.', 'info')
+      setSystemResetOpen(false)
+      setSystemResetConfirmation('')
+    } finally {
+      setSystemResetBusy(false)
+    }
   }
   const restoreOperational = async () => {
     if (!isBusinessSupport) return
@@ -232,7 +248,11 @@ export function ResetDataPage() {
   if (!canEditAttendance) {
     return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản này không được truy cập công cụ dữ liệu vận hành." icon={LockKeyhole} /></div>
   }
-  return <div className="page governance-page"><PageHeader title="RESET DỮ LIỆU" subtitle="Khôi phục an toàn lần chỉnh sửa hoặc xóa gần nhất; mọi thao tác đều có nhật ký." icon={RefreshCcw} actions={isAdmin ? <Button variant="danger" icon={RefreshCcw} onClick={restoreDemo}>KHÔI PHỤC DỮ LIỆU MẪU</Button> : null} />
+  return <div className="page governance-page"><PageHeader title="RESET DỮ LIỆU" subtitle="Quản lý dữ liệu hệ thống theo đúng phạm vi quyền; các thao tác vận hành đều có nhật ký." icon={RefreshCcw} />
+    {isAdmin && <Card title="Xóa toàn bộ dữ liệu và tài khoản" className="system-reset-card">
+      <InfoNote tone="orange"><strong>Thao tác không thể hoàn tác.</strong><br />Toàn bộ cửa hàng, hồ sơ nhân viên, tài khoản ngoài Admin, đơn hàng, chấm công, dòng tiền và lịch sử vận hành sẽ bị xóa. Các tài khoản Admin được giữ lại; chỉ phiên Admin hiện tại tiếp tục hoạt động.</InfoNote>
+      <div className="card-actions card-actions--below"><Button variant="danger" icon={Trash2} onClick={() => setSystemResetOpen(true)}>BẮT ĐẦU XÓA DỮ LIỆU</Button></div>
+    </Card>}
     {isBusinessSupport && <Card title="Khôi phục chỉnh sửa/xóa" className="operational-reset-card">
       <InfoNote>Chức năng này chỉ khôi phục phiên bản trước của dữ liệu trong phạm vi đã chọn, không xóa trắng dữ liệu hoặc tài khoản.</InfoNote>
       <div className="form-grid form-grid--3">
@@ -248,6 +268,12 @@ export function ResetDataPage() {
     <Card title="Chấm công theo ca" action={<SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên hoặc ca..." />}><TableWrap><thead><tr><th>Nhân viên</th><th>Cửa hàng</th><th>Ca</th><th>Ngày</th><th>Giờ vào / Kết</th><th>Số giờ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{rows.map((record) => { const employee = employeeById.get(String(record.employeeId || '')); const editable = canEditAttendanceRecord(record); return <tr key={record.id}><td><strong>{employee?.name || record.employeeId}</strong><small className="table-note">{record.employeeId}</small></td><td>{stores.find((store) => store.id === record.storeId)?.name || record.storeId}</td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td>{record.checkIn || '—'} / {record.checkOut || '—'}</td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={record.status === 'Đi trễ' ? 'red' : record.status === 'Đi sớm' ? 'green' : 'blue'}>{record.status}</Badge></td><td>{editable ? <Button variant="outline" onClick={() => openEdit(record)}>Chỉnh sửa</Button> : <span className="table-note">Chỉ xem</span>}</td></tr> })}{!rows.length && <tr><td colSpan="8">Chưa có dữ liệu chấm công phù hợp.</td></tr>}</tbody></TableWrap></Card>
     <Card title="Nhật ký chỉnh sửa gần nhất"><TableWrap><thead><tr><th>Thời gian</th><th>Đối tượng</th><th>Hành động</th><th>Người thực hiện</th></tr></thead><tbody>{recentAudit.map((item, index) => { const isResetHistory = Boolean(item.dataType && item.restoredCount != null); const action = item.action || item.type || (isResetHistory ? 'Khôi phục' : '—'); const isRestore = String(action).toLowerCase().includes('restore') || String(action).toLowerCase().includes('khôi phục'); const entity = item.entity || item.type || (item.dataType === 'orders' ? 'đơn hàng' : item.dataType === 'attendance' ? 'chấm công' : 'dữ liệu'); return <tr key={item.id || `${item.entityId || item.orderId || item.attendanceId}-${index}`}><td>{displayDateTime(item.createdAt)}</td><td>{entity} — {item.entityId || item.orderId || item.attendanceId || item.id || '—'}</td><td>{isRestore ? <Badge tone="green">Khôi phục</Badge> : action}</td><td>{item.actor?.name || item.createdBy?.name || '—'}</td></tr> })}{!recentAudit.length && <tr><td colSpan="4">Chưa có nhật ký chỉnh sửa.</td></tr>}</tbody></TableWrap></Card>
     <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Chỉnh sửa giờ chấm công" footer={<><Button variant="outline" onClick={() => setEditing(null)}>Hủy</Button><Button icon={Save} onClick={save}>LƯU</Button></>}><div className="form-grid"><Field label="Giờ vào" required hint="Định dạng 24 giờ"><Input type="time" value={form.checkIn} onChange={(event) => setForm({ ...form, checkIn: event.target.value })} /></Field><Field label="Giờ kết" hint="Định dạng 24 giờ"><Input type="time" value={form.checkOut} onChange={(event) => setForm({ ...form, checkOut: event.target.value })} /></Field><Field label="Lý do chỉnh sửa" required className="span-2"><textarea maxLength={500} value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder="Nhập lý do để lưu nhật ký kiểm toán" /></Field></div></Modal>
+    <Modal open={systemResetOpen} onClose={closeSystemReset} title="Xác nhận xóa toàn bộ dữ liệu" footer={<><Button variant="outline" onClick={closeSystemReset} disabled={systemResetBusy}>Hủy</Button><Button variant="danger" icon={Trash2} loading={systemResetBusy} disabled={systemResetBusy || systemResetConfirmation !== 'RESET_ALL_DATA'} onClick={executeSystemReset}>XÓA TOÀN BỘ DỮ LIỆU</Button></>}>
+      <div className="form-stack">
+        <InfoNote tone="orange">Sau khi xác nhận, các tài khoản Admin được giữ lại và chỉ phiên Admin hiện tại tiếp tục hoạt động. Dữ liệu cùng các tài khoản khác đã xóa không thể phục hồi từ giao diện.</InfoNote>
+        <Field label="Nhập RESET_ALL_DATA để xác nhận" required hint="Phân biệt chữ hoa, dấu gạch dưới và không có khoảng trắng."><Input autoComplete="off" spellCheck="false" value={systemResetConfirmation} onChange={(event) => setSystemResetConfirmation(event.target.value)} placeholder="RESET_ALL_DATA" /></Field>
+      </div>
+    </Modal>
   </div>
 }
 

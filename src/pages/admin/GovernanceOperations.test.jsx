@@ -6,6 +6,7 @@ const mocked = vi.hoisted(() => ({
   session: { role: 'business_support', name: 'Hỗ trợ KD' },
   saveSupportTransfer: vi.fn(),
   restoreOperationalData: vi.fn(),
+  resetAllData: vi.fn(),
   updateAttendance: vi.fn(),
   savePolicies: vi.fn(),
   notify: vi.fn(),
@@ -56,6 +57,7 @@ vi.mock('../../state/AppContext', () => ({
     policyHistory: [],
     saveSupportTransfer: mocked.saveSupportTransfer,
     restoreOperationalData: mocked.restoreOperationalData,
+    resetAllData: mocked.resetAllData,
     updateAttendance: mocked.updateAttendance,
     savePolicies: mocked.savePolicies,
     resetDemo: vi.fn(),
@@ -68,6 +70,7 @@ describe('Hỗ trợ KD operations', () => {
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD' }
     mocked.saveSupportTransfer.mockReset().mockResolvedValue({ ok: true })
     mocked.restoreOperationalData.mockReset().mockResolvedValue({ ok: true, restoredCount: 1 })
+    mocked.resetAllData.mockReset().mockResolvedValue({ ok: true })
     mocked.updateAttendance.mockReset().mockResolvedValue({ ok: true })
     mocked.savePolicies.mockReset().mockResolvedValue({ ok: true })
     mocked.notify.mockReset()
@@ -117,6 +120,7 @@ describe('Hỗ trợ KD operations', () => {
     render(<ResetDataPage />)
 
     expect(screen.queryByRole('button', { name: /Khôi phục dữ liệu mẫu/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Bắt đầu xóa dữ liệu/i })).toBeNull()
     fireEvent.change(screen.getByLabelText(/Loại dữ liệu/i), { target: { value: 'attendance' } })
     fireEvent.change(screen.getByLabelText(/Cửa hàng/i), { target: { value: 'CH001' } })
     fireEvent.change(screen.getByLabelText(/Nhân viên \(không bắt buộc\)/i), { target: { value: 'SM234-001' } })
@@ -136,6 +140,21 @@ describe('Hỗ trợ KD operations', () => {
 
     expect(screen.getAllByRole('button', { name: 'Chỉnh sửa' })).toHaveLength(1)
     expect(screen.getAllByText('Chỉ xem')).toHaveLength(2)
+  })
+
+  it('requires Admin to type the exact destructive confirmation before resetting everything', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    render(<ResetDataPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Bắt đầu xóa dữ liệu/i }))
+    const deleteButton = screen.getByRole('button', { name: /^Xóa toàn bộ dữ liệu$/i })
+    expect(deleteButton.disabled).toBe(true)
+
+    fireEvent.change(screen.getByLabelText(/Nhập RESET_ALL_DATA để xác nhận/i), { target: { value: 'RESET_ALL_DATA' } })
+    expect(deleteButton.disabled).toBe(false)
+    fireEvent.click(deleteButton)
+
+    await waitFor(() => expect(mocked.resetAllData).toHaveBeenCalledTimes(1))
   })
 
   it('does not expose transfer creation to Admin', () => {

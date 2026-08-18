@@ -93,7 +93,7 @@ export default function Login() {
 
       <section className="login-panel-wrap">
         <form className="login-panel" onSubmit={submit}>
-          <img className="login-round-logo" src="/logo.jpg?v=20260814" alt="Biểu trưng IDOSI" />
+          <img className="login-round-logo" src="/favicon.png" alt="Biểu trưng IDOSI" />
           <h2>Chào mừng bạn quay trở lại!</h2>
           <p>Vui lòng đăng nhập để tiếp tục vào hệ thống</p>
 

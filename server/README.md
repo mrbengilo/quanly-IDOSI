@@ -75,11 +75,16 @@ Các lệnh chính:
   Hồ sơ `unit: business_support` tự nhận `storeId: BUSINESS_SUPPORT`, role
   `business_support`, mã toàn cục `HTKD-001...`; hồ sơ `unit: store_manager`
   bắt buộc `storeId` thật, role `store_manager`, mã toàn cục `QLCH-001...`.
-  Cả hai chỉ nhận `name`, điện thoại `0` + 9 số, `cccd` đúng 12 số, `address`,
-  `startDate: YYYY-MM-DD`, `employmentType` (`Full-Time`, `Part-Time`,
-  `Thực Tập Sinh`), vị trí đúng vai trò, `username`/`password` và ảnh CCCD.
-  Giờ chấm công của hai vai trò do server cố định `08:00-17:00`, không nhận
-  cấu hình ngày công/giờ làm/lương tùy biến.
+  Cả hai nhận `name`, điện thoại `0` + 9 số, `cccd` đúng 12 số, `address`,
+  `startDate: YYYY-MM-DD`, vị trí đúng vai trò, `username`/`password` và ảnh
+  CCCD. Hỗ trợ KD nhận `employmentType` (`Full-Time`, `Part-Time`,
+  `Thực Tập Sinh`). Quản lý cửa hàng chỉ nhận `Full-Time|Part-Time` và create
+  bắt buộc đủ `baseSalary` (số nguyên VND dương), `standardWorkDays: 1..31`,
+  `requiredMonthlyHours: >0..744`; update các trường lương được kiểm tra trên
+  cấu hình kết quả đầy đủ. Full-Time được canonical thành lương tháng,
+  Part-Time thành lương giờ; response/profile luôn trả cả `payBasis`,
+  `salaryUnit`, `baseSalary`, ngày công và giờ tháng. Giờ chấm công của hai vai
+  trò vẫn do server cố định `08:00-17:00`.
   Hồ sơ `unit: office` bắt buộc `storeId: OFFICE`, tự sinh mã `VP-001...`, điện thoại `0` + 9 số, CCCD đúng
   12 số, bắt buộc địa chỉ, ngày bắt đầu, loại nhân viên (`Full-Time`,
   `Part-Time`, `Thực Tập Sinh`), vị trí (`Kế Toán`, `Marketing`) và cặp
@@ -164,6 +169,24 @@ Các lệnh chính:
   cascade, tham chiếu audit được giữ với `actor_id = NULL`, và chỉ giữ
   account settings của Admin. Response trả state đã projection cùng
   `version` mới và `nonAdminAccountsPurged: true`.
+
+- `system.reset_all`: chỉ Admin, payload chính xác
+  `{confirmation:'RESET_ALL_DATA'}` và vẫn cần `expectedVersion`. Lệnh xóa mọi
+  state nghiệp vụ (kể cả private scope/entity), tài khoản ngoài Admin, mọi
+  session trừ phiên Admin đang gọi, receipt/chunk, audit cũ, counter và đưa
+  policy về mặc định. Tất cả tài khoản/credential Admin và account settings
+  tương ứng được giữ lại; mã nghiệp vụ phát sinh lại từ đầu. Namespace R2 duy
+  nhất bị xóa là `identity-images/`; object ngoài prefix này không bị chạm tới.
+  Reset dùng hai pha: D1 lưu marker pending sau khi purge, sau đó Worker liệt kê
+  phân trang, xóa và xác minh prefix ảnh rỗng. Chỉ khi xác minh thành công mới
+  ghi đúng một audit + receipt thành công và xóa marker. Nếu R2 lỗi, API trả
+  `503 RESET_CLEANUP_PENDING`, giữ phiên Admin hiện tại, khóa các lệnh ghi khác
+  và **không** ghi success receipt. Client nên giữ `Idempotency-Key` trong
+  `sessionStorage` để retry ổn định; nếu trang bị tải lại hoặc key đổi, đúng
+  Admin đã khởi tạo vẫn có thể gửi lại confirmation chính xác để tiếp tục
+  cleanup/finalize receipt gốc (không chạy thêm lần purge D1). Response thành
+  công trả `reset.purged`, danh sách Admin được giữ, số policy mặc định và
+  `identityImageStorageVerifiedEmpty: true`.
 
 - `order.create`: payload `storeId`, `customerName`, `customerPhone?`,
   `customerAge?`, `amount` (số nguyên VND), `paymentMethod`. Với employee, server

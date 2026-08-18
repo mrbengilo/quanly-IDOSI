@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { apiAddressSuggestions } from '../services/idosiApi'
 import { Field, Input } from './UI'
 import {
@@ -25,6 +25,7 @@ function SuggestionInput({ disabled, field, onValueChange, required, scope, valu
   const [suggestions, setSuggestions] = useState([])
   const [serviceAvailable, setServiceAvailable] = useState(true)
   const [focused, setFocused] = useState(false)
+  const focusStartValue = useRef(String(value || ''))
 
   useEffect(() => {
     const query = String(value || '').trim()
@@ -62,7 +63,23 @@ function SuggestionInput({ disabled, field, onValueChange, required, scope, valu
   const handleChange = (event) => {
     const nextValue = event.target.value
     const selected = visibleSuggestions.find((item) => item.value === nextValue || item.label === nextValue)
-    onValueChange(field, nextValue, selected)
+    onValueChange(field, nextValue, selected, {
+      commit: Boolean(selected),
+      previousValue: focusStartValue.current,
+    })
+  }
+
+  const handleFocus = () => {
+    focusStartValue.current = String(value || '')
+    setFocused(true)
+  }
+
+  const handleBlur = (event) => {
+    onValueChange(field, event.target.value, null, {
+      commit: true,
+      previousValue: focusStartValue.current,
+    })
+    setFocused(false)
   }
 
   return (
@@ -80,8 +97,8 @@ function SuggestionInput({ disabled, field, onValueChange, required, scope, valu
         disabled={disabled}
         autoComplete="off"
         aria-describedby={`${listId}-hint`}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
       />
       <datalist id={listId}>
         {visibleSuggestions.map((item) => <option key={`${item.placeId || item.value}-${item.label}`} value={item.value}>{item.label}</option>)}
@@ -104,8 +121,8 @@ export function AddressAutocomplete({
     street: String(value.street || ''),
   }
 
-  const update = (field, input, suggestion) => {
-    onChange?.(applyAddressSuggestion(address, field, input, suggestion))
+  const update = (field, input, suggestion, options) => {
+    onChange?.(applyAddressSuggestion(address, field, input, suggestion, options))
   }
 
   return (

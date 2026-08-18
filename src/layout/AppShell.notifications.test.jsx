@@ -77,6 +77,7 @@ describe('AppShell notifications', () => {
   it('shows the Admin-only account management menus', () => {
     render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
 
+    expect(document.querySelector('.sidebar__brand .brand__mark')?.getAttribute('src')).toBe('/favicon.png')
     expect(screen.getByRole('link', { name: /Nhân viên hỗ trợ KD/i }).getAttribute('href')).toBe('/admin/business-support')
     expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i }).getAttribute('href')).toBe('/admin/store-managers')
     expect(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeTruthy()
@@ -147,5 +148,6 @@ describe('AppShell notifications', () => {
     expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Quản lý nhân viên/i })).toBeNull()
+    expect(screen.getByAltText('Logo IDOSI').getAttribute('src')).toBe('/favicon.png')
   })
 })

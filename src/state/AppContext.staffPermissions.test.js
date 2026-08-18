@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   canCreateEmployeeUnit,
   canManagePolicies,
+  createInitialState,
+  createLocalSystemResetState,
   generateBusinessSupportStoreCredentials,
+  hydrateState,
   resolveRemoteActiveStoreId,
 } from './AppContext'
 
@@ -52,5 +55,37 @@ describe('Business Support staff and policy permissions', () => {
       remoteActiveStoreId: 'STORE-A',
       preferredActiveStoreId: 'STORE-B',
     })).toBe('ASSIGNED-STORE')
+  })
+
+  it('keeps an explicit local reset empty after reload while retaining every Admin account', () => {
+    const initial = createInitialState()
+    const secondAdmin = { ...initial.adminAccounts[0], id: 'ADMIN-2', code: 'ADMIN-2', username: 'admin-2' }
+    const current = {
+      ...initial,
+      adminAccounts: [...initial.adminAccounts, secondAdmin],
+      managerAccounts: [{ id: 'HTKD-001', role: 'business_support' }],
+      settings: { ...initial.settings, name: 'Admin đang thao tác' },
+      session: { id: 'ADMIN', username: 'admin', role: 'admin', name: 'Admin đang thao tác' },
+    }
+
+    const resetState = createLocalSystemResetState(current)
+    expect(resetState.stores).toEqual([])
+    expect(resetState.employees).toEqual([])
+    expect(resetState.orders).toEqual([])
+    expect(resetState.shiftDefinitions).toEqual([])
+    expect(resetState.managerAccounts).toEqual([])
+    expect(resetState.orderCounters).toEqual({})
+    expect(resetState.importCounter).toBe(0)
+    expect(resetState.systemResetCompletedAt).toBeTruthy()
+    expect(resetState.adminAccounts.map((account) => account.username)).toEqual(['admin', 'admin-2'])
+    expect(resetState.session?.username).toBe('admin')
+
+    const reloaded = hydrateState({ ...resetState, session: null })
+    expect(reloaded.stores).toEqual([])
+    expect(reloaded.employees).toEqual([])
+    expect(reloaded.orders).toEqual([])
+    expect(reloaded.shiftDefinitions).toEqual([])
+    expect(reloaded.activeStoreId).toBeNull()
+    expect(reloaded.adminAccounts.map((account) => account.username)).toEqual(['admin', 'admin-2'])
   })
 })

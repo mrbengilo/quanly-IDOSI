@@ -34,7 +34,7 @@ import { money } from '../utils'
 export function Brand({ compact = false, blue = false, subtitle = 'hệ thống quản lý' }) {
   return (
     <div className={`brand ${compact ? 'brand--compact' : ''} ${blue ? 'brand--blue' : ''}`}>
-      <img className="brand__mark" src="/logo.jpg?v=20260814" alt="" aria-hidden="true" />
+      <img className="brand__mark" src="/favicon.png" alt="" aria-hidden="true" />
       <span className="brand__word">IDOSI</span>
       {!compact && <small>{subtitle}</small>}
     </div>
@@ -342,7 +342,7 @@ export function ExportButton({ onClick, label = 'Xuất Excel' }) {
 export function StoreIllustration({ name = 'IDOSI', accent = '#076a3d' }) {
   return (
     <div className="store-illustration" style={{ '--store-accent': accent }}>
-      <div className="store-sign"><span>✦</span> IDOSI <small>{name.replace(/^IDOSI\s*/i, '')}</small></div>
+      <div className="store-sign"><img src="/favicon.png" alt="" aria-hidden="true" /><strong>IDOSI</strong><small>{name}</small></div>
       <div className="store-awning"><i /><i /><i /><i /><i /><i /></div>
       <div className="store-front"><span /><span /><span /></div>
     </div>

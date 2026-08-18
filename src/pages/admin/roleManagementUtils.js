@@ -1,4 +1,4 @@
-import { today } from '../../utils'
+import { formatMoneyInput, parseMoneyInput, today } from '../../utils'
 
 export const ROLE_KEYS = Object.freeze({
   businessSupport: 'business_support',
@@ -16,6 +16,11 @@ export const ROLE_POSITIONS = Object.freeze({
 })
 
 export const EMPLOYMENT_TYPES = Object.freeze(['Full-Time', 'Part-Time', 'Thực Tập Sinh'])
+export const STORE_MANAGER_EMPLOYMENT_TYPES = Object.freeze(['Full-Time', 'Part-Time'])
+
+export const roleEmploymentTypes = (roleKey = ROLE_KEYS.businessSupport) => (
+  roleKey === ROLE_KEYS.storeManager ? STORE_MANAGER_EMPLOYMENT_TYPES : EMPLOYMENT_TYPES
+)
 
 const normalize = (value = '') => String(value).trim().toLocaleLowerCase('vi-VN').replaceAll('-', '_').replaceAll(' ', '_')
 const profileCode = (profile = {}) => String(profile.code || profile.employeeCode || profile.id || '')
@@ -132,6 +137,9 @@ export const emptyRoleProfile = (roleKey = ROLE_KEYS.businessSupport) => ({
   username: '',
   password: '',
   storeId: '',
+  baseSalary: '',
+  standardWorkDays: '26',
+  requiredMonthlyHours: '',
 })
 
 export const roleProfileToForm = (profile = {}, roleKey = ROLE_KEYS.businessSupport) => {
@@ -153,6 +161,9 @@ export const roleProfileToForm = (profile = {}, roleKey = ROLE_KEYS.businessSupp
     storeId: profile.storeId === 'OFFICE' || profile.storeId === 'BUSINESS_SUPPORT'
       ? ''
       : profile.storeId || profile.assignedStoreId || '',
+    baseSalary: formatMoneyInput(profile.baseSalary || profile.monthlySalary || profile.salary),
+    standardWorkDays: String(profile.standardWorkDays || 26),
+    requiredMonthlyHours: String(profile.requiredMonthlyHours || ''),
   }
 }
 
@@ -179,8 +190,18 @@ export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requ
   if (!/^0\d{9}$/u.test(String(form?.phone || ''))) errors.push('Số điện thoại phải gồm đúng 10 chữ số và bắt đầu bằng số 0.')
   if (!/^\d{12}$/u.test(String(form?.cccd || ''))) errors.push('CCCD phải gồm đúng 12 chữ số.')
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(form?.startDate || ''))) errors.push('Ngày bắt đầu làm không hợp lệ.')
-  if (!EMPLOYMENT_TYPES.includes(form?.employmentType)) errors.push('Loại nhân viên không hợp lệ.')
+  if (!roleEmploymentTypes(roleKey).includes(form?.employmentType)) errors.push('Loại nhân viên không hợp lệ.')
   if (String(form?.position || '') !== ROLE_POSITIONS[roleKey]) errors.push('Vị trí công việc không đúng với vai trò tài khoản.')
+  if (roleKey === ROLE_KEYS.storeManager) {
+    if (parseMoneyInput(form?.baseSalary) <= 0) errors.push('Lương cơ bản phải là số lớn hơn 0.')
+    if (!Number.isInteger(Number(form?.standardWorkDays)) || Number(form.standardWorkDays) < 1 || Number(form.standardWorkDays) > 31) {
+      errors.push('Số ngày công quy định/tháng phải là số nguyên từ 1 đến 31.')
+    }
+    const requiredMonthlyHours = Number(form?.requiredMonthlyHours)
+    if (!Number.isFinite(requiredMonthlyHours) || requiredMonthlyHours <= 0 || requiredMonthlyHours > 744) {
+      errors.push('Số giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
+    }
+  }
   if (requiresPassword && String(form?.password || '').length < 8) errors.push('Mật khẩu phải có ít nhất 8 ký tự.')
   if (!requiresPassword && form?.password && String(form.password).length < 8) errors.push('Mật khẩu mới phải có ít nhất 8 ký tự.')
 
@@ -219,5 +240,10 @@ export const roleProfilePayload = (form = {}, roleKey = ROLE_KEYS.businessSuppor
     ...(form.password ? { password: form.password } : {}),
     unit: roleKey,
     storeId: isStoreManager ? form.storeId : 'BUSINESS_SUPPORT',
+    ...(isStoreManager ? {
+      baseSalary: parseMoneyInput(form.baseSalary),
+      standardWorkDays: Number(form.standardWorkDays),
+      requiredMonthlyHours: Number(form.requiredMonthlyHours),
+    } : {}),
   }
 }
