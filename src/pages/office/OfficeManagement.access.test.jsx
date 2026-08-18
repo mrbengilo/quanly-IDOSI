@@ -1,0 +1,72 @@
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { OfficeManagement } from './OfficeManagement'
+
+const mocked = vi.hoisted(() => ({ app: {} }))
+
+vi.mock('../../state/AppContext', () => ({
+  useApp: () => mocked.app,
+}))
+
+afterEach(() => {
+  cleanup()
+  mocked.app = {}
+})
+
+describe('Office Management permissions', () => {
+  it.each(['business_support', 'manager'])('lets %s open the employee creation form without edit, delete or payroll controls', async (role) => {
+    mocked.app = {
+      session: { role, employeeId: 'HTKD-001' },
+      employees: [{
+        id: 'VP-003',
+        code: 'VP-003',
+        unit: 'office',
+        storeId: 'OFFICE',
+        isOffice: true,
+        name: 'Nhân viên văn phòng',
+        status: 'Đang làm việc',
+        employmentType: 'Full-Time',
+        phone: '0901234567',
+        cccd: '079123456789',
+        position: 'Kế Toán',
+      }],
+      deletedEmployees: [{ id: 'VP-008', unit: 'office', deletedAt: '2026-08-17T00:00:00Z' }],
+      attendance: [],
+      salaryAdjustments: [],
+      officeAdjustments: [],
+      payrollPeriods: [],
+      policies: {},
+      addEmployee: vi.fn(),
+      updateEmployee: vi.fn(),
+      deleteEmployee: vi.fn(),
+      addSalaryAdjustment: vi.fn(),
+      notify: vi.fn(),
+    }
+
+    render(<OfficeManagement />)
+
+    expect(screen.getByRole('button', { name: /Thêm nhân viên/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Sửa Nhân viên văn phòng/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Xóa Nhân viên văn phòng/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Tạo thưởng/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Tạo phụ cấp/i })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Thêm nhân viên/i }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByDisplayValue('VP-009').readOnly).toBe(true)
+    expect(screen.getByLabelText('Mặt trước CCCD')).toBeTruthy()
+    expect(screen.getByLabelText('Mặt sau CCCD')).toBeTruthy()
+
+    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu để cấp tài khoản'), { target: { value: 'PlaintextMustClear' } })
+    fireEvent.change(screen.getByLabelText('Mặt trước CCCD'), {
+      target: { files: [new File(['front'], 'front.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => expect(screen.getByAltText(/Xem trước mặt trước CCCD/i)).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Hủy bỏ' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Thêm nhân viên/i }))
+    expect(screen.getByPlaceholderText('Nhập mật khẩu để cấp tài khoản').value).toBe('')
+    expect(screen.queryByAltText(/Xem trước mặt trước CCCD/i)).toBeNull()
+  })
+})

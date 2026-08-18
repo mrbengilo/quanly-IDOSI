@@ -114,13 +114,19 @@ describe('business-support store workspace permits only the required order contr
 
   afterEach(cleanup)
 
-  it('shows store employees without account mutation controls', () => {
+  it('lets Business Support add a store employee but keeps existing profiles read-only', () => {
     renderPage(StoreEmployees)
 
     expect(screen.getAllByText(employee.name).length).toBeGreaterThan(0)
-    expect(screen.queryByRole('button', { name: /Thêm nhân viên/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Thêm nhân viên/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: new RegExp(`Sửa ${employee.name}`, 'i') })).toBeNull()
     expect(screen.queryByRole('button', { name: new RegExp(`Xóa ${employee.name}`, 'i') })).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Thêm nhân viên/i }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByDisplayValue('Nhân viên bán hàng').readOnly).toBe(true)
+    expect(screen.getByLabelText('Mặt trước CCCD')).toBeTruthy()
+    expect(screen.getByLabelText('Mặt sau CCCD')).toBeTruthy()
   })
 
   it('shows assigned work and schedules without editors', () => {

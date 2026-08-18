@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement } from 'react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { OfficeManagement } from '../office/OfficeManagement'
 import { AdminStores } from './AdminPages'
@@ -19,6 +19,11 @@ import {
 } from './roleManagementUtils'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
+
+function CurrentRoute() {
+  const location = useLocation()
+  return createElement('output', { 'data-testid': 'current-route' }, location.pathname)
+}
 
 vi.mock('../../state/AppContext', () => ({
   useApp: () => mocked.app,
@@ -264,6 +269,9 @@ describe('Business Support read-only system views', () => {
     expect(screen.queryByRole('button', { name: /Xóa SecondMall SM234/i })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Đang hoạt động' })).toBeNull()
     expect(screen.getByText('Đang hoạt động')).toBeTruthy()
+    const openStore = screen.getByRole('button', { name: /Mở cửa hàng SecondMall SM234/i })
+    expect(openStore.closest('.store-directory-card')).toBeTruthy()
+    expect(document.querySelector('.store-directory-card-grid')).toBeTruthy()
   })
 
   it('derives store employee totals from active profiles and opens the selected store directly', () => {
@@ -285,11 +293,12 @@ describe('Business Support read-only system views', () => {
       setActiveStoreId,
     }
 
-    render(createElement(MemoryRouter, null, createElement(AdminStores)))
+    render(createElement(MemoryRouter, { initialEntries: ['/admin/stores'] }, createElement(AdminStores), createElement(CurrentRoute)))
 
     expect(screen.getByText('Tổng nhân viên').closest('.metric').textContent).toContain('2')
     fireEvent.click(screen.getByRole('button', { name: /Mở cửa hàng SecondMall SM234/i }))
     expect(setActiveStoreId).toHaveBeenCalledWith('CH001')
+    expect(screen.getByTestId('current-route').textContent).toBe('/store/overview')
   })
 
   it('can inspect store employees without status, password, or delete controls', () => {
@@ -324,7 +333,7 @@ describe('Business Support read-only system views', () => {
     render(createElement(OfficeManagement))
 
     expect(screen.getByText('Nhân viên văn phòng')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Thêm nhân viên/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Thêm nhân viên/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Sửa Nhân viên văn phòng/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Xóa Nhân viên văn phòng/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Tạo thưởng|Tạo phụ cấp/i })).toBeNull()

@@ -178,11 +178,41 @@ const isOfficeUnit = (value) => ['office', 'văn phòng', 'van phong', 'khối v
 const isBusinessSupportUnit = (value) => ['business_support', 'business support', 'support', 'hỗ trợ kinh doanh', 'ho tro kinh doanh', 'htkd'].includes(normalizeText(value))
 const isStoreManagerUnit = (value) => ['store_manager', 'store manager', 'quản lý cửa hàng', 'quan ly cua hang', 'qlch'].includes(normalizeText(value))
 const normalizeAuthRole = (role) => normalizeText(role) === 'manager' ? 'business_support' : normalizeText(role)
+export const canCreateEmployeeUnit = (role, unit) => {
+  const normalizedRole = normalizeAuthRole(role)
+  if (normalizedRole === 'admin') return true
+  if (normalizedRole === 'business_support') return ['store_manager', 'office', 'store'].includes(unit)
+  return normalizedRole === 'store_manager' && unit === 'store'
+}
+export const canManagePolicies = (role) => ['admin', 'business_support'].includes(normalizeAuthRole(role))
 const isActiveAccount = (status) => !['tạm ngưng', 'tạm nghỉ', 'đã nghỉ việc', 'inactive', 'disabled'].includes(normalizeText(status))
 const isSystemRole = (role) => ['admin', 'business_support', 'manager'].includes(normalizeText(role))
 const isStoreWorkspaceRole = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
 const canListAccounts = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
 const isValidEmployeePhone = (value) => /^0\d{9}$/.test(normalizePhone(value))
+
+const normalizeCredentialToken = (value = '') => String(value)
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/[Đđ]/g, 'd')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '')
+
+export const generateBusinessSupportStoreCredentials = (payload = {}, store = {}, accounts = []) => {
+  const givenName = normalizeCredentialToken(payload.name).split('-').filter(Boolean).at(-1) || 'nhanvien'
+  const storePrefix = normalizeCredentialToken(store.short || store.id || 'store') || 'store'
+  const baseUsername = `${storePrefix}-${givenName}`
+  const usernames = new Set(accounts.map((account) => normalizeText(account.username)).filter(Boolean))
+  let username = baseUsername
+  let suffix = 2
+  while (usernames.has(normalizeText(username))) {
+    username = `${baseUsername}-${suffix}`
+    suffix += 1
+  }
+  const cccd = String(payload.cccd || payload.citizenId || '').replace(/\D/g, '')
+  return { username, password: `${cccd.slice(-6)}${givenName}@` }
+}
 
 const addressDetailsFrom = (payload = {}) => {
   const nested = payload.addressDetails || (typeof payload.address === 'object' ? payload.address : {}) || {}
@@ -420,7 +450,19 @@ const hydrateState = (stored) => {
   return migrateDomainState(hydrated, { stores: hydrated.stores, imports: hydrated.imports })
 }
 
-const hydrateRemoteState = (remoteState, remoteUser, policyRecords = []) => {
+export const resolveRemoteActiveStoreId = ({ stores = [], session, remoteActiveStoreId, preferredActiveStoreId }) => {
+  const storeExists = (id) => Boolean(id) && stores.some((store) => String(store.id) === String(id))
+  if (session?.role === 'store_manager' || (session?.role === 'employee' && session?.unit !== 'office')) {
+    return session.storeId || null
+  }
+  if (['admin', 'business_support'].includes(normalizeAuthRole(session?.role)) && storeExists(preferredActiveStoreId)) {
+    return preferredActiveStoreId
+  }
+  if (storeExists(remoteActiveStoreId)) return remoteActiveStoreId
+  return stores[0]?.id || null
+}
+
+const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferredActiveStoreId = null) => {
   const emptyCollections = Object.fromEntries(REMOTE_ARRAY_KEYS.map((key) => [key, []]))
   const mappedPolicies = apiPolicyMap(policyRecords)
   const safeRemote = {
@@ -472,9 +514,12 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = []) => {
   return {
     ...hydrated,
     session,
-    activeStoreId: session.role === 'store_manager' || (session.role === 'employee' && session.unit !== 'office')
-      ? session.storeId
-      : hydrated.activeStoreId,
+    activeStoreId: resolveRemoteActiveStoreId({
+      stores: hydrated.stores,
+      session,
+      remoteActiveStoreId: hydrated.activeStoreId,
+      preferredActiveStoreId,
+    }),
   }
 }
 
@@ -660,9 +705,9 @@ export function AppProvider({ children }) {
     lastSerialized: '',
   })
 
-  const activateRemotePayload = (payload, loginUser) => {
+  const activateRemotePayload = (payload, loginUser, preferredActiveStoreId = null) => {
     const remoteUser = payload.user || loginUser
-    const hydrated = hydrateRemoteState(payload.state, remoteUser, payload.policies)
+    const hydrated = hydrateRemoteState(payload.state, remoteUser, payload.policies, preferredActiveStoreId)
     const remote = apiRef.current
     remote.enabled = true
     remote.role = normalizeAuthRole(remoteUser.role)
@@ -690,7 +735,7 @@ export function AppProvider({ children }) {
       remote.version = Number(result.version)
       try {
         const latest = await apiGetState('global')
-        activateRemotePayload(latest, remote.user)
+        activateRemotePayload(latest, remote.user, state.activeStoreId)
       } catch {
         remote.suppressNext = true
         setApiStatus('error')
@@ -700,7 +745,7 @@ export function AppProvider({ children }) {
       if (error.code === 'VERSION_CONFLICT') {
         try {
           const latest = await apiGetState('global')
-          activateRemotePayload(latest, remote.user)
+          activateRemotePayload(latest, remote.user, state.activeStoreId)
         } catch {
           setApiStatus('error')
         }
@@ -812,7 +857,7 @@ export function AppProvider({ children }) {
             remote.lastSerialized = pending.serialized
             remote.suppressNext = true
             setState((current) => ({
-              ...hydrateRemoteState(merged, remote.user, latest.policies),
+              ...hydrateRemoteState(merged, remote.user, latest.policies, current.activeStoreId),
               session: current.session,
             }))
           }
@@ -1049,20 +1094,30 @@ export function AppProvider({ children }) {
         : payload.isOffice || isOfficeUnit(payload.unit) || isOfficeUnit(payload.storeId)
           ? 'office'
           : 'store'
-    if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền tạo nhân viên.' }
-    if (actorRole === 'business_support' && requestedUnit !== 'store_manager') return { ok: false, message: 'Nhân viên Hỗ trợ KD chỉ được tạo tài khoản Quản lý cửa hàng.' }
+    if (!canCreateEmployeeUnit(actorRole, requestedUnit)) return { ok: false, message: 'Tài khoản không có quyền tạo nhân viên thuộc khối này.' }
     if (requestedUnit === 'business_support' && actorRole !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo tài khoản Hỗ trợ KD.' }
     if (requestedUnit === 'store_manager' && !['admin', 'business_support'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền tạo Quản lý cửa hàng.' }
-    if (requestedUnit === 'office' && actorRole !== 'admin') return { ok: false, message: 'Chỉ Admin được tạo nhân viên Văn Phòng.' }
+    if (requestedUnit === 'office' && !['admin', 'business_support'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền tạo nhân viên Văn Phòng.' }
     const scopedStoreId = actorRole === 'store_manager' ? state.session.storeId : payload.storeId
     const normalizedPayload = { ...payload, unit: requestedUnit, storeId: requestedUnit === 'store' ? scopedStoreId || state.activeStoreId : scopedStoreId }
     const generatedCode = String(payload.id || payload.code || payload.employeeCode || nextEmployeeCode(normalizedPayload, state)).trim()
     const employeeStore = state.stores.find((store) => String(store.id) === String(normalizedPayload.storeId))
+    const usesGeneratedStoreCredentials = actorRole === 'business_support' && requestedUnit === 'store'
+    const generatedCredentials = usesGeneratedStoreCredentials
+      ? generateBusinessSupportStoreCredentials(normalizedPayload, employeeStore, [...state.adminAccounts, ...state.managerAccounts, ...state.employees])
+      : null
     const monthlyHoursFormula = requestedUnit === 'store'
       && getEmployeeType(normalizedPayload) === 'Full-Time'
       && isSecondMallStore(employeeStore)
     const employeePayload = {
       ...normalizedPayload,
+      ...(generatedCredentials ? {
+        username: generatedCredentials.username,
+        password: generatedCredentials.password,
+        position: 'Nhân viên bán hàng',
+        workPosition: 'Nhân viên bán hàng',
+        role: 'Nhân viên bán hàng',
+      } : {}),
       id: generatedCode,
       code: generatedCode,
       employeeCode: generatedCode,
@@ -1070,6 +1125,15 @@ export function AppProvider({ children }) {
     }
     const officeEmployee = requestedUnit === 'office'
     if (!isValidEmployeePhone(employeePayload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
+    if (usesGeneratedStoreCredentials && !/^\d{12}$/.test(String(employeePayload.cccd || employeePayload.citizenId || ''))) {
+      return { ok: false, message: 'Số CCCD phải gồm đúng 12 chữ số.' }
+    }
+    if (usesGeneratedStoreCredentials && !/^\d{4}-\d{2}-\d{2}$/u.test(String(employeePayload.startDate || employeePayload.joinDate || ''))) {
+      return { ok: false, message: 'Ngày bắt đầu làm không hợp lệ.' }
+    }
+    if (usesGeneratedStoreCredentials && (!employeePayload.identityImages?.front || !employeePayload.identityImages?.back)) {
+      return { ok: false, message: 'Cần tải lên đủ ảnh mặt trước và mặt sau CCCD.' }
+    }
     if (hasDuplicateAccount(employeePayload)) {
       notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
       return { ok: false }
@@ -1084,12 +1148,18 @@ export function AppProvider({ children }) {
           employmentType: officeEmployee
             ? employeePayload.officeEmployeeType || employeePayload.officeEmploymentType || 'Chính thức'
             : employeePayload.employmentType,
+          ...(usesGeneratedStoreCredentials ? { username: undefined, password: undefined } : {}),
           passwordHash: undefined,
           legacyPassword: undefined,
           monthlyWorkdayTargets: undefined,
         })
         notify('Đã tạo hồ sơ và tài khoản đăng nhập nhân viên.')
-        return { ok: true, employee: result.employee, user: result.user }
+        return {
+          ok: true,
+          employee: result.employee,
+          user: result.user,
+          ...(result.generatedCredentials ? { generatedCredentials: result.generatedCredentials } : {}),
+        }
       } catch (error) {
         notify(error.message || 'Không thể tạo tài khoản nhân viên.', 'info')
         return { ok: false, message: error.message }
@@ -1103,7 +1173,7 @@ export function AppProvider({ children }) {
       return { ...current, employees, stores: countStoreEmployees(current.stores, employees) }
     })
     notify('Đã lưu hồ sơ nhân viên.')
-    return { ok: true, employee }
+    return { ok: true, employee, ...(generatedCredentials ? { generatedCredentials } : {}) }
   }
 
   const updateEmployee = async (id, payload) => {
@@ -1773,7 +1843,7 @@ export function AppProvider({ children }) {
   }
 
   const savePolicies = async (payload = {}) => {
-    if (state.session?.role !== 'admin') return { ok: false, message: 'Chỉ Admin được thay đổi chính sách.' }
+    if (!canManagePolicies(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Nhân viên Hỗ trợ KD được thay đổi chính sách.' }
     const next = {
       ...state.policies,
       ...payload,

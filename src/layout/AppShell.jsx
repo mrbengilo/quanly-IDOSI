@@ -68,6 +68,7 @@ const businessSupportMenu = [
   systemOperations[3],
   { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
   { label: 'Công việc được giao', path: '/support/tasks', icon: ClipboardCheck },
+  { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
   { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
 ]

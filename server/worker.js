@@ -36,6 +36,8 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'attendance.update',
   'order.update',
   'order.delete',
+  'policy.set',
+  'policies.set',
   'operational_reset.restore',
   'support_transfer.create',
   'support_transfer.update',
@@ -2091,8 +2093,11 @@ const policyNumber = async (db, key, fallback) => {
 const commitGlobalStateDomainCommand = async (db, actor, current, nextState, options, commandContext) => {
   const currentVersion = Number(current.version)
   const nextVersion = currentVersion + 1
-  const responseBody = apiPayload(commandContext, { ...options.response, version: nextVersion })
-  const responseJson = JSON.stringify(responseBody)
+  const receiptBody = apiPayload(commandContext, { ...options.response, version: nextVersion })
+  const responseBody = options.ephemeralResponse
+    ? apiPayload(commandContext, { ...options.response, ...options.ephemeralResponse, version: nextVersion })
+    : receiptBody
+  const responseJson = JSON.stringify(receiptBody)
   const stateGuardSql = options.stateGuard?.sql ? ` AND EXISTS (${options.stateGuard.sql})` : ''
   const stateGuardBindings = Array.isArray(options.stateGuard?.bindings) ? options.stateGuard.bindings : []
   const additionalStatements = Array.isArray(options.additionalStatements) ? options.additionalStatements : []
@@ -2650,6 +2655,44 @@ const storeEmployeePrefix = (store) => {
   return words.map((word) => word[0]).join('').slice(0, 8) || 'NV'
 }
 
+const credentialSlug = (value) => String(value || '')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/gu, '')
+  .replace(/Đ/gu, 'D')
+  .replace(/đ/gu, 'd')
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/gu, '-')
+  .replace(/^-+|-+$/gu, '')
+
+const employeeCredentialName = (name) => credentialSlug(name).split('-').filter(Boolean).at(-1) || ''
+
+const generatedStoreEmployeeCredentials = async (db, store, profile) => {
+  const storeSlug = credentialSlug(storeEmployeePrefix(store))
+  const nameSlug = employeeCredentialName(profile?.name)
+  const cccd = String(profile?.cccd || '')
+  if (!storeSlug || !nameSlug || !/^\d{12}$/u.test(cccd)) {
+    throw new ApiError(400, 'EMPLOYEE_CREDENTIALS_GENERATION_FAILED', 'Không thể tự sinh thông tin đăng nhập từ cửa hàng, tên nhân viên và CCCD.')
+  }
+  const base = `${storeSlug}-${nameSlug}`
+  let username = ''
+  for (let sequence = 1; sequence <= 10_000; sequence += 1) {
+    const suffix = sequence === 1 ? '' : `-${sequence}`
+    const candidate = `${base.slice(0, 80 - suffix.length)}${suffix}`
+    const duplicate = await first(db, 'SELECT id FROM users WHERE username_normalized = ? LIMIT 1', normalizeUsername(candidate))
+    if (!duplicate) {
+      username = candidate
+      break
+    }
+  }
+  if (!username) {
+    throw new ApiError(409, 'USERNAME_SEQUENCE_EXHAUSTED', 'Không thể cấp tên đăng nhập duy nhất cho nhân viên.')
+  }
+  return {
+    username,
+    password: `${cccd.slice(-6)}${nameSlug}@`,
+  }
+}
+
 const nextEmployeeCode = (state, store, unit = null) => {
   const normalizedUnit = unit || (String(store?.id || '') === OFFICE_STORE_ID ? 'office' : 'store')
   const prefix = storeEmployeePrefix(store)
@@ -3021,7 +3064,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
     ? (payload.position !== undefined || previous?.position
         ? officePosition(payload.position ?? previous.position)
         : (previous ? '' : officePosition(payload.position)))
-    : String(payload.position ?? previous?.position ?? '').trim().slice(0, 160)
+    : String(payload.position ?? previous?.position ?? (normalizedUnit === 'store' ? 'Nhân viên bán hàng' : '')).trim().slice(0, 160)
   const profile = sanitizeStateValue({
     ...(previous || {}),
     ...payload,
@@ -3106,7 +3149,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const profilePayload = isPlainRecord(payload.employee) ? payload.employee : payload
   const { current, state } = await loadGlobalCommandState(db, body)
   const employees = Array.isArray(state.employees) ? state.employees : []
-  const employeeId = operation === 'create'
+  let employeeId = operation === 'create'
     ? String(profilePayload.id || profilePayload.code || profilePayload.employeeCode || '').trim().toUpperCase()
     : String(payload.employeeId || profilePayload.id || profilePayload.code || '').trim()
   const previous = operation === 'create'
@@ -3114,12 +3157,19 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : employees.find((employee) => String(employee.id || employee.code || '') === employeeId && !employee.deletedAt)
   if (operation !== 'create' && !previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
   const unit = normalizeEmployeeUnitRequest(profilePayload, previous)
-  if (actor.role === 'business_support' && !(operation === 'create' && unit === 'store_manager')) {
-    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm mới tài khoản Quản lý cửa hàng.')
+  const supportCreatingStoreEmployee = actor.role === 'business_support' && operation === 'create' && unit === 'store'
+  if (supportCreatingStoreEmployee) employeeId = ''
+  const supportCreateUnits = new Set(['store', 'office', 'store_manager'])
+  if (actor.role === 'business_support' && !(operation === 'create' && supportCreateUnits.has(unit))) {
+    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm mới nhân viên cửa hàng, Khối văn phòng hoặc Quản lý cửa hàng.')
   }
-  const hasIdentityImagePayload = Object.values(identityImageInputs(profilePayload)).some((input) => input.provided)
-  if (hasIdentityImagePayload && !['business_support', 'store_manager', 'office'].includes(unit)) {
-    throw new ApiError(400, 'IDENTITY_IMAGE_ROLE_INVALID', 'Ảnh CCCD riêng tư chỉ áp dụng cho Hỗ trợ KD, Quản lý cửa hàng và Khối văn phòng.')
+  const requestedIdentityImages = identityImageInputs(profilePayload)
+  const hasIdentityImagePayload = Object.values(requestedIdentityImages).some((input) => input.provided)
+  const hasCompleteIdentityImages = ['front', 'back'].every((side) => (
+    requestedIdentityImages[side].provided && String(requestedIdentityImages[side].value || '').trim()
+  ))
+  if (hasIdentityImagePayload && !['business_support', 'store_manager', 'office', 'store'].includes(unit)) {
+    throw new ApiError(400, 'IDENTITY_IMAGE_ROLE_INVALID', 'Ảnh CCCD riêng tư chỉ áp dụng cho hồ sơ nhân viên hợp lệ.')
   }
   if (previous && ['unit', 'unitType', 'department', 'role'].some((field) => profilePayload[field] !== undefined)) {
     const requestedUnit = normalizeEmployeeUnitRequest(profilePayload)
@@ -3128,11 +3178,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     }
   }
   if (['business_support', 'store_manager', 'office'].includes(unit) && actor.role !== 'admin') {
-    const supportCreatingStoreManager = actor.role === 'business_support'
+    const supportCreatingInternalEmployee = actor.role === 'business_support'
       && operation === 'create'
-      && unit === 'store_manager'
-    if (!supportCreatingStoreManager) {
-      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Hỗ trợ KD chỉ được thêm mới Quản lý cửa hàng; các hồ sơ nội bộ khác chỉ Admin được quản lý.')
+      && ['store_manager', 'office'].includes(unit)
+    if (!supportCreatingInternalEmployee) {
+      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Hỗ trợ KD chỉ được thêm mới Quản lý cửa hàng hoặc nhân viên Khối văn phòng; các hồ sơ nội bộ khác chỉ Admin được quản lý.')
     }
   }
   if (previous && unit === 'store') assertOperationalStoreAccess(actor, String(previous.storeId || ''))
@@ -3148,11 +3198,14 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : (operation === 'create'
       ? String(profilePayload.storeId || '').trim()
       : String(previous.storeId || '').trim())
+  if (operation === 'create' && unit === 'office' && storeId !== OFFICE_STORE_ID) {
+    throw new ApiError(400, 'OFFICE_STORE_REQUIRED', 'Nhân viên Khối văn phòng bắt buộc thuộc đơn vị OFFICE.')
+  }
   if (unit === 'store') assertOperationalStoreAccess(actor, storeId)
   let store
   if (unit === 'business_support') {
     store = { id: BUSINESS_SUPPORT_STORE_ID, name: 'Nhân viên hỗ trợ kinh doanh', short: 'HTKD' }
-  } else if (unit === 'office' && storeId === OFFICE_STORE_ID && actor.role === 'admin') {
+  } else if (unit === 'office' && storeId === OFFICE_STORE_ID && ['admin', 'business_support'].includes(actor.role)) {
     store = { id: OFFICE_STORE_ID, name: 'Khối Văn Phòng', short: 'VP' }
   } else store = requireStore(state, storeId)
   if (unit === 'store_manager' && [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].includes(storeId)) {
@@ -3236,7 +3289,30 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     return response
   }
 
-  const profile = normalizeEmployeeProfilePayload(withoutIdentityImagePayload(profilePayload), previous, store, state, unit)
+  const profileInput = withoutIdentityImagePayload(profilePayload)
+  if (supportCreatingStoreEmployee) {
+    for (const field of ['employeeId', 'id', 'code', 'employeeCode']) delete profileInput[field]
+  }
+  const profile = normalizeEmployeeProfilePayload(profileInput, previous, store, state, unit)
+  if (operation === 'create' && unit === 'office' && !hasCompleteIdentityImages) {
+    throw new ApiError(400, 'IDENTITY_IMAGES_REQUIRED', 'Cần tải đủ ảnh mặt trước và mặt sau CCCD của nhân viên Khối văn phòng.')
+  }
+  if (supportCreatingStoreEmployee) {
+    const normalizedCccd = String(profilePayload.cccd ?? profilePayload.citizenId ?? '').replace(/\D/gu, '')
+    if (!/^\d{12}$/u.test(normalizedCccd)) {
+      throw new ApiError(400, 'CCCD_INVALID', 'CCCD phải có đúng 12 chữ số để tự sinh tài khoản nhân viên cửa hàng.')
+    }
+    if (!profile.startDate) {
+      throw new ApiError(400, 'START_DATE_REQUIRED', 'Ngày bắt đầu làm là bắt buộc đối với nhân viên cửa hàng.')
+    }
+    if (!hasCompleteIdentityImages) {
+      throw new ApiError(400, 'IDENTITY_IMAGES_REQUIRED', 'Cần tải đủ ảnh mặt trước và mặt sau CCCD của nhân viên cửa hàng.')
+    }
+    profile.cccd = normalizedCccd
+    profile.citizenId = normalizedCccd
+    profile.position = 'Nhân viên bán hàng'
+    profile.jobPosition = 'Nhân viên bán hàng'
+  }
   let requestedStatus = null
   if (operation === 'update' && profilePayload.status !== undefined) {
     requestedStatus = employeeStatusValues(profilePayload.status)
@@ -3277,10 +3353,16 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const additionalStatements = []
   let stateGuard
   let responseUser = null
-  const requestedUsername = String(profilePayload.username || '').trim()
-  const requestedPassword = String(profilePayload.password || '')
+  let requestedUsername = String(profilePayload.username || '').trim()
+  let requestedPassword = String(profilePayload.password || '')
+  let generatedCredentials = null
   const requestedAuthUserId = String(profilePayload.authUserId || '').trim()
   const expectedAuthRole = roleForEmployeeUnit(unit)
+  if (supportCreatingStoreEmployee) {
+    generatedCredentials = await generatedStoreEmployeeCredentials(db, store, profile)
+    requestedUsername = generatedCredentials.username
+    requestedPassword = generatedCredentials.password
+  }
 
   if (operation === 'create') {
     if (requestedAuthUserId && !['business_support', 'store_manager', 'office'].includes(unit)) {
@@ -3625,7 +3707,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       }
     }
   }
-  const identityImageUpdate = ['business_support', 'store_manager', 'office'].includes(unit)
+  const identityImageUpdate = ['business_support', 'store_manager', 'office', 'store'].includes(unit)
     ? await prepareIdentityImageUpdate(env, profilePayload, previous, saved.id, commandContext.now)
     : { identityImages: {}, uploadedKeys: [], retiredKeys: [] }
   if (Object.keys(identityImageUpdate.identityImages).length) saved.identityImages = identityImageUpdate.identityImages
@@ -3654,6 +3736,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       after: saved,
       metadata: { payrollTargets },
       response: { command: body.type, employee: saved, ...(responseUser ? { user: responseUser } : {}) },
+      ...(generatedCredentials ? { ephemeralResponse: { generatedCredentials } } : {}),
       additionalStatements,
       stateGuard,
       status: operation === 'create' ? 201 : 200,
@@ -7430,7 +7513,9 @@ const payrollCommand = async (db, actor, body, commandContext) => {
 }
 
 const policyCommand = async (db, user, body, commandContext) => {
-  if (user.role !== 'admin') throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ quản trị viên được thay đổi chính sách.')
+  if (!['admin', 'business_support'].includes(user.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được thay đổi chính sách.')
+  }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const key = String(payload.key || '')
   const value = validatePolicy(key, payload.value)
@@ -7525,7 +7610,9 @@ const policyCommand = async (db, user, body, commandContext) => {
 }
 
 const policiesCommand = async (db, user, body, commandContext) => {
-  if (user.role !== 'admin') throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ quản trị viên được thay đổi chính sách.')
+  if (!['admin', 'business_support'].includes(user.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được thay đổi chính sách.')
+  }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const updates = Array.isArray(payload.updates) ? payload.updates : []
   if (!updates.length || updates.length > Object.keys(DEFAULT_POLICIES).length) {
@@ -7599,7 +7686,7 @@ const policiesCommand = async (db, user, body, commandContext) => {
         request_id, actor_id, actor_role, action, entity_type, entity_id,
         before_json, after_json, metadata_json, server_timestamp
       )
-      SELECT ?, ?, 'admin', 'policies.set', 'policy-set', 'global', ?, ?, ?, ?
+      SELECT ?, ?, ?, 'policies.set', 'policy-set', 'global', ?, ?, ?, ?
       WHERE (
         SELECT COUNT(*) FROM policies
         WHERE policy_key IN (${placeholders}) AND last_request_id = ?
@@ -7607,6 +7694,7 @@ const policiesCommand = async (db, user, body, commandContext) => {
     `).bind(
       commandContext.requestId,
       user.user_id,
+      user.role,
       JSON.stringify(currentRows.map((row) => row ? {
         key: row.policy_key,
         value: parseStoredJson(row.value_json),
@@ -8446,8 +8534,9 @@ const getIdentityImage = async (request, env, context, employeeId, side) => {
   ].find((record) => String(record.id || record.code || record.employeeCode || '') === normalizedEmployeeId)
   const authorized = actor.role === 'admin'
     || actor.role === 'business_support'
-    || (['store_manager', 'employee'].includes(actor.role) && String(actor.employee_id || '') === normalizedEmployeeId)
-  if (!profile || !['business_support', 'store_manager', 'office'].includes(employeeUnit(profile)) || !authorized) {
+    || (actor.role === 'store_manager' && String(actor.store_id || '') === String(profile?.storeId || ''))
+    || (actor.role === 'employee' && String(actor.employee_id || '') === normalizedEmployeeId)
+  if (!profile || !['business_support', 'store_manager', 'office', 'store'].includes(employeeUnit(profile)) || !authorized) {
     throw new ApiError(403, 'IDENTITY_IMAGE_FORBIDDEN', 'Bạn không có quyền xem ảnh CCCD này.')
   }
   const metadata = isPlainRecord(profile.identityImages?.[side]) ? profile.identityImages[side] : null

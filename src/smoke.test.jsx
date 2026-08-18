@@ -193,6 +193,8 @@ describe('IDOSI page smoke tests', () => {
     fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
     fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
     expect(await screen.findByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
+    expect(screen.getByRole('link', { name: /Reset dữ liệu/i }).getAttribute('href')).toBe('/admin/reset')
     expect(screen.queryByRole('link', { name: /Tài khoản quản lý/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Lương thưởng quản lý/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Chia lợi nhuận/i })).toBeNull()
@@ -219,8 +221,8 @@ describe('IDOSI page smoke tests', () => {
     expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Điều chuyển nhân sự$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Công việc được giao/i })).toBeTruthy()
-    expect(screen.queryByRole('link', { name: /Cài đặt chính sách/i })).toBeNull()
-    expect(screen.getByRole('link', { name: /Reset dữ liệu/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
+    expect(screen.getByRole('link', { name: /Reset dữ liệu/i }).getAttribute('href')).toBe('/admin/reset')
     expect(screen.getByRole('link', { name: /Lịch sử chỉnh sửa đơn hàng/i })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i }))
@@ -240,11 +242,14 @@ describe('IDOSI page smoke tests', () => {
     expect(await screen.findByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
 
     fireEvent.click(screen.getByText('Mở trực tiếp chính sách'))
-    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/policies'))
+    expect(screen.getByRole('heading', { name: 'CÀI ĐẶT CHÍNH SÁCH' })).toBeTruthy()
 
     fireEvent.click(screen.getByText('Mở trực tiếp reset dữ liệu'))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/reset'))
     expect(screen.getByRole('heading', { name: 'RESET DỮ LIỆU' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Khôi phục chỉnh sửa\/xóa/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Khôi phục dữ liệu mẫu/i })).toBeNull()
 
     fireEvent.click(screen.getByText('Mở trực tiếp chấm công hỗ trợ'))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))

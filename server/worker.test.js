@@ -2458,10 +2458,10 @@ describe('IDOSI Worker security primitives', () => {
       }), env)
       const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
       for (const [index, type] of [
-        'state.merge', 'store.update', 'employee.create', 'shift_definition.create',
+        'state.merge', 'store.update', 'shift_definition.create',
         'schedule.assign', 'tasks.replace_scope', 'import.create', 'expense.create',
         'salary_adjustment.create', 'salary_advance.create', 'payroll.close',
-        'system.reset_demo', 'policy.set', 'user.create', 'task.done',
+        'system.reset_demo', 'user.create', 'task.done',
       ].entries()) {
         const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
           type, expectedVersion: 3, payload: {},
@@ -4067,7 +4067,7 @@ describe('IDOSI Worker security primitives', () => {
     ]))
   })
 
-  it('lets business support create only store managers, mutate orders, and complete Admin assignments', async () => {
+  it('lets business support create store managers, mutate orders, and complete Admin assignments', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-support-work' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'support-work-admin-password',
@@ -4121,12 +4121,12 @@ describe('IDOSI Worker security primitives', () => {
       user: { role: 'store_manager', employeeId: 'QLCH-001', storeId: 'S01' },
     })
 
-    const forbiddenStoreEmployee = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    const invalidStoreEmployee = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'employee.create', expectedVersion: 3,
-      payload: { unit: 'store', storeId: 'S01', name: 'Không được tạo', phone: '0903333333' },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-create-store-employee-denied-0001' }), env)
-    expect(forbiddenStoreEmployee.status).toBe(403)
-    expect(await forbiddenStoreEmployee.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+      payload: { unit: 'store', storeId: 'S01', name: 'Thiếu CCCD', phone: '0903333333' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-create-store-employee-invalid-0001' }), env)
+    expect(invalidStoreEmployee.status).toBe(400)
+    expect(await invalidStoreEmployee.json()).toMatchObject({ error: { code: 'CCCD_INVALID' } })
     const forbiddenManagerEdit = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'employee.update', expectedVersion: 3,
       payload: { employeeId: 'QLCH-001', name: 'Không được sửa' },
@@ -4318,6 +4318,30 @@ describe('IDOSI Worker security primitives', () => {
     expect(invalidCccd.status).toBe(400)
     expect(await invalidCccd.json()).toMatchObject({ error: { code: 'CCCD_INVALID' } })
 
+    const missingIdentityImages = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1,
+      payload: {
+        unit: 'office', storeId: 'OFFICE', name: 'Thiếu ảnh CCCD', phone: '0904444444',
+        cccd: '079123456744', address: 'TP. Hồ Chí Minh', startDate: '2026-08-18',
+        employmentType: 'Full-Time', position: 'Kế Toán',
+        username: 'office.missing.images', password: 'office-missing-images-password',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'office-missing-images-0001' }), env)
+    expect(missingIdentityImages.status).toBe(400)
+    expect(await missingIdentityImages.json()).toMatchObject({ error: { code: 'IDENTITY_IMAGES_REQUIRED' } })
+
+    const physicalStoreOffice = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1,
+      payload: {
+        unit: 'office', storeId: 'S01', name: 'Sai đơn vị', phone: '0904444444',
+        cccd: '079123456744', address: 'TP. Hồ Chí Minh', startDate: '2026-08-18',
+        employmentType: 'Full-Time', position: 'Kế Toán', identityImages: { front: pngDataUrl, back: pngDataUrl },
+        username: 'office.wrong.store', password: 'office-wrong-store-password',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'office-physical-store-denied-0001' }), env)
+    expect(physicalStoreOffice.status).toBe(400)
+    expect(await physicalStoreOffice.json()).toMatchObject({ error: { code: 'OFFICE_STORE_REQUIRED' } })
+
     const officeCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'employee.create', expectedVersion: 1,
       payload: {
@@ -4325,7 +4349,8 @@ describe('IDOSI Worker security primitives', () => {
         cccd: '079123456744', address: '12 Đường IDOSI, Phường Hiệp Bình, TP. Hồ Chí Minh',
         addressDetails: { province: 'TP. Hồ Chí Minh', ward: 'Phường Hiệp Bình', street: '12 Đường IDOSI' },
         startDate: '2026-08-18', employmentType: 'Full-Time', position: 'Kế Toán',
-        identityImages: { front: pngDataUrl }, username: 'office.accounting', password: 'office-accounting-password',
+        identityImages: { front: pngDataUrl, back: pngDataUrl },
+        username: 'office.accounting', password: 'office-accounting-password',
       },
     }, { ...adminAuthorization, 'idempotency-key': 'office-profile-create-0001' }), env)
     expect(officeCreated.status).toBe(201)
@@ -4336,7 +4361,10 @@ describe('IDOSI Worker security primitives', () => {
         id: 'VP-002', code: 'VP-002', unit: 'office', storeId: 'OFFICE',
         employmentType: 'Full-Time', position: 'Kế Toán', cccd: '079123456744',
         addressDetails: { province: 'TP. Hồ Chí Minh', ward: 'Phường Hiệp Bình', street: '12 Đường IDOSI' },
-        identityImages: { front: { contentType: 'image/png', size: pngBytes.byteLength } },
+        identityImages: {
+          front: { contentType: 'image/png', size: pngBytes.byteLength },
+          back: { contentType: 'image/png', size: pngBytes.byteLength },
+        },
       },
       user: { role: 'employee', employeeId: 'VP-002', storeId: 'OFFICE' },
     })
@@ -4351,6 +4379,229 @@ describe('IDOSI Worker security primitives', () => {
     expect(ownImage.status).toBe(200)
     expect(ownImage.headers.get('content-type')).toBe('image/png')
     expect(new Uint8Array(await ownImage.arrayBuffer())).toEqual(pngBytes)
+  })
+
+  it('lets business support create office and store employees with one-time generated credentials and policy access', async () => {
+    const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+    const pngDataUrl = `data:image/png;base64,${Buffer.from(pngBytes).toString('base64')}`
+    const env = {
+      DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-support-staff-policy', IDENTITY_IMAGES: new MemoryR2(),
+    }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'support-staff-policy-admin-password',
+      initialState: {
+        stores: [
+          { id: 'SM234', name: 'SecondMall SM234', short: 'SM234', status: 'Đang hoạt động' },
+          { id: 'S02', name: 'IDOSI Tây Hòa', short: 'TH', status: 'Đang hoạt động' },
+        ],
+        employees: [], attendance: [], schedule: [], tasks: [], orders: [], notifications: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'support-staff-policy-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+
+    const supportCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1,
+      payload: {
+        unit: 'business_support', name: 'Hỗ trợ Nhân sự', phone: '0907000001',
+        cccd: '079999000010', address: 'TP. Hồ Chí Minh', startDate: '2026-08-18',
+        employmentType: 'Full-Time', position: 'NV hỗ trợ KD',
+        username: 'support.staff', password: 'support-staff-account-password',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-staff-profile-create-0001' }), env)
+    expect(supportCreated.status).toBe(201)
+    const managerCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 2,
+      payload: {
+        unit: 'store_manager', storeId: 'SM234', name: 'Quản lý SM234', phone: '0907000002',
+        cccd: '079999000020', address: 'TP. Hồ Chí Minh', startDate: '2026-08-18',
+        employmentType: 'Full-Time', position: 'Quản lý cửa hàng',
+        username: 'manager.sm234', password: 'manager-sm234-account-password',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-staff-manager-create-0001' }), env)
+    expect(managerCreated.status).toBe(201)
+    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'support.staff', password: 'support-staff-account-password',
+    }), env)
+    const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+    const managerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'manager.sm234', password: 'manager-sm234-account-password',
+    }), env)
+    const managerAuthorization = { authorization: `Bearer ${(await managerLogin.json()).token}` }
+
+    const officeCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 3,
+      payload: {
+        unit: 'office', storeId: 'OFFICE', name: 'Kế toán do Hỗ trợ tạo', phone: '0907000003',
+        cccd: '079999000001', address: '12 Đường IDOSI, TP. Hồ Chí Minh', startDate: '2026-08-18',
+        employmentType: 'Thực Tập Sinh', position: 'Kế Toán',
+        identityImages: { front: pngDataUrl, back: pngDataUrl },
+        username: 'support.office', password: 'support-office-account-password',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-office-create-0001' }), env)
+    expect(officeCreated.status).toBe(201)
+    expect(await officeCreated.json()).toMatchObject({
+      version: 4,
+      employee: { id: 'VP-001', unit: 'office', position: 'Kế Toán', employmentType: 'Thực Tập Sinh' },
+      user: { role: 'employee', employeeId: 'VP-001', storeId: 'OFFICE' },
+    })
+
+    const missingImages = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 4,
+      payload: {
+        unit: 'store', storeId: 'SM234', name: 'Thiếu ảnh', phone: '0907000099', cccd: '079999999999',
+        startDate: '2026-08-18', employmentType: 'Part-Time', hourlyRate: 30_000,
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-store-images-required-0001' }), env)
+    expect(missingImages.status).toBe(400)
+    expect(await missingImages.json()).toMatchObject({ error: { code: 'IDENTITY_IMAGES_REQUIRED' } })
+
+    const firstStoreCommand = {
+      type: 'employee.create', expectedVersion: 4,
+      payload: {
+        id: 'CLIENT-ID-999', code: 'CLIENT-CODE-999', employeeCode: 'CLIENT-EMPLOYEE-999',
+        unit: 'store', storeId: 'SM234', name: 'Bến', phone: '0907000004', cccd: '079999123456',
+        startDate: '2026-08-18', employmentType: 'Part-Time', hourlyRate: 30_000,
+        position: 'Không được tin cậy', identityImages: { front: pngDataUrl, back: pngDataUrl },
+        username: 'client-must-be-ignored', password: 'client-must-be-ignored',
+      },
+    }
+    const firstStoreHeaders = { ...supportAuthorization, 'idempotency-key': 'support-store-ben-create-0001' }
+    const firstStoreCreated = await worker.fetch(jsonRequest(
+      'https://idosi.example/api/command', firstStoreCommand, firstStoreHeaders,
+    ), env)
+    expect(firstStoreCreated.status).toBe(201)
+    const firstStoreBody = await firstStoreCreated.json()
+    expect(firstStoreBody).toMatchObject({
+      version: 5,
+      employee: {
+        id: 'SM234-001', unit: 'store', storeId: 'SM234', cccd: '079999123456',
+        startDate: '2026-08-18', position: 'Nhân viên bán hàng', username: 'sm234-ben',
+      },
+      user: { role: 'employee', employeeId: 'SM234-001', username: 'sm234-ben' },
+      generatedCredentials: { username: 'sm234-ben', password: '123456ben@' },
+    })
+    expect(firstStoreBody.employee).not.toHaveProperty('password')
+
+    const duplicateNameCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 5,
+      payload: {
+        unit: 'store', storeId: 'SM234', name: 'Bến', phone: '0907000005', cccd: '079999654321',
+        startDate: '2026-08-18', employmentType: 'Part-Time', hourlyRate: 31_000,
+        identityImages: { front: pngDataUrl, back: pngDataUrl },
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-store-ben-duplicate-create-0001' }), env)
+    expect(duplicateNameCreated.status).toBe(201)
+    expect(await duplicateNameCreated.json()).toMatchObject({
+      version: 6,
+      employee: { id: 'SM234-002', username: 'sm234-ben-2', position: 'Nhân viên bán hàng' },
+      generatedCredentials: { username: 'sm234-ben-2', password: '654321ben@' },
+    })
+
+    const secondStoreCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 6,
+      payload: {
+        unit: 'store', storeId: 'S02', name: 'Anh', phone: '0907000006', cccd: '079999147852',
+        startDate: '2026-08-18', employmentType: 'Part-Time', hourlyRate: 32_000,
+        identityImages: { front: pngDataUrl, back: pngDataUrl },
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-store-anh-create-0001' }), env)
+    expect(secondStoreCreated.status).toBe(201)
+    expect(await secondStoreCreated.json()).toMatchObject({
+      version: 7,
+      employee: { id: 'TH-001', username: 'th-anh' },
+      generatedCredentials: { username: 'th-anh', password: '147852anh@' },
+    })
+
+    const replayed = await worker.fetch(jsonRequest(
+      'https://idosi.example/api/command', firstStoreCommand, firstStoreHeaders,
+    ), env)
+    expect(replayed.status).toBe(201)
+    expect(replayed.headers.get('idempotency-replayed')).toBe('true')
+    const replayedBody = await replayed.json()
+    expect(replayedBody).toMatchObject({ employee: { id: 'SM234-001' }, user: { username: 'sm234-ben' } })
+    expect(replayedBody).not.toHaveProperty('generatedCredentials')
+
+    const policyUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'policy.set', expectedVersion: 1,
+      payload: { key: 'late_tolerance_minutes', value: 17 },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-policy-set-0001' }), env)
+    expect(policyUpdated.status).toBe(200)
+    expect(await policyUpdated.json()).toMatchObject({
+      policy: { key: 'late_tolerance_minutes', value: 17, version: 2 },
+    })
+    const policiesUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'policies.set',
+      payload: { updates: [{ key: 'early_check_in_limit_minutes', value: 100, expectedVersion: 1 }] },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-policies-set-0001' }), env)
+    expect(policiesUpdated.status).toBe(200)
+    expect(await policiesUpdated.json()).toMatchObject({
+      policies: [{ key: 'early_check_in_limit_minutes', value: 100, version: 2 }],
+    })
+    expect(env.DB.database.prepare(`
+      SELECT action, actor_role FROM audit_log
+      WHERE action IN ('policy.set', 'policies.set') ORDER BY id
+    `).all()).toEqual([
+      { action: 'policy.set', actor_role: 'business_support' },
+      { action: 'policies.set', actor_role: 'business_support' },
+    ])
+
+    for (const [index, type] of ['employee.update', 'employee.delete', 'system.reset_demo'].entries()) {
+      const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type, expectedVersion: 7,
+        payload: type === 'system.reset_demo'
+          ? { state: { stores: [], employees: [] } }
+          : { employeeId: 'SM234-001', name: 'Không được sửa' },
+      }, { ...supportAuthorization, 'idempotency-key': `support-staff-forbidden-${index}-0001` }), env)
+      expect(denied.status, type).toBe(403)
+      expect(await denied.json(), type).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+    }
+
+    const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'sm234-ben', password: '123456ben@',
+    }), env)
+    expect(employeeLogin.status).toBe(200)
+    const employeeAuthorization = { authorization: `Bearer ${(await employeeLogin.json()).token}` }
+    const supportImage = await worker.fetch(new Request(
+      'https://idosi.example/api/identity-images/TH-001/front', { headers: supportAuthorization },
+    ), env)
+    expect(supportImage.status).toBe(200)
+    const ownStoreManagerImage = await worker.fetch(new Request(
+      'https://idosi.example/api/identity-images/SM234-001/front', { headers: managerAuthorization },
+    ), env)
+    expect(ownStoreManagerImage.status).toBe(200)
+    const crossStoreManagerImage = await worker.fetch(new Request(
+      'https://idosi.example/api/identity-images/TH-001/front', { headers: managerAuthorization },
+    ), env)
+    expect(crossStoreManagerImage.status).toBe(403)
+    const ownEmployeeImage = await worker.fetch(new Request(
+      'https://idosi.example/api/identity-images/SM234-001/back', { headers: employeeAuthorization },
+    ), env)
+    expect(ownEmployeeImage.status).toBe(200)
+    const crossEmployeeImage = await worker.fetch(new Request(
+      'https://idosi.example/api/identity-images/TH-001/back', { headers: employeeAuthorization },
+    ), env)
+    expect(crossEmployeeImage.status).toBe(403)
+
+    const receipt = env.DB.database.prepare(`
+      SELECT response_json FROM command_receipts WHERE idempotency_key = 'support-store-ben-create-0001'
+    `).get()
+    expect(receipt.response_json).not.toContain('123456ben@')
+    expect(receipt.response_json).not.toContain('generatedCredentials')
+    const rawState = JSON.stringify(readHydratedState(env.DB.database))
+    expect(rawState).not.toContain('123456ben@')
+    expect(rawState).not.toContain('client-must-be-ignored')
+    expect(rawState).not.toContain('CLIENT-ID-999')
+    expect(rawState).not.toContain('CLIENT-CODE-999')
+    expect(rawState).not.toContain('CLIENT-EMPLOYEE-999')
+    const auditJson = JSON.stringify(env.DB.database.prepare(`
+      SELECT before_json, after_json, metadata_json FROM audit_log ORDER BY id
+    `).all())
+    expect(auditJson).not.toContain('123456ben@')
+    expect(auditJson).not.toContain('client-must-be-ignored')
   })
 
   it('proxies authenticated Vietnamese address suggestions without exposing the Google key', async () => {

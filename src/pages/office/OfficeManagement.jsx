@@ -235,6 +235,7 @@ export function OfficeManagement() {
   const [adjustmentSaving, setAdjustmentSaving] = useState(false)
   const [payrollMonth, setPayrollMonth] = useState(today().slice(0, 7))
   const canManageOffice = app.session?.role === 'admin'
+  const canCreateOffice = ['admin', 'business_support', 'manager'].includes(app.session?.role)
 
   useEffect(() => {
     const url = viewingImage?.url
@@ -267,6 +268,7 @@ export function OfficeManagement() {
   })
 
   const openEmployeeCreate = () => {
+    if (!canCreateOffice) return
     setEditingEmployee(null)
     setEmployeeForm({ ...emptyEmployee, code: nextOfficeEmployeeCodeFromState({ employees: allEmployees, deletedEmployees }) })
     setEmployeeErrors([])
@@ -287,6 +289,7 @@ export function OfficeManagement() {
   const closeEmployeeDrawer = () => {
     setEmployeeDrawer(false)
     setEditingEmployee(null)
+    setEmployeeForm({ ...emptyEmployee, identityImages: { ...emptyEmployee.identityImages } })
     setEmployeeErrors([])
     setShowPassword(false)
     setImageBusy('')
@@ -351,7 +354,7 @@ export function OfficeManagement() {
 
   const saveEmployee = async (event) => {
     event?.preventDefault()
-    if (!canManageOffice) return
+    if (editingEmployee ? !canManageOffice : !canCreateOffice) return
     const editingKey = editingEmployee?.id || (editingEmployee ? employeeCode(editingEmployee) : '')
     const errors = validateOfficeEmployee(employeeForm, allEmployees, editingKey, !editingEmployee || editingRequiresPassword)
     if (errors.length) {
@@ -462,7 +465,7 @@ export function OfficeManagement() {
   const onTimeCount = attendanceRows.filter((row) => row.label === 'Đúng giờ').length
   const lateCount = attendanceRows.filter((row) => row.label === 'Đi trễ').length
 
-  if (['manager', 'store_manager'].includes(app.session?.role)) {
+  if (app.session?.role === 'store_manager') {
     return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản Quản lý không được truy cập Khối văn phòng." icon={Users} /></div>
   }
 
@@ -474,7 +477,7 @@ export function OfficeManagement() {
         icon={Users}
         actions={canManageOffice ? <><Button variant="outline" icon={Gift} onClick={() => openAdjustment('Thưởng')}>Tạo thưởng</Button><Button icon={Wallet} onClick={() => openAdjustment('Phụ cấp')}>Tạo phụ cấp</Button></> : null}
       />
-      {!canManageOffice && <InfoNote>Chế độ chỉ xem. Chỉ Admin được thêm, sửa, xóa nhân viên hoặc tạo khoản lương thưởng.</InfoNote>}
+      {!canManageOffice && <InfoNote>{canCreateOffice ? 'Nhân viên Hỗ trợ KD được thêm nhân viên văn phòng; chỉ Admin được sửa, xóa hồ sơ hoặc tạo khoản lương thưởng.' : 'Chế độ chỉ xem. Chỉ Admin được sửa, xóa nhân viên hoặc tạo khoản lương thưởng.'}</InfoNote>}
 
       <div className="tabs">
         <button className={tab === 'employees' ? 'active' : ''} onClick={() => setTab('employees')}><Users />Nhân viên</button>
@@ -492,7 +495,7 @@ export function OfficeManagement() {
         <Card>
           <div className="card__subheader">
             <div className="filter-pills"><button className={statusFilter === 'all' ? 'active' : ''} onClick={() => setStatusFilter('all')}>Tất cả ({officeEmployees.length})</button>{EMPLOYEE_STATUSES.map((status) => <button key={status} className={statusFilter === status ? 'active' : ''} onClick={() => setStatusFilter(status)}>{status}</button>)}</div>
-            <div><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." />{canManageOffice && <Button icon={Plus} onClick={openEmployeeCreate}>Thêm nhân viên</Button>}</div>
+            <div><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." />{canCreateOffice && <Button icon={Plus} onClick={openEmployeeCreate}>Thêm nhân viên</Button>}</div>
           </div>
           <TableWrap>
             <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th><th>CCCD</th><th>Số điện thoại</th><th>Địa chỉ</th><th>Vị trí</th><th>Ảnh CCCD</th><th>Trạng thái</th>{canManageOffice && <th>Thao tác</th>}</tr></thead>

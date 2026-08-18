@@ -127,7 +127,7 @@ export function AdminStores() {
   const [editingStore, setEditingStore] = useState(null)
   const [viewingStore, setViewingStore] = useState(null)
   const [form, setForm] = useState(emptyStoreForm)
-  const filtered = stores.filter((item) => `${item.name} ${item.location}`.toLowerCase().includes(query.toLowerCase()))
+  const filtered = stores.filter((item) => `${item.name} ${item.location} ${item.address}`.toLowerCase().includes(query.toLowerCase()))
   const financeByStore = new Map(stores.map((store) => [store.id, financeSummaryFromState(app, { storeId: store.id })]))
   const revenue = [...financeByStore.values()].reduce((total, summary) => total + summary.revenue, 0)
   const expense = [...financeByStore.values()].reduce((total, summary) => total + summary.expense, 0)
@@ -139,8 +139,10 @@ export function AdminStores() {
   })
   const employeeCountByStore = activeStoreEmployees.reduce((counts, employee) => counts.set(employee.storeId, (counts.get(employee.storeId) || 0) + 1), new Map())
   const storeEmployeeCount = activeStoreEmployees.length
-  const canManageStoreDirectory = session?.role === 'admin'
-  const canDeleteStore = session?.role === 'admin'
+  const canonicalSessionRole = session?.role === 'manager' ? 'business_support' : session?.role
+  const isBusinessSupport = canonicalSessionRole === 'business_support'
+  const canManageStoreDirectory = canonicalSessionRole === 'admin'
+  const canDeleteStore = canonicalSessionRole === 'admin'
 
   const setStoreStatus = async (store, active) => {
     if (!canManageStoreDirectory) return
@@ -221,7 +223,7 @@ export function AdminStores() {
         subtitle="Quản lý thông tin cửa hàng, nhân sự và kết quả hoạt động của từng cửa hàng."
         actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
-      {session?.role === 'business_support' && <InfoNote>Chọn tên cửa hàng để mở không gian vận hành. Hỗ trợ KD có thể quản lý đơn hàng, chấm công và dữ liệu vận hành trong từng cửa hàng.</InfoNote>}
+      {isBusinessSupport && <InfoNote>Chọn cửa hàng để mở không gian vận hành. Hỗ trợ KD có thể quản lý đơn hàng, chấm công và dữ liệu vận hành trong từng cửa hàng.</InfoNote>}
       <div className="toolbar toolbar--right">
         <SearchInput value={query} onChange={setQuery} placeholder="Tìm kiếm cửa hàng..." />
         {canManageStoreDirectory && <Button icon={Plus} onClick={openCreate}>Thêm cửa hàng</Button>}
@@ -233,7 +235,39 @@ export function AdminStores() {
         <MetricCard label="Tổng chi phí" value={money(expense)} helper="Trong khoảng thời gian đã chọn" icon={Wallet} tone="orange" compact />
         <MetricCard label="Tổng lợi nhuận" value={money(revenue - expense)} helper="Trong khoảng thời gian đã chọn" icon={TrendingUp} tone="blue" compact />
       </div>
-      <Card title="Danh sách cửa hàng">
+      {isBusinessSupport ? (
+        <section className="store-directory" aria-labelledby="store-directory-heading">
+          <div className="section-heading store-directory__heading">
+            <div><h2 id="store-directory-heading">Không gian cửa hàng</h2><p>Chọn một cửa hàng để chuyển đến trang vận hành tương ứng.</p></div>
+            <Badge tone="green">{filtered.length} cửa hàng</Badge>
+          </div>
+          <div className="store-directory-card-grid">
+            {filtered.map((store) => {
+              const storeFinance = financeByStore.get(store.id) || { revenue: 0, expense: 0, profit: 0, marginPercent: 0 }
+              const isInactive = ['Tạm ngưng', 'Ngưng hoạt động', 'Ngừng hoạt động'].includes(store.status)
+              return (
+                <Card key={store.id} className="store-directory-card">
+                  <StoreIllustration name={store.name} accent={store.accent} />
+                  <div className="store-directory-card__body">
+                    <div className="store-directory-card__title">
+                      <h3>{store.name}</h3>
+                      <Badge tone={isInactive ? 'orange' : 'green'}>{isInactive ? 'Ngưng hoạt động' : 'Đang hoạt động'}</Badge>
+                    </div>
+                    <p className="store-directory-card__address"><MapPin size={17} aria-hidden="true" /><span>{store.address || store.location || 'Chưa cập nhật địa chỉ'}</span></p>
+                    <div className="store-directory-card__summary">
+                      <span><small>Nhân viên</small><strong>{employeeCountByStore.get(store.id) || 0}</strong></span>
+                      <span><small>Doanh thu</small><strong>{money(storeFinance.revenue)}</strong></span>
+                      <span><small>Lợi nhuận</small><strong>{money(storeFinance.profit)}</strong></span>
+                    </div>
+                    <Button className="store-directory-card__action" icon={Store} onClick={() => manageStore(store)} aria-label={`Mở cửa hàng ${store.name}`}>MỞ CỬA HÀNG</Button>
+                  </div>
+                </Card>
+              )
+            })}
+          </div>
+          {!filtered.length && <p className="store-directory__empty" role="status">Không tìm thấy cửa hàng phù hợp.</p>}
+        </section>
+      ) : <Card title="Danh sách cửa hàng">
         <TableWrap>
           <thead><tr><th>#</th><th>Tên cửa hàng</th><th>Địa chỉ</th><th>Nhân viên</th><th>Doanh thu</th><th>Chi phí</th><th>Lợi nhuận</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>
@@ -256,7 +290,7 @@ export function AdminStores() {
           </tbody>
         </TableWrap>
         <TableFooter shown={filtered.length} total={filtered.length} />
-      </Card>
+      </Card>}
 
       {canManageStoreDirectory && <Modal open={open} onClose={closeForm} title={editingStore ? 'Cập nhật cửa hàng' : 'Thêm cửa hàng mới'} footer={<><Button variant="outline" onClick={closeForm}>Hủy</Button><Button icon={Save} onClick={save}>{editingStore ? 'Lưu thay đổi' : 'Lưu cửa hàng'}</Button></>}>
         <form className="form-grid" onSubmit={save}>

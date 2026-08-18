@@ -126,6 +126,7 @@ export default function App() {
         <Route path="/office" element={<OfficeManagement />} />
         <Route path="/admin/office" element={<Navigate to="/office" replace />} />
         <Route path="/admin/settings" element={<AdminSettings />} />
+        <Route path="/admin/policies" element={<PolicySettings />} />
         <Route path="/admin/order-audit" element={<OrderAuditPage />} />
         <Route path="/admin/reset" element={<ResetDataPage />} />
       </Route>
@@ -154,7 +155,6 @@ export default function App() {
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/admin/tasks" element={<AdminSupportWorkPage />} />
-        <Route path="/admin/policies" element={<PolicySettings />} />
       </Route>
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>

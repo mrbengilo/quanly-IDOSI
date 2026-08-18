@@ -6,6 +6,7 @@ import {
   Check,
   ClipboardCheck,
   Clock3,
+  Copy,
   Edit3,
   Eye,
   EyeOff,
@@ -56,13 +57,23 @@ import {
   today,
 } from '../../utils'
 import { selectTaskShiftForDate, taskShiftOptionsForDate } from './taskScope'
+import {
+  buildStoreEmployeePayload,
+  formatStoreMoneyInput,
+  generateStoreEmployeeCredentials,
+  isPartTimeEmployee,
+  nextStoreEmployeeCode,
+  normalizeStoreEmploymentType,
+  storeEmployeePrefix,
+  validateStoreEmployee,
+} from './storeEmployeeForm'
 
 const shiftById = (id) => shifts.find((shift) => shift.id === id)
 
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
 const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time']
-const PHONE_PATTERN = /^0\d{9}$/
-const CCCD_PATTERN = /^\d{12}$/
+const IDENTITY_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
+const MAX_IDENTITY_IMAGE_SIZE = 2 * 1024 * 1024
 const emptyEmployeeForm = {
   id: '',
   name: '',
@@ -71,6 +82,8 @@ const emptyEmployeeForm = {
   province: '',
   ward: '',
   street: '',
+  startDate: today(),
+  identityImages: { front: '', back: '' },
   salary: '',
   baseSalary: '',
   standardWorkDays: '26',
@@ -84,52 +97,21 @@ const emptyEmployeeForm = {
   storeId: '',
 }
 
-const normalizePhone = (value = '') => String(value).replace(/[\s.()-]/g, '')
 const normalizeText = (value = '') => String(value).trim().toLowerCase()
-const parseMoneyInput = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
-const formatMoneyInput = (value) => {
-  const amount = parseMoneyInput(value)
-  return amount ? new Intl.NumberFormat('en-US').format(amount) : ''
-}
-const isPartTime = (value) => String(value || '').toLowerCase() === 'part-time'
-const normalizeEmploymentType = (value) => isPartTime(value) ? 'Part-Time' : 'Full-Time'
-const employmentTypeLabel = normalizeEmploymentType
+const isPartTime = isPartTimeEmployee
+const normalizeEmploymentType = normalizeStoreEmploymentType
+const employmentTypeLabel = normalizeStoreEmploymentType
+const formatMoneyInput = formatStoreMoneyInput
 
-const normalizeStoreKey = (value = '') => String(value)
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .replace(/[Đđ]/g, 'D')
-  .toUpperCase()
-
-const storeEmployeePrefix = (store = {}) => {
-  const source = normalizeStoreKey(`${store.short || ''} ${store.name || ''} ${store.id || ''}`)
-  const rules = [
-    ['SM234', 'SM234'],
-    ['TO NGOC VAN', 'TNV'],
-    ['TAY HOA', 'TH'],
-    ['DI AN', 'DIAN'],
-    ['NO TRANG LONG', 'NTL'],
-    ['BUON MA THU', 'BMT'],
-    ['LE VAN THO', 'LVT'],
-    ['NGUYEN VAN THUONG', 'NVT'],
-    ['KHA VAN CAN', 'KVC'],
-    ['CAN THO', 'CT'],
-  ]
-  const matched = rules.find(([keyword]) => source.includes(keyword))
-  if (matched) return matched[1]
-  const shortCode = normalizeStoreKey(store.short || store.id || 'NV').replace(/[^A-Z0-9]/g, '').slice(0, 8)
-  return shortCode || 'NV'
-}
-
-const nextStoreEmployeeCode = (store, employees = []) => {
-  const prefix = storeEmployeePrefix(store)
-  const matcher = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d+)$`, 'i')
-  const highest = employees.reduce((value, employee) => {
-    const match = String(employee.id || employee.code || employee.employeeCode || '').match(matcher)
-    return match ? Math.max(value, Number(match[1]) || 0) : value
-  }, 0)
-  return `${prefix}-${String(highest + 1).padStart(3, '0')}`
-}
+const readIdentityImage = (file) => new Promise((resolve, reject) => {
+  if (!file) return resolve('')
+  if (!IDENTITY_IMAGE_TYPES.has(file.type)) return reject(new Error('Ảnh CCCD phải là tệp JPG, PNG hoặc WEBP.'))
+  if (file.size > MAX_IDENTITY_IMAGE_SIZE) return reject(new Error('Mỗi ảnh CCCD không được vượt quá 2 MB.'))
+  const reader = new FileReader()
+  reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh CCCD.'))
+  reader.onload = () => resolve(String(reader.result || ''))
+  reader.readAsDataURL(file)
+})
 
 const useStoreScope = () => {
   const app = useApp()
@@ -183,6 +165,11 @@ const employeeToForm = (employee = {}, storeId = '') => {
     province: address.province,
     ward: address.ward,
     street: address.street,
+    startDate: String(employee.startDate || employee.joinDate || '').slice(0, 10),
+    identityImages: {
+      front: employee.identityImages?.front || employee.cccdFrontImage || '',
+      back: employee.identityImages?.back || employee.cccdBackImage || '',
+    },
     salary: isPartTime(employmentType) ? formatMoneyInput(employeeSalary(employee)) : '',
     baseSalary: isPartTime(employmentType) ? '' : formatMoneyInput(employee.baseSalary || employeeSalary(employee)),
     standardWorkDays: String(employee.standardWorkDays || 26),
@@ -201,61 +188,6 @@ const employeeStatusTone = (status) => {
   if (status === 'Đang làm việc') return 'green'
   if (status === 'Đã nghỉ việc') return 'red'
   return 'orange'
-}
-
-function validateEmployee(form, employees, editingId, requiresPassword = !editingId) {
-  const errors = []
-  const required = [
-    ['Mã nhân viên', form.id],
-    ['Tên nhân viên', form.name],
-    ['Số CCCD', form.cccd],
-    ['Số điện thoại', form.phone],
-    ['Tỉnh/Thành phố', form.province],
-    ['Phường/Xã', form.ward],
-    ['Đường, số nhà', form.street],
-    [isPartTime(form.employmentType) ? 'Lương theo giờ' : 'Lương cơ bản', isPartTime(form.employmentType) ? form.salary : form.baseSalary],
-    ['Vị trí công việc', form.position],
-    ['Tuổi', form.age],
-    ['Tên đăng nhập', form.username],
-    ['Cửa hàng', form.storeId],
-  ]
-
-  required.forEach(([label, value]) => {
-    if (!String(value ?? '').trim()) errors.push(`${label} là trường bắt buộc.`)
-  })
-  if (!CCCD_PATTERN.test(form.cccd)) errors.push('Số CCCD phải gồm đúng 12 chữ số.')
-  if (!PHONE_PATTERN.test(normalizePhone(form.phone))) errors.push('Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.')
-  if (!Number.isFinite(parseMoneyInput(form.salary)) || parseMoneyInput(form.salary) <= 0) {
-    if (isPartTime(form.employmentType)) errors.push('Lương theo giờ phải là số lớn hơn 0.')
-  }
-  if (!isPartTime(form.employmentType)) {
-    if (parseMoneyInput(form.baseSalary) <= 0) errors.push('Lương cơ bản phải là số lớn hơn 0.')
-    if (!Number.isInteger(Number(form.standardWorkDays)) || Number(form.standardWorkDays) < 1 || Number(form.standardWorkDays) > 31) {
-      errors.push('Số ngày công quy định phải là số nguyên từ 1 đến 31.')
-    }
-    if (!Number.isFinite(Number(form.requiredMonthlyHours)) || Number(form.requiredMonthlyHours) <= 0 || Number(form.requiredMonthlyHours) > 744) {
-      errors.push('Tổng giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
-    }
-  }
-  if (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100) {
-    errors.push('Tuổi phải là số nguyên từ 16 đến 100.')
-  }
-  if (requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
-
-  const others = employees.filter((employee) => String(employee.id || employee.code || '') !== String(editingId || ''))
-  if (others.some((employee) => normalizeText(employee.id || employee.code || employee.employeeCode) === normalizeText(form.id))) {
-    errors.push('Mã nhân viên đã tồn tại.')
-  }
-  if (others.some((employee) => String(employee.cccd || employee.citizenId || '') === form.cccd)) {
-    errors.push('Số CCCD đã được sử dụng.')
-  }
-  if (others.some((employee) => normalizeText(employee.username) === normalizeText(form.username))) {
-    errors.push('Tên đăng nhập đã tồn tại.')
-  }
-  if (others.some((employee) => normalizePhone(employee.phone) === normalizePhone(form.phone))) {
-    errors.push('Số điện thoại đã được sử dụng.')
-  }
-  return [...new Set(errors)]
 }
 
 export function StoreOverview() {
@@ -415,6 +347,7 @@ export function StoreEmployees() {
   const scopedStore = stores.find((store) => String(store.id) === String(scopedStoreId)) || stores[0]
   const createEmployeeForm = () => ({
     ...emptyEmployeeForm,
+    identityImages: { ...emptyEmployeeForm.identityImages },
     id: nextStoreEmployeeCode(scopedStore, employees),
     storeId: scopedStoreId,
   })
@@ -425,7 +358,12 @@ export function StoreEmployees() {
   const [form, setForm] = useState(createEmployeeForm)
   const [errors, setErrors] = useState([])
   const [showPassword, setShowPassword] = useState(false)
+  const [imageBusy, setImageBusy] = useState('')
+  const [createdCredentials, setCreatedCredentials] = useState(null)
+  const [showCreatedPassword, setShowCreatedPassword] = useState(false)
   const canManageStore = ['admin', 'store_manager'].includes(session?.role)
+  const canCreateStoreEmployee = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
+  const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
   const canDeleteEmployee = session?.role === 'admin'
   const editingRequiresPassword = Boolean(editing) && !(
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
@@ -455,10 +393,11 @@ export function StoreEmployees() {
   })
 
   const openCreate = () => {
-    if (!canManageStore) return
+    if (!canCreateStoreEmployee) return
     setEditing(null)
     setErrors([])
     setShowPassword(false)
+    setImageBusy('')
     setForm(createEmployeeForm())
     setOpen(true)
   }
@@ -468,6 +407,7 @@ export function StoreEmployees() {
     setEditing(employee)
     setErrors([])
     setShowPassword(false)
+    setImageBusy('')
     setForm(employeeToForm(employee, scopedStoreId))
     setOpen(true)
   }
@@ -477,6 +417,8 @@ export function StoreEmployees() {
     setEditing(null)
     setErrors([])
     setShowPassword(false)
+    setImageBusy('')
+    setForm(createEmployeeForm())
   }
 
   const updateField = (field) => (event) => {
@@ -490,6 +432,25 @@ export function StoreEmployees() {
     setForm((current) => ({ ...current, [field]: value }))
   }
 
+  const updateIdentityImage = (side) => async (event) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    setImageBusy(side)
+    try {
+      const value = await readIdentityImage(file)
+      setForm((current) => ({
+        ...current,
+        identityImages: { ...current.identityImages, [side]: value },
+      }))
+      setErrors((current) => current.filter((error) => !error.includes(side === 'front' ? 'mặt trước CCCD' : 'mặt sau CCCD')))
+    } catch (error) {
+      notify?.(error.message, 'info')
+    } finally {
+      setImageBusy('')
+      event.target.value = ''
+    }
+  }
+
   const updateEmploymentType = (event) => {
     const employmentType = event.target.value
     setForm((current) => ({ ...current, employmentType, salary: '', baseSalary: '' }))
@@ -498,59 +459,28 @@ export function StoreEmployees() {
 
   const save = async (event) => {
     event?.preventDefault()
-    if (!canManageStore) return
+    if (editing ? !canManageStore : !canCreateStoreEmployee) return
     const editingId = editing?.id || editing?.code || ''
     const scopedForm = { ...form, storeId: scopedStoreId }
-    const validationErrors = validateEmployee(scopedForm, employees, editingId, !editing || editingRequiresPassword)
+    const autoCredentials = isBusinessSupport && !editing
+    const validationErrors = validateStoreEmployee(
+      scopedForm,
+      employees,
+      editingId,
+      !editing || editingRequiresPassword,
+      { autoCredentials, requireIdentityImages: !editing },
+    )
     if (validationErrors.length) {
       setErrors(validationErrors)
       notify?.('Vui lòng kiểm tra lại thông tin nhân viên.', 'info')
       return
     }
 
-    const addressDetails = {
-      province: form.province.trim(),
-      ward: form.ward.trim(),
-      street: form.street.trim(),
-    }
-    const partTime = isPartTime(form.employmentType)
-    const baseSalary = partTime ? 0 : parseMoneyInput(form.baseSalary)
-    const usesMonthlyHours = !partTime && storeEmployeePrefix(scopedStore) === 'SM234'
-    const payload = {
-      id: form.id.trim(),
-      code: form.id.trim(),
-      employeeCode: form.id.trim(),
-      name: form.name.trim(),
-      cccd: form.cccd,
-      citizenId: form.cccd,
-      phone: form.phone.trim(),
-      ...addressDetails,
-      addressDetails,
-      address: [addressDetails.street, addressDetails.ward, addressDetails.province].join(', '),
-      salary: partTime ? parseMoneyInput(form.salary) : baseSalary,
-      payBasis: partTime ? 'hourly' : 'monthly',
-      salaryBasis: partTime ? 'hourly' : 'monthly',
-      salaryUnit: partTime ? 'hour' : 'month',
-      monthlySalary: partTime ? null : baseSalary,
-      baseSalary: partTime ? null : baseSalary,
-      hourlyRate: partTime ? parseMoneyInput(form.salary) : null,
-      standardWorkDays: partTime ? null : Number(form.standardWorkDays),
-      requiredMonthlyHours: partTime ? null : Number(form.requiredMonthlyHours),
-      payFormula: usesMonthlyHours ? 'monthly-hours' : 'monthly',
-      compensationVersion: 2,
-      currency: 'VND',
-      employmentType: form.employmentType,
-      employeeType: form.employmentType,
-      position: form.position.trim(),
-      role: form.position.trim(),
-      shortRole: form.position.replace(/^Nhân viên\s*/i, '') || form.position,
-      age: Number(form.age),
-      username: form.username.trim(),
-      status: form.status,
+    const payload = buildStoreEmployeePayload(form, {
       storeId: scopedStoreId,
-      unit: 'store',
-      ...(form.password ? { password: form.password } : {}),
-    }
+      store: scopedStore,
+      autoCredentials,
+    })
 
     if (editing) {
       if (typeof updateEmployee !== 'function') return notify?.('Chức năng cập nhật nhân viên đang được kết nối.', 'info')
@@ -560,18 +490,45 @@ export function StoreEmployees() {
       if (typeof addEmployee !== 'function') return notify?.('Chức năng thêm nhân viên đang được kết nối.', 'info')
       const result = await addEmployee(payload)
       if (!result?.ok) return notify?.(result?.message || 'Không thể thêm nhân viên.', 'info')
+      if (autoCredentials) {
+        setCreatedCredentials({
+          employeeName: result.employee?.name || form.name.trim(),
+          username: result.generatedCredentials?.username || result.user?.username || '',
+          password: result.generatedCredentials?.password || '',
+        })
+        setShowCreatedPassword(false)
+      }
     }
     closeDrawer()
+  }
+
+  const copyCreatedCredentials = async () => {
+    if (!createdCredentials?.password) return
+    const content = `Tên đăng nhập: ${createdCredentials.username}\nMật khẩu: ${createdCredentials.password}`
+    try {
+      await navigator.clipboard.writeText(content)
+      notify?.('Đã sao chép thông tin đăng nhập.', 'info')
+    } catch {
+      notify?.('Trình duyệt chưa cho phép sao chép tự động. Vui lòng sao chép thủ công.', 'info')
+    }
+  }
+
+  const closeCreatedCredentials = () => {
+    setCreatedCredentials(null)
+    setShowCreatedPassword(false)
   }
 
   const activeCount = scopedEmployees.filter((item) => item.status === 'Đang làm việc').length
   const pausedCount = scopedEmployees.filter((item) => item.status === 'Tạm ngưng' || item.status === 'Tạm nghỉ').length
   const stoppedCount = scopedEmployees.filter((item) => item.status === 'Đã nghỉ việc').length
+  const autoCredentialPreview = isBusinessSupport && !editing
+    ? generateStoreEmployeeCredentials(scopedStore, form.name, form.cccd)
+    : null
 
   return (
     <div className="page">
-      <PageHeader title="Quản lý nhân viên" subtitle={canManageStore ? 'Thêm, sửa và quản lý hồ sơ nhân viên theo cửa hàng.' : 'Danh sách nhân viên theo cửa hàng — chế độ chỉ xem.'} actions={<><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." />{canManageStore && <Button icon={Plus} onClick={openCreate}>Thêm nhân viên</Button>}</>} />
-      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể thêm, sửa, xóa hoặc cấp lại tài khoản nhân viên cửa hàng.</InfoNote>}
+      <PageHeader title="Quản lý nhân viên" subtitle={canManageStore ? 'Thêm, sửa và quản lý hồ sơ nhân viên theo cửa hàng.' : isBusinessSupport ? 'Thêm mới và xem danh sách nhân viên theo cửa hàng.' : 'Danh sách nhân viên theo cửa hàng — chế độ chỉ xem.'} actions={<><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." />{canCreateStoreEmployee && <Button icon={Plus} onClick={openCreate}>Thêm nhân viên</Button>}</>} />
+      {!canManageStore && <InfoNote>{isBusinessSupport ? 'Nhân viên Hỗ trợ KD được thêm nhân viên mới; không được sửa hoặc xóa hồ sơ đã có. Tài khoản đăng nhập được hệ thống tự sinh.' : 'Chế độ chỉ xem. Tài khoản này không thể thay đổi nhân viên cửa hàng.'}</InfoNote>}
       <div className="metric-grid metric-grid--four">
         <MetricCard label="Tổng nhân viên" value={scopedEmployees.length} helper="Thuộc cửa hàng đang chọn" icon={Users} tone="green" compact />
         <MetricCard label="Đang làm việc" value={activeCount} helper="Theo trạng thái" icon={UserCheck} tone="green" compact />
@@ -605,7 +562,7 @@ export function StoreEmployees() {
         </TableWrap>
         <TableFooter shown={filtered.length} total={filtered.length} />
       </Card>
-      {canManageStore && <Modal wide open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
+      {canCreateStoreEmployee && <Modal wide open={open} onClose={closeDrawer} title={editing ? 'Cập nhật nhân viên' : 'Thêm nhân viên'} footer={<><Button type="button" variant="outline" onClick={closeDrawer} disabled={Boolean(imageBusy)}>Hủy bỏ</Button><Button type="button" icon={Save} onClick={save} disabled={Boolean(imageBusy)}>{editing ? 'Lưu thay đổi' : 'Lưu nhân viên'}</Button></>}>
         <form className="form-stack" onSubmit={save}>
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
@@ -614,6 +571,7 @@ export function StoreEmployees() {
             <Field label="Tên nhân viên" required><Input value={form.name} onChange={updateField('name')} placeholder="Nhập họ và tên" /></Field>
             <Field label="Số CCCD" required hint="Chỉ gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={updateField('cccd')} placeholder="012345678901" /></Field>
             <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng số 0"><Input type="tel" inputMode="numeric" maxLength={10} pattern="0[0-9]{9}" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field>
+            <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={updateField('startDate')} /></Field>
             <Field label="Loại nhân viên" required hint="Full-Time dùng định mức ngày, giờ và lương cơ bản; Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
             {isPartTime(form.employmentType)
               ? <Field label="Lương mặc định theo giờ (đ/giờ)" required hint="Dùng để tính lương theo tổng giờ chấm công"><Input inputMode="numeric" value={form.salary} onChange={updateField('salary')} placeholder="30,000" /></Field>
@@ -623,28 +581,59 @@ export function StoreEmployees() {
                   <Field label="Lương cơ bản (đ/tháng)" required hint={storeEmployeePrefix(scopedStore) === 'SM234' ? 'SecondMall: giờ thực tế ÷ giờ quy định × lương cơ bản' : 'Mức lương cơ bản của kỳ lương tháng'}><Input inputMode="numeric" value={form.baseSalary} onChange={updateField('baseSalary')} placeholder="8,000,000" /></Field>
                 </>}
             <Field label="Tuổi" required><Input inputMode="numeric" min="16" max="100" value={form.age} onChange={updateField('age')} placeholder="Ví dụ: 22" /></Field>
-            <Field label="Vị trí công việc" required><Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select></Field>
+            <Field label="Vị trí công việc" required hint={isBusinessSupport && !editing ? 'Mặc định cho nhân viên do Hỗ trợ KD tạo' : undefined}>{isBusinessSupport && !editing
+              ? <Input value="Nhân viên bán hàng" readOnly aria-readonly="true" />
+              : <Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select>}</Field>
           </div>
           <h3>Địa chỉ</h3>
           <AddressAutocomplete
             value={{ province: form.province, ward: form.ward, street: form.street }}
             onChange={(address) => setForm((current) => ({ ...current, ...address }))}
           />
+          <h3>Hình ảnh CCCD</h3>
+          <div className="form-grid identity-image-grid">
+            {['front', 'back'].map((side) => {
+              const label = side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'
+              const image = form.identityImages?.[side]
+              const preview = typeof image === 'string' && image.startsWith('data:image/') ? image : ''
+              return <Field key={side} label={label} required={!editing} hint="JPG, PNG hoặc WEBP; tối đa 2 MB">
+                <Input type="file" accept="image/jpeg,image/png,image/webp" aria-label={label} onChange={updateIdentityImage(side)} disabled={Boolean(imageBusy)} />
+                {image && <small>{preview ? 'Đã chọn ảnh mới' : 'Ảnh đã được lưu riêng tư'}</small>}
+                {preview && <img className="identity-image-preview" src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} />}
+              </Field>
+            })}
+          </div>
+          {imageBusy && <InfoNote>Đang đọc ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
-            <Field label="Tên đăng nhập" required><Input autoComplete="username" value={form.username} onChange={updateField('username')} placeholder="Ví dụ: nguyenvana" /></Field>
-            <Field label="Mật khẩu" required={!editing || editingRequiresPassword} hint={editing && !editingRequiresPassword ? 'Để trống nếu không muốn đổi mật khẩu' : 'Bắt buộc để cấp tài khoản đăng nhập'}>
+            <Field label="Tên đăng nhập" required hint={autoCredentialPreview ? 'Xem trước; máy chủ sẽ xác nhận tên cuối cùng sau khi lưu' : undefined}><Input autoComplete="username" value={autoCredentialPreview?.username || form.username} onChange={autoCredentialPreview ? undefined : updateField('username')} readOnly={Boolean(autoCredentialPreview)} aria-readonly={autoCredentialPreview ? 'true' : undefined} placeholder={autoCredentialPreview ? 'Nhập tên nhân viên để xem trước' : 'Ví dụ: nguyenvana'} /></Field>
+            <Field label="Mật khẩu" required={!editing || editingRequiresPassword} hint={autoCredentialPreview ? '6 số cuối CCCD + tên nhân viên + @; chỉ hiển thị lại một lần sau khi lưu' : editing && !editingRequiresPassword ? 'Để trống nếu không muốn đổi mật khẩu' : 'Bắt buộc để cấp tài khoản đăng nhập'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={updateField('password')} placeholder={editing ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} />
+                <Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={autoCredentialPreview?.password || form.password} onChange={autoCredentialPreview ? undefined : updateField('password')} readOnly={Boolean(autoCredentialPreview)} aria-readonly={autoCredentialPreview ? 'true' : undefined} placeholder={autoCredentialPreview ? 'Nhập đủ CCCD và tên để xem trước' : editing ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} />
                 <button type="button" className="icon-button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>
                   {showPassword ? <EyeOff size={19} /> : <Eye size={19} />}
                 </button>
               </div>
             </Field>
           </div>
-          <InfoNote>Vì an toàn dữ liệu, hệ thống chỉ lưu số CCCD và không lưu tệp ảnh CCCD.</InfoNote>
+          <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư. Hệ thống không lưu hoặc hiển thị lại mật khẩu sau khi đóng thông báo cấp tài khoản.</InfoNote>
         </form>
       </Modal>}
+      <Modal
+        open={Boolean(createdCredentials)}
+        onClose={closeCreatedCredentials}
+        title="Đã cấp tài khoản nhân viên"
+        footer={<><Button type="button" variant="outline" onClick={closeCreatedCredentials}>Đóng</Button>{createdCredentials?.password && <Button type="button" icon={Copy} onClick={copyCreatedCredentials}>Sao chép tài khoản</Button>}</>}
+      >
+        <InfoNote tone="green"><strong>{createdCredentials?.employeeName}</strong> đã được thêm vào cửa hàng. Hãy bàn giao thông tin đăng nhập trước khi đóng cửa sổ này.</InfoNote>
+        <div className="form-grid">
+          <Field label="Tên đăng nhập"><Input value={createdCredentials?.username || ''} readOnly /></Field>
+          <Field label="Mật khẩu một lần" hint="Mật khẩu sẽ được xóa khỏi giao diện khi đóng cửa sổ">
+            <span className="password-input"><Input type={showCreatedPassword ? 'text' : 'password'} value={createdCredentials?.password || ''} readOnly /><button type="button" onClick={() => setShowCreatedPassword((current) => !current)} aria-label={showCreatedPassword ? 'Ẩn mật khẩu được cấp' : 'Hiện mật khẩu được cấp'} title={showCreatedPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>{showCreatedPassword ? <EyeOff size={20} /> : <Eye size={20} />}</button></span>
+          </Field>
+        </div>
+        {!createdCredentials?.password && <InfoNote tone="orange">Mật khẩu không được trả lại vì yêu cầu đã được xử lý trước đó. Hãy tạo yêu cầu cấp lại tài khoản nếu nhân viên chưa nhận được mật khẩu.</InfoNote>}
+      </Modal>
     </div>
   )
 }

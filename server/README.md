@@ -48,14 +48,14 @@ Các lệnh chính:
   `business_support` kế thừa projection đọc toàn hệ thống giống Admin, gồm cả
   `OFFICE`, tài chính, đơn hàng và lịch sử, nhưng chỉ nhận account settings của
   chính họ và không nhận credential/secret. Ngoài thao tác tự phục vụ, role này
-  được tạo mới duy nhất hồ sơ+tài khoản `store_manager`, sửa/xóa đơn hàng,
+  được tạo mới hồ sơ+tài khoản `store_manager`, `office` và `store`, sửa/xóa đơn hàng,
   chỉnh chấm công nhân viên cửa hàng, quản lý điều chuyển, khôi phục lần
   sửa/xóa vận hành gần nhất và cập nhật công việc Admin giao cho chính mình;
-  họ không được sửa/xóa/khóa/reset
-  mật khẩu Quản lý cửa hàng hoặc tạo nhóm nhân sự khác;
+  họ không được sửa/xóa/khóa/reset mật khẩu hồ sơ nhân viên đã có;
   `store_manager` bắt buộc có `store_id` thật và chỉ nhận/ghi dữ liệu đúng cửa
-  hàng đó. Cả hai không thể gọi `state.merge|replace`, đổi chính sách hoặc xóa cửa
-  hàng/nhân viên. `store_manager` không được sửa/xóa
+  hàng đó. Cả hai không thể gọi `state.merge|replace` hoặc xóa cửa hàng/nhân viên;
+  Hỗ trợ KD được đọc/ghi chính sách như Admin nhưng không được gọi
+  `system.reset_demo`. `store_manager` không được sửa/xóa
   đơn hàng; hai thao tác này chỉ dành cho Admin và Hỗ trợ KD.
 - `store.create`: chỉ admin; `store.update`: admin hoặc store_manager của đúng
   cửa hàng; `store.delete`: chỉ admin. `store.update`
@@ -67,7 +67,7 @@ Các lệnh chính:
   `operatingHours`, nên giờ hoạt động là dữ liệu đã lưu chứ không phải UI tĩnh.
 - `employee.create|update`: admin cho mọi nhóm; store_manager chỉ cho nhân viên
   `unit: store` thuộc đúng cửa hàng; business_support chỉ được
-  `employee.create` với `unit: store_manager`. Admin tạo mọi nhóm. Create nhận
+  `employee.create` với `unit: store_manager|office|store`. Admin tạo mọi nhóm. Create nhận
   hồ sơ trực tiếp cùng `username`, `password`; Worker
   tự sinh mã cửa hàng, kiểm tra điện thoại `0` + 9 số và commit hồ sơ + tài khoản
   đăng nhập trong cùng transaction. `employee.delete` chỉ admin. Update có thể
@@ -80,12 +80,20 @@ Các lệnh chính:
   `Thực Tập Sinh`), vị trí đúng vai trò, `username`/`password` và ảnh CCCD.
   Giờ chấm công của hai vai trò do server cố định `08:00-17:00`, không nhận
   cấu hình ngày công/giờ làm/lương tùy biến.
-  Hồ sơ `unit: office` tự sinh mã `VP-001...`, điện thoại `0` + 9 số, CCCD đúng
+  Hồ sơ `unit: office` bắt buộc `storeId: OFFICE`, tự sinh mã `VP-001...`, điện thoại `0` + 9 số, CCCD đúng
   12 số, bắt buộc địa chỉ, ngày bắt đầu, loại nhân viên (`Full-Time`,
   `Part-Time`, `Thực Tập Sinh`), vị trí (`Kế Toán`, `Marketing`) và cặp
-  `username`/`password`; create hồ sơ+tài khoản trong một transaction.
+  `username`/`password`; create mới bắt buộc đủ `identityImages.front|back` và
+  commit hồ sơ+tài khoản trong một transaction.
   `addressDetails` tùy chọn có cấu trúc `{province,ward,street}` để lưu đúng ba
   tầng địa chỉ mà giao diện đã chọn.
+  Khi Hỗ trợ KD tạo `unit: store`, Worker bắt buộc CCCD 12 số, ngày bắt đầu và
+  đủ ảnh CCCD trước/sau, cố định vị trí `Nhân viên bán hàng`, rồi tự sinh
+  mã nhân viên (bỏ qua mọi `id|code|employeeCode` từ client), username dạng
+  `<mã-ngắn-cửa-hàng>-<tên>` (tự thêm hậu tố số nếu trùng) và
+  password dạng `<6-số-cuối-CCCD><tên>@`. Password chỉ xuất hiện trong
+  `generatedCredentials` của response create đầu tiên; receipt replay, state và
+  audit không lưu plaintext này.
   Sau migration xóa credential, `employee.update` có thể nhận lại cặp
   `username`/`password` để phát hành tài khoản mới nguyên tử cho đúng
   profile hiện hữu; mã profile và lịch sử nghiệp vụ không thay đổi.
@@ -99,8 +107,8 @@ Các lệnh chính:
   `identityImages.front|back` nhận data URL JPEG/PNG/WebP tối đa 2 MiB/ảnh;
   Worker chỉ lưu metadata/key trong D1 và byte ảnh trong R2. Ảnh được lấy qua
   `GET /api/identity-images/:employeeId/:side` có Bearer token; Admin và Hỗ trợ
-  KD xem được toàn bộ, Quản lý cửa hàng và Nhân viên văn phòng chỉ xem ảnh của
-  chính mình.
+  KD xem được toàn bộ, Quản lý cửa hàng xem hồ sơ thuộc cửa hàng mình, còn nhân
+  viên chỉ xem ảnh của chính mình.
 - `shift_definition.create|update|delete`: admin/store_manager, payload `storeId`,
   `name`, `date?`, `start`, `end` theo 24 giờ; màu sáng và thời lượng do server
   tạo. `schedule.assign` nhận `storeId`, `date`, `employeeIds[]`, `shiftIds[]`;
@@ -236,7 +244,7 @@ Các lệnh chính:
   còn kỳ hiện tại đã chi/khóa chặn cập nhật.
   Profile `unit: store_manager` bị loại khỏi lịch phân ca và bảng lương/KPI của
   nhân viên cửa hàng.
-- `policy.set`: admin, payload `key`, `value`, dùng version riêng của policy.
+- `policy.set`: admin/business_support, payload `key`, `value`, dùng version riêng của policy.
   Khi lưu nhiều ô cùng lúc, dùng `policies.set` với payload
   `updates: [{ key, value, expectedVersion }]` để toàn bộ thay đổi cùng commit
   hoặc cùng rollback.

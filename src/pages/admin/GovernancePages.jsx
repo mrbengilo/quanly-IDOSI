@@ -58,8 +58,8 @@ export function PolicySettings() {
   }))
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
 
-  if (session?.role !== 'admin') {
-    return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản Quản lý không được truy cập Cài đặt chính sách." icon={LockKeyhole} /></div>
+  if (!['admin', 'business_support', 'manager'].includes(session?.role)) {
+    return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản này không được truy cập Cài đặt chính sách." icon={LockKeyhole} /></div>
   }
 
   const save = async () => {
