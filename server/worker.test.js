@@ -2078,6 +2078,9 @@ describe('IDOSI Worker security primitives', () => {
         payrollPeriods: [{
           id: 'PAYROLL-LOCKED', storeId: 'S01', period: '2026-09', status: 'Đã khóa',
           lockedAt: '2026-09-30T00:00:00.000Z',
+        }, {
+          id: 'PAYROLL-PAID', storeId: 'S02', period: '2026-10', status: 'Đã chi',
+          confirmedAt: '2026-10-31T00:00:00.000Z',
         }],
       },
     }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
@@ -2110,25 +2113,65 @@ describe('IDOSI Worker security primitives', () => {
       expect.objectContaining({ id: 'ST-OFFICE', employeeId: 'VP001' }),
     ])
 
+    const adminTransferDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.create',
+      expectedVersion: 1,
+      payload: {
+        employeeId: 'E01', toStoreId: 'S02', fromDate: '2026-08-15', toDate: '2026-08-17',
+        hourlySupportRate: 45_000, allowance: 150_000,
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'admin-support-transfer-denied-0001' }), env)
+    expect(adminTransferDenied.status).toBe(403)
+    expect(await adminTransferDenied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
+
+    const transferRateRequired = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.create', expectedVersion: 1,
+      payload: { employeeId: 'E01', toStoreId: 'S02', fromDate: '2026-08-15', toDate: '2026-08-17' },
+    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-rate-required-0001' }), env)
+    expect(transferRateRequired.status).toBe(400)
+    expect(await transferRateRequired.json()).toMatchObject({ error: { code: 'SUPPORT_HOURLY_RATE_REQUIRED' } })
+
+    const transferSourceMismatch = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.create', expectedVersion: 1,
+      payload: {
+        employeeId: 'E01', fromStoreId: 'S02', toStoreId: 'S01',
+        fromDate: '2026-08-15', toDate: '2026-08-17', hourlySupportRate: 45_000, allowance: 0,
+      },
+    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-source-mismatch-0001' }), env)
+    expect(transferSourceMismatch.status).toBe(400)
+    expect(await transferSourceMismatch.json()).toMatchObject({ error: { code: 'TRANSFER_SOURCE_MISMATCH' } })
+
     const lockedTransfer = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'support_transfer.create',
       expectedVersion: 1,
       payload: {
-        employeeId: 'E01', toStoreId: 'S02', fromDate: '2026-09-01', toDate: '2026-09-02', note: 'Kỳ đã khóa',
+        employeeId: 'E01', toStoreId: 'S02', fromDate: '2026-09-01', toDate: '2026-09-02',
+        hourlySupportRate: 45_000, allowance: 150_000, note: 'Kỳ đã khóa',
       },
-    }, { ...adminAuthorization, 'idempotency-key': 'support-transfer-locked-0001' }), env)
+    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-locked-0001' }), env)
     expect(lockedTransfer.status).toBe(409)
     expect(await lockedTransfer.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+    const paidTransfer = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.create', expectedVersion: 1,
+      payload: {
+        employeeId: 'E01', toStoreId: 'S02', fromDate: '2026-10-01', toDate: '2026-10-02',
+        hourlySupportRate: 45_000, allowance: 150_000,
+      },
+    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-paid-0001' }), env)
+    expect(paidTransfer.status).toBe(409)
+    expect(await paidTransfer.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
 
     const createTransferCommand = {
       type: 'support_transfer.create',
       expectedVersion: 1,
       payload: {
-        employeeId: 'E01', toStoreId: 'S02', fromDate: '2026-08-15', toDate: '2026-08-17', note: 'Hỗ trợ khai trương',
+        employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        fromDate: '2026-08-15', toDate: '2026-08-17',
+        hourlySupportRate: 45_000, allowance: 150_000, note: 'Hỗ trợ khai trương',
       },
     }
     const transferCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', createTransferCommand, {
-      ...adminAuthorization, 'idempotency-key': 'support-transfer-create-0001',
+      ...managerAuthorization, 'idempotency-key': 'support-transfer-create-0001',
     }), env)
     expect(transferCreated.status).toBe(201)
     const transferCreatedBody = await transferCreated.json()
@@ -2137,31 +2180,42 @@ describe('IDOSI Worker security primitives', () => {
       version: 2,
       transfer: {
         employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
-        fromDate: '2026-08-15', toDate: '2026-08-17', status: 'Đã duyệt',
+        fromDate: '2026-08-15', toDate: '2026-08-17', hourlySupportRate: 45_000,
+        allowance: 150_000, status: 'Đã duyệt',
       },
     })
     const transferReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', createTransferCommand, {
-      ...adminAuthorization, 'idempotency-key': 'support-transfer-create-0001',
+      ...managerAuthorization, 'idempotency-key': 'support-transfer-create-0001',
     }), env)
     expect(transferReplay.status).toBe(201)
     expect(transferReplay.headers.get('idempotency-replayed')).toBe('true')
     expect(await transferReplay.json()).toEqual(transferCreatedBody)
 
+    const overlappingTransfer = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.create', expectedVersion: 2,
+      payload: {
+        employeeId: 'E01', toStoreId: 'S02', fromDate: '2026-08-17', toDate: '2026-08-19',
+        hourlySupportRate: 45_000, allowance: 0,
+      },
+    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-overlap-0001' }), env)
+    expect(overlappingTransfer.status).toBe(409)
+    expect(await overlappingTransfer.json()).toMatchObject({ error: { code: 'SUPPORT_TRANSFER_OVERLAP' } })
+
     const transferId = transferCreatedBody.transfer.id
     const transferUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'support_transfer.update',
       expectedVersion: 2,
-      payload: { transferId, toDate: '2026-08-18', note: 'Đã gia hạn', status: 'Hoàn tất' },
-    }, { ...adminAuthorization, 'idempotency-key': 'support-transfer-update-0001' }), env)
+      payload: { transferId, toDate: '2026-08-18', hourlyRate: 50_000, allowance: 200_000, note: 'Đã gia hạn', status: 'Hoàn tất' },
+    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-update-0001' }), env)
     expect(transferUpdated.status).toBe(200)
     expect(await transferUpdated.json()).toMatchObject({
-      version: 3, transfer: { id: transferId, toDate: '2026-08-18', note: 'Đã gia hạn', status: 'Hoàn tất' },
+      version: 3, transfer: { id: transferId, toDate: '2026-08-18', hourlySupportRate: 50_000, allowance: 200_000, note: 'Đã gia hạn', status: 'Hoàn tất' },
     })
     const transferDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'support_transfer.delete',
       expectedVersion: 3,
       payload: { transferId, reason: 'Điều chuyển đã kết thúc' },
-    }, { ...adminAuthorization, 'idempotency-key': 'support-transfer-delete-0001' }), env)
+    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-delete-0001' }), env)
     expect(transferDeleted.status).toBe(200)
     expect(await transferDeleted.json()).toMatchObject({
       version: 4, transfer: { id: transferId, status: 'Đã xóa', deleteReason: 'Điều chuyển đã kết thúc' },
@@ -2172,12 +2226,18 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...adminAuthorization, 'idempotency-key': 'store-settings-invalid-0001' }), env)
     expect(invalidStore.status).toBe(400)
     expect(await invalidStore.json()).toMatchObject({ error: { code: 'PHONE_INVALID' } })
+    const invalidHours = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'store.update', expectedVersion: 4,
+      payload: { storeId: 'S01', operatingHours: { opening: '22:00', closing: '07:00' } },
+    }, { ...adminAuthorization, 'idempotency-key': 'store-settings-hours-invalid-0001' }), env)
+    expect(invalidHours.status).toBe(400)
+    expect(await invalidHours.json()).toMatchObject({ error: { code: 'STORE_HOURS_INVALID' } })
     const storeUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'store.update',
       expectedVersion: 4,
       payload: {
         storeId: 'S01', phone: '0901234567', email: 'STORE01@IDOSI.VN', tax: '0312345678',
-        opening: '07:30', closing: '22:45', address: '123 Đường IDOSI',
+        operatingHours: { opening: '07:30', closing: '22:45' }, address: '123 Đường IDOSI',
       },
     }, { ...adminAuthorization, 'idempotency-key': 'store-settings-update-0001' }), env)
     expect(storeUpdated.status).toBe(200)
@@ -2186,7 +2246,16 @@ describe('IDOSI Worker security primitives', () => {
       store: {
         phone: '0901234567', email: 'store01@idosi.vn', tax: '0312345678', taxCode: '0312345678',
         opening: '07:30', openingTime: '07:30', closing: '22:45', closingTime: '22:45', address: '123 Đường IDOSI',
+        operatingHours: { opening: '07:30', closing: '22:45' },
       },
+    })
+    const projectedStoreState = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: managerAuthorization,
+    }), env)
+    expect(projectedStoreState.status).toBe(200)
+    expect((await projectedStoreState.json()).state.stores.find(({ id }) => id === 'S01')).toMatchObject({
+      opening: '07:30', openingTime: '07:30', closing: '22:45', closingTime: '22:45',
+      operatingHours: { opening: '07:30', closing: '22:45' },
     })
 
     const oversizedAvatar = `data:image/png;base64,${'A'.repeat(128 * 1024)}`
@@ -2392,7 +2461,6 @@ describe('IDOSI Worker security primitives', () => {
         'state.merge', 'store.update', 'employee.create', 'shift_definition.create',
         'schedule.assign', 'tasks.replace_scope', 'import.create', 'expense.create',
         'salary_adjustment.create', 'salary_advance.create', 'payroll.close',
-        'support_transfer.create', 'attendance.update',
         'system.reset_demo', 'policy.set', 'user.create', 'task.done',
       ].entries()) {
         const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -2775,7 +2843,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(finalState.schedule[0].shiftSnapshots).toEqual([originalSnapshot])
   })
 
-  it('lets only admin edit attendance time with payroll and audit invariants', async () => {
+  it('lets Admin and business support edit scoped attendance with payroll and audit invariants', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-attendance-edit' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin',
@@ -2783,7 +2851,8 @@ describe('IDOSI Worker security primitives', () => {
       initialState: {
         stores: [{ id: 'S01', name: 'Cửa hàng 01', short: 'S01' }],
         employees: [
-          { id: 'E01', name: 'Nhân viên 01', storeId: 'S01' },
+          { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store' },
+          { id: 'VP-001', name: 'Nhân viên văn phòng', storeId: 'OFFICE', unit: 'office' },
           { id: 'HTKD-ATTENDANCE', code: 'HTKD-ATTENDANCE', name: 'Manager', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', status: 'Đang làm việc' },
         ],
         shiftDefinitions: [{ id: 'SHIFT-01', storeId: 'S01', name: 'Ca ngày', start: '08:00', end: '17:00', active: true }],
@@ -2800,6 +2869,23 @@ describe('IDOSI Worker security primitives', () => {
             id: 'ATT-SEP', employeeId: 'E01', storeId: 'S01', shiftId: 'SHIFT-01', shiftStart: '08:00', shiftEnd: '17:00',
             date: '2026-09-14', workDate: '2026-09-14', checkIn: '08:00', checkInAt: '2026-09-14T01:00:00.000Z',
             checkOut: '17:00', checkOutAt: '2026-09-14T10:00:00.000Z', workedSeconds: 32_400, hours: 9,
+          },
+          {
+            id: 'ATT-OFFICE', employeeId: 'VP-001', storeId: 'OFFICE', shiftStart: '08:00', shiftEnd: '17:00',
+            date: '2026-08-14', workDate: '2026-08-14', checkIn: '08:00', checkInAt: '2026-08-14T01:00:00.000Z',
+            checkOut: '17:00', checkOutAt: '2026-08-14T10:00:00.000Z', workedSeconds: 32_400, hours: 9,
+          },
+        ],
+        orders: [
+          {
+            id: 'ORDER-ATT-CASH', code: 'S01-00001', storeId: 'S01', employeeId: 'E01', attendanceId: 'ATT-AUG',
+            amount: 1_000_000, customerName: 'Khách 1', paymentMethod: 'Tiền mặt', status: 'Hoàn tất', source: 'order',
+            createdAt: '2026-08-14T02:00:00.000Z', deletedAt: null,
+          },
+          {
+            id: 'ORDER-ATT-TRANSFER', code: 'S01-00002', storeId: 'S01', employeeId: 'E01', attendanceId: 'ATT-AUG',
+            amount: 1_500_000, customerName: 'Khách 2', paymentMethod: 'Chuyển khoản', status: 'Hoàn tất', source: 'order',
+            createdAt: '2026-08-14T03:00:00.000Z', deletedAt: null,
           },
         ],
         payrollPeriods: [
@@ -2823,21 +2909,31 @@ describe('IDOSI Worker security primitives', () => {
     }), env)
     const managerAuthorization = { authorization: `Bearer ${(await managerLogin.json()).token}` }
 
-    const managerDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    const managerUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'attendance.update', expectedVersion: 1,
-      payload: { attendanceId: 'ATT-AUG', checkIn: '07:55', checkOut: '17:15', reason: 'Manager không được sửa' },
-    }, { ...managerAuthorization, 'idempotency-key': 'attendance-manager-denied-0001' }), env)
-    expect(managerDenied.status).toBe(403)
-    expect(await managerDenied.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+      payload: { attendanceId: 'ATT-AUG', checkIn: '08:15', checkOut: '17:05', reason: 'Đối soát theo yêu cầu cửa hàng' },
+    }, { ...managerAuthorization, 'idempotency-key': 'attendance-support-update-0001' }), env)
+    expect(managerUpdated.status).toBe(200)
+    expect(await managerUpdated.json()).toMatchObject({
+      version: 2,
+      attendance: { id: 'ATT-AUG', checkIn: '08:15', checkOut: '17:05' },
+      audit: { actor: { role: 'business_support' } },
+    })
+    const officeDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.update', expectedVersion: 2,
+      payload: { attendanceId: 'ATT-OFFICE', checkIn: '08:05', checkOut: '17:00', reason: 'Không được sửa khối văn phòng' },
+    }, { ...managerAuthorization, 'idempotency-key': 'attendance-support-office-denied-0001' }), env)
+    expect(officeDenied.status).toBe(403)
+    expect(await officeDenied.json()).toMatchObject({ error: { code: 'OFFICE_FORBIDDEN' } })
 
     const missingReason = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.update', expectedVersion: 1,
+      type: 'attendance.update', expectedVersion: 2,
       payload: { attendanceId: 'ATT-AUG', checkIn: '07:55', checkOut: '17:15' },
     }, { ...adminAuthorization, 'idempotency-key': 'attendance-reason-required-0001' }), env)
     expect(missingReason.status).toBe(400)
     expect(await missingReason.json()).toMatchObject({ error: { code: 'REASON_REQUIRED' } })
     const immutableScope = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.update', expectedVersion: 1,
+      type: 'attendance.update', expectedVersion: 2,
       payload: {
         attendanceId: 'ATT-AUG', employeeId: 'E02', checkIn: '07:55', checkOut: '17:15', reason: 'Không được đổi nhân viên',
       },
@@ -2845,19 +2941,19 @@ describe('IDOSI Worker security primitives', () => {
     expect(immutableScope.status).toBe(400)
     expect(await immutableScope.json()).toMatchObject({ error: { code: 'ATTENDANCE_SCOPE_IMMUTABLE' } })
     const invalidOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.update', expectedVersion: 1,
+      type: 'attendance.update', expectedVersion: 2,
       payload: { attendanceId: 'ATT-AUG', checkIn: '17:00', checkOut: '08:00', reason: 'Sai thứ tự giờ' },
     }, { ...adminAuthorization, 'idempotency-key': 'attendance-time-invalid-0001' }), env)
     expect(invalidOrder.status).toBe(400)
     expect(await invalidOrder.json()).toMatchObject({ error: { code: 'ATTENDANCE_TIME_ORDER_INVALID' } })
 
     const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.update', expectedVersion: 1,
+      type: 'attendance.update', expectedVersion: 2,
       payload: { attendanceId: 'ATT-AUG', date: '2026-08-14', checkIn: '07:55', checkOut: '17:15', reason: 'Đối soát máy chấm công' },
     }, { ...adminAuthorization, 'idempotency-key': 'attendance-update-success-0001' }), env)
     expect(updated.status).toBe(200)
     expect(await updated.json()).toMatchObject({
-      version: 2,
+      version: 3,
       attendance: {
         id: 'ATT-AUG', employeeId: 'E01', storeId: 'S01', shiftId: 'SHIFT-01',
         date: '2026-08-14', checkIn: '07:55', checkInAt: '2026-08-14T00:55:00.000Z',
@@ -2873,17 +2969,171 @@ describe('IDOSI Worker security primitives', () => {
       status: 'Đã chốt', needsReclose: true, invalidationReason: 'attendance.update',
     })
 
+    const orderUpdatedAfterAttendance = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 3,
+      payload: { orderId: 'ORDER-ATT-TRANSFER', amount: 2_000_000, reason: 'Cập nhật doanh thu sau chỉnh công' },
+    }, { ...managerAuthorization, 'idempotency-key': 'attendance-followup-order-update-0001' }), env)
+    expect(orderUpdatedAfterAttendance.status).toBe(200)
+    expect(await orderUpdatedAfterAttendance.json()).toMatchObject({ version: 4, order: { amount: 2_000_000 } })
+    expect(readHydratedState(env.DB.database).attendance.find(({ id }) => id === 'ATT-AUG')).toMatchObject({
+      revenue: 3_000_000, cash: 1_000_000, transfer: 2_000_000, orderCount: 2,
+    })
+
     const paidPeriodDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.update', expectedVersion: 2,
+      type: 'attendance.update', expectedVersion: 4,
       payload: { attendanceId: 'ATT-SEP', checkIn: '08:05', checkOut: '17:00', reason: 'Kỳ đã chi' },
     }, { ...adminAuthorization, 'idempotency-key': 'attendance-paid-denied-0001' }), env)
     expect(paidPeriodDenied.status).toBe(409)
     expect(await paidPeriodDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
-    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 2 })
-    const audit = env.DB.database.prepare("SELECT metadata_json FROM audit_log WHERE action = 'attendance.update'").get()
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 4 })
+    const audit = env.DB.database.prepare("SELECT metadata_json FROM audit_log WHERE action = 'attendance.update' ORDER BY id DESC").get()
     expect(JSON.parse(audit.metadata_json)).toMatchObject({
       reason: 'Đối soát máy chấm công', storeId: 'S01', employeeId: 'E01',
     })
+
+    const resetAttendanceCommand = {
+      type: 'operational_reset.restore', expectedVersion: 4,
+      payload: {
+        dataType: 'attendance', storeId: 'S01', employeeId: 'E01',
+        fromDate: '2026-08-14', toDate: '2026-08-14', reason: 'Khôi phục lần chỉnh gần nhất',
+      },
+    }
+    const resetAttendance = await worker.fetch(jsonRequest('https://idosi.example/api/command', resetAttendanceCommand, {
+      ...managerAuthorization, 'idempotency-key': 'attendance-operational-reset-0001',
+    }), env)
+    expect(resetAttendance.status).toBe(200)
+    const resetAttendanceBody = await resetAttendance.json()
+    expect(resetAttendanceBody).toMatchObject({
+      version: 5, restoredCount: 1, restoredIds: ['ATT-AUG'],
+      reset: { dataType: 'attendance', storeId: 'S01', employeeId: 'E01', restoredCount: 1 },
+      restored: [{ id: 'ATT-AUG', checkIn: '08:15', checkOut: '17:05' }],
+    })
+    const resetAttendanceReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', resetAttendanceCommand, {
+      ...managerAuthorization, 'idempotency-key': 'attendance-operational-reset-0001',
+    }), env)
+    expect(resetAttendanceReplay.status).toBe(200)
+    expect(resetAttendanceReplay.headers.get('idempotency-replayed')).toBe('true')
+    expect(await resetAttendanceReplay.json()).toEqual(resetAttendanceBody)
+    const stateAfterReset = readHydratedState(env.DB.database)
+    expect(stateAfterReset.attendance.find(({ id }) => id === 'ATT-AUG')).toMatchObject({
+      checkIn: '08:15', checkOut: '17:05',
+      revenue: 3_000_000, cash: 1_000_000, transfer: 2_000_000, orderCount: 2,
+    })
+    expect(stateAfterReset.attendanceAudit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'Khôi phục', attendanceId: 'ATT-AUG' }),
+      expect.objectContaining({ action: 'Sửa', attendanceId: 'ATT-AUG', restoredAt: expect.any(String) }),
+    ]))
+
+    const adminOperationalResetDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      ...resetAttendanceCommand, expectedVersion: 5,
+    }, { ...adminAuthorization, 'idempotency-key': 'admin-operational-reset-denied-0001' }), env)
+    expect(adminOperationalResetDenied.status).toBe(403)
+    expect(await adminOperationalResetDenied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
+  })
+
+  it('restores a pre-deploy attendance correction from the private D1 audit log once', async () => {
+    const before = {
+      id: 'ATT-LEGACY-D1', employeeId: 'E01', storeId: 'S01', shiftId: 'SHIFT-01',
+      date: '2026-08-12', workDate: '2026-08-12', attendanceDate: '2026-08-12',
+      checkIn: '08:20', checkInTime: '08:20', checkInAt: '2026-08-12T01:20:00.000Z',
+      checkOut: '17:00', checkOutTime: '17:00', checkOutAt: '2026-08-12T10:00:00.000Z',
+      arrivalTag: 'Đi trễ', departureTag: 'Đã ra về', punctuality: 'Đi trễ', status: 'Đi trễ',
+      minutesEarly: 0, minutesLate: 20, workedSeconds: 31_200, workedMinutes: 520, hours: 26 / 3,
+      revenue: 900_000, cash: 400_000, transfer: 500_000, orderCount: 2,
+    }
+    const after = {
+      ...before,
+      checkIn: '07:55', checkInTime: '07:55', checkInAt: '2026-08-12T00:55:00.000Z',
+      checkOut: '17:15', checkOutTime: '17:15', checkOutAt: '2026-08-12T10:15:00.000Z',
+      arrivalTag: 'Đi sớm', punctuality: 'Đi sớm', status: 'Đi sớm', minutesEarly: 5, minutesLate: 0,
+      workedSeconds: 33_600, workedMinutes: 560, hours: 28 / 3,
+      editedAt: '2026-08-13T02:00:00.000Z', editedBy: { id: 'legacy-admin', role: 'admin' },
+      editReason: 'Đối soát trước khi nâng cấp', updatedAt: '2026-08-13T02:00:00.000Z',
+    }
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-legacy-attendance-audit' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'legacy-attendance-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01' }],
+        employees: [
+          { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store' },
+          { id: 'HTKD-LEGACY', name: 'Hỗ trợ KD', storeId: 'BUSINESS_SUPPORT', unit: 'business_support' },
+        ],
+        attendance: [after], attendanceAudit: [],
+        payrollPeriods: [{ id: 'PAY-LEGACY', storeId: 'S01', period: '2026-08', status: 'Đã chốt', needsReclose: false }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'legacy-attendance-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const adminId = env.DB.database.prepare("SELECT id FROM users WHERE role = 'admin'").get().id
+    const metadata = {
+      reason: 'Đối soát trước khi nâng cấp', storeId: 'S01', employeeId: 'E01',
+      changedFields: ['checkIn', 'checkOut', 'workedSeconds', 'hours'],
+    }
+    env.DB.database.prepare(`
+      INSERT INTO audit_log (
+        request_id, actor_id, actor_role, action, entity_type, entity_id,
+        before_json, after_json, metadata_json, server_timestamp
+      ) VALUES (?, ?, 'admin', 'attendance.update', 'attendance', ?, ?, ?, ?, ?)
+    `).run(
+      'legacy-attendance-request-0001', adminId, 'ATT-LEGACY-D1',
+      JSON.stringify(before), JSON.stringify(after), JSON.stringify(metadata), '2026-08-13T02:00:00.000Z',
+    )
+    const legacyAuditId = env.DB.database.prepare(`
+      SELECT id FROM audit_log WHERE request_id = 'legacy-attendance-request-0001'
+    `).get().id
+
+    const supportUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', expectedVersion: 0,
+      payload: {
+        role: 'business_support', employeeId: 'HTKD-LEGACY', username: 'support.legacy',
+        password: 'support-legacy-password', displayName: 'Hỗ trợ KD',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-legacy-user-create-0001' }), env)
+    expect(supportUser.status).toBe(201)
+    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'support.legacy', password: 'support-legacy-password',
+    }), env)
+    const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+    const resetPayload = {
+      dataType: 'attendance', storeId: 'S01', employeeId: 'E01',
+      fromDate: '2026-08-12', toDate: '2026-08-12', reason: 'Khôi phục bản chỉnh cũ',
+    }
+    const restored = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'operational_reset.restore', expectedVersion: 1, payload: resetPayload,
+    }, { ...supportAuthorization, 'idempotency-key': 'legacy-attendance-reset-0001' }), env)
+    expect(restored.status).toBe(200)
+    expect(await restored.json()).toMatchObject({
+      version: 2, restoredCount: 1,
+      restored: [{ id: 'ATT-LEGACY-D1', checkIn: '08:20', checkOut: '17:00', revenue: 900_000, orderCount: 2 }],
+    })
+    let state = readHydratedState(env.DB.database)
+    expect(state.attendance[0]).toMatchObject({ checkIn: '08:20', checkOut: '17:00', revenue: 900_000, orderCount: 2 })
+    expect(state.attendanceAudit).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'Khôi phục', attendanceId: 'ATT-LEGACY-D1' }),
+      expect.objectContaining({
+        id: `ata_legacy_${legacyAuditId}`, source: 'd1-audit-log', legacyAuditLogId: legacyAuditId,
+        attendanceId: 'ATT-LEGACY-D1', restoredAt: expect.any(String),
+      }),
+    ]))
+    expect(state.payrollPeriods[0]).toMatchObject({ needsReclose: true, invalidationReason: 'operational_reset.restore' })
+
+    const secondReset = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'operational_reset.restore', expectedVersion: 2, payload: resetPayload,
+    }, { ...supportAuthorization, 'idempotency-key': 'legacy-attendance-reset-noop-0001' }), env)
+    expect(secondReset.status).toBe(200)
+    expect(await secondReset.json()).toMatchObject({ version: 2, existing: true, restoredCount: 0, restored: [] })
+    state = readHydratedState(env.DB.database)
+    expect(state.attendanceAudit.filter(({ id }) => id === `ata_legacy_${legacyAuditId}`)).toHaveLength(1)
+
+    const supportAuditView = await worker.fetch(new Request('https://idosi.example/api/audit', {
+      headers: supportAuthorization,
+    }), env)
+    expect(supportAuditView.status).toBe(200)
+    expect((await supportAuditView.json()).audit).toEqual([])
   })
 
   it('checks an Office employee in and out with server time, location, scoped history, and prorated payroll', async () => {
@@ -4176,5 +4426,184 @@ describe('IDOSI Worker security primitives', () => {
     } finally {
       vi.unstubAllGlobals()
     }
+  })
+
+  it('restores the latest order edit atomically and reconciles shift revenue', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-order-operational-reset' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'order-operational-reset-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01', short: 'S01' }],
+        employees: [
+          { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store' },
+          { id: 'HTKD-RESET', name: 'Hỗ trợ KD', storeId: 'BUSINESS_SUPPORT', unit: 'business_support' },
+        ],
+        attendance: [{
+          id: 'ATT-ORDER-01', employeeId: 'E01', storeId: 'S01', shiftId: 'SHIFT-01',
+          date: '2026-08-18', checkInAt: '2026-08-18T01:00:00.000Z', checkOutAt: '2026-08-18T10:00:00.000Z',
+          revenue: 100_000, cash: 100_000, transfer: 0, orderCount: 1,
+        }],
+        orders: [{
+          id: 'ORDER-RESET-01', code: 'S01-00001', storeId: 'S01', employeeId: 'E01', attendanceId: 'ATT-ORDER-01',
+          amount: 100_000, customerName: 'Khách', paymentMethod: 'Tiền mặt', status: 'Hoàn tất', source: 'order',
+          createdAt: '2026-08-18T02:00:00.000Z', updatedAt: '2026-08-18T02:00:00.000Z', deletedAt: null,
+        }],
+        orderAudit: [], attendanceAudit: [], operationalResetHistory: [],
+        payrollPeriods: [{ id: 'PAY-CLOSED', storeId: 'S01', period: '2026-08', status: 'Đã chốt', needsReclose: false }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'order-operational-reset-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const supportUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', expectedVersion: 0,
+      payload: {
+        role: 'business_support', employeeId: 'HTKD-RESET', username: 'support.reset',
+        password: 'support-reset-password', displayName: 'Hỗ trợ KD',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-reset-user-create-0001' }), env)
+    expect(supportUser.status).toBe(201)
+    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'support.reset', password: 'support-reset-password',
+    }), env)
+    const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+
+    const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 1,
+      payload: { orderId: 'ORDER-RESET-01', amount: 250_000, reason: 'Đối soát doanh thu' },
+    }, { ...supportAuthorization, 'idempotency-key': 'order-before-operational-reset-0001' }), env)
+    expect(updated.status).toBe(200)
+    expect(await updated.json()).toMatchObject({ version: 2, order: { amount: 250_000 } })
+    let state = readHydratedState(env.DB.database)
+    expect(state.attendance[0]).toMatchObject({ revenue: 250_000, cash: 250_000, transfer: 0, orderCount: 1 })
+    expect(state.payrollPeriods[0]).toMatchObject({ needsReclose: true, invalidationReason: 'order.update' })
+
+    const resetCommand = {
+      type: 'operational_reset.restore', expectedVersion: 2,
+      payload: {
+        dataType: 'orders', storeId: 'S01', employeeId: 'E01',
+        fromDate: '2026-08-18', toDate: '2026-08-18', reason: 'Hoàn tác lần sửa gần nhất',
+      },
+    }
+    const restored = await worker.fetch(jsonRequest('https://idosi.example/api/command', resetCommand, {
+      ...supportAuthorization, 'idempotency-key': 'order-operational-reset-0001',
+    }), env)
+    expect(restored.status).toBe(200)
+    const restoredBody = await restored.json()
+    expect(restoredBody).toMatchObject({
+      version: 3, restoredCount: 1, restoredIds: ['ORDER-RESET-01'],
+      reset: { dataType: 'orders', storeId: 'S01', employeeId: 'E01', restoredCount: 1 },
+      restored: [{ id: 'ORDER-RESET-01', amount: 100_000, status: 'Hoàn tất', deletedAt: null }],
+    })
+    const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', resetCommand, {
+      ...supportAuthorization, 'idempotency-key': 'order-operational-reset-0001',
+    }), env)
+    expect(replay.status).toBe(200)
+    expect(replay.headers.get('idempotency-replayed')).toBe('true')
+    expect(await replay.json()).toEqual(restoredBody)
+
+    state = readHydratedState(env.DB.database)
+    expect(state.orders[0]).toMatchObject({ id: 'ORDER-RESET-01', amount: 100_000, restoredAt: expect.any(String) })
+    expect(state.attendance[0]).toMatchObject({ revenue: 100_000, cash: 100_000, transfer: 0, orderCount: 1 })
+    expect(state.orderAudit).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        action: 'Khôi phục', orderId: 'ORDER-RESET-01', changedFields: ['amount'],
+        revenueBefore: 250_000, revenueAfter: 100_000,
+      }),
+      expect.objectContaining({ action: 'Sửa', orderId: 'ORDER-RESET-01', restoredAt: expect.any(String) }),
+    ]))
+    expect(state.operationalResetHistory[0]).toMatchObject({
+      dataType: 'orders', restoredCount: 1, restoredIds: ['ORDER-RESET-01'], createdBy: { role: 'business_support' },
+    })
+    expect(state.stores).toHaveLength(1)
+    expect(state.employees).toHaveLength(2)
+    expect(state.payrollPeriods).toHaveLength(1)
+    const audit = env.DB.database.prepare("SELECT actor_role, entity_type, metadata_json FROM audit_log WHERE action = 'operational_reset.restore'").get()
+    expect(audit).toMatchObject({ actor_role: 'business_support', entity_type: 'operational-reset' })
+    expect(JSON.parse(audit.metadata_json)).toMatchObject({ dataType: 'orders', restoredCount: 1 })
+    const protectedHistoryMutation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'state.merge', expectedVersion: 3, payload: { patch: { attendanceAudit: [], operationalResetHistory: [] } },
+    }, { ...adminAuthorization, 'idempotency-key': 'operational-history-raw-mutation-denied-0001' }), env)
+    expect(protectedHistoryMutation.status).toBe(400)
+    expect(await protectedHistoryMutation.json()).toMatchObject({ error: { code: 'DOMAIN_COMMAND_REQUIRED' } })
+  })
+
+  it('blocks paid order mutations and stale operational restore snapshots', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-paid-order-stale-reset' }
+    const staleBefore = {
+      id: 'ORDER-STALE', code: 'S02-00001', storeId: 'S02', employeeId: 'E02', amount: 50_000,
+      customerName: 'Khách', paymentMethod: 'Tiền mặt', status: 'Hoàn tất', source: 'order',
+      createdAt: '2026-08-18T02:00:00.000Z', updatedAt: '2026-08-18T02:00:00.000Z', deletedAt: null,
+    }
+    const staleAfter = { ...staleBefore, amount: 75_000, updatedAt: '2026-08-18T03:00:00.000Z' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'paid-order-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01' }, { id: 'S02', name: 'Cửa hàng 02' }],
+        employees: [
+          { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store' },
+          { id: 'E02', name: 'Nhân viên 02', storeId: 'S02', unit: 'store' },
+          { id: 'HTKD-LOCK', name: 'Hỗ trợ KD', storeId: 'BUSINESS_SUPPORT', unit: 'business_support' },
+        ],
+        orders: [{
+          id: 'ORDER-PAID', code: 'S01-00001', storeId: 'S01', employeeId: 'E01', amount: 100_000,
+          customerName: 'Khách', paymentMethod: 'Tiền mặt', status: 'Hoàn tất', source: 'order',
+          createdAt: '2026-08-18T02:00:00.000Z', deletedAt: null,
+        }, { ...staleBefore, amount: 90_000 }],
+        orderAudit: [{
+          id: 'AUDIT-STALE', action: 'Sửa', orderId: 'ORDER-STALE', storeId: 'S02',
+          before: staleBefore, after: staleAfter, createdAt: '2026-08-18T03:00:00.000Z',
+        }],
+        payrollPeriods: [{
+          id: 'PAY-PAID', storeId: 'S01', period: '2026-08', status: 'Đã chi',
+          confirmedAt: '2026-08-31T00:00:00.000Z',
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'paid-order-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const supportUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', expectedVersion: 0,
+      payload: {
+        role: 'business_support', employeeId: 'HTKD-LOCK', username: 'support.lock',
+        password: 'support-lock-password', displayName: 'Hỗ trợ KD',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'support-lock-user-create-0001' }), env)
+    expect(supportUser.status).toBe(201)
+    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'support.lock', password: 'support-lock-password',
+    }), env)
+    const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+
+    for (const [index, authorization] of [supportAuthorization, adminAuthorization].entries()) {
+      const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.update', expectedVersion: 1,
+        payload: { orderId: 'ORDER-PAID', amount: 200_000, reason: 'Kỳ đã chi' },
+      }, { ...authorization, 'idempotency-key': `paid-order-update-denied-${index}` }), env)
+      expect(denied.status).toBe(409)
+      expect(await denied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
+    }
+    const deleteDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.delete', expectedVersion: 1,
+      payload: { orderId: 'ORDER-PAID', reason: 'Kỳ đã chi' },
+    }, { ...supportAuthorization, 'idempotency-key': 'paid-order-delete-denied-0001' }), env)
+    expect(deleteDenied.status).toBe(409)
+    expect(await deleteDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
+
+    const staleReset = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'operational_reset.restore', expectedVersion: 1,
+      payload: {
+        dataType: 'orders', storeId: 'S02', employeeId: 'E02', fromDate: '2026-08-18', toDate: '2026-08-18',
+        reason: 'Không được ghi đè thay đổi mới',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'stale-order-reset-denied-0001' }), env)
+    expect(staleReset.status).toBe(409)
+    expect(await staleReset.json()).toMatchObject({ error: { code: 'OPERATIONAL_RESET_STALE_AUDIT' } })
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 1 })
   })
 })

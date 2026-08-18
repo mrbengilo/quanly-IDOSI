@@ -72,7 +72,7 @@ const ROLE_CONFIG = Object.freeze({
     deleteMethod: 'deleteBusinessSupport',
   },
   [ROLE_KEYS.storeManager]: {
-    title: 'QUẢN LÝ CỬA HÀNG',
+    title: 'NHÂN VIÊN QUẢN LÝ CỬA HÀNG',
     subtitle: 'Tạo tài khoản quản lý và gán chính xác cửa hàng được phép truy cập.',
     singular: 'quản lý cửa hàng',
     icon: UserCog,

@@ -401,10 +401,13 @@ export function StoreSettings() {
   const activeStore = stores.find((item) => item.id === selectedStoreId) || stores[0]
   const [tab, setTab] = useState('info')
   const [form, setForm] = useState(() => storeSettingsForm(activeStore))
+  const [saving, setSaving] = useState(false)
+  const [lastSavedAt, setLastSavedAt] = useState('')
   useEffect(() => {
     // Đồng bộ biểu mẫu khi quản trị viên chuyển sang một cửa hàng khác.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setForm(storeSettingsForm(activeStore))
+    setLastSavedAt('')
   }, [activeStore])
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
   const save = async () => {
@@ -413,6 +416,7 @@ export function StoreSettings() {
     if (!form.name.trim()) return notify('Tên cửa hàng không được để trống.', 'info')
     if (form.email && !/^\S+@\S+\.\S+$/.test(form.email)) return notify('Email cửa hàng chưa đúng định dạng.', 'info')
     if (!form.opening || !form.closing) return notify('Vui lòng nhập đầy đủ giờ mở cửa và đóng cửa.', 'info')
+    if (form.opening === form.closing) return notify('Giờ mở cửa và giờ đóng cửa không được trùng nhau.', 'info')
     if (typeof updateStore !== 'function') return notify('Chức năng cập nhật cửa hàng chưa sẵn sàng.', 'info')
     const payload = {
       name: form.name.trim(),
@@ -426,13 +430,19 @@ export function StoreSettings() {
       closing: form.closing,
       closingTime: form.closing,
     }
-    const result = await updateStore(activeStore.id, payload)
-    if (!result?.ok || !result.store) return notify(result?.message || 'Máy chủ chưa ghi nhận cài đặt cửa hàng.', 'info')
-    const persisted = storeSettingsForm(result.store)
-    if (Object.keys(form).some((key) => String(persisted[key] ?? '') !== String(form[key] ?? '').trim())) {
-      return notify('Máy chủ chưa ghi nhận đầy đủ cài đặt cửa hàng.', 'info')
+    setSaving(true)
+    try {
+      const result = await updateStore(activeStore.id, payload)
+      if (!result?.ok || !result.store) return notify(result?.message || 'Máy chủ chưa ghi nhận cài đặt cửa hàng.', 'info')
+      const persisted = storeSettingsForm(result.store)
+      if (Object.keys(form).some((key) => String(persisted[key] ?? '') !== String(form[key] ?? '').trim())) {
+        return notify('Máy chủ chưa ghi nhận đầy đủ cài đặt cửa hàng.', 'info')
+      }
+      setForm(persisted)
+      setLastSavedAt(new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }))
+    } finally {
+      setSaving(false)
     }
-    setForm(persisted)
   }
   return (
     <div className="page settings-page">
@@ -440,7 +450,7 @@ export function StoreSettings() {
       {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể thay đổi cài đặt cửa hàng.</InfoNote>}
       <div className="settings-layout">
         <Card className="settings-nav" title="Cài đặt"><button className={tab === 'info' ? 'active' : ''} onClick={() => setTab('info')}><Store />Thông tin cửa hàng</button><button className={tab === 'hours' ? 'active' : ''} onClick={() => setTab('hours')}><Clock3 />Giờ hoạt động</button><button className={tab === 'payroll' ? 'active' : ''} onClick={() => setTab('payroll')}><Banknote />Thiết lập lương</button></Card>
-        <Card className="settings-content"><h2>{tab === 'hours' ? 'Giờ hoạt động' : tab === 'payroll' ? 'Thiết lập lương nhân viên' : 'Thông tin cửa hàng'}</h2><p>{tab === 'payroll' ? 'Mức lương được thiết lập trực tiếp trong hồ sơ từng nhân viên.' : canManageStore ? 'Cập nhật thông tin hiển thị và dữ liệu vận hành.' : 'Thông tin hiển thị và dữ liệu vận hành.'}</p><div className="store-settings-hero"><Store size={42} /><div><strong>{form.name}</strong><small>Đang hoạt động</small></div><Badge>Hoạt động</Badge></div>{tab === 'info' && <div className="form-grid"><Field label="Tên cửa hàng"><Input value={form.name} onChange={set('name')} readOnly={!canManageStore} /></Field><Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} readOnly={!canManageStore} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} readOnly={!canManageStore} /></Field><Field label="Mã số thuế"><Input value={form.tax} onChange={set('tax')} readOnly={!canManageStore} /></Field><Field label="Địa chỉ" className="span-2"><Input value={form.address} onChange={set('address')} readOnly={!canManageStore} /></Field></div>}{tab === 'hours' && <div className="form-grid"><Field label="Giờ mở cửa"><Input type="time" value={form.opening} onChange={set('opening')} readOnly={!canManageStore} /></Field><Field label="Giờ đóng cửa"><Input type="time" value={form.closing} onChange={set('closing')} readOnly={!canManageStore} /></Field></div>}{tab === 'payroll' && <InfoNote>Full-time được thiết lập lương theo tháng; Part-time được thiết lập lương theo giờ tại danh mục Nhân viên. Bảng lương sẽ tự động áp dụng đúng cơ chế.</InfoNote>}{canManageStore && <div className="card-actions"><Button icon={Save} onClick={save}>Lưu thay đổi</Button></div>}</Card>
+        <Card className="settings-content"><h2>{tab === 'hours' ? 'Giờ hoạt động' : tab === 'payroll' ? 'Thiết lập lương nhân viên' : 'Thông tin cửa hàng'}</h2><p>{tab === 'payroll' ? 'Mức lương được thiết lập trực tiếp trong hồ sơ từng nhân viên.' : canManageStore ? 'Cập nhật thông tin hiển thị và dữ liệu vận hành.' : 'Thông tin hiển thị và dữ liệu vận hành.'}</p><div className="store-settings-hero"><Store size={42} /><div><strong>{form.name}</strong><small>Đang hoạt động</small></div><Badge>Hoạt động</Badge></div>{tab === 'info' && <div className="form-grid"><Field label="Tên cửa hàng"><Input value={form.name} onChange={set('name')} readOnly={!canManageStore} /></Field><Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} readOnly={!canManageStore} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} readOnly={!canManageStore} /></Field><Field label="Mã số thuế"><Input value={form.tax} onChange={set('tax')} readOnly={!canManageStore} /></Field><Field label="Địa chỉ" className="span-2"><Input value={form.address} onChange={set('address')} readOnly={!canManageStore} /></Field></div>}{tab === 'hours' && <><div className="form-grid"><Field label="Giờ mở cửa" required hint="Định dạng 24 giờ"><Input type="time" value={form.opening} onChange={set('opening')} readOnly={!canManageStore} /></Field><Field label="Giờ đóng cửa" required hint="Định dạng 24 giờ"><Input type="time" value={form.closing} onChange={set('closing')} readOnly={!canManageStore} /></Field></div><InfoNote>Khung giờ đang áp dụng: <strong>{form.opening} – {form.closing}</strong>. Thay đổi chỉ có hiệu lực sau khi máy chủ xác nhận lưu thành công.</InfoNote></>}{tab === 'payroll' && <InfoNote>Full-time được thiết lập lương theo tháng; Part-time được thiết lập lương theo giờ tại danh mục Nhân viên. Bảng lương sẽ tự động áp dụng đúng cơ chế.</InfoNote>}{canManageStore && <div className="card-actions store-settings-save"><Button icon={Save} loading={saving} disabled={saving} onClick={save}>{saving ? 'Đang lưu...' : 'Lưu thay đổi'}</Button>{lastSavedAt && <span role="status">Đã đồng bộ lúc {lastSavedAt}</span>}</div>}</Card>
       </div>
     </div>
   )

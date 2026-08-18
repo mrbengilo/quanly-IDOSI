@@ -48,19 +48,23 @@ Các lệnh chính:
   `business_support` kế thừa projection đọc toàn hệ thống giống Admin, gồm cả
   `OFFICE`, tài chính, đơn hàng và lịch sử, nhưng chỉ nhận account settings của
   chính họ và không nhận credential/secret. Ngoài thao tác tự phục vụ, role này
-  được tạo mới duy nhất hồ sơ+tài khoản `store_manager`, sửa/xóa đơn hàng và
-  cập nhật công việc Admin giao cho chính mình; họ không được sửa/xóa/khóa/reset
+  được tạo mới duy nhất hồ sơ+tài khoản `store_manager`, sửa/xóa đơn hàng,
+  chỉnh chấm công nhân viên cửa hàng, quản lý điều chuyển, khôi phục lần
+  sửa/xóa vận hành gần nhất và cập nhật công việc Admin giao cho chính mình;
+  họ không được sửa/xóa/khóa/reset
   mật khẩu Quản lý cửa hàng hoặc tạo nhóm nhân sự khác;
   `store_manager` bắt buộc có `store_id` thật và chỉ nhận/ghi dữ liệu đúng cửa
-  hàng đó. Cả hai không thể gọi `state.merge|replace`, đổi chính sách, xóa cửa
-  hàng/nhân viên hoặc thay giờ chấm công. `store_manager` không được sửa/xóa
+  hàng đó. Cả hai không thể gọi `state.merge|replace`, đổi chính sách hoặc xóa cửa
+  hàng/nhân viên. `store_manager` không được sửa/xóa
   đơn hàng; hai thao tác này chỉ dành cho Admin và Hỗ trợ KD.
 - `store.create`: chỉ admin; `store.update`: admin hoặc store_manager của đúng
   cửa hàng; `store.delete`: chỉ admin. `store.update`
   nhận `storeId` cùng `name`, `short`, `location`, `address`, `phone`, `email`,
   `tax`, `opening`, `closing`, `accent`, `status` cần đổi. Giờ mở/đóng theo 24
-  giờ; server cũng chấp nhận alias `taxCode`, `openingTime`, `closingTime` và trả
-  về cả hai tên để tương thích state hiện tại.
+  giờ và giờ đóng phải sau giờ mở; server cũng chấp nhận alias `taxCode`,
+  `openingTime`, `closingTime` hoặc `operatingHours {opening,closing}`. State/projection
+  canonical luôn trả đủ `opening`, `openingTime`, `closing`, `closingTime` và
+  `operatingHours`, nên giờ hoạt động là dữ liệu đã lưu chứ không phải UI tĩnh.
 - `employee.create|update`: admin cho mọi nhóm; store_manager chỉ cho nhân viên
   `unit: store` thuộc đúng cửa hàng; business_support chỉ được
   `employee.create` với `unit: store_manager`. Admin tạo mọi nhóm. Create nhận
@@ -122,12 +126,18 @@ Các lệnh chính:
   lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và
   thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
   bảo vệ, không thể sửa qua `state.merge|replace`.
-- `support_transfer.create`: chỉ admin, payload `employeeId`, `toStoreId`,
-  `fromDate`, `toDate`, `note?`; cửa hàng đi được lấy từ hồ sơ nhân viên.
-  `support_transfer.update` nhận `transferId` và các trường cần đổi (`toStoreId`,
-  ngày, ghi chú, trạng thái); `support_transfer.delete` nhận `transferId`,
-  `reason` và xóa mềm. Cả update/delete cũng chỉ Admin; kỳ lương liên quan đã
-  khóa sẽ chặn thay đổi.
+- `support_transfer.create|update|delete`: **chỉ** `business_support`; Admin và các
+  role còn lại nhận `403`. Create nhận
+  `{employeeId,fromStoreId?,toStoreId,fromDate,toDate,hourlySupportRate,allowance,note?}`;
+  chấp nhận alias `startDate/endDate`, `startAt/endAt`, `date` và `hourlyRate`, nhưng
+  response canonical luôn là `fromDate/toDate/hourlySupportRate`. Cửa hàng đi phải
+  khớp hồ sơ nhân viên cửa hàng; cửa hàng nhận phải khác và không được
+  có lịch active trùng ngày cho cùng nhân viên. Update nhận `transferId`
+  cùng các trường cần đổi; delete nhận `transferId`, `reason` và xóa mềm.
+  Kỳ lương đã chi/khóa ở cửa hàng đi hoặc nhận chặn thay đổi; kỳ đã
+  chốt được invalidation để chốt lại. Mọi lệnh commit state + audit + receipt
+  idempotency nguyên tử. Bản ghi điều chuyển hiện là lịch sử/khoản hỗ trợ;
+  không tự đổi `store_id` hay quyền đăng nhập của nhân viên.
 - `account_settings.update`: admin/business_support/store_manager tự cập nhật tài khoản hiện tại với
   payload `name`, `email`, `phone`, `birthday`, `gender`, `address`, `bio`,
   `avatar?`, `notifications {tasks,dailyReport,expenseAlert}`. Ảnh là data URL
@@ -164,17 +174,37 @@ Các lệnh chính:
   chấm công; chi phí ca nếu có được ghi cùng transaction.
   Với `OFFICE`, checkout chỉ nhận thời gian server và vị trí, sau đó
   đánh dấu `workdayCredit: 1`; không nhận chi phí/TikTok.
-- `attendance.update`: chỉ admin, payload `attendanceId`, `date?` (alias
-  `workDate`), `checkIn`, `checkOut?` theo `HH:mm`, `reason` bắt buộc. Server tự
+- `attendance.update`: Admin hoặc Hỗ trợ KD, payload `attendanceId`, `date?` (alias
+  `workDate`), `checkIn`, `checkOut?` theo `HH:mm`, `reason` bắt buộc. Hỗ trợ KD
+  chỉ được sửa record của `unit: store` tại cửa hàng thật; không thể sửa
+  `OFFICE`, `BUSINESS_SUPPORT` hay đổi liên kết nhân viên/cửa hàng/ca. Server tự
   dựng timestamp giờ Việt Nam, tính lại thời lượng/đi sớm-trễ nhưng giữ nguyên
-  liên kết nhân viên/cửa hàng/ca và số liệu đơn hàng. Kỳ lương đã chi/khóa chặn
-  sửa; kỳ đã chốt được đánh dấu cần chốt lại.
+  số liệu đơn hàng. Mỗi lần sửa ghi before/after server-side vào
+  `attendanceAudit`. Kỳ lương đã chi/khóa chặn sửa; kỳ đã chốt được
+  đánh dấu cần chốt lại.
 - `order.update`: Admin hoặc Hỗ trợ KD, payload `orderId`, các trường khách hàng/
   `amount`/`paymentMethod` cần sửa và `reason` bắt buộc. `order.delete`
   nhận `orderId`, `reason` và chỉ xóa mềm. Cả hai tính lại tổng ca và ghi
-  `orderAudit`. Hỗ trợ KD đọc lịch sử này trong shared-state projection; nếu gọi
+  `orderAudit`. Kỳ lương đã chi/khóa chặn sửa/xóa; kỳ đã chốt bị
+  invalidation để chốt lại. Hỗ trợ KD đọc lịch sử này trong shared-state projection; nếu gọi
   `GET /api/audit` thì chỉ nhận audit `order.update|order.delete`, không nhận
   nhật ký hệ thống khác.
+- `operational_reset.restore`: chỉ Hỗ trợ KD, payload
+  `{dataType:'orders'|'attendance',storeId,fromDate,toDate,employeeId?,reason}`
+  (có alias `startDate/endDate` hoặc `date`). Lệnh **không xóa sạch dữ liệu**:
+  với mỗi entity trong scope, server chỉ khôi phục before-image của lần sửa/xóa
+  chưa khôi phục gần nhất. Server so khớp current record với audit after-image;
+  nếu có thay đổi mới hơn thì toàn lệnh trả `409 OPERATIONAL_RESET_STALE_AUDIT`
+  thay vì ghi đè. Reset đơn hàng tính lại doanh thu/tiền mặt/chuyển khoản/
+  số đơn của ca; cả hai loại đều audit, invalidation kỳ đã chốt và
+  chặn kỳ đã chi/khóa. Lệnh không đổi/xóa tài khoản, cửa hàng, hồ sơ
+  nhân viên hay bản ghi payroll; response trả `reset`, `restoredCount`,
+  `restoredIds`, `restored` và `version`. Để tương thích dữ liệu đã phát sinh
+  trước khi có `attendanceAudit`, nhánh attendance đọc riêng các D1 audit row
+  `attendance.update` trong đúng scope, sanitize before/after, gán ID ổn định
+  `ata_legacy_<audit_log.id>`, loại trùng với state audit và chỉ sau khi khôi phục
+  mới nhập row đó vào history. Audit D1 attendance không được mở qua
+  `GET /api/audit` cho Hỗ trợ KD.
 - `task.done` (alias `task.set_done`): employee, payload `taskId`, `done`.
   Server lấy nhân viên/cửa hàng từ session và chỉ đổi cờ của chính actor.
 - `fixed_expense.create|update|delete`: admin/store_manager theo phạm vi cửa hàng; create nhận `storeId`, `type`,

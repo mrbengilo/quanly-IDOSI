@@ -33,13 +33,19 @@ const BUSINESS_SUPPORT_SELF_SERVICE_COMMANDS = new Set([
 ])
 const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'employee.create',
+  'attendance.update',
   'order.update',
   'order.delete',
+  'operational_reset.restore',
+  'support_transfer.create',
+  'support_transfer.update',
+  'support_transfer.delete',
   'support_work.update',
 ])
 const ADDRESS_SUGGESTION_TYPES = new Set(['province', 'ward', 'street'])
 const ADDRESS_SUGGESTION_RATE_LIMIT = 30
 const ADDRESS_SUGGESTION_RATE_WINDOW_MS = 60_000
+const MAX_LEGACY_ATTENDANCE_AUDITS = 10_000
 const addressSuggestionRateWindows = new Map()
 
 const DEFAULT_POLICIES = Object.freeze({
@@ -344,6 +350,22 @@ const normalizeSharedStateForStorage = (value) => {
     'checkedInAt',
     'finishedShift',
   ]) delete state[key]
+  if (Array.isArray(state.stores)) {
+    state.stores = state.stores.map((store) => {
+      const configured = isPlainRecord(store?.operatingHours) ? store.operatingHours : {}
+      const opening = parseShiftTime(store?.opening ?? store?.openingTime ?? configured.opening)
+      const closing = parseShiftTime(store?.closing ?? store?.closingTime ?? configured.closing)
+      if (!opening || !closing || closing.minuteOfDay <= opening.minuteOfDay) return store
+      return {
+        ...store,
+        opening: opening.label,
+        openingTime: opening.label,
+        closing: closing.label,
+        closingTime: closing.label,
+        operatingHours: { opening: opening.label, closing: closing.label },
+      }
+    })
+  }
   if (Array.isArray(state.importVouchers)) {
     const expenses = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
     const canonicalImportExpenses = new Map()
@@ -1853,8 +1875,12 @@ const getState = async (request, env, context, url) => {
 }
 
 const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
+  'attendance',
+  'attendanceAudit',
   'orders',
   'orderAudit',
+  'operationalResetHistory',
+  'supportTransfers',
   'supportWorkAssignments',
   'expenseEntries',
   'fixedExpenses',
@@ -2358,8 +2384,9 @@ const storeCommand = async (db, actor, body, commandContext) => {
       throw new ApiError(400, 'EMAIL_INVALID', 'Email cửa hàng không đúng định dạng.')
     }
     const tax = String(payload.tax ?? payload.taxCode ?? '').trim().slice(0, 64)
-    const opening = parseShiftTime(payload.opening ?? payload.openingTime ?? '07:00')
-    const closing = parseShiftTime(payload.closing ?? payload.closingTime ?? '23:00')
+    const operatingHours = isPlainRecord(payload.operatingHours) ? payload.operatingHours : {}
+    const opening = parseShiftTime(payload.opening ?? payload.openingTime ?? operatingHours.opening ?? '07:00')
+    const closing = parseShiftTime(payload.closing ?? payload.closingTime ?? operatingHours.closing ?? '23:00')
     if (!opening || !closing || closing.minuteOfDay <= opening.minuteOfDay) {
       throw new ApiError(400, 'STORE_HOURS_INVALID', 'Giờ mở/đóng cửa phải theo định dạng 24 giờ và giờ đóng phải sau giờ mở.')
     }
@@ -2377,6 +2404,7 @@ const storeCommand = async (db, actor, body, commandContext) => {
       openingTime: opening.label,
       closing: closing.label,
       closingTime: closing.label,
+      operatingHours: { opening: opening.label, closing: closing.label },
       status: ['Ngưng hoạt động', 'inactive'].includes(String(payload.status)) ? 'Ngưng hoạt động' : 'Đang hoạt động',
       accent: String(payload.accent || '#075fba').trim().slice(0, 32),
       employees: 0,
@@ -2443,12 +2471,13 @@ const storeCommand = async (db, actor, body, commandContext) => {
     candidate.tax = String(payload.tax ?? payload.taxCode ?? '').trim().slice(0, 64)
     candidate.taxCode = candidate.tax
   }
-  if (payload.opening !== undefined || payload.openingTime !== undefined) {
-    candidate.opening = String(payload.opening ?? payload.openingTime ?? '').trim()
+  const operatingHours = isPlainRecord(payload.operatingHours) ? payload.operatingHours : {}
+  if (payload.opening !== undefined || payload.openingTime !== undefined || operatingHours.opening !== undefined) {
+    candidate.opening = String(payload.opening ?? payload.openingTime ?? operatingHours.opening ?? '').trim()
     candidate.openingTime = candidate.opening
   }
-  if (payload.closing !== undefined || payload.closingTime !== undefined) {
-    candidate.closing = String(payload.closing ?? payload.closingTime ?? '').trim()
+  if (payload.closing !== undefined || payload.closingTime !== undefined || operatingHours.closing !== undefined) {
+    candidate.closing = String(payload.closing ?? payload.closingTime ?? operatingHours.closing ?? '').trim()
     candidate.closingTime = candidate.closing
   }
   if (payload.status !== undefined) {
@@ -2476,9 +2505,10 @@ const storeCommand = async (db, actor, body, commandContext) => {
   candidate.openingTime = opening.label
   candidate.closing = closing.label
   candidate.closingTime = closing.label
+  candidate.operatingHours = { opening: opening.label, closing: closing.label }
   const changedFields = [
     'name', 'short', 'location', 'address', 'accent', 'status', 'phone', 'email',
-    'tax', 'taxCode', 'opening', 'openingTime', 'closing', 'closingTime',
+    'tax', 'taxCode', 'opening', 'openingTime', 'closing', 'closingTime', 'operatingHours',
   ]
     .filter((key) => JSON.stringify(candidate[key]) !== JSON.stringify(existing[key]))
   if (!changedFields.length) {
@@ -4116,8 +4146,8 @@ const monthsInDateRange = (fromDate, toDate) => {
 }
 
 const supportTransferCommand = async (db, actor, body, commandContext) => {
-  if (!['admin', 'business_support'].includes(actor.role)) {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý điều chuyển hỗ trợ.')
+  if (actor.role !== 'business_support') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Nhân viên hỗ trợ KD được quản lý điều chuyển nhân sự.')
   }
   const operation = body.type.split('.').at(-1)
   if (!['create', 'update', 'delete'].includes(operation)) {
@@ -4129,6 +4159,12 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   const transferId = operation === 'create'
     ? String(payload.id || `support_${crypto.randomUUID()}`).trim()
     : String(payload.transferId || payload.id || '').trim()
+  if (!/^[A-Za-z0-9_-]{3,100}$/u.test(transferId)) {
+    throw new ApiError(400, 'SUPPORT_TRANSFER_ID_INVALID', 'Mã điều chuyển không hợp lệ.')
+  }
+  if (operation === 'create' && transfers.some((record) => String(record.id || '') === transferId)) {
+    throw new ApiError(409, 'SUPPORT_TRANSFER_EXISTS', 'Mã điều chuyển đã tồn tại.')
+  }
   const previous = operation === 'create'
     ? null
     : transfers.find((record) => String(record.id || '') === transferId)
@@ -4147,13 +4183,22 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(409, 'SUPPORT_TRANSFER_DELETED', 'Điều chuyển hỗ trợ đã bị xóa.')
   }
   const employeeId = String(payload.employeeId ?? previous?.employeeId ?? '').trim()
-  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+  const employee = [
+    ...(Array.isArray(state.employees) ? state.employees : []),
+    ...(operation === 'create' ? [] : (Array.isArray(state.deletedEmployees) ? state.deletedEmployees : [])),
+  ].find((record) => (
     String(record.id || record.code || '') === employeeId
     && employeeUnit(record) === 'store'
-    && !record.deletedAt
   ))
-  if (!employee) throw new ApiError(400, 'EMPLOYEE_INVALID', 'Nhân viên hỗ trợ không hợp lệ.')
+  if (!employee
+    || (operation === 'create' && (employee.deletedAt || ['Đã nghỉ việc', 'inactive'].includes(String(employee.status || ''))))) {
+    throw new ApiError(400, 'EMPLOYEE_INVALID', 'Nhân viên hỗ trợ không hợp lệ.')
+  }
   const fromStoreId = String(previous?.fromStoreId || employee.storeId || '').trim()
+  const requestedFromStoreId = String(payload.fromStoreId ?? fromStoreId).trim()
+  if (requestedFromStoreId !== fromStoreId) {
+    throw new ApiError(400, 'TRANSFER_SOURCE_MISMATCH', 'Cửa hàng điều chuyển phải đúng với cửa hàng hiện tại của nhân viên.')
+  }
   const toStoreId = String(payload.toStoreId ?? previous?.toStoreId ?? '').trim()
   assertOperationalStoreAccess(actor, fromStoreId)
   assertOperationalStoreAccess(actor, toStoreId)
@@ -4162,12 +4207,23 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   if (fromStoreId === toStoreId) {
     throw new ApiError(400, 'SUPPORT_STORE_INVALID', 'Cửa hàng hỗ trợ phải khác cửa hàng hiện tại của nhân viên.')
   }
-  const fromDate = optionalCalendarDate(payload.fromDate ?? previous?.fromDate, 'Ngày bắt đầu')
-  const toDate = optionalCalendarDate(payload.toDate ?? previous?.toDate, 'Ngày kết thúc')
+  const fromDate = optionalCalendarDate(
+    payload.fromDate ?? payload.startDate ?? payload.startAt?.slice?.(0, 10) ?? payload.date ?? previous?.fromDate,
+    'Ngày bắt đầu',
+  )
+  const toDate = optionalCalendarDate(
+    payload.toDate ?? payload.endDate ?? payload.endAt?.slice?.(0, 10) ?? payload.date ?? previous?.toDate,
+    'Ngày kết thúc',
+  )
   if (!fromDate || !toDate) throw new ApiError(400, 'TRANSFER_DATE_REQUIRED', 'Cần nhập đủ ngày bắt đầu và kết thúc.')
   const months = monthsInDateRange(fromDate, toDate)
-  const payrollTargets = [fromStoreId, toStoreId].flatMap((storeId) => months.map((period) => ({ storeId, period })))
-  for (const target of payrollTargets) assertAccountingPeriodOpen(state, target.storeId, target.period)
+  const previousMonths = previous ? monthsInDateRange(previous.fromDate, previous.toDate) : []
+  const payrollTargets = [...new Map([
+    ...[fromStoreId, toStoreId].flatMap((storeId) => months.map((period) => ({ storeId, period }))),
+    ...(previous ? [previous.fromStoreId, previous.toStoreId]
+      .flatMap((storeId) => previousMonths.map((period) => ({ storeId, period }))) : []),
+  ].map((target) => [`${target.storeId}:${target.period}`, target])).values()]
+  for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
 
   if (operation === 'delete') {
     const reason = String(payload.reason || '').trim()
@@ -4201,9 +4257,27 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
 
   const note = String(payload.note ?? previous?.note ?? '').trim()
   if (note.length > 1_000) throw new ApiError(400, 'NOTE_TOO_LONG', 'Ghi chú không được vượt quá 1.000 ký tự.')
+  const rawHourlySupportRate = payload.hourlySupportRate ?? payload.hourlyRate
+    ?? payload.supportHourlyRate ?? previous?.hourlySupportRate
+  if (rawHourlySupportRate === undefined || rawHourlySupportRate === null || rawHourlySupportRate === '') {
+    throw new ApiError(400, 'SUPPORT_HOURLY_RATE_REQUIRED', 'Cần nhập lương hỗ trợ theo giờ.')
+  }
+  const hourlySupportRate = asVnd(rawHourlySupportRate, 'Lương hỗ trợ theo giờ', { positive: true })
+  const allowance = asVnd(payload.allowance ?? previous?.allowance ?? 0, 'Phụ cấp')
   const status = String(payload.status ?? previous?.status ?? 'Đã duyệt')
   if (!['Đã duyệt', 'Hoàn tất', 'Đã hủy'].includes(status)) {
     throw new ApiError(400, 'SUPPORT_TRANSFER_STATUS_INVALID', 'Trạng thái điều chuyển không hợp lệ.')
+  }
+  const overlap = transfers.find((record) => (
+    String(record.id || '') !== transferId
+    && String(record.employeeId || '') === employeeId
+    && !record.deletedAt
+    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+    && String(record.fromDate || '') <= toDate
+    && String(record.toDate || '') >= fromDate
+  ))
+  if (overlap) {
+    throw new ApiError(409, 'SUPPORT_TRANSFER_OVERLAP', 'Nhân viên đã có lịch điều chuyển trùng thời gian.', { transferId: overlap.id })
   }
   const transfer = {
     ...(previous || {}),
@@ -4214,6 +4288,8 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     toStoreId,
     fromDate,
     toDate,
+    hourlySupportRate,
+    allowance,
     note,
     status,
     ...(operation === 'create'
@@ -4245,6 +4321,7 @@ const RESET_ARRAY_COLLECTIONS = Object.freeze([
   'employees',
   'imports',
   'attendance',
+  'attendanceAudit',
   'schedule',
   'tasks',
   'officeAdjustments',
@@ -4264,6 +4341,7 @@ const RESET_ARRAY_COLLECTIONS = Object.freeze([
   'deletedStores',
   'deletedEmployees',
   'supportTransfers',
+  'operationalResetHistory',
   'supportWorkAssignments',
 ])
 
@@ -4845,7 +4923,9 @@ const vietnamBusinessTimestamp = (date, time) => {
 }
 
 const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
-  assertAdmin(actor, 'Chỉ Admin được chỉnh sửa thời gian chấm công.')
+  if (!['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được chỉnh sửa thời gian chấm công.')
+  }
   if (body.type !== 'attendance.update') {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh chỉnh sửa chấm công không được hỗ trợ.')
   }
@@ -4863,6 +4943,23 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
   const previous = attendance.find((record) => String(record.id || '') === attendanceId && !record.deletedAt)
   if (!previous) throw new ApiError(404, 'ATTENDANCE_NOT_FOUND', 'Không tìm thấy bản ghi chấm công.')
+  const storeId = String(previous.storeId || '').trim()
+  const employeeId = employeeReference(previous)
+  if (!storeId || !employeeId) {
+    throw new ApiError(409, 'ATTENDANCE_SCOPE_INVALID', 'Bản ghi chấm công thiếu liên kết nhân viên hoặc cửa hàng.')
+  }
+  const linkedEmployee = [
+    ...(Array.isArray(state.employees) ? state.employees : []),
+    ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
+  ].find((employee) => [employee.id, employee.code, employee.employeeId].map(String).includes(employeeId))
+  if (actor.role === 'business_support') {
+    assertOperationalStoreAccess(actor, storeId)
+    if (!linkedEmployee
+      || employeeUnit(linkedEmployee) !== 'store'
+      || String(linkedEmployee.storeId || '') !== storeId) {
+      throw new ApiError(403, 'ATTENDANCE_STORE_EMPLOYEE_ONLY', 'Nhân viên hỗ trợ KD chỉ được chỉnh chấm công của nhân viên cửa hàng.')
+    }
+  }
 
   const date = optionalCalendarDate(payload.date ?? payload.workDate ?? dateFromRecord(previous), 'Ngày chấm công')
   const checkIn = parseShiftTime(payload.checkIn ?? payload.checkInTime ?? previous.checkIn ?? previous.checkInTime)
@@ -4881,11 +4978,6 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'ATTENDANCE_TIME_ORDER_INVALID', 'Giờ ra phải sau giờ vào trong cùng ngày làm việc.')
   }
 
-  const storeId = String(previous.storeId || '').trim()
-  const employeeId = employeeReference(previous)
-  if (!storeId || !employeeId) {
-    throw new ApiError(409, 'ATTENDANCE_SCOPE_INVALID', 'Bản ghi chấm công thiếu liên kết nhân viên hoặc cửa hàng.')
-  }
   const previousPeriod = monthFromRecord(previous)
   const nextPeriod = date.slice(0, 7)
   const payrollTargets = [...new Map([
@@ -4908,8 +5000,6 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   const minutesFromStart = checkIn.minuteOfDay - shiftStart.minuteOfDay
   const lateTolerance = Math.trunc(await policyNumber(db, 'late_tolerance_minutes', 10))
   const officeAttendance = officeLikeEmployee(previous) || previous.attendanceMode === 'office'
-  const linkedEmployee = (Array.isArray(state.employees) ? state.employees : [])
-    .find((employee) => String(employee.id || employee.code || '') === employeeId)
   const requiredWorkingDays = validRequiredWorkingDays(previous.requiredWorkingDaysSnapshot)
     || validRequiredWorkingDays(previous.standardWorkDaysSnapshot)
     || requiredWorkingDaysForEmployee(linkedEmployee, date.slice(0, 7))
@@ -4955,9 +5045,24 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     'date', 'checkIn', 'checkInAt', 'checkOut', 'checkOutAt', 'arrivalTag',
     'departureTag', 'minutesEarly', 'minutesLate', 'workdayCredit', 'workedSeconds', 'hours',
   ].filter((field) => JSON.stringify(next[field]) !== JSON.stringify(previous[field]))
+  const auditRecord = {
+    id: `ata_${crypto.randomUUID()}`,
+    action: 'Sửa',
+    attendanceId,
+    storeId,
+    employeeId,
+    before: previous,
+    after: next,
+    changedFields,
+    reason,
+    actor: serverActorSnapshot(actor),
+    createdAt: commandContext.now,
+  }
   const nextState = {
     ...state,
     attendance: attendance.map((record) => String(record.id || '') === attendanceId ? next : record),
+    attendanceAudit: [auditRecord, ...(Array.isArray(state.attendanceAudit) ? state.attendanceAudit : [])],
+    auditLogs: [auditRecord, ...(Array.isArray(state.auditLogs) ? state.auditLogs : [])],
     payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
@@ -4968,7 +5073,417 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     before: previous,
     after: next,
     metadata: { reason, changedFields, storeId, employeeId, payrollTargets },
-    response: { command: body.type, attendance: next },
+    response: { command: body.type, attendance: next, audit: auditRecord },
+  }, commandContext)
+}
+
+const normalizedOperationalResetType = (value) => {
+  const normalized = normalizeTextKey(value).replace(/\s+/gu, '_')
+  if (['order', 'orders', 'don_hang'].includes(normalized)) return 'orders'
+  if (['attendance', 'attendances', 'cham_cong'].includes(normalized)) return 'attendance'
+  return ''
+}
+
+const recordEmployeeId = (record) => String(record?.employeeId || record?.employeeCode || '').trim()
+
+const ORDER_OPERATIONAL_MUTABLE_FIELDS = Object.freeze([
+  'customerName', 'customerPhone', 'customerAge', 'amount', 'paymentMethod',
+  'status', 'deletedAt', 'deletedBy', 'deleteReason',
+])
+
+const ATTENDANCE_CORRECTION_FIELDS = Object.freeze([
+  'date', 'workDate', 'attendanceDate', 'checkIn', 'checkInTime', 'checkInAt',
+  'checkOut', 'checkOutTime', 'checkOutAt', 'arrivalTag', 'departureTag',
+  'punctuality', 'status', 'minutesEarly', 'minutesLate', 'workedSeconds',
+  'workedMinutes', 'hours', 'workdayCredit', 'attendanceMode',
+  'requiredWorkingDaysSnapshot', 'standardWorkDaysSnapshot',
+  'editedAt', 'editedBy', 'editReason',
+])
+
+const restoreAuditedFields = (current, baseline, fields) => {
+  const restored = { ...current }
+  for (const field of fields) {
+    if (Object.hasOwn(baseline, field)) restored[field] = baseline[field]
+    else delete restored[field]
+  }
+  return restored
+}
+
+const operationalAuditFingerprint = (record, dataType) => {
+  const keys = dataType === 'orders'
+    ? [
+        'id', 'code', 'storeId', 'employeeId', 'attendanceId', 'customerName',
+        'customerPhone', 'customerAge', 'amount', 'paymentMethod', 'status',
+        'deletedAt', 'createdAt',
+      ]
+    : ['id', 'storeId', 'employeeId', 'shiftId', 'shift', ...ATTENDANCE_CORRECTION_FIELDS]
+  return JSON.stringify(Object.fromEntries(keys.map((key) => [key, record?.[key] ?? null])))
+}
+
+const recordWithinOperationalResetScope = (record, scope) => {
+  if (!isPlainRecord(record) || String(record.storeId || '') !== scope.storeId) return false
+  const date = dateFromRecord(record)
+  if (!date || date < scope.fromDate || date > scope.toDate) return false
+  return !scope.employeeId || recordEmployeeId(record) === scope.employeeId
+}
+
+const latestRestorableAuditByEntity = (history, options) => {
+  const latest = new Map()
+  for (const audit of Array.isArray(history) ? history : []) {
+    if (!isPlainRecord(audit) || audit.restoredAt || !isPlainRecord(audit.before)) continue
+    if (!options.actions.has(String(audit.action || ''))) continue
+    if (!String(audit.id || '').trim()) continue
+    const entityId = String(audit[options.entityKey] || audit.before.id || '').trim()
+    const scopedRecord = isPlainRecord(audit.after) ? audit.after : audit.before
+    if (!entityId || !recordWithinOperationalResetScope(scopedRecord, options.scope)) continue
+    const current = latest.get(entityId)
+    const timestamp = Date.parse(audit.createdAt || '')
+    const currentTimestamp = Date.parse(current?.createdAt || '')
+    if (!current || (Number.isFinite(timestamp) && (!Number.isFinite(currentTimestamp) || timestamp > currentTimestamp))) {
+      latest.set(entityId, audit)
+    }
+  }
+  return latest
+}
+
+const attendanceAuditSignature = (audit) => {
+  if (!isPlainRecord(audit?.before) || !isPlainRecord(audit?.after)) return ''
+  return JSON.stringify([
+    String(audit.attendanceId || audit.before.id || ''),
+    String(audit.createdAt || ''),
+    operationalAuditFingerprint(audit.before, 'attendance'),
+    operationalAuditFingerprint(audit.after, 'attendance'),
+  ])
+}
+
+const legacyAttendanceAuditsForScope = async (db, stateAudits, scope) => {
+  const rows = await all(db, `
+    SELECT
+      id, request_id, actor_id, actor_role, entity_id,
+      before_json, after_json, metadata_json, server_timestamp
+    FROM audit_log
+    WHERE action = 'attendance.update' AND entity_type = 'attendance'
+      AND json_extract(after_json, '$.storeId') = ?
+      AND COALESCE(
+        json_extract(after_json, '$.workDate'),
+        json_extract(after_json, '$.attendanceDate'),
+        json_extract(after_json, '$.date'),
+        substr(json_extract(after_json, '$.createdAt'), 1, 10),
+        ''
+      ) BETWEEN ? AND ?
+      AND (? = '' OR COALESCE(
+        json_extract(after_json, '$.employeeId'),
+        json_extract(after_json, '$.employeeCode'),
+        ''
+      ) = ?)
+    ORDER BY id DESC
+    LIMIT ?
+  `, scope.storeId, scope.fromDate, scope.toDate, scope.employeeId, scope.employeeId, MAX_LEGACY_ATTENDANCE_AUDITS)
+  const represented = new Set((Array.isArray(stateAudits) ? stateAudits : [])
+    .map(attendanceAuditSignature).filter(Boolean))
+  const legacy = []
+  for (const row of rows) {
+    const auditLogId = Number(row.id)
+    if (!Number.isSafeInteger(auditLogId) || auditLogId <= 0) continue
+    let before
+    let after
+    let metadata
+    try {
+      before = sanitizeStateValue(parseStoredJson(row.before_json))
+      after = sanitizeStateValue(parseStoredJson(row.after_json))
+      metadata = sanitizeStateValue(parseStoredJson(row.metadata_json, {}))
+    } catch {
+      continue
+    }
+    if (!isPlainRecord(before) || !isPlainRecord(after)
+      || before.truncated === true || after.truncated === true) continue
+    const attendanceId = String(row.entity_id || before.id || '').trim()
+    if (!attendanceId
+      || String(before.id || '') !== attendanceId
+      || String(after.id || '') !== attendanceId
+      || String(before.storeId || '') !== String(after.storeId || '')
+      || employeeReference(before) !== employeeReference(after)
+      || !recordWithinOperationalResetScope(after, scope)) continue
+    const audit = {
+      id: `ata_legacy_${auditLogId}`,
+      action: 'Sửa',
+      attendanceId,
+      storeId: String(metadata.storeId || after.storeId || ''),
+      employeeId: String(metadata.employeeId || employeeReference(after) || ''),
+      before,
+      after,
+      changedFields: Array.isArray(metadata.changedFields)
+        ? metadata.changedFields.map(String).slice(0, 100)
+        : [],
+      reason: String(metadata.reason || '').slice(0, 500),
+      actor: {
+        id: row.actor_id ? String(row.actor_id) : null,
+        name: 'Nhật ký hệ thống',
+        role: VALID_ROLES.has(String(row.actor_role || '')) ? String(row.actor_role) : 'admin',
+      },
+      createdAt: String(row.server_timestamp || ''),
+      legacyAuditLogId: auditLogId,
+      legacyRequestId: String(row.request_id || ''),
+      source: 'd1-audit-log',
+    }
+    const signature = attendanceAuditSignature(audit)
+    if (!signature || represented.has(signature)) continue
+    represented.add(signature)
+    legacy.push(audit)
+  }
+  return legacy
+}
+
+const operationalResetCommand = async (db, actor, body, commandContext) => {
+  if (actor.role !== 'business_support') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Nhân viên hỗ trợ KD được khôi phục chỉnh sửa dữ liệu vận hành.')
+  }
+  if (body.type !== 'operational_reset.restore') {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh khôi phục dữ liệu vận hành không được hỗ trợ.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const dataType = normalizedOperationalResetType(payload.dataType ?? payload.type)
+  if (!dataType) {
+    throw new ApiError(400, 'OPERATIONAL_RESET_TYPE_INVALID', 'Chỉ có thể khôi phục chỉnh sửa đơn hàng hoặc chấm công.')
+  }
+  const reason = String(payload.reason || '').trim()
+  if (!reason || reason.length > 500) {
+    throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do khôi phục từ 1 đến 500 ký tự.')
+  }
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const storeId = String(payload.storeId || '').trim()
+  assertOperationalStoreAccess(actor, storeId)
+  requireStore(state, storeId)
+  const fromDate = optionalCalendarDate(payload.fromDate ?? payload.startDate ?? payload.date, 'Từ ngày')
+  const toDate = optionalCalendarDate(payload.toDate ?? payload.endDate ?? payload.date, 'Đến ngày')
+  if (!fromDate || !toDate) {
+    throw new ApiError(400, 'OPERATIONAL_RESET_DATE_REQUIRED', 'Cần chọn khoảng ngày khôi phục.')
+  }
+  monthsInDateRange(fromDate, toDate)
+  const employeeId = String(payload.employeeId || '').trim()
+  if (employeeId) {
+    const employee = [
+      ...(Array.isArray(state.employees) ? state.employees : []),
+      ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
+    ].find((record) => [record.id, record.code, record.employeeId].map(String).includes(employeeId))
+    if (!employee || employeeUnit(employee) !== 'store' || String(employee.storeId || '') !== storeId) {
+      throw new ApiError(400, 'OPERATIONAL_RESET_EMPLOYEE_INVALID', 'Nhân viên không thuộc cửa hàng đã chọn.')
+    }
+  }
+  const scope = { storeId, fromDate, toDate, employeeId }
+  const resetId = `opr_${crypto.randomUUID()}`
+  const actorSnapshot = serverActorSnapshot(actor)
+  let beforeRecords = []
+  let restoredRecords = []
+  let sourceAuditIds = []
+  let nextState
+
+  if (dataType === 'orders') {
+    const orders = Array.isArray(state.orders) ? state.orders : []
+    const orderAudit = Array.isArray(state.orderAudit) ? state.orderAudit : []
+    const latestAudits = latestRestorableAuditByEntity(orderAudit, {
+      actions: new Set(['Sửa', 'Xóa']), entityKey: 'orderId', scope,
+    })
+    const restorationById = new Map()
+    for (const [orderId, audit] of latestAudits) {
+      const currentOrder = orders.find((record) => String(record.id || '') === orderId)
+      if (!currentOrder) continue
+      if (operationalAuditFingerprint(currentOrder, dataType) !== operationalAuditFingerprint(audit.after, dataType)) {
+        throw new ApiError(409, 'OPERATIONAL_RESET_STALE_AUDIT', 'Đơn hàng đã thay đổi sau bản chỉnh sửa gần nhất; hãy tải lại dữ liệu trước khi khôi phục.', { entityId: orderId })
+      }
+      const baseline = audit.before
+      const restored = {
+        ...restoreAuditedFields(currentOrder, baseline, ORDER_OPERATIONAL_MUTABLE_FIELDS),
+        restoredAt: commandContext.now,
+        restoredBy: actorSnapshot,
+        restoreReason: reason,
+        updatedAt: commandContext.now,
+        updatedBy: actorSnapshot,
+      }
+      beforeRecords.push(currentOrder)
+      restoredRecords.push(restored)
+      sourceAuditIds.push(String(audit.id || ''))
+      restorationById.set(orderId, { restored, audit })
+    }
+    if (!restorationById.size) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        reset: { id: null, dataType, scope, restoredCount: 0, restoredIds: [] },
+        restoredCount: 0,
+        restoredIds: [],
+        restored: [],
+        existing: true,
+      }, 200, commandContext)
+    }
+    const payrollTargets = [...new Map(restoredRecords.flatMap((restored, index) => [
+      { storeId: String(restored.storeId || ''), period: monthFromRecord(restored) },
+      { storeId: String(beforeRecords[index].storeId || ''), period: monthFromRecord(beforeRecords[index]) },
+    ]).map((target) => [`${target.storeId}:${target.period}`, target])).values()]
+    for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
+    const nextOrders = orders.map((record) => restorationById.get(String(record.id || ''))?.restored || record)
+    const affectedAttendanceIds = new Set()
+    for (const [orderId, { restored }] of restorationById) {
+      const currentOrder = orders.find((record) => String(record.id || '') === orderId)
+      for (const order of [currentOrder, restored]) {
+        if (order?.attendanceId) affectedAttendanceIds.add(String(order.attendanceId))
+      }
+      for (const attendance of Array.isArray(state.attendance) ? state.attendance : []) {
+        if (orderBelongsToAttendance(currentOrder, attendance) || orderBelongsToAttendance(restored, attendance)) {
+          affectedAttendanceIds.add(String(attendance.id || ''))
+        }
+      }
+    }
+    const nextAttendance = (Array.isArray(state.attendance) ? state.attendance : []).map((attendance) => (
+      affectedAttendanceIds.has(String(attendance.id || ''))
+        ? { ...attendance, ...orderSalesTotals(nextOrders, attendance), updatedAt: commandContext.now }
+        : attendance
+    ))
+    const restoredAudit = orderAudit.map((audit) => (
+      sourceAuditIds.includes(String(audit.id || ''))
+        ? { ...audit, restoredAt: commandContext.now, restoredBy: actorSnapshot, resetId }
+        : audit
+    ))
+    const resetAuditRecords = restoredRecords.map((restored, index) => {
+      const before = beforeRecords[index]
+      const changedFields = [
+        ...ORDER_OPERATIONAL_MUTABLE_FIELDS,
+      ].filter((field) => JSON.stringify(before[field]) !== JSON.stringify(restored[field]))
+      return {
+        id: `oda_${crypto.randomUUID()}`,
+        action: 'Khôi phục',
+        orderId: restored.id,
+        orderCode: restored.code,
+        storeId,
+        before,
+        after: restored,
+        changedFields,
+        revenueBefore: before.deletedAt || before.status === 'Đã xóa' ? 0 : Number(before.amount || 0),
+        revenueAfter: restored.deletedAt || restored.status === 'Đã xóa' ? 0 : Number(restored.amount || 0),
+        reason,
+        actor: actorSnapshot,
+        resetId,
+        sourceAuditId: sourceAuditIds[index],
+        createdAt: commandContext.now,
+      }
+    })
+    const historyRecord = {
+      id: resetId, dataType, ...scope, reason, restoredCount: restoredRecords.length,
+      restoredIds: restoredRecords.map((record) => record.id), sourceAuditIds,
+      createdAt: commandContext.now, createdBy: actorSnapshot,
+    }
+    nextState = {
+      ...state,
+      orders: nextOrders,
+      attendance: nextAttendance,
+      orderAudit: [...resetAuditRecords, ...restoredAudit],
+      auditLogs: [...resetAuditRecords, ...(Array.isArray(state.auditLogs) ? state.auditLogs : [])],
+      operationalResetHistory: [historyRecord, ...(Array.isArray(state.operationalResetHistory) ? state.operationalResetHistory : [])],
+      payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+  } else {
+    const attendance = Array.isArray(state.attendance) ? state.attendance : []
+    const stateAttendanceAudit = Array.isArray(state.attendanceAudit) ? state.attendanceAudit : []
+    const attendanceAudit = [
+      ...stateAttendanceAudit,
+      ...await legacyAttendanceAuditsForScope(db, stateAttendanceAudit, scope),
+    ]
+    const latestAudits = latestRestorableAuditByEntity(attendanceAudit, {
+      actions: new Set(['Sửa']), entityKey: 'attendanceId', scope,
+    })
+    const restorationById = new Map()
+    for (const [attendanceId, audit] of latestAudits) {
+      const currentAttendance = attendance.find((record) => String(record.id || '') === attendanceId && !record.deletedAt)
+      if (!currentAttendance) continue
+      if (operationalAuditFingerprint(currentAttendance, dataType) !== operationalAuditFingerprint(audit.after, dataType)) {
+        throw new ApiError(409, 'OPERATIONAL_RESET_STALE_AUDIT', 'Chấm công đã thay đổi sau bản chỉnh sửa gần nhất; hãy tải lại dữ liệu trước khi khôi phục.', { entityId: attendanceId })
+      }
+      const restored = {
+        ...restoreAuditedFields(currentAttendance, audit.before, ATTENDANCE_CORRECTION_FIELDS),
+        restoredAt: commandContext.now,
+        restoredBy: actorSnapshot,
+        restoreReason: reason,
+        updatedAt: commandContext.now,
+        updatedBy: actorSnapshot,
+      }
+      beforeRecords.push(currentAttendance)
+      restoredRecords.push(restored)
+      sourceAuditIds.push(String(audit.id || ''))
+      restorationById.set(attendanceId, { restored, audit })
+    }
+    if (!restorationById.size) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        reset: { id: null, dataType, scope, restoredCount: 0, restoredIds: [] },
+        restoredCount: 0,
+        restoredIds: [],
+        restored: [],
+        existing: true,
+      }, 200, commandContext)
+    }
+    const payrollTargets = [...new Map(restoredRecords.flatMap((restored, index) => [
+      { storeId: String(restored.storeId || ''), period: monthFromRecord(restored) },
+      { storeId: String(beforeRecords[index].storeId || ''), period: monthFromRecord(beforeRecords[index]) },
+    ]).map((target) => [`${target.storeId}:${target.period}`, target])).values()]
+    for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
+    const restoredAudit = attendanceAudit.map((audit) => (
+      sourceAuditIds.includes(String(audit.id || ''))
+        ? { ...audit, restoredAt: commandContext.now, restoredBy: actorSnapshot, resetId }
+        : audit
+    ))
+    const resetAuditRecords = restoredRecords.map((restored, index) => {
+      const before = beforeRecords[index]
+      const changedFields = ATTENDANCE_CORRECTION_FIELDS
+        .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(restored[field]))
+      return {
+        id: `ata_${crypto.randomUUID()}`,
+        action: 'Khôi phục',
+        attendanceId: restored.id,
+        storeId,
+        employeeId: recordEmployeeId(restored),
+        before,
+        after: restored,
+        changedFields,
+        reason,
+        actor: actorSnapshot,
+        resetId,
+        sourceAuditId: sourceAuditIds[index],
+        createdAt: commandContext.now,
+      }
+    })
+    const historyRecord = {
+      id: resetId, dataType, ...scope, reason, restoredCount: restoredRecords.length,
+      restoredIds: restoredRecords.map((record) => record.id), sourceAuditIds,
+      createdAt: commandContext.now, createdBy: actorSnapshot,
+    }
+    nextState = {
+      ...state,
+      attendance: attendance.map((record) => restorationById.get(String(record.id || ''))?.restored || record),
+      attendanceAudit: [...resetAuditRecords, ...restoredAudit],
+      auditLogs: [...resetAuditRecords, ...(Array.isArray(state.auditLogs) ? state.auditLogs : [])],
+      operationalResetHistory: [historyRecord, ...(Array.isArray(state.operationalResetHistory) ? state.operationalResetHistory : [])],
+      payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+  }
+
+  const reset = nextState.operationalResetHistory[0]
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'operational-reset',
+    entityId: resetId,
+    before: beforeRecords,
+    after: restoredRecords,
+    metadata: { dataType, scope, reason, sourceAuditIds, restoredCount: restoredRecords.length },
+    response: {
+      command: body.type,
+      reset,
+      restoredCount: restoredRecords.length,
+      restoredIds: restoredRecords.map((record) => record.id),
+      restored: restoredRecords,
+    },
   }, commandContext)
 }
 
@@ -5448,6 +5963,7 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
   if (previous.source === 'legacy-opening-balance') {
     throw new ApiError(409, 'LEGACY_ORDER_IMMUTABLE', 'Không thể thay đổi bản ghi doanh thu chuyển tiếp.')
   }
+  assertPayrollNotPaidOrLocked(state, previous.storeId, monthFromRecord(previous))
   const actorSnapshot = serverActorSnapshot(actor)
   let next
   let action
@@ -7814,6 +8330,9 @@ const executeCommand = async (request, env, context) => {
     }
     if (String(body.type || '').startsWith('support_transfer.')) {
       return await supportTransferCommand(db, user, body, commandContext)
+    }
+    if (String(body.type || '').startsWith('operational_reset.')) {
+      return await operationalResetCommand(db, user, body, commandContext)
     }
     if (body.type === 'system.reset_demo') {
       return await systemResetDemoCommand(db, user, body, commandContext)

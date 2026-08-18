@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { isCurrentLocalCache, mergeEmployeeAuthUsers, mergeLegacyCredentialMigration, purgeLegacyLocalCredentials } from './AppContext'
+import {
+  isCurrentLocalCache,
+  isRestorableOperationalAuditAction,
+  mergeEmployeeAuthUsers,
+  mergeLegacyCredentialMigration,
+  purgeLegacyLocalCredentials,
+  restoreOperationalRecordFields,
+} from './AppContext'
 
 describe('legacy credential migration race guard', () => {
   const remoteState = {
@@ -64,5 +71,47 @@ describe('legacy credential migration race guard', () => {
     expect(isCurrentLocalCache({ storageMode: 'remote', cachePrivacyEpoch: 1 })).toBe(false)
     expect(isCurrentLocalCache({ employees: [{ cccd: 'sensitive' }] })).toBe(false)
     expect(isCurrentLocalCache({ storageMode: 'local', cachePrivacyEpoch: 1 })).toBe(true)
+  })
+
+  it('restores only editable order fields and preserves order ownership', () => {
+    const current = {
+      id: 'DH-001', code: 'DH-001', storeId: 'STORE-A', employeeId: 'NV-001', attendanceId: 'ATT-001',
+      customerName: 'Khách đã sửa', amount: 250000, paymentMethod: 'Chuyển khoản', createdAt: '2026-08-18T01:00:00.000Z',
+    }
+    const baseline = {
+      ...current,
+      storeId: 'STORE-B', employeeId: 'NV-KHAC', attendanceId: 'ATT-KHAC',
+      customerName: 'Khách ban đầu', amount: 200000, paymentMethod: 'Tiền mặt',
+    }
+
+    expect(restoreOperationalRecordFields(current, baseline, 'orders')).toMatchObject({
+      id: 'DH-001', storeId: 'STORE-A', employeeId: 'NV-001', attendanceId: 'ATT-001',
+      customerName: 'Khách ban đầu', amount: 200000, paymentMethod: 'Tiền mặt',
+      createdAt: '2026-08-18T01:00:00.000Z',
+    })
+  })
+
+  it('restores attendance corrections without overwriting sales, location, identity or shift', () => {
+    const current = {
+      id: 'ATT-001', storeId: 'STORE-A', employeeId: 'NV-001', shiftId: 'SHIFT-01',
+      checkIn: '08:30', checkOut: '17:00', sales: 900000, location: { latitude: 10.8, longitude: 106.7 },
+    }
+    const baseline = {
+      ...current,
+      storeId: 'STORE-B', employeeId: 'NV-KHAC', shiftId: 'SHIFT-KHAC',
+      checkIn: '08:00', sales: 0, location: { latitude: 0, longitude: 0 },
+    }
+
+    expect(restoreOperationalRecordFields(current, baseline, 'attendance')).toMatchObject({
+      id: 'ATT-001', storeId: 'STORE-A', employeeId: 'NV-001', shiftId: 'SHIFT-01',
+      checkIn: '08:00', checkOut: '17:00', sales: 900000,
+      location: { latitude: 10.8, longitude: 106.7 },
+    })
+  })
+
+  it('accepts canonical and legacy local attendance-edit audits for restoration', () => {
+    expect(isRestorableOperationalAuditAction('Sửa', 'attendance')).toBe(true)
+    expect(isRestorableOperationalAuditAction('update', 'attendance')).toBe(true)
+    expect(isRestorableOperationalAuditAction('delete', 'attendance')).toBe(false)
   })
 })

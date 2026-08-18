@@ -78,25 +78,29 @@ describe('AppShell notifications', () => {
     render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
 
     expect(screen.getByRole('link', { name: /Nhân viên hỗ trợ KD/i }).getAttribute('href')).toBe('/admin/business-support')
-    expect(screen.getByRole('link', { name: /^Quản lý cửa hàng$/i }).getAttribute('href')).toBe('/admin/store-managers')
+    expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i }).getAttribute('href')).toBe('/admin/store-managers')
+    expect(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Danh sách nhân viên cửa hàng/i })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Điều chuyển nhân sự/i })).toBeNull()
   })
 
-  it('gives business support the complete read workspace without policy and reset menus', () => {
+  it('gives business support the operational workspace with transfers and scoped reset', () => {
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001' }
     render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
 
     expect(screen.getByRole('link', { name: /^Tổng quan$/i }).getAttribute('href')).toBe('/support/overview')
-    expect(screen.getByRole('link', { name: /^Cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeTruthy()
     expect(screen.getAllByText('Hỗ trợ KD').length).toBeGreaterThan(0)
     expect(screen.getByRole('link', { name: /Khối văn phòng/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Quản lý nhân viên hệ thống/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /^Quản lý cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Danh sách nhân viên cửa hàng/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Điều chuyển nhân sự$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Công việc được giao/i }).getAttribute('href')).toBe('/support/tasks')
     expect(screen.getByRole('link', { name: /Lịch sử chỉnh sửa đơn hàng/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /Nhân viên hỗ trợ KD/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Cài đặt$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Cài đặt chính sách/i })).toBeNull()
-    expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /Reset dữ liệu/i })).toBeTruthy()
   })
 
   it('shows a support-work notification only to its assigned support employee', async () => {
@@ -139,7 +143,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
     expect(screen.getAllByText('Cua hang 2').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()
-    expect(screen.queryByRole('link', { name: /^Cửa hàng$/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Quản lý nhân viên/i })).toBeNull()
   })
 })

@@ -29,10 +29,9 @@ import { isOfficeProfile } from '../pages/employee/officeAttendance'
 
 const systemOperations = [
   { label: 'Tổng quan', path: '/admin/overview', icon: LayoutDashboard },
-  { label: 'Cửa hàng', path: '/admin/stores', icon: Store },
+  { label: 'Danh sách cửa hàng', path: '/admin/stores', icon: Store },
   { label: 'Dòng tiền', path: '/admin/cashflow', icon: Banknote },
   { label: 'Báo cáo', path: '/admin/reports', icon: BarChart3 },
-  { label: 'Điều chuyển nhân sự hỗ trợ', path: '/admin/support-transfers', icon: Users },
   { label: 'Cài đặt', path: '/admin/settings', icon: Settings },
 ]
 
@@ -62,27 +61,28 @@ const officeEmployeeMenu = [
 const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
   systemOperations[1],
-  { label: 'Quản lý nhân viên hệ thống', path: '/admin/employees', icon: Users },
-  { label: 'Quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
+  { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users },
+  { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
   officeOperation,
   systemOperations[2],
   systemOperations[3],
   { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
   { label: 'Công việc được giao', path: '/support/tasks', icon: ClipboardCheck },
+  { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
 ]
 
 const systemMenus = {
   admin: [
     ...systemOperations.slice(0, 2),
-    { label: 'Quản lý nhân viên', path: '/admin/employees', icon: Users, badge: 'Mới' },
+    { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users, badge: 'Mới' },
     { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users },
     { label: 'Giao Việc', path: '/admin/tasks', icon: ClipboardCheck, badge: 'Mới' },
-    { label: 'Quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
+    { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
-    ...systemOperations.slice(2, 5),
+    ...systemOperations.slice(2, 4),
     { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
-    systemOperations[5],
+    systemOperations[4],
     { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },
     { label: 'Lịch sử sửa/xóa đơn hàng', path: '/admin/order-audit', icon: ClipboardCheck },
   ],

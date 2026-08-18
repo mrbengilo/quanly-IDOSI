@@ -125,9 +125,9 @@ export default function App() {
         <Route path="/admin/store-managers" element={<StoreManagerManagement />} />
         <Route path="/office" element={<OfficeManagement />} />
         <Route path="/admin/office" element={<Navigate to="/office" replace />} />
-        <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
         <Route path="/admin/settings" element={<AdminSettings />} />
         <Route path="/admin/order-audit" element={<OrderAuditPage />} />
+        <Route path="/admin/reset" element={<ResetDataPage />} />
       </Route>
 
       <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager']}><AppShell /></RoleGuard>}>
@@ -149,12 +149,12 @@ export default function App() {
         <Route path="/support/overview" element={<OfficeEmployeeDashboard />} />
         <Route path="/support/attendance" element={<Navigate to="/support/overview" replace />} />
         <Route path="/support/tasks" element={<SupportAssignedWorkPage />} />
+        <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/admin/tasks" element={<AdminSupportWorkPage />} />
         <Route path="/admin/policies" element={<PolicySettings />} />
-        <Route path="/admin/reset" element={<ResetDataPage />} />
       </Route>
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>

@@ -58,12 +58,41 @@ const LOCAL_PROFILE_CREDENTIAL_KEYS = new Set([
   'token', 'accessToken', 'refreshToken',
 ])
 
+const ORDER_OPERATIONAL_MUTABLE_FIELDS = [
+  'customerName', 'customerPhone', 'customerAge', 'amount', 'paymentMethod',
+  'status', 'deletedAt', 'deletedBy', 'deleteReason',
+]
+const ATTENDANCE_CORRECTION_FIELDS = [
+  'date', 'workDate', 'attendanceDate', 'checkIn', 'checkInTime', 'checkInAt',
+  'checkOut', 'checkOutTime', 'checkOutAt', 'arrivalTag', 'departureTag',
+  'punctuality', 'status', 'minutesEarly', 'minutesLate', 'workedSeconds',
+  'workedMinutes', 'hours', 'workdayCredit', 'attendanceMode',
+  'requiredWorkingDaysSnapshot', 'standardWorkDaysSnapshot',
+  'editedAt', 'editedBy', 'editReason',
+]
+
+export const restoreOperationalRecordFields = (current, baseline, dataType) => {
+  const fields = dataType === 'orders' ? ORDER_OPERATIONAL_MUTABLE_FIELDS : ATTENDANCE_CORRECTION_FIELDS
+  const restored = { ...current }
+  fields.forEach((field) => {
+    if (Object.hasOwn(baseline, field)) restored[field] = baseline[field]
+    else delete restored[field]
+  })
+  return restored
+}
+
+export const isRestorableOperationalAuditAction = (action, dataType) => (
+  dataType === 'orders'
+    ? ['Sửa', 'Xóa'].includes(String(action || ''))
+    : ['Sửa', 'update'].includes(String(action || ''))
+)
+
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const REMOTE_ARRAY_KEYS = [
   'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'supportWorkAssignments', 'officeAdjustments',
   'orders', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
-  'importVouchers', 'auditLogs', 'deletedStores', 'deletedEmployees', 'supportTransfers',
+  'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
 ]
 const SERVER_EXCLUDED_FIELDS = new Set([
   'password', 'passwordHash', 'password_hash', 'passwordSalt', 'password_salt', 'passwordIterations',
@@ -2251,20 +2280,27 @@ export function AppProvider({ children }) {
   }
 
   const saveSupportTransfer = async (payload = {}) => {
-    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được điều chuyển nhân sự.' }
+    if (normalizeAuthRole(state.session?.role) !== 'business_support') return { ok: false, message: 'Chỉ Nhân viên Hỗ trợ KD được điều chuyển nhân sự.' }
     const employee = state.employees.find((item) => String(item.id || item.code) === String(payload.employeeId))
+    const fromStore = state.stores.find((store) => String(store.id) === String(payload.fromStoreId))
     const toStore = state.stores.find((store) => String(store.id) === String(payload.toStoreId))
-    if (!employee || !toStore || String(employee.storeId) === String(toStore.id)) {
-      return { ok: false, message: 'Nhân viên hoặc cửa hàng hỗ trợ chưa hợp lệ.' }
+    if (!employee || !fromStore || !toStore || String(employee.storeId) !== String(fromStore.id) || String(fromStore.id) === String(toStore.id)) {
+      return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
     }
     if (!payload.fromDate || !payload.toDate || payload.fromDate > payload.toDate) {
       return { ok: false, message: 'Khoảng thời gian điều chuyển chưa hợp lệ.' }
     }
+    const hourlySupportRate = nonNegativeInteger(payload.hourlySupportRate)
+    const allowance = nonNegativeInteger(payload.allowance)
+    if (hourlySupportRate <= 0) return { ok: false, message: 'Lương hỗ trợ theo giờ phải lớn hơn 0.' }
     const commandPayload = {
       employeeId: employee.id || employee.code,
+      fromStoreId: fromStore.id,
       toStoreId: toStore.id,
       fromDate: payload.fromDate,
       toDate: payload.toDate,
+      hourlySupportRate,
+      allowance,
       note: String(payload.note || '').trim(),
     }
     if (apiRef.current.enabled) {
@@ -2285,10 +2321,106 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const transfer = { id: uid('SUP'), ...commandPayload, fromStoreId: employee.storeId, status: 'Đã duyệt', createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
+    const transfer = { id: uid('SUP'), ...commandPayload, status: 'Đã lưu', createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
     updateCollection('supportTransfers', (items) => [transfer, ...items])
     notify('Đã lưu điều chuyển hỗ trợ.')
     return { ok: true, transfer }
+  }
+
+  const restoreOperationalData = async (payload = {}) => {
+    if (normalizeAuthRole(state.session?.role) !== 'business_support') {
+      return { ok: false, message: 'Chỉ Nhân viên Hỗ trợ KD được khôi phục dữ liệu vận hành.' }
+    }
+    const dataType = String(payload.dataType || '')
+    const storeId = String(payload.storeId || '')
+    const fromDate = String(payload.fromDate || '').slice(0, 10)
+    const toDate = String(payload.toDate || '').slice(0, 10)
+    const employeeId = String(payload.employeeId || '')
+    const reason = String(payload.reason || '').trim()
+    if (!['orders', 'attendance'].includes(dataType) || !state.stores.some((store) => String(store.id) === storeId)) {
+      return { ok: false, message: 'Loại dữ liệu hoặc cửa hàng chưa hợp lệ.' }
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/u.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/u.test(toDate) || fromDate > toDate) {
+      return { ok: false, message: 'Khoảng ngày khôi phục chưa hợp lệ.' }
+    }
+    if (!reason || reason.length > 500) return { ok: false, message: 'Lý do khôi phục phải có từ 1 đến 500 ký tự.' }
+    const commandPayload = { dataType, storeId, fromDate, toDate, ...(employeeId ? { employeeId } : {}), reason }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('operational_reset.restore', commandPayload)
+        const restoredCount = Number(result.reset?.restoredCount ?? result.restoredCount ?? 0)
+        notify(`Đã khôi phục ${restoredCount} bản ghi ${dataType === 'orders' ? 'đơn hàng' : 'chấm công'}.`)
+        return { ok: true, ...result }
+      } catch (error) {
+        notify(error.message || 'Không thể khôi phục dữ liệu vận hành.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const sourceAudits = dataType === 'orders'
+      ? state.orderAudit
+      : (state.attendanceAudit?.length ? state.attendanceAudit : state.auditLogs)
+    const entityNames = dataType === 'orders' ? new Set(['order', 'orders']) : new Set(['attendance'])
+    const latestByEntity = new Map()
+    sourceAudits.forEach((audit) => {
+      const before = audit.before
+      const scopedRecord = audit.after || before
+      const entity = String(audit.entity || (dataType === 'orders' ? 'order' : 'attendance'))
+      const entityId = String(audit.entityId || audit.orderId || audit.attendanceId || before?.id || '')
+      const recordDate = String(scopedRecord?.date || scopedRecord?.workDate || scopedRecord?.createdAt || audit.createdAt || '').slice(0, 10)
+      const recordStoreId = String(audit.storeId || scopedRecord?.storeId || '')
+      const recordEmployeeId = String(scopedRecord?.employeeId || audit.employeeId || '')
+      if (!before || audit.restoredAt || !isRestorableOperationalAuditAction(audit.action, dataType) || !entityId || !entityNames.has(entity) || recordStoreId !== storeId || recordDate < fromDate || recordDate > toDate || (employeeId && recordEmployeeId !== employeeId)) return
+      const previousAudit = latestByEntity.get(entityId)
+      if (!previousAudit || String(audit.createdAt || '') > String(previousAudit.createdAt || '')) latestByEntity.set(entityId, audit)
+    })
+    if (!latestByEntity.size) return { ok: false, message: 'Không có bản chỉnh sửa hoặc xóa nào phù hợp để khôi phục.' }
+    const collection = dataType === 'orders' ? 'orders' : 'attendance'
+    const restorableEntries = [...latestByEntity.entries()].filter(([entityId]) => (
+      (state[collection] || []).some((record) => String(record.id) === String(entityId))
+    ))
+    if (!restorableEntries.length) return { ok: false, message: 'Bản ghi gốc không còn tồn tại để khôi phục an toàn.' }
+    const restoredAt = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const restoredCount = restorableEntries.length
+    setState((current) => {
+      const currentRecords = Array.isArray(current[collection]) ? current[collection] : []
+      const restoredById = new Map(restorableEntries.flatMap(([entityId, audit]) => {
+        const currentRecord = currentRecords.find((record) => String(record.id) === String(entityId))
+        if (!currentRecord) return []
+        const restored = {
+          ...restoreOperationalRecordFields(currentRecord, audit.before, dataType),
+          restoredAt,
+          restoredBy: actor,
+          restoreReason: reason,
+          updatedAt: restoredAt,
+          updatedBy: actor,
+        }
+        return [[String(entityId), restored]]
+      }))
+      const sourceAuditIds = new Set(restorableEntries.map(([, audit]) => String(audit.id || '')).filter(Boolean))
+      const markedAudits = (items = []) => items.map((audit) => (
+        sourceAuditIds.has(String(audit.id || '')) ? { ...audit, restoredAt, restoredBy: actor } : audit
+      ))
+      const resetHistory = {
+        id: uid('OPR'),
+        ...commandPayload,
+        restoredCount,
+        restoredIds: [...restoredById.keys()],
+        createdAt: restoredAt,
+        createdBy: actor,
+      }
+      return {
+        ...current,
+        [collection]: currentRecords.map((record) => restoredById.get(String(record.id)) || record),
+        ...(dataType === 'orders' ? { orderAudit: markedAudits(current.orderAudit) } : { attendanceAudit: markedAudits(current.attendanceAudit) }),
+        operationalResetHistory: [resetHistory, ...(current.operationalResetHistory || [])],
+        auditLogs: [{ id: uid('AUD'), entity: 'operational-reset', entityId: `${dataType}:${storeId}`, action: 'Khôi phục', reason, details: { ...commandPayload, restoredCount }, actor, createdAt: restoredAt }, ...markedAudits(current.auditLogs)],
+        stateVersion: current.stateVersion + 1,
+      }
+    })
+    notify(`Đã khôi phục ${restoredCount} bản ghi ${dataType === 'orders' ? 'đơn hàng' : 'chấm công'}.`)
+    return { ok: true, restoredCount }
   }
 
   const addAttendanceRecord = (payload) => {
@@ -2298,9 +2430,9 @@ export function AppProvider({ children }) {
   }
 
   const updateAttendance = async (id, payload = {}) => {
-    if (state.session?.role !== 'admin') {
-      notify('Chỉ Admin được chỉnh sửa chấm công.', 'info')
-      return { ok: false, message: 'Chỉ Admin được chỉnh sửa chấm công.' }
+    if (!['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))) {
+      notify('Tài khoản không có quyền chỉnh sửa chấm công.', 'info')
+      return { ok: false, message: 'Tài khoản không có quyền chỉnh sửa chấm công.' }
     }
     const previous = state.attendance.find((record) => record.id === id)
     if (!previous) return { ok: false, message: 'Không tìm thấy bản ghi chấm công.' }
@@ -2360,8 +2492,29 @@ export function AppProvider({ children }) {
     next.minutesLate = minutesLate(checkIn, next.shiftStart)
     const timestamp = new Date().toISOString()
     const actor = actorSnapshot(state.session)
-    const audit = { id: uid('AUD'), entity: 'attendance', entityId: id, action: 'update', reason, before: previous, after: next, actor, createdAt: timestamp }
-    setState((current) => ({ ...current, attendance: current.attendance.map((record) => record.id === id ? next : record), auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
+    const changedFields = ATTENDANCE_CORRECTION_FIELDS.filter((field) => JSON.stringify(previous[field]) !== JSON.stringify(next[field]))
+    const audit = {
+      id: uid('ATA'),
+      entity: 'attendance',
+      entityId: id,
+      attendanceId: id,
+      storeId: previous.storeId,
+      employeeId: previous.employeeId,
+      action: 'Sửa',
+      changedFields,
+      reason,
+      before: previous,
+      after: next,
+      actor,
+      createdAt: timestamp,
+    }
+    setState((current) => ({
+      ...current,
+      attendance: current.attendance.map((record) => record.id === id ? next : record),
+      attendanceAudit: [audit, ...(current.attendanceAudit || [])],
+      auditLogs: [audit, ...current.auditLogs],
+      stateVersion: current.stateVersion + 1,
+    }))
     notify('Đã cập nhật chấm công và tính lại số giờ.')
     return { ok: true, attendance: next }
   }
@@ -2644,6 +2797,7 @@ export function AppProvider({ children }) {
     updateImportVoucher,
     deleteImportVoucher,
     saveSupportTransfer,
+    restoreOperationalData,
     addAttendanceRecord,
     updateAttendance,
     deleteAttendance,

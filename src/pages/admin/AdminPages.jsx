@@ -95,7 +95,7 @@ export function AdminOverview() {
       />
       <AdminMetrics stores={stores} />
       <div className="section-heading">
-        <div><h2>Quản lý cửa hàng</h2><p>Chọn cửa hàng để mở không gian quản lý độc lập.</p></div>
+        <div><h2>Danh sách cửa hàng</h2><p>Chọn cửa hàng để mở không gian quản lý độc lập.</p></div>
         <div className="section-heading__actions"><Badge tone="green">{activeStores.length} cửa hàng hoạt động</Badge><Button variant="ghost" onClick={() => navigate('/admin/stores')}>Xem tất cả</Button></div>
       </div>
       <div className="store-card-grid">
@@ -120,7 +120,7 @@ export function AdminOverview() {
 
 export function AdminStores() {
   const app = useApp()
-  const { stores, addStore, updateStore, deleteStore, setActiveStoreId, notify, session } = app
+  const { stores, employees = [], addStore, updateStore, deleteStore, setActiveStoreId, notify, session } = app
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
@@ -131,6 +131,14 @@ export function AdminStores() {
   const financeByStore = new Map(stores.map((store) => [store.id, financeSummaryFromState(app, { storeId: store.id })]))
   const revenue = [...financeByStore.values()].reduce((total, summary) => total + summary.revenue, 0)
   const expense = [...financeByStore.values()].reduce((total, summary) => total + summary.expense, 0)
+  const activeStoreEmployees = employees.filter((employee) => {
+    const status = String(employee.status || '').trim().toLowerCase()
+    return String(employee.unit || 'store') === 'store'
+      && !employee.deletedAt
+      && !['đã nghỉ việc', 'inactive', 'đã xóa'].includes(status)
+  })
+  const employeeCountByStore = activeStoreEmployees.reduce((counts, employee) => counts.set(employee.storeId, (counts.get(employee.storeId) || 0) + 1), new Map())
+  const storeEmployeeCount = activeStoreEmployees.length
   const canManageStoreDirectory = session?.role === 'admin'
   const canDeleteStore = session?.role === 'admin'
 
@@ -209,18 +217,18 @@ export function AdminStores() {
   return (
     <div className="page">
       <PageHeader
-        title="Quản lý cửa hàng"
+        title="Danh sách cửa hàng"
         subtitle="Quản lý thông tin cửa hàng, nhân sự và kết quả hoạt động của từng cửa hàng."
         actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
       />
-      {session?.role === 'business_support' && <InfoNote>Chế độ chỉ xem. Chỉ Admin được thêm, sửa, xóa hoặc thay đổi trạng thái cửa hàng.</InfoNote>}
+      {session?.role === 'business_support' && <InfoNote>Chọn tên cửa hàng để mở không gian vận hành. Hỗ trợ KD có thể quản lý đơn hàng, chấm công và dữ liệu vận hành trong từng cửa hàng.</InfoNote>}
       <div className="toolbar toolbar--right">
         <SearchInput value={query} onChange={setQuery} placeholder="Tìm kiếm cửa hàng..." />
         {canManageStoreDirectory && <Button icon={Plus} onClick={openCreate}>Thêm cửa hàng</Button>}
       </div>
       <div className="metric-grid metric-grid--five">
         <MetricCard label="Tổng số cửa hàng" value={stores.length} suffix="cửa hàng" icon={Store} tone="green" compact />
-        <MetricCard label="Tổng nhân viên" value={sum(stores, 'employees')} suffix="nhân viên" icon={Users} tone="green" compact />
+        <MetricCard label="Tổng nhân viên" value={storeEmployeeCount} suffix="nhân viên" icon={Users} tone="green" compact />
         <MetricCard label="Tổng doanh thu" value={money(revenue)} helper="Trong khoảng thời gian đã chọn" icon={BarChart3} tone="green" compact />
         <MetricCard label="Tổng chi phí" value={money(expense)} helper="Trong khoảng thời gian đã chọn" icon={Wallet} tone="orange" compact />
         <MetricCard label="Tổng lợi nhuận" value={money(revenue - expense)} helper="Trong khoảng thời gian đã chọn" icon={TrendingUp} tone="blue" compact />
@@ -234,9 +242,9 @@ export function AdminStores() {
               return (
               <tr key={store.id}>
                 <td>{index + 1}</td>
-                <td><div className="store-cell"><StoreIllustration name={store.name} accent={store.accent} /><strong>{store.name}</strong></div></td>
+                <td><div className="store-cell"><StoreIllustration name={store.name} accent={store.accent} /><button type="button" className="store-directory-link" onClick={() => manageStore(store)} aria-label={`Mở cửa hàng ${store.name}`}><strong>{store.name}</strong><small>Mở trang cửa hàng</small></button></div></td>
                 <td className="address-cell"><strong>{store.address || store.location}</strong>{store.address && store.location && <small className="table-note">{store.location}</small>}</td>
-                <td><strong className="green-text">{store.employees}</strong><small className="table-sub">nhân viên</small></td>
+                <td><strong className="green-text">{employeeCountByStore.get(store.id) || 0}</strong><small className="table-sub">nhân viên</small></td>
                 <td className="green-text"><strong>{money(storeFinance.revenue)}</strong></td>
                 <td className="orange-text"><strong>{money(storeFinance.expense)}</strong></td>
                 <td><strong>{money(storeFinance.profit)}</strong><small className="green-text table-sub">({storeFinance.marginPercent.toFixed(2)}%)</small></td>
@@ -258,12 +266,12 @@ export function AdminStores() {
         </form>
       </Modal>}
 
-      <Modal open={Boolean(viewingStore)} onClose={() => setViewingStore(null)} title="Chi tiết cửa hàng" footer={<><Button variant="outline" onClick={() => setViewingStore(null)}>Đóng</Button><Button onClick={() => viewingStore && manageStore(viewingStore)}>Quản lý cửa hàng</Button></>}>
+      <Modal open={Boolean(viewingStore)} onClose={() => setViewingStore(null)} title="Chi tiết cửa hàng" footer={<><Button variant="outline" onClick={() => setViewingStore(null)}>Đóng</Button><Button onClick={() => viewingStore && manageStore(viewingStore)}>MỞ TRANG CỬA HÀNG</Button></>}>
         {viewingStore && <div className="form-stack">
           <InfoNote><strong>{viewingStore.name}</strong><br />{viewingStore.address || viewingStore.location}</InfoNote>
           <div className="summary-list">
             <p><span>Mã cửa hàng</span><strong>{viewingStore.id}</strong></p>
-            <p><span>Nhân viên</span><strong>{viewingStore.employees || 0}</strong></p>
+            <p><span>Nhân viên</span><strong>{employeeCountByStore.get(viewingStore.id) || 0}</strong></p>
             <p><span>Doanh thu</span><strong>{money(financeByStore.get(viewingStore.id)?.revenue || 0)}</strong></p>
             <p><span>Chi phí</span><strong>{money(financeByStore.get(viewingStore.id)?.expense || 0)}</strong></p>
             <p className="total"><span>Lợi nhuận</span><strong>{money(financeByStore.get(viewingStore.id)?.profit || 0)}</strong></p>

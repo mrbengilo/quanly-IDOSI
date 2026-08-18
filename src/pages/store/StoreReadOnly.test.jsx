@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { today } from '../../utils'
@@ -208,5 +208,27 @@ describe('business-support store workspace permits only the required order contr
     renderPage(StoreOrdersPage)
     expect(screen.queryByRole('button', { name: /^Sửa$/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^Xóa$/i })).toBeNull()
+  })
+
+  it('persists store operating hours from the server response', async () => {
+    mocked.app.session = { role: 'admin', employeeId: 'ADMIN' }
+    mocked.app.updateStore.mockResolvedValue({
+      ok: true,
+      store: { ...store, opening: '09:00', openingTime: '09:00', closing: '21:30', closingTime: '21:30' },
+    })
+
+    renderPage(StoreSettings)
+    fireEvent.click(screen.getByRole('button', { name: /Giờ hoạt động/i }))
+    fireEvent.change(screen.getByLabelText(/Giờ mở cửa/i), { target: { value: '09:00' } })
+    fireEvent.change(screen.getByLabelText(/Giờ đóng cửa/i), { target: { value: '21:30' } })
+    fireEvent.click(screen.getByRole('button', { name: /Lưu thay đổi/i }))
+
+    await waitFor(() => expect(mocked.app.updateStore).toHaveBeenCalledWith(store.id, expect.objectContaining({
+      opening: '09:00',
+      openingTime: '09:00',
+      closing: '21:30',
+      closingTime: '21:30',
+    })))
+    expect((await screen.findByRole('status')).textContent).toMatch(/Đã đồng bộ lúc/i)
   })
 })

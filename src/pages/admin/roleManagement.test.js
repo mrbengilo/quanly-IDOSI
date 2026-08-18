@@ -266,6 +266,32 @@ describe('Business Support read-only system views', () => {
     expect(screen.getByText('Đang hoạt động')).toBeTruthy()
   })
 
+  it('derives store employee totals from active profiles and opens the selected store directly', () => {
+    const setActiveStoreId = vi.fn(() => true)
+    mocked.app = {
+      ...baseApp('business_support'),
+      stores: [{ id: 'CH001', name: 'SecondMall SM234', location: 'TP. HCM', address: '234 Phạm Văn Đồng', status: 'Đang hoạt động' }],
+      employees: [
+        { id: 'NV-001', unit: 'store', storeId: 'CH001', status: 'Đang làm việc' },
+        { id: 'NV-002', unit: 'store', storeId: 'CH001', status: 'Tạm ngưng' },
+        { id: 'NV-003', unit: 'store', storeId: 'CH001', status: 'Đã nghỉ việc' },
+        { id: 'NV-004', unit: 'store', storeId: 'CH001', status: 'Đang làm việc', deletedAt: '2026-08-18T00:00:00Z' },
+      ],
+      orders: [],
+      expenseEntries: [],
+      fixedExpenses: [],
+      importVouchers: [],
+      salaryAdjustments: [],
+      setActiveStoreId,
+    }
+
+    render(createElement(MemoryRouter, null, createElement(AdminStores)))
+
+    expect(screen.getByText('Tổng nhân viên').closest('.metric').textContent).toContain('2')
+    fireEvent.click(screen.getByRole('button', { name: /Mở cửa hàng SecondMall SM234/i }))
+    expect(setActiveStoreId).toHaveBeenCalledWith('CH001')
+  })
+
   it('can inspect store employees without status, password, or delete controls', () => {
     mocked.app = {
       ...baseApp('business_support'),
