@@ -11,6 +11,8 @@
     "build": "vite build && node scripts/prepare-sites.mjs",
     "sites:verify": "node scripts/verify-sites-build.mjs",
     "preview": "vite preview --host 0.0.0.0",
+    "vps:start": "node server/vps/server.mjs",
+    "vps:bootstrap": "node server/vps/bootstrap.mjs",
     "lint": "eslint .",
     "test": "vitest run"
   },

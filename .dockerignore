@@ -1,0 +1,12 @@
+.git
+.codex
+.agents
+node_modules
+dist
+.env
+.env.*
+!.env.example
+*.log
+*.tgz
+data
+deploy/vps/backups

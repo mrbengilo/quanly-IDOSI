@@ -1,0 +1,27 @@
+FROM node:24-bookworm-slim AS build
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY . .
+RUN npm run build
+
+FROM node:24-bookworm-slim AS runtime
+
+ENV NODE_ENV=production \
+    HOST=0.0.0.0 \
+    PORT=3000 \
+    IDOSI_DB_PATH=/app/data/idosi.sqlite \
+    IDOSI_IMAGES_DIR=/app/data/identity-images \
+    IDOSI_MIGRATIONS_DIR=/app/drizzle \
+    IDOSI_STATIC_DIR=/app/dist/client
+
+WORKDIR /app
+COPY --from=build /app/dist/client ./dist/client
+COPY --from=build /app/server ./server
+COPY --from=build /app/drizzle ./drizzle
+RUN mkdir -p /app/data && chown -R node:node /app
+
+USER node
+EXPOSE 3000
+CMD ["node", "server/vps/server.mjs"]
