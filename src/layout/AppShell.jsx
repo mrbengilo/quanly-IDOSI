@@ -156,7 +156,7 @@ export default function AppShell() {
       : null
   const sessionEmployeeId = String(session?.employeeId || session?.code || '')
   const unreadNotifications = notificationItems.filter((item) => {
-    const targetEmployeeId = String(item?.targetEmployeeId || item?.target?.employeeId || item?.data?.employeeId || (item?.type === 'support-work-assigned' ? item?.employeeId : '') || '')
+    const targetEmployeeId = String(item?.targetEmployeeId || item?.target?.employeeId || item?.data?.employeeId || (['support-work-assigned', 'store-task-assigned'].includes(item?.type) ? item?.employeeId : '') || '')
     const belongsToAccount = targetEmployeeId
       ? (!isAdmin && targetEmployeeId === sessionEmployeeId)
       : true
@@ -223,7 +223,9 @@ export default function AppShell() {
     const explicitDestination = requestedDestination === '/admin/support-employees'
       ? '/admin/business-support'
       : requestedDestination
-    const destination = assignmentId && (!explicitDestination || String(explicitDestination).startsWith('/support/tasks'))
+    const destination = item?.type === 'store-task-assigned'
+      ? `/employee/home?assignment=${encodeURIComponent(assignmentId || '')}`
+      : assignmentId && (!explicitDestination || String(explicitDestination).startsWith('/support/tasks'))
       ? `/support/tasks?assignment=${encodeURIComponent(assignmentId)}`
       : explicitDestination
       || (orderId ? `${ordersPath}?order=${encodeURIComponent(orderId)}` : ordersPath)
@@ -253,7 +255,9 @@ export default function AppShell() {
       <aside className={`sidebar ${mobileOpen ? 'sidebar--open' : ''}`}>
         <button className="sidebar__close" onClick={() => setMobileOpen(false)} aria-label="Đóng menu"><X size={20} /></button>
         <div className="sidebar__brand">
-          {isEmployee ? <Brand /> : isStoreWorkspace ? (
+          {isEmployee && !isOfficeEmployee ? (
+            <div className="store-logo"><img src="/favicon.png" alt="Logo IDOSI" /><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>Nhân viên cửa hàng</small></div></div>
+          ) : isEmployee ? <Brand /> : isStoreWorkspace ? (
             <div className="store-logo"><img src="/favicon.png" alt="Logo IDOSI" /><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>{systemRoleLabel}</small></div></div>
           ) : <Brand subtitle={isBusinessSupport ? 'Hỗ trợ KD' : 'Quản lý toàn hệ thống'} />}
         </div>

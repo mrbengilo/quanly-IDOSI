@@ -57,7 +57,7 @@ describe('Business Support staff and policy permissions', () => {
     })).toBe('ASSIGNED-STORE')
   })
 
-  it('keeps an explicit local reset empty after reload while retaining every Admin account', () => {
+  it('keeps an explicit local reset empty after reload while retaining only the current Admin account', () => {
     const initial = createInitialState()
     const secondAdmin = { ...initial.adminAccounts[0], id: 'ADMIN-2', code: 'ADMIN-2', username: 'admin-2' }
     const current = {
@@ -77,7 +77,7 @@ describe('Business Support staff and policy permissions', () => {
     expect(resetState.orderCounters).toEqual({})
     expect(resetState.importCounter).toBe(0)
     expect(resetState.systemResetCompletedAt).toBeTruthy()
-    expect(resetState.adminAccounts.map((account) => account.username)).toEqual(['admin', 'admin-2'])
+    expect(resetState.adminAccounts.map((account) => account.username)).toEqual(['admin'])
     expect(resetState.session?.username).toBe('admin')
 
     const reloaded = hydrateState({ ...resetState, session: null })
@@ -86,6 +86,6 @@ describe('Business Support staff and policy permissions', () => {
     expect(reloaded.orders).toEqual([])
     expect(reloaded.shiftDefinitions).toEqual([])
     expect(reloaded.activeStoreId).toBeNull()
-    expect(reloaded.adminAccounts.map((account) => account.username)).toEqual(['admin', 'admin-2'])
+    expect(reloaded.adminAccounts.map((account) => account.username)).toEqual(['admin'])
   })
 })

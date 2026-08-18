@@ -1,19 +1,16 @@
 import { useEffect, useState } from 'react'
 import {
-  Banknote,
   CalendarDays,
   Clock3,
   Edit3,
   Eye,
   EyeOff,
-  Gift,
   History,
   Plus,
   Save,
   Trash2,
   UserCheck,
   Users,
-  Wallet,
 } from 'lucide-react'
 import {
   Avatar,
@@ -34,14 +31,13 @@ import {
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
-import { formatMoneyInput, money, parseMoneyInput, shortDate, today } from '../../utils'
+import { shortDate, today } from '../../utils'
+import { officeLocationLabel } from '../employee/officeAttendance'
 import {
-  officeAdjustmentTotals,
-  officeLocationLabel,
-  officePayrollSummary,
-  officeSalaryAdjustments,
-} from '../employee/officeAttendance'
-import { submitOfficeSalaryAdjustment } from './officeSalaryAdjustment'
+  officeAttendanceStatsByEmployee,
+  officeAttendanceSummary,
+  officeAttendanceViewRows,
+} from './officeAttendanceView'
 import {
   nextOfficeEmployeeCodeFromState,
   OFFICE_EMPLOYEE_TYPES,
@@ -67,13 +63,6 @@ const emptyEmployee = {
   identityImages: { front: '', back: '' },
   username: '',
   password: '',
-}
-
-const emptyAdjustment = {
-  date: today(),
-  employeeId: '',
-  amount: '',
-  content: '',
 }
 
 const normalizeText = (value = '') => String(value).trim().toLowerCase()
@@ -137,49 +126,20 @@ const employeeStatusTone = (status) => {
   return 'orange'
 }
 
-const recordDate = (record = {}) => record.date || record.workDate || record.attendanceDate || String(record.checkInAt || '').slice(0, 10)
-const recordEmployeeId = (record = {}) => record.employeeId || record.staffId || record.userId || ''
-const checkInTime = (record = {}) => record.checkIn || record.checkInTime || String(record.checkInAt || '').slice(11, 19)
-const checkOutTime = (record = {}) => record.checkOut || record.checkOutTime || String(record.checkOutAt || '').slice(11, 19)
-
-const minutesFromTime = (value = '') => {
-  const [hours, minutes] = String(value).slice(0, 5).split(':').map(Number)
-  return Number.isFinite(hours) && Number.isFinite(minutes) ? hours * 60 + minutes : null
+const recordEmployeeId = (record = {}) => record.employeeId || record.employeeCode || record.staffId || record.userId || ''
+const attendanceTone = (label, departure = false) => {
+  const source = normalizeText(label)
+  if (source.includes('đúng') || source.includes('đã ra về')) return 'green'
+  if (source.includes('sớm')) return departure ? 'orange' : 'blue'
+  if (source.includes('trễ') || source.includes('muộn')) return 'orange'
+  return 'blue'
 }
 
-const attendanceLabel = (record, employee) => {
-  const source = normalizeText(record.status || record.punctuality)
-  if (source.includes('sớm') || source.includes('som') || source.includes('early')) return 'Đi sớm'
-  if (source.includes('trễ') || source.includes('tre') || source.includes('muộn') || source.includes('late')) return 'Đi trễ'
-  if (source.includes('đúng') || source.includes('dung') || source.includes('on time')) return 'Đúng giờ'
-
-  const actual = minutesFromTime(checkInTime(record))
-  const expected = minutesFromTime(record.shiftStart || record.startTime || employee?.workStart || '08:00')
-  if (actual == null || expected == null) return 'Chưa xác định'
-  const difference = actual - expected
-  if (difference < -5) return 'Đi sớm'
-  if (difference <= 5) return 'Đúng giờ'
-  return 'Đi trễ'
+const attendanceEvaluationTone = (value) => {
+  if (value === 'Chuyên cần tốt') return 'green'
+  if (value === 'Cần cải thiện') return 'red'
+  return 'orange'
 }
-
-const attendanceTone = (label) => {
-  if (label === 'Đi sớm') return 'blue'
-  if (label === 'Đúng giờ') return 'green'
-  if (label === 'Đi trễ') return 'orange'
-  return 'red'
-}
-
-const hoursWorked = (record) => {
-  if (Number.isFinite(Number(record.hours))) return Number(record.hours)
-  const start = minutesFromTime(checkInTime(record))
-  const end = minutesFromTime(checkOutTime(record))
-  if (start == null || end == null) return 0
-  const minutes = end >= start ? end - start : end + 24 * 60 - start
-  return Math.max(0, minutes / 60)
-}
-
-const adjustmentEmployeeId = (adjustment = {}) => adjustment.employeeId || adjustment.staffId || ''
-const adjustmentDate = (adjustment = {}) => adjustment.date || adjustment.createdDate || String(adjustment.createdAt || '').slice(0, 10)
 
 const shortYearDate = (value) => {
   if (!value) return '—'
@@ -206,9 +166,7 @@ export function OfficeManagement() {
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
   const deletedEmployees = Array.isArray(app.deletedEmployees) ? app.deletedEmployees : []
   const allAttendance = Array.isArray(app.attendance) ? app.attendance : []
-  const salaryAdjustments = Array.isArray(app.salaryAdjustments) ? app.salaryAdjustments : []
-  const legacyOfficeAdjustments = Array.isArray(app.officeAdjustments) ? app.officeAdjustments : []
-  const { addEmployee, updateEmployee, deleteEmployee, addSalaryAdjustment, notify } = app
+  const { addEmployee, updateEmployee, deleteEmployee, notify } = app
   const officeEmployees = allEmployees.filter(isOfficeEmployee)
   const officeEmployeeIds = new Set(officeEmployees.flatMap((employee) => [String(employee.id || ''), String(employeeCode(employee))]).filter(Boolean))
   const officeAttendance = allAttendance.filter((record) => officeEmployeeIds.has(String(recordEmployeeId(record))) || isOfficeValue(record.department || record.unitType))
@@ -225,15 +183,12 @@ export function OfficeManagement() {
   const [imageBusy, setImageBusy] = useState('')
   const [viewingImage, setViewingImage] = useState(null)
   const [viewingSide, setViewingSide] = useState('')
+  const [attendanceFrom, setAttendanceFrom] = useState('')
+  const [attendanceTo, setAttendanceTo] = useState('')
+  const [attendanceEmployeeId, setAttendanceEmployeeId] = useState('all')
   const editingRequiresPassword = Boolean(editingEmployee) && !(
     editingEmployee.authUserId || editingEmployee.authVersion || editingEmployee.passwordHash || editingEmployee.legacyPassword
   )
-  const [adjustmentModal, setAdjustmentModal] = useState(false)
-  const [adjustmentType, setAdjustmentType] = useState('Thưởng')
-  const [adjustmentForm, setAdjustmentForm] = useState(emptyAdjustment)
-  const [adjustmentErrors, setAdjustmentErrors] = useState([])
-  const [adjustmentSaving, setAdjustmentSaving] = useState(false)
-  const [payrollMonth, setPayrollMonth] = useState(today().slice(0, 7))
   const canManageOffice = app.session?.role === 'admin'
   const canCreateOffice = ['admin', 'business_support', 'manager'].includes(app.session?.role)
 
@@ -244,27 +199,25 @@ export function OfficeManagement() {
     }
   }, [viewingImage?.url])
 
-  const employeeById = (id) => officeEmployees.find((employee) => String(employee.id) === String(id) || String(employeeCode(employee)) === String(id))
   const normalizedQuery = normalizeText(query)
   const filteredEmployees = officeEmployees.filter((employee) => {
     const haystack = [employeeCode(employee), employee.name, employee.cccd, employee.phone, employee.position, employee.workPosition, employee.role, addressLabel(employee)].join(' ').toLowerCase()
     return (!normalizedQuery || haystack.includes(normalizedQuery)) && (statusFilter === 'all' || employee.status === statusFilter)
   })
-  const monthAttendance = officeAttendance.filter((record) => !payrollMonth || recordDate(record).startsWith(payrollMonth))
-  const monthAdjustments = officeEmployees.flatMap((employee) => officeSalaryAdjustments({
-    salaryAdjustments,
-    legacyAdjustments: legacyOfficeAdjustments,
-    employeeId: String(employee.id || employeeCode(employee)),
-    period: payrollMonth,
-  })).toSorted((left, right) => String(right.createdAt || right.date || '').localeCompare(String(left.createdAt || left.date || '')))
-  const closedPayrollPeriod = (Array.isArray(app.payrollPeriods) ? app.payrollPeriods : []).find((item) => (
-    String(item.storeId || '') === 'OFFICE'
-    && String(item.period || '') === payrollMonth
-    && !item.needsReclose
-  ))
-  const attendanceRows = officeAttendance.map((record) => {
-    const employee = employeeById(recordEmployeeId(record))
-    return { record, employee, label: attendanceLabel(record, employee) }
+  const attendanceRows = officeAttendanceViewRows({
+    records: officeAttendance,
+    employees: officeEmployees,
+    fromDate: attendanceFrom,
+    toDate: attendanceTo,
+    employeeId: attendanceEmployeeId,
+  })
+  const attendanceEvaluation = app.policies?.attendanceEvaluation || {}
+  const attendanceSummary = officeAttendanceSummary(attendanceRows, attendanceEvaluation)
+  const attendanceStats = officeAttendanceStatsByEmployee({
+    rows: attendanceRows,
+    employees: officeEmployees,
+    evaluation: attendanceEvaluation,
+    employeeId: attendanceEmployeeId,
   })
 
   const openEmployeeCreate = () => {
@@ -418,52 +371,9 @@ export function OfficeManagement() {
     setPendingDelete(null)
   }
 
-  const openAdjustment = (type) => {
-    setAdjustmentType(type)
-    setAdjustmentErrors([])
-    setAdjustmentSaving(false)
-    setAdjustmentForm({ ...emptyAdjustment, employeeId: officeEmployees[0]?.id || employeeCode(officeEmployees[0]) || '' })
-    setAdjustmentModal(true)
-  }
-
-  const saveAdjustment = async (event) => {
-    event?.preventDefault()
-    if (!canManageOffice || adjustmentSaving) return
-    const errors = []
-    if (!adjustmentForm.date) errors.push('Vui lòng chọn ngày.')
-    if (!adjustmentForm.employeeId) errors.push('Vui lòng chọn nhân viên.')
-    if (parseMoneyInput(adjustmentForm.amount) <= 0) errors.push('Số tiền phải lớn hơn 0.')
-    if (!adjustmentForm.content.trim()) errors.push('Vui lòng nhập nội dung.')
-    if (errors.length) {
-      setAdjustmentErrors(errors)
-      return
-    }
-    setAdjustmentSaving(true)
-    try {
-      const result = await submitOfficeSalaryAdjustment({
-        addSalaryAdjustment,
-        form: adjustmentForm,
-        type: adjustmentType,
-      })
-      if (!result?.ok) {
-        setAdjustmentErrors([result?.message || 'Không thể lưu khoản lương thưởng.'])
-        return
-      }
-      setAdjustmentModal(false)
-    } catch (error) {
-      setAdjustmentErrors([error?.message || 'Không thể lưu khoản lương thưởng.'])
-      notify?.(error?.message || 'Không thể lưu khoản lương thưởng.', 'info')
-    } finally {
-      setAdjustmentSaving(false)
-    }
-  }
-
   const activeCount = officeEmployees.filter((employee) => employee.status === 'Đang làm việc').length
   const pausedCount = officeEmployees.filter((employee) => employee.status === 'Tạm ngưng' || employee.status === 'Tạm nghỉ').length
   const resignedCount = officeEmployees.filter((employee) => employee.status === 'Đã nghỉ việc').length
-  const earlyCount = attendanceRows.filter((row) => row.label === 'Đi sớm').length
-  const onTimeCount = attendanceRows.filter((row) => row.label === 'Đúng giờ').length
-  const lateCount = attendanceRows.filter((row) => row.label === 'Đi trễ').length
 
   if (app.session?.role === 'store_manager') {
     return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản Quản lý không được truy cập Khối văn phòng." icon={Users} /></div>
@@ -473,16 +383,14 @@ export function OfficeManagement() {
     <div className="page">
       <PageHeader
         title="KHỐI VĂN PHÒNG"
-        subtitle="Quản lý nhân sự, chấm công, thưởng, phụ cấp và lương văn phòng."
+        subtitle="Thông tin nhân viên, lịch sử chấm công và đánh giá mức độ chuyên cần."
         icon={Users}
-        actions={canManageOffice ? <><Button variant="outline" icon={Gift} onClick={() => openAdjustment('Thưởng')}>Tạo thưởng</Button><Button icon={Wallet} onClick={() => openAdjustment('Phụ cấp')}>Tạo phụ cấp</Button></> : null}
       />
-      {!canManageOffice && <InfoNote>{canCreateOffice ? 'Nhân viên Hỗ trợ KD được thêm nhân viên văn phòng; chỉ Admin được sửa, xóa hồ sơ hoặc tạo khoản lương thưởng.' : 'Chế độ chỉ xem. Chỉ Admin được sửa, xóa nhân viên hoặc tạo khoản lương thưởng.'}</InfoNote>}
+      {!canManageOffice && <InfoNote>{canCreateOffice ? 'Nhân viên Hỗ trợ KD được thêm nhân viên văn phòng; chỉ Admin được sửa hoặc xóa hồ sơ.' : 'Chế độ chỉ xem. Chỉ Admin được sửa hoặc xóa nhân viên.'}</InfoNote>}
 
       <div className="tabs">
         <button className={tab === 'employees' ? 'active' : ''} onClick={() => setTab('employees')}><Users />Nhân viên</button>
-        <button className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button>
-        <button className={tab === 'payroll' ? 'active' : ''} onClick={() => setTab('payroll')}><Banknote />Thống kê lương</button>
+        <button className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công &amp; chuyên cần</button>
       </div>
 
       {tab === 'employees' && <>
@@ -517,48 +425,40 @@ export function OfficeManagement() {
       </>}
 
       {tab === 'attendance' && <>
-        <div className="metric-grid metric-grid--four">
-          <MetricCard label="Lượt điểm danh" value={attendanceRows.length} suffix="lượt" icon={History} tone="blue" compact />
-          <MetricCard label="Đi sớm" value={earlyCount} suffix="lượt" icon={Clock3} tone="blue" compact />
-          <MetricCard label="Đúng giờ" value={onTimeCount} suffix="lượt" icon={UserCheck} tone="green" compact />
-          <MetricCard label="Đi trễ" value={lateCount} suffix="lượt" icon={Clock3} tone="orange" compact />
+        <Card title="Bộ lọc chấm công" className="filter-card">
+          <div className="filter-grid filter-grid--four">
+            <Field label="Từ ngày"><Input type="date" value={attendanceFrom} onChange={(event) => setAttendanceFrom(event.target.value)} aria-label="Từ ngày chấm công" /></Field>
+            <Field label="Đến ngày"><Input type="date" value={attendanceTo} onChange={(event) => setAttendanceTo(event.target.value)} aria-label="Đến ngày chấm công" /></Field>
+            <Field label="Nhân viên"><Select value={attendanceEmployeeId} onChange={(event) => setAttendanceEmployeeId(event.target.value)} aria-label="Lọc nhân viên chấm công"><option value="all">Tất cả nhân viên</option>{officeEmployees.map((employee) => <option key={employee.id || employeeCode(employee)} value={employee.id || employeeCode(employee)}>{employeeCode(employee)} — {employee.name}</option>)}</Select></Field>
+            <Button variant="outline" onClick={() => { setAttendanceFrom(''); setAttendanceTo(''); setAttendanceEmployeeId('all') }}>Đặt lại bộ lọc</Button>
+          </div>
+          <InfoNote>Thống kê và đánh giá bên dưới luôn áp dụng đồng thời khoảng thời gian và nhân viên đã chọn.</InfoNote>
+        </Card>
+        <div className="metric-grid metric-grid--six">
+          <MetricCard label="Lượt điểm danh" value={attendanceSummary.total} suffix="lượt" icon={History} tone="blue" compact />
+          <MetricCard label="Đi sớm" value={attendanceSummary.early} suffix="lượt" icon={Clock3} tone="blue" compact />
+          <MetricCard label="Đúng giờ" value={attendanceSummary.onTime} suffix="lượt" icon={UserCheck} tone="green" compact />
+          <MetricCard label="Đi trễ" value={attendanceSummary.late} suffix="lượt" icon={Clock3} tone="orange" compact />
+          <MetricCard label="Tổng phút đi sớm" value={attendanceSummary.earlyMinutes} suffix="phút" icon={Clock3} tone="blue" compact />
+          <MetricCard label="Tổng phút đi trễ" value={attendanceSummary.lateMinutes} suffix="phút" icon={Clock3} tone="red" compact />
         </div>
-        <Card title="Lịch sử điểm danh">
+        <Card title="Lịch sử chấm công">
           <TableWrap>
-            <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Vị trí công việc</th><th>Giờ vào</th><th>Giờ ra</th><th>Số giờ</th><th>Trạng thái</th><th>Vị trí điểm danh</th></tr></thead>
+            <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca làm việc</th><th>Điểm danh vào</th><th>Ra về</th><th>Số giờ</th><th>Tags / Chênh lệch</th></tr></thead>
             <tbody>
-              {attendanceRows.map(({ record, employee, label }, index) => <tr key={record.id || `${recordEmployeeId(record)}-${recordDate(record)}-${index}`}><td><strong>{shortDate(recordDate(record))}</strong></td><td><div className="person-cell"><Avatar name={employee?.name || record.employeeName || 'NV'} color={employee?.color} /><span><strong>{employee?.name || record.employeeName || recordEmployeeId(record)}</strong><small>{employeeCode(employee)}</small></span></div></td><td>{employee?.position || employee?.workPosition || employee?.role || '—'}</td><td className="green-text"><strong>{checkInTime(record) || '—'}</strong></td><td><strong>{checkOutTime(record) || '—'}</strong></td><td>{hoursWorked(record).toFixed(2)} giờ</td><td><Badge tone={attendanceTone(label)}>{label}</Badge></td><td className="address-cell">{officeLocationLabel(record.locationName || record.checkInLocation || record.location || record.address)}</td></tr>)}
-              {!attendanceRows.length && <tr><td colSpan="8">Chưa có lịch sử điểm danh của khối văn phòng.</td></tr>}
+              {attendanceRows.map((row) => <tr key={row.id}><td><strong>{shortDate(row.date)}</strong></td><td><div className="person-cell"><Avatar name={row.employee?.name || row.record.employeeName || 'NV'} color={row.employee?.color} /><span><strong>{row.employee?.name || row.record.employeeName || row.employeeId}</strong><small>{employeeCode(row.employee) || row.employeeId} · {row.employee?.position || row.employee?.workPosition || row.employee?.role || 'Nhân viên văn phòng'}</small></span></div></td><td><strong>{row.shiftName}</strong><span className="table-sub">{row.shiftStart || '--:--'}–{row.shiftEnd || '--:--'}</span></td><td><strong>{row.checkIn || '—'}</strong><span className="table-sub">{officeLocationLabel(row.checkInLocation)}</span></td><td><strong>{row.checkOut || 'Chưa ra về'}</strong><span className="table-sub">{officeLocationLabel(row.checkOutLocation)}</span></td><td>{row.workedHours.toFixed(2)} giờ</td><td><Badge tone={attendanceTone(row.arrivalStatus)}>{row.arrivalStatus}</Badge> <Badge tone={attendanceTone(row.departureStatus, true)}>{row.departureStatus}</Badge><span className="table-sub">Sớm {row.earlyMinutes} phút · Trễ {row.lateMinutes} phút</span></td></tr>)}
+              {!attendanceRows.length && <tr><td colSpan="7">Chưa có lịch sử chấm công phù hợp bộ lọc.</td></tr>}
             </tbody>
           </TableWrap>
           <TableFooter shown={attendanceRows.length} total={attendanceRows.length} />
         </Card>
-      </>}
-
-      {tab === 'payroll' && <>
-        <Card className="filter-card"><div className="filter-grid"><Field label="Tháng thống kê"><Input type="month" value={payrollMonth} onChange={(event) => setPayrollMonth(event.target.value)} /></Field><InfoNote>Ngày công chỉ được tính khi nhân viên đã ghi nhận ra về. Kỳ đã chốt ưu tiên bản lương trên máy chủ.</InfoNote></div></Card>
-        <Card title="Thống kê ngày công và lương">
+        <Card title="Thống kê và đánh giá chuyên cần theo nhân viên">
           <TableWrap>
-            <thead><tr><th>Nhân viên</th><th>Vị trí</th><th>Ngày thực tế / quy định</th><th>Lương tháng</th><th>Lương theo công</th><th>Thưởng</th><th>Phụ cấp</th><th>Khấu trừ</th><th>Tổng nhận</th></tr></thead>
+            <thead><tr><th>Nhân viên</th><th>Tổng lượt</th><th>Đi sớm</th><th>Đúng giờ</th><th>Đi trễ</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tỷ lệ không trễ</th><th>Đánh giá</th></tr></thead>
             <tbody>
-              {officeEmployees.map((employee) => {
-                const id = employee.id || employeeCode(employee)
-                const employeeAttendance = monthAttendance.filter((record) => String(recordEmployeeId(record)) === String(id) || String(recordEmployeeId(record)) === String(employeeCode(employee)))
-                const employeeAdjustments = monthAdjustments.filter((item) => String(adjustmentEmployeeId(item)) === String(id) || String(adjustmentEmployeeId(item)) === String(employeeCode(employee)))
-                const payrollRow = (Array.isArray(closedPayrollPeriod?.rows) ? closedPayrollPeriod.rows : []).find((row) => String(row.employeeId || row.employeeCode || '') === String(id))
-                const summary = officePayrollSummary({ records: employeeAttendance, employee, period: payrollMonth, historical: payrollMonth < today().slice(0, 7), payrollRow })
-                const adjustmentTotals = officeAdjustmentTotals(employeeAdjustments)
-                const total = summary.authoritative ? summary.gross : Math.max(0, summary.basePay + adjustmentTotals.net)
-                return <tr key={id}><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employeeCode(employee)}</small></span></div></td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><strong>{summary.actualDays} / {summary.requiredDays} ngày</strong></td><td>{money(summary.monthlySalary)}</td><td>{money(summary.basePay)}</td><td className="green-text">{money(adjustmentTotals.bonus)}</td><td className="orange-text">{money(adjustmentTotals.allowance)}</td><td className="red-text">{money(adjustmentTotals.deduction)}</td><td className="green-text"><strong>{money(total)}</strong>{summary.authoritative && <small className="table-note">Số liệu đã chốt</small>}</td></tr>
-              })}
-              {!officeEmployees.length && <tr><td colSpan="9">Chưa có dữ liệu lương nhân viên văn phòng.</td></tr>}
+              {attendanceStats.map((item) => <tr key={item.employee.id || employeeCode(item.employee)}><td><div className="person-cell"><Avatar name={item.employee.name} color={item.employee.color} /><span><strong>{item.employee.name}</strong><small>{employeeCode(item.employee)} · {item.employee.position || item.employee.workPosition || item.employee.role || 'Nhân viên văn phòng'}</small></span></div></td><td>{item.total}</td><td className="blue-text">{item.early}</td><td className="green-text">{item.onTime}</td><td className="orange-text">{item.late}</td><td>{item.earlyMinutes} phút</td><td>{item.lateMinutes} phút</td><td><strong>{item.onTimeRate.toFixed(1)}%</strong></td><td><Badge tone={attendanceEvaluationTone(item.rating)}>{item.rating}</Badge></td></tr>)}
+              {!attendanceStats.length && <tr><td colSpan="9">Chưa có nhân viên phù hợp bộ lọc để đánh giá.</td></tr>}
             </tbody>
-          </TableWrap>
-        </Card>
-        <Card title="Lịch sử thưởng và phụ cấp">
-          <TableWrap>
-            <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Loại</th><th>Số tiền</th><th>Nội dung</th></tr></thead>
-            <tbody>{monthAdjustments.map((item, index) => <tr key={item.id || index}><td>{shortDate(adjustmentDate(item))}</td><td><strong>{employeeById(adjustmentEmployeeId(item))?.name || item.employeeName || adjustmentEmployeeId(item)}</strong></td><td><Badge tone={item.type === 'Thưởng khác' ? 'green' : item.type === 'Khấu trừ' ? 'red' : 'orange'}>{item.type}</Badge></td><td><strong>{money(item.amount)}</strong></td><td className="address-cell">{item.note || '—'}{item.source === 'legacy-office-adjustment' && <small className="table-note">Dữ liệu cũ</small>}</td></tr>)}{!monthAdjustments.length && <tr><td colSpan="5">Chưa có khoản thưởng hoặc phụ cấp trong tháng.</td></tr>}</tbody>
           </TableWrap>
         </Card>
       </>}
@@ -616,27 +516,12 @@ export function OfficeManagement() {
       </Modal>
 
       <Modal
-        open={adjustmentModal}
-        onClose={() => setAdjustmentModal(false)}
-        title={`Tạo ${adjustmentType.toLowerCase()}`}
-        footer={<><Button variant="outline" disabled={adjustmentSaving} onClick={() => setAdjustmentModal(false)}>Hủy</Button><Button icon={Save} loading={adjustmentSaving} disabled={adjustmentSaving} onClick={saveAdjustment}>LƯU</Button></>}
-      >
-        <form className="form-stack" onSubmit={saveAdjustment}>
-          {adjustmentErrors.length > 0 && <InfoNote tone="orange"><ul>{adjustmentErrors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
-          <Field label="Ngày" required><Input icon={CalendarDays} type="date" value={adjustmentForm.date} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, date: event.target.value })} /></Field>
-          <Field label="Nhân viên" required><Select value={adjustmentForm.employeeId} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, employeeId: event.target.value })}><option value="">Chọn nhân viên</option>{officeEmployees.filter((employee) => employee.status !== 'Đã nghỉ việc').map((employee) => <option key={employee.id || employeeCode(employee)} value={employee.id || employeeCode(employee)}>{employeeCode(employee)} — {employee.name}</option>)}</Select></Field>
-          <Field label="Số tiền" required><Input inputMode="numeric" value={adjustmentForm.amount} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, amount: formatMoneyInput(event.target.value) })} placeholder="2,000" /></Field>
-          <Field label="Nội dung" required><textarea value={adjustmentForm.content} onChange={(event) => setAdjustmentForm({ ...adjustmentForm, content: event.target.value })} placeholder={`Nhập nội dung ${adjustmentType.toLowerCase()}`} /></Field>
-        </form>
-      </Modal>
-
-      <Modal
         open={Boolean(pendingDelete)}
         onClose={() => setPendingDelete(null)}
         title="Xóa nhân viên văn phòng"
         footer={<><Button variant="outline" onClick={() => setPendingDelete(null)}>Hủy</Button><Button onClick={confirmDelete}>Xóa nhân viên</Button></>}
       >
-        <InfoNote tone="orange">Bạn sắp xóa hồ sơ của <strong>{pendingDelete?.name}</strong>. Nên chuyển trạng thái sang “Đã nghỉ việc” nếu cần giữ lịch sử chấm công và lương.</InfoNote>
+        <InfoNote tone="orange">Bạn sắp xóa hồ sơ của <strong>{pendingDelete?.name}</strong>. Nên chuyển trạng thái sang “Đã nghỉ việc” nếu cần giữ lịch sử chấm công.</InfoNote>
       </Modal>
     </div>
   )

@@ -107,7 +107,7 @@ const makeApp = () => {
 
 const renderPage = (Page) => render(<MemoryRouter><Page /></MemoryRouter>)
 
-describe('business-support store workspace permits only the required order controls', () => {
+describe('business-support store workspace permissions', () => {
   beforeEach(() => {
     mocked.app = makeApp()
   })
@@ -129,22 +129,23 @@ describe('business-support store workspace permits only the required order contr
     expect(screen.getByLabelText('Mặt sau CCCD')).toBeTruthy()
   })
 
-  it('shows assigned work and schedules without editors', () => {
+  it('lets Business Support assign store work and manage schedules', () => {
     const taskView = renderPage(StoreTasks)
-    expect(screen.getByText('Kiểm kê quầy')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Lưu và gửi/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Thêm công việc/i })).toBeNull()
+    expect(screen.getByText(/Kiểm kê quầy/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^GỬI$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Thêm công việc/i })).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`)).toBeTruthy()
     taskView.unmount()
 
     renderPage(UnifiedSchedule)
     expect(screen.getAllByText('Ca sáng').length).toBeGreaterThan(0)
-    expect(screen.queryByRole('button', { name: /Tạo ca/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Sửa Ca sáng/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Xóa Ca sáng/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^LƯU$/i })).toBeNull()
+    expect(screen.getAllByRole('button', { name: /Tạo ca/i }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /Sửa Ca sáng/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Xóa Ca sáng/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^LƯU$/i })).toBeTruthy()
   })
 
-  it('allows order correction while keeping cashflow and payroll mutations read-only', () => {
+  it('allows order correction, cashflow, and payroll operations', () => {
     const orderView = renderPage(StoreOrdersPage)
     expect(screen.getByText('DH-001')).toBeTruthy()
     expect(screen.getAllByRole('button', { name: /^Sửa$/i }).length).toBeGreaterThan(0)
@@ -153,33 +154,32 @@ describe('business-support store workspace permits only the required order contr
 
     const cashflowView = renderPage(StoreCashflowV2)
     expect(screen.getByRole('heading', { name: 'DÒNG TIỀN CỬA HÀNG' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /NHẬP CHI PHÍ CỐ ĐỊNH/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /NHẬP CHI PHÍ CỐ ĐỊNH/i })).toBeTruthy()
     cashflowView.unmount()
 
     renderPage(StorePayrollV2)
     expect(screen.getAllByText(employee.name).length).toBeGreaterThan(0)
-    expect(screen.queryByRole('button', { name: /TẠO THƯỞNG/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /TẠO ỨNG LƯƠNG/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /XÁC NHẬN CHI/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /CHỐT SỔ/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /TẠO THƯỞNG/i })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /TẠO ỨNG LƯƠNG/i }).length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: /^XÁC NHẬN CHI$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^CHỐT SỔ$/i })).toBeTruthy()
   })
 
-  it('shows import history without voucher mutation controls', () => {
+  it('allows voucher mutations from import history', () => {
     renderPage(StoreImportsV2)
 
     expect(screen.getByText('Hàng mẫu')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /THÊM PHIẾU NHẬP/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Sửa PN-/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Xóa PN-/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /THÊM PHIẾU NHẬP/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Sửa PN-/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Xóa PN-/i })).toBeTruthy()
   })
 
-  it('shows store settings as read-only', () => {
+  it('allows Business Support to update store settings', () => {
     renderPage(StoreSettings)
 
     const nameInput = screen.getByDisplayValue(store.name)
-    expect(nameInput.readOnly).toBe(true)
-    expect(screen.queryByRole('button', { name: /Lưu thay đổi/i })).toBeNull()
-    expect(screen.getByText(/không thể thay đổi cài đặt cửa hàng/i)).toBeTruthy()
+    expect(nameInput.readOnly).toBe(false)
+    expect(screen.getByRole('button', { name: /Lưu thay đổi/i })).toBeTruthy()
   })
 
   it('never invokes a store mutation while rendering read-only views', () => {

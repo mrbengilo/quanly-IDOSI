@@ -1120,6 +1120,9 @@ describe('IDOSI Worker security primitives', () => {
       payload: {
         storeId: 'S01',
         customerName: 'Khách hàng mới',
+        gender: 'Nữ',
+        occupation: 'Kinh doanh',
+        acquisitionChannel: 'Facebook',
         amount: 25_000,
         paymentMethod: 'Chuyển khoản',
       },
@@ -1434,6 +1437,9 @@ describe('IDOSI Worker security primitives', () => {
         amount: 1_250_000,
         customerName: 'Khách kiểm thử',
         customerPhone: '0901 234 567',
+        gender: 'Nam',
+        occupation: 'Kỹ sư',
+        acquisitionChannel: 'Tiktok',
         paymentMethod: 'Chuyển khoản',
       },
     }
@@ -1472,6 +1478,8 @@ describe('IDOSI Worker security primitives', () => {
       expectedVersion: 4,
       payload: {
         attendanceId,
+        cashRevenue: 0,
+        transferRevenue: 1_250_000,
         location: { latitude: 10.777, longitude: 106.701, accuracy: 15 },
       },
     }, { ...employeeAuthorization, 'idempotency-key': 'attendance-out-0001' }), env)
@@ -1816,7 +1824,13 @@ describe('IDOSI Worker security primitives', () => {
       },
       {
         key: 'manager-order-create-0001',
-        body: { type: 'order.create', expectedVersion: 1, payload: { storeId: 'S01', customerName: 'Khách', amount: 100_000, paymentMethod: 'Tiền mặt' } },
+        body: {
+          type: 'order.create', expectedVersion: 1,
+          payload: {
+            storeId: 'S01', customerName: 'Khách', gender: 'Khác', occupation: 'Khác',
+            acquisitionChannel: 'Khác', amount: 100_000, paymentMethod: 'Tiền mặt',
+          },
+        },
       },
       {
         key: 'manager-store-delete-0001',
@@ -2477,10 +2491,7 @@ describe('IDOSI Worker security primitives', () => {
       }), env)
       const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
       for (const [index, type] of [
-        'state.merge', 'store.update', 'shift_definition.create',
-        'schedule.assign', 'tasks.replace_scope', 'import.create', 'expense.create',
-        'salary_adjustment.create', 'salary_advance.create', 'payroll.close',
-        'system.reset_demo', 'user.create', 'task.done',
+        'state.merge', 'system.reset_demo', 'user.create', 'task.done',
       ].entries()) {
         const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
           type, expectedVersion: 3, payload: {},
@@ -3362,7 +3373,7 @@ describe('IDOSI Worker security primitives', () => {
         type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'OFFICE', period: '2026-08' },
       }, { ...managerAuthorization, 'idempotency-key': 'office-manager-payroll-denied-0001' }), env)
       expect(managerOfficePayrollDenied.status).toBe(403)
-      expect(await managerOfficePayrollDenied.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+      expect(await managerOfficePayrollDenied.json()).toMatchObject({ error: { code: 'OFFICE_FORBIDDEN' } })
 
       const payrollClosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'OFFICE', period: '2026-08' },
@@ -4576,9 +4587,18 @@ describe('IDOSI Worker security primitives', () => {
       { action: 'policies.set', actor_role: 'business_support' },
     ])
 
-    for (const [index, type] of ['employee.update', 'employee.delete', 'system.reset_demo'].entries()) {
+    const employeeUpdatedBySupport = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 7,
+      payload: { employeeId: 'SM234-001', name: 'Bến cập nhật' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-staff-update-allowed-0001' }), env)
+    expect(employeeUpdatedBySupport.status).toBe(200)
+    expect(await employeeUpdatedBySupport.json()).toMatchObject({
+      version: 8, employee: { id: 'SM234-001', name: 'Bến cập nhật' },
+    })
+
+    for (const [index, type] of ['employee.delete', 'system.reset_demo'].entries()) {
       const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type, expectedVersion: 7,
+        type, expectedVersion: 8,
         payload: type === 'system.reset_demo'
           ? { state: { stores: [], employees: [] } }
           : { employeeId: 'SM234-001', name: 'Không được sửa' },
@@ -4911,6 +4931,29 @@ describe('IDOSI Worker security primitives', () => {
     const currentAdminLoginBody = await currentAdminLogin.json()
     const currentAdminAuthorization = { authorization: `Bearer ${currentAdminLoginBody.token}` }
     const adminId = currentAdminLoginBody.user.id
+    const secondAdminId = 'admin-reset-secondary'
+    const secondAdminPassword = await hashPassword('reset-secondary-admin-password')
+    env.DB.database.prepare(`
+      INSERT INTO users (
+        id, username, username_normalized, display_name, password_hash, password_salt,
+        password_iterations, password_algorithm, role, status, version,
+        password_updated_at, created_at, updated_at
+      ) VALUES (?, 'admin.secondary', 'admin.secondary', 'Admin phụ', ?, ?, ?, ?, 'admin', 'active', 1, ?, ?, ?)
+    `).run(
+      secondAdminId,
+      secondAdminPassword.hash,
+      secondAdminPassword.salt,
+      secondAdminPassword.iterations,
+      secondAdminPassword.algorithm,
+      '2026-08-18T00:00:00.000Z',
+      '2026-08-18T00:00:00.000Z',
+      '2026-08-18T00:00:00.000Z',
+    )
+    const secondAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.secondary', password: 'reset-secondary-admin-password',
+    }), env)
+    expect(secondAdminLogin.status).toBe(200)
+    const secondAdminAuthorization = { authorization: `Bearer ${(await secondAdminLogin.json()).token}` }
     const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
     const pngDataUrl = `data:image/png;base64,${Buffer.from(pngBytes).toString('base64')}`
 
@@ -4984,6 +5027,9 @@ describe('IDOSI Worker security primitives', () => {
       headers: firstAdminAuthorization,
     }), env)).status).toBe(401)
     expect((await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: secondAdminAuthorization,
+    }), env)).status).toBe(401)
+    expect((await worker.fetch(new Request('https://idosi.example/api/state', {
       headers: managerAuthorization,
     }), env)).status).toBe(401)
     const mutationBlocked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -5012,8 +5058,10 @@ describe('IDOSI Worker security primitives', () => {
       version: 4,
       reset: {
         purged: {
+          accounts: 2,
+          otherAdminAccounts: 1,
           nonAdminAccounts: 1,
-          sessions: 2,
+          sessions: 3,
           commandReceipts: 2,
           privateStateScopes: 1,
           identityImageObjectsTargeted: 3,
@@ -5228,5 +5276,269 @@ describe('IDOSI Worker security primitives', () => {
       standardWorkDays: 26, requiredMonthlyHours: 208, salaryUnit: 'month',
     })
     expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  })
+
+  it('assigns future store tasks and reconciles employee checkout against mandatory customer orders', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-18T01:00:00.000Z'))
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-employee-shift-reconciliation' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'employee-shift-admin-password',
+        initialState: {
+          stores: [
+            { id: 'S01', short: 'TNV', name: 'IDOSI Tô Ngọc Vân', status: 'Đang hoạt động' },
+            { id: 'S02', short: 'TH', name: 'IDOSI Tây Hòa', status: 'Đang hoạt động' },
+          ],
+          employees: [
+            { id: 'E01', name: 'Nhân viên Một', storeId: 'S01', unit: 'store', status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 30_000 },
+            { id: 'E02', name: 'Nhân viên Hai', storeId: 'S02', unit: 'store', status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 30_000 },
+            { id: 'HTKD-01', name: 'Hỗ trợ KD', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', status: 'Đang làm việc' },
+            { id: 'QLCH-01', name: 'Quản lý S01', storeId: 'S01', unit: 'store_manager', status: 'Đang làm việc' },
+          ],
+          attendance: [], schedule: [], tasks: [], taskAssignmentHistory: [], notifications: [],
+          shiftDefinitions: [], orders: [], orderAudit: [], expenseEntries: [], fixedExpenses: [],
+          cashTransactions: [], salaryAdjustments: [], salaryAdvances: [], payrollPeriods: [], payrollPayments: [],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+      const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'employee-shift-admin-password',
+      }), env)
+      let adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+      for (const account of [
+        { username: 'employee.one', password: 'employee-one-password', displayName: 'Nhân viên Một', storeId: 'S01', employeeId: 'E01', role: 'employee' },
+        { username: 'employee.two', password: 'employee-two-password', displayName: 'Nhân viên Hai', storeId: 'S02', employeeId: 'E02', role: 'employee' },
+        { username: 'support.ops', password: 'support-ops-password', displayName: 'Hỗ trợ KD', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-01', role: 'business_support' },
+        { username: 'manager.s01', password: 'manager-s01-password', displayName: 'Quản lý S01', storeId: 'S01', employeeId: 'QLCH-01', role: 'store_manager' },
+      ]) {
+        const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+          type: 'user.create', payload: account,
+        }, { ...adminAuthorization, 'idempotency-key': `employee-shift-user-${account.employeeId}` }), env)
+        expect(created.status, account.employeeId).toBe(201)
+      }
+      const loginAs = async (username, password) => {
+        const response = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username, password }), env)
+        expect(response.status).toBe(200)
+        return { authorization: `Bearer ${(await response.json()).token}` }
+      }
+      let employeeAuthorization = await loginAs('employee.one', 'employee-one-password')
+      const otherEmployeeAuthorization = await loginAs('employee.two', 'employee-two-password')
+      const supportAuthorization = await loginAs('support.ops', 'support-ops-password')
+      const managerAuthorization = await loginAs('manager.s01', 'manager-s01-password')
+
+      const shiftCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'shift_definition.create', expectedVersion: 1,
+        payload: { storeId: 'S01', id: 'SHIFT-FUTURE', name: 'Ca tương lai', date: '2026-08-20', start: '08:00', end: '17:00' },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-future-shift-0001' }), env)
+      expect(shiftCreated.status).toBe(201)
+      expect(await shiftCreated.json()).toMatchObject({ version: 2, shift: { id: 'SHIFT-FUTURE', storeId: 'S01' } })
+
+      const assigned = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'tasks.assign', expectedVersion: 2,
+        payload: {
+          storeId: 'S01', date: '2026-08-20', shiftId: 'SHIFT-FUTURE', employeeIds: ['E01'],
+          tasks: [
+            { id: 'TASK-FUTURE-01', title: 'Mở cửa hàng', detail: 'Kiểm tra vệ sinh' },
+            { id: 'TASK-FUTURE-02', title: 'Kiểm hàng', detail: 'Ghi nhận tồn kho' },
+          ],
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-future-task-0001' }), env)
+      expect(assigned.status).toBe(201)
+      const assignedBody = await assigned.json()
+      expect(assignedBody).toMatchObject({
+        version: 3,
+        employeeIds: ['E01'],
+        tasks: [
+          { id: 'TASK-FUTURE-01', employeeIds: ['E01'] },
+          { id: 'TASK-FUTURE-02', employeeIds: ['E01'] },
+        ],
+        notifications: [{ type: 'store-task-assigned', employeeId: 'E01', route: '/employee/home' }],
+        history: { action: 'assigned', employeeIds: ['E01'], taskCount: 2 },
+      })
+
+      const crossStoreAssignment = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'tasks.assign', expectedVersion: 3,
+        payload: {
+          storeId: 'S01', date: '2026-08-20', shiftId: 'SHIFT-FUTURE', employeeIds: ['E02'],
+          tasks: [{ title: 'Không hợp lệ' }],
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-cross-store-task-0001' }), env)
+      expect(crossStoreAssignment.status).toBe(400)
+      expect(await crossStoreAssignment.json()).toMatchObject({ error: { code: 'EMPLOYEE_STORE_MISMATCH' } })
+      const managerCrossStore = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'tasks.assign', expectedVersion: 3,
+        payload: {
+          storeId: 'S02', date: '2026-08-20', employeeIds: ['E02'], tasks: [{ title: 'Vượt phạm vi' }],
+        },
+      }, { ...managerAuthorization, 'idempotency-key': 'manager-cross-store-task-0001' }), env)
+      expect(managerCrossStore.status).toBe(403)
+      expect(await managerCrossStore.json()).toMatchObject({ error: { code: 'STORE_SCOPE_FORBIDDEN' } })
+      const otherEmployeeDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.done', expectedVersion: 3, payload: { taskId: 'TASK-FUTURE-01', done: true },
+      }, { ...otherEmployeeAuthorization, 'idempotency-key': 'other-employee-task-denied-0001' }), env)
+      expect(otherEmployeeDenied.status).toBe(403)
+      expect(await otherEmployeeDenied.json()).toMatchObject({ error: { code: 'TASK_FORBIDDEN' } })
+
+      const scheduled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'schedule.assign', expectedVersion: 3,
+        payload: { storeId: 'S01', date: '2026-08-20', employeeIds: ['E01'], shiftIds: ['SHIFT-FUTURE'] },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-future-schedule-0001' }), env)
+      expect(scheduled.status).toBe(200)
+      expect(await scheduled.json()).toMatchObject({ version: 4, assignments: [{ employeeId: 'E01', shiftId: 'SHIFT-FUTURE' }] })
+      const employeeBeforeShift = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: employeeAuthorization,
+      }), env)
+      const employeeBeforeShiftState = (await employeeBeforeShift.json()).state
+      expect(employeeBeforeShiftState.tasks.map(({ id }) => id).sort()).toEqual(['TASK-FUTURE-01', 'TASK-FUTURE-02'])
+      expect(employeeBeforeShiftState.notifications).toEqual([
+        expect.objectContaining({ type: 'store-task-assigned', employeeId: 'E01' }),
+      ])
+      expect(employeeBeforeShiftState.taskAssignmentHistory).toEqual([
+        expect.objectContaining({ action: 'assigned', employeeIds: ['E01'] }),
+      ])
+      const prematureDone = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.done', expectedVersion: 4, payload: { taskId: 'TASK-FUTURE-01', done: true },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-premature-task-0001' }), env)
+      expect(prematureDone.status).toBe(409)
+      expect(await prematureDone.json()).toMatchObject({ error: { code: 'TASK_DATE_INVALID' } })
+
+      vi.setSystemTime(new Date('2026-08-20T01:00:00.000Z'))
+      adminAuthorization = await loginAs('admin', 'employee-shift-admin-password')
+      employeeAuthorization = await loginAs('employee.one', 'employee-one-password')
+      const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 4,
+        payload: { shiftId: 'SHIFT-FUTURE', location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-future-check-in-0001' }), env)
+      expect(checkedIn.status).toBe(201)
+      const attendanceId = (await checkedIn.json()).attendance.id
+      const completedTask = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.done', expectedVersion: 5, payload: { taskId: 'TASK-FUTURE-01', done: true },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-task-done-0001' }), env)
+      expect(completedTask.status).toBe(200)
+      expect(await completedTask.json()).toMatchObject({ version: 6, task: { completedBy: { E01: true } } })
+
+      const missingCustomerProfile = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.create', expectedVersion: 6,
+        payload: { storeId: 'S01', customerName: 'Thiếu hồ sơ', amount: 100_000, paymentMethod: 'Tiền mặt' },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-order-profile-required-0001' }), env)
+      expect(missingCustomerProfile.status).toBe(400)
+      expect(await missingCustomerProfile.json()).toMatchObject({ error: { code: 'ORDER_GENDER_INVALID' } })
+      const spoofedOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.create', expectedVersion: 6,
+        payload: {
+          storeId: 'S02', employeeId: 'E02', attendanceId: 'ATT-SPOOF', customerName: 'Giả mạo',
+          gender: 'Khác', occupation: 'Khác', acquisitionChannel: 'Khác', amount: 100_000, paymentMethod: 'Tiền mặt',
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-order-spoof-0001' }), env)
+      expect(spoofedOrder.status).toBe(403)
+      expect(await spoofedOrder.json()).toMatchObject({ error: { code: 'STORE_FORBIDDEN' } })
+
+      const cashOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.create', expectedVersion: 6,
+        payload: {
+          storeId: 'S01', employeeId: 'E02', attendanceId: 'ATT-SPOOF', customerName: 'Khách tiền mặt',
+          gender: 'Nữ', occupation: 'Kế toán', acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt',
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-cash-order-0001' }), env)
+      expect(cashOrder.status).toBe(201)
+      const cashOrderBody = await cashOrder.json()
+      expect(cashOrderBody).toMatchObject({
+        version: 7,
+        order: {
+          storeId: 'S01', employeeId: 'E01', attendanceId, gender: 'Nữ', occupation: 'Kế toán',
+          acquisitionChannel: 'Facebook', paymentMethod: 'Tiền mặt', amount: 100_000,
+        },
+      })
+      const transferOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.create', expectedVersion: 7,
+        payload: {
+          storeId: 'S01', customerName: 'Khách chuyển khoản', gender: 'Nam', occupation: 'Kỹ sư',
+          acquisitionChannel: 'Tiktok', amount: 200_000, paymentMethod: 'Chuyển khoản',
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-transfer-order-0001' }), env)
+      expect(transferOrder.status).toBe(201)
+      const transferOrderBody = await transferOrder.json()
+      expect(transferOrderBody).toMatchObject({ version: 8, order: { attendanceId, acquisitionChannel: 'Tiktok' } })
+      const updatedOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.update', expectedVersion: 8,
+        payload: {
+          orderId: transferOrderBody.order.id, gender: 'Khác', occupation: 'Giáo viên',
+          acquisitionChannel: 'Zalo', reason: 'Bổ sung hồ sơ khách hàng',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'admin-order-profile-update-0001' }), env)
+      expect(updatedOrder.status).toBe(200)
+      expect(await updatedOrder.json()).toMatchObject({
+        version: 9,
+        order: { gender: 'Khác', occupation: 'Giáo viên', acquisitionChannel: 'Zalo' },
+        audit: { changedFields: ['gender', 'occupation', 'acquisitionChannel'] },
+      })
+
+      const mismatchCheckout = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 9,
+        payload: {
+          attendanceId, cashRevenue: 50_000, transferRevenue: 200_000,
+          incompleteTaskReason: 'Còn kiểm hàng',
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-checkout-mismatch-0001' }), env)
+      expect(mismatchCheckout.status).toBe(409)
+      expect(await mismatchCheckout.json()).toMatchObject({
+        error: {
+          code: 'SHIFT_REVENUE_MISMATCH',
+          details: {
+            expected: { cashRevenue: 100_000, transferRevenue: 200_000, totalRevenue: 300_000 },
+            received: { cashRevenue: 50_000, transferRevenue: 200_000, totalRevenue: 250_000 },
+          },
+        },
+      })
+      const reasonRequired = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 9,
+        payload: {
+          attendanceId, cashRevenue: 100_000, transferRevenue: 200_000,
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-checkout-reason-required-0001' }), env)
+      expect(reasonRequired.status).toBe(400)
+      expect(await reasonRequired.json()).toMatchObject({
+        error: { code: 'INCOMPLETE_TASK_REASON_REQUIRED', details: { taskIds: ['TASK-FUTURE-02'] } },
+      })
+      const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 9,
+        payload: {
+          attendanceId, cashRevenue: 100_000, transferRevenue: 200_000,
+          incompleteTaskReason: 'Chưa hoàn tất kiểm hàng vì khách đông',
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-checkout-success-0001' }), env)
+      expect(checkedOut.status).toBe(200)
+      expect(await checkedOut.json()).toMatchObject({
+        version: 10,
+        attendance: {
+          id: attendanceId, orderCount: 2, revenue: 300_000, cash: 100_000, transfer: 200_000,
+          declaredRevenue: { cash: 100_000, transfer: 200_000, total: 300_000 },
+          revenueReconciliation: {
+            matched: true, expectedCash: 100_000, expectedTransfer: 200_000, expectedTotal: 300_000,
+          },
+          incompleteTaskReason: 'Chưa hoàn tất kiểm hàng vì khách đông',
+          incompleteTasksSnapshot: [{ id: 'TASK-FUTURE-02', title: 'Kiểm hàng' }],
+        },
+      })
+      const persistedState = readHydratedState(env.DB.database)
+      expect(persistedState.taskAssignmentHistory.map(({ action }) => action)).toEqual(['assigned'])
+      expect(persistedState.taskAssignmentHistory[0]).toMatchObject({
+        tasks: [
+          { id: 'TASK-FUTURE-01', completedBy: { E01: true } },
+          { id: 'TASK-FUTURE-02', completedBy: {} },
+        ],
+        progressHistory: [{ taskId: 'TASK-FUTURE-01', employeeId: 'E01', done: true }],
+      })
+      expect(persistedState.tasks.find(({ id }) => id === 'TASK-FUTURE-01').completionHistory).toEqual([
+        expect.objectContaining({ employeeId: 'E01', done: true }),
+      ])
+      expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

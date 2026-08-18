@@ -13,6 +13,65 @@ export const taskCompletedByEmployee = (task = {}, id) => Boolean(
   id && task.completedBy && task.completedBy[String(id)],
 )
 
+const explicitAssigneeIds = (task = {}) => [
+  task.employeeId,
+  ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
+  ...(Array.isArray(task.assigneeIds) ? task.assigneeIds : []),
+  ...(Array.isArray(task.assignedEmployeeIds) ? task.assignedEmployeeIds : []),
+].filter(Boolean).map(String)
+
+const assignmentIdOf = (record = {}) => String(record.assignmentId || record.id || record.taskAssignmentId || record.batchId || '')
+
+export const taskAssignedToEmployee = (task = {}, id) => {
+  const assignees = explicitAssigneeIds(task)
+  return assignees.length > 0 && assignees.includes(String(id))
+}
+
+export const employeeTaskAssignmentById = ({ assignmentId, taskAssignmentHistory = [], tasks = [], employee = {} } = {}) => {
+  const requestedId = String(assignmentId || '').trim()
+  const id = employeeId(employee)
+  const storeId = String(employee?.storeId || '')
+  if (!requestedId || !id || !storeId) return null
+
+  const history = (Array.isArray(taskAssignmentHistory) ? taskAssignmentHistory : []).find((item) => (
+    assignmentIdOf(item) === requestedId && sameId(item.storeId, storeId)
+  ))
+  const historyEmployeeIds = explicitAssigneeIds(history || {})
+  const flatTasks = (Array.isArray(tasks) ? tasks : []).filter((task) => (
+    !task.deletedAt
+    && String(task.assignmentId || task.taskAssignmentId || task.batchId || '') === requestedId
+    && sameId(task.storeId, storeId)
+    && taskAssignedToEmployee(task, id)
+  ))
+  const belongsToEmployee = historyEmployeeIds.includes(id) || flatTasks.length > 0
+  if (!belongsToEmployee) return null
+
+  const sourceTasks = flatTasks.length ? flatTasks : (Array.isArray(history?.tasks) ? history.tasks : [])
+  const visibleTasks = sourceTasks.filter((task) => {
+    const taskEmployeeIds = explicitAssigneeIds(task)
+    return taskEmployeeIds.length ? taskEmployeeIds.includes(id) : historyEmployeeIds.includes(id)
+  }).map((task) => ({
+    ...task,
+    assignmentId: requestedId,
+    storeId,
+    date: explicitWorkDateOf(task) || explicitWorkDateOf(history),
+    shiftId: shiftIdOf(task) || shiftIdOf(history),
+    employeeIds: explicitAssigneeIds(task).length ? explicitAssigneeIds(task) : historyEmployeeIds,
+  }))
+  if (!visibleTasks.length) return null
+
+  return {
+    ...(history || {}),
+    id: requestedId,
+    assignmentId: requestedId,
+    storeId,
+    date: explicitWorkDateOf(history) || explicitWorkDateOf(visibleTasks[0]),
+    shiftId: shiftIdOf(history) || shiftIdOf(visibleTasks[0]),
+    employeeIds: historyEmployeeIds.length ? historyEmployeeIds : [id],
+    tasks: visibleTasks,
+  }
+}
+
 export const employeeTaskScopesForDate = ({ schedule = [], attendance = [], employee = {}, workDate } = {}) => {
   const id = employeeId(employee)
   const scopes = new Set()
@@ -44,7 +103,10 @@ export const employeeTasksForDate = ({ tasks = [], schedule = [], attendance = [
 
   return tasks.filter((task) => (
     explicitWorkDateOf(task) === workDate
-    && (!task.employeeId || sameId(task.employeeId, id))
-    && scopes.has(`${String(task.storeId || '')}\u0000${shiftIdOf(task)}`)
+    && sameId(task.storeId, employee?.storeId)
+    && (
+      taskAssignedToEmployee(task, id)
+      || (explicitAssigneeIds(task).length === 0 && scopes.has(`${String(task.storeId || '')}\u0000${shiftIdOf(task)}`))
+    )
   ))
 }

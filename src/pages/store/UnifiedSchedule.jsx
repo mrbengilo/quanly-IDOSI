@@ -102,7 +102,7 @@ export function UnifiedSchedule() {
   const shiftDefinitions = Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : []
   const schedule = Array.isArray(app.schedule) ? app.schedule : []
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
-  const canManageStore = ['admin', 'store_manager'].includes(session?.role)
+  const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const storeId = session?.role === 'store_manager'
     ? session.storeId
     : activeStore?.id || activeStoreId || session?.storeId || ''
@@ -264,7 +264,7 @@ export function UnifiedSchedule() {
           </>
         )}
       />
-      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể tạo, sửa, xóa ca hoặc thay đổi lịch phân ca.</InfoNote>}
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Tài khoản hiện tại không thể tạo, sửa, xóa ca hoặc thay đổi lịch phân ca.</InfoNote>}
 
       <div className="metric-grid metric-grid--four">
         <MetricCard label="Ca trong ngày" value={dayShifts.length} suffix="ca" icon={Clock3} tone="blue" compact />

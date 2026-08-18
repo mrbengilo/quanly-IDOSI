@@ -308,3 +308,146 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   color: #136b48;
   background: #e9faef;
 }
+
+/* Employee workspace: keep the attendance, schedule and task flow visually aligned. */
+.employee-hero-title {
+  display: grid;
+  grid-template-columns: 56px minmax(0, auto);
+  justify-content: center;
+  align-items: center;
+  column-gap: 14px;
+}
+
+.employee-hero-title > img {
+  grid-row: 1 / span 2;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  object-fit: cover;
+  box-shadow: 0 8px 24px rgb(4 99 50 / 14%);
+}
+
+.employee-hero-title > h1,
+.employee-hero-title > p {
+  text-align: left;
+}
+
+.employee-hero-title > h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.employee-hero-title > p {
+  margin: 2px 0 0;
+}
+
+.task-checklist {
+  display: grid;
+  gap: 9px;
+}
+
+.task-checklist > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 1px solid #d8e7dd;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.task-checklist > div.done {
+  border-color: #aed8ba;
+  background: #eef9f1;
+}
+
+.task-checklist > div > div,
+.task-checklist > div strong,
+.task-checklist > div small {
+  min-width: 0;
+  display: block;
+}
+
+.task-checklist > div strong {
+  color: #143326;
+  overflow-wrap: anywhere;
+}
+
+.task-checklist > div small {
+  margin-top: 4px;
+  color: #66756d;
+  line-height: 1.45;
+}
+
+.task-checklist > div.done strong {
+  color: #387251;
+  text-decoration: line-through;
+}
+
+.task-checklist .icon-button[aria-pressed="true"] {
+  color: #087b3d;
+  background: #dff3e5;
+}
+
+.quick-action-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.quick-action-grid > .button {
+  justify-content: center;
+  min-height: 46px;
+}
+
+.order-group__totals {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.order-group__totals > span {
+  color: #66756d;
+  font-size: 11px;
+}
+
+@media (max-width: 900px) {
+  .quick-action-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 560px) {
+  .employee-hero-title {
+    grid-template-columns: 46px minmax(0, 1fr);
+    justify-content: stretch;
+    column-gap: 10px;
+  }
+
+  .employee-hero-title > img {
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+  }
+
+  .employee-hero-title > h1 {
+    font-size: 21px;
+  }
+
+  .task-checklist > div {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .task-checklist > div > .badge {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .quick-action-grid {
+    grid-template-columns: 1fr;
+  }
+}

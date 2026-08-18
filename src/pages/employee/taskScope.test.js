@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
+import { employeeTaskAssignmentById, employeeTasksForDate, taskAssignedToEmployee, taskCompletedByEmployee } from './taskScope'
 
 describe('employee task scope', () => {
   const employee = { id: 'NV001', storeId: 'CH001' }
@@ -30,5 +30,56 @@ describe('employee task scope', () => {
 
     expect(taskCompletedByEmployee(task, 'NV001')).toBe(false)
     expect(taskCompletedByEmployee(task, 'NV002')).toBe(true)
+  })
+
+  it('shows an explicitly assigned future-shift task without requiring an active attendance', () => {
+    const visible = employeeTasksForDate({
+      employee,
+      workDate,
+      schedule: [],
+      attendance: [],
+      tasks: [
+        { id: 'mine', storeId: 'CH001', date: workDate, shiftId: 'night', employeeIds: ['NV001'] },
+        { id: 'other', storeId: 'CH001', date: workDate, shiftId: 'night', assigneeIds: ['NV002'] },
+      ],
+    })
+
+    expect(visible.map((task) => task.id)).toEqual(['mine'])
+    expect(taskAssignedToEmployee(visible[0], 'NV001')).toBe(true)
+  })
+
+  it('resolves a future assignment deep link only for its employee and store', () => {
+    const assignment = {
+      id: 'TAS-FUTURE',
+      storeId: 'CH001',
+      date: '2026-08-20',
+      shiftId: 'night',
+      employeeIds: ['NV001'],
+      createdBy: { displayName: 'Quản lý A' },
+      tasks: [{ id: 'future-task', title: 'Kiểm tra tồn kho', employeeIds: ['NV001'] }],
+    }
+
+    expect(employeeTaskAssignmentById({
+      assignmentId: 'TAS-FUTURE',
+      taskAssignmentHistory: [assignment],
+      tasks: [],
+      employee,
+    })).toMatchObject({
+      id: 'TAS-FUTURE',
+      date: '2026-08-20',
+      shiftId: 'night',
+      tasks: [{ id: 'future-task', date: '2026-08-20', shiftId: 'night' }],
+    })
+
+    expect(employeeTaskAssignmentById({
+      assignmentId: 'TAS-FUTURE',
+      taskAssignmentHistory: [assignment],
+      employee: { id: 'NV002', storeId: 'CH001' },
+    })).toBeNull()
+    expect(employeeTaskAssignmentById({
+      assignmentId: 'TAS-FUTURE',
+      taskAssignmentHistory: [assignment],
+      employee: { id: 'NV001', storeId: 'CH002' },
+    })).toBeNull()
   })
 })

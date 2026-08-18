@@ -250,7 +250,7 @@ export function ResetDataPage() {
   }
   return <div className="page governance-page"><PageHeader title="RESET DỮ LIỆU" subtitle="Quản lý dữ liệu hệ thống theo đúng phạm vi quyền; các thao tác vận hành đều có nhật ký." icon={RefreshCcw} />
     {isAdmin && <Card title="Xóa toàn bộ dữ liệu và tài khoản" className="system-reset-card">
-      <InfoNote tone="orange"><strong>Thao tác không thể hoàn tác.</strong><br />Toàn bộ cửa hàng, hồ sơ nhân viên, tài khoản ngoài Admin, đơn hàng, chấm công, dòng tiền và lịch sử vận hành sẽ bị xóa. Các tài khoản Admin được giữ lại; chỉ phiên Admin hiện tại tiếp tục hoạt động.</InfoNote>
+      <InfoNote tone="orange"><strong>Thao tác không thể hoàn tác.</strong><br />Toàn bộ cửa hàng, hồ sơ nhân viên, đơn hàng, chấm công, dòng tiền, lịch sử vận hành và mọi tài khoản khác sẽ bị xóa. Chỉ tài khoản Admin đang thực hiện Reset và phiên hiện tại được giữ lại.</InfoNote>
       <div className="card-actions card-actions--below"><Button variant="danger" icon={Trash2} onClick={() => setSystemResetOpen(true)}>BẮT ĐẦU XÓA DỮ LIỆU</Button></div>
     </Card>}
     {isBusinessSupport && <Card title="Khôi phục chỉnh sửa/xóa" className="operational-reset-card">
@@ -270,7 +270,7 @@ export function ResetDataPage() {
     <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Chỉnh sửa giờ chấm công" footer={<><Button variant="outline" onClick={() => setEditing(null)}>Hủy</Button><Button icon={Save} onClick={save}>LƯU</Button></>}><div className="form-grid"><Field label="Giờ vào" required hint="Định dạng 24 giờ"><Input type="time" value={form.checkIn} onChange={(event) => setForm({ ...form, checkIn: event.target.value })} /></Field><Field label="Giờ kết" hint="Định dạng 24 giờ"><Input type="time" value={form.checkOut} onChange={(event) => setForm({ ...form, checkOut: event.target.value })} /></Field><Field label="Lý do chỉnh sửa" required className="span-2"><textarea maxLength={500} value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder="Nhập lý do để lưu nhật ký kiểm toán" /></Field></div></Modal>
     <Modal open={systemResetOpen} onClose={closeSystemReset} title="Xác nhận xóa toàn bộ dữ liệu" footer={<><Button variant="outline" onClick={closeSystemReset} disabled={systemResetBusy}>Hủy</Button><Button variant="danger" icon={Trash2} loading={systemResetBusy} disabled={systemResetBusy || systemResetConfirmation !== 'RESET_ALL_DATA'} onClick={executeSystemReset}>XÓA TOÀN BỘ DỮ LIỆU</Button></>}>
       <div className="form-stack">
-        <InfoNote tone="orange">Sau khi xác nhận, các tài khoản Admin được giữ lại và chỉ phiên Admin hiện tại tiếp tục hoạt động. Dữ liệu cùng các tài khoản khác đã xóa không thể phục hồi từ giao diện.</InfoNote>
+        <InfoNote tone="orange">Sau khi xác nhận, chỉ tài khoản Admin đang thực hiện Reset cùng phiên hiện tại được giữ lại. Dữ liệu và mọi tài khoản khác đã xóa không thể phục hồi từ giao diện.</InfoNote>
         <Field label="Nhập RESET_ALL_DATA để xác nhận" required hint="Phân biệt chữ hoa, dấu gạch dưới và không có khoảng trắng."><Input autoComplete="off" spellCheck="false" value={systemResetConfirmation} onChange={(event) => setSystemResetConfirmation(event.target.value)} placeholder="RESET_ALL_DATA" /></Field>
       </div>
     </Modal>

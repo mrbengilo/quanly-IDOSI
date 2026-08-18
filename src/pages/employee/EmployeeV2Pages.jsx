@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Banknote,
   CalendarDays,
@@ -31,8 +31,15 @@ import {
 import { resolveShiftCandidates } from '../../domain'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, today, usesMonthlyHoursFormula } from '../../utils'
-import { employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
-import { ordersForOpenAttendance } from './employeeShiftOrders'
+import { employeeTaskAssignmentById, employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
+import {
+  ACQUISITION_CHANNELS,
+  checkoutReconciliation,
+  ORDER_GENDERS,
+  ordersForOpenAttendance,
+  shiftRevenueBreakdown,
+  validateEmployeeOrder,
+} from './employeeShiftOrders'
 
 const parseMoney = (value) => Math.max(0, Math.trunc(Number(String(value ?? '').replace(/[^\d-]/gu, '')) || 0))
 const moneyInput = (value) => String(value ?? '').replace(/\D/gu, '').replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
@@ -40,6 +47,12 @@ const recordDate = (record = {}) => String(record.date || record.workDate || rec
 const employeeKey = (employee = {}) => String(employee?.id || employee?.code || employee?.employeeCode || '')
 const timestamp = (value) => value ? new Date(value).toLocaleString('vi-VN', { hour12: false }) : '—'
 const periodLabel = (value) => value ? value.split('-').reverse().join('/') : '—'
+const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: 'Chuyển khoản' })
+const actorLabel = (value) => {
+  if (!value) return 'Chưa ghi nhận'
+  if (typeof value === 'string') return value
+  return value.displayName || value.name || value.fullName || value.username || value.code || value.id || 'Chưa ghi nhận'
+}
 
 const statusLabel = (value) => {
   const normalized = String(value || '').toLocaleLowerCase('vi-VN')
@@ -63,13 +76,18 @@ const workedHours = (record = {}) => {
   return 0
 }
 
-const employeeAttendance = (attendance, employeeId) => attendance
-  .filter((record) => !record.deletedAt && String(record.employeeId) === String(employeeId))
+const employeeAttendance = (attendance, employeeId, storeId) => attendance
+  .filter((record) => (
+    !record.deletedAt
+    && String(record.employeeId) === String(employeeId)
+    && (!storeId || String(record.storeId) === String(storeId))
+  ))
   .sort((left, right) => String(right.checkInAt || right.date || '').localeCompare(String(left.checkInAt || left.date || '')))
 
 const findScheduledShifts = (app, employee, workDate) => {
   const assignment = (app.schedule || []).find((record) => (
     String(record.employeeId) === employeeKey(employee)
+    && String(record.storeId || employee.storeId) === String(employee.storeId)
     && (!record.date || record.date === workDate)
   ))
   const ids = assignment?.shiftIds || []
@@ -79,12 +97,7 @@ const findScheduledShifts = (app, employee, workDate) => {
     snapshots.find((shift) => String(shift.id) === String(id))
     || definitions.find((shift) => String(shift.id) === String(id) && shift.active !== false)
   )).filter(Boolean)
-  const fallback = definitions.filter((shift) => (
-    shift.active !== false
-    && (!shift.storeId || String(shift.storeId) === String(employee.storeId))
-    && (!shift.date || shift.date === workDate)
-  ))
-  return (selected.length ? selected : fallback).map((shift) => ({ ...shift, date: workDate }))
+  return selected.map((shift) => ({ ...shift, date: workDate }))
 }
 
 const geolocate = () => new Promise((resolve, reject) => {
@@ -109,27 +122,85 @@ const geolocate = () => new Promise((resolve, reject) => {
 export function EmployeeDashboardV2() {
   const app = useApp()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const {
     currentEmployee: employee,
     attendance = [],
     orders = [],
     schedule = [],
     tasks = [],
+    taskAssignmentHistory = [],
+    shiftDefinitions = [],
+    stores = [],
+    policies,
+    checkIn,
+    checkOut,
     setTaskDone,
     notify,
   } = app
+  const [now, setNow] = useState(() => new Date())
   const [pendingTaskId, setPendingTaskId] = useState(null)
+  const [candidateModal, setCandidateModal] = useState(null)
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+  const [locating, setLocating] = useState('')
+  const [cashRevenue, setCashRevenue] = useState('')
+  const [transferRevenue, setTransferRevenue] = useState('')
+  const [incompleteTaskReason, setIncompleteTaskReason] = useState('')
   const employeeId = employeeKey(employee)
   const workDate = today()
-  const ownAttendance = employeeAttendance(attendance, employeeId)
+  const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
+  const requestedAssignment = employeeTaskAssignmentById({
+    assignmentId: requestedAssignmentId,
+    taskAssignmentHistory,
+    tasks,
+    employee,
+  })
+  const store = stores.find((item) => String(item.id) === String(employee?.storeId))
+  const ownAttendance = employeeAttendance(attendance, employeeId, employee?.storeId)
   const activeRecord = ownAttendance.find((record) => !record.checkOutAt && !record.checkOut)
   const todayRecords = ownAttendance.filter((record) => recordDate(record) === workDate)
-  const monthOrders = orders.filter((order) => String(order.employeeId) === employeeId && !order.deletedAt && businessDate(order.createdAt).startsWith(workDate.slice(0, 7)))
+  const ownOrders = orders.filter((order) => (
+    String(order.employeeId) === employeeId
+    && String(order.storeId) === String(employee?.storeId)
+    && !order.deletedAt
+    && order.source !== 'legacy-opening-balance'
+  ))
+  const monthOrders = ownOrders.filter((order) => businessDate(order.createdAt).startsWith(workDate.slice(0, 7)))
   const todayTasks = employeeTasksForDate({ tasks, schedule, attendance, employee, workDate })
   const completedTasks = todayTasks.filter((task) => taskCompletedByEmployee(task, employeeId)).length
   const shifts = findScheduledShifts(app, employee || {}, workDate)
+  const activeShiftOrders = ordersForOpenAttendance(ownOrders, employeeId, activeRecord)
+  const activeShiftId = String(activeRecord?.shiftId || activeRecord?.shift || '')
+  const activeShiftTasks = todayTasks.filter((task) => {
+    const taskShiftId = String(task.shiftId || task.shift || '')
+    return activeRecord && (!taskShiftId || taskShiftId === activeShiftId)
+  })
+  const incompleteTasks = activeShiftTasks.filter((task) => !taskCompletedByEmployee(task, employeeId))
+  const displayedTasks = requestedAssignment?.tasks || todayTasks
+  const displayedTaskDate = requestedAssignment?.date || workDate
+  const displayedTaskShiftId = String(requestedAssignment?.shiftId || '')
+  const displayedTaskShift = shiftDefinitions.find((shift) => String(shift.id) === displayedTaskShiftId)
+  const expectedRevenue = shiftRevenueBreakdown(activeShiftOrders)
+  const reconciliation = checkoutReconciliation({
+    orders: activeShiftOrders,
+    cashRevenue: parseMoney(cashRevenue),
+    transferRevenue: parseMoney(transferRevenue),
+  })
+  const revenueDeclared = cashRevenue.trim() !== '' && transferRevenue.trim() !== ''
+  const checkoutReady = revenueDeclared && reconciliation.matches && (!incompleteTasks.length || incompleteTaskReason.trim())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const toggleTask = async (task) => {
+    const taskShiftId = String(task.shiftId || task.shift || '')
+    const taskDate = String(task.date || task.workDate || '')
+    if (!activeRecord || (taskDate && taskDate !== workDate) || (taskShiftId && taskShiftId !== activeShiftId)) {
+      notify?.('Bạn chỉ có thể cập nhật công việc sau khi điểm danh vào đúng ca.', 'info')
+      return
+    }
     if (typeof setTaskDone !== 'function') {
       notify?.('Chức năng cập nhật công việc chưa sẵn sàng.', 'info')
       return
@@ -146,58 +217,224 @@ export function EmployeeDashboardV2() {
     }
   }
 
+  const captureAndCheckIn = async (shift) => {
+    setLocating('in')
+    try {
+      const location = await geolocate()
+      const result = await checkIn?.({
+        employeeId,
+        date: workDate,
+        shiftId: shift.id,
+        shiftName: shift.name,
+        shiftStart: shift.start,
+        shiftEnd: shift.end,
+        location,
+      })
+      if (!result?.ok) notify?.(result?.message || 'Không thể điểm danh.', 'info')
+      if (result?.ok) setCandidateModal(null)
+    } catch (error) {
+      notify?.(error.message, 'info')
+    } finally {
+      setLocating('')
+    }
+  }
+
+  const beginCheckIn = () => {
+    if (!shifts.length) {
+      notify?.('Bạn chưa được xếp ca cho ngày hôm nay.', 'info')
+      return
+    }
+    try {
+      const result = resolveShiftCandidates({
+        at: now,
+        shifts,
+        workDate,
+        earlyWindowMinutes: Number(policies?.earlyCheckInLimitMinutes || 120),
+      })
+      if (!result.candidates.length) {
+        notify?.(`Chưa đến thời gian điểm danh. Chỉ được vào sớm tối đa ${policies?.earlyCheckInLimitMinutes || 120} phút.`, 'info')
+        return
+      }
+      setCandidateModal(result)
+    } catch {
+      notify?.('Không thể xác định ca phù hợp từ lịch làm việc.', 'info')
+    }
+  }
+
+  const submitCheckout = async () => {
+    if (!activeRecord) return
+    if (!reconciliation.matches) {
+      notify?.('Tiền mặt và chuyển khoản phải khớp riêng từng kênh với đơn hàng trong ca.', 'info')
+      return
+    }
+    if (incompleteTasks.length && !incompleteTaskReason.trim()) {
+      notify?.('Vui lòng nhập lý do cho công việc chưa hoàn thành.', 'info')
+      return
+    }
+    setLocating('out')
+    try {
+      const location = await geolocate()
+      const result = await checkOut?.({
+        attendanceId: activeRecord.id,
+        location,
+        cashRevenue: parseMoney(cashRevenue),
+        transferRevenue: parseMoney(transferRevenue),
+        incompleteTaskReason: incompleteTaskReason.trim(),
+      })
+      if (!result?.ok) {
+        notify?.(result?.message || 'Không thể kết ca.', 'info')
+        return
+      }
+      setCheckoutOpen(false)
+      setCashRevenue('')
+      setTransferRevenue('')
+      setIncompleteTaskReason('')
+    } catch (error) {
+      notify?.(error.message, 'info')
+    } finally {
+      setLocating('')
+    }
+  }
+
+  const displayShift = activeRecord || shifts[0]
+
   return (
-    <div className="page">
-      <PageHeader title={`XIN CHÀO, ${employee?.name || 'NHÂN VIÊN'}`} subtitle="Theo dõi ca làm, đơn hàng và công việc của bạn. Doanh thu được tự động lấy từ đơn hàng đã tạo." icon={Fingerprint} />
+    <div className="page employee-home">
+      <div className="employee-hero-title">
+        <img src="/favicon.png" width="56" height="56" alt="Logo IDOSI" />
+        <h1>{store?.name || 'Cửa hàng IDOSI'}</h1>
+        <p>HỆ THỐNG LÀM VIỆC NHÂN VIÊN</p>
+      </div>
+      <PageHeader title={`XIN CHÀO, ${employee?.name || 'NHÂN VIÊN'}`} subtitle="Điểm danh, theo dõi ca, đơn hàng và công việc đúng cửa hàng trực thuộc." icon={Fingerprint} />
+      <div className="employee-top-grid">
+        <Card className="checkin-card">
+          <h2>ĐIỂM DANH</h2>
+          <p>{now.toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}</p>
+          <strong>{now.toLocaleTimeString('vi-VN', { hour12: false })}</strong>
+          {!activeRecord
+            ? <Button icon={Fingerprint} loading={locating === 'in'} disabled={Boolean(locating)} onClick={beginCheckIn}>ĐIỂM DANH</Button>
+            : <Button variant="danger" icon={LogOut} loading={locating === 'out'} disabled={Boolean(locating)} onClick={() => setCheckoutOpen(true)}>KẾT CA</Button>}
+          <small>{activeRecord ? `Đã vào ca lúc ${activeRecord.checkIn || timestamp(activeRecord.checkInAt)}` : 'Khi bấm Điểm danh, hệ thống sẽ yêu cầu quyền vị trí.'}</small>
+        </Card>
+        <Card className="employee-info-card">
+          <h2>THÔNG TIN NHÂN VIÊN</h2>
+          <dl>
+            <div><dt>Mã nhân viên</dt><dd>{employeeId || '—'}</dd></div>
+            <div><dt>Họ và tên</dt><dd>{employee?.name || '—'}</dd></div>
+            <div><dt>Cửa hàng</dt><dd>{store?.name || '—'}</dd></div>
+            <div><dt>Loại nhân viên</dt><dd>{employee?.employmentType || employee?.type || '—'}</dd></div>
+            <div><dt>Số điện thoại</dt><dd>{employee?.phone || '—'}</dd></div>
+          </dl>
+        </Card>
+        <Card className="current-shift-card">
+          <h2>CA LÀM VIỆC HÔM NAY</h2>
+          <div>
+            <Badge tone={activeRecord ? 'green' : 'blue'}>{displayShift?.shiftName || displayShift?.name || 'CHƯA XẾP CA'}</Badge>
+            <strong>{displayShift ? `${displayShift.shiftStart || displayShift.start || '--:--'} – ${displayShift.shiftEnd || displayShift.end || '--:--'}` : '—'}</strong>
+          </div>
+          <p><span>Giờ vào: <b>{activeRecord?.checkIn || '--:--'}</b></span><span>Giờ kết ca: <b>{activeRecord?.checkOut || '--:--'}</b></span></p>
+          <div className={activeRecord ? 'status-ok' : 'status-pending'}>{activeRecord ? 'Đang làm việc' : todayRecords.some((record) => record.checkOutAt || record.checkOut) ? 'Đã kết ca' : 'Chưa điểm danh'}</div>
+        </Card>
+      </div>
       <div className="metrics-grid metrics-grid--4">
         <MetricCard label="TRẠNG THÁI CA" value={activeRecord ? 'Đang làm' : todayRecords.some((record) => record.checkOutAt || record.checkOut) ? 'Đã kết ca' : 'Chưa điểm danh'} icon={Clock3} tone={activeRecord ? 'green' : 'blue'} />
         <MetricCard label="CA ĐƯỢC PHÂN HÔM NAY" value={shifts.length} suffix="ca" icon={CalendarDays} tone="blue" />
         <MetricCard label="ĐƠN TRONG THÁNG" value={monthOrders.length} suffix="đơn" icon={ShoppingCart} tone="green" />
         <MetricCard label="CÔNG VIỆC HÔM NAY" value={`${completedTasks}/${todayTasks.length}`} icon={ClipboardCheck} tone={completedTasks === todayTasks.length && todayTasks.length ? 'green' : 'orange'} />
       </div>
-      <div className="two-column-layout">
-        <Card title="Ca làm hôm nay">
-          <div className="summary-list">
-            {shifts.map((shift) => <p key={shift.id}><span>{shift.name || shift.id}</span><strong>{shift.start || '--:--'}–{shift.end || '--:--'}</strong></p>)}
-            {!shifts.length && <p><span>Chưa có lịch phân ca</span><strong>—</strong></p>}
-            {activeRecord && <p className="total"><span>Đã điểm danh</span><strong>{timestamp(activeRecord.checkInAt || activeRecord.checkIn)}</strong></p>}
-          </div>
-          <div className="card-actions"><Button icon={Fingerprint} onClick={() => navigate('/employee/attendance')}>MỞ CHẤM CÔNG</Button></div>
-        </Card>
-        <Card title="Truy cập nhanh">
-          <div className="quick-action-grid">
-            <Button icon={Plus} onClick={() => navigate('/employee/orders')}>Tạo đơn hàng</Button>
-            <Button icon={Clock3} variant="outline" onClick={() => navigate('/employee/work-history')}>Lịch sử làm việc</Button>
-            <Button icon={Wallet} variant="outline" onClick={() => navigate('/employee/payroll')}>Bảng lương</Button>
-            <Button icon={Banknote} variant="outline" onClick={() => navigate('/employee/cashflow')}>Dòng tiền cá nhân</Button>
-          </div>
-        </Card>
-      </div>
-      <Card title="Công việc hôm nay">
+      <Card title="LỊCH PHÂN CA CỦA TÔI">
+        <TableWrap>
+          <thead><tr><th>Ngày</th><th>Cửa hàng</th><th>Ca</th><th>Thời gian 24 giờ</th><th>Trạng thái</th></tr></thead>
+          <tbody>
+            {shifts.map((shift) => <tr key={shift.id}><td><strong>{shortDate(workDate)}</strong></td><td>{store?.name || '—'}</td><td>{shift.name || shift.id}</td><td><strong>{shift.start || '--:--'} – {shift.end || '--:--'}</strong></td><td><Badge tone={String(activeRecord?.shift || activeRecord?.shiftId) === String(shift.id) ? 'green' : 'blue'}>{String(activeRecord?.shift || activeRecord?.shiftId) === String(shift.id) ? 'Đang làm' : 'Đã xếp ca'}</Badge></td></tr>)}
+            {!shifts.length && <tr><td colSpan="5">Chưa có lịch phân ca hôm nay.</td></tr>}
+          </tbody>
+        </TableWrap>
+      </Card>
+      <Card
+        className="employee-tasks"
+        title={requestedAssignment ? 'CÔNG VIỆC TỪ THÔNG BÁO' : 'CÔNG VIỆC CẦN LÀM'}
+        action={requestedAssignment ? <><Badge tone="blue">{shortDate(displayedTaskDate)}</Badge> <Badge tone="green">{displayedTaskShift?.name || displayedTaskShiftId || 'Chưa chọn ca'}</Badge></> : null}
+      >
+        {requestedAssignment && (
+          <InfoNote tone={displayedTaskDate === workDate ? 'green' : 'orange'}>
+            Lượt giao {requestedAssignment.id} • {shortDate(displayedTaskDate)} • {displayedTaskShift?.name || displayedTaskShiftId || 'Chưa chọn ca'}{displayedTaskShift ? ` (${displayedTaskShift.start || '--:--'}–${displayedTaskShift.end || '--:--'})` : ''} • Người giao: {actorLabel(requestedAssignment.createdBy || requestedAssignment.assignedBy)}{requestedAssignment.createdAt || requestedAssignment.assignedAt ? ` • ${timestamp(requestedAssignment.createdAt || requestedAssignment.assignedAt)}` : ''}.
+            {displayedTaskDate !== workDate ? ' Bạn có thể xem trước; chỉ được tick khi đã điểm danh vào đúng ngày, đúng ca.' : ''}
+          </InfoNote>
+        )}
+        {requestedAssignmentId && !requestedAssignment && <InfoNote tone="orange">Không tìm thấy lượt giao việc phù hợp với tài khoản và cửa hàng hiện tại.</InfoNote>}
         <div className="task-checklist">
-          {todayTasks.map((task) => {
+          {displayedTasks.map((task) => {
             const done = taskCompletedByEmployee(task, employeeId)
             const pending = String(pendingTaskId) === String(task.id)
+            const taskShiftId = String(task.shiftId || task.shift || '')
+            const taskDate = String(task.date || task.workDate || displayedTaskDate)
+            const canUpdate = Boolean(activeRecord) && taskDate === workDate && (!taskShiftId || taskShiftId === activeShiftId)
             return (
               <div key={task.id} className={done ? 'done' : ''}>
                 <button
                   type="button"
                   className="icon-button"
                   onClick={() => toggleTask(task)}
-                  disabled={pending}
-                  aria-label={done ? `Mở lại công việc ${task.title}` : `Hoàn thành công việc ${task.title}`}
+                  disabled={pending || !canUpdate}
+                  aria-label={!canUpdate ? `Chờ điểm danh đúng ca để cập nhật ${task.title || task.name || 'công việc'}` : done ? `Mở lại công việc ${task.title || task.name || ''}` : `Hoàn thành công việc ${task.title || task.name || ''}`}
                   aria-pressed={done}
                 >
                   <CheckCircle2 size={18} />
                 </button>
-                <div><strong>{task.title}</strong><small>{task.detail}</small></div>
-                <Badge tone={done ? 'green' : 'orange'}>{pending ? 'Đang cập nhật...' : done ? 'Đã hoàn thành' : 'Chưa hoàn thành'}</Badge>
+                <div><strong>{task.title || task.name || 'Công việc'}</strong><small>{task.detail || task.description || 'Không có mô tả.'}</small></div>
+                <Badge tone={done ? 'green' : 'orange'}>{pending ? 'Đang cập nhật...' : done ? 'Đã hoàn thành' : canUpdate ? 'Chưa hoàn thành' : 'Chờ vào đúng ca'}</Badge>
               </div>
             )
           })}
-          {!todayTasks.length && <InfoNote>Chưa có công việc đúng ca làm hôm nay.</InfoNote>}
+          {!displayedTasks.length && <InfoNote>Chưa có công việc được giao cho bạn trong phạm vi này.</InfoNote>}
         </div>
       </Card>
+      <Card title="TRUY CẬP NHANH">
+        <div className="quick-action-grid">
+          <Button icon={Plus} onClick={() => navigate('/employee/orders')}>Tạo đơn hàng</Button>
+          <Button icon={Clock3} variant="outline" onClick={() => navigate('/employee/work-history')}>Lịch sử làm việc</Button>
+          <Button icon={Wallet} variant="outline" onClick={() => navigate('/employee/payroll')}>Bảng lương</Button>
+          <Button icon={Banknote} variant="outline" onClick={() => navigate('/employee/cashflow')}>Dòng tiền cá nhân</Button>
+        </div>
+      </Card>
+      <Modal open={Boolean(candidateModal)} onClose={() => setCandidateModal(null)} title="Chọn ca để điểm danh">
+        <div className="shift-choice-list">
+          {candidateModal?.candidates.map((shift) => (
+            <button type="button" key={shift.id} onClick={() => captureAndCheckIn(shift)} disabled={Boolean(locating)}>
+              <Clock3 />
+              <span><strong>{shift.name || shift.id}</strong><small>{shift.start} – {shift.end}</small></span>
+              <Badge tone={shift.isCurrent ? 'blue' : 'green'}>{shift.isCurrent ? 'Ca hiện tại' : `Vào sớm ${shift.minutesUntilStart} phút`}</Badge>
+            </button>
+          ))}
+        </div>
+        {candidateModal?.requiresEarlyConfirmation && <InfoNote tone="orange">Bạn đang điểm danh sớm. Hãy xác nhận đúng ca trước khi tiếp tục.</InfoNote>}
+      </Modal>
+      <Modal
+        open={checkoutOpen && Boolean(activeRecord)}
+        onClose={() => setCheckoutOpen(false)}
+        title="Kết ca và đối soát doanh thu"
+        footer={<><Button variant="outline" onClick={() => setCheckoutOpen(false)}>Hủy</Button><Button variant="danger" icon={LogOut} loading={locating === 'out'} disabled={!checkoutReady || Boolean(locating)} onClick={submitCheckout}>XÁC NHẬN KẾT CA</Button></>}
+      >
+        <div className="form-grid">
+          <Field label="Tiền mặt" required hint={`Theo đơn trong ca: ${money(expectedRevenue.cash)}`} error={cashRevenue && !reconciliation.cashMatches ? 'Số tiền mặt chưa khớp.' : ''}>
+            <Input inputMode="numeric" value={cashRevenue} onChange={(event) => setCashRevenue(moneyInput(event.target.value))} placeholder="0" />
+          </Field>
+          <Field label="Chuyển khoản" required hint={`Theo đơn trong ca: ${money(expectedRevenue.transfer)}`} error={transferRevenue && !reconciliation.transferMatches ? 'Số tiền chuyển khoản chưa khớp.' : ''}>
+            <Input inputMode="numeric" value={transferRevenue} onChange={(event) => setTransferRevenue(moneyInput(event.target.value))} placeholder="0" />
+          </Field>
+          <InfoNote tone={reconciliation.matches ? 'green' : 'orange'}>
+            Đã nhập {money(reconciliation.entered.total)} / Doanh thu đơn hàng {money(expectedRevenue.total)}. Hệ thống kiểm tra riêng tiền mặt và chuyển khoản.
+          </InfoNote>
+          {!revenueDeclared && <InfoNote tone="orange">Vui lòng nhập rõ cả hai ô; nếu không phát sinh hãy nhập 0.</InfoNote>}
+          {expectedRevenue.unknown > 0 && <InfoNote tone="orange">Có {money(expectedRevenue.unknown)} dùng hình thức thanh toán chưa hỗ trợ. Vui lòng liên hệ quản lý trước khi kết ca.</InfoNote>}
+          {incompleteTasks.length > 0 && (
+            <Field label={`Lý do chưa hoàn thành ${incompleteTasks.length} công việc`} required className="span-2" error={!incompleteTaskReason.trim() ? 'Bắt buộc nhập lý do để kết ca.' : ''}>
+              <textarea maxLength="1000" value={incompleteTaskReason} onChange={(event) => setIncompleteTaskReason(event.target.value)} placeholder="Nhập lý do cụ thể..." />
+            </Field>
+          )}
+        </div>
+      </Modal>
     </div>
   )
 }
@@ -205,13 +442,21 @@ export function EmployeeDashboardV2() {
 export function EmployeeOrdersPage() {
   const app = useApp()
   const [searchParams] = useSearchParams()
-  const { currentEmployee: employee, orders = [], attendance = [], createOrder, notify } = app
+  const { currentEmployee: employee, stores = [], orders = [], attendance = [], createOrder, notify } = app
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAge: '', amount: '', paymentMethod: 'Chuyển khoản' })
+  const [formErrors, setFormErrors] = useState({})
+  const [form, setForm] = useState(EMPTY_ORDER_FORM)
+  const orderRequestRef = useRef({ fingerprint: '', idempotencyKey: '' })
   const employeeId = employeeKey(employee)
+  const store = stores.find((item) => String(item.id) === String(employee?.storeId))
   const rows = orders
-    .filter((order) => !order.deletedAt && String(order.employeeId) === employeeId && order.source !== 'legacy-opening-balance')
+    .filter((order) => (
+      !order.deletedAt
+      && String(order.employeeId) === employeeId
+      && String(order.storeId) === String(employee?.storeId)
+      && order.source !== 'legacy-opening-balance'
+    ))
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
   const total = rows.reduce((sum, order) => sum + Number(order.amount || 0), 0)
   const requestedOrderId = String(searchParams.get('order') || '')
@@ -224,7 +469,21 @@ export function EmployeeOrdersPage() {
       notify('Bạn cần điểm danh vào ca trước khi tạo đơn hàng.', 'info')
       return
     }
+    orderRequestRef.current = { fingerprint: '', idempotencyKey: '' }
+    setFormErrors({})
     setOpen(true)
+  }
+
+  const closeCreate = () => {
+    orderRequestRef.current = { fingerprint: '', idempotencyKey: '' }
+    setForm(EMPTY_ORDER_FORM)
+    setFormErrors({})
+    setOpen(false)
+  }
+
+  const updateForm = (field, value) => {
+    setForm((current) => ({ ...current, [field]: value }))
+    setFormErrors((current) => current[field] ? { ...current, [field]: '' } : current)
   }
 
   useEffect(() => {
@@ -241,27 +500,42 @@ export function EmployeeOrdersPage() {
       setOpen(false)
       return
     }
-    if (!form.customerName.trim() || parseMoney(form.amount) <= 0) {
-      notify('Vui lòng nhập tên khách hàng và số tiền hợp lệ.', 'info')
+    const normalizedForm = { ...form, amount: parseMoney(form.amount), occupation: form.occupation.trim() }
+    const errors = validateEmployeeOrder(normalizedForm)
+    if (Object.keys(errors).length) {
+      setFormErrors(errors)
+      notify('Vui lòng nhập đủ các thông tin bắt buộc của đơn hàng.', 'info')
       return
+    }
+    const requestFingerprint = JSON.stringify({
+      ...normalizedForm,
+      employeeId,
+      storeId: employee?.storeId,
+      attendanceId: openAttendance?.id,
+      shiftId: openAttendance?.shiftId || openAttendance?.shift,
+    })
+    if (orderRequestRef.current.fingerprint !== requestFingerprint) {
+      orderRequestRef.current = {
+        fingerprint: requestFingerprint,
+        idempotencyKey: `order:${crypto.randomUUID()}`,
+      }
     }
     setSaving(true)
     try {
       const result = await createOrder({
-        ...form,
-        amount: parseMoney(form.amount),
+        ...normalizedForm,
         employeeId,
         storeId: employee?.storeId,
-        shiftId: openAttendance?.shift,
+        attendanceId: openAttendance?.id,
+        shiftId: openAttendance?.shiftId || openAttendance?.shift,
         shiftName: openAttendance?.shiftName,
-        idempotencyKey: `order:${employeeId}:${Date.now()}`,
+        idempotencyKey: orderRequestRef.current.idempotencyKey,
       })
       if (!result?.ok) {
         notify(result?.message || 'Không thể tạo đơn hàng.', 'info')
         return
       }
-      setForm({ customerName: '', customerPhone: '', customerAge: '', amount: '', paymentMethod: 'Chuyển khoản' })
-      setOpen(false)
+      closeCreate()
     } finally {
       setSaving(false)
     }
@@ -271,7 +545,7 @@ export function EmployeeOrdersPage() {
     <div className="page">
       <PageHeader
         title="ĐƠN HÀNG CỦA TÔI"
-        subtitle="Nhân viên chỉ được tạo và xem đơn do chính mình lập. Mã đơn được cấp tự động."
+        subtitle={`Mọi đơn hàng và doanh thu được ghi nhận cho ${store?.name || 'cửa hàng trực thuộc'}.`}
         icon={ShoppingCart}
         actions={<Button icon={Plus} onClick={openCreate} disabled={!openAttendance}>TẠO ĐƠN HÀNG</Button>}
       />
@@ -285,21 +559,24 @@ export function EmployeeOrdersPage() {
         {rows.length ? (
           <>
             <TableWrap>
-              <thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Điện thoại</th><th>Tuổi</th><th>Ca làm việc</th><th>Thanh toán</th><th>Số tiền</th></tr></thead>
-              <tbody>{rows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td><strong>{order.code}</strong></td><td>{timestamp(order.createdAt)}</td><td>{order.customerName || 'Khách lẻ'}</td><td>{order.customerPhone || '—'}</td><td>{order.customerAge ?? '—'}</td><td>{order.shiftName || 'Chưa gắn ca'}</td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
+              <thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Giới tính</th><th>Nghề nghiệp</th><th>Biết qua kênh</th><th>Ca làm việc</th><th>Thanh toán</th><th>Số tiền</th></tr></thead>
+              <tbody>{rows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td><strong>{order.code}</strong></td><td>{timestamp(order.createdAt)}</td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || '—'} • {order.customerAge ?? '—'} tuổi</small></td><td>{order.gender || '—'}</td><td>{order.occupation || '—'}</td><td><Badge tone="green">{order.acquisitionChannel || '—'}</Badge></td><td>{order.shiftName || 'Chưa gắn ca'}</td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
             </TableWrap>
             <TableFooter shown={rows.length} total={rows.length} />
           </>
         ) : <EmptyState title="Chưa có đơn hàng" description="Nhấn Tạo đơn hàng để ghi nhận đơn đầu tiên." />}
       </Card>
-      <Modal open={open} onClose={() => setOpen(false)} title="Tạo đơn hàng" footer={<><Button variant="outline" onClick={() => setOpen(false)}>Hủy</Button><Button icon={ShoppingCart} loading={saving} onClick={save}>LƯU ĐƠN</Button></>}>
+      <Modal open={open} onClose={closeCreate} title={`Tạo đơn hàng • ${store?.name || 'IDOSI'}`} footer={<><Button variant="outline" onClick={closeCreate}>Hủy</Button><Button icon={ShoppingCart} loading={saving} onClick={save}>LƯU ĐƠN</Button></>}>
         <div className="form-grid">
-          <Field label="Tên khách hàng" required><Input value={form.customerName} onChange={(event) => setForm({ ...form, customerName: event.target.value })} /></Field>
-          <Field label="Số điện thoại"><Input inputMode="tel" value={form.customerPhone} onChange={(event) => setForm({ ...form, customerPhone: event.target.value })} /></Field>
-          <Field label="Tuổi"><Input type="number" min="0" max="120" value={form.customerAge} onChange={(event) => setForm({ ...form, customerAge: event.target.value })} /></Field>
-          <Field label="Số tiền" required><Input inputMode="numeric" value={form.amount} onChange={(event) => setForm({ ...form, amount: moneyInput(event.target.value) })} /></Field>
-          <Field label="Hình thức thanh toán"><Select value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })}><option>Chuyển khoản</option><option>Tiền mặt</option></Select></Field>
-          <InfoNote>Đơn sẽ tự gắn với {openAttendance?.shiftName || openAttendance?.shift} và thời gian tạo thực tế.</InfoNote>
+          <Field label="Tên khách hàng" required error={formErrors.customerName}><Input value={form.customerName} onChange={(event) => updateForm('customerName', event.target.value)} /></Field>
+          <Field label="Số điện thoại"><Input inputMode="tel" value={form.customerPhone} onChange={(event) => updateForm('customerPhone', event.target.value)} /></Field>
+          <Field label="Tuổi"><Input type="number" min="0" max="120" value={form.customerAge} onChange={(event) => updateForm('customerAge', event.target.value)} /></Field>
+          <Field label="Giới tính" required hint="Hỏi khách hoặc đoán." error={formErrors.gender}><Select value={form.gender} onChange={(event) => updateForm('gender', event.target.value)}><option value="">Chọn giới tính</option>{ORDER_GENDERS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
+          <Field label="Nghề nghiệp" required hint="Hỏi khách hoặc đoán." error={formErrors.occupation}><Input value={form.occupation} onChange={(event) => updateForm('occupation', event.target.value)} placeholder="Ví dụ: Nhân viên văn phòng" /></Field>
+          <Field label="Biết qua kênh nào" required error={formErrors.acquisitionChannel}><Select value={form.acquisitionChannel} onChange={(event) => updateForm('acquisitionChannel', event.target.value)}><option value="">Chọn kênh</option>{ACQUISITION_CHANNELS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
+          <Field label="Số tiền" required error={formErrors.amount}><Input inputMode="numeric" value={form.amount} onChange={(event) => updateForm('amount', moneyInput(event.target.value))} /></Field>
+          <Field label="Hình thức thanh toán" required><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option>Chuyển khoản</option><option>Tiền mặt</option></Select></Field>
+          <InfoNote>Đơn sẽ tự gắn với {openAttendance?.shiftName || openAttendance?.shift}, {store?.name || 'cửa hàng trực thuộc'} và thời gian tạo thực tế.</InfoNote>
         </div>
       </Modal>
     </div>
@@ -308,9 +585,10 @@ export function EmployeeOrdersPage() {
 
 export function EmployeeAttendancePage() {
   const app = useApp()
-  const { currentEmployee: employee, attendance = [], orders = [], policies, checkIn, checkOut, notify } = app
+  const navigate = useNavigate()
+  const { currentEmployee: employee, attendance = [], orders = [], policies, checkIn, notify } = app
   const employeeId = employeeKey(employee)
-  const rows = employeeAttendance(attendance, employeeId)
+  const rows = employeeAttendance(attendance, employeeId, employee?.storeId)
   const openRecord = rows.find((record) => !record.checkOut && !record.checkOutAt)
   const [candidateModal, setCandidateModal] = useState(null)
   const [locating, setLocating] = useState('')
@@ -365,19 +643,6 @@ export function EmployeeAttendancePage() {
     setCandidateModal(result)
   }
 
-  const handleCheckOut = async () => {
-    setLocating('out')
-    try {
-      const location = await geolocate()
-      const result = await checkOut({ employeeId, location })
-      if (!result?.ok) notify(result?.message || 'Không thể ghi nhận ra về.', 'info')
-    } catch (error) {
-      notify(error.message, 'info')
-    } finally {
-      setLocating('')
-    }
-  }
-
   const stats = rows.reduce((value, record) => {
     const label = statusLabel(record.arrivalTag || record.status)
     value.total += 1
@@ -399,11 +664,11 @@ export function EmployeeAttendancePage() {
           <span>{openRecord ? `${openRecord.shiftName} • ${openRecord.shiftStart}–${openRecord.shiftEnd}` : `${scheduledShifts.length} ca được xếp hôm nay`}</span>
           <Button icon={Fingerprint} onClick={beginCheckIn} loading={locating === 'in'} disabled={Boolean(openRecord) || Boolean(locating)}>ĐIỂM DANH</Button>
         </Card>
-        <Card className="attendance-action-card" title="Ra về">
+        <Card className="attendance-action-card" title="Kết ca">
           <MapPin size={32} />
           <strong>{openRecord ? 'Đang làm việc' : 'Chưa có ca mở'}</strong>
-          <span>Chỉ ghi nhận khi bạn chủ động bấm nút</span>
-          <Button variant="danger" icon={LogOut} onClick={handleCheckOut} loading={locating === 'out'} disabled={!openRecord || Boolean(locating)}>GHI NHẬN RA VỀ</Button>
+          <span>Đối soát tiền mặt, chuyển khoản và công việc tại Trang chủ.</span>
+          {openRecord ? <Button variant="danger" icon={LogOut} onClick={() => navigate('/employee/home')}>MỞ KẾT CA</Button> : null}
         </Card>
       </div>
       <div className="metric-grid metric-grid--four">
@@ -455,7 +720,7 @@ export function EmployeePayrollDetails() {
     ...payrollPeriods.filter((item) => item.rows?.some((row) => String(row.employeeId) === employeeId)).map((item) => item.period),
   ].filter(Boolean))].sort().reverse()
   const [period, setPeriod] = useState(() => periods[0] || today().slice(0, 7))
-  const rows = employeeAttendance(attendance, employeeId).filter((record) => recordDate(record).startsWith(period))
+  const rows = employeeAttendance(attendance, employeeId, employee?.storeId).filter((record) => recordDate(record).startsWith(period))
   const snapshot = payrollPeriods.find((item) => item.period === period && item.rows?.some((row) => String(row.employeeId) === employeeId))
   const snapshotRow = snapshot?.rows.find((row) => String(row.employeeId) === employeeId)
   const hours = rows.reduce((sum, record) => sum + workedHours(record), 0)

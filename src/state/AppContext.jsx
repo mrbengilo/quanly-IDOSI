@@ -60,7 +60,7 @@ const LOCAL_PROFILE_CREDENTIAL_KEYS = new Set([
 ])
 
 const ORDER_OPERATIONAL_MUTABLE_FIELDS = [
-  'customerName', 'customerPhone', 'customerAge', 'amount', 'paymentMethod',
+  'customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod',
   'status', 'deletedAt', 'deletedBy', 'deleteReason',
 ]
 const ATTENDANCE_CORRECTION_FIELDS = [
@@ -90,7 +90,7 @@ export const isRestorableOperationalAuditAction = (action, dataType) => (
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const REMOTE_ARRAY_KEYS = [
-  'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'supportWorkAssignments', 'officeAdjustments',
+  'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'officeAdjustments',
   'orders', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
   'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
@@ -191,6 +191,8 @@ const isSystemRole = (role) => ['admin', 'business_support', 'manager'].includes
 const isStoreWorkspaceRole = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
 const canListAccounts = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
 const isValidEmployeePhone = (value) => /^0\d{9}$/.test(normalizePhone(value))
+const ORDER_GENDERS = new Set(['Nam', 'Nữ', 'Khác'])
+const ORDER_ACQUISITION_CHANNELS = new Set(['Facebook', 'Tiktok', 'Zalo', 'Bạn Bè', 'Người thân', 'Khác'])
 
 const normalizeCredentialToken = (value = '') => String(value)
   .normalize('NFD')
@@ -385,6 +387,12 @@ const normalizeTask = (task = {}, fallbackStoreId = null) => ({
   date: task.date || task.workDate || today(),
   title: String(task.title || '').trim(),
   detail: String(task.detail || '').trim(),
+  employeeId: task.employeeId || null,
+  employeeIds: [...new Set([
+    ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
+    ...(Array.isArray(task.assigneeIds) ? task.assigneeIds : []),
+    ...(task.employeeId ? [task.employeeId] : []),
+  ].map(String).filter(Boolean))],
   done: Boolean(task.done),
 })
 
@@ -403,6 +411,7 @@ export const createInitialState = () => {
     attendance: clone(attendanceSeed),
     schedule: clone(scheduleSeed),
     tasks: clone(tasksSeed).map((task) => normalizeTask(task, storesSeed[0]?.id)),
+    taskAssignmentHistory: [],
     supportWorkAssignments: [],
     officeAdjustments: clone(officeAdjustmentsSeed),
     activeStoreId: storesSeed[0]?.id || null,
@@ -461,10 +470,12 @@ export const createLocalSystemResetState = (current = {}) => {
   clearedState.orderCounters = {}
   clearedState.importCounter = 0
   clearedState.systemResetCompletedAt = new Date().toISOString()
-  const retainedAdmins = (Array.isArray(current.adminAccounts) ? current.adminAccounts : [])
-    .filter((account) => normalizeAuthRole(account.role) === 'admin')
-    .map(normalizeAdmin)
-  clearedState.adminAccounts = retainedAdmins.length ? retainedAdmins : clearedState.adminAccounts
+  const retainedAdmin = (Array.isArray(current.adminAccounts) ? current.adminAccounts : [])
+    .find((account) => normalizeAuthRole(account.role) === 'admin' && (
+      accountKey(account) === accountKey(current.session)
+      || (account.username && normalizeText(account.username) === normalizeText(current.session?.username))
+    ))
+  clearedState.adminAccounts = retainedAdmin ? [normalizeAdmin(retainedAdmin)] : clearedState.adminAccounts.slice(0, 1)
   clearedState.managerAccounts = []
   clearedState.settings = current.settings && typeof current.settings === 'object' ? { ...current.settings } : clearedState.settings
   clearedState.session = current.session?.role === 'admin' ? current.session : null
@@ -745,6 +756,7 @@ export function AppProvider({ children }) {
   const [toast, setToast] = useState(null)
   const [credentialsReady, setCredentialsReady] = useState(false)
   const [apiStatus, setApiStatus] = useState('local')
+  const [attendanceCheckoutRequests, setAttendanceCheckoutRequests] = useState({})
   const apiRef = useRef({
     enabled: false,
     role: null,
@@ -1233,7 +1245,6 @@ export function AppProvider({ children }) {
   const updateEmployee = async (id, payload) => {
     const actorRole = normalizeAuthRole(state.session?.role)
     if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền cập nhật nhân viên.' }
-    if (actorRole === 'business_support') return { ok: false, message: 'Nhân viên Hỗ trợ KD không được sửa tài khoản nhân viên.' }
     if (hasDuplicateAccount(payload, id)) {
       notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
       return { ok: false }
@@ -1436,40 +1447,89 @@ export function AppProvider({ children }) {
     return { ok: true }
   }
 
-  const replaceTasks = async (tasks) => {
-    const nextTasks = (Array.isArray(tasks) ? tasks : []).map((task) => normalizeTask(task, state.activeStoreId))
+  const replaceTasks = async (input) => {
+    const envelope = Array.isArray(input)
+      ? { tasks: input }
+      : (input && typeof input === 'object' ? input : { tasks: [] })
+    const rawTasks = Array.isArray(envelope.tasks) ? envelope.tasks : []
+    const legacyScope = rawTasks[0] || {}
+    const storeId = envelope.storeId || legacyScope.storeId || state.activeStoreId
+    const date = envelope.date || legacyScope.date || legacyScope.workDate || today()
+    const shiftId = envelope.shiftId ?? legacyScope.shiftId ?? legacyScope.shift ?? ''
+    const employeeIds = [...new Set([
+      ...(Array.isArray(envelope.employeeIds) ? envelope.employeeIds : []),
+      ...(Array.isArray(envelope.assigneeIds) ? envelope.assigneeIds : []),
+      ...(envelope.employeeId ? [envelope.employeeId] : []),
+    ].map(String).filter(Boolean))]
+    const nextTasks = rawTasks.map((task) => normalizeTask({
+      ...task,
+      storeId,
+      date,
+      shiftId,
+      employeeIds: employeeIds.length ? employeeIds : task.employeeIds,
+    }, storeId))
     const scope = nextTasks[0]
     if (!scope) return { ok: false, message: 'Cần có ít nhất một công việc để lưu.' }
+    if (!storeId || !date || !shiftId) return { ok: false, message: 'Vui lòng chọn đủ cửa hàng, ngày và ca làm việc.' }
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('tasks.replace_scope', {
-          storeId: scope.storeId,
-          date: scope.date,
-          shiftId: scope.shiftId,
+        const assigningEmployees = employeeIds.length > 0
+        const result = await runRemoteDomainCommand(assigningEmployees ? 'tasks.assign' : 'tasks.replace_scope', {
+          storeId,
+          date,
+          shiftId,
+          ...(assigningEmployees ? { employeeIds } : {}),
           tasks: nextTasks.map(({ title, detail }) => ({ title, detail })),
-        })
+        }, envelope.idempotencyKey || `tasks:${crypto.randomUUID()}`)
         notify('Đã lưu và gửi danh sách công việc.')
-        return { ok: true, tasks: result.tasks || [] }
+        return { ok: true, tasks: result.tasks || [], assignment: result.assignment || null, history: result.history || result.taskAssignmentHistory || null }
       } catch (error) {
         notify(error.message || 'Không thể lưu danh sách công việc.', 'info')
         return { ok: false, message: error.message }
       }
     }
-    setState((current) => ({
-      ...current,
-      tasks: scope
-        ? [
-            ...nextTasks,
-            ...current.tasks.filter((task) => !(
-              String(task.storeId) === String(scope.storeId)
-              && String(task.shiftId || task.shift) === String(scope.shiftId)
-              && String(task.date || task.workDate) === String(scope.date)
-            )),
-          ]
-        : current.tasks,
+    const assignedAt = new Date().toISOString()
+    const assignedBy = actorSnapshot(state.session)
+    const assignmentId = employeeIds.length ? uid('TAS') : null
+    const assignedTasks = nextTasks.map((task) => ({
+      ...task,
+      ...(assignmentId ? { assignmentId, employeeIds, assignedAt, assignedBy, createdAt: assignedAt, createdBy: assignedBy } : {}),
     }))
+    const assignment = assignmentId ? {
+      id: assignmentId,
+      storeId,
+      date,
+      shiftId,
+      employeeIds,
+      tasks: assignedTasks.map(({ id, title, detail, completedBy = {} }) => ({ id, title, detail, completedBy })),
+      assignedAt,
+      assignedBy,
+      status: 'Đã giao',
+    } : null
+    setState((current) => {
+      const legacyTasks = assignmentId
+        ? current.tasks
+        : current.tasks.filter((task) => !(
+            String(task.storeId) === String(scope.storeId)
+            && String(task.shiftId || task.shift) === String(scope.shiftId)
+            && String(task.date || task.workDate) === String(scope.date)
+          ))
+      const notifications = assignmentId
+        ? employeeIds.map((employeeId) => ({
+            id: uid('NTF'), type: 'store-task-assigned', storeId, employeeId, targetEmployeeId: employeeId,
+            assignmentId, title: 'Bạn có công việc mới', message: `Bạn được giao ${assignedTasks.length} công việc cho ngày ${date}.`,
+            route: '/employee/home', createdAt: assignedAt, readAt: null,
+          }))
+        : []
+      return {
+        ...current,
+        tasks: [...assignedTasks, ...legacyTasks],
+        taskAssignmentHistory: assignment ? [assignment, ...(current.taskAssignmentHistory || [])] : (current.taskAssignmentHistory || []),
+        notifications: [...notifications, ...(current.notifications || [])],
+      }
+    })
     notify('Đã lưu và gửi danh sách công việc.')
-    return { ok: true, tasks: nextTasks }
+    return { ok: true, tasks: assignedTasks, assignment }
   }
 
   const assignSupportWork = async (payload = {}) => {
@@ -1717,6 +1777,12 @@ export function AppProvider({ children }) {
     const storeId = state.session?.role === 'employee' ? state.session.storeId : requestedStoreId
     const store = state.stores.find((item) => item.id === storeId)
     if (!store || amount <= 0) return { ok: false, message: 'Cửa hàng hoặc số tiền đơn hàng chưa hợp lệ.' }
+    const gender = String(payload.gender || '').trim()
+    const occupation = String(payload.occupation || '').trim()
+    const acquisitionChannel = String(payload.acquisitionChannel || '').trim()
+    if (!ORDER_GENDERS.has(gender)) return { ok: false, message: 'Vui lòng chọn giới tính khách hàng.' }
+    if (!occupation) return { ok: false, message: 'Vui lòng nhập nghề nghiệp khách hàng.' }
+    if (!ORDER_ACQUISITION_CHANNELS.has(acquisitionChannel)) return { ok: false, message: 'Vui lòng chọn kênh khách hàng biết đến cửa hàng.' }
     const idempotencyKey = String(payload.idempotencyKey || '').trim()
     if (idempotencyKey && state.idempotencyKeys.includes(idempotencyKey)) {
       const existing = state.orders.find((item) => item.idempotencyKey === idempotencyKey)
@@ -1727,7 +1793,7 @@ export function AppProvider({ children }) {
       try {
         const result = await runRemoteDomainCommand(
           'order.create',
-          { ...payload, amount, storeId, idempotencyKey: undefined },
+          { ...payload, gender, occupation, acquisitionChannel, amount, storeId, idempotencyKey: undefined },
           idempotencyKey || `order:${crypto.randomUUID()}`,
         )
         notify(`Đã tạo đơn hàng ${result.order.code}.`)
@@ -1750,6 +1816,9 @@ export function AppProvider({ children }) {
       customerName: String(payload.customerName || '').trim(),
       customerPhone: normalizePhone(payload.customerPhone),
       customerAge: payload.customerAge === '' || payload.customerAge == null ? null : Math.max(0, Number(payload.customerAge) || 0),
+      gender,
+      occupation,
+      acquisitionChannel,
       amount,
       paymentMethod: payload.paymentMethod === 'Tiền mặt' ? 'Tiền mặt' : 'Chuyển khoản',
       employeeId,
@@ -1811,11 +1880,14 @@ export function AppProvider({ children }) {
       customerName: payload.customerName == null ? previous.customerName : String(payload.customerName).trim(),
       customerPhone: payload.customerPhone == null ? previous.customerPhone : normalizePhone(payload.customerPhone),
       customerAge: payload.customerAge == null ? previous.customerAge : Math.max(0, Number(payload.customerAge) || 0),
+      gender: payload.gender == null ? previous.gender : String(payload.gender).trim(),
+      occupation: payload.occupation == null ? previous.occupation : String(payload.occupation).trim(),
+      acquisitionChannel: payload.acquisitionChannel == null ? previous.acquisitionChannel : String(payload.acquisitionChannel).trim(),
       amount: payload.amount == null ? previous.amount : nonNegativeInteger(payload.amount),
       paymentMethod: payload.paymentMethod || previous.paymentMethod,
     }
     if (candidate.amount <= 0) return { ok: false, message: 'Số tiền đơn hàng phải lớn hơn 0.' }
-    const changedFields = ['customerName', 'customerPhone', 'customerAge', 'amount', 'paymentMethod']
+    const changedFields = ['customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod']
       .filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(candidate[key]))
     if (!changedFields.length) return { ok: true, order: previous, existing: true }
     const next = { ...candidate, updatedAt: timestamp }
@@ -2767,17 +2839,48 @@ export function AppProvider({ children }) {
       notify('Không tìm thấy lượt điểm danh đang mở.', 'info')
       return { ok: false }
     }
+    const storeEmployeeAttendance = String(openRecord.unit || openRecord.unitType || 'store') === 'store'
+      && !['OFFICE', 'BUSINESS_SUPPORT'].includes(String(openRecord.storeId || ''))
 
     if (apiRef.current.enabled) {
-      const idempotencyKey = payload.idempotencyKey || `attendance-out:${crypto.randomUUID()}`
-      try {
-        const commandPayload = {
-          attendanceId: openRecord.id,
-          location: payload.location || payload.coords || payload,
-          ...(payload.expense == null ? {} : { expense: nonNegativeInteger(payload.expense) }),
-          ...(payload.tiktok == null ? {} : { tiktok: Boolean(payload.tiktok) }),
+      const rawLocation = payload.location || payload.coords || (
+        payload.latitude != null || payload.lat != null ? payload : null
+      )
+      const proposedCommandPayload = {
+        attendanceId: openRecord.id,
+        location: rawLocation,
+        ...(storeEmployeeAttendance ? {
+          cashRevenue: nonNegativeInteger(payload.cashRevenue ?? payload.cash),
+          transferRevenue: nonNegativeInteger(payload.transferRevenue ?? payload.transfer),
+          incompleteTaskReason: String(payload.incompleteTaskReason || payload.incompleteReason || '').trim(),
+        } : {}),
+        ...(payload.expense == null ? {} : { expense: nonNegativeInteger(payload.expense) }),
+        ...(payload.tiktok == null ? {} : { tiktok: Boolean(payload.tiktok) }),
+      }
+      const { location: _location, ...checkoutBusinessPayload } = proposedCommandPayload
+      void _location
+      const requestFingerprint = JSON.stringify(checkoutBusinessPayload)
+      const requestKey = String(openRecord.id)
+      const storedRequest = attendanceCheckoutRequests[requestKey]
+      const explicitIdempotencyKey = String(payload.idempotencyKey || '')
+      let request = storedRequest
+      if (!storedRequest
+        || storedRequest.fingerprint !== requestFingerprint
+        || (explicitIdempotencyKey && storedRequest.idempotencyKey !== explicitIdempotencyKey)) {
+        request = {
+          fingerprint: requestFingerprint,
+          idempotencyKey: explicitIdempotencyKey || `attendance-out:${crypto.randomUUID()}`,
+          commandPayload: proposedCommandPayload,
         }
-        const result = await runRemoteDomainCommand('attendance.check_out', commandPayload, idempotencyKey)
+        setAttendanceCheckoutRequests((current) => ({ ...current, [requestKey]: request }))
+      }
+      try {
+        const result = await runRemoteDomainCommand('attendance.check_out', request.commandPayload, request.idempotencyKey)
+        setAttendanceCheckoutRequests((current) => {
+          const { [requestKey]: _completed, ...remaining } = current
+          void _completed
+          return remaining
+        })
         notify(finishMessage ? 'Đã kết ca và lưu thông tin chấm công.' : `Đã ghi nhận ra về lúc ${result.attendance.checkOut}.`)
         return { ok: true, record: result.attendance }
       } catch (error) {
@@ -2795,6 +2898,47 @@ export function AppProvider({ children }) {
     const departureTag = getDepartureTag(checkOutTime, openRecord.shiftEnd, payload.toleranceMinutes ?? state.policies.lateToleranceMinutes)
     const checkOutAt = localDateTime(at)
     const hours = calculateWorkedHours(openRecord.checkInAt || openRecord.checkIn, checkOutAt)
+    const relatedOrders = state.orders.filter((order) => (
+      !order.deletedAt
+      && order.status !== 'Đã xóa'
+      && String(order.employeeId || '') === String(employeeId || '')
+      && String(order.storeId || '') === String(openRecord.storeId || '')
+      && (
+        String(order.attendanceId || '') === String(openRecord.id || '')
+        || (!order.attendanceId
+          && String(order.shiftId || '') === String(openRecord.shiftId || openRecord.shift || '')
+          && Date.parse(order.createdAt) >= Date.parse(openRecord.checkInAt)
+          && Date.parse(order.createdAt) <= at.getTime())
+      )
+    ))
+    const expectedCashRevenue = relatedOrders.filter((order) => order.paymentMethod === 'Tiền mặt').reduce((sum, order) => sum + Number(order.amount || 0), 0)
+    const expectedTransferRevenue = relatedOrders.filter((order) => order.paymentMethod === 'Chuyển khoản').reduce((sum, order) => sum + Number(order.amount || 0), 0)
+    const cashRevenue = nonNegativeInteger(payload.cashRevenue ?? payload.cash)
+    const transferRevenue = nonNegativeInteger(payload.transferRevenue ?? payload.transfer)
+    const scopedTasks = state.tasks.filter((task) => {
+      const assignees = new Set([
+        ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
+        ...(Array.isArray(task.assigneeIds) ? task.assigneeIds : []),
+        ...(task.employeeId ? [task.employeeId] : []),
+      ].map(String))
+      return !task.deletedAt
+        && String(task.storeId || '') === String(openRecord.storeId || '')
+        && String(task.date || task.workDate || '') === String(openRecord.date || openRecord.workDate || '')
+        && (!String(task.shiftId || task.shift || '') || String(task.shiftId || task.shift || '') === String(openRecord.shiftId || openRecord.shift || ''))
+        && (!assignees.size || assignees.has(String(employeeId || '')))
+    })
+    const incompleteTasks = scopedTasks.filter((task) => !(task.completedBy?.[employeeId] ?? task.done))
+    const incompleteTaskReason = String(payload.incompleteTaskReason || payload.incompleteReason || '').trim()
+    if (storeEmployeeAttendance && (cashRevenue !== expectedCashRevenue || transferRevenue !== expectedTransferRevenue)) {
+      const message = `Doanh thu kết ca chưa khớp: tiền mặt ${expectedCashRevenue.toLocaleString('en-US')} đ, chuyển khoản ${expectedTransferRevenue.toLocaleString('en-US')} đ.`
+      notify(message, 'info')
+      return { ok: false, message, expectedCashRevenue, expectedTransferRevenue }
+    }
+    if (storeEmployeeAttendance && incompleteTasks.length && !incompleteTaskReason) {
+      const message = 'Cần nhập lý do cho các công việc chưa hoàn thành trước khi kết ca.'
+      notify(message, 'info')
+      return { ok: false, message, incompleteTaskIds: incompleteTasks.map((task) => task.id) }
+    }
     const updated = {
       ...openRecord,
       ...payload.details,
@@ -2805,10 +2949,13 @@ export function AppProvider({ children }) {
       departureTag,
       hours,
       workdayCredit: openRecord.unit === 'office' || openRecord.storeId === 'OFFICE' ? 1 : openRecord.workdayCredit,
-      revenue: Number(payload.revenue ?? payload.totalRevenue ?? (Number(payload.cash || 0) + Number(payload.transfer || 0))) || Number(openRecord.revenue) || 0,
+      revenue: storeEmployeeAttendance ? expectedCashRevenue + expectedTransferRevenue : Number(payload.revenue ?? payload.totalRevenue ?? (Number(payload.cash || 0) + Number(payload.transfer || 0))) || Number(openRecord.revenue) || 0,
       expense: Number(payload.expense) || Number(openRecord.expense) || 0,
-      cash: Number(payload.cash) || Number(openRecord.cash) || 0,
-      transfer: Number(payload.transfer) || Number(openRecord.transfer) || 0,
+      cash: storeEmployeeAttendance ? expectedCashRevenue : Number(payload.cash) || Number(openRecord.cash) || 0,
+      transfer: storeEmployeeAttendance ? expectedTransferRevenue : Number(payload.transfer) || Number(openRecord.transfer) || 0,
+      orderCount: storeEmployeeAttendance ? relatedOrders.length : Number(openRecord.orderCount) || 0,
+      incompleteTaskReason: incompleteTasks.length ? incompleteTaskReason : '',
+      incompleteTaskIds: incompleteTasks.map((task) => task.id),
       tiktok: Boolean(payload.tiktok ?? openRecord.tiktok),
       note: payload.note ?? openRecord.note,
     }

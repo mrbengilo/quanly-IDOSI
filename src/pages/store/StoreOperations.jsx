@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import {
   BarChart3,
   Box,
@@ -58,6 +58,13 @@ import {
 } from '../../utils'
 import { selectTaskShiftForDate, taskShiftOptionsForDate } from './taskScope'
 import {
+  buildStoreTaskAssignmentPayload,
+  canAssignStoreTasks,
+  formatTaskDate,
+  formatTaskDateTime24,
+  storeTaskHistory,
+} from './storeTaskAssignments'
+import {
   buildStoreEmployeePayload,
   formatStoreMoneyInput,
   generateStoreEmployeeCredentials,
@@ -102,6 +109,10 @@ const isPartTime = isPartTimeEmployee
 const normalizeEmploymentType = normalizeStoreEmploymentType
 const employmentTypeLabel = normalizeStoreEmploymentType
 const formatMoneyInput = formatStoreMoneyInput
+
+let storeTaskDraftSequence = 0
+const newStoreTaskRow = () => ({ id: `store-task-draft-${storeTaskDraftSequence += 1}`, title: '', detail: '' })
+const storeTaskStatusTone = (status) => status === 'Hoàn thành' ? 'green' : status === 'Đang thực hiện' ? 'blue' : 'orange'
 
 const readIdentityImage = (file) => new Promise((resolve, reject) => {
   if (!file) return resolve('')
@@ -642,13 +653,15 @@ export function StoreTasks() {
   const {
     activeStore,
     storeId,
+    employees = [],
     tasks = [],
+    taskAssignmentHistory = [],
     shiftDefinitions = [],
     replaceTasks,
     notify,
     session,
   } = useStoreScope()
-  const canManageStore = ['admin', 'store_manager'].includes(session?.role)
+  const canManageStore = canAssignStoreTasks(session?.role)
   const initialDate = today()
   const optionsForDate = (nextDate) => taskShiftOptionsForDate({
     shiftDefinitions,
@@ -664,91 +677,132 @@ export function StoreTasks() {
     date: initialDate,
     shiftOptions: optionsForDate(initialDate),
   }))
-  const rowsForScope = (nextShiftId, nextDate) => tasks
-    .filter((task) => (
-      String(task.storeId) === String(storeId)
-      && String(task.shiftId || task.shift) === String(nextShiftId)
-      && String(task.date || task.workDate) === String(nextDate)
-    ))
-    .map(({ id, title, detail }) => ({ id, title, detail }))
-  const [rows, setRows] = useState(() => rowsForScope(shiftId, date))
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([])
+  const [rows, setRows] = useState(() => [newStoreTaskRow()])
+  const [busy, setBusy] = useState(false)
+  const assignmentRequestRef = useRef({ fingerprint: '', idempotencyKey: '' })
+  const assignableEmployees = employees.filter((employee) => (
+    !employee.deletedAt && String(employee.status || '').toLocaleLowerCase('vi-VN') !== 'đã nghỉ việc'
+  ))
+  const assignableEmployeeIds = new Set(assignableEmployees.map((employee) => String(employee.id || employee.code || employee.employeeCode || '')))
+  const selectedIds = selectedEmployeeIds.filter((id) => assignableEmployeeIds.has(String(id)))
+  const selectedIdSet = new Set(selectedIds.map(String))
+  const history = storeTaskHistory({ taskAssignmentHistory, tasks, storeId, employees, shiftDefinitions })
 
   const changeShift = (nextShiftId) => {
     if (!shiftOptions.some((shift) => String(shift.id) === String(nextShiftId))) return
     setShiftId(nextShiftId)
-    setRows(rowsForScope(nextShiftId, date))
   }
   const changeDate = (nextDate) => {
     const nextShiftOptions = optionsForDate(nextDate)
     const nextShiftId = selectTaskShiftForDate({ tasks, storeId, date: nextDate, shiftOptions: nextShiftOptions })
     setDate(nextDate)
     setShiftId(nextShiftId)
-    setRows(nextShiftId ? rowsForScope(nextShiftId, nextDate) : [])
   }
   const updateRow = (index, key, value) => setRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, [key]: value } : item))
-  const removeRow = (index) => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))
+  const removeRow = (index) => setRows((current) => current.length > 1 ? current.filter((_, rowIndex) => rowIndex !== index) : current)
+  const toggleEmployee = (id) => setSelectedEmployeeIds((current) => current.some((item) => String(item) === String(id))
+    ? current.filter((item) => String(item) !== String(id))
+    : [...current, String(id)])
   const send = async () => {
     if (!canManageStore) return
     if (!date || !shiftId) return notify?.('Vui lòng chọn ngày và ca làm việc.', 'info')
     if (!shiftOptions.some((shift) => String(shift.id) === String(shiftId))) {
       return notify?.('Ca làm việc không hợp lệ cho ngày đã chọn. Vui lòng chọn lại ca.', 'info')
     }
-    const validRows = rows.filter((item) => item.title.trim())
-    if (!validRows.length) return notify?.('Danh sách công việc đang trống.', 'info')
-    const nextTasks = validRows.map((item, index) => ({
-      ...item,
-      id: item.id || `CV-${Date.now()}-${index + 1}`,
-      title: item.title.trim(),
-      detail: item.detail.trim(),
-      storeId,
-      storeName: activeStore?.name || '',
-      shiftId,
-      date,
-      done: false,
-    }))
-    const result = await replaceTasks?.(nextTasks)
-    if (result?.ok === false) return notify?.(result.message || 'Chưa thể lưu danh sách công việc.', 'info')
-    const savedTasks = Array.isArray(result?.tasks) ? result.tasks : nextTasks
-    setRows(savedTasks.map(({ id, title, detail }) => ({ id, title, detail })))
+    if (!selectedIds.length) return notify?.('Vui lòng chọn ít nhất một nhân viên nhận việc.', 'info')
+    if (rows.some((item) => !String(item.title || '').trim())) return notify?.('Mỗi công việc cần có tên.', 'info')
+    if (typeof replaceTasks !== 'function') return notify?.('Chức năng giao việc chưa sẵn sàng.', 'info')
+
+    const payload = buildStoreTaskAssignmentPayload({ storeId, date, shiftId, employeeIds: selectedIds, tasks: rows })
+    const requestFingerprint = JSON.stringify(payload)
+    if (assignmentRequestRef.current.fingerprint !== requestFingerprint) {
+      assignmentRequestRef.current = {
+        fingerprint: requestFingerprint,
+        idempotencyKey: `tasks:${crypto.randomUUID()}`,
+      }
+    }
+    setBusy(true)
+    try {
+      const result = await replaceTasks({ ...payload, idempotencyKey: assignmentRequestRef.current.idempotencyKey })
+      if (result?.ok === false) return notify?.(result.message || 'Chưa thể gửi danh sách công việc.', 'info')
+      assignmentRequestRef.current = { fingerprint: '', idempotencyKey: '' }
+      setRows([newStoreTaskRow()])
+      setSelectedEmployeeIds([])
+    } catch (error) {
+      notify?.(error.message || 'Chưa thể gửi danh sách công việc.', 'info')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
     <div className="page admin-task-page">
       <PageHeader title="Giao việc" subtitle={canManageStore ? `Tạo danh sách công việc theo ca tại ${activeStore?.name || 'cửa hàng đang chọn'}.` : `Xem danh sách công việc theo ca tại ${activeStore?.name || 'cửa hàng đang chọn'}.`} icon={ClipboardCheck} />
-      {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể tạo, sửa, xóa hoặc gửi công việc.</InfoNote>}
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Chỉ Admin, Quản lý cửa hàng và Nhân viên hỗ trợ KD được giao việc.</InfoNote>}
       <Card className="task-toolbar-card">
         <div className="task-toolbar-grid">
-          <Field label="Cửa hàng"><Input icon={Store} value={activeStore?.name || storeId} readOnly /></Field>
-          <Field label="Ca làm" required>
+          <Field label="Ngày giao việc" required><Input icon={CalendarDays} type="date" value={date} onChange={(event) => changeDate(event.target.value)} /></Field>
+          <Field label="Ca làm việc" required>
             <Select value={shiftId} onChange={(event) => changeShift(event.target.value)} disabled={!shiftOptions.length}>
               {!shiftOptions.length && <option value="">Chưa có ca hợp lệ cho ngày này</option>}
               {shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} ({shift.start || '--:--'}–{shift.end || '--:--'})</option>)}
             </Select>
           </Field>
-          <Field label="Ngày áp dụng" required><Input icon={CalendarDays} type="date" value={date} onChange={(event) => changeDate(event.target.value)} /></Field>
-          {canManageStore && <Button icon={Send} onClick={send} className="task-send">LƯU VÀ GỬI</Button>}
+          <Field label="Cửa hàng"><Input icon={Store} value={activeStore?.name || storeId} readOnly /></Field>
+          {canManageStore && <Field label="Nhân viên đã chọn"><Input icon={Users} value={`${selectedIds.length} nhân viên`} readOnly /></Field>}
         </div>
       </Card>
-      <div className="split-layout split-layout--tasks">
+      {canManageStore && <Card title="Chọn nhân viên nhận việc">
+        <div className="employee-picker" role="group" aria-label="Chọn nhân viên nhận việc">
+          {assignableEmployees.map((employee) => {
+            const id = String(employee.id || employee.code || employee.employeeCode || '')
+            const selected = selectedIdSet.has(id)
+            return <label key={id} className={selected ? 'selected' : ''}>
+              <input type="checkbox" checked={selected} onChange={() => toggleEmployee(id)} aria-label={`Chọn nhân viên ${employee.name || id}`} />
+              <Avatar name={employee.name || id} color={employee.color} />
+              <span><strong>{employee.name || id}</strong><small>{id} · {employee.position || employee.role || 'Nhân viên cửa hàng'}</small></span>
+              <Badge tone={getEmployeeType(employee) === 'Full-Time' ? 'blue' : 'green'}>{getEmployeeType(employee)}</Badge>
+            </label>
+          })}
+          {!assignableEmployees.length && <InfoNote>Cửa hàng chưa có nhân viên đang làm việc để giao việc.</InfoNote>}
+        </div>
+        {assignableEmployees.length > 0 && <div className="panel-actions">
+          <Button variant="outline" onClick={() => setSelectedEmployeeIds(assignableEmployees.map((employee) => String(employee.id || employee.code || employee.employeeCode || '')))}>Chọn tất cả</Button>
+          <Button variant="outline" onClick={() => setSelectedEmployeeIds([])} disabled={!selectedIds.length}>Bỏ chọn</Button>
+        </div>}
+      </Card>}
+      {canManageStore && <div className="split-layout split-layout--tasks">
         <Card title="Danh sách công việc" className="task-editor">
-          <div className="task-editor__head"><span>STT</span><span>Nội dung công việc</span><span>Chi tiết / Ghi chú</span><span /></div>
+          <div className="task-editor__head"><span>STT</span><span>Tên công việc</span><span>Mô tả công việc</span><span /></div>
           {rows.map((item, index) => (
-            <div className="task-editor__row" key={item.id || index}>
+            <div className="task-editor__row" key={item.id}>
               <b>{index + 1}</b>
-              {canManageStore ? <input value={item.title} onChange={(event) => updateRow(index, 'title', event.target.value)} placeholder="Nhập nội dung công việc" /> : <strong>{item.title || '—'}</strong>}
-              {canManageStore ? <textarea value={item.detail} onChange={(event) => updateRow(index, 'detail', event.target.value)} placeholder="Chi tiết thực hiện" /> : <span>{item.detail || '—'}</span>}
-              {canManageStore && <button type="button" onClick={() => removeRow(index)} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>}
+              <input value={item.title} maxLength={240} onChange={(event) => updateRow(index, 'title', event.target.value)} placeholder="Nhập tên công việc" aria-label={`Tên công việc ${index + 1}`} />
+              <textarea value={item.detail} maxLength={2000} onChange={(event) => updateRow(index, 'detail', event.target.value)} placeholder="Mô tả, yêu cầu thực hiện" aria-label={`Mô tả công việc ${index + 1}`} />
+              <button type="button" onClick={() => removeRow(index)} disabled={rows.length === 1} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>
             </div>
           ))}
-          {canManageStore && <button type="button" className="add-row" onClick={() => setRows((current) => [...current, { id: `CV-${Date.now()}`, title: '', detail: '' }])}><Plus size={18} /> Thêm công việc</button>}
-          {!rows.length && <InfoNote>Chưa có công việc cho ca và ngày đã chọn.</InfoNote>}
+          <button type="button" className="add-row" onClick={() => setRows((current) => [...current, newStoreTaskRow()])}><Plus size={18} /> Thêm công việc</button>
+          <div className="support-work-actions"><Button icon={Send} loading={busy} disabled={busy} onClick={send}>GỬI</Button></div>
         </Card>
         <Card className="guide-card">
           <h2><Info size={22} /> Giao việc theo cửa hàng</h2>
-          {canManageStore ? <ol><li>Chọn ca làm và ngày áp dụng.</li><li>Nhập từng công việc và hướng dẫn cần thiết.</li><li>Nhấn “Lưu và gửi” để nhân viên trong ca nhận việc.</li></ol> : <p>Chọn ngày và ca làm để xem công việc đã giao.</p>}
-          <InfoNote><strong>Phạm vi được giới hạn tự động</strong><br />Công việc chỉ được gửi đến cửa hàng đang quản lý.</InfoNote>
+          <ol><li>Chọn ngày, kể cả ngày trong tương lai.</li><li>Chọn ca và một hoặc nhiều nhân viên cửa hàng.</li><li>Nhập danh sách công việc rồi nhấn “Gửi”.</li></ol>
+          <InfoNote><strong>Không phụ thuộc chấm công</strong><br />Có thể giao trước khi nhân viên điểm danh hoặc bắt đầu ca.</InfoNote>
         </Card>
-      </div>
+      </div>}
+      <Card title="Lịch sử giao việc">
+        <TableWrap><thead><tr><th>Người giao / Thời gian</th><th>Ngày / Ca</th><th>Nhân viên nhận</th><th>Nội dung công việc</th><th>Trạng thái / Hoàn thành</th></tr></thead>
+          <tbody>{history.map((assignment) => <tr key={assignment.id}>
+            <td><strong>{assignment.assignedBy}</strong><span className="table-sub">{formatTaskDateTime24(assignment.assignedAt)}</span></td>
+            <td><strong>{formatTaskDate(assignment.date)}</strong><span className="table-sub">{assignment.shiftName}{assignment.shiftTime ? ` · ${assignment.shiftTime}` : ''}</span></td>
+            <td><strong>{assignment.employeeNames.join(', ') || 'Toàn bộ nhân viên trong ca'}</strong><span className="table-sub">{assignment.employeeIds.join(', ') || 'Dữ liệu cũ chưa ghi người nhận'}</span></td>
+            <td><ol className="compact-task-list">{assignment.tasks.map((task, index) => <li key={task.id || `${assignment.id}-${index}`}><strong>{index + 1}. {task.title || 'Công việc chưa đặt tên'}</strong>{task.detail && <small>{task.detail}</small>}<small>{task.status} · {task.completed}/{task.required} nhân viên</small></li>)}</ol></td>
+            <td><Badge tone={storeTaskStatusTone(assignment.status)}>{assignment.status}</Badge><span className="table-sub">{assignment.completed}/{assignment.required || assignment.tasks.length} lượt hoàn thành</span></td>
+          </tr>)}{!history.length && <tr><td colSpan="5">Chưa có lịch sử giao việc tại cửa hàng này.</td></tr>}</tbody>
+        </TableWrap>
+      </Card>
     </div>
   )
 }

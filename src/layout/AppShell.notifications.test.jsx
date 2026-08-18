@@ -26,6 +26,7 @@ vi.mock('../state/AppContext', () => ({
       { id: 'N4', type: 'support-work-assigned', employeeId: 'HTKD001', assignmentId: 'SWA-1', route: '/support/tasks?assignment=SWA-1', title: 'Cong viec cua toi' },
       { id: 'N5', type: 'support-work-assigned', employeeId: 'HTKD002', assignmentId: 'SWA-2', route: '/support/tasks?assignment=SWA-2', title: 'Cong viec nguoi khac' },
       { id: 'N6', type: 'support-work-submitted', assignmentId: 'SWA-3', route: '/admin/support-employees', title: 'Ho tro KD da gui ket qua' },
+      { id: 'N7', type: 'store-task-assigned', storeId: 'CH001', employeeId: 'E01', assignmentId: 'TSA-1', route: '/employee/home', title: 'Viec ca tuong lai' },
     ],
     readNotification: mocked.readNotification,
     clearNotifications: mocked.clearNotifications,
@@ -135,6 +136,26 @@ describe('AppShell notifications', () => {
 
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/business-support'))
     expect(mocked.readNotification).toHaveBeenCalledWith('N6')
+  })
+
+  it('opens an assigned store task on the employee home assignment view', async () => {
+    mocked.session = { role: 'employee', name: 'Nhân viên', employeeId: 'E01', code: 'E01', storeId: 'CH001', unit: 'store' }
+    mocked.readNotification.mockResolvedValue({ ok: true })
+    render(
+      <MemoryRouter initialEntries={['/employee/home']}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="*" element={<CurrentRoute />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    fireEvent.click(screen.getByText('Viec ca tuong lai'))
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/employee/home?assignment=TSA-1'))
+    expect(mocked.readNotification).toHaveBeenCalledWith('N7')
   })
 
   it('locks a store manager to the assigned store workspace', () => {
