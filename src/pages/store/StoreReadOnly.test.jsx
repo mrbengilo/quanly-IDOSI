@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { today } from '../../utils'
@@ -57,6 +57,7 @@ const mutationNames = [
   'updateShiftDefinition',
   'deleteShiftDefinition',
   'saveScheduleMultiple',
+  'replaceScheduleDay',
   'updateOrder',
   'deleteOrder',
   'addFixedExpense',
@@ -83,7 +84,7 @@ const makeApp = () => {
     activeStore: store,
     employees: [employee],
     attendance: [{ id: 'CC-001', storeId: store.id, employeeId: employee.id, date, hours: 4, checkIn: '08:00', checkOut: '12:00', status: 'Đúng giờ', shift: shift.id, shiftName: shift.name }],
-    schedule: [{ id: 'LICH-001', storeId: store.id, employeeId: employee.id, date, shiftIds: [shift.id], shiftSnapshots: [shift], note: 'Lịch sáng' }],
+    schedule: [{ id: 'LICH-001', storeId: store.id, employeeId: employee.id, date, shiftIds: [shift.id], shiftSnapshots: [shift], note: 'Lịch sáng', createdAt: `${date}T06:30:00+07:00` }],
     shiftDefinitions: [shift],
     tasks: [{ id: 'CV-001', storeId: store.id, shiftId: shift.id, date, title: 'Kiểm kê quầy', detail: 'Đếm hàng trước ca' }],
     orders: [{ id: 'DH-001', code: 'DH-001', storeId: store.id, employeeId: employee.id, employeeName: employee.name, amount: 250_000, paymentMethod: 'Tiền mặt', status: 'Hoàn tất', createdAt: `${date}T09:00:00+07:00` }],
@@ -168,6 +169,31 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getByRole('button', { name: /Sửa Ca sáng/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Xóa Ca sáng/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^LƯU$/i })).toBeTruthy()
+  })
+
+  it('edits and deletes a created schedule from the daily schedule list', async () => {
+    mocked.app.replaceScheduleDay.mockResolvedValue({ ok: true })
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+    renderPage(UnifiedSchedule)
+    fireEvent.click(screen.getByRole('button', { name: /Sửa lịch Ca sáng/i }))
+
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn ${employee.name} cho Ca sáng`).checked).toBe(true)
+    fireEvent.change(within(dialog).getByPlaceholderText('Ghi chú cho lịch phân ca...'), { target: { value: 'Lịch đã sửa' } })
+    fireEvent.click(screen.getByRole('button', { name: /LƯU LỊCH/i }))
+
+    await waitFor(() => expect(mocked.app.replaceScheduleDay).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'LICH-001', employeeId: employee.id, shiftIds: ['CA-SANG'], note: 'Lịch đã sửa' }),
+    ], { storeId: store.id, date: today() }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    mocked.app.replaceScheduleDay.mockClear()
+    fireEvent.click(screen.getByRole('button', { name: /Xóa lịch Ca sáng/i }))
+    await waitFor(() => expect(mocked.app.replaceScheduleDay).toHaveBeenCalledWith([], { storeId: store.id, date: today() }))
+    expect(confirm).toHaveBeenCalled()
+    confirm.mockRestore()
   })
 
   it('allows order correction, cashflow, and payroll operations', () => {

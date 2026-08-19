@@ -29,6 +29,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
+import { removeShiftAssignments, replaceShiftAssignees } from './scheduleAssignments'
 
 const localDate = () => {
   const value = new Date()
@@ -39,6 +40,22 @@ const localDate = () => {
 const displayDate = (value) => {
   const [year, month, day] = String(value || '').split('-')
   return year && month && day ? `${day}/${month}/${year.slice(-2)}` : '—'
+}
+
+const displayDateTime = (value) => {
+  if (!value) return 'Chưa ghi nhận'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return 'Chưa ghi nhận'
+  return new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(parsed)
 }
 
 const moveDate = (value, days) => {
@@ -114,6 +131,7 @@ export function UnifiedSchedule() {
     updateShiftDefinition,
     deleteShiftDefinition,
     saveScheduleMultiple,
+    replaceScheduleDay,
   } = app
   const shiftDefinitions = Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : []
   const schedule = Array.isArray(app.schedule) ? app.schedule : []
@@ -149,6 +167,10 @@ export function UnifiedSchedule() {
   const [shiftModalOpen, setShiftModalOpen] = useState(false)
   const [editingShift, setEditingShift] = useState(null)
   const [shiftForm, setShiftForm] = useState(() => blankShift(localDate(), nextShiftColor(shiftDefinitions)))
+  const [editingAssignment, setEditingAssignment] = useState(null)
+  const [assignmentEmployeeIds, setAssignmentEmployeeIds] = useState([])
+  const [assignmentNote, setAssignmentNote] = useState('')
+  const [savingAssignment, setSavingAssignment] = useState(false)
 
   const dayShifts = shiftDefinitions
     .filter((shift) => (
@@ -187,10 +209,26 @@ export function UnifiedSchedule() {
     return definition ? { ...definition, snapshot: false } : { id: shiftId, name: 'Ca không còn hoạt động', snapshot: false }
   }
 
-  const totalAssignments = daySchedule.reduce((total, record) => total + (record.shiftIds?.length || 0), 0)
-  const totalScheduledMinutes = daySchedule.reduce((total, record) => (
-    total + (record.shiftIds || []).reduce((shiftTotal, shiftId) => shiftTotal + shiftMinutes(resolveScheduledShift(record, shiftId)), 0)
-  ), 0)
+  const createdScheduleRows = [...new Set(daySchedule.flatMap((record) => (
+    record.shiftIds || (record.shiftId ? [record.shiftId] : [])
+  )).map(String))].map((shiftId) => {
+    const records = daySchedule.filter((record) => (
+      record.shiftIds || (record.shiftId ? [record.shiftId] : [])
+    ).map(String).includes(shiftId))
+    const shift = resolveScheduledShift(records[0] || {}, shiftId)
+    const employeeNames = records.map((record) => {
+      const employee = employees.find((item) => String(item.id) === String(record.employeeId))
+      return employee?.name || record.employeeName || record.employeeId
+    })
+    const timestamps = records.map((record) => record.updatedAt || record.createdAt).filter(Boolean)
+    return {
+      shift,
+      records,
+      employeeNames,
+      note: records.find((record) => record.note)?.note || '',
+      updatedAt: timestamps.toSorted().at(-1) || '',
+    }
+  }).toSorted((left, right) => String(right.shift.start || '').localeCompare(String(left.shift.start || '')))
 
   const changeDate = (event) => {
     const nextDate = event.target.value
@@ -287,6 +325,55 @@ export function UnifiedSchedule() {
     setNote('')
   }
 
+  const openAssignmentEditor = (row) => {
+    if (!canManageStore) return
+    setEditingAssignment(row)
+    setAssignmentEmployeeIds(row.records.map((record) => String(record.employeeId)))
+    setAssignmentNote(row.note)
+  }
+
+  const closeAssignmentEditor = () => {
+    if (savingAssignment) return
+    setEditingAssignment(null)
+    setAssignmentEmployeeIds([])
+    setAssignmentNote('')
+  }
+
+  const toggleAssignmentEmployee = (employeeId) => {
+    setAssignmentEmployeeIds((current) => current.includes(employeeId)
+      ? current.filter((id) => id !== employeeId)
+      : [...current, employeeId])
+  }
+
+  const saveEditedAssignment = async () => {
+    if (!editingAssignment || !assignmentEmployeeIds.length || savingAssignment) return
+    setSavingAssignment(true)
+    const assignments = replaceShiftAssignees(
+      daySchedule,
+      editingAssignment.shift.id,
+      assignmentEmployeeIds,
+      assignmentNote,
+    )
+    const result = await replaceScheduleDay?.(assignments, { storeId, date })
+    setSavingAssignment(false)
+    if (!result?.ok) {
+      notify?.(result?.message || 'Chưa thể sửa lịch phân ca.', 'info')
+      return
+    }
+    setEditingAssignment(null)
+    setAssignmentEmployeeIds([])
+    setAssignmentNote('')
+  }
+
+  const deleteAssignment = async (row) => {
+    if (!canManageStore) return
+    const employeeText = row.employeeNames.length === 1 ? row.employeeNames[0] : `${row.employeeNames.length} nhân viên`
+    if (!window.confirm(`Xóa lịch ${row.shift.name} của ${employeeText} ngày ${displayDate(date)}?`)) return
+    const assignments = removeShiftAssignments(daySchedule, row.shift.id)
+    const result = await replaceScheduleDay?.(assignments, { storeId, date })
+    if (!result?.ok) notify?.(result?.message || 'Chưa thể xóa lịch phân ca.', 'info')
+  }
+
   return (
     <div className="page">
       <PageHeader
@@ -302,7 +389,14 @@ export function UnifiedSchedule() {
       />
       {!canManageStore && <InfoNote>Chế độ chỉ xem. Tài khoản hiện tại không thể tạo, sửa, xóa ca hoặc thay đổi lịch phân ca.</InfoNote>}
 
-      <Card>
+      <div className="metric-grid metric-grid--four schedule-metrics">
+        <MetricCard label="Lịch trong ngày" value={createdScheduleRows.length} suffix="lịch" icon={Clock3} tone="blue" compact />
+        <MetricCard label="Nhân viên đã xếp" value={new Set(daySchedule.map((item) => item.employeeId)).size} suffix="người" icon={Users} tone="green" compact />
+        <MetricCard label="Ca hoạt động" value={dayShifts.length} suffix="ca" icon={CalendarDays} tone="purple" compact />
+        <MetricCard label="Chưa phân ca" value={Math.max(0, employees.length - new Set(daySchedule.map((item) => item.employeeId)).size)} suffix="người" icon={Users} tone="orange" compact />
+      </div>
+
+      <Card className="schedule-board">
         <div className="card__subheader">
           <div className="tabs" role="tablist" aria-label="Kiểu xem lịch phân ca">
             <button type="button" className={viewMode === 'day' ? 'active' : ''} onClick={() => setViewMode('day')}>Theo ngày</button>
@@ -316,12 +410,12 @@ export function UnifiedSchedule() {
             <Button variant="outline" onClick={() => setDate(localDate())}>Hôm nay</Button>
           </div>
         </div>
-        {viewMode === 'day' && (dayShifts.length ? <TableWrap>
+        {viewMode === 'day' && (dayShifts.length ? <TableWrap className="schedule-matrix">
           <thead><tr><th>Nhân viên</th>{dayShifts.map((shift) => <th key={shift.id}>{shift.name}<small className="table-note">{timeLabel(shift.start, shift.end)}</small></th>)}</tr></thead>
           <tbody>{employees.map((employee) => {
             const record = scheduleForEmployeeDate(employee.id, date)
             const assigned = new Set(record?.shiftIds || (record?.shiftId ? [record.shiftId] : []))
-            return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.id} · {employeeRole(employee)}</small></span></div></td>{dayShifts.map((shift) => <td key={shift.id}>{assigned.has(shift.id) ? <Badge tone="green">✓ {shift.name}</Badge> : '—'}</td>)}</tr>
+            return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>{dayShifts.map((shift) => <td key={shift.id}>{assigned.has(shift.id) ? <span className="schedule-shift-chip" style={{ '--shift-color': shift.color || '#07873d' }}><Check /> <strong>{shift.name}</strong><small>{timeLabel(shift.start, shift.end)}</small></span> : <span className="schedule-empty-cell">—</span>}</td>)}</tr>
           })}</tbody>
         </TableWrap> : <EmptyState title="Chưa có ca trong ngày" description="Tạo ca làm việc để hiển thị ma trận phân ca." />)}
         {viewMode === 'week' && <TableWrap>
@@ -342,14 +436,7 @@ export function UnifiedSchedule() {
         </>}
       </Card>
 
-      <div className="metric-grid metric-grid--four">
-        <MetricCard label="Ca trong ngày" value={dayShifts.length} suffix="ca" icon={Clock3} tone="blue" compact />
-        <MetricCard label="Nhân viên đã phân" value={new Set(daySchedule.map((item) => item.employeeId)).size} suffix="người" icon={Users} tone="green" compact />
-        <MetricCard label="Tổng lượt ca" value={totalAssignments} suffix="lượt" icon={CalendarDays} tone="purple" compact />
-        <MetricCard label="Tổng giờ dự kiến" value={(totalScheduledMinutes / 60).toFixed(1)} suffix="giờ" icon={Clock3} tone="orange" compact />
-      </div>
-
-      <div className="chart-grid">
+      <div className="chart-grid schedule-management-grid">
         <Card
           title={`Ca làm việc ngày ${displayDate(date)}`}
           action={canManageStore ? <Button variant="outline" icon={Plus} onClick={openCreateShift}>Tạo ca</Button> : null}
@@ -434,45 +521,77 @@ export function UnifiedSchedule() {
         </Card>}
       </div>
 
-      <Card title={`Danh sách lịch phân ca · ${displayDate(date)}`}>
-        {daySchedule.length ? (
-          <>
-            <TableWrap>
-              <thead><tr><th>Nhân viên</th><th>Ngày</th><th>Ca và thời gian đã lưu</th><th>Tổng giờ</th><th>Ghi chú</th></tr></thead>
-              <tbody>
-                {daySchedule.map((record) => {
-                  const employee = employees.find((item) => String(item.id) === String(record.employeeId))
-                  const assignedShifts = (record.shiftIds || []).map((shiftId) => resolveScheduledShift(record, shiftId))
-                  const rowMinutes = assignedShifts.reduce((total, shift) => total + shiftMinutes(shift), 0)
-                  return (
-                    <tr key={record.id || `${record.employeeId}-${record.date}`}>
-                      <td>
-                        <div className="person-cell">
-                          <Avatar name={employee?.name || record.employeeName || record.employeeId} color={employee?.color} />
-                          <span><strong>{employee?.name || record.employeeName || record.employeeId}</strong><small>{employee?.code || record.employeeId}</small></span>
-                        </div>
-                      </td>
-                      <td><strong>{displayDate(record.date)}</strong></td>
-                      <td>
-                        {assignedShifts.map((shift) => (
-                          <span className="table-sub" key={`${record.employeeId}-${shift.id}`}>
-                            <strong>{shift.name || shift.id}</strong> · {timeLabel(shift.start, shift.end)} {shift.snapshot && <Badge tone="green">Bản chụp</Badge>}
-                          </span>
-                        ))}
-                      </td>
-                      <td><strong>{(rowMinutes / 60).toFixed(1)} giờ</strong></td>
-                      <td>{record.note || '—'}</td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </TableWrap>
-            <TableFooter shown={daySchedule.length} total={daySchedule.length} />
-          </>
+      <Card className="created-schedule-card">
+        <div className="created-schedule-card__header">
+          <div>
+            <h2>Lịch đã tạo ngày {displayDate(date)}</h2>
+            <p>Chọn một lịch để sửa danh sách nhân viên, ghi chú hoặc xóa lịch phân ca.</p>
+          </div>
+          <Button variant="outline" onClick={() => setDate(localDate())}>Hôm nay</Button>
+        </div>
+        {createdScheduleRows.length ? (
+          <div className="created-schedule-list">
+            {createdScheduleRows.map((row) => (
+              <article key={row.shift.id} className="created-schedule-row">
+                <span className="created-schedule-row__icon"><Clock3 /></span>
+                <div className="created-schedule-row__content">
+                  <strong>{row.shift.name}</strong>
+                  <b>{timeLabel(row.shift.start, row.shift.end)}</b>
+                  <span>{row.employeeNames.join(', ')}</span>
+                  {row.note && <small>Ghi chú: {row.note}</small>}
+                  <small>Cập nhật: {displayDateTime(row.updatedAt)}</small>
+                </div>
+                {canManageStore && <div className="created-schedule-row__actions">
+                  <button type="button" onClick={() => openAssignmentEditor(row)} aria-label={`Sửa lịch ${row.shift.name}`}><Edit3 /></button>
+                  <button type="button" className="danger" onClick={() => deleteAssignment(row)} aria-label={`Xóa lịch ${row.shift.name}`}><Trash2 /></button>
+                </div>}
+              </article>
+            ))}
+          </div>
         ) : (
-          <EmptyState title="Chưa có lịch phân ca" description="Chọn nhiều ca và nhiều nhân viên ở trên để tạo lịch." />
+          <EmptyState title="Chưa có lịch phân ca" description="Chọn ca và nhân viên ở trên để tạo lịch mới." />
         )}
+        {createdScheduleRows.length > 0 && <TableFooter shown={createdScheduleRows.length} total={createdScheduleRows.length} />}
       </Card>
+
+      {canManageStore && <Modal
+        open={Boolean(editingAssignment)}
+        onClose={closeAssignmentEditor}
+        title={`Sửa lịch ${editingAssignment?.shift?.name || ''} · ${displayDate(date)}`}
+        wide
+        footer={(
+          <>
+            <Button variant="outline" onClick={closeAssignmentEditor} disabled={savingAssignment}>Hủy</Button>
+            <Button icon={Save} onClick={saveEditedAssignment} loading={savingAssignment} disabled={!assignmentEmployeeIds.length}>LƯU LỊCH</Button>
+          </>
+        )}
+      >
+        <div className="schedule-edit-summary">
+          <Clock3 />
+          <span><strong>{editingAssignment?.shift?.name}</strong><small>{timeLabel(editingAssignment?.shift?.start, editingAssignment?.shift?.end)}</small></span>
+        </div>
+        <Field label={`Nhân viên được phân ca · Đã chọn ${assignmentEmployeeIds.length}`} required>
+          <div className="employee-picker schedule-edit-employees">
+            {employees.map((employee) => (
+              <label key={employee.id} className={assignmentEmployeeIds.includes(String(employee.id)) ? 'selected' : ''}>
+                <input
+                  type="checkbox"
+                  checked={assignmentEmployeeIds.includes(String(employee.id))}
+                  onChange={() => toggleAssignmentEmployee(String(employee.id))}
+                  aria-label={`Chọn ${employee.name} cho ${editingAssignment?.shift?.name || 'ca'}`}
+                />
+                <Avatar name={employee.name} color={employee.color} size={30} />
+                <strong>{employee.name}</strong>
+                <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
+              </label>
+            ))}
+          </div>
+        </Field>
+        <Field label="Ghi chú (tùy chọn)">
+          <textarea value={assignmentNote} onChange={(event) => setAssignmentNote(event.target.value)} placeholder="Ghi chú cho lịch phân ca..." />
+        </Field>
+        <InfoNote>Thao tác này chỉ sửa lịch ngày đã chọn. Dữ liệu chấm công và bản chụp lịch sử trước đó không bị thay đổi.</InfoNote>
+      </Modal>}
 
       {canManageStore && <Modal
         open={shiftModalOpen}

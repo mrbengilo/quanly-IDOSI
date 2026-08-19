@@ -2394,6 +2394,70 @@ export function AppProvider({ children }) {
     return { ok: true }
   }
 
+  const replaceScheduleDay = async (assignments = [], details = {}) => {
+    const date = details.date || today()
+    const storeId = details.storeId || state.activeStoreId || state.session?.storeId
+    if (!storeId || !date || !Array.isArray(assignments)) {
+      return { ok: false, message: 'Dữ liệu lịch phân ca không hợp lệ.' }
+    }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('schedule.replace_day', {
+          storeId,
+          date,
+          assignments: assignments.map((item) => ({
+            id: item.id,
+            employeeId: item.employeeId,
+            shiftIds: item.shiftIds,
+            note: item.note || '',
+          })),
+        })
+        notify('Đã cập nhật lịch phân ca.')
+        return { ok: true, assignments: result.assignments || [] }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật lịch phân ca.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    updateCollection('schedule', (items) => {
+      const now = new Date().toISOString()
+      const nextDay = assignments.map((item) => {
+        const previous = items.find((record) => (
+          String(record.storeId || '') === String(storeId)
+          && String(record.date || record.workDate || '') === String(date)
+          && String(record.employeeId || '') === String(item.employeeId || '')
+        ))
+        const previousSnapshots = new Map((previous?.shiftSnapshots || []).map((snapshot) => [String(snapshot.id), snapshot]))
+        const shiftSnapshots = (item.shiftIds || []).map((shiftId) => {
+          if (previousSnapshots.has(String(shiftId))) return previousSnapshots.get(String(shiftId))
+          const shift = state.shiftDefinitions.find((definition) => String(definition.id) === String(shiftId))
+          return shift ? { id: shift.id, name: shift.name, start: shift.start, end: shift.end, color: shift.color, version: shift.version } : { id: shiftId }
+        })
+        return {
+          ...previous,
+          ...item,
+          storeId,
+          date,
+          shiftId: item.shiftIds?.[0],
+          shiftSnapshots,
+          createdAt: previous?.createdAt || now,
+          createdBy: previous?.createdBy || actorSnapshot(state.session),
+          updatedAt: now,
+          updatedBy: actorSnapshot(state.session),
+        }
+      })
+      return [
+        ...nextDay,
+        ...items.filter((item) => !(
+        String(item.storeId || '') === String(storeId)
+        && String(item.date || item.workDate || '') === String(date)
+        )),
+      ]
+    })
+    notify('Đã cập nhật lịch phân ca.')
+    return { ok: true, assignments }
+  }
+
   const createImportVoucher = async (payload = {}) => {
     const storeId = payload.storeId || state.activeStoreId || state.session?.storeId
     const items = Array.isArray(payload.items) ? payload.items.filter(Boolean) : []
@@ -3121,6 +3185,7 @@ export function AppProvider({ children }) {
     updateShiftDefinition,
     deleteShiftDefinition,
     saveScheduleMultiple,
+    replaceScheduleDay,
     createImportVoucher,
     updateImportVoucher,
     deleteImportVoucher,
