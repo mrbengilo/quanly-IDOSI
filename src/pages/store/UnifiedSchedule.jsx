@@ -164,6 +164,8 @@ export function UnifiedSchedule() {
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([])
   const [employeeQuery, setEmployeeQuery] = useState('')
   const [note, setNote] = useState('')
+  const [assignmentModalOpen, setAssignmentModalOpen] = useState(false)
+  const [savingNewAssignment, setSavingNewAssignment] = useState(false)
   const [shiftModalOpen, setShiftModalOpen] = useState(false)
   const [editingShift, setEditingShift] = useState(null)
   const [shiftForm, setShiftForm] = useState(() => blankShift(localDate(), nextShiftColor(shiftDefinitions)))
@@ -314,14 +316,36 @@ export function UnifiedSchedule() {
   }
 
   const saveAssignments = async () => {
-    if (!canManageStore) return
+    if (!canManageStore || savingNewAssignment) return
+    setSavingNewAssignment(true)
     const result = await saveScheduleMultiple?.(selectedEmployeeIds, selectedShiftIds, { date, note, storeId })
+    setSavingNewAssignment(false)
     if (!result?.ok) {
       notify?.(result?.message || 'Vui lòng chọn ít nhất một ca và một nhân viên.', 'info')
       return
     }
     setSelectedEmployeeIds([])
     setSelectedShiftIds([])
+    setNote('')
+    setEmployeeQuery('')
+    setAssignmentModalOpen(false)
+  }
+
+  const openAssignmentModal = () => {
+    if (!canManageStore) return
+    setSelectedEmployeeIds([])
+    setSelectedShiftIds([])
+    setEmployeeQuery('')
+    setNote('')
+    setAssignmentModalOpen(true)
+  }
+
+  const closeAssignmentModal = () => {
+    if (savingNewAssignment) return
+    setAssignmentModalOpen(false)
+    setSelectedEmployeeIds([])
+    setSelectedShiftIds([])
+    setEmployeeQuery('')
     setNote('')
   }
 
@@ -383,7 +407,8 @@ export function UnifiedSchedule() {
         actions={(
           <>
             <Input icon={CalendarDays} type="date" value={date} onChange={changeDate} aria-label="Ngày phân ca" />
-            {canManageStore && <Button icon={Plus} onClick={openCreateShift}>Tạo ca làm việc</Button>}
+            {canManageStore && <Button variant="outline" icon={Plus} onClick={openCreateShift}>Tạo ca làm việc</Button>}
+            {canManageStore && <Button icon={CalendarDays} onClick={openAssignmentModal}>PHÂN CA</Button>}
           </>
         )}
       />
@@ -469,56 +494,6 @@ export function UnifiedSchedule() {
           )}
         </Card>
 
-        {canManageStore && <Card title={`Tạo lịch phân ca · ${displayDate(date)}`}>
-          <Field label="1. Chọn ngày" required>
-            <Input icon={CalendarDays} type="date" value={date} onChange={changeDate} />
-          </Field>
-          <Field label={`2. Chọn ca (có thể chọn nhiều) · Đã chọn ${selectedShiftIds.length}`}>
-            {dayShifts.length ? (
-              <div className="shift-selector">
-                {dayShifts.map((shift) => (
-                  <button
-                    type="button"
-                    key={shift.id}
-                    className={selectedShiftIds.includes(shift.id) ? 'active' : ''}
-                    style={{ '--shift-color': shift.color || '#07873d' }}
-                    onClick={() => toggleShift(shift.id)}
-                    title={timeLabel(shift.start, shift.end)}
-                  >
-                    {shift.name}
-                    {selectedShiftIds.includes(shift.id) && <Check />}
-                  </button>
-                ))}
-              </div>
-            ) : <InfoNote tone="orange">Chưa có ca để chọn trong ngày này.</InfoNote>}
-          </Field>
-
-          <div className="card__subheader">
-            <strong>3. Chọn nhân viên (có thể chọn nhiều) · Đã chọn {selectedEmployeeIds.length}</strong>
-            <Button variant="ghost" onClick={toggleAllEmployees} disabled={!visibleEmployees.length}>
-              {visibleEmployees.length && visibleEmployees.every((employee) => selectedEmployeeIds.includes(employee.id)) ? 'Bỏ chọn hiển thị' : 'Chọn tất cả hiển thị'}
-            </Button>
-          </div>
-          <SearchInput value={employeeQuery} onChange={setEmployeeQuery} placeholder="Tìm tên hoặc mã nhân viên..." />
-          <div className="employee-picker">
-            {visibleEmployees.map((employee) => (
-              <label key={employee.id} className={selectedEmployeeIds.includes(employee.id) ? 'selected' : ''}>
-                <input type="checkbox" checked={selectedEmployeeIds.includes(employee.id)} onChange={() => toggleEmployee(employee.id)} />
-                <Avatar name={employee.name} color={employee.color} size={30} />
-                <strong>{employee.name}</strong>
-                <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
-              </label>
-            ))}
-            {!visibleEmployees.length && <EmptyState title="Không tìm thấy nhân viên" description="Thử một từ khóa khác." />}
-          </div>
-          <Field label="4. Ghi chú (tùy chọn)">
-            <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ghi chú cho lịch phân ca..." />
-          </Field>
-          <div className="panel-actions">
-            <Button variant="outline" onClick={() => { setSelectedShiftIds([]); setSelectedEmployeeIds([]); setNote('') }}>Làm lại</Button>
-            <Button icon={Save} onClick={saveAssignments} disabled={!selectedShiftIds.length || !selectedEmployeeIds.length}>LƯU</Button>
-          </div>
-        </Card>}
       </div>
 
       <Card className="created-schedule-card">
@@ -553,6 +528,78 @@ export function UnifiedSchedule() {
         )}
         {createdScheduleRows.length > 0 && <TableFooter shown={createdScheduleRows.length} total={createdScheduleRows.length} />}
       </Card>
+
+      {canManageStore && <Modal
+        open={assignmentModalOpen}
+        onClose={closeAssignmentModal}
+        title="Phân ca nhân viên"
+        wide
+        footer={(
+          <>
+            <Button variant="outline" onClick={closeAssignmentModal} disabled={savingNewAssignment}>Hủy</Button>
+            <Button
+              icon={Save}
+              onClick={saveAssignments}
+              loading={savingNewAssignment}
+              disabled={!selectedShiftIds.length || !selectedEmployeeIds.length}
+            >LƯU</Button>
+          </>
+        )}
+      >
+        <div className="schedule-assignment-flow">
+          <Field label="1. Chọn ngày" required>
+            <Input icon={CalendarDays} type="date" value={date} onChange={changeDate} aria-label="Ngày tạo lịch phân ca" />
+          </Field>
+          <Field label={`2. Chọn ca (có thể chọn nhiều) · Đã chọn ${selectedShiftIds.length}`} required>
+            {dayShifts.length ? (
+              <div className="shift-selector schedule-assignment-shifts">
+                {dayShifts.map((shift) => (
+                  <button
+                    type="button"
+                    key={shift.id}
+                    className={selectedShiftIds.includes(shift.id) ? 'active' : ''}
+                    style={{ '--shift-color': shift.color || '#07873d' }}
+                    onClick={() => toggleShift(shift.id)}
+                    aria-pressed={selectedShiftIds.includes(shift.id)}
+                    aria-label={`Chọn ${shift.name} ${timeLabel(shift.start, shift.end)}`}
+                  >
+                    <span><strong>{shift.name}</strong><small>{timeLabel(shift.start, shift.end)}</small></span>
+                    {selectedShiftIds.includes(shift.id) && <Check />}
+                  </button>
+                ))}
+              </div>
+            ) : <InfoNote tone="orange">Ngày này chưa có ca làm việc. Hãy tạo ca trước khi phân lịch.</InfoNote>}
+          </Field>
+          <div className="schedule-assignment-employees">
+            <div className="card__subheader">
+              <strong>3. Chọn nhân viên (có thể chọn nhiều) · Đã chọn {selectedEmployeeIds.length}</strong>
+              <Button variant="ghost" onClick={toggleAllEmployees} disabled={!visibleEmployees.length}>
+                {visibleEmployees.length && visibleEmployees.every((employee) => selectedEmployeeIds.includes(employee.id)) ? 'Bỏ chọn hiển thị' : 'Chọn tất cả hiển thị'}
+              </Button>
+            </div>
+            <SearchInput value={employeeQuery} onChange={setEmployeeQuery} placeholder="Tìm tên hoặc mã nhân viên..." />
+            <div className="employee-picker">
+              {visibleEmployees.map((employee) => (
+                <label key={employee.id} className={selectedEmployeeIds.includes(employee.id) ? 'selected' : ''}>
+                  <input
+                    type="checkbox"
+                    checked={selectedEmployeeIds.includes(employee.id)}
+                    onChange={() => toggleEmployee(employee.id)}
+                    aria-label={`Chọn nhân viên ${employee.name}`}
+                  />
+                  <Avatar name={employee.name} color={employee.color} size={30} />
+                  <strong>{employee.name}</strong>
+                  <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
+                </label>
+              ))}
+              {!visibleEmployees.length && <EmptyState title="Không tìm thấy nhân viên" description="Thử một từ khóa khác." />}
+            </div>
+          </div>
+          <Field label="4. Ghi chú (tùy chọn)">
+            <textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ghi chú cho lịch phân ca..." />
+          </Field>
+        </div>
+      </Modal>}
 
       {canManageStore && <Modal
         open={Boolean(editingAssignment)}

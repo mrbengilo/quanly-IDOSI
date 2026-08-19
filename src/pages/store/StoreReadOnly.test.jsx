@@ -168,7 +168,48 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getAllByRole('button', { name: /Tạo ca/i }).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: /Sửa Ca sáng/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Xóa Ca sáng/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^LƯU$/i })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^PHÂN CA$/i }))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByLabelText('Ngày tạo lịch phân ca')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Chọn Ca sáng 08:00 - 12:00/i })).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`)).toBeTruthy()
     expect(screen.getByRole('button', { name: /^LƯU$/i })).toBeTruthy()
+  })
+
+  it('opens the assignment flow only from its button and saves fields in the required order', async () => {
+    mocked.app.saveScheduleMultiple.mockResolvedValue({ ok: true })
+    renderPage(UnifiedSchedule)
+
+    expect(screen.queryByText('1. Chọn ngày')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^PHÂN CA$/i }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /Chọn Ca sáng 08:00 - 12:00/i }))
+    fireEvent.click(within(dialog).getByLabelText(`Chọn nhân viên ${employee.name}`))
+    fireEvent.change(within(dialog).getByPlaceholderText('Ghi chú cho lịch phân ca...'), { target: { value: 'Ưu tiên quầy chính' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /^LƯU$/i }))
+
+    await waitFor(() => expect(mocked.app.saveScheduleMultiple).toHaveBeenCalledWith(
+      [employee.id],
+      ['CA-SANG'],
+      { date: today(), note: 'Ưu tiên quầy chính', storeId: store.id },
+    ))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it.each([
+    ['admin', { role: 'admin', employeeId: 'ADMIN' }],
+    ['business_support', { role: 'business_support', employeeId: 'HTKD-001' }],
+    ['store_manager', { role: 'store_manager', employeeId: 'QLCH-001', storeId: store.id }],
+  ])('allows %s to create, edit, and delete shifts and schedules', (_role, session) => {
+    mocked.app.session = session
+    renderPage(UnifiedSchedule)
+
+    expect(screen.getByRole('button', { name: /^PHÂN CA$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Sửa Ca sáng/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Xóa Ca sáng/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Sửa lịch Ca sáng/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Xóa lịch Ca sáng/i })).toBeTruthy()
   })
 
   it('edits and deletes a created schedule from the daily schedule list', async () => {
