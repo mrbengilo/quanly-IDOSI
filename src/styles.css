@@ -87,6 +87,8 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
 .badge--blue { color: #1766d4; background: #e9f2ff; }
 .badge--red { color: #dd2d36; background: #ffebec; }
 .badge--purple { color: #5f38da; background: #f0ebff; }
+.table-stack { display: grid; gap: 4px; min-width: 230px; }
+.table-stack small { color: var(--muted); line-height: 1.35; }
 .green-text { color: #07843d !important; }
 .orange-text { color: #ed6b0b !important; }
 .red-text { color: #e2444b !important; }

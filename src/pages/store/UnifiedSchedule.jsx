@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import {
   CalendarDays,
+  ChevronLeft,
+  ChevronRight,
   Check,
   Clock3,
   Edit3,
@@ -22,6 +24,7 @@ import {
   Modal,
   PageHeader,
   SearchInput,
+  Select,
   TableFooter,
   TableWrap,
 } from '../../components/UI'
@@ -35,7 +38,20 @@ const localDate = () => {
 
 const displayDate = (value) => {
   const [year, month, day] = String(value || '').split('-')
-  return year && month && day ? `${day}/${month}/${year}` : '—'
+  return year && month && day ? `${day}/${month}/${year.slice(-2)}` : '—'
+}
+
+const moveDate = (value, days) => {
+  const date = new Date(`${value}T12:00:00`)
+  date.setDate(date.getDate() + days)
+  return date.toISOString().slice(0, 10)
+}
+
+const weekDates = (value) => {
+  const date = new Date(`${value}T12:00:00`)
+  const mondayOffset = (date.getDay() + 6) % 7
+  const monday = moveDate(value, -mondayOffset)
+  return Array.from({ length: 7 }, (_, index) => moveDate(monday, index))
 }
 
 const timeLabel = (start, end) => start && end ? `${start} - ${end}` : 'Chưa thiết lập'
@@ -102,19 +118,30 @@ export function UnifiedSchedule() {
   const shiftDefinitions = Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : []
   const schedule = Array.isArray(app.schedule) ? app.schedule : []
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
+  const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const storeId = session?.role === 'store_manager'
     ? session.storeId
     : activeStore?.id || activeStoreId || session?.storeId || ''
+  const [date, setDate] = useState(localDate)
+  const employeeSupportsStoreOnDate = (employee) => supportTransfers.some((record) => (
+    String(record.employeeId || '') === String(employee.id || employee.code || '')
+    && String(record.toStoreId || '') === String(storeId)
+    && !record.deletedAt
+    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+    && String(record.fromDate || '') <= date
+    && String(record.toDate || '') >= date
+  ))
   const employees = allEmployees
     .filter((employee) => (
       String(employee.unit || 'store') === 'store'
       && employee.status !== 'Đã nghỉ việc'
-      && (!storeId || String(employee.storeId) === String(storeId))
+      && (!storeId || String(employee.storeId) === String(storeId) || employeeSupportsStoreOnDate(employee))
     ))
     .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'vi'))
 
-  const [date, setDate] = useState(localDate)
+  const [viewMode, setViewMode] = useState('day')
+  const [focusedEmployeeId, setFocusedEmployeeId] = useState('')
   const [selectedShiftIds, setSelectedShiftIds] = useState([])
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([])
   const [employeeQuery, setEmployeeQuery] = useState('')
@@ -141,6 +168,15 @@ export function UnifiedSchedule() {
       .toLocaleLowerCase('vi')
       .includes(employeeQuery.trim().toLocaleLowerCase('vi'))
   ))
+  const datesOfWeek = weekDates(date)
+  const scheduleForEmployeeDate = (employeeId, targetDate) => schedule.find((record) => (
+    String(record.employeeId || '') === String(employeeId || '')
+    && String(record.date || record.workDate || '') === targetDate
+    && (!record.storeId || !storeId || String(record.storeId) === String(storeId))
+  ))
+  const shiftsForDate = (targetDate) => shiftDefinitions
+    .filter((shift) => shift.active !== false && String(shift.date || '') === targetDate && (!shift.storeId || String(shift.storeId) === String(storeId)))
+    .sort((left, right) => String(left.start || '').localeCompare(String(right.start || '')))
 
   const resolveScheduledShift = (record, shiftId) => {
     const snapshot = Array.isArray(record.shiftSnapshots)
@@ -265,6 +301,46 @@ export function UnifiedSchedule() {
         )}
       />
       {!canManageStore && <InfoNote>Chế độ chỉ xem. Tài khoản hiện tại không thể tạo, sửa, xóa ca hoặc thay đổi lịch phân ca.</InfoNote>}
+
+      <Card>
+        <div className="card__subheader">
+          <div className="tabs" role="tablist" aria-label="Kiểu xem lịch phân ca">
+            <button type="button" className={viewMode === 'day' ? 'active' : ''} onClick={() => setViewMode('day')}>Theo ngày</button>
+            <button type="button" className={viewMode === 'week' ? 'active' : ''} onClick={() => setViewMode('week')}>Theo tuần</button>
+            <button type="button" className={viewMode === 'employee' ? 'active' : ''} onClick={() => setViewMode('employee')}>Theo nhân viên</button>
+          </div>
+          <div className="row-actions">
+            <Button variant="outline" icon={ChevronLeft} onClick={() => setDate((current) => moveDate(current, viewMode === 'week' ? -7 : -1))} aria-label="Lùi thời gian" />
+            <strong>{viewMode === 'week' ? `${displayDate(datesOfWeek[0])} – ${displayDate(datesOfWeek[6])}` : displayDate(date)}</strong>
+            <Button variant="outline" icon={ChevronRight} onClick={() => setDate((current) => moveDate(current, viewMode === 'week' ? 7 : 1))} aria-label="Tiến thời gian" />
+            <Button variant="outline" onClick={() => setDate(localDate())}>Hôm nay</Button>
+          </div>
+        </div>
+        {viewMode === 'day' && (dayShifts.length ? <TableWrap>
+          <thead><tr><th>Nhân viên</th>{dayShifts.map((shift) => <th key={shift.id}>{shift.name}<small className="table-note">{timeLabel(shift.start, shift.end)}</small></th>)}</tr></thead>
+          <tbody>{employees.map((employee) => {
+            const record = scheduleForEmployeeDate(employee.id, date)
+            const assigned = new Set(record?.shiftIds || (record?.shiftId ? [record.shiftId] : []))
+            return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.id} · {employeeRole(employee)}</small></span></div></td>{dayShifts.map((shift) => <td key={shift.id}>{assigned.has(shift.id) ? <Badge tone="green">✓ {shift.name}</Badge> : '—'}</td>)}</tr>
+          })}</tbody>
+        </TableWrap> : <EmptyState title="Chưa có ca trong ngày" description="Tạo ca làm việc để hiển thị ma trận phân ca." />)}
+        {viewMode === 'week' && <TableWrap>
+          <thead><tr><th>Nhân viên</th>{datesOfWeek.map((item) => <th key={item}>{displayDate(item)}</th>)}</tr></thead>
+          <tbody>{employees.map((employee) => <tr key={employee.id}><td><strong>{employee.name}</strong><small className="table-note">{employee.id}</small></td>{datesOfWeek.map((item) => {
+            const record = scheduleForEmployeeDate(employee.id, item)
+            const definitions = shiftsForDate(item)
+            const ids = record?.shiftIds || (record?.shiftId ? [record.shiftId] : [])
+            return <td key={item}>{ids.length ? ids.map((id) => definitions.find((shift) => shift.id === id)?.name || id).join(', ') : '—'}</td>
+          })}</tr>)}</tbody>
+        </TableWrap>}
+        {viewMode === 'employee' && <>
+          <Field label="Nhân viên"><Select value={focusedEmployeeId || employees[0]?.id || ''} onChange={(event) => setFocusedEmployeeId(event.target.value)}>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} — {employee.id}</option>)}</Select></Field>
+          <TableWrap><thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ</th><th>Ghi chú</th></tr></thead><tbody>{schedule.filter((record) => String(record.employeeId) === String(focusedEmployeeId || employees[0]?.id || '') && (!record.storeId || String(record.storeId) === String(storeId))).toSorted((left, right) => String(right.date).localeCompare(String(left.date))).map((record) => {
+            const assigned = (record.shiftIds || []).map((id) => resolveScheduledShift(record, id))
+            return <tr key={record.id || `${record.employeeId}-${record.date}`}><td>{displayDate(record.date)}</td><td>{assigned.map((shift) => shift.name).join(', ') || '—'}</td><td>{assigned.map((shift) => timeLabel(shift.start, shift.end)).join(', ') || '—'}</td><td>{record.note || '—'}</td></tr>
+          })}</tbody></TableWrap>
+        </>}
+      </Card>
 
       <div className="metric-grid metric-grid--four">
         <MetricCard label="Ca trong ngày" value={dayShifts.length} suffix="ca" icon={Clock3} tone="blue" compact />

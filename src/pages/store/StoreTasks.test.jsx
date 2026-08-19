@@ -107,10 +107,10 @@ describe('StoreTasks assignment workflow', () => {
     render(<StoreTasks />)
 
     expect(screen.getByText('Admin IDOSI')).toBeTruthy()
-    expect(screen.getByText('24/12/2099 14:05:06')).toBeTruthy()
+    expect(screen.getByText('24/12/99 14:05:06')).toBeTruthy()
     expect(screen.getByText(/Ca tương lai · 14:00–22:00/i)).toBeTruthy()
     expect(screen.getByText(`${employees[0].name}, ${employees[1].name}`)).toBeTruthy()
-    expect(screen.getByText('Đếm hàng trước ca')).toBeTruthy()
+    expect(screen.getAllByText('Đếm hàng trước ca').length).toBeGreaterThan(0)
     expect(screen.getByText('Hoàn thành · 2/2 nhân viên')).toBeTruthy()
     expect(screen.getByText('Chưa hoàn thành · 0/2 nhân viên')).toBeTruthy()
     expect(screen.getByText('Đang thực hiện')).toBeTruthy()

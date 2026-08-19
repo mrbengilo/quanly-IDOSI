@@ -58,13 +58,7 @@ const vietnamClock = (date) => date.toLocaleTimeString('vi-VN', {
   second: '2-digit',
 })
 
-const vietnamLongDate = (date) => date.toLocaleDateString('vi-VN', {
-  timeZone: VN_TIME_ZONE,
-  weekday: 'long',
-  day: '2-digit',
-  month: '2-digit',
-  year: 'numeric',
-})
+const vietnamLongDate = (date) => shortDate(vietnamDateKey(date))
 
 const timeOnly = (value) => {
   if (!value) return '—'

@@ -48,7 +48,7 @@ import {
 import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
 import { useApp } from '../../state/AppContext'
-import { downloadCsv, money, today, validateVietnamPhone } from '../../utils'
+import { downloadCsv, money, shortDate, today, validateVietnamPhone } from '../../utils'
 
 const sum = (items, key) => items.reduce((total, item) => total + (Number(item[key]) || 0), 0)
 const percent = (value, total) => total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '0.00%'
@@ -60,9 +60,13 @@ const seriesDate = (day, year = new Date().getFullYear()) => {
 }
 
 const parseRange = (value = '') => {
-  const dates = String(value).match(/\d{2}\/\d{2}\/\d{4}/g) || []
+  const dates = String(value).match(/\d{2}\/\d{2}\/(?:\d{2}|\d{4})/gu) || []
   if (dates.length !== 2) return null
-  const toIso = (date) => date.split('/').reverse().join('-')
+  const toIso = (date) => {
+    const [day, month, inputYear] = date.split('/')
+    const year = inputYear.length === 2 ? `20${inputYear}` : inputYear
+    return `${year}-${month}-${day}`
+  }
   return [toIso(dates[0]), toIso(dates[1])]
 }
 
@@ -91,7 +95,7 @@ export function AdminOverview() {
       <PageHeader
         title="Tổng quan"
         subtitle={`Xin chào, ${session?.name || (session?.role === 'admin' ? 'Admin' : ['manager', 'business_support'].includes(session?.role) ? 'Hỗ trợ KD' : 'Nhân viên')}! Đây là tổng quan hoạt động của tất cả cửa hàng.`}
-        actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
+        actions={<DateRange value={shortDate(new Date())} />}
       />
       <AdminMetrics stores={stores} />
       <div className="section-heading">
@@ -221,7 +225,7 @@ export function AdminStores() {
       <PageHeader
         title="Danh sách cửa hàng"
         subtitle="Quản lý thông tin cửa hàng, nhân sự và kết quả hoạt động của từng cửa hàng."
-        actions={<DateRange value={new Date().toLocaleDateString('vi-VN')} />}
+        actions={<DateRange value={shortDate(new Date())} />}
       />
       {isBusinessSupport && <InfoNote>Chọn cửa hàng để mở không gian vận hành. Hỗ trợ KD có thể quản lý đơn hàng, chấm công và dữ liệu vận hành trong từng cửa hàng.</InfoNote>}
       <div className="toolbar toolbar--right">

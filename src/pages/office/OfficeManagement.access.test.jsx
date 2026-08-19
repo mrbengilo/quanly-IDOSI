@@ -14,7 +14,7 @@ afterEach(() => {
 })
 
 describe('Office Management permissions', () => {
-  it.each(['business_support', 'manager'])('lets %s open the employee creation form without edit, delete or payroll controls', async (role) => {
+  it.each(['business_support', 'manager'])('lets %s create and edit Office employees without delete or payroll controls', async (role) => {
     mocked.app = {
       session: { role, employeeId: 'HTKD-001' },
       employees: [{
@@ -46,7 +46,7 @@ describe('Office Management permissions', () => {
     render(<OfficeManagement />)
 
     expect(screen.getByRole('button', { name: /Thêm nhân viên/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Sửa Nhân viên văn phòng/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Sửa Nhân viên văn phòng/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Xóa Nhân viên văn phòng/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Tạo thưởng/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Tạo phụ cấp/i })).toBeNull()

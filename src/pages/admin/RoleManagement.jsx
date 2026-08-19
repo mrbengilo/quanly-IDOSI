@@ -36,7 +36,7 @@ import {
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { useApp } from '../../state/AppContext'
 import { apiGetIdentityImage } from '../../services/idosiApi'
-import { formatMoneyInput, money, shortDate, today } from '../../utils'
+import { shortDate, today } from '../../utils'
 import {
   officeArrivalMinutes,
   officeArrivalStatus,
@@ -157,6 +157,7 @@ function RoleProfileDrawer({
   roleKey,
   requiresPassword,
   showPassword,
+  storeEmployees,
   stores,
   togglePassword,
 }) {
@@ -180,8 +181,21 @@ function RoleProfileDrawer({
               {stores.map((store) => <option key={store.id} value={store.id}>{store.name} — {store.id}</option>)}
             </Select>
           </Field>
+          {!editingProfile && <Field label="Cách tạo Quản lý cửa hàng" required>
+            <Select value={form.managerSource || 'new'} onChange={onChange('managerSource')}>
+              <option value="new">Tạo hồ sơ quản lý mới</option>
+              <option value="existing">Chọn nhân viên cửa hàng hiện có</option>
+            </Select>
+          </Field>}
+          {!editingProfile && form.managerSource === 'existing' && <Field label="Nhân viên được phân quyền quản lý" required hint="Nhân viên giữ nguyên vai trò bán hàng và dùng cùng tài khoản để quản lý cửa hàng.">
+            <Select value={form.linkedEmployeeId || ''} onChange={onChange('linkedEmployeeId')}>
+              <option value="">Chọn nhân viên</option>
+              {storeEmployees.filter((employee) => String(employee.storeId || '') === String(form.storeId || '') && !employee.isStoreManager).map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}
+            </Select>
+          </Field>}
         </>}
 
+        {!(roleKey === ROLE_KEYS.storeManager && !editingProfile && form.managerSource === 'existing') && <>
         <h3>Thông tin nhân viên</h3>
         <div className="form-grid">
           <Field label="Mã nhân viên" required hint="Mã xem trước; máy chủ phát sinh mã chính thức khi lưu"><Input value={form.code} readOnly /></Field>
@@ -190,11 +204,6 @@ function RoleProfileDrawer({
           <Field label="CCCD" required hint="CCCD phải gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={onChange('cccd')} placeholder="012345678901" /></Field>
           <Field label="Ngày bắt đầu làm" required hint="Hiển thị trong danh sách theo dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={onChange('startDate')} /></Field>
           <Field label="Loại nhân viên" required><Select value={form.employmentType} onChange={onChange('employmentType')}>{employmentTypes.map((type) => <option key={type}>{type}</option>)}</Select></Field>
-          {roleKey === ROLE_KEYS.storeManager && <>
-            <Field label="Lương cơ bản" required hint={form.employmentType === 'Part-Time' ? 'Đơn vị đồng/giờ' : 'Đơn vị đồng/tháng'}><Input inputMode="numeric" value={form.baseSalary} onChange={onChange('baseSalary')} placeholder={form.employmentType === 'Part-Time' ? '35,000' : '8,000,000'} /></Field>
-            <Field label="Số ngày công quy định/tháng" required hint="Từ 1 đến 31 ngày"><Input type="number" inputMode="numeric" min="1" max="31" step="1" value={form.standardWorkDays} onChange={onChange('standardWorkDays')} placeholder="26" /></Field>
-            <Field label="Số giờ làm quy định/tháng" required hint="Lớn hơn 0 và không vượt quá 744 giờ"><Input type="number" inputMode="decimal" min="0.01" max="744" step="0.01" value={form.requiredMonthlyHours} onChange={onChange('requiredMonthlyHours')} placeholder="208" /></Field>
-          </>}
           <Field label="Vị trí công việc" required hint="Vị trí cố định theo vai trò tài khoản"><Input value={form.position} readOnly /></Field>
         </div>
 
@@ -207,7 +216,7 @@ function RoleProfileDrawer({
             const label = side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'
             const image = form.identityImages?.[side]
             const preview = identityImagePreview(image)
-            return <Field key={side} label={label} hint="Chọn ảnh JPG, PNG hoặc WEBP; tối đa 2 MB">
+            return <Field key={side} label={label} required hint="Chọn ảnh JPG, PNG hoặc WEBP; tối đa 2 MB">
               <Input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => onImageChange(side, event)} disabled={Boolean(imageBusy)} aria-label={label} />
               {image && <small>{preview ? `Đã chọn ${side === 'front' ? 'mặt trước' : 'mặt sau'}` : `Đã lưu ${side === 'front' ? 'mặt trước' : 'mặt sau'}`}</small>}
               {preview && <img src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} style={{ width: '100%', maxWidth: 220, maxHeight: 132, marginTop: 8, borderRadius: 10, objectFit: 'cover', border: '1px solid #d8e3dc' }} />}
@@ -223,13 +232,14 @@ function RoleProfileDrawer({
             <span className="password-input"><Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={onChange('password')} placeholder={editingProfile ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} /><button type="button" onClick={togglePassword} aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>{showPassword ? <EyeOff size={20} /> : <Eye size={20} />}</button></span>
           </Field>
         </div>
-        <InfoNote>Tài khoản chỉ được cấp quyền theo vai trò và phạm vi đã gán. Hệ thống không hiển thị lại mật khẩu hiện tại.</InfoNote>
+        <InfoNote>Quản lý cửa hàng không có lương quản lý riêng; chỉ nhận phụ cấp và thưởng cuối tháng. Tài khoản chỉ được cấp quyền theo phạm vi đã gán.</InfoNote>
+        </>}
       </form>
     </Modal>
   )
 }
 
-function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDelete, onEdit, onViewImage, profiles, roleKey, stores }) {
+function ProfileList({ canCreate, canDelete, canEdit, config, imageBusyKey, onCreate, onDelete, onEdit, onViewImage, profiles, roleKey, stores }) {
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
   const [storeFilter, setStoreFilter] = useState('all')
@@ -257,7 +267,7 @@ function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDel
         </div>
       </div>
       <TableWrap>
-        <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th>{roleKey === ROLE_KEYS.storeManager && <><th>Cửa hàng quản lý</th><th>Lương & định mức</th></>}<th>Liên hệ / CCCD</th><th>Địa chỉ</th><th>Vị trí</th><th>Hình CCCD</th>{canEdit && <th>Thao tác</th>}</tr></thead>
+        <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th>{roleKey === ROLE_KEYS.storeManager && <th>Cửa hàng quản lý</th>}<th>Liên hệ / CCCD</th><th>Địa chỉ</th><th>Vị trí</th><th>Hình CCCD</th>{canEdit && <th>Thao tác</th>}</tr></thead>
         <tbody>
           {rows.map((profile) => {
             const storeId = profile.storeId === 'OFFICE' ? '' : profile.storeId || profile.assignedStoreId
@@ -269,7 +279,6 @@ function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDel
               <td><Badge tone={employmentTypeTone(type)}>{type}</Badge></td>
               <td><strong>{formatRoleDate(profile.startDate || profile.joinDate || profile.employmentStartDate || profile.hireDate)}</strong></td>
               {roleKey === ROLE_KEYS.storeManager && <td><strong>{store?.name || storeId || '—'}</strong><small className="table-note">{store?.id || ''}</small></td>}
-              {roleKey === ROLE_KEYS.storeManager && <td><strong>{money(profile.baseSalary || profile.monthlySalary || profile.salary)}{type === 'Part-Time' ? '/giờ' : '/tháng'}</strong><small className="table-note">{Number(profile.standardWorkDays || 0)} ngày · {Number(profile.requiredMonthlyHours || 0)} giờ/tháng</small></td>}
               <td>{profile.phone || '—'}<small className="table-note">CCCD: {profile.cccd || profile.citizenId || '—'}</small></td>
               <td className="address-cell">{roleProfileAddress(profile)}</td>
               <td>{profile.position || profile.workPosition || '—'}</td>
@@ -281,10 +290,10 @@ function ProfileList({ canCreate, canEdit, config, imageBusyKey, onCreate, onDel
                   ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'back')} aria-label={`Xem mặt sau CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:back` ? 'Đang tải…' : 'Mặt sau'}</button>
                   : <small>Chưa có mặt sau</small>}
               </div></td>
-              {canEdit && <td><div className="row-actions"><button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button><button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button></div></td>}
+              {canEdit && <td><div className="row-actions"><button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button>{canDelete && <button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button>}</div></td>}
             </tr>
           })}
-          {!rows.length && <tr><td colSpan={(roleKey === ROLE_KEYS.storeManager ? 10 : 8) + (canEdit ? 1 : 0)}>Chưa có {config.singular} phù hợp.</td></tr>}
+          {!rows.length && <tr><td colSpan={(roleKey === ROLE_KEYS.storeManager ? 9 : 8) + (canEdit ? 1 : 0)}>Chưa có {config.singular} phù hợp.</td></tr>}
         </tbody>
       </TableWrap>
       <TableFooter shown={rows.length} total={rows.length} />
@@ -358,6 +367,9 @@ function RoleManagement({ roleKey }) {
     ...(Array.isArray(app.storeManagers) ? app.storeManagers : []),
     ...(Array.isArray(app.deletedEmployees) ? app.deletedEmployees : []),
   ]
+  const storeEmployees = (Array.isArray(app.employees) ? app.employees : []).filter((profile) => (
+    String(profile.unit || 'store') === 'store' && !profile.deletedAt
+  ))
   const [tab, setTab] = useState('profiles')
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [editingProfile, setEditingProfile] = useState(null)
@@ -370,9 +382,12 @@ function RoleManagement({ roleKey }) {
   const [imageViewer, setImageViewer] = useState(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const canEdit = app.session?.role === 'admin'
-  const canCreate = canEdit || (app.session?.role === ROLE_KEYS.businessSupport && roleKey === ROLE_KEYS.storeManager)
-  const canView = canEdit || app.session?.role === ROLE_KEYS.businessSupport
+  const isAdmin = app.session?.role === 'admin'
+  const isBusinessSupport = ['business_support', 'manager'].includes(app.session?.role)
+  const canEdit = isAdmin || (isBusinessSupport && roleKey === ROLE_KEYS.storeManager)
+  const canDelete = isAdmin
+  const canCreate = isAdmin || (isBusinessSupport && roleKey === ROLE_KEYS.storeManager)
+  const canView = isAdmin || isBusinessSupport
   const requiresPassword = !editingProfile || !(
     editingProfile.authUserId || editingProfile.authVersion || editingProfile.passwordHash || editingProfile.legacyPassword
   )
@@ -439,7 +454,6 @@ function RoleManagement({ roleKey }) {
     let value = event.target.value
     if (field === 'cccd') value = value.replace(/\D/gu, '').slice(0, 12)
     if (field === 'phone') value = value.replace(/\D/gu, '').slice(0, 10)
-    if (field === 'baseSalary') value = formatMoneyInput(value)
     setForm((current) => ({
       ...current,
       [field]: value,
@@ -536,14 +550,14 @@ function RoleManagement({ roleKey }) {
 
   return <div className="page">
     <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={canCreate ? <Button icon={Plus} onClick={openCreate}>Thêm tài khoản</Button> : null} />
-    {!canCreate && <InfoNote>Chế độ chỉ xem. Chỉ Admin được thêm, sửa, xóa hoặc cấp lại tài khoản.</InfoNote>}
-    {canCreate && !canEdit && <InfoNote>Nhân viên Hỗ trợ KD được thêm tài khoản Quản lý cửa hàng; chỉ Admin được sửa hoặc xóa tài khoản.</InfoNote>}
+    {!canCreate && <InfoNote>Chế độ chỉ xem. Chỉ Admin được quản lý tài khoản này.</InfoNote>}
+    {isBusinessSupport && roleKey === ROLE_KEYS.storeManager && <InfoNote>Nhân viên Hỗ trợ KD được tạo hoặc sửa Quản lý cửa hàng; chỉ Admin được xóa tài khoản.</InfoNote>}
     {roleKey === ROLE_KEYS.businessSupport && <div className="tabs"><button type="button" className={tab === 'profiles' ? 'active' : ''} onClick={() => setTab('profiles')}><Users />Danh sách nhân viên</button><button type="button" className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button><button type="button" className={tab === 'evaluation' ? 'active' : ''} onClick={() => setTab('evaluation')}><ShieldCheck />Chuyên cần</button>{canEdit && <button type="button" className={tab === 'work' ? 'active' : ''} onClick={() => setTab('work')}><ClipboardCheck />Công việc</button>}</div>}
-    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList canCreate={canCreate} canEdit={canEdit} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
+    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList canCreate={canCreate} canDelete={canDelete} canEdit={canEdit} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'attendance' && <BusinessSupportAttendance attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'evaluation' && <BusinessSupportEvaluation attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'work' && canEdit && <SupportWorkEvaluationTable assignments={app.supportWorkAssignments || []} profiles={profiles} />}
-    {canCreate && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onAddressChange={updateAddress} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} stores={stores} togglePassword={() => setShowPassword((current) => !current)} />}
+    {canCreate && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onAddressChange={updateAddress} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} storeEmployees={storeEmployees} stores={stores} togglePassword={() => setShowPassword((current) => !current)} />}
     <Modal open={Boolean(imageViewer)} onClose={closeImageViewer} title={imageViewer?.title || 'Hình ảnh CCCD'} footer={<Button variant="outline" onClick={closeImageViewer}>Đóng</Button>}><img src={imageViewer?.url || ''} alt={imageViewer?.title || 'Hình ảnh CCCD'} style={{ display: 'block', width: '100%', maxHeight: '65vh', objectFit: 'contain', borderRadius: 12 }} /></Modal>
     {canEdit && <Modal open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} title={`Xóa ${config.singular}`} footer={<><Button variant="outline" onClick={() => setPendingDelete(null)} disabled={isDeleting}>Hủy</Button><Button variant="danger" icon={Trash2} loading={isDeleting} disabled={isDeleting} onClick={confirmDelete}>XÓA TÀI KHOẢN</Button></>}><InfoNote tone="orange">Xóa <strong>{pendingDelete?.name}</strong> khỏi danh sách? Lịch sử chấm công và nhật ký hệ thống vẫn được giữ lại.</InfoNote></Modal>}
   </div>

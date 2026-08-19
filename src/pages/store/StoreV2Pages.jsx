@@ -37,14 +37,11 @@ import {
 } from '../../components/UI'
 import { calculateKpiBonuses, financeSummaryFromState } from '../../domain'
 import { useApp } from '../../state/AppContext'
-import { businessDate, calculateEmployeeBasePay, getMonthlySalary, getPayBasis, money, shortDate, today, usesMonthlyHoursFormula } from '../../utils'
+import { businessDate, calculateEmployeeBasePay, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
 
 const parseMoney = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
 const moneyInput = (value) => new Intl.NumberFormat('en-US').format(parseMoney(value))
-const timestamp = (value) => {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? String(value || '—') : date.toLocaleString('vi-VN', { hour12: false })
-}
+const timestamp = shortDateTime24
 const monthBounds = (period) => ({
   from: `${period}-01`,
   to: `${period}-${String(new Date(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 0).getDate()).padStart(2, '0')}`,

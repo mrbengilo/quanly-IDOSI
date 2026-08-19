@@ -14,16 +14,6 @@ export const formatStoreMoneyInput = (value) => {
 export const isPartTimeEmployee = (value) => String(value || '').toLowerCase() === 'part-time'
 export const normalizeStoreEmploymentType = (value) => isPartTimeEmployee(value) ? 'Part-Time' : 'Full-Time'
 
-const normalizeCredentialToken = (value = '') => String(value)
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .replace(/[Đđ]/g, 'd')
-  .toLowerCase()
-  .replace(/[^a-z0-9]+/g, '-')
-  .replace(/^-+|-+$/g, '')
-
-const employeeGivenName = (name = '') => normalizeCredentialToken(name).split('-').filter(Boolean).at(-1) || ''
-
 const normalizeStoreKey = (value = '') => String(value)
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/g, '')
@@ -35,29 +25,39 @@ export const storeEmployeePrefix = (store = {}) => {
   const rules = [
     ['SM234', 'SM234'],
     ['TO NGOC VAN', 'TNV'],
+    ['TNV', 'TNV'],
     ['TAY HOA', 'TH'],
+    ['TH', 'TH'],
     ['DI AN', 'DIAN'],
+    ['DIAN', 'DIAN'],
     ['NO TRANG LONG', 'NTL'],
+    ['NTL', 'NTL'],
     ['BUON MA THU', 'BMT'],
+    ['BMT', 'BMT'],
     ['LE VAN THO', 'LVT'],
+    ['LVT', 'LVT'],
     ['NGUYEN VAN THUONG', 'NVT'],
+    ['NVT', 'NVT'],
     ['KHA VAN CAN', 'KVC'],
+    ['KVC', 'KVC'],
     ['CAN THO', 'CT'],
+    ['CT', 'CT'],
   ]
-  const matched = rules.find(([keyword]) => source.includes(keyword))
-  if (matched) return matched[1]
+  const sourceTokens = source.split(/\s+/u)
+  const matched = rules.find(([keyword]) => keyword.includes(' ') ? source.includes(keyword) : sourceTokens.includes(keyword))
+  if (matched) {
+    if (matched[1] === 'SM234') return matched[1]
+    const brand = source.includes('DOSII')
+      ? 'DOSII'
+      : source.includes('DOSSI')
+        ? 'DOSSI'
+        : /(^|\s)SM(\s|$)/.test(source)
+          ? 'SM'
+          : ''
+    return brand ? `${brand}-${matched[1]}` : matched[1]
+  }
   const shortCode = normalizeStoreKey(store.short || store.id || 'NV').replace(/[^A-Z0-9]/g, '').slice(0, 8)
   return shortCode || 'NV'
-}
-
-export const generateStoreEmployeeCredentials = (store, name, cccd) => {
-  const givenName = employeeGivenName(name)
-  const storePrefix = normalizeCredentialToken(storeEmployeePrefix(store))
-  const identityNumber = String(cccd || '').replace(/\D/g, '')
-  return {
-    username: storePrefix && givenName ? `${storePrefix}-${givenName}` : '',
-    password: givenName && identityNumber.length === 12 ? `${identityNumber.slice(-6)}${givenName}@` : '',
-  }
 }
 
 export const freshIdentityImages = (images = {}) => Object.fromEntries(
@@ -79,7 +79,6 @@ export const nextStoreEmployeeCode = (store, employees = []) => {
 }
 
 export function validateStoreEmployee(form, employees, editingId, requiresPassword = !editingId, options = {}) {
-  const autoCredentials = Boolean(options.autoCredentials)
   const requireIdentityImages = Boolean(options.requireIdentityImages)
   const errors = []
   const required = [
@@ -96,7 +95,7 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
     ['Tuổi', form.age],
     ['Cửa hàng', form.storeId],
   ]
-  if (!autoCredentials) required.push(['Tên đăng nhập', form.username])
+  required.push(['Tên đăng nhập', form.username])
 
   required.forEach(([label, value]) => {
     if (!String(value ?? '').trim()) errors.push(`${label} là trường bắt buộc.`)
@@ -121,7 +120,7 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   if (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100) {
     errors.push('Tuổi phải là số nguyên từ 16 đến 100.')
   }
-  if (!autoCredentials && requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
+  if (requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
 
   const others = employees.filter((employee) => String(employee.id || employee.code || '') !== String(editingId || ''))
   if (others.some((employee) => normalizeText(employee.id || employee.code || employee.employeeCode) === normalizeText(form.id))) {
@@ -130,7 +129,7 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   if (others.some((employee) => String(employee.cccd || employee.citizenId || '') === form.cccd)) {
     errors.push('Số CCCD đã được sử dụng.')
   }
-  if (!autoCredentials && others.some((employee) => normalizeText(employee.username) === normalizeText(form.username))) {
+  if (others.some((employee) => normalizeText(employee.username) === normalizeText(form.username))) {
     errors.push('Tên đăng nhập đã tồn tại.')
   }
   if (others.some((employee) => normalizePhone(employee.phone) === normalizePhone(form.phone))) {
@@ -139,7 +138,7 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   return [...new Set(errors)]
 }
 
-export const buildStoreEmployeePayload = (form, { storeId, store, autoCredentials = false } = {}) => {
+export const buildStoreEmployeePayload = (form, { storeId, store } = {}) => {
   const addressDetails = {
     province: form.province.trim(),
     ward: form.ward.trim(),
@@ -147,7 +146,7 @@ export const buildStoreEmployeePayload = (form, { storeId, store, autoCredential
   }
   const partTime = isPartTimeEmployee(form.employmentType)
   const baseSalary = partTime ? 0 : parseStoreMoneyInput(form.baseSalary)
-  const position = autoCredentials ? 'Nhân viên bán hàng' : form.position.trim()
+  const position = form.position.trim() || 'Nhân viên bán hàng'
   const identityImages = freshIdentityImages(form.identityImages)
   return {
     id: form.id.trim(),
@@ -184,7 +183,8 @@ export const buildStoreEmployeePayload = (form, { storeId, store, autoCredential
     status: form.status,
     storeId,
     unit: 'store',
-    ...(autoCredentials ? {} : { username: form.username.trim(), ...(form.password ? { password: form.password } : {}) }),
+    username: form.username.trim(),
+    ...(form.password ? { password: form.password } : {}),
     ...(Object.keys(identityImages).length ? { identityImages } : {}),
   }
 }

@@ -27,13 +27,10 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
-import { formatMoneyInput, money, parseMoneyInput, shortDate, today } from '../../utils'
+import { formatMoneyInput, money, parseMoneyInput, shortDate, shortDateTime24, today } from '../../utils'
 import { orderAuditChanges } from './orderAuditUtils'
 
-const displayDateTime = (value) => {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? String(value || '—') : date.toLocaleString('vi-VN', { hour12: false })
-}
+const displayDateTime = shortDateTime24
 
 const employeeTypeLabel = (employee = {}) => String(employee.employmentType || employee.employeeType || employee.type || 'Full-Time').toLowerCase().includes('part') ? 'Part-Time' : 'Full-Time'
 

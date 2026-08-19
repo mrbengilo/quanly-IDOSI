@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   buildStoreEmployeePayload,
   freshIdentityImages,
-  generateStoreEmployeeCredentials,
+  nextStoreEmployeeCode,
+  storeEmployeePrefix,
   validateStoreEmployee,
 } from './storeEmployeeForm'
 
@@ -28,52 +29,43 @@ const validForm = (overrides = {}) => ({
   employmentType: 'Full-Time',
   position: 'Nhân viên thu ngân',
   age: '22',
-  username: '',
-  password: '',
+  username: 'sm234-minhanh',
+  password: 'MatKhauBaoMat123!',
   status: 'Đang làm việc',
   storeId: store.id,
   ...overrides,
 })
 
 describe('Business Support store employee form', () => {
-  it('previews the required store-based username and last-six-CCCD password', () => {
-    expect(generateStoreEmployeeCredentials(store, 'Nguyễn Ben', '079203147852')).toEqual({
-      username: 'sm234-ben',
-      password: '147852ben@',
-    })
-    expect(generateStoreEmployeeCredentials({ short: 'TH' }, 'Trần Minh Anh', '012345123456')).toEqual({
-      username: 'th-anh',
-      password: '123456anh@',
-    })
+  it('uses the store brand and branch in sequential employee codes', () => {
+    expect(storeEmployeePrefix({ name: 'Dossi LVT', short: 'LVT' })).toBe('DOSSI-LVT')
+    expect(storeEmployeePrefix({ name: 'Dosii TNV', short: 'TNV' })).toBe('DOSII-TNV')
+    expect(storeEmployeePrefix({ name: 'SM TNV', short: 'TNV' })).toBe('SM-TNV')
+    expect(nextStoreEmployeeCode({ name: 'Dosii TNV', short: 'TNV' }, [{ id: 'DOSII-TNV-001' }])).toBe('DOSII-TNV-002')
   })
 
-  it('accepts server-generated credentials only when date and both CCCD images are present', () => {
-    expect(validateStoreEmployee(validForm(), [], '', true, {
-      autoCredentials: true,
-      requireIdentityImages: true,
-    })).toEqual([])
+  it('requires manually entered credentials, date and both CCCD images', () => {
+    expect(validateStoreEmployee(validForm(), [], '', true, { requireIdentityImages: true })).toEqual([])
 
     const errors = validateStoreEmployee(validForm({
       startDate: '',
       identityImages: { front: '', back: '' },
-    }), [], '', true, {
-      autoCredentials: true,
-      requireIdentityImages: true,
-    })
+      username: '',
+      password: '',
+    }), [], '', true, { requireIdentityImages: true })
     expect(errors).toEqual(expect.arrayContaining([
       'Ngày bắt đầu làm là trường bắt buộc.',
       'Hình ảnh mặt trước CCCD là trường bắt buộc.',
       'Hình ảnh mặt sau CCCD là trường bắt buộc.',
     ]))
-    expect(errors).not.toContain('Tên đăng nhập là trường bắt buộc.')
-    expect(errors).not.toContain('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
+    expect(errors).toContain('Tên đăng nhập là trường bắt buộc.')
+    expect(errors).toContain('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
   })
 
-  it('omits credentials from the Business Support request and fixes the sales position', () => {
+  it('includes manual credentials in the request and keeps the chosen store position', () => {
     const payload = buildStoreEmployeePayload(validForm(), {
       storeId: store.id,
       store,
-      autoCredentials: true,
     })
 
     expect(payload).toMatchObject({
@@ -81,15 +73,15 @@ describe('Business Support store employee form', () => {
       storeId: store.id,
       startDate: '2026-08-18',
       joinDate: '2026-08-18',
-      position: 'Nhân viên bán hàng',
-      workPosition: 'Nhân viên bán hàng',
+      position: 'Nhân viên thu ngân',
+      workPosition: 'Nhân viên thu ngân',
+      username: 'sm234-minhanh',
+      password: 'MatKhauBaoMat123!',
       identityImages: {
         front: 'data:image/png;base64,fresh-front',
         back: 'data:image/webp;base64,fresh-back',
       },
     })
-    expect(payload).not.toHaveProperty('username')
-    expect(payload).not.toHaveProperty('password')
   })
 
   it('never resubmits persisted private image metadata', () => {

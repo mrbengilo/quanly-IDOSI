@@ -746,11 +746,47 @@ export const projectSharedState = (rawState, user) => {
     const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
     const ownLatestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
-    const employees = filterArray(state, 'employees', (record) => (
+    const homeEmployees = filterArray(state, 'employees', (record) => (
       String(record.storeId || '') === storeId
       && (employeeUnit(record) === 'store'
         || [record.id, record.code, record.employeeId].map(String).includes(ownEmployeeId))
     ))
+    const projectionDate = localDateTimeParts(new Date().toISOString()).date
+    const inboundTransfers = filterArray(state, 'supportTransfers', (record) => (
+      String(record.toStoreId || '') === storeId
+      && !record.deletedAt
+      && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+      && String(record.toDate || '') >= projectionDate
+    ))
+    const inboundTransferByEmployee = new Map(inboundTransfers.map((record) => [String(record.employeeId || ''), record]))
+    const transferredEmployees = filterArray(state, 'employees', (record) => (
+      employeeUnit(record) === 'store'
+      && !record.deletedAt
+      && inboundTransferByEmployee.has(String(record.id || record.code || ''))
+    )).map((record) => {
+      const transfer = inboundTransferByEmployee.get(String(record.id || record.code || ''))
+      return {
+        ...record,
+        homeStoreId: record.storeId,
+        supportStoreId: storeId,
+        supportAssignment: {
+          id: transfer.id,
+          fromStoreId: transfer.fromStoreId,
+          toStoreId: transfer.toStoreId,
+          fromDate: transfer.fromDate,
+          toDate: transfer.toDate,
+          hourlySupportRate: transfer.hourlySupportRate,
+          allowance: transfer.allowance,
+          status: transfer.status,
+        },
+      }
+    })
+    const employees = [...homeEmployees]
+    for (const employee of transferredEmployees) {
+      if (!employees.some((record) => String(record.id || record.code || '') === String(employee.id || employee.code || ''))) {
+        employees.push(employee)
+      }
+    }
     const visibleEmployeeIds = new Set(employees.flatMap((record) => (
       [record.id, record.code, record.employeeId].map((value) => String(value || '')).filter(Boolean)
     )))
@@ -965,6 +1001,8 @@ const publicUser = (user) => ({
   status: user.status,
   version: Number(user.version || 1),
   lastLoginAt: user.last_login_at || null,
+  ...(user.home_store_id ? { homeStoreId: user.home_store_id } : {}),
+  ...(user.active_transfer_id ? { activeTransferId: user.active_transfer_id } : {}),
 })
 
 const bearerToken = (request) => {
@@ -1002,7 +1040,57 @@ const requireSession = async (request, db, context) => {
   `, tokenHash, context.now)
   if (!session) throw new ApiError(401, 'SESSION_INVALID', 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.')
   await run(db, 'UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?', context.now, tokenHash)
-  return session
+  return resolveEffectiveEmployeeStore(db, session, context.now)
+}
+
+const activeSupportTransferFor = (state, employeeId, date) => (Array.isArray(state.supportTransfers)
+  ? state.supportTransfers
+  : [])
+  .filter((record) => (
+    String(record.employeeId || '') === String(employeeId || '')
+    && !record.deletedAt
+    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+    && String(record.fromDate || '') <= date
+    && String(record.toDate || '') >= date
+  ))
+  .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
+
+const supportTransferToStoreOnDate = (state, employeeId, storeId, date) => (Array.isArray(state.supportTransfers)
+  ? state.supportTransfers
+  : [])
+  .filter((record) => (
+    String(record.employeeId || '') === String(employeeId || '')
+    && String(record.toStoreId || '') === String(storeId || '')
+    && !record.deletedAt
+    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+    && String(record.fromDate || '') <= date
+    && String(record.toDate || '') >= date
+  ))
+  .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
+
+const employeeWorksAtStoreOnDate = (state, employee, storeId, date) => (
+  String(employee?.storeId || '') === String(storeId || '')
+  || Boolean(supportTransferToStoreOnDate(
+    state,
+    String(employee?.id || employee?.code || ''),
+    storeId,
+    date,
+  ))
+)
+
+const resolveEffectiveEmployeeStore = async (db, user, now) => {
+  if (user?.role !== 'employee' || !user?.employee_id) return user
+  const stateRow = await loadState(db, 'global')
+  const state = stateRow ? parseStoredJson(stateRow.value_json, {}) : {}
+  const date = localDateTimeParts(now).date
+  const transfer = activeSupportTransferFor(state, user.employee_id, date)
+  if (!transfer?.toStoreId) return user
+  return {
+    ...user,
+    home_store_id: user.store_id || transfer.fromStoreId || null,
+    store_id: String(transfer.toStoreId),
+    active_transfer_id: String(transfer.id || ''),
+  }
 }
 
 const validScope = (scope) => /^(?:global|store:[A-Za-z0-9_-]{1,80}|employee:[A-Za-z0-9_-]{1,80})$/u.test(String(scope || ''))
@@ -1881,11 +1969,12 @@ const login = async (request, env, context) => {
     ),
   ])
 
+  const effectiveUser = await resolveEffectiveEmployeeStore(db, { ...user, last_login_at: context.now }, context.now)
   return jsonResponse(apiPayload(context, {
     token: rawToken,
     tokenType: 'Bearer',
     expiresAt,
-    user: publicUser({ ...user, last_login_at: context.now }),
+    user: publicUser(effectiveUser),
   }))
 }
 
@@ -2635,7 +2724,7 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
   }
   const activeStoreEmployees = new Map((Array.isArray(state.employees) ? state.employees : [])
     .filter((employee) => (
-      String(employee.storeId || '') === storeId
+      employeeWorksAtStoreOnDate(state, employee, storeId, date)
       && employeeUnit(employee) === 'store'
       && !employee.deletedAt
       && !['da nghi viec', 'tam ngung', 'inactive', 'locked'].includes(normalizeTextKey(employee.status))
@@ -2780,15 +2869,24 @@ const STORE_EMPLOYEE_PREFIXES = new Map([
   ['SECOND MALL SM234', 'SM234'],
   ['SM234', 'SM234'],
   ['TO NGOC VAN', 'TNV'],
+  ['TNV', 'TNV'],
   ['DI AN', 'DIAN'],
+  ['DIAN', 'DIAN'],
   ['KHA VAN CAN', 'KVC'],
+  ['KVC', 'KVC'],
   ['TAY HOA', 'TH'],
+  ['TH', 'TH'],
   ['NGUYEN VAN THUONG', 'NVT'],
+  ['NVT', 'NVT'],
   ['NO TRANG LONG', 'NTL'],
+  ['NTL', 'NTL'],
   ['LE VAN THO', 'LVT'],
+  ['LVT', 'LVT'],
   ['BUON MA THUOT', 'BMT'],
   ['BUON MA THUOC', 'BMT'],
+  ['BMT', 'BMT'],
   ['CAN THO', 'CT'],
+  ['CT', 'CT'],
 ])
 
 const asciiUpper = (value) => String(value || '')
@@ -2801,53 +2899,26 @@ const asciiUpper = (value) => String(value || '')
   .trim()
 
 const storeEmployeePrefix = (store) => {
-  const candidates = [store?.employeePrefix, store?.short, store?.name]
-    .map((value) => asciiUpper(value).replace(/^IDOSI\s+/u, ''))
+  const rawCandidates = [store?.employeePrefix, store?.short, store?.name]
+    .map((value) => asciiUpper(value))
     .filter(Boolean)
+  const candidates = rawCandidates.map((value) => value.replace(/^IDOSI\s+/u, ''))
+  const identity = rawCandidates.join(' ')
+  const brand = /\bDOSII\b/u.test(identity)
+    ? 'DOSII'
+    : (/\bDOSSI\b/u.test(identity)
+        ? 'DOSSI'
+        : (/\bSM\b/u.test(identity) ? 'SM' : ''))
   for (const candidate of candidates) {
-    if (STORE_EMPLOYEE_PREFIXES.has(candidate)) return STORE_EMPLOYEE_PREFIXES.get(candidate)
+    if (STORE_EMPLOYEE_PREFIXES.has(candidate)) {
+      const branch = STORE_EMPLOYEE_PREFIXES.get(candidate)
+      if (branch === 'SM234') return branch
+      return brand ? `${brand}-${branch}` : branch
+    }
     if (/\d/u.test(candidate)) return candidate.replace(/\s+/gu, '').slice(0, 12)
   }
   const words = (candidates[0] || 'NV').split(/\s+/u).filter(Boolean)
   return words.map((word) => word[0]).join('').slice(0, 8) || 'NV'
-}
-
-const credentialSlug = (value) => String(value || '')
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/gu, '')
-  .replace(/Đ/gu, 'D')
-  .replace(/đ/gu, 'd')
-  .toLowerCase()
-  .replace(/[^a-z0-9]+/gu, '-')
-  .replace(/^-+|-+$/gu, '')
-
-const employeeCredentialName = (name) => credentialSlug(name).split('-').filter(Boolean).at(-1) || ''
-
-const generatedStoreEmployeeCredentials = async (db, store, profile) => {
-  const storeSlug = credentialSlug(storeEmployeePrefix(store))
-  const nameSlug = employeeCredentialName(profile?.name)
-  const cccd = String(profile?.cccd || '')
-  if (!storeSlug || !nameSlug || !/^\d{12}$/u.test(cccd)) {
-    throw new ApiError(400, 'EMPLOYEE_CREDENTIALS_GENERATION_FAILED', 'Không thể tự sinh thông tin đăng nhập từ cửa hàng, tên nhân viên và CCCD.')
-  }
-  const base = `${storeSlug}-${nameSlug}`
-  let username = ''
-  for (let sequence = 1; sequence <= 10_000; sequence += 1) {
-    const suffix = sequence === 1 ? '' : `-${sequence}`
-    const candidate = `${base.slice(0, 80 - suffix.length)}${suffix}`
-    const duplicate = await first(db, 'SELECT id FROM users WHERE username_normalized = ? LIMIT 1', normalizeUsername(candidate))
-    if (!duplicate) {
-      username = candidate
-      break
-    }
-  }
-  if (!username) {
-    throw new ApiError(409, 'USERNAME_SEQUENCE_EXHAUSTED', 'Không thể cấp tên đăng nhập duy nhất cho nhân viên.')
-  }
-  return {
-    username,
-    password: `${cccd.slice(-6)}${nameSlug}@`,
-  }
 }
 
 const nextEmployeeCode = (state, store, unit = null) => {
@@ -2902,7 +2973,7 @@ const OPERATIONAL_PROFILE_FIELDS = new Set([
   'unit', 'unitType', 'department', 'role', 'storeId',
   'name', 'phone', 'cccd', 'citizenId', 'address', 'addressDetails', 'startDate', 'joinDate',
   'employmentType', 'position', 'jobPosition', 'username', 'password', 'authUserId',
-  'baseSalary', 'standardWorkDays', 'requiredMonthlyHours',
+  'baseSalary', 'standardWorkDays', 'requiredMonthlyHours', 'linkedEmployeeId',
   'identityImages', 'cccdImages', 'identityCardImages', 'cccdFront', 'cccdBack',
 ])
 
@@ -3081,35 +3152,6 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
   if (unit === 'store_manager' && !['Full-Time', 'Part-Time'].includes(employmentType)) {
     throw new ApiError(400, 'EMPLOYMENT_TYPE_INVALID', 'Loại nhân viên Quản lý cửa hàng phải là Full-Time hoặc Part-Time.')
   }
-  const compensationProvided = ['employmentType', 'baseSalary', 'standardWorkDays', 'requiredMonthlyHours']
-    .some((field) => payload[field] !== undefined)
-  const requiresManagerCompensation = unit === 'store_manager' && (!previous || compensationProvided)
-  const rawManagerBaseSalary = payload.baseSalary ?? previous?.baseSalary
-  const rawManagerStandardWorkDays = payload.standardWorkDays ?? previous?.standardWorkDays
-  const rawManagerRequiredMonthlyHours = payload.requiredMonthlyHours ?? previous?.requiredMonthlyHours
-  if (requiresManagerCompensation && [
-    rawManagerBaseSalary, rawManagerStandardWorkDays, rawManagerRequiredMonthlyHours,
-  ].some((value) => value === undefined || value === null || value === '')) {
-    throw new ApiError(400, 'STORE_MANAGER_PAYROLL_FIELDS_REQUIRED', 'Quản lý cửa hàng cần đủ Lương cơ bản, Số ngày công và Số giờ làm quy định mỗi tháng.', {
-      requiredFields: ['baseSalary', 'standardWorkDays', 'requiredMonthlyHours'],
-    })
-  }
-  const managerBaseSalary = unit === 'store_manager'
-    && rawManagerBaseSalary !== undefined
-    ? asVnd(rawManagerBaseSalary, 'Lương cơ bản', { positive: true })
-    : null
-  const managerStandardWorkDays = unit === 'store_manager'
-    ? Number(rawManagerStandardWorkDays)
-    : null
-  const managerRequiredMonthlyHours = unit === 'store_manager'
-    ? Number(rawManagerRequiredMonthlyHours)
-    : null
-  if (requiresManagerCompensation && !validRequiredWorkingDays(managerStandardWorkDays)) {
-    throw new ApiError(400, 'STORE_MANAGER_WORK_DAYS_INVALID', 'Số ngày công quy định mỗi tháng của Quản lý cửa hàng phải là số nguyên từ 1 đến 31.')
-  }
-  if (requiresManagerCompensation && !validRequiredMonthlyHours(managerRequiredMonthlyHours)) {
-    throw new ApiError(400, 'STORE_MANAGER_MONTHLY_HOURS_INVALID', `Số giờ làm quy định mỗi tháng của Quản lý cửa hàng phải lớn hơn 0 và không quá ${MAX_REQUIRED_MONTHLY_HOURS} giờ.`)
-  }
   const position = operationalPosition(payload.position ?? payload.jobPosition ?? previous?.position, unit)
   const preservedMetadata = previous ? Object.fromEntries(Object.entries(previous).filter(([key]) => [
     'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'authUserId', 'authVersion', 'identityImages',
@@ -3129,20 +3171,17 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
     joinDate: startDate,
     employmentType,
     ...(unit === 'store_manager' ? {
-      payBasis: employmentType === 'Part-Time' ? 'hourly' : 'monthly',
-      salaryBasis: employmentType === 'Part-Time' ? 'hourly' : 'monthly',
-      salaryUnit: employmentType === 'Part-Time' ? 'hour' : 'month',
-      salary: managerBaseSalary,
-      baseSalary: managerBaseSalary,
-      monthlySalary: employmentType === 'Full-Time' ? managerBaseSalary : null,
-      hourlyRate: employmentType === 'Part-Time' ? managerBaseSalary : null,
-      standardWorkDays: validRequiredWorkingDays(managerStandardWorkDays)
-        ? managerStandardWorkDays
-        : null,
-      requiredMonthlyHours: validRequiredMonthlyHours(managerRequiredMonthlyHours)
-        ? managerRequiredMonthlyHours
-        : null,
-      payFormula: employmentType === 'Part-Time' ? 'hourly' : 'monthly-workdays',
+      salary: 0,
+      baseSalary: 0,
+      monthlySalary: 0,
+      hourlyRate: 0,
+      payBasis: 'allowance-only',
+      salaryBasis: 'allowance-only',
+      salaryUnit: 'none',
+      payFormula: 'allowance-bonus-only',
+      ...(payload.linkedEmployeeId || previous?.linkedEmployeeId
+        ? { linkedEmployeeId: String(payload.linkedEmployeeId || previous.linkedEmployeeId) }
+        : {}),
     } : {}),
     position,
     jobPosition: position,
@@ -3211,15 +3250,15 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
     && (!validRequiredWorkingDays(requestedStoreWorkDays) || !validRequiredMonthlyHours(requestedMonthlyHours))) {
     throw new ApiError(400, 'SM234_PAYROLL_FIELDS_REQUIRED', 'Nhân viên Full-Time SecondMall SM234 cần số ngày công và tổng giờ làm quy định mỗi tháng.')
   }
-  const cccd = normalizedUnit === 'office'
+  const cccd = ['office', 'store'].includes(normalizedUnit)
     ? String(payload.cccd ?? payload.citizenId ?? previous?.cccd ?? previous?.citizenId ?? '').replace(/\D/gu, '')
     : String(payload.cccd ?? payload.citizenId ?? previous?.cccd ?? previous?.citizenId ?? '').trim().slice(0, 20)
-  if (normalizedUnit === 'office' && (!previous || payload.cccd !== undefined || payload.citizenId !== undefined)
+  if (['office', 'store'].includes(normalizedUnit) && (!previous || payload.cccd !== undefined || payload.citizenId !== undefined)
     && !/^\d{12}$/u.test(cccd)) {
     throw new ApiError(400, 'CCCD_INVALID', 'CCCD phải có đúng 12 chữ số.')
   }
   const address = String(payload.address ?? previous?.address ?? '').trim().slice(0, 500)
-  if (normalizedUnit === 'office' && !previous && !address) {
+  if (['office', 'store'].includes(normalizedUnit) && !previous && !address) {
     throw new ApiError(400, 'EMPLOYEE_ADDRESS_INVALID', 'Địa chỉ nhân viên không được để trống.')
   }
   const addressDetails = normalizeAddressDetails(payload.addressDetails ?? previous?.addressDetails)
@@ -3263,7 +3302,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
   if (requestedStandardWorkDaysPeriod) monthlyWorkdayTargets[requestedStandardWorkDaysPeriod] = requestedStandardWorkDays
   const requestedStartDate = payload.startDate ?? payload.joinDate ?? previous?.startDate ?? previous?.joinDate ?? ''
   const startDate = requestedStartDate ? optionalCalendarDate(requestedStartDate, 'Ngày bắt đầu làm') : ''
-  if (!previous && ['business_support', 'store_manager', 'office'].includes(normalizedUnit) && !startDate) {
+  if (!previous && ['business_support', 'store_manager', 'office', 'store'].includes(normalizedUnit) && !startDate) {
     throw new ApiError(400, 'START_DATE_REQUIRED', 'Ngày bắt đầu làm là bắt buộc.')
   }
   const position = normalizedUnit === 'office'
@@ -3363,12 +3402,27 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : employees.find((employee) => String(employee.id || employee.code || '') === employeeId && !employee.deletedAt)
   if (operation !== 'create' && !previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
   const unit = normalizeEmployeeUnitRequest(profilePayload, previous)
-  const supportCreatingStoreEmployee = actor.role === 'business_support' && operation === 'create' && unit === 'store'
-  if (supportCreatingStoreEmployee) employeeId = ''
-  const supportOperationAllowed = (unit === 'store' && ['create', 'update'].includes(operation))
-    || (operation === 'create' && ['office', 'store_manager'].includes(unit))
+  const linkedEmployeeId = operation === 'create' && unit === 'store_manager'
+    ? String(profilePayload.linkedEmployeeId || '').trim()
+    : ''
+  const linkedStoreEmployee = linkedEmployeeId
+    ? employees.find((employee) => (
+        String(employee.id || employee.code || '') === linkedEmployeeId
+        && employeeUnit(employee) === 'store'
+        && !employee.deletedAt
+        && !['da nghi viec', 'inactive'].includes(normalizeTextKey(employee.status))
+      ))
+    : null
+  if (linkedEmployeeId && !linkedStoreEmployee) {
+    throw new ApiError(404, 'LINKED_EMPLOYEE_NOT_FOUND', 'Không tìm thấy nhân viên cửa hàng đang làm việc để phân quyền Quản lý cửa hàng.')
+  }
+  const creatingStoreEmployee = operation === 'create' && unit === 'store'
+  const supportCreatingStoreEmployee = actor.role === 'business_support' && creatingStoreEmployee
+  if (creatingStoreEmployee) employeeId = ''
+  const supportOperationAllowed = ['store', 'office', 'store_manager'].includes(unit)
+    && ['create', 'update'].includes(operation)
   if (actor.role === 'business_support' && !supportOperationAllowed) {
-    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm/cập nhật nhân viên cửa hàng hoặc thêm mới nhân sự được phân quyền.')
+    throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm hoặc cập nhật nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng.')
   }
   const requestedIdentityImages = identityImageInputs(profilePayload)
   const hasIdentityImagePayload = Object.values(requestedIdentityImages).some((input) => input.provided)
@@ -3384,13 +3438,12 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       throw new ApiError(400, 'EMPLOYEE_UNIT_IMMUTABLE', 'Không thể đổi nhóm vai trò của hồ sơ nhân viên.')
     }
   }
-  if (['business_support', 'store_manager', 'office'].includes(unit) && actor.role !== 'admin') {
-    const supportCreatingInternalEmployee = actor.role === 'business_support'
-      && operation === 'create'
-      && ['store_manager', 'office'].includes(unit)
-    if (!supportCreatingInternalEmployee) {
-      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Hỗ trợ KD chỉ được thêm mới Quản lý cửa hàng hoặc nhân viên Khối văn phòng; các hồ sơ nội bộ khác chỉ Admin được quản lý.')
-    }
+  if (unit === 'business_support' && actor.role !== 'admin') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được quản lý hồ sơ Nhân viên hỗ trợ KD.')
+  }
+  if (['store_manager', 'office'].includes(unit)
+    && !['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý hồ sơ này.')
   }
   if (previous && unit === 'store') assertOperationalStoreAccess(actor, String(previous.storeId || ''))
   if (actor.role !== 'admin' && previous && ['da nghi viec', 'inactive'].includes(normalizeTextKey(previous.status))) {
@@ -3403,7 +3456,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const storeId = unit === 'business_support'
     ? BUSINESS_SUPPORT_STORE_ID
     : (operation === 'create'
-      ? String(profilePayload.storeId || '').trim()
+      ? String(profilePayload.storeId || linkedStoreEmployee?.storeId || '').trim()
       : String(previous.storeId || '').trim())
   if (operation === 'create' && unit === 'office' && storeId !== OFFICE_STORE_ID) {
     throw new ApiError(400, 'OFFICE_STORE_REQUIRED', 'Nhân viên Khối văn phòng bắt buộc thuộc đơn vị OFFICE.')
@@ -3417,6 +3470,9 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   } else store = requireStore(state, storeId)
   if (unit === 'store_manager' && [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].includes(storeId)) {
     throw new ApiError(400, 'STORE_INVALID', 'Quản lý cửa hàng phải được gán cho một cửa hàng đang tồn tại.')
+  }
+  if (linkedStoreEmployee && String(linkedStoreEmployee.storeId || '') !== storeId) {
+    throw new ApiError(400, 'LINKED_EMPLOYEE_STORE_MISMATCH', 'Nhân viên được chọn không thuộc cửa hàng cần phân quyền quản lý.')
   }
 
   if (operation === 'delete') {
@@ -3496,18 +3552,38 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     return response
   }
 
-  const profileInput = withoutIdentityImagePayload(profilePayload)
-  if (supportCreatingStoreEmployee) {
+  const profileInput = withoutIdentityImagePayload(linkedStoreEmployee ? {
+    ...profilePayload,
+    name: linkedStoreEmployee.name,
+    phone: linkedStoreEmployee.phone,
+    cccd: linkedStoreEmployee.cccd || linkedStoreEmployee.citizenId,
+    address: linkedStoreEmployee.address,
+    addressDetails: linkedStoreEmployee.addressDetails,
+    startDate: linkedStoreEmployee.startDate || linkedStoreEmployee.joinDate,
+    employmentType: linkedStoreEmployee.employmentType || 'Full-Time',
+    linkedEmployeeId,
+  } : profilePayload)
+  if (creatingStoreEmployee) {
     for (const field of ['employeeId', 'id', 'code', 'employeeCode']) delete profileInput[field]
   }
   const profile = normalizeEmployeeProfilePayload(profileInput, previous, store, state, unit)
-  if (operation === 'create' && unit === 'office' && !hasCompleteIdentityImages) {
-    throw new ApiError(400, 'IDENTITY_IMAGES_REQUIRED', 'Cần tải đủ ảnh mặt trước và mặt sau CCCD của nhân viên Khối văn phòng.')
+  const linkedIdentityImages = isPlainRecord(linkedStoreEmployee?.identityImages)
+    ? linkedStoreEmployee.identityImages
+    : {}
+  const previousIdentityImages = isPlainRecord(previous?.identityImages) ? previous.identityImages : {}
+  const hasEffectiveIdentityImages = ['front', 'back'].every((side) => {
+    if (linkedIdentityImages[side]?.key) return true
+    const requested = requestedIdentityImages[side]
+    if (requested.provided) return Boolean(String(requested.value || '').trim())
+    return Boolean(previousIdentityImages[side]?.key)
+  })
+  if (!hasEffectiveIdentityImages) {
+    throw new ApiError(400, 'IDENTITY_IMAGES_REQUIRED', 'Cần tải đủ ảnh mặt trước và mặt sau CCCD của nhân viên.')
   }
   if (supportCreatingStoreEmployee) {
     const normalizedCccd = String(profilePayload.cccd ?? profilePayload.citizenId ?? '').replace(/\D/gu, '')
     if (!/^\d{12}$/u.test(normalizedCccd)) {
-      throw new ApiError(400, 'CCCD_INVALID', 'CCCD phải có đúng 12 chữ số để tự sinh tài khoản nhân viên cửa hàng.')
+      throw new ApiError(400, 'CCCD_INVALID', 'CCCD phải có đúng 12 chữ số.')
     }
     if (!profile.startDate) {
       throw new ApiError(400, 'START_DATE_REQUIRED', 'Ngày bắt đầu làm là bắt buộc đối với nhân viên cửa hàng.')
@@ -3540,7 +3616,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     ))) {
       throw new ApiError(409, 'EMPLOYEE_ID_RETIRED', 'Mã nhân viên đã được sử dụng và không thể cấp lại.')
     }
-    if (employees.some((employee) => String(employee.phone || '') === profile.phone && !employee.deletedAt)) {
+    if (employees.some((employee) => (
+      String(employee.phone || '') === profile.phone
+      && String(employee.id || employee.code || '') !== linkedEmployeeId
+      && !employee.deletedAt
+    ))) {
       throw new ApiError(409, 'PHONE_EXISTS', 'Số điện thoại nhân viên đã tồn tại.')
     }
   } else if (employees.some((employee) => (
@@ -3562,16 +3642,59 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   let responseUser = null
   let requestedUsername = String(profilePayload.username || '').trim()
   let requestedPassword = String(profilePayload.password || '')
-  let generatedCredentials = null
   const requestedAuthUserId = String(profilePayload.authUserId || '').trim()
   const expectedAuthRole = roleForEmployeeUnit(unit)
-  if (supportCreatingStoreEmployee) {
-    generatedCredentials = await generatedStoreEmployeeCredentials(db, store, profile)
-    requestedUsername = generatedCredentials.username
-    requestedPassword = generatedCredentials.password
-  }
 
   if (operation === 'create') {
+    if (linkedStoreEmployee) {
+      const linkedTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', linkedEmployeeId)
+      if (!linkedTarget || !['employee', 'store_manager'].includes(linkedTarget.role)) {
+        throw new ApiError(409, 'LINKED_EMPLOYEE_ACCOUNT_REQUIRED', 'Nhân viên được chọn phải có tài khoản đăng nhập đang hoạt động.')
+      }
+      if (linkedTarget.status !== 'active') {
+        throw new ApiError(409, 'LINKED_EMPLOYEE_ACCOUNT_INACTIVE', 'Tài khoản nhân viên được chọn đang bị khóa hoặc ngưng hoạt động.')
+      }
+      const currentAuthVersion = Number(linkedTarget.version || 1)
+      const nextAuthVersion = currentAuthVersion + 1
+      responseUser = {
+        ...publicUser(linkedTarget),
+        role: 'store_manager',
+        storeId,
+        employeeId: linkedEmployeeId,
+        version: nextAuthVersion,
+      }
+      saved.username = linkedTarget.username
+      saved.authUserId = linkedTarget.id
+      saved.authVersion = nextAuthVersion
+      saved.linkedEmployeeId = linkedEmployeeId
+      stateGuard = {
+        sql: 'SELECT 1 FROM users WHERE id = ? AND version = ? AND employee_id = ?',
+        bindings: [linkedTarget.id, currentAuthVersion, linkedEmployeeId],
+      }
+      additionalStatements.push(db.prepare(`
+        UPDATE users
+        SET role = 'store_manager', store_id = ?, version = ?, updated_at = ?
+        WHERE id = ? AND version = ? AND employee_id = ? AND role IN ('employee', 'store_manager')
+          AND EXISTS (
+            SELECT 1 FROM app_state
+            WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+          )
+      `).bind(
+        storeId,
+        nextAuthVersion,
+        commandContext.now,
+        linkedTarget.id,
+        currentAuthVersion,
+        linkedEmployeeId,
+        nextStateVersion,
+        commandContext.requestId,
+      ))
+      additionalStatements.push(db.prepare(`
+        UPDATE sessions
+        SET revoked_at = ?, last_seen_at = ?
+        WHERE user_id = ? AND revoked_at IS NULL
+      `).bind(commandContext.now, commandContext.now, linkedTarget.id))
+    } else {
     if (requestedAuthUserId && !['business_support', 'store_manager', 'office'].includes(unit)) {
       throw new ApiError(400, 'AUTH_LINK_INVALID', 'Chỉ hồ sơ Hỗ trợ KD, Quản lý cửa hàng hoặc Khối văn phòng được liên kết tài khoản có sẵn.')
     }
@@ -3655,7 +3778,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         saved.id,
       ))
     } else {
-      const credentialsRequired = ['business_support', 'store_manager', 'office'].includes(unit)
+      const credentialsRequired = ['business_support', 'store_manager', 'office', 'store'].includes(unit)
       if (credentialsRequired && (!requestedUsername || !requestedPassword)) {
         throw new ApiError(400, 'EMPLOYEE_CREDENTIALS_REQUIRED', 'Tên đăng nhập và mật khẩu là bắt buộc cho vai trò này.')
       }
@@ -3718,10 +3841,14 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         ))
       }
     }
+    }
   }
 
   if (operation === 'update') {
-    const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', saved.id)
+    const authEmployeeId = unit === 'store_manager' && previous?.linkedEmployeeId
+      ? String(previous.linkedEmployeeId)
+      : saved.id
+    const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', authEmployeeId)
     if (authTarget) {
       if (authTarget.role !== expectedAuthRole) {
         throw new ApiError(409, 'EMPLOYEE_ROLE_MISMATCH', 'Vai trò tài khoản không khớp nhóm hồ sơ nhân viên.')
@@ -3914,8 +4041,10 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       }
     }
   }
-  const identityImageUpdate = ['business_support', 'store_manager', 'office', 'store'].includes(unit)
-    ? await prepareIdentityImageUpdate(env, profilePayload, previous, saved.id, commandContext.now)
+  const identityImageUpdate = linkedStoreEmployee
+    ? { identityImages: linkedIdentityImages, uploadedKeys: [], retiredKeys: [] }
+    : ['business_support', 'store_manager', 'office', 'store'].includes(unit)
+      ? await prepareIdentityImageUpdate(env, profilePayload, previous, saved.id, commandContext.now)
     : { identityImages: {}, uploadedKeys: [], retiredKeys: [] }
   if (Object.keys(identityImageUpdate.identityImages).length) saved.identityImages = identityImageUpdate.identityImages
   else delete saved.identityImages
@@ -3943,7 +4072,6 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       after: saved,
       metadata: { payrollTargets },
       response: { command: body.type, employee: saved, ...(responseUser ? { user: responseUser } : {}) },
-      ...(generatedCredentials ? { ephemeralResponse: { generatedCredentials } } : {}),
       additionalStatements,
       stateGuard,
       status: operation === 'create' ? 201 : 200,
@@ -4061,7 +4189,7 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
   requireStore(state, storeId)
   const storeEmployees = new Set((Array.isArray(state.employees) ? state.employees : [])
     .filter((employee) => (
-      String(employee.storeId || '') === storeId
+      employeeWorksAtStoreOnDate(state, employee, storeId, date)
       && employeeUnit(employee) === 'store'
       && !employee.deletedAt
     ))
@@ -5274,6 +5402,47 @@ const workedHoursFor = (state, employeeId, period) => (Array.isArray(state.atten
     return sum + (Number.isFinite(hours) && hours > 0 ? hours : 0)
   }, 0)
 
+const supportTransferPayFor = (state, employeeId, storeId, period) => {
+  const monthStart = `${period}-01`
+  const monthEnd = `${period}-31`
+  const transfers = (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).filter((record) => (
+    String(record.employeeId || '') === String(employeeId || '')
+    && String(record.toStoreId || '') === String(storeId || '')
+    && !record.deletedAt
+    && !['Đã xóa', 'Đã hủy'].includes(String(record.status || ''))
+    && String(record.fromDate || '') <= monthEnd
+    && String(record.toDate || '') >= monthStart
+  ))
+  if (!transfers.length) return null
+  let hours = 0
+  let base = 0
+  let allowance = 0
+  for (const transfer of transfers) {
+    const transferHours = (Array.isArray(state.attendance) ? state.attendance : [])
+      .filter((record) => (
+        !record.deletedAt
+        && belongsToEmployee(record, employeeId)
+        && String(record.storeId || '') === String(storeId)
+        && monthFromRecord(record) === period
+        && dateFromRecord(record) >= String(transfer.fromDate || '')
+        && dateFromRecord(record) <= String(transfer.toDate || '')
+        && (!record.supportTransferId || String(record.supportTransferId) === String(transfer.id || ''))
+      ))
+      .reduce((sum, record) => {
+        const value = Number(record.hours ?? (Number(record.workedSeconds || 0) / 3_600))
+        return sum + (Number.isFinite(value) && value > 0 ? value : 0)
+      }, 0)
+    hours += transferHours
+    base = safeMoneySum(
+      base,
+      Math.floor(transferHours * Number(transfer.hourlySupportRate || 0)),
+      'Lương hỗ trợ điều chuyển',
+    )
+    allowance = safeMoneySum(allowance, Number(transfer.allowance || 0), 'Phụ cấp điều chuyển')
+  }
+  return { transfers, hours, base, allowance }
+}
+
 const validRequiredWorkingDays = (value) => {
   const days = Number(value)
   return Number.isInteger(days) && days >= 1 && days <= 31 ? days : null
@@ -5451,8 +5620,17 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
       employee,
       hours: workedHoursFor(state, employeeId, period),
       workedDays: workedDaysFor(state, employeeId, period),
+      supportPay: null,
     }
   })
+  for (const employee of Array.isArray(state.employees) ? state.employees : []) {
+    const employeeId = String(employee.id || employee.code || '').trim()
+    if (!employeeId || participantIds.has(employeeId) || employeeUnit(employee) !== 'store' || employee.deletedAt) continue
+    const supportPay = supportTransferPayFor(state, employeeId, storeId, period)
+    if (!supportPay) continue
+    participantIds.add(employeeId)
+    participants.push({ employee, hours: supportPay.hours, workedDays: 0, supportPay })
+  }
   const revenue = revenueFor(state, storeId, period)
   const expense = recognizedExpensesFor(state, storeId, period)
   const profit = revenue - expense
@@ -5469,7 +5647,7 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
             : (profitPerHour >= 7_000 ? policies.employeeKpiRates.from7000 : 0)))
     : 0
   const attendanceProratedPayroll = ['office', 'business_support'].includes(String(payrollUnit.unit || ''))
-  const rows = participants.map(({ employee, hours, workedDays }) => {
+  const rows = participants.map(({ employee, hours, workedDays, supportPay }) => {
     const employeeId = String(employee.id || employee.code || '')
     const payBasis = String(employee.payBasis || employee.salaryBasis || (
       normalizeTextKey(employee.employmentType).includes('part') ? 'hourly' : 'monthly'
@@ -5491,7 +5669,7 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
       && isSecondMallSm234Store(payrollUnit)
       && normalizeTextKey(employee.employmentType) === 'full-time'
       && Boolean(requiredMonthlyHours)
-    const base = payBasis === 'hourly'
+    const base = supportPay ? supportPay.base : payBasis === 'hourly'
       ? Math.floor(hours * (Number.isFinite(hourlyRate) && hourlyRate > 0 ? hourlyRate : 0))
       : (sm234HoursFormula
           ? Math.floor((hours / requiredMonthlyHours) * monthlyBase)
@@ -5501,7 +5679,11 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
     const kpiBonus = profit > 0 && totalHours > 0
       ? Math.floor((hours / totalHours) * (ratePercent / 100) * profit)
       : 0
-    const allowance = Number.isSafeInteger(Number(employee.tiktokAllowance)) ? Number(employee.tiktokAllowance) : 0
+    const allowance = safeMoneySum(
+      Number.isSafeInteger(Number(employee.tiktokAllowance)) ? Number(employee.tiktokAllowance) : 0,
+      Number(supportPay?.allowance || 0),
+      'Tổng phụ cấp nhân viên',
+    )
     const adjustment = adjustmentAmountFor(state, employeeId, period)
     if (![base, kpiBonus, allowance, adjustment].every(Number.isSafeInteger)) {
       throw new ApiError(409, 'PAYROLL_DATA_INVALID', `Số liệu lương của ${employeeId} không hợp lệ.`)
@@ -5521,6 +5703,11 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
       gross,
       kpiBonus,
       advancesPaid,
+      ...(supportPay ? {
+        supportTransferIds: supportPay.transfers.map((record) => record.id),
+        supportHourlyPay: supportPay.base,
+        supportAllowance: supportPay.allowance,
+      } : {}),
       remaining: Math.max(0, gross - advancesPaid),
       salarySnapshot: {
         salary: employee.salary ?? null,
@@ -6147,7 +6334,16 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   const storeId = String(actor.store_id || '')
   const employee = (Array.isArray(state.employees) ? state.employees : [])
     .find((record) => String(record.id || record.code || '') === employeeId && !record.deletedAt)
-  if (!employee || String(employee.storeId || '') !== storeId) {
+  const activeTransfer = actor.active_transfer_id
+    ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
+        String(record.id || '') === String(actor.active_transfer_id)
+        && String(record.employeeId || '') === employeeId
+        && String(record.toStoreId || '') === storeId
+        && !record.deletedAt
+        && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+      ))
+    : null
+  if (!employee || (String(employee.storeId || '') !== storeId && !activeTransfer)) {
     throw new ApiError(409, 'EMPLOYEE_PROFILE_MISSING', 'Tài khoản chưa được liên kết với hồ sơ nhân viên hợp lệ.')
   }
   const officeEmployee = officeLikeEmployee(employee)
@@ -6244,6 +6440,8 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       employeeId,
       employeeName: employee.name || actor.display_name,
       storeId,
+      homeStoreId: activeTransfer?.fromStoreId || employee.storeId || storeId,
+      ...(activeTransfer ? { supportTransferId: activeTransfer.id } : {}),
       unit: employee.unit || 'store',
       employmentTypeSnapshot: employee.employmentType || null,
       payBasisSnapshot: employee.payBasis || null,
@@ -6480,6 +6678,19 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     attendance: attendance.map((record) => String(record.id || '') === String(openRecord.id) ? updatedRecord : record),
     expenseEntries: expenseEntry ? [expenseEntry, ...expenseEntries] : expenseEntries,
     cashTransactions: cashTransaction ? [cashTransaction, ...cashTransactions] : cashTransactions,
+    supportTransfers: activeTransfer
+      ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).map((record) => (
+          String(record.id || '') === String(activeTransfer.id)
+            ? {
+                ...record,
+                status: 'Hoàn tất',
+                completedAt: commandContext.now,
+                completedAttendanceId: openRecord.id,
+                updatedAt: commandContext.now,
+              }
+            : record
+        ))
+      : (Array.isArray(state.supportTransfers) ? state.supportTransfers : []),
     payrollPeriods: invalidateClosedPayrollPeriods(
       state,
       { storeId, period: localNow.date.slice(0, 7) },
@@ -6597,7 +6808,16 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   if (actor.role === 'employee' && (!employee || employeeInactive)) {
     throw new ApiError(409, 'EMPLOYEE_PROFILE_MISSING', 'Tài khoản chưa được liên kết với hồ sơ nhân viên hợp lệ.')
   }
-  if (employee && String(employee.storeId || '') !== storeId) {
+  const activeTransfer = actor.active_transfer_id
+    ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
+        String(record.id || '') === String(actor.active_transfer_id)
+        && String(record.employeeId || '') === employeeId
+        && String(record.toStoreId || '') === storeId
+        && !record.deletedAt
+        && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+      ))
+    : null
+  if (employee && String(employee.storeId || '') !== storeId && !activeTransfer) {
     throw new ApiError(403, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng tạo đơn.')
   }
 
@@ -6648,6 +6868,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
     shiftStart: openAttendance?.shiftStart || times.start?.label || null,
     shiftEnd: openAttendance?.shiftEnd || times.end?.label || null,
     attendanceId: openAttendance?.id || null,
+    ...(activeTransfer ? { supportTransferId: activeTransfer.id, homeStoreId: activeTransfer.fromStoreId } : {}),
     status: 'Hoàn tất',
     source: 'order',
     createdAt: commandContext.now,

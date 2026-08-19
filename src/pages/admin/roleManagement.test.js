@@ -125,7 +125,7 @@ describe('admin role management helpers', () => {
     expect(STORE_MANAGER_EMPLOYMENT_TYPES).toEqual(['Full-Time', 'Part-Time'])
   })
 
-  it('validates every store-manager compensation target', () => {
+  it('keeps store-manager pay allowance-only while validating the allowed employee types', () => {
     const errors = validateRoleProfile({
       form: {
         ...validForm(ROLE_KEYS.storeManager),
@@ -139,9 +139,9 @@ describe('admin role management helpers', () => {
     })
 
     expect(errors).toContain('Loại nhân viên không hợp lệ.')
-    expect(errors).toContain('Lương cơ bản phải là số lớn hơn 0.')
-    expect(errors).toContain('Số ngày công quy định/tháng phải là số nguyên từ 1 đến 31.')
-    expect(errors).toContain('Số giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
+    expect(errors).not.toContain('Lương cơ bản phải là số lớn hơn 0.')
+    expect(errors).not.toContain('Số ngày công quy định/tháng phải là số nguyên từ 1 đến 31.')
+    expect(errors).not.toContain('Số giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
   })
 
   it('requires a fresh password when reissuing a purged login for an existing profile', () => {
@@ -172,10 +172,11 @@ describe('admin role management helpers', () => {
       unit: 'store_manager',
       storeId: 'CH001',
       position: 'Quản lý cửa hàng',
-      baseSalary: 12_000_000,
-      standardWorkDays: 26,
-      requiredMonthlyHours: 208,
+      identityImages: { front: 'data:image/png;base64,front', back: 'data:image/png;base64,back' },
     })
+    expect(managerPayload).not.toHaveProperty('baseSalary')
+    expect(managerPayload).not.toHaveProperty('standardWorkDays')
+    expect(managerPayload).not.toHaveProperty('requiredMonthlyHours')
     expect(supportPayload).not.toHaveProperty('id')
     expect(supportPayload).not.toHaveProperty('code')
     expect(supportPayload).not.toHaveProperty('salary')
@@ -235,13 +236,13 @@ describe('role management permissions and form', () => {
     render(createElement(BusinessSupportManagement))
 
     expect(screen.getByText('Nguyễn An')).toBeTruthy()
-    expect(screen.getByText('Chế độ chỉ xem. Chỉ Admin được thêm, sửa, xóa hoặc cấp lại tài khoản.')).toBeTruthy()
+    expect(screen.getByText('Chế độ chỉ xem. Chỉ Admin được quản lý tài khoản này.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Thêm tài khoản/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Sửa Nguyễn An/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Xóa Nguyễn An/i })).toBeNull()
   })
 
-  it('shows Admin the store-manager assignment and compensation form', () => {
+  it('shows Admin the store-manager assignment and dual-role selection form', () => {
     mocked.app = baseApp('admin')
     render(createElement(StoreManagerManagement))
 
@@ -249,14 +250,15 @@ describe('role management permissions and form', () => {
 
     const dialog = screen.getByRole('dialog')
     const labels = [...dialog.querySelectorAll('.field__label')].map((label) => label.textContent.trim().replace(/\s*\*$/u, ''))
-    expect(labels.slice(0, 3)).toEqual(['Cửa hàng quản lý', 'Mã nhân viên', 'Tên nhân viên'])
+    expect(labels.slice(0, 4)).toEqual(['Cửa hàng quản lý', 'Cách tạo Quản lý cửa hàng', 'Mã nhân viên', 'Tên nhân viên'])
     expect(screen.getByDisplayValue('QLCH-001').readOnly).toBe(true)
     expect(screen.getByDisplayValue('Quản lý cửa hàng').readOnly).toBe(true)
     expect(screen.getByLabelText('Mặt trước CCCD')).toBeTruthy()
     expect(screen.getByLabelText('Mặt sau CCCD')).toBeTruthy()
-    expect(labels).toContain('Lương cơ bản')
-    expect(labels).toContain('Số ngày công quy định/tháng')
-    expect(labels).toContain('Số giờ làm quy định/tháng')
+    expect(screen.getByLabelText(/Cách tạo quản lý/i)).toBeTruthy()
+    expect(labels).not.toContain('Lương cơ bản')
+    expect(labels).not.toContain('Số ngày công quy định/tháng')
+    expect(labels).not.toContain('Số giờ làm quy định/tháng')
     expect([...screen.getByLabelText(/Loại nhân viên/i).options].map((option) => option.textContent)).toEqual(['Full-Time', 'Part-Time'])
     expect(labels).not.toContain('Trạng thái')
     expect(labels).not.toContain('Giờ bắt đầu')
@@ -264,7 +266,7 @@ describe('role management permissions and form', () => {
     expect(labels).not.toContain('Ngày sinh')
   })
 
-  it('lets Business Support create a store manager but hides edit and delete controls', () => {
+  it('lets Business Support create and edit a store manager while keeping delete Admin-only', () => {
     mocked.app = {
       ...baseApp('business_support'),
       storeManagers: [{ id: 'QLCH-001', unit: 'store_manager', storeId: 'CH001', name: 'Quản lý một', employmentType: 'Full-Time' }],
@@ -273,16 +275,16 @@ describe('role management permissions and form', () => {
     render(createElement(StoreManagerManagement))
 
     expect(screen.getAllByRole('button', { name: /Thêm tài khoản/i }).length).toBeGreaterThan(0)
-    expect(screen.getByText(/Hỗ trợ KD được thêm tài khoản Quản lý cửa hàng/i)).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Sửa Quản lý một/i })).toBeNull()
+    expect(screen.getByText(/Hỗ trợ KD được tạo hoặc sửa Quản lý cửa hàng/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Sửa Quản lý một/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Xóa Quản lý một/i })).toBeNull()
 
     fireEvent.click(screen.getAllByRole('button', { name: /Thêm tài khoản/i })[0])
     const dialog = screen.getByRole('dialog')
     expect(dialog).toBeTruthy()
-    expect(screen.getByLabelText(/Lương cơ bản/i)).toBeTruthy()
-    expect(screen.getByLabelText(/Số ngày công quy định\/tháng/i)).toBeTruthy()
-    expect(screen.getByLabelText(/Số giờ làm quy định\/tháng/i)).toBeTruthy()
+    expect(screen.queryByLabelText(/Lương cơ bản/i)).toBeNull()
+    expect(screen.queryByLabelText(/Số ngày công quy định\/tháng/i)).toBeNull()
+    expect(screen.queryByLabelText(/Số giờ làm quy định\/tháng/i)).toBeNull()
     expect([...screen.getByLabelText(/Loại nhân viên/i).options].map((option) => option.textContent)).toEqual(['Full-Time', 'Part-Time'])
   })
 })
@@ -356,7 +358,7 @@ describe('Business Support read-only system views', () => {
     expect(screen.queryByRole('button', { name: /Xóa Nhân viên cửa hàng/i })).toBeNull()
   })
 
-  it('can inspect the office block without employee or payroll mutation controls', () => {
+  it('can create and edit Office employees without delete or payroll mutation controls', () => {
     mocked.app = {
       ...baseApp('business_support'),
       employees: [{
@@ -372,7 +374,7 @@ describe('Business Support read-only system views', () => {
 
     expect(screen.getByText('Nhân viên văn phòng')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Thêm nhân viên/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Sửa Nhân viên văn phòng/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Sửa Nhân viên văn phòng/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Xóa Nhân viên văn phòng/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Tạo thưởng|Tạo phụ cấp/i })).toBeNull()
   })

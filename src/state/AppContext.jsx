@@ -728,6 +728,27 @@ const isSecondMallStore = (store = {}) => {
   return String(store.id || '') === 'CH001' || key.includes('SM234') || key.includes('SECOND MALL')
 }
 
+const employeePrefixForStore = (store = {}) => {
+  const normalize = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/gu, '').toUpperCase()
+  const identity = [store.id, store.short, store.name, store.employeePrefix].map(normalize).join(' ')
+  if (identity.includes('SM234') || identity.includes('SECOND MALL')) return 'SM234'
+  const branches = [
+    ['TO NGOC VAN', 'TNV'], ['DI AN', 'DIAN'], ['KHA VAN CAN', 'KVC'], ['TAY HOA', 'TH'],
+    ['NGUYEN VAN THUONG', 'NVT'], ['NO TRANG LONG', 'NTL'], ['LE VAN THO', 'LVT'],
+    ['BUON MA THUOT', 'BMT'], ['BUON MA THUOC', 'BMT'], ['CAN THO', 'CT'],
+  ]
+  const branch = branches.find(([label]) => identity.includes(label))?.[1]
+    || normalize(store.employeePrefix || storeCode(store)).replace(/[^A-Z0-9]/gu, '').slice(0, 12)
+  const brand = identity.includes('DOSII')
+    ? 'DOSII'
+    : identity.includes('DOSSI')
+      ? 'DOSSI'
+      : /(^|\s)SM(\s|$)/u.test(identity)
+        ? 'SM'
+        : ''
+  return brand && branch && !branch.startsWith(`${brand}-`) ? `${brand}-${branch}` : branch
+}
+
 const nextEmployeeCode = (payload, state) => {
   const requestedRole = normalizeAuthRole(payload.roleType || payload.accountRole || payload.authRole)
   const businessSupport = isBusinessSupportUnit(payload.unit) || requestedRole === 'business_support'
@@ -740,7 +761,7 @@ const nextEmployeeCode = (payload, state) => {
       ? 'QLCH'
       : officeEmployee
         ? 'VP'
-        : String(store?.employeePrefix || storeCode(store)).toUpperCase()
+        : employeePrefixForStore(store)
   const separator = officeEmployee ? '' : '-'
   const pattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}${separator}(\\d+)$`, 'i')
   const knownEmployees = [...(state.employees || []), ...(state.deletedEmployees || [])]
@@ -1166,23 +1187,18 @@ export function AppProvider({ children }) {
     if (requestedUnit === 'office' && !['admin', 'business_support'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền tạo nhân viên Văn Phòng.' }
     const scopedStoreId = actorRole === 'store_manager' ? state.session.storeId : payload.storeId
     const normalizedPayload = { ...payload, unit: requestedUnit, storeId: requestedUnit === 'store' ? scopedStoreId || state.activeStoreId : scopedStoreId }
+    const linkedManagerPromotion = requestedUnit === 'store_manager' && Boolean(normalizedPayload.linkedEmployeeId)
     const generatedCode = String(payload.id || payload.code || payload.employeeCode || nextEmployeeCode(normalizedPayload, state)).trim()
     const employeeStore = state.stores.find((store) => String(store.id) === String(normalizedPayload.storeId))
-    const usesGeneratedStoreCredentials = actorRole === 'business_support' && requestedUnit === 'store'
-    const generatedCredentials = usesGeneratedStoreCredentials
-      ? generateBusinessSupportStoreCredentials(normalizedPayload, employeeStore, [...state.adminAccounts, ...state.managerAccounts, ...state.employees])
-      : null
     const monthlyHoursFormula = requestedUnit === 'store'
       && getEmployeeType(normalizedPayload) === 'Full-Time'
       && isSecondMallStore(employeeStore)
     const employeePayload = {
       ...normalizedPayload,
-      ...(generatedCredentials ? {
-        username: generatedCredentials.username,
-        password: generatedCredentials.password,
-        position: 'Nhân viên bán hàng',
-        workPosition: 'Nhân viên bán hàng',
-        role: 'Nhân viên bán hàng',
+      ...(requestedUnit === 'store' ? {
+        position: normalizedPayload.position || 'Nhân viên bán hàng',
+        workPosition: normalizedPayload.workPosition || 'Nhân viên bán hàng',
+        role: normalizedPayload.role || 'Nhân viên bán hàng',
       } : {}),
       id: generatedCode,
       code: generatedCode,
@@ -1190,17 +1206,20 @@ export function AppProvider({ children }) {
       ...(monthlyHoursFormula ? { payFormula: 'monthly-hours' } : {}),
     }
     const officeEmployee = requestedUnit === 'office'
-    if (!isValidEmployeePhone(employeePayload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
-    if (usesGeneratedStoreCredentials && !/^\d{12}$/.test(String(employeePayload.cccd || employeePayload.citizenId || ''))) {
+    if (!linkedManagerPromotion && !isValidEmployeePhone(employeePayload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
+    if (!linkedManagerPromotion && !/^\d{12}$/.test(String(employeePayload.cccd || employeePayload.citizenId || ''))) {
       return { ok: false, message: 'Số CCCD phải gồm đúng 12 chữ số.' }
     }
-    if (usesGeneratedStoreCredentials && !/^\d{4}-\d{2}-\d{2}$/u.test(String(employeePayload.startDate || employeePayload.joinDate || ''))) {
+    if (!linkedManagerPromotion && !/^\d{4}-\d{2}-\d{2}$/u.test(String(employeePayload.startDate || employeePayload.joinDate || ''))) {
       return { ok: false, message: 'Ngày bắt đầu làm không hợp lệ.' }
     }
-    if (usesGeneratedStoreCredentials && (!employeePayload.identityImages?.front || !employeePayload.identityImages?.back)) {
+    if (!linkedManagerPromotion && (!employeePayload.identityImages?.front || !employeePayload.identityImages?.back)) {
       return { ok: false, message: 'Cần tải lên đủ ảnh mặt trước và mặt sau CCCD.' }
     }
-    if (hasDuplicateAccount(employeePayload)) {
+    if (!linkedManagerPromotion && (!String(employeePayload.username || '').trim() || !String(employeePayload.password || ''))) {
+      return { ok: false, message: 'Tên đăng nhập và mật khẩu là bắt buộc.' }
+    }
+    if (!linkedManagerPromotion && hasDuplicateAccount(employeePayload)) {
       notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
       return { ok: false }
     }
@@ -1214,7 +1233,6 @@ export function AppProvider({ children }) {
           employmentType: officeEmployee
             ? employeePayload.officeEmployeeType || employeePayload.officeEmploymentType || 'Chính thức'
             : employeePayload.employmentType,
-          ...(usesGeneratedStoreCredentials ? { username: undefined, password: undefined } : {}),
           passwordHash: undefined,
           legacyPassword: undefined,
           monthlyWorkdayTargets: undefined,
@@ -1224,7 +1242,6 @@ export function AppProvider({ children }) {
           ok: true,
           employee: result.employee,
           user: result.user,
-          ...(result.generatedCredentials ? { generatedCredentials: result.generatedCredentials } : {}),
         }
       } catch (error) {
         notify(error.message || 'Không thể tạo tài khoản nhân viên.', 'info')
@@ -1239,7 +1256,7 @@ export function AppProvider({ children }) {
       return { ...current, employees, stores: countStoreEmployees(current.stores, employees) }
     })
     notify('Đã lưu hồ sơ nhân viên.')
-    return { ok: true, employee, ...(generatedCredentials ? { generatedCredentials } : {}) }
+    return { ok: true, employee }
   }
 
   const updateEmployee = async (id, payload) => {
@@ -1251,7 +1268,10 @@ export function AppProvider({ children }) {
     }
     const previous = state.employees.find((employee) => accountKey(employee) === String(id))
     if (!previous) return { ok: false }
-    if (actorRole !== 'admin' && previous.unit !== 'store') return { ok: false, message: 'Chỉ Admin được cập nhật hồ sơ nhân sự khối này.' }
+    if (actorRole === 'business_support' && !['store', 'office', 'store_manager'].includes(previous.unit)) {
+      return { ok: false, message: 'Hỗ trợ KD chỉ được cập nhật nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng.' }
+    }
+    if (actorRole === 'store_manager' && previous.unit !== 'store') return { ok: false, message: 'Quản lý cửa hàng chỉ được cập nhật nhân viên cửa hàng.' }
     if (actorRole === 'store_manager' && String(previous.storeId) !== String(state.session.storeId)) {
       return { ok: false, message: 'Quản lý cửa hàng chỉ được cập nhật nhân viên thuộc cửa hàng được phân công.' }
     }

@@ -114,12 +114,12 @@ describe('business-support store workspace permissions', () => {
 
   afterEach(cleanup)
 
-  it('lets Business Support add a store employee but keeps existing profiles read-only', () => {
+  it('lets Business Support add and edit store employees while keeping delete Admin-only', () => {
     renderPage(StoreEmployees)
 
     expect(screen.getAllByText(employee.name).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: /Thêm nhân viên/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: new RegExp(`Sửa ${employee.name}`, 'i') })).toBeNull()
+    expect(screen.getByRole('button', { name: new RegExp(`Sửa ${employee.name}`, 'i') })).toBeTruthy()
     expect(screen.queryByRole('button', { name: new RegExp(`Xóa ${employee.name}`, 'i') })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /Thêm nhân viên/i }))
@@ -129,9 +129,34 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getByLabelText('Mặt sau CCCD')).toBeTruthy()
   })
 
+  it('shows a transferred employee with full support assignment details at the destination store', () => {
+    const supportEmployee = {
+      id: 'DOSII-TNV-009', code: 'DOSII-TNV-009', name: 'Trần Minh Hỗ Trợ', unit: 'store', storeId: 'CH002',
+      status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 35_000,
+      phone: '0907654321', cccd: '079765432109', address: '12 Tô Ngọc Vân', position: 'Nhân viên bán hàng',
+    }
+    mocked.app.stores.push({ id: 'CH002', name: 'Dosii TNV', short: 'TNV' })
+    mocked.app.employees.push(supportEmployee)
+    mocked.app.supportTransfers = [{
+      id: 'TRANSFER-001', employeeId: supportEmployee.id, fromStoreId: 'CH002', toStoreId: store.id,
+      fromDate: today(), toDate: today(), hourlySupportRate: 45_000, allowance: 180_000, status: 'Đã duyệt',
+    }]
+
+    renderPage(StoreEmployees)
+
+    expect(screen.getByText(supportEmployee.name)).toBeTruthy()
+    expect(screen.getByText('Nhân viên hỗ trợ')).toBeTruthy()
+    expect(screen.getByText(/Dosii TNV.*SecondMall SM234/i)).toBeTruthy()
+    expect(screen.getByText(/45,000.*giờ.*180,000/i)).toBeTruthy()
+    expect(screen.getByText(/Trạng thái: Đã duyệt/i)).toBeTruthy()
+    expect(screen.getByText(supportEmployee.cccd)).toBeTruthy()
+    expect(screen.getByText(supportEmployee.phone)).toBeTruthy()
+    expect(screen.getByText(supportEmployee.address)).toBeTruthy()
+  })
+
   it('lets Business Support assign store work and manage schedules', () => {
     const taskView = renderPage(StoreTasks)
-    expect(screen.getByText(/Kiểm kê quầy/)).toBeTruthy()
+    expect(screen.getAllByText(/Kiểm kê quầy/).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: /^GỬI$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Thêm công việc/i })).toBeTruthy()
     expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`)).toBeTruthy()

@@ -6,7 +6,6 @@ import {
   Check,
   ClipboardCheck,
   Clock3,
-  Copy,
   Edit3,
   Eye,
   EyeOff,
@@ -54,6 +53,7 @@ import {
   getPayBasis,
   money,
   salaryBasisLabel,
+  shortDate,
   today,
 } from '../../utils'
 import { selectTaskShiftForDate, taskShiftOptionsForDate } from './taskScope'
@@ -67,7 +67,6 @@ import {
 import {
   buildStoreEmployeePayload,
   formatStoreMoneyInput,
-  generateStoreEmployeeCredentials,
   isPartTimeEmployee,
   nextStoreEmployeeCode,
   normalizeStoreEmploymentType,
@@ -110,6 +109,35 @@ const normalizeEmploymentType = normalizeStoreEmploymentType
 const employmentTypeLabel = normalizeStoreEmploymentType
 const formatMoneyInput = formatStoreMoneyInput
 
+const activeSupportTransferForStore = (transfers = [], employeeId, storeId, date = today()) => transfers
+  .filter((record) => (
+    String(record.employeeId || '') === String(employeeId || '')
+    && String(record.toStoreId || '') === String(storeId || '')
+    && !record.deletedAt
+    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+    && String(record.fromDate || '') <= date
+    && String(record.toDate || '') >= date
+  ))
+  .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
+
+const storeEmployeesForDate = (employees = [], transfers = [], storeId, date = today()) => employees
+  .filter((employee) => String(employee.unit || 'store') === 'store' && !employee.deletedAt)
+  .flatMap((employee) => {
+    if (String(employee.storeId || '') === String(storeId || '')) return [employee]
+    const supportAssignment = activeSupportTransferForStore(
+      transfers,
+      employee.id || employee.code,
+      storeId,
+      date,
+    )
+    return supportAssignment ? [{
+      ...employee,
+      homeStoreId: employee.storeId,
+      supportStoreId: storeId,
+      supportAssignment,
+    }] : []
+  })
+
 let storeTaskDraftSequence = 0
 const newStoreTaskRow = () => ({ id: `store-task-draft-${storeTaskDraftSequence += 1}`, title: '', detail: '' })
 const storeTaskStatusTone = (status) => status === 'Hoàn thành' ? 'green' : status === 'Đang thực hiện' ? 'blue' : 'orange'
@@ -130,9 +158,9 @@ const useStoreScope = () => {
   const storeId = ['employee', 'store_manager'].includes(app.session?.role)
     ? app.session.storeId
     : app.activeStoreId || app.session?.storeId || stores[0]?.id || ''
-  const employees = (Array.isArray(app.employees) ? app.employees : []).filter((employee) =>
-    String(employee.unit || 'store') === 'store' && String(employee.storeId || stores[0]?.id || '') === String(storeId),
-  )
+  const allEmployees = Array.isArray(app.employees) ? app.employees : []
+  const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
+  const employees = storeEmployeesForDate(allEmployees, supportTransfers, storeId)
   const employeeIds = new Set(employees.map((employee) => String(employee.id)))
   const attendance = (Array.isArray(app.attendance) ? app.attendance : []).filter((record) =>
     record.storeId ? String(record.storeId) === String(storeId) : employeeIds.has(String(record.employeeId)),
@@ -141,7 +169,18 @@ const useStoreScope = () => {
     String(record.storeId || stores[0]?.id || '') === String(storeId),
   )
   const schedule = (Array.isArray(app.schedule) ? app.schedule : []).filter((record) => employeeIds.has(String(record.employeeId)))
-  return { ...app, stores, storeId, activeStore: stores.find((store) => String(store.id) === String(storeId)) || stores[0], employees, attendance, imports, schedule }
+  return {
+    ...app,
+    stores,
+    storeId,
+    activeStore: stores.find((store) => String(store.id) === String(storeId)) || stores[0],
+    employees,
+    allEmployees,
+    supportTransfers,
+    attendance,
+    imports,
+    schedule,
+  }
 }
 
 const employeeAddressParts = (employee = {}) => {
@@ -210,7 +249,7 @@ export function StoreOverview() {
   const recordedExpense = attendance.reduce((sum, item) => sum + (Number(item.expense) || 0), 0)
   const revenue = recordedRevenue || Number(activeStore?.revenue) || 0
   const expense = recordedExpense || Number(activeStore?.expense) || 0
-  const currentDate = new Date().toLocaleDateString('vi-VN')
+  const currentDate = shortDate(today())
   return (
     <div className="page">
       <PageHeader title="Tổng quan cửa hàng" subtitle={`Chào buổi sáng! Đây là tình hình hoạt động của ${storeName} hôm nay.`} icon={Store} actions={<DateRange value={currentDate} />} />
@@ -350,6 +389,7 @@ export function StoreSchedule() {
 export function StoreEmployees() {
   const app = useApp()
   const employees = Array.isArray(app.employees) ? app.employees : []
+  const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
   const stores = Array.isArray(app.stores) ? app.stores : []
   const { addEmployee, updateEmployee, deleteEmployee, notify, session, activeStoreId } = app
   const scopedStoreId = session?.role === 'employee'
@@ -370,9 +410,7 @@ export function StoreEmployees() {
   const [errors, setErrors] = useState([])
   const [showPassword, setShowPassword] = useState(false)
   const [imageBusy, setImageBusy] = useState('')
-  const [createdCredentials, setCreatedCredentials] = useState(null)
-  const [showCreatedPassword, setShowCreatedPassword] = useState(false)
-  const canManageStore = ['admin', 'store_manager'].includes(session?.role)
+  const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const canCreateStoreEmployee = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
   const canDeleteEmployee = session?.role === 'admin'
@@ -380,12 +418,13 @@ export function StoreEmployees() {
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
   )
 
-  const scopedEmployees = employees.filter((employee) => {
-    if (String(employee.unit || 'store') !== 'store') return false
-    if (!scopedStoreId) return true
-    if (!employee.storeId) return String(scopedStoreId) === String(stores[0]?.id || scopedStoreId)
-    return String(employee.storeId) === String(scopedStoreId)
-  })
+  const scopedEmployees = scopedStoreId
+    ? storeEmployeesForDate(employees, supportTransfers, scopedStoreId)
+    : employees.filter((employee) => String(employee.unit || 'store') === 'store')
+  const canEditEmployee = (employee) => (
+    canManageStore
+    && (session?.role !== 'store_manager' || !employee.supportAssignment)
+  )
 
   const normalizedQuery = normalizeText(query)
   const filtered = scopedEmployees.filter((employee) => {
@@ -473,13 +512,12 @@ export function StoreEmployees() {
     if (editing ? !canManageStore : !canCreateStoreEmployee) return
     const editingId = editing?.id || editing?.code || ''
     const scopedForm = { ...form, storeId: scopedStoreId }
-    const autoCredentials = isBusinessSupport && !editing
     const validationErrors = validateStoreEmployee(
       scopedForm,
       employees,
       editingId,
       !editing || editingRequiresPassword,
-      { autoCredentials, requireIdentityImages: !editing },
+      { requireIdentityImages: !editing },
     )
     if (validationErrors.length) {
       setErrors(validationErrors)
@@ -490,7 +528,6 @@ export function StoreEmployees() {
     const payload = buildStoreEmployeePayload(form, {
       storeId: scopedStoreId,
       store: scopedStore,
-      autoCredentials,
     })
 
     if (editing) {
@@ -501,45 +538,17 @@ export function StoreEmployees() {
       if (typeof addEmployee !== 'function') return notify?.('Chức năng thêm nhân viên đang được kết nối.', 'info')
       const result = await addEmployee(payload)
       if (!result?.ok) return notify?.(result?.message || 'Không thể thêm nhân viên.', 'info')
-      if (autoCredentials) {
-        setCreatedCredentials({
-          employeeName: result.employee?.name || form.name.trim(),
-          username: result.generatedCredentials?.username || result.user?.username || '',
-          password: result.generatedCredentials?.password || '',
-        })
-        setShowCreatedPassword(false)
-      }
     }
     closeDrawer()
-  }
-
-  const copyCreatedCredentials = async () => {
-    if (!createdCredentials?.password) return
-    const content = `Tên đăng nhập: ${createdCredentials.username}\nMật khẩu: ${createdCredentials.password}`
-    try {
-      await navigator.clipboard.writeText(content)
-      notify?.('Đã sao chép thông tin đăng nhập.', 'info')
-    } catch {
-      notify?.('Trình duyệt chưa cho phép sao chép tự động. Vui lòng sao chép thủ công.', 'info')
-    }
-  }
-
-  const closeCreatedCredentials = () => {
-    setCreatedCredentials(null)
-    setShowCreatedPassword(false)
   }
 
   const activeCount = scopedEmployees.filter((item) => item.status === 'Đang làm việc').length
   const pausedCount = scopedEmployees.filter((item) => item.status === 'Tạm ngưng' || item.status === 'Tạm nghỉ').length
   const stoppedCount = scopedEmployees.filter((item) => item.status === 'Đã nghỉ việc').length
-  const autoCredentialPreview = isBusinessSupport && !editing
-    ? generateStoreEmployeeCredentials(scopedStore, form.name, form.cccd)
-    : null
-
   return (
     <div className="page">
       <PageHeader title="Quản lý nhân viên" subtitle={canManageStore ? 'Thêm, sửa và quản lý hồ sơ nhân viên theo cửa hàng.' : isBusinessSupport ? 'Thêm mới và xem danh sách nhân viên theo cửa hàng.' : 'Danh sách nhân viên theo cửa hàng — chế độ chỉ xem.'} actions={<><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã, tên, CCCD..." />{canCreateStoreEmployee && <Button icon={Plus} onClick={openCreate}>Thêm nhân viên</Button>}</>} />
-      {!canManageStore && <InfoNote>{isBusinessSupport ? 'Nhân viên Hỗ trợ KD được thêm nhân viên mới; không được sửa hoặc xóa hồ sơ đã có. Tài khoản đăng nhập được hệ thống tự sinh.' : 'Chế độ chỉ xem. Tài khoản này không thể thay đổi nhân viên cửa hàng.'}</InfoNote>}
+      {!canManageStore && <InfoNote>Chế độ chỉ xem. Tài khoản này không thể thay đổi nhân viên cửa hàng.</InfoNote>}
       <div className="metric-grid metric-grid--four">
         <MetricCard label="Tổng nhân viên" value={scopedEmployees.length} helper="Thuộc cửa hàng đang chọn" icon={Users} tone="green" compact />
         <MetricCard label="Đang làm việc" value={activeCount} helper="Theo trạng thái" icon={UserCheck} tone="green" compact />
@@ -549,7 +558,7 @@ export function StoreEmployees() {
       <div className="filter-pills"><button className={status === 'all' ? 'active' : ''} onClick={() => setStatus('all')}>Tất cả ({scopedEmployees.length})</button>{EMPLOYEE_STATUSES.map((item) => <button key={item} className={status === item ? 'active' : ''} onClick={() => setStatus(item)}>{item}</button>)}</div>
       <Card>
         <TableWrap>
-          <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại</th><th>Vị trí</th><th>CCCD</th><th>Liên hệ</th><th>Địa chỉ</th><th>Lương</th><th>Tài khoản</th><th>Trạng thái</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
+          <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Phân bổ</th><th>Loại</th><th>Vị trí</th><th>CCCD</th><th>Liên hệ</th><th>Địa chỉ</th><th>Lương</th><th>Tài khoản</th><th>Trạng thái</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
           <tbody>
             {filtered.map((employee) => {
               const normalizedStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc')
@@ -557,6 +566,7 @@ export function StoreEmployees() {
               return <tr key={employee.id}>
                 <td><strong>{employee.id}</strong></td>
                 <td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.age ? `${employee.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
+                <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{formatTaskDate(employee.supportAssignment.fromDate)} – {formatTaskDate(employee.supportAssignment.toDate)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
                 <td><Badge tone={isPartTime(type) ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
                 <td>{employeePosition(employee)}</td>
                 <td>{employee.cccd || employee.citizenId || '—'}</td>
@@ -565,10 +575,10 @@ export function StoreEmployees() {
                 <td>{employeeSalary(employee) > 0 ? <><strong>{money(employeeSalary(employee))}</strong><small className="table-sub">{employeeSalarySuffix(employee)} · {salaryBasisLabel(employee)}</small>{!isPartTime(type) && <small className="table-sub">{employee.standardWorkDays || 26} ngày · {employee.requiredMonthlyHours || '—'} giờ/tháng</small>}</> : <span className="orange-text">Chưa thiết lập</span>}</td>
                 <td>{employee.username || '—'}</td>
                 <td><Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge></td>
-                {canManageStore && <td><div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>}
+                {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
               </tr>
             })}
-            {!filtered.length && <tr><td colSpan={canManageStore ? 11 : 10}>Không có nhân viên phù hợp.</td></tr>}
+            {!filtered.length && <tr><td colSpan={canManageStore ? 12 : 11}>Không có nhân viên phù hợp.</td></tr>}
           </tbody>
         </TableWrap>
         <TableFooter shown={filtered.length} total={filtered.length} />
@@ -617,10 +627,10 @@ export function StoreEmployees() {
           {imageBusy && <InfoNote>Đang đọc ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
-            <Field label="Tên đăng nhập" required hint={autoCredentialPreview ? 'Xem trước; máy chủ sẽ xác nhận tên cuối cùng sau khi lưu' : undefined}><Input autoComplete="username" value={autoCredentialPreview?.username || form.username} onChange={autoCredentialPreview ? undefined : updateField('username')} readOnly={Boolean(autoCredentialPreview)} aria-readonly={autoCredentialPreview ? 'true' : undefined} placeholder={autoCredentialPreview ? 'Nhập tên nhân viên để xem trước' : 'Ví dụ: nguyenvana'} /></Field>
-            <Field label="Mật khẩu" required={!editing || editingRequiresPassword} hint={autoCredentialPreview ? '6 số cuối CCCD + tên nhân viên + @; chỉ hiển thị lại một lần sau khi lưu' : editing && !editingRequiresPassword ? 'Để trống nếu không muốn đổi mật khẩu' : 'Bắt buộc để cấp tài khoản đăng nhập'}>
+             <Field label="Tên đăng nhập" required><Input autoComplete="username" value={form.username} onChange={updateField('username')} placeholder="Ví dụ: nguyenvana" /></Field>
+             <Field label="Mật khẩu" required={!editing || editingRequiresPassword} hint={editing && !editingRequiresPassword ? 'Để trống nếu không muốn đổi mật khẩu' : 'Người tạo tự nhập mật khẩu để cấp tài khoản đăng nhập'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={autoCredentialPreview?.password || form.password} onChange={autoCredentialPreview ? undefined : updateField('password')} readOnly={Boolean(autoCredentialPreview)} aria-readonly={autoCredentialPreview ? 'true' : undefined} placeholder={autoCredentialPreview ? 'Nhập đủ CCCD và tên để xem trước' : editing ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} />
+                 <Input type={showPassword ? 'text' : 'password'} autoComplete="new-password" value={form.password} onChange={updateField('password')} placeholder={editing ? 'Nhập mật khẩu mới nếu cần' : 'Nhập mật khẩu'} />
                 <button type="button" className="icon-button" onClick={() => setShowPassword((visible) => !visible)} aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} title={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>
                   {showPassword ? <EyeOff size={19} /> : <Eye size={19} />}
                 </button>
@@ -630,21 +640,6 @@ export function StoreEmployees() {
           <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư. Hệ thống không lưu hoặc hiển thị lại mật khẩu sau khi đóng thông báo cấp tài khoản.</InfoNote>
         </form>
       </Modal>}
-      <Modal
-        open={Boolean(createdCredentials)}
-        onClose={closeCreatedCredentials}
-        title="Đã cấp tài khoản nhân viên"
-        footer={<><Button type="button" variant="outline" onClick={closeCreatedCredentials}>Đóng</Button>{createdCredentials?.password && <Button type="button" icon={Copy} onClick={copyCreatedCredentials}>Sao chép tài khoản</Button>}</>}
-      >
-        <InfoNote tone="green"><strong>{createdCredentials?.employeeName}</strong> đã được thêm vào cửa hàng. Hãy bàn giao thông tin đăng nhập trước khi đóng cửa sổ này.</InfoNote>
-        <div className="form-grid">
-          <Field label="Tên đăng nhập"><Input value={createdCredentials?.username || ''} readOnly /></Field>
-          <Field label="Mật khẩu một lần" hint="Mật khẩu sẽ được xóa khỏi giao diện khi đóng cửa sổ">
-            <span className="password-input"><Input type={showCreatedPassword ? 'text' : 'password'} value={createdCredentials?.password || ''} readOnly /><button type="button" onClick={() => setShowCreatedPassword((current) => !current)} aria-label={showCreatedPassword ? 'Ẩn mật khẩu được cấp' : 'Hiện mật khẩu được cấp'} title={showCreatedPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>{showCreatedPassword ? <EyeOff size={20} /> : <Eye size={20} />}</button></span>
-          </Field>
-        </div>
-        {!createdCredentials?.password && <InfoNote tone="orange">Mật khẩu không được trả lại vì yêu cầu đã được xử lý trước đó. Hãy tạo yêu cầu cấp lại tài khoản nếu nhân viên chưa nhận được mật khẩu.</InfoNote>}
-      </Modal>
     </div>
   )
 }
@@ -653,7 +648,8 @@ export function StoreTasks() {
   const {
     activeStore,
     storeId,
-    employees = [],
+    allEmployees = [],
+    supportTransfers = [],
     tasks = [],
     taskAssignmentHistory = [],
     shiftDefinitions = [],
@@ -681,6 +677,7 @@ export function StoreTasks() {
   const [rows, setRows] = useState(() => [newStoreTaskRow()])
   const [busy, setBusy] = useState(false)
   const assignmentRequestRef = useRef({ fingerprint: '', idempotencyKey: '' })
+  const employees = storeEmployeesForDate(allEmployees, supportTransfers, storeId, date)
   const assignableEmployees = employees.filter((employee) => (
     !employee.deletedAt && String(employee.status || '').toLocaleLowerCase('vi-VN') !== 'đã nghỉ việc'
   ))
@@ -688,6 +685,11 @@ export function StoreTasks() {
   const selectedIds = selectedEmployeeIds.filter((id) => assignableEmployeeIds.has(String(id)))
   const selectedIdSet = new Set(selectedIds.map(String))
   const history = storeTaskHistory({ taskAssignmentHistory, tasks, storeId, employees, shiftDefinitions })
+  const reusableTasks = [...new Map(history.flatMap((assignment) => assignment.tasks || []).flatMap((task) => {
+    const title = String(task.title || '').trim()
+    const detail = String(task.detail || '').trim()
+    return title ? [[`${title.toLocaleLowerCase('vi-VN')}|${detail.toLocaleLowerCase('vi-VN')}`, { title, detail }]] : []
+  })).entries()].map(([key, task]) => ({ key, ...task }))
 
   const changeShift = (nextShiftId) => {
     if (!shiftOptions.some((shift) => String(shift.id) === String(nextShiftId))) return
@@ -701,6 +703,12 @@ export function StoreTasks() {
   }
   const updateRow = (index, key, value) => setRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, [key]: value } : item))
   const removeRow = (index) => setRows((current) => current.length > 1 ? current.filter((_, rowIndex) => rowIndex !== index) : current)
+  const toggleReusableTask = (template) => setRows((current) => {
+    const index = current.findIndex((row) => String(row.templateKey || '') === template.key)
+    if (index >= 0) return current.filter((_, rowIndex) => rowIndex !== index)
+    const withoutEmptyStarter = current.length === 1 && !current[0].title && !current[0].detail ? [] : current
+    return [...withoutEmptyStarter, { ...newStoreTaskRow(), title: template.title, detail: template.detail, templateKey: template.key }]
+  })
   const toggleEmployee = (id) => setSelectedEmployeeIds((current) => current.some((item) => String(item) === String(id))
     ? current.filter((item) => String(item) !== String(id))
     : [...current, String(id)])
@@ -774,6 +782,15 @@ export function StoreTasks() {
       </Card>}
       {canManageStore && <div className="split-layout split-layout--tasks">
         <Card title="Danh sách công việc" className="task-editor">
+          {reusableTasks.length > 0 && <>
+            <InfoNote>Tick các công việc đã nhập sẵn cần giao trong lần này. Có thể bổ sung công việc mới bên dưới.</InfoNote>
+            <div className="employee-picker" role="group" aria-label="Công việc nhập sẵn">
+              {reusableTasks.map((template) => {
+                const checked = rows.some((row) => row.templateKey === template.key)
+                return <label key={template.key} className={checked ? 'selected' : ''}><input type="checkbox" checked={checked} onChange={() => toggleReusableTask(template)} /><span><strong>{template.title}</strong><small>{template.detail || 'Không có mô tả'}</small></span></label>
+              })}
+            </div>
+          </>}
           <div className="task-editor__head"><span>STT</span><span>Tên công việc</span><span>Mô tả công việc</span><span /></div>
           {rows.map((item, index) => (
             <div className="task-editor__row" key={item.id}>

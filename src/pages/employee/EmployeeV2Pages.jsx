@@ -30,7 +30,7 @@ import {
 } from '../../components/UI'
 import { resolveShiftCandidates } from '../../domain'
 import { useApp } from '../../state/AppContext'
-import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, today, usesMonthlyHoursFormula } from '../../utils'
+import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
 import { employeeTaskAssignmentById, employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
 import {
   ACQUISITION_CHANNELS,
@@ -45,7 +45,7 @@ const parseMoney = (value) => Math.max(0, Math.trunc(Number(String(value ?? '').
 const moneyInput = (value) => String(value ?? '').replace(/\D/gu, '').replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
 const recordDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
 const employeeKey = (employee = {}) => String(employee?.id || employee?.code || employee?.employeeCode || '')
-const timestamp = (value) => value ? new Date(value).toLocaleString('vi-VN', { hour12: false }) : '—'
+const timestamp = shortDateTime24
 const periodLabel = (value) => value ? value.split('-').reverse().join('/') : '—'
 const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: 'Chuyển khoản' })
 const actorLabel = (value) => {
@@ -309,7 +309,7 @@ export function EmployeeDashboardV2() {
       <div className="employee-top-grid">
         <Card className="checkin-card">
           <h2>ĐIỂM DANH</h2>
-          <p>{now.toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}</p>
+          <p>{shortDate(now)}</p>
           <strong>{now.toLocaleTimeString('vi-VN', { hour12: false })}</strong>
           {!activeRecord
             ? <Button icon={Fingerprint} loading={locating === 'in'} disabled={Boolean(locating)} onClick={beginCheckIn}>ĐIỂM DANH</Button>

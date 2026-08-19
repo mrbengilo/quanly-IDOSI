@@ -82,13 +82,13 @@ Các lệnh chính:
   Cả hai nhận `name`, điện thoại `0` + 9 số, `cccd` đúng 12 số, `address`,
   `startDate: YYYY-MM-DD`, vị trí đúng vai trò, `username`/`password` và ảnh
   CCCD. Hỗ trợ KD nhận `employmentType` (`Full-Time`, `Part-Time`,
-  `Thực Tập Sinh`). Quản lý cửa hàng chỉ nhận `Full-Time|Part-Time` và create
-  bắt buộc đủ `baseSalary` (số nguyên VND dương), `standardWorkDays: 1..31`,
-  `requiredMonthlyHours: >0..744`; update các trường lương được kiểm tra trên
-  cấu hình kết quả đầy đủ. Full-Time được canonical thành lương tháng,
-  Part-Time thành lương giờ; response/profile luôn trả cả `payBasis`,
-  `salaryUnit`, `baseSalary`, ngày công và giờ tháng. Giờ chấm công của hai vai
-  trò vẫn do server cố định `08:00-17:00`.
+  `Thực Tập Sinh`). Quản lý cửa hàng chỉ nhận `Full-Time|Part-Time`, không có
+  lương cơ bản: profile canonical dùng `payBasis: allowance-only`,
+  `salaryUnit: none` và chỉ nhận thưởng/phụ cấp cuối tháng. Có thể tạo hồ sơ mới
+  hoặc truyền `linkedEmployeeId` để phân quyền quản lý cho nhân viên bán hàng
+  hiện hữu; hồ sơ bán hàng và cách tính lương cửa hàng vẫn giữ nguyên, còn cùng
+  tài khoản được nâng thành `store_manager`. Giờ chấm công của hai vai trò do
+  server mặc định `08:00-17:00`.
   Hồ sơ `unit: office` bắt buộc `storeId: OFFICE`, tự sinh mã `VP-001...`, điện thoại `0` + 9 số, CCCD đúng
   12 số, bắt buộc địa chỉ, ngày bắt đầu, loại nhân viên (`Full-Time`,
   `Part-Time`, `Thực Tập Sinh`), vị trí (`Kế Toán`, `Marketing`) và cặp
@@ -96,13 +96,13 @@ Các lệnh chính:
   commit hồ sơ+tài khoản trong một transaction.
   `addressDetails` tùy chọn có cấu trúc `{province,ward,street}` để lưu đúng ba
   tầng địa chỉ mà giao diện đã chọn.
-  Khi Hỗ trợ KD tạo `unit: store`, Worker bắt buộc CCCD 12 số, ngày bắt đầu và
-  đủ ảnh CCCD trước/sau, cố định vị trí `Nhân viên bán hàng`, rồi tự sinh
-  mã nhân viên (bỏ qua mọi `id|code|employeeCode` từ client), username dạng
-  `<mã-ngắn-cửa-hàng>-<tên>` (tự thêm hậu tố số nếu trùng) và
-  password dạng `<6-số-cuối-CCCD><tên>@`. Password chỉ xuất hiện trong
-  `generatedCredentials` của response create đầu tiên; receipt replay, state và
-  audit không lưu plaintext này.
+  Mọi create nhân viên bắt buộc đủ ảnh CCCD trước/sau và cặp
+  `username`/`password` do người tạo nhập; server không tự sinh credential.
+  Khi tạo `unit: store`, Worker cố định vị trí `Nhân viên bán hàng`, bỏ qua mọi
+  `id|code|employeeCode` từ client và tự sinh mã theo thương hiệu + chi nhánh,
+  ví dụ `DOSSI-LVT-001`, `DOSII-TNV-001`, `SM-TNV-001`; các cửa hàng legacy vẫn
+  dùng mã ngắn tương thích. Hồ sơ+tài khoản được commit nguyên tử nên tài khoản
+  do Hỗ trợ KD tạo đăng nhập được ngay sau response thành công.
   Sau migration xóa credential, `employee.update` có thể nhận lại cặp
   `username`/`password` để phát hành tài khoản mới nguyên tử cho đúng
   profile hiện hữu; mã profile và lịch sử nghiệp vụ không thay đổi.
@@ -158,9 +158,13 @@ Các lệnh chính:
   có lịch active trùng ngày cho cùng nhân viên. Update nhận `transferId`
   cùng các trường cần đổi; delete nhận `transferId`, `reason` và xóa mềm.
   Kỳ lương đã chi/khóa ở cửa hàng đi hoặc nhận chặn thay đổi; kỳ đã
-  chốt được invalidation để chốt lại. Mọi lệnh commit state + audit + receipt
-  idempotency nguyên tử. Bản ghi điều chuyển hiện là lịch sử/khoản hỗ trợ;
-  không tự đổi `store_id` hay quyền đăng nhập của nhân viên.
+  chốt được invalidation để chốt lại. Trong khoảng điều chuyển, session nhân
+  viên tự chuyển sang cửa hàng nhận; cửa hàng nhận thấy hồ sơ cùng thời gian,
+  lương giờ hỗ trợ, phụ cấp và có thể xếp ca/giao việc. Chấm công, đơn hàng,
+  doanh thu và chi phí lương hỗ trợ được ghi vào cửa hàng nhận. Lương hỗ trợ =
+  giờ làm thực tế × `hourlySupportRate`, cộng `allowance`; khi hết thời gian hoặc
+  kết ca hỗ trợ, session tự trở về cửa hàng gốc. Mọi lệnh commit state + audit +
+  receipt idempotency nguyên tử.
 - `account_settings.update`: admin/business_support/store_manager tự cập nhật tài khoản hiện tại với
   payload `name`, `email`, `phone`, `birthday`, `gender`, `address`, `bio`,
   `avatar?`, `notifications {tasks,dailyReport,expenseAlert}`. Ảnh là data URL

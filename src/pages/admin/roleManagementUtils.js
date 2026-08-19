@@ -1,4 +1,4 @@
-import { formatMoneyInput, parseMoneyInput, today } from '../../utils'
+import { today } from '../../utils'
 
 export const ROLE_KEYS = Object.freeze({
   businessSupport: 'business_support',
@@ -140,6 +140,8 @@ export const emptyRoleProfile = (roleKey = ROLE_KEYS.businessSupport) => ({
   baseSalary: '',
   standardWorkDays: '26',
   requiredMonthlyHours: '',
+  managerSource: 'new',
+  linkedEmployeeId: '',
 })
 
 export const roleProfileToForm = (profile = {}, roleKey = ROLE_KEYS.businessSupport) => {
@@ -161,14 +163,18 @@ export const roleProfileToForm = (profile = {}, roleKey = ROLE_KEYS.businessSupp
     storeId: profile.storeId === 'OFFICE' || profile.storeId === 'BUSINESS_SUPPORT'
       ? ''
       : profile.storeId || profile.assignedStoreId || '',
-    baseSalary: formatMoneyInput(profile.baseSalary || profile.monthlySalary || profile.salary),
-    standardWorkDays: String(profile.standardWorkDays || 26),
-    requiredMonthlyHours: String(profile.requiredMonthlyHours || ''),
+    managerSource: profile.linkedEmployeeId ? 'existing' : 'new',
+    linkedEmployeeId: String(profile.linkedEmployeeId || ''),
   }
 }
 
 export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requiresPassword = !editingKey, roleKey = ROLE_KEYS.businessSupport } = {}) => {
   const errors = []
+  if (roleKey === ROLE_KEYS.storeManager && !editingKey && form?.managerSource === 'existing') {
+    if (!String(form.storeId || '').trim()) errors.push('Cửa hàng quản lý là trường bắt buộc.')
+    if (!String(form.linkedEmployeeId || '').trim()) errors.push('Cần chọn nhân viên cửa hàng để phân quyền quản lý.')
+    return errors
+  }
   const required = [
     ['Mã nhân viên', form?.code],
     ['Tên nhân viên', form?.name],
@@ -192,16 +198,8 @@ export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requ
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(form?.startDate || ''))) errors.push('Ngày bắt đầu làm không hợp lệ.')
   if (!roleEmploymentTypes(roleKey).includes(form?.employmentType)) errors.push('Loại nhân viên không hợp lệ.')
   if (String(form?.position || '') !== ROLE_POSITIONS[roleKey]) errors.push('Vị trí công việc không đúng với vai trò tài khoản.')
-  if (roleKey === ROLE_KEYS.storeManager) {
-    if (parseMoneyInput(form?.baseSalary) <= 0) errors.push('Lương cơ bản phải là số lớn hơn 0.')
-    if (!Number.isInteger(Number(form?.standardWorkDays)) || Number(form.standardWorkDays) < 1 || Number(form.standardWorkDays) > 31) {
-      errors.push('Số ngày công quy định/tháng phải là số nguyên từ 1 đến 31.')
-    }
-    const requiredMonthlyHours = Number(form?.requiredMonthlyHours)
-    if (!Number.isFinite(requiredMonthlyHours) || requiredMonthlyHours <= 0 || requiredMonthlyHours > 744) {
-      errors.push('Số giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
-    }
-  }
+  if (!form?.identityImages?.front) errors.push('Hình CCCD mặt trước là bắt buộc.')
+  if (!form?.identityImages?.back) errors.push('Hình CCCD mặt sau là bắt buộc.')
   if (requiresPassword && String(form?.password || '').length < 8) errors.push('Mật khẩu phải có ít nhất 8 ký tự.')
   if (!requiresPassword && form?.password && String(form.password).length < 8) errors.push('Mật khẩu mới phải có ít nhất 8 ký tự.')
 
@@ -215,6 +213,13 @@ export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requ
 
 export const roleProfilePayload = (form = {}, roleKey = ROLE_KEYS.businessSupport) => {
   const isStoreManager = roleKey === ROLE_KEYS.storeManager
+  if (isStoreManager && form.managerSource === 'existing' && form.linkedEmployeeId) {
+    return {
+      unit: roleKey,
+      storeId: form.storeId,
+      linkedEmployeeId: form.linkedEmployeeId,
+    }
+  }
   const position = ROLE_POSITIONS[roleKey]
   const identityImages = Object.fromEntries(['front', 'back'].flatMap((side) => {
     const value = form.identityImages?.[side]
@@ -240,10 +245,5 @@ export const roleProfilePayload = (form = {}, roleKey = ROLE_KEYS.businessSuppor
     ...(form.password ? { password: form.password } : {}),
     unit: roleKey,
     storeId: isStoreManager ? form.storeId : 'BUSINESS_SUPPORT',
-    ...(isStoreManager ? {
-      baseSalary: parseMoneyInput(form.baseSalary),
-      standardWorkDays: Number(form.standardWorkDays),
-      requiredMonthlyHours: Number(form.requiredMonthlyHours),
-    } : {}),
   }
 }

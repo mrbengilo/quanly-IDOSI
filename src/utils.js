@@ -116,7 +116,22 @@ export const today = (date = new Date()) => businessDate(date)
 export const shortDate = (iso) => {
   if (!iso) return ''
   const [year, month, day] = businessDate(iso).split('-')
-  return year && month && day ? `${day}/${month}/${year}` : String(iso)
+  return year && month && day ? `${day}/${month}/${year.slice(-2)}` : String(iso)
+}
+
+const vietnamTimeFormatter = new Intl.DateTimeFormat('vi-VN', {
+  timeZone: 'Asia/Ho_Chi_Minh',
+  hourCycle: 'h23',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+})
+
+export const shortDateTime24 = (value) => {
+  if (!value) return '—'
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return String(value)
+  return `${shortDate(date)} ${vietnamTimeFormatter.format(date)}`
 }
 
 export const validateCccd = (value) => /^\d{12}$/.test(String(value ?? '').trim())

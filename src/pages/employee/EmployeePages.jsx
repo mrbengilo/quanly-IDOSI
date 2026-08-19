@@ -315,7 +315,7 @@ export function EmployeeHome() {
         <div className="chart-grid">
           <Card className="checkin-card">
             <h2>ĐIỂM DANH</h2>
-            <p>{new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' })}</p>
+            <p>{shortDate(new Date())}</p>
             <strong>{formatTime(checkedInAt || new Date().toLocaleTimeString('vi-VN', { hour12: false }))}</strong>
             <Button icon={Fingerprint} loading={locatingAction === 'in'} onClick={handleCheckIn} disabled={Boolean(checkedInAt) || Boolean(locatingAction)}>{checkedInAt ? 'ĐÃ ĐIỂM DANH' : 'ĐIỂM DANH'}</Button>
             <small>{checkedInAt ? `Giờ vào: ${formatTime(checkedInAt)}` : 'Vị trí và thời gian sẽ được ghi nhận'}</small>
@@ -369,7 +369,7 @@ export function EmployeeHome() {
     <div className="page employee-home">
       <div className="employee-hero-title"><span>‹</span><h1>{store?.name || 'IDOSI'}</h1><span>›</span><p>HỆ THỐNG LÀM VIỆC NHÂN VIÊN</p></div>
       <div className="employee-top-grid">
-        <Card className="checkin-card"><h2>ĐIỂM DANH</h2><p>{new Date().toLocaleDateString('vi-VN')}</p><strong>{formatTime(checkedInAt || currentTime)}</strong><Button icon={Fingerprint} loading={locatingAction === 'in'} onClick={handleCheckIn} disabled={Boolean(checkedInAt) || Boolean(locatingAction)}>{checkedInAt ? 'ĐÃ ĐIỂM DANH' : 'ĐIỂM DANH'}</Button><small>{checkedInAt ? `Đã vào ca lúc ${formatTime(checkedInAt)}` : 'Thời gian và vị trí sẽ được ghi nhận'}</small></Card>
+        <Card className="checkin-card"><h2>ĐIỂM DANH</h2><p>{shortDate(new Date())}</p><strong>{formatTime(checkedInAt || currentTime)}</strong><Button icon={Fingerprint} loading={locatingAction === 'in'} onClick={handleCheckIn} disabled={Boolean(checkedInAt) || Boolean(locatingAction)}>{checkedInAt ? 'ĐÃ ĐIỂM DANH' : 'ĐIỂM DANH'}</Button><small>{checkedInAt ? `Đã vào ca lúc ${formatTime(checkedInAt)}` : 'Thời gian và vị trí sẽ được ghi nhận'}</small></Card>
         <Card className="employee-info-card"><h2>THÔNG TIN NHÂN VIÊN</h2><dl><div><dt>Mã nhân viên</dt><dd>{employeeId(employee) || '—'}</dd></div><div><dt>Họ và tên</dt><dd>{employee.name || '—'}</dd></div><div><dt>Vị trí</dt><dd>{employeePosition(employee)}</dd></div><div><dt>Loại nhân viên</dt><dd><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></dd></div><div><dt>Số điện thoại</dt><dd>{employee.phone || '—'}</dd></div></dl></Card>
         <Card className="current-shift-card"><h2>CA LÀM VIỆC HÔM NAY</h2><div><Badge tone="green">{workShift.name.toUpperCase()}</Badge><strong>{workShift.time}</strong><small>({Number(employee.shiftHours) || 5} tiếng)</small></div><p><span>Giờ vào: <b>{formatTime(checkedInAt)}</b></span><span>Giờ kết ca: <b>{formatTime(checkedOutAt)}</b></span></p><div className={checkedInAt ? 'status-ok' : 'status-pending'}>{finishedShift ? 'Đã kết ca' : checkedInAt ? 'Đang làm việc' : 'Chưa điểm danh'}</div></Card>
       </div>
@@ -446,7 +446,7 @@ export function EmployeeCashflow() {
     <div className="page">
       <PageHeader title="DÒNG TIỀN" subtitle="Thống kê doanh thu, chi phí của ca làm hiện tại" icon={Banknote} />
       <Card title="CA LÀM HIỆN TẠI" className="current-cashflow">
-        <div className="current-shift-info"><Badge>{currentShift.name}</Badge><strong>{currentShift.time}</strong><span>{currentRecord ? shortDate(recordDate(currentRecord)) : new Date().toLocaleDateString('vi-VN')}</span><Badge>{!currentRecord ? '● Chưa có ca' : currentRecord.checkOut ? '● Đã kết ca' : '● Đang làm'}</Badge><small>{employee.name || employeeId(employee)}</small></div>
+        <div className="current-shift-info"><Badge>{currentShift.name}</Badge><strong>{currentShift.time}</strong><span>{currentRecord ? shortDate(recordDate(currentRecord)) : shortDate(new Date())}</span><Badge>{!currentRecord ? '● Chưa có ca' : currentRecord.checkOut ? '● Đã kết ca' : '● Đang làm'}</Badge><small>{employee.name || employeeId(employee)}</small></div>
         <div className="cashflow-current-card green"><h3><TrendingUp />DOANH THU</h3><strong>{money(revenue)}</strong><p><span>Số đơn: <b>{Number(currentRecord?.orders) || 0}</b></span></p></div>
         <div className="cashflow-current-card red"><h3><TrendingDown />CHI PHÍ</h3><strong>{money(expense)}</strong><p>Tổng chi trong ca</p></div>
         <div className="cashflow-current-card blue"><h3><Wallet />LỢI NHUẬN TẠM TÍNH</h3><strong>{money(profit)}</strong><p>Doanh thu - Chi phí</p><div><span>Tỷ lệ lợi nhuận</span><b>{revenue ? ((profit / revenue) * 100).toFixed(2) : '0.00'}%</b></div></div>

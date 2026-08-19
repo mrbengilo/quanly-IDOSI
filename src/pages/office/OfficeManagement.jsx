@@ -189,7 +189,8 @@ export function OfficeManagement() {
   const editingRequiresPassword = Boolean(editingEmployee) && !(
     editingEmployee.authUserId || editingEmployee.authVersion || editingEmployee.passwordHash || editingEmployee.legacyPassword
   )
-  const canManageOffice = app.session?.role === 'admin'
+  const canManageOffice = ['admin', 'business_support', 'manager'].includes(app.session?.role)
+  const canDeleteOffice = app.session?.role === 'admin'
   const canCreateOffice = ['admin', 'business_support', 'manager'].includes(app.session?.role)
 
   useEffect(() => {
@@ -364,7 +365,7 @@ export function OfficeManagement() {
   }
 
   const confirmDelete = async () => {
-    if (!canManageOffice || !pendingDelete) return
+    if (!canDeleteOffice || !pendingDelete) return
     if (typeof deleteEmployee !== 'function') return notify?.('Chức năng xóa nhân viên đang được kết nối.', 'info')
     const result = await deleteEmployee(pendingDelete.id || employeeCode(pendingDelete))
     if (result?.ok === false) return notify?.(result.message || 'Không thể xóa nhân viên.', 'info')
@@ -386,7 +387,7 @@ export function OfficeManagement() {
         subtitle="Thông tin nhân viên, lịch sử chấm công và đánh giá mức độ chuyên cần."
         icon={Users}
       />
-      {!canManageOffice && <InfoNote>{canCreateOffice ? 'Nhân viên Hỗ trợ KD được thêm nhân viên văn phòng; chỉ Admin được sửa hoặc xóa hồ sơ.' : 'Chế độ chỉ xem. Chỉ Admin được sửa hoặc xóa nhân viên.'}</InfoNote>}
+      {!canManageOffice && <InfoNote>Chế độ chỉ xem. Tài khoản hiện tại không thể sửa hồ sơ nhân viên.</InfoNote>}
 
       <div className="tabs">
         <button className={tab === 'employees' ? 'active' : ''} onClick={() => setTab('employees')}><Users />Nhân viên</button>
@@ -415,7 +416,7 @@ export function OfficeManagement() {
                   back: employee.identityImages?.back || employee.cccdBackImage,
                 }
                 const imageCount = Object.values(images).filter(Boolean).length
-                return <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={type === 'Full-Time' ? 'green' : type === 'Part-Time' ? 'blue' : 'orange'}>{type}</Badge></td><td><strong>{shortYearDate(employee.startDate || employee.joinDate)}</strong></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><div className="identity-image-actions"><Badge tone={imageCount === 2 ? 'green' : 'orange'}>{imageCount}/2 ảnh</Badge>{Object.entries(images).map(([side, image]) => image ? <button key={side} type="button" onClick={() => viewSavedIdentityImage(side, employee)} disabled={Boolean(viewingSide)} aria-label={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD của ${employee.name}`} title={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD`}><Eye size={16} /><span>{side === 'front' ? 'Trước' : 'Sau'}</span></button> : null)}</div></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button><button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button></div></td>}</tr>
+                return <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={type === 'Full-Time' ? 'green' : type === 'Part-Time' ? 'blue' : 'orange'}>{type}</Badge></td><td><strong>{shortYearDate(employee.startDate || employee.joinDate)}</strong></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><div className="identity-image-actions"><Badge tone={imageCount === 2 ? 'green' : 'orange'}>{imageCount}/2 ảnh</Badge>{Object.entries(images).map(([side, image]) => image ? <button key={side} type="button" onClick={() => viewSavedIdentityImage(side, employee)} disabled={Boolean(viewingSide)} aria-label={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD của ${employee.name}`} title={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD`}><Eye size={16} /><span>{side === 'front' ? 'Trước' : 'Sau'}</span></button> : null)}</div></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteOffice && <button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>}</tr>
               })}
               {!filteredEmployees.length && <tr><td colSpan={canManageOffice ? 11 : 10}>Chưa có nhân viên văn phòng phù hợp.</td></tr>}
             </tbody>
@@ -463,7 +464,7 @@ export function OfficeManagement() {
         </Card>
       </>}
 
-      <Modal
+      {(editingEmployee ? canManageOffice : canCreateOffice) && <Modal
         wide
         open={employeeDrawer}
         onClose={closeEmployeeDrawer}
@@ -509,7 +510,7 @@ export function OfficeManagement() {
           </div>
           <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư và chỉ tài khoản có quyền mới truy cập được. Hệ thống không hiển thị lại mật khẩu hiện tại.</InfoNote>
         </form>
-      </Modal>
+      </Modal>}
 
       <Modal open={Boolean(viewingImage)} onClose={() => setViewingImage(null)} title={viewingImage?.label || 'Ảnh CCCD'}>
         {viewingImage && <img className="identity-image-viewer" src={viewingImage.url} alt={viewingImage.label} />}
