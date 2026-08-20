@@ -2,11 +2,44 @@ import { businessDate } from '../../utils'
 
 const attendanceDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
 
+export const effectiveEmployeeStoreId = (session = {}, employee = {}) => String(
+  session?.storeId || employee?.storeId || '',
+).trim()
+
+export const orderCreatorEmployeeId = (order = {}) => {
+  const explicitEmployeeId = String(
+    order.createdByEmployeeId
+      || order.creatorEmployeeId
+      || order.createdBy?.employeeId
+      || order.createdBy?.employee_id
+      || '',
+  ).trim()
+  if (explicitEmployeeId) return explicitEmployeeId
+
+  const creatorRole = String(order.createdBy?.role || '').trim().toLowerCase()
+  if (creatorRole && creatorRole !== 'employee') return ''
+  return String(order.employeeId || order.employee_id || '').trim()
+}
+
+export const orderCreatedByEmployee = (order = {}, employeeId = '') => (
+  Boolean(String(employeeId || '').trim())
+  && orderCreatorEmployeeId(order) === String(employeeId).trim()
+)
+
+export const employeeCreatedOrders = (orders = [], employeeId = '', storeId = '') => orders
+  .filter((order) => (
+    !order.deletedAt
+    && order.source !== 'legacy-opening-balance'
+    && orderCreatedByEmployee(order, employeeId)
+    && (!storeId || String(order.storeId || '') === String(storeId))
+  ))
+  .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+
 export const ordersForOpenAttendance = (orders = [], employeeId = '', openRecord = null) => {
   if (!openRecord) return []
   return orders
     .filter((order) => {
-      if (order.deletedAt || String(order.employeeId) !== String(employeeId) || order.source === 'legacy-opening-balance') return false
+      if (order.deletedAt || !orderCreatedByEmployee(order, employeeId) || order.source === 'legacy-opening-balance') return false
       if (order.attendanceId) return String(order.attendanceId) === String(openRecord.id)
       const orderShift = String(order.shiftId || order.shift || '')
       const attendanceShift = String(openRecord.shiftId || openRecord.shift || '')

@@ -1,10 +1,14 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PolicySettings, ResetDataPage, SupportTransfersPage } from './GovernancePages'
 
 const mocked = vi.hoisted(() => ({
   session: { role: 'business_support', name: 'Hỗ trợ KD' },
+  attendance: [],
+  supportTransfers: [],
   saveSupportTransfer: vi.fn(),
+  updateSupportTransfer: vi.fn(),
+  deleteSupportTransfer: vi.fn(),
   restoreOperationalData: vi.fn(),
   resetAllData: vi.fn(),
   updateAttendance: vi.fn(),
@@ -24,26 +28,32 @@ const employees = [
   { id: 'HTKD-001', name: 'Hỗ trợ KD', unit: 'business_support', storeId: 'BUSINESS_SUPPORT' },
 ]
 
+const baseAttendance = [
+  {
+    id: 'ATT-001', employeeId: 'SM234-001', storeId: 'CH001', shiftName: 'Ca sáng',
+    shiftStart: '07:00', shiftEnd: '12:00', date: '2026-08-18', checkIn: '07:05', checkOut: '12:00', hours: 4.92, status: 'Đi trễ',
+  },
+  {
+    id: 'ATT-INBOUND', employeeId: 'TNV-001', storeId: 'CH001', supportTransferId: 'TR-INBOUND', shiftName: 'Ca hỗ trợ',
+    shiftStart: '13:00', shiftEnd: '18:00', date: '2026-08-18', checkIn: '14:00', checkOut: '17:00', hours: 3, status: 'Đúng giờ',
+  },
+  {
+    id: 'ATT-OFFICE', employeeId: 'VP-001', storeId: 'OFFICE', shiftName: 'Giờ hành chính',
+    date: '2026-08-18', checkIn: '08:00', checkOut: '17:00', hours: 8, status: 'Đúng giờ',
+  },
+  {
+    id: 'ATT-SUPPORT', employeeId: 'HTKD-001', storeId: 'BUSINESS_SUPPORT', shiftName: 'Giờ hành chính',
+    date: '2026-08-18', checkIn: '08:00', checkOut: '17:00', hours: 8, status: 'Đúng giờ',
+  },
+]
+
 vi.mock('../../state/AppContext', () => ({
   useApp: () => ({
     session: mocked.session,
     stores,
     employees,
-    supportTransfers: [],
-    attendance: [
-      {
-        id: 'ATT-001', employeeId: 'SM234-001', storeId: 'CH001', shiftName: 'Ca sáng',
-        shiftStart: '07:00', shiftEnd: '12:00', date: '2026-08-18', checkIn: '07:05', checkOut: '12:00', hours: 4.92, status: 'Đi trễ',
-      },
-      {
-        id: 'ATT-OFFICE', employeeId: 'VP-001', storeId: 'OFFICE', shiftName: 'Giờ hành chính',
-        date: '2026-08-18', checkIn: '08:00', checkOut: '17:00', hours: 8, status: 'Đúng giờ',
-      },
-      {
-        id: 'ATT-SUPPORT', employeeId: 'HTKD-001', storeId: 'BUSINESS_SUPPORT', shiftName: 'Giờ hành chính',
-        date: '2026-08-18', checkIn: '08:00', checkOut: '17:00', hours: 8, status: 'Đúng giờ',
-      },
-    ],
+    supportTransfers: mocked.supportTransfers,
+    attendance: mocked.attendance,
     auditLogs: [],
     attendanceAudit: [],
     operationalResetHistory: [],
@@ -56,6 +66,8 @@ vi.mock('../../state/AppContext', () => ({
     },
     policyHistory: [],
     saveSupportTransfer: mocked.saveSupportTransfer,
+    updateSupportTransfer: mocked.updateSupportTransfer,
+    deleteSupportTransfer: mocked.deleteSupportTransfer,
     restoreOperationalData: mocked.restoreOperationalData,
     resetAllData: mocked.resetAllData,
     updateAttendance: mocked.updateAttendance,
@@ -68,7 +80,11 @@ vi.mock('../../state/AppContext', () => ({
 describe('Hỗ trợ KD operations', () => {
   beforeEach(() => {
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD' }
+    mocked.attendance = baseAttendance.map((record) => ({ ...record }))
+    mocked.supportTransfers = []
     mocked.saveSupportTransfer.mockReset().mockResolvedValue({ ok: true })
+    mocked.updateSupportTransfer.mockReset().mockResolvedValue({ ok: true })
+    mocked.deleteSupportTransfer.mockReset().mockResolvedValue({ ok: true })
     mocked.restoreOperationalData.mockReset().mockResolvedValue({ ok: true, restoredCount: 1 })
     mocked.resetAllData.mockReset().mockResolvedValue({ ok: true })
     mocked.updateAttendance.mockReset().mockResolvedValue({ ok: true })
@@ -116,6 +132,34 @@ describe('Hỗ trợ KD operations', () => {
     expect(mocked.notify).not.toHaveBeenCalled()
   })
 
+  it('edits and deletes an existing transfer with an explicit audit reason', async () => {
+    mocked.supportTransfers = [{
+      id: 'TR-001', employeeId: 'SM234-001', fromStoreId: 'CH001', toStoreId: 'CH002',
+      startAt: '2026-08-20T01:00:00.000Z', endAt: '2026-08-20T05:00:00.000Z',
+      hourlySupportRate: 30_000, allowance: 200_000, note: 'Hỗ trợ buổi sáng', status: 'Đã duyệt',
+      createdAt: '2026-08-19T00:00:00.000Z',
+    }]
+    render(<SupportTransfersPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sửa' }))
+    expect(screen.getByText('Chỉnh sửa điều chuyển')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText(/Ghi chú/i), { target: { value: 'Cập nhật lịch hỗ trợ' } })
+    fireEvent.click(screen.getByRole('button', { name: /Cập nhật điều chuyển/i }))
+    await waitFor(() => expect(mocked.updateSupportTransfer).toHaveBeenCalledWith('TR-001', expect.objectContaining({
+      employeeId: 'SM234-001', fromStoreId: 'CH001', toStoreId: 'CH002',
+      startAt: '2026-08-20T08:00', endAt: '2026-08-20T12:00',
+      hourlySupportRate: 30_000, allowance: 200_000, note: 'Cập nhật lịch hỗ trợ',
+    })))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa' }))
+    fireEvent.change(screen.getByLabelText(/Lý do xóa/i), { target: { value: 'Lịch hỗ trợ không còn áp dụng' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Xóa điều chuyển$/i }))
+    await waitFor(() => expect(mocked.deleteSupportTransfer).toHaveBeenCalledWith(
+      'TR-001',
+      'Lịch hỗ trợ không còn áp dụng',
+    ))
+  })
+
   it('restores only the selected operational scope and keeps a required audit reason', async () => {
     render(<ResetDataPage />)
 
@@ -139,7 +183,40 @@ describe('Hỗ trợ KD operations', () => {
     render(<ResetDataPage />)
 
     expect(screen.getAllByRole('button', { name: 'Chỉnh sửa' })).toHaveLength(1)
+    expect(screen.getAllByText('Chỉ xem')).toHaveLength(3)
+  })
+
+  it('allows editing and reset scoping for an inbound transferred store employee only in the linked time range', () => {
+    mocked.supportTransfers = [{
+      id: 'TR-INBOUND', employeeId: 'TNV-001', fromStoreId: 'CH002', toStoreId: 'CH001',
+      startAt: '2026-08-18T06:00:00.000Z', endAt: '2026-08-18T11:00:00.000Z', status: 'Hoàn tất',
+    }]
+    render(<ResetDataPage />)
+
+    const inboundRow = screen.getByText('TNV-001').closest('tr')
+    expect(within(inboundRow).getByRole('button', { name: 'Chỉnh sửa' })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Chỉnh sửa' })).toHaveLength(2)
     expect(screen.getAllByText('Chỉ xem')).toHaveLength(2)
+
+    fireEvent.change(screen.getByLabelText(/Loại dữ liệu/i), { target: { value: 'attendance' } })
+    fireEvent.change(screen.getByLabelText(/Cửa hàng/i), { target: { value: 'CH001' } })
+    fireEvent.change(screen.getByLabelText(/Từ ngày/i), { target: { value: '2026-08-18' } })
+    fireEvent.change(screen.getByLabelText(/Đến ngày/i), { target: { value: '2026-08-18' } })
+
+    const employeeSelect = screen.getByLabelText(/Nhân viên \(không bắt buộc\)/i)
+    expect(Array.from(employeeSelect.options, (option) => option.value)).toEqual(['', 'SM234-001', 'TNV-001'])
+  })
+
+  it('does not expose an inbound attendance record when the linked transfer time does not contain check-in', () => {
+    mocked.supportTransfers = [{
+      id: 'TR-INBOUND', employeeId: 'TNV-001', fromStoreId: 'CH002', toStoreId: 'CH001',
+      startAt: '2026-08-19T06:00:00.000Z', endAt: '2026-08-19T11:00:00.000Z', status: 'Đã duyệt',
+    }]
+    render(<ResetDataPage />)
+
+    const inboundRow = screen.getByText('TNV-001').closest('tr')
+    expect(within(inboundRow).queryByRole('button', { name: 'Chỉnh sửa' })).toBeNull()
+    expect(within(inboundRow).getByText('Chỉ xem')).toBeTruthy()
   })
 
   it('requires Admin to type the exact destructive confirmation before resetting everything', async () => {

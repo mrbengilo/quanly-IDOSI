@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest'
 import {
   canCreateEmployeeUnit,
   canBusinessSupportUpdateEmployee,
+  canManageSupportTransfers,
   canManagePolicies,
   createInitialState,
   createLocalSystemResetState,
   generateBusinessSupportStoreCredentials,
   hydrateState,
+  nextSupportTransferBoundaryDelay,
+  remoteEffectiveUserChanged,
   resolveRemoteActiveStoreId,
 } from './AppContext'
 
@@ -38,6 +41,30 @@ describe('Business Support staff and policy permissions', () => {
     expect(canManagePolicies('manager')).toBe(true)
     expect(canManagePolicies('store_manager')).toBe(false)
     expect(canManagePolicies('employee')).toBe(false)
+  })
+
+  it('allows only Admin and Business Support to manage transfers', () => {
+    expect(canManageSupportTransfers('admin')).toBe(true)
+    expect(canManageSupportTransfers('business_support')).toBe(true)
+    expect(canManageSupportTransfers('manager')).toBe(true)
+    expect(canManageSupportTransfers('store_manager')).toBe(false)
+    expect(canManageSupportTransfers('employee')).toBe(false)
+  })
+
+  it('detects same-version effective-store changes and the next exact transfer boundary', () => {
+    expect(remoteEffectiveUserChanged(
+      { role: 'employee', storeId: 'S01', homeStoreId: 'S01' },
+      { role: 'employee', storeId: 'S02', homeStoreId: 'S01', activeTransferId: 'TR-01' },
+    )).toBe(true)
+    expect(remoteEffectiveUserChanged(
+      { role: 'employee', storeId: 'S01', homeStoreId: 'S01' },
+      { role: 'employee', storeId: 'S01', homeStoreId: 'S01' },
+    )).toBe(false)
+    expect(nextSupportTransferBoundaryDelay([{
+      status: 'Đã duyệt',
+      startAt: '2026-08-20T14:00',
+      endAt: '2026-08-20T21:00',
+    }], Date.parse('2026-08-20T06:59:00.000Z'))).toBe(60_000)
   })
 
   it('generates an ephemeral credential and adds a collision suffix without storing a password field', () => {

@@ -33,6 +33,7 @@ import { createDomainState, defaultPolicies, migrateDomainState } from './initia
 import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateKpiBonuses, financeSummaryFromState } from '../domain'
+import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
   apiBootstrapState,
   apiCommand,
@@ -193,6 +194,28 @@ const isOfficeUnit = (value) => ['office', 'văn phòng', 'van phong', 'khối v
 const isBusinessSupportUnit = (value) => ['business_support', 'business support', 'support', 'hỗ trợ kinh doanh', 'ho tro kinh doanh', 'htkd'].includes(normalizeText(value))
 const isStoreManagerUnit = (value) => ['store_manager', 'store manager', 'quản lý cửa hàng', 'quan ly cua hang', 'qlch'].includes(normalizeText(value))
 const normalizeAuthRole = (role) => normalizeText(role) === 'manager' ? 'business_support' : normalizeText(role)
+export const remoteEffectiveUserChanged = (current = {}, latest = {}) => {
+  if (!latest || typeof latest !== 'object' || !Object.keys(latest).length) return false
+  const field = (record, camel, snake = camel) => String(record?.[camel] ?? record?.[snake] ?? '')
+  return normalizeAuthRole(current?.role) !== normalizeAuthRole(latest?.role)
+    || field(current, 'storeId', 'store_id') !== field(latest, 'storeId', 'store_id')
+    || field(current, 'homeStoreId', 'home_store_id') !== field(latest, 'homeStoreId', 'home_store_id')
+    || field(current, 'activeTransferId', 'active_transfer_id') !== field(latest, 'activeTransferId', 'active_transfer_id')
+}
+export const canManageSupportTransfers = (role) => ['admin', 'business_support'].includes(normalizeAuthRole(role))
+export const nextSupportTransferBoundaryDelay = (transfers = [], at = Date.now()) => {
+  const nowMs = at instanceof Date ? at.getTime() : Number(at)
+  if (!Number.isFinite(nowMs)) return null
+  const nextBoundary = transfers
+    .filter((record) => !record?.deletedAt && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record?.status || '')))
+    .flatMap((record) => {
+      const bounds = supportTransferBounds(record)
+      return bounds ? [bounds.startMs, bounds.endMs] : []
+    })
+    .filter((epochMs) => epochMs > nowMs)
+    .sort((left, right) => left - right)[0]
+  return Number.isFinite(nextBoundary) ? Math.max(0, nextBoundary - nowMs) : null
+}
 export const canCreateEmployeeUnit = (role, unit) => {
   const normalizedRole = normalizeAuthRole(role)
   if (normalizedRole === 'admin') return true
@@ -907,7 +930,7 @@ export function AppProvider({ children }) {
   useEffect(() => {
     const remote = apiRef.current
     const role = normalizeAuthRole(state.session?.role)
-    if (!credentialsReady || !remote.enabled || !state.session || !['business_support', 'employee'].includes(role)) return undefined
+    if (!credentialsReady || !remote.enabled || !state.session || !['business_support', 'store_manager', 'employee'].includes(role)) return undefined
     let active = true
     let busy = false
     const refresh = async () => {
@@ -915,12 +938,15 @@ export function AppProvider({ children }) {
       busy = true
       try {
         const latest = await apiGetState('global')
-        if (!active || Number(latest.version || 0) <= Number(remote.version || 0)) return
-        if (canListAccounts(role)) {
+        const versionAdvanced = Number(latest.version || 0) > Number(remote.version || 0)
+        const effectiveUserChanged = remoteEffectiveUserChanged(remote.user, latest.user)
+        const timeSensitiveProjection = ['store_manager', 'employee'].includes(role)
+        if (!active || (!versionAdvanced && !effectiveUserChanged && !timeSensitiveProjection)) return
+        if (versionAdvanced && canListAccounts(role)) {
           const users = await apiListUsers()
           latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
         }
-        if (active) activateRemotePayload(latest, remote.user, state.activeStoreId)
+        if (active) activateRemotePayload(latest, latest.user || remote.user, state.activeStoreId)
       } catch {
         // Polling is best-effort; the next interval or a foreground action will retry.
       } finally {
@@ -928,14 +954,21 @@ export function AppProvider({ children }) {
       }
     }
     const timer = window.setInterval(refresh, 5000)
+    const boundaryDelay = ['store_manager', 'employee'].includes(role)
+      ? nextSupportTransferBoundaryDelay(state.supportTransfers, Date.now())
+      : null
+    const boundaryTimer = boundaryDelay == null
+      ? null
+      : window.setTimeout(refresh, Math.min(boundaryDelay + 25, 2_147_000_000))
     const refreshWhenVisible = () => { if (!document.hidden) refresh() }
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       active = false
       window.clearInterval(timer)
+      if (boundaryTimer != null) window.clearTimeout(boundaryTimer)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [credentialsReady, state.activeStoreId, state.session])
+  }, [credentialsReady, state.activeStoreId, state.session, state.supportTransfers])
 
   useEffect(() => {
     if (credentialsReady) return undefined
@@ -2642,14 +2675,19 @@ export function AppProvider({ children }) {
   }
 
   const saveSupportTransfer = async (payload = {}) => {
-    if (normalizeAuthRole(state.session?.role) !== 'business_support') return { ok: false, message: 'Chỉ Nhân viên Hỗ trợ KD được điều chuyển nhân sự.' }
+    if (!canManageSupportTransfers(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Nhân viên Hỗ trợ KD được điều chuyển nhân sự.' }
     const employee = state.employees.find((item) => String(item.id || item.code) === String(payload.employeeId))
     const fromStore = state.stores.find((store) => String(store.id) === String(payload.fromStoreId))
     const toStore = state.stores.find((store) => String(store.id) === String(payload.toStoreId))
     if (!employee || !fromStore || !toStore || String(employee.storeId) !== String(fromStore.id) || String(fromStore.id) === String(toStore.id)) {
       return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
     }
-    if (!payload.fromDate || !payload.toDate || payload.fromDate > payload.toDate) {
+    const exactDateTimes = isVietnamDateTimeLocal(payload.startAt) && isVietnamDateTimeLocal(payload.endAt)
+    const timeBounds = exactDateTimes ? supportTransferBounds(payload) : supportTransferBounds({
+      fromDate: payload.fromDate,
+      toDate: payload.toDate,
+    })
+    if (!timeBounds) {
       return { ok: false, message: 'Khoảng thời gian điều chuyển chưa hợp lệ.' }
     }
     const hourlySupportRate = nonNegativeInteger(payload.hourlySupportRate)
@@ -2659,8 +2697,8 @@ export function AppProvider({ children }) {
       employeeId: employee.id || employee.code,
       fromStoreId: fromStore.id,
       toStoreId: toStore.id,
-      fromDate: payload.fromDate,
-      toDate: payload.toDate,
+      startAt: exactDateTimes ? payload.startAt : timeBounds.startAt,
+      endAt: exactDateTimes ? payload.endAt : timeBounds.endAt,
       hourlySupportRate,
       allowance,
       note: String(payload.note || '').trim(),
@@ -2683,9 +2721,116 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const transfer = { id: uid('SUP'), ...commandPayload, status: 'Đã lưu', createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
+    const transfer = {
+      id: uid('SUP'),
+      ...commandPayload,
+      startAt: timeBounds.startAt,
+      endAt: timeBounds.endAt,
+      fromDate: businessDate(timeBounds.startAt),
+      toDate: businessDate(new Date(timeBounds.endMs - 1)),
+      status: 'Đã lưu',
+      createdAt: new Date().toISOString(),
+      createdBy: actorSnapshot(state.session),
+    }
     updateCollection('supportTransfers', (items) => [transfer, ...items])
     notify('Đã lưu điều chuyển hỗ trợ.')
+    return { ok: true, transfer }
+  }
+
+  const updateSupportTransfer = async (transferId, payload = {}) => {
+    if (!canManageSupportTransfers(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Nhân viên Hỗ trợ KD được sửa điều chuyển nhân sự.' }
+    const previous = state.supportTransfers.find((item) => String(item.id || '') === String(transferId || '') && !item.deletedAt)
+    if (!previous) return { ok: false, message: 'Không tìm thấy phiếu điều chuyển.' }
+    const employeeId = String(payload.employeeId ?? previous.employeeId ?? '')
+    const fromStoreId = String(payload.fromStoreId ?? previous.fromStoreId ?? '')
+    const toStoreId = String(payload.toStoreId ?? previous.toStoreId ?? '')
+    const employee = state.employees.find((item) => String(item.id || item.code) === employeeId)
+    if (!employee || String(employee.storeId || '') !== fromStoreId || !state.stores.some((store) => String(store.id) === toStoreId) || fromStoreId === toStoreId) {
+      return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
+    }
+    const startAt = payload.startAt ?? previous.startAt
+    const endAt = payload.endAt ?? previous.endAt
+    const timeBounds = supportTransferBounds({ ...previous, startAt, endAt })
+    if (!timeBounds) return { ok: false, message: 'Khoảng thời gian điều chuyển chưa hợp lệ.' }
+    const hourlySupportRate = nonNegativeInteger(payload.hourlySupportRate ?? previous.hourlySupportRate)
+    const allowance = nonNegativeInteger(payload.allowance ?? previous.allowance)
+    if (hourlySupportRate <= 0) return { ok: false, message: 'Lương hỗ trợ theo giờ phải lớn hơn 0.' }
+    const commandPayload = {
+      transferId: previous.id,
+      employeeId,
+      fromStoreId,
+      toStoreId,
+      startAt: isVietnamDateTimeLocal(startAt) ? startAt : timeBounds.startAt,
+      endAt: isVietnamDateTimeLocal(endAt) ? endAt : timeBounds.endAt,
+      hourlySupportRate,
+      allowance,
+      note: String(payload.note ?? previous.note ?? '').trim(),
+      status: String(payload.status ?? previous.status ?? 'Đã duyệt'),
+    }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('support_transfer.update', commandPayload)
+        const transfer = result.transfer
+        if (!transfer) return { ok: false, message: 'Máy chủ không trả về phiếu điều chuyển.' }
+        setState((current) => ({
+          ...current,
+          supportTransfers: current.supportTransfers.map((item) => item.id === transfer.id ? transfer : item),
+        }))
+        notify('Đã cập nhật điều chuyển hỗ trợ.')
+        return { ok: true, transfer }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật điều chuyển hỗ trợ.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const transfer = {
+      ...previous,
+      ...commandPayload,
+      startAt: timeBounds.startAt,
+      endAt: timeBounds.endAt,
+      fromDate: businessDate(timeBounds.startAt),
+      toDate: businessDate(new Date(timeBounds.endMs - 1)),
+      updatedAt: new Date().toISOString(),
+      updatedBy: actorSnapshot(state.session),
+    }
+    updateCollection('supportTransfers', (items) => items.map((item) => item.id === transfer.id ? transfer : item))
+    notify('Đã cập nhật điều chuyển hỗ trợ.')
+    return { ok: true, transfer }
+  }
+
+  const deleteSupportTransfer = async (transferId, reasonValue = '') => {
+    if (!canManageSupportTransfers(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Nhân viên Hỗ trợ KD được xóa điều chuyển nhân sự.' }
+    const previous = state.supportTransfers.find((item) => String(item.id || '') === String(transferId || '') && !item.deletedAt)
+    const reason = String(reasonValue || '').trim()
+    if (!previous) return { ok: false, message: 'Không tìm thấy phiếu điều chuyển.' }
+    if (!reason || reason.length > 500) return { ok: false, message: 'Lý do xóa phải có từ 1 đến 500 ký tự.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('support_transfer.delete', { transferId: previous.id, reason })
+        const transfer = result.transfer
+        if (!transfer) return { ok: false, message: 'Máy chủ không trả về phiếu điều chuyển.' }
+        setState((current) => ({
+          ...current,
+          supportTransfers: current.supportTransfers.map((item) => item.id === transfer.id ? transfer : item),
+        }))
+        notify('Đã xóa điều chuyển hỗ trợ.', 'info')
+        return { ok: true, transfer }
+      } catch (error) {
+        notify(error.message || 'Không thể xóa điều chuyển hỗ trợ.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const timestamp = new Date().toISOString()
+    const transfer = {
+      ...previous,
+      status: 'Đã xóa',
+      deletedAt: timestamp,
+      deletedBy: actorSnapshot(state.session),
+      deleteReason: reason,
+      updatedAt: timestamp,
+    }
+    updateCollection('supportTransfers', (items) => items.map((item) => item.id === transfer.id ? transfer : item))
+    notify('Đã xóa điều chuyển hỗ trợ.', 'info')
     return { ok: true, transfer }
   }
 
@@ -3273,6 +3418,8 @@ export function AppProvider({ children }) {
     updateImportVoucher,
     deleteImportVoucher,
     saveSupportTransfer,
+    updateSupportTransfer,
+    deleteSupportTransfer,
     restoreOperationalData,
     addAttendanceRecord,
     updateAttendance,

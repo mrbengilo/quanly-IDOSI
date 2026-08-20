@@ -248,6 +248,125 @@ const localDateTimeParts = (isoTimestamp) => {
   }
 }
 
+const VIETNAM_UTC_OFFSET = '+07:00'
+const TRANSFER_LOCAL_DATE_TIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/u
+const TRANSFER_EXPLICIT_DATE_TIME_PATTERN = /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/iu
+
+const validCalendarDateParts = (year, month, day) => {
+  const parsed = new Date(Date.UTC(year, month - 1, day))
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() + 1 === month
+    && parsed.getUTCDate() === day
+}
+
+const shiftCalendarDate = (date, days) => {
+  const match = String(date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/u)
+  if (!match || !validCalendarDateParts(Number(match[1]), Number(match[2]), Number(match[3]))) return ''
+  const shifted = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + days))
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-${String(shifted.getUTCDate()).padStart(2, '0')}`
+}
+
+const transferDateTimeEpoch = (value) => {
+  const source = String(value || '').trim()
+  const localMatch = source.match(TRANSFER_LOCAL_DATE_TIME_PATTERN)
+  if (localMatch) {
+    const year = Number(localMatch[1])
+    const month = Number(localMatch[2])
+    const day = Number(localMatch[3])
+    const hour = Number(localMatch[4])
+    const minute = Number(localMatch[5])
+    if (!validCalendarDateParts(year, month, day) || hour > 23 || minute > 59) return null
+    const timestamp = Date.parse(`${source}:00${VIETNAM_UTC_OFFSET}`)
+    return Number.isFinite(timestamp) ? timestamp : null
+  }
+  if (!TRANSFER_EXPLICIT_DATE_TIME_PATTERN.test(source)) return null
+  const timestamp = Date.parse(source)
+  return Number.isFinite(timestamp) ? timestamp : null
+}
+
+const requiredTransferDateTime = (value, field) => {
+  const epochMs = transferDateTimeEpoch(value)
+  if (epochMs == null) {
+    throw new ApiError(400, 'TRANSFER_DATE_TIME_INVALID', `${field} phải có định dạng ngày giờ hợp lệ YYYY-MM-DDTHH:mm.`)
+  }
+  return new Date(epochMs).toISOString()
+}
+
+export const supportTransferTimeBounds = (record = {}) => {
+  const legacyStart = record.fromDate ? `${record.fromDate}T00:00` : ''
+  const legacyEndDate = shiftCalendarDate(record.toDate || record.fromDate, 1)
+  const legacyEnd = legacyEndDate ? `${legacyEndDate}T00:00` : ''
+  const startMs = transferDateTimeEpoch(record.startAt || legacyStart)
+  const endMs = transferDateTimeEpoch(record.endAt || legacyEnd)
+  if (startMs == null || endMs == null || endMs <= startMs) return null
+  return { startMs, endMs, startAt: new Date(startMs).toISOString(), endAt: new Date(endMs).toISOString() }
+}
+
+const supportTransferCalendarRange = (bounds) => {
+  if (!bounds) return { fromDate: '', toDate: '' }
+  return {
+    fromDate: localDateTimeParts(new Date(bounds.startMs).toISOString()).date,
+    // endAt is exclusive, so the last included local calendar day is one millisecond earlier.
+    toDate: localDateTimeParts(new Date(bounds.endMs - 1).toISOString()).date,
+  }
+}
+
+const supportTransferUsable = (record = {}) => (
+  !record.deletedAt
+  && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+)
+
+export const isSupportTransferActiveAt = (record, at) => {
+  if (!supportTransferUsable(record)) return false
+  const bounds = supportTransferTimeBounds(record)
+  const atMs = transferDateTimeEpoch(at) ?? Date.parse(String(at || ''))
+  return Boolean(bounds && Number.isFinite(atMs) && bounds.startMs <= atMs && atMs < bounds.endMs)
+}
+
+const supportTransferOverlapsDate = (record, date) => {
+  if (!supportTransferUsable(record) || !/^\d{4}-\d{2}-\d{2}$/u.test(String(date || ''))) return false
+  const bounds = supportTransferTimeBounds(record)
+  const dayStart = transferDateTimeEpoch(`${date}T00:00`)
+  const nextDate = shiftCalendarDate(date, 1)
+  const dayEnd = transferDateTimeEpoch(`${nextDate}T00:00`)
+  return Boolean(bounds
+    && Number.isFinite(dayStart)
+    && Number.isFinite(dayEnd)
+    && bounds.startMs < dayEnd
+    && bounds.endMs > dayStart)
+}
+
+const supportTransferMatchesTime = (record, at) => /^\d{4}-\d{2}-\d{2}$/u.test(String(at || ''))
+  ? supportTransferOverlapsDate(record, at)
+  : isSupportTransferActiveAt(record, at)
+
+const supportTransferMatchesEmployeeStore = (record, employeeId, storeId) => (
+  isPlainRecord(record)
+  && String(record.employeeId || '') === String(employeeId || '')
+  && String(record.toStoreId || '') === String(storeId || '')
+)
+
+const supportTransferOverlapsCalendarRange = (record, fromDate, toDate) => {
+  const bounds = supportTransferTimeBounds(record)
+  const rangeStartMs = transferDateTimeEpoch(`${fromDate}T00:00`)
+  const rangeEndDate = shiftCalendarDate(toDate, 1)
+  const rangeEndMs = transferDateTimeEpoch(`${rangeEndDate}T00:00`)
+  return Boolean(bounds
+    && Number.isFinite(rangeStartMs)
+    && Number.isFinite(rangeEndMs)
+    && bounds.startMs < rangeEndMs
+    && bounds.endMs > rangeStartMs)
+}
+
+const linkedSupportTransferForAttendance = (state, attendance, employeeId, storeId) => {
+  const transferId = String(attendance?.supportTransferId || '').trim()
+  if (!transferId) return null
+  return (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
+    String(record.id || '') === transferId
+    && supportTransferMatchesEmployeeStore(record, employeeId, storeId)
+  )) || null
+}
+
 const parseShiftTime = (value) => {
   const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/u)
   if (!match) return null
@@ -527,6 +646,30 @@ const belongsToEmployee = (record, employeeId) => {
   return employeeReferences(record).includes(String(employeeId))
 }
 
+const orderCreatorEmployeeId = (record) => {
+  if (!isPlainRecord(record)) return ''
+  const explicitEmployeeId = String(
+    record.createdByEmployeeId
+      || record.creatorEmployeeId
+      || record.createdBy?.employeeId
+      || record.createdBy?.employee_id
+      || '',
+  ).trim()
+  if (explicitEmployeeId) return explicitEmployeeId
+
+  // Older employee orders predate the creator snapshot. Their direct employeeId is
+  // the only durable creator identity. An explicit non-employee actor, however,
+  // must never make an assigned order appear as if the employee created it.
+  const creatorRole = String(record.createdBy?.role || '').trim().toLowerCase()
+  if (creatorRole && creatorRole !== 'employee') return ''
+  return String(record.employeeId || record.employee_id || '').trim()
+}
+
+const orderCreatedByEmployee = (record, employeeId) => (
+  Boolean(String(employeeId || '').trim())
+  && orderCreatorEmployeeId(record) === String(employeeId).trim()
+)
+
 const taskAssigneeIds = (task) => {
   const references = new Set()
   const add = (value) => {
@@ -615,6 +758,77 @@ const projectPayrollPeriodForEmployees = (period, visibleEmployeeIds, { stripKpi
   }
 }
 
+const referencedOrderForNotification = (state, record) => {
+  const orders = Array.isArray(state.orders) ? state.orders : []
+  const stores = Array.isArray(state.stores) ? state.stores : []
+  const references = (values) => [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]
+  const normalizeIdentity = (value) => String(value || '')
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/gu, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/gu, '')
+  const storeIdFromCode = (code) => {
+    const prefix = normalizeIdentity(String(code || '').trim().replace(/-\d+$/u, ''))
+    if (!prefix) return ''
+    const matches = stores.filter((store) => [
+      store.id, store.short, store.code, store.employeePrefix, store.name,
+    ].some((value) => normalizeIdentity(value) === prefix))
+    return matches.length === 1 ? String(matches[0].id || '') : ''
+  }
+  const embeddedStoreId = String(
+    record.order?.storeId
+      || record.data?.order?.storeId
+      || '',
+  )
+  const genericStoreId = String(
+    record.data?.storeId
+      || record.storeId
+      || '',
+  )
+  const uniqueOrderByCode = (reference) => {
+    const matches = orders.filter((order) => String(order.code || '').trim() === reference)
+    if (matches.length === 1) return matches[0]
+    for (const storeId of references([embeddedStoreId, storeIdFromCode(reference), genericStoreId])) {
+      const scoped = matches.filter((order) => String(order.storeId || '') === storeId)
+      if (scoped.length === 1) return scoped[0]
+    }
+    return null
+  }
+  const idReferences = references([
+    record.orderId,
+    record.order_id,
+    record.data?.orderId,
+    record.data?.order_id,
+    record.data?.order?.id,
+    record.order?.id,
+  ])
+  for (const reference of idReferences) {
+    const matches = orders.filter((order) => String(order.id || '').trim() === reference)
+    if (matches.length === 1) return matches[0]
+  }
+
+  const codeReferences = references([
+    record.orderCode,
+    record.order_code,
+    record.data?.orderCode,
+    record.data?.order_code,
+    record.data?.order?.code,
+    record.order?.code,
+  ])
+  for (const reference of codeReferences) {
+    const order = uniqueOrderByCode(reference)
+    if (order) return order
+  }
+  // Older notification rows stored the visible order code in `orderId`.
+  // Only use this cross-type fallback after exact IDs and explicit codes fail.
+  for (const reference of idReferences) {
+    const order = uniqueOrderByCode(reference)
+    if (order) return order
+  }
+  return null
+}
+
 const canAccessNotification = (state, actor, record) => {
   if (!isPlainRecord(record)) return false
   if (actor.role === 'admin') return true
@@ -631,6 +845,8 @@ const canAccessNotification = (state, actor, record) => {
     if (!storeId || recordStoreId !== storeId) return false
     const referencedEmployeeIds = employeeReferences(record)
     if (!referencedEmployeeIds.length) return true
+    const eventTime = String(record.createdAt || record.occurredAt || '')
+    const eventEpoch = Date.parse(eventTime)
     return referencedEmployeeIds.every((reference) => (
       (Array.isArray(state.employees) ? state.employees : []).some((employee) => (
         [employee.id, employee.code, employee.employeeId].map(String).includes(reference)
@@ -638,12 +854,24 @@ const canAccessNotification = (state, actor, record) => {
         && (employeeUnit(employee) === 'store'
           || [employee.id, employee.code, employee.employeeId].map(String).includes(String(actor.employee_id || '')))
       ))
+      || (Number.isFinite(eventEpoch) && (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).some((transfer) => {
+        if (String(transfer.employeeId || '') !== reference
+          || String(transfer.toStoreId || '') !== storeId
+          || transfer.deletedAt
+          || ['Đã xóa', 'Đã hủy'].includes(String(transfer.status || ''))) return false
+        const bounds = supportTransferTimeBounds(transfer)
+        return Boolean(bounds && bounds.startMs <= eventEpoch && eventEpoch < bounds.endMs)
+      }))
     ))
   }
   if (actor.role !== 'employee') return false
   const employeeId = String(actor.employee_id || actor.user_id || '')
   const storeId = String(actor.store_id || '')
   if (!employeeId || !storeId || (recordStoreId && recordStoreId !== storeId)) return false
+  if (String(record.type || '').startsWith('order.')) {
+    const order = referencedOrderForNotification(state, record)
+    if (!order || !orderCreatedByEmployee(order, employeeId)) return false
+  }
   return hasExplicitNotificationAudience(record)
     ? belongsToEmployee(record, employeeId)
     : recordStoreId === storeId
@@ -751,12 +979,10 @@ export const projectSharedState = (rawState, user) => {
       && (employeeUnit(record) === 'store'
         || [record.id, record.code, record.employeeId].map(String).includes(ownEmployeeId))
     ))
-    const projectionDate = localDateTimeParts(new Date().toISOString()).date
+    const projectionTimestamp = new Date().toISOString()
     const inboundTransfers = filterArray(state, 'supportTransfers', (record) => (
       String(record.toStoreId || '') === storeId
-      && !record.deletedAt
-      && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-      && String(record.toDate || '') >= projectionDate
+      && isSupportTransferActiveAt(record, projectionTimestamp)
     ))
     const inboundTransferByEmployee = new Map(inboundTransfers.map((record) => [String(record.employeeId || ''), record]))
     const transferredEmployees = filterArray(state, 'employees', (record) => (
@@ -773,6 +999,8 @@ export const projectSharedState = (rawState, user) => {
           id: transfer.id,
           fromStoreId: transfer.fromStoreId,
           toStoreId: transfer.toStoreId,
+          startAt: supportTransferTimeBounds(transfer)?.startAt || transfer.startAt,
+          endAt: supportTransferTimeBounds(transfer)?.endAt || transfer.endAt,
           fromDate: transfer.fromDate,
           toDate: transfer.toDate,
           hourlySupportRate: transfer.hourlySupportRate,
@@ -793,12 +1021,22 @@ export const projectSharedState = (rawState, user) => {
     const storeEmployeeIds = new Set(employees.filter((record) => employeeUnit(record) === 'store')
       .flatMap((record) => [record.id, record.code, record.employeeId]
         .map((value) => String(value || '')).filter(Boolean)))
+    const historicalInboundEmployeeIds = filterArray(state, 'supportTransfers', (record) => (
+      String(record.toStoreId || '') === storeId
+      && !record.deletedAt
+      && String(record.status || '') !== 'Đã xóa'
+    )).map((record) => String(record.employeeId || '')).filter(Boolean)
     const historicalStoreEmployeeIds = new Set([
       ...storeEmployeeIds,
+      ...historicalInboundEmployeeIds,
       ...filterArray(state, 'deletedEmployees', (record) => (
         String(record.storeId || '') === storeId && employeeUnit(record) === 'store'
       )).flatMap((record) => [record.id, record.code, record.employeeId]
         .map((value) => String(value || '')).filter(Boolean)),
+    ])
+    const payrollVisibleEmployeeIds = new Set([
+      ...storeEmployeeIds,
+      ...historicalInboundEmployeeIds,
     ])
     const historicalVisibleEmployeeIds = new Set([...visibleEmployeeIds, ...historicalStoreEmployeeIds])
     const belongsToAllowedStoreEmployees = (record, allowedEmployeeIds) => {
@@ -825,7 +1063,7 @@ export const projectSharedState = (rawState, user) => {
     )
     const payrollPeriods = filterArray(state, 'payrollPeriods', (period) => (
       String(period.storeId || '') === storeId
-    )).map((period) => projectPayrollPeriodForEmployees(period, storeEmployeeIds))
+    )).map((period) => projectPayrollPeriodForEmployees(period, payrollVisibleEmployeeIds))
     const deletedEmployees = filterArray(state, 'deletedEmployees', (record) => (
       String(record.storeId || '') === storeId
       && (employeeUnit(record) === 'store'
@@ -857,7 +1095,7 @@ export const projectSharedState = (rawState, user) => {
       importVouchers: historicalEmployeeScoped('importVouchers'),
       imports: historicalEmployeeScoped('imports'),
       deletedEmployees,
-      supportTransfers: historicalEmployeeScoped('supportTransfers').filter((record) => (
+      supportTransfers: filterArray(state, 'supportTransfers', (record) => (
         String(record.fromStoreId || '') === storeId || String(record.toStoreId || '') === storeId
       )),
       settings: ownAccountSettings(state, user),
@@ -876,14 +1114,16 @@ export const projectSharedState = (rawState, user) => {
     const visibleStoreIds = new Set([
       storeId,
       String(user.home_store_id || ''),
+      String(openAttendance?.storeId || ''),
     ].filter(Boolean))
     const stores = filterArray(state, 'stores', (record) => visibleStoreIds.has(String(record.id || '')))
       .map((record) => Object.fromEntries(Object.entries(record).filter(([key]) => (
         !['revenue', 'expense', 'profit', 'cash', 'balance', 'costs'].includes(key)
       ))))
-    const tasks = filterArray(state, 'tasks', (record) => {
-      return taskAppliesToEmployee(record, employeeId, storeId)
-    }).map((record) => redactEmployeeReferences(record, new Set([employeeId])))
+    const taskStoreIds = new Set([storeId, String(openAttendance?.storeId || '')].filter(Boolean))
+    const tasks = filterArray(state, 'tasks', (record) => (
+      [...taskStoreIds].some((taskStoreId) => taskAppliesToEmployee(record, employeeId, taskStoreId))
+    )).map((record) => redactEmployeeReferences(record, new Set([employeeId])))
     const payrollPeriods = (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []).flatMap((period) => {
       const rows = Array.isArray(period.rows)
         ? period.rows.filter((row) => belongsToEmployee(row, employeeId))
@@ -906,7 +1146,7 @@ export const projectSharedState = (rawState, user) => {
       taskAssignmentHistory: own('taskAssignmentHistory')
         .map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
       supportTransfers: own('supportTransfers'),
-      orders: own('orders'),
+      orders: filterArray(state, 'orders', (record) => orderCreatedByEmployee(record, employeeId)),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
         .map((record) => projectNotificationForActor(record, user)),
       officeAdjustments: own('officeAdjustments'),
@@ -1048,28 +1288,22 @@ const requireSession = async (request, db, context) => {
   return resolveEffectiveEmployeeStore(db, session, context.now)
 }
 
-const activeSupportTransferFor = (state, employeeId, date) => (Array.isArray(state.supportTransfers)
+const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state.supportTransfers)
   ? state.supportTransfers
   : [])
   .filter((record) => (
     String(record.employeeId || '') === String(employeeId || '')
-    && !record.deletedAt
-    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-    && String(record.fromDate || '') <= date
-    && String(record.toDate || '') >= date
+    && supportTransferMatchesTime(record, at)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
-const supportTransferToStoreOnDate = (state, employeeId, storeId, date) => (Array.isArray(state.supportTransfers)
+const supportTransferToStoreOnDate = (state, employeeId, storeId, at) => (Array.isArray(state.supportTransfers)
   ? state.supportTransfers
   : [])
   .filter((record) => (
     String(record.employeeId || '') === String(employeeId || '')
     && String(record.toStoreId || '') === String(storeId || '')
-    && !record.deletedAt
-    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-    && String(record.fromDate || '') <= date
-    && String(record.toDate || '') >= date
+    && supportTransferMatchesTime(record, at)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
@@ -1087,8 +1321,7 @@ const resolveEffectiveEmployeeStore = async (db, user, now) => {
   if (user?.role !== 'employee' || !user?.employee_id) return user
   const stateRow = await loadState(db, 'global')
   const state = stateRow ? parseStoredJson(stateRow.value_json, {}) : {}
-  const date = localDateTimeParts(now).date
-  const transfer = activeSupportTransferFor(state, user.employee_id, date)
+  const transfer = activeSupportTransferFor(state, user.employee_id, now)
   if (!transfer?.toStoreId) return user
   return {
     ...user,
@@ -2009,6 +2242,7 @@ const getState = async (request, env, context, url) => {
   const [row, policies] = await Promise.all([loadState(db, scope), listPolicies(db)])
   const rawState = row ? parseStoredJson(row.value_json, {}) : {}
   return jsonResponse(apiPayload(context, {
+    user: publicUser(user),
     scope,
     projection: scope === 'global' ? user.role : 'private',
     state: scope === 'global' ? projectSharedState(rawState, user) : sanitizeStateValue(rawState),
@@ -4710,6 +4944,15 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     }
     throw new ApiError(409, 'SUPPORT_TRANSFER_DELETED', 'Điều chuyển hỗ trợ đã bị xóa.')
   }
+  if (previous && (Array.isArray(state.attendance) ? state.attendance : []).some((record) => (
+    !record.deletedAt && String(record.supportTransferId || '') === transferId
+  ))) {
+    throw new ApiError(
+      409,
+      'SUPPORT_TRANSFER_ATTENDANCE_IMMUTABLE',
+      'Điều chuyển đã phát sinh chấm công; không thể sửa, hủy hoặc xóa.',
+    )
+  }
   const employeeId = String(payload.employeeId ?? previous?.employeeId ?? '').trim()
   const employee = [
     ...(Array.isArray(state.employees) ? state.employees : []),
@@ -4735,17 +4978,43 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   if (fromStoreId === toStoreId) {
     throw new ApiError(400, 'SUPPORT_STORE_INVALID', 'Cửa hàng hỗ trợ phải khác cửa hàng hiện tại của nhân viên.')
   }
-  const fromDate = optionalCalendarDate(
-    payload.fromDate ?? payload.startDate ?? payload.startAt?.slice?.(0, 10) ?? payload.date ?? previous?.fromDate,
-    'Ngày bắt đầu',
-  )
-  const toDate = optionalCalendarDate(
-    payload.toDate ?? payload.endDate ?? payload.endAt?.slice?.(0, 10) ?? payload.date ?? previous?.toDate,
-    'Ngày kết thúc',
-  )
-  if (!fromDate || !toDate) throw new ApiError(400, 'TRANSFER_DATE_REQUIRED', 'Cần nhập đủ ngày bắt đầu và kết thúc.')
+  const requestedLegacyStartDate = payload.fromDate ?? payload.startDate ?? payload.date
+  const requestedLegacyEndDate = payload.toDate ?? payload.endDate ?? payload.date
+  const legacyStartDate = requestedLegacyStartDate === undefined
+    ? ''
+    : optionalCalendarDate(requestedLegacyStartDate, 'Ngày bắt đầu')
+  const legacyEndDate = requestedLegacyEndDate === undefined
+    ? ''
+    : optionalCalendarDate(requestedLegacyEndDate, 'Ngày kết thúc')
+  const previousBounds = previous ? supportTransferTimeBounds(previous) : null
+  const requestedStartAt = String(payload.startAt ?? '').trim()
+  const requestedEndAt = String(payload.endAt ?? '').trim()
+  const rawStartAt = payload.startAt !== undefined
+    ? (/^\d{4}-\d{2}-\d{2}$/u.test(requestedStartAt) ? `${requestedStartAt}T00:00` : requestedStartAt)
+    : legacyStartDate
+      ? `${legacyStartDate}T00:00`
+      : previousBounds?.startAt
+  const legacyExclusiveEndDate = legacyEndDate ? shiftCalendarDate(legacyEndDate, 1) : ''
+  const rawEndAt = payload.endAt !== undefined
+    ? (/^\d{4}-\d{2}-\d{2}$/u.test(requestedEndAt)
+        ? `${shiftCalendarDate(requestedEndAt, 1)}T00:00`
+        : requestedEndAt)
+    : legacyExclusiveEndDate
+      ? `${legacyExclusiveEndDate}T00:00`
+      : previousBounds?.endAt
+  if (!rawStartAt || !rawEndAt) {
+    throw new ApiError(400, 'TRANSFER_DATE_TIME_REQUIRED', 'Cần nhập đủ thời gian bắt đầu và kết thúc.')
+  }
+  const startAt = requiredTransferDateTime(rawStartAt, 'Thời gian bắt đầu')
+  const endAt = requiredTransferDateTime(rawEndAt, 'Thời gian kết thúc')
+  const timeBounds = supportTransferTimeBounds({ startAt, endAt })
+  if (!timeBounds || timeBounds.endMs - timeBounds.startMs > 366 * 24 * 60 * 60 * 1_000) {
+    throw new ApiError(400, 'TRANSFER_DATE_RANGE_INVALID', 'Khoảng điều chuyển phải theo thứ tự và không vượt quá 366 ngày.')
+  }
+  const { fromDate, toDate } = supportTransferCalendarRange(timeBounds)
   const months = monthsInDateRange(fromDate, toDate)
-  const previousMonths = previous ? monthsInDateRange(previous.fromDate, previous.toDate) : []
+  const previousRange = supportTransferCalendarRange(previousBounds)
+  const previousMonths = previousBounds ? monthsInDateRange(previousRange.fromDate, previousRange.toDate) : []
   const payrollTargets = [...new Map([
     ...[fromStoreId, toStoreId].flatMap((storeId) => months.map((period) => ({ storeId, period }))),
     ...(previous ? [previous.fromStoreId, previous.toStoreId]
@@ -4799,10 +5068,13 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   const overlap = transfers.find((record) => (
     String(record.id || '') !== transferId
     && String(record.employeeId || '') === employeeId
-    && !record.deletedAt
-    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-    && String(record.fromDate || '') <= toDate
-    && String(record.toDate || '') >= fromDate
+    && supportTransferUsable(record)
+    && (() => {
+      const existingBounds = supportTransferTimeBounds(record)
+      return existingBounds
+        && existingBounds.startMs < timeBounds.endMs
+        && existingBounds.endMs > timeBounds.startMs
+    })()
   ))
   if (overlap) {
     throw new ApiError(409, 'SUPPORT_TRANSFER_OVERLAP', 'Nhân viên đã có lịch điều chuyển trùng thời gian.', { transferId: overlap.id })
@@ -4814,6 +5086,8 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     employeeName: employee.name || employeeId,
     fromStoreId,
     toStoreId,
+    startAt,
+    endAt,
     fromDate,
     toDate,
     hourlySupportRate,
@@ -5449,13 +5723,14 @@ const recordNoopCommand = async (db, actor, response, status, commandContext) =>
 }
 
 const orderBelongsToAttendance = (order, attendance) => {
+  const attendanceEmployeeId = String(attendance.employeeId || '')
+  if (!attendanceEmployeeId || !orderCreatedByEmployee(order, attendanceEmployeeId)) return false
   if (String(order.attendanceId || '') === String(attendance.id || '')) return true
-  if (order.attendanceId || !attendance.employeeId || !attendance.storeId) return false
+  if (order.attendanceId || !attendance.storeId) return false
   const createdAt = Date.parse(order.createdAt)
   const checkInAt = Date.parse(attendance.checkInAt)
   const checkOutAt = Date.parse(attendance.checkOutAt || attendance.updatedAt)
-  return belongsToEmployee(order, String(attendance.employeeId))
-    && String(order.storeId || '') === String(attendance.storeId)
+  return String(order.storeId || '') === String(attendance.storeId)
     && String(order.shiftId || '') === String(attendance.shiftId || attendance.shift || '')
     && Number.isFinite(createdAt)
     && Number.isFinite(checkInAt)
@@ -5478,10 +5753,7 @@ const orderSalesTotals = (orders, attendance) => {
 
 const refreshAttendanceSales = (state, orders, changedOrder, timestamp) => {
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
-  const target = attendance.find((record) => (
-    String(record.id || '') === String(changedOrder.attendanceId || '')
-    || orderBelongsToAttendance(changedOrder, record)
-  ))
+  const target = attendance.find((record) => orderBelongsToAttendance(changedOrder, record))
   if (!target) return attendance
   const totals = orderSalesTotals(orders, target)
   return attendance.map((record) => String(record.id || '') === String(target.id)
@@ -5501,10 +5773,11 @@ const nonCancelled = (record) => {
   return !record?.deletedAt && !['da huy', 'huy', 'cancelled', 'voided'].includes(status)
 }
 
-const workedHoursFor = (state, employeeId, period) => (Array.isArray(state.attendance) ? state.attendance : [])
+const workedHoursFor = (state, employeeId, storeId, period) => (Array.isArray(state.attendance) ? state.attendance : [])
   .filter((record) => (
     !record.deletedAt
     && belongsToEmployee(record, employeeId)
+    && String(record.storeId || '') === String(storeId || '')
     && monthFromRecord(record) === period
   ))
   .reduce((sum, record) => {
@@ -5514,42 +5787,79 @@ const workedHoursFor = (state, employeeId, period) => (Array.isArray(state.atten
 
 const supportTransferPayFor = (state, employeeId, storeId, period) => {
   const monthStart = `${period}-01`
-  const monthEnd = `${period}-31`
-  const transfers = (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).filter((record) => (
+  const nextMonthDate = (() => {
+    const [year, month] = period.split('-').map(Number)
+    const next = new Date(Date.UTC(year, month, 1))
+    return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-01`
+  })()
+  const monthStartMs = transferDateTimeEpoch(`${monthStart}T00:00`)
+  const monthEndMs = transferDateTimeEpoch(`${nextMonthDate}T00:00`)
+  const candidates = (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).filter((record) => (
     String(record.employeeId || '') === String(employeeId || '')
     && String(record.toStoreId || '') === String(storeId || '')
     && !record.deletedAt
     && !['Đã xóa', 'Đã hủy'].includes(String(record.status || ''))
-    && String(record.fromDate || '') <= monthEnd
-    && String(record.toDate || '') >= monthStart
+    && (() => {
+      const bounds = supportTransferTimeBounds(record)
+      return bounds && bounds.startMs < monthEndMs && bounds.endMs > monthStartMs
+    })()
   ))
-  if (!transfers.length) return null
+  if (!candidates.length) return null
+  const transfers = []
   let hours = 0
   let base = 0
   let allowance = 0
-  for (const transfer of transfers) {
-    const transferHours = (Array.isArray(state.attendance) ? state.attendance : [])
+  for (const transfer of candidates) {
+    const transferBounds = supportTransferTimeBounds(transfer)
+    const transferAttendance = (Array.isArray(state.attendance) ? state.attendance : [])
       .filter((record) => (
         !record.deletedAt
         && belongsToEmployee(record, employeeId)
         && String(record.storeId || '') === String(storeId)
-        && monthFromRecord(record) === period
-        && dateFromRecord(record) >= String(transfer.fromDate || '')
-        && dateFromRecord(record) <= String(transfer.toDate || '')
-        && (!record.supportTransferId || String(record.supportTransferId) === String(transfer.id || ''))
+        && (() => {
+          if (record.supportTransferId) {
+            return String(record.supportTransferId) === String(transfer.id || '')
+          }
+          const checkInMs = Date.parse(String(record.checkInAt || ''))
+          if (Number.isFinite(checkInMs)) {
+            return transferBounds && transferBounds.startMs <= checkInMs && checkInMs < transferBounds.endMs
+          }
+          const legacyDate = dateFromRecord(record)
+          const range = supportTransferCalendarRange(transferBounds)
+          return legacyDate >= range.fromDate && legacyDate <= range.toDate
+        })()
       ))
+    const firstAttendance = [...transferAttendance].sort((left, right) => {
+      const leftEpoch = Date.parse(String(left.checkInAt || left.createdAt || ''))
+      const rightEpoch = Date.parse(String(right.checkInAt || right.createdAt || ''))
+      if (Number.isFinite(leftEpoch) && Number.isFinite(rightEpoch)) return leftEpoch - rightEpoch
+      return dateFromRecord(left).localeCompare(dateFromRecord(right))
+    })[0]
+    // A transfer allowance belongs to exactly one payroll period. Prefer the
+    // first linked attendance/check-in period; if no attendance exists yet,
+    // attribute it to the configured transfer-start month.
+    const attributionPeriod = firstAttendance
+      ? monthFromRecord(firstAttendance)
+      : localDateTimeParts(transferBounds.startAt).date.slice(0, 7)
+    const transferHours = transferAttendance
+      .filter((record) => monthFromRecord(record) === period)
       .reduce((sum, record) => {
         const value = Number(record.hours ?? (Number(record.workedSeconds || 0) / 3_600))
         return sum + (Number.isFinite(value) && value > 0 ? value : 0)
       }, 0)
+    if (transferHours <= 0 && attributionPeriod !== period) continue
+    transfers.push(transfer)
     hours += transferHours
     base = safeMoneySum(
       base,
       Math.floor(transferHours * Number(transfer.hourlySupportRate || 0)),
       'Lương hỗ trợ điều chuyển',
     )
-    allowance = safeMoneySum(allowance, Number(transfer.allowance || 0), 'Phụ cấp điều chuyển')
+    if (attributionPeriod === period) {
+      allowance = safeMoneySum(allowance, Number(transfer.allowance || 0), 'Phụ cấp điều chuyển')
+    }
   }
+  if (!transfers.length) return null
   return { transfers, hours, base, allowance }
 }
 
@@ -5566,7 +5876,7 @@ const requiredWorkingDaysForEmployee = (employee, period) => (
   || 26
 )
 
-const snapshottedRequiredWorkingDaysFor = (state, employee, employeeId, period) => {
+const snapshottedRequiredWorkingDaysFor = (state, employee, employeeId, storeId, period) => {
   const monthlyTarget = validRequiredWorkingDays(isPlainRecord(employee?.monthlyWorkdayTargets)
     ? employee.monthlyWorkdayTargets[period]
     : null)
@@ -5575,6 +5885,7 @@ const snapshottedRequiredWorkingDaysFor = (state, employee, employeeId, period) 
     .filter((record) => (
       !record.deletedAt
       && belongsToEmployee(record, employeeId)
+      && String(record.storeId || '') === String(storeId || '')
       && monthFromRecord(record) === period
     ))
     .sort((left, right) => dateFromRecord(left).localeCompare(dateFromRecord(right)))
@@ -5587,10 +5898,13 @@ const snapshottedRequiredWorkingDaysFor = (state, employee, employeeId, period) 
   return validRequiredWorkingDays(employee?.standardWorkDays) || 26
 }
 
-const workedDaysFor = (state, employeeId, period) => {
+const workedDaysFor = (state, employeeId, storeId, period) => {
   const credits = new Map()
   for (const record of Array.isArray(state.attendance) ? state.attendance : []) {
-    if (record.deletedAt || !belongsToEmployee(record, employeeId) || monthFromRecord(record) !== period) continue
+    if (record.deletedAt
+      || !belongsToEmployee(record, employeeId)
+      || String(record.storeId || '') !== String(storeId || '')
+      || monthFromRecord(record) !== period) continue
     const completed = Boolean(record.checkOutAt || record.checkOut || record.checkOutTime)
     if (!completed) continue
     const workedSeconds = Number(record.workedSeconds ?? (Number(record.hours || 0) * 3_600))
@@ -5728,8 +6042,8 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
     participantIds.add(employeeId)
     return {
       employee,
-      hours: workedHoursFor(state, employeeId, period),
-      workedDays: workedDaysFor(state, employeeId, period),
+      hours: workedHoursFor(state, employeeId, storeId, period),
+      workedDays: workedDaysFor(state, employeeId, storeId, period),
       supportPay: null,
     }
   })
@@ -5768,6 +6082,7 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
       state,
       employee,
       employeeId,
+      storeId,
       period,
     )
     const configuredBaseSalary = Number(employee.baseSalary ?? monthlySalary)
@@ -5893,11 +6208,21 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     ...(Array.isArray(state.employees) ? state.employees : []),
     ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
   ].find((employee) => [employee.id, employee.code, employee.employeeId].map(String).includes(employeeId))
+  const linkedTransfer = linkedSupportTransferForAttendance(state, previous, employeeId, storeId)
+  const linkedTransferBounds = linkedTransfer ? supportTransferTimeBounds(linkedTransfer) : null
+  if (previous.supportTransferId && (!linkedTransfer || !linkedTransferBounds)) {
+    throw new ApiError(
+      409,
+      'SUPPORT_TRANSFER_TIME_INVALID',
+      'Bản ghi chấm công hỗ trợ thiếu phiếu điều chuyển hoặc thời gian điều chuyển hợp lệ.',
+    )
+  }
   if (actor.role === 'business_support') {
     assertOperationalStoreAccess(actor, storeId)
+    const homeStoreAttendance = String(linkedEmployee?.storeId || '') === storeId
     if (!linkedEmployee
       || employeeUnit(linkedEmployee) !== 'store'
-      || String(linkedEmployee.storeId || '') !== storeId) {
+      || (!homeStoreAttendance && !linkedTransfer)) {
       throw new ApiError(403, 'ATTENDANCE_STORE_EMPLOYEE_ONLY', 'Nhân viên hỗ trợ KD chỉ được chỉnh chấm công của nhân viên cửa hàng.')
     }
   }
@@ -5915,7 +6240,7 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   if ((requestedCheckOut === undefined ? previousCheckOut : requestedCheckOut) && !checkOut) {
     throw new ApiError(400, 'ATTENDANCE_TIME_INVALID', 'Giờ ra phải theo định dạng 24 giờ HH:mm.')
   }
-  if (checkOut && checkOut.minuteOfDay <= checkIn.minuteOfDay) {
+  if (checkOut && !linkedTransferBounds && checkOut.minuteOfDay <= checkIn.minuteOfDay) {
     throw new ApiError(400, 'ATTENDANCE_TIME_ORDER_INVALID', 'Giờ ra phải sau giờ vào trong cùng ngày làm việc.')
   }
 
@@ -5928,8 +6253,28 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
 
   const checkInAt = vietnamBusinessTimestamp(date, checkIn.label)
-  const checkOutAt = checkOut ? vietnamBusinessTimestamp(date, checkOut.label) : null
-  const workedSeconds = checkOut ? Math.floor((Date.parse(checkOutAt) - Date.parse(checkInAt)) / 1000) : 0
+  const checkOutDate = checkOut && linkedTransferBounds && checkOut.minuteOfDay <= checkIn.minuteOfDay
+    ? shiftCalendarDate(date, 1)
+    : date
+  const checkOutAt = checkOut ? vietnamBusinessTimestamp(checkOutDate, checkOut.label) : null
+  const checkInMs = Date.parse(checkInAt)
+  const checkOutMs = checkOutAt ? Date.parse(checkOutAt) : null
+  if (linkedTransferBounds && (
+    checkInMs < linkedTransferBounds.startMs
+    || checkInMs >= linkedTransferBounds.endMs
+    || (checkOutMs != null && (checkOutMs <= checkInMs || checkOutMs > linkedTransferBounds.endMs))
+  )) {
+    throw new ApiError(
+      400,
+      'ATTENDANCE_TRANSFER_BOUNDS_INVALID',
+      'Thời gian chấm công phải nằm hoàn toàn trong thời gian điều chuyển đã thiết lập.',
+      { startAt: linkedTransferBounds.startAt, endAt: linkedTransferBounds.endAt },
+    )
+  }
+  const payableCheckOutMs = checkOutMs == null
+    ? null
+    : (linkedTransferBounds ? Math.min(checkOutMs, linkedTransferBounds.endMs) : checkOutMs)
+  const workedSeconds = payableCheckOutMs == null ? 0 : Math.floor((payableCheckOutMs - checkInMs) / 1000)
   if (!Number.isSafeInteger(workedSeconds) || workedSeconds < 0 || workedSeconds >= 24 * 60 * 60) {
     throw new ApiError(400, 'ATTENDANCE_DURATION_INVALID', 'Thời lượng chấm công phải lớn hơn 0 và nhỏ hơn 24 giờ.')
   }
@@ -5938,7 +6283,9 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   const shiftStart = parseShiftTime(previous.shiftStart) || shiftTimes(linkedShift).start
   const shiftEnd = parseShiftTime(previous.shiftEnd) || shiftTimes(linkedShift).end
   if (!shiftStart) throw new ApiError(409, 'ATTENDANCE_SHIFT_INVALID', 'Bản ghi chấm công thiếu giờ bắt đầu ca.')
-  const minutesFromStart = checkIn.minuteOfDay - shiftStart.minuteOfDay
+  const minutesFromStart = linkedTransferBounds
+    ? Math.floor((checkInMs - linkedTransferBounds.startMs) / 60_000)
+    : checkIn.minuteOfDay - shiftStart.minuteOfDay
   const lateTolerance = Math.trunc(await policyNumber(db, 'late_tolerance_minutes', 10))
   const officeAttendance = officeLikeEmployee(previous) || previous.attendanceMode === 'office'
   const requiredWorkingDays = validRequiredWorkingDays(previous.requiredWorkingDaysSnapshot)
@@ -5949,7 +6296,9 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     : (minutesFromStart <= lateTolerance ? 'Đi đúng giờ' : 'Đi trễ')
   const departureTag = !checkOut
     ? 'Chưa ra về'
-    : (shiftEnd && checkOut.minuteOfDay < shiftEnd.minuteOfDay ? 'Về sớm' : 'Đã ra về')
+    : (linkedTransferBounds
+        ? (checkOutMs < linkedTransferBounds.endMs ? 'Về sớm' : 'Đã ra về')
+        : (shiftEnd && checkOut.minuteOfDay < shiftEnd.minuteOfDay ? 'Về sớm' : 'Đã ra về'))
   const next = {
     ...previous,
     date,
@@ -6207,7 +6556,14 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       ...(Array.isArray(state.employees) ? state.employees : []),
       ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
     ].find((record) => [record.id, record.code, record.employeeId].map(String).includes(employeeId))
-    if (!employee || employeeUnit(employee) !== 'store' || String(employee.storeId || '') !== storeId) {
+    const historicalDestinationTransfer = (Array.isArray(state.supportTransfers) ? state.supportTransfers : [])
+      .some((record) => (
+        supportTransferMatchesEmployeeStore(record, employeeId, storeId)
+        && supportTransferOverlapsCalendarRange(record, fromDate, toDate)
+      ))
+    if (!employee
+      || employeeUnit(employee) !== 'store'
+      || (String(employee.storeId || '') !== storeId && !historicalDestinationTransfer)) {
       throw new ApiError(400, 'OPERATIONAL_RESET_EMPLOYEE_INVALID', 'Nhân viên không thuộc cửa hàng đã chọn.')
     }
   }
@@ -6473,6 +6829,9 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
         attendanceId: ownOpenRecords[0].id,
       })
     }
+    // Reject before creating an attendance row so a paid/locked payroll period
+    // can never acquire a new open shift that cannot later be settled safely.
+    assertPayrollNotPaidOrLocked(state, storeId, localNow.date.slice(0, 7))
     const dayAssignments = (Array.isArray(state.schedule) ? state.schedule : []).filter((record) => (
       belongsToEmployee(record, employeeId)
       && String(record.date || record.workDate || '') === localNow.date
@@ -6492,6 +6851,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     const profileShifts = officeEmployee ? configuredProfileWorkShifts(employee) : []
     let shiftId = String(payload.shiftId || payload.workShiftId || '').trim()
     let shift = shiftId ? activeShifts.find((record) => String(record.id || '') === shiftId) : null
+    let activeTransferBounds = null
     if (shiftId && !/^[A-Za-z0-9_-]{1,80}$/u.test(shiftId)) {
       throw new ApiError(400, 'SHIFT_INVALID', 'Cần chọn ca làm việc hợp lệ.')
     }
@@ -6502,27 +6862,27 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       && dayAssignments.length && !assignedShiftIds.has(shiftId)) {
       throw new ApiError(403, 'SHIFT_NOT_ASSIGNED', 'Ca này không nằm trong lịch làm việc hôm nay của bạn.')
     }
-    if (activeTransfer && (!shift || !assignedShiftIds.has(shiftId))) {
-      const supportStore = (Array.isArray(state.stores) ? state.stores : [])
-        .find((record) => String(record.id || '') === storeId)
-      const configuredStart = parseShiftTime(
-        supportStore?.openingTime || supportStore?.opening || supportStore?.openTime,
-      )
-      const configuredEnd = parseShiftTime(
-        supportStore?.closingTime || supportStore?.closing || supportStore?.closeTime,
-      )
-      const safeEnd = configuredEnd && configuredEnd.minuteOfDay > localNow.minuteOfDay
-        ? configuredEnd
-        : parseShiftTime('23:59')
+    // A support transfer is itself the attendance window. Even if a stale or
+    // destination schedule is submitted, punctuality must use the exact
+    // configured transfer start/end rather than unrelated shift hours.
+    if (activeTransfer) {
+      activeTransferBounds = supportTransferTimeBounds(activeTransfer)
+      const transferStart = activeTransferBounds
+        ? parseShiftTime(localDateTimeParts(activeTransferBounds.startAt).time)
+        : null
+      const transferEnd = activeTransferBounds
+        ? parseShiftTime(localDateTimeParts(activeTransferBounds.endAt).time)
+        : null
+      if (!transferStart || !transferEnd) {
+        throw new ApiError(409, 'SUPPORT_TRANSFER_TIME_INVALID', 'Phiếu điều chuyển thiếu thời gian làm việc hợp lệ.')
+      }
       shiftId = `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80)
       shift = {
         id: shiftId,
         name: 'Ca hỗ trợ cửa hàng',
         storeId,
-        start: configuredStart && configuredStart.minuteOfDay <= localNow.minuteOfDay
-          ? configuredStart.label
-          : localNow.time,
-        end: safeEnd.label,
+        start: transferStart.label,
+        end: transferEnd.label,
         version: 1,
         source: 'support-transfer',
       }
@@ -6552,7 +6912,10 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     ))) {
       throw new ApiError(409, 'OFFICE_ATTENDANCE_ALREADY_RECORDED', 'Bạn đã chấm công trong ngày hôm nay.')
     }
-    const minutesFromStart = localNow.minuteOfDay - times.start.minuteOfDay
+    const currentEpochMs = Date.parse(commandContext.now)
+    const minutesFromStart = activeTransferBounds && Number.isFinite(currentEpochMs)
+      ? Math.floor((currentEpochMs - activeTransferBounds.startMs) / 60_000)
+      : localNow.minuteOfDay - times.start.minuteOfDay
     const earlyLimit = Math.trunc(await policyNumber(db, 'early_check_in_limit_minutes', 120))
     if (minutesFromStart < -earlyLimit) {
       throw new ApiError(409, 'CHECK_IN_TOO_EARLY', `Chỉ được điểm danh sớm tối đa ${earlyLimit} phút.`, {
@@ -6646,12 +7009,32 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   if (ownOpenRecords.length > 1 && !requestedId) {
     throw new ApiError(409, 'ATTENDANCE_AMBIGUOUS', 'Có nhiều ca đang mở; cần chỉ rõ mã chấm công.')
   }
+  // An exact transfer end immediately restores the account's home-store scope.
+  // The employee must still be able to settle the already-open destination shift,
+  // without regaining any permission to create new destination activity.
+  const attendanceStoreId = String(openRecord.storeId || storeId)
+  const attendanceTransfer = openRecord.supportTransferId
+    ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
+        String(record.id || '') === String(openRecord.supportTransferId)
+        && String(record.employeeId || '') === employeeId
+        && String(record.toStoreId || '') === attendanceStoreId
+        && !record.deletedAt
+        && !['Đã xóa', 'Đã hủy'].includes(String(record.status || ''))
+      )) || null
+    : null
+  const attendanceTransferBounds = attendanceTransfer ? supportTransferTimeBounds(attendanceTransfer) : null
   const checkInTime = Date.parse(openRecord.checkInAt)
   const checkOutTime = Date.parse(commandContext.now)
   if (!Number.isFinite(checkInTime) || checkOutTime < checkInTime) {
     throw new ApiError(409, 'ATTENDANCE_TIME_INVALID', 'Thời gian vào ca đang lưu không hợp lệ.')
   }
-  const workedSeconds = Math.floor((checkOutTime - checkInTime) / 1000)
+  const attendancePeriod = asMonth(monthFromRecord(openRecord), 'Kỳ chấm công')
+  assertPayrollNotPaidOrLocked(state, attendanceStoreId, attendancePeriod)
+  const payableCheckOutTime = attendanceTransferBounds
+    ? Math.min(checkOutTime, attendanceTransferBounds.endMs)
+    : checkOutTime
+  const elapsedSeconds = Math.floor((checkOutTime - checkInTime) / 1000)
+  const workedSeconds = Math.max(0, Math.floor((payableCheckOutTime - checkInTime) / 1000))
   const shiftStart = parseShiftTime(openRecord.shiftStart)
   const shiftEnd = parseShiftTime(openRecord.shiftEnd)
   let departureDelta = 0
@@ -6667,8 +7050,8 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   const relatedOrders = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
     !order.deletedAt
     && String(order.status || '') === 'Hoàn tất'
-    && belongsToEmployee(order, employeeId)
-    && String(order.storeId || '') === storeId
+    && orderCreatedByEmployee(order, employeeId)
+    && String(order.storeId || '') === attendanceStoreId
     && (
       String(order.attendanceId || '') === String(openRecord.id)
       || (!order.attendanceId
@@ -6710,7 +7093,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   const attendanceShiftId = String(openRecord.shiftId || openRecord.shift || '')
   const incompleteTasks = storeEmployee
     ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
-        if (!taskAppliesToEmployee(task, employeeId, storeId)) return false
+        if (!taskAppliesToEmployee(task, employeeId, attendanceStoreId)) return false
         if (String(task.date || task.workDate || '') !== attendanceDate) return false
         const taskShiftId = String(task.shiftId || task.shift || '')
         if (taskShiftId && taskShiftId !== attendanceShiftId) return false
@@ -6731,7 +7114,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'OFFICE_CHECK_OUT_FIELDS_INVALID', 'Chấm công ra về của nhân sự theo giờ hồ sơ chỉ ghi nhận thời gian và vị trí.')
   }
   const shiftExpense = officeEmployee || payload.expense == null ? 0 : asVnd(payload.expense, 'Chi phí trong ca')
-  if (shiftExpense > 0) assertAccountingPeriodOpen(state, storeId, localNow.date.slice(0, 7))
+  if (shiftExpense > 0) assertAccountingPeriodOpen(state, attendanceStoreId, attendancePeriod)
   const updatedRecord = {
     ...openRecord,
     checkOut: localNow.time,
@@ -6740,6 +7123,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     checkOutLocation: location,
     departureTag: shiftEnd && departureDelta < 0 ? 'Về sớm' : 'Đã ra về',
     ...(officeEmployee ? { workdayCredit: workedSeconds > 0 ? 1 : 0 } : {}),
+    ...(attendanceTransferBounds ? { elapsedSeconds } : {}),
     workedSeconds,
     workedMinutes: workedSeconds / 60,
     hours: workedSeconds / 3_600,
@@ -6774,7 +7158,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   }
   const expenseEntry = shiftExpense > 0 ? {
     id: `exp_shift_${openRecord.id}`,
-    storeId,
+    storeId: attendanceStoreId,
     employeeId,
     shiftId: openRecord.shiftId || openRecord.shift || null,
     type: 'Chi phí trong ca',
@@ -6790,7 +7174,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   } : null
   const cashTransaction = shiftExpense > 0 ? {
     id: `txn_shift_${openRecord.id}`,
-    storeId,
+    storeId: attendanceStoreId,
     employeeId,
     type: 'Chi phí trong ca',
     direction: 'out',
@@ -6811,9 +7195,9 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     attendance: attendance.map((record) => String(record.id || '') === String(openRecord.id) ? updatedRecord : record),
     expenseEntries: expenseEntry ? [expenseEntry, ...expenseEntries] : expenseEntries,
     cashTransactions: cashTransaction ? [cashTransaction, ...cashTransactions] : cashTransactions,
-    supportTransfers: activeTransfer
+    supportTransfers: attendanceTransfer
       ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).map((record) => (
-          String(record.id || '') === String(activeTransfer.id)
+          String(record.id || '') === String(attendanceTransfer.id)
             ? {
                 ...record,
                 status: 'Hoàn tất',
@@ -6826,7 +7210,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       : (Array.isArray(state.supportTransfers) ? state.supportTransfers : []),
     payrollPeriods: invalidateClosedPayrollPeriods(
       state,
-      { storeId, period: localNow.date.slice(0, 7) },
+      { storeId: attendanceStoreId, period: attendancePeriod },
       commandContext.now,
       body.type,
     ),
@@ -6839,7 +7223,8 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     before: openRecord,
     after: updatedRecord,
     metadata: {
-      storeId,
+      storeId: attendanceStoreId,
+      period: attendancePeriod,
       shiftId: openRecord.shiftId || openRecord.shift,
       shiftExpense,
       serverTimestamp: commandContext.now,
@@ -6984,6 +7369,10 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   }
   const nextCounterValue = counterValue + 1
   const code = `${storeCode}-${String(nextCounterValue).padStart(5, '0')}`
+  const creator = {
+    ...serverActorSnapshot(actor),
+    ...(actor.role === 'employee' ? { employeeId } : {}),
+  }
   const order = {
     id: `ord_${crypto.randomUUID()}`,
     code,
@@ -7004,6 +7393,8 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
     ...(activeTransfer ? { supportTransferId: activeTransfer.id, homeStoreId: activeTransfer.fromStoreId } : {}),
     status: 'Hoàn tất',
     source: 'order',
+    createdByEmployeeId: actor.role === 'employee' ? employeeId : null,
+    createdBy: creator,
     createdAt: commandContext.now,
     updatedAt: commandContext.now,
     deletedAt: null,
@@ -8386,6 +8777,24 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+const assertPayrollHasNoOpenAttendance = (state, storeId, period) => {
+  const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => (
+    !record.deletedAt
+    && String(record.storeId || '') === String(storeId || '')
+    && monthFromRecord(record) === period
+    && !record.checkOut
+    && !record.checkOutAt
+  ))
+  if (openAttendance.length) {
+    throw new ApiError(
+      409,
+      'PAYROLL_ATTENDANCE_OPEN',
+      'Kỳ lương còn ca chấm công chưa kết thúc; cần kết ca trước khi chốt, chi hoặc khóa.',
+      { attendanceIds: openAttendance.map((record) => String(record.id || '')).filter(Boolean) },
+    )
+  }
+}
+
 const payrollCommand = async (db, actor, body, commandContext) => {
   assertOperationsRole(actor, 'Tài khoản không có quyền xử lý kỳ lương cửa hàng.')
   const payload = isPlainRecord(body.payload) ? body.payload : {}
@@ -8401,6 +8810,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   const periods = Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []
   const existing = payrollPeriodFor(state, storeId, period)
   const actorSnapshot = serverActorSnapshot(actor)
+  assertPayrollHasNoOpenAttendance(state, storeId, period)
 
   if (operation === 'close') {
     if (existing?.lockedAt || existing?.status === 'Đã khóa') {

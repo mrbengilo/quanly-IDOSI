@@ -81,6 +81,42 @@ describe('order notification deep links', () => {
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/orders?store=S01&order=ORDER-TARGET'))
   })
 
+  it('uses the requested store to resolve duplicate order codes without relying on array order', () => {
+    const duplicateCodeOrders = [{
+      ...targetOrder,
+      id: 'ORDER-S01-DUP',
+      code: 'SHARED-00001',
+      storeId: 'S01',
+      customerName: 'Khách sai cửa hàng',
+    }, {
+      ...targetOrder,
+      id: 'ORDER-S02-DUP',
+      code: 'SHARED-00001',
+      storeId: 'S02',
+      employeeId: 'E02',
+      customerName: 'Khách đúng cửa hàng',
+    }]
+    mocked.app = {
+      session: { role: 'admin' },
+      activeStoreId: 'S01',
+      stores: [{ id: 'S01', name: 'Cửa hàng 01' }, { id: 'S02', name: 'Cửa hàng 02' }],
+      orders: duplicateCodeOrders,
+      employees: [
+        { id: 'E01', storeId: 'S01', name: 'Nhân viên 01' },
+        { id: 'E02', storeId: 'S02', name: 'Nhân viên 02' },
+      ],
+      updateOrder: vi.fn(),
+      deleteOrder: vi.fn(),
+      notify: vi.fn(),
+    }
+
+    render(<MemoryRouter initialEntries={['/store/orders?store=S02&order=SHARED-00001']}><StoreOrdersPage /></MemoryRouter>)
+
+    expect(screen.getByText('Khách đúng cửa hàng')).toBeTruthy()
+    expect(screen.queryByText('Khách sai cửa hàng')).toBeNull()
+    expect(screen.getByText('SHARED-00001').closest('tr')?.classList.contains('order-row--highlight')).toBe(true)
+  })
+
   it('highlights the requested own order in the employee view', () => {
     mocked.app = {
       currentEmployee: { id: 'E01', storeId: 'S01', name: 'Nhân viên 01' },
@@ -116,7 +152,7 @@ describe('order notification deep links', () => {
     mocked.app = {
       currentEmployee: { id: 'E01', storeId: 'S01', name: 'Nhân viên 01' },
       orders: [],
-      attendance: [{ id: 'ATT-01', employeeId: 'E01', shift: 'CA-01', shiftName: 'Ca sáng', checkIn: '08:00' }],
+      attendance: [{ id: 'ATT-01', employeeId: 'E01', storeId: 'S01', shift: 'CA-01', shiftName: 'Ca sáng', checkIn: '08:00' }],
       createOrder: vi.fn(),
       notify: vi.fn(),
     }

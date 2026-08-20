@@ -27,6 +27,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
+import { supportTransferOverlapsDate } from '../../domain/supportTransferTime'
 import { downloadCsv } from '../../utils'
 import { removeShiftAssignments, replaceShiftAssignees } from './scheduleAssignments'
 import './UnifiedSchedule.css'
@@ -144,19 +145,13 @@ export function UnifiedSchedule() {
   const employeeSupportsStoreOnDate = (employee) => supportTransfers.some((record) => (
     String(record.employeeId || '') === String(employee.id || employee.code || '')
     && String(record.toStoreId || '') === String(storeId)
-    && !record.deletedAt
-    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-    && String(record.fromDate || '') <= date
-    && String(record.toDate || '') >= date
+    && supportTransferOverlapsDate(record, date)
   ))
   const employeeSupportsAnotherStoreOnDate = (employee) => supportTransfers.some((record) => (
     String(record.employeeId || '') === String(employee.id || employee.code || '')
     && String(record.fromStoreId || '') === String(storeId)
     && String(record.toStoreId || '') !== String(storeId)
-    && !record.deletedAt
-    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-    && String(record.fromDate || '') <= date
-    && String(record.toDate || '') >= date
+    && supportTransferOverlapsDate(record, date)
   ))
   const employees = allEmployees
     .filter((employee) => (

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Banknote,
   CalendarDays,
@@ -29,12 +29,15 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { resolveShiftCandidates } from '../../domain'
+import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
 import { employeeTaskAssignmentById, employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
 import {
   ACQUISITION_CHANNELS,
   checkoutReconciliation,
+  effectiveEmployeeStoreId,
+  employeeCreatedOrders,
   ORDER_GENDERS,
   ordersForOpenAttendance,
   shiftRevenueBreakdown,
@@ -153,50 +156,57 @@ export function EmployeeDashboardV2() {
   const [incompleteTaskReason, setIncompleteTaskReason] = useState('')
   const employeeId = employeeKey(employee)
   const workDate = today()
+  const allOwnAttendance = employeeAttendance(attendance, employeeId)
+  const activeRecord = allOwnAttendance.find((record) => !record.checkOutAt && !record.checkOut)
+  const sessionStoreId = String(session?.storeId || employee?.storeId || '')
+  // An expired transfer no longer grants destination access, but its still-open
+  // attendance remains visible so the employee can reconcile and close that shift.
+  const workingStoreId = String(activeRecord?.storeId || sessionStoreId)
+  const homeStoreId = String(session?.homeStoreId || employee?.storeId || sessionStoreId)
+  const store = stores.find((item) => String(item.id) === workingStoreId)
+  const homeStore = stores.find((item) => String(item.id) === homeStoreId)
+  const openTransferId = String(activeRecord?.supportTransferId || '').trim()
+  const sessionTransferId = String(session?.activeTransferId || '').trim()
+  const activeTransfer = supportTransfers.find((record) => (
+    (openTransferId && String(record.id || '') === openTransferId)
+    || (sessionTransferId && String(record.id || '') === sessionTransferId)
+    || (
+      String(record.employeeId || '') === employeeId
+      && String(record.toStoreId || '') === sessionStoreId
+      && isSupportTransferActiveAt(record, now)
+    )
+  )) || null
+  const hasActiveTransferAccess = Boolean(activeTransfer && isSupportTransferActiveAt(activeTransfer, now))
+  const isSupporting = Boolean(
+    activeTransfer
+    && workingStoreId !== homeStoreId
+    && (hasActiveTransferAccess || String(activeRecord?.supportTransferId || '') === String(activeTransfer.id || '')),
+  )
+  const dashboardEmployee = { ...(employee || {}), storeId: workingStoreId }
+  const ownAttendance = employeeAttendance(attendance, employeeId, workingStoreId)
+  const operationalDate = activeRecord ? recordDate(activeRecord) : workDate
+  const todayRecords = ownAttendance.filter((record) => recordDate(record) === workDate)
   const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
   const requestedAssignment = employeeTaskAssignmentById({
     assignmentId: requestedAssignmentId,
     taskAssignmentHistory,
     tasks,
-    employee,
+    employee: dashboardEmployee,
   })
-  const workingStoreId = String(session?.storeId || employee?.storeId || '')
-  const homeStoreId = String(session?.homeStoreId || employee?.storeId || workingStoreId)
-  const store = stores.find((item) => String(item.id) === workingStoreId)
-  const homeStore = stores.find((item) => String(item.id) === homeStoreId)
-  const activeTransfer = supportTransfers.find((record) => (
-    String(record.id || '') === String(session?.activeTransferId || '')
-    || (
-      String(record.employeeId || '') === employeeId
-      && String(record.toStoreId || '') === workingStoreId
-      && !record.deletedAt
-      && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-      && String(record.fromDate || '') <= workDate
-      && String(record.toDate || '') >= workDate
-    )
-  )) || null
-  const isSupporting = Boolean(activeTransfer && workingStoreId !== homeStoreId)
-  const ownAttendance = employeeAttendance(attendance, employeeId, workingStoreId)
-  const activeRecord = ownAttendance.find((record) => !record.checkOutAt && !record.checkOut)
-  const todayRecords = ownAttendance.filter((record) => recordDate(record) === workDate)
-  const ownOrders = orders.filter((order) => (
-    String(order.employeeId) === employeeId
-    && String(order.storeId) === workingStoreId
-    && !order.deletedAt
-    && order.source !== 'legacy-opening-balance'
-  ))
+  const ownOrders = employeeCreatedOrders(orders, employeeId, workingStoreId)
   const monthOrders = ownOrders.filter((order) => businessDate(order.createdAt).startsWith(workDate.slice(0, 7)))
-  const todayTasks = employeeTasksForDate({ tasks, schedule, attendance, employee, workDate })
+  const todayTasks = employeeTasksForDate({ tasks, schedule, attendance, employee: dashboardEmployee, workDate: operationalDate })
   const completedTasks = todayTasks.filter((task) => taskCompletedByEmployee(task, employeeId)).length
-  const scheduledShifts = findScheduledShifts(app, { ...(employee || {}), storeId: workingStoreId }, workDate)
-  const shifts = scheduledShifts.length || !isSupporting ? scheduledShifts : [{
+  const scheduledShifts = findScheduledShifts(app, dashboardEmployee, operationalDate)
+  const transferBounds = supportTransferBounds(activeTransfer || {})
+  const shifts = isSupporting ? [{
     id: `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80),
     name: 'Ca hỗ trợ cửa hàng',
-    start: '00:00',
-    end: '23:59',
-    date: workDate,
+    start: transferBounds?.startLocal?.slice(11, 16) || '--:--',
+    end: transferBounds?.endLocal?.slice(11, 16) || '--:--',
+    date: operationalDate,
     source: 'support-transfer',
-  }]
+  }] : scheduledShifts
   const activeShiftOrders = ordersForOpenAttendance(ownOrders, employeeId, activeRecord)
   const activeShiftId = String(activeRecord?.shiftId || activeRecord?.shift || '')
   const activeShiftTasks = todayTasks.filter((task) => {
@@ -205,7 +215,7 @@ export function EmployeeDashboardV2() {
   })
   const incompleteTasks = activeShiftTasks.filter((task) => !taskCompletedByEmployee(task, employeeId))
   const displayedTasks = requestedAssignment?.tasks || todayTasks
-  const displayedTaskDate = requestedAssignment?.date || workDate
+  const displayedTaskDate = requestedAssignment?.date || operationalDate
   const displayedTaskShiftId = String(requestedAssignment?.shiftId || '')
   const displayedTaskShift = shiftDefinitions.find((shift) => String(shift.id) === displayedTaskShiftId)
   const expectedRevenue = shiftRevenueBreakdown(activeShiftOrders)
@@ -225,7 +235,7 @@ export function EmployeeDashboardV2() {
   const toggleTask = async (task) => {
     const taskShiftId = String(task.shiftId || task.shift || '')
     const taskDate = String(task.date || task.workDate || '')
-    if (!activeRecord || (taskDate && taskDate !== workDate) || (taskShiftId && taskShiftId !== activeShiftId)) {
+    if (!activeRecord || (taskDate && taskDate !== operationalDate) || (taskShiftId && taskShiftId !== activeShiftId)) {
       notify?.('Bạn chỉ có thể cập nhật công việc sau khi điểm danh vào đúng ca.', 'info')
       return
     }
@@ -251,7 +261,7 @@ export function EmployeeDashboardV2() {
       const location = await geolocate()
       const result = await checkIn?.({
         employeeId,
-        date: workDate,
+        date: operationalDate,
         shiftId: shift.id,
         shiftName: shift.name,
         shiftStart: shift.start,
@@ -276,7 +286,7 @@ export function EmployeeDashboardV2() {
       const result = resolveShiftCandidates({
         at: now,
         shifts,
-        workDate,
+        workDate: operationalDate,
         earlyWindowMinutes: Number(policies?.earlyCheckInLimitMinutes || 120),
       })
       if (!result.candidates.length) {
@@ -361,7 +371,7 @@ export function EmployeeDashboardV2() {
             {isSupporting && <>
               <div><dt>Lương hỗ trợ</dt><dd>{money(activeTransfer.hourlySupportRate || 0)}/giờ</dd></div>
               <div><dt>Phụ cấp hỗ trợ</dt><dd>{money(activeTransfer.allowance || 0)}</dd></div>
-              <div><dt>Thời gian hỗ trợ</dt><dd>{shortDate(activeTransfer.fromDate)} – {shortDate(activeTransfer.toDate)}</dd></div>
+              <div><dt>Thời gian hỗ trợ</dt><dd>{activeTransfer.startAt && activeTransfer.endAt ? `${formatVietnamTransferDateTime(activeTransfer.startAt)} – ${formatVietnamTransferDateTime(activeTransfer.endAt)}` : `${shortDate(activeTransfer.fromDate)} – ${shortDate(activeTransfer.toDate)}`}</dd></div>
             </>}
             <div><dt>Loại nhân viên</dt><dd>{employee?.employmentType || employee?.type || '—'}</dd></div>
             <div><dt>Số điện thoại</dt><dd>{employee?.phone || '—'}</dd></div>
@@ -387,7 +397,7 @@ export function EmployeeDashboardV2() {
         <TableWrap>
           <thead><tr><th>Ngày</th><th>Cửa hàng</th><th>Ca</th><th>Thời gian 24 giờ</th><th>Trạng thái</th></tr></thead>
           <tbody>
-            {shifts.map((shift) => <tr key={shift.id}><td><strong>{shortDate(workDate)}</strong></td><td>{store?.name || '—'}</td><td>{shift.name || shift.id}</td><td><strong>{shift.start || '--:--'} – {shift.end || '--:--'}</strong></td><td><Badge tone={String(activeRecord?.shift || activeRecord?.shiftId) === String(shift.id) ? 'green' : 'blue'}>{String(activeRecord?.shift || activeRecord?.shiftId) === String(shift.id) ? 'Đang làm' : 'Đã xếp ca'}</Badge></td></tr>)}
+            {shifts.map((shift) => <tr key={shift.id}><td><strong>{shortDate(operationalDate)}</strong></td><td>{store?.name || '—'}</td><td>{shift.name || shift.id}</td><td><strong>{shift.start || '--:--'} – {shift.end || '--:--'}</strong></td><td><Badge tone={String(activeRecord?.shift || activeRecord?.shiftId) === String(shift.id) ? 'green' : 'blue'}>{String(activeRecord?.shift || activeRecord?.shiftId) === String(shift.id) ? 'Đang làm' : 'Đã xếp ca'}</Badge></td></tr>)}
             {!shifts.length && <tr><td colSpan="5">Chưa có lịch phân ca hôm nay.</td></tr>}
           </tbody>
         </TableWrap>
@@ -398,9 +408,9 @@ export function EmployeeDashboardV2() {
         action={requestedAssignment ? <><Badge tone="blue">{shortDate(displayedTaskDate)}</Badge> <Badge tone="green">{displayedTaskShift?.name || displayedTaskShiftId || 'Chưa chọn ca'}</Badge></> : null}
       >
         {requestedAssignment && (
-          <InfoNote tone={displayedTaskDate === workDate ? 'green' : 'orange'}>
+          <InfoNote tone={displayedTaskDate === operationalDate ? 'green' : 'orange'}>
             Lượt giao {requestedAssignment.id} • {shortDate(displayedTaskDate)} • {displayedTaskShift?.name || displayedTaskShiftId || 'Chưa chọn ca'}{displayedTaskShift ? ` (${displayedTaskShift.start || '--:--'}–${displayedTaskShift.end || '--:--'})` : ''} • Người giao: {actorLabel(requestedAssignment.createdBy || requestedAssignment.assignedBy)}{requestedAssignment.createdAt || requestedAssignment.assignedAt ? ` • ${timestamp(requestedAssignment.createdAt || requestedAssignment.assignedAt)}` : ''}.
-            {displayedTaskDate !== workDate ? ' Bạn có thể xem trước; chỉ được tick khi đã điểm danh vào đúng ngày, đúng ca.' : ''}
+            {displayedTaskDate !== operationalDate ? ' Bạn có thể xem trước; chỉ được tick khi đã điểm danh vào đúng ngày, đúng ca.' : ''}
           </InfoNote>
         )}
         {requestedAssignmentId && !requestedAssignment && <InfoNote tone="orange">Không tìm thấy lượt giao việc phù hợp với tài khoản và cửa hàng hiện tại.</InfoNote>}
@@ -410,7 +420,7 @@ export function EmployeeDashboardV2() {
             const pending = String(pendingTaskId) === String(task.id)
             const taskShiftId = String(task.shiftId || task.shift || '')
             const taskDate = String(task.date || task.workDate || displayedTaskDate)
-            const canUpdate = Boolean(activeRecord) && taskDate === workDate && (!taskShiftId || taskShiftId === activeShiftId)
+            const canUpdate = Boolean(activeRecord) && taskDate === operationalDate && (!taskShiftId || taskShiftId === activeShiftId)
             return (
               <div key={task.id} className={done ? 'done' : ''}>
                 <button
@@ -483,27 +493,27 @@ export function EmployeeDashboardV2() {
 export function EmployeeOrdersPage() {
   const app = useApp()
   const [searchParams] = useSearchParams()
-  const { currentEmployee: employee, stores = [], orders = [], attendance = [], createOrder, notify } = app
+  const { currentEmployee: employee, session, stores = [], orders = [], attendance = [], createOrder, notify } = app
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [formErrors, setFormErrors] = useState({})
   const [form, setForm] = useState(EMPTY_ORDER_FORM)
   const orderRequestRef = useRef({ fingerprint: '', idempotencyKey: '' })
   const employeeId = employeeKey(employee)
-  const store = stores.find((item) => String(item.id) === String(employee?.storeId))
-  const rows = orders
-    .filter((order) => (
-      !order.deletedAt
-      && String(order.employeeId) === employeeId
-      && String(order.storeId) === String(employee?.storeId)
-      && order.source !== 'legacy-opening-balance'
-    ))
-    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+  const effectiveStoreId = effectiveEmployeeStoreId(session, employee)
+  const store = stores.find((item) => String(item.id) === effectiveStoreId)
+  const rows = employeeCreatedOrders(orders, employeeId, effectiveStoreId)
   const total = rows.reduce((sum, order) => sum + Number(order.amount || 0), 0)
   const requestedOrderId = String(searchParams.get('order') || '')
   const requestedOrder = rows.find((order) => [order.id, order.code].map(String).includes(requestedOrderId))
   const requestedOrderKey = String(requestedOrder?.id || '')
-  const openAttendance = attendance.find((record) => String(record.employeeId) === employeeId && !record.deletedAt && !record.checkOutAt && !record.checkOut)
+  const openAttendance = attendance.find((record) => (
+    String(record.employeeId) === employeeId
+    && String(record.storeId || '') === effectiveStoreId
+    && !record.deletedAt
+    && !record.checkOutAt
+    && !record.checkOut
+  ))
 
   const openCreate = () => {
     if (!openAttendance) {
@@ -551,7 +561,7 @@ export function EmployeeOrdersPage() {
     const requestFingerprint = JSON.stringify({
       ...normalizedForm,
       employeeId,
-      storeId: employee?.storeId,
+      storeId: effectiveStoreId,
       attendanceId: openAttendance?.id,
       shiftId: openAttendance?.shiftId || openAttendance?.shift,
     })
@@ -566,7 +576,7 @@ export function EmployeeOrdersPage() {
       const result = await createOrder({
         ...normalizedForm,
         employeeId,
-        storeId: employee?.storeId,
+        storeId: effectiveStoreId,
         attendanceId: openAttendance?.id,
         shiftId: openAttendance?.shiftId || openAttendance?.shift,
         shiftName: openAttendance?.shiftName,
@@ -627,14 +637,58 @@ export function EmployeeOrdersPage() {
 export function EmployeeAttendancePage() {
   const app = useApp()
   const navigate = useNavigate()
-  const { currentEmployee: employee, attendance = [], orders = [], policies, checkIn, notify } = app
+  const {
+    currentEmployee: employee,
+    attendance = [],
+    orders = [],
+    policies,
+    session,
+    supportTransfers = [],
+    checkIn,
+    notify,
+  } = app
   const employeeId = employeeKey(employee)
-  const rows = employeeAttendance(attendance, employeeId, employee?.storeId)
-  const openRecord = rows.find((record) => !record.checkOut && !record.checkOutAt)
+  const allRows = employeeAttendance(attendance, employeeId)
+  const openRecord = allRows.find((record) => !record.checkOut && !record.checkOutAt)
+  const sessionStoreId = String(session?.storeId || employee?.storeId || '')
+  const workingStoreId = String(openRecord?.storeId || sessionStoreId)
+  const homeStoreId = String(session?.homeStoreId || employee?.storeId || sessionStoreId)
+  const rows = employeeAttendance(attendance, employeeId, workingStoreId)
   const [candidateModal, setCandidateModal] = useState(null)
   const [locating, setLocating] = useState('')
   const workDate = today()
-  const scheduledShifts = useMemo(() => findScheduledShifts(app, employee || {}, workDate), [app, employee, workDate])
+  const operationalDate = openRecord ? recordDate(openRecord) : workDate
+  const openTransferId = String(openRecord?.supportTransferId || '').trim()
+  const sessionTransferId = String(session?.activeTransferId || '').trim()
+  const activeTransfer = supportTransfers.find((record) => (
+    (openTransferId && String(record.id || '') === openTransferId)
+    || (sessionTransferId && String(record.id || '') === sessionTransferId)
+    || (
+      String(record.employeeId || '') === employeeId
+      && String(record.toStoreId || '') === sessionStoreId
+      && isSupportTransferActiveAt(record, new Date())
+    )
+  )) || null
+  const transferActive = Boolean(activeTransfer && isSupportTransferActiveAt(activeTransfer, new Date()))
+  const isSupporting = Boolean(
+    activeTransfer
+    && workingStoreId !== homeStoreId
+    && (transferActive || String(openRecord?.supportTransferId || '') === String(activeTransfer.id || '')),
+  )
+  const scheduledShifts = findScheduledShifts(
+    app,
+    { ...(employee || {}), storeId: workingStoreId },
+    operationalDate,
+  )
+  const transferBounds = supportTransferBounds(activeTransfer || {})
+  const availableShifts = isSupporting ? [{
+    id: `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80),
+    name: 'Ca hỗ trợ cửa hàng',
+    start: transferBounds?.startLocal?.slice(11, 16) || '--:--',
+    end: transferBounds?.endLocal?.slice(11, 16) || '--:--',
+    date: operationalDate,
+    source: 'support-transfer',
+  }] : scheduledShifts
   const currentShiftOrders = ordersForOpenAttendance(orders, employeeId, openRecord)
   const currentShiftRevenue = currentShiftOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
 
@@ -644,7 +698,7 @@ export function EmployeeAttendancePage() {
       const location = await geolocate()
       const result = await checkIn({
         employeeId,
-        date: workDate,
+        date: operationalDate,
         shiftId: shift.id,
         shiftName: shift.name,
         shiftStart: shift.start,
@@ -661,7 +715,7 @@ export function EmployeeAttendancePage() {
   }
 
   const beginCheckIn = () => {
-    if (!scheduledShifts.length) {
+    if (!availableShifts.length) {
       notify('Bạn chưa được xếp ca cho ngày hôm nay.', 'info')
       return
     }
@@ -669,8 +723,8 @@ export function EmployeeAttendancePage() {
     try {
       result = resolveShiftCandidates({
         at: new Date(),
-        shifts: scheduledShifts,
-        workDate,
+        shifts: availableShifts,
+        workDate: operationalDate,
         earlyWindowMinutes: Number(policies?.earlyCheckInLimitMinutes || 120),
       })
     } catch {
@@ -703,7 +757,7 @@ export function EmployeeAttendancePage() {
         <Card className="attendance-action-card" title="Vào ca">
           <Clock3 size={32} />
           <strong>{openRecord?.checkIn || '--:--'}</strong>
-          <span>{openRecord ? `${openRecord.shiftName} • ${openRecord.shiftStart}–${openRecord.shiftEnd}` : `${scheduledShifts.length} ca được xếp hôm nay`}</span>
+          <span>{openRecord ? `${openRecord.shiftName} • ${openRecord.shiftStart}–${openRecord.shiftEnd}` : `${availableShifts.length} ca có thể điểm danh`}</span>
           <Button icon={Fingerprint} onClick={beginCheckIn} loading={locating === 'in'} disabled={Boolean(openRecord) || Boolean(locating)}>ĐIỂM DANH</Button>
         </Card>
         <Card className="attendance-action-card" title="Kết ca">

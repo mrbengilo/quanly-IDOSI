@@ -47,6 +47,7 @@ import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { cashSeries, shifts } from '../../data'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
+import { formatVietnamTransferDateTime, supportTransferBounds, supportTransferMatchesMoment } from '../../domain/supportTransferTime'
 import {
   downloadCsv,
   getEmployeeType,
@@ -112,41 +113,35 @@ const normalizeEmploymentType = normalizeStoreEmploymentType
 const employmentTypeLabel = normalizeStoreEmploymentType
 const formatMoneyInput = formatStoreMoneyInput
 
-const activeSupportTransferForStore = (transfers = [], employeeId, storeId, date = today()) => transfers
+const activeSupportTransferForStore = (transfers = [], employeeId, storeId, moment = new Date()) => transfers
   .filter((record) => (
     String(record.employeeId || '') === String(employeeId || '')
     && String(record.toStoreId || '') === String(storeId || '')
-    && !record.deletedAt
-    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-    && String(record.fromDate || '') <= date
-    && String(record.toDate || '') >= date
+    && supportTransferMatchesMoment(record, moment)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
-const activeSupportTransferFromStore = (transfers = [], employeeId, storeId, date = today()) => transfers
+const activeSupportTransferFromStore = (transfers = [], employeeId, storeId, moment = new Date()) => transfers
   .filter((record) => (
     String(record.employeeId || '') === String(employeeId || '')
     && String(record.fromStoreId || '') === String(storeId || '')
     && String(record.toStoreId || '') !== String(storeId || '')
-    && !record.deletedAt
-    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
-    && String(record.fromDate || '') <= date
-    && String(record.toDate || '') >= date
+    && supportTransferMatchesMoment(record, moment)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
-const storeEmployeesForDate = (employees = [], transfers = [], storeId, date = today(), { includeSupportingAway = false } = {}) => employees
+const storeEmployeesForDate = (employees = [], transfers = [], storeId, moment = new Date(), { includeSupportingAway = false } = {}) => employees
   .filter((employee) => String(employee.unit || 'store') === 'store' && !employee.deletedAt)
   .flatMap((employee) => {
     if (String(employee.storeId || '') === String(storeId || '')) {
-      const supportingAway = activeSupportTransferFromStore(transfers, employee.id || employee.code, storeId, date)
+      const supportingAway = activeSupportTransferFromStore(transfers, employee.id || employee.code, storeId, moment)
       return supportingAway && !includeSupportingAway ? [] : [employee]
     }
     const supportAssignment = activeSupportTransferForStore(
       transfers,
       employee.id || employee.code,
       storeId,
-      date,
+      moment,
     )
     return supportAssignment ? [{
       ...employee,
@@ -155,6 +150,23 @@ const storeEmployeesForDate = (employees = [], transfers = [], storeId, date = t
       supportAssignment,
     }] : []
   })
+
+const transferTimeLabel = (record = {}) => {
+  const bounds = supportTransferBounds(record)
+  if (record.startAt && record.endAt && bounds) {
+    return `${formatVietnamTransferDateTime(bounds.startAt)} – ${formatVietnamTransferDateTime(bounds.endAt)}`
+  }
+  return `${formatTaskDate(record.fromDate)} – ${formatTaskDate(record.toDate)}`
+}
+
+const useTransferClock = () => {
+  const [moment, setMoment] = useState(() => new Date())
+  useEffect(() => {
+    const timer = window.setInterval(() => setMoment(new Date()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [])
+  return moment
+}
 
 let storeTaskDraftSequence = 0
 const newStoreTaskRow = () => ({ id: `store-task-draft-${storeTaskDraftSequence += 1}`, title: '', detail: '' })
@@ -172,13 +184,14 @@ const readIdentityImage = (file) => new Promise((resolve, reject) => {
 
 const useStoreScope = () => {
   const app = useApp()
+  const transferClock = useTransferClock()
   const stores = Array.isArray(app.stores) ? app.stores : []
   const storeId = ['employee', 'store_manager'].includes(app.session?.role)
     ? app.session.storeId
     : app.activeStoreId || app.session?.storeId || stores[0]?.id || ''
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
-  const employees = storeEmployeesForDate(allEmployees, supportTransfers, storeId)
+  const employees = storeEmployeesForDate(allEmployees, supportTransfers, storeId, transferClock)
   const employeeIds = new Set(employees.map((employee) => String(employee.id)))
   const attendance = (Array.isArray(app.attendance) ? app.attendance : []).filter((record) =>
     record.storeId ? String(record.storeId) === String(storeId) : employeeIds.has(String(record.employeeId)),
@@ -406,6 +419,7 @@ export function StoreSchedule() {
 
 export function StoreEmployees() {
   const app = useApp()
+  const transferClock = useTransferClock()
   const employees = Array.isArray(app.employees) ? app.employees : []
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
   const stores = Array.isArray(app.stores) ? app.stores : []
@@ -446,12 +460,12 @@ export function StoreEmployees() {
   }, [viewingImage?.url])
 
   const scopedEmployees = scopedStoreId
-    ? storeEmployeesForDate(employees, supportTransfers, scopedStoreId, today(), { includeSupportingAway: true })
+    ? storeEmployeesForDate(employees, supportTransfers, scopedStoreId, transferClock, { includeSupportingAway: true })
     : employees.filter((employee) => String(employee.unit || 'store') === 'store')
   const canEditEmployee = (employee) => (
     canManageStore
     && (session?.role !== 'store_manager' || !employee.supportAssignment)
-    && !activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId)
+    && !activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId, transferClock)
   )
 
   const normalizedQuery = normalizeText(query)
@@ -619,14 +633,14 @@ export function StoreEmployees() {
             {filtered.map((employee) => {
               const normalizedStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc')
               const type = employeeType(employee)
-              const outboundTransfer = activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId)
+              const outboundTransfer = activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId, transferClock)
               const supportStore = outboundTransfer
                 ? stores.find((store) => String(store.id) === String(outboundTransfer.toStoreId))
                 : null
               return <tr key={employee.id} className={outboundTransfer ? 'employee-row--supporting-away' : ''}>
                 <td><strong>{employee.id}</strong></td>
                 <td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.age ? `${employee.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
-                <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{formatTaskDate(employee.supportAssignment.fromDate)} – {formatTaskDate(employee.supportAssignment.toDate)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : outboundTransfer ? <div className="table-stack"><Badge tone="orange">Đang hỗ trợ {supportStore?.name || outboundTransfer.toStoreId}</Badge><small>{formatTaskDate(outboundTransfer.fromDate)} – {formatTaskDate(outboundTransfer.toDate)}</small><small>{money(outboundTransfer.hourlySupportRate || 0)}/giờ · Phụ cấp {money(outboundTransfer.allowance || 0)}</small><small>Hồ sơ tạm khóa thao tác tại cửa hàng chính</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
+                <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{transferTimeLabel(employee.supportAssignment)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : outboundTransfer ? <div className="table-stack"><Badge tone="orange">Đang hỗ trợ {supportStore?.name || outboundTransfer.toStoreId}</Badge><small>{transferTimeLabel(outboundTransfer)}</small><small>{money(outboundTransfer.hourlySupportRate || 0)}/giờ · Phụ cấp {money(outboundTransfer.allowance || 0)}</small><small>Hồ sơ tạm khóa thao tác tại cửa hàng chính</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
                 <td><Badge tone={isPartTime(type) ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
                 <td>{employeePosition(employee)}</td>
                 <td>

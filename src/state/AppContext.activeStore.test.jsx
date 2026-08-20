@@ -46,6 +46,11 @@ const adminUser = {
   version: 1,
 }
 
+const employeeHomeUser = {
+  id: 'USER-E01', employeeId: 'E01', username: 'employee-one', displayName: 'Nhân viên 01',
+  role: 'employee', storeId: 'STORE-A', homeStoreId: 'STORE-A', status: 'active', version: 1,
+}
+
 const makeRemoteState = (activeStoreId = 'STORE-A') => ({
   ...createInitialState(),
   stores: [
@@ -108,6 +113,41 @@ describe('remote command active-store preservation', () => {
 
     expect(api.apiGetState).toHaveBeenCalledWith('global')
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+  })
+
+  it('switches an already-open employee session at the exact boundary even when state version is unchanged', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T06:59:00.000Z')
+    const transfer = {
+      id: 'TR-01', employeeId: 'E01', fromStoreId: 'STORE-A', toStoreId: 'STORE-B',
+      startAt: '2026-08-20T14:00', endAt: '2026-08-20T21:00', status: 'Đã duyệt',
+    }
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{ id: 'E01', code: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc' }],
+      supportTransfers: [transfer],
+    }
+    const currentUser = () => Date.now() < Date.parse('2026-08-20T07:00:00.000Z')
+      ? employeeHomeUser
+      : { ...employeeHomeUser, storeId: 'STORE-B', activeTransferId: 'TR-01' }
+    const payload = () => ({ user: currentUser(), state: employeeState, policies: [], version: 7 })
+    api.apiLogin.mockResolvedValue({ user: employeeHomeUser })
+    api.apiBootstrapState.mockImplementation(async () => payload())
+    api.apiGetState.mockImplementation(async () => payload())
+
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+    })
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(59_999) })
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30) })
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+    expect(appRef.current.session).toMatchObject({ storeId: 'STORE-B', homeStoreId: 'STORE-A', activeTransferId: 'TR-01' })
+    expect(api.apiGetState).toHaveBeenCalledWith('global')
   })
 
   it('creates a reusable remote shift without requiring or sending an application date', async () => {

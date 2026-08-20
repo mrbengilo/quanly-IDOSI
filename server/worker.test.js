@@ -10,7 +10,9 @@ import worker, {
   canWriteScope,
   hashPassword,
   monthFromRecord,
+  isSupportTransferActiveAt,
   projectSharedState,
+  supportTransferTimeBounds,
   verifyPassword,
 } from './worker'
 
@@ -188,6 +190,92 @@ const jsonRequest = (url, body, headers = {}) => new Request(url, {
   body: JSON.stringify(body),
 })
 
+const setupSupportTransferRuntime = async ({
+  token,
+  transfer,
+  attendance = [],
+  payrollPeriods = [],
+  schedule = [],
+  shiftDefinitions = [],
+  orders = [],
+  notifications = [],
+} = {}) => {
+  const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: token }
+  const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+    username: 'admin', password: 'transfer-runtime-admin-password',
+    initialState: {
+      stores: [
+        { id: 'S01', short: 'HOME', name: 'IDOSI Home', status: 'Đang hoạt động' },
+        { id: 'S02', short: 'DEST', name: 'IDOSI Destination', status: 'Đang hoạt động' },
+      ],
+      employees: [{
+        id: 'E01', name: 'Nhân viên hỗ trợ', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+        employmentType: 'Part-Time', hourlyRate: 30_000,
+      }, {
+        id: 'QL02', name: 'Quản lý đích', storeId: 'S02', unit: 'store_manager', status: 'Đang làm việc',
+      }, {
+        id: 'HTKD-TRANSFER', name: 'Hỗ trợ vận hành', storeId: 'BUSINESS_SUPPORT',
+        unit: 'business_support', status: 'Đang làm việc',
+      }],
+      supportTransfers: [transfer],
+      attendance,
+      payrollPeriods,
+      schedule,
+      shiftDefinitions,
+      orders,
+      notifications,
+      tasks: [], taskAssignmentHistory: [], orderAudit: [], expenseEntries: [], fixedExpenses: [],
+      cashTransactions: [], salaryAdjustments: [], salaryAdvances: [], payrollPayments: [],
+    },
+  }, { 'x-idosi-bootstrap-token': token }), env)
+  expect(bootstrap.status).toBe(201)
+  const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+    username: 'admin', password: 'transfer-runtime-admin-password',
+  }), env)
+  expect(adminLogin.status).toBe(200)
+  const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+  const employeeUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    type: 'user.create',
+    payload: {
+      username: 'transfer.employee', password: 'transfer-employee-password', displayName: 'Nhân viên hỗ trợ',
+      role: 'employee', storeId: 'S01', employeeId: 'E01',
+    },
+  }, { ...adminAuthorization, 'idempotency-key': `transfer-runtime-user-${token}` }), env)
+  expect(employeeUser.status).toBe(201)
+  const managerUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    type: 'user.create',
+    payload: {
+      username: 'transfer.manager', password: 'transfer-manager-password', displayName: 'Quản lý đích',
+      role: 'store_manager', storeId: 'S02', employeeId: 'QL02',
+    },
+  }, { ...adminAuthorization, 'idempotency-key': `transfer-runtime-manager-${token}` }), env)
+  expect(managerUser.status).toBe(201)
+  const supportUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    type: 'user.create',
+    payload: {
+      username: 'transfer.support', password: 'transfer-support-password', displayName: 'Hỗ trợ vận hành',
+      role: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-TRANSFER',
+    },
+  }, { ...adminAuthorization, 'idempotency-key': `transfer-runtime-support-${token}` }), env)
+  expect(supportUser.status).toBe(201)
+  const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+    username: 'transfer.employee', password: 'transfer-employee-password',
+  }), env)
+  expect(employeeLogin.status).toBe(200)
+  const employeeAuthorization = { authorization: `Bearer ${(await employeeLogin.json()).token}` }
+  const managerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+    username: 'transfer.manager', password: 'transfer-manager-password',
+  }), env)
+  expect(managerLogin.status).toBe(200)
+  const managerAuthorization = { authorization: `Bearer ${(await managerLogin.json()).token}` }
+  const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+    username: 'transfer.support', password: 'transfer-support-password',
+  }), env)
+  expect(supportLogin.status).toBe(200)
+  const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+  return { env, adminAuthorization, employeeAuthorization, managerAuthorization, supportAuthorization }
+}
+
 describe('IDOSI Worker security primitives', () => {
   it('hashes passwords with salted PBKDF2 and verifies without storing plaintext', async () => {
     const record = await hashPassword('idosi-test-password', { iterations: 100_000 })
@@ -204,6 +292,31 @@ describe('IDOSI Worker security primitives', () => {
     expect(monthFromRecord({ createdAt: '2026-08-31T17:30:00.000Z' })).toBe('2026-09')
     expect(monthFromRecord({ period: '2026-10', createdAt: '2026-08-31T17:30:00.000Z' })).toBe('2026-10')
     expect(monthFromRecord({ workDate: '2026-11-01', createdAt: '2026-10-31T17:30:00.000Z' })).toBe('2026-11')
+  })
+
+  it('uses exact start-inclusive and end-exclusive support-transfer boundaries with legacy compatibility', () => {
+    const exact = {
+      status: 'Đã duyệt',
+      startAt: '2026-08-20T07:00:00.000Z',
+      endAt: '2026-08-20T14:00:00.000Z',
+    }
+    expect(supportTransferTimeBounds(exact)).toMatchObject({
+      startAt: '2026-08-20T07:00:00.000Z',
+      endAt: '2026-08-20T14:00:00.000Z',
+    })
+    expect(isSupportTransferActiveAt(exact, '2026-08-20T06:59:59.999Z')).toBe(false)
+    expect(isSupportTransferActiveAt(exact, '2026-08-20T07:00:00.000Z')).toBe(true)
+    expect(isSupportTransferActiveAt(exact, '2026-08-20T10:30:00.000Z')).toBe(true)
+    expect(isSupportTransferActiveAt(exact, '2026-08-20T14:00:00.000Z')).toBe(false)
+    expect(isSupportTransferActiveAt(exact, '2026-08-20T14:00:00.001Z')).toBe(false)
+
+    const legacy = { status: 'Đã duyệt', fromDate: '2026-08-20', toDate: '2026-08-21' }
+    expect(supportTransferTimeBounds(legacy)).toMatchObject({
+      startAt: '2026-08-19T17:00:00.000Z',
+      endAt: '2026-08-21T17:00:00.000Z',
+    })
+    expect(isSupportTransferActiveAt(legacy, '2026-08-21T16:59:59.999Z')).toBe(true)
+    expect(isSupportTransferActiveAt(legacy, '2026-08-21T17:00:00.000Z')).toBe(false)
   })
 
   it('enforces the admin, business-support, store-manager, and employee scope model', () => {
@@ -747,8 +860,13 @@ describe('IDOSI Worker security primitives', () => {
         { id: 'VP001', storeId: 'OFFICE', unit: 'office', name: 'Nhân viên văn phòng' },
       ],
       orders: [
-        { id: 'O01', employeeId: 'E01', storeId: 'S01' },
-        { id: 'O02', employeeId: 'E02', storeId: 'S01' },
+        { id: 'O01', employeeId: 'E01', createdByEmployeeId: 'E01', storeId: 'S01', shiftId: 'CA-SAME', attendanceId: 'A01' },
+        { id: 'O02', employeeId: 'E02', createdByEmployeeId: 'E02', storeId: 'S01', shiftId: 'CA-SAME', attendanceId: 'A02' },
+        {
+          id: 'O03', employeeId: 'E02', createdByEmployeeId: 'E02', storeId: 'S01', shiftId: 'CA-SAME',
+          updatedBy: { employeeId: 'E01' },
+        },
+        { id: 'O04', employeeId: 'E01', createdBy: { id: 'ADMIN-01', role: 'admin' }, storeId: 'S01', shiftId: 'CA-SAME' },
       ],
       officeAdjustments: [{ id: 'OA01', employeeId: 'VP001', amount: 500_000 }],
       supportTransfers: [
@@ -803,7 +921,9 @@ describe('IDOSI Worker security primitives', () => {
 
     expect(projection.stores).toEqual([{ id: 'S01', name: 'Cửa hàng 1' }])
     expect(projection.employees).toEqual([{ id: 'E01', storeId: 'S01', name: 'Nhân viên 1' }])
-    expect(projection.orders).toEqual([{ id: 'O01', employeeId: 'E01', storeId: 'S01' }])
+    expect(projection.orders).toEqual([{
+      id: 'O01', employeeId: 'E01', createdByEmployeeId: 'E01', storeId: 'S01', shiftId: 'CA-SAME', attendanceId: 'A01',
+    }])
     expect(projection.notifications).toEqual([{ id: 'N01', employeeId: 'E01', readAt: null }])
     expect(projection.tasks.map(({ id }) => id)).toEqual(['T-store', 'T-own', 'T-mixed', 'T-nested'])
     expect(projection.tasks[2]).toMatchObject({
@@ -1461,6 +1581,8 @@ describe('IDOSI Worker security primitives', () => {
         code: 'SM234-00008',
         storeId: 'SM234',
         employeeId: 'NV001',
+        createdByEmployeeId: 'NV001',
+        createdBy: { role: 'employee', employeeId: 'NV001' },
         shiftId: 'ca1',
         shiftName: 'Ca kiểm thử',
         attendanceId,
@@ -5290,6 +5412,138 @@ describe('IDOSI Worker security primitives', () => {
     expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
   })
 
+  it('excludes an Admin-created assigned order from employee checkout reconciliation', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-20T10:00:00.000Z'))
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-exact-order-creator-checkout' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'exact-order-creator-admin-password',
+        initialState: {
+          stores: [{ id: 'S01', short: 'TNV', name: 'IDOSI Tô Ngọc Vân', status: 'Đang hoạt động' }],
+          employees: [{
+            id: 'E01', name: 'Nhân viên Một', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+            employmentType: 'Part-Time', hourlyRate: 30_000,
+          }, {
+            id: 'HTKD-ORDER', name: 'Hỗ trợ KD', storeId: 'BUSINESS_SUPPORT',
+            unit: 'business_support', status: 'Đang làm việc',
+          }],
+          attendance: [{
+            id: 'ATT-E01', employeeId: 'E01', employeeName: 'Nhân viên Một', storeId: 'S01',
+            date: '2026-08-20', workDate: '2026-08-20', shiftId: 'CA-SAME', shift: 'CA-SAME',
+            shiftName: 'Ca chung', shiftStart: '08:00', shiftEnd: '17:00',
+            checkIn: '08:00', checkInAt: '2026-08-20T01:00:00.000Z', checkOut: null, checkOutAt: null,
+          }],
+          orders: [{
+            id: 'ORDER-OWN', code: 'S01-OWN', storeId: 'S01', employeeId: 'E01',
+            createdByEmployeeId: 'E01', createdBy: { role: 'employee', employeeId: 'E01' },
+            attendanceId: 'ATT-E01', shiftId: 'CA-SAME', amount: 120_000,
+            paymentMethod: 'Tiền mặt', status: 'Hoàn tất', source: 'order', createdAt: '2026-08-20T02:00:00.000Z',
+          }, {
+            id: 'ORDER-ADMIN-ASSIGNED', code: 'S01-ADMIN', storeId: 'S01', employeeId: 'E01',
+            createdBy: { id: 'admin', role: 'admin' }, attendanceId: 'ATT-E01', shiftId: 'CA-SAME',
+            amount: 900_000, paymentMethod: 'Chuyển khoản', status: 'Hoàn tất', source: 'order',
+            createdAt: '2026-08-20T02:05:00.000Z',
+          }],
+          notifications: [{
+            id: 'N-ORDER-OWN', type: 'order.created', storeId: 'S01', employeeId: 'E01',
+            orderId: 'ORDER-OWN', orderCode: 'S01-OWN', title: 'Đơn do nhân viên tạo',
+          }, {
+            id: 'N-ORDER-OWN-LEGACY', type: 'order.created', storeId: 'S01', employeeId: 'E01',
+            orderId: 'S01-OWN', title: 'Đơn legacy dùng mã trong orderId',
+          }, {
+            id: 'N-ORDER-ADMIN', type: 'order.created', storeId: 'S01', employeeId: 'E01',
+            orderId: 'ORDER-ADMIN-ASSIGNED', orderCode: 'S01-ADMIN', title: 'Đơn do Admin tạo và gán',
+          }],
+          tasks: [], schedule: [], shiftDefinitions: [], supportTransfers: [],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+
+      const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'exact-order-creator-admin-password',
+      }), env)
+      const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+      const userCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create',
+        payload: {
+          username: 'employee.one', password: 'employee-one-password', displayName: 'Nhân viên Một',
+          storeId: 'S01', employeeId: 'E01', role: 'employee',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'exact-order-creator-user-0001' }), env)
+      expect(userCreated.status).toBe(201)
+      const supportUserCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create',
+        payload: {
+          username: 'support.orders', password: 'support-orders-password', displayName: 'Hỗ trợ KD',
+          storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-ORDER', role: 'business_support',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'exact-order-creator-support-user-0001' }), env)
+      expect(supportUserCreated.status).toBe(201)
+      const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'employee.one', password: 'employee-one-password',
+      }), env)
+      const employeeAuthorization = { authorization: `Bearer ${(await employeeLogin.json()).token}` }
+      const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'support.orders', password: 'support-orders-password',
+      }), env)
+      const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+
+      const employeeStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: employeeAuthorization,
+      }), env)
+      expect(employeeStateResponse.status).toBe(200)
+      const employeeState = (await employeeStateResponse.json()).state
+      expect(employeeState.orders.map(({ id }) => id)).toEqual(['ORDER-OWN'])
+      expect(employeeState.notifications.map(({ id }) => id)).toEqual(['N-ORDER-OWN', 'N-ORDER-OWN-LEGACY'])
+
+      const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 1,
+        payload: {
+          attendanceId: 'ATT-E01', cashRevenue: 120_000, transferRevenue: 0,
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'exact-order-creator-checkout-0001' }), env)
+      expect(checkedOut.status).toBe(200)
+      expect(await checkedOut.json()).toMatchObject({
+        version: 2,
+        attendance: {
+          id: 'ATT-E01', orderCount: 1, revenue: 120_000, cash: 120_000, transfer: 0,
+          revenueReconciliation: {
+            matched: true, expectedCash: 120_000, expectedTransfer: 0, expectedTotal: 120_000,
+          },
+        },
+      })
+
+      const adminOrderUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.update', expectedVersion: 2,
+        payload: { orderId: 'ORDER-ADMIN-ASSIGNED', amount: 950_000, reason: 'Đối soát đơn do Admin tạo' },
+      }, { ...adminAuthorization, 'idempotency-key': 'exact-order-creator-admin-update-0001' }), env)
+      expect(adminOrderUpdated.status).toBe(200)
+      expect(await adminOrderUpdated.json()).toMatchObject({ version: 3, order: { amount: 950_000 } })
+      expect(readHydratedState(env.DB.database).attendance[0]).toMatchObject({
+        id: 'ATT-E01', orderCount: 1, revenue: 120_000, cash: 120_000, transfer: 0,
+      })
+
+      const adminOrderRestored = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'operational_reset.restore', expectedVersion: 3,
+        payload: {
+          dataType: 'orders', storeId: 'S01', employeeId: 'E01',
+          fromDate: '2026-08-20', toDate: '2026-08-20', reason: 'Hoàn tác đơn do Admin tạo',
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'exact-order-creator-admin-reset-0001' }), env)
+      expect(adminOrderRestored.status).toBe(200)
+      expect(await adminOrderRestored.json()).toMatchObject({
+        version: 4, restoredCount: 1, restoredIds: ['ORDER-ADMIN-ASSIGNED'],
+      })
+      expect(readHydratedState(env.DB.database).attendance[0]).toMatchObject({
+        id: 'ATT-E01', orderCount: 1, revenue: 120_000, cash: 120_000, transfer: 0,
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('assigns future store tasks and reconciles employee checkout against mandatory customer orders', async () => {
     vi.useFakeTimers()
     try {
@@ -5557,14 +5811,27 @@ describe('IDOSI Worker security primitives', () => {
         type: 'support_transfer.create', expectedVersion: 10,
         payload: {
           employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
-          fromDate: '2026-08-21', toDate: '2026-08-22', hourlySupportRate: 45_000,
+          startAt: '2026-08-21T08:00', endAt: '2026-08-21T12:00', hourlySupportRate: 45_000,
           allowance: 180_000, note: 'Hỗ trợ cửa hàng Tây Hòa',
         },
       }, { ...supportAuthorization, 'idempotency-key': 'support-runtime-transfer-0001' }), env)
       expect(transferCreated.status).toBe(201)
       const transferCreatedBody = await transferCreated.json()
-      expect(transferCreatedBody).toMatchObject({ version: 11, transfer: { employeeId: 'E01', toStoreId: 'S02' } })
+      expect(transferCreatedBody).toMatchObject({
+        version: 11,
+        transfer: {
+          employeeId: 'E01', toStoreId: 'S02',
+          startAt: '2026-08-21T01:00:00.000Z', endAt: '2026-08-21T05:00:00.000Z',
+          fromDate: '2026-08-21', toDate: '2026-08-21',
+        },
+      })
 
+      vi.setSystemTime(new Date('2026-08-21T00:59:59.999Z'))
+      const beforeTransferLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'employee.one', password: 'employee-one-password',
+      }), env)
+      expect(beforeTransferLogin.status).toBe(200)
+      expect(await beforeTransferLogin.json()).toMatchObject({ user: { storeId: 'S01' } })
       vi.setSystemTime(new Date('2026-08-21T01:00:00.000Z'))
       employeeAuthorization = await loginAs('employee.one', 'employee-one-password')
       supportAuthorization = await loginAs('support.ops', 'support-ops-password')
@@ -5593,7 +5860,8 @@ describe('IDOSI Worker security primitives', () => {
         id: 'E01', name: 'Nhân viên Một', phone: '0901234567', cccd: '079123456789', address: '12 Tô Ngọc Vân',
         homeStoreId: 'S01', supportStoreId: 'S02',
         supportAssignment: {
-          fromDate: '2026-08-21', toDate: '2026-08-22', hourlySupportRate: 45_000,
+          startAt: '2026-08-21T01:00:00.000Z', endAt: '2026-08-21T05:00:00.000Z',
+          fromDate: '2026-08-21', toDate: '2026-08-21', hourlySupportRate: 45_000,
           allowance: 180_000, status: 'Đã duyệt',
         },
       })
@@ -5606,10 +5874,29 @@ describe('IDOSI Worker security primitives', () => {
       const destinationCheckInBody = await destinationCheckIn.json()
       expect(destinationCheckInBody).toMatchObject({
         version: 12,
-        attendance: { shiftName: 'Ca hỗ trợ cửa hàng', shiftSource: 'support-transfer' },
+        attendance: {
+          shiftName: 'Ca hỗ trợ cửa hàng', shiftSource: 'support-transfer',
+          shiftStart: '08:00', shiftEnd: '12:00', arrivalTag: 'Đi đúng giờ', minutesLate: 0,
+        },
       })
       const destinationAttendanceId = destinationCheckInBody.attendance.id
       vi.setSystemTime(new Date('2026-08-21T05:00:00.000Z'))
+      const stateAtExclusiveEnd = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: employeeAuthorization,
+      }), env)
+      expect(stateAtExclusiveEnd.status).toBe(200)
+      const stateAtExclusiveEndBody = await stateAtExclusiveEnd.json()
+      expect(stateAtExclusiveEndBody).toMatchObject({ user: { storeId: 'S01' }, state: { activeStoreId: 'S01' } })
+      expect(stateAtExclusiveEndBody.state.attendance.find(({ id }) => id === destinationAttendanceId)).toMatchObject({
+        storeId: 'S02', checkOutAt: null,
+      })
+      expect(stateAtExclusiveEndBody.state.stores.map(({ id }) => id).sort()).toEqual(['S01', 'S02'])
+      const destinationAtExclusiveEnd = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: destinationManagerAuthorization,
+      }), env)
+      expect(destinationAtExclusiveEnd.status).toBe(200)
+      expect((await destinationAtExclusiveEnd.json()).state.employees.some(({ id }) => id === 'E01')).toBe(false)
+      vi.setSystemTime(new Date('2026-08-21T07:00:00.000Z'))
       const destinationCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_out', expectedVersion: 12,
         payload: {
@@ -5620,7 +5907,10 @@ describe('IDOSI Worker security primitives', () => {
       expect(destinationCheckOut.status).toBe(200)
       expect(await destinationCheckOut.json()).toMatchObject({
         version: 13,
-        attendance: { storeId: 'S02', homeStoreId: 'S01', supportTransferId: transferCreatedBody.transfer.id, hours: 4 },
+        attendance: {
+          storeId: 'S02', homeStoreId: 'S01', supportTransferId: transferCreatedBody.transfer.id,
+          elapsedSeconds: 21_600, workedSeconds: 14_400, hours: 4,
+        },
       })
       const stateAfterSupportShift = readHydratedState(env.DB.database)
       expect(stateAfterSupportShift.supportTransfers.find(({ id }) => id === transferCreatedBody.transfer.id)).toMatchObject({
@@ -5761,6 +6051,437 @@ describe('IDOSI Worker security primitives', () => {
           shiftStart: '13:00', shiftEnd: '17:30', shiftSource: 'profile-work-shift',
           checkIn: '13:05', arrivalTag: 'Đi đúng giờ', minutesLate: 5,
         },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it.each([
+    {
+      label: 'paid',
+      period: { id: 'PAY-S02-AUG-PAID', storeId: 'S02', period: '2026-08', status: 'Đã chi', confirmedAt: '2026-08-20T00:00:00.000Z' },
+      code: 'PAYROLL_PERIOD_PAID',
+    },
+    {
+      label: 'locked',
+      period: { id: 'PAY-S02-AUG-LOCKED', storeId: 'S02', period: '2026-08', status: 'Đã khóa', lockedAt: '2026-08-20T00:00:00.000Z' },
+      code: 'PAYROLL_PERIOD_LOCKED',
+    },
+  ])('rejects a destination check-in when its payroll period is $label', async ({ label, period, code }) => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-20T02:00:00.000Z')) // 09:00 Vietnam
+      const transfer = {
+        id: `TR-CHECK-IN-${label.toUpperCase()}`, employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-20T01:00:00.000Z', endAt: '2026-08-20T05:00:00.000Z',
+        fromDate: '2026-08-20', toDate: '2026-08-20', hourlySupportRate: 45_000, allowance: 0,
+        status: 'Đã duyệt', createdAt: '2026-08-19T00:00:00.000Z',
+      }
+      const { env, employeeAuthorization } = await setupSupportTransferRuntime({
+        token: `bootstrap-transfer-check-in-${label}`, transfer, payrollPeriods: [period],
+      })
+      const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 1,
+        payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+      }, { ...employeeAuthorization, 'idempotency-key': `transfer-check-in-${label}-0001` }), env)
+      expect(checkedIn.status).toBe(409)
+      expect(await checkedIn.json()).toMatchObject({ error: { code } })
+      const state = readHydratedState(env.DB.database)
+      expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 1 })
+      expect(state.attendance).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('blocks payroll close, pay and lock while attendance is open, then allows checkout and close', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-20T02:00:00.000Z')) // 09:00 Vietnam
+      const transfer = {
+        id: 'TR-OPEN-PAYROLL-GUARD', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-20T01:00:00.000Z', endAt: '2026-08-20T05:00:00.000Z',
+        fromDate: '2026-08-20', toDate: '2026-08-20', hourlySupportRate: 45_000, allowance: 0,
+        status: 'Đã duyệt', createdAt: '2026-08-19T00:00:00.000Z',
+      }
+      const { env, adminAuthorization, employeeAuthorization } = await setupSupportTransferRuntime({
+        token: 'bootstrap-open-payroll-guard', transfer,
+      })
+      const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 1,
+        payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+      }, { ...employeeAuthorization, 'idempotency-key': 'open-payroll-guard-check-in-0001' }), env)
+      expect(checkedIn.status).toBe(201)
+      const attendanceId = (await checkedIn.json()).attendance.id
+
+      for (const operation of ['close', 'pay', 'lock']) {
+        const blocked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+          type: `payroll.${operation}`, expectedVersion: 2, payload: { storeId: 'S02', period: '2026-08' },
+        }, { ...adminAuthorization, 'idempotency-key': `open-payroll-guard-${operation}-0001` }), env)
+        expect(blocked.status, operation).toBe(409)
+        expect(await blocked.json()).toMatchObject({
+          error: { code: 'PAYROLL_ATTENDANCE_OPEN', details: { attendanceIds: [attendanceId] } },
+        })
+      }
+
+      vi.setSystemTime(new Date('2026-08-20T03:00:00.000Z'))
+      const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 2,
+        payload: {
+          attendanceId, cashRevenue: 0, transferRevenue: 0,
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'open-payroll-guard-check-out-0001' }), env)
+      expect(checkedOut.status).toBe(200)
+      expect(await checkedOut.json()).toMatchObject({ version: 3, attendance: { id: attendanceId, workedSeconds: 3_600 } })
+
+      const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 3, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'open-payroll-guard-close-after-checkout-0001' }), env)
+      expect(closed.status).toBe(201)
+      expect(await closed.json()).toMatchObject({ version: 4, period: { storeId: 'S02', period: '2026-08', status: 'Đã chốt' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('lets business support correct and restore destination attendance only within exact transfer bounds', async () => {
+    const transfer = {
+      id: 'TR-HISTORICAL-CORRECTION', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+      startAt: '2026-08-20T01:00:00.000Z', endAt: '2026-08-20T05:00:00.000Z',
+      fromDate: '2026-08-20', toDate: '2026-08-20', hourlySupportRate: 45_000, allowance: 0,
+      status: 'Hoàn tất', completedAt: '2026-08-20T05:00:00.000Z',
+    }
+    const attendance = [{
+      id: 'ATT-TRANSFER-CORRECTION', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+      storeId: 'S02', homeStoreId: 'S01', supportTransferId: transfer.id,
+      date: '2026-08-20', workDate: '2026-08-20', attendanceDate: '2026-08-20',
+      shiftId: 'SUPPORT_TRANSFER_TR_HISTORICAL_CORRECTION', shiftStart: '08:00', shiftEnd: '12:00',
+      checkIn: '08:10', checkInAt: '2026-08-20T01:10:00.000Z',
+      checkOut: '11:50', checkOutAt: '2026-08-20T04:50:00.000Z', workedSeconds: 13_200, hours: 11 / 3,
+      deletedAt: null,
+    }]
+    const { env, supportAuthorization } = await setupSupportTransferRuntime({
+      token: 'bootstrap-transfer-correction', transfer, attendance,
+    })
+
+    const extended = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.update', expectedVersion: 1,
+      payload: {
+        attendanceId: attendance[0].id, date: '2026-08-20', checkIn: '08:00', checkOut: '23:00',
+        reason: 'Không được kéo dài qua thời gian hỗ trợ',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'transfer-correction-out-of-bounds-0001' }), env)
+    expect(extended.status).toBe(400)
+    expect(await extended.json()).toMatchObject({ error: { code: 'ATTENDANCE_TRANSFER_BOUNDS_INVALID' } })
+
+    const corrected = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.update', expectedVersion: 1,
+      payload: {
+        attendanceId: attendance[0].id, date: '2026-08-20', checkIn: '08:00', checkOut: '12:00',
+        reason: 'Đối soát đúng thời gian điều chuyển',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'transfer-correction-valid-0001' }), env)
+    expect(corrected.status).toBe(200)
+    expect(await corrected.json()).toMatchObject({
+      version: 2,
+      attendance: {
+        id: attendance[0].id, storeId: 'S02', supportTransferId: transfer.id,
+        checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z',
+        workedSeconds: 14_400, departureTag: 'Đã ra về',
+      },
+      audit: { actor: { role: 'business_support' } },
+    })
+
+    const restored = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'operational_reset.restore', expectedVersion: 2,
+      payload: {
+        dataType: 'attendance', storeId: 'S02', employeeId: 'E01',
+        fromDate: '2026-08-20', toDate: '2026-08-20', reason: 'Khôi phục giờ chấm công trước đó',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'transfer-correction-restore-0001' }), env)
+    expect(restored.status).toBe(200)
+    expect(await restored.json()).toMatchObject({
+      version: 3, restoredCount: 1,
+      restored: [{ id: attendance[0].id, storeId: 'S02', checkIn: '08:10', checkOut: '11:50' }],
+    })
+  }, 30_000)
+
+  it('corrects an overnight transferred attendance using absolute next-day checkout time', async () => {
+    const transfer = {
+      id: 'TR-OVERNIGHT-CORRECTION', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+      startAt: '2026-08-31T15:00:00.000Z', endAt: '2026-08-31T19:00:00.000Z',
+      fromDate: '2026-08-31', toDate: '2026-09-01', hourlySupportRate: 45_000, allowance: 0,
+      status: 'Hoàn tất', completedAt: '2026-08-31T19:00:00.000Z',
+    }
+    const attendance = [{
+      id: 'ATT-OVERNIGHT-CORRECTION', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+      storeId: 'S02', homeStoreId: 'S01', supportTransferId: transfer.id,
+      date: '2026-08-31', workDate: '2026-08-31', attendanceDate: '2026-08-31',
+      shiftId: 'SUPPORT_TRANSFER_TR_OVERNIGHT_CORRECTION', shiftStart: '22:00', shiftEnd: '02:00',
+      checkIn: '22:15', checkInAt: '2026-08-31T15:15:00.000Z',
+      checkOut: '01:45', checkOutAt: '2026-08-31T18:45:00.000Z', workedSeconds: 12_600, hours: 3.5,
+      deletedAt: null,
+    }]
+    const { env, adminAuthorization } = await setupSupportTransferRuntime({
+      token: 'bootstrap-overnight-correction', transfer, attendance,
+    })
+    const corrected = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.update', expectedVersion: 1,
+      payload: {
+        attendanceId: attendance[0].id, date: '2026-08-31', checkIn: '22:30', checkOut: '01:30',
+        reason: 'Đối soát ca hỗ trợ qua đêm',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'overnight-correction-valid-0001' }), env)
+    expect(corrected.status).toBe(200)
+    expect(await corrected.json()).toMatchObject({
+      version: 2,
+      attendance: {
+        checkInAt: '2026-08-31T15:30:00.000Z', checkOutAt: '2026-08-31T18:30:00.000Z',
+        workedSeconds: 10_800, workedMinutes: 180, hours: 3,
+        arrivalTag: 'Đi trễ', minutesLate: 30, departureTag: 'Về sớm',
+      },
+    })
+  }, 30_000)
+
+  it('checks into an overnight support transfer using the exact previous-day start instant', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-31T17:30:00.000Z')) // 01/09 00:30 Vietnam
+      const transfer = {
+        id: 'TR-OVERNIGHT', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-31T15:00:00.000Z', endAt: '2026-08-31T19:00:00.000Z',
+        fromDate: '2026-08-31', toDate: '2026-09-01', hourlySupportRate: 45_000, allowance: 180_000,
+        status: 'Đã duyệt', createdAt: '2026-08-20T00:00:00.000Z',
+      }
+      const { env, employeeAuthorization } = await setupSupportTransferRuntime({
+        token: 'bootstrap-transfer-overnight', transfer,
+      })
+      const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 1,
+        payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+      }, { ...employeeAuthorization, 'idempotency-key': 'overnight-transfer-check-in-0001' }), env)
+      expect(checkedIn.status).toBe(201)
+      expect(await checkedIn.json()).toMatchObject({
+        version: 2,
+        attendance: {
+          date: '2026-09-01', storeId: 'S02', supportTransferId: 'TR-OVERNIGHT',
+          shiftStart: '22:00', shiftEnd: '02:00', arrivalTag: 'Đi trễ', minutesLate: 150,
+        },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('caps cross-month support pay at endAt, invalidates the check-in period and pays allowance once', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-31T16:00:00.000Z')) // 31/08 23:00 Vietnam
+      const transfer = {
+        id: 'TR-CROSS-MONTH', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-31T15:00:00.000Z', endAt: '2026-08-31T19:00:00.000Z',
+        fromDate: '2026-08-31', toDate: '2026-09-01', hourlySupportRate: 45_000, allowance: 180_000,
+        status: 'Đã duyệt', createdAt: '2026-08-20T00:00:00.000Z',
+      }
+      const { env, adminAuthorization, employeeAuthorization, managerAuthorization } = await setupSupportTransferRuntime({
+        token: 'bootstrap-transfer-cross-month',
+        transfer,
+        payrollPeriods: [{
+          id: 'PAY-S02-AUG', storeId: 'S02', period: '2026-08', status: 'Đã chốt', rows: [],
+          confirmedAt: null, lockedAt: null, needsReclose: false,
+        }],
+      })
+      const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 1,
+        payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+      }, { ...employeeAuthorization, 'idempotency-key': 'cross-month-transfer-check-in-0001' }), env)
+      expect(checkedIn.status).toBe(201)
+      const attendanceId = (await checkedIn.json()).attendance.id
+
+      vi.setSystemTime(new Date('2026-08-31T16:05:00.000Z'))
+      const orderCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.create', expectedVersion: 2,
+        payload: {
+          storeId: 'S02', customerName: 'Khách hỗ trợ', gender: 'Nữ', occupation: 'Kế toán',
+          acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt',
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'cross-month-transfer-order-0001' }), env)
+      expect(orderCreated.status).toBe(201)
+      const orderBody = await orderCreated.json()
+
+      const deleteLinked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_transfer.delete', expectedVersion: 3,
+        payload: { transferId: transfer.id, reason: 'Không được xóa sau khi chấm công' },
+      }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-delete-linked-0001' }), env)
+      expect(deleteLinked.status).toBe(409)
+      expect(await deleteLinked.json()).toMatchObject({ error: { code: 'SUPPORT_TRANSFER_ATTENDANCE_IMMUTABLE' } })
+      const cancelLinked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_transfer.update', expectedVersion: 3,
+        payload: { transferId: transfer.id, status: 'Đã hủy' },
+      }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-cancel-linked-0001' }), env)
+      expect(cancelLinked.status).toBe(409)
+      expect(await cancelLinked.json()).toMatchObject({ error: { code: 'SUPPORT_TRANSFER_ATTENDANCE_IMMUTABLE' } })
+
+      vi.setSystemTime(new Date('2026-08-31T21:00:00.000Z')) // 01/09 04:00, two hours after endAt
+      const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 3,
+        payload: {
+          attendanceId, cashRevenue: 100_000, transferRevenue: 0,
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'cross-month-transfer-check-out-0001' }), env)
+      expect(checkedOut.status).toBe(200)
+      expect(await checkedOut.json()).toMatchObject({
+        version: 4,
+        attendance: {
+          storeId: 'S02', supportTransferId: transfer.id,
+          elapsedSeconds: 18_000, workedSeconds: 10_800, workedMinutes: 180, hours: 3,
+        },
+      })
+      const afterCheckout = readHydratedState(env.DB.database)
+      expect(afterCheckout.payrollPeriods.find(({ id }) => id === 'PAY-S02-AUG')).toMatchObject({
+        period: '2026-08', needsReclose: true, invalidationReason: 'attendance.check_out',
+      })
+      expect(afterCheckout.payrollPeriods.some(({ period }) => period === '2026-09')).toBe(false)
+      expect(afterCheckout.supportTransfers.find(({ id }) => id === transfer.id)).toMatchObject({ status: 'Hoàn tất' })
+
+      const historicalManagerStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: managerAuthorization,
+      }), env)
+      const historicalManagerState = (await historicalManagerStateResponse.json()).state
+      expect(historicalManagerState.employees.some(({ id }) => id === 'E01')).toBe(false)
+      expect(historicalManagerState.attendance.find(({ id }) => id === attendanceId)).toMatchObject({ storeId: 'S02' })
+      expect(historicalManagerState.orders.find(({ id }) => id === orderBody.order.id)).toMatchObject({ storeId: 'S02' })
+      expect(historicalManagerState.notifications.find(({ orderId }) => orderId === orderBody.order.id)).toMatchObject({
+        type: 'order.created', storeId: 'S02', employeeId: 'E01',
+      })
+
+      const augustPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 4, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-aug-0001' }), env)
+      expect(augustPayroll.status).toBe(200)
+      const augustPayrollBody = await augustPayroll.json()
+      expect(augustPayrollBody.period.rows.find(({ employeeId }) => employeeId === 'E01')).toMatchObject({
+        hours: 3, baseSalary: 135_000, supportHourlyPay: 135_000, supportAllowance: 180_000,
+        supportTransferIds: [transfer.id],
+      })
+      const septemberPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-09' },
+      }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-sep-0001' }), env)
+      expect(septemberPayroll.status).toBe(201)
+      expect((await septemberPayroll.json()).period.rows.some(({ employeeId }) => employeeId === 'E01')).toBe(false)
+      const homePayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-home-0001' }), env)
+      expect(homePayroll.status).toBe(201)
+      const homeEmployeeRow = (await homePayroll.json()).period.rows.find(({ employeeId }) => employeeId === 'E01')
+      expect(homeEmployeeRow).toMatchObject({ hours: 0, baseSalary: 0, gross: 0 })
+      expect(homeEmployeeRow).not.toHaveProperty('supportAllowance')
+      const managerPayrollState = (await (await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: managerAuthorization,
+      }), env)).json()).state
+      expect(managerPayrollState.payrollPeriods.find(({ period }) => period === '2026-08').rows).toEqual([
+        expect.objectContaining({ employeeId: 'E01', supportAllowance: 180_000 }),
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('rejects a cross-month checkout for legacy open attendance when the destination period is locked', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-31T16:00:00.000Z'))
+      const transfer = {
+        id: 'TR-LOCKED-AUG', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-31T15:00:00.000Z', endAt: '2026-08-31T19:00:00.000Z',
+        fromDate: '2026-08-31', toDate: '2026-09-01', hourlySupportRate: 45_000, allowance: 180_000,
+        status: 'Đã duyệt', createdAt: '2026-08-20T00:00:00.000Z',
+      }
+      const { env, employeeAuthorization } = await setupSupportTransferRuntime({
+        token: 'bootstrap-transfer-locked-aug',
+        transfer,
+        attendance: [{
+          id: 'ATT-LOCKED-AUG-OPEN', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+          storeId: 'S02', homeStoreId: 'S01', supportTransferId: transfer.id,
+          date: '2026-08-31', workDate: '2026-08-31', shiftId: 'SUPPORT_TRANSFER_TR_LOCKED_AUG',
+          shiftStart: '22:00', shiftEnd: '02:00', checkIn: '23:00', checkInAt: '2026-08-31T16:00:00.000Z',
+          checkOut: null, checkOutAt: null, deletedAt: null,
+        }],
+        payrollPeriods: [{
+          id: 'PAY-S02-AUG-LOCKED', storeId: 'S02', period: '2026-08', status: 'Đã khóa', rows: [],
+          confirmedAt: '2026-09-01T00:00:00.000Z', lockedAt: '2026-09-01T01:00:00.000Z',
+        }],
+      })
+      vi.setSystemTime(new Date('2026-08-31T17:30:00.000Z')) // September locally, August attendance period
+      const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 1,
+        payload: {
+          attendanceId: 'ATT-LOCKED-AUG-OPEN', cashRevenue: 0, transferRevenue: 0,
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'locked-aug-transfer-check-out-0001' }), env)
+      expect(checkedOut.status).toBe(409)
+      expect(await checkedOut.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+      const state = readHydratedState(env.DB.database)
+      expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 1 })
+      expect(state.attendance.find(({ id }) => id === 'ATT-LOCKED-AUG-OPEN')).toMatchObject({ checkOutAt: null })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('does not complete an active transfer when closing a pre-existing home attendance', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-20T07:00:00.000Z'))
+      const transfer = {
+        id: 'TR-AFTER-HOME-SHIFT', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-20T07:00:00.000Z', endAt: '2026-08-20T14:00:00.000Z',
+        fromDate: '2026-08-20', toDate: '2026-08-20', hourlySupportRate: 45_000, allowance: 180_000,
+        status: 'Đã duyệt', createdAt: '2026-08-01T00:00:00.000Z',
+      }
+      const { env, employeeAuthorization } = await setupSupportTransferRuntime({
+        token: 'bootstrap-transfer-home-open',
+        transfer,
+        attendance: [{
+          id: 'ATT-HOME-OPEN', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', storeId: 'S01',
+          date: '2026-08-20', workDate: '2026-08-20', shiftId: 'HOME-SHIFT', shiftName: 'Ca cửa hàng chính',
+          shiftStart: '08:00', shiftEnd: '17:00', checkIn: '08:00', checkInAt: '2026-08-20T01:00:00.000Z',
+          checkOut: null, checkOutAt: null, deletedAt: null,
+        }],
+      })
+      const blockedDestinationCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 1,
+        payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+      }, { ...employeeAuthorization, 'idempotency-key': 'home-open-destination-check-in-0001' }), env)
+      expect(blockedDestinationCheckIn.status).toBe(409)
+      expect(await blockedDestinationCheckIn.json()).toMatchObject({ error: { code: 'ATTENDANCE_ALREADY_OPEN' } })
+
+      const homeCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 1,
+        payload: {
+          attendanceId: 'ATT-HOME-OPEN', cashRevenue: 0, transferRevenue: 0,
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'home-open-check-out-0001' }), env)
+      expect(homeCheckOut.status).toBe(200)
+      expect(await homeCheckOut.json()).toMatchObject({ version: 2, attendance: { storeId: 'S01' } })
+      const afterHomeCheckout = readHydratedState(env.DB.database)
+      const unchangedTransfer = afterHomeCheckout.supportTransfers.find(({ id }) => id === transfer.id)
+      expect(unchangedTransfer).toMatchObject({ status: 'Đã duyệt' })
+      expect(unchangedTransfer).not.toHaveProperty('completedAt')
+
+      const destinationCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 2,
+        payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+      }, { ...employeeAuthorization, 'idempotency-key': 'after-home-destination-check-in-0001' }), env)
+      expect(destinationCheckIn.status).toBe(201)
+      expect(await destinationCheckIn.json()).toMatchObject({
+        version: 3,
+        attendance: { storeId: 'S02', supportTransferId: transfer.id, shiftSource: 'support-transfer' },
       })
     } finally {
       vi.useRealTimers()

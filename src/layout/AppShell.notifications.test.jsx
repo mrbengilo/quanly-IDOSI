@@ -111,6 +111,53 @@ describe('AppShell notifications', () => {
     expect(mocked.readNotification).toHaveBeenCalledTimes(1)
   })
 
+  it('uses nested order store metadata to route a duplicate code to the exact order id', async () => {
+    mocked.notifications = baseNotifications.map((item) => (
+      item.id === 'N3'
+        ? {
+            ...item,
+            orderId: undefined,
+            orderCode: 'SHARED-00001',
+            storeId: 'CH001',
+            data: { order: { id: 'ORDER-CH002-DUP', code: 'SHARED-00001', storeId: 'CH002' } },
+            title: 'Don trung ma cua hang 2',
+          }
+        : item
+    ))
+    mocked.orders = [
+      {
+        id: 'ORDER-CH001-DUP', code: 'SHARED-00001', storeId: 'CH001', customerName: 'Khach sai cua hang',
+        amount: 10_000, createdAt: '2026-08-20T08:00:00+07:00',
+      },
+      {
+        id: 'ORDER-CH002-DUP', code: 'SHARED-00001', storeId: 'CH002', customerName: 'Khach dung cua hang',
+        amount: 20_000, createdAt: '2026-08-20T09:00:00+07:00',
+      },
+    ]
+    mocked.readNotification.mockResolvedValue({ ok: true })
+    render(
+      <MemoryRouter initialEntries={['/admin/overview']}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/store/orders" element={<><StoreOrdersPage /><CurrentRoute /></>} />
+            <Route path="*" element={<CurrentRoute />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    fireEvent.click(screen.getByText('Don trung ma cua hang 2'))
+
+    expect(mocked.setActiveStoreId).toHaveBeenCalledWith('CH002')
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe(
+      '/store/orders?store=CH002&order=ORDER-CH002-DUP',
+    ))
+    expect(screen.getByText('Khach dung cua hang')).toBeTruthy()
+    expect(screen.queryByText('Khach sai cua hang')).toBeNull()
+    expect(mocked.readNotification).toHaveBeenCalledWith('N3')
+  })
+
   it('marks only the selected order notification as read', async () => {
     mocked.notifications = baseNotifications.slice(0, 2)
     mocked.readNotification.mockResolvedValue({ ok: true })

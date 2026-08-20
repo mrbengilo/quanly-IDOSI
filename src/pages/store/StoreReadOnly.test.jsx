@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { today } from '../../utils'
@@ -117,7 +117,10 @@ describe('business-support store workspace permissions', () => {
     mocked.app = makeApp()
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
 
   it('lets Business Support add and edit store employees while keeping delete Admin-only', () => {
     renderPage(StoreEmployees)
@@ -156,6 +159,8 @@ describe('business-support store workspace permissions', () => {
     mocked.app.employees.push(supportEmployee)
     mocked.app.supportTransfers = [{
       id: 'TRANSFER-001', employeeId: supportEmployee.id, fromStoreId: 'CH002', toStoreId: store.id,
+      startAt: new Date(Date.now() - 60 * 60 * 1_000).toISOString(),
+      endAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
       fromDate: today(), toDate: today(), hourlySupportRate: 45_000, allowance: 180_000, status: 'Đã duyệt',
     }]
 
@@ -169,6 +174,31 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getByText(supportEmployee.cccd)).toBeTruthy()
     expect(screen.getByText(supportEmployee.phone)).toBeTruthy()
     expect(screen.getByText(supportEmployee.address)).toBeTruthy()
+  })
+
+  it('adds and removes a destination support employee at the exact time boundaries without reload', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T06:59:59.000Z')
+    const supportEmployee = {
+      id: 'DOSII-TNV-010', code: 'DOSII-TNV-010', name: 'Nhân viên Biên Giới', unit: 'store', storeId: 'CH002',
+      status: 'Đang làm việc', employmentType: 'Part-Time', phone: '0907000010', cccd: '079700000010',
+    }
+    mocked.app.stores.push({ id: 'CH002', name: 'Dosii TNV', short: 'TNV' })
+    mocked.app.employees.push(supportEmployee)
+    mocked.app.supportTransfers = [{
+      id: 'TRANSFER-BOUNDARY', employeeId: supportEmployee.id, fromStoreId: 'CH002', toStoreId: store.id,
+      startAt: '2026-08-20T07:00:00.000Z', endAt: '2026-08-20T08:00:00.000Z',
+      hourlySupportRate: 45_000, allowance: 180_000, status: 'Đã duyệt',
+    }]
+
+    renderPage(StoreEmployees)
+    expect(screen.queryByText(supportEmployee.name)).toBeNull()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(screen.getByText(supportEmployee.name)).toBeTruthy()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60 * 60 * 1_000) })
+    expect(screen.queryByText(supportEmployee.name)).toBeNull()
   })
 
   it('lets Business Support assign store work and manage schedules', () => {
