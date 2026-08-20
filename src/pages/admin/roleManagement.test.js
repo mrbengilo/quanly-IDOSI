@@ -238,6 +238,10 @@ describe('role management permissions and form', () => {
         employmentType: 'Full-Time',
         position: 'NV hỗ trợ KD',
         username: 'support_an',
+        identityImages: {
+          front: 'data:image/png;base64,support-front',
+          back: 'data:image/png;base64,support-back',
+        },
       }],
     }
 
@@ -248,6 +252,10 @@ describe('role management permissions and form', () => {
     expect(screen.queryByRole('button', { name: /Thêm tài khoản/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Sửa Nguyễn An/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Xóa Nguyễn An/i })).toBeNull()
+    const viewFront = screen.getByRole('button', { name: /Xem mặt trước CCCD Nguyễn An/i })
+    expect(viewFront.closest('.identity-image-actions--stable')).toBeTruthy()
+    fireEvent.click(viewFront)
+    expect(screen.getByRole('img', { name: /Nguyễn An · Mặt trước CCCD/i }).closest('.identity-document-viewer__frame')).toBeTruthy()
   })
 
   it('shows Admin the store-manager assignment and dual-role selection form', () => {

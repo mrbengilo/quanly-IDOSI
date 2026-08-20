@@ -475,11 +475,106 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   overflow: hidden;
   transform: translateX(-50%);
   color: var(--green-800);
-  font-size: 16px;
+  font-size: 20px;
   font-weight: 800;
   text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.topbar-account-button {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 3px 4px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: #172033;
+  text-align: left;
+}
+
+.topbar-account-button:hover,
+.topbar-account-button:focus-visible {
+  background: #e8f5ec;
+  outline: none;
+}
+
+.app-shell--store-workspace {
+  --sidebar-width: 220px;
+}
+
+.app-shell--store-workspace .main-content {
+  padding-inline: 20px;
+}
+
+.app-shell--store-workspace .page {
+  max-width: 1480px;
+  gap: 14px;
+}
+
+.app-shell--store-workspace .metrics-grid .metric {
+  min-height: 116px;
+  padding: 17px 16px;
+}
+
+.app-shell--store-workspace .metrics-grid .metric__icon {
+  width: 44px;
+  height: 44px;
+}
+
+.app-shell--store-workspace .metrics-grid .metric strong {
+  font-size: 21px;
+}
+
+.app-shell--store-workspace .store-order-metrics .metric {
+  min-height: 126px;
+  border-width: 2px;
+  box-shadow: 0 10px 24px rgba(13, 87, 50, .07);
+}
+
+.app-shell--store-workspace .store-order-metrics .metric strong {
+  font-size: 25px;
+}
+
+.attendance-location-link {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--green-700);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-color: rgba(8, 121, 61, .35);
+  text-underline-offset: 3px;
+}
+
+.attendance-location-link:hover,
+.attendance-location-link:focus-visible {
+  color: var(--green-900);
+  text-decoration-color: currentColor;
+}
+
+.attendance-minutes,
+.payroll-hourly-rate {
+  white-space: nowrap;
+}
+
+.payroll-hourly-rate {
+  color: var(--green-700);
+}
+
+.app-shell--store-workspace .global-topbar {
+  height: 70px;
+}
+
+.app-shell--store-workspace .sidebar nav a {
+  min-height: 42px;
+  font-size: 12px;
+}
+
+.app-shell--store-workspace .global-topbar__store-name {
+  font-size: 21px;
 }
 
 .sidebar {
@@ -544,9 +639,15 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
     padding-left: 54px;
   }
 
+  .global-topbar__right {
+    position: relative;
+    z-index: 61;
+    margin-left: auto;
+  }
+
   .global-topbar__store-name {
     max-width: 48vw;
-    font-size: 14px;
+    font-size: 17px;
   }
 }
 
@@ -587,9 +688,27 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   }
 
   .global-topbar__store-name {
-    left: 58px;
-    max-width: calc(100vw - 150px);
-    transform: none;
-    text-align: left;
+    left: 50%;
+    max-width: calc(100vw - 190px);
+    transform: translateX(-50%);
+    font-size: 15px;
+    text-align: center;
+  }
+
+  .global-topbar__right {
+    gap: 4px;
+  }
+
+  .topbar-account-button {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 42px;
+    justify-content: center;
+    padding: 2px;
+  }
+
+  .topbar-account-button .topbar-user,
+  .topbar-account-button > svg {
+    display: none;
   }
 }

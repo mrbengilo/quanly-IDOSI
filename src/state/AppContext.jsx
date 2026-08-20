@@ -2357,12 +2357,19 @@ export function AppProvider({ children }) {
 
   const createShiftDefinition = async (payload = {}) => {
     const name = String(payload.name || '').trim()
-    if (!name || !payload.start || !payload.end || !payload.date) return { ok: false, message: 'Vui lòng nhập đủ tên, thời gian và ngày áp dụng.' }
+    if (!name || !payload.start || !payload.end) return { ok: false, message: 'Vui lòng nhập đủ tên và thời gian ca làm việc.' }
     const storeId = payload.storeId || state.activeStoreId
+    const date = String(payload.date || '').trim()
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('shift_definition.create', { storeId, name, date: payload.date, start: payload.start, end: payload.end })
-        notify('Đã tạo ca làm việc theo ngày.')
+        const result = await runRemoteDomainCommand('shift_definition.create', {
+          storeId,
+          name,
+          start: payload.start,
+          end: payload.end,
+          ...(date ? { date } : {}),
+        })
+        notify('Đã tạo ca làm việc dùng chung.')
         return { ok: true, shift: result.shift }
       } catch (error) {
         notify(error.message || 'Không thể tạo ca làm việc.', 'info')
@@ -2371,9 +2378,9 @@ export function AppProvider({ children }) {
     }
     const colors = ['#22C55E', '#3B82F6', '#F97316', '#A855F7', '#EC4899', '#06B6D4', '#EAB308', '#EF4444']
     const durationMinutes = Math.max(0, Number(timeToMinutes(payload.end)) - Number(timeToMinutes(payload.start)))
-    const definition = { id: uid('SHIFT'), storeId, name, start: payload.start, end: payload.end, time: `${payload.start} - ${payload.end}`, date: payload.date, effectiveFrom: payload.date, color: colors[state.shiftDefinitions.filter((shift) => shift.storeId === storeId && !shift.deletedAt).length % colors.length], tint: '#edf5ff', durationMinutes, durationHours: durationMinutes / 60, active: true, version: 1, createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
+    const definition = { id: uid('SHIFT'), storeId, name, start: payload.start, end: payload.end, time: `${payload.start} - ${payload.end}`, date: date || null, effectiveFrom: date || null, color: colors[state.shiftDefinitions.filter((shift) => shift.storeId === storeId && !shift.deletedAt).length % colors.length], tint: '#edf5ff', durationMinutes, durationHours: durationMinutes / 60, active: true, version: 1, createdAt: new Date().toISOString(), createdBy: actorSnapshot(state.session) }
     updateCollection('shiftDefinitions', (items) => [definition, ...items])
-    notify('Đã tạo ca làm việc theo ngày.')
+    notify('Đã tạo ca làm việc dùng chung.')
     return { ok: true, shift: definition }
   }
 

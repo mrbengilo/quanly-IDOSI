@@ -70,6 +70,9 @@ const statusTone = (value) => {
   return 'orange'
 }
 
+const attendanceEarlyMinutes = (record = {}) => Math.max(0, Number(record.minutesEarly ?? record.earlyMinutes) || 0)
+const attendanceLateMinutes = (record = {}) => Math.max(0, Number(record.minutesLate ?? record.lateMinutes) || 0)
+
 const workedHours = (record = {}) => {
   const explicit = Number(record.hours)
   if (Number.isFinite(explicit) && explicit >= 0) return explicit
@@ -685,12 +688,13 @@ export function EmployeeAttendancePage() {
     const label = statusLabel(record.arrivalTag || record.status)
     value.total += 1
     value.hours += workedHours(record)
-    value.lateMinutes += Number(record.minutesLate || 0)
+    value.earlyMinutes += attendanceEarlyMinutes(record)
+    value.lateMinutes += attendanceLateMinutes(record)
     if (label === 'Đi sớm') value.early += 1
     if (label === 'Đi đúng giờ') value.onTime += 1
     if (label === 'Đi trễ') value.late += 1
     return value
-  }, { total: 0, early: 0, onTime: 0, late: 0, lateMinutes: 0, hours: 0 })
+  }, { total: 0, early: 0, onTime: 0, late: 0, earlyMinutes: 0, lateMinutes: 0, hours: 0 })
 
   return (
     <div className="page">
@@ -711,7 +715,7 @@ export function EmployeeAttendancePage() {
       </div>
       <div className="metric-grid metric-grid--four">
         <MetricCard label="TỔNG CA" value={stats.total} icon={Clock3} tone="blue" />
-        <MetricCard label="ĐI SỚM" value={stats.early} icon={CheckCircle2} tone="green" />
+        <MetricCard label="ĐI SỚM" value={stats.early} helper={`${stats.earlyMinutes} phút sớm`} icon={CheckCircle2} tone="green" />
         <MetricCard label="ĐI ĐÚNG GIỜ" value={stats.onTime} icon={CheckCircle2} tone="blue" />
         <MetricCard label="ĐI TRỄ" value={stats.late} helper={`${stats.lateMinutes} phút trễ`} icon={Clock3} tone="red" />
       </div>
@@ -724,11 +728,11 @@ export function EmployeeAttendancePage() {
       </Card>
       <Card title="Lịch sử chấm công chi tiết">
         <TableWrap>
-          <thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ vào</th><th>Vị trí vào</th><th>Giờ ra</th><th>Vị trí ra</th><th>Số giờ</th><th>Số đơn</th><th>Doanh thu ca</th><th>Trạng thái</th><th>Phút trễ</th></tr></thead>
+          <thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ vào</th><th>Vị trí vào</th><th>Giờ ra</th><th>Vị trí ra</th><th>Số giờ</th><th>Số đơn</th><th>Doanh thu ca</th><th>Trạng thái</th><th>Phút sớm / trễ</th></tr></thead>
           <tbody>{rows.map((record) => {
             const shiftOrders = ordersForOpenAttendance(orders, employeeId, record)
             const shiftRevenue = shiftOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
-            return <tr key={record.id}><td><strong>{shortDate(recordDate(record))}</strong></td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{record.checkIn || '—'}</td><td>{record.checkInLocation?.label || record.location?.label || 'Đã ghi tọa độ'}</td><td>{record.checkOut || 'Đang làm'}</td><td>{record.checkOutLocation?.label || (record.checkOut ? 'Đã ghi tọa độ' : '—')}</td><td>{workedHours(record).toFixed(2)}</td><td><strong>{shiftOrders.length}</strong></td><td><strong>{money(shiftRevenue)}</strong></td><td><Badge tone={statusTone(record.arrivalTag || record.status)}>{statusLabel(record.arrivalTag || record.status)}</Badge></td><td>{Number(record.minutesLate || 0)}</td></tr>
+            return <tr key={record.id}><td><strong>{shortDate(recordDate(record))}</strong></td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{record.checkIn || '—'}</td><td>{record.checkInLocation?.label || record.location?.label || 'Đã ghi tọa độ'}</td><td>{record.checkOut || 'Đang làm'}</td><td>{record.checkOutLocation?.label || (record.checkOut ? 'Đã ghi tọa độ' : '—')}</td><td>{workedHours(record).toFixed(2)}</td><td><strong>{shiftOrders.length}</strong></td><td><strong>{money(shiftRevenue)}</strong></td><td><Badge tone={statusTone(record.arrivalTag || record.status)}>{statusLabel(record.arrivalTag || record.status)}</Badge></td><td><span className="attendance-minutes"><strong>{attendanceEarlyMinutes(record)}</strong> sớm / <strong>{attendanceLateMinutes(record)}</strong> trễ</span></td></tr>
           })}{!rows.length && <tr><td colSpan="11">Chưa có lịch sử chấm công.</td></tr>}</tbody>
         </TableWrap>
         <TableFooter shown={rows.length} total={rows.length} />
@@ -764,6 +768,12 @@ export function EmployeePayrollDetails() {
   const hours = rows.reduce((sum, record) => sum + workedHours(record), 0)
   const basis = getPayBasis(employee || {})
   const base = calculateEmployeeBasePay(employee || {}, { hours })
+  const explicitHourlyRate = getHourlyRate(employee || {})
+  const configuredHourlyRate = explicitHourlyRate > 0
+    ? explicitHourlyRate
+    : Number(employee?.requiredMonthlyHours) > 0
+      ? Math.floor(getMonthlySalary(employee || {}) / Number(employee.requiredMonthlyHours))
+      : 0
   const adjustments = salaryAdjustments.filter((item) => String(item.employeeId) === employeeId && item.period === period && item.status !== 'Đã hủy')
   const bonus = adjustments.filter((item) => item.type === 'Thưởng khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const allowance = adjustments.filter((item) => item.type === 'Phụ cấp khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
@@ -778,9 +788,10 @@ export function EmployeePayrollDetails() {
     if (label === 'Đi sớm') value.early += 1
     if (label === 'Đi đúng giờ') value.onTime += 1
     if (label === 'Đi trễ') value.late += 1
-    value.lateMinutes += Number(record.minutesLate || 0)
+    value.earlyMinutes += attendanceEarlyMinutes(record)
+    value.lateMinutes += attendanceLateMinutes(record)
     return value
-  }, { early: 0, onTime: 0, late: 0, lateMinutes: 0 })
+  }, { early: 0, onTime: 0, late: 0, earlyMinutes: 0, lateMinutes: 0 })
   const onTimeRate = rows.length ? (stats.onTime / rows.length) * 100 : 0
   const evaluation = stats.late === 0 ? 'Chuyên cần tốt' : stats.late >= 3 || stats.lateMinutes >= 30 ? 'Cần cải thiện' : 'Cần duy trì'
 
@@ -795,7 +806,7 @@ export function EmployeePayrollDetails() {
       </div>
       <Card title="Chi tiết thu nhập">
         <div className="payroll-breakdown">
-          <p><span>Lương cứng</span><strong>{money(base)}</strong></p>
+          <p><span>Lương cứng</span><strong className="payroll-hourly-rate">{money(configuredHourlyRate)}/giờ</strong></p>
           <p><span>Thưởng KPI</span><strong>{money(kpi)}</strong></p>
           <p><span>Thưởng khác</span><strong>{money(bonus)}</strong></p>
           <p><span>Phụ cấp TikTok (một lần trong tháng)</span><strong>{money(tiktok)}</strong></p>
@@ -806,7 +817,7 @@ export function EmployeePayrollDetails() {
         </div>
       </Card>
       <Card title="Thống kê chuyên cần">
-        <TableWrap><thead><tr><th>Đi sớm</th><th>Đi đúng giờ</th><th>Đi trễ</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody><tr><td className="green-text"><strong>{stats.early}</strong></td><td className="blue-text"><strong>{stats.onTime}</strong></td><td className="red-text"><strong>{stats.late}</strong></td><td>{stats.lateMinutes}</td><td>{rows.length}</td><td>{onTimeRate.toFixed(1)}%</td><td><Badge tone={evaluation === 'Chuyên cần tốt' ? 'green' : evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{evaluation}</Badge></td></tr></tbody></TableWrap>
+        <TableWrap><thead><tr><th>Đi sớm</th><th>Đi đúng giờ</th><th>Đi trễ</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody><tr><td className="green-text"><strong>{stats.early}</strong></td><td className="blue-text"><strong>{stats.onTime}</strong></td><td className="red-text"><strong>{stats.late}</strong></td><td>{stats.earlyMinutes}</td><td>{stats.lateMinutes}</td><td>{rows.length}</td><td>{onTimeRate.toFixed(1)}%</td><td><Badge tone={evaluation === 'Chuyên cần tốt' ? 'green' : evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{evaluation}</Badge></td></tr></tbody></TableWrap>
       </Card>
       {snapshot && <InfoNote tone={snapshot.status === 'Đã khóa' ? 'orange' : 'green'}>Kỳ {periodLabel(period)} đã lưu snapshot lúc {timestamp(snapshot.closedAt)}. Trạng thái: <strong>{snapshot.status}</strong>.</InfoNote>}
     </div>

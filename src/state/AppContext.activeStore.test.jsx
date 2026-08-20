@@ -77,6 +77,7 @@ describe('remote command active-store preservation', () => {
   beforeEach(() => {
     appRef = createRef()
     sessionStorage.clear()
+    localStorage.clear()
     const bootstrap = () => ({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
     api.apiLogin.mockResolvedValue({ user: supportUser })
     api.apiBootstrapState.mockImplementation(async () => bootstrap())
@@ -88,6 +89,7 @@ describe('remote command active-store preservation', () => {
   afterEach(() => {
     cleanup()
     sessionStorage.clear()
+    localStorage.clear()
     vi.useRealTimers()
     vi.clearAllMocks()
   })
@@ -106,6 +108,52 @@ describe('remote command active-store preservation', () => {
 
     expect(api.apiGetState).toHaveBeenCalledWith('global')
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+  })
+
+  it('creates a reusable remote shift without requiring or sending an application date', async () => {
+    api.apiCommand.mockResolvedValueOnce({
+      version: 2,
+      shift: { id: 'SHIFT-MORNING', storeId: 'STORE-A', name: 'Ca sáng', start: '08:00', end: '12:00', date: null },
+    })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+
+    let result
+    await act(async () => {
+      result = await appRef.current.createShiftDefinition({
+        storeId: 'STORE-A',
+        name: 'Ca sáng',
+        start: '08:00',
+        end: '12:00',
+      })
+    })
+
+    expect(result).toMatchObject({ ok: true, shift: { id: 'SHIFT-MORNING', date: null } })
+    const command = api.apiCommand.mock.calls.find(([type]) => type === 'shift_definition.create')
+    expect(command?.[1]).toEqual({ storeId: 'STORE-A', name: 'Ca sáng', start: '08:00', end: '12:00' })
+    expect(Object.hasOwn(command?.[1] || {}, 'date')).toBe(false)
+  })
+
+  it('stores a reusable local shift with a null date', async () => {
+    renderProvider()
+
+    let result
+    await act(async () => {
+      result = await appRef.current.createShiftDefinition({
+        storeId: 'STORE-A',
+        name: 'Ca chiều',
+        start: '13:00',
+        end: '17:30',
+      })
+    })
+
+    expect(result).toMatchObject({
+      ok: true,
+      shift: { storeId: 'STORE-A', name: 'Ca chiều', start: '13:00', end: '17:30', date: null, effectiveFrom: null },
+    })
+    expect(api.apiCommand).not.toHaveBeenCalled()
   })
 
   it('restores the selected store after the provider reloads', async () => {

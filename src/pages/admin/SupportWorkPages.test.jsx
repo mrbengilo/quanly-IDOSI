@@ -37,6 +37,22 @@ describe('support work screens', () => {
     })
   })
 
+  it('renders reusable work titles in the compact readable task-template grid', () => {
+    mocked.app.supportWorkAssignments = [{
+      id: 'SWA-TEMPLATE',
+      date: '2026-08-18',
+      employeeId: 'HTKD-001',
+      tasks: [{ id: 'T1', name: 'Thiết kế logo nhận diện cửa hàng', completed: false }],
+    }]
+
+    render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
+
+    const picker = screen.getByRole('group', { name: 'Công việc hỗ trợ KD nhập sẵn' })
+    expect(picker.classList.contains('task-template-picker')).toBe(true)
+    expect(picker.textContent).toContain('Thiết kế logo nhận diện cửa hàng')
+    expect(screen.getByLabelText('Danh sách công việc').classList.contains('task-assignment-editor')).toBe(true)
+  })
+
   it('requires a reason before submitting an incomplete assignment', async () => {
     mocked.app.session = { role: 'business_support', employeeId: 'HTKD-001', code: 'HTKD-001', name: 'Nguyễn Hỗ Trợ' }
     mocked.app.supportWorkAssignments = [{

@@ -29,6 +29,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
+import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { shortDate, today } from '../../utils'
@@ -431,7 +432,7 @@ export function OfficeManagement() {
                   back: employee.identityImages?.back || employee.cccdBackImage,
                 }
                 const imageCount = Object.values(images).filter(Boolean).length
-                return <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={type === 'Full-Time' ? 'green' : type === 'Part-Time' ? 'blue' : 'orange'}>{type}</Badge></td><td><strong>{shortYearDate(employee.startDate || employee.joinDate)}</strong></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><div className="identity-image-actions"><Badge tone={imageCount === 2 ? 'green' : 'orange'}>{imageCount}/2 ảnh</Badge>{Object.entries(images).map(([side, image]) => image ? <button key={side} type="button" onClick={() => viewSavedIdentityImage(side, employee)} disabled={Boolean(viewingSide)} aria-label={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD của ${employee.name}`} title={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD`}><Eye size={16} /><span>{side === 'front' ? 'Trước' : 'Sau'}</span></button> : null)}</div></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteOffice && <button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>}</tr>
+                return <tr key={employee.id || employeeCode(employee)}><td><strong>{employeeCode(employee)}</strong></td><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.username || 'Chưa có tên đăng nhập'}</small></span></div></td><td><Badge tone={type === 'Full-Time' ? 'green' : type === 'Part-Time' ? 'blue' : 'orange'}>{type}</Badge></td><td><strong>{shortYearDate(employee.startDate || employee.joinDate)}</strong></td><td>{employee.cccd || employee.citizenId || '—'}</td><td>{employee.phone || '—'}</td><td className="address-cell">{addressLabel(employee)}</td><td>{employee.position || employee.workPosition || employee.role || '—'}</td><td><div className="identity-image-actions identity-image-actions--stable"><Badge tone={imageCount === 2 ? 'green' : 'orange'}>{imageCount}/2 ảnh</Badge>{Object.entries(images).map(([side, image]) => image ? <button key={side} type="button" onClick={() => viewSavedIdentityImage(side, employee)} disabled={Boolean(viewingSide)} aria-label={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD của ${employee.name}`} title={`Xem ${side === 'front' ? 'mặt trước' : 'mặt sau'} CCCD`}><Eye size={16} /><span>{side === 'front' ? 'Trước' : 'Sau'}</span></button> : null)}</div></td><td><Badge tone={employeeStatusTone(employee.status)}>{employee.status || EMPLOYEE_STATUSES[0]}</Badge></td>{canManageOffice && <td><div className="row-actions"><button onClick={() => openEmployeeEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteOffice && <button className="danger" onClick={() => setPendingDelete(employee)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div></td>}</tr>
               })}
               {!filteredEmployees.length && <tr><td colSpan={canManageOffice ? 11 : 10}>Chưa có nhân viên văn phòng phù hợp.</td></tr>}
             </tbody>
@@ -530,8 +531,8 @@ export function OfficeManagement() {
         </form>
       </Modal>}
 
-      <Modal open={Boolean(viewingImage)} onClose={() => setViewingImage(null)} title={viewingImage?.label || 'Ảnh CCCD'}>
-        {viewingImage && <img className="identity-image-viewer" src={viewingImage.url} alt={viewingImage.label} />}
+      <Modal wide open={Boolean(viewingImage)} onClose={() => setViewingImage(null)} title={viewingImage?.label || 'Ảnh CCCD'} footer={<Button variant="outline" onClick={() => setViewingImage(null)}>Đóng</Button>}>
+        <IdentityDocumentViewer src={viewingImage?.url || ''} alt={viewingImage?.label || 'Ảnh CCCD'} />
       </Modal>
 
       <Modal

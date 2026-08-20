@@ -1,0 +1,49 @@
+.employee-picker.task-template-picker label {
+  grid-template-columns: 22px minmax(0, 1fr);
+  min-height: 44px;
+  gap: 10px;
+  padding: 9px 12px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.employee-picker.task-template-picker label > span {
+  min-width: 0;
+}
+
+.employee-picker.task-template-picker label strong {
+  display: block;
+  font-size: inherit;
+  line-height: inherit;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+
+.task-assignment-editor input:not([type='checkbox']) {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+  .employee-picker.task-template-picker {
+    max-height: 240px;
+  }
+
+  .employee-picker.task-template-picker label {
+    grid-template-columns: 24px minmax(0, 1fr);
+    min-height: 48px;
+    padding: 10px 12px;
+    font-size: 15px;
+  }
+
+  .task-assignment-editor input:not([type='checkbox']) {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .task-assignment-editor .task-editor__row > b,
+  .task-assignment-editor .support-task-editor__row > strong {
+    font-size: 14px;
+  }
+}

@@ -114,7 +114,6 @@ const blankShift = (color = BRIGHT_SHIFT_COLORS[0]) => ({
   name: '',
   start: '07:00',
   end: '12:00',
-  date: '',
   color,
 })
 
@@ -283,7 +282,6 @@ export function UnifiedSchedule() {
       name: shift.name || '',
       start: shift.start || '07:00',
       end: shift.end || '12:00',
-      date: '',
       color: shift.color || '#07873d',
     })
     setShiftModalOpen(true)
@@ -301,6 +299,7 @@ export function UnifiedSchedule() {
       ...shiftForm,
       name: shiftForm.name.trim(),
       storeId,
+      ...(editingShift?.date ? { date: '' } : {}),
     }
     if (!payload.name || !payload.start || !payload.end) {
       notify?.('Vui lòng nhập đủ tên và thời gian ca làm việc.', 'info')
@@ -313,7 +312,6 @@ export function UnifiedSchedule() {
       notify?.(result?.message || 'Chưa thể lưu ca làm việc.', 'info')
       return
     }
-    if (payload.date) setDate(payload.date)
     setSelectedShiftIds(result.shift?.id ? [result.shift.id] : [])
     closeShiftModal()
   }

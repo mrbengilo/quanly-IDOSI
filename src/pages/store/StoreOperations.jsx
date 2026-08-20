@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   BarChart3,
   Box,
@@ -43,7 +43,9 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
+import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { cashSeries, shifts } from '../../data'
+import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import {
   downloadCsv,
@@ -73,6 +75,7 @@ import {
   storeEmployeePrefix,
   validateStoreEmployee,
 } from './storeEmployeeForm'
+import '../task-assignment.css'
 
 const shiftById = (id) => shifts.find((shift) => shift.id === id)
 
@@ -425,6 +428,8 @@ export function StoreEmployees() {
   const [errors, setErrors] = useState([])
   const [showPassword, setShowPassword] = useState(false)
   const [imageBusy, setImageBusy] = useState('')
+  const [viewingImage, setViewingImage] = useState(null)
+  const [viewingSide, setViewingSide] = useState('')
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const canCreateStoreEmployee = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
@@ -432,6 +437,13 @@ export function StoreEmployees() {
   const editingRequiresPassword = Boolean(editing) && !(
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
   )
+
+  useEffect(() => {
+    const url = viewingImage?.url
+    return () => {
+      if (url?.startsWith('blob:')) URL.revokeObjectURL(url)
+    }
+  }, [viewingImage?.url])
 
   const scopedEmployees = scopedStoreId
     ? storeEmployeesForDate(employees, supportTransfers, scopedStoreId, today(), { includeSupportingAway: true })
@@ -517,6 +529,34 @@ export function StoreEmployees() {
     }
   }
 
+  const viewSavedIdentityImage = async (side, employee = editing) => {
+    if (!employee) return
+    const employeeId = employee.id || employee.code || employee.employeeCode
+    const busyKey = `${employeeId}:${side}`
+    const storedImage = employee.identityImages?.[side]
+      || (side === 'front' ? employee.cccdFrontImage : employee.cccdBackImage)
+    if (typeof storedImage === 'string' && storedImage.startsWith('data:image/')) {
+      setViewingImage({
+        url: storedImage,
+        label: `${employee.name || employeeId} · ${side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'}`,
+      })
+      return
+    }
+    if (!employeeId || viewingSide) return
+    setViewingSide(busyKey)
+    try {
+      const blob = await apiGetIdentityImage(employeeId, side)
+      setViewingImage({
+        url: URL.createObjectURL(blob),
+        label: `${employee.name || employeeId} · ${side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'}`,
+      })
+    } catch (error) {
+      notify?.(error.message || 'Không thể tải ảnh CCCD.', 'info')
+    } finally {
+      setViewingSide('')
+    }
+  }
+
   const updateEmploymentType = (event) => {
     const employmentType = event.target.value
     setForm((current) => ({ ...current, employmentType, salary: '', baseSalary: '' }))
@@ -589,7 +629,13 @@ export function StoreEmployees() {
                 <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{formatTaskDate(employee.supportAssignment.fromDate)} – {formatTaskDate(employee.supportAssignment.toDate)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : outboundTransfer ? <div className="table-stack"><Badge tone="orange">Đang hỗ trợ {supportStore?.name || outboundTransfer.toStoreId}</Badge><small>{formatTaskDate(outboundTransfer.fromDate)} – {formatTaskDate(outboundTransfer.toDate)}</small><small>{money(outboundTransfer.hourlySupportRate || 0)}/giờ · Phụ cấp {money(outboundTransfer.allowance || 0)}</small><small>Hồ sơ tạm khóa thao tác tại cửa hàng chính</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
                 <td><Badge tone={isPartTime(type) ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
                 <td>{employeePosition(employee)}</td>
-                <td>{employee.cccd || employee.citizenId || '—'}</td>
+                <td>
+                  <span>{employee.cccd || employee.citizenId || '—'}</span>
+                  {canManageStore && <div className="identity-image-actions identity-image-actions--stable">
+                    {employee.identityImages?.front || employee.cccdFrontImage ? <button type="button" onClick={() => viewSavedIdentityImage('front', employee)} disabled={Boolean(viewingSide)} aria-label={`Xem mặt trước CCCD của ${employee.name}`}><Eye size={16} /><span>Trước</span></button> : null}
+                    {employee.identityImages?.back || employee.cccdBackImage ? <button type="button" onClick={() => viewSavedIdentityImage('back', employee)} disabled={Boolean(viewingSide)} aria-label={`Xem mặt sau CCCD của ${employee.name}`}><Eye size={16} /><span>Sau</span></button> : null}
+                  </div>}
+                </td>
                 <td>{employee.phone || '—'}</td>
                 <td className="address-cell">{employeeAddressLabel(employee)}</td>
                 <td>{employeeSalary(employee) > 0 ? <><strong>{money(employeeSalary(employee))}</strong><small className="table-sub">{employeeSalarySuffix(employee)} · {salaryBasisLabel(employee)}</small>{!isPartTime(type) && <small className="table-sub">{employee.standardWorkDays || 26} ngày · {employee.requiredMonthlyHours || '—'} giờ/tháng</small>}</> : <span className="orange-text">Chưa thiết lập</span>}</td>
@@ -641,6 +687,7 @@ export function StoreEmployees() {
                 <Input type="file" accept="image/jpeg,image/png,image/webp" aria-label={label} onChange={updateIdentityImage(side)} disabled={Boolean(imageBusy)} />
                 {image && <small>{preview ? 'Đã chọn ảnh mới' : 'Ảnh đã được lưu riêng tư'}</small>}
                 {preview && <img className="identity-image-preview" src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} />}
+                {image && !preview && editing && <Button type="button" variant="outline" icon={Eye} loading={viewingSide === `${editing.id || editing.code || editing.employeeCode}:${side}`} disabled={Boolean(viewingSide)} onClick={() => viewSavedIdentityImage(side)}>Xem ảnh đã lưu</Button>}
               </Field>
             })}
           </div>
@@ -660,6 +707,9 @@ export function StoreEmployees() {
           <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư. Hệ thống không lưu hoặc hiển thị lại mật khẩu sau khi đóng thông báo cấp tài khoản.</InfoNote>
         </form>
       </Modal>}
+      <Modal wide open={Boolean(viewingImage)} onClose={() => setViewingImage(null)} title={viewingImage?.label || 'Ảnh CCCD'} footer={<Button variant="outline" onClick={() => setViewingImage(null)}>Đóng</Button>}>
+        <IdentityDocumentViewer src={viewingImage?.url || ''} alt={viewingImage?.label || 'Ảnh CCCD'} />
+      </Modal>
     </div>
   )
 }
@@ -800,10 +850,10 @@ export function StoreTasks() {
         </div>}
       </Card>}
       {canManageStore && <div className="split-layout split-layout--tasks">
-        <Card title="Danh sách công việc" className="task-editor">
+        <Card title="Danh sách công việc" className="task-editor task-assignment-editor">
           {reusableTasks.length > 0 && <>
             <InfoNote>Tick các công việc đã nhập sẵn cần giao trong lần này. Có thể bổ sung công việc mới bên dưới.</InfoNote>
-            <div className="employee-picker" role="group" aria-label="Công việc nhập sẵn">
+            <div className="employee-picker task-template-picker" role="group" aria-label="Công việc nhập sẵn">
               {reusableTasks.map((template) => {
                 const checked = rows.some((row) => row.templateKey === template.key)
                 return <label key={template.key} className={checked ? 'selected' : ''}><input type="checkbox" checked={checked} onChange={() => toggleReusableTask(template)} /><span><strong>{template.title}</strong></span></label>

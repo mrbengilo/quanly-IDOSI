@@ -45,6 +45,10 @@ const employee = {
   position: 'Nhân viên bán hàng',
   phone: '0901234567',
   cccd: '079203001234',
+  identityImages: {
+    front: 'data:image/png;base64,store-front',
+    back: 'data:image/png;base64,store-back',
+  },
   username: 'sm234.001',
 }
 
@@ -128,6 +132,18 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getByDisplayValue('Nhân viên bán hàng').readOnly).toBe(true)
     expect(screen.getByLabelText('Mặt trước CCCD')).toBeTruthy()
     expect(screen.getByLabelText('Mặt sau CCCD')).toBeTruthy()
+  })
+
+  it('opens saved store-employee CCCD images in the stable document frame', () => {
+    renderPage(StoreEmployees)
+
+    const frontButton = screen.getByRole('button', { name: `Xem mặt trước CCCD của ${employee.name}` })
+    expect(frontButton.closest('.identity-image-actions--stable')).toBeTruthy()
+    fireEvent.click(frontButton)
+
+    const image = screen.getByRole('img', { name: `${employee.name} · Mặt trước CCCD` })
+    expect(image.classList.contains('identity-document-viewer__image')).toBe(true)
+    expect(image.closest('.identity-document-viewer__frame')).toBeTruthy()
   })
 
   it('shows a transferred employee with full support assignment details at the destination store', () => {

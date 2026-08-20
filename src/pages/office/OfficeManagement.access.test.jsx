@@ -28,6 +28,10 @@ describe('Office Management permissions', () => {
         employmentType: 'Full-Time',
         phone: '0901234567',
         cccd: '079123456789',
+        identityImages: {
+          front: 'data:image/png;base64,office-front',
+          back: 'data:image/png;base64,office-back',
+        },
         position: 'Kế Toán',
       }],
       deletedEmployees: [{ id: 'VP-008', unit: 'office', deletedAt: '2026-08-17T00:00:00Z' }],
@@ -50,6 +54,12 @@ describe('Office Management permissions', () => {
     expect(screen.queryByRole('button', { name: /Xóa Nhân viên văn phòng/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Tạo thưởng/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Tạo phụ cấp/i })).toBeNull()
+
+    const viewFront = screen.getByRole('button', { name: /Xem mặt trước CCCD của Nhân viên văn phòng/i })
+    expect(viewFront.closest('.identity-image-actions--stable')).toBeTruthy()
+    fireEvent.click(viewFront)
+    expect(screen.getByRole('img', { name: /Nhân viên văn phòng · Mặt trước CCCD/i }).closest('.identity-document-viewer__frame')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Đóng' }))
 
     fireEvent.click(screen.getByRole('button', { name: /Thêm nhân viên/i }))
     expect(screen.getByRole('dialog')).toBeTruthy()

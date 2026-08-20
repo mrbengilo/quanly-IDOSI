@@ -104,6 +104,8 @@ describe('StoreTasks assignment workflow', () => {
 
     render(<StoreTasks />)
 
+    const picker = screen.getByRole('group', { name: 'Công việc nhập sẵn' })
+    expect(picker.classList.contains('task-template-picker')).toBe(true)
     expect(screen.getByText('Admin IDOSI')).toBeTruthy()
     expect(screen.getByText('24/12/99 14:05:06')).toBeTruthy()
     expect(screen.getByText(/Ca tương lai · 14:00–22:00/i)).toBeTruthy()

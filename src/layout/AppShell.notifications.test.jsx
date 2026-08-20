@@ -10,6 +10,7 @@ const mocked = vi.hoisted(() => ({
   clearNotifications: vi.fn(),
   setActiveStoreId: vi.fn(),
   notifications: [],
+  orders: [],
 }))
 
 const baseNotifications = [
@@ -31,6 +32,7 @@ vi.mock('../state/AppContext', () => ({
     ],
     activeStoreId: mocked.activeStoreId,
     notifications: mocked.notifications,
+    orders: mocked.orders,
     readNotification: mocked.readNotification,
     clearNotifications: mocked.clearNotifications,
     setActiveStoreId: mocked.setActiveStoreId,
@@ -52,6 +54,7 @@ describe('AppShell notifications', () => {
     mocked.session = { role: 'admin', name: 'Admin' }
     mocked.activeStoreId = 'CH001'
     mocked.notifications = baseNotifications.map((item) => ({ ...item }))
+    mocked.orders = [{ id: 'ORDER-CH002', code: 'CH2-00001', storeId: 'CH002' }]
     sessionStorage.clear()
     mocked.readNotification.mockReset()
     mocked.clearNotifications.mockReset().mockResolvedValue({ ok: true, updatedCount: 2 })
@@ -70,6 +73,9 @@ describe('AppShell notifications', () => {
   })
 
   it('switches to the notification store before opening its order', async () => {
+    mocked.notifications = baseNotifications.map((item) => (
+      item.id === 'N3' ? { ...item, storeId: 'CH001' } : item
+    ))
     mocked.readNotification.mockResolvedValue({ ok: true })
     render(
       <MemoryRouter initialEntries={['/admin/overview']}>
@@ -87,6 +93,21 @@ describe('AppShell notifications', () => {
     expect(mocked.setActiveStoreId).toHaveBeenCalledWith('CH002')
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/orders?store=CH002&order=ORDER-CH002'))
     await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N3'))
+  })
+
+  it('marks only the selected order notification as read', async () => {
+    mocked.notifications = baseNotifications.slice(0, 2)
+    mocked.readNotification.mockResolvedValue({ ok: true })
+    render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    fireEvent.click(screen.getByText('Don moi 1'))
+    await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N1'))
+
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    expect(screen.queryByText('Don moi 1')).toBeNull()
+    expect(screen.getByText('Don moi 2')).toBeTruthy()
+    expect(mocked.readNotification).toHaveBeenCalledTimes(1)
   })
 
   it('shows a new assigned-task popup and removes it from the bell after opening', async () => {

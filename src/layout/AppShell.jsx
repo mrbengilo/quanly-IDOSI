@@ -109,7 +109,15 @@ const notificationTime24 = (value) => {
   }).format(date)
 }
 
-const notificationKey = (item) => String(item?.id || item?.notificationId || item?.orderId || '')
+const notificationId = (item) => String(item?.id || item?.notificationId || item?.data?.notificationId || '')
+const notificationOrderId = (item) => String(item?.orderId || item?.order_id || item?.data?.orderId || item?.data?.order_id || item?.order?.id || '')
+const notificationStoreId = (item) => String(item?.storeId || item?.store_id || item?.data?.storeId || item?.data?.store_id || item?.order?.storeId || item?.store?.id || '')
+const notificationKey = (item) => notificationId(item) || [
+  item?.type || 'notification',
+  notificationStoreId(item),
+  notificationOrderId(item),
+  item?.createdAt || item?.time || item?.updatedAt || '',
+].join(':')
 const isAssignedTaskNotification = (item) => ['support-work-assigned', 'store-task-assigned'].includes(String(item?.type || ''))
 
 export default function AppShell() {
@@ -240,11 +248,11 @@ export default function AppShell() {
   }
 
   const openNotification = (item) => {
-    const id = item?.id || item?.notificationId || item?.orderId
+    const id = notificationId(item)
     const localId = notificationKey(item)
     if (localId) setLocallyReadNotificationIds((current) => new Set([...current, localId]))
     setTaskPopup(null)
-    if (id != null && readNotification) {
+    if (id && readNotification) {
       Promise.resolve().then(() => readNotification(id)).then((result) => {
         if (result?.ok === false) {
           setLocallyReadNotificationIds((current) => new Set([...current].filter((value) => value !== localId)))
@@ -256,13 +264,18 @@ export default function AppShell() {
       })
     }
     app.onNotificationOpen?.(item)
-    const orderId = item?.orderId || item?.data?.orderId
-    const notificationStoreId = String(item?.storeId || item?.data?.storeId || '')
+    const requestedOrderId = notificationOrderId(item)
+    const matchingOrder = (Array.isArray(app.orders) ? app.orders : []).find((order) => (
+      String(order?.id || '') === requestedOrderId
+      || String(order?.code || '') === requestedOrderId
+    ))
+    const orderId = String(matchingOrder?.id || requestedOrderId || item?.orderCode || item?.data?.orderCode || '')
+    const targetStoreId = String(matchingOrder?.storeId || notificationStoreId(item))
     if (isSystemOperator
-      && notificationStoreId
-      && stores.some((store) => String(store.id) === notificationStoreId)) {
+      && targetStoreId
+      && stores.some((store) => String(store.id) === targetStoreId)) {
       const changeActiveStore = app.setActiveStoreId || app.setActiveStore
-      changeActiveStore?.(notificationStoreId)
+      changeActiveStore?.(targetStoreId)
     }
     const ordersPath = isEmployee ? '/employee/orders' : '/store/orders'
     const assignmentId = item?.assignmentId || item?.data?.assignmentId
@@ -272,7 +285,7 @@ export default function AppShell() {
       : requestedDestination
     const orderDestination = orderId
       ? `${ordersPath}?${new URLSearchParams({
-          ...(notificationStoreId ? { store: notificationStoreId } : {}),
+          ...(targetStoreId ? { store: targetStoreId } : {}),
           order: String(orderId),
         }).toString()}`
       : ''
@@ -386,13 +399,15 @@ export default function AppShell() {
                 </section>
               )}
             </div>
-            <Avatar name={session?.name} src={app.settings?.avatar} size={38} />
-            <div className="topbar-user"><strong>{session?.name}</strong><small>{accountSubtitle}</small></div>
             <button
-              className="icon-button"
+              className="topbar-account-button"
               onClick={() => navigate('/account/settings')}
               aria-label="Mở trang tài khoản"
-            ><ChevronDown size={17} /></button>
+            >
+              <Avatar name={session?.name} src={app.settings?.avatar} size={38} />
+              <span className="topbar-user"><strong>{session?.name}</strong><small>{accountSubtitle}</small></span>
+              <ChevronDown size={17} />
+            </button>
           </div>
         </div>
         {taskPopup && (

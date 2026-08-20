@@ -34,6 +34,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
+import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { useApp } from '../../state/AppContext'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { shortDate, today } from '../../utils'
@@ -219,7 +220,7 @@ function RoleProfileDrawer({
             return <Field key={side} label={label} required hint="Chọn ảnh JPG, PNG hoặc WEBP; tối đa 2 MB">
               <Input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => onImageChange(side, event)} disabled={Boolean(imageBusy)} aria-label={label} />
               {image && <small>{preview ? `Đã chọn ${side === 'front' ? 'mặt trước' : 'mặt sau'}` : `Đã lưu ${side === 'front' ? 'mặt trước' : 'mặt sau'}`}</small>}
-              {preview && <img src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} style={{ width: '100%', maxWidth: 220, maxHeight: 132, marginTop: 8, borderRadius: 10, objectFit: 'cover', border: '1px solid #d8e3dc' }} />}
+              {preview && <img className="identity-image-preview" src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} />}
             </Field>
           })}
         </div>
@@ -282,7 +283,7 @@ function ProfileList({ canCreate, canDelete, canEdit, config, imageBusyKey, onCr
               <td>{profile.phone || '—'}<small className="table-note">CCCD: {profile.cccd || profile.citizenId || '—'}</small></td>
               <td className="address-cell">{roleProfileAddress(profile)}</td>
               <td>{profile.position || profile.workPosition || '—'}</td>
-              <td><div className="row-actions">
+              <td><div className="row-actions identity-image-actions--stable">
                 {profile.identityImages?.front || profile.cccdFrontImage
                   ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'front')} aria-label={`Xem mặt trước CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:front` ? 'Đang tải…' : 'Mặt trước'}</button>
                   : <small>Chưa có mặt trước</small>}
@@ -558,7 +559,9 @@ function RoleManagement({ roleKey }) {
     {roleKey === ROLE_KEYS.businessSupport && tab === 'evaluation' && <BusinessSupportEvaluation attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'work' && canEdit && <SupportWorkEvaluationTable assignments={app.supportWorkAssignments || []} profiles={profiles} />}
     {canCreate && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onAddressChange={updateAddress} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} storeEmployees={storeEmployees} stores={stores} togglePassword={() => setShowPassword((current) => !current)} />}
-    <Modal open={Boolean(imageViewer)} onClose={closeImageViewer} title={imageViewer?.title || 'Hình ảnh CCCD'} footer={<Button variant="outline" onClick={closeImageViewer}>Đóng</Button>}><img src={imageViewer?.url || ''} alt={imageViewer?.title || 'Hình ảnh CCCD'} style={{ display: 'block', width: '100%', maxHeight: '65vh', objectFit: 'contain', borderRadius: 12 }} /></Modal>
+    <Modal wide open={Boolean(imageViewer)} onClose={closeImageViewer} title={imageViewer?.title || 'Hình ảnh CCCD'} footer={<Button variant="outline" onClick={closeImageViewer}>Đóng</Button>}>
+      <IdentityDocumentViewer src={imageViewer?.url || ''} alt={imageViewer?.title || 'Hình ảnh CCCD'} />
+    </Modal>
     {canEdit && <Modal open={Boolean(pendingDelete)} onClose={() => setPendingDelete(null)} title={`Xóa ${config.singular}`} footer={<><Button variant="outline" onClick={() => setPendingDelete(null)} disabled={isDeleting}>Hủy</Button><Button variant="danger" icon={Trash2} loading={isDeleting} disabled={isDeleting} onClick={confirmDelete}>XÓA TÀI KHOẢN</Button></>}><InfoNote tone="orange">Xóa <strong>{pendingDelete?.name}</strong> khỏi danh sách? Lịch sử chấm công và nhật ký hệ thống vẫn được giữ lại.</InfoNote></Modal>}
   </div>
 }

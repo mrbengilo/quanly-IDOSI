@@ -27,6 +27,7 @@ import { useApp } from '../../state/AppContext'
 import { shortDate, today, uid } from '../../utils'
 import { ROLE_KEYS, roleProfileCode, roleProfilesFromApp } from './roleManagementUtils'
 import { isFinalSupportWorkStatus, supportWorkEvaluation, supportWorkProgress, supportWorkStatus } from './supportWorkUtils'
+import '../task-assignment.css'
 
 const ratingTone = (rating) => {
   if (rating === 'Hoàn thành tốt') return 'green'
@@ -148,14 +149,14 @@ export function AdminSupportWorkPage() {
       </div>
       {reusableTasks.length > 0 && <>
         <InfoNote>Tick các công việc đã nhập trước đây để dùng lại; chỉ cần thêm công việc mới khi danh sách chưa có.</InfoNote>
-        <div className="employee-picker support-work-templates" role="group" aria-label="Công việc hỗ trợ KD nhập sẵn">
+        <div className="employee-picker support-work-templates task-template-picker" role="group" aria-label="Công việc hỗ trợ KD nhập sẵn">
           {reusableTasks.map((template) => {
             const selected = form.tasks.some((task) => task.templateKey === template.key)
             return <label key={template.key} className={selected ? 'selected' : ''}><input type="checkbox" checked={selected} onChange={() => toggleReusableTask(template)} /><span><strong>{template.name}</strong></span></label>
           })}
         </div>
       </>}
-      <div className="support-task-editor" aria-label="Danh sách công việc">
+      <div className="support-task-editor task-assignment-editor" aria-label="Danh sách công việc">
         <div className="support-task-editor__head"><span>STT</span><span>Tên công việc</span><span /></div>
         {form.tasks.map((task, index) => <div className="support-task-editor__row" key={task.id}>
           <strong>{index + 1}</strong>
