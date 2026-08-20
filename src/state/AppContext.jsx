@@ -73,6 +73,19 @@ const ATTENDANCE_CORRECTION_FIELDS = [
   'editedAt', 'editedBy', 'editReason',
 ]
 
+export const BUSINESS_SUPPORT_WORKING_TIME_FIELDS = Object.freeze([
+  'workTimeType', 'workStart', 'workEnd', 'workShifts', 'workingTime',
+])
+
+export const canBusinessSupportUpdateEmployee = (previous = {}, payload = {}) => {
+  const unit = String(previous.unit || previous.unitType || previous.department || '').trim().toLowerCase()
+  if (['store', 'store_manager', 'office'].includes(unit)) return true
+  if (unit !== 'business_support') return false
+  const allowed = new Set(BUSINESS_SUPPORT_WORKING_TIME_FIELDS)
+  const fields = Object.keys(payload || {})
+  return fields.length > 0 && fields.every((field) => allowed.has(field))
+}
+
 export const restoreOperationalRecordFields = (current, baseline, dataType) => {
   const fields = dataType === 'orders' ? ORDER_OPERATIONAL_MUTABLE_FIELDS : ATTENDANCE_CORRECTION_FIELDS
   const restored = { ...current }
@@ -1322,14 +1335,14 @@ export function AppProvider({ children }) {
   const updateEmployee = async (id, payload) => {
     const actorRole = normalizeAuthRole(state.session?.role)
     if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền cập nhật nhân viên.' }
+    const previous = state.employees.find((employee) => accountKey(employee) === String(id))
+    if (!previous) return { ok: false }
+    if (actorRole === 'business_support' && !canBusinessSupportUpdateEmployee(previous, payload)) {
+      return { ok: false, message: 'Hỗ trợ KD chỉ được sửa cấu hình giờ làm trên hồ sơ Nhân viên hỗ trợ KD.' }
+    }
     if (hasDuplicateAccount(payload, id)) {
       notify('Tên đăng nhập đã tồn tại.', 'info')
       return { ok: false }
-    }
-    const previous = state.employees.find((employee) => accountKey(employee) === String(id))
-    if (!previous) return { ok: false }
-    if (actorRole === 'business_support' && !['store', 'office', 'store_manager'].includes(previous.unit)) {
-      return { ok: false, message: 'Hỗ trợ KD chỉ được cập nhật nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng.' }
     }
     if (actorRole === 'store_manager' && previous.unit !== 'store') return { ok: false, message: 'Quản lý cửa hàng chỉ được cập nhật nhân viên cửa hàng.' }
     if (actorRole === 'store_manager' && String(previous.storeId) !== String(state.session.storeId)) {
@@ -1345,9 +1358,11 @@ export function AppProvider({ children }) {
           id: undefined,
           code: undefined,
           employeeCode: undefined,
-          employmentType: isOfficeUnit(previous.unit) || isOfficeUnit(previous.storeId)
-            ? payload.officeEmployeeType || payload.officeEmploymentType || previous.officeEmployeeType || previous.employmentType || 'Chính thức'
-            : payload.employmentType ?? previous.employmentType,
+          employmentType: actorRole === 'business_support' && previous.unit === 'business_support'
+            ? undefined
+            : isOfficeUnit(previous.unit) || isOfficeUnit(previous.storeId)
+              ? payload.officeEmployeeType || payload.officeEmploymentType || previous.officeEmployeeType || previous.employmentType || 'Chính thức'
+              : payload.employmentType ?? previous.employmentType,
           passwordHash: undefined,
           legacyPassword: undefined,
           monthlyWorkdayTargets: undefined,

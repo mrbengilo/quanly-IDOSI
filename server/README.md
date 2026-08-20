@@ -88,7 +88,7 @@ Các lệnh chính:
   hoặc truyền `linkedEmployeeId` để phân quyền quản lý cho nhân viên bán hàng
   hiện hữu; hồ sơ bán hàng và cách tính lương cửa hàng vẫn giữ nguyên, còn cùng
   tài khoản được nâng thành `store_manager`. Giờ chấm công của hai vai trò do
-  server mặc định `08:00-17:00`.
+  server mặc định Full-Time `08:00-17:30`.
   Hồ sơ `unit: office` bắt buộc `storeId: OFFICE`, tự sinh mã `VP-001...`, điện thoại `0` + 9 số, CCCD đúng
   12 số, bắt buộc địa chỉ, ngày bắt đầu, loại nhân viên (`Full-Time`,
   `Part-Time`, `Thực Tập Sinh`), vị trí (`Kế Toán`, `Marketing`) và cặp
@@ -106,8 +106,18 @@ Các lệnh chính:
   Sau migration xóa credential, `employee.update` có thể nhận lại cặp
   `username`/`password` để phát hành tài khoản mới nguyên tử cho đúng
   profile hiện hữu; mã profile và lịch sử nghiệp vụ không thay đổi.
-  Hồ sơ office-like nhận `workStart`, `workEnd` theo `HH:mm` (giờ ra sau
-  giờ vào trong cùng ngày) và cặp `standardWorkDaysPeriod: YYYY-MM`,
+  Hồ sơ `office` và `business_support` nhận hợp đồng giờ làm canonical
+  `workTimeType`, `workShifts:[{id,name,start,end}]` và
+  `workingTime:{type,mode,shifts}`. Full-Time có đúng một khung cố định;
+  Part-Time/Thực Tập Sinh có 1..12 ca đặt tên. `workStart`/`workEnd` luôn là
+  alias của ca đầu tiên để tương thích client cũ; mọi giờ theo `HH:mm`, giờ ra
+  sau giờ vào trong cùng ngày, id/tên ca không trùng. Admin được cập nhật toàn
+  bộ hồ sơ; Hỗ trợ KD vẫn được cập nhật đầy đủ hồ sơ Office nhưng với hồ sơ
+  Hỗ trợ KD khác chỉ được gửi các trường giờ làm nêu trên.
+  Khi chấm công office-like, client gửi `shiftId` của ca hồ sơ đã chọn; Worker
+  chụp bất biến `shiftId/name/start/end` và `shiftSource: profile-work-shift`
+  vào bản ghi chấm công.
+  Hồ sơ office-like còn nhận cặp `standardWorkDaysPeriod: YYYY-MM`,
   `standardWorkDays: 1..31`. Server gộp cặp này vào
   `monthlyWorkdayTargets[period]` của riêng nhân viên.
   Hồ sơ Full-Time cửa hàng nhận `standardWorkDays: 1..31`,

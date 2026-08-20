@@ -131,4 +131,39 @@ describe('operational-role attendance overview', () => {
     expect(screen.getByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
     expect(screen.queryByText('Bảng lương theo ngày công')).toBeNull()
   })
+
+  it('lets a Part-Time employee choose the configured afternoon shift before check-in', async () => {
+    const partTimeProfile = {
+      ...profile,
+      id: 'VP-PT-001',
+      code: 'VP-PT-001',
+      unit: 'office',
+      employmentType: 'Part-Time',
+      workTimeType: 'Part-Time',
+      workShifts: [
+        { id: 'ca_sang', name: 'Ca sáng', start: '08:00', end: '12:00' },
+        { id: 'ca_chieu', name: 'Ca chiều', start: '13:00', end: '17:30' },
+      ],
+    }
+    mocked.app = makeApp({
+      session: { role: 'employee', employeeId: partTimeProfile.id, storeId: 'OFFICE' },
+      currentEmployee: partTimeProfile,
+      employees: [partTimeProfile],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+    fireEvent.change(screen.getByLabelText('Chọn ca làm việc để điểm danh'), { target: { value: 'ca_chieu' } })
+    expect(screen.getByText('13:00 – 17:30')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i }))
+
+    await waitFor(() => expect(mocked.app.checkIn).toHaveBeenCalledTimes(1))
+    expect(mocked.app.checkIn).toHaveBeenCalledWith(expect.objectContaining({
+      employeeId: 'VP-PT-001',
+      shiftId: 'ca_chieu',
+      workShiftId: 'ca_chieu',
+      shiftName: 'Ca chiều',
+      shiftStart: '13:00',
+      shiftEnd: '17:30',
+    }))
+  })
 })

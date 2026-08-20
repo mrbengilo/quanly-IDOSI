@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { useApp } from '../state/AppContext'
 import { Avatar, Brand, Toast } from '../components/UI'
+import { resolveOrderNotificationTarget, resolveOrderRouteScope } from '../domain/orderStoreScope'
 import { isOfficeProfile } from '../pages/employee/officeAttendance'
 
 const systemOperations = [
@@ -110,12 +111,11 @@ const notificationTime24 = (value) => {
 }
 
 const notificationId = (item) => String(item?.id || item?.notificationId || item?.data?.notificationId || '')
-const notificationOrderId = (item) => String(item?.orderId || item?.order_id || item?.data?.orderId || item?.data?.order_id || item?.order?.id || '')
 const notificationStoreId = (item) => String(item?.storeId || item?.store_id || item?.data?.storeId || item?.data?.store_id || item?.order?.storeId || item?.store?.id || '')
 const notificationKey = (item) => notificationId(item) || [
   item?.type || 'notification',
   notificationStoreId(item),
-  notificationOrderId(item),
+  item?.orderId || item?.orderCode || item?.data?.orderId || item?.data?.orderCode || '',
   item?.createdAt || item?.time || item?.updatedAt || '',
 ].join(':')
 const isAssignedTaskNotification = (item) => ['support-work-assigned', 'store-task-assigned'].includes(String(item?.type || ''))
@@ -152,9 +152,19 @@ export default function AppShell() {
   const assignedStoreId = [session?.assignedStoreId, session?.storeId]
     .find((storeId) => stores.some((store) => store.id === storeId)) || ''
   const isStoreBoundRole = isEmployee || isStoreManager
+  const workspaceSearch = new URLSearchParams(location.search)
+  const workspaceOrderScope = resolveOrderRouteScope({
+    requestedStoreId: isStoreWorkspace ? workspaceSearch.get('store') : '',
+    requestedOrderId: isStoreWorkspace ? workspaceSearch.get('order') : '',
+    fallbackStoreId: activeStoreId || assignedStoreId,
+    orders: app.orders,
+    stores,
+  })
   const selectedStoreId = isStoreBoundRole
     ? (stores.some((store) => store.id === assignedStoreId) ? assignedStoreId : '')
-    : stores.some((store) => store.id === activeStoreId)
+    : isStoreWorkspace && workspaceOrderScope.storeId
+      ? workspaceOrderScope.storeId
+      : stores.some((store) => store.id === activeStoreId)
       ? activeStoreId
       : stores.some((store) => store.id === assignedStoreId)
         ? assignedStoreId
@@ -185,6 +195,12 @@ export default function AppShell() {
   }), [isAdmin, locallyReadNotificationIds, notificationItems, scopedNotificationStoreId, sessionEmployeeId])
   const readNotification = app.readNotification || app.markNotificationRead || app.dismissNotification
   const clearNotifications = app.clearNotifications || app.clearAllNotifications || app.deleteAllNotifications
+
+  useEffect(() => {
+    if (!isStoreWorkspace || !isSystemOperator || !selectedStoreId || String(selectedStoreId) === String(activeStoreId)) return
+    const changeActiveStore = app.setActiveStoreId || app.setActiveStore
+    changeActiveStore?.(selectedStoreId)
+  }, [activeStoreId, app.setActiveStore, app.setActiveStoreId, isStoreWorkspace, isSystemOperator, selectedStoreId])
 
   useEffect(() => {
     if (!notificationOpen) return undefined
@@ -264,13 +280,13 @@ export default function AppShell() {
       })
     }
     app.onNotificationOpen?.(item)
-    const requestedOrderId = notificationOrderId(item)
-    const matchingOrder = (Array.isArray(app.orders) ? app.orders : []).find((order) => (
-      String(order?.id || '') === requestedOrderId
-      || String(order?.code || '') === requestedOrderId
-    ))
-    const orderId = String(matchingOrder?.id || requestedOrderId || item?.orderCode || item?.data?.orderCode || '')
-    const targetStoreId = String(matchingOrder?.storeId || notificationStoreId(item))
+    const target = resolveOrderNotificationTarget({
+      notification: item,
+      orders: app.orders,
+      stores,
+    })
+    const orderId = target.orderId
+    const targetStoreId = target.storeId
     if (isSystemOperator
       && targetStoreId
       && stores.some((store) => String(store.id) === targetStoreId)) {

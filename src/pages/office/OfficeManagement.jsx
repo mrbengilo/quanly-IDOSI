@@ -45,6 +45,12 @@ import {
   OFFICE_POSITIONS,
   validateOfficeEmployee,
 } from './officeEmployeeForm'
+import { WorkingTimeFields } from './WorkingTimeFields'
+import {
+  normalizeWorkingTimeForm,
+  withEmploymentWorkingTime,
+  workingTimePayload,
+} from './workingTime'
 
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
 const IDENTITY_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
@@ -63,6 +69,7 @@ const emptyEmployee = {
   workTimeType: 'Full-Time',
   workStart: '08:00',
   workEnd: '17:30',
+  workShifts: [{ id: 'full_time', name: 'Giờ hành chính', start: '08:00', end: '17:30' }],
   position: OFFICE_POSITIONS[0],
   identityImages: { front: '', back: '' },
   username: '',
@@ -101,6 +108,8 @@ const isOfficeEmployee = (employee = {}) => Boolean(
 
 const employeeToForm = (employee = {}) => {
   const address = addressParts(employee)
+  const employmentType = officeEmployeeType(employee)
+  const workingTime = normalizeWorkingTimeForm(employee, employmentType)
   return {
     ...emptyEmployee,
     code: employeeCode(employee),
@@ -111,10 +120,8 @@ const employeeToForm = (employee = {}) => {
     ward: address.ward,
     street: address.street,
     startDate: String(employee.startDate || employee.joinDate || '').slice(0, 10),
-    employmentType: officeEmployeeType(employee),
-    workTimeType: employee.workTimeType || (officeEmployeeType(employee) === 'Full-Time' ? 'Full-Time' : 'Part-Time'),
-    workStart: employee.workStart || '08:00',
-    workEnd: employee.workEnd || (officeEmployeeType(employee) === 'Full-Time' ? '17:30' : '12:00'),
+    employmentType,
+    ...workingTime,
     position: OFFICE_POSITIONS.includes(employee.position || employee.workPosition || employee.role)
       ? (employee.position || employee.workPosition || employee.role)
       : OFFICE_POSITIONS[0],
@@ -231,7 +238,11 @@ export function OfficeManagement() {
   const openEmployeeCreate = () => {
     if (!canCreateOffice) return
     setEditingEmployee(null)
-    setEmployeeForm({ ...emptyEmployee, code: nextOfficeEmployeeCodeFromState({ employees: allEmployees, deletedEmployees }) })
+    setEmployeeForm({
+      ...emptyEmployee,
+      workShifts: emptyEmployee.workShifts.map((shift) => ({ ...shift })),
+      code: nextOfficeEmployeeCodeFromState({ employees: allEmployees, deletedEmployees }),
+    })
     setEmployeeErrors([])
     setShowPassword(false)
     setImageBusy('')
@@ -250,7 +261,11 @@ export function OfficeManagement() {
   const closeEmployeeDrawer = () => {
     setEmployeeDrawer(false)
     setEditingEmployee(null)
-    setEmployeeForm({ ...emptyEmployee, identityImages: { ...emptyEmployee.identityImages } })
+    setEmployeeForm({
+      ...emptyEmployee,
+      identityImages: { ...emptyEmployee.identityImages },
+      workShifts: emptyEmployee.workShifts.map((shift) => ({ ...shift })),
+    })
     setEmployeeErrors([])
     setShowPassword(false)
     setImageBusy('')
@@ -260,12 +275,8 @@ export function OfficeManagement() {
     let value = event.target.value
     if (field === 'cccd') value = value.replace(/\D/g, '').slice(0, 12)
     if (field === 'phone') value = value.replace(/\D/g, '').slice(0, 10)
-    setEmployeeForm((current) => field === 'workTimeType'
-      ? {
-          ...current,
-          workTimeType: value,
-          ...(value === 'Full-Time' ? { workStart: '08:00', workEnd: '17:30' } : {}),
-        }
+    setEmployeeForm((current) => field === 'employmentType'
+      ? withEmploymentWorkingTime(current, value)
       : ({ ...current, [field]: value }))
   }
 
@@ -349,9 +360,7 @@ export function OfficeManagement() {
       startDate: employeeForm.startDate,
       joinDate: employeeForm.startDate,
       employmentType: employeeForm.employmentType,
-      workTimeType: employeeForm.workTimeType,
-      workStart: employeeForm.workStart,
-      workEnd: employeeForm.workEnd,
+      ...workingTimePayload(employeeForm),
       officeEmployeeType: employeeForm.employmentType,
       officeEmploymentType: employeeForm.employmentType,
       position: employeeForm.position.trim(),
@@ -497,11 +506,10 @@ export function OfficeManagement() {
             <Field label="CCCD" required hint="CCCD phải gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={employeeForm.cccd} onChange={updateEmployeeField('cccd')} placeholder="012345678901" /></Field>
             <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={employeeForm.startDate} onChange={updateEmployeeField('startDate')} /></Field>
             <Field label="Loại nhân viên" required><Select value={employeeForm.employmentType} onChange={updateEmployeeField('employmentType')}>{OFFICE_EMPLOYEE_TYPES.map((type) => <option key={type}>{type}</option>)}</Select></Field>
-            <Field label="Thời gian làm việc" required><Select value={employeeForm.workTimeType} onChange={updateEmployeeField('workTimeType')}><option>Full-Time</option><option>Part-Time</option></Select></Field>
-            <Field label="Giờ bắt đầu (24 giờ)" required hint={employeeForm.workTimeType === 'Full-Time' ? 'Khung Full-Time mặc định; Admin/Hỗ trợ KD có thể điều chỉnh.' : 'Thiết lập theo ca sáng, chiều hoặc thời gian linh hoạt.'}><Input type="time" value={employeeForm.workStart} onChange={updateEmployeeField('workStart')} /></Field>
-            <Field label="Giờ kết thúc (24 giờ)" required><Input type="time" value={employeeForm.workEnd} onChange={updateEmployeeField('workEnd')} /></Field>
             <Field label="Vị trí công việc" required><Select value={employeeForm.position} onChange={updateEmployeeField('position')}>{OFFICE_POSITIONS.map((position) => <option key={position}>{position}</option>)}</Select></Field>
           </div>
+          <h3>Thời gian làm việc</h3>
+          <WorkingTimeFields form={employeeForm} onChange={(workingTime) => setEmployeeForm((current) => ({ ...current, ...workingTime }))} />
           <h3>Địa chỉ</h3>
           <AddressAutocomplete
             value={{ province: employeeForm.province, ward: employeeForm.ward, street: employeeForm.street }}

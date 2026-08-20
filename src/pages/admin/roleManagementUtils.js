@@ -1,4 +1,9 @@
 import { today } from '../../utils'
+import {
+  normalizeWorkingTimeForm,
+  validateWorkingTime,
+  workingTimePayload,
+} from '../office/workingTime'
 
 export const ROLE_KEYS = Object.freeze({
   businessSupport: 'business_support',
@@ -132,6 +137,10 @@ export const emptyRoleProfile = (roleKey = ROLE_KEYS.businessSupport) => ({
   street: '',
   startDate: today(),
   employmentType: EMPLOYMENT_TYPES[0],
+  workTimeType: 'Full-Time',
+  workStart: '08:00',
+  workEnd: '17:30',
+  workShifts: [{ id: 'full_time', name: 'Giờ hành chính', start: '08:00', end: '17:30' }],
   position: ROLE_POSITIONS[roleKey],
   identityImages: { front: '', back: '' },
   username: '',
@@ -146,6 +155,7 @@ export const emptyRoleProfile = (roleKey = ROLE_KEYS.businessSupport) => ({
 
 export const roleProfileToForm = (profile = {}, roleKey = ROLE_KEYS.businessSupport) => {
   const address = roleProfileAddress(profile) === '—' ? '' : roleProfileAddress(profile)
+  const employmentType = roleEmploymentType(profile)
   return {
     ...emptyRoleProfile(roleKey),
     ...profileAddressParts(profile),
@@ -155,7 +165,8 @@ export const roleProfileToForm = (profile = {}, roleKey = ROLE_KEYS.businessSupp
     cccd: String(profile.cccd || profile.citizenId || ''),
     address,
     startDate: profile.startDate || profile.joinDate || profile.employmentStartDate || profile.hireDate || '',
-    employmentType: roleEmploymentType(profile),
+    employmentType,
+    ...normalizeWorkingTimeForm(profile, employmentType),
     position: ROLE_POSITIONS[roleKey],
     identityImages: identityImagesFromProfile(profile),
     username: profile.username || '',
@@ -197,6 +208,7 @@ export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requ
   if (!/^\d{12}$/u.test(String(form?.cccd || ''))) errors.push('CCCD phải gồm đúng 12 chữ số.')
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(form?.startDate || ''))) errors.push('Ngày bắt đầu làm không hợp lệ.')
   if (!roleEmploymentTypes(roleKey).includes(form?.employmentType)) errors.push('Loại nhân viên không hợp lệ.')
+  if (roleKey === ROLE_KEYS.businessSupport) errors.push(...validateWorkingTime(form))
   if (String(form?.position || '') !== ROLE_POSITIONS[roleKey]) errors.push('Vị trí công việc không đúng với vai trò tài khoản.')
   if (!form?.identityImages?.front) errors.push('Hình CCCD mặt trước là bắt buộc.')
   if (!form?.identityImages?.back) errors.push('Hình CCCD mặt sau là bắt buộc.')
@@ -237,6 +249,7 @@ export const roleProfilePayload = (form = {}, roleKey = ROLE_KEYS.businessSuppor
     ...(structuredAddress ? { addressDetails } : {}),
     startDate: form.startDate,
     employmentType: form.employmentType,
+    ...(!isStoreManager ? workingTimePayload(form) : {}),
     position,
     ...(Object.keys(identityImages).length ? { identityImages } : {}),
     username: form.username.trim(),

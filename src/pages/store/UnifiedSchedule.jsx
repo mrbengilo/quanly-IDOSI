@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Check,
   Clock3,
+  Download,
   Edit3,
   Plus,
   Save,
@@ -13,23 +14,22 @@ import {
 } from 'lucide-react'
 import {
   Avatar,
-  Badge,
   Button,
   Card,
   EmptyState,
   Field,
   InfoNote,
   Input,
-  MetricCard,
   Modal,
-  PageHeader,
   SearchInput,
   Select,
   TableFooter,
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
+import { downloadCsv } from '../../utils'
 import { removeShiftAssignments, replaceShiftAssignees } from './scheduleAssignments'
+import './UnifiedSchedule.css'
 
 const localDate = () => {
   const value = new Date()
@@ -197,6 +197,15 @@ export function UnifiedSchedule() {
     && employeeIds.has(String(record.employeeId))
     && (!record.storeId || !storeId || String(record.storeId) === String(storeId))
   ))
+  const scheduledEmployeeIds = new Set(daySchedule.map((record) => String(record.employeeId)))
+  const assignedEmployeeCountByShift = new Map()
+  daySchedule.forEach((record) => {
+    const ids = record.shiftIds || (record.shiftId ? [record.shiftId] : [])
+    ids.forEach((shiftId) => {
+      const key = String(shiftId)
+      assignedEmployeeCountByShift.set(key, (assignedEmployeeCountByShift.get(key) || 0) + 1)
+    })
+  })
   const visibleEmployees = employees.filter((employee) => (
     `${employee.id || ''} ${employee.code || ''} ${employee.name || ''} ${employeeRole(employee)}`
       .toLocaleLowerCase('vi')
@@ -426,28 +435,88 @@ export function UnifiedSchedule() {
     if (!result?.ok) notify?.(result?.message || 'Chưa thể xóa lịch phân ca.', 'info')
   }
 
+  const exportDailySchedule = () => {
+    const rows = daySchedule.flatMap((record) => {
+      const employee = employees.find((item) => String(item.id) === String(record.employeeId))
+      const ids = record.shiftIds || (record.shiftId ? [record.shiftId] : [])
+      return ids.map((shiftId) => {
+        const shift = resolveScheduledShift(record, shiftId)
+        return {
+          Ngày: displayDate(date),
+          'Mã nhân viên': employee?.code || employee?.id || record.employeeId,
+          'Tên nhân viên': employee?.name || record.employeeName || record.employeeId,
+          'Vị trí': employeeRole(employee),
+          Ca: shift.name,
+          'Giờ bắt đầu': shift.start || '',
+          'Giờ kết thúc': shift.end || '',
+          'Ghi chú': record.note || '',
+        }
+      })
+    })
+    if (!rows.length) {
+      notify?.('Ngày đang chọn chưa có lịch phân ca để xuất.', 'info')
+      return
+    }
+    downloadCsv(`lich-phan-ca-${date}.csv`, rows)
+  }
+
   return (
-    <div className="page">
-      <PageHeader
-        title="Lịch phân ca"
-        subtitle={`Tạo ca và phân lịch theo từng ngày cho ${activeStore?.name || 'cửa hàng'}.`}
-        icon={CalendarDays}
-        actions={(
-          <>
-            <Input icon={CalendarDays} type="date" value={date} onChange={changeDate} aria-label="Ngày phân ca" />
-            {canManageStore && <Button variant="outline" icon={Plus} onClick={openCreateShift}>Tạo ca làm việc</Button>}
-            {canManageStore && <Button icon={CalendarDays} onClick={openAssignmentModal}>PHÂN CA</Button>}
-          </>
-        )}
-      />
+    <div className="page unified-schedule-page">
+      <header className="schedule-page-hero">
+        <div className="schedule-page-hero__store">
+          <strong>CỬA HÀNG · {activeStore?.name || 'IDOSI'}</strong>
+          <span>Dữ liệu phân ca độc lập theo cửa hàng.</span>
+        </div>
+        <h1>Lịch phân ca</h1>
+        <span className="schedule-page-hero__status"><i /> Đang hoạt động</span>
+      </header>
+
+      <Card className="schedule-toolbar-card">
+        <div className="schedule-toolbar-card__copy">
+          <h2>Lịch phân ca</h2>
+          <p>Tạo ca dùng chung, sau đó phân nhiều ca cho nhiều nhân viên.</p>
+        </div>
+        <div className="schedule-toolbar-card__actions">
+          <Input icon={CalendarDays} type="date" value={date} onChange={changeDate} aria-label="Ngày phân ca" />
+          <Button variant="outline" icon={Download} onClick={exportDailySchedule}>Xuất Excel</Button>
+          {canManageStore && <Button variant="outline" icon={Plus} onClick={openCreateShift}>Tạo ca làm việc</Button>}
+          {canManageStore && <Button icon={CalendarDays} onClick={openAssignmentModal} aria-label="PHÂN CA">Tạo lịch phân ca</Button>}
+        </div>
+      </Card>
       {!canManageStore && <InfoNote>Chế độ chỉ xem. Tài khoản hiện tại không thể tạo, sửa, xóa ca hoặc thay đổi lịch phân ca.</InfoNote>}
 
-      <div className="metric-grid metric-grid--four schedule-metrics">
-        <MetricCard label="Lịch trong ngày" value={createdScheduleRows.length} suffix="lịch" icon={Clock3} tone="blue" compact />
-        <MetricCard label="Nhân viên đã xếp" value={new Set(daySchedule.map((item) => item.employeeId)).size} suffix="người" icon={Users} tone="green" compact />
-        <MetricCard label="Ca hoạt động" value={dayShifts.length} suffix="ca" icon={CalendarDays} tone="purple" compact />
-        <MetricCard label="Chưa phân ca" value={Math.max(0, employees.length - new Set(daySchedule.map((item) => item.employeeId)).size)} suffix="người" icon={Users} tone="orange" compact />
-      </div>
+      {dayShifts.length ? (
+        <section className="schedule-shift-card-grid" aria-label="Ca làm việc dùng chung">
+          {dayShifts.map((shift) => {
+            const assignedCount = assignedEmployeeCountByShift.get(String(shift.id)) || 0
+            return (
+              <article key={shift.id} className="schedule-shift-card" style={{ '--shift-color': shift.color || '#07873d' }}>
+                <i className="schedule-shift-card__accent" aria-hidden="true" />
+                <div className="schedule-shift-card__clock"><Clock3 /></div>
+                <div className="schedule-shift-card__content">
+                  <strong>{shift.name}</strong>
+                  <b>{timeLabel(shift.start, shift.end)}</b>
+                  <span>{durationLabel(shift)} · {assignedCount} nhân viên</span>
+                  <small>Cập nhật: {displayDateTime(shift.updatedAt || shift.createdAt)}</small>
+                </div>
+                {canManageStore && <div className="schedule-shift-card__actions">
+                  <button type="button" onClick={() => openEditShift(shift)} aria-label={`Sửa ${shift.name}`}><Edit3 /></button>
+                  <button type="button" className="danger" onClick={() => removeShift(shift)} aria-label={`Xóa ${shift.name}`}><Trash2 /></button>
+                </div>}
+              </article>
+            )
+          })}
+        </section>
+      ) : (
+        <Card className="schedule-no-shifts"><EmptyState title="Chưa có ca làm việc" description={canManageStore ? 'Tạo ca một lần để dùng lại khi phân lịch.' : 'Cửa hàng chưa có dữ liệu ca làm việc.'} /></Card>
+      )}
+
+      <section className="schedule-stat-strip" aria-label="Thống kê lịch phân ca">
+        <article><CalendarDays /><strong>{createdScheduleRows.length}</strong><span>Lịch trong ngày</span></article>
+        <article><Users /><strong>{scheduledEmployeeIds.size}</strong><span>Nhân viên đã xếp</span></article>
+        <article><Clock3 /><strong>{dayShifts.length}</strong><span>Ca hoạt động</span></article>
+        <article><Users /><strong>{Math.max(0, employees.length - scheduledEmployeeIds.size)}</strong><span>Chưa phân ca</span></article>
+      </section>
 
       <Card className="schedule-board">
         <div className="card__subheader">
@@ -460,7 +529,7 @@ export function UnifiedSchedule() {
             <Button variant="outline" icon={ChevronLeft} onClick={() => setDate((current) => moveDate(current, viewMode === 'week' ? -7 : -1))} aria-label="Lùi thời gian" />
             <strong>{viewMode === 'week' ? `${displayDate(datesOfWeek[0])} – ${displayDate(datesOfWeek[6])}` : displayDate(date)}</strong>
             <Button variant="outline" icon={ChevronRight} onClick={() => setDate((current) => moveDate(current, viewMode === 'week' ? 7 : 1))} aria-label="Tiến thời gian" />
-            <Button variant="outline" onClick={() => setDate(localDate())}>Hôm nay</Button>
+            <Button variant="outline" className="schedule-today-button" onClick={() => setDate(localDate())}>Hôm nay</Button>
           </div>
         </div>
         {viewMode === 'day' && (dayShifts.length ? <TableWrap className="schedule-matrix">
@@ -488,41 +557,6 @@ export function UnifiedSchedule() {
           })}</tbody></TableWrap>
         </>}
       </Card>
-
-      <div className="chart-grid schedule-management-grid">
-        <Card
-          title="Ca làm việc dùng chung"
-          action={canManageStore ? <Button variant="outline" icon={Plus} onClick={openCreateShift}>Tạo ca</Button> : null}
-        >
-          {dayShifts.length ? (
-            <>
-              <TableWrap>
-                <thead><tr><th>Tên ca</th><th>Thời gian</th><th>Thời lượng</th><th>Phiên bản</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
-                <tbody>
-                  {dayShifts.map((shift) => (
-                    <tr key={shift.id}>
-                      <td><Badge tone="blue">{shift.name}</Badge></td>
-                      <td><strong>{timeLabel(shift.start, shift.end)}</strong></td>
-                      <td>{durationLabel(shift)}</td>
-                      <td>v{shift.version || 1}</td>
-                      {canManageStore && <td>
-                        <div className="row-actions">
-                          <button type="button" onClick={() => openEditShift(shift)} aria-label={`Sửa ${shift.name}`}><Edit3 /></button>
-                          <button type="button" className="danger" onClick={() => removeShift(shift)} aria-label={`Xóa ${shift.name}`}><Trash2 /></button>
-                        </div>
-                      </td>}
-                    </tr>
-                  ))}
-                </tbody>
-              </TableWrap>
-              <InfoNote>Dữ liệu chấm công và lịch cũ dùng bản chụp tên, giờ bắt đầu và giờ kết thúc; sửa ca hôm nay không đổi lịch sử.</InfoNote>
-            </>
-          ) : (
-          <EmptyState title="Chưa có ca làm việc" description={canManageStore ? 'Tạo ca một lần để dùng lại khi phân lịch tuần hoặc tháng.' : 'Cửa hàng chưa có dữ liệu ca làm việc.'} />
-          )}
-        </Card>
-
-      </div>
 
       <Card className="created-schedule-card">
         <div className="created-schedule-card__header">

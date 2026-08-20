@@ -1,0 +1,46 @@
+.working-time-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.working-time-fields__list {
+  display: grid;
+  gap: 10px;
+}
+
+.working-time-fields__row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) minmax(150px, 1fr) minmax(150px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--border, #d9e5dc);
+  border-radius: 14px;
+  background: var(--surface-soft, #f8fbf9);
+}
+
+.working-time-fields__remove {
+  display: inline-grid;
+  place-items: center;
+  min-width: 44px;
+  min-height: 44px;
+  margin-bottom: 1px;
+  border: 1px solid #f3c6c6;
+  border-radius: 10px;
+  color: #d12f2f;
+  background: #fff;
+}
+
+.working-time-fields__remove:disabled {
+  opacity: .4;
+}
+
+@media (max-width: 720px) {
+  .working-time-fields__row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .working-time-fields__row > :first-child {
+    grid-column: 1 / -1;
+  }
+}

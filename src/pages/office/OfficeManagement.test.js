@@ -6,6 +6,11 @@ import {
   OFFICE_POSITIONS,
   validateOfficeEmployee,
 } from './officeEmployeeForm'
+import {
+  nextAvailableWorkShift,
+  validateWorkingTime,
+  workingTimePayload,
+} from './workingTime'
 
 const validForm = (overrides = {}) => ({
   code: 'VP-001',
@@ -62,5 +67,34 @@ describe('office employee form', () => {
     const existing = [{ id: 'HTKD-001', cccd: validForm().cccd, phone: validForm().phone, username: 'support-role' }]
     expect(validateOfficeEmployee(validForm(), existing, '', true)).toEqual([])
     expect(validateOfficeEmployee(validForm({ username: 'support-role' }), existing, '', true)).toContain('Tên đăng nhập đã tồn tại.')
+  })
+
+  it('builds canonical Full-Time and flexible-shift payloads', () => {
+    const shifts = [
+      { id: 'ca_sang', name: 'Ca sáng', start: '08:00', end: '12:00' },
+      { id: 'ca_chieu', name: 'Ca chiều', start: '13:00', end: '17:30' },
+    ]
+    const payload = workingTimePayload({ employmentType: 'Part-Time', workTimeType: 'Part-Time', workShifts: shifts })
+    expect(payload).toEqual({
+      workTimeType: 'Part-Time',
+      workStart: '08:00',
+      workEnd: '12:00',
+      workShifts: shifts,
+      workingTime: { type: 'Part-Time', mode: 'shifts', shifts },
+    })
+    expect(validateWorkingTime({ employmentType: 'Full-Time', workTimeType: 'Full-Time', workShifts: shifts }))
+      .toContain('Nhân viên Full-Time chỉ dùng một khung giờ cố định.')
+  })
+
+  it('uses the first available stable shift id after deleting a middle row', () => {
+    const remaining = [
+      { id: 'work_1', name: 'Ca 1', start: '08:00', end: '12:00' },
+      { id: 'work_3', name: 'Ca 3', start: '17:00', end: '21:00' },
+    ]
+    const added = nextAvailableWorkShift(remaining)
+    const workShifts = [...remaining, added]
+    expect(added.id).toBe('work_2')
+    expect(validateWorkingTime({ employmentType: 'Part-Time', workTimeType: 'Part-Time', workShifts })).toEqual([])
+    expect(new Set(workingTimePayload({ employmentType: 'Part-Time', workShifts }).workShifts.map(({ id }) => id)).size).toBe(3)
   })
 })

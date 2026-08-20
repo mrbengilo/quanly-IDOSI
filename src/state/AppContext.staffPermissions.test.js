@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   canCreateEmployeeUnit,
+  canBusinessSupportUpdateEmployee,
   canManagePolicies,
   createInitialState,
   createLocalSystemResetState,
@@ -17,6 +18,18 @@ describe('Business Support staff and policy permissions', () => {
     expect(canCreateEmployeeUnit('business_support', 'business_support')).toBe(false)
     expect(canCreateEmployeeUnit('store_manager', 'office')).toBe(false)
     expect(canCreateEmployeeUnit('employee', 'store')).toBe(false)
+  })
+
+  it('keeps full Office edit rights but whitelists Business Support profile changes to working time', () => {
+    const shifts = [{ id: 'ca_sang', name: 'Ca sáng', start: '08:00', end: '12:00' }]
+    expect(canBusinessSupportUpdateEmployee({ unit: 'office' }, { phone: '0901234567', workShifts: shifts })).toBe(true)
+    expect(canBusinessSupportUpdateEmployee({ unit: 'business_support' }, {
+      workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00', workShifts: shifts,
+      workingTime: { type: 'Part-Time', mode: 'shifts', shifts },
+    })).toBe(true)
+    for (const protectedField of ['username', 'password', 'status', 'salary', 'unit', 'storeId', 'phone', 'address']) {
+      expect(canBusinessSupportUpdateEmployee({ unit: 'business_support' }, { [protectedField]: 'blocked' }), protectedField).toBe(false)
+    }
   })
 
   it('shares policy editing with Business Support while excluding store roles', () => {

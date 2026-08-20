@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { StoreOrdersPage } from '../pages/store/StoreV2Pages'
 import AppShell from './AppShell'
 
 const mocked = vi.hoisted(() => ({
@@ -9,6 +10,8 @@ const mocked = vi.hoisted(() => ({
   readNotification: vi.fn(),
   clearNotifications: vi.fn(),
   setActiveStoreId: vi.fn(),
+  updateOrder: vi.fn(),
+  deleteOrder: vi.fn(),
   notifications: [],
   orders: [],
 }))
@@ -36,6 +39,8 @@ vi.mock('../state/AppContext', () => ({
     readNotification: mocked.readNotification,
     clearNotifications: mocked.clearNotifications,
     setActiveStoreId: mocked.setActiveStoreId,
+    updateOrder: mocked.updateOrder,
+    deleteOrder: mocked.deleteOrder,
     logout: vi.fn(),
     notify: vi.fn(),
     toast: null,
@@ -59,6 +64,8 @@ describe('AppShell notifications', () => {
     mocked.readNotification.mockReset()
     mocked.clearNotifications.mockReset().mockResolvedValue({ ok: true, updatedCount: 2 })
     mocked.setActiveStoreId.mockReset()
+    mocked.updateOrder.mockReset()
+    mocked.deleteOrder.mockReset()
   })
 
   it('marks all notifications in one scoped command instead of one request per item', async () => {
@@ -72,15 +79,20 @@ describe('AppShell notifications', () => {
     expect(mocked.readNotification).not.toHaveBeenCalled()
   })
 
-  it('switches to the notification store before opening its order', async () => {
+  it('opens a legacy order-code notification in its authoritative store workspace', async () => {
     mocked.notifications = baseNotifications.map((item) => (
-      item.id === 'N3' ? { ...item, storeId: 'CH001' } : item
+      item.id === 'N3' ? { ...item, orderId: undefined, orderCode: 'CH2-00001', storeId: 'CH001' } : item
     ))
+    mocked.orders = [
+      { id: 'ORDER-CH001', code: 'CH1-00001', storeId: 'CH001', amount: 10_000, createdAt: '2026-08-20T08:00:00+07:00' },
+      { id: 'ORDER-CH002', code: 'CH2-00001', storeId: 'CH002', amount: 20_000, createdAt: '2026-08-20T09:00:00+07:00' },
+    ]
     mocked.readNotification.mockResolvedValue({ ok: true })
     render(
       <MemoryRouter initialEntries={['/admin/overview']}>
         <Routes>
           <Route element={<AppShell />}>
+            <Route path="/store/orders" element={<><StoreOrdersPage /><CurrentRoute /></>} />
             <Route path="*" element={<CurrentRoute />} />
           </Route>
         </Routes>
@@ -92,7 +104,11 @@ describe('AppShell notifications', () => {
 
     expect(mocked.setActiveStoreId).toHaveBeenCalledWith('CH002')
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/orders?store=CH002&order=ORDER-CH002'))
+    expect(document.querySelector('.global-topbar__store-name')?.textContent).toBe('Cua hang 2')
+    expect(screen.getByText('CH2-00001')).toBeTruthy()
+    expect(screen.queryByText('CH1-00001')).toBeNull()
     await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N3'))
+    expect(mocked.readNotification).toHaveBeenCalledTimes(1)
   })
 
   it('marks only the selected order notification as read', async () => {

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -189,10 +189,15 @@ describe('admin role management helpers', () => {
     expect(supportPayload).not.toHaveProperty('code')
     expect(supportPayload).not.toHaveProperty('salary')
     expect(supportPayload).not.toHaveProperty('status')
-    expect(supportPayload).not.toHaveProperty('workStart')
+    expect(supportPayload).toMatchObject({
+      workTimeType: 'Full-Time', workStart: '08:00', workEnd: '17:30',
+      workShifts: [{ id: 'full_time', name: 'Giờ hành chính', start: '08:00', end: '17:30' }],
+      workingTime: { type: 'Full-Time', mode: 'fixed' },
+    })
     expect(supportPayload).not.toHaveProperty('standardWorkDays')
     expect(Object.keys(supportPayload).sort()).toEqual([
       'address', 'cccd', 'employmentType', 'identityImages', 'name', 'password', 'phone', 'position', 'startDate', 'storeId', 'unit', 'username',
+      'workTimeType', 'workStart', 'workEnd', 'workShifts', 'workingTime',
     ].sort())
   })
 
@@ -248,14 +253,42 @@ describe('role management permissions and form', () => {
     render(createElement(BusinessSupportManagement))
 
     expect(screen.getByText('Nguyễn An')).toBeTruthy()
-    expect(screen.getByText('Chế độ chỉ xem. Chỉ Admin được quản lý tài khoản này.')).toBeTruthy()
+    expect(screen.getByText('Chỉ Admin được quản lý tài khoản; Admin và Hỗ trợ KD được cấu hình thời gian làm việc.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Thêm tài khoản/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Sửa Nguyễn An/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Xóa Nguyễn An/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Cài giờ làm Nguyễn An/i })).toBeTruthy()
     const viewFront = screen.getByRole('button', { name: /Xem mặt trước CCCD Nguyễn An/i })
     expect(viewFront.closest('.identity-image-actions--stable')).toBeTruthy()
     fireEvent.click(viewFront)
     expect(screen.getByRole('img', { name: /Nguyễn An · Mặt trước CCCD/i }).closest('.identity-document-viewer__frame')).toBeTruthy()
+  })
+
+  it('submits only canonical working-time fields when Business Support configures another support profile', async () => {
+    const updateBusinessSupport = vi.fn().mockResolvedValue({ ok: true })
+    mocked.app = {
+      ...baseApp('business_support'),
+      updateBusinessSupport,
+      businessSupportEmployees: [{
+        id: 'HTKD-002', name: 'Hỗ trợ ca', employmentType: 'Part-Time',
+        workShifts: [
+          { id: 'ca_sang', name: 'Ca sáng', start: '08:00', end: '12:00' },
+          { id: 'ca_chieu', name: 'Ca chiều', start: '13:00', end: '17:30' },
+        ],
+      }],
+    }
+
+    render(createElement(BusinessSupportManagement))
+    fireEvent.click(screen.getByRole('button', { name: 'Cài giờ làm Hỗ trợ ca' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu giờ làm' }))
+
+    await waitFor(() => expect(updateBusinessSupport).toHaveBeenCalledTimes(1))
+    const [, payload] = updateBusinessSupport.mock.calls[0]
+    expect(Object.keys(payload).sort()).toEqual(['workEnd', 'workShifts', 'workStart', 'workTimeType', 'workingTime'].sort())
+    expect(payload).toMatchObject({ workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00' })
+    expect(payload).not.toHaveProperty('username')
+    expect(payload).not.toHaveProperty('status')
+    expect(payload).not.toHaveProperty('salary')
   })
 
   it('shows Admin the store-manager assignment and dual-role selection form', () => {

@@ -36,6 +36,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { calculateKpiBonuses, financeSummaryFromState } from '../../domain'
+import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
 
@@ -184,8 +185,24 @@ export function StoreReportsV2() {
 }
 
 export function StoreOrdersPage() {
-  const [searchParams] = useSearchParams()
-  const app = useStoreData(searchParams.get('store') || '')
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedStoreParam = searchParams.get('store') || ''
+  const requestedOrderParam = searchParams.get('order') || ''
+  const initialApp = useStoreData(requestedStoreParam)
+  const routeScope = resolveOrderRouteScope({
+    requestedStoreId: requestedStoreParam,
+    requestedOrderId: requestedOrderParam,
+    fallbackStoreId: initialApp.storeId,
+    orders: initialApp.orders,
+    stores: initialApp.stores,
+  })
+  const app = routeScope.storeId && routeScope.storeId !== initialApp.storeId
+    ? {
+        ...initialApp,
+        storeId: routeScope.storeId,
+        store: initialApp.stores.find((item) => String(item.id) === String(routeScope.storeId)),
+      }
+    : initialApp
   const { storeId, store, orders = [], employees = [], updateOrder, deleteOrder, notify } = app
   const canManageOrders = ['admin', 'business_support', 'manager'].includes(app.session?.role)
   const [view, setView] = useState('shift')
@@ -197,7 +214,7 @@ export function StoreOrdersPage() {
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAge: '', gender: 'Khác', occupation: '', acquisitionChannel: 'Khác', amount: '', paymentMethod: 'Chuyển khoản', reason: '' })
   const storeOrders = orders.filter((order) => order.storeId === storeId && order.source !== 'legacy-opening-balance' && !order.deletedAt)
-  const requestedOrderId = String(searchParams.get('order') || '')
+  const requestedOrderId = String(requestedOrderParam)
   const requestedOrder = storeOrders.find((order) => [order.id, order.code].map(String).includes(requestedOrderId))
   const requestedOrderKey = String(requestedOrder?.id || '')
   const employeeOptions = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId)
@@ -235,9 +252,18 @@ export function StoreOrdersPage() {
   }, { orders: 0, transfer: 0, cash: 0, revenue: 0 })
 
   useEffect(() => {
+    if (!requestedOrderKey || !storeId || requestedStoreParam === String(storeId)) return
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('store', String(storeId))
+      return next
+    }, { replace: true })
+  }, [requestedOrderKey, requestedStoreParam, setSearchParams, storeId])
+
+  useEffect(() => {
     if (!requestedOrderKey) return undefined
     const scrollTimer = window.setTimeout(() => {
-      document.getElementById(`order-${requestedOrderKey}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      document.getElementById(`order-${requestedOrderKey}`)?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
     }, 0)
     return () => window.clearTimeout(scrollTimer)
   }, [requestedOrderKey])

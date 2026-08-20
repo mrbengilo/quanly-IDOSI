@@ -24,6 +24,7 @@ import {
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
 import { money, shortDate } from '../../utils'
+import { normalizeWorkingTimeForm } from '../office/workingTime'
 import {
   officeArrivalMinutes,
   officeArrivalStatus,
@@ -210,6 +211,8 @@ export function OfficeEmployeeDashboard() {
   const [filterValue, setFilterValue] = useState(() => vietnamDateKey().slice(0, 7))
   const [busy, setBusy] = useState('')
   const [locationError, setLocationError] = useState('')
+  const profileWorkShifts = useMemo(() => normalizeWorkingTimeForm(employee, employee.employmentType).workShifts, [employee])
+  const [selectedShiftId, setSelectedShiftId] = useState(() => profileWorkShifts[0]?.id || '')
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1_000)
@@ -226,6 +229,8 @@ export function OfficeEmployeeDashboard() {
     : officeRecordDate(record).startsWith(filterValue))
   const monthRows = allRows.filter((record) => officeRecordDate(record).startsWith(selectedMonth))
   const stats = officeAttendanceStats(filteredRows, app.policies?.attendanceEvaluation)
+  const selectedShift = profileWorkShifts.find((shift) => shift.id === selectedShiftId) || profileWorkShifts[0]
+  const effectiveShiftId = selectedShift?.id || ''
 
   const changeFilterMode = (mode) => {
     setFilterMode(mode)
@@ -240,6 +245,12 @@ export function OfficeEmployeeDashboard() {
       app.notify?.(message, 'info')
       return
     }
+    if (action === 'in' && profileWorkShifts.length > 1 && !effectiveShiftId) {
+      const message = 'Vui lòng chọn ca làm việc trước khi điểm danh.'
+      setLocationError(message)
+      app.notify?.(message, 'info')
+      return
+    }
     setBusy(action)
     try {
       const location = await requestLocation()
@@ -247,10 +258,11 @@ export function OfficeEmployeeDashboard() {
         ? await app.checkIn?.({
           employeeId,
           date: dateKey,
-          shiftId: '',
-          shiftName: `Giờ làm ${unitLabel}`,
-          shiftStart: employee.workStart || '08:00',
-          shiftEnd: employee.workEnd || '17:00',
+          shiftId: effectiveShiftId,
+          workShiftId: effectiveShiftId,
+          shiftName: selectedShift?.name || `Giờ làm ${unitLabel}`,
+          shiftStart: selectedShift?.start || employee.workStart || '08:00',
+          shiftEnd: selectedShift?.end || employee.workEnd || '17:00',
           location,
           idempotencyKey: `office-attendance-in:${employeeId}:${dateKey}`,
         })
@@ -287,15 +299,20 @@ export function OfficeEmployeeDashboard() {
         </Card>
         <Card className="office-attendance-action">
           <div className="office-attendance-action__heading">
-            <div><span>CHẤM CÔNG HÔM NAY</span><strong>Giờ làm {unitLabel}</strong><small>{employee.workStart || '08:00'} – {employee.workEnd || '17:00'}</small></div>
+            <div><span>CHẤM CÔNG HÔM NAY</span><strong>{selectedShift?.name || `Giờ làm ${unitLabel}`}</strong><small>{selectedShift?.start || employee.workStart || '08:00'} – {selectedShift?.end || employee.workEnd || '17:00'}</small></div>
             <Badge tone={statusTone(todayStatus)}>{todayStatus}</Badge>
           </div>
+          {profileWorkShifts.length > 1 && !todayRecord && <Field label="Chọn ca làm việc" required>
+            <Select value={effectiveShiftId} onChange={(event) => setSelectedShiftId(event.target.value)} aria-label="Chọn ca làm việc để điểm danh">
+              {profileWorkShifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.start}–{shift.end}</option>)}
+            </Select>
+          </Field>}
           <div className="office-attendance-action__times">
             <p><span>Giờ vào</span><strong>{timeOnly(todayRecord?.checkIn || todayRecord?.checkInAt)}</strong></p>
             <p><span>Giờ ra</span><strong>{timeOnly(todayRecord?.checkOut || todayRecord?.checkOutAt)}</strong></p>
           </div>
           <div className="card-actions">
-            <Button icon={Fingerprint} loading={busy === 'in'} disabled={Boolean(openRecord || todayRecord?.checkOut || busy)} onClick={() => runLocatedAction('in')}>BẤM ĐIỂM DANH</Button>
+            <Button icon={Fingerprint} loading={busy === 'in'} disabled={Boolean(openRecord || todayRecord?.checkOut || busy || (profileWorkShifts.length > 1 && !effectiveShiftId))} onClick={() => runLocatedAction('in')}>BẤM ĐIỂM DANH</Button>
             <Button variant="danger" icon={LogOut} loading={busy === 'out'} disabled={!openRecord || Boolean(busy)} onClick={() => runLocatedAction('out')}>RA VỀ</Button>
           </div>
           <small className="office-location-hint"><MapPin aria-hidden="true" /> Hệ thống chỉ ghi nhận sau khi bạn chủ động bật và cho phép truy cập vị trí.</small>

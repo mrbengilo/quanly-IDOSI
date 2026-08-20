@@ -2978,9 +2978,14 @@ const OPERATIONAL_PROFILE_FIELDS = new Set([
   'unit', 'unitType', 'department', 'role', 'storeId',
   'name', 'phone', 'cccd', 'citizenId', 'address', 'addressDetails', 'startDate', 'joinDate',
   'employmentType', 'position', 'jobPosition', 'username', 'password', 'authUserId',
-  'workTimeType', 'workStart', 'workEnd',
+  'workTimeType', 'workStart', 'workEnd', 'workShifts', 'workingTime',
   'baseSalary', 'standardWorkDays', 'requiredMonthlyHours', 'linkedEmployeeId',
   'identityImages', 'cccdImages', 'identityCardImages', 'cccdFront', 'cccdBack',
+])
+
+const BUSINESS_SUPPORT_WORK_TIME_PROFILE_FIELDS = new Set([
+  'employeeId', 'id', 'code', 'employeeCode',
+  'workTimeType', 'workStart', 'workEnd', 'workShifts', 'workingTime',
 ])
 
 const operationalEmploymentType = (value) => {
@@ -3030,6 +3035,116 @@ const operationalPosition = (value, unit) => {
 }
 
 const MAX_REQUIRED_MONTHLY_HOURS = 744
+const MAX_PROFILE_WORK_SHIFTS = 12
+
+const expectedWorkTimeType = (employmentType) => (
+  employmentType === 'Full-Time' ? 'Full-Time' : 'Part-Time'
+)
+
+const profileWorkShiftId = (value, index) => {
+  const safe = String(value || '').trim().replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80)
+  return safe || `work_${index + 1}`
+}
+
+const normalizeProfileWorkingTime = (payload, previous, employmentType) => {
+  const workTimeType = expectedWorkTimeType(employmentType)
+  const requestedType = payload.workTimeType ?? payload.workingTime?.type
+  if (requestedType !== undefined && String(requestedType).trim() !== workTimeType) {
+    throw new ApiError(400, 'OFFICE_WORK_TIME_TYPE_INVALID', 'Loại thời gian làm việc phải khớp với loại nhân viên.')
+  }
+  const hasCanonicalPayload = Object.hasOwn(payload, 'workShifts') || Object.hasOwn(payload, 'workingTime')
+  const canonicalInput = payload.workShifts ?? payload.workingTime?.shifts
+  let rawShifts
+  if (hasCanonicalPayload) {
+    if (!Array.isArray(canonicalInput)) {
+      throw new ApiError(400, 'OFFICE_WORK_SHIFTS_INVALID', 'Danh sách ca làm việc không hợp lệ.')
+    }
+    rawShifts = canonicalInput
+  } else if (payload.workStart !== undefined || payload.workEnd !== undefined) {
+    rawShifts = [{
+      id: workTimeType === 'Full-Time' ? 'full_time' : 'work_1',
+      name: workTimeType === 'Full-Time' ? 'Giờ hành chính' : 'Ca 1',
+      start: payload.workStart ?? previous?.workStart,
+      end: payload.workEnd ?? previous?.workEnd,
+    }]
+  } else if (Array.isArray(previous?.workShifts)) {
+    rawShifts = previous.workShifts
+  } else if (Array.isArray(previous?.workingTime?.shifts)) {
+    rawShifts = previous.workingTime.shifts
+  } else {
+    rawShifts = [{
+      id: workTimeType === 'Full-Time' ? 'full_time' : 'work_1',
+      name: workTimeType === 'Full-Time' ? 'Giờ hành chính' : 'Ca 1',
+      start: previous?.workStart || '08:00',
+      end: previous?.workEnd || (workTimeType === 'Full-Time' ? '17:30' : '12:00'),
+    }]
+  }
+  if (!rawShifts.length || rawShifts.length > MAX_PROFILE_WORK_SHIFTS) {
+    throw new ApiError(400, 'OFFICE_WORK_SHIFTS_INVALID', `Cần từ 1 đến ${MAX_PROFILE_WORK_SHIFTS} ca làm việc.`)
+  }
+  if (workTimeType === 'Full-Time' && rawShifts.length !== 1) {
+    throw new ApiError(400, 'OFFICE_WORK_SHIFTS_INVALID', 'Nhân viên Full-Time chỉ dùng một khung giờ cố định.')
+  }
+  const workShifts = rawShifts.map((rawShift, index) => {
+    if (!isPlainRecord(rawShift)) throw new ApiError(400, 'OFFICE_WORK_SHIFT_INVALID', 'Ca làm việc không hợp lệ.')
+    const name = String(rawShift.name || '').trim().slice(0, 80)
+    const start = parseShiftTime(rawShift.start)
+    const end = parseShiftTime(rawShift.end)
+    if (!name || !start || !end || end.minuteOfDay <= start.minuteOfDay) {
+      throw new ApiError(400, 'OFFICE_WORK_TIME_INVALID', 'Mỗi ca cần tên, giờ bắt đầu và giờ kết thúc hợp lệ trong cùng ngày.')
+    }
+    return { id: profileWorkShiftId(rawShift.id, index), name, start: start.label, end: end.label }
+  })
+  const ids = workShifts.map(({ id }) => id)
+  const names = workShifts.map(({ name }) => normalizeTextKey(name))
+  if (new Set(ids).size !== ids.length || new Set(names).size !== names.length) {
+    throw new ApiError(400, 'OFFICE_WORK_SHIFTS_DUPLICATE', 'Mã và tên ca làm việc không được trùng nhau.')
+  }
+  const first = workShifts[0]
+  return {
+    workTimeType,
+    workStart: first.start,
+    workEnd: first.end,
+    workShifts,
+    workingTime: {
+      type: workTimeType,
+      mode: workTimeType === 'Full-Time' ? 'fixed' : 'shifts',
+      shifts: workShifts,
+    },
+  }
+}
+
+const configuredProfileWorkShifts = (employee) => {
+  const canonical = Array.isArray(employee?.workShifts)
+    ? employee.workShifts
+    : Array.isArray(employee?.workingTime?.shifts) ? employee.workingTime.shifts : []
+  const shifts = canonical.flatMap((rawShift, index) => {
+    if (!isPlainRecord(rawShift)) return []
+    const start = parseShiftTime(rawShift.start)
+    const end = parseShiftTime(rawShift.end)
+    if (!start || !end || end.minuteOfDay <= start.minuteOfDay) return []
+    return [{
+      id: profileWorkShiftId(rawShift.id, index),
+      name: String(rawShift.name || `Ca ${index + 1}`).trim().slice(0, 80),
+      start: start.label,
+      end: end.label,
+      version: 1,
+      source: 'profile-work-shift',
+    }]
+  })
+  if (shifts.length) return shifts
+  const start = parseShiftTime(employee?.workStart)
+  const end = parseShiftTime(employee?.workEnd)
+  if (!start || !end || end.minuteOfDay <= start.minuteOfDay) return []
+  return [{
+    id: `${employeeUnit(employee).toUpperCase()}_DEFAULT`,
+    name: employeeUnit(employee) === 'office' ? 'Giờ làm Văn phòng' : 'Giờ làm theo hồ sơ',
+    start: start.label,
+    end: end.label,
+    version: 1,
+    source: 'office-profile',
+  }]
+}
 
 const validRequiredMonthlyHours = (value) => {
   const hours = Number(value)
@@ -3158,6 +3273,7 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
   if (unit === 'store_manager' && !['Full-Time', 'Part-Time'].includes(employmentType)) {
     throw new ApiError(400, 'EMPLOYMENT_TYPE_INVALID', 'Loại nhân viên Quản lý cửa hàng phải là Full-Time hoặc Part-Time.')
   }
+  const workingTime = normalizeProfileWorkingTime(payload, previous, employmentType)
   const position = operationalPosition(payload.position ?? payload.jobPosition ?? previous?.position, unit)
   const preservedMetadata = previous ? Object.fromEntries(Object.entries(previous).filter(([key]) => [
     'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'authUserId', 'authVersion', 'identityImages',
@@ -3197,8 +3313,7 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
     department: unit,
     isOffice: false,
     isOfficeLike: true,
-    workStart: '08:00',
-    workEnd: '17:00',
+    ...workingTime,
     status: previous?.status || 'Đang làm việc',
   })
   if (previous?.username) profile.username = previous.username
@@ -3268,19 +3383,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
     throw new ApiError(400, 'EMPLOYEE_ADDRESS_INVALID', 'Địa chỉ nhân viên không được để trống.')
   }
   const addressDetails = normalizeAddressDetails(payload.addressDetails ?? previous?.addressDetails)
-  const requestedWorkStart = payload.workStart ?? previous?.workStart ?? (officeLike ? '08:00' : undefined)
-  const requestedWorkEnd = payload.workEnd ?? previous?.workEnd ?? (officeLike ? '17:00' : undefined)
-  const workStart = officeLike ? parseShiftTime(requestedWorkStart) : null
-  const workEnd = officeLike ? parseShiftTime(requestedWorkEnd) : null
-  const workTimeType = officeLike
-    ? String(payload.workTimeType ?? previous?.workTimeType ?? (employmentType === 'Full-Time' ? 'Full-Time' : 'Part-Time')).trim()
-    : null
-  if (officeLike && !['Full-Time', 'Part-Time'].includes(workTimeType)) {
-    throw new ApiError(400, 'OFFICE_WORK_TIME_TYPE_INVALID', 'Thời gian làm việc phải là Full-Time hoặc Part-Time.')
-  }
-  if (officeLike && (!workStart || !workEnd || workEnd.minuteOfDay <= workStart.minuteOfDay)) {
-    throw new ApiError(400, 'OFFICE_WORK_TIME_INVALID', 'Giờ làm việc phải theo HH:mm và giờ ra phải sau giờ vào trong cùng ngày.')
-  }
+  const workingTime = officeLike ? normalizeProfileWorkingTime(payload, previous, employmentType) : null
   if (officeLike && payload.monthlyWorkdayTargets !== undefined) {
     throw new ApiError(400, 'OFFICE_WORK_DAYS_PAYLOAD_INVALID', 'Hãy cập nhật ngày công theo cặp standardWorkDaysPeriod và standardWorkDays.')
   }
@@ -3364,9 +3467,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
       ? { needsProfileCompletion: !startDate }
       : {}),
     ...(officeLike ? {
-      workTimeType,
-      workStart: workStart.label,
-      workEnd: workEnd.label,
+      ...workingTime,
       monthlyWorkdayTargets,
       ...(validRequiredWorkingDays(requestedStandardWorkDays)
         ? { standardWorkDays: requestedStandardWorkDays }
@@ -3432,8 +3533,14 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const creatingStoreEmployee = operation === 'create' && unit === 'store'
   const supportCreatingStoreEmployee = actor.role === 'business_support' && creatingStoreEmployee
   if (creatingStoreEmployee) employeeId = ''
-  const supportOperationAllowed = ['store', 'office', 'store_manager'].includes(unit)
-    && ['create', 'update'].includes(operation)
+  const supportWorkingTimeUpdate = actor.role === 'business_support'
+    && operation === 'update'
+    && ['office', 'business_support'].includes(unit)
+    && Object.keys(profilePayload).every((field) => BUSINESS_SUPPORT_WORK_TIME_PROFILE_FIELDS.has(field))
+    && Object.keys(profilePayload).some((field) => ['workTimeType', 'workStart', 'workEnd', 'workShifts', 'workingTime'].includes(field))
+  const supportOperationAllowed = (
+    ['store', 'office', 'store_manager'].includes(unit) && ['create', 'update'].includes(operation)
+  ) || supportWorkingTimeUpdate
   if (actor.role === 'business_support' && !supportOperationAllowed) {
     throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm hoặc cập nhật nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng.')
   }
@@ -3451,7 +3558,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       throw new ApiError(400, 'EMPLOYEE_UNIT_IMMUTABLE', 'Không thể đổi nhóm vai trò của hồ sơ nhân viên.')
     }
   }
-  if (unit === 'business_support' && actor.role !== 'admin') {
+  if (unit === 'business_support' && actor.role !== 'admin' && !supportWorkingTimeUpdate) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được quản lý hồ sơ Nhân viên hỗ trợ KD.')
   }
   if (['store_manager', 'office'].includes(unit)
@@ -6382,12 +6489,17 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       && shiftTimes(record).start
       && shiftTimes(record).end
     ))
-    let shiftId = String(payload.shiftId || '').trim()
+    const profileShifts = officeEmployee ? configuredProfileWorkShifts(employee) : []
+    let shiftId = String(payload.shiftId || payload.workShiftId || '').trim()
     let shift = shiftId ? activeShifts.find((record) => String(record.id || '') === shiftId) : null
     if (shiftId && !/^[A-Za-z0-9_-]{1,80}$/u.test(shiftId)) {
       throw new ApiError(400, 'SHIFT_INVALID', 'Cần chọn ca làm việc hợp lệ.')
     }
-    if (shift && dayAssignments.length && !assignedShiftIds.has(shiftId)) {
+    if (!shift && officeEmployee && shiftId) {
+      shift = profileShifts.find((record) => String(record.id || '') === shiftId) || null
+    }
+    if (shift && shift.source !== 'profile-work-shift' && shift.source !== 'office-profile'
+      && dayAssignments.length && !assignedShiftIds.has(shiftId)) {
       throw new ApiError(403, 'SHIFT_NOT_ASSIGNED', 'Ca này không nằm trong lịch làm việc hôm nay của bạn.')
     }
     if (activeTransfer && (!shift || !assignedShiftIds.has(shiftId))) {
@@ -6419,22 +6531,15 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       shift = activeShifts.find((record) => assignedShiftIds.has(String(record.id || ''))) || null
       shiftId = String(shift?.id || '')
     }
-    if (!shift && officeEmployee && (!shiftId || !assignedShiftIds.has(shiftId))) {
-      const workStart = parseShiftTime(employee.workStart) || parseShiftTime('08:00')
-      const workEnd = parseShiftTime(employee.workEnd) || parseShiftTime('17:00')
-      if (!workStart || !workEnd || workEnd.minuteOfDay <= workStart.minuteOfDay) {
-        throw new ApiError(409, 'OFFICE_WORK_TIME_INVALID', 'Hồ sơ nhân sự thiếu giờ làm việc hợp lệ.')
+    if (!shift && officeEmployee && !shiftId) {
+      if (profileShifts.length > 1) {
+        throw new ApiError(400, 'PROFILE_WORK_SHIFT_REQUIRED', 'Vui lòng chọn ca làm việc trong hồ sơ trước khi điểm danh.')
       }
-      shiftId = `${employeeUnit(employee).toUpperCase()}_DEFAULT`
-      shift = {
-        id: shiftId,
-        name: employeeUnit(employee) === 'office' ? 'Giờ làm Văn phòng' : 'Giờ làm theo hồ sơ',
-        storeId,
-        start: workStart.label,
-        end: workEnd.label,
-        version: 1,
-        source: 'office-profile',
-      }
+      shift = profileShifts[0] || null
+      shiftId = String(shift?.id || '')
+    }
+    if (!shift && officeEmployee && !profileShifts.length) {
+      throw new ApiError(409, 'OFFICE_WORK_TIME_INVALID', 'Hồ sơ nhân sự thiếu giờ làm việc hợp lệ.')
     }
     const times = shiftTimes(shift)
     if (!shift || !times.start || !times.end) {

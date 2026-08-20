@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EmployeeOrdersPage } from '../employee/EmployeeV2Pages'
 import { StoreOrdersPage } from './StoreV2Pages'
@@ -25,6 +25,11 @@ const targetOrder = {
   createdAt: '2026-08-14T08:30:00+07:00',
 }
 
+function CurrentRoute() {
+  const location = useLocation()
+  return <output data-testid="current-route">{location.pathname}{location.search}</output>
+}
+
 describe('order notification deep links', () => {
   it('reveals and highlights the requested order in the store view', () => {
     mocked.app = {
@@ -40,6 +45,40 @@ describe('order notification deep links', () => {
     render(<MemoryRouter initialEntries={['/store/orders?store=S01&order=ORDER-TARGET']}><StoreOrdersPage /></MemoryRouter>)
 
     expect(screen.getByText('S01-00002').closest('tr')?.classList.contains('order-row--highlight')).toBe(true)
+  })
+
+  it('corrects a stale store query and never mixes another store\'s orders into the requested order view', async () => {
+    const otherStoreOrder = {
+      ...targetOrder,
+      id: 'ORDER-OTHER',
+      code: 'S02-00001',
+      storeId: 'S02',
+      employeeId: 'E02',
+      customerName: 'Khách cửa hàng 02',
+    }
+    mocked.app = {
+      session: { role: 'admin' },
+      activeStoreId: 'S02',
+      stores: [{ id: 'S01', name: 'Cửa hàng 01' }, { id: 'S02', name: 'Cửa hàng 02' }],
+      orders: [otherStoreOrder, targetOrder],
+      employees: [
+        { id: 'E01', storeId: 'S01', name: 'Nhân viên 01' },
+        { id: 'E02', storeId: 'S02', name: 'Nhân viên 02' },
+      ],
+      updateOrder: vi.fn(),
+      deleteOrder: vi.fn(),
+      notify: vi.fn(),
+    }
+    render(
+      <MemoryRouter initialEntries={['/store/orders?store=S02&order=ORDER-TARGET']}>
+        <StoreOrdersPage />
+        <CurrentRoute />
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('S01-00002')).toBeTruthy()
+    expect(screen.queryByText('S02-00001')).toBeNull()
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/orders?store=S01&order=ORDER-TARGET'))
   })
 
   it('highlights the requested own order in the employee view', () => {
