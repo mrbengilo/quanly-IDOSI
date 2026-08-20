@@ -8,7 +8,7 @@ const MAX_RECEIPT_INLINE_BYTES = 1_500_000
 const MAX_RECEIPT_CHUNK_BYTES = 1_500_000
 const STATE_ENTITY_ORDER_STEP = 1_000_000
 const STATE_ENTITY_PAGE_SIZE = 10_000
-const MAX_AVATAR_BYTES = 200 * 1024
+const MAX_AVATAR_BYTES = 300 * 1024
 const MAX_IDENTITY_IMAGE_BYTES = 2 * 1024 * 1024
 const MAX_JSON_DEPTH = 64
 const MAX_MONEY_VND = 100_000_000_000
@@ -18,6 +18,16 @@ const MIN_PBKDF2_ITERATIONS = 100_000
 const MAX_PBKDF2_ITERATIONS = 100_000
 const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'employee'])
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
+
+const validAvatarImageSignature = (mimeType, binary) => {
+  const byte = (index) => binary.charCodeAt(index)
+  if (mimeType === 'image/png') {
+    return [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((value, index) => byte(index) === value)
+  }
+  if (mimeType === 'image/jpeg') return byte(0) === 0xff && byte(1) === 0xd8 && byte(2) === 0xff
+  if (mimeType === 'image/webp') return binary.slice(0, 4) === 'RIFF' && binary.slice(8, 12) === 'WEBP'
+  return false
+}
 const BUSINESS_SUPPORT_STORE_ID = 'BUSINESS_SUPPORT'
 const OFFICE_STORE_ID = 'OFFICE'
 const OPERATIONS_ROLES = new Set(['admin', 'business_support', 'store_manager'])
@@ -4840,14 +4850,21 @@ const accountSettingsCommand = async (db, actor, body, commandContext) => {
   }
   if (payload.avatar !== undefined) {
     const avatar = String(payload.avatar || '')
-    if (avatar && !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/u.test(avatar)) {
-      throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là ảnh PNG hoặc JPEG hợp lệ.')
-    }
-    const base64 = avatar.split(',')[1] || ''
-    const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
-    const avatarBytes = avatar ? Math.max(0, Math.floor(base64.length * 3 / 4) - padding) : 0
-    if (avatarBytes > MAX_AVATAR_BYTES) {
-      throw new ApiError(413, 'AVATAR_TOO_LARGE', 'Ảnh đại diện không được vượt quá 200 KB.')
+    if (avatar) {
+      const match = avatar.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*(?:={0,2}))$/u)
+      let binary
+      try {
+        if (!match?.[2] || match[2].length % 4 !== 0) throw new Error('invalid avatar encoding')
+        binary = atob(match[2])
+      } catch {
+        throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là dữ liệu ảnh JPG, PNG hoặc WebP hợp lệ.')
+      }
+      if (!validAvatarImageSignature(match[1], binary)) {
+        throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là dữ liệu ảnh JPG, PNG hoặc WebP hợp lệ.')
+      }
+      if (binary.length > MAX_AVATAR_BYTES) {
+        throw new ApiError(413, 'AVATAR_TOO_LARGE', 'Ảnh đại diện sau khi tối ưu không được vượt quá 300 KB.')
+      }
     }
     next.avatar = avatar
   }

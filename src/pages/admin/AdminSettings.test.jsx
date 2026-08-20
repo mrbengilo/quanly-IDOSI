@@ -5,7 +5,13 @@ import { AdminSettings } from './AdminPages'
 const mocked = vi.hoisted(() => ({
   changeAdminPassword: vi.fn(),
   notify: vi.fn(),
+  optimizeAccountAvatar: vi.fn(),
+  saveSettings: vi.fn(),
   verifyCurrentPassword: vi.fn(),
+}))
+
+vi.mock('../../domain/accountAvatar', () => ({
+  optimizeAccountAvatar: mocked.optimizeAccountAvatar,
 }))
 
 vi.mock('../../state/AppContext', () => ({
@@ -21,7 +27,7 @@ vi.mock('../../state/AppContext', () => ({
       notifications: {},
     },
     session: { id: 'ADMIN-001', username: 'admin', role: 'admin', name: 'Quản trị viên' },
-    saveSettings: vi.fn(),
+    saveSettings: mocked.saveSettings,
     changeAdminPassword: mocked.changeAdminPassword,
     verifyCurrentPassword: mocked.verifyCurrentPassword,
     resetDemo: vi.fn(),
@@ -39,6 +45,8 @@ describe('AdminSettings password visibility', () => {
     mocked.changeAdminPassword.mockReset().mockResolvedValue(true)
     mocked.verifyCurrentPassword.mockReset().mockResolvedValue(true)
     mocked.notify.mockReset()
+    mocked.optimizeAccountAvatar.mockReset()
+    mocked.saveSettings.mockReset().mockResolvedValue({ ok: true, settings: {} })
   })
 
   afterEach(cleanup)
@@ -92,5 +100,26 @@ describe('AdminSettings password visibility', () => {
     expect(newPassword.value).toBe('')
     expect(confirmPassword.value).toBe('')
     expect(newPassword.type).toBe('password')
+  })
+
+  it('accepts a 5 MiB-class WebP source, uses the optimized payload, and explains the final limit', async () => {
+    const avatar = 'data:image/webp;base64,UklGRkFBQUFXRUJQ'
+    mocked.optimizeAccountAvatar.mockResolvedValue({ dataUrl: avatar, bytes: 245 * 1024 })
+    mocked.saveSettings.mockResolvedValue({ ok: true, settings: { avatar } })
+    render(<AdminSettings />)
+
+    const input = document.querySelector('input[type="file"]')
+    expect(input.accept).toBe('image/jpeg,image/png,image/webp')
+    expect(screen.getByText(/Ảnh gốc JPG, PNG, WebP tối đa 5 MB/u)).toBeTruthy()
+    fireEvent.change(input, {
+      target: { files: [new File([new Uint8Array(4 * 1024 * 1024)], 'avatar.webp', { type: 'image/webp' })] },
+    })
+
+    await waitFor(() => expect(mocked.optimizeAccountAvatar).toHaveBeenCalledOnce())
+    await waitFor(() => expect(screen.getByAltText('Ảnh đại diện tài khoản').getAttribute('src')).toBe(avatar))
+    expect(mocked.notify).toHaveBeenCalledWith(expect.stringContaining('245 KB'), 'info')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
+    await waitFor(() => expect(mocked.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ avatar })))
   })
 })

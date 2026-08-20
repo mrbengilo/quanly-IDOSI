@@ -33,6 +33,7 @@ import { createDomainState, defaultPolicies, migrateDomainState } from './initia
 import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateKpiBonuses, financeSummaryFromState } from '../domain'
+import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
   normalizeWorkTimeEffectiveDate,
@@ -65,6 +66,22 @@ const LOCAL_PROFILE_CREDENTIAL_KEYS = new Set([
   'passwordIterations', 'legacyPassword', 'authUserId', 'authVersion', 'username',
   'token', 'accessToken', 'refreshToken',
 ])
+const ACCOUNT_SETTINGS_KEYS = ['name', 'email', 'phone', 'birthday', 'gender', 'address', 'bio', 'avatar']
+
+export const createAccountSettingsPayload = (settings = {}) => {
+  const payload = Object.fromEntries(ACCOUNT_SETTINGS_KEYS
+    .filter((key) => settings[key] !== undefined)
+    .map((key) => [key, settings[key]]))
+  if (settings.notifications && typeof settings.notifications === 'object') {
+    payload.notifications = {
+      tasks: Boolean(settings.notifications.tasks),
+      dailyReport: Boolean(settings.notifications.dailyReport),
+      expenseAlert: Boolean(settings.notifications.expenseAlert),
+    }
+  }
+  if (payload.avatar !== undefined) payload.avatar = validateAccountAvatarDataUrl(payload.avatar).dataUrl
+  return payload
+}
 
 const ORDER_OPERATIONAL_MUTABLE_FIELDS = [
   'customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod',
@@ -1910,16 +1927,13 @@ export function AppProvider({ children }) {
 
   const saveSettings = async (settings = {}) => {
     if (!state.session) return { ok: false, message: 'Vui lòng đăng nhập để cập nhật cài đặt tài khoản.' }
-    const allowedKeys = ['name', 'email', 'phone', 'birthday', 'gender', 'address', 'bio', 'avatar']
-    const payload = Object.fromEntries(allowedKeys
-      .filter((key) => settings[key] !== undefined)
-      .map((key) => [key, settings[key]]))
-    if (settings.notifications && typeof settings.notifications === 'object') {
-      payload.notifications = {
-        tasks: Boolean(settings.notifications.tasks),
-        dailyReport: Boolean(settings.notifications.dailyReport),
-        expenseAlert: Boolean(settings.notifications.expenseAlert),
-      }
+    let payload
+    try {
+      payload = createAccountSettingsPayload(settings)
+    } catch (error) {
+      const message = error?.message || 'Ảnh đại diện không hợp lệ.'
+      notify(message, 'info')
+      return { ok: false, message }
     }
 
     const applyPersistedSettings = (persistedSettings, user = null) => {

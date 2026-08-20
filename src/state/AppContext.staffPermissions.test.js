@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { Buffer } from 'node:buffer'
 import {
   canCreateEmployeeUnit,
   canBusinessSupportUpdateEmployee,
@@ -6,6 +7,7 @@ import {
   canManageSupportTransfers,
   canManagePolicies,
   createInitialState,
+  createAccountSettingsPayload,
   createLocalSystemResetState,
   generateBusinessSupportStoreCredentials,
   hydrateState,
@@ -14,7 +16,22 @@ import {
   resolveRemoteActiveStoreId,
 } from './AppContext'
 
+const pngAvatarDataUrl = (bytes) => {
+  const buffer = Buffer.alloc(bytes, 0x41)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buffer)
+  return `data:image/png;base64,${buffer.toString('base64')}`
+}
+
 describe('Business Support staff and policy permissions', () => {
+  it('enforces the final avatar invariant before either remote or local settings persistence', () => {
+    const boundaryAvatar = pngAvatarDataUrl(300 * 1024)
+    expect(createAccountSettingsPayload({ avatar: boundaryAvatar })).toMatchObject({ avatar: boundaryAvatar })
+    expect(() => createAccountSettingsPayload({ avatar: pngAvatarDataUrl(300 * 1024 + 1) }))
+      .toThrow(expect.objectContaining({ code: 'AVATAR_TOO_LARGE' }))
+    expect(() => createAccountSettingsPayload({ avatar: 'data:image/png;base64,QUFBQQ==' }))
+      .toThrow(expect.objectContaining({ code: 'AVATAR_INVALID' }))
+  })
+
   it('can create office and store profiles without gaining employee update/delete authority', () => {
     expect(canCreateEmployeeUnit('business_support', 'office')).toBe(true)
     expect(canCreateEmployeeUnit('business_support', 'store')).toBe(true)

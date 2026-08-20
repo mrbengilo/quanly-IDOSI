@@ -48,6 +48,7 @@ import {
 } from '../../components/UI'
 import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
+import { optimizeAccountAvatar } from '../../domain/accountAvatar'
 import { useApp } from '../../state/AppContext'
 import { downloadCsv, money, shortDate, today, validateVietnamPhone } from '../../utils'
 
@@ -543,6 +544,7 @@ export function AdminSettings() {
   const { settings, session, saveSettings, changeAdminPassword, verifyCurrentPassword, resetDemo, notify } = useApp()
   const [tab, setTab] = useState('profile')
   const [form, setForm] = useState(settings || {})
+  const [photoProcessing, setPhotoProcessing] = useState(false)
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' })
   const [visiblePasswords, setVisiblePasswords] = useState({ current: false, next: false, confirm: false })
   const [notifications, setNotifications] = useState(() => ({
@@ -571,25 +573,21 @@ export function AdminSettings() {
     setForm((current) => ({ ...current, ...(result.settings || {}) }))
   }
 
-  const choosePhoto = (event) => {
-    const file = event.target.files?.[0]
+  const choosePhoto = async (event) => {
+    const input = event.currentTarget
+    const file = input.files?.[0]
     if (!file) return
-    if (!['image/jpeg', 'image/png'].includes(file.type)) {
-      notify('Ảnh đại diện chỉ hỗ trợ JPG hoặc PNG.', 'info')
-      event.target.value = ''
-      return
+    input.value = ''
+    setPhotoProcessing(true)
+    try {
+      const optimized = await optimizeAccountAvatar(file)
+      setForm((current) => ({ ...current, avatar: optimized.dataUrl }))
+      notify(`Đã tối ưu ảnh đại diện còn ${Math.ceil(optimized.bytes / 1024)} KB. Nhấn "Lưu thay đổi" để hoàn tất.`, 'info')
+    } catch (error) {
+      notify(error?.message || 'Không thể xử lý ảnh đại diện. Vui lòng thử ảnh khác.', 'info')
+    } finally {
+      setPhotoProcessing(false)
     }
-    if (file.size > 200 * 1024) {
-      notify('Tệp ảnh đại diện không được vượt quá 200KB.', 'info')
-      event.target.value = ''
-      return
-    }
-    const reader = new FileReader()
-    reader.onload = () => {
-      const avatar = String(reader.result || '')
-      setForm((current) => ({ ...current, avatar }))
-    }
-    reader.readAsDataURL(file)
   }
 
   const requestPasswordChange = async () => {
@@ -632,7 +630,7 @@ export function AdminSettings() {
           <Card className="settings-content">
             <h2>Thông tin cá nhân</h2><p>Cập nhật thông tin tài khoản của bạn.</p>
             <div className="profile-form">
-              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện tài khoản" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png" hidden onChange={choosePhoto} /><Button variant="outline" onClick={() => photoInput.current?.click()}>Đổi ảnh</Button><small>Định dạng JPG, PNG<br />Tệp tối đa 200KB</small></div>
+              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện tài khoản" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button><small>Ảnh gốc JPG, PNG, WebP tối đa 5 MB<br />Hệ thống tự tối ưu còn tối đa 300 KB</small></div>
               <div className="form-grid">
                 <Field label="Họ và tên"><Input value={form.name} onChange={set('name')} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} /></Field>
                 <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Input value={roleLabel} disabled /></Field>
@@ -642,7 +640,7 @@ export function AdminSettings() {
               </div>
             </div>
             <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || ''} disabled /></Field><Field label="Vai trò"><Input value={roleLabel} disabled /></Field></div></div>
-            <div className="card-actions"><Button icon={Save} onClick={saveProfile}>Lưu thay đổi</Button></div>
+            <div className="card-actions"><Button icon={Save} disabled={photoProcessing} onClick={saveProfile}>Lưu thay đổi</Button></div>
           </Card>
         ) : (
           <Card className="settings-content settings-placeholder"><ShieldCheck size={48} /><h2>{tab === 'password' ? 'Đổi mật khẩu' : 'Thiết lập thông báo'}</h2><p>{tab === 'password' ? 'Nhập mật khẩu mới để tăng cường bảo mật tài khoản.' : 'Chọn loại thông báo bạn muốn nhận từ hệ thống.'}</p><div className="form-stack">{tab === 'password' ? <><PasswordField id="account-current-password" label="Mật khẩu hiện tại" autoComplete="current-password" visible={visiblePasswords.current} onToggle={() => togglePassword('current')} value={passwordForm.current} onChange={(event) => setPasswordForm((current) => ({ ...current, current: event.target.value }))} /><PasswordField id="account-new-password" label="Mật khẩu mới" autoComplete="new-password" visible={visiblePasswords.next} onToggle={() => togglePassword('next')} value={passwordForm.next} onChange={(event) => setPasswordForm((current) => ({ ...current, next: event.target.value }))} /><PasswordField id="account-confirm-password" label="Xác nhận mật khẩu" autoComplete="new-password" visible={visiblePasswords.confirm} onToggle={() => togglePassword('confirm')} value={passwordForm.confirm} onChange={(event) => setPasswordForm((current) => ({ ...current, confirm: event.target.value }))} /></> : <><label className="switch-row"><span>Thông báo công việc mới</span><input type="checkbox" checked={notifications.tasks} onChange={(event) => setNotifications({ ...notifications, tasks: event.target.checked })} /></label><label className="switch-row"><span>Báo cáo doanh thu hàng ngày</span><input type="checkbox" checked={notifications.dailyReport} onChange={(event) => setNotifications({ ...notifications, dailyReport: event.target.checked })} /></label><label className="switch-row"><span>Cảnh báo chi phí</span><input type="checkbox" checked={notifications.expenseAlert} onChange={(event) => setNotifications({ ...notifications, expenseAlert: event.target.checked })} /></label></>}<Button onClick={tab === 'password' ? requestPasswordChange : saveNotifications}>Lưu thiết lập</Button></div></Card>

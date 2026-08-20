@@ -18,6 +18,16 @@ import worker, {
 
 const TEST_IDENTITY_IMAGE = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
 const testIdentityImages = () => ({ front: TEST_IDENTITY_IMAGE, back: TEST_IDENTITY_IMAGE })
+const testAvatarDataUrl = (mimeType, bytes, encodedMimeType = mimeType) => {
+  const buffer = Buffer.alloc(bytes, 0x41)
+  if (mimeType === 'image/png') Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buffer)
+  if (mimeType === 'image/jpeg') Buffer.from([0xff, 0xd8, 0xff]).copy(buffer)
+  if (mimeType === 'image/webp') {
+    Buffer.from('RIFF').copy(buffer, 0)
+    Buffer.from('WEBP').copy(buffer, 8)
+  }
+  return `data:${encodedMimeType};base64,${buffer.toString('base64')}`
+}
 
 class MemoryD1Statement {
   constructor(database, sql, bindings = [], onQuery = () => {}) {
@@ -2463,7 +2473,7 @@ describe('IDOSI Worker security primitives', () => {
       username: 'employee.next', password: 'employee-next-password',
     }), env)
     const nextEmployeeToken = (await nextEmployeeLogin.json()).token
-    const employeeAvatar = `data:image/png;base64,${'A'.repeat(200 * 1024)}`
+    const employeeAvatar = testAvatarDataUrl('image/png', 200 * 1024)
     const employeeSettingsUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'account_settings.update', expectedVersion: 14,
       payload: { name: 'Nhân viên kế tiếp', email: 'employee.next@idosi.vn', avatar: employeeAvatar },
@@ -2693,18 +2703,35 @@ describe('IDOSI Worker security primitives', () => {
       operatingHours: { opening: '07:30', closing: '22:45' },
     })
 
-    const oversizedAvatar = `data:image/png;base64,${'A'.repeat(Math.ceil((200 * 1024 + 1) * 4 / 3))}`
+    const oversizedAvatar = testAvatarDataUrl('image/png', 300 * 1024 + 1)
     const avatarRejected = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'account_settings.update', expectedVersion: 5, payload: { avatar: oversizedAvatar },
     }, { ...managerAuthorization, 'idempotency-key': 'account-settings-avatar-0001' }), env)
     expect(avatarRejected.status).toBe(413)
     expect(await avatarRejected.json()).toMatchObject({ error: { code: 'AVATAR_TOO_LARGE' } })
+    const unsupportedAvatar = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 5, payload: { avatar: 'data:image/gif;base64,R0lGODlhAQABAIAAAAUEBA==' },
+    }, { ...managerAuthorization, 'idempotency-key': 'account-settings-avatar-invalid-mime-0001' }), env)
+    expect(unsupportedAvatar.status).toBe(400)
+    expect(await unsupportedAvatar.json()).toMatchObject({ error: { code: 'AVATAR_INVALID' } })
+    const spoofedAvatar = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 5,
+      payload: { avatar: testAvatarDataUrl('image/jpeg', 128, 'image/png') },
+    }, { ...managerAuthorization, 'idempotency-key': 'account-settings-avatar-spoofed-mime-0001' }), env)
+    expect(spoofedAvatar.status).toBe(400)
+    expect(await spoofedAvatar.json()).toMatchObject({ error: { code: 'AVATAR_INVALID' } })
+    const invalidBase64Avatar = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 5, payload: { avatar: 'data:image/png;base64,not_base64' },
+    }, { ...managerAuthorization, 'idempotency-key': 'account-settings-avatar-invalid-base64-0001' }), env)
+    expect(invalidBase64Avatar.status).toBe(400)
+    expect(await invalidBase64Avatar.json()).toMatchObject({ error: { code: 'AVATAR_INVALID' } })
+    const boundaryAvatar = testAvatarDataUrl('image/webp', 300 * 1024)
     const settingsUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'account_settings.update',
       expectedVersion: 5,
       payload: {
         name: 'Quản lý IDOSI', email: 'manager@idosi.vn', phone: '0907654321', birthday: '1991-10-20',
-        gender: 'Khác', address: 'TP. Hồ Chí Minh', bio: 'Quản lý vận hành cửa hàng.',
+        gender: 'Khác', address: 'TP. Hồ Chí Minh', bio: 'Quản lý vận hành cửa hàng.', avatar: boundaryAvatar,
         notifications: { tasks: false, dailyReport: true, expenseAlert: true },
       },
     }, { ...managerAuthorization, 'idempotency-key': 'account-settings-update-0001' }), env)
@@ -2713,6 +2740,7 @@ describe('IDOSI Worker security primitives', () => {
       version: 6,
       settings: {
         name: 'Quản lý IDOSI', email: 'manager@idosi.vn', phone: '0907654321', birthday: '1991-10-20',
+        avatar: boundaryAvatar,
         notifications: { tasks: false, dailyReport: true, expenseAlert: true },
       },
       user: { id: managerCreatedBody.user.id, displayName: 'Quản lý IDOSI', version: 2 },

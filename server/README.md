@@ -182,8 +182,10 @@ Các lệnh chính:
   receipt idempotency nguyên tử.
 - `account_settings.update`: mọi tài khoản đăng nhập tự cập nhật tài khoản hiện tại với
   payload `name`, `email`, `phone`, `birthday`, `gender`, `address`, `bio`,
-  `avatar?`, `notifications {tasks,dailyReport,expenseAlert}`. Ảnh là data URL
-  PNG/JPEG tối đa 200 KB; response trả `settings`, `user`, `version`.
+  `avatar?`, `notifications {tasks,dailyReport,expenseAlert}`. Giao diện nhận ảnh gốc
+  JPG/PNG/WebP tối đa 5 MiB, tự resize/nén trước khi gửi. API chỉ nhận data URL
+  JPG/PNG/WebP có chữ ký ảnh đúng MIME và dung lượng giải mã tối đa 300 KiB;
+  response trả `settings`, `user`, `version`.
 - `notification.mark_read`: mọi tài khoản đăng nhập, payload
   `{ notificationId }`; chỉ đánh dấu thông báo nằm trong projection của actor.
   `notification.mark_all_read` nhận `{ storeId? }` và đánh dấu toàn bộ thông báo
@@ -436,7 +438,8 @@ Phiên bản global state tăng một lần với request id
 
 - Compact shell và mỗi entity/chunk giới hạn 1.500.000 byte; request JSON
   giới hạn 16 MiB. Byte ảnh CCCD nằm trong R2 private binding
-  `IDENTITY_IMAGES`, không nằm trong state; avatar data URL tối đa 200 KB dữ liệu ảnh gốc.
+  `IDENTITY_IMAGES`, không nằm trong state; avatar data URL tối đa 300 KiB
+  sau giải mã (giao diện tự tối ưu từ ảnh gốc tối đa 5 MiB).
 - Cần rate-limit/WAF cho `/api/login` và smoke-test chi phí PBKDF2 trên plan chạy.
 - Cần đặt retention cho audit/command receipts và theo dõi quota D1 trước khi
   vận hành dữ liệu rất lớn.
