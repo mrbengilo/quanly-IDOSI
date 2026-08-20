@@ -126,14 +126,8 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   if (others.some((employee) => normalizeText(employee.id || employee.code || employee.employeeCode) === normalizeText(form.id))) {
     errors.push('Mã nhân viên đã tồn tại.')
   }
-  if (others.some((employee) => String(employee.cccd || employee.citizenId || '') === form.cccd)) {
-    errors.push('Số CCCD đã được sử dụng.')
-  }
   if (others.some((employee) => normalizeText(employee.username) === normalizeText(form.username))) {
     errors.push('Tên đăng nhập đã tồn tại.')
-  }
-  if (others.some((employee) => normalizePhone(employee.phone) === normalizePhone(form.phone))) {
-    errors.push('Số điện thoại đã được sử dụng.')
   }
   return [...new Set(errors)]
 }

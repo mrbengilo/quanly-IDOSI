@@ -44,10 +44,8 @@ describe('StoreTasks assignment workflow', () => {
     fireEvent.click(screen.getByLabelText(`Chọn nhân viên ${employees[0].name}`))
     fireEvent.click(screen.getByLabelText(`Chọn nhân viên ${employees[1].name}`))
     fireEvent.change(screen.getByLabelText('Tên công việc 1'), { target: { value: 'Kiểm kê quầy' } })
-    fireEvent.change(screen.getByLabelText('Mô tả công việc 1'), { target: { value: 'Đếm hàng trước ca' } })
     fireEvent.click(screen.getByRole('button', { name: /Thêm công việc/i }))
     fireEvent.change(screen.getByLabelText('Tên công việc 2'), { target: { value: 'Chuẩn bị bảng giá' } })
-    fireEvent.change(screen.getByLabelText('Mô tả công việc 2'), { target: { value: 'Đặt tại quầy thu ngân' } })
     fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
 
     await waitFor(() => expect(mocked.app.replaceTasks).toHaveBeenCalledWith(expect.objectContaining({
@@ -56,8 +54,8 @@ describe('StoreTasks assignment workflow', () => {
       shiftId: futureShift.id,
       employeeIds: employees.map((employee) => employee.id),
       tasks: [
-        { title: 'Kiểm kê quầy', detail: 'Đếm hàng trước ca' },
-        { title: 'Chuẩn bị bảng giá', detail: 'Đặt tại quầy thu ngân' },
+        { title: 'Kiểm kê quầy', detail: '' },
+        { title: 'Chuẩn bị bảng giá', detail: '' },
       ],
     })))
     expect(mocked.app.replaceTasks.mock.calls[0][0].idempotencyKey).toMatch(/^tasks:/)
@@ -110,7 +108,6 @@ describe('StoreTasks assignment workflow', () => {
     expect(screen.getByText('24/12/99 14:05:06')).toBeTruthy()
     expect(screen.getByText(/Ca tương lai · 14:00–22:00/i)).toBeTruthy()
     expect(screen.getByText(`${employees[0].name}, ${employees[1].name}`)).toBeTruthy()
-    expect(screen.getAllByText('Đếm hàng trước ca').length).toBeGreaterThan(0)
     expect(screen.getByText('Hoàn thành · 2/2 nhân viên')).toBeTruthy()
     expect(screen.getByText('Chưa hoàn thành · 0/2 nhân viên')).toBeTruthy()
     expect(screen.getByText('Đang thực hiện')).toBeTruthy()

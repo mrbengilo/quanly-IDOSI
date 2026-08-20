@@ -150,4 +150,37 @@ describe('store employee current-shift orders', () => {
     expect(screen.getByRole('button', { name: /Chờ điểm danh đúng ca để cập nhật Kiểm tra tồn kho/i }).disabled).toBe(true)
     expect(screen.getByText(/Người giao: Quản lý A/i)).toBeTruthy()
   })
+
+  it('shows the effective support store, home store and transfer compensation without requiring a schedule', () => {
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S02', homeStoreId: 'S01', activeTransferId: 'TR-01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên hỗ trợ', storeId: 'S01', employmentType: 'Full-Time' },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }, { id: 'S02', name: 'Dosii KVC' }],
+      supportTransfers: [{
+        id: 'TR-01', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        fromDate: '2026-08-01', toDate: '2026-08-31', hourlySupportRate: 45_000, allowance: 180_000,
+        status: 'Đã duyệt',
+      }],
+      attendance: [],
+      orders: [],
+      schedule: [],
+      tasks: [],
+      taskAssignmentHistory: [],
+      shiftDefinitions: [],
+      policies: {},
+      checkIn: vi.fn(),
+      checkOut: vi.fn(),
+      setTaskDone: vi.fn(),
+      notify: vi.fn(),
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeeDashboardV2)))
+
+    expect(screen.getAllByText('Dosii KVC').length).toBeGreaterThan(0)
+    expect(screen.getByText(/NV hỗ trợ từ Dosii TNV/i)).toBeTruthy()
+    expect(screen.getByText('45,000 đ/giờ')).toBeTruthy()
+    expect(screen.getByText('180,000 đ')).toBeTruthy()
+    expect(screen.getAllByText('Ca hỗ trợ cửa hàng').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'ĐIỂM DANH' })).toBeTruthy()
+  })
 })

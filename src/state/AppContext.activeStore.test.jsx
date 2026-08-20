@@ -108,6 +108,24 @@ describe('remote command active-store preservation', () => {
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
   })
 
+  it('restores the selected store after the provider reloads', async () => {
+    const firstView = renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+    act(() => appRef.current.setActiveStoreId('STORE-B'))
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+
+    firstView.unmount()
+    appRef = createRef()
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+  })
+
   it('keeps store B selected when a version conflict refreshes the latest state', async () => {
     renderProvider()
     await act(async () => {

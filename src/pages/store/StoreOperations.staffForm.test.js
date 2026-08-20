@@ -84,6 +84,13 @@ describe('Business Support store employee form', () => {
     })
   })
 
+  it('allows the same CCCD and phone for another job account while keeping usernames unique', () => {
+    const existing = [{ id: 'HTKD-001', cccd: validForm().cccd, phone: validForm().phone, username: 'support-role' }]
+    expect(validateStoreEmployee(validForm(), existing, '', true, { requireIdentityImages: true })).toEqual([])
+    expect(validateStoreEmployee(validForm({ username: 'support-role' }), existing, '', true, { requireIdentityImages: true }))
+      .toContain('Tên đăng nhập đã tồn tại.')
+  })
+
   it('never resubmits persisted private image metadata', () => {
     expect(freshIdentityImages({
       front: { key: 'private/front.webp', contentType: 'image/webp' },

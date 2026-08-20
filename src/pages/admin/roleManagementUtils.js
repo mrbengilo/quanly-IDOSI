@@ -205,9 +205,7 @@ export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requ
 
   const others = profiles.filter((profile) => String(profile.id || profileCode(profile)) !== String(editingKey || ''))
   if (others.some((profile) => normalize(profileCode(profile)) === normalize(form?.code))) errors.push('Mã nhân viên đã tồn tại.')
-  if (others.some((profile) => String(profile.cccd || profile.citizenId || '') === String(form?.cccd))) errors.push('CCCD đã được sử dụng.')
   if (others.some((profile) => normalize(profile.username) === normalize(form?.username))) errors.push('Tên đăng nhập đã tồn tại.')
-  if (others.some((profile) => String(profile.phone || '').replace(/\D/gu, '') === String(form?.phone || ''))) errors.push('Số điện thoại đã được sử dụng.')
   return [...new Set(errors)]
 }
 

@@ -157,11 +157,11 @@ describe('Hỗ trợ KD operations', () => {
     await waitFor(() => expect(mocked.resetAllData).toHaveBeenCalledTimes(1))
   })
 
-  it('does not expose transfer creation to Admin', () => {
+  it('allows Admin to create staff transfers', () => {
     mocked.session = { role: 'admin', name: 'Admin' }
     render(<SupportTransfersPage />)
 
-    expect(screen.getByRole('heading', { name: /Không có quyền truy cập/i })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Lưu điều chuyển/i })).toBeNull()
+    expect(screen.getByRole('heading', { name: /Điều chuyển nhân sự/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Lưu điều chuyển/i })).toBeTruthy()
   })
 })

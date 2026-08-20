@@ -132,6 +132,8 @@ export function EmployeeDashboardV2() {
     taskAssignmentHistory = [],
     shiftDefinitions = [],
     stores = [],
+    supportTransfers = [],
+    session,
     policies,
     checkIn,
     checkOut,
@@ -155,20 +157,43 @@ export function EmployeeDashboardV2() {
     tasks,
     employee,
   })
-  const store = stores.find((item) => String(item.id) === String(employee?.storeId))
-  const ownAttendance = employeeAttendance(attendance, employeeId, employee?.storeId)
+  const workingStoreId = String(session?.storeId || employee?.storeId || '')
+  const homeStoreId = String(session?.homeStoreId || employee?.storeId || workingStoreId)
+  const store = stores.find((item) => String(item.id) === workingStoreId)
+  const homeStore = stores.find((item) => String(item.id) === homeStoreId)
+  const activeTransfer = supportTransfers.find((record) => (
+    String(record.id || '') === String(session?.activeTransferId || '')
+    || (
+      String(record.employeeId || '') === employeeId
+      && String(record.toStoreId || '') === workingStoreId
+      && !record.deletedAt
+      && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+      && String(record.fromDate || '') <= workDate
+      && String(record.toDate || '') >= workDate
+    )
+  )) || null
+  const isSupporting = Boolean(activeTransfer && workingStoreId !== homeStoreId)
+  const ownAttendance = employeeAttendance(attendance, employeeId, workingStoreId)
   const activeRecord = ownAttendance.find((record) => !record.checkOutAt && !record.checkOut)
   const todayRecords = ownAttendance.filter((record) => recordDate(record) === workDate)
   const ownOrders = orders.filter((order) => (
     String(order.employeeId) === employeeId
-    && String(order.storeId) === String(employee?.storeId)
+    && String(order.storeId) === workingStoreId
     && !order.deletedAt
     && order.source !== 'legacy-opening-balance'
   ))
   const monthOrders = ownOrders.filter((order) => businessDate(order.createdAt).startsWith(workDate.slice(0, 7)))
   const todayTasks = employeeTasksForDate({ tasks, schedule, attendance, employee, workDate })
   const completedTasks = todayTasks.filter((task) => taskCompletedByEmployee(task, employeeId)).length
-  const shifts = findScheduledShifts(app, employee || {}, workDate)
+  const scheduledShifts = findScheduledShifts(app, { ...(employee || {}), storeId: workingStoreId }, workDate)
+  const shifts = scheduledShifts.length || !isSupporting ? scheduledShifts : [{
+    id: `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80),
+    name: 'Ca hỗ trợ cửa hàng',
+    start: '00:00',
+    end: '23:59',
+    date: workDate,
+    source: 'support-transfer',
+  }]
   const activeShiftOrders = ordersForOpenAttendance(ownOrders, employeeId, activeRecord)
   const activeShiftId = String(activeRecord?.shiftId || activeRecord?.shift || '')
   const activeShiftTasks = todayTasks.filter((task) => {
@@ -305,7 +330,14 @@ export function EmployeeDashboardV2() {
         <h1>{store?.name || 'Cửa hàng IDOSI'}</h1>
         <p>HỆ THỐNG LÀM VIỆC NHÂN VIÊN</p>
       </div>
-      <PageHeader title={`XIN CHÀO, ${employee?.name || 'NHÂN VIÊN'}`} subtitle="Điểm danh, theo dõi ca, đơn hàng và công việc đúng cửa hàng trực thuộc." icon={Fingerprint} />
+      <PageHeader
+        title={`XIN CHÀO, ${employee?.name || 'NHÂN VIÊN'}`}
+        subtitle={isSupporting
+          ? `NV hỗ trợ từ ${homeStore?.name || homeStoreId} · đang làm việc tại ${store?.name || workingStoreId}.`
+          : 'Điểm danh, theo dõi ca, đơn hàng và công việc đúng cửa hàng trực thuộc.'}
+        icon={Fingerprint}
+        actions={isSupporting ? <Badge tone="orange">NV HỖ TRỢ</Badge> : null}
+      />
       <div className="employee-top-grid">
         <Card className="checkin-card">
           <h2>ĐIỂM DANH</h2>
@@ -321,7 +353,13 @@ export function EmployeeDashboardV2() {
           <dl>
             <div><dt>Mã nhân viên</dt><dd>{employeeId || '—'}</dd></div>
             <div><dt>Họ và tên</dt><dd>{employee?.name || '—'}</dd></div>
-            <div><dt>Cửa hàng</dt><dd>{store?.name || '—'}</dd></div>
+            <div><dt>Cửa hàng đang làm việc</dt><dd>{store?.name || '—'}</dd></div>
+            <div><dt>Cửa hàng chính trực thuộc</dt><dd>{homeStore?.name || '—'}</dd></div>
+            {isSupporting && <>
+              <div><dt>Lương hỗ trợ</dt><dd>{money(activeTransfer.hourlySupportRate || 0)}/giờ</dd></div>
+              <div><dt>Phụ cấp hỗ trợ</dt><dd>{money(activeTransfer.allowance || 0)}</dd></div>
+              <div><dt>Thời gian hỗ trợ</dt><dd>{shortDate(activeTransfer.fromDate)} – {shortDate(activeTransfer.toDate)}</dd></div>
+            </>}
             <div><dt>Loại nhân viên</dt><dd>{employee?.employmentType || employee?.type || '—'}</dd></div>
             <div><dt>Số điện thoại</dt><dd>{employee?.phone || '—'}</dd></div>
           </dl>
@@ -329,7 +367,7 @@ export function EmployeeDashboardV2() {
         <Card className="current-shift-card">
           <h2>CA LÀM VIỆC HÔM NAY</h2>
           <div>
-            <Badge tone={activeRecord ? 'green' : 'blue'}>{displayShift?.shiftName || displayShift?.name || 'CHƯA XẾP CA'}</Badge>
+            <Badge tone={activeRecord ? 'green' : isSupporting ? 'orange' : 'blue'}>{displayShift?.shiftName || displayShift?.name || 'CHƯA XẾP CA'}</Badge>
             <strong>{displayShift ? `${displayShift.shiftStart || displayShift.start || '--:--'} – ${displayShift.shiftEnd || displayShift.end || '--:--'}` : '—'}</strong>
           </div>
           <p><span>Giờ vào: <b>{activeRecord?.checkIn || '--:--'}</b></span><span>Giờ kết ca: <b>{activeRecord?.checkOut || '--:--'}</b></span></p>
@@ -338,7 +376,7 @@ export function EmployeeDashboardV2() {
       </div>
       <div className="metrics-grid metrics-grid--4">
         <MetricCard label="TRẠNG THÁI CA" value={activeRecord ? 'Đang làm' : todayRecords.some((record) => record.checkOutAt || record.checkOut) ? 'Đã kết ca' : 'Chưa điểm danh'} icon={Clock3} tone={activeRecord ? 'green' : 'blue'} />
-        <MetricCard label="CA ĐƯỢC PHÂN HÔM NAY" value={shifts.length} suffix="ca" icon={CalendarDays} tone="blue" />
+        <MetricCard label={isSupporting ? 'CHẾ ĐỘ LÀM VIỆC' : 'CA ĐƯỢC PHÂN HÔM NAY'} value={isSupporting ? 'Hỗ trợ' : shifts.length} suffix={isSupporting ? '' : 'ca'} icon={CalendarDays} tone={isSupporting ? 'orange' : 'blue'} />
         <MetricCard label="ĐƠN TRONG THÁNG" value={monthOrders.length} suffix="đơn" icon={ShoppingCart} tone="green" />
         <MetricCard label="CÔNG VIỆC HÔM NAY" value={`${completedTasks}/${todayTasks.length}`} icon={ClipboardCheck} tone={completedTasks === todayTasks.length && todayTasks.length ? 'green' : 'orange'} />
       </div>
@@ -382,7 +420,7 @@ export function EmployeeDashboardV2() {
                 >
                   <CheckCircle2 size={18} />
                 </button>
-                <div><strong>{task.title || task.name || 'Công việc'}</strong><small>{task.detail || task.description || 'Không có mô tả.'}</small></div>
+                <div><strong>{task.title || task.name || 'Công việc'}</strong></div>
                 <Badge tone={done ? 'green' : 'orange'}>{pending ? 'Đang cập nhật...' : done ? 'Đã hoàn thành' : canUpdate ? 'Chưa hoàn thành' : 'Chờ vào đúng ca'}</Badge>
               </div>
             )

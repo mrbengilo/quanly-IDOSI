@@ -9,7 +9,18 @@ const mocked = vi.hoisted(() => ({
   readNotification: vi.fn(),
   clearNotifications: vi.fn(),
   setActiveStoreId: vi.fn(),
+  notifications: [],
 }))
+
+const baseNotifications = [
+  { id: 'N1', storeId: 'CH001', title: 'Don moi 1' },
+  { id: 'N2', storeId: 'CH001', title: 'Don moi 2' },
+  { id: 'N3', storeId: 'CH002', orderId: 'ORDER-CH002', title: 'Don moi cua hang 2' },
+  { id: 'N4', type: 'support-work-assigned', employeeId: 'HTKD001', assignmentId: 'SWA-1', route: '/support/tasks?assignment=SWA-1', title: 'Cong viec cua toi' },
+  { id: 'N5', type: 'support-work-assigned', employeeId: 'HTKD002', assignmentId: 'SWA-2', route: '/support/tasks?assignment=SWA-2', title: 'Cong viec nguoi khac' },
+  { id: 'N6', type: 'support-work-submitted', assignmentId: 'SWA-3', route: '/admin/support-employees', title: 'Ho tro KD da gui ket qua' },
+  { id: 'N7', type: 'store-task-assigned', storeId: 'CH001', employeeId: 'E01', assignmentId: 'TSA-1', route: '/employee/home', title: 'Viec ca tuong lai' },
+]
 
 vi.mock('../state/AppContext', () => ({
   useApp: () => ({
@@ -19,15 +30,7 @@ vi.mock('../state/AppContext', () => ({
       { id: 'CH002', name: 'Cua hang 2', short: 'CH2' },
     ],
     activeStoreId: mocked.activeStoreId,
-    notifications: [
-      { id: 'N1', storeId: 'CH001', title: 'Don moi 1' },
-      { id: 'N2', storeId: 'CH001', title: 'Don moi 2' },
-      { id: 'N3', storeId: 'CH002', orderId: 'ORDER-CH002', title: 'Don moi cua hang 2' },
-      { id: 'N4', type: 'support-work-assigned', employeeId: 'HTKD001', assignmentId: 'SWA-1', route: '/support/tasks?assignment=SWA-1', title: 'Cong viec cua toi' },
-      { id: 'N5', type: 'support-work-assigned', employeeId: 'HTKD002', assignmentId: 'SWA-2', route: '/support/tasks?assignment=SWA-2', title: 'Cong viec nguoi khac' },
-      { id: 'N6', type: 'support-work-submitted', assignmentId: 'SWA-3', route: '/admin/support-employees', title: 'Ho tro KD da gui ket qua' },
-      { id: 'N7', type: 'store-task-assigned', storeId: 'CH001', employeeId: 'E01', assignmentId: 'TSA-1', route: '/employee/home', title: 'Viec ca tuong lai' },
-    ],
+    notifications: mocked.notifications,
     readNotification: mocked.readNotification,
     clearNotifications: mocked.clearNotifications,
     setActiveStoreId: mocked.setActiveStoreId,
@@ -48,6 +51,8 @@ describe('AppShell notifications', () => {
   beforeEach(() => {
     mocked.session = { role: 'admin', name: 'Admin' }
     mocked.activeStoreId = 'CH001'
+    mocked.notifications = baseNotifications.map((item) => ({ ...item }))
+    sessionStorage.clear()
     mocked.readNotification.mockReset()
     mocked.clearNotifications.mockReset().mockResolvedValue({ ok: true, updatedCount: 2 })
     mocked.setActiveStoreId.mockReset()
@@ -66,16 +71,58 @@ describe('AppShell notifications', () => {
 
   it('switches to the notification store before opening its order', async () => {
     mocked.readNotification.mockResolvedValue({ ok: true })
-    render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
+    render(
+      <MemoryRouter initialEntries={['/admin/overview']}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="*" element={<CurrentRoute />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
 
     fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
     fireEvent.click(screen.getByText('Don moi cua hang 2'))
 
     expect(mocked.setActiveStoreId).toHaveBeenCalledWith('CH002')
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/orders?store=CH002&order=ORDER-CH002'))
     await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N3'))
   })
 
-  it('shows the Admin-only account management menus', () => {
+  it('shows a new assigned-task popup and removes it from the bell after opening', async () => {
+    mocked.session = { role: 'employee', name: 'Nhân viên', employeeId: 'E01', code: 'E01', storeId: 'CH001', unit: 'store' }
+    mocked.notifications = []
+    mocked.readNotification.mockResolvedValue({ ok: true })
+    const view = render(
+      <MemoryRouter initialEntries={['/employee/home']}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="*" element={<CurrentRoute />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    mocked.notifications = [{ id: 'TASK-NEW', type: 'store-task-assigned', storeId: 'CH001', employeeId: 'E01', assignmentId: 'ASSIGN-NEW', title: 'Công việc mới' }]
+    view.rerender(
+      <MemoryRouter initialEntries={['/employee/home']}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="*" element={<CurrentRoute />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByRole('button', { name: 'Mở công việc vừa được giao' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Mở công việc vừa được giao' }))
+    expect(screen.getByTestId('current-route').textContent).toBe('/employee/home?assignment=ASSIGN-NEW')
+    await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('TASK-NEW'))
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    expect(screen.queryByText('Công việc mới')).toBeNull()
+  })
+
+  it('shows Admin all current business-support menus plus account management', () => {
     render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
 
     expect(document.querySelector('.sidebar__brand .brand__mark')?.getAttribute('src')).toBe('/favicon.png')
@@ -85,7 +132,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Danh sách nhân viên cửa hàng/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
     expect(screen.getByRole('link', { name: /Reset dữ liệu/i }).getAttribute('href')).toBe('/admin/reset')
-    expect(screen.queryByRole('link', { name: /Điều chuyển nhân sự/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
   })
 
   it('gives business support policy access and the scoped operational reset', () => {
@@ -113,9 +160,9 @@ describe('AppShell notifications', () => {
     render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
 
     fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
-    expect(screen.getByText('Cong viec cua toi')).toBeTruthy()
+    expect(screen.getAllByText('Cong viec cua toi').length).toBeGreaterThan(0)
     expect(screen.queryByText('Cong viec nguoi khac')).toBeNull()
-    fireEvent.click(screen.getByText('Cong viec cua toi'))
+    fireEvent.click(screen.getAllByText('Cong viec cua toi').find((node) => node.closest('.notification-item')).closest('.notification-item'))
     await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N4'))
   })
 
@@ -152,7 +199,7 @@ describe('AppShell notifications', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
-    fireEvent.click(screen.getByText('Viec ca tuong lai'))
+    fireEvent.click(screen.getAllByText('Viec ca tuong lai').find((node) => node.closest('.notification-item')).closest('.notification-item'))
 
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/employee/home?assignment=TSA-1'))
     expect(mocked.readNotification).toHaveBeenCalledWith('N7')

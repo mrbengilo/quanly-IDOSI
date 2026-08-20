@@ -57,4 +57,10 @@ describe('office employee form', () => {
       'Hình ảnh mặt sau CCCD là trường bắt buộc.',
     ]))
   })
+
+  it('allows a person to reuse CCCD and phone for a different login and position', () => {
+    const existing = [{ id: 'HTKD-001', cccd: validForm().cccd, phone: validForm().phone, username: 'support-role' }]
+    expect(validateOfficeEmployee(validForm(), existing, '', true)).toEqual([])
+    expect(validateOfficeEmployee(validForm({ username: 'support-role' }), existing, '', true)).toContain('Tên đăng nhập đã tồn tại.')
+  })
 })

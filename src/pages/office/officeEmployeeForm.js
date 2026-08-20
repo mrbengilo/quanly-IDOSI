@@ -42,6 +42,8 @@ export function validateOfficeEmployee(form, employees, editingKey, requiresPass
   if (!PHONE_PATTERN.test(normalizePhone(form.phone))) errors.push('Số điện thoại phải gồm đúng 10 chữ số và bắt đầu bằng số 0.')
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(form.startDate || ''))) errors.push('Ngày bắt đầu làm không hợp lệ.')
   if (!OFFICE_EMPLOYEE_TYPES.includes(form.employmentType)) errors.push('Loại nhân viên không hợp lệ.')
+  if (form.workTimeType && !['Full-Time', 'Part-Time'].includes(form.workTimeType)) errors.push('Thời gian làm việc phải là Full-Time hoặc Part-Time.')
+  if ((form.workStart || form.workEnd) && (!/^\d{2}:\d{2}$/u.test(String(form.workStart || '')) || !/^\d{2}:\d{2}$/u.test(String(form.workEnd || '')) || form.workEnd <= form.workStart)) errors.push('Giờ làm việc phải theo định dạng 24 giờ và giờ kết thúc phải sau giờ bắt đầu.')
   if (!OFFICE_POSITIONS.includes(form.position)) errors.push('Vị trí công việc không hợp lệ.')
   if (!form.identityImages?.front) errors.push('Hình ảnh mặt trước CCCD là trường bắt buộc.')
   if (!form.identityImages?.back) errors.push('Hình ảnh mặt sau CCCD là trường bắt buộc.')
@@ -50,8 +52,6 @@ export function validateOfficeEmployee(form, employees, editingKey, requiresPass
 
   const others = employees.filter((item) => String(item.id || employeeCode(item)) !== String(editingKey || ''))
   if (others.some((item) => normalizeText(employeeCode(item)) === normalizeText(form.code))) errors.push('Mã nhân viên đã tồn tại.')
-  if (others.some((item) => String(item.cccd || item.citizenId || '') === form.cccd)) errors.push('Số CCCD đã được sử dụng.')
   if (others.some((item) => normalizeText(item.username) === normalizeText(form.username))) errors.push('Tên đăng nhập đã tồn tại.')
-  if (others.some((item) => normalizePhone(item.phone) === normalizePhone(form.phone))) errors.push('Số điện thoại đã được sử dụng.')
   return [...new Set(errors)]
 }

@@ -41,7 +41,7 @@ export function Brand({ compact = false, blue = false, subtitle = 'hệ thống 
   )
 }
 
-export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38 }) {
+export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38, src = '' }) {
   const initials = name
     .split(' ')
     .slice(-2)
@@ -50,7 +50,7 @@ export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38 }) {
     .toUpperCase()
   return (
     <span className="avatar" style={{ '--avatar-color': color, width: size, height: size }}>
-      {initials}
+      {src ? <img src={src} alt={`Ảnh đại diện ${name}`} /> : initials}
     </span>
   )
 }

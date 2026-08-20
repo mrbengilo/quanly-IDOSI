@@ -110,11 +110,11 @@ const nextShiftColor = (shifts = []) => {
     || BRIGHT_SHIFT_COLORS[shifts.length % BRIGHT_SHIFT_COLORS.length]
 }
 
-const blankShift = (date, color = BRIGHT_SHIFT_COLORS[0]) => ({
+const blankShift = (color = BRIGHT_SHIFT_COLORS[0]) => ({
   name: '',
   start: '07:00',
   end: '12:00',
-  date,
+  date: '',
   color,
 })
 
@@ -150,15 +150,26 @@ export function UnifiedSchedule() {
     && String(record.fromDate || '') <= date
     && String(record.toDate || '') >= date
   ))
+  const employeeSupportsAnotherStoreOnDate = (employee) => supportTransfers.some((record) => (
+    String(record.employeeId || '') === String(employee.id || employee.code || '')
+    && String(record.fromStoreId || '') === String(storeId)
+    && String(record.toStoreId || '') !== String(storeId)
+    && !record.deletedAt
+    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+    && String(record.fromDate || '') <= date
+    && String(record.toDate || '') >= date
+  ))
   const employees = allEmployees
     .filter((employee) => (
       String(employee.unit || 'store') === 'store'
       && employee.status !== 'Đã nghỉ việc'
       && (!storeId || String(employee.storeId) === String(storeId) || employeeSupportsStoreOnDate(employee))
+      && !(String(employee.storeId) === String(storeId) && employeeSupportsAnotherStoreOnDate(employee))
     ))
     .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'vi'))
 
   const [viewMode, setViewMode] = useState('day')
+  const [historyMode, setHistoryMode] = useState('day')
   const [focusedEmployeeId, setFocusedEmployeeId] = useState('')
   const [selectedShiftIds, setSelectedShiftIds] = useState([])
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([])
@@ -168,7 +179,7 @@ export function UnifiedSchedule() {
   const [savingNewAssignment, setSavingNewAssignment] = useState(false)
   const [shiftModalOpen, setShiftModalOpen] = useState(false)
   const [editingShift, setEditingShift] = useState(null)
-  const [shiftForm, setShiftForm] = useState(() => blankShift(localDate(), nextShiftColor(shiftDefinitions)))
+  const [shiftForm, setShiftForm] = useState(() => blankShift(nextShiftColor(shiftDefinitions)))
   const [editingAssignment, setEditingAssignment] = useState(null)
   const [assignmentEmployeeIds, setAssignmentEmployeeIds] = useState([])
   const [assignmentNote, setAssignmentNote] = useState('')
@@ -177,7 +188,7 @@ export function UnifiedSchedule() {
   const dayShifts = shiftDefinitions
     .filter((shift) => (
       shift.active !== false
-      && shift.date === date
+      && (!shift.date || shift.date === date)
       && (!shift.storeId || !storeId || String(shift.storeId) === String(storeId))
     ))
     .sort((left, right) => String(left.start || '').localeCompare(String(right.start || '')))
@@ -199,7 +210,7 @@ export function UnifiedSchedule() {
     && (!record.storeId || !storeId || String(record.storeId) === String(storeId))
   ))
   const shiftsForDate = (targetDate) => shiftDefinitions
-    .filter((shift) => shift.active !== false && String(shift.date || '') === targetDate && (!shift.storeId || String(shift.storeId) === String(storeId)))
+    .filter((shift) => shift.active !== false && (!shift.date || String(shift.date) === targetDate) && (!shift.storeId || String(shift.storeId) === String(storeId)))
     .sort((left, right) => String(left.start || '').localeCompare(String(right.start || '')))
 
   const resolveScheduledShift = (record, shiftId) => {
@@ -231,18 +242,37 @@ export function UnifiedSchedule() {
       updatedAt: timestamps.toSorted().at(-1) || '',
     }
   }).toSorted((left, right) => String(right.shift.start || '').localeCompare(String(left.shift.start || '')))
+  const historyDates = new Set(historyMode === 'week'
+    ? weekDates(date)
+    : historyMode === 'month'
+      ? schedule.map((record) => String(record.date || record.workDate || '')).filter((value) => value.startsWith(date.slice(0, 7)))
+      : [date])
+  const scheduleHistoryRows = schedule
+    .filter((record) => (
+      historyDates.has(String(record.date || record.workDate || ''))
+      && (!record.storeId || String(record.storeId) === String(storeId))
+    ))
+    .flatMap((record) => (record.shiftIds || (record.shiftId ? [record.shiftId] : [])).map((shiftId) => ({
+      id: `${record.id || record.employeeId}-${shiftId}`,
+      date: String(record.date || record.workDate || ''),
+      employeeName: employees.find((employee) => String(employee.id) === String(record.employeeId))?.name || record.employeeName || record.employeeId,
+      employeeId: record.employeeId,
+      shift: resolveScheduledShift(record, shiftId),
+      note: record.note || '',
+      updatedAt: record.updatedAt || record.createdAt || '',
+    })))
+    .toSorted((left, right) => `${right.date}:${right.updatedAt}`.localeCompare(`${left.date}:${left.updatedAt}`))
 
   const changeDate = (event) => {
     const nextDate = event.target.value
     setDate(nextDate)
     setSelectedShiftIds([])
-    setShiftForm((current) => editingShift ? current : { ...current, date: nextDate })
   }
 
   const openCreateShift = () => {
     if (!canManageStore) return
     setEditingShift(null)
-    setShiftForm(blankShift(date, nextShiftColor(shiftDefinitions.filter((shift) => !storeId || !shift.storeId || String(shift.storeId) === String(storeId)))))
+    setShiftForm(blankShift(nextShiftColor(shiftDefinitions.filter((shift) => !storeId || !shift.storeId || String(shift.storeId) === String(storeId)))))
     setShiftModalOpen(true)
   }
 
@@ -253,7 +283,7 @@ export function UnifiedSchedule() {
       name: shift.name || '',
       start: shift.start || '07:00',
       end: shift.end || '12:00',
-      date: shift.date || date,
+      date: '',
       color: shift.color || '#07873d',
     })
     setShiftModalOpen(true)
@@ -262,7 +292,7 @@ export function UnifiedSchedule() {
   const closeShiftModal = () => {
     setShiftModalOpen(false)
     setEditingShift(null)
-    setShiftForm(blankShift(date, nextShiftColor(shiftDefinitions)))
+    setShiftForm(blankShift(nextShiftColor(shiftDefinitions)))
   }
 
   const saveShift = async () => {
@@ -272,8 +302,8 @@ export function UnifiedSchedule() {
       name: shiftForm.name.trim(),
       storeId,
     }
-    if (!payload.name || !payload.start || !payload.end || !payload.date) {
-      notify?.('Vui lòng nhập đủ tên, thời gian và ngày áp dụng.', 'info')
+    if (!payload.name || !payload.start || !payload.end) {
+      notify?.('Vui lòng nhập đủ tên và thời gian ca làm việc.', 'info')
       return
     }
     const result = editingShift
@@ -283,14 +313,14 @@ export function UnifiedSchedule() {
       notify?.(result?.message || 'Chưa thể lưu ca làm việc.', 'info')
       return
     }
-    setDate(payload.date)
+    if (payload.date) setDate(payload.date)
     setSelectedShiftIds(result.shift?.id ? [result.shift.id] : [])
     closeShiftModal()
   }
 
   const removeShift = async (shift) => {
     if (!canManageStore) return
-    if (!window.confirm(`Ngừng sử dụng ${shift.name} ngày ${displayDate(shift.date)}? Lịch sử đã ghi nhận sẽ được giữ nguyên.`)) return
+    if (!window.confirm(`Ngừng sử dụng ${shift.name}? Lịch sử đã ghi nhận sẽ được giữ nguyên.`)) return
     const result = await deleteShiftDefinition?.(shift.id)
     if (result === false || result?.ok === false) {
       notify?.(result?.message || 'Chưa thể xóa ca làm việc.', 'info')
@@ -463,7 +493,7 @@ export function UnifiedSchedule() {
 
       <div className="chart-grid schedule-management-grid">
         <Card
-          title={`Ca làm việc ngày ${displayDate(date)}`}
+          title="Ca làm việc dùng chung"
           action={canManageStore ? <Button variant="outline" icon={Plus} onClick={openCreateShift}>Tạo ca</Button> : null}
         >
           {dayShifts.length ? (
@@ -490,7 +520,7 @@ export function UnifiedSchedule() {
               <InfoNote>Dữ liệu chấm công và lịch cũ dùng bản chụp tên, giờ bắt đầu và giờ kết thúc; sửa ca hôm nay không đổi lịch sử.</InfoNote>
             </>
           ) : (
-            <EmptyState title="Chưa có ca trong ngày" description={canManageStore ? 'Tạo ca làm việc trước khi phân lịch cho nhân viên.' : 'Chưa có dữ liệu ca làm việc trong ngày đã chọn.'} />
+          <EmptyState title="Chưa có ca làm việc" description={canManageStore ? 'Tạo ca một lần để dùng lại khi phân lịch tuần hoặc tháng.' : 'Cửa hàng chưa có dữ liệu ca làm việc.'} />
           )}
         </Card>
 
@@ -499,12 +529,12 @@ export function UnifiedSchedule() {
       <Card className="created-schedule-card">
         <div className="created-schedule-card__header">
           <div>
-            <h2>Lịch đã tạo ngày {displayDate(date)}</h2>
-            <p>Chọn một lịch để sửa danh sách nhân viên, ghi chú hoặc xóa lịch phân ca.</p>
+            <h2>Lịch sử phân ca</h2>
+            <p>Xem theo ngày, tuần hoặc tháng; lịch ngày đang chọn có thể sửa hoặc xóa.</p>
           </div>
-          <Button variant="outline" onClick={() => setDate(localDate())}>Hôm nay</Button>
+          <div className="tabs" role="tablist" aria-label="Phạm vi lịch sử phân ca"><button type="button" className={historyMode === 'day' ? 'active' : ''} onClick={() => setHistoryMode('day')}>Theo ngày</button><button type="button" className={historyMode === 'week' ? 'active' : ''} onClick={() => setHistoryMode('week')}>Theo tuần</button><button type="button" className={historyMode === 'month' ? 'active' : ''} onClick={() => setHistoryMode('month')}>Theo tháng</button></div>
         </div>
-        {createdScheduleRows.length ? (
+        {historyMode === 'day' && createdScheduleRows.length ? (
           <div className="created-schedule-list">
             {createdScheduleRows.map((row) => (
               <article key={row.shift.id} className="created-schedule-row">
@@ -523,10 +553,10 @@ export function UnifiedSchedule() {
               </article>
             ))}
           </div>
-        ) : (
+        ) : historyMode === 'day' ? (
           <EmptyState title="Chưa có lịch phân ca" description="Chọn ca và nhân viên ở trên để tạo lịch mới." />
-        )}
-        {createdScheduleRows.length > 0 && <TableFooter shown={createdScheduleRows.length} total={createdScheduleRows.length} />}
+        ) : scheduleHistoryRows.length ? <TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca</th><th>Thời gian</th><th>Ghi chú</th><th>Cập nhật</th></tr></thead><tbody>{scheduleHistoryRows.map((row) => <tr key={row.id}><td><strong>{displayDate(row.date)}</strong></td><td>{row.employeeName}<small className="table-note">{row.employeeId}</small></td><td>{row.shift.name}</td><td>{timeLabel(row.shift.start, row.shift.end)}</td><td>{row.note || '—'}</td><td>{displayDateTime(row.updatedAt)}</td></tr>)}</tbody></TableWrap> : <EmptyState title="Chưa có lịch sử phân ca" description="Không có lịch trong phạm vi đang chọn." />}
+        {historyMode === 'day' && createdScheduleRows.length > 0 && <TableFooter shown={createdScheduleRows.length} total={createdScheduleRows.length} />}
       </Card>
 
       {canManageStore && <Modal
@@ -655,9 +685,6 @@ export function UnifiedSchedule() {
           <Field label="Tên ca" required>
             <Input value={shiftForm.name} onChange={(event) => setShiftForm({ ...shiftForm, name: event.target.value })} placeholder="Ví dụ: Ca sáng" autoFocus />
           </Field>
-          <Field label="Ngày áp dụng" required>
-            <Input type="date" value={shiftForm.date} onChange={(event) => setShiftForm({ ...shiftForm, date: event.target.value })} />
-          </Field>
           <Field label="Giờ bắt đầu (24 giờ)" required>
             <Input type="time" value={shiftForm.start} onChange={(event) => setShiftForm({ ...shiftForm, start: event.target.value })} />
           </Field>
@@ -674,7 +701,7 @@ export function UnifiedSchedule() {
             <Input value={durationLabel(shiftForm)} readOnly />
           </Field>
         </div>
-        <InfoNote>Ca được quản lý độc lập theo ngày. Hệ thống lưu bản chụp thời gian khi phân ca để không làm sai lịch sử.</InfoNote>
+        <InfoNote>Ca được tạo một lần và dùng lại cho mọi ngày phân lịch. Hệ thống lưu bản chụp thời gian để việc sửa ca không làm sai lịch sử cũ.</InfoNote>
       </Modal>}
     </div>
   )

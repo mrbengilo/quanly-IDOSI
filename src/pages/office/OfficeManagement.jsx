@@ -59,6 +59,9 @@ const emptyEmployee = {
   street: '',
   startDate: today(),
   employmentType: OFFICE_EMPLOYEE_TYPES[0],
+  workTimeType: 'Full-Time',
+  workStart: '08:00',
+  workEnd: '17:30',
   position: OFFICE_POSITIONS[0],
   identityImages: { front: '', back: '' },
   username: '',
@@ -108,6 +111,9 @@ const employeeToForm = (employee = {}) => {
     street: address.street,
     startDate: String(employee.startDate || employee.joinDate || '').slice(0, 10),
     employmentType: officeEmployeeType(employee),
+    workTimeType: employee.workTimeType || (officeEmployeeType(employee) === 'Full-Time' ? 'Full-Time' : 'Part-Time'),
+    workStart: employee.workStart || '08:00',
+    workEnd: employee.workEnd || (officeEmployeeType(employee) === 'Full-Time' ? '17:30' : '12:00'),
     position: OFFICE_POSITIONS.includes(employee.position || employee.workPosition || employee.role)
       ? (employee.position || employee.workPosition || employee.role)
       : OFFICE_POSITIONS[0],
@@ -253,7 +259,13 @@ export function OfficeManagement() {
     let value = event.target.value
     if (field === 'cccd') value = value.replace(/\D/g, '').slice(0, 12)
     if (field === 'phone') value = value.replace(/\D/g, '').slice(0, 10)
-    setEmployeeForm((current) => ({ ...current, [field]: value }))
+    setEmployeeForm((current) => field === 'workTimeType'
+      ? {
+          ...current,
+          workTimeType: value,
+          ...(value === 'Full-Time' ? { workStart: '08:00', workEnd: '17:30' } : {}),
+        }
+      : ({ ...current, [field]: value }))
   }
 
   const updateEmployeeAddress = (address) => {
@@ -336,6 +348,9 @@ export function OfficeManagement() {
       startDate: employeeForm.startDate,
       joinDate: employeeForm.startDate,
       employmentType: employeeForm.employmentType,
+      workTimeType: employeeForm.workTimeType,
+      workStart: employeeForm.workStart,
+      workEnd: employeeForm.workEnd,
       officeEmployeeType: employeeForm.employmentType,
       officeEmploymentType: employeeForm.employmentType,
       position: employeeForm.position.trim(),
@@ -481,6 +496,9 @@ export function OfficeManagement() {
             <Field label="CCCD" required hint="CCCD phải gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={employeeForm.cccd} onChange={updateEmployeeField('cccd')} placeholder="012345678901" /></Field>
             <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={employeeForm.startDate} onChange={updateEmployeeField('startDate')} /></Field>
             <Field label="Loại nhân viên" required><Select value={employeeForm.employmentType} onChange={updateEmployeeField('employmentType')}>{OFFICE_EMPLOYEE_TYPES.map((type) => <option key={type}>{type}</option>)}</Select></Field>
+            <Field label="Thời gian làm việc" required><Select value={employeeForm.workTimeType} onChange={updateEmployeeField('workTimeType')}><option>Full-Time</option><option>Part-Time</option></Select></Field>
+            <Field label="Giờ bắt đầu (24 giờ)" required hint={employeeForm.workTimeType === 'Full-Time' ? 'Khung Full-Time mặc định; Admin/Hỗ trợ KD có thể điều chỉnh.' : 'Thiết lập theo ca sáng, chiều hoặc thời gian linh hoạt.'}><Input type="time" value={employeeForm.workStart} onChange={updateEmployeeField('workStart')} /></Field>
+            <Field label="Giờ kết thúc (24 giờ)" required><Input type="time" value={employeeForm.workEnd} onChange={updateEmployeeField('workEnd')} /></Field>
             <Field label="Vị trí công việc" required><Select value={employeeForm.position} onChange={updateEmployeeField('position')}>{OFFICE_POSITIONS.map((position) => <option key={position}>{position}</option>)}</Select></Field>
           </div>
           <h3>Địa chỉ</h3>

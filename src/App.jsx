@@ -61,7 +61,8 @@ const homeByRole = {
 const homeFor = (session) => homeByRole[canonicalRole(session?.role)] || '/login'
 
 function RoleGuard({ roles, children }) {
-  const { session } = useApp()
+  const { session, authReady = true } = useApp()
+  if (!authReady) return <div className="route-loading" role="status">Đang khôi phục màn hình...</div>
   if (!session) return <Navigate to="/login" replace />
   const allowedRoles = Array.isArray(roles) ? roles : [roles]
   if (!allowedRoles.includes(canonicalRole(session.role))) return <Navigate to={homeFor(session)} replace />
@@ -69,7 +70,8 @@ function RoleGuard({ roles, children }) {
 }
 
 function EntryRedirect() {
-  const { session } = useApp()
+  const { session, authReady = true } = useApp()
+  if (!authReady) return <div className="route-loading" role="status">Đang khôi phục màn hình...</div>
   return <Navigate to={homeFor(session)} replace />
 }
 
@@ -109,11 +111,15 @@ function StoreOverviewRoute() {
 }
 
 export default function App() {
-  const { session } = useApp()
+  const { session, authReady = true } = useApp()
   return (
     <Routes>
       <Route path="/" element={<EntryRedirect />} />
-      <Route path="/login" element={session ? <Navigate to={homeFor(session)} replace /> : <Login />} />
+      <Route path="/login" element={!authReady ? <div className="route-loading" role="status">Đang khôi phục màn hình...</div> : session ? <Navigate to={homeFor(session)} replace /> : <Login />} />
+
+      <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager', 'employee']}><AppShell /></RoleGuard>}>
+        <Route path="/account/settings" element={<AdminSettings />} />
+      </Route>
 
       <Route element={<RoleGuard roles={['admin', 'business_support']}><AppShell /></RoleGuard>}>
         <Route path="/admin/overview" element={<AdminOverviewV2 />} />
@@ -129,6 +135,7 @@ export default function App() {
         <Route path="/admin/policies" element={<PolicySettings />} />
         <Route path="/admin/order-audit" element={<OrderAuditPage />} />
         <Route path="/admin/reset" element={<ResetDataPage />} />
+        <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
       </Route>
 
       <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager']}><AppShell /></RoleGuard>}>
@@ -150,7 +157,6 @@ export default function App() {
         <Route path="/support/overview" element={<OfficeEmployeeDashboard />} />
         <Route path="/support/attendance" element={<Navigate to="/support/overview" replace />} />
         <Route path="/support/tasks" element={<SupportAssignedWorkPage />} />
-        <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>

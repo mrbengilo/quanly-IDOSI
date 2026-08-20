@@ -120,10 +120,25 @@ const activeSupportTransferForStore = (transfers = [], employeeId, storeId, date
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
-const storeEmployeesForDate = (employees = [], transfers = [], storeId, date = today()) => employees
+const activeSupportTransferFromStore = (transfers = [], employeeId, storeId, date = today()) => transfers
+  .filter((record) => (
+    String(record.employeeId || '') === String(employeeId || '')
+    && String(record.fromStoreId || '') === String(storeId || '')
+    && String(record.toStoreId || '') !== String(storeId || '')
+    && !record.deletedAt
+    && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+    && String(record.fromDate || '') <= date
+    && String(record.toDate || '') >= date
+  ))
+  .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
+
+const storeEmployeesForDate = (employees = [], transfers = [], storeId, date = today(), { includeSupportingAway = false } = {}) => employees
   .filter((employee) => String(employee.unit || 'store') === 'store' && !employee.deletedAt)
   .flatMap((employee) => {
-    if (String(employee.storeId || '') === String(storeId || '')) return [employee]
+    if (String(employee.storeId || '') === String(storeId || '')) {
+      const supportingAway = activeSupportTransferFromStore(transfers, employee.id || employee.code, storeId, date)
+      return supportingAway && !includeSupportingAway ? [] : [employee]
+    }
     const supportAssignment = activeSupportTransferForStore(
       transfers,
       employee.id || employee.code,
@@ -419,11 +434,12 @@ export function StoreEmployees() {
   )
 
   const scopedEmployees = scopedStoreId
-    ? storeEmployeesForDate(employees, supportTransfers, scopedStoreId)
+    ? storeEmployeesForDate(employees, supportTransfers, scopedStoreId, today(), { includeSupportingAway: true })
     : employees.filter((employee) => String(employee.unit || 'store') === 'store')
   const canEditEmployee = (employee) => (
     canManageStore
     && (session?.role !== 'store_manager' || !employee.supportAssignment)
+    && !activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId)
   )
 
   const normalizedQuery = normalizeText(query)
@@ -563,10 +579,14 @@ export function StoreEmployees() {
             {filtered.map((employee) => {
               const normalizedStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc')
               const type = employeeType(employee)
-              return <tr key={employee.id}>
+              const outboundTransfer = activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId)
+              const supportStore = outboundTransfer
+                ? stores.find((store) => String(store.id) === String(outboundTransfer.toStoreId))
+                : null
+              return <tr key={employee.id} className={outboundTransfer ? 'employee-row--supporting-away' : ''}>
                 <td><strong>{employee.id}</strong></td>
                 <td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.age ? `${employee.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
-                <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{formatTaskDate(employee.supportAssignment.fromDate)} – {formatTaskDate(employee.supportAssignment.toDate)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
+                <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{formatTaskDate(employee.supportAssignment.fromDate)} – {formatTaskDate(employee.supportAssignment.toDate)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : outboundTransfer ? <div className="table-stack"><Badge tone="orange">Đang hỗ trợ {supportStore?.name || outboundTransfer.toStoreId}</Badge><small>{formatTaskDate(outboundTransfer.fromDate)} – {formatTaskDate(outboundTransfer.toDate)}</small><small>{money(outboundTransfer.hourlySupportRate || 0)}/giờ · Phụ cấp {money(outboundTransfer.allowance || 0)}</small><small>Hồ sơ tạm khóa thao tác tại cửa hàng chính</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
                 <td><Badge tone={isPartTime(type) ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
                 <td>{employeePosition(employee)}</td>
                 <td>{employee.cccd || employee.citizenId || '—'}</td>
@@ -574,7 +594,7 @@ export function StoreEmployees() {
                 <td className="address-cell">{employeeAddressLabel(employee)}</td>
                 <td>{employeeSalary(employee) > 0 ? <><strong>{money(employeeSalary(employee))}</strong><small className="table-sub">{employeeSalarySuffix(employee)} · {salaryBasisLabel(employee)}</small>{!isPartTime(type) && <small className="table-sub">{employee.standardWorkDays || 26} ngày · {employee.requiredMonthlyHours || '—'} giờ/tháng</small>}</> : <span className="orange-text">Chưa thiết lập</span>}</td>
                 <td>{employee.username || '—'}</td>
-                <td><Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge></td>
+                <td>{outboundTransfer ? <Badge tone="orange">Đang hỗ trợ</Badge> : <Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge>}</td>
                 {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
               </tr>
             })}
@@ -687,8 +707,7 @@ export function StoreTasks() {
   const history = storeTaskHistory({ taskAssignmentHistory, tasks, storeId, employees, shiftDefinitions })
   const reusableTasks = [...new Map(history.flatMap((assignment) => assignment.tasks || []).flatMap((task) => {
     const title = String(task.title || '').trim()
-    const detail = String(task.detail || '').trim()
-    return title ? [[`${title.toLocaleLowerCase('vi-VN')}|${detail.toLocaleLowerCase('vi-VN')}`, { title, detail }]] : []
+    return title ? [[title.toLocaleLowerCase('vi-VN'), { title }]] : []
   })).entries()].map(([key, task]) => ({ key, ...task }))
 
   const changeShift = (nextShiftId) => {
@@ -707,7 +726,7 @@ export function StoreTasks() {
     const index = current.findIndex((row) => String(row.templateKey || '') === template.key)
     if (index >= 0) return current.filter((_, rowIndex) => rowIndex !== index)
     const withoutEmptyStarter = current.length === 1 && !current[0].title && !current[0].detail ? [] : current
-    return [...withoutEmptyStarter, { ...newStoreTaskRow(), title: template.title, detail: template.detail, templateKey: template.key }]
+    return [...withoutEmptyStarter, { ...newStoreTaskRow(), title: template.title, detail: '', templateKey: template.key }]
   })
   const toggleEmployee = (id) => setSelectedEmployeeIds((current) => current.some((item) => String(item) === String(id))
     ? current.filter((item) => String(item) !== String(id))
@@ -787,16 +806,15 @@ export function StoreTasks() {
             <div className="employee-picker" role="group" aria-label="Công việc nhập sẵn">
               {reusableTasks.map((template) => {
                 const checked = rows.some((row) => row.templateKey === template.key)
-                return <label key={template.key} className={checked ? 'selected' : ''}><input type="checkbox" checked={checked} onChange={() => toggleReusableTask(template)} /><span><strong>{template.title}</strong><small>{template.detail || 'Không có mô tả'}</small></span></label>
+                return <label key={template.key} className={checked ? 'selected' : ''}><input type="checkbox" checked={checked} onChange={() => toggleReusableTask(template)} /><span><strong>{template.title}</strong></span></label>
               })}
             </div>
           </>}
-          <div className="task-editor__head"><span>STT</span><span>Tên công việc</span><span>Mô tả công việc</span><span /></div>
+          <div className="task-editor__head"><span>STT</span><span>Tên công việc</span><span /></div>
           {rows.map((item, index) => (
             <div className="task-editor__row" key={item.id}>
               <b>{index + 1}</b>
               <input value={item.title} maxLength={240} onChange={(event) => updateRow(index, 'title', event.target.value)} placeholder="Nhập tên công việc" aria-label={`Tên công việc ${index + 1}`} />
-              <textarea value={item.detail} maxLength={2000} onChange={(event) => updateRow(index, 'detail', event.target.value)} placeholder="Mô tả, yêu cầu thực hiện" aria-label={`Mô tả công việc ${index + 1}`} />
               <button type="button" onClick={() => removeRow(index)} disabled={rows.length === 1} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>
             </div>
           ))}
@@ -815,7 +833,7 @@ export function StoreTasks() {
             <td><strong>{assignment.assignedBy}</strong><span className="table-sub">{formatTaskDateTime24(assignment.assignedAt)}</span></td>
             <td><strong>{formatTaskDate(assignment.date)}</strong><span className="table-sub">{assignment.shiftName}{assignment.shiftTime ? ` · ${assignment.shiftTime}` : ''}</span></td>
             <td><strong>{assignment.employeeNames.join(', ') || 'Toàn bộ nhân viên trong ca'}</strong><span className="table-sub">{assignment.employeeIds.join(', ') || 'Dữ liệu cũ chưa ghi người nhận'}</span></td>
-            <td><ol className="compact-task-list">{assignment.tasks.map((task, index) => <li key={task.id || `${assignment.id}-${index}`}><strong>{index + 1}. {task.title || 'Công việc chưa đặt tên'}</strong>{task.detail && <small>{task.detail}</small>}<small>{task.status} · {task.completed}/{task.required} nhân viên</small></li>)}</ol></td>
+            <td><ol className="compact-task-list">{assignment.tasks.map((task, index) => <li key={task.id || `${assignment.id}-${index}`}><strong>{index + 1}. {task.title || 'Công việc chưa đặt tên'}</strong><small>{task.status} · {task.completed}/{task.required} nhân viên</small></li>)}</ol></td>
             <td><Badge tone={storeTaskStatusTone(assignment.status)}>{assignment.status}</Badge><span className="table-sub">{assignment.completed}/{assignment.required || assignment.tasks.length} lượt hoàn thành</span></td>
           </tr>)}{!history.length && <tr><td colSpan="5">Chưa có lịch sử giao việc tại cửa hàng này.</td></tr>}</tbody>
         </TableWrap>

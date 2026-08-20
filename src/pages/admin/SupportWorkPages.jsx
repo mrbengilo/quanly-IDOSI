@@ -90,11 +90,17 @@ export function AdminSupportWorkPage() {
   const [form, setForm] = useState({ date: today(), employeeId: '', tasks: [newTaskRow()] })
   const [busy, setBusy] = useState(false)
   const validTasks = form.tasks
-    .map((task) => ({ id: task.id, name: task.name.trim(), description: task.description.trim() }))
+    .map((task) => ({ id: task.id, name: task.name.trim(), description: '' }))
     .filter((task) => task.name)
   const sortedAssignments = useMemo(() => [...(Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])].toSorted((left, right) => (
     String(right.assignedAt || right.updatedAt || right.date).localeCompare(String(left.assignedAt || left.updatedAt || left.date))
   )), [app.supportWorkAssignments])
+  const reusableTasks = useMemo(() => [...new Map(sortedAssignments
+    .flatMap((assignment) => Array.isArray(assignment.tasks) ? assignment.tasks : [])
+    .flatMap((task) => {
+      const name = String(task.name || task.title || '').trim()
+      return name ? [[name.toLocaleLowerCase('vi-VN'), name]] : []
+    }))].map(([key, name]) => ({ key, name })), [sortedAssignments])
 
   const updateTask = (id, key, value) => setForm((current) => ({
     ...current,
@@ -105,6 +111,18 @@ export function AdminSupportWorkPage() {
     ...current,
     tasks: current.tasks.length > 1 ? current.tasks.filter((task) => task.id !== id) : current.tasks,
   }))
+
+  const toggleReusableTask = (template) => setForm((current) => {
+    const selected = current.tasks.some((task) => task.templateKey === template.key)
+    if (selected) {
+      const tasks = current.tasks.filter((task) => task.templateKey !== template.key)
+      return { ...current, tasks: tasks.length ? tasks : [newTaskRow()] }
+    }
+    const tasks = current.tasks.length === 1 && !current.tasks[0].name.trim()
+      ? []
+      : current.tasks
+    return { ...current, tasks: [...tasks, { ...newTaskRow(), name: template.name, templateKey: template.key }] }
+  })
 
   const send = async () => {
     if (!form.date) return app.notify?.('Vui lòng chọn ngày giao việc.', 'info')
@@ -128,12 +146,20 @@ export function AdminSupportWorkPage() {
         <Field label="Chọn ngày" required><Input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} /></Field>
         <Field label="Nhân viên hỗ trợ kinh doanh" required><Select value={form.employeeId} onChange={(event) => setForm((current) => ({ ...current, employeeId: event.target.value }))}><option value="">Chọn nhân viên</option>{profiles.map((profile) => <option key={roleProfileCode(profile)} value={roleProfileCode(profile)}>{profile.name} — {roleProfileCode(profile)}</option>)}</Select></Field>
       </div>
+      {reusableTasks.length > 0 && <>
+        <InfoNote>Tick các công việc đã nhập trước đây để dùng lại; chỉ cần thêm công việc mới khi danh sách chưa có.</InfoNote>
+        <div className="employee-picker support-work-templates" role="group" aria-label="Công việc hỗ trợ KD nhập sẵn">
+          {reusableTasks.map((template) => {
+            const selected = form.tasks.some((task) => task.templateKey === template.key)
+            return <label key={template.key} className={selected ? 'selected' : ''}><input type="checkbox" checked={selected} onChange={() => toggleReusableTask(template)} /><span><strong>{template.name}</strong></span></label>
+          })}
+        </div>
+      </>}
       <div className="support-task-editor" aria-label="Danh sách công việc">
-        <div className="support-task-editor__head"><span>STT</span><span>Tên công việc</span><span>Mô tả công việc</span><span /></div>
+        <div className="support-task-editor__head"><span>STT</span><span>Tên công việc</span><span /></div>
         {form.tasks.map((task, index) => <div className="support-task-editor__row" key={task.id}>
           <strong>{index + 1}</strong>
           <Input value={task.name} maxLength={200} onChange={(event) => updateTask(task.id, 'name', event.target.value)} placeholder="Tên công việc" aria-label={`Tên công việc ${index + 1}`} />
-          <Input value={task.description} maxLength={1000} onChange={(event) => updateTask(task.id, 'description', event.target.value)} placeholder="Mô tả, yêu cầu thực hiện" aria-label={`Mô tả công việc ${index + 1}`} />
           <button type="button" className="danger icon-action" onClick={() => removeTask(task.id)} disabled={form.tasks.length === 1} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>
         </div>)}
       </div>
@@ -183,7 +209,7 @@ function SupportAssignmentCard({ assignment, highlighted, onUpdate }) {
     <div className="support-task-checklist">
       {tasks.map((task, index) => <label key={task.id} className={task.completed ? 'is-complete' : ''}>
         <input type="checkbox" checked={task.completed} disabled={finalized || Boolean(busy)} onChange={(event) => setTasks((current) => current.map((item) => item.id === task.id ? { ...item, completed: event.target.checked } : item))} />
-        <span><strong>{index + 1}. {task.name}</strong>{task.description && <small>{task.description}</small>}</span>
+        <span><strong>{index + 1}. {task.name}</strong></span>
       </label>)}
     </div>
     <div className="support-assignment-progress"><strong>{progress.completed}/{progress.total} công việc hoàn thành</strong><span>{progress.rate.toFixed(0)}%</span><div><i style={{ width: `${progress.rate}%` }} /></div></div>

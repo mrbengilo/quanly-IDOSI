@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -81,6 +81,7 @@ const systemMenus = {
     { label: 'Giao Việc', path: '/admin/tasks', icon: ClipboardCheck, badge: 'Mới' },
     { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
+    { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
     ...systemOperations.slice(2, 4),
     { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
     systemOperations[4],
@@ -108,13 +109,20 @@ const notificationTime24 = (value) => {
   }).format(date)
 }
 
+const notificationKey = (item) => String(item?.id || item?.notificationId || item?.orderId || '')
+const isAssignedTaskNotification = (item) => ['support-work-assigned', 'store-task-assigned'].includes(String(item?.type || ''))
+
 export default function AppShell() {
   const app = useApp()
   const { session, logout, toast, notify, stores = [], activeStoreId } = app
   const [mobileOpen, setMobileOpen] = useState(false)
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [notificationBusy, setNotificationBusy] = useState(false)
+  const [locallyReadNotificationIds, setLocallyReadNotificationIds] = useState(() => new Set())
+  const [taskPopup, setTaskPopup] = useState(null)
   const notificationRef = useRef(null)
+  const taskPopupAccountRef = useRef('')
+  const taskPopupSeenRef = useRef(new Set())
   const navigate = useNavigate()
   const location = useLocation()
   const role = session?.role || 'employee'
@@ -144,18 +152,18 @@ export default function AppShell() {
         ? assignedStoreId
         : stores[0]?.id || ''
   const activeStore = stores.find((store) => store.id === selectedStoreId) || (!isStoreBoundRole ? stores[0] : null)
-  const notificationItems = Array.isArray(app.notifications)
+  const notificationItems = useMemo(() => (Array.isArray(app.notifications)
     ? app.notifications
     : Array.isArray(app.orderNotifications)
       ? app.orderNotifications
-      : []
+      : []), [app.notifications, app.orderNotifications])
   const scopedNotificationStoreId = isStoreWorkspace
     ? selectedStoreId
     : isEmployee
       ? session?.storeId
       : null
   const sessionEmployeeId = String(session?.employeeId || session?.code || '')
-  const unreadNotifications = notificationItems.filter((item) => {
+  const unreadNotifications = useMemo(() => notificationItems.filter((item) => {
     const targetEmployeeId = String(item?.targetEmployeeId || item?.target?.employeeId || item?.data?.employeeId || (['support-work-assigned', 'store-task-assigned'].includes(item?.type) ? item?.employeeId : '') || '')
     const belongsToAccount = targetEmployeeId
       ? (!isAdmin && targetEmployeeId === sessionEmployeeId)
@@ -165,7 +173,8 @@ export default function AppShell() {
     && !item?.read
     && !item?.isRead
     && !item?.readAt
-  })
+    && !locallyReadNotificationIds.has(notificationKey(item))
+  }), [isAdmin, locallyReadNotificationIds, notificationItems, scopedNotificationStoreId, sessionEmployeeId])
   const readNotification = app.readNotification || app.markNotificationRead || app.dismissNotification
   const clearNotifications = app.clearNotifications || app.clearAllNotifications || app.deleteAllNotifications
 
@@ -185,6 +194,35 @@ export default function AppShell() {
     }
   }, [notificationOpen])
 
+  useEffect(() => {
+    if (!sessionEmployeeId) return undefined
+    const storageKey = `idosi-task-popup-seen:${sessionEmployeeId}`
+    if (taskPopupAccountRef.current !== storageKey) {
+      taskPopupAccountRef.current = storageKey
+      try {
+        taskPopupSeenRef.current = new Set(JSON.parse(sessionStorage.getItem(storageKey) || '[]'))
+      } catch {
+        taskPopupSeenRef.current = new Set()
+      }
+    }
+    const taskItems = unreadNotifications.filter(isAssignedTaskNotification)
+    const unseen = taskItems.filter((item) => {
+      const id = notificationKey(item)
+      return id && !taskPopupSeenRef.current.has(id)
+    })
+    if (!unseen.length) return undefined
+    taskItems.forEach((item) => taskPopupSeenRef.current.add(notificationKey(item)))
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify([...taskPopupSeenRef.current].slice(-200)))
+    } catch {
+      // The popup still works for the current render when session storage is unavailable.
+    }
+    const newest = unseen.at(-1)
+    setTaskPopup(newest)
+    const timeout = window.setTimeout(() => setTaskPopup(null), 3000)
+    return () => window.clearTimeout(timeout)
+  }, [sessionEmployeeId, unreadNotifications])
+
   const handleLogout = () => {
     logout()
     navigate('/login')
@@ -203,10 +241,19 @@ export default function AppShell() {
 
   const openNotification = (item) => {
     const id = item?.id || item?.notificationId || item?.orderId
+    const localId = notificationKey(item)
+    if (localId) setLocallyReadNotificationIds((current) => new Set([...current, localId]))
+    setTaskPopup(null)
     if (id != null && readNotification) {
       Promise.resolve().then(() => readNotification(id)).then((result) => {
-        if (result?.ok === false) notify?.(result.message || 'Không thể cập nhật thông báo.', 'info')
-      }).catch((error) => notify?.(error.message || 'Không thể cập nhật thông báo.', 'info'))
+        if (result?.ok === false) {
+          setLocallyReadNotificationIds((current) => new Set([...current].filter((value) => value !== localId)))
+          notify?.(result.message || 'Không thể cập nhật thông báo.', 'info')
+        }
+      }).catch((error) => {
+        setLocallyReadNotificationIds((current) => new Set([...current].filter((value) => value !== localId)))
+        notify?.(error.message || 'Không thể cập nhật thông báo.', 'info')
+      })
     }
     app.onNotificationOpen?.(item)
     const orderId = item?.orderId || item?.data?.orderId
@@ -223,12 +270,17 @@ export default function AppShell() {
     const explicitDestination = requestedDestination === '/admin/support-employees'
       ? '/admin/business-support'
       : requestedDestination
+    const orderDestination = orderId
+      ? `${ordersPath}?${new URLSearchParams({
+          ...(notificationStoreId ? { store: notificationStoreId } : {}),
+          order: String(orderId),
+        }).toString()}`
+      : ''
     const destination = item?.type === 'store-task-assigned'
       ? `/employee/home?assignment=${encodeURIComponent(assignmentId || '')}`
       : assignmentId && (!explicitDestination || String(explicitDestination).startsWith('/support/tasks'))
       ? `/support/tasks?assignment=${encodeURIComponent(assignmentId)}`
-      : explicitDestination
-      || (orderId ? `${ordersPath}?order=${encodeURIComponent(orderId)}` : ordersPath)
+      : orderDestination || explicitDestination || ordersPath
     setNotificationOpen(false)
     navigate(destination)
   }
@@ -277,7 +329,7 @@ export default function AppShell() {
         </nav>
         <div className="sidebar__footer">
           <div className="sidebar__profile">
-            <Avatar name={session?.name} size={38} />
+            <Avatar name={session?.name} src={app.settings?.avatar} size={38} />
             <div><strong>{session?.name}</strong><small>{accountSubtitle}</small></div>
             <button onClick={handleLogout} aria-label="Đăng xuất"><LogOut size={18} /></button>
           </div>
@@ -287,6 +339,7 @@ export default function AppShell() {
       <main className="main-content">
         <div className="global-topbar">
           <button className="icon-button topbar-menu" onClick={() => setMobileOpen(true)} aria-label="Mở menu"><Menu size={22} /></button>
+          {(isStoreWorkspace || (isEmployee && !isOfficeEmployee)) && <div className="global-topbar__store-name">{activeStore?.name || 'Cửa hàng IDOSI'}</div>}
           <div className="global-topbar__right">
             <div className="notification-center" ref={notificationRef}>
               <button
@@ -318,7 +371,7 @@ export default function AppShell() {
                         key={item?.id || item?.notificationId || `${item?.orderId || 'notification'}-${index}`}
                         onClick={() => openNotification(item)}
                       >
-                        <span className="notification-item__icon">{item?.type === 'support-work-assigned' ? <ClipboardCheck size={17} /> : <ShoppingCart size={17} />}</span>
+                        <span className="notification-item__icon">{isAssignedTaskNotification(item) ? <ClipboardCheck size={17} /> : <ShoppingCart size={17} />}</span>
                         <span className="notification-item__body">
                           <strong>{item?.title || item?.message || 'Thông báo mới'}</strong>
                           <small>{item?.description || item?.content || item?.message || item?.orderCode || item?.data?.orderCode || 'Mở để xem chi tiết'}</small>
@@ -333,15 +386,21 @@ export default function AppShell() {
                 </section>
               )}
             </div>
-            <Avatar name={session?.name} size={38} />
+            <Avatar name={session?.name} src={app.settings?.avatar} size={38} />
             <div className="topbar-user"><strong>{session?.name}</strong><small>{accountSubtitle}</small></div>
             <button
               className="icon-button"
-              onClick={() => navigate(isStoreWorkspace ? '/store/settings' : isSystemOperator ? '/admin/settings' : '/employee/home')}
+              onClick={() => navigate('/account/settings')}
               aria-label="Mở trang tài khoản"
             ><ChevronDown size={17} /></button>
           </div>
         </div>
+        {taskPopup && (
+          <button type="button" className="task-notification-popup" onClick={() => openNotification(taskPopup)} aria-label="Mở công việc vừa được giao">
+            <span><ClipboardCheck size={20} /></span>
+            <span><strong>{taskPopup.title || 'Bạn có công việc mới'}</strong><small>{taskPopup.description || taskPopup.message || 'Bấm để xem danh sách công việc được giao.'}</small></span>
+          </button>
+        )}
         <Outlet context={{ openMenu: () => setMobileOpen(true), activeStore }} />
       </main>
       <Toast toast={toast} />

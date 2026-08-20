@@ -8,7 +8,7 @@ const MAX_RECEIPT_INLINE_BYTES = 1_500_000
 const MAX_RECEIPT_CHUNK_BYTES = 1_500_000
 const STATE_ENTITY_ORDER_STEP = 1_000_000
 const STATE_ENTITY_PAGE_SIZE = 10_000
-const MAX_AVATAR_DATA_URL_BYTES = 128 * 1024
+const MAX_AVATAR_BYTES = 200 * 1024
 const MAX_IDENTITY_IMAGE_BYTES = 2 * 1024 * 1024
 const MAX_JSON_DEPTH = 64
 const MAX_MONEY_VND = 100_000_000_000
@@ -873,7 +873,11 @@ export const projectSharedState = (rawState, user) => {
     const openAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
     const latestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
-    const stores = filterArray(state, 'stores', (record) => String(record.id || '') === storeId)
+    const visibleStoreIds = new Set([
+      storeId,
+      String(user.home_store_id || ''),
+    ].filter(Boolean))
+    const stores = filterArray(state, 'stores', (record) => visibleStoreIds.has(String(record.id || '')))
       .map((record) => Object.fromEntries(Object.entries(record).filter(([key]) => (
         !['revenue', 'expense', 'profit', 'cash', 'balance', 'costs'].includes(key)
       ))))
@@ -901,6 +905,7 @@ export const projectSharedState = (rawState, user) => {
       tasks,
       taskAssignmentHistory: own('taskAssignmentHistory')
         .map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
+      supportTransfers: own('supportTransfers'),
       orders: own('orders'),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
         .map((record) => projectNotificationForActor(record, user)),
@@ -2973,6 +2978,7 @@ const OPERATIONAL_PROFILE_FIELDS = new Set([
   'unit', 'unitType', 'department', 'role', 'storeId',
   'name', 'phone', 'cccd', 'citizenId', 'address', 'addressDetails', 'startDate', 'joinDate',
   'employmentType', 'position', 'jobPosition', 'username', 'password', 'authUserId',
+  'workTimeType', 'workStart', 'workEnd',
   'baseSalary', 'standardWorkDays', 'requiredMonthlyHours', 'linkedEmployeeId',
   'identityImages', 'cccdImages', 'identityCardImages', 'cccdFront', 'cccdBack',
 ])
@@ -3266,6 +3272,12 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
   const requestedWorkEnd = payload.workEnd ?? previous?.workEnd ?? (officeLike ? '17:00' : undefined)
   const workStart = officeLike ? parseShiftTime(requestedWorkStart) : null
   const workEnd = officeLike ? parseShiftTime(requestedWorkEnd) : null
+  const workTimeType = officeLike
+    ? String(payload.workTimeType ?? previous?.workTimeType ?? (employmentType === 'Full-Time' ? 'Full-Time' : 'Part-Time')).trim()
+    : null
+  if (officeLike && !['Full-Time', 'Part-Time'].includes(workTimeType)) {
+    throw new ApiError(400, 'OFFICE_WORK_TIME_TYPE_INVALID', 'Thời gian làm việc phải là Full-Time hoặc Part-Time.')
+  }
   if (officeLike && (!workStart || !workEnd || workEnd.minuteOfDay <= workStart.minuteOfDay)) {
     throw new ApiError(400, 'OFFICE_WORK_TIME_INVALID', 'Giờ làm việc phải theo HH:mm và giờ ra phải sau giờ vào trong cùng ngày.')
   }
@@ -3352,6 +3364,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
       ? { needsProfileCompletion: !startDate }
       : {}),
     ...(officeLike ? {
+      workTimeType,
       workStart: workStart.label,
       workEnd: workEnd.label,
       monthlyWorkdayTargets,
@@ -3616,19 +3629,6 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     ))) {
       throw new ApiError(409, 'EMPLOYEE_ID_RETIRED', 'Mã nhân viên đã được sử dụng và không thể cấp lại.')
     }
-    if (employees.some((employee) => (
-      String(employee.phone || '') === profile.phone
-      && String(employee.id || employee.code || '') !== linkedEmployeeId
-      && !employee.deletedAt
-    ))) {
-      throw new ApiError(409, 'PHONE_EXISTS', 'Số điện thoại nhân viên đã tồn tại.')
-    }
-  } else if (employees.some((employee) => (
-    String(employee.id || employee.code || '') !== employeeId
-    && String(employee.phone || '') === profile.phone
-    && !employee.deletedAt
-  ))) {
-    throw new ApiError(409, 'PHONE_EXISTS', 'Số điện thoại nhân viên đã tồn tại.')
   }
   const saved = {
     ...profile,
@@ -4314,13 +4314,13 @@ const optionalCalendarDate = (value, field) => {
 }
 
 const accountSettingsCommand = async (db, actor, body, commandContext) => {
-  assertOperationsRole(actor, 'Tài khoản không có quyền cập nhật thiết lập tài khoản.')
+  if (!VALID_ROLES.has(actor.role)) throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền cập nhật thiết lập tài khoản.')
   if (body.type !== 'account_settings.update') {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh thiết lập tài khoản không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload?.settings) ? body.payload.settings : (isPlainRecord(body.payload) ? body.payload : {})
   const { current, state } = await loadGlobalCommandState(db, body)
-  const target = await first(db, "SELECT * FROM users WHERE id = ? AND role IN ('admin', 'business_support', 'store_manager') LIMIT 1", actor.user_id)
+  const target = await first(db, "SELECT * FROM users WHERE id = ? AND role IN ('admin', 'business_support', 'store_manager', 'employee') LIMIT 1", actor.user_id)
   if (!target) throw new ApiError(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản quản trị hiện tại.')
   const previous = ownAccountSettings(state, actor)
   const next = { ...previous }
@@ -4359,8 +4359,11 @@ const accountSettingsCommand = async (db, actor, body, commandContext) => {
     if (avatar && !/^data:image\/(?:png|jpeg);base64,[A-Za-z0-9+/=]+$/u.test(avatar)) {
       throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là ảnh PNG hoặc JPEG hợp lệ.')
     }
-    if (textEncoder.encode(avatar).byteLength > MAX_AVATAR_DATA_URL_BYTES) {
-      throw new ApiError(413, 'AVATAR_TOO_LARGE', 'Ảnh đại diện không được vượt quá 128 KiB sau khi nén.')
+    const base64 = avatar.split(',')[1] || ''
+    const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0
+    const avatarBytes = avatar ? Math.max(0, Math.floor(base64.length * 3 / 4) - padding) : 0
+    if (avatarBytes > MAX_AVATAR_BYTES) {
+      throw new ApiError(413, 'AVATAR_TOO_LARGE', 'Ảnh đại diện không được vượt quá 200 KB.')
     }
     next.avatar = avatar
   }
@@ -4564,8 +4567,8 @@ const monthsInDateRange = (fromDate, toDate) => {
 }
 
 const supportTransferCommand = async (db, actor, body, commandContext) => {
-  if (actor.role !== 'business_support') {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Nhân viên hỗ trợ KD được quản lý điều chuyển nhân sự.')
+  if (!['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý điều chuyển nhân sự.')
   }
   const operation = body.type.split('.').at(-1)
   if (!['create', 'update', 'delete'].includes(operation)) {
@@ -6386,6 +6389,31 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     }
     if (shift && dayAssignments.length && !assignedShiftIds.has(shiftId)) {
       throw new ApiError(403, 'SHIFT_NOT_ASSIGNED', 'Ca này không nằm trong lịch làm việc hôm nay của bạn.')
+    }
+    if (activeTransfer && (!shift || !assignedShiftIds.has(shiftId))) {
+      const supportStore = (Array.isArray(state.stores) ? state.stores : [])
+        .find((record) => String(record.id || '') === storeId)
+      const configuredStart = parseShiftTime(
+        supportStore?.openingTime || supportStore?.opening || supportStore?.openTime,
+      )
+      const configuredEnd = parseShiftTime(
+        supportStore?.closingTime || supportStore?.closing || supportStore?.closeTime,
+      )
+      const safeEnd = configuredEnd && configuredEnd.minuteOfDay > localNow.minuteOfDay
+        ? configuredEnd
+        : parseShiftTime('23:59')
+      shiftId = `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80)
+      shift = {
+        id: shiftId,
+        name: 'Ca hỗ trợ cửa hàng',
+        storeId,
+        start: configuredStart && configuredStart.minuteOfDay <= localNow.minuteOfDay
+          ? configuredStart.label
+          : localNow.time,
+        end: safeEnd.label,
+        version: 1,
+        source: 'support-transfer',
+      }
     }
     if (!shift && officeEmployee && !shiftId) {
       shift = activeShifts.find((record) => assignedShiftIds.has(String(record.id || ''))) || null

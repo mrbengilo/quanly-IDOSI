@@ -29,15 +29,15 @@ describe('order notification deep links', () => {
   it('reveals and highlights the requested order in the store view', () => {
     mocked.app = {
       session: { role: 'manager' },
-      activeStoreId: 'S01',
-      stores: [{ id: 'S01', name: 'Cửa hàng 01' }],
+      activeStoreId: 'S02',
+      stores: [{ id: 'S01', name: 'Cửa hàng 01' }, { id: 'S02', name: 'Cửa hàng 02' }],
       orders: [targetOrder],
       employees: [{ id: 'E01', storeId: 'S01', name: 'Nhân viên 01' }],
       updateOrder: vi.fn(),
       deleteOrder: vi.fn(),
       notify: vi.fn(),
     }
-    render(<MemoryRouter initialEntries={['/store/orders?order=ORDER-TARGET']}><StoreOrdersPage /></MemoryRouter>)
+    render(<MemoryRouter initialEntries={['/store/orders?store=S01&order=ORDER-TARGET']}><StoreOrdersPage /></MemoryRouter>)
 
     expect(screen.getByText('S01-00002').closest('tr')?.classList.contains('order-row--highlight')).toBe(true)
   })

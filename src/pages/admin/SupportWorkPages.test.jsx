@@ -23,18 +23,17 @@ describe('support work screens', () => {
 
   afterEach(cleanup)
 
-  it('sends the selected date, support employee, task name and description', async () => {
+  it('sends the selected date, support employee and title-only task', async () => {
     render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
 
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'HTKD-001' } })
     fireEvent.change(screen.getByLabelText('Tên công việc 1'), { target: { value: 'Kiểm tra báo cáo' } })
-    fireEvent.change(screen.getByLabelText('Mô tả công việc 1'), { target: { value: 'Đối chiếu doanh thu các cửa hàng' } })
     fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
 
     await waitFor(() => expect(mocked.app.assignSupportWork).toHaveBeenCalledTimes(1))
     expect(mocked.app.assignSupportWork.mock.calls[0][0]).toMatchObject({
       employeeId: 'HTKD-001',
-      tasks: [{ name: 'Kiểm tra báo cáo', description: 'Đối chiếu doanh thu các cửa hàng' }],
+      tasks: [{ name: 'Kiểm tra báo cáo', description: '' }],
     })
   })
 

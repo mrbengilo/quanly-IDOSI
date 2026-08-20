@@ -276,7 +276,7 @@ export function ResetDataPage() {
 
 export function SupportTransfersPage() {
   const { stores = [], employees = [], supportTransfers = [], saveSupportTransfer, notify, session } = useApp()
-  const canManageTransfers = ['business_support', 'manager'].includes(session?.role)
+  const canManageTransfers = ['admin', 'business_support', 'manager'].includes(session?.role)
   const [form, setForm] = useState({ employeeId: '', fromStoreId: '', toStoreId: '', fromDate: today(), toDate: today(), hourlySupportRate: '', allowance: '', note: '' })
   const employee = useMemo(() => employees.find((item) => item.id === form.employeeId), [employees, form.employeeId])
   const availableEmployees = employees.filter((item) => String(item.unit || 'store') === 'store' && !item.deletedAt && (!form.fromStoreId || String(item.storeId) === String(form.fromStoreId)))
@@ -292,7 +292,7 @@ export function SupportTransfersPage() {
     if (!result?.ok) return notify(result?.message || 'Không thể lưu điều chuyển hỗ trợ.', 'info')
     setForm({ employeeId: '', fromStoreId: '', toStoreId: '', fromDate: today(), toDate: today(), hourlySupportRate: '', allowance: '', note: '' })
   }
-  if (!canManageTransfers) return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Điều chuyển nhân sự thuộc quyền Nhân viên Hỗ trợ KD." icon={LockKeyhole} /></div>
+  if (!canManageTransfers) return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Điều chuyển nhân sự thuộc quyền Admin và Nhân viên Hỗ trợ KD." icon={LockKeyhole} /></div>
   return <div className="page governance-page"><PageHeader title="ĐIỀU CHUYỂN NHÂN SỰ" subtitle="Phân bổ nhân viên hỗ trợ giữa các cửa hàng mà không thay đổi hồ sơ gốc." icon={CalendarClock} />
     <Card title="Tạo điều chuyển" className="support-transfer-card"><div className="form-grid form-grid--3">
       <Field label="Từ ngày" required><Input type="date" value={form.fromDate} onChange={(event) => setForm((current) => ({ ...current, fromDate: event.target.value }))} /></Field>

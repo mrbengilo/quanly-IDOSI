@@ -149,7 +149,7 @@ Các lệnh chính:
   lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và
   thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
   bảo vệ, không thể sửa qua `state.merge|replace`.
-- `support_transfer.create|update|delete`: **chỉ** `business_support`; Admin và các
+- `support_transfer.create|update|delete`: `admin` hoặc `business_support`; các
   role còn lại nhận `403`. Create nhận
   `{employeeId,fromStoreId?,toStoreId,fromDate,toDate,hourlySupportRate,allowance,note?}`;
   chấp nhận alias `startDate/endDate`, `startAt/endAt`, `date` và `hourlyRate`, nhưng
@@ -165,10 +165,10 @@ Các lệnh chính:
   giờ làm thực tế × `hourlySupportRate`, cộng `allowance`; khi hết thời gian hoặc
   kết ca hỗ trợ, session tự trở về cửa hàng gốc. Mọi lệnh commit state + audit +
   receipt idempotency nguyên tử.
-- `account_settings.update`: admin/business_support/store_manager tự cập nhật tài khoản hiện tại với
+- `account_settings.update`: mọi tài khoản đăng nhập tự cập nhật tài khoản hiện tại với
   payload `name`, `email`, `phone`, `birthday`, `gender`, `address`, `bio`,
   `avatar?`, `notifications {tasks,dailyReport,expenseAlert}`. Ảnh là data URL
-  PNG/JPEG tối đa 128 KiB sau nén; response trả `settings`, `user`, `version`.
+  PNG/JPEG tối đa 200 KB; response trả `settings`, `user`, `version`.
 - `notification.mark_read`: mọi tài khoản đăng nhập, payload
   `{ notificationId }`; chỉ đánh dấu thông báo nằm trong projection của actor.
   `notification.mark_all_read` nhận `{ storeId? }` và đánh dấu toàn bộ thông báo
@@ -217,6 +217,9 @@ Các lệnh chính:
   chuẩn của tháng, `minutesEarly`, `minutesLate` và chỉ cho một lượt/ngày.
   Role `business_support` và `store_manager` cũng được chấm công khi tài khoản
   đã liên kết profile; server dùng ca mặc định `08:00-17:00` cho hai vai trò.
+  Nhân viên cửa hàng đang trong thời gian điều chuyển có thể điểm danh trực tiếp
+  tại cửa hàng nhận mà không cần lịch phân ca; server tạo snapshot ca hỗ trợ từ
+  giờ hoạt động cửa hàng. Sau khi kết ca hỗ trợ, session tự trở lại cửa hàng gốc.
 - `attendance.check_out`: payload `attendanceId?`, `location`, `expense?`,
   `tiktok?`. Với nhân viên cửa hàng, bắt buộc thêm `cashRevenue` và
   `transferRevenue`; server chỉ tổng hợp đơn `Hoàn tất` đúng employee/store/
@@ -405,7 +408,7 @@ hành lại tài khoản theo đúng luồng quản trị.
 
 - Compact shell và mỗi entity/chunk giới hạn 1.500.000 byte; request JSON
   giới hạn 16 MiB. Byte ảnh CCCD nằm trong R2 private binding
-  `IDENTITY_IMAGES`, không nằm trong state; avatar data URL tối đa 128 KiB.
+  `IDENTITY_IMAGES`, không nằm trong state; avatar data URL tối đa 200 KB dữ liệu ảnh gốc.
 - Cần rate-limit/WAF cho `/api/login` và smoke-test chi phí PBKDF2 trên plan chạy.
 - Cần đặt retention cho audit/command receipts và theo dõi quota D1 trước khi
   vận hành dữ liệu rất lớn.

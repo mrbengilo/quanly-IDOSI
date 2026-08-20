@@ -37,7 +37,7 @@ import {
 } from '../../components/UI'
 import { calculateKpiBonuses, financeSummaryFromState } from '../../domain'
 import { useApp } from '../../state/AppContext'
-import { businessDate, calculateEmployeeBasePay, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
+import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
 
 const parseMoney = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
 const moneyInput = (value) => new Intl.NumberFormat('en-US').format(parseMoney(value))
@@ -69,11 +69,15 @@ const importVoucherPreview = (vouchers = []) => {
   return `PN-${day}/${month}/${year}-${String(nextSequence).padStart(4, '0')}`
 }
 
-function useStoreData() {
+function useStoreData(preferredStoreId = '') {
   const app = useApp()
+  const canUsePreferredStore = ['admin', 'business_support', 'manager'].includes(app.session?.role)
+    && app.stores.some((store) => String(store.id) === String(preferredStoreId))
   const storeId = app.session?.role === 'store_manager'
     ? app.session.storeId
-    : app.activeStore?.id || app.activeStoreId || app.session?.storeId
+    : canUsePreferredStore
+      ? preferredStoreId
+      : app.activeStore?.id || app.activeStoreId || app.session?.storeId
   return { ...app, storeId, store: app.stores.find((item) => item.id === storeId) || app.activeStore }
 }
 
@@ -158,8 +162,8 @@ export function StoreReportsV2() {
 }
 
 export function StoreOrdersPage() {
-  const app = useStoreData()
   const [searchParams] = useSearchParams()
+  const app = useStoreData(searchParams.get('store') || '')
   const { storeId, store, orders = [], employees = [], updateOrder, deleteOrder, notify } = app
   const canManageOrders = ['admin', 'business_support', 'manager'].includes(app.session?.role)
   const [view, setView] = useState('shift')
@@ -437,6 +441,11 @@ export function StorePayrollV2() {
     const records = scopedAttendance.filter((record) => record.employeeId === employee.id)
     const hours = records.reduce((sum, record) => sum + Number(record.hours || 0), 0)
     const base = calculateEmployeeBasePay(employee, { hours })
+    const hourlyUnit = getPayBasis(employee) === 'hourly'
+      ? getHourlyRate(employee)
+      : Number(employee.requiredMonthlyHours) > 0
+        ? Math.floor(getMonthlySalary(employee) / Number(employee.requiredMonthlyHours))
+        : 0
     const adjustments = salaryAdjustments.filter((item) => item.employeeId === employee.id && item.period === period && item.status !== 'Đã hủy')
     const otherBonus = adjustments.filter((item) => item.type === 'Thưởng khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
     const otherAllowance = adjustments.filter((item) => item.type === 'Phụ cấp khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
@@ -444,7 +453,7 @@ export function StorePayrollV2() {
     const kpiBonus = kpi.results.find((item) => item.id === employee.id)?.amount || 0
     const advances = salaryAdvances.filter((item) => item.employeeId === employee.id && item.period === period && item.status === 'Đã chi').reduce((sum, item) => sum + Number(item.amount || 0), 0)
     const gross = Math.max(0, base + Number(employee.tiktokAllowance || 0) + otherBonus + otherAllowance + kpiBonus - deductions)
-    return { employee, hours, base, otherBonus, otherAllowance, deductions, kpiBonus, advances, gross, net: Math.max(0, gross - advances) }
+    return { employee, hours, base: hourlyUnit, otherBonus, otherAllowance, deductions, kpiBonus, advances, gross, net: Math.max(0, gross - advances) }
   })
   const totals = rows.reduce((value, row) => ({ gross: value.gross + row.gross, advances: value.advances + row.advances, net: value.net + row.net, kpi: value.kpi + row.kpiBonus }), { gross: 0, advances: 0, net: 0, kpi: 0 })
 

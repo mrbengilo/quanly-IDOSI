@@ -125,6 +125,14 @@ describe('admin role management helpers', () => {
     expect(STORE_MANAGER_EMPLOYMENT_TYPES).toEqual(['Full-Time', 'Part-Time'])
   })
 
+  it('allows duplicate personal information across job accounts but not duplicate usernames', () => {
+    const form = validForm(ROLE_KEYS.storeManager)
+    const profiles = [{ id: 'HTKD-001', cccd: form.cccd, phone: form.phone, username: 'another-role' }]
+    expect(validateRoleProfile({ form, profiles, roleKey: ROLE_KEYS.storeManager })).toEqual([])
+    expect(validateRoleProfile({ form: { ...form, username: 'another-role' }, profiles, roleKey: ROLE_KEYS.storeManager }))
+      .toContain('Tên đăng nhập đã tồn tại.')
+  })
+
   it('keeps store-manager pay allowance-only while validating the allowed employee types', () => {
     const errors = validateRoleProfile({
       form: {

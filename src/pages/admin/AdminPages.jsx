@@ -527,6 +527,13 @@ export function AdminSettings() {
     expenseAlert: settings?.notifications?.expenseAlert ?? false,
   }))
   const photoInput = useRef(null)
+  const roleLabel = session?.role === 'admin'
+    ? 'Admin'
+    : ['manager', 'business_support'].includes(session?.role)
+      ? 'Nhân viên hỗ trợ KD'
+      : session?.role === 'store_manager'
+        ? 'Quản lý cửa hàng'
+        : 'Nhân viên'
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
 
   const saveProfile = async () => {
@@ -547,15 +554,14 @@ export function AdminSettings() {
       event.target.value = ''
       return
     }
-    if (file.size > 95 * 1024) {
-      notify('Tệp ảnh đại diện không được vượt quá 95KB để dữ liệu ảnh sau mã hóa không vượt 128KB.', 'info')
+    if (file.size > 200 * 1024) {
+      notify('Tệp ảnh đại diện không được vượt quá 200KB.', 'info')
       event.target.value = ''
       return
     }
     const reader = new FileReader()
     reader.onload = () => {
       const avatar = String(reader.result || '')
-      if (avatar.length > 128 * 1024) return notify('Dữ liệu ảnh sau mã hóa vượt quá 128KB.', 'info')
       setForm((current) => ({ ...current, avatar }))
     }
     reader.readAsDataURL(file)
@@ -598,16 +604,16 @@ export function AdminSettings() {
           <Card className="settings-content">
             <h2>Thông tin cá nhân</h2><p>Cập nhật thông tin tài khoản của bạn.</p>
             <div className="profile-form">
-              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện quản trị" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : 'QT'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png" hidden onChange={choosePhoto} /><Button variant="outline" onClick={() => photoInput.current?.click()}>Đổi ảnh</Button><small>Định dạng JPG, PNG<br />Tệp tối đa 95KB</small></div>
+              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện tài khoản" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png" hidden onChange={choosePhoto} /><Button variant="outline" onClick={() => photoInput.current?.click()}>Đổi ảnh</Button><small>Định dạng JPG, PNG<br />Tệp tối đa 200KB</small></div>
               <div className="form-grid">
                 <Field label="Họ và tên"><Input value={form.name} onChange={set('name')} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} /></Field>
-                <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Select value="admin" disabled><option value="admin">Quản lý hệ thống</option></Select></Field>
+                <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Input value={roleLabel} disabled /></Field>
                 <Field label="Ngày sinh"><Input type="date" value={form.birthday} onChange={set('birthday')} /></Field><Field label="Giới tính"><Select value={form.gender} onChange={set('gender')}><option>Nam</option><option>Nữ</option><option>Khác</option></Select></Field>
                 <Field label="Địa chỉ" className="span-2"><Input value={form.address} onChange={set('address')} /></Field>
                 <Field label="Giới thiệu" className="span-2"><textarea value={form.bio || ''} onChange={set('bio')} maxLength={200} /><small>{String(form.bio || '').length}/200</small></Field>
               </div>
             </div>
-            <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || 'admin'} disabled /></Field><Field label="Vai trò"><Input value={['manager', 'business_support'].includes(session?.role) ? 'Nhân viên hỗ trợ KD' : 'Admin'} disabled /></Field></div></div>
+            <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || ''} disabled /></Field><Field label="Vai trò"><Input value={roleLabel} disabled /></Field></div></div>
             <div className="card-actions"><Button icon={Save} onClick={saveProfile}>Lưu thay đổi</Button></div>
           </Card>
         ) : (

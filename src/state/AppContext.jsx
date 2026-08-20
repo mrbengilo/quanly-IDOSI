@@ -50,6 +50,7 @@ import {
 const AppContext = createContext(null)
 export const STORAGE_KEY = 'idosi-state-v2'
 export const SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY = 'idosi-system-reset-all-idempotency-key'
+export const ACTIVE_STORE_STORAGE_PREFIX = 'idosi-active-store:'
 const LEGACY_STORAGE_KEY = 'idosi-manager-state-v1'
 const ACCOUNT_CREDENTIAL_EPOCH = 1
 const LOCAL_CACHE_PRIVACY_EPOCH = 1
@@ -520,6 +521,8 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
         accountType: ['business_support', 'store_manager'].includes(remoteRole) ? remoteRole : 'employee',
         employeeId: employeeId || remoteEmployee?.id || remoteEmployee?.code || (remoteRole === 'business_support' ? null : remoteUser?.id),
         storeId: remoteUser?.storeId || remoteUser?.store_id || remoteEmployee?.storeId || (remoteRole === 'business_support' ? 'BUSINESS_SUPPORT' : undefined),
+        homeStoreId: remoteUser?.homeStoreId || remoteUser?.home_store_id || remoteEmployee?.storeId || undefined,
+        activeTransferId: remoteUser?.activeTransferId || remoteUser?.active_transfer_id || undefined,
         unit: remoteEmployee?.unit || (remoteRole === 'business_support' ? 'business_support' : remoteRole === 'store_manager' ? 'store_manager' : 'store'),
         unitType: remoteEmployee?.unit || (remoteRole === 'business_support' ? 'business_support' : remoteRole === 'store_manager' ? 'store_manager' : 'store'),
         authUserId: remoteUser?.id,
@@ -601,6 +604,29 @@ const clearSystemResetIdempotencyKey = (completedKey) => {
     }
   } catch {
     // A completed reset remains successful even when browser storage is unavailable.
+  }
+}
+
+const activeStoreStorageKey = (account = {}) => {
+  const accountId = String(account.id || account.user_id || account.username || '').trim()
+  return accountId ? `${ACTIVE_STORE_STORAGE_PREFIX}${accountId}` : ''
+}
+
+const readRememberedActiveStore = (account) => {
+  try {
+    const key = activeStoreStorageKey(account)
+    return key && typeof sessionStorage !== 'undefined' ? String(sessionStorage.getItem(key) || '') : ''
+  } catch {
+    return ''
+  }
+}
+
+const rememberActiveStore = (account, storeId) => {
+  try {
+    const key = activeStoreStorageKey(account)
+    if (key && storeId && typeof sessionStorage !== 'undefined') sessionStorage.setItem(key, String(storeId))
+  } catch {
+    // The active route still remains in the URL when session storage is unavailable.
   }
 }
 
@@ -776,6 +802,7 @@ export function AppProvider({ children }) {
   const [state, setState] = useState(readState)
   const [toast, setToast] = useState(null)
   const [credentialsReady, setCredentialsReady] = useState(false)
+  const [sessionRestoreReady, setSessionRestoreReady] = useState(() => !hasApiSession())
   const [apiStatus, setApiStatus] = useState('local')
   const [attendanceCheckoutRequests, setAttendanceCheckoutRequests] = useState({})
   const apiRef = useRef({
@@ -794,7 +821,8 @@ export function AppProvider({ children }) {
 
   const activateRemotePayload = (payload, loginUser, preferredActiveStoreId = null) => {
     const remoteUser = payload.user || loginUser
-    const hydrated = hydrateRemoteState(payload.state, remoteUser, payload.policies, preferredActiveStoreId)
+    const rememberedActiveStoreId = preferredActiveStoreId || readRememberedActiveStore(remoteUser)
+    const hydrated = hydrateRemoteState(payload.state, remoteUser, payload.policies, rememberedActiveStoreId)
     const remote = apiRef.current
     remote.enabled = true
     remote.role = normalizeAuthRole(remoteUser.role)
@@ -808,6 +836,7 @@ export function AppProvider({ children }) {
       localStorage.removeItem(LEGACY_STORAGE_KEY)
     }
     setApiStatus('connected')
+    rememberActiveStore(remoteUser, hydrated.activeStoreId)
     setState(hydrated)
     return hydrated.session
   }
@@ -856,9 +885,44 @@ export function AppProvider({ children }) {
     }).catch(() => {
       clearApiSession()
       if (active) setApiStatus('local')
+    }).finally(() => {
+      if (active) setSessionRestoreReady(true)
     })
     return () => { active = false }
   }, [])
+
+  useEffect(() => {
+    const remote = apiRef.current
+    const role = normalizeAuthRole(state.session?.role)
+    if (!credentialsReady || !remote.enabled || !state.session || !['business_support', 'employee'].includes(role)) return undefined
+    let active = true
+    let busy = false
+    const refresh = async () => {
+      if (!active || busy || (typeof document !== 'undefined' && document.hidden)) return
+      busy = true
+      try {
+        const latest = await apiGetState('global')
+        if (!active || Number(latest.version || 0) <= Number(remote.version || 0)) return
+        if (canListAccounts(role)) {
+          const users = await apiListUsers()
+          latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
+        }
+        if (active) activateRemotePayload(latest, remote.user, state.activeStoreId)
+      } catch {
+        // Polling is best-effort; the next interval or a foreground action will retry.
+      } finally {
+        busy = false
+      }
+    }
+    const timer = window.setInterval(refresh, 5000)
+    const refreshWhenVisible = () => { if (!document.hidden) refresh() }
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
+  }, [credentialsReady, state.activeStoreId, state.session])
 
   useEffect(() => {
     if (credentialsReady) return undefined
@@ -981,6 +1045,7 @@ export function AppProvider({ children }) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       const session = activateRemotePayload(bootstrap, authenticated.user)
+      setSessionRestoreReady(true)
       return { ok: true, account: session }
     } catch (error) {
       clearApiSession()
@@ -1058,6 +1123,7 @@ export function AppProvider({ children }) {
   const setActiveStoreId = (id) => {
     if (state.session?.role === 'store_manager' && String(id) !== String(state.session.storeId)) return false
     if (!state.stores.some((store) => store.id === id)) return false
+    rememberActiveStore(apiRef.current.user || state.session, id)
     setState((current) => ({ ...current, activeStoreId: id }))
     return true
   }
@@ -1163,13 +1229,7 @@ export function AppProvider({ children }) {
   const hasDuplicateAccount = (payload, ignoredKey = '') => {
     const records = [...state.adminAccounts, ...state.managerAccounts, ...state.employees].filter((account) => accountKey(account) !== String(ignoredKey))
     const username = normalizeText(payload.username)
-    const cccd = String(payload.cccd || payload.citizenId || '').trim()
-    const phone = normalizePhone(payload.phone)
-    return records.some((account) =>
-      (username && normalizeText(account.username) === username)
-      || (cccd && String(account.cccd || account.citizenId || '') === cccd)
-      || (phone && normalizePhone(account.phone) === phone),
-    )
+    return records.some((account) => username && normalizeText(account.username) === username)
   }
 
   const addEmployee = async (payload) => {
@@ -1220,7 +1280,7 @@ export function AppProvider({ children }) {
       return { ok: false, message: 'Tên đăng nhập và mật khẩu là bắt buộc.' }
     }
     if (!linkedManagerPromotion && hasDuplicateAccount(employeePayload)) {
-      notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
+      notify('Tên đăng nhập đã tồn tại.', 'info')
       return { ok: false }
     }
     if (apiRef.current.enabled) {
@@ -1263,7 +1323,7 @@ export function AppProvider({ children }) {
     const actorRole = normalizeAuthRole(state.session?.role)
     if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền cập nhật nhân viên.' }
     if (hasDuplicateAccount(payload, id)) {
-      notify('Tên đăng nhập, số CCCD hoặc số điện thoại đã tồn tại.', 'info')
+      notify('Tên đăng nhập đã tồn tại.', 'info')
       return { ok: false }
     }
     const previous = state.employees.find((employee) => accountKey(employee) === String(id))
@@ -1739,7 +1799,7 @@ export function AppProvider({ children }) {
   }
 
   const saveSettings = async (settings = {}) => {
-    if (!isSystemRole(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Quản lý được cập nhật cài đặt tài khoản.' }
+    if (!state.session) return { ok: false, message: 'Vui lòng đăng nhập để cập nhật cài đặt tài khoản.' }
     const allowedKeys = ['name', 'email', 'phone', 'birthday', 'gender', 'address', 'bio', 'avatar']
     const payload = Object.fromEntries(allowedKeys
       .filter((key) => settings[key] !== undefined)
@@ -3132,6 +3192,7 @@ export function AppProvider({ children }) {
     ...state,
     activeStore,
     currentEmployee,
+    authReady: sessionRestoreReady,
     apiStatus,
     toast,
     notify,
