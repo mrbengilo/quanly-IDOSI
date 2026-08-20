@@ -248,6 +248,38 @@ export const canManagePolicies = (role) => ['admin', 'business_support'].include
 const isActiveAccount = (status) => !['tạm ngưng', 'tạm nghỉ', 'đã nghỉ việc', 'inactive', 'disabled'].includes(normalizeText(status))
 const isSystemRole = (role) => ['admin', 'business_support', 'manager'].includes(normalizeText(role))
 const isStoreWorkspaceRole = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
+const STORE_EXPENSE_CATEGORIES = new Set(['Set up', 'Mặt bằng', 'Điện', 'Nước', 'Wifi', 'Marketing', 'Rác', 'Khác'])
+const LEGACY_STORE_EXPENSE_CATEGORIES = {
+  'Wi-Fi': 'Wifi',
+  'Chi phí thiết lập cửa hàng': 'Set up',
+  'Chi phí khác': 'Khác',
+}
+const normalizeStoreExpenseItems = (payload = {}, fallback = {}) => {
+  const sourceItems = Array.isArray(payload.items) && payload.items.length
+    ? payload.items
+    : [{
+      category: payload.type || fallback.type || 'Khác',
+      name: payload.name || fallback.name || '',
+      amount: payload.amount ?? fallback.amount,
+      description: payload.description ?? payload.note ?? fallback.description ?? fallback.note ?? '',
+    }]
+  return sourceItems.map((item) => {
+    const rawCategory = String(item?.category || item?.type || 'Khác').trim()
+    const category = LEGACY_STORE_EXPENSE_CATEGORIES[rawCategory] || rawCategory
+    return {
+      category: STORE_EXPENSE_CATEGORIES.has(category) ? category : 'Khác',
+      name: String(item?.name || '').trim(),
+      amount: nonNegativeInteger(item?.amount),
+      description: String(item?.description || '').trim(),
+    }
+  })
+}
+const validateStoreExpenseItems = (items = []) => {
+  if (!items.length || items.some((item) => item.amount <= 0)) return 'Mỗi khoản chi phải có số tiền lớn hơn 0.'
+  if (items.some((item) => item.category === 'Khác' && !item.description)) return 'Khoản chi Khác bắt buộc phải có mô tả.'
+  if (items.some((item) => item.category === 'Khác' && !item.name)) return 'Khoản chi Khác bắt buộc phải có tên khoản chi.'
+  return ''
+}
 const canListAccounts = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
 const isValidEmployeePhone = (value) => /^0\d{9}$/.test(normalizePhone(value))
 const ORDER_GENDERS = new Set(['Nam', 'Nữ', 'Khác'])
@@ -2232,18 +2264,22 @@ export function AppProvider({ children }) {
   const addFixedExpense = async (payload = {}) => {
     if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền tạo chi phí.' }
     const storeId = payload.storeId || state.activeStoreId || state.session?.storeId
-    const amount = nonNegativeInteger(payload.amount)
-    if (!storeId || amount <= 0) return { ok: false, message: 'Cửa hàng hoặc số tiền chưa hợp lệ.' }
+    if (normalizeAuthRole(state.session?.role) === 'store_manager' && String(storeId || '') !== String(state.session?.storeId || '')) {
+      return { ok: false, message: 'Quản lý cửa hàng chỉ được tạo chi phí cho cửa hàng trực thuộc.' }
+    }
+    const items = normalizeStoreExpenseItems(payload)
+    const validationMessage = validateStoreExpenseItems(items)
+    const amount = items.reduce((total, item) => total + item.amount, 0)
+    if (!storeId || validationMessage) return { ok: false, message: validationMessage || 'Cửa hàng chưa hợp lệ.' }
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('fixed_expense.create', {
           storeId,
-          type: payload.type || 'Chi phí khác',
-          amount,
+          items,
           note: String(payload.note || '').trim(),
           occurredAt: payload.occurredAt,
         })
-        notify('Đã lưu một bản ghi chi phí cố định mới.')
+        notify('Đã lưu phiếu chi cửa hàng.')
         return { ok: true, expense: result.expense, expenseEntry: result.expenseEntry }
       } catch (error) {
         notify(error.message || 'Không thể lưu chi phí.', 'info')
@@ -2252,11 +2288,87 @@ export function AppProvider({ children }) {
     }
     const timestamp = new Date().toISOString()
     const actor = actorSnapshot(state.session)
-    const record = { id: uid('FIX'), storeId, type: payload.type || 'Chi phí khác', amount, note: String(payload.note || '').trim(), occurredAt: payload.occurredAt || timestamp, createdAt: timestamp, createdBy: actor }
-    const expense = { id: uid('EXP'), storeId, type: record.type, category: 'fixed', amount, description: record.note, sourceType: 'fixed-expense', sourceId: record.id, recognized: true, occurredAt: record.occurredAt, createdAt: timestamp, createdBy: actor.id }
+    const record = { id: uid('FIX'), storeId, type: 'Phiếu chi phí cửa hàng', items, totalAmount: amount, amount, note: String(payload.note || '').trim(), occurredAt: payload.occurredAt || timestamp, createdAt: timestamp, createdBy: actor, deletedAt: null }
+    const expense = { id: uid('EXP'), storeId, type: record.type, category: 'fixed', amount, description: record.note || items.map((item) => item.name || item.category).join(', '), sourceType: 'fixed-expense', sourceId: record.id, recognized: true, occurredAt: record.occurredAt, createdAt: timestamp, createdBy: actor.id }
     setState((current) => ({ ...current, fixedExpenses: [record, ...current.fixedExpenses], expenseEntries: [expense, ...current.expenseEntries], stateVersion: current.stateVersion + 1 }))
-    notify('Đã lưu một bản ghi chi phí cố định mới.')
+    notify('Đã lưu phiếu chi cửa hàng.')
     return { ok: true, expense: record }
+  }
+
+  const updateFixedExpense = async (expenseId, payload = {}) => {
+    if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền sửa chi phí.' }
+    const previous = state.fixedExpenses.find((item) => String(item.id || '') === String(expenseId || '') && !item.deletedAt)
+    if (!previous) return { ok: false, message: 'Không tìm thấy phiếu chi cần sửa.' }
+    if (normalizeAuthRole(state.session?.role) === 'store_manager' && String(previous.storeId || '') !== String(state.session?.storeId || '')) {
+      return { ok: false, message: 'Quản lý cửa hàng chỉ được sửa chi phí của cửa hàng trực thuộc.' }
+    }
+    const reason = String(payload.reason || '').trim()
+    if (!reason) return { ok: false, message: 'Vui lòng nhập lý do chỉnh sửa.' }
+    const items = normalizeStoreExpenseItems(payload, previous)
+    const validationMessage = validateStoreExpenseItems(items)
+    if (validationMessage) return { ok: false, message: validationMessage }
+    const amount = items.reduce((total, item) => total + item.amount, 0)
+    const commandPayload = {
+      expenseId: previous.id,
+      items,
+      note: payload.note == null ? String(previous.note || '') : String(payload.note || '').trim(),
+      occurredAt: payload.occurredAt || previous.occurredAt,
+      reason,
+    }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('fixed_expense.update', commandPayload)
+        notify('Đã cập nhật phiếu chi cửa hàng.')
+        return { ok: true, expense: result.expense, expenseEntry: result.expenseEntry }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật phiếu chi.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const updated = { ...previous, items, totalAmount: amount, amount, type: 'Phiếu chi phí cửa hàng', note: commandPayload.note, occurredAt: commandPayload.occurredAt, updatedAt: timestamp, updatedBy: actor, updateReason: reason }
+    setState((current) => ({
+      ...current,
+      fixedExpenses: current.fixedExpenses.map((item) => item.id === previous.id ? updated : item),
+      expenseEntries: current.expenseEntries.map((entry) => entry.sourceType === 'fixed-expense' && String(entry.sourceId) === String(previous.id)
+        ? { ...entry, amount, type: updated.type, description: updated.note || items.map((item) => item.name || item.category).join(', '), occurredAt: updated.occurredAt, updatedAt: timestamp }
+        : entry),
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify('Đã cập nhật phiếu chi cửa hàng.')
+    return { ok: true, expense: updated }
+  }
+
+  const deleteFixedExpense = async (expenseId, reasonValue = '') => {
+    if (normalizeAuthRole(state.session?.role) !== 'admin') return { ok: false, message: 'Chỉ Admin được xóa phiếu chi cửa hàng.' }
+    const previous = state.fixedExpenses.find((item) => String(item.id || '') === String(expenseId || '') && !item.deletedAt)
+    if (!previous) return { ok: false, message: 'Không tìm thấy phiếu chi cần xóa.' }
+    const reason = String(typeof reasonValue === 'object' ? reasonValue.reason : reasonValue || '').trim()
+    if (!reason) return { ok: false, message: 'Vui lòng nhập lý do xóa.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('fixed_expense.delete', { id: previous.id, reason })
+        notify('Đã xóa phiếu chi cửa hàng.')
+        return { ok: true, expense: result.expense, expenseEntry: result.expenseEntry }
+      } catch (error) {
+        notify(error.message || 'Không thể xóa phiếu chi.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const deleted = { ...previous, deletedAt: timestamp, deletedBy: actor, deleteReason: reason }
+    setState((current) => ({
+      ...current,
+      fixedExpenses: current.fixedExpenses.map((item) => item.id === previous.id ? deleted : item),
+      expenseEntries: current.expenseEntries.map((entry) => entry.sourceType === 'fixed-expense' && String(entry.sourceId) === String(previous.id)
+        ? { ...entry, recognized: false, deletedAt: timestamp, deletedBy: actor.id }
+        : entry),
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify('Đã xóa phiếu chi cửa hàng.')
+    return { ok: true, expense: deleted }
   }
 
   const addSalaryAdjustment = async (payload = {}) => {
@@ -3480,6 +3592,8 @@ export function AppProvider({ children }) {
     clearNotifications,
     savePolicies,
     addFixedExpense,
+    updateFixedExpense,
+    deleteFixedExpense,
     addSalaryAdjustment,
     getAvailableSalary,
     createSalaryAdvance,

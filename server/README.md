@@ -244,7 +244,12 @@ Các lệnh chính:
   và không commit. Nếu còn task đúng ngày/ca chưa tick, payload phải có
   `incompleteTaskReason`, đồng thời attendance lưu snapshot task/lý do và kết
   quả reconciliation. Server tự tính thời lượng; chi phí ca nếu có được ghi
-  cùng transaction.
+  cùng transaction. Với ca điều chuyển, attendance trả và lưu
+  `supportCompensation {transferId,homeStoreId,supportStoreId,transferStartAt,
+  transferEndAt,hourlyRate,hours,basePay,allowance,allowanceApplied,totalPay,
+  expenseEntryId}`. Phụ cấp chỉ gắn vào lượt hoàn tất sớm nhất của phiếu;
+  `totalPay = floor(hours * hourlyRate) + allowance` được ghi một lần thành
+  expense `support-attendance-compensation` của cửa hàng nhận hỗ trợ.
   Với `OFFICE`, checkout chỉ nhận thời gian server và vị trí, sau đó
   đánh dấu `workdayCredit: 1`; không nhận chi phí/TikTok.
 - `attendance.update`: Admin hoặc Hỗ trợ KD, payload `attendanceId`, `date?` (alias
@@ -281,8 +286,14 @@ Các lệnh chính:
 - `task.done` (alias `task.set_done`): employee, payload `taskId`, `done`.
   Server lấy nhân viên/cửa hàng từ session, chỉ cho đúng assignee trong đúng
   ngày/ca đang mở và append lịch sử hoàn thành.
-- `fixed_expense.create|update|delete`: admin/business_support/store_manager theo phạm vi cửa hàng; create nhận `storeId`, `type`,
-  `amount`, `note?`, `occurredAt?`; update/delete dùng `expenseId` và `reason`.
+- `fixed_expense.create|update|delete`: create/update dành cho
+  admin/business_support/store_manager theo phạm vi cửa hàng; **chỉ Admin** được
+  delete. Create nhận `storeId`, `occurredAt?`, `note?`,
+  `items[{category,name?,amount,description?}]` với category `Set up|Mặt bằng|
+  Điện|Nước|Wifi|Marketing|Rác|Khác`; `Khác` bắt buộc có tên hoặc nội dung.
+  Mỗi amount là số nguyên VND không âm, tổng phiếu phải dương. Update/delete dùng
+  `expenseId` và `reason`; delete là xóa mềm, giữ audit và void expense liên kết.
+  Payload legacy `type,amount,note?` vẫn được chuẩn hóa thành phiếu một dòng.
   Lệnh `expense.create|update|delete` có cùng envelope cho chi phí thủ công.
 - `import.create`: admin/business_support/store_manager theo phạm vi cửa hàng, payload `storeId`, `items[{name,category,
   quantity,weight,price,shippingAmount?,note?}]`, `shippingAmount?`,
@@ -299,6 +310,13 @@ Các lệnh chính:
   attendance, lương, KPI, ứng lương và finance; `pay` chỉ chi phần còn
   lại, `lock` chỉ áp dụng sau khi đã chi. Nếu nguồn tài chính/lương
   đổi sau khi chốt, `pay` trả `PAYROLL_NEEDS_RECLOSE` cho đến khi chốt lại.
+  Dòng lương điều chuyển chỉ gồm lương giờ hỗ trợ + phụ cấp phiếu, không cộng lặp
+  KPI/phụ cấp hồ sơ/điều chỉnh/ứng lương ở cửa hàng chính. Payment vẫn ghi cash
+  out nhưng expense payroll tương ứng không được recognize lần hai vì chi phí đã
+  accrual theo attendance tại cửa hàng nhận. Khi dữ liệu attendance lịch sử chưa
+  có bút toán accrual, bản chốt tự cộng `supportAccrualGap` vào finance/KPI và lúc
+  chi chỉ recognize đúng phần còn thiếu; không có ca đã hoàn tất thì không phát
+  sinh lương giờ hoặc phụ cấp hỗ trợ.
   Lương tháng `OFFICE` và `BUSINESS_SUPPORT` được chia theo ngày hoàn
   tất chấm công trên ngày công chuẩn đã snapshot. Admin chốt lương
   `BUSINESS_SUPPORT`; business_support và store_manager không thể thao tác

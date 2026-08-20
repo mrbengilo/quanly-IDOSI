@@ -933,7 +933,8 @@ const ownAccountSettings = (state, user) => {
 }
 
 export const projectSharedState = (rawState, user) => {
-  const state = normalizeSharedStateForStorage(rawState)
+  const normalizedState = normalizeSharedStateForStorage(rawState)
+  let state = normalizedState
   const common = {
     schemaVersion: state.schemaVersion,
     stateVersion: state.stateVersion,
@@ -947,10 +948,20 @@ export const projectSharedState = (rawState, user) => {
     void accountSettings
     return {
       ...adminState,
+      ...(Object.hasOwn(state, 'attendance') ? {
+        attendance: (Array.isArray(state.attendance) ? state.attendance : [])
+          .map((record) => withSupportCompensation(state, record)),
+      } : {}),
       notifications: filterArray(state, 'notifications', () => true).map((record) => projectNotificationForActor(record, user)),
       settings: ownAccountSettings(state, user),
       session: null,
     }
+  }
+
+  state = {
+    ...normalizedState,
+    attendance: (Array.isArray(normalizedState.attendance) ? normalizedState.attendance : [])
+      .map((record) => withSupportCompensation(normalizedState, record)),
   }
 
   if (user.role === 'business_support') {
@@ -1118,6 +1129,7 @@ export const projectSharedState = (rawState, user) => {
   if (user.role === 'employee' && employeeId) {
     const own = (key) => filterArray(state, key, (record) => belongsToEmployee(record, employeeId))
     const ownAttendance = own('attendance')
+    const ownSupportTransfers = own('supportTransfers')
     const openAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
     const latestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
@@ -1155,7 +1167,7 @@ export const projectSharedState = (rawState, user) => {
       tasks,
       taskAssignmentHistory: own('taskAssignmentHistory')
         .map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
-      supportTransfers: own('supportTransfers'),
+      supportTransfers: ownSupportTransfers,
       orders: filterArray(state, 'orders', (record) => orderCreatedByEmployee(record, employeeId)),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
         .map((record) => projectNotificationForActor(record, user)),
@@ -2283,12 +2295,40 @@ const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
   'payrollPayments',
 ])
 
+const SUPPORT_ATTENDANCE_PROJECTION_FIELDS = new Set([
+  'supportCompensation',
+  'supportHourlyRate',
+  'supportHours',
+  'supportBasePay',
+  'supportAllowance',
+  'supportAllowanceApplied',
+  'supportActualPay',
+])
+
+const protectedCollectionComparable = (key, value) => {
+  if (key !== 'attendance' || !Array.isArray(value)) return value
+  return value.map((record) => Object.fromEntries(Object.entries(record || {}).filter(([field]) => (
+    !SUPPORT_ATTENDANCE_PROJECTION_FIELDS.has(field)
+  ))))
+}
+
 const assertProtectedCollectionsUnchanged = (currentState, nextState) => {
   for (const key of DOMAIN_PROTECTED_STATE_COLLECTIONS) {
-    if (JSON.stringify(canonicalize(currentState?.[key])) !== JSON.stringify(canonicalize(nextState?.[key]))) {
+    const currentValue = protectedCollectionComparable(key, currentState?.[key])
+    const nextValue = protectedCollectionComparable(key, nextState?.[key])
+    if (JSON.stringify(canonicalize(currentValue)) !== JSON.stringify(canonicalize(nextValue))) {
       throw new ApiError(400, 'DOMAIN_COMMAND_REQUIRED', `Bộ sưu tập ${key} chỉ được thay đổi bằng lệnh nghiệp vụ.`)
     }
   }
+}
+
+const preserveProtectedCollections = (currentState, nextState) => {
+  const protectedState = { ...nextState }
+  for (const key of DOMAIN_PROTECTED_STATE_COLLECTIONS) {
+    if (Object.hasOwn(currentState || {}, key)) protectedState[key] = currentState[key]
+    else delete protectedState[key]
+  }
+  return protectedState
 }
 
 const preserveNotificationReadReceipts = (currentState, nextState) => {
@@ -2350,7 +2390,10 @@ const stateCommand = async (db, user, body, commandContext) => {
     nextState = { ...currentState, ...payload.patch }
   }
   if (!isPlainRecord(nextState)) throw new ApiError(400, 'INVALID_STATE', 'Trạng thái phải là một đối tượng JSON.')
-  if (scope === 'global') assertProtectedCollectionsUnchanged(currentState, nextState)
+  if (scope === 'global') {
+    assertProtectedCollectionsUnchanged(currentState, nextState)
+    nextState = preserveProtectedCollections(currentState, nextState)
+  }
   nextState = normalizeSharedStateForStorage(nextState)
   if (scope === 'global') {
     const currentAccountSettings = normalizeSharedStateForStorage(currentState).accountSettings
@@ -5948,7 +5991,101 @@ const workedHoursFor = (state, employeeId, storeId, period) => (Array.isArray(st
     return sum + (Number.isFinite(hours) && hours > 0 ? hours : 0)
   }, 0)
 
-const supportTransferPayFor = (state, employeeId, storeId, period) => {
+const attendanceWorkedHours = (record = {}) => {
+  const value = Number(record.hours ?? (Number(record.workedSeconds || 0) / 3_600))
+  return Number.isFinite(value) && value > 0 ? value : 0
+}
+
+const linkedAttendanceForSupportTransfer = (state, transfer) => {
+  const transferBounds = supportTransferTimeBounds(transfer)
+  if (!transferBounds) return []
+  const employeeId = String(transfer.employeeId || '')
+  const storeId = String(transfer.toStoreId || '')
+  const calendarRange = supportTransferCalendarRange(transferBounds)
+  return (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => {
+    if (record.deletedAt
+      || !belongsToEmployee(record, employeeId)
+      || String(record.storeId || '') !== storeId) return false
+    if (record.supportTransferId) return String(record.supportTransferId) === String(transfer.id || '')
+    const checkInMs = Date.parse(String(record.checkInAt || ''))
+    if (Number.isFinite(checkInMs)) return transferBounds.startMs <= checkInMs && checkInMs < transferBounds.endMs
+    const legacyDate = dateFromRecord(record)
+    return legacyDate >= calendarRange.fromDate && legacyDate <= calendarRange.toDate
+  })
+}
+
+const supportAllowanceAttendanceId = (state, transfer) => {
+  const completed = linkedAttendanceForSupportTransfer(state, transfer)
+    .filter((record) => attendanceWorkedHours(record) > 0 && Boolean(record.checkOutAt || record.checkOut || record.checkOutTime))
+    .sort((left, right) => {
+      const leftEpoch = Date.parse(String(left.checkInAt || left.createdAt || ''))
+      const rightEpoch = Date.parse(String(right.checkInAt || right.createdAt || ''))
+      if (Number.isFinite(leftEpoch) && Number.isFinite(rightEpoch) && leftEpoch !== rightEpoch) return leftEpoch - rightEpoch
+      const dateOrder = dateFromRecord(left).localeCompare(dateFromRecord(right))
+      return dateOrder || String(left.id || '').localeCompare(String(right.id || ''))
+    })
+  return String(completed[0]?.id || '') || null
+}
+
+const storeNameForId = (state, storeId) => (Array.isArray(state.stores) ? state.stores : [])
+  .find((record) => String(record.id || '') === String(storeId || '') && !record.deletedAt)?.name || null
+
+export const supportCompensationForAttendance = (state, record) => {
+  const transferId = String(record?.supportTransferId || record?.supportCompensation?.transferId || '')
+  if (!transferId) return null
+  const transfer = (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((candidate) => (
+    String(candidate.id || '') === transferId
+    && !candidate.deletedAt
+    && !['Đã xóa', 'Đã hủy'].includes(String(candidate.status || ''))
+  ))
+  if (!transfer) return isPlainRecord(record.supportCompensation) ? record.supportCompensation : null
+  const bounds = supportTransferTimeBounds(transfer)
+  if (!bounds) return isPlainRecord(record.supportCompensation) ? record.supportCompensation : null
+  const hours = attendanceWorkedHours(record)
+  const hourlyRateValue = Number(transfer.hourlySupportRate ?? record.supportHourlyRate ?? 0)
+  const hourlyRate = Number.isSafeInteger(hourlyRateValue) && hourlyRateValue >= 0 ? hourlyRateValue : 0
+  const basePay = Math.floor(hours * hourlyRate)
+  if (!Number.isSafeInteger(basePay) || basePay < 0 || basePay > MAX_MONEY_VND) return null
+  const allowanceValue = Number(transfer.allowance ?? 0)
+  const configuredAllowance = Number.isSafeInteger(allowanceValue) && allowanceValue >= 0 ? allowanceValue : 0
+  const allowanceApplied = Boolean(hours > 0 && String(record.id || '') === supportAllowanceAttendanceId(state, transfer))
+  const allowance = allowanceApplied ? configuredAllowance : 0
+  const totalPay = safeMoneySum(basePay, allowance, 'Lương thực nhận ca hỗ trợ')
+  return {
+    transferId,
+    homeStoreId: String(transfer.fromStoreId || record.homeStoreId || ''),
+    homeStoreName: storeNameForId(state, transfer.fromStoreId) || record.supportCompensation?.homeStoreName || null,
+    supportStoreId: String(transfer.toStoreId || record.storeId || ''),
+    supportStoreName: storeNameForId(state, transfer.toStoreId) || record.supportCompensation?.supportStoreName || null,
+    transferStartAt: bounds.startAt,
+    transferEndAt: bounds.endAt,
+    hourlyRate,
+    hours,
+    basePay,
+    allowance,
+    configuredAllowance,
+    allowanceApplied,
+    totalPay,
+    expenseEntryId: totalPay > 0 ? `exp_support_${record.id}` : null,
+  }
+}
+
+const withSupportCompensation = (state, record) => {
+  const supportCompensation = supportCompensationForAttendance(state, record)
+  if (!supportCompensation) return record
+  return {
+    ...record,
+    supportCompensation,
+    supportHourlyRate: supportCompensation.hourlyRate,
+    supportHours: supportCompensation.hours,
+    supportBasePay: supportCompensation.basePay,
+    supportAllowance: supportCompensation.allowance,
+    supportAllowanceApplied: supportCompensation.allowanceApplied,
+    supportActualPay: supportCompensation.totalPay,
+  }
+}
+
+export const supportTransferPayFor = (state, employeeId, storeId, period) => {
   const monthStart = `${period}-01`
   const nextMonthDate = (() => {
     const [year, month] = period.split('-').map(Number)
@@ -5974,56 +6111,68 @@ const supportTransferPayFor = (state, employeeId, storeId, period) => {
   let allowance = 0
   for (const transfer of candidates) {
     const transferBounds = supportTransferTimeBounds(transfer)
-    const transferAttendance = (Array.isArray(state.attendance) ? state.attendance : [])
-      .filter((record) => (
-        !record.deletedAt
-        && belongsToEmployee(record, employeeId)
-        && String(record.storeId || '') === String(storeId)
-        && (() => {
-          if (record.supportTransferId) {
-            return String(record.supportTransferId) === String(transfer.id || '')
-          }
-          const checkInMs = Date.parse(String(record.checkInAt || ''))
-          if (Number.isFinite(checkInMs)) {
-            return transferBounds && transferBounds.startMs <= checkInMs && checkInMs < transferBounds.endMs
-          }
-          const legacyDate = dateFromRecord(record)
-          const range = supportTransferCalendarRange(transferBounds)
-          return legacyDate >= range.fromDate && legacyDate <= range.toDate
-        })()
-      ))
-    const firstAttendance = [...transferAttendance].sort((left, right) => {
-      const leftEpoch = Date.parse(String(left.checkInAt || left.createdAt || ''))
-      const rightEpoch = Date.parse(String(right.checkInAt || right.createdAt || ''))
-      if (Number.isFinite(leftEpoch) && Number.isFinite(rightEpoch)) return leftEpoch - rightEpoch
-      return dateFromRecord(left).localeCompare(dateFromRecord(right))
-    })[0]
+    const transferAttendance = linkedAttendanceForSupportTransfer(state, transfer)
+    const allowanceAttendanceId = supportAllowanceAttendanceId(state, transfer)
+    const firstAttendance = transferAttendance.find((record) => String(record.id || '') === allowanceAttendanceId)
     // A transfer allowance belongs to exactly one payroll period. Prefer the
     // first linked attendance/check-in period; if no attendance exists yet,
     // attribute it to the configured transfer-start month.
     const attributionPeriod = firstAttendance
       ? monthFromRecord(firstAttendance)
       : localDateTimeParts(transferBounds.startAt).date.slice(0, 7)
-    const transferHours = transferAttendance
-      .filter((record) => monthFromRecord(record) === period)
-      .reduce((sum, record) => {
-        const value = Number(record.hours ?? (Number(record.workedSeconds || 0) / 3_600))
-        return sum + (Number.isFinite(value) && value > 0 ? value : 0)
-      }, 0)
-    if (transferHours <= 0 && attributionPeriod !== period) continue
-    transfers.push(transfer)
-    hours += transferHours
-    base = safeMoneySum(
-      base,
-      Math.floor(transferHours * Number(transfer.hourlySupportRate || 0)),
-      'Lương hỗ trợ điều chuyển',
-    )
-    if (attributionPeriod === period) {
-      allowance = safeMoneySum(allowance, Number(transfer.allowance || 0), 'Phụ cấp điều chuyển')
+    const periodAttendance = transferAttendance.filter((record) => monthFromRecord(record) === period)
+    const transferHours = periodAttendance.reduce((sum, record) => sum + attendanceWorkedHours(record), 0)
+    if (transferHours <= 0) continue
+    const hourlyRate = Number(transfer.hourlySupportRate || 0)
+    const transferBase = Math.floor(transferHours * hourlyRate)
+    const transferAllowance = attributionPeriod === period ? Number(transfer.allowance || 0) : 0
+    const attendanceIds = periodAttendance.map((record) => String(record.id || '')).filter(Boolean)
+    const detail = {
+      transferId: String(transfer.id || ''),
+      homeStoreId: String(transfer.fromStoreId || ''),
+      homeStoreName: storeNameForId(state, transfer.fromStoreId),
+      supportStoreId: String(transfer.toStoreId || ''),
+      supportStoreName: storeNameForId(state, transfer.toStoreId),
+      startAt: transferBounds.startAt,
+      endAt: transferBounds.endAt,
+      hours: transferHours,
+      hourlyRate,
+      basePay: transferBase,
+      allowance: transferAllowance,
+      totalPay: safeMoneySum(transferBase, transferAllowance, 'Lương điều chuyển theo phiếu'),
+      attendanceIds,
+      allowanceAttendanceId,
     }
+    transfers.push({ ...transfer, compensation: detail })
+    hours += transferHours
+    base = safeMoneySum(base, transferBase, 'Lương hỗ trợ điều chuyển')
+    allowance = safeMoneySum(allowance, transferAllowance, 'Phụ cấp điều chuyển')
   }
   if (!transfers.length) return null
-  return { transfers, hours, base, allowance }
+  const details = transfers.map((record) => record.compensation)
+  return { transfers, details, hours, base, allowance, totalPay: safeMoneySum(base, allowance, 'Tổng lương hỗ trợ') }
+}
+
+const recognizedSupportCompensationFor = (state, storeId, employeeId, supportDetails) => {
+  const attendanceIds = new Set((Array.isArray(supportDetails) ? supportDetails : [])
+    .flatMap((detail) => Array.isArray(detail.attendanceIds) ? detail.attendanceIds.map(String) : []))
+  const seenSources = new Set()
+  return (Array.isArray(state.expenseEntries) ? state.expenseEntries : [])
+    .filter((entry) => (
+      String(entry.storeId || '') === String(storeId || '')
+      && String(entry.employeeId || '') === String(employeeId || '')
+      && String(entry.sourceType || '') === 'support-attendance-compensation'
+      && attendanceIds.has(String(entry.sourceId || entry.attendanceId || ''))
+      && entry.recognized !== false
+      && !entry.deletedAt
+      && !entry.voidedAt
+    ))
+    .reduce((sum, entry) => {
+      const sourceId = String(entry.sourceId || entry.attendanceId || entry.id || '')
+      if (seenSources.has(sourceId)) return sum
+      seenSources.add(sourceId)
+      return safeMoneySum(sum, Number(entry.amount || 0), 'Chi phí lương hỗ trợ đã ghi nhận')
+    }, 0)
 }
 
 const validRequiredWorkingDays = (value) => {
@@ -6219,7 +6368,22 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
     participants.push({ employee, hours: supportPay.hours, workedDays: 0, supportPay })
   }
   const revenue = revenueFor(state, storeId, period)
-  const expense = recognizedExpensesFor(state, storeId, period)
+  const recognizedExpense = recognizedExpensesFor(state, storeId, period)
+  const supportAccrualGap = participants.reduce((sum, participant) => {
+    const supportPay = participant.supportPay
+    if (!supportPay) return sum
+    const employeeId = String(participant.employee.id || participant.employee.code || '')
+    const accrued = recognizedSupportCompensationFor(state, storeId, employeeId, supportPay.details)
+    if (accrued > supportPay.totalPay) {
+      throw new ApiError(409, 'SUPPORT_PAYROLL_ACCRUAL_MISMATCH', 'Chi phí lương hỗ trợ đã ghi nhận lớn hơn lương theo chấm công.', {
+        employeeId,
+        expectedAmount: supportPay.totalPay,
+        accruedAmount: accrued,
+      })
+    }
+    return safeMoneySum(sum, supportPay.totalPay - accrued, 'Chi phí lương hỗ trợ còn thiếu trong kỳ')
+  }, 0)
+  const expense = safeMoneySum(recognizedExpense, supportAccrualGap, 'Tổng chi phí trong kỳ')
   const profit = revenue - expense
   if (![revenue, expense, profit].every(Number.isSafeInteger)) {
     throw new ApiError(409, 'FINANCE_DATA_INVALID', 'Số liệu tài chính trong kỳ vượt quá giới hạn an toàn.')
@@ -6264,20 +6428,18 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
           : (attendanceProratedPayroll
           ? Math.floor(monthlyBase * Math.min(requiredWorkingDays, Math.max(0, workedDays)) / requiredWorkingDays)
           : monthlyBase))
-    const kpiBonus = profit > 0 && totalHours > 0
+    const kpiBonus = !supportPay && profit > 0 && totalHours > 0
       ? Math.floor((hours / totalHours) * (ratePercent / 100) * profit)
       : 0
-    const allowance = safeMoneySum(
-      Number.isSafeInteger(Number(employee.tiktokAllowance)) ? Number(employee.tiktokAllowance) : 0,
-      Number(supportPay?.allowance || 0),
-      'Tổng phụ cấp nhân viên',
-    )
-    const adjustment = adjustmentAmountFor(state, employeeId, period)
+    const allowance = supportPay
+      ? Number(supportPay.allowance || 0)
+      : (Number.isSafeInteger(Number(employee.tiktokAllowance)) ? Number(employee.tiktokAllowance) : 0)
+    const adjustment = supportPay ? 0 : adjustmentAmountFor(state, employeeId, period)
     if (![base, kpiBonus, allowance, adjustment].every(Number.isSafeInteger)) {
       throw new ApiError(409, 'PAYROLL_DATA_INVALID', `Số liệu lương của ${employeeId} không hợp lệ.`)
     }
     const gross = Math.max(0, base + allowance + adjustment + kpiBonus)
-    const advancesPaid = paidAdvancesFor(state, employeeId, period)
+    const advancesPaid = supportPay ? 0 : paidAdvancesFor(state, employeeId, period)
     if (!Number.isSafeInteger(gross) || !Number.isSafeInteger(advancesPaid)) {
       throw new ApiError(409, 'PAYROLL_DATA_INVALID', `Tổng lương của ${employeeId} vượt quá giới hạn an toàn.`)
     }
@@ -6295,6 +6457,15 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
         supportTransferIds: supportPay.transfers.map((record) => record.id),
         supportHourlyPay: supportPay.base,
         supportAllowance: supportPay.allowance,
+        supportActualPay: supportPay.totalPay,
+        supportCompensation: {
+          hours: supportPay.hours,
+          basePay: supportPay.base,
+          allowance: supportPay.allowance,
+          totalPay: supportPay.totalPay,
+          transferIds: supportPay.transfers.map((record) => record.id),
+        },
+        supportDetails: supportPay.details,
       } : {}),
       remaining: Math.max(0, gross - advancesPaid),
       salarySnapshot: {
@@ -6313,7 +6484,7 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
   })
   return {
     rows,
-    financeSnapshot: { revenue, expense, profit },
+    financeSnapshot: { revenue, expense, profit, recognizedExpense, supportAccrualGap },
     kpiSnapshot: {
       eligible: profit > 0 && totalHours > 0,
       profit,
@@ -6412,6 +6583,10 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   const payrollTargets = [...new Map([
     { storeId, period: previousPeriod },
     { storeId, period: nextPeriod },
+    ...(linkedTransfer ? linkedAttendanceForSupportTransfer(state, linkedTransfer).map((record) => ({
+      storeId,
+      period: monthFromRecord(record),
+    })) : []),
   ].map((target) => [`${target.storeId}:${target.period}`, target])).values()]
   for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
 
@@ -6462,7 +6637,7 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     : (linkedTransferBounds
         ? (checkOutMs < linkedTransferBounds.endMs ? 'Về sớm' : 'Đã ra về')
         : (shiftEnd && checkOut.minuteOfDay < shiftEnd.minuteOfDay ? 'Về sớm' : 'Đã ra về'))
-  const next = {
+  const nextBase = {
     ...previous,
     date,
     workDate: date,
@@ -6494,9 +6669,68 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     updatedAt: commandContext.now,
     updatedBy: serverActorSnapshot(actor),
   }
+  const attendanceCandidate = attendance.map((record) => String(record.id || '') === attendanceId ? nextBase : record)
+  const compensationState = linkedTransfer ? { ...state, attendance: attendanceCandidate } : state
+  const nextAttendance = linkedTransfer
+    ? attendanceCandidate.map((record) => (
+        String(record.supportTransferId || '') === String(linkedTransfer.id || '')
+          ? withSupportCompensation(compensationState, record)
+          : record
+      ))
+    : attendanceCandidate
+  const next = nextAttendance.find((record) => String(record.id || '') === attendanceId) || nextBase
+  let nextExpenseEntries = Array.isArray(state.expenseEntries) ? [...state.expenseEntries] : []
+  if (linkedTransfer) {
+    for (const supportAttendance of nextAttendance.filter((record) => (
+      String(record.supportTransferId || '') === String(linkedTransfer.id || '')
+    ))) {
+      const compensation = supportAttendance.supportCompensation
+      const supportAmount = Number(compensation?.totalPay || 0)
+      const expenseIndex = nextExpenseEntries.findIndex((entry) => (
+        sourceMatch(entry, 'support-attendance-compensation', supportAttendance.id)
+      ))
+      if (supportAmount > 0) {
+        assertAccountingPeriodOpen(state, storeId, monthFromRecord(supportAttendance))
+        const expense = {
+          ...(expenseIndex >= 0 ? nextExpenseEntries[expenseIndex] : {
+            id: `exp_support_${supportAttendance.id}`,
+            storeId,
+            employeeId,
+            attendanceId: supportAttendance.id,
+            supportTransferId: linkedTransfer.id,
+            type: 'Lương ca hỗ trợ',
+            category: 'payroll-support',
+            sourceType: 'support-attendance-compensation',
+            sourceId: supportAttendance.id,
+            createdAt: commandContext.now,
+            createdBy: actor.user_id,
+          }),
+          amount: supportAmount,
+          description: `Lương hỗ trợ ${supportAttendance.employeeName || employeeId}: ${compensation.hours} giờ × ${compensation.hourlyRate} đ${compensation.allowance ? ` + ${compensation.allowance} đ phụ cấp` : ''}`,
+          recognized: true,
+          occurredAt: supportAttendance.checkOutAt || supportAttendance.updatedAt || commandContext.now,
+          deletedAt: null,
+          voidedAt: null,
+          updatedAt: commandContext.now,
+          updatedBy: actor.user_id,
+        }
+        if (expenseIndex >= 0) nextExpenseEntries[expenseIndex] = expense
+        else nextExpenseEntries.unshift(expense)
+      } else if (expenseIndex >= 0) {
+        nextExpenseEntries[expenseIndex] = {
+          ...nextExpenseEntries[expenseIndex],
+          recognized: false,
+          voidedAt: commandContext.now,
+          updatedAt: commandContext.now,
+          updatedBy: actor.user_id,
+        }
+      }
+    }
+  }
   const changedFields = [
     'date', 'checkIn', 'checkInAt', 'checkOut', 'checkOutAt', 'arrivalTag',
     'departureTag', 'minutesEarly', 'minutesLate', 'workdayCredit', 'workedSeconds', 'hours',
+    'supportCompensation', 'supportActualPay',
   ].filter((field) => JSON.stringify(next[field]) !== JSON.stringify(previous[field]))
   const auditRecord = {
     id: `ata_${crypto.randomUUID()}`,
@@ -6513,7 +6747,8 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   }
   const nextState = {
     ...state,
-    attendance: attendance.map((record) => String(record.id || '') === attendanceId ? next : record),
+    attendance: nextAttendance,
+    expenseEntries: nextExpenseEntries,
     attendanceAudit: [auditRecord, ...(Array.isArray(state.attendanceAudit) ? state.attendanceAudit : [])],
     auditLogs: [auditRecord, ...(Array.isArray(state.auditLogs) ? state.auditLogs : [])],
     payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
@@ -7100,7 +7335,21 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       employeeName: employee.name || actor.display_name,
       storeId,
       homeStoreId: activeTransfer?.fromStoreId || employee.storeId || storeId,
-      ...(activeTransfer ? { supportTransferId: activeTransfer.id } : {}),
+      ...(activeTransfer ? {
+        supportTransferId: activeTransfer.id,
+        supportTransferSnapshot: {
+          id: activeTransfer.id,
+          fromStoreId: activeTransfer.fromStoreId,
+          fromStoreName: storeNameForId(state, activeTransfer.fromStoreId),
+          toStoreId: activeTransfer.toStoreId,
+          toStoreName: storeNameForId(state, activeTransfer.toStoreId),
+          startAt: activeTransferBounds.startAt,
+          endAt: activeTransferBounds.endAt,
+          hourlySupportRate: Number(activeTransfer.hourlySupportRate || 0),
+          allowance: Number(activeTransfer.allowance || 0),
+        },
+        supportHourlyRate: Number(activeTransfer.hourlySupportRate || 0),
+      } : {}),
       unit: employee.unit || 'store',
       employmentTypeSnapshot: employee.employmentType || null,
       payBasisSnapshot: employee.payBasis || null,
@@ -7278,7 +7527,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   }
   const shiftExpense = officeEmployee || payload.expense == null ? 0 : asVnd(payload.expense, 'Chi phí trong ca')
   if (shiftExpense > 0) assertAccountingPeriodOpen(state, attendanceStoreId, attendancePeriod)
-  const updatedRecord = {
+  const updatedRecordBase = {
     ...openRecord,
     checkOut: localNow.time,
     checkOutTime: localNow.time,
@@ -7319,7 +7568,21 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     tiktok: officeEmployee ? false : Boolean(payload.tiktok),
     updatedAt: commandContext.now,
   }
-  const expenseEntry = shiftExpense > 0 ? {
+  const compensationState = attendanceTransfer ? {
+    ...state,
+    attendance: attendance.map((record) => (
+      String(record.id || '') === String(openRecord.id) ? updatedRecordBase : record
+    )),
+  } : state
+  const updatedRecord = attendanceTransfer
+    ? withSupportCompensation(compensationState, updatedRecordBase)
+    : updatedRecordBase
+  const supportCompensation = isPlainRecord(updatedRecord.supportCompensation)
+    ? updatedRecord.supportCompensation
+    : null
+  const supportExpense = Number(supportCompensation?.totalPay || 0)
+  if (supportExpense > 0) assertAccountingPeriodOpen(state, attendanceStoreId, attendancePeriod)
+  const shiftExpenseEntry = shiftExpense > 0 ? {
     id: `exp_shift_${openRecord.id}`,
     storeId: attendanceStoreId,
     employeeId,
@@ -7329,6 +7592,23 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     amount: shiftExpense,
     description: `Chi phí ${openRecord.shiftName || openRecord.shift || ''}`.trim(),
     sourceType: 'shift-expense',
+    sourceId: openRecord.id,
+    recognized: true,
+    occurredAt: commandContext.now,
+    createdAt: commandContext.now,
+    createdBy: actor.user_id,
+  } : null
+  const supportExpenseEntry = supportExpense > 0 ? {
+    id: `exp_support_${openRecord.id}`,
+    storeId: attendanceStoreId,
+    employeeId,
+    attendanceId: openRecord.id,
+    supportTransferId: attendanceTransfer?.id || null,
+    type: 'Lương ca hỗ trợ',
+    category: 'payroll-support',
+    amount: supportExpense,
+    description: `Lương hỗ trợ ${updatedRecord.employeeName || employeeId}: ${supportCompensation.hours} giờ × ${supportCompensation.hourlyRate} đ${supportCompensation.allowance ? ` + ${supportCompensation.allowance} đ phụ cấp` : ''}`,
+    sourceType: 'support-attendance-compensation',
     sourceId: openRecord.id,
     recognized: true,
     occurredAt: commandContext.now,
@@ -7350,13 +7630,16 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   } : null
   const expenseEntries = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
   const cashTransactions = Array.isArray(state.cashTransactions) ? state.cashTransactions : []
-  if (expenseEntry && expenseEntries.some((entry) => sourceMatch(entry, 'shift-expense', openRecord.id))) {
+  if (shiftExpenseEntry && expenseEntries.some((entry) => sourceMatch(entry, 'shift-expense', openRecord.id))) {
     throw new ApiError(409, 'SHIFT_EXPENSE_EXISTS', 'Chi phí của ca này đã được ghi nhận.')
+  }
+  if (supportExpenseEntry && expenseEntries.some((entry) => sourceMatch(entry, 'support-attendance-compensation', openRecord.id))) {
+    throw new ApiError(409, 'SUPPORT_COMPENSATION_EXPENSE_EXISTS', 'Chi phí lương ca hỗ trợ này đã được ghi nhận.')
   }
   const nextState = {
     ...state,
     attendance: attendance.map((record) => String(record.id || '') === String(openRecord.id) ? updatedRecord : record),
-    expenseEntries: expenseEntry ? [expenseEntry, ...expenseEntries] : expenseEntries,
+    expenseEntries: [supportExpenseEntry, shiftExpenseEntry, ...expenseEntries].filter(Boolean),
     cashTransactions: cashTransaction ? [cashTransaction, ...cashTransactions] : cashTransactions,
     supportTransfers: attendanceTransfer
       ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).map((record) => (
@@ -7390,6 +7673,8 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       period: attendancePeriod,
       shiftId: openRecord.shiftId || openRecord.shift,
       shiftExpense,
+      supportExpense,
+      supportTransferId: attendanceTransfer?.id || null,
       serverTimestamp: commandContext.now,
       ...(storeEmployee ? {
         revenueReconciliation: {
@@ -7402,7 +7687,12 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
         incompleteTaskReason: incompleteTasks.length ? incompleteTaskReason : null,
       } : {}),
     },
-    response: { command: body.type, attendance: updatedRecord, expense: expenseEntry },
+    response: {
+      command: body.type,
+      attendance: updatedRecord,
+      expense: shiftExpenseEntry,
+      supportExpense: supportExpenseEntry,
+    },
   }, commandContext)
 }
 
@@ -8153,14 +8443,80 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
 }
 
 const FIXED_EXPENSE_TYPES = new Set([
+  'Set up',
+  'Mặt bằng',
   'Điện',
   'Nước',
-  'Wi-Fi',
-  'Rác',
+  'Wifi',
   'Marketing',
-  'Chi phí thiết lập cửa hàng',
-  'Chi phí khác',
+  'Rác',
+  'Khác',
 ])
+
+const normalizeFixedExpenseType = (value) => {
+  const raw = String(value || '').trim()
+  const normalized = normalizeTextKey(raw)
+  const aliases = new Map([
+    ['set up', 'Set up'],
+    ['setup', 'Set up'],
+    ['chi phi thiet lap cua hang', 'Set up'],
+    ['mat bang', 'Mặt bằng'],
+    ['dien', 'Điện'],
+    ['nuoc', 'Nước'],
+    ['wifi', 'Wifi'],
+    ['wi-fi', 'Wifi'],
+    ['marketing', 'Marketing'],
+    ['rac', 'Rác'],
+    ['khac', 'Khác'],
+    ['chi phi khac', 'Khác'],
+  ])
+  return aliases.get(normalized) || (FIXED_EXPENSE_TYPES.has(raw) ? raw : '')
+}
+
+export const normalizeFixedExpenseItems = (value, legacy = {}) => {
+  const rawItems = Array.isArray(value)
+    ? value
+    : [{
+        category: legacy.type || 'Khác',
+        name: legacy.name,
+        amount: legacy.amount,
+        description: legacy.note ?? legacy.description,
+      }]
+  if (rawItems.length < 1 || rawItems.length > 50) {
+    throw new ApiError(400, 'EXPENSE_ITEMS_INVALID', 'Phiếu chi phí phải có từ 1 đến 50 khoản chi.')
+  }
+  let totalAmount = 0
+  const items = rawItems.map((item, index) => {
+    if (!isPlainRecord(item)) throw new ApiError(400, 'EXPENSE_ITEM_INVALID', `Khoản chi thứ ${index + 1} không hợp lệ.`)
+    const category = normalizeFixedExpenseType(item.category ?? item.type)
+    if (!category) throw new ApiError(400, 'EXPENSE_TYPE_INVALID', `Loại khoản chi thứ ${index + 1} không hợp lệ.`)
+    const name = String(item.name || '').trim()
+    const description = String(item.description ?? item.note ?? '').trim()
+    if (name.length > 160 || description.length > 500) {
+      throw new ApiError(400, 'EXPENSE_ITEM_INVALID', `Nội dung khoản chi thứ ${index + 1} vượt quá giới hạn.`)
+    }
+    if (category === 'Khác' && !name && !description) {
+      throw new ApiError(400, 'EXPENSE_CUSTOM_DETAIL_REQUIRED', `Khoản chi Khác thứ ${index + 1} cần nhập tên hoặc nội dung.`)
+    }
+    const amount = asVnd(item.amount ?? 0, `Số tiền khoản chi thứ ${index + 1}`)
+    totalAmount = safeMoneySum(totalAmount, amount, 'Tổng phiếu chi phí cửa hàng')
+    return {
+      category,
+      name: name || category,
+      amount,
+      description,
+    }
+  })
+  if (totalAmount <= 0) throw new ApiError(400, 'EXPENSE_TOTAL_INVALID', 'Tổng phiếu chi phí phải lớn hơn 0 đồng.')
+  return { items, totalAmount }
+}
+
+const fixedExpenseDescription = (record) => {
+  const note = String(record.note || '').trim()
+  if (note) return note
+  const items = Array.isArray(record.items) ? record.items : []
+  return items.map((item) => `${item.name || item.category}: ${item.amount} đ`).join('; ').slice(0, 1_000)
+}
 
 const expenseCommand = async (db, actor, body, commandContext) => {
   assertOperationsRole(actor, 'Tài khoản không có quyền quản lý chi phí cửa hàng.')
@@ -8179,13 +8535,18 @@ const expenseCommand = async (db, actor, body, commandContext) => {
     const storeId = String(payload.storeId || '').trim()
     assertOperationalStoreAccess(actor, storeId)
     requireStore(state, storeId)
-    const amount = asVnd(payload.amount, 'Số tiền chi phí', { positive: true })
-    const type = String(payload.type || 'Chi phí khác').trim()
-    if (!type || type.length > 120 || (fixed && !FIXED_EXPENSE_TYPES.has(type))) {
-      throw new ApiError(400, 'EXPENSE_TYPE_INVALID', 'Loại chi phí không hợp lệ.')
-    }
     const note = String(payload.note ?? payload.description ?? '').trim()
     if (note.length > 1_000) throw new ApiError(400, 'NOTE_TOO_LONG', 'Ghi chú không được vượt quá 1.000 ký tự.')
+    const fixedVoucher = fixed
+      ? normalizeFixedExpenseItems(payload.items, { type: payload.type, amount: payload.amount, note })
+      : null
+    const amount = fixedVoucher
+      ? fixedVoucher.totalAmount
+      : asVnd(payload.amount, 'Số tiền chi phí', { positive: true })
+    const type = fixedVoucher
+      ? (Array.isArray(payload.items) ? 'Phiếu chi phí cửa hàng' : fixedVoucher.items[0].category)
+      : String(payload.type || 'Chi phí khác').trim()
+    if (!type || type.length > 120) throw new ApiError(400, 'EXPENSE_TYPE_INVALID', 'Loại chi phí không hợp lệ.')
     const occurredAt = asOccurredAt(payload.occurredAt, commandContext.now)
     assertAccountingPeriodOpen(state, storeId, occurredAt.slice(0, 7))
     const sourceId = `${fixed ? 'fix' : 'mex'}_${crypto.randomUUID()}`
@@ -8195,7 +8556,7 @@ const expenseCommand = async (db, actor, body, commandContext) => {
       type,
       category: fixed ? 'fixed' : String(payload.category || 'other').trim().slice(0, 80) || 'other',
       amount,
-      description: note,
+      description: fixedVoucher ? fixedExpenseDescription({ items: fixedVoucher.items, note }) : note,
       sourceType: fixed ? 'fixed-expense' : 'manual-expense',
       sourceId,
       recognized: true,
@@ -8208,6 +8569,8 @@ const expenseCommand = async (db, actor, body, commandContext) => {
       storeId,
       type,
       amount,
+      totalAmount: amount,
+      items: fixedVoucher.items,
       note,
       occurredAt,
       createdAt: commandContext.now,
@@ -8257,6 +8620,9 @@ const expenseCommand = async (db, actor, body, commandContext) => {
       ))
   if (!previous) throw new ApiError(404, 'EXPENSE_NOT_FOUND', 'Không tìm thấy chi phí.')
   assertOperationalStoreAccess(actor, previous.storeId)
+  if (fixed && operation === 'delete') {
+    assertAdmin(actor, 'Chỉ Admin được xóa phiếu chi phí cửa hàng.')
+  }
   const previousEntry = fixed
     ? expenses.find((entry) => sourceMatch(entry, 'fixed-expense', previous.id))
     : previous
@@ -8306,14 +8672,26 @@ const expenseCommand = async (db, actor, body, commandContext) => {
     }
   } else {
     const candidate = { ...previous }
-    if (payload.type !== undefined) {
-      const type = String(payload.type || '').trim()
-      if (!type || type.length > 120 || (fixed && !FIXED_EXPENSE_TYPES.has(type))) {
-        throw new ApiError(400, 'EXPENSE_TYPE_INVALID', 'Loại chi phí không hợp lệ.')
+    if (fixed && (payload.items !== undefined || payload.type !== undefined || payload.amount !== undefined)) {
+      const previousFirst = Array.isArray(previous.items) ? previous.items[0] : null
+      const normalized = normalizeFixedExpenseItems(payload.items, {
+        type: payload.type ?? previousFirst?.category ?? previous.type,
+        amount: payload.amount ?? previousFirst?.amount ?? previous.amount,
+        name: previousFirst?.name,
+        note: payload.note ?? payload.description ?? previousFirst?.description ?? previous.note,
+      })
+      candidate.items = normalized.items
+      candidate.amount = normalized.totalAmount
+      candidate.totalAmount = normalized.totalAmount
+      candidate.type = Array.isArray(payload.items) ? 'Phiếu chi phí cửa hàng' : normalized.items[0].category
+    } else if (!fixed) {
+      if (payload.type !== undefined) {
+        const type = String(payload.type || '').trim()
+        if (!type || type.length > 120) throw new ApiError(400, 'EXPENSE_TYPE_INVALID', 'Loại chi phí không hợp lệ.')
+        candidate.type = type
       }
-      candidate.type = type
+      if (payload.amount !== undefined) candidate.amount = asVnd(payload.amount, 'Số tiền chi phí', { positive: true })
     }
-    if (payload.amount !== undefined) candidate.amount = asVnd(payload.amount, 'Số tiền chi phí', { positive: true })
     if (payload.note !== undefined || payload.description !== undefined) {
       const note = String(payload.note ?? payload.description ?? '').trim()
       if (note.length > 1_000) throw new ApiError(400, 'NOTE_TOO_LONG', 'Ghi chú không được vượt quá 1.000 ký tự.')
@@ -8325,7 +8703,7 @@ const expenseCommand = async (db, actor, body, commandContext) => {
       candidate.category = String(payload.category || '').trim().slice(0, 80) || 'other'
     }
     const businessFields = fixed
-      ? ['type', 'amount', 'note', 'occurredAt']
+      ? ['type', 'items', 'amount', 'totalAmount', 'note', 'occurredAt']
       : ['type', 'category', 'amount', 'description', 'occurredAt']
     changedFields = businessFields.filter((key) => JSON.stringify(candidate[key]) !== JSON.stringify(previous[key]))
     if (!changedFields.length) {
@@ -8352,7 +8730,7 @@ const expenseCommand = async (db, actor, body, commandContext) => {
       type: next.type,
       category: fixed ? 'fixed' : next.category,
       amount: next.amount,
-      description: fixed ? next.note : next.description,
+      description: fixed ? fixedExpenseDescription(next) : next.description,
       occurredAt: next.occurredAt,
       recognized: true,
       updatedAt: commandContext.now,
@@ -9097,6 +9475,29 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     ))) {
       throw new ApiError(409, 'PAYROLL_PAYMENT_EXISTS', 'Kỳ lương đã có bản ghi chi trả không nhất quán.')
     }
+    const supportExpectedAmount = row.supportCompensation
+      ? asVnd(row.supportActualPay ?? row.supportCompensation.totalPay ?? 0, 'Lương hỗ trợ trong kỳ')
+      : 0
+    if (row.supportCompensation && supportExpectedAmount !== amount) {
+      throw new ApiError(409, 'SUPPORT_PAYROLL_ACCRUAL_MISMATCH', 'Chi lương hỗ trợ không khớp chi phí đã ghi nhận theo chấm công; cần chốt lại kỳ lương.', {
+        employeeId,
+        paymentAmount: amount,
+        expectedAmount: supportExpectedAmount,
+      })
+    }
+    const supportAccruedAmount = row.supportCompensation
+      ? recognizedSupportCompensationFor(state, storeId, employeeId, row.supportDetails)
+      : 0
+    if (supportAccruedAmount > supportExpectedAmount) {
+      throw new ApiError(409, 'SUPPORT_PAYROLL_ACCRUAL_MISMATCH', 'Chi phí lương hỗ trợ đã ghi nhận lớn hơn bản chốt; cần đối soát chấm công.', {
+        employeeId,
+        expectedAmount: supportExpectedAmount,
+        accruedAmount: supportAccruedAmount,
+      })
+    }
+    const payrollExpenseAmount = row.supportCompensation
+      ? supportExpectedAmount - supportAccruedAmount
+      : amount
     const payment = {
       id: `pay_${existing.id}_${employeeId}`,
       periodId: existing.id,
@@ -9105,6 +9506,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
       employeeId,
       employeeName: row.employeeName || employeeId,
       amount,
+      accruedExpenseAmount: supportAccruedAmount,
       type: 'Lương nhân viên',
       createdAt: commandContext.now,
       actor: actorSnapshot,
@@ -9120,11 +9522,16 @@ const payrollCommand = async (db, actor, body, commandContext) => {
       employeeId,
       type: payment.type,
       category: 'payroll',
-      amount,
       description: `${payment.type} kỳ ${period}`,
       sourceType: 'payroll-payment',
       sourceId: payment.id,
-      recognized: true,
+      amount: payrollExpenseAmount > 0 ? payrollExpenseAmount : amount,
+      recognized: payrollExpenseAmount > 0,
+      ...(supportAccruedAmount > 0 ? {
+        accruedBySourceType: 'support-attendance-compensation',
+        accruedAmount: supportAccruedAmount,
+      } : {}),
+      ...(row.supportCompensation ? { supportExpectedAmount, recognizedAmount: payrollExpenseAmount } : {}),
       occurredAt: commandContext.now,
       createdAt: commandContext.now,
       createdBy: actor.user_id,

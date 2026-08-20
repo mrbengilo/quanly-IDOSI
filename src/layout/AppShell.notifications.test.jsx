@@ -296,6 +296,7 @@ describe('AppShell notifications', () => {
 
     expect(screen.getByRole('link', { name: /^Tổng quan$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /^Chi phí cửa hàng$/i }).getAttribute('href')).toBe('/store/expenses')
     expect(screen.getAllByText('Cua hang 2').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeNull()

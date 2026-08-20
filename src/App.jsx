@@ -37,6 +37,7 @@ import {
 import { isOfficeProfile } from './pages/employee/officeAttendance'
 import { StoreEmployees, StoreTasks } from './pages/store/StoreOperations'
 import { StoreSettings } from './pages/store/StoreFinance'
+import { StoreExpensesV2 } from './pages/store/StoreExpensesV2'
 import {
   StoreAttendanceV2,
   StoreCashflowV2,
@@ -146,6 +147,7 @@ export default function App() {
         <Route path="/store/orders" element={<StoreOrdersPage />} />
         <Route path="/store/tasks" element={<StoreTasks />} />
         <Route path="/store/imports" element={<StoreImportsV2 />} />
+        <Route path="/store/expenses" element={<StoreExpensesV2 />} />
         <Route path="/store/attendance" element={<StoreAttendanceV2 />} />
         <Route path="/store/payroll" element={<StorePayrollV2 />} />
         <Route path="/store/cashflow" element={<StoreCashflowV2 />} />

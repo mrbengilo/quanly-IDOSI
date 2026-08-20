@@ -44,6 +44,7 @@ import {
   shortDate,
   usesMonthlyHoursFormula,
 } from '../../utils'
+import { supportAttendanceCompensationRows } from './employeeSupportCompensation'
 
 const FALLBACK_SHIFT = { id: 'ca1', name: 'Ca 1', time: '07:00 - 12:00', start: '07:00', end: '12:00' }
 const getShift = (id) => shifts.find((shift) => shift.id === id) || FALLBACK_SHIFT
@@ -464,6 +465,13 @@ export function EmployeeShiftHistory() {
   const app = useApp()
   const employee = findCurrentEmployee(app)
   const allRows = attendanceForEmployee(Array.isArray(app.attendance) ? app.attendance : [], employee)
+  const supportRows = supportAttendanceCompensationRows({
+    attendance: allRows,
+    employeeId: employeeId(employee),
+    supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
+    stores: Array.isArray(app.stores) ? app.stores : [],
+  })
+  const supportByAttendance = new Map(supportRows.map((item) => [item.record, item]))
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [shift, setShift] = useState('all')
@@ -492,7 +500,24 @@ export function EmployeeShiftHistory() {
       <PageHeader title="LỊCH SỬ CA LÀM" subtitle={`Xem lịch sử ca làm của ${employee.name || 'nhân viên'}.`} icon={Clock3} actions={<Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge>} />
       {filterPanel}
       <Card action={<ExportButton onClick={() => downloadCsv('lich-su-ca-lam.csv', rows)} />}>
-        <TableWrap><thead><tr><th>STT</th><th>Ngày làm việc</th><th>Mã nhân viên</th><th>Tên nhân viên</th><th>Loại</th><th>Ca làm</th><th>Thời gian vào</th><th>Thời gian kết ca</th><th>Số giờ</th><th>Lương dự tính</th></tr></thead><tbody>{rows.map((row, index) => { const hours = workedHours(row); return <tr key={row.id || index}><td>{index + 1}</td><td><strong>{shortDate(recordDate(row))}</strong></td><td>{employeeId(employee)}</td><td><strong>{employee.name}</strong></td><td><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></td><td><Badge tone={row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{getShift(row.shift).name}</Badge></td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td className="green-text"><strong>{hours.toFixed(2)} giờ</strong></td><td className="green-text"><strong>{payBasis === 'hourly' ? money(hours * hourlyRate) : usesMonthlyHoursFormula(employee) ? money(calculateEmployeeBasePay(employee, { hours })) : 'Theo lương tháng'}</strong></td></tr>})}{!rows.length && <tr><td colSpan="10">Không có lịch sử ca làm phù hợp với bộ lọc.</td></tr>}</tbody></TableWrap>
+        <TableWrap>
+          <thead><tr><th>STT</th><th>Ngày làm việc</th><th>Mã nhân viên</th><th>Tên nhân viên</th><th>Loại</th><th>Ca làm</th><th>Phụ chú</th><th>Thời gian vào</th><th>Thời gian kết ca</th><th>Số giờ</th><th>Lương thực nhận</th></tr></thead>
+          <tbody>{rows.map((row, index) => {
+            const hours = workedHours(row)
+            const support = supportByAttendance.get(row)
+            const homePay = payBasis === 'hourly'
+              ? money(hours * hourlyRate)
+              : usesMonthlyHoursFormula(employee)
+                ? money(calculateEmployeeBasePay(employee, { hours }))
+                : 'Theo lương tháng'
+            return <tr key={row.id || index}>
+              <td>{index + 1}</td><td><strong>{shortDate(recordDate(row))}</strong></td><td>{employeeId(employee)}</td><td><strong>{employee.name}</strong></td><td><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></td><td><Badge tone={row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{row.shiftName || getShift(row.shift).name}</Badge></td>
+              <td>{support?.isSupport ? <div className="table-stack"><Badge tone="orange">Ca hỗ trợ • {support.destinationStoreName}</Badge><small>{support.timeLabel}</small><small>{money(support.hourlyRate)}/giờ • Phụ cấp {money(support.allowance)}</small></div> : '—'}</td>
+              <td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td className="green-text"><strong>{hours.toFixed(2)} giờ</strong></td>
+              <td className="green-text">{support?.isSupport ? <div className="table-stack"><strong>{money(support.actualPay)}</strong><small>{support.hours.toFixed(2)} giờ × {money(support.hourlyRate)}{support.allowance > 0 ? ` + ${money(support.allowance)}` : ''}</small></div> : <strong>{homePay}</strong>}</td>
+            </tr>
+          })}{!rows.length && <tr><td colSpan="11">Không có lịch sử ca làm phù hợp với bộ lọc.</td></tr>}</tbody>
+        </TableWrap>
         <TableFooter shown={rows.length} total={rows.length} />
       </Card>
     </div>

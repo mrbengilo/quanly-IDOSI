@@ -2,7 +2,12 @@ import { createElement } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EmployeeAttendancePage, EmployeeDashboardV2, EmployeeOrdersPage } from './EmployeeV2Pages'
+import {
+  EmployeeAttendancePage,
+  EmployeeDashboardV2,
+  EmployeeOrdersPage,
+  EmployeePayrollDetails,
+} from './EmployeeV2Pages'
 import {
   checkoutReconciliation,
   effectiveEmployeeStoreId,
@@ -384,5 +389,158 @@ describe('store employee current-shift orders', () => {
     expect(screen.queryByRole('button', { name: 'ĐIỂM DANH' })).toBeNull()
     expect(screen.getByText('20/08/2026 14:00 – 20/08/2026 21:00')).toBeTruthy()
     expect(screen.getByText(/NV hỗ trợ từ Dosii TNV/i)).toBeTruthy()
+  })
+
+  it('shows support-store notes and canonical actual pay in the employee work history', () => {
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01', homeStoreId: 'S01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }, { id: 'S02', name: 'Dosii KVC' }],
+      supportTransfers: [{
+        id: 'TR-01', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-20T14:00:00+07:00', endAt: '2026-08-20T21:00:00+07:00',
+        hourlySupportRate: 29_000, allowance: 50_000, status: 'Đã duyệt',
+      }],
+      attendance: [{
+        id: 'ATT-HOME', employeeId: 'E01', storeId: 'S01', date: '2026-08-19',
+        shiftName: 'Ca cửa hàng chính', shiftStart: '08:00', shiftEnd: '17:00',
+        checkIn: '08:00', checkOut: '17:00', hours: 8, arrivalTag: 'Đi đúng giờ',
+      }, {
+        id: 'ATT-SUPPORT', employeeId: 'E01', storeId: 'S02', date: '2026-08-20',
+        supportTransferId: 'TR-01', shiftName: 'Ca hỗ trợ', shiftStart: '14:00', shiftEnd: '21:00',
+        checkIn: '14:00', checkOut: '17:00', hours: 3, arrivalTag: 'Đi đúng giờ',
+        supportCompensation: {
+          transferId: 'TR-01', supportStoreId: 'S02', transferStartAt: '2026-08-20T14:00:00+07:00',
+          transferEndAt: '2026-08-20T21:00:00+07:00', hourlyRate: 29_000, hours: 3,
+          basePay: 87_000, allowance: 50_000, allowanceApplied: true, totalPay: 137_000,
+        },
+      }],
+      orders: [], policies: {}, checkIn: vi.fn(), notify: vi.fn(),
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeeAttendancePage)))
+
+    expect(screen.getByText('Ca cửa hàng chính')).toBeTruthy()
+    expect(screen.getByText('Ca hỗ trợ • Dosii KVC')).toBeTruthy()
+    expect(screen.getByText('20/08/2026 14:00 – 20/08/2026 21:00')).toBeTruthy()
+    expect(screen.getByText('3.00 giờ × 29,000 đ + 50,000 đ')).toBeTruthy()
+    expect(screen.getByText('137,000 đ')).toBeTruthy()
+  })
+
+  it('combines locked home and support payroll snapshots and keeps support detail attribution', () => {
+    mocked.app = {
+      currentEmployee: {
+        id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time',
+        baseSalary: 4_000_000, requiredMonthlyHours: 176,
+      },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }, { id: 'S02', name: 'Dosii KVC' }],
+      attendance: [], supportTransfers: [], salaryAdjustments: [], salaryAdvances: [],
+      payrollPeriods: [{
+        id: 'PAY-HOME', storeId: 'S01', period: '2026-08', status: 'Đã khóa',
+        lockedAt: '2026-09-01T08:00:00+07:00',
+        rows: [{
+          employeeId: 'E01', baseSalary: 4_000_000, kpiBonus: 200_000,
+          gross: 4_200_000, advancesPaid: 500_000, remaining: 3_700_000,
+        }],
+      }, {
+        id: 'PAY-SUPPORT', storeId: 'S02', period: '2026-08', status: 'Đã khóa',
+        lockedAt: '2026-09-01T08:05:00+07:00',
+        rows: [{
+          employeeId: 'E01', baseSalary: 87_000, gross: 137_000, remaining: 137_000,
+          supportCompensation: { hours: 3, basePay: 87_000, allowance: 50_000, totalPay: 137_000 },
+          supportDetails: [{
+            transferId: 'TR-01', supportStoreId: 'S02', startAt: '2026-08-20T14:00:00+07:00',
+            endAt: '2026-08-20T21:00:00+07:00', hours: 3, hourlyRate: 29_000,
+            basePay: 87_000, allowance: 50_000, totalPay: 137_000, attendanceIds: ['ATT-SUPPORT'],
+          }],
+        }],
+      }],
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeePayrollDetails)))
+
+    expect(screen.getByText('3.00 giờ hỗ trợ • Gồm phụ cấp 50,000 đ')).toBeTruthy()
+    expect(screen.getAllByText('137,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('3,837,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getByText('Dosii KVC')).toBeTruthy()
+    expect(screen.getByText('20/08/2026 14:00 – 20/08/2026 21:00')).toBeTruthy()
+    expect(screen.getByText('1 ca đã chốt')).toBeTruthy()
+  })
+
+  it('adds live support compensation when only the home payroll snapshot is closed', () => {
+    mocked.app = {
+      currentEmployee: {
+        id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time', baseSalary: 4_000_000,
+      },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }],
+      supportTransfers: [], salaryAdjustments: [], salaryAdvances: [],
+      attendance: [{
+        id: 'ATT-SUPPORT-LIVE', employeeId: 'E01', storeId: 'S02', date: '2026-08-20',
+        supportTransferId: 'TR-LIVE', shiftStart: '14:00', shiftEnd: '21:00', hours: 3,
+        supportCompensation: {
+          transferId: 'TR-LIVE', supportStoreId: 'S02', supportStoreName: 'Dosii KVC',
+          transferStartAt: '2026-08-20T14:00:00+07:00', transferEndAt: '2026-08-20T21:00:00+07:00',
+          hours: 3, hourlyRate: 29_000, basePay: 87_000, allowance: 50_000,
+          allowanceApplied: true, totalPay: 137_000,
+        },
+      }],
+      payrollPeriods: [{
+        id: 'PAY-HOME', storeId: 'S01', period: '2026-08', status: 'Đã khóa',
+        rows: [{
+          employeeId: 'E01', baseSalary: 4_000_000, kpiBonus: 200_000,
+          gross: 4_200_000, advancesPaid: 500_000, remaining: 3_700_000,
+        }],
+      }],
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeePayrollDetails)))
+
+    expect(screen.getByText('3.00 giờ hỗ trợ • Gồm phụ cấp 50,000 đ')).toBeTruthy()
+    expect(screen.getAllByText('137,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('3,837,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getByText('Dosii KVC')).toBeTruthy()
+  })
+
+  it('adds live home pay when only the destination payroll snapshot is closed without duplicating support', () => {
+    mocked.app = {
+      currentEmployee: {
+        id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Part-Time',
+        payBasis: 'hourly', hourlyRate: 25_000,
+      },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }, { id: 'S02', name: 'Dosii KVC' }],
+      supportTransfers: [], salaryAdjustments: [], salaryAdvances: [],
+      attendance: [{
+        id: 'ATT-HOME-LIVE', employeeId: 'E01', storeId: 'S01', date: '2026-08-19', hours: 4,
+      }, {
+        id: 'ATT-SUPPORT-CLOSED', employeeId: 'E01', storeId: 'S02', date: '2026-08-20',
+        supportTransferId: 'TR-CLOSED', hours: 3,
+        supportCompensation: {
+          transferId: 'TR-CLOSED', supportStoreId: 'S02', supportStoreName: 'Dosii KVC',
+          hours: 3, hourlyRate: 29_000, basePay: 87_000, allowance: 50_000,
+          allowanceApplied: true, totalPay: 137_000,
+        },
+      }],
+      payrollPeriods: [{
+        id: 'PAY-SUPPORT', storeId: 'S02', period: '2026-08', status: 'Đã khóa',
+        rows: [{
+          employeeId: 'E01', baseSalary: 87_000, gross: 137_000, remaining: 137_000,
+          supportCompensation: {
+            hours: 3, basePay: 87_000, allowance: 50_000, totalPay: 137_000, transferIds: ['TR-CLOSED'],
+          },
+          supportDetails: [{
+            transferId: 'TR-CLOSED', supportStoreId: 'S02', startAt: '2026-08-20T14:00:00+07:00',
+            endAt: '2026-08-20T21:00:00+07:00', hours: 3, hourlyRate: 29_000,
+            basePay: 87_000, allowance: 50_000, totalPay: 137_000, attendanceIds: ['ATT-SUPPORT-CLOSED'],
+          }],
+        }],
+      }],
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeePayrollDetails)))
+
+    expect(screen.getAllByText('100,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('137,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('237,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Dosii KVC')).toHaveLength(1)
   })
 })

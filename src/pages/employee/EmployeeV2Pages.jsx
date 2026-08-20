@@ -43,6 +43,13 @@ import {
   shiftRevenueBreakdown,
   validateEmployeeOrder,
 } from './employeeShiftOrders'
+import {
+  employeePayrollSnapshotSummary,
+  supportAttendanceCompensationRows,
+  supportCompensationTotals,
+  supportPayrollDetailRows,
+  supportRowsUncoveredByPayrollSnapshot,
+} from './employeeSupportCompensation'
 
 const parseMoney = (value) => Math.max(0, Math.trunc(Number(String(value ?? '').replace(/[^\d-]/gu, '')) || 0))
 const moneyInput = (value) => String(value ?? '').replace(/\D/gu, '').replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
@@ -643,6 +650,7 @@ export function EmployeeAttendancePage() {
     orders = [],
     policies,
     session,
+    stores = [],
     supportTransfers = [],
     checkIn,
     notify,
@@ -653,7 +661,14 @@ export function EmployeeAttendancePage() {
   const sessionStoreId = String(session?.storeId || employee?.storeId || '')
   const workingStoreId = String(openRecord?.storeId || sessionStoreId)
   const homeStoreId = String(session?.homeStoreId || employee?.storeId || sessionStoreId)
-  const rows = employeeAttendance(attendance, employeeId, workingStoreId)
+  const rows = allRows
+  const compensationRows = supportAttendanceCompensationRows({
+    attendance: rows,
+    employeeId,
+    supportTransfers,
+    stores,
+  })
+  const compensationByAttendanceId = new Map(compensationRows.map((item) => [String(item.record.id || ''), item]))
   const [candidateModal, setCandidateModal] = useState(null)
   const [locating, setLocating] = useState('')
   const workDate = today()
@@ -780,14 +795,15 @@ export function EmployeeAttendancePage() {
             ? <TableWrap><thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Thanh toán</th><th>Số tiền</th></tr></thead><tbody>{currentShiftOrders.map((order) => <tr key={order.id || order.code}><td><strong>{order.code || order.id}</strong></td><td>{timestamp(order.createdAt)}</td><td>{order.customerName || 'Khách lẻ'}</td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod || '—'}</Badge></td><td><strong>{money(order.amount)}</strong></td></tr>)}</tbody></TableWrap>
             : <EmptyState title="Chưa có đơn hàng trong ca" description="Đơn hàng bạn tạo sau khi vào ca sẽ tự động hiển thị tại đây." />}
       </Card>
-      <Card title="Lịch sử chấm công chi tiết">
+      <Card title="Lịch sử làm việc và chấm công">
         <TableWrap>
-          <thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ vào</th><th>Vị trí vào</th><th>Giờ ra</th><th>Vị trí ra</th><th>Số giờ</th><th>Số đơn</th><th>Doanh thu ca</th><th>Trạng thái</th><th>Phút sớm / trễ</th></tr></thead>
+          <thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Phụ chú</th><th>Giờ vào</th><th>Vị trí vào</th><th>Giờ ra</th><th>Vị trí ra</th><th>Số giờ</th><th>Lương thực nhận</th><th>Số đơn</th><th>Doanh thu ca</th><th>Trạng thái</th><th>Phút sớm / trễ</th></tr></thead>
           <tbody>{rows.map((record) => {
             const shiftOrders = ordersForOpenAttendance(orders, employeeId, record)
             const shiftRevenue = shiftOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
-            return <tr key={record.id}><td><strong>{shortDate(recordDate(record))}</strong></td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{record.checkIn || '—'}</td><td>{record.checkInLocation?.label || record.location?.label || 'Đã ghi tọa độ'}</td><td>{record.checkOut || 'Đang làm'}</td><td>{record.checkOutLocation?.label || (record.checkOut ? 'Đã ghi tọa độ' : '—')}</td><td>{workedHours(record).toFixed(2)}</td><td><strong>{shiftOrders.length}</strong></td><td><strong>{money(shiftRevenue)}</strong></td><td><Badge tone={statusTone(record.arrivalTag || record.status)}>{statusLabel(record.arrivalTag || record.status)}</Badge></td><td><span className="attendance-minutes"><strong>{attendanceEarlyMinutes(record)}</strong> sớm / <strong>{attendanceLateMinutes(record)}</strong> trễ</span></td></tr>
-          })}{!rows.length && <tr><td colSpan="11">Chưa có lịch sử chấm công.</td></tr>}</tbody>
+            const compensation = compensationByAttendanceId.get(String(record.id || ''))
+            return <tr key={record.id}><td><strong>{shortDate(recordDate(record))}</strong></td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{compensation?.isSupport ? <div className="table-stack"><Badge tone="orange">Ca hỗ trợ • {compensation.destinationStoreName}</Badge><small>{compensation.timeLabel}</small><small>{money(compensation.hourlyRate)}/giờ • Phụ cấp {money(compensation.allowance)}</small></div> : '—'}</td><td>{record.checkIn || '—'}</td><td>{record.checkInLocation?.label || record.location?.label || 'Đã ghi tọa độ'}</td><td>{record.checkOut || 'Đang làm'}</td><td>{record.checkOutLocation?.label || (record.checkOut ? 'Đã ghi tọa độ' : '—')}</td><td>{workedHours(record).toFixed(2)}</td><td>{compensation?.isSupport ? <div className="table-stack"><strong className="green-text">{money(compensation.actualPay)}</strong><small>{compensation.hours.toFixed(2)} giờ × {money(compensation.hourlyRate)}{compensation.allowance > 0 ? ` + ${money(compensation.allowance)}` : ''}</small></div> : '—'}</td><td><strong>{shiftOrders.length}</strong></td><td><strong>{money(shiftRevenue)}</strong></td><td><Badge tone={statusTone(record.arrivalTag || record.status)}>{statusLabel(record.arrivalTag || record.status)}</Badge></td><td><span className="attendance-minutes"><strong>{attendanceEarlyMinutes(record)}</strong> sớm / <strong>{attendanceLateMinutes(record)}</strong> trễ</span></td></tr>
+          })}{!rows.length && <tr><td colSpan="13">Chưa có lịch sử chấm công.</td></tr>}</tbody>
         </TableWrap>
         <TableFooter shown={rows.length} total={rows.length} />
       </Card>
@@ -809,19 +825,50 @@ export function EmployeeAttendancePage() {
 
 export function EmployeePayrollDetails() {
   const app = useApp()
-  const { currentEmployee: employee, attendance = [], salaryAdjustments = [], salaryAdvances = [], payrollPeriods = [] } = app
+  const {
+    currentEmployee: employee,
+    attendance = [],
+    stores = [],
+    supportTransfers = [],
+    salaryAdjustments = [],
+    salaryAdvances = [],
+    payrollPeriods = [],
+  } = app
   const employeeId = employeeKey(employee)
   const periods = [...new Set([
     ...attendance.filter((record) => String(record.employeeId) === employeeId).map((record) => recordDate(record).slice(0, 7)),
     ...payrollPeriods.filter((item) => item.rows?.some((row) => String(row.employeeId) === employeeId)).map((item) => item.period),
   ].filter(Boolean))].sort().reverse()
   const [period, setPeriod] = useState(() => periods[0] || today().slice(0, 7))
-  const rows = employeeAttendance(attendance, employeeId, employee?.storeId).filter((record) => recordDate(record).startsWith(period))
-  const snapshot = payrollPeriods.find((item) => item.period === period && item.rows?.some((row) => String(row.employeeId) === employeeId))
-  const snapshotRow = snapshot?.rows.find((row) => String(row.employeeId) === employeeId)
-  const hours = rows.reduce((sum, record) => sum + workedHours(record), 0)
+  const allRows = employeeAttendance(attendance, employeeId)
+  const rows = allRows.filter((record) => recordDate(record).startsWith(period))
+  const compensationRows = supportAttendanceCompensationRows({
+    attendance: allRows,
+    employeeId,
+    supportTransfers,
+    stores,
+  })
+  const supportRows = compensationRows.filter((item) => (
+    item.isSupport && recordDate(item.record).startsWith(period)
+  ))
+  const snapshot = employeePayrollSnapshotSummary({ payrollPeriods, employeeId, period })
+  const uncoveredSupportRows = supportRowsUncoveredByPayrollSnapshot(supportRows, snapshot)
+  const uncoveredSupportTotals = supportCompensationTotals(uncoveredSupportRows)
+  const supportDetails = supportPayrollDetailRows({
+    snapshotDetails: snapshot?.supportDetails,
+    snapshot,
+    attendanceRows: supportRows,
+    stores,
+  })
+  const homeRows = rows.filter((record) => !record.supportTransferId && !record.supportCompensation?.transferId)
+  const hours = homeRows.reduce((sum, record) => sum + workedHours(record), 0)
   const basis = getPayBasis(employee || {})
-  const base = calculateEmployeeBasePay(employee || {}, { hours })
+  const estimatedHomeBase = calculateEmployeeBasePay(employee || {}, { hours })
+  const base = snapshot?.homeSnapshot?.baseSalary ?? estimatedHomeBase
+  const supportHourlyPay = (snapshot?.supportSnapshot?.hourlyPay || 0) + uncoveredSupportTotals.hourlyPay
+  const supportAllowance = (snapshot?.supportSnapshot?.allowance || 0) + uncoveredSupportTotals.allowance
+  const supportPay = (snapshot?.supportSnapshot?.pay || 0) + uncoveredSupportTotals.actualPay
+  const supportHours = (snapshot?.supportSnapshot?.hours || 0) + uncoveredSupportTotals.hours
   const explicitHourlyRate = getHourlyRate(employee || {})
   const configuredHourlyRate = explicitHourlyRate > 0
     ? explicitHourlyRate
@@ -833,10 +880,12 @@ export function EmployeePayrollDetails() {
   const allowance = adjustments.filter((item) => item.type === 'Phụ cấp khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const deductions = adjustments.filter((item) => item.type === 'Khấu trừ').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const tiktok = Number(employee?.tiktokAllowance || 0)
-  const kpi = Number(snapshotRow?.kpiBonus || 0)
-  const gross = snapshotRow?.gross ?? Math.max(0, base + bonus + allowance + tiktok + kpi - deductions)
-  const advances = salaryAdvances.filter((item) => String(item.employeeId) === employeeId && item.period === period && item.status === 'Đã chi').reduce((sum, item) => sum + Number(item.amount || 0), 0)
-  const net = snapshotRow?.remaining ?? Math.max(0, gross - advances)
+  const kpi = Number(snapshot?.homeSnapshot?.kpiBonus || 0)
+  const estimatedHomeGross = Math.max(0, base + bonus + allowance + tiktok + kpi - deductions)
+  const gross = (snapshot?.homeSnapshot?.gross ?? estimatedHomeGross) + supportPay
+  const estimatedAdvances = salaryAdvances.filter((item) => String(item.employeeId) === employeeId && item.period === period && item.status === 'Đã chi').reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  const advances = snapshot?.homeSnapshot?.advancesPaid ?? estimatedAdvances
+  const net = Math.max(0, gross - advances)
   const stats = rows.reduce((value, record) => {
     const label = statusLabel(record.arrivalTag || record.status)
     if (label === 'Đi sớm') value.early += 1
@@ -854,26 +903,32 @@ export function EmployeePayrollDetails() {
       <PageHeader title="BẢNG LƯƠNG CỦA TÔI" subtitle="Dữ liệu cá nhân theo kỳ; các kỳ đã khóa dùng đúng bản chụp lương, KPI và chính sách." icon={Wallet} actions={<Select value={period} onChange={(event) => setPeriod(event.target.value)}><option value={period}>{periodLabel(period)}</option>{periods.filter((item) => item !== period).map((item) => <option key={item} value={item}>{periodLabel(item)}</option>)}</Select>} />
       <div className="metric-grid metric-grid--four">
         <MetricCard label="LƯƠNG CỨNG" value={money(base)} helper={basis === 'hourly' ? `${hours.toFixed(2)} giờ × ${money(getHourlyRate(employee || {}))}` : usesMonthlyHoursFormula(employee || {}) ? `${hours.toFixed(2)} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || getMonthlySalary(employee || {}))}` : 'Theo mức lương tháng'} icon={Banknote} tone="blue" />
-        <MetricCard label="THƯỞNG KPI" value={money(kpi)} helper={snapshot ? 'Theo snapshot kỳ lương' : 'Chỉ có sau khi chốt kỳ'} icon={CheckCircle2} tone="green" />
+        <MetricCard label="LƯƠNG CA HỖ TRỢ" value={money(supportPay)} helper={`${supportHours.toFixed(2)} giờ hỗ trợ • Gồm phụ cấp ${money(supportAllowance)}`} icon={CheckCircle2} tone="green" />
         <MetricCard label="ĐÃ ỨNG" value={money(advances)} icon={Wallet} tone="orange" />
-        <MetricCard label="THỰC NHẬN" value={money(net)} helper={snapshot?.status || 'Tạm tính'} icon={Banknote} tone="green" />
+        <MetricCard label="THỰC NHẬN" value={money(net)} helper={snapshot ? snapshot.statuses.join(' • ') : 'Tạm tính'} icon={Banknote} tone="green" />
       </div>
       <Card title="Chi tiết thu nhập">
         <div className="payroll-breakdown">
-          <p><span>Lương cứng</span><strong className="payroll-hourly-rate">{money(configuredHourlyRate)}/giờ</strong></p>
+          <p><span>Lương cứng ({hours.toFixed(2)} giờ tại cửa hàng chính)</span><strong>{money(base)} <small className="table-note">Mức cài đặt {money(configuredHourlyRate)}/giờ</small></strong></p>
+          <p><span>Lương theo giờ các ca hỗ trợ</span><strong>{money(supportHourlyPay)}</strong></p>
+          <p><span>Phụ cấp các ca hỗ trợ</span><strong>{money(supportAllowance)}</strong></p>
           <p><span>Thưởng KPI</span><strong>{money(kpi)}</strong></p>
           <p><span>Thưởng khác</span><strong>{money(bonus)}</strong></p>
           <p><span>Phụ cấp TikTok (một lần trong tháng)</span><strong>{money(tiktok)}</strong></p>
           <p><span>Phụ cấp khác</span><strong>{money(allowance)}</strong></p>
           <p><span>Khấu trừ</span><strong>- {money(deductions)}</strong></p>
+          <p><span>Tổng thu nhập trước ứng lương</span><strong>{money(gross)}</strong></p>
           <p><span>Đã ứng</span><strong>- {money(advances)}</strong></p>
           <p className="total"><span>Thực nhận</span><strong>{money(net)}</strong></p>
         </div>
       </Card>
+      <Card title="Chi tiết ca hỗ trợ trong kỳ">
+        {supportDetails.length ? <TableWrap><thead><tr><th>Ngày</th><th>Cửa hàng hỗ trợ</th><th>Thời gian hỗ trợ</th><th>Giờ làm thực tế</th><th>Lương hỗ trợ/giờ</th><th>Tiền lương</th><th>Phụ cấp</th><th>Thực nhận</th></tr></thead><tbody>{supportDetails.map((item) => <tr key={item.key}><td><strong>{shortDate(item.date)}</strong></td><td><Badge tone="orange">{item.destinationStoreName}</Badge></td><td>{item.timeLabel}<small className="table-note">{item.shiftLabel}</small></td><td>{item.hours.toFixed(2)} giờ</td><td>{money(item.hourlyRate)}/giờ</td><td>{money(item.hourlyPay)}</td><td>{money(item.allowance)}</td><td><strong className="green-text">{money(item.actualPay)}</strong></td></tr>)}</tbody></TableWrap> : <EmptyState title="Không có ca hỗ trợ" description="Kỳ lương này không có ca làm việc tại cửa hàng hỗ trợ." />}
+      </Card>
       <Card title="Thống kê chuyên cần">
         <TableWrap><thead><tr><th>Đi sớm</th><th>Đi đúng giờ</th><th>Đi trễ</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody><tr><td className="green-text"><strong>{stats.early}</strong></td><td className="blue-text"><strong>{stats.onTime}</strong></td><td className="red-text"><strong>{stats.late}</strong></td><td>{stats.earlyMinutes}</td><td>{stats.lateMinutes}</td><td>{rows.length}</td><td>{onTimeRate.toFixed(1)}%</td><td><Badge tone={evaluation === 'Chuyên cần tốt' ? 'green' : evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{evaluation}</Badge></td></tr></tbody></TableWrap>
       </Card>
-      {snapshot && <InfoNote tone={snapshot.status === 'Đã khóa' ? 'orange' : 'green'}>Kỳ {periodLabel(period)} đã lưu snapshot lúc {timestamp(snapshot.closedAt)}. Trạng thái: <strong>{snapshot.status}</strong>.</InfoNote>}
+      {snapshot && <InfoNote tone={snapshot.locked ? 'orange' : 'green'}>Kỳ {periodLabel(period)} đã tổng hợp {snapshot.rows.length} bản ghi lương từ cửa hàng chính và cửa hàng hỗ trợ{snapshot.closedAt ? ` lúc ${timestamp(snapshot.closedAt)}` : ''}. Trạng thái: <strong>{snapshot.statuses.join(' • ')}</strong>.</InfoNote>}
     </div>
   )
 }

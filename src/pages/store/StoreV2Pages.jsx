@@ -39,7 +39,7 @@ import {
 import { calculateKpiBonuses, financeSummaryFromState } from '../../domain'
 import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
 import { useApp } from '../../state/AppContext'
-import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
+import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, money, shortDate, shortDateTime24, today } from '../../utils'
 
 const parseMoney = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
 const moneyInput = (value) => new Intl.NumberFormat('en-US').format(parseMoney(value))
@@ -86,6 +86,51 @@ const attendanceLocationDetails = (record = {}) => {
     label: label || coordinates || '—',
     mapUrl: query ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}` : '',
   }
+}
+const supportCompensationForAttendance = (record = {}, employee = {}, transfers = []) => {
+  const canonical = record.supportCompensation || record.compensation?.support || {}
+  const transferId = canonical.transferId || record.supportTransferId || record.transferId || ''
+  const transfer = transfers.find((item) => String(item.id || '') === String(transferId || ''))
+    || transfers.find((item) => String(item.employeeId || '') === String(record.employeeId || '')
+      && String(item.toStoreId || '') === String(record.storeId || ''))
+  const homeStoreId = canonical.homeStoreId || record.homeStoreId || transfer?.fromStoreId || employee.storeId || ''
+  const supportStoreId = canonical.supportStoreId || record.supportStoreId || transfer?.toStoreId || record.storeId || ''
+  const isSupport = Boolean(transferId || canonical.supportStoreId || record.supportStoreId)
+    || Boolean(homeStoreId && supportStoreId && String(homeStoreId) !== String(supportStoreId) && transfer)
+  if (!isSupport) return null
+  const hours = Math.max(0, Number(canonical.hours ?? record.supportHours ?? record.hours) || 0)
+  const hourlyRate = Math.max(0, Number(canonical.hourlyRate ?? record.supportHourlyRate ?? transfer?.hourlySupportRate) || 0)
+  const basePay = Math.max(0, Number(canonical.basePay ?? record.supportBasePay ?? record.supportHourlyPay) || (hours * hourlyRate))
+  const allowanceApplied = canonical.allowanceApplied ?? record.supportAllowanceApplied ?? true
+  const allowance = allowanceApplied
+    ? Math.max(0, Number(canonical.allowance ?? record.supportAllowance ?? transfer?.allowance) || 0)
+    : 0
+  const totalPay = Math.max(0, Number(canonical.totalPay ?? record.supportActualPay) || (basePay + allowance))
+  return {
+    transferId: transferId || transfer?.id || '',
+    homeStoreId,
+    supportStoreId,
+    transferStartAt: canonical.transferStartAt || transfer?.startAt || transfer?.fromDate || '',
+    transferEndAt: canonical.transferEndAt || transfer?.endAt || transfer?.toDate || '',
+    hours,
+    hourlyRate,
+    basePay,
+    allowance,
+    allowanceApplied: Boolean(allowanceApplied),
+    totalPay,
+  }
+}
+const isFullTimeAttendanceEmployee = (employee = {}) => String(employee.employmentType || employee.employeeType || '')
+  .trim()
+  .toLowerCase()
+  .includes('full')
+const attendancePayDetails = (record = {}, employee = {}, transfers = []) => {
+  const support = supportCompensationForAttendance(record, employee, transfers)
+  if (support) return { kind: 'support', amount: support.totalPay, support }
+  if (!employee?.id || isFullTimeAttendanceEmployee(employee)) return { kind: 'full-time-home', amount: null, support: null }
+  const hours = Math.max(0, Number(record.hours || 0))
+  const hourlyRate = Math.max(0, getHourlyRate(employee))
+  return { kind: 'part-time-home', amount: hours * hourlyRate, support: null, hours, hourlyRate }
 }
 const canManageStoreOperations = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(role)
 const newImportForm = () => ({ name: '', quantity: 1, weight: '', price: '', shippingAmount: '', reason: '' })
@@ -457,23 +502,46 @@ export function StoreCashflowV2() {
 
 export function StoreAttendanceV2() {
   const app = useStoreData()
-  const { storeId, attendance = [], employees = [], policies } = app
+  const { storeId, store, stores = [], attendance = [], employees = [], supportTransfers = [], expenseEntries = [], policies } = app
   const canViewAttendanceLocations = ['admin', 'business_support', 'manager', 'store_manager'].includes(app.session?.role)
   const [period, setPeriod] = useState(today().slice(0, 7))
   const [query, setQuery] = useState('')
   const [shift, setShift] = useState('all')
   const [employeeId, setEmployeeId] = useState('all')
-  const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId)
-  const rows = attendance.filter((record) => !record.deletedAt && record.storeId === storeId && recordInMonth(record, period) && (shift === 'all' || record.shift === shift) && (employeeId === 'all' || record.employeeId === employeeId) && (!query || [record.employeeId, scopedEmployees.find((employee) => employee.id === record.employeeId)?.name, record.shiftName].some((value) => String(value || '').toLowerCase().includes(query.toLowerCase()))))
-  const uniqueTiktokEmployees = new Set(rows.filter((record) => scopedEmployees.find((employee) => employee.id === record.employeeId)?.tiktokAllowance > 0).map((record) => record.employeeId))
-  const totalTiktok = [...uniqueTiktokEmployees].reduce((sum, id) => sum + Number(scopedEmployees.find((employee) => employee.id === id)?.tiktokAllowance || 0), 0)
+  const storeRows = attendance.filter((record) => !record.deletedAt && String(record.storeId || '') === String(storeId || '') && recordInMonth(record, period))
+  const storeEmployeeIds = new Set(storeRows.map((record) => String(record.employeeId || '')))
+  const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store'
+    && (String(employee.storeId || '') === String(storeId || '') || storeEmployeeIds.has(String(employee.id || employee.code || ''))))
+  const employeeById = new Map(scopedEmployees.map((employee) => [String(employee.id || employee.code || ''), employee]))
+  const rows = storeRows.filter((record) => (shift === 'all' || record.shift === shift)
+    && (employeeId === 'all' || String(record.employeeId) === String(employeeId))
+    && (!query || [record.employeeId, employeeById.get(String(record.employeeId || ''))?.name, record.employeeName, record.shiftName]
+      .some((value) => String(value || '').toLowerCase().includes(query.toLowerCase()))))
+  const rowDetails = rows.map((record) => {
+    const employee = employeeById.get(String(record.employeeId || ''))
+    return { record, employee, pay: attendancePayDetails(record, employee, supportTransfers) }
+  })
+  const uniqueTiktokEmployees = new Set(rowDetails
+    .filter(({ employee, pay }) => pay.kind !== 'support' && employee?.tiktokAllowance > 0)
+    .map(({ record }) => record.employeeId))
+  const totalTiktok = [...uniqueTiktokEmployees].reduce((sum, id) => sum + Number(employeeById.get(String(id))?.tiktokAllowance || 0), 0)
   const totalHours = rows.reduce((sum, record) => sum + Number(record.hours || 0), 0)
-  const totalPay = rows.reduce((sum, record) => {
-    const employee = scopedEmployees.find((item) => item.id === record.employeeId)
-    if (!employee) return sum
-    if (getPayBasis(employee) === 'hourly' || usesMonthlyHoursFormula(employee)) return sum + calculateEmployeeBasePay(employee, { hours: Number(record.hours || 0) })
-    return sum + getMonthlySalary(employee) / Number(employee.standardWorkDays || 26)
-  }, 0)
+  const totalPay = rowDetails.reduce((sum, item) => sum + Number(item.pay.amount || 0), 0)
+  const supportRows = rowDetails.filter((item) => item.pay.kind === 'support')
+  const recordedSupportExpenses = expenseEntries.filter((entry) => !entry.deletedAt
+    && entry.recognized !== false
+    && entry.sourceType === 'support-attendance-compensation'
+    && String(entry.storeId || '') === String(storeId || '')
+    && recordInMonth(entry, period))
+  const supportExpenseByAttendanceId = recordedSupportExpenses.reduce((entries, entry) => {
+    const sourceId = String(entry.sourceId || '').trim()
+    if (sourceId && !entries.has(sourceId)) entries.set(sourceId, Number(entry.amount || 0))
+    return entries
+  }, new Map())
+  const supportExpense = [...supportExpenseByAttendanceId.values()].reduce((sum, amount) => sum + amount, 0)
+    + supportRows
+      .filter((item) => !supportExpenseByAttendanceId.has(String(item.record.id || '')))
+      .reduce((sum, item) => sum + Number(item.pay.amount || 0), 0)
   const shifts = [...new Map(attendance.filter((record) => record.storeId === storeId).map((record) => [record.shift, record.shiftName || record.shift])).entries()]
   const stats = scopedEmployees.map((employee) => {
     const records = rows.filter((record) => record.employeeId === employee.id)
@@ -483,19 +551,24 @@ export function StoreAttendanceV2() {
     const earlyMinutes = records.reduce((sum, record) => sum + attendanceEarlyMinutes(record), 0)
     const lateMinutes = records.reduce((sum, record) => sum + attendanceLateMinutes(record), 0)
     const rate = records.length ? (onTime / records.length) * 100 : 0
-    const evaluation = late === 0 ? 'Chuyên cần tốt' : late >= policies.attendanceEvaluation.improveMinLateCount || lateMinutes >= policies.attendanceEvaluation.improveMinLateMinutes ? 'Cần cải thiện' : 'Cần duy trì'
+    const evaluationPolicy = policies?.attendanceEvaluation || { improveMinLateCount: 3, improveMinLateMinutes: 30 }
+    const evaluation = late === 0 ? 'Chuyên cần tốt' : late >= evaluationPolicy.improveMinLateCount || lateMinutes >= evaluationPolicy.improveMinLateMinutes ? 'Cần cải thiện' : 'Cần duy trì'
     return { employee, records: records.length, early, onTime, late, earlyMinutes, lateMinutes, rate, evaluation }
   }).filter((item) => item.records > 0)
 
-  return <div className="page"><PageHeader title="CHẤM CÔNG CỬA HÀNG" subtitle="Mỗi lượt chấm công là một bản ghi độc lập, có ca, vị trí và thời gian thực tế." icon={Clock3} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} /><Card title="Lịch sử chấm công của nhân viên" action={<div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." /><Select value={shift} onChange={(event) => setShift(event.target.value)}><option value="all">Tất cả ca</option>{shifts.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</Select><Select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{scopedEmployees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select></div>}><TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Ca làm việc</th><th>Ngày</th><th>Giờ vào / Kết</th><th>Giờ thực tế</th><th>Trạng thái</th><th>Phút sớm / trễ</th><th>Phụ cấp TikTok</th><th>Lương thực nhận</th><th>Vị trí</th></tr></thead><tbody>{rows.map((record, index) => {
-    const employee = scopedEmployees.find((item) => item.id === record.employeeId)
-    const pay = employee ? getPayBasis(employee) === 'hourly' || usesMonthlyHoursFormula(employee) ? calculateEmployeeBasePay(employee, { hours: Number(record.hours || 0) }) : getMonthlySalary(employee) / Number(employee.standardWorkDays || 26) : 0
+  return <div className="page"><PageHeader title="CHẤM CÔNG CỬA HÀNG" subtitle="Lịch sử gồm nhân viên trực thuộc và nhân viên được điều chuyển đến hỗ trợ." icon={Clock3} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} /><div className="metrics-grid metrics-grid--3" aria-label="Tổng quan chấm công cửa hàng"><MetricCard label="TỔNG GIỜ GHI NHẬN" value={totalHours.toFixed(2)} suffix="giờ" icon={Clock3} tone="blue" /><MetricCard label="LƯỢT HỖ TRỢ NHẬN VÀO" value={supportRows.length} suffix="lượt" icon={Users} tone="orange" /><MetricCard label="CHI PHÍ NHÂN SỰ HỖ TRỢ" value={money(Math.floor(supportExpense))} icon={Wallet} tone="green" /></div><InfoNote>Chi phí lương hỗ trợ được ghi nhận cho <strong>{store?.name || 'cửa hàng nhận hỗ trợ'}</strong>, gồm lương theo giờ hỗ trợ và phụ cấp áp dụng một lần.</InfoNote><Card title="Lịch sử chấm công của nhân viên" action={<div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." /><Select value={shift} onChange={(event) => setShift(event.target.value)}><option value="all">Tất cả ca</option>{shifts.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</Select><Select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{scopedEmployees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select></div>}><TableWrap><thead><tr><th>STT</th><th>Nhân viên / Cửa hàng</th><th>Ca làm việc</th><th>Ngày</th><th>Giờ vào / Kết</th><th>Giờ thực tế</th><th>Trạng thái</th><th>Phút sớm / trễ</th><th>Phụ cấp TikTok</th><th>Lương thực nhận</th><th>Vị trí</th></tr></thead><tbody>{rowDetails.map(({ record, employee, pay }, index) => {
     const status = normalizedStatus(record.status || record.arrivalTag)
     const location = attendanceLocationDetails(record)
     const checkIn = String(record.checkIn || record.checkInTime || '—').slice(0, 5)
     const checkOut = String(record.checkOut || record.checkOutTime || '').slice(0, 5)
     const minutesKind = attendanceMinutesKind(record)
-    return <tr key={record.id}><td>{index + 1}</td><td><strong>{employee?.name || record.employeeName}</strong><small className="table-note">{record.employeeId}</small></td><td><strong>{record.shiftName || record.shift}</strong><small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td><div className="attendance-shift-timing"><span className="attendance-shift-timing__time attendance-shift-timing__time--in"><small>Vào</small><strong>{checkIn}</strong></span>{checkOut ? <><span className="attendance-shift-timing__arrow" aria-hidden="true">→</span><span className="attendance-shift-timing__time attendance-shift-timing__time--out"><small>Kết</small><strong>{checkOut}</strong></span><span className="attendance-shift-timing__state attendance-shift-timing__state--closed"><CheckCircle2 size={14} aria-hidden="true" />Đã kết ca</span></> : <span className="attendance-shift-timing__state attendance-shift-timing__state--open"><Clock3 size={14} aria-hidden="true" />Đang làm</span>}</div></td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={statusTone(status)}>{status}</Badge></td><td><span className={`attendance-minutes attendance-minutes--${minutesKind}`}>{attendanceMinutesLabel(record)}</span></td><td>{uniqueTiktokEmployees.has(record.employeeId) ? money(employee?.tiktokAllowance) : money(0)}</td><td>{money(Math.floor(pay))}</td><td>{canViewAttendanceLocations && location.mapUrl ? <a className="attendance-location-link" href={location.mapUrl} target="_blank" rel="noreferrer" aria-label={`Xem vị trí điểm danh của ${employee?.name || record.employeeName || record.employeeId} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí</span></a> : <span className="table-note">—</span>}</td></tr>
+    const homeStoreId = pay.support?.homeStoreId || employee?.storeId
+    const homeStore = stores.find((item) => String(item.id) === String(homeStoreId))
+    const supportStore = stores.find((item) => String(item.id) === String(pay.support?.supportStoreId || storeId))
+    const supportTime = pay.support?.transferStartAt || pay.support?.transferEndAt
+      ? `${shortDateTime24(pay.support.transferStartAt)} – ${shortDateTime24(pay.support.transferEndAt)}`
+      : ''
+    return <tr key={record.id}><td>{index + 1}</td><td><strong>{employee?.name || record.employeeName}</strong><small className="table-note">{record.employeeId}</small>{pay.kind === 'support' ? <><Badge tone="orange">NV hỗ trợ</Badge><small className="table-note">{homeStore?.name || homeStoreId || 'Cửa hàng chính'} → {supportStore?.name || store?.name || storeId}</small>{supportTime && <small className="table-note">{supportTime}</small>}<small className="table-note">{money(pay.support.hourlyRate)}/giờ · Phụ cấp {money(pay.support.allowance)}</small></> : <small className="table-note">Cửa hàng chính: {homeStore?.name || store?.name || storeId}</small>}</td><td><strong>{record.shiftName || record.shift}</strong><small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td><div className="attendance-shift-timing"><span className="attendance-shift-timing__time attendance-shift-timing__time--in"><small>Vào</small><strong>{checkIn}</strong></span>{checkOut ? <><span className="attendance-shift-timing__arrow" aria-hidden="true">→</span><span className="attendance-shift-timing__time attendance-shift-timing__time--out"><small>Kết</small><strong>{checkOut}</strong></span><span className="attendance-shift-timing__state attendance-shift-timing__state--closed"><CheckCircle2 size={14} aria-hidden="true" />Đã kết ca</span></> : <span className="attendance-shift-timing__state attendance-shift-timing__state--open"><Clock3 size={14} aria-hidden="true" />Đang làm</span>}</div></td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={statusTone(status)}>{status}</Badge></td><td><span className={`attendance-minutes attendance-minutes--${minutesKind}`}>{attendanceMinutesLabel(record)}</span></td><td>{uniqueTiktokEmployees.has(record.employeeId) ? money(employee?.tiktokAllowance) : money(0)}</td><td>{pay.amount == null ? <span className="table-note" title="Nhân viên Full-Time tại cửa hàng chính không tính lương theo từng lượt chấm công">Không áp dụng</span> : <strong>{money(Math.floor(pay.amount))}</strong>}</td><td>{canViewAttendanceLocations && location.mapUrl ? <a className="attendance-location-link" href={location.mapUrl} target="_blank" rel="noreferrer" aria-label={`Xem vị trí điểm danh của ${employee?.name || record.employeeName || record.employeeId} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí</span></a> : <span className="table-note">—</span>}</td></tr>
   })}<tr className="total-row"><td colSpan="5">TỔNG</td><td>{totalHours.toFixed(2)} giờ</td><td colSpan="2" /><td>{money(totalTiktok)}</td><td>{money(Math.floor(totalPay))}</td><td /></tr></tbody></TableWrap></Card><Card title="THỐNG KÊ ĐI LÀM ĐÚNG GIỜ"><TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Đi trễ</th><th>Đi đúng giờ</th><th>Đi sớm</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody>{stats.map((item, index) => <tr key={item.employee.id}><td>{index + 1}</td><td><strong>{item.employee.name}</strong><small className="table-note">{item.employee.id}</small></td><td className="red-text attendance-stat-value">{item.late}</td><td className="blue-text attendance-stat-value">{item.onTime}</td><td className="green-text attendance-stat-value">{item.early}</td><td className="green-text attendance-stat-value">{item.earlyMinutes}</td><td className="red-text attendance-stat-value">{item.lateMinutes}</td><td>{item.records}</td><td className="blue-text attendance-stat-value"><strong>{item.rate.toFixed(1)}%</strong></td><td><Badge tone={item.evaluation === 'Chuyên cần tốt' ? 'green' : item.evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{item.evaluation}</Badge></td></tr>)}</tbody></TableWrap></Card></div>
 }
 

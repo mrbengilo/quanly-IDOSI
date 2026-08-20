@@ -1,0 +1,131 @@
+.store-expense-items {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 16rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.store-expense-items li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.store-expense-items span,
+.store-expense-items small {
+  display: block;
+}
+
+.store-expense-items small {
+  margin-top: 0.1rem;
+  color: var(--muted, #64748b);
+}
+
+.store-expense-total {
+  color: var(--green-700, #047857);
+  white-space: nowrap;
+}
+
+.store-expense-form,
+.store-expense-lines {
+  display: grid;
+  gap: 1rem;
+}
+
+.store-expense-line {
+  display: grid;
+  grid-template-columns: auto minmax(9rem, 0.8fr) minmax(11rem, 1.2fr) minmax(9rem, 0.7fr) minmax(12rem, 1.2fr) auto;
+  align-items: end;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid #d7e6dc;
+  border-radius: 0.9rem;
+  background: #fbfefc;
+}
+
+.store-expense-line__index {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  margin-bottom: 0.7rem;
+  place-items: center;
+  border-radius: 999px;
+  background: #e8f6ed;
+  color: #08743b;
+  font-weight: 800;
+}
+
+.store-expense-line__remove {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  margin-bottom: 0.15rem;
+  place-items: center;
+  border: 1px solid #fecaca;
+  border-radius: 0.7rem;
+  background: #fff;
+  color: #dc2626;
+  cursor: pointer;
+}
+
+.store-expense-line__remove:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.store-expense-form__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.store-expense-form__summary p {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.store-expense-form__summary strong {
+  color: #08743b;
+  font-size: 1.25rem;
+}
+
+@media (max-width: 900px) {
+  .store-expense-line {
+    grid-template-columns: auto 1fr 1fr auto;
+  }
+
+  .store-expense-line .field:nth-of-type(3),
+  .store-expense-line .field:nth-of-type(4) {
+    grid-column: 2 / span 2;
+  }
+}
+
+@media (max-width: 640px) {
+  .store-expense-line {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .store-expense-line .field {
+    grid-column: 2;
+  }
+
+  .store-expense-line__remove {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .store-expense-form__summary {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .store-expense-form__summary p {
+    justify-content: space-between;
+  }
+}
