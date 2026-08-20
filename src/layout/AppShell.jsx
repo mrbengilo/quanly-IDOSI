@@ -51,6 +51,7 @@ const storeOperations = [
 ]
 
 const officeOperation = { label: 'Khối văn phòng', path: '/office', icon: Building2, badge: 'Mới' }
+const businessSupportDirectoryOperation = { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users }
 
 const officeEmployeeMenu = [
   { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
@@ -63,6 +64,7 @@ const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
   systemOperations[1],
   { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users },
+  businessSupportDirectoryOperation,
   { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
   officeOperation,
   systemOperations[2],
@@ -78,7 +80,7 @@ const systemMenus = {
   admin: [
     ...systemOperations.slice(0, 2),
     { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users, badge: 'Mới' },
-    { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users },
+    businessSupportDirectoryOperation,
     { label: 'Giao Việc', path: '/admin/tasks', icon: ClipboardCheck, badge: 'Mới' },
     { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
