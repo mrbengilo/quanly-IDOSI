@@ -26,8 +26,19 @@ describe('Office Management permissions', () => {
         name: 'Nhân viên văn phòng',
         status: 'Đang làm việc',
         employmentType: 'Full-Time',
+        startDate: '2026-08-01',
         phone: '0901234567',
         cccd: '079123456789',
+        province: 'Thành phố Hồ Chí Minh',
+        ward: 'Phường Bến Nghé',
+        street: '01 Nguyễn Huệ',
+        address: '01 Nguyễn Huệ, Phường Bến Nghé, Thành phố Hồ Chí Minh',
+        username: 'office.employee',
+        authUserId: 'user-office-employee',
+        workTimeType: 'Full-Time',
+        workStart: '08:00',
+        workEnd: '17:30',
+        workShifts: [{ id: 'full_time', name: 'Giờ hành chính', start: '08:00', end: '17:30' }],
         identityImages: {
           front: 'data:image/png;base64,office-front',
           back: 'data:image/png;base64,office-back',
@@ -41,7 +52,7 @@ describe('Office Management permissions', () => {
       payrollPeriods: [],
       policies: {},
       addEmployee: vi.fn(),
-      updateEmployee: vi.fn(),
+      updateEmployee: vi.fn().mockResolvedValue({ ok: true }),
       deleteEmployee: vi.fn(),
       addSalaryAdjustment: vi.fn(),
       notify: vi.fn(),
@@ -78,5 +89,17 @@ describe('Office Management permissions', () => {
     fireEvent.click(screen.getByRole('button', { name: /Thêm nhân viên/i }))
     expect(screen.getByPlaceholderText('Nhập mật khẩu để cấp tài khoản').value).toBe('')
     expect(screen.queryByAltText(/Xem trước mặt trước CCCD/i)).toBeNull()
-  })
+    fireEvent.click(screen.getByRole('button', { name: 'Hủy bỏ' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Sửa Nhân viên văn phòng/i }))
+    expect(screen.queryByText('Thời gian làm việc')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
+    await waitFor(() => expect(mocked.app.updateEmployee).toHaveBeenCalledTimes(1))
+    const [, updatePayload] = mocked.app.updateEmployee.mock.calls[0]
+    expect(updatePayload).not.toHaveProperty('workTimeType')
+    expect(updatePayload).not.toHaveProperty('workStart')
+    expect(updatePayload).not.toHaveProperty('workEnd')
+    expect(updatePayload).not.toHaveProperty('workShifts')
+    expect(updatePayload).not.toHaveProperty('workingTime')
+  }, 15_000)
 })

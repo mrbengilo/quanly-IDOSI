@@ -106,17 +106,22 @@ Các lệnh chính:
   Sau migration xóa credential, `employee.update` có thể nhận lại cặp
   `username`/`password` để phát hành tài khoản mới nguyên tử cho đúng
   profile hiện hữu; mã profile và lịch sử nghiệp vụ không thay đổi.
-  Hồ sơ `office` và `business_support` nhận hợp đồng giờ làm canonical
-  `workTimeType`, `workShifts:[{id,name,start,end}]` và
+  Hồ sơ `office` và `business_support` chỉ nhận baseline giờ làm canonical khi
+  `employee.create`: `workTimeType`, `workShifts:[{id,name,start,end}]` và
   `workingTime:{type,mode,shifts}`. Full-Time có đúng một khung cố định;
-  Part-Time/Thực Tập Sinh có 1..12 ca đặt tên. `workStart`/`workEnd` luôn là
-  alias của ca đầu tiên để tương thích client cũ; mọi giờ theo `HH:mm`, giờ ra
-  sau giờ vào trong cùng ngày, id/tên ca không trùng. Admin được cập nhật toàn
-  bộ hồ sơ; Hỗ trợ KD vẫn được cập nhật đầy đủ hồ sơ Office nhưng với hồ sơ
-  Hỗ trợ KD khác chỉ được gửi các trường giờ làm nêu trên.
-  Khi chấm công office-like, client gửi `shiftId` của ca hồ sơ đã chọn; Worker
-  chụp bất biến `shiftId/name/start/end` và `shiftSource: profile-work-shift`
-  vào bản ghi chấm công.
+  Part-Time/Thực Tập Sinh có 1..12 ca đặt tên. `workStart`/`workEnd` là alias
+  của ca đầu tiên để tương thích client cũ; mọi giờ theo `HH:mm`, giờ ra sau
+  giờ vào trong cùng ngày, id/tên ca không trùng.
+  Sau khi tạo hồ sơ, mọi thay đổi giờ làm phải dùng
+  `employee.working_time.set` với `employeeId`, `effectiveFrom: YYYY-MM-DD` và
+  cấu hình canonical mới. `employee.update` gửi bất kỳ trường giờ làm nào sẽ
+  trả `WORK_TIME_UPDATE_COMMAND_REQUIRED`. Worker thêm hoặc thay đúng mốc trong
+  `workTimeSchedule`; khi mốc đầu tiên nằm sau ngày bắt đầu làm, cấu hình
+  baseline được carry-forward về ngày bắt đầu để các ngày cũ không đổi. Mỗi
+  ngày dùng mốc gần nhất có `effectiveFrom <= workDate`.
+  Khi chấm công office-like, client gửi `shiftId` của ca đã chọn; Worker chụp
+  bất biến `shiftId/name/start/end` và `shiftSource: profile-work-shift` vào bản
+  ghi, nên chỉnh lịch tương lai không viết lại snapshot chấm công lịch sử.
   Hồ sơ office-like còn nhận cặp `standardWorkDaysPeriod: YYYY-MM`,
   `standardWorkDays: 1..31`. Server gộp cặp này vào
   `monthlyWorkdayTargets[period]` của riêng nhân viên.
@@ -159,8 +164,8 @@ Các lệnh chính:
   lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và
   thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
   bảo vệ, không thể sửa qua `state.merge|replace`.
-- `support_transfer.create|update|delete`: `admin` hoặc `business_support`; các
-  role còn lại nhận `403`. Create nhận
+- `support_transfer.create|update`: `admin` hoặc `business_support`; `support_transfer.delete`
+  chỉ dành cho `admin`, các role còn lại nhận `403`. Create nhận
   `{employeeId,fromStoreId?,toStoreId,fromDate,toDate,hourlySupportRate,allowance,note?}`;
   chấp nhận alias `startDate/endDate`, `startAt/endAt`, `date` và `hourlyRate`, nhưng
   response canonical luôn là `fromDate/toDate/hourlySupportRate`. Cửa hàng đi phải
@@ -413,6 +418,19 @@ audit thành `NULL`. Hồ sơ đang làm/đã xóa cùng toàn bộ lịch sử 
 settings chỉ còn của Admin; phiên bản global state được tăng một lần với request
 id `migration:0005:admin-only-accounts`. Sau migration, chỉ Admin có thể phát
 hành lại tài khoản theo đúng luồng quản trị.
+
+## Xóa đệ quy credential còn sót trong hồ sơ (migration 0006)
+
+`drizzle/0006_recursive_profile_secret_scrub.sql` rà soát đệ quy hồ sơ
+`employees` và `deletedEmployees` trong cả `state_entities` lẫn compact JSON cũ.
+Migration chuẩn hóa tên khóa giống Worker rồi gỡ password, token, API key,
+secret, credential, authorization, cookie và các credential envelope gồm
+`hash`/`salt`/`iterations`/`algorithm`, kể cả khi nằm trong object hoặc mảng
+lồng sâu. Các giá trị không nhạy cảm, thứ tự tương đối của hồ sơ/phần tử hợp lệ
+và lịch sử nghiệp vụ được giữ nguyên; root credential envelope không hợp lệ bị
+lọc giống runtime.
+Phiên bản global state tăng một lần với request id
+`migration:0006:recursive-profile-secret-scrub`.
 
 ## Giới hạn cần xử lý trước tải lớn
 

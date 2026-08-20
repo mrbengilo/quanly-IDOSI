@@ -221,7 +221,11 @@ export const validateRoleProfile = ({ form, profiles = [], editingKey = '', requ
   return [...new Set(errors)]
 }
 
-export const roleProfilePayload = (form = {}, roleKey = ROLE_KEYS.businessSupport) => {
+export const roleProfilePayload = (
+  form = {},
+  roleKey = ROLE_KEYS.businessSupport,
+  { includeWorkingTime = true } = {},
+) => {
   const isStoreManager = roleKey === ROLE_KEYS.storeManager
   if (isStoreManager && form.managerSource === 'existing' && form.linkedEmployeeId) {
     return {
@@ -249,7 +253,7 @@ export const roleProfilePayload = (form = {}, roleKey = ROLE_KEYS.businessSuppor
     ...(structuredAddress ? { addressDetails } : {}),
     startDate: form.startDate,
     employmentType: form.employmentType,
-    ...(!isStoreManager ? workingTimePayload(form) : {}),
+    ...(!isStoreManager && includeWorkingTime ? workingTimePayload(form) : {}),
     position,
     ...(Object.keys(identityImages).length ? { identityImages } : {}),
     username: form.username.trim(),

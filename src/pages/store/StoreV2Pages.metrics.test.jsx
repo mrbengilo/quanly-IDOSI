@@ -83,11 +83,14 @@ describe('store order, attendance, and payroll summaries', () => {
   })
 
   it.each(['admin', 'business_support', 'store_manager'])('lets %s open a safe attendance map link and shows early/late minute totals', (role) => {
+    const onTimeEmployee = { ...employee, id: 'S01-002', name: 'Trần Bình' }
     mocked.app = {
       ...baseApp(role),
+      employees: [employee, onTimeEmployee],
       attendance: [
         { id: 'A-EARLY', storeId: store.id, employeeId: employee.id, employeeName: employee.name, date: today(), shift: 'CA-01', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00', checkIn: '07:45', checkOut: '12:00', hours: 4, status: 'Đi sớm', minutesEarly: 15, minutesLate: 0, location: { latitude: 10.857789, longitude: 106.749938, label: 'Cửa hàng Dosii KVC' } },
-        { id: 'A-LATE', storeId: store.id, employeeId: employee.id, employeeName: employee.name, date: today(), shift: 'CA-02', shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '17:00', checkIn: '13:07', checkOut: '17:00', hours: 4, status: 'Đi trễ', minutesEarly: 0, minutesLate: 7, location: { latitude: 10.85779, longitude: 106.74994 } },
+        { id: 'A-LATE', storeId: store.id, employeeId: employee.id, employeeName: employee.name, date: today(), shift: 'CA-02', shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '17:00', checkIn: '13:07', hours: 4, status: 'Đi trễ', minutesEarly: 0, minutesLate: 7, location: { latitude: 10.85779, longitude: 106.74994 } },
+        { id: 'A-ON-TIME', storeId: store.id, employeeId: onTimeEmployee.id, employeeName: onTimeEmployee.name, date: today(), shift: 'CA-03', shiftName: 'Ca tối', shiftStart: '17:00', shiftEnd: '21:00', checkIn: '17:00', checkOut: '21:00', hours: 4, status: 'Đi đúng giờ', minutesEarly: 0, minutesLate: 0 },
       ],
     }
 
@@ -98,9 +101,45 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(links[0].href).toMatch(/^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=/)
     expect(links[0].target).toBe('_blank')
     expect(links[0].rel).toContain('noreferrer')
+    links.forEach((link) => expect(link.textContent).toBe('Xem vị trí'))
+    expect(screen.queryByText(/10\.857789|106\.749938|10\.85779|106\.74994/)).toBeNull()
     expect(screen.getByRole('columnheader', { name: 'Tổng phút sớm' })).toBeTruthy()
     expect(screen.getByRole('columnheader', { name: 'Tổng phút trễ' })).toBeTruthy()
-    expect(screen.getByText((_, node) => node?.classList.contains('attendance-minutes') && node.textContent === '15 sớm / 0 trễ')).toBeTruthy()
+    const earlyMinutes = screen.getByText((_, node) => node?.classList.contains('attendance-minutes') && node.textContent === 'Sớm 15 phút')
+    const lateMinutes = screen.getByText((_, node) => node?.classList.contains('attendance-minutes') && node.textContent === 'Trễ 7 phút')
+    const onTimeMinutes = screen.getByText((_, node) => node?.classList.contains('attendance-minutes') && node.textContent === 'Đúng giờ')
+    expect(earlyMinutes.classList.contains('attendance-minutes--early')).toBe(true)
+    expect(lateMinutes.classList.contains('attendance-minutes--late')).toBe(true)
+    expect(onTimeMinutes.classList.contains('attendance-minutes--on-time')).toBe(true)
+    expect(screen.queryByText(/\d+ sớm \/ \d+ trễ/)).toBeNull()
+
+    const closedRow = earlyMinutes.closest('tr')
+    expect(within(closedRow).getByText('07:45')).toBeTruthy()
+    expect(within(closedRow).getByText('12:00')).toBeTruthy()
+    expect(within(closedRow).getByText('Đã kết ca')).toBeTruthy()
+    const openRow = lateMinutes.closest('tr')
+    expect(within(openRow).getByText('13:07')).toBeTruthy()
+    expect(within(openRow).getByText('Đang làm')).toBeTruthy()
+
+    const statsTable = screen.getByRole('columnheader', { name: 'Tổng phút sớm' }).closest('table')
+    const employeeStatsRow = within(statsTable).getByText(employee.name).closest('tr')
+    const employeeStatsCells = within(employeeStatsRow).getAllByRole('cell')
+    expect(employeeStatsCells[2].classList.contains('red-text')).toBe(true)
+    expect(employeeStatsCells[3].classList.contains('blue-text')).toBe(true)
+    expect(employeeStatsCells[4].classList.contains('green-text')).toBe(true)
+    expect(employeeStatsCells[5].classList.contains('green-text')).toBe(true)
+    expect(employeeStatsCells[6].classList.contains('red-text')).toBe(true)
+    expect(employeeStatsCells[8].classList.contains('blue-text')).toBe(true)
+    const onTimeStatsRow = within(statsTable).getByText(onTimeEmployee.name).closest('tr')
+    const onTimeStatsCells = within(onTimeStatsRow).getAllByRole('cell')
+    expect(onTimeStatsCells[2].textContent).toBe('0')
+    expect(onTimeStatsCells[2].classList.contains('red-text')).toBe(true)
+    expect(onTimeStatsCells[4].textContent).toBe('0')
+    expect(onTimeStatsCells[4].classList.contains('green-text')).toBe(true)
+    expect(onTimeStatsCells[5].textContent).toBe('0')
+    expect(onTimeStatsCells[5].classList.contains('green-text')).toBe(true)
+    expect(onTimeStatsCells[6].textContent).toBe('0')
+    expect(onTimeStatsCells[6].classList.contains('red-text')).toBe(true)
   })
 
   it('shows the configured hourly rate while keeping earned pay in store payroll totals', () => {

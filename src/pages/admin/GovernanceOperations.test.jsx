@@ -132,7 +132,7 @@ describe('Hỗ trợ KD operations', () => {
     expect(mocked.notify).not.toHaveBeenCalled()
   })
 
-  it('edits and deletes an existing transfer with an explicit audit reason', async () => {
+  it('lets Business Support edit an existing transfer without exposing deletion', async () => {
     mocked.supportTransfers = [{
       id: 'TR-001', employeeId: 'SM234-001', fromStoreId: 'CH001', toStoreId: 'CH002',
       startAt: '2026-08-20T01:00:00.000Z', endAt: '2026-08-20T05:00:00.000Z',
@@ -149,6 +149,27 @@ describe('Hỗ trợ KD operations', () => {
       employeeId: 'SM234-001', fromStoreId: 'CH001', toStoreId: 'CH002',
       startAt: '2026-08-20T08:00', endAt: '2026-08-20T12:00',
       hourlySupportRate: 30_000, allowance: 200_000, note: 'Cập nhật lịch hỗ trợ',
+    })))
+
+    expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
+    expect(mocked.deleteSupportTransfer).not.toHaveBeenCalled()
+  })
+
+  it('lets Admin edit and delete an existing transfer with an explicit audit reason', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.supportTransfers = [{
+      id: 'TR-001', employeeId: 'SM234-001', fromStoreId: 'CH001', toStoreId: 'CH002',
+      startAt: '2026-08-20T01:00:00.000Z', endAt: '2026-08-20T05:00:00.000Z',
+      hourlySupportRate: 30_000, allowance: 200_000, note: 'Hỗ trợ buổi sáng', status: 'Đã duyệt',
+      createdAt: '2026-08-19T00:00:00.000Z',
+    }]
+    render(<SupportTransfersPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sửa' }))
+    fireEvent.change(screen.getByLabelText(/Ghi chú/i), { target: { value: 'Admin cập nhật lịch hỗ trợ' } })
+    fireEvent.click(screen.getByRole('button', { name: /Cập nhật điều chuyển/i }))
+    await waitFor(() => expect(mocked.updateSupportTransfer).toHaveBeenCalledWith('TR-001', expect.objectContaining({
+      note: 'Admin cập nhật lịch hỗ trợ',
     })))
 
     fireEvent.click(screen.getByRole('button', { name: 'Xóa' }))

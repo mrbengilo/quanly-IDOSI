@@ -19,6 +19,20 @@ export const officeLocationLabel = (location) => {
     : 'Đã ghi nhận vị trí'
 }
 
+export const officeLocationMapUrl = (location) => {
+  if (!location) return ''
+  const latitude = typeof location === 'object' ? Number(location.latitude ?? location.lat) : Number.NaN
+  const longitude = typeof location === 'object' ? Number(location.longitude ?? location.lng ?? location.lon) : Number.NaN
+  const hasCoordinates = Number.isFinite(latitude) && latitude >= -90 && latitude <= 90
+    && Number.isFinite(longitude) && longitude >= -180 && longitude <= 180
+  const query = hasCoordinates
+    ? `${latitude}, ${longitude}`
+    : typeof location === 'string'
+      ? location.trim()
+      : String(location.label || location.address || location.name || '').trim()
+  return query ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}` : ''
+}
+
 export const isOfficeProfile = (session = {}, employee = {}) => {
   const values = [
     session.unit,

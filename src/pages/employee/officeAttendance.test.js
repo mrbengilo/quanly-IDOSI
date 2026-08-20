@@ -6,6 +6,7 @@ import {
   officeAttendanceRows,
   officeAttendanceStats,
   officeLocationLabel,
+  officeLocationMapUrl,
   officePayrollStoreId,
   officePayrollSummary,
   officeSalaryAdjustments,
@@ -28,6 +29,9 @@ describe('office employee attendance helpers', () => {
   it('formats GPS objects safely for attendance tables', () => {
     expect(officeLocationLabel({ latitude: 10.8231, longitude: 106.6297 })).toBe('10.82310, 106.62970')
     expect(officeLocationLabel({ label: 'Văn phòng IDOSI' })).toBe('Văn phòng IDOSI')
+    expect(officeLocationMapUrl({ latitude: 10.8231, longitude: 106.6297 })).toBe('https://www.google.com/maps/search/?api=1&query=10.8231%2C%20106.6297')
+    expect(officeLocationMapUrl({ label: 'Văn phòng IDOSI' })).toBe('https://www.google.com/maps/search/?api=1&query=V%C4%83n%20ph%C3%B2ng%20IDOSI')
+    expect(officeLocationMapUrl(null)).toBe('')
   })
 
   it('scopes attendance to the signed-in employee and calculates punctuality totals', () => {

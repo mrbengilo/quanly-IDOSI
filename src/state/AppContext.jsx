@@ -35,6 +35,11 @@ import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateKpiBonuses, financeSummaryFromState } from '../domain'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
+  normalizeWorkTimeEffectiveDate,
+  resolveEffectiveWorkingTime,
+  upsertEffectiveWorkingTime,
+} from '../domain/workTimeSchedule'
+import {
   apiBootstrapState,
   apiCommand,
   apiGetState,
@@ -80,11 +85,10 @@ export const BUSINESS_SUPPORT_WORKING_TIME_FIELDS = Object.freeze([
 
 export const canBusinessSupportUpdateEmployee = (previous = {}, payload = {}) => {
   const unit = String(previous.unit || previous.unitType || previous.department || '').trim().toLowerCase()
-  if (['store', 'store_manager', 'office'].includes(unit)) return true
-  if (unit !== 'business_support') return false
-  const allowed = new Set(BUSINESS_SUPPORT_WORKING_TIME_FIELDS)
   const fields = Object.keys(payload || {})
-  return fields.length > 0 && fields.every((field) => allowed.has(field))
+  if (fields.some((field) => BUSINESS_SUPPORT_WORKING_TIME_FIELDS.includes(field))) return false
+  if (['store', 'store_manager', 'office'].includes(unit)) return true
+  return false
 }
 
 export const restoreOperationalRecordFields = (current, baseline, dataType) => {
@@ -203,6 +207,7 @@ export const remoteEffectiveUserChanged = (current = {}, latest = {}) => {
     || field(current, 'activeTransferId', 'active_transfer_id') !== field(latest, 'activeTransferId', 'active_transfer_id')
 }
 export const canManageSupportTransfers = (role) => ['admin', 'business_support'].includes(normalizeAuthRole(role))
+export const canDeleteSupportTransfers = (role) => normalizeAuthRole(role) === 'admin'
 export const nextSupportTransferBoundaryDelay = (transfers = [], at = Date.now()) => {
   const nowMs = at instanceof Date ? at.getTime() : Number(at)
   if (!Number.isFinite(nowMs)) return null
@@ -1370,8 +1375,11 @@ export function AppProvider({ children }) {
     if (!['admin', 'business_support', 'store_manager'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền cập nhật nhân viên.' }
     const previous = state.employees.find((employee) => accountKey(employee) === String(id))
     if (!previous) return { ok: false }
+    if (Object.keys(payload || {}).some((field) => BUSINESS_SUPPORT_WORKING_TIME_FIELDS.includes(field))) {
+      return { ok: false, message: 'Dùng chức năng Cài đặt thời gian làm việc và chọn ngày áp dụng.' }
+    }
     if (actorRole === 'business_support' && !canBusinessSupportUpdateEmployee(previous, payload)) {
-      return { ok: false, message: 'Hỗ trợ KD chỉ được sửa cấu hình giờ làm trên hồ sơ Nhân viên hỗ trợ KD.' }
+      return { ok: false, message: 'Hỗ trợ KD không được sửa hồ sơ Nhân viên hỗ trợ KD; hãy dùng Cài đặt thời gian làm việc.' }
     }
     if (hasDuplicateAccount(payload, id)) {
       notify('Tên đăng nhập đã tồn tại.', 'info')
@@ -1420,6 +1428,60 @@ export function AppProvider({ children }) {
     })
     notify('Đã cập nhật nhân viên.')
     return { ok: true, employee }
+  }
+
+  const setEmployeeWorkingTime = async (id, payload = {}) => {
+    const actorRole = normalizeAuthRole(state.session?.role)
+    if (!['admin', 'business_support'].includes(actorRole)) {
+      return { ok: false, message: 'Tài khoản không có quyền cài đặt thời gian làm việc.' }
+    }
+    const previous = state.employees.find((employee) => accountKey(employee) === String(id))
+    if (!previous) return { ok: false, message: 'Không tìm thấy nhân viên.' }
+    const unit = normalizeText(previous.unit || previous.unitType || previous.department)
+    if (!['office', 'business_support'].includes(unit)) {
+      return { ok: false, message: 'Chỉ cài đặt giờ làm cho Khối văn phòng và Nhân viên hỗ trợ KD.' }
+    }
+    const effectiveFrom = normalizeWorkTimeEffectiveDate(payload.effectiveFrom)
+    if (!effectiveFrom) return { ok: false, message: 'Ngày áp dụng không hợp lệ.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('employee.working_time.set', {
+          employeeId: previous.id,
+          ...payload,
+          effectiveFrom,
+        })
+        notify('Cài đặt thời gian làm việc đã được lưu và dùng lại cho các ngày sau.')
+        return { ok: true, employee: result.employee, setting: result.setting }
+      } catch (error) {
+        notify(error.message || 'Không thể lưu thời gian làm việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const timestamp = new Date().toISOString()
+    const configuration = { ...payload, employmentType: previous.employmentType }
+    const workTimeSchedule = upsertEffectiveWorkingTime(previous, effectiveFrom, configuration, {
+      updatedAt: timestamp,
+      updatedBy: actorSnapshot(state.session),
+    })
+    const resolved = resolveEffectiveWorkingTime({ ...previous, workTimeSchedule }, today())
+    const employee = {
+      ...previous,
+      workTimeType: resolved.workTimeType,
+      workStart: resolved.workStart,
+      workEnd: resolved.workEnd,
+      workShifts: resolved.workShifts,
+      workingTime: resolved.workingTime,
+      workTimeSchedule,
+      updatedAt: timestamp,
+      updatedBy: actorSnapshot(state.session),
+    }
+    setState((current) => ({
+      ...current,
+      employees: current.employees.map((item) => accountKey(item) === String(id) ? employee : item),
+      session: current.session?.employeeId === id ? toSession(employee, current.session.role) : current.session,
+    }))
+    notify('Cài đặt thời gian làm việc đã được lưu và dùng lại cho các ngày sau.')
+    return { ok: true, employee, setting: workTimeSchedule.find((entry) => entry.effectiveFrom === effectiveFrom) }
   }
 
   const deleteEmployee = async (id) => {
@@ -2799,7 +2861,7 @@ export function AppProvider({ children }) {
   }
 
   const deleteSupportTransfer = async (transferId, reasonValue = '') => {
-    if (!canManageSupportTransfers(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Nhân viên Hỗ trợ KD được xóa điều chuyển nhân sự.' }
+    if (!canDeleteSupportTransfers(state.session?.role)) return { ok: false, message: 'Chỉ Admin được xóa lịch sử điều chuyển nhân sự.' }
     const previous = state.supportTransfers.find((item) => String(item.id || '') === String(transferId || '') && !item.deletedAt)
     const reason = String(reasonValue || '').trim()
     if (!previous) return { ok: false, message: 'Không tìm thấy phiếu điều chuyển.' }
@@ -3072,9 +3134,11 @@ export function AppProvider({ children }) {
 
     const scheduled = state.shiftDefinitions.find((shift) => shift.id === payload.shiftId && shift.active !== false)
       || shifts.find((shift) => shift.id === payload.shiftId)
+    const effectiveWorkingTime = resolveEffectiveWorkingTime(employee, workDate)
+    const profileShift = (effectiveWorkingTime.workShifts || []).find((shift) => String(shift.id) === String(payload.shiftId || payload.shift))
     const shiftId = payload.shiftId || payload.shift || 'ca1'
-    const shiftStart = payload.shiftStart || scheduled?.start || employee.workStart || (employee.unit === 'office' ? '08:00' : '07:00')
-    const shiftEnd = payload.shiftEnd || scheduled?.end || employee.workEnd || (employee.unit === 'office' ? '17:00' : '12:00')
+    const shiftStart = payload.shiftStart || scheduled?.start || profileShift?.start || effectiveWorkingTime.workStart || (employee.unit === 'office' ? '08:00' : '07:00')
+    const shiftEnd = payload.shiftEnd || scheduled?.end || profileShift?.end || effectiveWorkingTime.workEnd || (employee.unit === 'office' ? '17:00' : '12:00')
     const checkInTime = timeLabel(at)
     const storeName = state.stores.find((store) => store.id === employee.storeId)?.name
     const rawLocation = payload.location || payload.coords || (
@@ -3106,7 +3170,7 @@ export function AppProvider({ children }) {
       requiredWorkingDaysSnapshot: Number(employee.monthlyWorkdayTargets?.[workDate.slice(0, 7)] || employee.standardWorkDays || 26),
       standardWorkDaysSnapshot: Number(employee.monthlyWorkdayTargets?.[workDate.slice(0, 7)] || employee.standardWorkDays || 26),
       shift: shiftId,
-      shiftName: scheduled?.name || payload.shiftName || shiftId,
+      shiftName: scheduled?.name || profileShift?.name || payload.shiftName || shiftId,
       shiftStart,
       shiftEnd,
       checkIn: checkInTime,
@@ -3373,6 +3437,7 @@ export function AppProvider({ children }) {
     deleteStore,
     addEmployee,
     updateEmployee,
+    setEmployeeWorkingTime,
     deleteEmployee,
     addBusinessSupport,
     updateBusinessSupport,

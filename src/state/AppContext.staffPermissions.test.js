@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   canCreateEmployeeUnit,
   canBusinessSupportUpdateEmployee,
+  canDeleteSupportTransfers,
   canManageSupportTransfers,
   canManagePolicies,
   createInitialState,
@@ -23,13 +24,14 @@ describe('Business Support staff and policy permissions', () => {
     expect(canCreateEmployeeUnit('employee', 'store')).toBe(false)
   })
 
-  it('keeps full Office edit rights but whitelists Business Support profile changes to working time', () => {
+  it('keeps profile edits separate from effective-dated working-time commands', () => {
     const shifts = [{ id: 'ca_sang', name: 'Ca sáng', start: '08:00', end: '12:00' }]
-    expect(canBusinessSupportUpdateEmployee({ unit: 'office' }, { phone: '0901234567', workShifts: shifts })).toBe(true)
+    expect(canBusinessSupportUpdateEmployee({ unit: 'office' }, { phone: '0901234567' })).toBe(true)
+    expect(canBusinessSupportUpdateEmployee({ unit: 'office' }, { phone: '0901234567', workShifts: shifts })).toBe(false)
     expect(canBusinessSupportUpdateEmployee({ unit: 'business_support' }, {
       workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00', workShifts: shifts,
       workingTime: { type: 'Part-Time', mode: 'shifts', shifts },
-    })).toBe(true)
+    })).toBe(false)
     for (const protectedField of ['username', 'password', 'status', 'salary', 'unit', 'storeId', 'phone', 'address']) {
       expect(canBusinessSupportUpdateEmployee({ unit: 'business_support' }, { [protectedField]: 'blocked' }), protectedField).toBe(false)
     }
@@ -49,6 +51,17 @@ describe('Business Support staff and policy permissions', () => {
     expect(canManageSupportTransfers('manager')).toBe(true)
     expect(canManageSupportTransfers('store_manager')).toBe(false)
     expect(canManageSupportTransfers('employee')).toBe(false)
+  })
+
+  it('reserves transfer deletion for Admin while Business Support keeps edit access', () => {
+    expect(canManageSupportTransfers('admin')).toBe(true)
+    expect(canDeleteSupportTransfers('admin')).toBe(true)
+    expect(canManageSupportTransfers('business_support')).toBe(true)
+    expect(canDeleteSupportTransfers('business_support')).toBe(false)
+    expect(canManageSupportTransfers('manager')).toBe(true)
+    expect(canDeleteSupportTransfers('manager')).toBe(false)
+    expect(canDeleteSupportTransfers('store_manager')).toBe(false)
+    expect(canDeleteSupportTransfers('employee')).toBe(false)
   })
 
   it('detects same-version effective-store changes and the next exact transfer boundary', () => {

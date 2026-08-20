@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, configure, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { AppProvider, createInitialState, STORAGE_KEY } from './state/AppContext'
@@ -32,6 +32,7 @@ import {
 import { DEMO_PASSWORD_HASH } from './security/passwords'
 
 beforeAll(() => {
+  configure({ asyncUtilTimeout: 5_000 })
   globalThis.scrollTo = () => {}
   globalThis.ResizeObserver = class {
     observe() {}

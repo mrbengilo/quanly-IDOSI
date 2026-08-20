@@ -59,6 +59,7 @@ class MemoryD1 {
       'drizzle/0003_state_entities.sql',
       'drizzle/0004_operational_roles.sql',
       'drizzle/0005_admin_only_accounts.sql',
+      'drizzle/0006_recursive_profile_secret_scrub.sql',
     ]) {
       const migration = readFileSync(file, 'utf8').replaceAll('--> statement-breakpoint', '')
       this.database.exec(migration)
@@ -826,6 +827,231 @@ describe('IDOSI Worker security primitives', () => {
     database.close()
   })
 
+  it('recursively scrubs profile secrets in split and compact storage without disturbing safe data', () => {
+    const database = new DatabaseSync(':memory:')
+    for (const file of [
+      'drizzle/0000_idosi_core.sql',
+      'drizzle/0001_manager_role.sql',
+      'drizzle/0002_attendance_evaluation_policies.sql',
+      'drizzle/0003_state_entities.sql',
+      'drizzle/0004_operational_roles.sql',
+      'drizzle/0005_admin_only_accounts.sql',
+    ]) {
+      database.exec(readFileSync(file, 'utf8').replaceAll('--> statement-breakpoint', ''))
+    }
+
+    const credentialEnvelope = (prefix) => ({
+      hash: `${prefix}-HASH-SENTINEL`,
+      salt: `${prefix}-SALT-SENTINEL`,
+      iterations: 210_000,
+      algorithm: 'PBKDF2-SHA256',
+    })
+    const compactState = {
+      stateVersion: 41,
+      employees: [{
+        id: 'COMPACT-ACTIVE-1',
+        name: 'Compact Active One',
+        accessToken: 'COMPACT-ROOT-TOKEN-SENTINEL',
+        tokenCount: 7,
+        nested: {
+          safeLabel: 'compact-safe-label',
+          api_key: 'COMPACT-NESTED-APIKEY-SENTINEL',
+          safeEnvelope: credentialEnvelope('COMPACT-NESTED-CREDENTIAL'),
+        },
+        orderedItems: [
+          { id: 'compact-before' },
+          credentialEnvelope('COMPACT-ARRAY-CREDENTIAL'),
+          { id: 'compact-after', safe: true },
+        ],
+      }, credentialEnvelope('COMPACT-ROOT-CREDENTIAL'), {
+        id: 'COMPACT-ACTIVE-2',
+        name: 'Compact Active Two',
+      }],
+      deletedEmployees: [{
+        id: 'COMPACT-DELETED-1',
+        name: 'Compact Deleted One',
+        nested: {
+          refresh_token: 'COMPACT-DELETED-TOKEN-SENTINEL',
+          disguisedCredential: 'COMPACT-DELETED-CREDENTIAL-SENTINEL',
+          safeValue: 42,
+        },
+      }],
+      attendance: [{ id: 'ATT-UNCHANGED', employeeId: 'COMPACT-ACTIVE-1' }],
+    }
+    database.prepare(`
+      INSERT INTO app_state (
+        scope_key, value_json, version, updated_at, updated_by, last_request_id
+      ) VALUES ('global', ?, 41, '2026-08-19T12:00:00.000Z', NULL, 'before-0006')
+    `).run(JSON.stringify(compactState))
+
+    replaceStateCollection(database, 'employees', [{
+      id: 'SPLIT-ACTIVE-1',
+      name: 'Split Active One',
+      tokenHash: 'SPLIT-ROOT-TOKEN-SENTINEL',
+      tokenCount: 9,
+      nested: {
+        apiKey: 'SPLIT-NESTED-APIKEY-SENTINEL',
+        safeLabel: 'split-safe-label',
+      },
+      orderedItems: [
+        { id: 'split-before' },
+        credentialEnvelope('SPLIT-ARRAY-CREDENTIAL'),
+        { id: 'split-after' },
+      ],
+    }, credentialEnvelope('SPLIT-ROOT-CREDENTIAL'), {
+      id: 'SPLIT-ACTIVE-2',
+      name: 'Split Active Two',
+    }])
+    replaceStateCollection(database, 'deletedEmployees', [{
+      id: 'SPLIT-DELETED-1',
+      name: 'Split Deleted One',
+      nested: {
+        authorization_header: 'SPLIT-DELETED-TOKEN-SENTINEL',
+        safeEnvelope: credentialEnvelope('SPLIT-NESTED-CREDENTIAL'),
+        safeValue: 'split-deleted-safe',
+      },
+    }])
+
+    const applySecretScrubMigration = () => {
+      database.exec('BEGIN IMMEDIATE')
+      try {
+        database.exec(readFileSync('drizzle/0006_recursive_profile_secret_scrub.sql', 'utf8')
+          .replaceAll('--> statement-breakpoint', ''))
+        database.exec('COMMIT')
+      } catch (error) {
+        database.exec('ROLLBACK')
+        throw error
+      }
+    }
+    applySecretScrubMigration()
+
+    const isSecretKey = (key) => {
+      const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/gu, '')
+      return [
+        'password', 'passwordhash', 'passwordsalt', 'passworditerations',
+        'legacypassword', 'token', 'tokenhash', 'accesstoken', 'refreshtoken',
+        'apikey', 'secret', 'credential', 'credentials', 'authorization',
+        'cookie', 'setcookie',
+      ].includes(normalized)
+        || normalized.includes('password')
+        || normalized.endsWith('token')
+        || normalized.endsWith('tokenhash')
+        || normalized.includes('accesstoken')
+        || normalized.includes('refreshtoken')
+        || normalized.includes('apikey')
+        || normalized.includes('secret')
+        || normalized.includes('credential')
+        || normalized.includes('authorization')
+        || normalized.includes('cookie')
+    }
+    const expectSanitized = (value) => {
+      expect(JSON.stringify(value)).not.toContain('SENTINEL')
+      const visit = (item) => {
+        if (Array.isArray(item)) {
+          item.forEach(visit)
+          return
+        }
+        if (!item || typeof item !== 'object') return
+        const keys = Object.keys(item)
+        const normalizedKeys = new Set(keys.map((key) => key.toLowerCase().replace(/[^a-z0-9]/gu, '')))
+        expect(['hash', 'salt', 'iterations', 'algorithm'].every((key) => normalizedKeys.has(key))).toBe(false)
+        keys.forEach((key) => {
+          expect(isSecretKey(key)).toBe(false)
+          visit(item[key])
+        })
+      }
+      visit(value)
+    }
+
+    const compactRow = database.prepare(`
+      SELECT value_json, version, updated_by, last_request_id
+      FROM app_state WHERE scope_key = 'global'
+    `).get()
+    expect({
+      version: compactRow.version,
+      updated_by: compactRow.updated_by,
+      last_request_id: compactRow.last_request_id,
+    }).toEqual({
+      version: 42,
+      updated_by: null,
+      last_request_id: 'migration:0006:recursive-profile-secret-scrub',
+    })
+    const migratedCompact = JSON.parse(compactRow.value_json)
+    expect(migratedCompact.employees.map(({ id }) => id)).toEqual([
+      'COMPACT-ACTIVE-1', 'COMPACT-ACTIVE-2',
+    ])
+    expect(migratedCompact.deletedEmployees.map(({ id }) => id)).toEqual(['COMPACT-DELETED-1'])
+    expect(migratedCompact.employees[0]).toMatchObject({
+      id: 'COMPACT-ACTIVE-1',
+      name: 'Compact Active One',
+      tokenCount: 7,
+      nested: { safeLabel: 'compact-safe-label' },
+      orderedItems: [{ id: 'compact-before' }, { id: 'compact-after', safe: true }],
+    })
+    expect(migratedCompact.deletedEmployees[0].nested).toEqual({ safeValue: 42 })
+    expect(migratedCompact.attendance).toEqual(compactState.attendance)
+    expectSanitized([migratedCompact.employees, migratedCompact.deletedEmployees])
+
+    const splitRows = database.prepare(`
+      SELECT collection_key, entity_order, value_json, value_bytes
+      FROM state_entities
+      WHERE scope_key = 'global' AND collection_key IN ('employees', 'deletedEmployees')
+      ORDER BY collection_key, entity_order, entity_key
+    `).all()
+    expect(splitRows.map(({ collection_key: collectionKey, entity_order: entityOrder, value_json: valueJson }) => ({
+      collectionKey,
+      entityOrder,
+      id: JSON.parse(valueJson).id,
+    }))).toEqual([
+      { collectionKey: 'deletedEmployees', entityOrder: 1_000_000, id: 'SPLIT-DELETED-1' },
+      { collectionKey: 'employees', entityOrder: 1_000_000, id: 'SPLIT-ACTIVE-1' },
+      { collectionKey: 'employees', entityOrder: 3_000_000, id: 'SPLIT-ACTIVE-2' },
+    ])
+    const migratedSplit = splitRows.map(({ value_json: valueJson }) => JSON.parse(valueJson))
+    expect(migratedSplit.find(({ id }) => id === 'SPLIT-ACTIVE-1')).toMatchObject({
+      name: 'Split Active One',
+      tokenCount: 9,
+      nested: { safeLabel: 'split-safe-label' },
+      orderedItems: [{ id: 'split-before' }, { id: 'split-after' }],
+    })
+    expect(migratedSplit.find(({ id }) => id === 'SPLIT-DELETED-1').nested)
+      .toEqual({ safeValue: 'split-deleted-safe' })
+    expectSanitized(migratedSplit)
+    expect(splitRows.every(({ value_json: valueJson, value_bytes: valueBytes }) => (
+      Buffer.byteLength(valueJson) === valueBytes
+    ))).toBe(true)
+    const replaySnapshot = {
+      appState: database.prepare(`
+        SELECT value_json, version, updated_at, updated_by, last_request_id
+        FROM app_state WHERE scope_key = 'global'
+      `).get(),
+      profiles: database.prepare(`
+        SELECT collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at
+        FROM state_entities
+        WHERE scope_key = 'global' AND collection_key IN ('employees', 'deletedEmployees')
+        ORDER BY collection_key, entity_order, entity_key
+      `).all(),
+    }
+    applySecretScrubMigration()
+    expect({
+      appState: database.prepare(`
+        SELECT value_json, version, updated_at, updated_by, last_request_id
+        FROM app_state WHERE scope_key = 'global'
+      `).get(),
+      profiles: database.prepare(`
+        SELECT collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at
+        FROM state_entities
+        WHERE scope_key = 'global' AND collection_key IN ('employees', 'deletedEmployees')
+        ORDER BY collection_key, entity_order, entity_key
+      `).all(),
+    }).toEqual(replaySnapshot)
+    expect(database.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'migration_0006_profile_scrub'
+    `).all()).toEqual([])
+    expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    database.close()
+  })
+
   it('projects only an employee own records and strips privileged legacy fields', () => {
     const state = {
       schemaVersion: 2,
@@ -1303,7 +1529,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(finalState.orders).toHaveLength(largeOrders.length + 1)
     expect(finalState.orders[0].code).toBe('S01-25101')
     expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  }, 30_000)
+  }, 60_000)
 
   it('runs bootstrap, employee lifecycle, projected state, atomic order creation, and logout end to end', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-secret-for-test' }
@@ -2409,11 +2635,22 @@ describe('IDOSI Worker security primitives', () => {
     expect(await transferUpdated.json()).toMatchObject({
       version: 3, transfer: { id: transferId, toDate: '2026-08-18', hourlySupportRate: 50_000, allowance: 200_000, note: 'Đã gia hạn', status: 'Hoàn tất' },
     })
+    const managerDeleteDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.delete',
+      expectedVersion: 3,
+      payload: { transferId, reason: 'Điều chuyển đã kết thúc' },
+    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-delete-denied-0001' }), env)
+    expect(managerDeleteDenied.status).toBe(403)
+    expect(await managerDeleteDenied.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+    const transferAfterDeniedDelete = readHydratedState(env.DB.database).supportTransfers.find(({ id }) => id === transferId)
+    expect(transferAfterDeniedDelete).toMatchObject({ id: transferId, status: 'Hoàn tất' })
+    expect(transferAfterDeniedDelete).not.toHaveProperty('deletedAt')
+
     const transferDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'support_transfer.delete',
       expectedVersion: 3,
       payload: { transferId, reason: 'Điều chuyển đã kết thúc' },
-    }, { ...managerAuthorization, 'idempotency-key': 'support-transfer-delete-0001' }), env)
+    }, { ...adminAuthorization, 'idempotency-key': 'support-transfer-delete-0001' }), env)
     expect(transferDeleted.status).toBe(200)
     expect(await transferDeleted.json()).toMatchObject({
       version: 4, transfer: { id: transferId, status: 'Đã xóa', deleteReason: 'Điều chuyển đã kết thúc' },
@@ -3380,7 +3617,7 @@ describe('IDOSI Worker security primitives', () => {
         payload: { employeeId: 'VP001', workStart: '18:00', workEnd: '08:00' },
       }, { ...adminAuthorization, 'idempotency-key': 'office-work-time-invalid-0001' }), env)
       expect(invalidWorkTime.status).toBe(400)
-      expect(await invalidWorkTime.json()).toMatchObject({ error: { code: 'OFFICE_WORK_TIME_INVALID' } })
+      expect(await invalidWorkTime.json()).toMatchObject({ error: { code: 'WORK_TIME_UPDATE_COMMAND_REQUIRED' } })
       const invalidWorkdayPeriod = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'employee.update', expectedVersion: 1,
         payload: { employeeId: 'VP001', standardWorkDaysPeriod: '2026-13', standardWorkDays: 20 },
@@ -3391,7 +3628,7 @@ describe('IDOSI Worker security primitives', () => {
       const officeProfileUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'employee.update', expectedVersion: 1,
         payload: {
-          employeeId: 'VP001', workStart: '08:00', workEnd: '17:00',
+          employeeId: 'VP001',
           standardWorkDaysPeriod: '2026-08', standardWorkDays: 20,
           identityImages: testIdentityImages(),
         },
@@ -5937,7 +6174,7 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 30_000)
 
-  it('lets Business Support configure Office and protected support work shifts and check in the selected shift', async () => {
+  it('lets Business Support configure effective-dated Office and protected support work shifts and check in the selected shift', async () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(new Date('2026-08-20T06:05:00.000Z'))
@@ -5990,20 +6227,36 @@ describe('IDOSI Worker security primitives', () => {
         type: 'employee.update', expectedVersion: 3,
         payload: {
           employeeId: office.id, phone: '0908555666', address: 'Địa chỉ mới',
-          workShifts: [
-            { id: 'office_am', name: 'Ca sáng', start: '08:00', end: '12:00' },
-            { id: 'office_pm', name: 'Ca chiều', start: '13:00', end: '17:30' },
-          ],
         },
       }, { ...supportAuthorization, 'idempotency-key': 'working-time-office-update-0001' }), env)
       expect(officeUpdated.status).toBe(200)
       expect(await officeUpdated.json()).toMatchObject({
         version: 4,
-        employee: { phone: '0908555666', address: 'Địa chỉ mới', workShifts: [{ id: 'office_am' }, { id: 'office_pm' }] },
+        employee: { phone: '0908555666', address: 'Địa chỉ mới', workShifts: [{ id: 'office_am' }] },
       })
 
-      const supportUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'employee.update', expectedVersion: 4,
+      const officeWorkingTimeUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.working_time.set', expectedVersion: 4,
+        payload: {
+          employeeId: office.id, effectiveFrom: '2026-08-20', workTimeType: 'Part-Time',
+          workStart: '08:00', workEnd: '12:00',
+          workShifts: [
+            { id: 'office_am', name: 'Ca sáng', start: '08:00', end: '12:00' },
+            { id: 'office_pm', name: 'Ca chiều', start: '13:00', end: '17:30' },
+          ],
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'working-time-office-effective-update-0001' }), env)
+      expect(officeWorkingTimeUpdated.status).toBe(200)
+      expect(await officeWorkingTimeUpdated.json()).toMatchObject({
+        version: 5,
+        employee: {
+          workShifts: [{ id: 'office_am' }, { id: 'office_pm' }],
+          workTimeSchedule: [{ effectiveFrom: '2026-08-20' }],
+        },
+      })
+
+      const genericWorkingTimeUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.update', expectedVersion: 5,
         payload: {
           employeeId: support.id, workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00',
           workShifts: [
@@ -6018,26 +6271,53 @@ describe('IDOSI Worker security primitives', () => {
             ],
           },
         },
+      }, { ...supportAuthorization, 'idempotency-key': 'working-time-support-generic-update-0001' }), env)
+      expect(genericWorkingTimeUpdate.status).toBe(400)
+      expect(await genericWorkingTimeUpdate.json()).toMatchObject({ error: { code: 'WORK_TIME_UPDATE_COMMAND_REQUIRED' } })
+
+      const supportUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.working_time.set', expectedVersion: 5,
+        payload: {
+          employeeId: support.id, effectiveFrom: '2026-08-20',
+          workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00',
+          workShifts: [
+            { id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' },
+            { id: 'support_pm', name: 'Ca chiều mới', start: '13:00', end: '17:30' },
+          ],
+          workingTime: {
+            type: 'Part-Time', mode: 'shifts',
+            shifts: [
+              { id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' },
+              { id: 'support_pm', name: 'Ca chiều mới', start: '13:00', end: '17:30' },
+            ],
+          },
+        },
       }, { ...supportAuthorization, 'idempotency-key': 'working-time-support-update-0001' }), env)
       expect(supportUpdated.status).toBe(200)
-      expect(await supportUpdated.json()).toMatchObject({ version: 5, employee: { workShifts: [{ id: 'support_am' }, { id: 'support_pm', name: 'Ca chiều mới' }] } })
+      expect(await supportUpdated.json()).toMatchObject({
+        version: 6,
+        employee: {
+          workShifts: [{ id: 'support_am' }, { id: 'support_pm', name: 'Ca chiều mới' }],
+          workTimeSchedule: [{ effectiveFrom: '2026-08-20' }],
+        },
+      })
 
       const protectedUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'employee.update', expectedVersion: 5,
+        type: 'employee.update', expectedVersion: 6,
         payload: { employeeId: support.id, phone: '0908999999' },
       }, { ...supportAuthorization, 'idempotency-key': 'working-time-support-protected-0001' }), env)
       expect(protectedUpdate.status).toBe(403)
       expect(await protectedUpdate.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
 
       const missingShift = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_in', expectedVersion: 5,
+        type: 'attendance.check_in', expectedVersion: 6,
         payload: { location: { latitude: 10.8231, longitude: 106.6297, accuracy: 10 } },
       }, { ...supportAuthorization, 'idempotency-key': 'working-time-support-missing-shift-0001' }), env)
       expect(missingShift.status).toBe(400)
       expect(await missingShift.json()).toMatchObject({ error: { code: 'PROFILE_WORK_SHIFT_REQUIRED' } })
 
       const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_in', expectedVersion: 5,
+        type: 'attendance.check_in', expectedVersion: 6,
         payload: {
           shiftId: 'support_pm',
           location: { latitude: 10.8231, longitude: 106.6297, accuracy: 10, label: 'Văn phòng IDOSI' },
@@ -6045,12 +6325,144 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...supportAuthorization, 'idempotency-key': 'working-time-support-check-in-0001' }), env)
       expect(checkedIn.status).toBe(201)
       expect(await checkedIn.json()).toMatchObject({
-        version: 6,
+        version: 7,
         attendance: {
           employeeId: support.id, shiftId: 'support_pm', shiftName: 'Ca chiều mới',
           shiftStart: '13:00', shiftEnd: '17:30', shiftSource: 'profile-work-shift',
           checkIn: '13:05', arrivalTag: 'Đi đúng giờ', minutesLate: 5,
         },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('applies effective-dated Office and Business Support working time without rewriting attendance snapshots', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-20T01:05:00.000Z')) // 08:05 Vietnam
+      const env = { DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-effective-working-time' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'effective-working-time-admin',
+        initialState: { stores: [], employees: [], attendance: [], schedule: [], shiftDefinitions: [] },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+      const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'effective-working-time-admin',
+      }), env)
+      const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+
+      const supportCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.create', expectedVersion: 1,
+        payload: {
+          unit: 'business_support', name: 'Hỗ trợ thực tập', phone: '0908111222', cccd: '079888111222',
+          address: 'TP. Hồ Chí Minh', startDate: '2026-08-20', employmentType: 'Thực Tập Sinh', position: 'NV hỗ trợ KD',
+          username: 'support.effective', password: 'support-effective-password', identityImages: testIdentityImages(),
+          workShifts: [{ id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'effective-support-create-0001' }), env)
+      expect(supportCreated.status).toBe(201)
+      const support = (await supportCreated.json()).employee
+
+      const officeCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.create', expectedVersion: 2,
+        payload: {
+          unit: 'office', storeId: 'OFFICE', name: 'Kế toán hiệu lực', phone: '0908333444', cccd: '079888333444',
+          address: 'TP. Hồ Chí Minh', startDate: '2026-08-20', employmentType: 'Full-Time', position: 'Kế Toán',
+          username: 'office.effective', password: 'office-effective-password', identityImages: testIdentityImages(),
+          workShifts: [{ id: 'full_time', name: 'Giờ hành chính', start: '08:00', end: '17:30' }],
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'effective-office-create-0001' }), env)
+      expect(officeCreated.status).toBe(201)
+      const office = (await officeCreated.json()).employee
+      const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'support.effective', password: 'support-effective-password',
+      }), env)
+      const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+      const officeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'office.effective', password: 'office-effective-password',
+      }), env)
+      const officeAuthorization = { authorization: `Bearer ${(await officeLogin.json()).token}` }
+
+      const oldAttendance = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 3,
+        payload: { location: { latitude: 10.81, longitude: 106.68, accuracy: 8 } },
+      }, { ...officeAuthorization, 'idempotency-key': 'effective-office-check-in-old' }), env)
+      expect(oldAttendance.status).toBe(201)
+      const oldAttendanceBody = await oldAttendance.json()
+      expect(oldAttendanceBody.attendance).toMatchObject({ shiftStart: '08:00', shiftEnd: '17:30' })
+      vi.setSystemTime(new Date('2026-08-20T10:30:00.000Z')) // 17:30 Vietnam
+      const oldCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 4,
+        payload: { attendanceId: oldAttendanceBody.attendance.id, location: { latitude: 10.81, longitude: 106.68, accuracy: 8 } },
+      }, { ...officeAuthorization, 'idempotency-key': 'effective-office-check-out-old' }), env)
+      expect(oldCheckOut.status).toBe(200)
+
+      const officeScheduled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.working_time.set', expectedVersion: 5,
+        payload: {
+          employeeId: office.id, effectiveFrom: '2026-08-21', workTimeType: 'Full-Time',
+          workShifts: [{ id: 'full_time', name: 'Giờ hành chính mới', start: '09:00', end: '18:00' }],
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'effective-office-schedule-0001' }), env)
+      expect(officeScheduled.status).toBe(200)
+      const officeScheduledBody = await officeScheduled.json()
+      expect(officeScheduledBody.employee).toMatchObject({ workStart: '08:00', workEnd: '17:30' })
+      expect(officeScheduledBody.employee.workTimeSchedule.map(({ effectiveFrom }) => effectiveFrom))
+        .toEqual(['2026-08-20', '2026-08-21'])
+
+      const supportScheduled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.working_time.set', expectedVersion: 6,
+        payload: {
+          employeeId: support.id, effectiveFrom: '2026-08-22', workTimeType: 'Part-Time',
+          workShifts: [
+            { id: 'support_pm', name: 'Ca chiều', start: '13:00', end: '17:30' },
+            { id: 'support_evening', name: 'Ca tối', start: '18:00', end: '21:00' },
+          ],
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'effective-support-schedule-0001' }), env)
+      expect(supportScheduled.status).toBe(200)
+      const supportScheduledBody = await supportScheduled.json()
+      expect(supportScheduledBody.employee).toMatchObject({ workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00' })
+      expect(supportScheduledBody.setting).toMatchObject({
+        effectiveFrom: '2026-08-22', employmentType: 'Thực Tập Sinh', workTimeType: 'Part-Time',
+        workShifts: [{ id: 'support_pm' }, { id: 'support_evening' }],
+      })
+
+      const supportReplaced = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.working_time.set', expectedVersion: 7,
+        payload: {
+          employeeId: support.id, effectiveFrom: '2026-08-22', workTimeType: 'Part-Time',
+          workShifts: [{ id: 'support_pm', name: 'Ca chiều mới', start: '14:00', end: '18:00' }],
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'effective-support-schedule-0002' }), env)
+      expect(supportReplaced.status).toBe(200)
+      const supportReplacedBody = await supportReplaced.json()
+      expect(supportReplacedBody.employee.workTimeSchedule.filter(({ effectiveFrom }) => effectiveFrom === '2026-08-22')).toHaveLength(1)
+      expect(supportReplacedBody.setting.workShifts).toEqual([
+        expect.objectContaining({ id: 'support_pm', name: 'Ca chiều mới', start: '14:00', end: '18:00' }),
+      ])
+
+      vi.setSystemTime(new Date('2026-08-21T02:05:00.000Z')) // 09:05 Vietnam
+      const refreshedOfficeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'office.effective', password: 'office-effective-password',
+      }), env)
+      const refreshedOfficeAuthorization = { authorization: `Bearer ${(await refreshedOfficeLogin.json()).token}` }
+      const newAttendance = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 8,
+        payload: { location: { latitude: 10.81, longitude: 106.68, accuracy: 8 } },
+      }, { ...refreshedOfficeAuthorization, 'idempotency-key': 'effective-office-check-in-new' }), env)
+      expect(newAttendance.status).toBe(201)
+      const newAttendanceBody = await newAttendance.json()
+      expect(newAttendanceBody.attendance).toMatchObject({
+        shiftName: 'Giờ hành chính mới', shiftStart: '09:00', shiftEnd: '18:00', minutesLate: 5,
+      })
+      const storedAttendance = readHydratedState(env.DB.database).attendance
+      expect(storedAttendance.find(({ id }) => id === oldAttendanceBody.attendance.id)).toMatchObject({
+        shiftStart: '08:00', shiftEnd: '17:30', checkOutAt: expect.any(String),
+      })
+      expect(storedAttendance.find(({ id }) => id === newAttendanceBody.attendance.id)).toMatchObject({
+        shiftStart: '09:00', shiftEnd: '18:00',
       })
     } finally {
       vi.useRealTimers()

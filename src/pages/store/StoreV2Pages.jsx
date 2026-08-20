@@ -8,6 +8,7 @@ import {
   Edit3,
   FileText,
   Gift,
+  MapPin,
   PackageCheck,
   Plus,
   ReceiptText,
@@ -52,6 +53,20 @@ const statusTone = (status) => status === 'Đi trễ' ? 'red' : status === 'Đi 
 const normalizedStatus = (status) => status === 'Đúng giờ' ? 'Đi đúng giờ' : status === 'Trễ' ? 'Đi trễ' : status || 'Chưa xác định'
 const attendanceEarlyMinutes = (record = {}) => Math.max(0, Number(record.minutesEarly ?? record.earlyMinutes) || 0)
 const attendanceLateMinutes = (record = {}) => Math.max(0, Number(record.minutesLate ?? record.lateMinutes) || 0)
+const attendanceMinutesKind = (record = {}) => {
+  const status = normalizedStatus(record.status || record.arrivalTag)
+  if (status === 'Đi trễ' || attendanceLateMinutes(record) > 0) return 'late'
+  if (status === 'Đi sớm' || attendanceEarlyMinutes(record) > 0) return 'early'
+  return 'on-time'
+}
+const attendanceMinutesLabel = (record = {}) => {
+  const kind = attendanceMinutesKind(record)
+  const earlyMinutes = attendanceEarlyMinutes(record)
+  const lateMinutes = attendanceLateMinutes(record)
+  if (kind === 'late') return `Trễ ${lateMinutes} phút`
+  if (kind === 'early') return `Sớm ${earlyMinutes} phút`
+  return 'Đúng giờ'
+}
 const attendanceLocationDetails = (record = {}) => {
   const location = record.checkInLocation || {}
   const fallbackLocation = record.location || {}
@@ -477,9 +492,11 @@ export function StoreAttendanceV2() {
     const pay = employee ? getPayBasis(employee) === 'hourly' || usesMonthlyHoursFormula(employee) ? calculateEmployeeBasePay(employee, { hours: Number(record.hours || 0) }) : getMonthlySalary(employee) / Number(employee.standardWorkDays || 26) : 0
     const status = normalizedStatus(record.status || record.arrivalTag)
     const location = attendanceLocationDetails(record)
-    const locationContent = <>{location.label}{location.coordinates && location.coordinates !== location.label ? <small className="table-note">{location.coordinates}</small> : null}</>
-    return <tr key={record.id}><td>{index + 1}</td><td><strong>{employee?.name || record.employeeName}</strong><small className="table-note">{record.employeeId}</small></td><td><strong>{record.shiftName || record.shift}</strong><small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td>{record.checkIn || '—'} / {record.checkOut || 'Đang làm'}</td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={statusTone(status)}>{status}</Badge></td><td><span className="attendance-minutes"><strong>{attendanceEarlyMinutes(record)}</strong> sớm / <strong>{attendanceLateMinutes(record)}</strong> trễ</span></td><td>{uniqueTiktokEmployees.has(record.employeeId) ? money(employee?.tiktokAllowance) : money(0)}</td><td>{money(Math.floor(pay))}</td><td>{canViewAttendanceLocations && location.mapUrl ? <a className="attendance-location-link" href={location.mapUrl} target="_blank" rel="noreferrer" aria-label={`Xem vị trí điểm danh của ${employee?.name || record.employeeName || record.employeeId} trên Google Maps`}>{locationContent}</a> : locationContent}</td></tr>
-  })}<tr className="total-row"><td colSpan="5">TỔNG</td><td>{totalHours.toFixed(2)} giờ</td><td colSpan="2" /><td>{money(totalTiktok)}</td><td>{money(Math.floor(totalPay))}</td><td /></tr></tbody></TableWrap></Card><Card title="THỐNG KÊ ĐI LÀM ĐÚNG GIỜ"><TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Đi trễ</th><th>Đi đúng giờ</th><th>Đi sớm</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody>{stats.map((item, index) => <tr key={item.employee.id}><td>{index + 1}</td><td><strong>{item.employee.name}</strong><small className="table-note">{item.employee.id}</small></td><td className="red-text">{item.late}</td><td className="blue-text">{item.onTime}</td><td className="green-text">{item.early}</td><td>{item.earlyMinutes}</td><td>{item.lateMinutes}</td><td>{item.records}</td><td><strong>{item.rate.toFixed(1)}%</strong></td><td><Badge tone={item.evaluation === 'Chuyên cần tốt' ? 'green' : item.evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{item.evaluation}</Badge></td></tr>)}</tbody></TableWrap></Card></div>
+    const checkIn = String(record.checkIn || record.checkInTime || '—').slice(0, 5)
+    const checkOut = String(record.checkOut || record.checkOutTime || '').slice(0, 5)
+    const minutesKind = attendanceMinutesKind(record)
+    return <tr key={record.id}><td>{index + 1}</td><td><strong>{employee?.name || record.employeeName}</strong><small className="table-note">{record.employeeId}</small></td><td><strong>{record.shiftName || record.shift}</strong><small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td><div className="attendance-shift-timing"><span className="attendance-shift-timing__time attendance-shift-timing__time--in"><small>Vào</small><strong>{checkIn}</strong></span>{checkOut ? <><span className="attendance-shift-timing__arrow" aria-hidden="true">→</span><span className="attendance-shift-timing__time attendance-shift-timing__time--out"><small>Kết</small><strong>{checkOut}</strong></span><span className="attendance-shift-timing__state attendance-shift-timing__state--closed"><CheckCircle2 size={14} aria-hidden="true" />Đã kết ca</span></> : <span className="attendance-shift-timing__state attendance-shift-timing__state--open"><Clock3 size={14} aria-hidden="true" />Đang làm</span>}</div></td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={statusTone(status)}>{status}</Badge></td><td><span className={`attendance-minutes attendance-minutes--${minutesKind}`}>{attendanceMinutesLabel(record)}</span></td><td>{uniqueTiktokEmployees.has(record.employeeId) ? money(employee?.tiktokAllowance) : money(0)}</td><td>{money(Math.floor(pay))}</td><td>{canViewAttendanceLocations && location.mapUrl ? <a className="attendance-location-link" href={location.mapUrl} target="_blank" rel="noreferrer" aria-label={`Xem vị trí điểm danh của ${employee?.name || record.employeeName || record.employeeId} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí</span></a> : <span className="table-note">—</span>}</td></tr>
+  })}<tr className="total-row"><td colSpan="5">TỔNG</td><td>{totalHours.toFixed(2)} giờ</td><td colSpan="2" /><td>{money(totalTiktok)}</td><td>{money(Math.floor(totalPay))}</td><td /></tr></tbody></TableWrap></Card><Card title="THỐNG KÊ ĐI LÀM ĐÚNG GIỜ"><TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Đi trễ</th><th>Đi đúng giờ</th><th>Đi sớm</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody>{stats.map((item, index) => <tr key={item.employee.id}><td>{index + 1}</td><td><strong>{item.employee.name}</strong><small className="table-note">{item.employee.id}</small></td><td className="red-text attendance-stat-value">{item.late}</td><td className="blue-text attendance-stat-value">{item.onTime}</td><td className="green-text attendance-stat-value">{item.early}</td><td className="green-text attendance-stat-value">{item.earlyMinutes}</td><td className="red-text attendance-stat-value">{item.lateMinutes}</td><td>{item.records}</td><td className="blue-text attendance-stat-value"><strong>{item.rate.toFixed(1)}%</strong></td><td><Badge tone={item.evaluation === 'Chuyên cần tốt' ? 'green' : item.evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{item.evaluation}</Badge></td></tr>)}</tbody></TableWrap></Card></div>
 }
 
 export function StorePayrollV2() {

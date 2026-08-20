@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   BriefcaseBusiness,
+  CalendarClock,
   CalendarDays,
   ClipboardCheck,
   Clock3,
@@ -8,6 +9,7 @@ import {
   Eye,
   EyeOff,
   History,
+  MapPin,
   Plus,
   Save,
   ShieldCheck,
@@ -43,7 +45,7 @@ import {
   officeArrivalStatus,
   officeAttendanceRows,
   officeAttendanceStats,
-  officeLocationLabel,
+  officeLocationMapUrl,
   officeRecordDate,
 } from '../employee/officeAttendance'
 import {
@@ -62,11 +64,9 @@ import {
 } from './roleManagementUtils'
 import { SupportWorkEvaluationTable } from './SupportWorkPages'
 import { WorkingTimeFields } from '../office/WorkingTimeFields'
+import { WorkingTimeSettingsModal } from '../office/WorkingTimeSettingsModal'
 import {
-  normalizeWorkingTimeForm,
-  validateWorkingTime,
   withEmploymentWorkingTime,
-  workingTimePayload,
 } from '../office/workingTime'
 
 const ROLE_CONFIG = Object.freeze({
@@ -215,10 +215,11 @@ function RoleProfileDrawer({
           <Field label="Vị trí công việc" required hint="Vị trí cố định theo vai trò tài khoản"><Input value={form.position} readOnly /></Field>
         </div>
 
-        {roleKey === ROLE_KEYS.businessSupport && <>
+        {roleKey === ROLE_KEYS.businessSupport && !editingProfile && <>
           <h3>Thời gian làm việc</h3>
           <WorkingTimeFields form={form} onChange={(workingTime) => onChange('__workingTime')({ target: { value: workingTime } })} />
         </>}
+        {roleKey === ROLE_KEYS.businessSupport && editingProfile && <InfoNote>Dùng chức năng “Cài đặt thời gian làm việc” để thay đổi giờ làm theo ngày áp dụng.</InfoNote>}
 
         <h3>Địa chỉ</h3>
         <AddressAutocomplete value={{ province: form.province, ward: form.ward, street: form.street }} onChange={onAddressChange} />
@@ -338,7 +339,8 @@ function BusinessSupportAttendance({ attendance, policies, profiles }) {
           {rows.map(({ profile, record }, index) => {
             const label = officeArrivalStatus(record)
             const minutes = officeArrivalMinutes(record)
-            return <tr key={record.id || `${recordEmployeeId(record)}-${officeRecordDate(record)}-${index}`}><td><strong>{shortDate(officeRecordDate(record))}</strong></td><td><div className="person-cell"><Avatar name={profile.name} color={profile.color} /><span><strong>{profile.name}</strong><small>{roleProfileCode(profile)}</small></span></div></td><td><strong>{record.shiftStart || profile.workStart || '08:00'}–{record.shiftEnd || profile.workEnd || '17:00'}</strong></td><td className="green-text"><strong>{time24(record.checkIn || record.checkInTime || record.checkInAt)}</strong></td><td><strong>{time24(record.checkOut || record.checkOutTime || record.checkOutAt)}</strong></td><td>{hoursWorked(record).toFixed(2)} giờ</td><td><Badge tone={attendanceTone(label)}>{label}</Badge></td><td>{label === 'Đi sớm' ? `${minutes.earlyMinutes} phút sớm` : label === 'Đi trễ' ? `${minutes.lateMinutes} phút trễ` : '—'}</td><td className="address-cell">{officeLocationLabel(record.checkInLocation || record.location || record.address)}</td></tr>
+            const locationMapUrl = officeLocationMapUrl(record.checkInLocation || record.location || record.address)
+            return <tr key={record.id || `${recordEmployeeId(record)}-${officeRecordDate(record)}-${index}`}><td><strong>{shortDate(officeRecordDate(record))}</strong></td><td><div className="person-cell"><Avatar name={profile.name} color={profile.color} /><span><strong>{profile.name}</strong><small>{roleProfileCode(profile)}</small></span></div></td><td><strong>{record.shiftStart || profile.workStart || '08:00'}–{record.shiftEnd || profile.workEnd || '17:00'}</strong></td><td className="green-text"><strong>{time24(record.checkIn || record.checkInTime || record.checkInAt)}</strong></td><td><strong>{time24(record.checkOut || record.checkOutTime || record.checkOutAt)}</strong></td><td>{hoursWorked(record).toFixed(2)} giờ</td><td><Badge tone={attendanceTone(label)}>{label}</Badge></td><td>{label === 'Đi sớm' ? `${minutes.earlyMinutes} phút sớm` : label === 'Đi trễ' ? `${minutes.lateMinutes} phút trễ` : '—'}</td><td>{locationMapUrl ? <a className="attendance-location-link" href={locationMapUrl} target="_blank" rel="noreferrer" aria-label={`Xem vị trí điểm danh của ${profile.name} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí</span></a> : <span className="table-note">—</span>}</td></tr>
           })}
           {!rows.length && <tr><td colSpan="9">Chưa có dữ liệu chấm công trong tháng đã chọn.</td></tr>}
         </tbody>
@@ -395,10 +397,8 @@ function RoleManagement({ roleKey }) {
   const [imageViewer, setImageViewer] = useState(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [workingTimeProfile, setWorkingTimeProfile] = useState(null)
-  const [workingTimeForm, setWorkingTimeForm] = useState(null)
-  const [workingTimeErrors, setWorkingTimeErrors] = useState([])
-  const [isSavingWorkingTime, setIsSavingWorkingTime] = useState(false)
+  const [workingTimeSettingsOpen, setWorkingTimeSettingsOpen] = useState(false)
+  const [workingTimeInitialProfileId, setWorkingTimeInitialProfileId] = useState('')
   const isAdmin = app.session?.role === 'admin'
   const isBusinessSupport = ['business_support', 'manager'].includes(app.session?.role)
   const canEdit = isAdmin || (isBusinessSupport && roleKey === ROLE_KEYS.storeManager)
@@ -488,41 +488,13 @@ function RoleManagement({ roleKey }) {
   }
 
   const openWorkingTime = (profile) => {
-    const employmentType = roleEmploymentType(profile)
-    setWorkingTimeProfile(profile)
-    setWorkingTimeForm({ employmentType, ...normalizeWorkingTimeForm(profile, employmentType) })
-    setWorkingTimeErrors([])
+    setWorkingTimeInitialProfileId(profile ? roleProfileCode(profile) : '')
+    setWorkingTimeSettingsOpen(true)
   }
 
   const closeWorkingTime = () => {
-    setWorkingTimeProfile(null)
-    setWorkingTimeForm(null)
-    setWorkingTimeErrors([])
-  }
-
-  const saveWorkingTime = async () => {
-    if (!canEditWorkingTime || !workingTimeProfile || !workingTimeForm || isSavingWorkingTime) return
-    const validationErrors = validateWorkingTime(workingTimeForm)
-    if (validationErrors.length) {
-      setWorkingTimeErrors(validationErrors)
-      return
-    }
-    const action = typeof app.updateBusinessSupport === 'function' ? app.updateBusinessSupport : app.updateEmployee
-    if (typeof action !== 'function') return app.notify?.('Chức năng cập nhật giờ làm đang được kết nối.', 'info')
-    setIsSavingWorkingTime(true)
-    try {
-      const result = await action(workingTimeProfile.id || roleProfileCode(workingTimeProfile), workingTimePayload(workingTimeForm))
-      if (result?.ok === false) {
-        const message = result.message || 'Không thể cập nhật giờ làm.'
-        setWorkingTimeErrors([message])
-        return
-      }
-      closeWorkingTime()
-    } catch (error) {
-      setWorkingTimeErrors([error?.message || 'Không thể cập nhật giờ làm.'])
-    } finally {
-      setIsSavingWorkingTime(false)
-    }
+    setWorkingTimeSettingsOpen(false)
+    setWorkingTimeInitialProfileId('')
   }
 
   const updateAddress = (address) => setForm((current) => ({
@@ -562,7 +534,7 @@ function RoleManagement({ roleKey }) {
       app.notify?.(`Vui lòng kiểm tra lại hồ sơ ${config.singular}.`, 'info')
       return
     }
-    const payload = roleProfilePayload(form, roleKey)
+    const payload = roleProfilePayload(form, roleKey, { includeWorkingTime: !editingProfile })
     const specificAction = editingProfile ? app[config.updateMethod] : app[config.addMethod]
     const fallbackAction = editingProfile ? app.updateEmployee : app.addEmployee
     const action = typeof specificAction === 'function' ? specificAction : fallbackAction
@@ -611,7 +583,7 @@ function RoleManagement({ roleKey }) {
   }
 
   return <div className="page">
-    <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={canCreate ? <Button icon={Plus} onClick={openCreate}>Thêm tài khoản</Button> : null} />
+    <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={<>{canEditWorkingTime && <Button variant="outline" icon={CalendarClock} onClick={() => openWorkingTime(null)}>Cài đặt thời gian làm việc</Button>}{canCreate && <Button icon={Plus} onClick={openCreate}>Thêm tài khoản</Button>}</>} />
     {!canCreate && <InfoNote>Chỉ Admin được quản lý tài khoản; Admin và Hỗ trợ KD được cấu hình thời gian làm việc.</InfoNote>}
     {isBusinessSupport && roleKey === ROLE_KEYS.storeManager && <InfoNote>Nhân viên Hỗ trợ KD được tạo hoặc sửa Quản lý cửa hàng; chỉ Admin được xóa tài khoản.</InfoNote>}
     {roleKey === ROLE_KEYS.businessSupport && <div className="tabs"><button type="button" className={tab === 'profiles' ? 'active' : ''} onClick={() => setTab('profiles')}><Users />Danh sách nhân viên</button><button type="button" className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button><button type="button" className={tab === 'evaluation' ? 'active' : ''} onClick={() => setTab('evaluation')}><ShieldCheck />Chuyên cần</button>{canEdit && <button type="button" className={tab === 'work' ? 'active' : ''} onClick={() => setTab('work')}><ClipboardCheck />Công việc</button>}</div>}
@@ -620,10 +592,14 @@ function RoleManagement({ roleKey }) {
     {roleKey === ROLE_KEYS.businessSupport && tab === 'evaluation' && <BusinessSupportEvaluation attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'work' && canEdit && <SupportWorkEvaluationTable assignments={app.supportWorkAssignments || []} profiles={profiles} />}
     {canCreate && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onAddressChange={updateAddress} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} storeEmployees={storeEmployees} stores={stores} togglePassword={() => setShowPassword((current) => !current)} />}
-    <Modal open={Boolean(workingTimeProfile)} onClose={closeWorkingTime} title={`Thời gian làm việc · ${workingTimeProfile?.name || ''}`} footer={<><Button variant="outline" onClick={closeWorkingTime} disabled={isSavingWorkingTime}>Hủy</Button><Button icon={Save} onClick={saveWorkingTime} loading={isSavingWorkingTime}>Lưu giờ làm</Button></>}>
-      {workingTimeErrors.length > 0 && <InfoNote tone="orange"><ul>{workingTimeErrors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
-      {workingTimeForm && <WorkingTimeFields form={workingTimeForm} onChange={(workingTime) => setWorkingTimeForm((current) => ({ ...current, ...workingTime }))} />}
-    </Modal>
+    <WorkingTimeSettingsModal
+      open={workingTimeSettingsOpen}
+      initialEmployeeId={workingTimeInitialProfileId}
+      profiles={profiles}
+      onClose={closeWorkingTime}
+      onSave={(employeeId, payload) => app.setEmployeeWorkingTime?.(employeeId, payload)}
+      title="Cài đặt thời gian làm việc · Nhân viên hỗ trợ KD"
+    />
     <Modal wide open={Boolean(imageViewer)} onClose={closeImageViewer} title={imageViewer?.title || 'Hình ảnh CCCD'} footer={<Button variant="outline" onClick={closeImageViewer}>Đóng</Button>}>
       <IdentityDocumentViewer src={imageViewer?.url || ''} alt={imageViewer?.title || 'Hình ảnh CCCD'} />
     </Modal>

@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   Edit3,
   Eye,
+  EyeOff,
   FileDown,
   Info,
   MapPin,
@@ -53,6 +54,28 @@ import { downloadCsv, money, shortDate, today, validateVietnamPhone } from '../.
 const sum = (items, key) => items.reduce((total, item) => total + (Number(item[key]) || 0), 0)
 const percent = (value, total) => total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '0.00%'
 const emptyStoreForm = { name: '', location: '', address: '' }
+
+function PasswordField({ id, label, visible, onToggle, ...props }) {
+  const toggleLabel = `${visible ? 'Ẩn' : 'Hiện'} ${label.toLowerCase()}`
+
+  return (
+    <Field label={label}>
+      <span className="password-input">
+        <Input id={id} type={visible ? 'text' : 'password'} {...props} />
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-controls={id}
+          aria-label={toggleLabel}
+          aria-pressed={visible}
+          title={toggleLabel}
+        >
+          {visible ? <EyeOff size={20} aria-hidden="true" /> : <Eye size={20} aria-hidden="true" />}
+        </button>
+      </span>
+    </Field>
+  )
+}
 
 const seriesDate = (day, year = new Date().getFullYear()) => {
   const [date, month] = String(day).split('/')
@@ -521,6 +544,7 @@ export function AdminSettings() {
   const [tab, setTab] = useState('profile')
   const [form, setForm] = useState(settings || {})
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' })
+  const [visiblePasswords, setVisiblePasswords] = useState({ current: false, next: false, confirm: false })
   const [notifications, setNotifications] = useState(() => ({
     tasks: settings?.notifications?.tasks ?? true,
     dailyReport: settings?.notifications?.dailyReport ?? true,
@@ -535,6 +559,7 @@ export function AdminSettings() {
         ? 'Quản lý cửa hàng'
         : 'Nhân viên'
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
+  const togglePassword = (key) => setVisiblePasswords((current) => ({ ...current, [key]: !current[key] }))
 
   const saveProfile = async () => {
     if (!String(form.name || '').trim() || !String(form.email || '').trim()) return notify('Họ tên và email là trường bắt buộc.', 'info')
@@ -573,7 +598,10 @@ export function AdminSettings() {
     if (passwordForm.next.length < 8) return notify('Mật khẩu mới phải có ít nhất 8 ký tự.', 'info')
     if (passwordForm.next !== passwordForm.confirm) return notify('Xác nhận mật khẩu mới không khớp.', 'info')
     const changed = await changeAdminPassword?.(session?.id || session?.username, passwordForm.next, passwordForm.current)
-    if (changed) setPasswordForm({ current: '', next: '', confirm: '' })
+    if (changed) {
+      setPasswordForm({ current: '', next: '', confirm: '' })
+      setVisiblePasswords({ current: false, next: false, confirm: false })
+    }
   }
 
   const saveNotifications = async () => {
@@ -617,7 +645,7 @@ export function AdminSettings() {
             <div className="card-actions"><Button icon={Save} onClick={saveProfile}>Lưu thay đổi</Button></div>
           </Card>
         ) : (
-          <Card className="settings-content settings-placeholder"><ShieldCheck size={48} /><h2>{tab === 'password' ? 'Đổi mật khẩu' : 'Thiết lập thông báo'}</h2><p>{tab === 'password' ? 'Nhập mật khẩu mới để tăng cường bảo mật tài khoản.' : 'Chọn loại thông báo bạn muốn nhận từ hệ thống.'}</p><div className="form-stack">{tab === 'password' ? <><Field label="Mật khẩu hiện tại"><Input type="password" value={passwordForm.current} onChange={(event) => setPasswordForm({ ...passwordForm, current: event.target.value })} /></Field><Field label="Mật khẩu mới"><Input type="password" value={passwordForm.next} onChange={(event) => setPasswordForm({ ...passwordForm, next: event.target.value })} /></Field><Field label="Xác nhận mật khẩu"><Input type="password" value={passwordForm.confirm} onChange={(event) => setPasswordForm({ ...passwordForm, confirm: event.target.value })} /></Field></> : <><label className="switch-row"><span>Thông báo công việc mới</span><input type="checkbox" checked={notifications.tasks} onChange={(event) => setNotifications({ ...notifications, tasks: event.target.checked })} /></label><label className="switch-row"><span>Báo cáo doanh thu hàng ngày</span><input type="checkbox" checked={notifications.dailyReport} onChange={(event) => setNotifications({ ...notifications, dailyReport: event.target.checked })} /></label><label className="switch-row"><span>Cảnh báo chi phí</span><input type="checkbox" checked={notifications.expenseAlert} onChange={(event) => setNotifications({ ...notifications, expenseAlert: event.target.checked })} /></label></>}<Button onClick={tab === 'password' ? requestPasswordChange : saveNotifications}>Lưu thiết lập</Button></div></Card>
+          <Card className="settings-content settings-placeholder"><ShieldCheck size={48} /><h2>{tab === 'password' ? 'Đổi mật khẩu' : 'Thiết lập thông báo'}</h2><p>{tab === 'password' ? 'Nhập mật khẩu mới để tăng cường bảo mật tài khoản.' : 'Chọn loại thông báo bạn muốn nhận từ hệ thống.'}</p><div className="form-stack">{tab === 'password' ? <><PasswordField id="account-current-password" label="Mật khẩu hiện tại" autoComplete="current-password" visible={visiblePasswords.current} onToggle={() => togglePassword('current')} value={passwordForm.current} onChange={(event) => setPasswordForm((current) => ({ ...current, current: event.target.value }))} /><PasswordField id="account-new-password" label="Mật khẩu mới" autoComplete="new-password" visible={visiblePasswords.next} onToggle={() => togglePassword('next')} value={passwordForm.next} onChange={(event) => setPasswordForm((current) => ({ ...current, next: event.target.value }))} /><PasswordField id="account-confirm-password" label="Xác nhận mật khẩu" autoComplete="new-password" visible={visiblePasswords.confirm} onToggle={() => togglePassword('confirm')} value={passwordForm.confirm} onChange={(event) => setPasswordForm((current) => ({ ...current, confirm: event.target.value }))} /></> : <><label className="switch-row"><span>Thông báo công việc mới</span><input type="checkbox" checked={notifications.tasks} onChange={(event) => setNotifications({ ...notifications, tasks: event.target.checked })} /></label><label className="switch-row"><span>Báo cáo doanh thu hàng ngày</span><input type="checkbox" checked={notifications.dailyReport} onChange={(event) => setNotifications({ ...notifications, dailyReport: event.target.checked })} /></label><label className="switch-row"><span>Cảnh báo chi phí</span><input type="checkbox" checked={notifications.expenseAlert} onChange={(event) => setNotifications({ ...notifications, expenseAlert: event.target.checked })} /></label></>}<Button onClick={tab === 'password' ? requestPasswordChange : saveNotifications}>Lưu thiết lập</Button></div></Card>
         )}
       </div>
     </div>

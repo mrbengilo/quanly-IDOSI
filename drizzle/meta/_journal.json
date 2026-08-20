@@ -43,6 +43,13 @@
       "when": 1787097600000,
       "tag": "0005_admin_only_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1787184000000,
+      "tag": "0006_recursive_profile_secret_scrub",
+      "breakpoints": true
     }
   ]
 }

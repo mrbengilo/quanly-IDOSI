@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import {
+  CalendarClock,
   CalendarDays,
   Clock3,
   Edit3,
   Eye,
   EyeOff,
   History,
+  MapPin,
   Plus,
   Save,
   Trash2,
@@ -33,7 +35,7 @@ import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { shortDate, today } from '../../utils'
-import { officeLocationLabel } from '../employee/officeAttendance'
+import { officeLocationMapUrl } from '../employee/officeAttendance'
 import {
   officeAttendanceStatsByEmployee,
   officeAttendanceSummary,
@@ -46,6 +48,7 @@ import {
   validateOfficeEmployee,
 } from './officeEmployeeForm'
 import { WorkingTimeFields } from './WorkingTimeFields'
+import { WorkingTimeSettingsModal } from './WorkingTimeSettingsModal'
 import {
   normalizeWorkingTimeForm,
   withEmploymentWorkingTime,
@@ -200,6 +203,7 @@ export function OfficeManagement() {
   const [attendanceFrom, setAttendanceFrom] = useState('')
   const [attendanceTo, setAttendanceTo] = useState('')
   const [attendanceEmployeeId, setAttendanceEmployeeId] = useState('all')
+  const [workingTimeSettingsOpen, setWorkingTimeSettingsOpen] = useState(false)
   const editingRequiresPassword = Boolean(editingEmployee) && !(
     editingEmployee.authUserId || editingEmployee.authVersion || editingEmployee.passwordHash || editingEmployee.legacyPassword
   )
@@ -360,7 +364,7 @@ export function OfficeManagement() {
       startDate: employeeForm.startDate,
       joinDate: employeeForm.startDate,
       employmentType: employeeForm.employmentType,
-      ...workingTimePayload(employeeForm),
+      ...(!editingEmployee ? workingTimePayload(employeeForm) : {}),
       officeEmployeeType: employeeForm.employmentType,
       officeEmploymentType: employeeForm.employmentType,
       position: employeeForm.position.trim(),
@@ -411,6 +415,7 @@ export function OfficeManagement() {
         title="KHỐI VĂN PHÒNG"
         subtitle="Thông tin nhân viên, lịch sử chấm công và đánh giá mức độ chuyên cần."
         icon={Users}
+        actions={canManageOffice ? <Button icon={CalendarClock} onClick={() => setWorkingTimeSettingsOpen(true)}>Cài đặt thời gian làm việc</Button> : null}
       />
       {!canManageOffice && <InfoNote>Chế độ chỉ xem. Tài khoản hiện tại không thể sửa hồ sơ nhân viên.</InfoNote>}
 
@@ -470,10 +475,15 @@ export function OfficeManagement() {
         </div>
         <Card title="Lịch sử chấm công">
           <TableWrap>
-            <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca làm việc</th><th>Điểm danh vào</th><th>Ra về</th><th>Số giờ</th><th>Tags / Chênh lệch</th></tr></thead>
+            <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca làm việc</th><th>Điểm danh vào</th><th>Ra về</th><th>Số giờ</th><th>Tags / Chênh lệch</th><th>Vị trí</th></tr></thead>
             <tbody>
-              {attendanceRows.map((row) => <tr key={row.id}><td><strong>{shortDate(row.date)}</strong></td><td><div className="person-cell"><Avatar name={row.employee?.name || row.record.employeeName || 'NV'} color={row.employee?.color} /><span><strong>{row.employee?.name || row.record.employeeName || row.employeeId}</strong><small>{employeeCode(row.employee) || row.employeeId} · {row.employee?.position || row.employee?.workPosition || row.employee?.role || 'Nhân viên văn phòng'}</small></span></div></td><td><strong>{row.shiftName}</strong><span className="table-sub">{row.shiftStart || '--:--'}–{row.shiftEnd || '--:--'}</span></td><td><strong>{row.checkIn || '—'}</strong><span className="table-sub">{officeLocationLabel(row.checkInLocation)}</span></td><td><strong>{row.checkOut || 'Chưa ra về'}</strong><span className="table-sub">{officeLocationLabel(row.checkOutLocation)}</span></td><td>{row.workedHours.toFixed(2)} giờ</td><td><Badge tone={attendanceTone(row.arrivalStatus)}>{row.arrivalStatus}</Badge> <Badge tone={attendanceTone(row.departureStatus, true)}>{row.departureStatus}</Badge><span className="table-sub">Sớm {row.earlyMinutes} phút · Trễ {row.lateMinutes} phút</span></td></tr>)}
-              {!attendanceRows.length && <tr><td colSpan="7">Chưa có lịch sử chấm công phù hợp bộ lọc.</td></tr>}
+              {attendanceRows.map((row) => {
+                const employeeName = row.employee?.name || row.record.employeeName || row.employeeId
+                const checkInMapUrl = officeLocationMapUrl(row.checkInLocation)
+                const checkOutMapUrl = officeLocationMapUrl(row.checkOutLocation)
+                return <tr key={row.id}><td><strong>{shortDate(row.date)}</strong></td><td><div className="person-cell"><Avatar name={employeeName || 'NV'} color={row.employee?.color} /><span><strong>{employeeName}</strong><small>{employeeCode(row.employee) || row.employeeId} · {row.employee?.position || row.employee?.workPosition || row.employee?.role || 'Nhân viên văn phòng'}</small></span></div></td><td><strong>{row.shiftName}</strong><span className="table-sub">{row.shiftStart || '--:--'}–{row.shiftEnd || '--:--'}</span></td><td><strong>{row.checkIn || '—'}</strong></td><td><strong>{row.checkOut || 'Chưa ra về'}</strong></td><td>{row.workedHours.toFixed(2)} giờ</td><td><Badge tone={attendanceTone(row.arrivalStatus)}>{row.arrivalStatus}</Badge> <Badge tone={attendanceTone(row.departureStatus, true)}>{row.departureStatus}</Badge><span className="table-sub">Sớm {row.earlyMinutes} phút · Trễ {row.lateMinutes} phút</span></td><td><div className="attendance-location-actions">{checkInMapUrl && <a className="attendance-location-link" href={checkInMapUrl} target="_blank" rel="noreferrer" aria-label={`Vị trí vào của ${employeeName} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí vào</span></a>}{checkOutMapUrl && <a className="attendance-location-link" href={checkOutMapUrl} target="_blank" rel="noreferrer" aria-label={`Vị trí ra của ${employeeName} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí ra</span></a>}{!checkInMapUrl && !checkOutMapUrl && <span className="table-note">—</span>}</div></td></tr>
+              })}
+              {!attendanceRows.length && <tr><td colSpan="8">Chưa có lịch sử chấm công phù hợp bộ lọc.</td></tr>}
             </tbody>
           </TableWrap>
           <TableFooter shown={attendanceRows.length} total={attendanceRows.length} />
@@ -508,8 +518,11 @@ export function OfficeManagement() {
             <Field label="Loại nhân viên" required><Select value={employeeForm.employmentType} onChange={updateEmployeeField('employmentType')}>{OFFICE_EMPLOYEE_TYPES.map((type) => <option key={type}>{type}</option>)}</Select></Field>
             <Field label="Vị trí công việc" required><Select value={employeeForm.position} onChange={updateEmployeeField('position')}>{OFFICE_POSITIONS.map((position) => <option key={position}>{position}</option>)}</Select></Field>
           </div>
-          <h3>Thời gian làm việc</h3>
-          <WorkingTimeFields form={employeeForm} onChange={(workingTime) => setEmployeeForm((current) => ({ ...current, ...workingTime }))} />
+          {!editingEmployee && <>
+            <h3>Thời gian làm việc</h3>
+            <WorkingTimeFields form={employeeForm} onChange={(workingTime) => setEmployeeForm((current) => ({ ...current, ...workingTime }))} />
+          </>}
+          {editingEmployee && <InfoNote>Dùng chức năng “Cài đặt thời gian làm việc” để thay đổi giờ làm theo ngày áp dụng.</InfoNote>}
           <h3>Địa chỉ</h3>
           <AddressAutocomplete
             value={{ province: employeeForm.province, ward: employeeForm.ward, street: employeeForm.street }}
@@ -538,6 +551,14 @@ export function OfficeManagement() {
           <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư và chỉ tài khoản có quyền mới truy cập được. Hệ thống không hiển thị lại mật khẩu hiện tại.</InfoNote>
         </form>
       </Modal>}
+
+      <WorkingTimeSettingsModal
+        open={workingTimeSettingsOpen}
+        profiles={officeEmployees}
+        onClose={() => setWorkingTimeSettingsOpen(false)}
+        onSave={(employeeId, payload) => app.setEmployeeWorkingTime?.(employeeId, payload)}
+        title="Cài đặt thời gian làm việc · Khối văn phòng"
+      />
 
       <Modal wide open={Boolean(viewingImage)} onClose={() => setViewingImage(null)} title={viewingImage?.label || 'Ảnh CCCD'} footer={<Button variant="outline" onClick={() => setViewingImage(null)}>Đóng</Button>}>
         <IdentityDocumentViewer src={viewingImage?.url || ''} alt={viewingImage?.label || 'Ảnh CCCD'} />

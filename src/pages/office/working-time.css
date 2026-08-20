@@ -35,6 +35,14 @@
   opacity: .4;
 }
 
+.working-time-settings__selectors {
+  align-items: start;
+}
+
+.working-time-settings .info-note ul {
+  margin: 8px 0 0 20px;
+}
+
 @media (max-width: 720px) {
   .working-time-fields__row {
     grid-template-columns: 1fr 1fr;

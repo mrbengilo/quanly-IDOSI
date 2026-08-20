@@ -12,6 +12,7 @@ const attendancePolicyMigrationPath = resolve(root, 'dist', '.openai', 'drizzle'
 const stateEntitiesMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0003_state_entities.sql')
 const operationalRolesMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0004_operational_roles.sql')
 const adminOnlyAccountsMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0005_admin_only_accounts.sql')
+const recursiveProfileSecretScrubMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0006_recursive_profile_secret_scrub.sql')
 const migrationJournalPath = resolve(root, 'dist', '.openai', 'drizzle', 'meta', '_journal.json')
 
 await access(workerPath)
@@ -22,6 +23,7 @@ await access(attendancePolicyMigrationPath)
 await access(stateEntitiesMigrationPath)
 await access(operationalRolesMigrationPath)
 await access(adminOnlyAccountsMigrationPath)
+await access(recursiveProfileSecretScrubMigrationPath)
 await access(migrationJournalPath)
 
 const hosting = JSON.parse(await readFile(hostingPath, 'utf8'))
@@ -33,6 +35,7 @@ const attendancePolicyMigration = await readFile(attendancePolicyMigrationPath, 
 const stateEntitiesMigration = await readFile(stateEntitiesMigrationPath, 'utf8')
 const operationalRolesMigration = await readFile(operationalRolesMigrationPath, 'utf8')
 const adminOnlyAccountsMigration = await readFile(adminOnlyAccountsMigrationPath, 'utf8')
+const recursiveProfileSecretScrubMigration = await readFile(recursiveProfileSecretScrubMigrationPath, 'utf8')
 const migrationJournal = JSON.parse(await readFile(migrationJournalPath, 'utf8'))
 const workerSource = await readFile(workerPath, 'utf8')
 assert.equal(migrationJournal.dialect, 'sqlite')
@@ -43,6 +46,7 @@ assert.deepEqual(migrationJournal.entries.map(({ tag }) => tag), [
   '0003_state_entities',
   '0004_operational_roles',
   '0005_admin_only_accounts',
+  '0006_recursive_profile_secret_scrub',
 ])
 for (const table of ['system_metadata', 'users', 'app_state', 'policies', 'audit_log', 'counters', 'sessions', 'command_receipts']) {
   assert.match(coreMigration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`))
@@ -81,6 +85,12 @@ assert.match(adminOnlyAccountsMigration, /lower\(field\.key\) NOT LIKE 'password
 assert.match(adminOnlyAccountsMigration, /'\$\.accountSettings'/u)
 assert.match(adminOnlyAccountsMigration, /migration:0005:admin-only-accounts/u)
 assert.match(adminOnlyAccountsMigration, /PRAGMA foreign_key_check/u)
+assert.match(recursiveProfileSecretScrubMigration, /json_tree\(profile\.value_json\)/u)
+assert.match(recursiveProfileSecretScrubMigration, /collection_key IN \('employees', 'deletedEmployees'\)/u)
+assert.match(recursiveProfileSecretScrubMigration, /'accesstoken'.*'refreshtoken'/su)
+assert.match(recursiveProfileSecretScrubMigration, /credential_envelopes/u)
+assert.match(recursiveProfileSecretScrubMigration, /migration:0006:recursive-profile-secret-scrub/u)
+assert.match(recursiveProfileSecretScrubMigration, /PRAGMA foreign_key_check/u)
 
 const { default: worker } = await import(`${new URL(`file:///${workerPath.replaceAll('\\', '/')}`).href}?v=${Date.now()}`)
 const contentTypes = {

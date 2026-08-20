@@ -6,6 +6,7 @@ import { OfficeManagement } from '../office/OfficeManagement'
 import { AdminStores } from './AdminPages'
 import { SystemEmployees } from './GovernancePages'
 import { BusinessSupportManagement, StoreManagerManagement } from './RoleManagement'
+import { today } from '../../utils'
 import {
   EMPLOYMENT_TYPES,
   ROLE_KEYS,
@@ -264,11 +265,11 @@ describe('role management permissions and form', () => {
     expect(screen.getByRole('img', { name: /Nguyễn An · Mặt trước CCCD/i }).closest('.identity-document-viewer__frame')).toBeTruthy()
   })
 
-  it('submits only canonical working-time fields when Business Support configures another support profile', async () => {
-    const updateBusinessSupport = vi.fn().mockResolvedValue({ ok: true })
+  it('submits an effective-dated working-time command when Business Support configures another support profile', async () => {
+    const setEmployeeWorkingTime = vi.fn().mockResolvedValue({ ok: true })
     mocked.app = {
       ...baseApp('business_support'),
-      updateBusinessSupport,
+      setEmployeeWorkingTime,
       businessSupportEmployees: [{
         id: 'HTKD-002', name: 'Hỗ trợ ca', employmentType: 'Part-Time',
         workShifts: [
@@ -280,15 +281,60 @@ describe('role management permissions and form', () => {
 
     render(createElement(BusinessSupportManagement))
     fireEvent.click(screen.getByRole('button', { name: 'Cài giờ làm Hỗ trợ ca' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Lưu giờ làm' }))
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
 
-    await waitFor(() => expect(updateBusinessSupport).toHaveBeenCalledTimes(1))
-    const [, payload] = updateBusinessSupport.mock.calls[0]
-    expect(Object.keys(payload).sort()).toEqual(['workEnd', 'workShifts', 'workStart', 'workTimeType', 'workingTime'].sort())
+    await waitFor(() => expect(setEmployeeWorkingTime).toHaveBeenCalledTimes(1))
+    const [employeeId, payload] = setEmployeeWorkingTime.mock.calls[0]
+    expect(employeeId).toBe('HTKD-002')
+    expect(Object.keys(payload).sort()).toEqual(['effectiveFrom', 'workEnd', 'workShifts', 'workStart', 'workTimeType', 'workingTime'].sort())
+    expect(payload.effectiveFrom).toBe(today())
     expect(payload).toMatchObject({ workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00' })
     expect(payload).not.toHaveProperty('username')
     expect(payload).not.toHaveProperty('status')
     expect(payload).not.toHaveProperty('salary')
+  })
+
+  it('omits working-time fields from generic Business Support profile edits', () => {
+    const payload = roleProfilePayload({
+      ...emptyRoleProfile(ROLE_KEYS.businessSupport),
+      name: 'Hỗ trợ ca', phone: '0901234567', cccd: '079123456789', startDate: '2026-08-01',
+      employmentType: 'Part-Time', position: 'NV hỗ trợ KD', username: 'support.shift',
+      workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00',
+      workShifts: [{ id: 'ca_sang', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+    }, ROLE_KEYS.businessSupport, { includeWorkingTime: false })
+
+    expect(payload).not.toHaveProperty('workTimeType')
+    expect(payload).not.toHaveProperty('workStart')
+    expect(payload).not.toHaveProperty('workEnd')
+    expect(payload).not.toHaveProperty('workShifts')
+    expect(payload).not.toHaveProperty('workingTime')
+  })
+
+  it('shows Business Support attendance locations only as safe Google Maps buttons', () => {
+    mocked.app = {
+      ...baseApp('admin'),
+      businessSupportEmployees: [{
+        id: 'HTKD-001', code: 'HTKD-001', unit: 'business_support', name: 'Nguyễn An',
+        employmentType: 'Full-Time', workStart: '08:00', workEnd: '17:30',
+      }],
+      attendance: [{
+        id: 'CC-HTKD-001', employeeId: 'HTKD-001', date: today(), shiftStart: '08:00', shiftEnd: '17:30',
+        checkIn: '08:15', checkOut: '17:30', hours: 9.25, arrivalTag: 'Đi trễ', minutesLate: 15,
+        checkInLocation: { latitude: 10.8577553, longitude: 106.7499427, label: 'Trụ sở IDOSI' },
+      }],
+      policies: { attendanceEvaluation: { maintainMaxLateCount: 1, improveMinLateCount: 3, improveMinLateMinutes: 30 } },
+    }
+
+    render(createElement(BusinessSupportManagement))
+    fireEvent.click(screen.getByRole('button', { name: 'Chấm công' }))
+
+    const link = screen.getByRole('link', { name: /Xem vị trí điểm danh của Nguyễn An trên Google Maps/i })
+    expect(link.textContent).toBe('Xem vị trí')
+    expect(link.href).toMatch(/^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=/)
+    expect(link.target).toBe('_blank')
+    expect(link.rel).toContain('noreferrer')
+    expect(screen.queryByText('Trụ sở IDOSI')).toBeNull()
+    expect(screen.queryByText(/10\.8577553|106\.7499427/)).toBeNull()
   })
 
   it('shows Admin the store-manager assignment and dual-role selection form', () => {

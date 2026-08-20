@@ -2,9 +2,11 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Bell,
+  CalendarClock,
   CalendarDays,
   Check,
   ChevronDown,
+  Clock3,
   Download,
   Info,
   LoaderCircle,
@@ -29,7 +31,11 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
+import { useRef } from 'react'
 import { money } from '../utils'
+
+const TEMPORAL_INPUT_TYPES = new Set(['date', 'time', 'month', 'datetime-local'])
+const TEMPORAL_PICKER_KEYS = new Set(['Enter', ' '])
 
 export function Brand({ compact = false, blue = false, subtitle = 'hệ thống quản lý' }) {
   return (
@@ -146,11 +152,64 @@ export function Field({ label, required, hint, error, children, className = '' }
   )
 }
 
-export function Input({ icon: Icon, className = '', ...props }) {
+export function Input({ icon, className = '', type, onKeyDown, ...props }) {
+  const inputRef = useRef(null)
+  const pickerRequestPendingRef = useRef(false)
+  const isTemporal = TEMPORAL_INPUT_TYPES.has(type)
+  const Icon = icon || (type === 'time' ? Clock3 : type === 'datetime-local' ? CalendarClock : isTemporal ? CalendarDays : null)
+
+  const requestPicker = (fallbackToClick = false) => {
+    const input = inputRef.current
+    if (!isTemporal || !input || input.disabled || input.readOnly || pickerRequestPendingRef.current) return false
+
+    pickerRequestPendingRef.current = true
+    input.focus({ preventScroll: true })
+
+    let opened = false
+    if (typeof input.showPicker === 'function') {
+      try {
+        input.showPicker()
+        opened = true
+      } catch {
+        // Browsers can reject showPicker() in embedded or unsupported contexts.
+      }
+    }
+
+    if (!opened && fallbackToClick) input.click()
+    queueMicrotask(() => {
+      pickerRequestPendingRef.current = false
+    })
+    return true
+  }
+
+  const handleWrapperClick = (event) => {
+    if (!isTemporal || event.defaultPrevented) return
+    const clickedOutsideInput = event.target !== inputRef.current
+    const pickerRequested = requestPicker(clickedOutsideInput)
+    if (clickedOutsideInput && pickerRequested) event.preventDefault()
+  }
+
+  const handleKeyDown = (event) => {
+    onKeyDown?.(event)
+    if (
+      event.defaultPrevented
+      || !isTemporal
+      || inputRef.current?.disabled
+      || inputRef.current?.readOnly
+      || (!TEMPORAL_PICKER_KEYS.has(event.key) && !(event.altKey && event.key === 'ArrowDown'))
+    ) return
+
+    event.preventDefault()
+    requestPicker(true)
+  }
+
   return (
-    <span className={`input-wrap ${className}`}>
-      {Icon && <Icon size={18} />}
-      <input {...props} />
+    <span
+      className={`input-wrap ${isTemporal ? 'input-wrap--temporal' : ''} ${className}`}
+      onClick={handleWrapperClick}
+    >
+      {Icon && <Icon className={isTemporal ? 'input-wrap__temporal-icon' : ''} size={18} aria-hidden="true" />}
+      <input ref={inputRef} type={type} onKeyDown={handleKeyDown} {...props} />
     </span>
   )
 }

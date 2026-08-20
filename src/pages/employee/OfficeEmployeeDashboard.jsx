@@ -23,6 +23,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
+import { resolveEffectiveWorkingTime } from '../../domain/workTimeSchedule'
 import { money, shortDate } from '../../utils'
 import { normalizeWorkingTimeForm } from '../office/workingTime'
 import {
@@ -211,7 +212,15 @@ export function OfficeEmployeeDashboard() {
   const [filterValue, setFilterValue] = useState(() => vietnamDateKey().slice(0, 7))
   const [busy, setBusy] = useState('')
   const [locationError, setLocationError] = useState('')
-  const profileWorkShifts = useMemo(() => normalizeWorkingTimeForm(employee, employee.employmentType).workShifts, [employee])
+  const dateKey = vietnamDateKey(now)
+  const effectiveEmployee = useMemo(
+    () => resolveEffectiveWorkingTime(employee, dateKey),
+    [dateKey, employee],
+  )
+  const profileWorkShifts = useMemo(
+    () => normalizeWorkingTimeForm(effectiveEmployee, employee.employmentType).workShifts,
+    [effectiveEmployee, employee.employmentType],
+  )
   const [selectedShiftId, setSelectedShiftId] = useState(() => profileWorkShifts[0]?.id || '')
 
   useEffect(() => {
@@ -219,7 +228,6 @@ export function OfficeEmployeeDashboard() {
     return () => window.clearInterval(timer)
   }, [])
 
-  const dateKey = vietnamDateKey(now)
   const allRows = useMemo(() => officeAttendanceRows(app.attendance || [], employee), [app.attendance, employee])
   const openRecord = allRows.find((record) => !record.checkOut && !record.checkOutAt)
   const todayRecord = allRows.find((record) => officeRecordDate(record) === dateKey)
@@ -261,8 +269,8 @@ export function OfficeEmployeeDashboard() {
           shiftId: effectiveShiftId,
           workShiftId: effectiveShiftId,
           shiftName: selectedShift?.name || `Giờ làm ${unitLabel}`,
-          shiftStart: selectedShift?.start || employee.workStart || '08:00',
-          shiftEnd: selectedShift?.end || employee.workEnd || '17:00',
+          shiftStart: selectedShift?.start || effectiveEmployee.workStart || '08:00',
+          shiftEnd: selectedShift?.end || effectiveEmployee.workEnd || '17:00',
           location,
           idempotencyKey: `office-attendance-in:${employeeId}:${dateKey}`,
         })
@@ -299,7 +307,7 @@ export function OfficeEmployeeDashboard() {
         </Card>
         <Card className="office-attendance-action">
           <div className="office-attendance-action__heading">
-            <div><span>CHẤM CÔNG HÔM NAY</span><strong>{selectedShift?.name || `Giờ làm ${unitLabel}`}</strong><small>{selectedShift?.start || employee.workStart || '08:00'} – {selectedShift?.end || employee.workEnd || '17:00'}</small></div>
+            <div><span>CHẤM CÔNG HÔM NAY</span><strong>{selectedShift?.name || `Giờ làm ${unitLabel}`}</strong><small>{selectedShift?.start || effectiveEmployee.workStart || '08:00'} – {selectedShift?.end || effectiveEmployee.workEnd || '17:00'}</small></div>
             <Badge tone={statusTone(todayStatus)}>{todayStatus}</Badge>
           </div>
           {profileWorkShifts.length > 1 && !todayRecord && <Field label="Chọn ca làm việc" required>

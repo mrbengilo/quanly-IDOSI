@@ -63,11 +63,11 @@ svg { flex: 0 0 auto; }
 .input-wrap { min-height: 43px; width: 100%; border: 1px solid #b9cfc1; border-radius: 8px; background: #fff; display: flex; align-items: center; gap: 9px; padding: 0 12px; transition: border .18s, box-shadow .18s; }
 .input-wrap:focus-within { border-color: #16894c; box-shadow: 0 0 0 3px rgba(8, 121, 61, .12); }
 .input-wrap input, .input-wrap select { width: 100%; border: 0; outline: 0; background: transparent; min-width: 0; height: 41px; }
-.input-wrap:has(input[type="date"]) { position: relative; cursor: pointer; min-width: 0; }
-.input-wrap:has(input[type="date"]) > svg { position: relative; z-index: 2; color: var(--green-700); pointer-events: none; }
-.input-wrap:has(input[type="date"]) input[type="date"] { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0 10px; cursor: pointer; }
-.input-wrap:has(> svg):has(input[type="date"]) input[type="date"] { padding-left: 40px; }
-.input-wrap input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; width: 20px; height: 20px; opacity: .72; }
+.input-wrap--temporal { position: relative; cursor: pointer; min-width: 0; }
+.input-wrap--temporal .input-wrap__temporal-icon { color: var(--green-700); pointer-events: none; }
+.input-wrap--temporal input { cursor: pointer; }
+.input-wrap--temporal input:disabled,.input-wrap--temporal input[readonly] { cursor: not-allowed; }
+.input-wrap--temporal input::-webkit-calendar-picker-indicator { width: 0; height: 0; margin: 0; padding: 0; opacity: 0; pointer-events: none; }
 .select-wrap { position: relative; padding-right: 34px; }
 .select-wrap select { appearance: none; cursor: pointer; }
 .select-chevron { position: absolute; right: 11px; pointer-events: none; }
@@ -540,24 +540,123 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
 
 .attendance-location-link {
   display: inline-flex;
-  flex-direction: column;
-  gap: 3px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 7px 12px;
+  border: 1px solid rgba(8, 121, 61, .24);
+  border-radius: 10px;
+  background: rgba(8, 121, 61, .06);
   color: var(--green-700);
   font-weight: 700;
-  text-decoration: underline;
-  text-decoration-color: rgba(8, 121, 61, .35);
-  text-underline-offset: 3px;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease, transform .16s ease;
 }
 
 .attendance-location-link:hover,
 .attendance-location-link:focus-visible {
   color: var(--green-900);
-  text-decoration-color: currentColor;
+  border-color: rgba(8, 121, 61, .48);
+  background: rgba(8, 121, 61, .12);
+  transform: translateY(-1px);
+}
+
+.attendance-location-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .attendance-minutes,
 .payroll-hourly-rate {
   white-space: nowrap;
+}
+
+.attendance-minutes {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  font-weight: 700;
+}
+
+.attendance-minutes--early {
+  color: #08783c;
+  background: #e9f7ee;
+}
+
+.attendance-minutes--late {
+  color: #d92d3b;
+  background: #fff0f1;
+}
+
+.attendance-minutes--on-time {
+  color: #176fec;
+  background: #edf4ff;
+}
+
+.attendance-shift-timing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 185px;
+  flex-wrap: wrap;
+}
+
+.attendance-shift-timing__time,
+.attendance-shift-timing__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.attendance-shift-timing__time {
+  border: 1px solid #dce8e0;
+  background: #fff;
+}
+
+.attendance-shift-timing__time small {
+  color: #667085;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.attendance-shift-timing__time--in strong {
+  color: #08783c;
+}
+
+.attendance-shift-timing__arrow {
+  color: #98a2b3;
+  font-weight: 700;
+}
+
+.attendance-shift-timing__state {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.attendance-shift-timing__state--open {
+  color: #08783c;
+  background: #e9f7ee;
+}
+
+.attendance-shift-timing__state--closed {
+  color: #176fec;
+  background: #edf4ff;
+}
+
+.attendance-stat-value {
+  font-weight: 700;
 }
 
 .payroll-hourly-rate {

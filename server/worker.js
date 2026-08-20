@@ -35,6 +35,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'store.update',
   'employee.create',
   'employee.update',
+  'employee.working_time.set',
   'shift_definition.create',
   'shift_definition.update',
   'shift_definition.delete',
@@ -69,7 +70,6 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'operational_reset.restore',
   'support_transfer.create',
   'support_transfer.update',
-  'support_transfer.delete',
   'support_work.update',
 ])
 const ADDRESS_SUGGESTION_TYPES = new Set(['province', 'ward', 'street'])
@@ -3217,8 +3217,7 @@ const OPERATIONAL_PROFILE_FIELDS = new Set([
   'identityImages', 'cccdImages', 'identityCardImages', 'cccdFront', 'cccdBack',
 ])
 
-const BUSINESS_SUPPORT_WORK_TIME_PROFILE_FIELDS = new Set([
-  'employeeId', 'id', 'code', 'employeeCode',
+const PROFILE_WORKING_TIME_FIELDS = new Set([
   'workTimeType', 'workStart', 'workEnd', 'workShifts', 'workingTime',
 ])
 
@@ -3270,6 +3269,7 @@ const operationalPosition = (value, unit) => {
 
 const MAX_REQUIRED_MONTHLY_HOURS = 744
 const MAX_PROFILE_WORK_SHIFTS = 12
+const MAX_PROFILE_WORK_TIME_SCHEDULE_ENTRIES = 120
 
 const expectedWorkTimeType = (employmentType) => (
   employmentType === 'Full-Time' ? 'Full-Time' : 'Part-Time'
@@ -3348,10 +3348,56 @@ const normalizeProfileWorkingTime = (payload, previous, employmentType) => {
   }
 }
 
-const configuredProfileWorkShifts = (employee) => {
-  const canonical = Array.isArray(employee?.workShifts)
-    ? employee.workShifts
-    : Array.isArray(employee?.workingTime?.shifts) ? employee.workingTime.shifts : []
+const profileWorkingTimeSchedule = (employee) => {
+  const employmentType = officeEmploymentType(employee?.employmentType || 'Full-Time')
+  const entries = new Map()
+  for (const rawEntry of Array.isArray(employee?.workTimeSchedule) ? employee.workTimeSchedule : []) {
+    if (!isPlainRecord(rawEntry)) continue
+    let effectiveFrom
+    try {
+      effectiveFrom = optionalCalendarDate(rawEntry.effectiveFrom, 'Ngày áp dụng')
+    } catch {
+      continue
+    }
+    if (!effectiveFrom) continue
+    try {
+      const entryEmploymentType = officeEmploymentType(rawEntry.employmentType || employmentType)
+      entries.set(effectiveFrom, {
+        effectiveFrom,
+        employmentType: entryEmploymentType,
+        ...normalizeProfileWorkingTime(rawEntry, employee, entryEmploymentType),
+        ...(rawEntry.createdAt ? { createdAt: rawEntry.createdAt } : {}),
+        ...(rawEntry.createdBy ? { createdBy: rawEntry.createdBy } : {}),
+        ...(rawEntry.updatedAt ? { updatedAt: rawEntry.updatedAt } : {}),
+        ...(rawEntry.updatedBy ? { updatedBy: rawEntry.updatedBy } : {}),
+        ...(rawEntry.source ? { source: rawEntry.source } : {}),
+      })
+    } catch {
+      // A malformed legacy entry must not make the employee unable to check in.
+    }
+  }
+  return [...entries.values()].sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom))
+}
+
+const resolveProfileWorkingTime = (employee, workDate) => {
+  const date = String(workDate || '').trim()
+  const effective = profileWorkingTimeSchedule(employee)
+    .filter((entry) => !date || entry.effectiveFrom <= date)
+    .at(-1)
+  if (effective) return effective
+  const employmentType = officeEmploymentType(employee?.employmentType || 'Full-Time')
+  return {
+    effectiveFrom: null,
+    employmentType,
+    ...normalizeProfileWorkingTime({}, employee, employmentType),
+  }
+}
+
+const configuredProfileWorkShifts = (employee, workDate) => {
+  const resolved = resolveProfileWorkingTime(employee, workDate)
+  const canonical = Array.isArray(resolved?.workShifts)
+    ? resolved.workShifts
+    : Array.isArray(resolved?.workingTime?.shifts) ? resolved.workingTime.shifts : []
   const shifts = canonical.flatMap((rawShift, index) => {
     if (!isPlainRecord(rawShift)) return []
     const start = parseShiftTime(rawShift.start)
@@ -3364,11 +3410,12 @@ const configuredProfileWorkShifts = (employee) => {
       end: end.label,
       version: 1,
       source: 'profile-work-shift',
+      ...(resolved.effectiveFrom ? { effectiveFrom: resolved.effectiveFrom } : {}),
     }]
   })
   if (shifts.length) return shifts
-  const start = parseShiftTime(employee?.workStart)
-  const end = parseShiftTime(employee?.workEnd)
+  const start = parseShiftTime(resolved?.workStart)
+  const end = parseShiftTime(resolved?.workEnd)
   if (!start || !end || end.minuteOfDay <= start.minuteOfDay) return []
   return [{
     id: `${employeeUnit(employee).toUpperCase()}_DEFAULT`,
@@ -3510,7 +3557,7 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
   const workingTime = normalizeProfileWorkingTime(payload, previous, employmentType)
   const position = operationalPosition(payload.position ?? payload.jobPosition ?? previous?.position, unit)
   const preservedMetadata = previous ? Object.fromEntries(Object.entries(previous).filter(([key]) => [
-    'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'authUserId', 'authVersion', 'identityImages',
+    'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'authUserId', 'authVersion', 'identityImages', 'workTimeSchedule',
   ].includes(key))) : {}
   const profile = sanitizeStateValue({
     ...preservedMetadata,
@@ -3731,7 +3778,101 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
   return profile
 }
 
+const employeeWorkingTimeCommand = async (db, actor, body, commandContext) => {
+  if (!['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được cài đặt thời gian làm việc.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const employeeId = String(payload.employeeId || '').trim()
+  const employees = Array.isArray(state.employees) ? state.employees : []
+  const previous = employees.find((employee) => (
+    String(employee.id || employee.code || '') === employeeId && !employee.deletedAt
+  ))
+  if (!previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
+  const unit = employeeUnit(previous)
+  if (!['office', 'business_support'].includes(unit)) {
+    throw new ApiError(400, 'WORK_TIME_UNIT_INVALID', 'Cài đặt này chỉ áp dụng cho Khối văn phòng và Nhân viên hỗ trợ KD.')
+  }
+  const effectiveFrom = optionalCalendarDate(payload.effectiveFrom, 'Ngày áp dụng')
+  if (!effectiveFrom) throw new ApiError(400, 'WORK_TIME_EFFECTIVE_DATE_REQUIRED', 'Cần chọn ngày áp dụng.')
+  const employmentStart = optionalCalendarDate(previous.startDate || previous.joinDate, 'Ngày bắt đầu làm') || '1970-01-01'
+  if (effectiveFrom < employmentStart) {
+    throw new ApiError(400, 'WORK_TIME_BEFORE_EMPLOYMENT', 'Ngày áp dụng không được trước ngày bắt đầu làm.')
+  }
+  const employmentType = officeEmploymentType(previous.employmentType || 'Full-Time')
+  const configuration = normalizeProfileWorkingTime(payload, previous, employmentType)
+  const existingEntries = profileWorkingTimeSchedule(previous)
+  if (existingEntries.length >= MAX_PROFILE_WORK_TIME_SCHEDULE_ENTRIES
+    && !existingEntries.some((entry) => entry.effectiveFrom === effectiveFrom)) {
+    throw new ApiError(
+      400,
+      'WORK_TIME_SCHEDULE_LIMIT',
+      `Mỗi nhân viên được lưu tối đa ${MAX_PROFILE_WORK_TIME_SCHEDULE_ENTRIES} mốc thời gian làm việc.`,
+    )
+  }
+  const scheduleEntries = [...existingEntries]
+  if (!scheduleEntries.length && employmentStart < effectiveFrom) {
+    scheduleEntries.push({
+      effectiveFrom: employmentStart,
+      employmentType,
+      ...normalizeProfileWorkingTime({}, previous, employmentType),
+      source: 'legacy-profile',
+      createdAt: previous.createdAt || commandContext.now,
+      createdBy: previous.createdBy || serverActorSnapshot(actor),
+    })
+  }
+  const previousEntry = scheduleEntries.find((entry) => entry.effectiveFrom === effectiveFrom)
+  const setting = {
+    ...(previousEntry || {}),
+    effectiveFrom,
+    employmentType,
+    ...configuration,
+    ...(previousEntry
+      ? { updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor) }
+      : { createdAt: commandContext.now, createdBy: serverActorSnapshot(actor) }),
+  }
+  const workTimeSchedule = [
+    ...scheduleEntries.filter((entry) => entry.effectiveFrom !== effectiveFrom),
+    setting,
+  ].sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom))
+  const active = resolveProfileWorkingTime(
+    { ...previous, workTimeSchedule },
+    localDateTimeParts(commandContext.now).date,
+  )
+  const saved = sanitizeStateValue({
+    ...previous,
+    workTimeType: active.workTimeType,
+    workStart: active.workStart,
+    workEnd: active.workEnd,
+    workShifts: active.workShifts,
+    workingTime: active.workingTime,
+    workTimeSchedule,
+    updatedAt: commandContext.now,
+    updatedBy: serverActorSnapshot(actor),
+  })
+  const nextState = {
+    ...state,
+    employees: employees.map((employee) => (
+      String(employee.id || employee.code || '') === employeeId ? saved : employee
+    )),
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'employee-working-time',
+    entityId: employeeId,
+    before: previous,
+    after: saved,
+    metadata: { employeeId, unit, effectiveFrom, replaced: Boolean(previousEntry) },
+    response: { command: body.type, employee: saved, setting },
+  }, commandContext)
+}
+
 const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
+  if (body.type === 'employee.working_time.set') {
+    return employeeWorkingTimeCommand(db, actor, body, commandContext)
+  }
   assertOperationsRole(actor, 'Tài khoản không có quyền quản lý hồ sơ nhân viên.')
   const operation = body.type.split('.').at(-1)
   if (!['create', 'update', 'delete'].includes(operation)) {
@@ -3767,14 +3908,16 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const creatingStoreEmployee = operation === 'create' && unit === 'store'
   const supportCreatingStoreEmployee = actor.role === 'business_support' && creatingStoreEmployee
   if (creatingStoreEmployee) employeeId = ''
-  const supportWorkingTimeUpdate = actor.role === 'business_support'
-    && operation === 'update'
-    && ['office', 'business_support'].includes(unit)
-    && Object.keys(profilePayload).every((field) => BUSINESS_SUPPORT_WORK_TIME_PROFILE_FIELDS.has(field))
-    && Object.keys(profilePayload).some((field) => ['workTimeType', 'workStart', 'workEnd', 'workShifts', 'workingTime'].includes(field))
+  if (operation === 'update' && Object.keys(profilePayload).some((field) => PROFILE_WORKING_TIME_FIELDS.has(field))) {
+    throw new ApiError(
+      400,
+      'WORK_TIME_UPDATE_COMMAND_REQUIRED',
+      'Dùng chức năng Cài đặt thời gian làm việc và chọn ngày áp dụng.',
+    )
+  }
   const supportOperationAllowed = (
     ['store', 'office', 'store_manager'].includes(unit) && ['create', 'update'].includes(operation)
-  ) || supportWorkingTimeUpdate
+  )
   if (actor.role === 'business_support' && !supportOperationAllowed) {
     throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD chỉ được thêm hoặc cập nhật nhân viên cửa hàng, Khối văn phòng và Quản lý cửa hàng.')
   }
@@ -3792,7 +3935,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       throw new ApiError(400, 'EMPLOYEE_UNIT_IMMUTABLE', 'Không thể đổi nhóm vai trò của hồ sơ nhân viên.')
     }
   }
-  if (unit === 'business_support' && actor.role !== 'admin' && !supportWorkingTimeUpdate) {
+  if (unit === 'business_support' && actor.role !== 'admin') {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được quản lý hồ sơ Nhân viên hỗ trợ KD.')
   }
   if (['store_manager', 'office'].includes(unit)
@@ -4914,6 +5057,9 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   const operation = body.type.split('.').at(-1)
   if (!['create', 'update', 'delete'].includes(operation)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh điều chuyển hỗ trợ không được hỗ trợ.')
+  }
+  if (operation === 'delete' && actor.role !== 'admin') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được xóa lịch sử điều chuyển nhân sự.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
@@ -6848,7 +6994,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       && shiftTimes(record).start
       && shiftTimes(record).end
     ))
-    const profileShifts = officeEmployee ? configuredProfileWorkShifts(employee) : []
+    const profileShifts = officeEmployee ? configuredProfileWorkShifts(employee, localNow.date) : []
     let shiftId = String(payload.shiftId || payload.workShiftId || '').trim()
     let shift = shiftId ? activeShifts.find((record) => String(record.id || '') === shiftId) : null
     let activeTransferBounds = null
