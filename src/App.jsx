@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import AppShell from './layout/AppShell'
 import Login from './pages/Login'
+import RoleSelectionPage from './pages/RoleSelectionPage'
 import {
   AdminSettings,
   AdminStores,
@@ -8,6 +9,7 @@ import {
 import { BusinessSupportManagement, StoreManagerManagement } from './pages/admin/RoleManagement'
 import { CustomerSurveyPage } from './pages/admin/CustomerSurveyPage'
 import { AdminSupportWorkPage, SupportAssignedWorkPage } from './pages/admin/SupportWorkPages'
+import { BusinessSupportSchedulePage, MyBusinessSupportSchedulePage } from './pages/admin/BusinessSupportSchedulePage'
 import {
   AdminCashflowV2,
   AdminOverviewV2,
@@ -67,6 +69,7 @@ function RoleGuard({ roles, children }) {
   const { session, authReady = true } = useApp()
   if (!authReady) return <div className="route-loading" role="status">Đang khôi phục màn hình...</div>
   if (!session) return <Navigate to="/login" replace />
+  if (session.needsRoleSelection) return <Navigate to="/select-role" replace />
   const allowedRoles = Array.isArray(roles) ? roles : [roles]
   if (!allowedRoles.includes(canonicalRole(session.role))) return <Navigate to={homeFor(session)} replace />
   return children
@@ -75,7 +78,7 @@ function RoleGuard({ roles, children }) {
 function EntryRedirect() {
   const { session, authReady = true } = useApp()
   if (!authReady) return <div className="route-loading" role="status">Đang khôi phục màn hình...</div>
-  return <Navigate to={homeFor(session)} replace />
+  return <Navigate to={session?.needsRoleSelection ? '/select-role' : homeFor(session)} replace />
 }
 
 function EmployeeHomePage() {
@@ -118,7 +121,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<EntryRedirect />} />
-      <Route path="/login" element={!authReady ? <div className="route-loading" role="status">Đang khôi phục màn hình...</div> : session ? <Navigate to={homeFor(session)} replace /> : <Login />} />
+      <Route path="/login" element={!authReady ? <div className="route-loading" role="status">Đang khôi phục màn hình...</div> : session ? <Navigate to={session.needsRoleSelection ? '/select-role' : homeFor(session)} replace /> : <Login />} />
+      <Route path="/select-role" element={<RoleSelectionPage />} />
 
       <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager', 'employee']}><AppShell /></RoleGuard>}>
         <Route path="/account/settings" element={<AdminSettings />} />
@@ -131,6 +135,7 @@ export default function App() {
         <Route path="/admin/reports" element={<AdminReportsV2 />} />
         <Route path="/admin/employees" element={<SystemEmployees />} />
         <Route path="/admin/business-support" element={<BusinessSupportManagement />} />
+        <Route path="/admin/business-support-schedule" element={<BusinessSupportSchedulePage />} />
         <Route path="/admin/store-managers" element={<StoreManagerManagement />} />
         <Route path="/office" element={<OfficeManagement />} />
         <Route path="/admin/office" element={<Navigate to="/office" replace />} />
@@ -161,6 +166,7 @@ export default function App() {
         <Route path="/support/overview" element={<OfficeEmployeeDashboard />} />
         <Route path="/support/attendance" element={<Navigate to="/support/overview" replace />} />
         <Route path="/support/tasks" element={<SupportAssignedWorkPage />} />
+        <Route path="/support/my-schedule" element={<MyBusinessSupportSchedulePage />} />
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>

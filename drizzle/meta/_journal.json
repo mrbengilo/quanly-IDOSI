@@ -50,6 +50,13 @@
       "when": 1787184000000,
       "tag": "0006_recursive_profile_secret_scrub",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1787270400000,
+      "tag": "0007_session_roles",
+      "breakpoints": true
     }
   ]
 }

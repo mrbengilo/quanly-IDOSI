@@ -180,13 +180,16 @@ function RoleProfileDrawer({
           {!editingProfile && <Field label="Cách tạo Quản lý cửa hàng" required>
             <Select value={form.managerSource || 'new'} onChange={onChange('managerSource')}>
               <option value="new">Tạo hồ sơ quản lý mới</option>
-              <option value="existing">Chọn nhân viên cửa hàng hiện có</option>
+              <option value="existing">Chọn nhân viên cửa hàng hoặc Hỗ trợ KD hiện có</option>
             </Select>
           </Field>}
-          {!editingProfile && form.managerSource === 'existing' && <Field label="Nhân viên được phân quyền quản lý" required hint="Nhân viên giữ nguyên vai trò bán hàng và dùng cùng tài khoản để quản lý cửa hàng.">
+          {!editingProfile && form.managerSource === 'existing' && <Field label="Nhân viên được phân quyền quản lý" required hint="Nhân viên giữ nguyên các vai trò hiện có và dùng cùng tài khoản để vào giao diện quản lý.">
             <Select value={form.linkedEmployeeId || ''} onChange={onChange('linkedEmployeeId')}>
               <option value="">Chọn nhân viên</option>
-              {storeEmployees.filter((employee) => String(employee.storeId || '') === String(form.storeId || '') && !employee.isStoreManager).map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}
+              {storeEmployees.filter((employee) => (
+                String(employee.unit || '').toLowerCase() === 'business_support'
+                || String(employee.storeId || '') === String(form.storeId || '')
+              ) && !employee.isStoreManager).map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}{String(employee.unit || '').toLowerCase() === 'business_support' ? ' · Hỗ trợ KD' : ''}</option>)}
             </Select>
           </Field>}
         </>}
@@ -371,7 +374,7 @@ function RoleManagement({ roleKey }) {
     ...(Array.isArray(app.deletedEmployees) ? app.deletedEmployees : []),
   ]
   const storeEmployees = (Array.isArray(app.employees) ? app.employees : []).filter((profile) => (
-    String(profile.unit || 'store') === 'store' && !profile.deletedAt
+    ['store', 'business_support'].includes(String(profile.unit || 'store').toLowerCase()) && !profile.deletedAt
   ))
   const [tab, setTab] = useState('profiles')
   const [drawerOpen, setDrawerOpen] = useState(false)

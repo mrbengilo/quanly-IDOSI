@@ -1,6 +1,8 @@
 import { businessDate } from '../utils'
 
 const normalize = (value) => String(value || '').trim().toLocaleLowerCase('vi')
+export const OCCUPATION_SURVEY_START_AT = '2026-08-21T11:15:00+07:00'
+const OCCUPATION_SURVEY_START_MS = Date.parse(OCCUPATION_SURVEY_START_AT)
 
 const validOrders = (orders = [], { period = '', storeId = '' } = {}) => (Array.isArray(orders) ? orders : [])
   .filter((order) => (
@@ -48,10 +50,14 @@ const topEntry = (counts = {}) => Object.entries(counts)
 
 export function customerSurveySummary(orders = [], filters = {}) {
   const records = validOrders(orders, filters)
+  const occupationRecords = records.filter((order) => {
+    const timestamp = Date.parse(order.createdAt || order.occurredAt || order.updatedAt || '')
+    return Number.isFinite(timestamp) && timestamp >= OCCUPATION_SURVEY_START_MS
+  })
   const genders = countBy(records, (order) => genderOf(order.gender))
   const channels = countBy(records, (order) => channelOf(order.acquisitionChannel))
   const ages = countBy(records, (order) => ageBucketOf(order.customerAge))
-  const occupations = countBy(records, (order) => String(order.occupation || '').trim() || 'Chưa rõ nghề nghiệp')
+  const occupations = countBy(occupationRecords, (order) => String(order.occupation || '').trim() || 'Chưa rõ nghề nghiệp')
   const numericAges = records.map((order) => Number(order.customerAge)).filter((age) => Number.isFinite(age) && age > 0)
   const [topGender, topGenderCount] = topEntry(genders)
   const [topChannel, topChannelCount] = topEntry(channels)
@@ -64,6 +70,7 @@ export function customerSurveySummary(orders = [], filters = {}) {
     channels,
     ages,
     occupations,
+    occupationTotal: occupationRecords.length,
     ageRange: numericAges.length ? { min: Math.min(...numericAges), max: Math.max(...numericAges) } : null,
     insights: {
       topGender, topGenderCount,

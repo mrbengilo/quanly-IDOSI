@@ -70,7 +70,7 @@ export default function Login() {
     setLoading(false)
     if (!result.ok) return setError(result.message)
     saveRememberedUsername(username, remember)
-    navigate(destinations[result.account.role] || '/login')
+    navigate(result.account.needsRoleSelection ? '/select-role' : (destinations[result.account.role] || '/login'))
   }
 
   const showRecoveryHelp = () => {

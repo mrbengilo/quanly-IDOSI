@@ -80,6 +80,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'support_transfer.create',
   'support_transfer.update',
   'support_work.update',
+  'support_schedule.assign',
 ])
 const ADDRESS_SUGGESTION_TYPES = new Set(['province', 'ward', 'street'])
 const ADDRESS_SUGGESTION_RATE_LIMIT = 30
@@ -1258,6 +1259,93 @@ const sessionTtlSeconds = (env) => {
 
 const addSeconds = (isoTimestamp, seconds) => new Date(Date.parse(isoTimestamp) + seconds * 1000).toISOString()
 
+const roleOptionKey = (option = {}) => [option.role, option.storeId || '', option.employeeId || ''].join(':')
+
+const availableRoleOptionsForUser = async (db, user) => {
+  if (user.role === 'admin') {
+    return [{ role: 'admin', storeId: null, employeeId: user.employee_id || null, label: 'Admin' }]
+  }
+  const stateRow = await loadState(db, 'global')
+  const state = stateRow ? normalizeSharedStateForStorage(parseStoredJson(stateRow.value_json, {})) : {}
+  const employees = Array.isArray(state.employees) ? state.employees : []
+  const activeProfiles = employees.filter((profile) => (
+    !profile.deletedAt && !['da nghi viec', 'inactive'].includes(normalizeTextKey(profile.status))
+  ))
+  const userId = String(user.user_id || user.id || '')
+  const baseEmployeeId = String(user.employee_id || '')
+  const linkedToUser = (profile) => (
+    String(profile.authUserId || '') === userId
+    || (baseEmployeeId && String(profile.linkedEmployeeId || '') === baseEmployeeId)
+  )
+  const options = []
+  const add = (option) => {
+    if (!option?.role || options.some((current) => roleOptionKey(current) === roleOptionKey(option))) return
+    options.push(option)
+  }
+  const rootProfile = activeProfiles.find((profile) => (
+    [profile.id, profile.code, profile.employeeId].map(String).includes(baseEmployeeId)
+  ))
+  const linkedManagerProfiles = activeProfiles.filter((profile) => employeeUnit(profile) === 'store_manager' && linkedToUser(profile))
+  const linkedStoreProfiles = activeProfiles.filter((profile) => employeeUnit(profile) === 'store' && linkedToUser(profile))
+
+  // Legacy promotions changed the account's base role to store_manager. Recover
+  // the original profile role so the same login can still enter Employee/HTKD.
+  if (user.role === 'store_manager' && linkedManagerProfiles.length) {
+    const sourceId = String(linkedManagerProfiles[0].linkedEmployeeId || '')
+    const source = activeProfiles.find((profile) => [profile.id, profile.code, profile.employeeId].map(String).includes(sourceId))
+    if (employeeUnit(source) === 'business_support') {
+      add({ role: 'business_support', storeId: BUSINESS_SUPPORT_STORE_ID, employeeId: sourceId, label: 'Hỗ trợ KD' })
+    } else if (source) {
+      add({ role: 'employee', storeId: source.storeId || user.store_id || null, employeeId: sourceId, label: 'Nhân viên' })
+    }
+  } else if (user.role === 'business_support') {
+    add({ role: 'business_support', storeId: BUSINESS_SUPPORT_STORE_ID, employeeId: baseEmployeeId || rootProfile?.id || null, label: 'Hỗ trợ KD' })
+  } else if (user.role === 'employee') {
+    add({ role: 'employee', storeId: rootProfile?.storeId || user.store_id || null, employeeId: baseEmployeeId || rootProfile?.id || null, label: 'Nhân viên' })
+  } else if (user.role === 'store_manager') {
+    add({ role: 'store_manager', storeId: rootProfile?.storeId || user.store_id || null, employeeId: baseEmployeeId || rootProfile?.id || null, label: 'Quản lý' })
+  }
+
+  linkedManagerProfiles.forEach((profile) => add({
+    role: 'store_manager',
+    storeId: profile.storeId || null,
+    employeeId: profile.id || profile.code || null,
+    label: 'Quản lý',
+    profileName: profile.name || '',
+  }))
+  linkedStoreProfiles.forEach((profile) => add({
+    role: 'employee',
+    storeId: profile.storeId || null,
+    employeeId: profile.id || profile.code || null,
+    label: 'Nhân viên',
+    profileName: profile.name || '',
+  }))
+  if (!options.length) {
+    add({ role: user.role, storeId: user.store_id || null, employeeId: user.employee_id || null, label: user.role })
+  }
+  const order = { store_manager: 0, employee: 1, business_support: 2, admin: 3 }
+  return options.sort((left, right) => (order[left.role] ?? 9) - (order[right.role] ?? 9))
+}
+
+const resolveSessionRole = async (db, session) => {
+  const options = await availableRoleOptionsForUser(db, session)
+  const selected = options.find((option) => (
+    option.role === session.active_role
+    && (!session.active_store_id || String(option.storeId || '') === String(session.active_store_id || ''))
+    && (!session.active_employee_id || String(option.employeeId || '') === String(session.active_employee_id || ''))
+  ))
+  const base = options.find((option) => option.role === session.role) || options[0]
+  const effective = selected || base
+  return {
+    ...session,
+    role: effective.role,
+    store_id: effective.storeId || null,
+    employee_id: effective.employeeId || null,
+    available_roles: options,
+    needs_role_selection: options.length > 1 && (!session.role_selected_at || !selected),
+  }
+}
+
 const publicUser = (user) => ({
   id: user.user_id || user.id,
   username: user.username,
@@ -1270,6 +1358,8 @@ const publicUser = (user) => ({
   lastLoginAt: user.last_login_at || null,
   ...(user.home_store_id ? { homeStoreId: user.home_store_id } : {}),
   ...(user.active_transfer_id ? { activeTransferId: user.active_transfer_id } : {}),
+  ...(Array.isArray(user.available_roles) ? { availableRoles: user.available_roles } : {}),
+  ...(user.needs_role_selection ? { needsRoleSelection: true } : {}),
 })
 
 const bearerToken = (request) => {
@@ -1288,6 +1378,10 @@ const requireSession = async (request, db, context) => {
       s.id AS session_id,
       s.token_hash,
       s.expires_at,
+      s.active_role,
+      s.active_store_id,
+      s.active_employee_id,
+      s.role_selected_at,
       u.id AS user_id,
       u.username,
       u.display_name,
@@ -1307,7 +1401,8 @@ const requireSession = async (request, db, context) => {
   `, tokenHash, context.now)
   if (!session) throw new ApiError(401, 'SESSION_INVALID', 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.')
   await run(db, 'UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?', context.now, tokenHash)
-  return resolveEffectiveEmployeeStore(db, session, context.now)
+  const assumed = await resolveSessionRole(db, session)
+  return resolveEffectiveEmployeeStore(db, assumed, context.now)
 }
 
 const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state.supportTransfers)
@@ -2199,6 +2294,10 @@ const login = async (request, env, context) => {
   }
   if (!VALID_ROLES.has(user.role)) throw new ApiError(403, 'ROLE_INVALID', 'Vai trò tài khoản không hợp lệ.')
 
+  const availableRoles = await availableRoleOptionsForUser(db, user)
+  const initialRole = availableRoles.find((option) => option.role === user.role) || availableRoles[0]
+  const roleSelectedAt = availableRoles.length === 1 ? context.now : null
+
   const rawToken = toBase64Url(randomBytes(32))
   const tokenHash = await sha256(rawToken)
   const sessionId = `ses_${crypto.randomUUID()}`
@@ -2208,9 +2307,13 @@ const login = async (request, env, context) => {
   await db.batch([
     db.prepare(`
       INSERT INTO sessions (
-        id, token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, ip_address
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(sessionId, tokenHash, user.id, context.now, context.now, expiresAt, userAgent, ipAddress),
+        id, token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, ip_address,
+        active_role, active_store_id, active_employee_id, role_selected_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      sessionId, tokenHash, user.id, context.now, context.now, expiresAt, userAgent, ipAddress,
+      initialRole.role, initialRole.storeId, initialRole.employeeId, roleSelectedAt,
+    ),
     db.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?')
       .bind(context.now, context.now, user.id),
     db.prepare(`
@@ -2229,13 +2332,57 @@ const login = async (request, env, context) => {
     ),
   ])
 
-  const effectiveUser = await resolveEffectiveEmployeeStore(db, { ...user, last_login_at: context.now }, context.now)
+  const effectiveUser = await resolveEffectiveEmployeeStore(db, {
+    ...user,
+    last_login_at: context.now,
+    role: initialRole.role,
+    store_id: initialRole.storeId,
+    employee_id: initialRole.employeeId,
+    available_roles: availableRoles,
+    needs_role_selection: availableRoles.length > 1,
+  }, context.now)
   return jsonResponse(apiPayload(context, {
     token: rawToken,
     tokenType: 'Bearer',
     expiresAt,
     user: publicUser(effectiveUser),
   }))
+}
+
+const selectSessionRole = async (request, env, context) => {
+  const db = getDatabase(env)
+  const actor = await requireSession(request, db, context)
+  const body = await readJson(request)
+  const requestedRole = String(body.role || '').trim()
+  const requestedStoreId = String(body.storeId || '').trim()
+  const requestedEmployeeId = String(body.employeeId || '').trim()
+  const matches = (Array.isArray(actor.available_roles) ? actor.available_roles : []).filter((option) => (
+    option.role === requestedRole
+    && (!requestedStoreId || String(option.storeId || '') === requestedStoreId)
+    && (!requestedEmployeeId || String(option.employeeId || '') === requestedEmployeeId)
+  ))
+  if (matches.length !== 1) {
+    throw new ApiError(400, 'ROLE_SELECTION_INVALID', 'Vai trò được chọn không còn hợp lệ. Vui lòng đăng nhập lại.')
+  }
+  const selected = matches[0]
+  const result = await run(db, `
+    UPDATE sessions
+    SET active_role = ?, active_store_id = ?, active_employee_id = ?, role_selected_at = ?, last_seen_at = ?
+    WHERE id = ? AND revoked_at IS NULL AND expires_at > ?
+  `, selected.role, selected.storeId || null, selected.employeeId || null, context.now, context.now, actor.session_id, context.now)
+  if (changes(result) !== 1) throw new ApiError(401, 'SESSION_INVALID', 'Phiên đăng nhập không còn hợp lệ.')
+  const effective = await resolveEffectiveEmployeeStore(db, {
+    ...actor,
+    role: selected.role,
+    store_id: selected.storeId || null,
+    employee_id: selected.employeeId || null,
+    active_role: selected.role,
+    active_store_id: selected.storeId || null,
+    active_employee_id: selected.employeeId || null,
+    role_selected_at: context.now,
+    needs_role_selection: false,
+  }, context.now)
+  return jsonResponse(apiPayload(context, { user: publicUser(effective) }))
 }
 
 const getBootstrap = async (request, env, context, url) => {
@@ -2285,6 +2432,8 @@ const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
   'operationalResetHistory',
   'supportTransfers',
   'supportWorkAssignments',
+  'supportWorkSchedules',
+  'supportWorkScheduleHistory',
   'expenseEntries',
   'fixedExpenses',
   'cashTransactions',
@@ -3446,7 +3595,27 @@ const resolveProfileWorkingTime = (employee, workDate) => {
   }
 }
 
-const configuredProfileWorkShifts = (employee, workDate) => {
+const configuredProfileWorkShifts = (employee, workDate, state = {}) => {
+  const daily = (Array.isArray(state.supportWorkSchedules) ? state.supportWorkSchedules : [])
+    .find((record) => (
+      !record.deletedAt
+      && String(record.employeeId || '') === String(employee?.id || employee?.code || '')
+      && String(record.date || '') === String(workDate || '')
+    ))
+  if (daily) {
+    const start = parseShiftTime(daily.start)
+    const end = parseShiftTime(daily.end)
+    if (start && end && end.minuteOfDay > start.minuteOfDay) {
+      return [{
+        id: String(daily.id || `SUPPORT_${daily.employeeId}_${daily.date}`).replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80),
+        name: String(daily.shiftName || daily.name || 'Lịch làm việc').trim().slice(0, 80),
+        start: start.label,
+        end: end.label,
+        version: Number(daily.version || 1),
+        source: 'support-daily-schedule',
+      }]
+    }
+  }
   const resolved = resolveProfileWorkingTime(employee, workDate)
   const canonical = Array.isArray(resolved?.workShifts)
     ? resolved.workShifts
@@ -3944,22 +4113,24 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : employees.find((employee) => String(employee.id || employee.code || '') === employeeId && !employee.deletedAt)
   if (operation !== 'create' && !previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
   const unit = normalizeEmployeeUnitRequest(profilePayload, previous)
-  const linkedEmployeeId = operation === 'create' && unit === 'store_manager'
+  const linkedEmployeeId = operation === 'create' && ['store_manager', 'store'].includes(unit)
     ? String(profilePayload.linkedEmployeeId || '').trim()
     : ''
   const linkedStoreEmployee = linkedEmployeeId
     ? employees.find((employee) => (
         String(employee.id || employee.code || '') === linkedEmployeeId
-        && employeeUnit(employee) === 'store'
+        && (unit === 'store_manager'
+          ? ['store', 'business_support'].includes(employeeUnit(employee))
+          : employeeUnit(employee) === 'business_support')
         && !employee.deletedAt
         && !['da nghi viec', 'inactive'].includes(normalizeTextKey(employee.status))
       ))
     : null
   if (linkedEmployeeId && !linkedStoreEmployee) {
-    throw new ApiError(404, 'LINKED_EMPLOYEE_NOT_FOUND', 'Không tìm thấy nhân viên cửa hàng đang làm việc để phân quyền Quản lý cửa hàng.')
+    throw new ApiError(404, 'LINKED_EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ đang hoạt động để liên kết thêm vai trò.')
   }
   const creatingStoreEmployee = operation === 'create' && unit === 'store'
-  const supportCreatingStoreEmployee = actor.role === 'business_support' && creatingStoreEmployee
+  const supportCreatingStoreEmployee = actor.role === 'business_support' && creatingStoreEmployee && !linkedEmployeeId
   if (creatingStoreEmployee) employeeId = ''
   if (operation === 'update' && Object.keys(profilePayload).some((field) => PROFILE_WORKING_TIME_FIELDS.has(field))) {
     throw new ApiError(
@@ -4021,13 +4192,22 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (unit === 'store_manager' && [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].includes(storeId)) {
     throw new ApiError(400, 'STORE_INVALID', 'Quản lý cửa hàng phải được gán cho một cửa hàng đang tồn tại.')
   }
-  if (linkedStoreEmployee && String(linkedStoreEmployee.storeId || '') !== storeId) {
+  if (linkedStoreEmployee && employeeUnit(linkedStoreEmployee) === 'store' && String(linkedStoreEmployee.storeId || '') !== storeId) {
     throw new ApiError(400, 'LINKED_EMPLOYEE_STORE_MISMATCH', 'Nhân viên được chọn không thuộc cửa hàng cần phân quyền quản lý.')
   }
 
   if (operation === 'delete') {
-    const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', employeeId)
+    const linkedRoleProfile = Boolean(previous.linkedEmployeeId && ['store_manager', 'store'].includes(unit))
+    const authEmployeeId = linkedRoleProfile ? String(previous.linkedEmployeeId) : employeeId
+    const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', authEmployeeId)
     const nextAuthVersion = authTarget ? Number(authTarget.version || 1) + 1 : null
+    const linkedSource = linkedRoleProfile
+      ? employees.find((employee) => String(employee.id || employee.code || '') === authEmployeeId && !employee.deletedAt)
+      : null
+    const restoredRole = employeeUnit(linkedSource) === 'business_support' ? 'business_support' : 'employee'
+    const restoredStoreId = restoredRole === 'business_support'
+      ? BUSINESS_SUPPORT_STORE_ID
+      : String(linkedSource?.storeId || authTarget?.store_id || '') || null
     const { identityImages: deletedIdentityImages, ...profileWithoutIdentityImages } = previous
     const deleted = {
       ...profileWithoutIdentityImages,
@@ -4047,13 +4227,17 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     const additionalStatements = authTarget ? [
       db.prepare(`
         UPDATE users
-        SET status = 'inactive', version = ?, updated_at = ?
+        SET status = ?, role = ?, store_id = ?, employee_id = ?, version = ?, updated_at = ?
         WHERE id = ? AND version = ?
           AND EXISTS (
             SELECT 1 FROM app_state
             WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
           )
       `).bind(
+        linkedRoleProfile ? 'active' : 'inactive',
+        linkedRoleProfile ? (authTarget.role === 'store_manager' ? restoredRole : authTarget.role) : authTarget.role,
+        linkedRoleProfile ? (authTarget.role === 'store_manager' ? restoredStoreId : authTarget.store_id) : authTarget.store_id,
+        linkedRoleProfile ? authEmployeeId : authTarget.employee_id,
         nextAuthVersion,
         commandContext.now,
         authTarget.id,
@@ -4065,9 +4249,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         UPDATE sessions
         SET revoked_at = ?, last_seen_at = ?
         WHERE user_id = ? AND revoked_at IS NULL
-          AND EXISTS (
-            SELECT 1 FROM users WHERE id = ? AND status = 'inactive' AND version = ?
-          )
+          AND EXISTS (SELECT 1 FROM users WHERE id = ? AND version = ?)
       `).bind(
         commandContext.now,
         commandContext.now,
@@ -4086,7 +4268,14 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         command: body.type,
         employee: deleted,
         ...(authTarget ? {
-          user: { ...publicUser(authTarget), status: 'inactive', version: nextAuthVersion },
+          user: {
+            ...publicUser(authTarget),
+            status: linkedRoleProfile ? 'active' : 'inactive',
+            role: linkedRoleProfile && authTarget.role === 'store_manager' ? restoredRole : authTarget.role,
+            storeId: linkedRoleProfile && authTarget.role === 'store_manager' ? restoredStoreId : authTarget.store_id,
+            employeeId: linkedRoleProfile ? authEmployeeId : authTarget.employee_id,
+            version: nextAuthVersion,
+          },
         } : {}),
       },
       additionalStatements,
@@ -4095,10 +4284,12 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         bindings: [authTarget.id, Number(authTarget.version || 1)],
       } : undefined,
     }, commandContext)
-    await bestEffortDeleteIdentityImages(
-      env?.IDENTITY_IMAGES,
-      Object.values(isPlainRecord(deletedIdentityImages) ? deletedIdentityImages : {}).map((image) => image?.key),
-    )
+    if (!linkedRoleProfile) {
+      await bestEffortDeleteIdentityImages(
+        env?.IDENTITY_IMAGES,
+        Object.values(isPlainRecord(deletedIdentityImages) ? deletedIdentityImages : {}).map((image) => image?.key),
+      )
+    }
     return response
   }
 
@@ -4109,8 +4300,8 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     cccd: linkedStoreEmployee.cccd || linkedStoreEmployee.citizenId,
     address: linkedStoreEmployee.address,
     addressDetails: linkedStoreEmployee.addressDetails,
-    startDate: linkedStoreEmployee.startDate || linkedStoreEmployee.joinDate,
-    employmentType: linkedStoreEmployee.employmentType || 'Full-Time',
+    startDate: profilePayload.startDate || linkedStoreEmployee.startDate || linkedStoreEmployee.joinDate,
+    employmentType: profilePayload.employmentType || linkedStoreEmployee.employmentType || 'Full-Time',
     linkedEmployeeId,
   } : profilePayload)
   if (creatingStoreEmployee) {
@@ -4185,52 +4376,25 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (operation === 'create') {
     if (linkedStoreEmployee) {
       const linkedTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', linkedEmployeeId)
-      if (!linkedTarget || !['employee', 'store_manager'].includes(linkedTarget.role)) {
-        throw new ApiError(409, 'LINKED_EMPLOYEE_ACCOUNT_REQUIRED', 'Nhân viên được chọn phải có tài khoản đăng nhập đang hoạt động.')
+      if (!linkedTarget || !['employee', 'business_support', 'store_manager'].includes(linkedTarget.role)) {
+        throw new ApiError(409, 'LINKED_EMPLOYEE_ACCOUNT_REQUIRED', 'Hồ sơ được chọn phải có tài khoản đăng nhập đang hoạt động.')
       }
       if (linkedTarget.status !== 'active') {
         throw new ApiError(409, 'LINKED_EMPLOYEE_ACCOUNT_INACTIVE', 'Tài khoản nhân viên được chọn đang bị khóa hoặc ngưng hoạt động.')
       }
       const currentAuthVersion = Number(linkedTarget.version || 1)
-      const nextAuthVersion = currentAuthVersion + 1
       responseUser = {
         ...publicUser(linkedTarget),
-        role: 'store_manager',
-        storeId,
-        employeeId: linkedEmployeeId,
-        version: nextAuthVersion,
+        version: currentAuthVersion,
       }
       saved.username = linkedTarget.username
       saved.authUserId = linkedTarget.id
-      saved.authVersion = nextAuthVersion
+      saved.authVersion = currentAuthVersion
       saved.linkedEmployeeId = linkedEmployeeId
       stateGuard = {
         sql: 'SELECT 1 FROM users WHERE id = ? AND version = ? AND employee_id = ?',
         bindings: [linkedTarget.id, currentAuthVersion, linkedEmployeeId],
       }
-      additionalStatements.push(db.prepare(`
-        UPDATE users
-        SET role = 'store_manager', store_id = ?, version = ?, updated_at = ?
-        WHERE id = ? AND version = ? AND employee_id = ? AND role IN ('employee', 'store_manager')
-          AND EXISTS (
-            SELECT 1 FROM app_state
-            WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
-          )
-      `).bind(
-        storeId,
-        nextAuthVersion,
-        commandContext.now,
-        linkedTarget.id,
-        currentAuthVersion,
-        linkedEmployeeId,
-        nextStateVersion,
-        commandContext.requestId,
-      ))
-      additionalStatements.push(db.prepare(`
-        UPDATE sessions
-        SET revoked_at = ?, last_seen_at = ?
-        WHERE user_id = ? AND revoked_at IS NULL
-      `).bind(commandContext.now, commandContext.now, linkedTarget.id))
     } else {
     if (requestedAuthUserId && !['business_support', 'store_manager', 'office'].includes(unit)) {
       throw new ApiError(400, 'AUTH_LINK_INVALID', 'Chỉ hồ sơ Hỗ trợ KD, Quản lý cửa hàng hoặc Khối văn phòng được liên kết tài khoản có sẵn.')
@@ -4381,10 +4545,8 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     }
   }
 
-  if (operation === 'update') {
-    const authEmployeeId = unit === 'store_manager' && previous?.linkedEmployeeId
-      ? String(previous.linkedEmployeeId)
-      : saved.id
+  if (operation === 'update' && !previous?.linkedEmployeeId) {
+    const authEmployeeId = saved.id
     const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', authEmployeeId)
     if (authTarget) {
       if (authTarget.role !== expectedAuthRole) {
@@ -5352,6 +5514,8 @@ const RESET_ARRAY_COLLECTIONS = Object.freeze([
   'supportTransfers',
   'operationalResetHistory',
   'supportWorkAssignments',
+  'supportWorkSchedules',
+  'supportWorkScheduleHistory',
   'policyHistory',
 ])
 
@@ -7246,7 +7410,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       && shiftTimes(record).start
       && shiftTimes(record).end
     ))
-    const profileShifts = officeEmployee ? configuredProfileWorkShifts(employee, localNow.date) : []
+    const profileShifts = officeEmployee ? configuredProfileWorkShifts(employee, localNow.date, state) : []
     let shiftId = String(payload.shiftId || payload.workShiftId || '').trim()
     let shift = shiftId ? activeShifts.find((record) => String(record.id || '') === shiftId) : null
     let activeTransferBounds = null
@@ -7256,7 +7420,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     if (!shift && officeEmployee && shiftId) {
       shift = profileShifts.find((record) => String(record.id || '') === shiftId) || null
     }
-    if (shift && shift.source !== 'profile-work-shift' && shift.source !== 'office-profile'
+    if (shift && !['profile-work-shift', 'office-profile', 'support-daily-schedule'].includes(shift.source)
       && dayAssignments.length && !assignedShiftIds.has(shiftId)) {
       throw new ApiError(403, 'SHIFT_NOT_ASSIGNED', 'Ca này không nằm trong lịch làm việc hôm nay của bạn.')
     }
@@ -8339,6 +8503,95 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     after: assignment,
     metadata: { employeeId, changedTaskIds, submitted: submit, ...metrics },
     response: { command: body.type, assignment, ...(notification ? { notification } : {}) },
+  }, commandContext)
+}
+
+const supportScheduleCommand = async (db, actor, body, commandContext) => {
+  if (!['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin và Nhân viên hỗ trợ KD được phân lịch làm việc.')
+  }
+  if (body.type !== 'support_schedule.assign') {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh phân lịch làm việc không được hỗ trợ.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const employeeId = String(payload.employeeId || '').trim()
+  const date = optionalCalendarDate(payload.date, 'Ngày làm việc')
+  if (!employeeId || !date) throw new ApiError(400, 'SUPPORT_SCHEDULE_REQUIRED', 'Cần chọn ngày và nhân viên.')
+  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+    String(record.id || record.code || '') === employeeId
+    && employeeUnit(record) === 'business_support'
+    && !record.deletedAt
+  ))
+  if (!employee) throw new ApiError(404, 'SUPPORT_EMPLOYEE_NOT_FOUND', 'Không tìm thấy Nhân viên hỗ trợ KD đang hoạt động.')
+  const start = parseShiftTime(payload.start)
+  const end = parseShiftTime(payload.end)
+  if (!start || !end || end.minuteOfDay <= start.minuteOfDay) {
+    throw new ApiError(400, 'SUPPORT_SCHEDULE_TIME_INVALID', 'Giờ bắt đầu và kết thúc phải hợp lệ trong cùng ngày.')
+  }
+  const employmentType = officeEmploymentType(employee.employmentType || employee.workTimeType || 'Full-Time')
+  const partTime = ['Part-Time', 'Thực Tập Sinh'].includes(employmentType)
+  const shiftName = String(payload.shiftName || '').trim().slice(0, 80)
+  if (partTime && !shiftName) throw new ApiError(400, 'SUPPORT_SCHEDULE_SHIFT_NAME_REQUIRED', 'Nhân viên Part-Time/Thực Tập Sinh cần tên ca làm việc.')
+  const schedules = Array.isArray(state.supportWorkSchedules) ? state.supportWorkSchedules : []
+  const previous = schedules.find((record) => (
+    String(record.employeeId || '') === employeeId && String(record.date || '') === date && !record.deletedAt
+  ))
+  const id = previous?.id || `sws_${crypto.randomUUID()}`
+  const version = Number(previous?.version || 0) + 1
+  const schedule = {
+    id,
+    employeeId,
+    employeeName: employee.name || employeeId,
+    date,
+    employmentType,
+    shiftName: partTime ? shiftName : (shiftName || 'Làm việc Full-Time'),
+    start: start.label,
+    end: end.label,
+    note: String(payload.note || '').trim().slice(0, 500),
+    version,
+    createdAt: previous?.createdAt || commandContext.now,
+    createdBy: previous?.createdBy || serverActorSnapshot(actor),
+    updatedAt: commandContext.now,
+    updatedBy: serverActorSnapshot(actor),
+  }
+  const history = {
+    ...schedule,
+    id: `swsh_${crypto.randomUUID()}`,
+    scheduleId: id,
+    action: previous ? 'Cập nhật lịch' : 'Tạo lịch',
+    recordedAt: commandContext.now,
+    recordedBy: serverActorSnapshot(actor),
+  }
+  const notification = {
+    id: `ntf_${crypto.randomUUID()}`,
+    type: 'support-schedule-assigned',
+    employeeId,
+    targetEmployeeId: employeeId,
+    title: 'Lịch làm việc đã được cập nhật',
+    message: `${date}: ${schedule.shiftName} ${schedule.start}–${schedule.end}`,
+    scheduleId: id,
+    createdAt: commandContext.now,
+    createdBy: serverActorSnapshot(actor),
+    readAt: null,
+  }
+  const nextState = {
+    ...state,
+    supportWorkSchedules: previous
+      ? schedules.map((record) => String(record.id || '') === String(previous.id || '') ? schedule : record)
+      : [schedule, ...schedules],
+    supportWorkScheduleHistory: [history, ...(Array.isArray(state.supportWorkScheduleHistory) ? state.supportWorkScheduleHistory : [])],
+    notifications: [notification, ...(Array.isArray(state.notifications) ? state.notifications : [])],
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'support-work-schedule',
+    entityId: id,
+    before: previous,
+    after: schedule,
+    metadata: { employeeId, date, version },
+    response: { command: body.type, schedule, history },
   }, commandContext)
 }
 
@@ -10522,6 +10775,9 @@ const executeCommand = async (request, env, context) => {
     if (String(body.type || '').startsWith('support_work.')) {
       return await supportWorkCommand(db, user, body, commandContext)
     }
+    if (String(body.type || '').startsWith('support_schedule.')) {
+      return await supportScheduleCommand(db, user, body, commandContext)
+    }
     if (body.type === 'task.done' || body.type === 'task.set_done') {
       return await taskDoneCommand(db, user, body, commandContext)
     }
@@ -10832,6 +11088,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/login') {
     if (request.method !== 'POST') return methodNotAllowed(['POST'])
     return login(request, env, context)
+  }
+  if (path === '/api/session/role') {
+    if (request.method !== 'POST') return methodNotAllowed(['POST'])
+    return selectSessionRole(request, env, context)
   }
   if (path === '/api/state') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])

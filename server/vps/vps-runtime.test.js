@@ -25,7 +25,7 @@ describe('IDOSI VPS runtime', () => {
     const directory = await temporaryDirectory()
     const databasePath = resolve(directory, 'idosi.sqlite')
     const db = createSqliteD1({ databasePath })
-    expect((await db.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(7)
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(8)
 
     await expect(db.batch([
       db.prepare("INSERT INTO system_metadata (meta_key, value_json, version, updated_at) VALUES ('rollback-check', '{}', 1, '2026-08-18T00:00:00.000Z')"),
@@ -35,7 +35,7 @@ describe('IDOSI VPS runtime', () => {
     db.close()
 
     const reopened = createSqliteD1({ databasePath })
-    expect((await reopened.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(7)
+    expect((await reopened.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(8)
     reopened.close()
   })
 

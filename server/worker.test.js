@@ -73,6 +73,7 @@ class MemoryD1 {
       'drizzle/0004_operational_roles.sql',
       'drizzle/0005_admin_only_accounts.sql',
       'drizzle/0006_recursive_profile_secret_scrub.sql',
+      'drizzle/0007_session_roles.sql',
     ]) {
       const migration = readFileSync(file, 'utf8').replaceAll('--> statement-breakpoint', '')
       this.database.exec(migration)
@@ -595,6 +596,11 @@ describe('IDOSI Worker security primitives', () => {
       request_id: 'audit-request-manager', actor_id: null, metadata_json: '{"history":"preserved"}',
     })
     expect(database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+
+    // The runtime exercised below represents the current deployed Worker, so
+    // apply the later session-role schema without altering the historical 0004
+    // data assertions above.
+    database.exec(readFileSync('drizzle/0007_session_roles.sql', 'utf8').replaceAll('--> statement-breakpoint', ''))
 
     const migratedD1 = new MemoryD1()
     migratedD1.database.close()
@@ -5708,22 +5714,37 @@ describe('IDOSI Worker security primitives', () => {
         id: 'QLCH-001', linkedEmployeeId: 'DOSII-TNV-001', baseSalary: 0, salary: 0,
         payBasis: 'allowance-only', salaryUnit: 'none', payFormula: 'allowance-bonus-only',
       },
-      user: { role: 'store_manager', employeeId: 'DOSII-TNV-001', storeId: 'S01' },
+      user: { role: 'employee', employeeId: 'DOSII-TNV-001', storeId: 'S01' },
     })
 
-    const staleEmployeeSession = await worker.fetch(new Request('https://idosi.example/api/state', {
+    const existingEmployeeSession = await worker.fetch(new Request('https://idosi.example/api/state', {
       headers: { authorization: `Bearer ${employeeToken}` },
     }), env)
-    expect(staleEmployeeSession.status).toBe(401)
+    expect(existingEmployeeSession.status).toBe(200)
     const managerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
       username: 'dual.manager', password: 'dual-manager-password',
     }), env)
     expect(managerLogin.status).toBe(200)
-    expect(await managerLogin.clone().json()).toMatchObject({
-      user: { role: 'store_manager', employeeId: 'DOSII-TNV-001', storeId: 'S01' },
+    const managerLoginBody = await managerLogin.clone().json()
+    expect(managerLoginBody).toMatchObject({
+      user: {
+        role: 'employee', employeeId: 'DOSII-TNV-001', storeId: 'S01', needsRoleSelection: true,
+        availableRoles: expect.arrayContaining([
+          expect.objectContaining({ role: 'employee', employeeId: 'DOSII-TNV-001', storeId: 'S01' }),
+          expect.objectContaining({ role: 'store_manager', employeeId: 'QLCH-001', storeId: 'S01' }),
+        ]),
+      },
+    })
+    const managerToken = managerLoginBody.token
+    const roleSelected = await worker.fetch(jsonRequest('https://idosi.example/api/session/role', {
+      role: 'store_manager', employeeId: 'QLCH-001', storeId: 'S01',
+    }, { authorization: `Bearer ${managerToken}` }), env)
+    expect(roleSelected.status).toBe(200)
+    expect(await roleSelected.json()).toMatchObject({
+      user: { role: 'store_manager', employeeId: 'QLCH-001', storeId: 'S01' },
     })
     const managerProjection = await worker.fetch(new Request('https://idosi.example/api/state', {
-      headers: { authorization: `Bearer ${(await managerLogin.json()).token}` },
+      headers: { authorization: `Bearer ${managerToken}` },
     }), env)
     const managerState = (await managerProjection.json()).state
     expect(managerState.employees.find(({ id }) => id === 'DOSII-TNV-001')).toMatchObject({
@@ -5735,6 +5756,75 @@ describe('IDOSI Worker security primitives', () => {
     })
     expect(rawProfiles.find(({ id }) => id === 'DOSII-TNV-001')).toMatchObject({
       unit: 'store', baseSalary: 9_000_000,
+    })
+
+    const deletedManagerRole = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.delete', expectedVersion: 3,
+      payload: { employeeId: 'QLCH-001' },
+    }, { ...authorization, 'idempotency-key': 'dual-store-manager-delete-0001' }), env)
+    expect(deletedManagerRole.status).toBe(200)
+    const revokedManagerSession = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: { authorization: `Bearer ${managerToken}` },
+    }), env)
+    expect(revokedManagerSession.status).toBe(401)
+    const employeeOnlyLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'dual.manager', password: 'dual-manager-password',
+    }), env)
+    expect(employeeOnlyLogin.status).toBe(200)
+    expect(await employeeOnlyLogin.json()).toMatchObject({
+      user: { role: 'employee', employeeId: 'DOSII-TNV-001', storeId: 'S01' },
+    })
+
+    const supportCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 4,
+      payload: {
+        unit: 'business_support', name: 'Hỗ trợ ba vai trò', phone: '0908000002',
+        cccd: '079888000002', address: 'TP. Hồ Chí Minh', startDate: '2026-08-18',
+        employmentType: 'Part-Time', position: 'NV hỗ trợ KD',
+        username: 'triple.role', password: 'triple-role-password', identityImages: testIdentityImages(),
+        workShifts: [{ id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+      },
+    }, { ...authorization, 'idempotency-key': 'triple-role-support-create-0001' }), env)
+    expect(supportCreated.status).toBe(201)
+    const supportProfile = (await supportCreated.json()).employee
+
+    const linkedStoreRole = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 5,
+      payload: {
+        unit: 'store', storeId: 'S01', linkedEmployeeId: supportProfile.id,
+        employmentType: 'Part-Time', startDate: '2026-08-18', hourlyRate: 25_000,
+        salary: 25_000, age: 28, position: 'Nhân viên bán hàng',
+      },
+    }, { ...authorization, 'idempotency-key': 'triple-role-store-link-0001' }), env)
+    expect(linkedStoreRole.status).toBe(201)
+    const linkedStoreProfile = (await linkedStoreRole.json()).employee
+
+    const linkedManagerRole = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 6,
+      payload: { unit: 'store_manager', storeId: 'S01', linkedEmployeeId: supportProfile.id },
+    }, { ...authorization, 'idempotency-key': 'triple-role-manager-link-0001' }), env)
+    expect(linkedManagerRole.status).toBe(201)
+    const linkedManagerProfile = (await linkedManagerRole.json()).employee
+
+    const tripleLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'triple.role', password: 'triple-role-password',
+    }), env)
+    expect(tripleLogin.status).toBe(200)
+    const tripleLoginBody = await tripleLogin.json()
+    expect(tripleLoginBody.user).toMatchObject({
+      role: 'business_support', employeeId: supportProfile.id, needsRoleSelection: true,
+      availableRoles: expect.arrayContaining([
+        expect.objectContaining({ role: 'business_support', employeeId: supportProfile.id }),
+        expect.objectContaining({ role: 'employee', employeeId: linkedStoreProfile.id, storeId: 'S01' }),
+        expect.objectContaining({ role: 'store_manager', employeeId: linkedManagerProfile.id, storeId: 'S01' }),
+      ]),
+    })
+    const tripleManagerSelection = await worker.fetch(jsonRequest('https://idosi.example/api/session/role', {
+      role: 'store_manager', employeeId: linkedManagerProfile.id, storeId: 'S01',
+    }, { authorization: `Bearer ${tripleLoginBody.token}` }), env)
+    expect(tripleManagerSelection.status).toBe(200)
+    expect(await tripleManagerSelection.json()).toMatchObject({
+      user: { role: 'store_manager', employeeId: linkedManagerProfile.id, storeId: 'S01' },
     })
     expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
   })
@@ -6410,6 +6500,30 @@ describe('IDOSI Worker security primitives', () => {
           checkIn: '13:05', arrivalTag: 'Đi đúng giờ', minutesLate: 5,
         },
       })
+
+      const dailySchedule = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 7,
+        payload: {
+          employeeId: support.id, date: '2026-08-21', shiftName: 'Ca tối',
+          start: '18:00', end: '21:00', note: 'Lịch riêng ngày 21/08',
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-daily-schedule-0001' }), env)
+      expect(dailySchedule.status).toBe(200)
+      expect(await dailySchedule.json()).toMatchObject({
+        version: 8,
+        schedule: {
+          employeeId: support.id, date: '2026-08-21', employmentType: 'Part-Time',
+          shiftName: 'Ca tối', start: '18:00', end: '21:00', version: 1,
+        },
+        history: { action: 'Tạo lịch', recordedBy: { role: 'business_support' } },
+      })
+      const scheduledState = readHydratedState(env.DB.database)
+      expect(scheduledState.supportWorkSchedules).toEqual([
+        expect.objectContaining({ employeeId: support.id, date: '2026-08-21', shiftName: 'Ca tối' }),
+      ])
+      expect(scheduledState.notifications).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'support-schedule-assigned', targetEmployeeId: support.id }),
+      ]))
     } finally {
       vi.useRealTimers()
     }

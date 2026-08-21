@@ -934,3 +934,45 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
     display: none;
   }
 }
+.role-selection-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at top left, #e7f8ef, #f7faf8 52%, #edf5ff);
+}
+
+.role-selection-card {
+  width: min(780px, 100%);
+  display: grid;
+  gap: 24px;
+  padding: clamp(24px, 5vw, 48px);
+  border: 2px solid #b5dfc5;
+  border-radius: 28px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgba(13, 91, 53, .14);
+}
+
+.role-selection-card h1 { margin: 4px 0 8px; color: #075e35; }
+.role-selection-card p { margin: 0; color: #5a6b63; }
+.role-selection-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.role-selection-option { min-height: 96px; justify-content: flex-start; text-align: left; padding: 16px 18px; }
+.role-selection-option > span:last-child { display: grid; gap: 4px; }
+.role-selection-option small { display: block; color: #617068; white-space: normal; }
+.role-selection-option__icon { display: grid; place-items: center; width: 52px; height: 52px; flex: 0 0 52px; border-radius: 16px; background: #e8f7ee; color: #08763f; }
+
+@media (max-width: 620px) {
+  .role-selection-page { padding: 14px; }
+  .role-selection-card { padding: 22px 18px; border-radius: 22px; }
+  .role-selection-grid { grid-template-columns: 1fr; }
+}
+
+.support-schedule-page { display: grid; gap: 18px; }
+.support-schedule-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: end; }
+.support-schedule-form > .button { min-height: 52px; }
+.support-schedule-tabs { margin: 0; }
+.support-schedule-history .table-wrap { max-height: 520px; overflow: auto; }
+
+@media (max-width: 820px) {
+  .support-schedule-form { grid-template-columns: 1fr; }
+}

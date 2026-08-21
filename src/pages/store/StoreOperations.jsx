@@ -105,6 +105,8 @@ const emptyEmployeeForm = {
   password: '',
   status: 'Đang làm việc',
   storeId: '',
+  employeeSource: 'new',
+  linkedEmployeeId: '',
 }
 
 const normalizeText = (value = '') => String(value).trim().toLowerCase()
@@ -420,6 +422,9 @@ export function StoreEmployees() {
     ? session.storeId
     : activeStoreId || session?.storeId || stores[0]?.id || ''
   const scopedStore = stores.find((store) => String(store.id) === String(scopedStoreId)) || stores[0]
+  const businessSupportProfiles = employees.filter((employee) => (
+    String(employee.unit || employee.unitType || '').toLowerCase() === 'business_support' && !employee.deletedAt
+  ))
   const createEmployeeForm = () => ({
     ...emptyEmployeeForm,
     identityImages: { ...emptyEmployeeForm.identityImages },
@@ -440,6 +445,7 @@ export function StoreEmployees() {
   const canCreateStoreEmployee = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
   const canDeleteEmployee = session?.role === 'admin'
+  const linkingBusinessSupport = !editing && form.employeeSource === 'business_support'
   const editingRequiresPassword = Boolean(editing) && !(
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
   )
@@ -516,6 +522,25 @@ export function StoreEmployees() {
     setForm((current) => ({ ...current, [field]: value }))
   }
 
+  const updateEmployeeSource = (event) => {
+    const employeeSource = event.target.value
+    setForm((current) => ({ ...createEmployeeForm(), employeeSource, linkedEmployeeId: '', employmentType: current.employmentType }))
+    setErrors([])
+  }
+
+  const updateLinkedBusinessSupport = (event) => {
+    const linkedEmployeeId = event.target.value
+    const source = businessSupportProfiles.find((employee) => String(employee.id || employee.code) === linkedEmployeeId)
+    setForm((current) => ({
+      ...current,
+      linkedEmployeeId,
+      name: source?.name || '',
+      startDate: current.startDate || today(),
+      age: source?.age ? String(source.age) : current.age,
+    }))
+    setErrors([])
+  }
+
   const updateIdentityImage = (side) => async (event) => {
     const file = event.target.files?.[0]
     if (!file) return
@@ -579,7 +604,7 @@ export function StoreEmployees() {
       employees,
       editingId,
       !editing || editingRequiresPassword,
-      { requireIdentityImages: !editing },
+      { requireIdentityImages: !editing, linkedEmployeeId: form.linkedEmployeeId },
     )
     if (validationErrors.length) {
       setErrors(validationErrors)
@@ -659,11 +684,16 @@ export function StoreEmployees() {
         <form className="form-stack" onSubmit={save}>
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
+          {!editing && <div className="form-grid">
+            <Field label="Cách tạo nhân viên" required><Select value={form.employeeSource || 'new'} onChange={updateEmployeeSource}><option value="new">Tạo tài khoản nhân viên mới</option><option value="business_support">Chọn Nhân viên hỗ trợ KD hiện có</option></Select></Field>
+            {linkingBusinessSupport && <Field label="Nhân viên hỗ trợ KD" required hint="Tài khoản sẽ có thêm vai trò Nhân viên và giữ nguyên vai trò Hỗ trợ KD."><Select value={form.linkedEmployeeId || ''} onChange={updateLinkedBusinessSupport}><option value="">Chọn nhân viên</option>{businessSupportProfiles.map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}</Select></Field>}
+          </div>}
+          {linkingBusinessSupport && form.linkedEmployeeId && <InfoNote>Đang phân thêm vai trò Nhân viên cửa hàng cho <strong>{form.name}</strong>. Hệ thống dùng chung tài khoản đăng nhập và hồ sơ CCCD hiện có.</InfoNote>}
           <div className="form-grid">
             <Field label="Mã nhân viên" required hint="Hệ thống phát sinh tự động theo mã viết tắt của cửa hàng"><Input value={form.id} readOnly aria-readonly="true" /></Field>
-            <Field label="Tên nhân viên" required><Input value={form.name} onChange={updateField('name')} placeholder="Nhập họ và tên" /></Field>
+            {!linkingBusinessSupport && <><Field label="Tên nhân viên" required><Input value={form.name} onChange={updateField('name')} placeholder="Nhập họ và tên" /></Field>
             <Field label="Số CCCD" required hint="Chỉ gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={updateField('cccd')} placeholder="012345678901" /></Field>
-            <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng số 0"><Input type="tel" inputMode="numeric" maxLength={10} pattern="0[0-9]{9}" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field>
+            <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng số 0"><Input type="tel" inputMode="numeric" maxLength={10} pattern="0[0-9]{9}" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field></>}
             <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={updateField('startDate')} /></Field>
             <Field label="Loại nhân viên" required hint="Full-Time dùng định mức ngày, giờ và lương cơ bản; Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
             {isPartTime(form.employmentType)
@@ -678,6 +708,7 @@ export function StoreEmployees() {
               ? <Input value="Nhân viên bán hàng" readOnly aria-readonly="true" />
               : <Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select>}</Field>
           </div>
+          {!linkingBusinessSupport && <>
           <h3>Địa chỉ</h3>
           <AddressAutocomplete
             value={{ province: form.province, ward: form.ward, street: form.street }}
@@ -711,6 +742,7 @@ export function StoreEmployees() {
             </Field>
           </div>
           <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư. Hệ thống không lưu hoặc hiển thị lại mật khẩu sau khi đóng thông báo cấp tài khoản.</InfoNote>
+          </>}
         </form>
       </Modal>}
       <Modal wide open={Boolean(viewingImage)} onClose={() => setViewingImage(null)} title={viewingImage?.label || 'Ảnh CCCD'} footer={<Button variant="outline" onClick={() => setViewingImage(null)}>Đóng</Button>}>

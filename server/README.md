@@ -86,9 +86,13 @@ Các lệnh chính:
   lương cơ bản: profile canonical dùng `payBasis: allowance-only`,
   `salaryUnit: none` và chỉ nhận thưởng/phụ cấp cuối tháng. Có thể tạo hồ sơ mới
   hoặc truyền `linkedEmployeeId` để phân quyền quản lý cho nhân viên bán hàng
-  hiện hữu; hồ sơ bán hàng và cách tính lương cửa hàng vẫn giữ nguyên, còn cùng
-  tài khoản được nâng thành `store_manager`. Giờ chấm công của hai vai trò do
-  server mặc định Full-Time `08:00-17:30`.
+  hiện hữu; hồ sơ bán hàng và cách tính lương cửa hàng vẫn giữ nguyên. Tài khoản
+  không bị đổi vai trò gốc: lần đăng nhập kế tiếp Worker trả `availableRoles`
+  để người dùng chọn `Quản lý` hoặc `Nhân viên`. Hỗ trợ KD được liên kết thêm
+  cả hồ sơ bán hàng và quản lý sẽ có đủ ba lựa chọn `Quản lý`, `Nhân viên`,
+  `Hỗ trợ KD`. Lựa chọn được lưu trên session qua `POST /api/session/role` và
+  được xác thực lại ở mọi request; xóa hồ sơ liên kết sẽ thu hồi các session
+  hiện hành nên quyền vừa xóa không thể tiếp tục sử dụng.
   Hồ sơ `unit: office` bắt buộc `storeId: OFFICE`, tự sinh mã `VP-001...`, điện thoại `0` + 9 số, CCCD đúng
   12 số, bắt buộc địa chỉ, ngày bắt đầu, loại nhân viên (`Full-Time`,
   `Part-Time`, `Thực Tập Sinh`), vị trí (`Kế Toán`, `Marketing`) và cặp
@@ -164,6 +168,12 @@ Các lệnh chính:
   lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và
   thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
   bảo vệ, không thể sửa qua `state.merge|replace`.
+- `support_schedule.assign`: Admin hoặc Nhân viên hỗ trợ KD, payload
+  `{employeeId,date,start,end,shiftName?,note?}`. Nhân viên đích phải thuộc nhóm
+  `business_support`; Part-Time/Thực Tập Sinh bắt buộc tên ca, Full-Time dùng
+  một khung giờ bắt đầu/kết thúc. Worker upsert lịch hiện hành theo
+  `employeeId + date`, append snapshot vào `supportWorkScheduleHistory`, tạo
+  notification cho đúng nhân viên và ưu tiên lịch ngày này khi chấm công.
 - `support_transfer.create|update`: `admin` hoặc `business_support`; `support_transfer.delete`
   chỉ dành cho `admin`, các role còn lại nhận `403`. Create nhận
   `{employeeId,fromStoreId?,toStoreId,fromDate,toDate,hourlySupportRate,allowance,note?}`;

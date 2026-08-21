@@ -57,7 +57,7 @@ export function CustomerSurveyPage() {
         <MetricCard compact label="FACEBOOK" value={overview.channels.Facebook || 0} helper={percentage(overview.channels.Facebook, overview.total)} icon={FacebookIcon} tone="blue" />
         <MetricCard compact label="ZALO" value={overview.channels.Zalo || 0} helper={percentage(overview.channels.Zalo, overview.total)} icon={ZaloIcon} tone="teal" />
         <MetricCard compact label="KÊNH KHÁC" value={overview.channels.Khác || 0} helper={percentage(overview.channels.Khác, overview.total)} icon={BriefcaseBusiness} tone="orange" />
-        <MetricCard compact label="CÔNG VIỆC PHỔ BIẾN" value={overview.insights.topOccupation || '—'} helper={overview.total ? `${overview.insights.topOccupationCount} khách` : 'Chưa có dữ liệu'} icon={BriefcaseBusiness} tone="green" />
+        <MetricCard compact label="CÔNG VIỆC PHỔ BIẾN" value={overview.insights.topOccupation || '—'} helper={overview.occupationTotal ? `${overview.insights.topOccupationCount} khách · từ 11:15 21/08/2026` : 'Chưa có dữ liệu từ mốc thống kê'} icon={BriefcaseBusiness} tone="green" />
       </div>
 
       <Card title="Thống kê từng cửa hàng" className="customer-survey-filter-card">
@@ -71,7 +71,7 @@ export function CustomerSurveyPage() {
       <div className="customer-survey-grid">
         <DistributionTable title="Độ tuổi khách hàng" label="Nhóm tuổi" counts={selected.ages} total={selected.total} />
         <DistributionTable title="Kênh khách hàng biết đến" label="Kênh" counts={selected.channels} total={selected.total} />
-        <DistributionTable title="Công việc / nghề nghiệp" label="Công việc" counts={selected.occupations} total={selected.total} />
+        <DistributionTable title="Công việc / nghề nghiệp · từ 11:15 21/08/2026" label="Công việc" counts={selected.occupations} total={selected.occupationTotal} />
       </div>
 
       <Card title="Nhận xét và đánh giá" className="customer-survey-insights">
@@ -79,7 +79,7 @@ export function CustomerSurveyPage() {
           <article><span>Độ tuổi nổi bật</span><strong>{insights.topAge}</strong><small>{insights.topAgeCount} khách • {percentage(insights.topAgeCount, selected.total)}</small></article>
           <article><span>Giới tính nhiều nhất</span><strong>{insights.topGender}</strong><small>{insights.topGenderCount} khách • {percentage(insights.topGenderCount, selected.total)}</small></article>
           <article><span>Kênh hiệu quả nhất</span><strong>{insights.topChannel}</strong><small>{insights.topChannelCount} khách • {percentage(insights.topChannelCount, selected.total)}</small></article>
-          <article><span>Công việc phổ biến</span><strong>{insights.topOccupation}</strong><small>{insights.topOccupationCount} khách • {percentage(insights.topOccupationCount, selected.total)}</small></article>
+          <article><span>Công việc phổ biến</span><strong>{insights.topOccupation || '—'}</strong><small>{insights.topOccupationCount} khách • {percentage(insights.topOccupationCount, selected.occupationTotal)} · từ 11:15 21/08/2026</small></article>
         </div> : <p>Chưa có dữ liệu để đưa ra nhận xét trong phạm vi đã chọn.</p>}
       </Card>
     </div>

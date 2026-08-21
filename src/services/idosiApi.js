@@ -82,6 +82,11 @@ export const apiLogin = async (username, password) => {
   return payload
 }
 
+export const apiSelectSessionRole = (selection) => request('/api/session/role', {
+  method: 'POST',
+  body: selection,
+})
+
 export const apiBootstrapState = (scope = 'global') => request(`/api/bootstrap?scope=${encodeURIComponent(scope)}`)
 export const apiGetState = (scope = 'global') => request(`/api/state?scope=${encodeURIComponent(scope)}`)
 
