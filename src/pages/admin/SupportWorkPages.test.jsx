@@ -8,6 +8,7 @@ const mocked = vi.hoisted(() => ({ app: {} }))
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 
 const supportProfile = { id: 'HTKD-001', code: 'HTKD-001', unit: 'business_support', name: 'Nguyễn Hỗ Trợ' }
+const officeProfile = { id: 'VP-001', code: 'VP-001', unit: 'office', name: 'Nguyễn Văn Phòng' }
 
 describe('support work screens', () => {
   beforeEach(() => {
@@ -26,15 +27,31 @@ describe('support work screens', () => {
   it('sends the selected date, support employee and title-only task', async () => {
     render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
 
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'HTKD-001' } })
+    fireEvent.change(screen.getByLabelText('Nhân viên nhận việc'), { target: { value: 'HTKD-001' } })
     fireEvent.change(screen.getByLabelText('Tên công việc 1'), { target: { value: 'Kiểm tra báo cáo' } })
     fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
 
     await waitFor(() => expect(mocked.app.assignSupportWork).toHaveBeenCalledTimes(1))
     expect(mocked.app.assignSupportWork.mock.calls[0][0]).toMatchObject({
       employeeId: 'HTKD-001',
+      targetUnit: 'business_support',
       tasks: [{ name: 'Kiểm tra báo cáo', description: '' }],
     })
+  })
+
+  it('lets Admin assign the same task flow to an Office employee', async () => {
+    mocked.app.employees = [supportProfile, officeProfile]
+    render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
+
+    fireEvent.change(screen.getByLabelText('Nhóm nhân viên'), { target: { value: 'office' } })
+    fireEvent.change(screen.getByLabelText('Nhân viên nhận việc'), { target: { value: 'VP-001' } })
+    fireEvent.change(screen.getByLabelText('Tên công việc 1'), { target: { value: 'Đối chiếu hồ sơ văn phòng' } })
+    fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
+
+    await waitFor(() => expect(mocked.app.assignSupportWork).toHaveBeenCalledWith(expect.objectContaining({
+      employeeId: 'VP-001', targetUnit: 'office',
+      tasks: [expect.objectContaining({ name: 'Đối chiếu hồ sơ văn phòng' })],
+    })))
   })
 
   it('renders reusable work titles in the compact readable task-template grid', () => {

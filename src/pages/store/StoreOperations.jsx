@@ -34,6 +34,7 @@ import {
   FinancialChart,
   InfoNote,
   Input,
+  MoneyInput,
   MetricCard,
   Modal,
   PageHeader,
@@ -44,6 +45,7 @@ import {
 } from '../../components/UI'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
+import { optimizeIdentityImage } from '../../domain/identityImage'
 import { cashSeries, shifts } from '../../data'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
@@ -82,8 +84,6 @@ const shiftById = (id) => shifts.find((shift) => shift.id === id)
 
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
 const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time']
-const IDENTITY_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
-const MAX_IDENTITY_IMAGE_SIZE = 2 * 1024 * 1024
 const emptyEmployeeForm = {
   id: '',
   name: '',
@@ -172,15 +172,7 @@ let storeTaskDraftSequence = 0
 const newStoreTaskRow = () => ({ id: `store-task-draft-${storeTaskDraftSequence += 1}`, title: '', detail: '' })
 const storeTaskStatusTone = (status) => status === 'Hoàn thành' ? 'green' : status === 'Đang thực hiện' ? 'blue' : 'orange'
 
-const readIdentityImage = (file) => new Promise((resolve, reject) => {
-  if (!file) return resolve('')
-  if (!IDENTITY_IMAGE_TYPES.has(file.type)) return reject(new Error('Ảnh CCCD phải là tệp JPG, PNG hoặc WEBP.'))
-  if (file.size > MAX_IDENTITY_IMAGE_SIZE) return reject(new Error('Mỗi ảnh CCCD không được vượt quá 2 MB.'))
-  const reader = new FileReader()
-  reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh CCCD.'))
-  reader.onload = () => resolve(String(reader.result || ''))
-  reader.readAsDataURL(file)
-})
+const readIdentityImage = async (file) => file ? (await optimizeIdentityImage(file)).dataUrl : ''
 
 const useStoreScope = () => {
   const app = useApp()
@@ -675,11 +667,11 @@ export function StoreEmployees() {
             <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={updateField('startDate')} /></Field>
             <Field label="Loại nhân viên" required hint="Full-Time dùng định mức ngày, giờ và lương cơ bản; Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
             {isPartTime(form.employmentType)
-              ? <Field label="Lương mặc định theo giờ (đ/giờ)" required hint="Dùng để tính lương theo tổng giờ chấm công"><Input inputMode="numeric" value={form.salary} onChange={updateField('salary')} placeholder="30,000" /></Field>
+              ? <Field label="Lương mặc định theo giờ (đ/giờ)" required hint="Dùng để tính lương theo tổng giờ chấm công"><MoneyInput value={form.salary} onChange={updateField('salary')} placeholder="Nhập số nghìn" /></Field>
               : <>
                   <Field label="Số ngày công quy định/tháng" required hint="Từ 1 đến 31 ngày"><Input type="number" inputMode="numeric" min="1" max="31" step="1" value={form.standardWorkDays} onChange={updateField('standardWorkDays')} placeholder="26" /></Field>
                   <Field label="Tổng giờ làm quy định/tháng" required hint="Dùng làm mẫu số tính lương theo giờ thực tế"><Input type="number" inputMode="decimal" min="0.01" max="744" step="0.01" value={form.requiredMonthlyHours} onChange={updateField('requiredMonthlyHours')} placeholder="208" /></Field>
-                  <Field label="Lương cơ bản (đ/tháng)" required hint={storeEmployeePrefix(scopedStore) === 'SM234' ? 'SecondMall: giờ thực tế ÷ giờ quy định × lương cơ bản' : 'Mức lương cơ bản của kỳ lương tháng'}><Input inputMode="numeric" value={form.baseSalary} onChange={updateField('baseSalary')} placeholder="8,000,000" /></Field>
+                  <Field label="Lương cơ bản (đ/tháng)" required hint={storeEmployeePrefix(scopedStore) === 'SM234' ? 'SecondMall: giờ thực tế ÷ giờ quy định × lương cơ bản' : 'Mức lương cơ bản của kỳ lương tháng'}><MoneyInput value={form.baseSalary} onChange={updateField('baseSalary')} placeholder="Nhập số nghìn" /></Field>
                 </>}
             <Field label="Tuổi" required><Input inputMode="numeric" min="16" max="100" value={form.age} onChange={updateField('age')} placeholder="Ví dụ: 22" /></Field>
             <Field label="Vị trí công việc" required hint={isBusinessSupport && !editing ? 'Mặc định cho nhân viên do Hỗ trợ KD tạo' : undefined}>{isBusinessSupport && !editing
@@ -697,7 +689,7 @@ export function StoreEmployees() {
               const label = side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'
               const image = form.identityImages?.[side]
               const preview = typeof image === 'string' && image.startsWith('data:image/') ? image : ''
-              return <Field key={side} label={label} required={!editing} hint="JPG, PNG hoặc WEBP; tối đa 2 MB">
+              return <Field key={side} label={label} required={!editing} hint="Ảnh gốc tối đa 5 MB; hệ thống tự tối ưu dưới 300 KB">
                 <Input type="file" accept="image/jpeg,image/png,image/webp" aria-label={label} onChange={updateIdentityImage(side)} disabled={Boolean(imageBusy)} />
                 {image && <small>{preview ? 'Đã chọn ảnh mới' : 'Ảnh đã được lưu riêng tư'}</small>}
                 {preview && <img className="identity-image-preview" src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} />}
@@ -705,7 +697,7 @@ export function StoreEmployees() {
               </Field>
             })}
           </div>
-          {imageBusy && <InfoNote>Đang đọc ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
+          {imageBusy && <InfoNote>Đang tối ưu ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
              <Field label="Tên đăng nhập" required><Input autoComplete="username" value={form.username} onChange={updateField('username')} placeholder="Ví dụ: nguyenvana" /></Field>
@@ -968,8 +960,8 @@ export function StoreImports() {
           <div className="form-grid"><Field label="Số lượng (bao)" required><Input type="number" min="1" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field><Field label="Đơn vị"><Select value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })}><option>Bao</option><option>Kiện</option><option>Thùng</option></Select></Field></div>
           <Field label="Danh mục"><Select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}><option>Thời trang nữ</option><option>Thời trang nam</option><option>Đồ mặc nhà</option><option>Phụ kiện</option></Select></Field>
           <Field label="Cân nặng (kg)" required><Input type="number" value={form.weight} onChange={(event) => setForm({ ...form, weight: event.target.value })} placeholder="Nhập cân nặng" /></Field>
-          <Field label="Đơn giá nhập (đ/kg)" required><Input type="number" value={form.price} onChange={(event) => setForm({ ...form, price: event.target.value })} placeholder="Nhập đơn giá nhập" /></Field>
-          <Field label="Phí vận chuyển (đ)"><Input type="number" value={form.shipping} onChange={(event) => setForm({ ...form, shipping: event.target.value })} /></Field>
+          <Field label="Đơn giá nhập (đ/kg)" required><MoneyInput value={form.price} onChange={(event) => setForm({ ...form, price: event.target.value })} placeholder="Nhập số nghìn" /></Field>
+          <Field label="Phí vận chuyển (đ)"><MoneyInput value={form.shipping} onChange={(event) => setForm({ ...form, shipping: event.target.value })} placeholder="Nhập số nghìn" /></Field>
           <div className="calculated-total"><span>Thành tiền</span><strong>{money(formTotal)}</strong><small>= Cân nặng × Đơn giá nhập + Phí vận chuyển</small></div>
           <Field label="Ghi chú (tùy chọn)"><textarea value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Nhập ghi chú..." /></Field>
           <InfoNote><strong>Mẹo</strong><br />Đơn giá nhập là giá của 1kg. Thành tiền được tính tự động.</InfoNote>

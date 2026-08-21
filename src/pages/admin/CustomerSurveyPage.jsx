@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { BarChart3, BriefcaseBusiness, MessageCircle, UsersRound, VenusAndMars } from 'lucide-react'
+import { BarChart3, BriefcaseBusiness, UsersRound, VenusAndMars } from 'lucide-react'
 import { Card, Field, InfoNote, Input, MetricCard, PageHeader, Select, TableWrap } from '../../components/UI'
 import { customerSurveySummary } from '../../domain/customerSurvey'
 import { useApp } from '../../state/AppContext'
@@ -7,6 +7,10 @@ import { today } from '../../utils'
 import './CustomerSurveyPage.css'
 
 const percentage = (value, total) => total ? `${((Number(value || 0) / total) * 100).toFixed(1)}%` : '0.0%'
+
+const TikTokIcon = ({ className = '' }) => <span className={`survey-brand-icon survey-brand-icon--tiktok ${className}`.trim()} aria-hidden="true">♪</span>
+const FacebookIcon = ({ className = '' }) => <span className={`survey-brand-icon survey-brand-icon--facebook ${className}`.trim()} aria-hidden="true">f</span>
+const ZaloIcon = ({ className = '' }) => <span className={`survey-brand-icon survey-brand-icon--zalo ${className}`.trim()} aria-hidden="true">Zalo</span>
 
 const sortedEntries = (counts = {}) => Object.entries(counts)
   .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], 'vi'))
@@ -45,15 +49,15 @@ export function CustomerSurveyPage() {
       />
 
       <div className="metrics-grid metrics-grid--4" aria-label="Tổng quan khảo sát khách hàng">
-        <MetricCard label="TỔNG SỐ KHÁCH" value={overview.total} suffix="lượt" icon={UsersRound} tone="green" />
-        <MetricCard label="GIỚI TÍNH NAM" value={overview.genders.Nam || 0} helper={percentage(overview.genders.Nam, overview.total)} icon={VenusAndMars} tone="blue" />
-        <MetricCard label="GIỚI TÍNH NỮ" value={overview.genders.Nữ || 0} helper={percentage(overview.genders.Nữ, overview.total)} icon={VenusAndMars} tone="purple" />
-        <MetricCard label="ĐỘ TUỔI GHI NHẬN" value={overview.ageRange ? `${overview.ageRange.min}–${overview.ageRange.max}` : '—'} suffix="tuổi" icon={UsersRound} tone="orange" />
-        <MetricCard label="TIKTOK" value={overview.channels.TikTok || 0} helper={percentage(overview.channels.TikTok, overview.total)} icon={MessageCircle} tone="green" />
-        <MetricCard label="FACEBOOK" value={overview.channels.Facebook || 0} helper={percentage(overview.channels.Facebook, overview.total)} icon={MessageCircle} tone="blue" />
-        <MetricCard label="ZALO" value={overview.channels.Zalo || 0} helper={percentage(overview.channels.Zalo, overview.total)} icon={MessageCircle} tone="teal" />
-        <MetricCard label="KÊNH KHÁC" value={overview.channels.Khác || 0} helper={percentage(overview.channels.Khác, overview.total)} icon={BriefcaseBusiness} tone="orange" />
-        <MetricCard label="CÔNG VIỆC PHỔ BIẾN" value={overview.insights.topOccupation || '—'} helper={overview.total ? `${overview.insights.topOccupationCount} khách` : 'Chưa có dữ liệu'} icon={BriefcaseBusiness} tone="green" />
+        <MetricCard compact label="TỔNG SỐ KHÁCH" value={overview.total} suffix="lượt" icon={UsersRound} tone="green" />
+        <MetricCard compact label="GIỚI TÍNH NAM" value={overview.genders.Nam || 0} helper={percentage(overview.genders.Nam, overview.total)} icon={VenusAndMars} tone="blue" />
+        <MetricCard compact label="GIỚI TÍNH NỮ" value={overview.genders.Nữ || 0} helper={percentage(overview.genders.Nữ, overview.total)} icon={VenusAndMars} tone="purple" />
+        <MetricCard compact label="ĐỘ TUỔI GHI NHẬN" value={overview.ageRange ? `${overview.ageRange.min}–${overview.ageRange.max}` : '—'} suffix="tuổi" icon={UsersRound} tone="orange" />
+        <MetricCard compact label="TIKTOK" value={overview.channels.TikTok || 0} helper={percentage(overview.channels.TikTok, overview.total)} icon={TikTokIcon} tone="green" />
+        <MetricCard compact label="FACEBOOK" value={overview.channels.Facebook || 0} helper={percentage(overview.channels.Facebook, overview.total)} icon={FacebookIcon} tone="blue" />
+        <MetricCard compact label="ZALO" value={overview.channels.Zalo || 0} helper={percentage(overview.channels.Zalo, overview.total)} icon={ZaloIcon} tone="teal" />
+        <MetricCard compact label="KÊNH KHÁC" value={overview.channels.Khác || 0} helper={percentage(overview.channels.Khác, overview.total)} icon={BriefcaseBusiness} tone="orange" />
+        <MetricCard compact label="CÔNG VIỆC PHỔ BIẾN" value={overview.insights.topOccupation || '—'} helper={overview.total ? `${overview.insights.topOccupationCount} khách` : 'Chưa có dữ liệu'} icon={BriefcaseBusiness} tone="green" />
       </div>
 
       <Card title="Thống kê từng cửa hàng" className="customer-survey-filter-card">

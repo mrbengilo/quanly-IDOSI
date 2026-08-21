@@ -87,8 +87,15 @@ const newTaskRow = () => ({ id: uid('CVHT'), name: '', description: '' })
 
 export function AdminSupportWorkPage() {
   const app = useApp()
-  const profiles = roleProfilesFromApp(app, ROLE_KEYS.businessSupport)
-  const [form, setForm] = useState({ date: today(), employeeId: '', tasks: [newTaskRow()] })
+  const supportProfiles = roleProfilesFromApp(app, ROLE_KEYS.businessSupport)
+  const officeProfiles = (Array.isArray(app.employees) ? app.employees : []).filter((profile) => (
+    !profile.deletedAt
+    && ['office', 'văn phòng', 'van phong'].includes(String(profile.unit || profile.unitType || profile.department || '').trim().toLocaleLowerCase('vi-VN'))
+    && !['Đã nghỉ việc', 'inactive'].includes(String(profile.status || ''))
+  ))
+  const allProfiles = [...supportProfiles, ...officeProfiles]
+  const [form, setForm] = useState({ date: today(), targetUnit: 'business_support', employeeId: '', tasks: [newTaskRow()] })
+  const profiles = form.targetUnit === 'office' ? officeProfiles : supportProfiles
   const [busy, setBusy] = useState(false)
   const validTasks = form.tasks
     .map((task) => ({ id: task.id, name: task.name.trim(), description: '' }))
@@ -127,25 +134,26 @@ export function AdminSupportWorkPage() {
 
   const send = async () => {
     if (!form.date) return app.notify?.('Vui lòng chọn ngày giao việc.', 'info')
-    if (!form.employeeId) return app.notify?.('Vui lòng chọn nhân viên hỗ trợ kinh doanh.', 'info')
+    if (!form.employeeId) return app.notify?.('Vui lòng chọn nhân viên nhận việc.', 'info')
     if (!validTasks.length || validTasks.length !== form.tasks.length) return app.notify?.('Mỗi công việc cần có tên.', 'info')
     if (typeof app.assignSupportWork !== 'function') return app.notify?.('Chức năng giao việc chưa sẵn sàng.', 'info')
     setBusy(true)
     try {
-      const result = await app.assignSupportWork({ date: form.date, employeeId: form.employeeId, tasks: validTasks })
+      const result = await app.assignSupportWork({ date: form.date, targetUnit: form.targetUnit, employeeId: form.employeeId, tasks: validTasks })
       if (result?.ok === false) return app.notify?.(result.message || 'Không thể giao việc.', 'info')
-      setForm({ date: today(), employeeId: '', tasks: [newTaskRow()] })
+      setForm({ date: today(), targetUnit: 'business_support', employeeId: '', tasks: [newTaskRow()] })
     } finally {
       setBusy(false)
     }
   }
 
   return <div className="page support-work-page">
-    <PageHeader title="GIAO VIỆC" subtitle="Giao danh sách công việc cho nhân viên hỗ trợ kinh doanh và theo dõi toàn bộ lịch sử." icon={ClipboardCheck} />
+    <PageHeader title="GIAO VIỆC" subtitle="Giao công việc cho nhân viên hỗ trợ kinh doanh hoặc Khối văn phòng và theo dõi toàn bộ lịch sử." icon={ClipboardCheck} />
     <Card title="Tạo danh sách công việc">
       <div className="support-work-form-head">
         <Field label="Chọn ngày" required><Input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} /></Field>
-        <Field label="Nhân viên hỗ trợ kinh doanh" required><Select value={form.employeeId} onChange={(event) => setForm((current) => ({ ...current, employeeId: event.target.value }))}><option value="">Chọn nhân viên</option>{profiles.map((profile) => <option key={roleProfileCode(profile)} value={roleProfileCode(profile)}>{profile.name} — {roleProfileCode(profile)}</option>)}</Select></Field>
+        <Field label="Nhóm nhân viên" required><Select aria-label="Nhóm nhân viên" value={form.targetUnit} onChange={(event) => setForm((current) => ({ ...current, targetUnit: event.target.value, employeeId: '' }))}><option value="business_support">Nhân viên hỗ trợ KD</option><option value="office">Khối văn phòng</option></Select></Field>
+        <Field label={form.targetUnit === 'office' ? 'Nhân viên Khối văn phòng' : 'Nhân viên hỗ trợ kinh doanh'} required><Select aria-label="Nhân viên nhận việc" value={form.employeeId} onChange={(event) => setForm((current) => ({ ...current, employeeId: event.target.value }))}><option value="">Chọn nhân viên</option>{profiles.map((profile) => <option key={roleProfileCode(profile)} value={roleProfileCode(profile)}>{profile.name} — {roleProfileCode(profile)}</option>)}</Select></Field>
       </div>
       {reusableTasks.length > 0 && <>
         <InfoNote>Tick các công việc đã nhập trước đây để dùng lại; chỉ cần thêm công việc mới khi danh sách chưa có.</InfoNote>
@@ -175,7 +183,7 @@ export function AdminSupportWorkPage() {
         <tbody>{sortedAssignments.map((assignment) => {
           const progress = supportWorkProgress(assignment)
           const status = supportWorkStatus(assignment.status)
-          return <tr key={assignment.id}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || profiles.find((profile) => roleProfileCode(profile) === assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{task.description && <small>{task.description}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
+          return <tr key={assignment.id}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || allProfiles.find((profile) => roleProfileCode(profile) === assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{task.description && <small>{task.description}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
         })}{!sortedAssignments.length && <tr><td colSpan="7">Chưa có lịch sử giao việc.</td></tr>}</tbody>
       </TableWrap>
     </Card>

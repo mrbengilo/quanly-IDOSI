@@ -23,6 +23,7 @@ import {
   Field,
   InfoNote,
   Input,
+  MoneyInput,
   MetricCard,
   PageHeader,
   Select,
@@ -34,7 +35,6 @@ import { useApp } from '../../state/AppContext'
 import {
   calculateEmployeeBasePay,
   downloadCsv,
-  formatMoneyInput,
   getEmployeeType,
   getHourlyRate,
   getMonthlySalary,
@@ -381,8 +381,8 @@ export function EmployeeHome() {
       </Card>
       <Card className="finish-shift" title="THÔNG TIN KẾT CA">
         <div className="finish-shift__grid">
-          <div><Field label="Chi phí trong ca (nếu có)"><Input inputMode="numeric" value={expense} onChange={(event) => setExpense(formatMoneyInput(event.target.value))} placeholder="2,000" /></Field><div className="expected-pay"><span>Số giờ làm dự kiến: <b>5 tiếng</b></span><span>{payBasis === 'hourly' || monthlyHoursFormula ? 'Lương ca dự kiến' : 'Mức lương tháng'}: <b>{money(payBasis === 'hourly' ? rate * 5 : monthlyHoursFormula ? calculateEmployeeBasePay(employee, { hours: 5 }) : rate)}</b></span><small>{payBasis === 'hourly' ? `(${money(rate)}/giờ)` : monthlyHoursFormula ? `5 / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || rate)}` : 'Full-time hưởng lương theo tháng'}</small></div></div>
-          <div><h3>Doanh thu ca <b>(bắt buộc)</b></h3><div className="revenue-entry"><Field label="Tiền mặt"><Input inputMode="numeric" value={cash} onChange={(event) => setCash(formatMoneyInput(event.target.value))} placeholder="2,000" /></Field><Field label="Chuyển khoản"><Input inputMode="numeric" value={transfer} onChange={(event) => setTransfer(formatMoneyInput(event.target.value))} placeholder="2,000" /></Field><div><span>Tổng tiền</span><strong>{money(totalRevenue)}</strong></div></div><Button className="finish-button" icon={LockKeyhole} loading={locatingAction === 'out'} disabled={!canFinish || Boolean(locatingAction)} onClick={handleFinish}>{finishedShift ? 'ĐÃ KẾT CA' : 'KẾT CA'}</Button>{!canFinish && !finishedShift && <small className="finish-warning">Vui lòng hoàn thành công việc và nhập doanh thu để kết ca</small>}</div>
+          <div><Field label="Chi phí trong ca (nếu có)"><MoneyInput value={expense} onChange={(event) => setExpense(event.target.value)} placeholder="Nhập số nghìn" /></Field><div className="expected-pay"><span>Số giờ làm dự kiến: <b>5 tiếng</b></span><span>{payBasis === 'hourly' || monthlyHoursFormula ? 'Lương ca dự kiến' : 'Mức lương tháng'}: <b>{money(payBasis === 'hourly' ? rate * 5 : monthlyHoursFormula ? calculateEmployeeBasePay(employee, { hours: 5 }) : rate)}</b></span><small>{payBasis === 'hourly' ? `(${money(rate)}/giờ)` : monthlyHoursFormula ? `5 / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || rate)}` : 'Full-time hưởng lương theo tháng'}</small></div></div>
+          <div><h3>Doanh thu ca <b>(bắt buộc)</b></h3><div className="revenue-entry"><Field label="Tiền mặt"><MoneyInput value={cash} onChange={(event) => setCash(event.target.value)} placeholder="Nhập số nghìn" /></Field><Field label="Chuyển khoản"><MoneyInput value={transfer} onChange={(event) => setTransfer(event.target.value)} placeholder="Nhập số nghìn" /></Field><div><span>Tổng tiền</span><strong>{money(totalRevenue)}</strong></div></div><Button className="finish-button" icon={LockKeyhole} loading={locatingAction === 'out'} disabled={!canFinish || Boolean(locatingAction)} onClick={handleFinish}>{finishedShift ? 'ĐÃ KẾT CA' : 'KẾT CA'}</Button>{!canFinish && !finishedShift && <small className="finish-warning">Vui lòng hoàn thành công việc và nhập doanh thu để kết ca</small>}</div>
           <div className="tiktok-box"><h3>♪ CLIP TIKTOK</h3><p>Nếu ca này có làm clip TikTok, vui lòng tick vào ô bên dưới.</p><label><input type="checkbox" checked={tiktok} onChange={(event) => setTiktok(event.target.checked)} /> Ca này có làm clip TikTok</label></div>
         </div>
       </Card>

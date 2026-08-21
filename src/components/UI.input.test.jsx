@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Field, Input } from './UI'
+import { Field, Input, MoneyInput } from './UI'
 
 afterEach(cleanup)
 
@@ -118,5 +118,29 @@ describe('Input native temporal picker', () => {
 
     expect(container.querySelector('.input-wrap--temporal')).toBeNull()
     expect(container.querySelector('.input-wrap__temporal-icon')).toBeNull()
+  })
+})
+
+describe('MoneyInput thousands unit', () => {
+  it('stays visually empty until typing and converts 35 to 35,000 VND', () => {
+    const onChange = vi.fn()
+    const { container, rerender } = render(<MoneyInput aria-label="Số tiền" value="" onChange={onChange} />)
+
+    expect(container.querySelector('input').value).toBe('')
+    expect(container.querySelector('.money-input__suffix')).toBeNull()
+
+    fireEvent.change(container.querySelector('input'), { target: { value: '35' } })
+    expect(onChange.mock.calls[0][0].target.value).toBe('35000')
+
+    rerender(<MoneyInput aria-label="Số tiền" value="35000" onChange={onChange} />)
+    expect(container.querySelector('input').value).toBe('35')
+    expect(container.querySelector('.money-input__suffix').textContent).toBe(',000 đ')
+  })
+
+  it('shows existing million values in thousands without changing the stored VND value', () => {
+    const { container } = render(<MoneyInput aria-label="Lương" value="8,000,000" onChange={() => {}} />)
+
+    expect(container.querySelector('input').value).toBe('8,000')
+    expect(container.textContent).toContain(',000 đ')
   })
 })

@@ -37,6 +37,7 @@ import {
 } from '../../components/UI'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
+import { optimizeIdentityImage } from '../../domain/identityImage'
 import { useApp } from '../../state/AppContext'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { shortDate, today } from '../../utils'
@@ -129,20 +130,7 @@ const hoursWorked = (record = {}) => {
   return Math.max(0, (end >= start ? end - start : end + 1440 - start) / 60)
 }
 
-const readIdentityImage = (file) => new Promise((resolve, reject) => {
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(String(file?.type || '').toLowerCase())) {
-    reject(new Error('Hình CCCD phải là tệp ảnh JPG, PNG hoặc WEBP.'))
-    return
-  }
-  if (file.size > 2 * 1024 * 1024) {
-    reject(new Error('Mỗi hình CCCD không được vượt quá 2 MB.'))
-    return
-  }
-  const reader = new FileReader()
-  reader.onerror = () => reject(new Error('Không thể đọc hình CCCD. Vui lòng chọn lại tệp.'))
-  reader.onload = () => resolve(String(reader.result || ''))
-  reader.readAsDataURL(file)
-})
+const readIdentityImage = async (file) => (await optimizeIdentityImage(file)).dataUrl
 
 const identityImagePreview = (value) => {
   const source = typeof value === 'string' ? value : value?.previewUrl || value?.objectUrl || ''
@@ -230,14 +218,14 @@ function RoleProfileDrawer({
             const label = side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'
             const image = form.identityImages?.[side]
             const preview = identityImagePreview(image)
-            return <Field key={side} label={label} required hint="Chọn ảnh JPG, PNG hoặc WEBP; tối đa 2 MB">
+            return <Field key={side} label={label} required hint="Ảnh gốc tối đa 5 MB; hệ thống tự tối ưu dưới 300 KB">
               <Input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => onImageChange(side, event)} disabled={Boolean(imageBusy)} aria-label={label} />
               {image && <small>{preview ? `Đã chọn ${side === 'front' ? 'mặt trước' : 'mặt sau'}` : `Đã lưu ${side === 'front' ? 'mặt trước' : 'mặt sau'}`}</small>}
               {preview && <img className="identity-image-preview" src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} />}
             </Field>
           })}
         </div>
-        {imageBusy && <InfoNote>Đang đọc ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
+        {imageBusy && <InfoNote>Đang tối ưu ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
 
         <h3>Tài khoản đăng nhập</h3>
         <div className="form-grid">
@@ -298,10 +286,10 @@ function ProfileList({ canCreate, canDelete, canEdit, canEditWorkingTime, config
               <td>{profile.position || profile.workPosition || '—'}</td>
               <td><div className="row-actions identity-image-actions--stable">
                 {profile.identityImages?.front || profile.cccdFrontImage
-                  ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'front')} aria-label={`Xem mặt trước CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:front` ? 'Đang tải…' : 'Mặt trước'}</button>
+                  ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'front')} aria-label={`Xem mặt trước CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:front` ? 'Đang tải…' : <><Eye size={15} /> Trước</>}</button>
                   : <small>Chưa có mặt trước</small>}
                 {profile.identityImages?.back || profile.cccdBackImage
-                  ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'back')} aria-label={`Xem mặt sau CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:back` ? 'Đang tải…' : 'Mặt sau'}</button>
+                  ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'back')} aria-label={`Xem mặt sau CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:back` ? 'Đang tải…' : <><Eye size={15} /> Sau</>}</button>
                   : <small>Chưa có mặt sau</small>}
               </div></td>
               {(canEdit || canEditWorkingTime) && <td><div className="row-actions">{canEditWorkingTime && <button type="button" onClick={() => onEditWorkingTime(profile)} aria-label={`Cài giờ làm ${profile.name}`} title={`Cài giờ làm ${profile.name}`}><Clock3 size={17} /></button>}{canEdit && <button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button>}{canDelete && <button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button>}</div></td>}

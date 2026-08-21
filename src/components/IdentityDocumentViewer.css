@@ -13,6 +13,7 @@
   border-radius: 12px;
   background: #f3f7f4;
   contain: layout paint;
+  max-height: min(68vh, 620px);
 }
 
 .identity-document-viewer__image {
@@ -25,12 +26,17 @@
 .identity-image-actions.identity-image-actions--stable,
 .row-actions.identity-image-actions--stable {
   display: grid;
-  grid-template-columns: repeat(3, max-content);
+  grid-template-columns: repeat(2, minmax(62px, 1fr));
   align-items: center;
   gap: 7px;
-  min-width: max-content;
+  width: 100%;
+  min-width: 0;
+  max-width: 180px;
   margin-top: 6px;
 }
+
+.identity-image-actions.identity-image-actions--stable > small,
+.row-actions.identity-image-actions--stable > small { grid-column: 1 / -1; }
 
 .identity-image-actions.identity-image-actions--stable > button,
 .identity-image-actions.identity-image-actions--stable > small,

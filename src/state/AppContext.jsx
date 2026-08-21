@@ -1772,19 +1772,22 @@ export function AppProvider({ children }) {
   }
 
   const assignSupportWork = async (payload = {}) => {
-    if (normalizeAuthRole(state.session?.role) !== 'admin') return { ok: false, message: 'Chỉ Admin được giao việc cho nhân viên hỗ trợ kinh doanh.' }
+    if (normalizeAuthRole(state.session?.role) !== 'admin') return { ok: false, message: 'Chỉ Admin được giao việc cho nhân viên.' }
     const date = String(payload.date || '').trim()
+    const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
     const employeeId = String(payload.employeeId || '').trim()
-    const employee = state.employees.find((item) => accountKey(item) === employeeId && isBusinessSupportUnit(item.unit))
+    const employee = state.employees.find((item) => accountKey(item) === employeeId && (targetUnit === 'office'
+      ? isOfficeUnit(item.unit || item.unitType || item.department)
+      : isBusinessSupportUnit(item.unit)))
     const tasks = (Array.isArray(payload.tasks) ? payload.tasks : [])
       .map((task) => ({ id: String(task.id || uid('CVHT')), name: String(task.name || '').trim(), description: String(task.description || '').trim() }))
       .filter((task) => task.name)
     if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) return { ok: false, message: 'Ngày giao việc không hợp lệ.' }
-    if (!employee) return { ok: false, message: 'Không tìm thấy nhân viên hỗ trợ kinh doanh.' }
+    if (!employee) return { ok: false, message: 'Không tìm thấy nhân viên nhận việc.' }
     if (!tasks.length) return { ok: false, message: 'Cần có ít nhất một công việc.' }
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('support_work.assign', { date, employeeId, tasks })
+        const result = await runRemoteDomainCommand('support_work.assign', { date, targetUnit, employeeId, tasks })
         notify(`Đã gửi ${tasks.length} công việc đến ${employee.name}.`)
         return { ok: true, assignment: result.assignment, notification: result.notification }
       } catch (error) {
@@ -1799,6 +1802,7 @@ export function AppProvider({ children }) {
       date,
       employeeId,
       employeeName: employee.name,
+      targetUnit,
       tasks: tasks.map((task) => ({ ...task, completed: false, completedAt: null, completedBy: null })),
       status: 'assigned',
       incompleteReason: '',
@@ -1819,7 +1823,9 @@ export function AppProvider({ children }) {
       targetEmployeeId: employeeId,
       employeeId,
       assignmentId: assignment.id,
-      route: `/support/tasks?assignment=${encodeURIComponent(assignment.id)}`,
+      targetUnit,
+      storeId: targetUnit === 'office' ? 'OFFICE' : 'BUSINESS_SUPPORT',
+      route: `${targetUnit === 'office' ? '/employee/tasks' : '/support/tasks'}?assignment=${encodeURIComponent(assignment.id)}`,
       title: `Công việc mới ngày ${date}`,
       message: `Admin đã giao ${tasks.length} công việc cho bạn.`,
       createdAt: timestamp,
@@ -1837,7 +1843,9 @@ export function AppProvider({ children }) {
 
   const updateSupportWork = async (payload = {}) => {
     const actorRole = normalizeAuthRole(state.session?.role)
-    if (actorRole !== 'business_support') return { ok: false, message: 'Chỉ nhân viên hỗ trợ kinh doanh được cập nhật công việc được giao.' }
+    const currentProfile = state.employees.find((item) => accountKey(item) === String(state.session?.employeeId || state.session?.code || ''))
+    const officeEmployee = actorRole === 'employee' && isOfficeUnit(currentProfile?.unit || currentProfile?.unitType || currentProfile?.department)
+    if (actorRole !== 'business_support' && !officeEmployee) return { ok: false, message: 'Chỉ nhân viên nhận việc được cập nhật công việc được giao.' }
     const assignmentId = String(payload.assignmentId || '').trim()
     const assignment = (state.supportWorkAssignments || []).find((item) => String(item.id) === assignmentId)
     const employeeId = String(state.session?.employeeId || state.session?.code || '')

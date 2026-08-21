@@ -19,6 +19,10 @@ describe('CustomerSurveyPage', () => {
   it('shows system metrics and filters detailed statistics by store', () => {
     render(<CustomerSurveyPage />)
     const overview = screen.getByLabelText('Tổng quan khảo sát khách hàng')
+    expect(overview.querySelectorAll('.metric--compact')).toHaveLength(9)
+    expect(overview.querySelector('.survey-brand-icon--tiktok')).toBeTruthy()
+    expect(overview.querySelector('.survey-brand-icon--facebook')).toBeTruthy()
+    expect(overview.querySelector('.survey-brand-icon--zalo')).toBeTruthy()
     expect(within(overview).getByText('3')).toBeTruthy()
     expect(screen.getAllByText('18–24').length).toBeGreaterThan(0)
     expect(screen.getAllByText('TikTok').length).toBeGreaterThan(0)

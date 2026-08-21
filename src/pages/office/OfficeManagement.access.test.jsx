@@ -8,6 +8,10 @@ vi.mock('../../state/AppContext', () => ({
   useApp: () => mocked.app,
 }))
 
+vi.mock('../../domain/identityImage', () => ({
+  optimizeIdentityImage: vi.fn(async () => ({ dataUrl: 'data:image/png;base64,iVBORw0KGgo=', bytes: 8 })),
+}))
+
 afterEach(() => {
   cleanup()
   mocked.app = {}

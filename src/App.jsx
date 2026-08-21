@@ -170,6 +170,7 @@ export default function App() {
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
         <Route path="/employee/home" element={<EmployeeHomePage />} />
+        <Route path="/employee/tasks" element={<SupportAssignedWorkPage />} />
         <Route path="/employee/orders" element={<StoreEmployeeRoute><EmployeeOrdersPage /></StoreEmployeeRoute>} />
         <Route path="/employee/attendance" element={<EmployeeAttendanceRoute />} />
         <Route path="/employee/shifts" element={<Navigate to="/employee/work-history" replace />} />

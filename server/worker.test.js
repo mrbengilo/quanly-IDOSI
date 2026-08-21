@@ -2005,6 +2005,21 @@ describe('IDOSI Worker security primitives', () => {
     const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
     const pngDataUrl = `data:image/png;base64,${Buffer.from(pngBytes).toString('base64')}`
     const jpegDataUrl = `data:image/jpeg;base64,${Buffer.from([0xff, 0xd8, 0x01, 0xff, 0xd9]).toString('base64')}`
+    const oversizedPngBytes = new Uint8Array((300 * 1024) + 1)
+    oversizedPngBytes.set(pngBytes)
+    const oversizedPngDataUrl = `data:image/png;base64,${Buffer.from(oversizedPngBytes).toString('base64')}`
+
+    const oversizedIdentityImage = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1,
+      payload: {
+        unit: 'business_support', name: 'Ảnh CCCD quá lớn', phone: '0901234099', cccd: '079123450099',
+        address: 'TP.HCM', startDate: '2026-08-01', employmentType: 'Full-Time', position: 'NV hỗ trợ KD',
+        username: 'support.image.large', password: 'support-image-large-password',
+        identityImages: { front: oversizedPngDataUrl, back: pngDataUrl },
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'identity-support-too-large-0001' }), env)
+    expect(oversizedIdentityImage.status).toBe(413)
+    expect(await oversizedIdentityImage.json()).toMatchObject({ error: { code: 'IDENTITY_IMAGE_TOO_LARGE' } })
 
     const supportCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'employee.create', expectedVersion: 1,
@@ -4725,7 +4740,7 @@ describe('IDOSI Worker security primitives', () => {
         completionRate: 50, incompleteReason: 'Cửa hàng chưa phản hồi tồn kho.',
         submittedAt: expect.any(String),
       },
-      notification: { type: 'support-work-submitted', route: '/admin/business-support' },
+      notification: { type: 'support-work-submitted', route: '/admin/tasks' },
     })
 
     const orderDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -4857,6 +4872,44 @@ describe('IDOSI Worker security primitives', () => {
     expect(ownImage.status).toBe(200)
     expect(ownImage.headers.get('content-type')).toBe('image/png')
     expect(new Uint8Array(await ownImage.arrayBuffer())).toEqual(pngBytes)
+
+    const officeWorkAssigned = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.assign', expectedVersion: 2,
+      payload: {
+        targetUnit: 'office', date: '2026-08-21', employeeId: 'VP-002',
+        tasks: [{ id: 'OFFICE-WORK-01', name: 'Đối chiếu chứng từ' }],
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'office-work-assign-0001' }), env)
+    expect(officeWorkAssigned.status).toBe(201)
+    const officeWorkBody = await officeWorkAssigned.json()
+    expect(officeWorkBody).toMatchObject({
+      version: 3,
+      assignment: { targetUnit: 'office', employeeId: 'VP-002', totalTasks: 1 },
+      notification: {
+        type: 'support-work-assigned', targetUnit: 'office', storeId: 'OFFICE', route: '/employee/tasks',
+      },
+    })
+    const officeState = (await (await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: officeAuthorization,
+    }), env)).json()).state
+    expect(officeState.supportWorkAssignments).toEqual([
+      expect.objectContaining({ id: officeWorkBody.assignment.id, targetUnit: 'office', employeeId: 'VP-002' }),
+    ])
+
+    const officeWorkSubmitted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.update', expectedVersion: 3,
+      payload: {
+        assignmentId: officeWorkBody.assignment.id,
+        tasks: [{ id: 'OFFICE-WORK-01', completed: true }],
+        submit: true,
+      },
+    }, { ...officeAuthorization, 'idempotency-key': 'office-work-submit-0001' }), env)
+    expect(officeWorkSubmitted.status).toBe(200)
+    expect(await officeWorkSubmitted.json()).toMatchObject({
+      version: 4,
+      assignment: { targetUnit: 'office', employeeId: 'VP-002', status: 'completed' },
+      notification: { type: 'support-work-submitted', storeId: 'OFFICE', route: '/admin/tasks' },
+    })
   })
 
   it('lets business support create office and store employees with creator-provided credentials and policy access', async () => {

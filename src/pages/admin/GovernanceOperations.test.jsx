@@ -110,8 +110,8 @@ describe('Hỗ trợ KD operations', () => {
     fireEvent.change(screen.getByLabelText(/Cửa hàng điều chuyển/i), { target: { value: 'CH001' } })
     fireEvent.change(screen.getByLabelText(/^Nhân viên/i), { target: { value: 'SM234-001' } })
     fireEvent.change(screen.getByLabelText(/Cửa hàng nhận hỗ trợ/i), { target: { value: 'CH002' } })
-    fireEvent.change(screen.getByLabelText(/Lương hỗ trợ/i), { target: { value: '30000' } })
-    fireEvent.change(screen.getByLabelText(/Phụ cấp/i), { target: { value: '200000' } })
+    fireEvent.change(screen.getByLabelText(/Lương hỗ trợ/i), { target: { value: '30' } })
+    fireEvent.change(screen.getByLabelText(/Phụ cấp/i), { target: { value: '200' } })
     fireEvent.click(screen.getByRole('button', { name: /Lưu điều chuyển/i }))
 
     await waitFor(() => expect(mocked.saveSupportTransfer).toHaveBeenCalledWith(expect.objectContaining({

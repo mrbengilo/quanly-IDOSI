@@ -128,7 +128,7 @@ Các lệnh chính:
   Hồ sơ Full-Time cửa hàng nhận `standardWorkDays: 1..31`,
   `requiredMonthlyHours: >0..744` và `baseSalary` là số nguyên VND. Full-Time
   SecondMall SM234 bắt buộc đủ ba trường và lưu `payFormula: monthly-hours`.
-  `identityImages.front|back` nhận data URL JPEG/PNG/WebP tối đa 2 MiB/ảnh;
+  `identityImages.front|back` nhận data URL JPEG/PNG/WebP đã tối ưu tối đa 300 KiB/ảnh; giao diện nhận ảnh gốc tối đa 5 MiB rồi tự thu nhỏ/nén;
   Worker chỉ lưu metadata/key trong D1 và byte ảnh trong R2. Ảnh được lấy qua
   `GET /api/identity-images/:employeeId/:side` có Bearer token; Admin và Hỗ trợ
   KD xem được toàn bộ, Quản lý cửa hàng xem hồ sơ thuộc cửa hàng mình, còn nhân
@@ -150,15 +150,15 @@ Các lệnh chính:
   có thể rỗng cho việc chung; nếu có thì ca phải đang hoạt động, thuộc đúng cửa
   hàng và ngày áp dụng phải khớp `date`.
 - `support_work.assign`: chỉ Admin, payload
-  `{date,employeeId,tasks:[{id?,name,description}]}`; nhân viên đích phải là
-  `business_support`. Mỗi lần gửi tạo một lượt mới, kể cả cùng nhân viên/ngày,
+  `{date,targetUnit:'business_support'|'office',employeeId,tasks:[{id?,name,description}]}`;
+  nhân viên đích phải thuộc đúng nhóm đã chọn. Mỗi lần gửi tạo một lượt mới, kể cả cùng nhân viên/ngày,
   để không ghi đè lịch sử. Chỉ khi Admin truyền `assignmentId` rõ ràng, một lượt
   chưa nộp mới được thay atomically; history giữ snapshot task trước/sau. State
   canonical là `supportWorkAssignments[]`; mỗi lượt có metrics, trạng thái,
   `assignedAt`, `updatedAt`, `submittedAt` và `history[]` đầy đủ task/timestamp.
   Server đồng thời tạo notification `support-work-assigned` trỏ tới
-  `/support/tasks` chỉ cho đúng nhân viên.
-- `support_work.update`: chỉ business_support của chính lượt được giao, payload
+  `/support/tasks` hoặc `/employee/tasks` chỉ cho đúng nhân viên.
+- `support_work.update`: chỉ nhân viên Hỗ trợ KD/Khối văn phòng của chính lượt được giao, payload
   `{assignmentId,tasks:[{id,completed}],submit?,incompleteReason?}`. Khi
   `submit:true` mà còn item chưa hoàn thành, `incompleteReason` là bắt buộc;
   lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và

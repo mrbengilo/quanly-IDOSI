@@ -143,11 +143,30 @@ describe('store employee current-shift orders', () => {
     fireEvent.click(screen.getByRole('button', { name: 'TẠO ĐƠN HÀNG' }))
     await screen.findByRole('dialog')
     expect(screen.getByRole('heading', { name: 'Tạo đơn hàng • Dosii KVC' })).toBeTruthy()
+    const occupationInput = screen.getByLabelText(/^Nghề nghiệp/u)
+    expect(occupationInput.getAttribute('list')).toBe('employee-order-occupations')
+    expect([...document.querySelectorAll('#employee-order-occupations option')].map((option) => option.value)).toEqual([
+      'Nhân viên VP',
+      'Kỹ sư',
+      'Bác sĩ',
+      'Giáo viên',
+      'Học sinh/Sinh viên',
+      'Lao động',
+      'Nội trợ',
+      'Buôn bán/kinh doanh',
+      'Tài xế',
+      'Giám đốc',
+      'Ca sỉ',
+      'Lao công',
+      'Bảo vệ',
+      'Công nhân',
+      'Khác',
+    ])
     fireEvent.change(screen.getByLabelText(/^Tên khách hàng/u), { target: { value: 'Khách hỗ trợ mới' } })
     fireEvent.change(screen.getByLabelText(/^Giới tính/u), { target: { value: 'Nữ' } })
     fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/u), { target: { value: 'Kế toán' } })
     fireEvent.change(screen.getByLabelText(/^Biết qua kênh nào/u), { target: { value: 'Facebook' } })
-    fireEvent.change(screen.getByLabelText(/^Số tiền/u), { target: { value: '250,000' } })
+    fireEvent.change(screen.getByLabelText(/^Số tiền/u), { target: { value: '250' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
 
     await waitFor(() => expect(createOrder).toHaveBeenCalledWith(expect.objectContaining({
@@ -246,7 +265,7 @@ describe('store employee current-shift orders', () => {
     fireEvent.change(screen.getByLabelText(/^Giới tính/), { target: { value: 'Nữ' } })
     fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/), { target: { value: 'Kế toán' } })
     fireEvent.change(screen.getByLabelText(/^Biết qua kênh nào/), { target: { value: 'Facebook' } })
-    fireEvent.change(screen.getByLabelText(/^Số tiền/), { target: { value: '159,000' } })
+    fireEvent.change(screen.getByLabelText(/^Số tiền/), { target: { value: '159' } })
 
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
     await waitFor(() => expect(createOrder).toHaveBeenCalledTimes(1))

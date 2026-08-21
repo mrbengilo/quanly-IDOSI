@@ -66,7 +66,7 @@ describe('StoreExpensesV2', () => {
     expect(within(category).getAllByRole('option').map((option) => option.textContent)).toEqual(categories)
     fireEvent.change(category, { target: { value: 'Khác' } })
     fireEvent.change(within(dialog).getByLabelText(/Tên khoản chi/i), { target: { value: 'Bảo trì máy lạnh' } })
-    fireEvent.change(within(dialog).getByLabelText(/Số tiền/i), { target: { value: '350000' } })
+    fireEvent.change(within(dialog).getByLabelText(/Số tiền/i), { target: { value: '350' } })
     fireEvent.change(within(dialog).getByLabelText(/Mô tả/i), { target: { value: 'Thay linh kiện dàn lạnh' } })
     expect(within(dialog).getByLabelText(/Mô tả/i)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU PHIẾU' }))
@@ -85,7 +85,7 @@ describe('StoreExpensesV2', () => {
     const dialog = screen.getByRole('dialog')
     fireEvent.change(within(dialog).getByLabelText(/Danh mục/i), { target: { value: 'Khác' } })
     fireEvent.change(within(dialog).getByLabelText(/Tên khoản chi/i), { target: { value: 'Khoản tùy chỉnh' } })
-    fireEvent.change(within(dialog).getByLabelText(/Số tiền/i), { target: { value: '100000' } })
+    fireEvent.change(within(dialog).getByLabelText(/Số tiền/i), { target: { value: '100' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU PHIẾU' }))
 
     expect(mocked.app.notify).toHaveBeenCalledWith('Vui lòng nhập mô tả cho khoản chi Khác.', 'info')

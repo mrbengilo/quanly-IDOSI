@@ -29,6 +29,7 @@ import { useApp } from '../state/AppContext'
 import { Avatar, Brand, Toast } from '../components/UI'
 import { resolveOrderNotificationTarget, resolveOrderRouteScope } from '../domain/orderStoreScope'
 import { isOfficeProfile } from '../pages/employee/officeAttendance'
+import { playTaskNotificationSound, unlockNotificationSound } from '../domain/notificationSound'
 
 const systemOperations = [
   { label: 'Tổng quan', path: '/admin/overview', icon: LayoutDashboard },
@@ -59,6 +60,7 @@ const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/ad
 
 const officeEmployeeMenu = [
   { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
+  { label: 'Công việc được giao', path: '/employee/tasks', icon: ClipboardCheck },
   { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
   { label: 'Lịch phân ca', path: '/employee/schedule', icon: CalendarCheck },
   { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
@@ -206,6 +208,16 @@ export default function AppShell() {
   const clearNotifications = app.clearNotifications || app.clearAllNotifications || app.deleteAllNotifications
 
   useEffect(() => {
+    const unlock = () => { void unlockNotificationSound() }
+    document.addEventListener('pointerdown', unlock, { once: true })
+    document.addEventListener('keydown', unlock, { once: true })
+    return () => {
+      document.removeEventListener('pointerdown', unlock)
+      document.removeEventListener('keydown', unlock)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!isStoreWorkspace || !isSystemOperator || !selectedStoreId || String(selectedStoreId) === String(activeStoreId)) return
     const changeActiveStore = app.setActiveStoreId || app.setActiveStore
     changeActiveStore?.(selectedStoreId)
@@ -251,6 +263,7 @@ export default function AppShell() {
       // The popup still works for the current render when session storage is unavailable.
     }
     const newest = unseen.at(-1)
+    void playTaskNotificationSound()
     setTaskPopup(newest)
     const timeout = window.setTimeout(() => setTaskPopup(null), 3000)
     return () => window.clearTimeout(timeout)
@@ -316,6 +329,8 @@ export default function AppShell() {
       : ''
     const destination = item?.type === 'store-task-assigned'
       ? `/employee/home?assignment=${encodeURIComponent(assignmentId || '')}`
+      : assignmentId && (item?.targetUnit === 'office' || item?.data?.targetUnit === 'office')
+      ? `/employee/tasks?assignment=${encodeURIComponent(assignmentId)}`
       : assignmentId && (!explicitDestination || String(explicitDestination).startsWith('/support/tasks'))
       ? `/support/tasks?assignment=${encodeURIComponent(assignmentId)}`
       : orderDestination || explicitDestination || ordersPath

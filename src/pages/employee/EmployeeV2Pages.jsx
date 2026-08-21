@@ -21,6 +21,7 @@ import {
   Field,
   InfoNote,
   Input,
+  MoneyInput,
   MetricCard,
   Modal,
   PageHeader,
@@ -52,12 +53,12 @@ import {
 } from './employeeSupportCompensation'
 
 const parseMoney = (value) => Math.max(0, Math.trunc(Number(String(value ?? '').replace(/[^\d-]/gu, '')) || 0))
-const moneyInput = (value) => String(value ?? '').replace(/\D/gu, '').replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
 const recordDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
 const employeeKey = (employee = {}) => String(employee?.id || employee?.code || employee?.employeeCode || '')
 const timestamp = shortDateTime24
 const periodLabel = (value) => value ? value.split('-').reverse().join('/') : '—'
 const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: 'Chuyển khoản' })
+const ORDER_OCCUPATIONS = Object.freeze(['Nhân viên VP', 'Kỹ sư', 'Bác sĩ', 'Giáo viên', 'Học sinh/Sinh viên', 'Lao động', 'Nội trợ', 'Buôn bán/kinh doanh', 'Tài xế', 'Giám đốc', 'Ca sỉ', 'Lao công', 'Bảo vệ', 'Công nhân', 'Khác'])
 const actorLabel = (value) => {
   if (!value) return 'Chưa ghi nhận'
   if (typeof value === 'string') return value
@@ -476,10 +477,10 @@ export function EmployeeDashboardV2() {
       >
         <div className="form-grid">
           <Field label="Tiền mặt" required hint={`Theo đơn trong ca: ${money(expectedRevenue.cash)}`} error={cashRevenue && !reconciliation.cashMatches ? 'Số tiền mặt chưa khớp.' : ''}>
-            <Input inputMode="numeric" value={cashRevenue} onChange={(event) => setCashRevenue(moneyInput(event.target.value))} placeholder="0" />
+            <MoneyInput value={cashRevenue} onChange={(event) => setCashRevenue(event.target.value)} placeholder="Nhập số nghìn" />
           </Field>
           <Field label="Chuyển khoản" required hint={`Theo đơn trong ca: ${money(expectedRevenue.transfer)}`} error={transferRevenue && !reconciliation.transferMatches ? 'Số tiền chuyển khoản chưa khớp.' : ''}>
-            <Input inputMode="numeric" value={transferRevenue} onChange={(event) => setTransferRevenue(moneyInput(event.target.value))} placeholder="0" />
+            <MoneyInput value={transferRevenue} onChange={(event) => setTransferRevenue(event.target.value)} placeholder="Nhập số nghìn" />
           </Field>
           <InfoNote tone={reconciliation.matches ? 'green' : 'orange'}>
             Đã nhập {money(reconciliation.entered.total)} / Doanh thu đơn hàng {money(expectedRevenue.total)}. Hệ thống kiểm tra riêng tiền mặt và chuyển khoản.
@@ -630,9 +631,9 @@ export function EmployeeOrdersPage() {
           <Field label="Số điện thoại"><Input inputMode="tel" value={form.customerPhone} onChange={(event) => updateForm('customerPhone', event.target.value)} /></Field>
           <Field label="Tuổi"><Input type="number" min="0" max="120" value={form.customerAge} onChange={(event) => updateForm('customerAge', event.target.value)} /></Field>
           <Field label="Giới tính" required hint="Hỏi khách hoặc đoán." error={formErrors.gender}><Select value={form.gender} onChange={(event) => updateForm('gender', event.target.value)}><option value="">Chọn giới tính</option>{ORDER_GENDERS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
-          <Field label="Nghề nghiệp" required hint="Hỏi khách hoặc đoán." error={formErrors.occupation}><Input value={form.occupation} onChange={(event) => updateForm('occupation', event.target.value)} placeholder="Ví dụ: Nhân viên văn phòng" /></Field>
+          <Field label="Nghề nghiệp" required hint="Hỏi khách hoặc đoán; gõ để tìm trong danh sách." error={formErrors.occupation}><Input list="employee-order-occupations" value={form.occupation} onChange={(event) => updateForm('occupation', event.target.value)} placeholder="Tìm hoặc chọn nghề nghiệp" /><datalist id="employee-order-occupations">{ORDER_OCCUPATIONS.map((occupation) => <option key={occupation} value={occupation} />)}</datalist></Field>
           <Field label="Biết qua kênh nào" required error={formErrors.acquisitionChannel}><Select value={form.acquisitionChannel} onChange={(event) => updateForm('acquisitionChannel', event.target.value)}><option value="">Chọn kênh</option>{ACQUISITION_CHANNELS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
-          <Field label="Số tiền" required error={formErrors.amount}><Input inputMode="numeric" value={form.amount} onChange={(event) => updateForm('amount', moneyInput(event.target.value))} /></Field>
+          <Field label="Số tiền" required error={formErrors.amount}><MoneyInput value={form.amount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số nghìn" /></Field>
           <Field label="Hình thức thanh toán" required><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option>Chuyển khoản</option><option>Tiền mặt</option></Select></Field>
           <InfoNote>Đơn sẽ tự gắn với {openAttendance?.shiftName || openAttendance?.shift}, {store?.name || 'cửa hàng trực thuộc'} và thời gian tạo thực tế.</InfoNote>
         </div>

@@ -32,6 +32,7 @@ import {
 } from '../../components/UI'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
+import { optimizeIdentityImage } from '../../domain/identityImage'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { shortDate, today } from '../../utils'
@@ -56,8 +57,6 @@ import {
 } from './workingTime'
 
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
-const IDENTITY_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp'])
-const MAX_IDENTITY_IMAGE_SIZE = 2 * 1024 * 1024
 
 const emptyEmployee = {
   code: '',
@@ -168,15 +167,7 @@ const shortYearDate = (value) => {
 
 const imagePreview = (value) => typeof value === 'string' && value.startsWith('data:image/') ? value : ''
 
-const readIdentityImage = (file) => new Promise((resolve, reject) => {
-  if (!file) return resolve('')
-  if (!IDENTITY_IMAGE_TYPES.has(file.type)) return reject(new Error('Ảnh CCCD phải là tệp JPG, PNG hoặc WEBP.'))
-  if (file.size > MAX_IDENTITY_IMAGE_SIZE) return reject(new Error('Mỗi ảnh CCCD không được vượt quá 2 MB.'))
-  const reader = new FileReader()
-  reader.onerror = () => reject(new Error('Không thể đọc tệp ảnh CCCD.'))
-  reader.onload = () => resolve(String(reader.result || ''))
-  reader.readAsDataURL(file)
-})
+const readIdentityImage = async (file) => file ? (await optimizeIdentityImage(file)).dataUrl : ''
 
 export function OfficeManagement() {
   const app = useApp()
@@ -534,7 +525,7 @@ export function OfficeManagement() {
               const label = side === 'front' ? 'Mặt trước CCCD' : 'Mặt sau CCCD'
               const image = employeeForm.identityImages?.[side]
               const preview = imagePreview(image)
-              return <Field key={side} label={label} required hint="JPG, PNG hoặc WEBP; tối đa 2 MB">
+              return <Field key={side} label={label} required hint="Ảnh gốc tối đa 5 MB; hệ thống tự tối ưu dưới 300 KB">
                 <Input type="file" accept="image/jpeg,image/png,image/webp" aria-label={label} onChange={updateIdentityImage(side)} disabled={Boolean(imageBusy)} />
                 {image && <small>{preview ? 'Đã chọn ảnh mới' : 'Ảnh đã được lưu riêng tư'}</small>}
                 {preview && <img className="identity-image-preview" src={preview} alt={`Xem trước ${label.toLocaleLowerCase('vi-VN')}`} />}
@@ -542,7 +533,7 @@ export function OfficeManagement() {
               </Field>
             })}
           </div>
-          {imageBusy && <InfoNote>Đang đọc ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
+          {imageBusy && <InfoNote>Đang tối ưu ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
           <h3>Tài khoản đăng nhập</h3>
           <div className="form-grid">
             <Field label="Tên đăng nhập" required><Input autoComplete="username" value={employeeForm.username} onChange={updateEmployeeField('username')} placeholder="Nhập tên đăng nhập" /></Field>

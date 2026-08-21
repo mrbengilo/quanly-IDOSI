@@ -9,7 +9,7 @@ const MAX_RECEIPT_CHUNK_BYTES = 1_500_000
 const STATE_ENTITY_ORDER_STEP = 1_000_000
 const STATE_ENTITY_PAGE_SIZE = 10_000
 const MAX_AVATAR_BYTES = 300 * 1024
-const MAX_IDENTITY_IMAGE_BYTES = 2 * 1024 * 1024
+const MAX_IDENTITY_IMAGE_BYTES = 300 * 1024
 const MAX_JSON_DEPTH = 64
 const MAX_MONEY_VND = 100_000_000_000
 const DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60
@@ -130,7 +130,7 @@ const decodeIdentityImage = (value, side) => {
     throw new ApiError(400, 'IDENTITY_IMAGE_INVALID', 'Ảnh CCCD phải là ảnh JPEG, PNG hoặc WebP mã hóa base64 hợp lệ.', { side })
   }
   if (match[2].length > Math.ceil(MAX_IDENTITY_IMAGE_BYTES / 3) * 4 + 4) {
-    throw new ApiError(413, 'IDENTITY_IMAGE_TOO_LARGE', 'Mỗi ảnh CCCD không được vượt quá 2 MiB.', { side })
+    throw new ApiError(413, 'IDENTITY_IMAGE_TOO_LARGE', 'Mỗi ảnh CCCD sau khi tối ưu không được vượt quá 300 KB.', { side })
   }
   let bytes
   try {
@@ -141,7 +141,7 @@ const decodeIdentityImage = (value, side) => {
   }
   if (!bytes.length || bytes.byteLength > MAX_IDENTITY_IMAGE_BYTES) {
     throw new ApiError(bytes.length ? 413 : 400, bytes.length ? 'IDENTITY_IMAGE_TOO_LARGE' : 'IDENTITY_IMAGE_INVALID', bytes.length
-      ? 'Mỗi ảnh CCCD không được vượt quá 2 MiB.'
+      ? 'Mỗi ảnh CCCD sau khi tối ưu không được vượt quá 300 KB.'
       : 'Ảnh CCCD không được để trống.', { side })
   }
   const type = match[1]
@@ -1166,6 +1166,7 @@ export const projectSharedState = (rawState, user) => {
       tasks,
       taskAssignmentHistory: own('taskAssignmentHistory')
         .map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
+      supportWorkAssignments: own('supportWorkAssignments'),
       supportTransfers: ownSupportTransfers,
       orders: filterArray(state, 'orders', (record) => orderCreatedByEmployee(record, employeeId)),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
@@ -8108,18 +8109,19 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
   const assignments = Array.isArray(state.supportWorkAssignments) ? state.supportWorkAssignments : []
 
   if (body.type === 'support_work.assign') {
-    assertAdmin(actor, 'Chỉ Admin được giao việc cho Nhân viên hỗ trợ KD.')
+    assertAdmin(actor, 'Chỉ Admin được giao việc cho nhân viên.')
     const date = optionalCalendarDate(payload.date, 'Ngày giao việc')
     if (!date) throw new ApiError(400, 'SUPPORT_WORK_DATE_REQUIRED', 'Ngày giao việc là bắt buộc.')
+    const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
     const employeeId = String(payload.employeeId || '').trim()
     const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
       !record.deletedAt
       && [record.id, record.code, record.employeeId].map(String).includes(employeeId)
-      && employeeUnit(record) === 'business_support'
+      && employeeUnit(record) === targetUnit
       && !['da nghi viec', 'inactive'].includes(normalizeTextKey(record.status))
     ))
     if (!employee) {
-      throw new ApiError(404, 'SUPPORT_EMPLOYEE_NOT_FOUND', 'Không tìm thấy Nhân viên hỗ trợ KD đang hoạt động.')
+      throw new ApiError(404, 'SUPPORT_EMPLOYEE_NOT_FOUND', 'Không tìm thấy nhân viên nhận việc đang hoạt động.')
     }
     const requestedAssignmentId = String(payload.assignmentId || '').trim()
     if (requestedAssignmentId && !/^[A-Za-z0-9_-]{1,160}$/u.test(requestedAssignmentId)) {
@@ -8131,7 +8133,7 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     if (requestedAssignmentId && !previous) {
       throw new ApiError(404, 'SUPPORT_WORK_NOT_FOUND', 'Không tìm thấy lượt giao việc cần cập nhật.')
     }
-    if (previous && (String(previous.employeeId || '') !== employeeId || String(previous.date || '') !== date)) {
+    if (previous && (String(previous.employeeId || '') !== employeeId || String(previous.date || '') !== date || String(previous.targetUnit || 'business_support') !== targetUnit)) {
       throw new ApiError(400, 'SUPPORT_WORK_SCOPE_IMMUTABLE', 'Không thể đổi nhân viên hoặc ngày của lượt giao việc đã tạo.')
     }
     if (previous?.submittedAt) {
@@ -8161,6 +8163,7 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
       date,
       employeeId,
       employeeName: employee.name || employeeId,
+      targetUnit,
       tasks,
       ...metrics,
       status: metrics.completedTasks ? 'in_progress' : 'assigned',
@@ -8175,10 +8178,11 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     const notification = {
       id: `notif_${crypto.randomUUID()}`,
       type: 'support-work-assigned',
-      storeId: BUSINESS_SUPPORT_STORE_ID,
+      storeId: targetUnit === 'office' ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID,
       employeeId,
       assignmentId,
-      route: '/support/tasks',
+      targetUnit,
+      route: targetUnit === 'office' ? '/employee/tasks' : '/support/tasks',
       title: 'Công việc mới từ Admin',
       message: `Bạn có ${tasks.length} công việc được giao cho ngày ${date}.`,
       createdAt: commandContext.now,
@@ -8199,7 +8203,7 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
       entityId: assignmentId,
       before: previous,
       after: assignment,
-      metadata: { employeeId, date, taskCount: tasks.length, replaced: Boolean(previous) },
+      metadata: { employeeId, targetUnit, date, taskCount: tasks.length, replaced: Boolean(previous) },
       response: { command: body.type, assignment, notification },
       status: previous ? 200 : 201,
     }, commandContext)
@@ -8208,15 +8212,23 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
   if (body.type !== 'support_work.update') {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh giao việc Hỗ trợ KD không được hỗ trợ.')
   }
-  if (actor.role !== 'business_support') {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Nhân viên hỗ trợ KD được cập nhật tiến độ công việc của mình.')
+  const actorEmployeeId = String(actor.employee_id || actor.user_id || '')
+  const actorEmployee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+    [record.id, record.code, record.employeeId].map(String).includes(actorEmployeeId)
+  ))
+  const actorIsOfficeEmployee = actor.role === 'employee' && employeeUnit(actorEmployee) === 'office'
+  if (actor.role !== 'business_support' && !actorIsOfficeEmployee) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên nhận việc được cập nhật tiến độ công việc của mình.')
   }
   const assignmentId = String(payload.assignmentId || payload.id || '').trim()
   const previous = assignments.find((record) => String(record.id || '') === assignmentId && !record.deletedAt)
   if (!previous) throw new ApiError(404, 'SUPPORT_WORK_NOT_FOUND', 'Không tìm thấy công việc được giao.')
-  const employeeId = String(actor.employee_id || actor.user_id || '')
+  const employeeId = actorEmployeeId
   if (!belongsToEmployee(previous, employeeId)) {
     throw new ApiError(403, 'SUPPORT_WORK_FORBIDDEN', 'Bạn chỉ được cập nhật công việc được giao cho chính mình.')
+  }
+  if ((previous.targetUnit === 'office') !== actorIsOfficeEmployee) {
+    throw new ApiError(403, 'SUPPORT_WORK_FORBIDDEN', 'Nhóm tài khoản không khớp với lượt giao việc.')
   }
   if (previous.submittedAt) {
     throw new ApiError(409, 'SUPPORT_WORK_SUBMITTED', 'Kết quả công việc đã được gửi và không thể thay đổi.')
@@ -8297,14 +8309,15 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     updatedBy: serverActorSnapshot(actor),
     history: [...(Array.isArray(previous.history) ? previous.history : []), historyEntry],
   }
+  const assignmentIsOffice = previous.targetUnit === 'office'
   const notification = submit ? {
     id: `notif_${crypto.randomUUID()}`,
     type: 'support-work-submitted',
-    storeId: BUSINESS_SUPPORT_STORE_ID,
+    storeId: assignmentIsOffice ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID,
     audienceRoles: ['admin'],
     assignmentId,
-    route: '/admin/business-support',
-    title: 'Hỗ trợ KD đã gửi kết quả công việc',
+    route: '/admin/tasks',
+    title: assignmentIsOffice ? 'Nhân viên Khối văn phòng đã gửi kết quả công việc' : 'Hỗ trợ KD đã gửi kết quả công việc',
     message: `${previous.employeeName || employeeId} hoàn thành ${metrics.completedTasks}/${metrics.totalTasks} công việc ngày ${previous.date}.`,
     createdAt: commandContext.now,
     createdBy: serverActorSnapshot(actor),
