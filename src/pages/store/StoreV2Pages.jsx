@@ -36,10 +36,11 @@ import {
   Select,
   TableWrap,
 } from '../../components/UI'
-import { calculateKpiBonuses, financeSummaryFromState } from '../../domain'
+import { calculateKpiBonuses, financeSummaryFromState, financeTransactionsFromState } from '../../domain'
 import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, money, shortDate, shortDateTime24, today } from '../../utils'
+import { storeDailyReportRows, storeMonthlyReportRows } from './storeReportAnalytics'
 
 const parseMoney = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
 const moneyInput = (value) => new Intl.NumberFormat('en-US').format(parseMoney(value))
@@ -211,23 +212,17 @@ export function StoreReportsV2() {
   const app = useStoreData()
   const { storeId, store } = app
   const [period, setPeriod] = useState(today().slice(0, 7))
+  const [reportMode, setReportMode] = useState('day')
   const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
-  const rows = useMemo(() => {
-    const grouped = new Map()
-    summary.transactions.forEach((transaction) => {
-      const date = String(transaction.occurredAt || transaction.createdAt || '').slice(0, 10)
-      if (!date) return
-      const row = grouped.get(date) || { date, orders: 0, revenue: 0, expense: 0 }
-      if (transaction.direction === 'in') {
-        row.revenue += Number(transaction.amount || 0)
-        if (transaction.sourceType === 'order') row.orders += 1
-      } else {
-        row.expense += Number(transaction.amount || 0)
-      }
-      grouped.set(date, row)
-    })
-    return [...grouped.values()].map((row) => ({ ...row, profit: row.revenue - row.expense })).sort((left, right) => right.date.localeCompare(left.date))
-  }, [summary.transactions])
+  const transactions = useMemo(() => financeTransactionsFromState({
+    orders: app.orders,
+    expenseEntries: app.expenseEntries,
+  }), [app.expenseEntries, app.orders])
+  const rows = useMemo(() => reportMode === 'month'
+    ? storeMonthlyReportRows({ transactions, orders: app.orders, storeId, period })
+    : storeDailyReportRows({ transactions, orders: app.orders, storeId, period }), [app.orders, period, reportMode, storeId, transactions])
+  const detailList = (values = {}) => Object.entries(values).sort((left, right) => right[1] - left[1])
+    .map(([label, amount]) => `${label}: ${money(amount)}`).join(' • ') || '—'
 
   return (
     <div className="page">
@@ -238,7 +233,9 @@ export function StoreReportsV2() {
         <MetricCard label="CHI PHÍ" value={money(summary.expense)} icon={TrendingDown} tone="orange" />
         <MetricCard label="LỢI NHUẬN" value={money(summary.profit)} icon={Wallet} tone={summary.profit >= 0 ? 'green' : 'red'} />
       </div>
-      <Card title="Kết quả theo ngày"><TableWrap><thead><tr><th>Ngày</th><th>Số đơn</th><th>Doanh thu</th><th>Chi phí</th><th>Lợi nhuận</th></tr></thead><tbody>{rows.map((row) => <tr key={row.date}><td>{shortDate(row.date)}</td><td>{row.orders}</td><td className="green-text"><strong>{money(row.revenue)}</strong></td><td className="orange-text"><strong>{money(row.expense)}</strong></td><td><strong>{money(row.profit)}</strong></td></tr>)}{!rows.length && <tr><td colSpan="5">Chưa có dữ liệu trong kỳ.</td></tr>}</tbody></TableWrap></Card>
+      <Card title="Bảng thống kê vận hành" action={<div className="tabs" role="tablist" aria-label="Kiểu báo cáo cửa hàng"><button type="button" className={reportMode === 'day' ? 'active' : ''} onClick={() => setReportMode('day')}>Theo ngày</button><button type="button" className={reportMode === 'month' ? 'active' : ''} onClick={() => setReportMode('month')}>Theo tháng</button></div>}>
+        <TableWrap><thead><tr><th>{reportMode === 'month' ? 'Tháng' : 'Ngày'}</th><th>Số đơn</th><th>Doanh thu cụ thể mỗi ca</th><th>Chi phí gì</th><th>Tổng doanh thu</th><th>Tổng chi phí</th><th>Lợi nhuận</th><th>So sánh kỳ trước</th><th>Đánh giá tăng trưởng</th></tr></thead><tbody>{rows.map((row) => <tr key={row.key}><td><strong>{reportMode === 'month' ? row.key.split('-').reverse().join('/') : shortDate(row.key)}</strong></td><td>{row.orders}</td><td><span className="report-detail-cell">{detailList(row.shifts)}</span></td><td><span className="report-detail-cell report-detail-cell--expense">{detailList(row.expenses)}</span></td><td className="green-text"><strong>{money(row.revenue)}</strong></td><td className="orange-text"><strong>{money(row.expense)}</strong></td><td><strong>{money(row.profit)}</strong></td><td><strong className={row.comparison.percent >= 0 ? 'green-text' : 'red-text'}>{row.comparison.percent >= 0 ? '+' : ''}{row.comparison.percent.toFixed(1)}%</strong></td><td><Badge tone={row.comparison.tone}>{row.comparison.label}</Badge></td></tr>)}{!rows.length && <tr><td colSpan="9">Chưa có dữ liệu trong kỳ.</td></tr>}</tbody></TableWrap>
+      </Card>
       <Card title="Cơ cấu chi phí"><div className="cost-structure-list">{Object.entries(summary.expenseByType).map(([type, amount]) => <div key={type}><span>{type}</span><strong>{money(amount)}</strong><b>{summary.expense ? `${((amount / summary.expense) * 100).toFixed(1)}%` : '0%'}</b></div>)}{!Object.keys(summary.expenseByType).length && <p>Chưa có chi phí trong kỳ.</p>}</div></Card>
     </div>
   )

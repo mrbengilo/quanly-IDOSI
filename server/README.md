@@ -267,7 +267,7 @@ Các lệnh chính:
   invalidation để chốt lại. Hỗ trợ KD đọc lịch sử này trong shared-state projection; nếu gọi
   `GET /api/audit` thì chỉ nhận audit `order.update|order.delete`, không nhận
   nhật ký hệ thống khác.
-- `operational_reset.restore`: chỉ Hỗ trợ KD, payload
+- `operational_reset.restore`: chỉ Admin, payload
   `{dataType:'orders'|'attendance',storeId,fromDate,toDate,employeeId?,reason}`
   (có alias `startDate/endDate` hoặc `date`). Lệnh **không xóa sạch dữ liệu**:
   với mỗi entity trong scope, server chỉ khôi phục before-image của lần sửa/xóa

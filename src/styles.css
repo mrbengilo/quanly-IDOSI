@@ -25,6 +25,128 @@
   --sidebar-width: 250px;
 }
 
+/* High-clarity operational tables and report cards */
+.table-scroll th {
+  border-right: 1px solid #b8cec0;
+  border-bottom-color: #adc8b7;
+}
+
+.table-scroll td {
+  border-right: 1px solid #d0dfd6;
+  border-bottom-color: #cbded1;
+}
+
+.table-scroll th:last-child,
+.table-scroll td:last-child {
+  border-right: 0;
+}
+
+.order-group {
+  border: 2px solid #9fc9ad;
+  box-shadow: 0 8px 24px rgba(7, 96, 50, 0.08);
+}
+
+.page .order-group > header {
+  padding: 14px 16px;
+  border-bottom: 2px solid #b5d6c0;
+  background: linear-gradient(135deg, #eef9f1, #fff);
+}
+
+.order-group > header h2,
+.order-group__totals strong {
+  color: #064f2d;
+  font-size: 1.02rem;
+  font-weight: 900;
+}
+
+.cost-structure-list > div {
+  display: grid;
+  grid-template-columns: minmax(10rem, 1fr) auto auto;
+  align-items: center;
+  gap: 18px;
+  padding: 13px 10px;
+  border-bottom: 1px solid #d2e1d7;
+}
+
+.cost-structure-list > div:nth-child(odd) {
+  background: #f7fbf8;
+}
+
+.cost-structure-list > div strong {
+  color: #17261e;
+  font-size: 13px;
+}
+
+.cost-structure-list > div b {
+  min-width: 4.5rem;
+  color: #08713a;
+  text-align: right;
+}
+
+.report-detail-cell {
+  display: block;
+  min-width: 13rem;
+  color: #075f34;
+  font-weight: 700;
+  line-height: 1.65;
+  white-space: normal;
+}
+
+.report-detail-cell--expense {
+  color: #bd550d;
+}
+
+.audit-change-list {
+  min-width: 22rem;
+}
+
+.page .audit-change-item {
+  grid-template-columns: minmax(8.5rem, 0.8fr) minmax(16rem, 1.8fr);
+  align-items: center;
+  text-align: left;
+}
+
+.page .audit-change-item > span {
+  display: grid;
+  grid-template-columns: minmax(7rem, 1fr) auto minmax(7rem, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.page .audit-change-item > span,
+.page .audit-change-item del,
+.page .audit-change-item ins {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.audit-log-summary {
+  display: block;
+  min-width: 18rem;
+  max-width: 34rem;
+  color: #26372e;
+  font-weight: 650;
+  line-height: 1.65;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .cost-structure-list > div {
+    grid-template-columns: 1fr auto;
+    gap: 8px 12px;
+  }
+
+  .cost-structure-list > div b {
+    grid-column: 2;
+  }
+
+  .page .audit-change-item,
+  .page .audit-change-item > span {
+    grid-template-columns: 1fr;
+  }
+}
+
 * { box-sizing: border-box; }
 html { min-width: 320px; background: #f7faf8; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: linear-gradient(145deg, #fff 0%, #f8fbf9 55%, #f5faf7 100%); }

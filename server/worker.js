@@ -77,7 +77,6 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'order.delete',
   'policy.set',
   'policies.set',
-  'operational_reset.restore',
   'support_transfer.create',
   'support_transfer.update',
   'support_work.update',
@@ -6923,8 +6922,8 @@ const legacyAttendanceAuditsForScope = async (db, stateAudits, scope) => {
 }
 
 const operationalResetCommand = async (db, actor, body, commandContext) => {
-  if (actor.role !== 'business_support') {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Nhân viên hỗ trợ KD được khôi phục chỉnh sửa dữ liệu vận hành.')
+  if (actor.role !== 'admin') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được khôi phục chỉnh sửa dữ liệu vận hành.')
   }
   if (body.type !== 'operational_reset.restore') {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh khôi phục dữ liệu vận hành không được hỗ trợ.')

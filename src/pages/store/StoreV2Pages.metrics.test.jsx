@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EmployeePayrollDetails } from '../employee/EmployeeV2Pages'
 import { today } from '../../utils'
-import { StoreAttendanceV2, StoreOrdersPage, StorePayrollV2 } from './StoreV2Pages'
+import { StoreAttendanceV2, StoreOrdersPage, StorePayrollV2, StoreReportsV2 } from './StoreV2Pages'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
@@ -80,6 +80,30 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(within(metrics).getByText('1')).toBeTruthy()
     expect(within(metrics).getAllByText('270,000 đ')).toHaveLength(2)
     expect(within(metrics).getByText('0 đ')).toBeTruthy()
+  })
+
+  it('shows daily and monthly store reports with shift revenue, expense detail and growth', () => {
+    mocked.app = {
+      ...baseApp(),
+      orders: [
+        { id: 'O-REPORT-1', storeId: store.id, amount: 500_000, shiftName: 'Ca sáng', createdAt: `${today()}T08:00:00+07:00` },
+        { id: 'O-REPORT-2', storeId: store.id, amount: 300_000, shiftName: 'Ca chiều', createdAt: `${today()}T14:00:00+07:00` },
+      ],
+      expenseEntries: [{ id: 'EXP-REPORT', storeId: store.id, amount: 200_000, type: 'Mặt bằng', direction: 'out', occurredAt: `${today()}T15:00:00+07:00`, recognized: true }],
+    }
+
+    renderPage(StoreReportsV2)
+
+    expect(screen.getByRole('columnheader', { name: 'Doanh thu cụ thể mỗi ca' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Chi phí gì' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'So sánh kỳ trước' })).toBeTruthy()
+    expect(screen.getByText(/Ca sáng:/)).toBeTruthy()
+    expect(screen.getByText(/Ca chiều:/)).toBeTruthy()
+    expect(screen.getByText(/Mặt bằng:/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Theo tháng' }))
+    expect(screen.getByRole('columnheader', { name: 'Tháng' })).toBeTruthy()
+    expect(screen.getByRole('columnheader', { name: 'Đánh giá tăng trưởng' })).toBeTruthy()
   })
 
   it.each(['admin', 'business_support', 'store_manager'])('lets %s open a safe attendance map link and shows early/late minute totals', (role) => {

@@ -6,6 +6,7 @@ import {
   AdminStores,
 } from './pages/admin/AdminPages'
 import { BusinessSupportManagement, StoreManagerManagement } from './pages/admin/RoleManagement'
+import { CustomerSurveyPage } from './pages/admin/CustomerSurveyPage'
 import { AdminSupportWorkPage, SupportAssignedWorkPage } from './pages/admin/SupportWorkPages'
 import {
   AdminCashflowV2,
@@ -24,6 +25,7 @@ import {
   EmployeeCashflow,
   EmployeeShiftHistory,
 } from './pages/employee/EmployeePages'
+import { EmployeeSchedulePage } from './pages/employee/EmployeeSchedulePage'
 import {
   EmployeeAttendancePage,
   EmployeeDashboardV2,
@@ -135,7 +137,7 @@ export default function App() {
         <Route path="/admin/settings" element={<AdminSettings />} />
         <Route path="/admin/policies" element={<PolicySettings />} />
         <Route path="/admin/order-audit" element={<OrderAuditPage />} />
-        <Route path="/admin/reset" element={<ResetDataPage />} />
+        <Route path="/admin/customer-survey" element={<CustomerSurveyPage />} />
         <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
       </Route>
 
@@ -163,6 +165,7 @@ export default function App() {
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/admin/tasks" element={<AdminSupportWorkPage />} />
+        <Route path="/admin/reset" element={<ResetDataPage />} />
       </Route>
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
@@ -171,6 +174,7 @@ export default function App() {
         <Route path="/employee/attendance" element={<EmployeeAttendanceRoute />} />
         <Route path="/employee/shifts" element={<Navigate to="/employee/work-history" replace />} />
         <Route path="/employee/work-history" element={<EmployeeShiftHistory />} />
+        <Route path="/employee/schedule" element={<EmployeeSchedulePage />} />
         <Route path="/employee/payroll" element={<EmployeePayrollPage />} />
         <Route path="/employee/cashflow" element={<StoreEmployeeRoute><EmployeeCashflow /></StoreEmployeeRoute>} />
       </Route>

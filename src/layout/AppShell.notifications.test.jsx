@@ -215,11 +215,12 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Danh sách nhân viên cửa hàng/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
+    expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
     expect(screen.getByRole('link', { name: /Reset dữ liệu/i }).getAttribute('href')).toBe('/admin/reset')
     expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
   })
 
-  it('gives business support its employee directory, policy access, and the scoped operational reset', () => {
+  it('gives business support its employee directory, policy and survey access without Reset dữ liệu', () => {
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001' }
     render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
 
@@ -235,7 +236,8 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Lịch sử chỉnh sửa đơn hàng/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Cài đặt$/i })).toBeNull()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
-    expect(screen.getByRole('link', { name: /Reset dữ liệu/i }).getAttribute('href')).toBe('/admin/reset')
+    expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
+    expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
   })
 
   it('shows a support-work notification only to its assigned support employee', async () => {

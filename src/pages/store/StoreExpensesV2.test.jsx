@@ -60,12 +60,15 @@ describe('StoreExpensesV2', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'TẠO PHIẾU CHI' }))
     const dialog = screen.getByRole('dialog')
+    expect(dialog.classList.contains('modal--wide')).toBe(true)
+    expect(within(dialog).getByLabelText(/Ghi chú phiếu/i)).toBeTruthy()
     const category = within(dialog).getByLabelText(/Danh mục/i)
     expect(within(category).getAllByRole('option').map((option) => option.textContent)).toEqual(categories)
     fireEvent.change(category, { target: { value: 'Khác' } })
     fireEvent.change(within(dialog).getByLabelText(/Tên khoản chi/i), { target: { value: 'Bảo trì máy lạnh' } })
     fireEvent.change(within(dialog).getByLabelText(/Số tiền/i), { target: { value: '350000' } })
     fireEvent.change(within(dialog).getByLabelText(/Mô tả/i), { target: { value: 'Thay linh kiện dàn lạnh' } })
+    expect(within(dialog).getByLabelText(/Mô tả/i)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU PHIẾU' }))
 
     await waitFor(() => expect(mocked.app.addFixedExpense).toHaveBeenCalledTimes(1))

@@ -6,6 +6,9 @@ const mocked = vi.hoisted(() => ({
   session: { role: 'business_support', name: 'Hỗ trợ KD' },
   attendance: [],
   supportTransfers: [],
+  auditLogs: [],
+  attendanceAudit: [],
+  operationalResetHistory: [],
   saveSupportTransfer: vi.fn(),
   updateSupportTransfer: vi.fn(),
   deleteSupportTransfer: vi.fn(),
@@ -54,9 +57,9 @@ vi.mock('../../state/AppContext', () => ({
     employees,
     supportTransfers: mocked.supportTransfers,
     attendance: mocked.attendance,
-    auditLogs: [],
-    attendanceAudit: [],
-    operationalResetHistory: [],
+    auditLogs: mocked.auditLogs,
+    attendanceAudit: mocked.attendanceAudit,
+    operationalResetHistory: mocked.operationalResetHistory,
     policies: {
       lateToleranceMinutes: 5,
       earlyCheckInLimitMinutes: 30,
@@ -82,6 +85,9 @@ describe('Hỗ trợ KD operations', () => {
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD' }
     mocked.attendance = baseAttendance.map((record) => ({ ...record }))
     mocked.supportTransfers = []
+    mocked.auditLogs = []
+    mocked.attendanceAudit = []
+    mocked.operationalResetHistory = []
     mocked.saveSupportTransfer.mockReset().mockResolvedValue({ ok: true })
     mocked.updateSupportTransfer.mockReset().mockResolvedValue({ ok: true })
     mocked.deleteSupportTransfer.mockReset().mockResolvedValue({ ok: true })
@@ -181,11 +187,18 @@ describe('Hỗ trợ KD operations', () => {
     ))
   })
 
-  it('restores only the selected operational scope and keeps a required audit reason', async () => {
+  it('blocks Business Support from the Reset dữ liệu page', () => {
     render(<ResetDataPage />)
 
-    expect(screen.queryByRole('button', { name: /Khôi phục dữ liệu mẫu/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Bắt đầu xóa dữ liệu/i })).toBeNull()
+    expect(screen.getByRole('heading', { name: /Không có quyền truy cập/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Khôi phục chỉnh sửa\/xóa/i })).toBeNull()
+    expect(mocked.restoreOperationalData).not.toHaveBeenCalled()
+  })
+
+  it('lets Admin restore only the selected operational scope with a required audit reason', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    render(<ResetDataPage />)
+
     fireEvent.change(screen.getByLabelText(/Loại dữ liệu/i), { target: { value: 'attendance' } })
     fireEvent.change(screen.getByLabelText(/Cửa hàng/i), { target: { value: 'CH001' } })
     fireEvent.change(screen.getByLabelText(/Nhân viên \(không bắt buộc\)/i), { target: { value: 'SM234-001' } })
@@ -200,44 +213,32 @@ describe('Hỗ trợ KD operations', () => {
     })))
   })
 
-  it('only exposes attendance editing for active physical-store employees', () => {
+  it('lets Admin edit attendance while keeping the destructive reset separately confirmed', () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
     render(<ResetDataPage />)
 
-    expect(screen.getAllByRole('button', { name: 'Chỉnh sửa' })).toHaveLength(1)
-    expect(screen.getAllByText('Chỉ xem')).toHaveLength(3)
+    expect(screen.getAllByRole('button', { name: 'Chỉnh sửa' })).toHaveLength(4)
+    expect(screen.queryByText('Chỉ xem')).toBeNull()
   })
 
-  it('allows editing and reset scoping for an inbound transferred store employee only in the linked time range', () => {
-    mocked.supportTransfers = [{
-      id: 'TR-INBOUND', employeeId: 'TNV-001', fromStoreId: 'CH002', toStoreId: 'CH001',
-      startAt: '2026-08-18T06:00:00.000Z', endAt: '2026-08-18T11:00:00.000Z', status: 'Hoàn tất',
+  it('shows exactly which field and employee were changed in the Reset audit log', () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.attendanceAudit = [{
+      id: 'AUDIT-ATT-001', attendanceId: 'ATT-001', employeeId: 'SM234-001', action: 'Sửa',
+      changedFields: ['checkIn', 'checkOut'],
+      before: { employeeId: 'SM234-001', checkIn: '07:05', checkOut: '12:00' },
+      after: { employeeId: 'SM234-001', checkIn: '07:15', checkOut: '12:10' },
+      reason: 'Đối soát máy chấm công', createdAt: '2026-08-18T12:00:00.000Z',
+      actor: { name: 'Admin' },
     }]
     render(<ResetDataPage />)
 
-    const inboundRow = screen.getByText('TNV-001').closest('tr')
-    expect(within(inboundRow).getByRole('button', { name: 'Chỉnh sửa' })).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: 'Chỉnh sửa' })).toHaveLength(2)
-    expect(screen.getAllByText('Chỉ xem')).toHaveLength(2)
-
-    fireEvent.change(screen.getByLabelText(/Loại dữ liệu/i), { target: { value: 'attendance' } })
-    fireEvent.change(screen.getByLabelText(/Cửa hàng/i), { target: { value: 'CH001' } })
-    fireEvent.change(screen.getByLabelText(/Từ ngày/i), { target: { value: '2026-08-18' } })
-    fireEvent.change(screen.getByLabelText(/Đến ngày/i), { target: { value: '2026-08-18' } })
-
-    const employeeSelect = screen.getByLabelText(/Nhân viên \(không bắt buộc\)/i)
-    expect(Array.from(employeeSelect.options, (option) => option.value)).toEqual(['', 'SM234-001', 'TNV-001'])
-  })
-
-  it('does not expose an inbound attendance record when the linked transfer time does not contain check-in', () => {
-    mocked.supportTransfers = [{
-      id: 'TR-INBOUND', employeeId: 'TNV-001', fromStoreId: 'CH002', toStoreId: 'CH001',
-      startAt: '2026-08-19T06:00:00.000Z', endAt: '2026-08-19T11:00:00.000Z', status: 'Đã duyệt',
-    }]
-    render(<ResetDataPage />)
-
-    const inboundRow = screen.getByText('TNV-001').closest('tr')
-    expect(within(inboundRow).queryByRole('button', { name: 'Chỉnh sửa' })).toBeNull()
-    expect(within(inboundRow).getByText('Chỉ xem')).toBeTruthy()
+    const auditCard = screen.getByText('Nhật ký chỉnh sửa gần nhất').closest('section')
+    const auditRow = within(auditCard).getByText((_, node) => node?.tagName === 'SMALL' && node.textContent.includes('ATT-001')).closest('tr')
+    expect(within(auditRow).getByText('Nguyễn An')).toBeTruthy()
+    expect(within(auditRow).getByText(/Giờ vào: 07:05 → 07:15/)).toBeTruthy()
+    expect(within(auditRow).getByText(/Giờ kết: 12:00 → 12:10/)).toBeTruthy()
+    expect(within(auditRow).getByText(/Đối soát máy chấm công/)).toBeTruthy()
   })
 
   it('requires Admin to type the exact destructive confirmation before resetting everything', async () => {

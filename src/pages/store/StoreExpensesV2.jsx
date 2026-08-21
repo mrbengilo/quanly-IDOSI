@@ -191,11 +191,11 @@ export function StoreExpensesV2() {
         </TableWrap>
       </Card>
 
-      {canManage && <Modal open={modalOpen} onClose={closeModal} title={editing ? 'Sửa phiếu chi cửa hàng' : 'Tạo phiếu chi cửa hàng'} footer={<><Button variant="outline" onClick={closeModal}>Hủy</Button><Button icon={Save} onClick={save}>{editing ? 'CẬP NHẬT' : 'LƯU PHIẾU'}</Button></>}>
+      {canManage && <Modal wide open={modalOpen} onClose={closeModal} title={editing ? 'Sửa phiếu chi cửa hàng' : 'Tạo phiếu chi cửa hàng'} footer={<><Button variant="outline" onClick={closeModal}>Hủy</Button><Button icon={Save} onClick={save}>{editing ? 'CẬP NHẬT' : 'LƯU PHIẾU'}</Button></>}>
         <div className="store-expense-form">
-          <div className="form-grid">
+          <div className="form-grid store-expense-form__header">
             <Field label="Thời gian phát sinh" required><Input type="datetime-local" value={form.occurredAt} onChange={(event) => setForm({ ...form, occurredAt: event.target.value })} /></Field>
-            <Field label="Ghi chú phiếu"><Input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Thông tin chung của phiếu" /></Field>
+            <Field label="Ghi chú phiếu"><textarea rows="2" value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Thông tin chung của phiếu" /></Field>
           </div>
           <div className="store-expense-lines" aria-label="Danh sách khoản chi">
             {form.items.map((item, index) => <div className="store-expense-line" role="group" aria-label={`Khoản chi ${index + 1}`} key={index}>

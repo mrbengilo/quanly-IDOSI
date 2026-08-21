@@ -11,6 +11,7 @@ import {
   ChevronDown,
   CircleDollarSign,
   ClipboardCheck,
+  ClipboardList,
   Clock3,
   LayoutDashboard,
   LogOut,
@@ -54,10 +55,12 @@ const storeOperations = [
 
 const officeOperation = { label: 'Khối văn phòng', path: '/office', icon: Building2, badge: 'Mới' }
 const businessSupportDirectoryOperation = { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users }
+const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/admin/customer-survey', icon: ClipboardList, badge: 'Mới' }
 
 const officeEmployeeMenu = [
   { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
   { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
+  { label: 'Lịch phân ca', path: '/employee/schedule', icon: CalendarCheck },
   { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
   { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
 ]
@@ -69,12 +72,12 @@ const businessSupportMenu = [
   businessSupportDirectoryOperation,
   { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
   officeOperation,
+  customerSurveyOperation,
   systemOperations[2],
   systemOperations[3],
   { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
   { label: 'Công việc được giao', path: '/support/tasks', icon: ClipboardCheck },
   { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
-  { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
 ]
 
@@ -86,6 +89,7 @@ const systemMenus = {
     { label: 'Giao Việc', path: '/admin/tasks', icon: ClipboardCheck, badge: 'Mới' },
     { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
+    customerSurveyOperation,
     { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
     ...systemOperations.slice(2, 4),
     { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
@@ -100,6 +104,7 @@ const systemMenus = {
     { label: 'Đơn hàng', path: '/employee/orders', icon: ShoppingCart },
     { label: 'Dòng tiền', path: '/employee/cashflow', icon: Banknote },
     { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
+    { label: 'Lịch phân ca', path: '/employee/schedule', icon: CalendarCheck },
     { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
     { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
   ],

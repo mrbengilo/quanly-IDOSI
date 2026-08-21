@@ -1,0 +1,20 @@
+import { describe, expect, it } from 'vitest'
+import { employeeScheduleRange, employeeScheduleRows } from './employeeSchedule'
+
+describe('employee schedule view', () => {
+  it('builds day/week/month ranges and includes transfer compensation details', () => {
+    expect(employeeScheduleRange('2026-08-20', 'week')).toEqual({ from: '2026-08-17', to: '2026-08-23' })
+    expect(employeeScheduleRange('2026-08-20', 'month')).toEqual({ from: '2026-08-01', to: '2026-08-31' })
+    const rows = employeeScheduleRows({
+      employee: { id: 'E01', storeId: 'S01' },
+      stores: [{ id: 'S01', name: 'Dosii NTL' }, { id: 'S02', name: 'Dosii KVC' }],
+      shiftDefinitions: [{ id: 'CA-1', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+      schedule: [{ id: 'SCH-1', employeeId: 'E01', storeId: 'S01', date: '2026-08-20', shiftIds: ['CA-1'], note: 'Bán hàng' }],
+      supportTransfers: [{ id: 'TR-1', employeeId: 'E01', toStoreId: 'S02', startAt: '2026-08-21T07:00:00+07:00', endAt: '2026-08-21T11:00:00+07:00', hourlySupportRate: 29_000, allowance: 50_000, status: 'Đã duyệt' }],
+      range: { from: '2026-08-17', to: '2026-08-23' },
+    })
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ kind: 'schedule', storeName: 'Dosii NTL', shiftName: 'Ca sáng' })
+    expect(rows[1]).toMatchObject({ kind: 'support', storeName: 'Dosii KVC', hourlyRate: 29_000, allowance: 50_000 })
+  })
+})

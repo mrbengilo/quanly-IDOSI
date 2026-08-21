@@ -3023,8 +3023,8 @@ export function AppProvider({ children }) {
   }
 
   const restoreOperationalData = async (payload = {}) => {
-    if (normalizeAuthRole(state.session?.role) !== 'business_support') {
-      return { ok: false, message: 'Chỉ Nhân viên Hỗ trợ KD được khôi phục dữ liệu vận hành.' }
+    if (normalizeAuthRole(state.session?.role) !== 'admin') {
+      return { ok: false, message: 'Chỉ Admin được khôi phục dữ liệu vận hành.' }
     }
     const dataType = String(payload.dataType || '')
     const storeId = String(payload.storeId || '')

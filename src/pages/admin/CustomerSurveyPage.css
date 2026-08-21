@@ -1,0 +1,71 @@
+.customer-survey-page .metric {
+  min-height: 132px;
+  border-width: 2px;
+}
+
+.customer-survey-filter-card .info-note {
+  margin-top: 1rem;
+}
+
+.customer-survey-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.customer-survey-distribution {
+  min-width: 0;
+}
+
+.customer-survey-distribution .table-scroll table {
+  min-width: 360px;
+}
+
+.survey-percent {
+  display: inline-flex;
+  min-width: 4rem;
+  justify-content: center;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid #b9ddc5;
+  border-radius: 999px;
+  background: #eaf8ef;
+  color: #08713a;
+  font-weight: 800;
+}
+
+.survey-insight-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.survey-insight-list article {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+  padding: 1rem;
+  border: 2px solid #b8ddc4;
+  border-radius: 0.9rem;
+  background: linear-gradient(145deg, #f1fbf4, #fff);
+}
+
+.survey-insight-list span,
+.survey-insight-list small {
+  color: #5b6b62;
+}
+
+.survey-insight-list strong {
+  color: #075f34;
+  font-size: 1.08rem;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1000px) {
+  .customer-survey-grid,
+  .survey-insight-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .customer-survey-grid,
+  .survey-insight-list { grid-template-columns: 1fr; }
+}

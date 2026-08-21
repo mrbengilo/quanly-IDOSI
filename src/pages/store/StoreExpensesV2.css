@@ -35,6 +35,14 @@
   gap: 1rem;
 }
 
+.store-expense-form__header {
+  position: sticky;
+  top: -20px;
+  z-index: 2;
+  padding: 0.2rem 0 0.9rem;
+  background: #fff;
+}
+
 .store-expense-line {
   display: grid;
   grid-template-columns: auto minmax(9rem, 0.8fr) minmax(11rem, 1.2fr) minmax(9rem, 0.7fr) minmax(12rem, 1.2fr) auto;

@@ -49,35 +49,26 @@ const supportTransferTimeLabel = (item) => {
   return bounds ? `${formatVietnamTransferDateTime(bounds.startAt)} – ${formatVietnamTransferDateTime(bounds.endAt)}` : '—'
 }
 
-const vietnamLocalEpoch = (date, time = '00:00') => {
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(date || '')) || !/^\d{1,2}:\d{2}$/u.test(String(time || ''))) return null
-  const epochMs = Date.parse(`${date}T${time}:00+07:00`)
-  return Number.isFinite(epochMs) ? epochMs : null
-}
+const AUDIT_FIELD_LABELS = Object.freeze({
+  checkIn: 'Giờ vào', checkInAt: 'Thời gian vào', checkOut: 'Giờ kết', checkOutAt: 'Thời gian kết',
+  hours: 'Số giờ', workedSeconds: 'Thời gian làm', status: 'Trạng thái', arrivalTag: 'Trạng thái vào',
+  departureTag: 'Trạng thái ra', amount: 'Số tiền', paymentMethod: 'Phương thức thanh toán',
+  customerName: 'Khách hàng', customerPhone: 'Số điện thoại', customerAge: 'Tuổi',
+})
 
-const attendanceMoment = (record = {}) => {
-  const persistedMoment = Date.parse(String(record.checkInAt || record.startedAt || ''))
-  if (Number.isFinite(persistedMoment)) return persistedMoment
-  const date = record.date || record.workDate
-  return vietnamLocalEpoch(date, record.checkIn || record.checkInTime || record.shiftStart || '00:00')
-}
-
-const transferContainsAttendance = (transfer, record) => {
-  const bounds = supportTransferBounds(transfer)
-  const checkInMs = attendanceMoment(record)
-  return Boolean(bounds && checkInMs != null && bounds.startMs <= checkInMs && checkInMs < bounds.endMs)
-}
-
-const transferOverlapsDateRange = (transfer, fromDate, toDate) => {
-  const bounds = supportTransferBounds(transfer)
-  const rangeStartMs = vietnamLocalEpoch(fromDate)
-  const rangeLastDayMs = vietnamLocalEpoch(toDate)
-  const rangeEndMs = rangeLastDayMs == null ? null : rangeLastDayMs + 86_400_000
-  return Boolean(bounds
-    && rangeStartMs != null
-    && rangeEndMs != null
-    && bounds.startMs < rangeEndMs
-    && bounds.endMs > rangeStartMs)
+const auditEmployeeId = (item = {}) => String(item.employeeId || item.after?.employeeId || item.before?.employeeId || item.scope?.employeeId || '')
+const auditChangedFields = (item = {}) => (Array.isArray(item.changedFields) ? item.changedFields : [])
+  .filter((field) => !['updatedAt', 'updatedBy'].includes(String(field)))
+const auditChangeSummary = (item = {}) => {
+  if (item.dataType && item.restoredCount != null) return `Khôi phục ${item.restoredCount} bản ghi ${item.dataType === 'orders' ? 'đơn hàng' : 'chấm công'}`
+  const fields = auditChangedFields(item)
+  if (!fields.length) return item.reason || 'Không có chi tiết trường thay đổi'
+  return fields.map((field) => {
+    const before = item.before?.[field]
+    const after = item.after?.[field]
+    const printable = (value) => value == null || value === '' ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value)
+    return `${AUDIT_FIELD_LABELS[field] || field}: ${printable(before)} → ${printable(after)}`
+  }).join(' • ')
 }
 
 const employeeTypeLabel = (employee = {}) => String(employee.employmentType || employee.employeeType || employee.type || 'Full-Time').toLowerCase().includes('part') ? 'Part-Time' : 'Full-Time'
@@ -210,7 +201,7 @@ export function OrderAuditPage() {
 }
 
 export function ResetDataPage() {
-  const { attendance = [], employees = [], stores = [], supportTransfers = [], updateAttendance, restoreOperationalData, resetAllData, auditLogs = [], attendanceAudit = [], operationalResetHistory = [], notify, session } = useApp()
+  const { attendance = [], employees = [], stores = [], updateAttendance, restoreOperationalData, resetAllData, auditLogs = [], attendanceAudit = [], operationalResetHistory = [], notify, session } = useApp()
   const [query, setQuery] = useState('')
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ checkIn: '', checkOut: '', reason: '' })
@@ -220,44 +211,16 @@ export function ResetDataPage() {
   const [systemResetBusy, setSystemResetBusy] = useState(false)
   const canonicalRole = session?.role === 'manager' ? 'business_support' : session?.role
   const isAdmin = canonicalRole === 'admin'
-  const isBusinessSupport = canonicalRole === 'business_support'
-  const canEditAttendance = isAdmin || isBusinessSupport
   const employeeById = useMemo(() => new Map(employees.map((employee) => [String(employee.id || employee.code), employee])), [employees])
-  const canEditAttendanceRecord = (record) => {
-    if (isAdmin) return true
-    const employee = employeeById.get(String(record.employeeId || ''))
-    const status = String(employee?.status || '').toLowerCase()
-    const homeStoreAttendance = String(employee?.storeId || '') === String(record.storeId || '')
-    const linkedInboundTransfer = String(record.supportTransferId || '').trim()
-      ? supportTransfers.some((transfer) => (
-          String(transfer.id || '') === String(record.supportTransferId || '')
-          && String(transfer.employeeId || '') === String(record.employeeId || '')
-          && String(transfer.toStoreId || '') === String(record.storeId || '')
-          && transferContainsAttendance(transfer, record)
-        ))
-      : false
-    return isBusinessSupport
-      && String(employee?.unit || employee?.unitType || '') === 'store'
-      && (homeStoreAttendance || linkedInboundTransfer)
-      && !employee?.deletedAt
-      && !['inactive', 'đã nghỉ việc', 'đã xóa'].includes(status)
-  }
+  const canEditAttendanceRecord = () => isAdmin
   const rows = attendance.filter((item) => !item.deletedAt && (!query || [item.employeeId, employees.find((employee) => employee.id === item.employeeId)?.name, item.shiftName].some((value) => String(value || '').toLowerCase().includes(query.toLowerCase()))))
-  const scopedEmployees = employees.filter((employee) => {
-    if (String(employee.unit || employee.unitType || 'store') !== 'store' || employee.deletedAt) return false
-    if (!resetForm.storeId || String(employee.storeId || '') === String(resetForm.storeId)) return true
-    return supportTransfers.some((transfer) => (
-      String(transfer.employeeId || '') === String(employee.id || employee.code || '')
-      && String(transfer.toStoreId || '') === String(resetForm.storeId)
-      && transferOverlapsDateRange(transfer, resetForm.fromDate, resetForm.toDate)
-    ))
-  })
+  const scopedEmployees = employees.filter((employee) => String(employee.unit || employee.unitType || 'store') === 'store' && !employee.deletedAt)
   const recentAudit = [...new Map([...operationalResetHistory, ...attendanceAudit, ...auditLogs]
     .map((item, index) => [String(item.id || `${item.entityId || item.orderId || item.attendanceId || 'audit'}-${index}`), item])).values()]
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
     .slice(0, 20)
   const openEdit = (record) => {
-    if (!canEditAttendanceRecord(record)) return notify('Hỗ trợ KD chỉ được chỉnh chấm công của nhân viên cửa hàng đang hoạt động.', 'info')
+    if (!canEditAttendanceRecord(record)) return notify('Chỉ Admin được chỉnh sửa chấm công tại công cụ Reset dữ liệu.', 'info')
     setEditing(record)
     setForm({ checkIn: record.checkIn || '', checkOut: record.checkOut || '', reason: '' })
   }
@@ -289,7 +252,7 @@ export function ResetDataPage() {
     }
   }
   const restoreOperational = async () => {
-    if (!isBusinessSupport) return
+    if (!isAdmin) return
     if (!resetForm.storeId || !resetForm.fromDate || !resetForm.toDate) return notify('Vui lòng chọn cửa hàng và khoảng ngày cần khôi phục.', 'info')
     if (resetForm.fromDate > resetForm.toDate) return notify('Khoảng ngày khôi phục chưa hợp lệ.', 'info')
     if (!resetForm.reason.trim()) return notify('Vui lòng nhập lý do khôi phục dữ liệu.', 'info')
@@ -307,7 +270,7 @@ export function ResetDataPage() {
     if (!result?.ok) return notify(result?.message || 'Không thể khôi phục dữ liệu vận hành.', 'info')
     setResetForm((current) => ({ ...current, reason: '' }))
   }
-  if (!canEditAttendance) {
+  if (!isAdmin) {
     return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Tài khoản này không được truy cập công cụ dữ liệu vận hành." icon={LockKeyhole} /></div>
   }
   return <div className="page governance-page"><PageHeader title="RESET DỮ LIỆU" subtitle="Quản lý dữ liệu hệ thống theo đúng phạm vi quyền; các thao tác vận hành đều có nhật ký." icon={RefreshCcw} />
@@ -315,7 +278,7 @@ export function ResetDataPage() {
       <InfoNote tone="orange"><strong>Thao tác không thể hoàn tác.</strong><br />Toàn bộ cửa hàng, hồ sơ nhân viên, đơn hàng, chấm công, dòng tiền, lịch sử vận hành và mọi tài khoản khác sẽ bị xóa. Chỉ tài khoản Admin đang thực hiện Reset và phiên hiện tại được giữ lại.</InfoNote>
       <div className="card-actions card-actions--below"><Button variant="danger" icon={Trash2} onClick={() => setSystemResetOpen(true)}>BẮT ĐẦU XÓA DỮ LIỆU</Button></div>
     </Card>}
-    {isBusinessSupport && <Card title="Khôi phục chỉnh sửa/xóa" className="operational-reset-card">
+    {isAdmin && <Card title="Khôi phục chỉnh sửa/xóa" className="operational-reset-card">
       <InfoNote>Chức năng này chỉ khôi phục phiên bản trước của dữ liệu trong phạm vi đã chọn, không xóa trắng dữ liệu hoặc tài khoản.</InfoNote>
       <div className="form-grid form-grid--3">
         <Field label="Loại dữ liệu" required><Select value={resetForm.dataType} onChange={(event) => setResetForm((current) => ({ ...current, dataType: event.target.value, employeeId: '' }))}><option value="orders">Đơn hàng</option><option value="attendance">Chấm công</option></Select></Field>
@@ -328,7 +291,20 @@ export function ResetDataPage() {
       <div className="card-actions card-actions--below"><Button variant="danger" icon={RefreshCcw} onClick={restoreOperational}>KHÔI PHỤC CHỈNH SỬA/XÓA</Button></div>
     </Card>}
     <Card title="Chấm công theo ca" action={<SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên hoặc ca..." />}><TableWrap><thead><tr><th>Nhân viên</th><th>Cửa hàng</th><th>Ca</th><th>Ngày</th><th>Giờ vào / Kết</th><th>Số giờ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{rows.map((record) => { const employee = employeeById.get(String(record.employeeId || '')); const editable = canEditAttendanceRecord(record); return <tr key={record.id}><td><strong>{employee?.name || record.employeeId}</strong><small className="table-note">{record.employeeId}</small></td><td>{stores.find((store) => store.id === record.storeId)?.name || record.storeId}</td><td>{record.shiftName || record.shift}<small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td>{record.checkIn || '—'} / {record.checkOut || '—'}</td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={record.status === 'Đi trễ' ? 'red' : record.status === 'Đi sớm' ? 'green' : 'blue'}>{record.status}</Badge></td><td>{editable ? <Button variant="outline" onClick={() => openEdit(record)}>Chỉnh sửa</Button> : <span className="table-note">Chỉ xem</span>}</td></tr> })}{!rows.length && <tr><td colSpan="8">Chưa có dữ liệu chấm công phù hợp.</td></tr>}</tbody></TableWrap></Card>
-    <Card title="Nhật ký chỉnh sửa gần nhất"><TableWrap><thead><tr><th>Thời gian</th><th>Đối tượng</th><th>Hành động</th><th>Người thực hiện</th></tr></thead><tbody>{recentAudit.map((item, index) => { const isResetHistory = Boolean(item.dataType && item.restoredCount != null); const action = item.action || item.type || (isResetHistory ? 'Khôi phục' : '—'); const isRestore = String(action).toLowerCase().includes('restore') || String(action).toLowerCase().includes('khôi phục'); const entity = item.entity || item.type || (item.dataType === 'orders' ? 'đơn hàng' : item.dataType === 'attendance' ? 'chấm công' : 'dữ liệu'); return <tr key={item.id || `${item.entityId || item.orderId || item.attendanceId}-${index}`}><td>{displayDateTime(item.createdAt)}</td><td>{entity} — {item.entityId || item.orderId || item.attendanceId || item.id || '—'}</td><td>{isRestore ? <Badge tone="green">Khôi phục</Badge> : action}</td><td>{item.actor?.name || item.createdBy?.name || '—'}</td></tr> })}{!recentAudit.length && <tr><td colSpan="4">Chưa có nhật ký chỉnh sửa.</td></tr>}</tbody></TableWrap></Card>
+    <Card title="Nhật ký chỉnh sửa gần nhất"><TableWrap><thead><tr><th>Thời gian</th><th>Mục được chỉnh sửa</th><th>Nhân viên liên quan</th><th>Nội dung thay đổi</th><th>Hành động</th><th>Người thực hiện</th></tr></thead><tbody>{recentAudit.map((item, index) => {
+      const isResetHistory = Boolean(item.dataType && item.restoredCount != null)
+      const action = item.action || item.type || (isResetHistory ? 'Khôi phục' : '—')
+      const isRestore = String(action).toLowerCase().includes('restore') || String(action).toLowerCase().includes('khôi phục')
+      const entity = item.entity
+        || (item.orderId ? 'Đơn hàng' : item.attendanceId ? 'Chấm công' : '')
+        || (item.dataType === 'orders' ? 'Đơn hàng' : item.dataType === 'attendance' ? 'Chấm công' : '')
+        || item.type
+        || 'Dữ liệu'
+      const relatedEmployeeId = auditEmployeeId(item)
+      const relatedEmployee = employeeById.get(relatedEmployeeId)
+      const entityId = item.entityId || item.orderId || item.attendanceId || item.id || '—'
+      return <tr key={item.id || `${entityId}-${index}`}><td>{displayDateTime(item.createdAt)}</td><td><strong>{entity}</strong><small className="table-note">Mã: {entityId}</small></td><td>{relatedEmployeeId ? <><strong>{relatedEmployee?.name || item.employeeName || relatedEmployeeId}</strong><small className="table-note">{relatedEmployeeId}</small></> : 'Không gắn nhân viên'}</td><td><span className="audit-log-summary">{auditChangeSummary(item)}</span>{item.reason && <small className="table-note">Lý do: {item.reason}</small>}</td><td>{isRestore ? <Badge tone="green">Khôi phục</Badge> : action}</td><td>{item.actor?.name || item.createdBy?.name || '—'}</td></tr>
+    })}{!recentAudit.length && <tr><td colSpan="6">Chưa có nhật ký chỉnh sửa.</td></tr>}</tbody></TableWrap></Card>
     <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Chỉnh sửa giờ chấm công" footer={<><Button variant="outline" onClick={() => setEditing(null)}>Hủy</Button><Button icon={Save} onClick={save}>LƯU</Button></>}><div className="form-grid"><Field label="Giờ vào" required hint="Định dạng 24 giờ"><Input type="time" value={form.checkIn} onChange={(event) => setForm({ ...form, checkIn: event.target.value })} /></Field><Field label="Giờ kết" hint="Định dạng 24 giờ"><Input type="time" value={form.checkOut} onChange={(event) => setForm({ ...form, checkOut: event.target.value })} /></Field><Field label="Lý do chỉnh sửa" required className="span-2"><textarea maxLength={500} value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} placeholder="Nhập lý do để lưu nhật ký kiểm toán" /></Field></div></Modal>
     <Modal open={systemResetOpen} onClose={closeSystemReset} title="Xác nhận xóa toàn bộ dữ liệu" footer={<><Button variant="outline" onClick={closeSystemReset} disabled={systemResetBusy}>Hủy</Button><Button variant="danger" icon={Trash2} loading={systemResetBusy} disabled={systemResetBusy || systemResetConfirmation !== 'RESET_ALL_DATA'} onClick={executeSystemReset}>XÓA TOÀN BỘ DỮ LIỆU</Button></>}>
       <div className="form-stack">
