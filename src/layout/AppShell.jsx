@@ -158,7 +158,7 @@ export default function AppShell() {
   const isStoreOperator = isSystemOperator || isStoreManager
   const isEmployee = role === 'employee'
   const isOfficeEmployee = isEmployee && isOfficeProfile(session, app.currentEmployee)
-  const isStoreWorkspace = isStoreOperator && location.pathname.startsWith('/store/')
+  const isStoreWorkspace = isStoreManager || (isStoreOperator && location.pathname.startsWith('/store/'))
   const isSystemWorkspace = isSystemOperator && !isStoreWorkspace
   const roleMenus = isOfficeEmployee
     ? officeEmployeeMenu

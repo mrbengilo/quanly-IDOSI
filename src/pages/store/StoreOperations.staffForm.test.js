@@ -91,6 +91,31 @@ describe('Business Support store employee form', () => {
       .toContain('Tên đăng nhập đã tồn tại.')
   })
 
+  it('links an Office or Business Support profile using only its hourly store rate', () => {
+    const linkedForm = validForm({
+      linkedEmployeeId: 'VP-001',
+      name: 'Nhân viên văn phòng',
+      salary: '25,000',
+      baseSalary: '',
+      startDate: '',
+      age: '',
+      identityImages: {},
+      username: '',
+      password: '',
+    })
+    expect(validateStoreEmployee(linkedForm, [], '', false, { linkedEmployeeId: 'VP-001', requireIdentityImages: true })).toEqual([])
+    expect(buildStoreEmployeePayload(linkedForm, { storeId: store.id, store })).toMatchObject({
+      unit: 'store',
+      storeId: store.id,
+      linkedEmployeeId: 'VP-001',
+      employmentType: 'Part-Time',
+      salaryUnit: 'hour',
+      salary: 25_000,
+      hourlyRate: 25_000,
+      baseSalary: null,
+    })
+  })
+
   it('never resubmits persisted private image metadata', () => {
     expect(freshIdentityImages({
       front: { key: 'private/front.webp', contentType: 'image/webp' },

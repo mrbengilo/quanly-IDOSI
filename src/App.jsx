@@ -8,6 +8,7 @@ import {
 } from './pages/admin/AdminPages'
 import { BusinessSupportManagement, StoreManagerManagement } from './pages/admin/RoleManagement'
 import { CustomerSurveyPage } from './pages/admin/CustomerSurveyPage'
+import { AttendanceResetPage } from './pages/admin/AttendanceResetPage'
 import { AdminSupportWorkPage, SupportAssignedWorkPage } from './pages/admin/SupportWorkPages'
 import { BusinessSupportSchedulePage, MyBusinessSupportSchedulePage } from './pages/admin/BusinessSupportSchedulePage'
 import {
@@ -18,7 +19,6 @@ import {
 import {
   OrderAuditPage,
   PolicySettings,
-  ResetDataPage,
   SupportTransfersPage,
   SystemEmployees,
 } from './pages/admin/GovernancePages'
@@ -178,7 +178,7 @@ export default function App() {
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/admin/tasks" element={<AdminSupportWorkPage />} />
-        <Route path="/admin/reset" element={<ResetDataPage />} />
+        <Route path="/admin/reset" element={<AttendanceResetPage />} />
       </Route>
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>

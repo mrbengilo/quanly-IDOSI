@@ -422,9 +422,18 @@ export function StoreEmployees() {
     ? session.storeId
     : activeStoreId || session?.storeId || stores[0]?.id || ''
   const scopedStore = stores.find((store) => String(store.id) === String(scopedStoreId)) || stores[0]
-  const businessSupportProfiles = employees.filter((employee) => (
-    String(employee.unit || employee.unitType || '').toLowerCase() === 'business_support' && !employee.deletedAt
-  ))
+  const linkableProfiles = employees.filter((employee) => {
+    const profileId = String(employee.id || employee.code || '')
+    const alreadyLinkedHere = employees.some((profile) => (
+      String(profile.unit || profile.unitType || '').toLowerCase() === 'store'
+      && String(profile.storeId || '') === String(scopedStoreId)
+      && String(profile.linkedEmployeeId || '') === profileId
+      && !profile.deletedAt
+    ))
+    return ['business_support', 'office'].includes(String(employee.unit || employee.unitType || '').toLowerCase())
+      && !employee.deletedAt
+      && !alreadyLinkedHere
+  })
   const createEmployeeForm = () => ({
     ...emptyEmployeeForm,
     identityImages: { ...emptyEmployeeForm.identityImages },
@@ -445,7 +454,7 @@ export function StoreEmployees() {
   const canCreateStoreEmployee = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
   const canDeleteEmployee = session?.role === 'admin'
-  const linkingBusinessSupport = !editing && form.employeeSource === 'business_support'
+  const linkingExistingProfile = !editing && ['business_support', 'office'].includes(form.employeeSource)
   const editingRequiresPassword = Boolean(editing) && !(
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
   )
@@ -528,15 +537,17 @@ export function StoreEmployees() {
     setErrors([])
   }
 
-  const updateLinkedBusinessSupport = (event) => {
+  const updateLinkedProfile = (event) => {
     const linkedEmployeeId = event.target.value
-    const source = businessSupportProfiles.find((employee) => String(employee.id || employee.code) === linkedEmployeeId)
+    const source = linkableProfiles.find((employee) => String(employee.id || employee.code) === linkedEmployeeId)
     setForm((current) => ({
       ...current,
       linkedEmployeeId,
       name: source?.name || '',
-      startDate: current.startDate || today(),
+      startDate: source?.startDate || source?.joinDate || current.startDate || today(),
       age: source?.age ? String(source.age) : current.age,
+      employmentType: 'Part-Time',
+      position: 'Nhân viên bán hàng',
     }))
     setErrors([])
   }
@@ -656,7 +667,7 @@ export function StoreEmployees() {
                 : null
               return <tr key={employee.id} className={outboundTransfer ? 'employee-row--supporting-away' : ''}>
                 <td><strong>{employee.id}</strong></td>
-                <td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.age ? `${employee.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
+                <td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.age ? `${employee.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
                 <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{transferTimeLabel(employee.supportAssignment)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : outboundTransfer ? <div className="table-stack"><Badge tone="orange">Đang hỗ trợ {supportStore?.name || outboundTransfer.toStoreId}</Badge><small>{transferTimeLabel(outboundTransfer)}</small><small>{money(outboundTransfer.hourlySupportRate || 0)}/giờ · Phụ cấp {money(outboundTransfer.allowance || 0)}</small><small>Hồ sơ tạm khóa thao tác tại cửa hàng chính</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
                 <td><Badge tone={isPartTime(type) ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
                 <td>{employeePosition(employee)}</td>
@@ -685,15 +696,17 @@ export function StoreEmployees() {
           {errors.length > 0 && <InfoNote tone="orange"><strong>Thông tin chưa hợp lệ</strong><ul>{errors.map((error) => <li key={error}>{error}</li>)}</ul></InfoNote>}
           <h3>Thông tin nhân viên</h3>
           {!editing && <div className="form-grid">
-            <Field label="Cách tạo nhân viên" required><Select value={form.employeeSource || 'new'} onChange={updateEmployeeSource}><option value="new">Tạo tài khoản nhân viên mới</option><option value="business_support">Chọn Nhân viên hỗ trợ KD hiện có</option></Select></Field>
-            {linkingBusinessSupport && <Field label="Nhân viên hỗ trợ KD" required hint="Tài khoản sẽ có thêm vai trò Nhân viên và giữ nguyên vai trò Hỗ trợ KD."><Select value={form.linkedEmployeeId || ''} onChange={updateLinkedBusinessSupport}><option value="">Chọn nhân viên</option>{businessSupportProfiles.map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}</Select></Field>}
+            <Field label="Cách tạo nhân viên" required><Select value={form.employeeSource || 'new'} onChange={updateEmployeeSource}><option value="new">Tạo tài khoản nhân viên mới</option><option value="office">Chọn nhân viên Khối văn phòng</option><option value="business_support">Chọn Nhân viên hỗ trợ KD</option></Select></Field>
+            {linkingExistingProfile && <Field label={form.employeeSource === 'office' ? 'Nhân viên Khối văn phòng' : 'Nhân viên hỗ trợ KD'} required hint="Tài khoản giữ nguyên vai trò hiện tại và có thêm vai trò Nhân viên cửa hàng."><Select value={form.linkedEmployeeId || ''} onChange={updateLinkedProfile}><option value="">Chọn nhân viên</option>{linkableProfiles.filter((employee) => String(employee.unit || employee.unitType || '').toLowerCase() === form.employeeSource).map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}</Select></Field>}
           </div>}
-          {linkingBusinessSupport && form.linkedEmployeeId && <InfoNote>Đang phân thêm vai trò Nhân viên cửa hàng cho <strong>{form.name}</strong>. Hệ thống dùng chung tài khoản đăng nhập và hồ sơ CCCD hiện có.</InfoNote>}
-          <div className="form-grid">
+          {linkingExistingProfile && form.linkedEmployeeId && <InfoNote>Đang phân thêm vai trò Nhân viên cửa hàng cho <strong>{form.name}</strong>. Hệ thống dùng chung tài khoản, hồ sơ và CCCD hiện có.</InfoNote>}
+          {linkingExistingProfile ? <div className="form-grid">
+            <Field label="Mức lương theo giờ (đ/giờ)" required hint="Mức lương dùng khi tài khoản làm việc với vai trò Nhân viên cửa hàng"><MoneyInput value={form.salary} onChange={updateField('salary')} placeholder="Nhập số nghìn" /></Field>
+          </div> : <div className="form-grid">
             <Field label="Mã nhân viên" required hint="Hệ thống phát sinh tự động theo mã viết tắt của cửa hàng"><Input value={form.id} readOnly aria-readonly="true" /></Field>
-            {!linkingBusinessSupport && <><Field label="Tên nhân viên" required><Input value={form.name} onChange={updateField('name')} placeholder="Nhập họ và tên" /></Field>
+            <><Field label="Tên nhân viên" required><Input value={form.name} onChange={updateField('name')} placeholder="Nhập họ và tên" /></Field>
             <Field label="Số CCCD" required hint="Chỉ gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={updateField('cccd')} placeholder="012345678901" /></Field>
-            <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng số 0"><Input type="tel" inputMode="numeric" maxLength={10} pattern="0[0-9]{9}" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field></>}
+            <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng số 0"><Input type="tel" inputMode="numeric" maxLength={10} pattern="0[0-9]{9}" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field></>
             <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={updateField('startDate')} /></Field>
             <Field label="Loại nhân viên" required hint="Full-Time dùng định mức ngày, giờ và lương cơ bản; Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
             {isPartTime(form.employmentType)
@@ -707,8 +720,8 @@ export function StoreEmployees() {
             <Field label="Vị trí công việc" required hint={isBusinessSupport && !editing ? 'Mặc định cho nhân viên do Hỗ trợ KD tạo' : undefined}>{isBusinessSupport && !editing
               ? <Input value="Nhân viên bán hàng" readOnly aria-readonly="true" />
               : <Select value={form.position} onChange={updateField('position')}><option>Nhân viên bán hàng</option><option>Nhân viên thu ngân</option><option>Nhân viên kho</option><option>Trưởng ca</option><option>Khác</option></Select>}</Field>
-          </div>
-          {!linkingBusinessSupport && <>
+          </div>}
+          {!linkingExistingProfile && <>
           <h3>Địa chỉ</h3>
           <AddressAutocomplete
             value={{ province: form.province, ward: form.ward, street: form.street }}

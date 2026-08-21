@@ -19,9 +19,10 @@ describe('RoleSelectionPage', () => {
   beforeEach(() => {
     mocked.selectSessionRole.mockReset().mockImplementation(async (option) => ({ ok: true, account: option }))
     mocked.session = {
-      role: 'business_support', name: 'Nguyễn Minh Khôi', needsRoleSelection: true,
+      role: 'business_support', employeeId: 'HTKD-01', storeId: 'BUSINESS_SUPPORT',
+      name: 'Nguyễn Minh Khôi', needsRoleSelection: true,
       availableRoles: [
-        { role: 'store_manager', label: 'Quản lý', employeeId: 'QLCH-01', storeId: 'S01' },
+        { role: 'store_manager', label: 'Quản lý CH', employeeId: 'QLCH-01', storeId: 'S01' },
         { role: 'employee', label: 'Nhân viên', employeeId: 'E-STORE-01', storeId: 'S01' },
         { role: 'business_support', label: 'Hỗ trợ KD', employeeId: 'HTKD-01', storeId: 'BUSINESS_SUPPORT' },
       ],

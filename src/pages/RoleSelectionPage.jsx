@@ -56,9 +56,9 @@ export default function RoleSelectionPage() {
           >
             <span className="role-selection-option__icon"><Icon size={28} /></span>
             <span>
-              <strong>{presentation.label}</strong>
+              <strong>{option.label || presentation.label}</strong>
               <small>{option.profileName || presentation.description}</small>
-              {option.role === session.role && <em>Vai trò hiện tại</em>}
+              {option.role === session.role && String(option.employeeId || '') === String(session.employeeId || '') && <em>Vai trò hiện tại</em>}
             </span>
           </Button>
         })}

@@ -767,14 +767,15 @@ const localRoleOptionsForSession = (current, session) => {
   if (normalizeAuthRole(session.role) === 'business_support') {
     add({ role: 'business_support', label: 'Hỗ trợ KD', employeeId: rootEmployeeId, storeId: 'BUSINESS_SUPPORT' })
   } else if (normalizeAuthRole(session.role) === 'store_manager') {
-    add({ role: 'store_manager', label: 'Quản lý', employeeId: rootEmployeeId, storeId: root?.storeId || session.storeId || null })
+    add({ role: 'store_manager', label: 'Quản lý CH', employeeId: rootEmployeeId, storeId: root?.storeId || session.storeId || null })
   } else {
-    add({ role: 'employee', label: 'Nhân viên', employeeId: rootEmployeeId, storeId: root?.storeId || session.storeId || null })
+    const rootUnit = String(root?.unit || root?.unitType || '').toLowerCase()
+    add({ role: 'employee', label: rootUnit === 'office' ? 'Nhân viên văn phòng' : 'Nhân viên', employeeId: rootEmployeeId, storeId: root?.storeId || session.storeId || null })
   }
   employees.filter((profile) => !profile.deletedAt && String(profile.linkedEmployeeId || '') === rootEmployeeId).forEach((profile) => {
     const unit = String(profile.unit || profile.unitType || '').toLowerCase()
-    if (unit === 'store_manager') add({ role: 'store_manager', label: 'Quản lý', employeeId: profile.id || profile.code, storeId: profile.storeId || null })
-    if (unit === 'store') add({ role: 'employee', label: 'Nhân viên', employeeId: profile.id || profile.code, storeId: profile.storeId || null })
+    if (unit === 'store_manager') add({ role: 'store_manager', label: 'Quản lý CH', employeeId: profile.id || profile.code, storeId: profile.storeId || null })
+    if (unit === 'store') add({ role: 'employee', label: 'Nhân viên cửa hàng', employeeId: profile.id || profile.code, storeId: profile.storeId || null })
   })
   const order = { store_manager: 0, employee: 1, business_support: 2 }
   return options.sort((left, right) => (order[left.role] ?? 9) - (order[right.role] ?? 9))
@@ -2003,6 +2004,7 @@ export function AppProvider({ children }) {
     const employmentType = String(employee.employmentType || employee.workTimeType || 'Full-Time')
     const partTime = /part|thực tập/u.test(employmentType.toLocaleLowerCase('vi-VN'))
     const commandPayload = {
+      ...(payload.scheduleId ? { scheduleId: String(payload.scheduleId) } : {}),
       employeeId,
       targetUnit,
       date,
@@ -2023,7 +2025,9 @@ export function AppProvider({ children }) {
       }
     }
     const timestamp = new Date().toISOString()
-    const previous = (state.supportWorkSchedules || []).find((record) => record.employeeId === employeeId && record.date === date)
+    const previous = payload.scheduleId
+      ? (state.supportWorkSchedules || []).find((record) => String(record.id || '') === String(payload.scheduleId))
+      : (state.supportWorkSchedules || []).find((record) => record.employeeId === employeeId && record.date === date)
     const schedule = {
       id: previous?.id || uid('SWS'),
       employeeId,
@@ -2046,6 +2050,33 @@ export function AppProvider({ children }) {
     }))
     notify(`Đã lưu lịch làm việc của ${targetUnit === 'office' ? 'nhân viên Khối văn phòng' : 'Nhân viên hỗ trợ KD'}.`)
     return { ok: true, schedule, history }
+  }
+
+  const deleteBusinessSupportSchedule = async (scheduleId, reason = '') => {
+    if (!['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))) return { ok: false, message: 'Tài khoản không có quyền xóa lịch làm việc.' }
+    const previous = (state.supportWorkSchedules || []).find((record) => String(record.id || '') === String(scheduleId || ''))
+    const normalizedReason = String(reason || '').trim()
+    if (!previous) return { ok: false, message: 'Không tìm thấy lịch làm việc.' }
+    if (!normalizedReason) return { ok: false, message: 'Cần nhập lý do xóa lịch làm việc.' }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('support_schedule.delete', { scheduleId, reason: normalizedReason })
+        notify('Đã xóa lịch làm việc.')
+        return { ok: true, schedule: result.schedule, history: result.history }
+      } catch (error) {
+        notify(error.message || 'Không thể xóa lịch làm việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const timestamp = new Date().toISOString()
+    const history = { ...previous, id: uid('SWSH'), scheduleId: previous.id, action: 'Xóa lịch', reason: normalizedReason, recordedAt: timestamp, recordedBy: actorSnapshot(state.session) }
+    setState((current) => ({
+      ...current,
+      supportWorkSchedules: (current.supportWorkSchedules || []).filter((record) => String(record.id || '') !== String(scheduleId)),
+      supportWorkScheduleHistory: [history, ...(current.supportWorkScheduleHistory || [])],
+    }))
+    notify('Đã xóa lịch làm việc.')
+    return { ok: true, schedule: previous, history }
   }
 
   const saveSchedule = (employeeIds, shiftId, details = {}) => {
@@ -3740,6 +3771,7 @@ export function AppProvider({ children }) {
     assignSupportWork,
     updateSupportWork,
     saveBusinessSupportSchedule,
+    deleteBusinessSupportSchedule,
     saveSchedule,
     changeAdminPassword,
     verifyCurrentPassword,

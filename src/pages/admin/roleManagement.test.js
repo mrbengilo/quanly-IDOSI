@@ -244,6 +244,7 @@ describe('role management permissions and form', () => {
         employmentType: 'Full-Time',
         position: 'NV hỗ trợ KD',
         username: 'support_an',
+        avatar: '/avatar-nguyen-an.webp',
         identityImages: {
           front: 'data:image/png;base64,support-front',
           back: 'data:image/png;base64,support-back',
@@ -254,6 +255,7 @@ describe('role management permissions and form', () => {
     render(createElement(BusinessSupportManagement))
 
     expect(screen.getByText('Nguyễn An')).toBeTruthy()
+    expect(screen.getByAltText('Ảnh đại diện Nguyễn An').getAttribute('src')).toBe('/avatar-nguyen-an.webp')
     expect(screen.getByText('Chỉ Admin được quản lý tài khoản; Admin và Hỗ trợ KD được cấu hình thời gian làm việc.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Thêm tài khoản/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Sửa Nguyễn An/i })).toBeNull()

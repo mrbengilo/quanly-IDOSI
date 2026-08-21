@@ -3,6 +3,12 @@ import { businessDate } from '../utils'
 const normalize = (value) => String(value || '').trim().toLocaleLowerCase('vi')
 export const OCCUPATION_SURVEY_START_AT = '2026-08-21T11:15:00+07:00'
 const OCCUPATION_SURVEY_START_MS = Date.parse(OCCUPATION_SURVEY_START_AT)
+export const CUSTOMER_OCCUPATIONS = Object.freeze([
+  'Nhân viên VP', 'Kỹ sư', 'Bác sĩ', 'Giáo viên', 'Học sinh/Sinh viên',
+  'Lao động', 'Nội trợ', 'Buôn bán/kinh doanh', 'Tài xế', 'Giám đốc', 'Ca sỉ',
+  'Lao công', 'Bảo vệ', 'Công nhân', 'Khác',
+])
+const CUSTOMER_OCCUPATION_SET = new Set(CUSTOMER_OCCUPATIONS)
 
 const validOrders = (orders = [], { period = '', storeId = '' } = {}) => (Array.isArray(orders) ? orders : [])
   .filter((order) => (
@@ -52,7 +58,9 @@ export function customerSurveySummary(orders = [], filters = {}) {
   const records = validOrders(orders, filters)
   const occupationRecords = records.filter((order) => {
     const timestamp = Date.parse(order.createdAt || order.occurredAt || order.updatedAt || '')
-    return Number.isFinite(timestamp) && timestamp >= OCCUPATION_SURVEY_START_MS
+    return Number.isFinite(timestamp)
+      && timestamp >= OCCUPATION_SURVEY_START_MS
+      && CUSTOMER_OCCUPATION_SET.has(String(order.occupation || '').trim())
   })
   const genders = countBy(records, (order) => genderOf(order.gender))
   const channels = countBy(records, (order) => channelOf(order.acquisitionChannel))

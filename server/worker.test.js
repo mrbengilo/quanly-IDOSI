@@ -2511,6 +2511,7 @@ describe('IDOSI Worker security primitives', () => {
       settings: { name: 'Nhân viên kế tiếp', email: 'employee.next@idosi.vn', avatar: employeeAvatar },
       user: { role: 'employee', employeeId: 'TNV-003', version: 2 },
     })
+    expect(readHydratedState(env.DB.database).employees.find(({ id }) => id === 'TNV-003')).toMatchObject({ avatar: employeeAvatar })
   })
 
   it('persists manager-safe transfers, store settings, account preferences, and admin demo reset', async () => {
@@ -5826,8 +5827,66 @@ describe('IDOSI Worker security primitives', () => {
     expect(await tripleManagerSelection.json()).toMatchObject({
       user: { role: 'store_manager', employeeId: linkedManagerProfile.id, storeId: 'S01' },
     })
+
+    const managerSettingsUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 7,
+      payload: { name: 'Hỗ trợ ba vai trò' },
+    }, { authorization: `Bearer ${tripleLoginBody.token}`, 'idempotency-key': 'triple-role-manager-settings-0001' }), env)
+    expect(managerSettingsUpdated.status).toBe(200)
+    expect(await managerSettingsUpdated.json()).toMatchObject({
+      version: 8,
+      user: {
+        role: 'store_manager', employeeId: linkedManagerProfile.id, storeId: 'S01',
+        availableRoles: expect.arrayContaining([
+          expect.objectContaining({ role: 'business_support', employeeId: supportProfile.id }),
+          expect.objectContaining({ role: 'employee', employeeId: linkedStoreProfile.id, storeId: 'S01' }),
+          expect.objectContaining({ role: 'store_manager', employeeId: linkedManagerProfile.id, storeId: 'S01' }),
+        ]),
+      },
+    })
+
+    const officeCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 8,
+      payload: {
+        unit: 'office', storeId: 'OFFICE', name: 'Văn phòng kiêm bán hàng', phone: '0908000003',
+        cccd: '079888000003', address: 'TP. Hồ Chí Minh', startDate: '2026-08-18',
+        employmentType: 'Full-Time', position: 'Marketing', username: 'office.store.role',
+        password: 'office-store-role-password', identityImages: testIdentityImages(),
+      },
+    }, { ...authorization, 'idempotency-key': 'office-store-role-source-0001' }), env)
+    expect(officeCreated.status).toBe(201)
+    const officeProfile = (await officeCreated.json()).employee
+    const officeStoreRole = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 9,
+      payload: { unit: 'store', storeId: 'S01', linkedEmployeeId: officeProfile.id, hourlyRate: 27_000, salary: 27_000 },
+    }, { ...authorization, 'idempotency-key': 'office-store-role-link-0001' }), env)
+    expect(officeStoreRole.status).toBe(201)
+    const officeStoreProfile = (await officeStoreRole.json()).employee
+    expect(officeStoreProfile).toMatchObject({
+      unit: 'store', storeId: 'S01', linkedEmployeeId: officeProfile.id,
+      employmentType: 'Part-Time', hourlyRate: 27_000, salaryUnit: 'hour',
+    })
+    const officeRoleLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'office.store.role', password: 'office-store-role-password',
+    }), env)
+    expect(officeRoleLogin.status).toBe(200)
+    expect(await officeRoleLogin.json()).toMatchObject({
+      user: {
+        role: 'employee', employeeId: officeProfile.id, needsRoleSelection: true,
+        availableRoles: expect.arrayContaining([
+          expect.objectContaining({ role: 'employee', employeeId: officeProfile.id, label: 'Nhân viên văn phòng' }),
+          expect.objectContaining({ role: 'employee', employeeId: officeStoreProfile.id, storeId: 'S01', label: 'Nhân viên cửa hàng' }),
+        ]),
+      },
+    })
+    const duplicateOfficeStoreRole = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 10,
+      payload: { unit: 'store', storeId: 'S01', linkedEmployeeId: officeProfile.id, hourlyRate: 30_000, salary: 30_000 },
+    }, { ...authorization, 'idempotency-key': 'office-store-role-duplicate-0001' }), env)
+    expect(duplicateOfficeStoreRole.status).toBe(409)
+    expect(await duplicateOfficeStoreRole.json()).toMatchObject({ error: { code: 'LINKED_EMPLOYEE_ROLE_EXISTS' } })
     expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
-  })
+  }, 30_000)
 
   it('excludes an Admin-created assigned order from employee checkout reconciliation', async () => {
     vi.useFakeTimers()
@@ -6550,6 +6609,33 @@ describe('IDOSI Worker security primitives', () => {
       expect((await officeState.json()).state.supportWorkSchedules).toEqual([
         expect.objectContaining({ employeeId: office.id, targetUnit: 'office', date: '2026-08-21' }),
       ])
+      const scheduled = readHydratedState(env.DB.database).supportWorkSchedules.find(({ employeeId }) => employeeId === support.id)
+      const supportScheduleUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 9,
+        payload: {
+          scheduleId: scheduled.id, employeeId: support.id, date: '2026-08-22', shiftName: 'Ca tối mới',
+          start: '18:30', end: '21:30', note: 'Hỗ trợ KD sửa lịch',
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-daily-schedule-update-0001' }), env)
+      expect(supportScheduleUpdated.status).toBe(200)
+      expect(await supportScheduleUpdated.json()).toMatchObject({
+        version: 10,
+        schedule: { id: scheduled.id, date: '2026-08-22', start: '18:30', end: '21:30', version: 2 },
+        history: { action: 'Cập nhật lịch', recordedBy: { role: 'business_support' } },
+      })
+      const supportScheduleDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.delete', expectedVersion: 10,
+        payload: { scheduleId: scheduled.id, reason: 'Phân lịch nhầm' },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-daily-schedule-delete-0001' }), env)
+      expect(supportScheduleDeleted.status).toBe(200)
+      expect(await supportScheduleDeleted.json()).toMatchObject({
+        version: 11,
+        schedule: { id: scheduled.id, employeeId: support.id },
+        history: { action: 'Xóa lịch', reason: 'Phân lịch nhầm', recordedBy: { role: 'business_support' } },
+      })
+      expect(readHydratedState(env.DB.database).supportWorkSchedules).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: scheduled.id }),
+      ]))
     } finally {
       vi.useRealTimers()
     }

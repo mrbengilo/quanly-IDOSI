@@ -82,14 +82,16 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   const requireIdentityImages = Boolean(options.requireIdentityImages)
   const linkedEmployeeId = String(options.linkedEmployeeId || form.linkedEmployeeId || '').trim()
   const errors = []
-  const required = [
-    ['Mã nhân viên', form.id],
-    ['Ngày bắt đầu làm', form.startDate],
-    [isPartTimeEmployee(form.employmentType) ? 'Lương theo giờ' : 'Lương cơ bản', isPartTimeEmployee(form.employmentType) ? form.salary : form.baseSalary],
-    ['Vị trí công việc', form.position],
-    ['Tuổi', form.age],
-    ['Cửa hàng', form.storeId],
-  ]
+  const required = linkedEmployeeId
+    ? [['Mã nhân viên', form.id], ['Lương theo giờ', form.salary], ['Cửa hàng', form.storeId]]
+    : [
+        ['Mã nhân viên', form.id],
+        ['Ngày bắt đầu làm', form.startDate],
+        [isPartTimeEmployee(form.employmentType) ? 'Lương theo giờ' : 'Lương cơ bản', isPartTimeEmployee(form.employmentType) ? form.salary : form.baseSalary],
+        ['Vị trí công việc', form.position],
+        ['Tuổi', form.age],
+        ['Cửa hàng', form.storeId],
+      ]
   if (!linkedEmployeeId) required.push(
     ['Tên nhân viên', form.name],
     ['Số CCCD', form.cccd],
@@ -105,13 +107,13 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   })
   if (!linkedEmployeeId && !CCCD_PATTERN.test(form.cccd)) errors.push('Số CCCD phải gồm đúng 12 chữ số.')
   if (!linkedEmployeeId && !PHONE_PATTERN.test(normalizePhone(form.phone))) errors.push('Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.')
-  if (!/^\d{4}-\d{2}-\d{2}$/u.test(String(form.startDate || ''))) errors.push('Ngày bắt đầu làm không hợp lệ.')
+  if (!linkedEmployeeId && !/^\d{4}-\d{2}-\d{2}$/u.test(String(form.startDate || ''))) errors.push('Ngày bắt đầu làm không hợp lệ.')
   if (!linkedEmployeeId && requireIdentityImages && !form.identityImages?.front) errors.push('Hình ảnh mặt trước CCCD là trường bắt buộc.')
   if (!linkedEmployeeId && requireIdentityImages && !form.identityImages?.back) errors.push('Hình ảnh mặt sau CCCD là trường bắt buộc.')
   if (!Number.isFinite(parseStoreMoneyInput(form.salary)) || parseStoreMoneyInput(form.salary) <= 0) {
-    if (isPartTimeEmployee(form.employmentType)) errors.push('Lương theo giờ phải là số lớn hơn 0.')
+    if (linkedEmployeeId || isPartTimeEmployee(form.employmentType)) errors.push('Lương theo giờ phải là số lớn hơn 0.')
   }
-  if (!isPartTimeEmployee(form.employmentType)) {
+  if (!linkedEmployeeId && !isPartTimeEmployee(form.employmentType)) {
     if (parseStoreMoneyInput(form.baseSalary) <= 0) errors.push('Lương cơ bản phải là số lớn hơn 0.')
     if (!Number.isInteger(Number(form.standardWorkDays)) || Number(form.standardWorkDays) < 1 || Number(form.standardWorkDays) > 31) {
       errors.push('Số ngày công quy định phải là số nguyên từ 1 đến 31.')
@@ -120,7 +122,7 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
       errors.push('Tổng giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
     }
   }
-  if (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100) {
+  if (!linkedEmployeeId && (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100)) {
     errors.push('Tuổi phải là số nguyên từ 16 đến 100.')
   }
   if (!linkedEmployeeId && requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
@@ -142,7 +144,7 @@ export const buildStoreEmployeePayload = (form, { storeId, store } = {}) => {
     ward: form.ward.trim(),
     street: form.street.trim(),
   }
-  const partTime = isPartTimeEmployee(form.employmentType)
+  const partTime = Boolean(linkedEmployeeId) || isPartTimeEmployee(form.employmentType)
   const baseSalary = partTime ? 0 : parseStoreMoneyInput(form.baseSalary)
   const position = form.position.trim() || 'Nhân viên bán hàng'
   const identityImages = freshIdentityImages(form.identityImages)
@@ -171,8 +173,8 @@ export const buildStoreEmployeePayload = (form, { storeId, store } = {}) => {
     payFormula: !partTime && storeEmployeePrefix(store) === 'SM234' ? 'monthly-hours' : 'monthly',
     compensationVersion: 2,
     currency: 'VND',
-    employmentType: form.employmentType,
-    employeeType: form.employmentType,
+    employmentType: linkedEmployeeId ? 'Part-Time' : form.employmentType,
+    employeeType: linkedEmployeeId ? 'Part-Time' : form.employmentType,
     position,
     workPosition: position,
     role: position,

@@ -30,6 +30,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { resolveShiftCandidates } from '../../domain'
+import { CUSTOMER_OCCUPATIONS } from '../../domain/customerSurvey'
 import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
@@ -58,7 +59,7 @@ const employeeKey = (employee = {}) => String(employee?.id || employee?.code || 
 const timestamp = shortDateTime24
 const periodLabel = (value) => value ? value.split('-').reverse().join('/') : '—'
 const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: 'Chuyển khoản' })
-const ORDER_OCCUPATIONS = Object.freeze(['Nhân viên VP', 'Kỹ sư', 'Bác sĩ', 'Giáo viên', 'Học sinh/Sinh viên', 'Lao động', 'Nội trợ', 'Buôn bán/kinh doanh', 'Tài xế', 'Giám đốc', 'Ca sỉ', 'Lao công', 'Bảo vệ', 'Công nhân', 'Khác'])
+const ORDER_OCCUPATIONS = CUSTOMER_OCCUPATIONS
 const actorLabel = (value) => {
   if (!value) return 'Chưa ghi nhận'
   if (typeof value === 'string') return value

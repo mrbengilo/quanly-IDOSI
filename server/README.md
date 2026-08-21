@@ -93,6 +93,10 @@ Các lệnh chính:
   `Hỗ trợ KD`. Lựa chọn được lưu trên session qua `POST /api/session/role` và
   được xác thực lại ở mọi request; xóa hồ sơ liên kết sẽ thu hồi các session
   hiện hành nên quyền vừa xóa không thể tiếp tục sử dụng.
+  Khi tạo hồ sơ `unit: store`, Admin/Hỗ trợ KD cũng có thể truyền
+  `linkedEmployeeId` của hồ sơ `office|business_support`; chỉ cần bổ sung
+  lương theo giờ. Hệ thống dùng chung credential/CCCD, tạo thêm lựa chọn
+  `Nhân viên cửa hàng` và chặn liên kết trùng trong cùng cửa hàng.
   Hồ sơ `unit: office` bắt buộc `storeId: OFFICE`, tự sinh mã `VP-001...`, điện thoại `0` + 9 số, CCCD đúng
   12 số, bắt buộc địa chỉ, ngày bắt đầu, loại nhân viên (`Full-Time`,
   `Part-Time`, `Thực Tập Sinh`), vị trí (`Kế Toán`, `Marketing`) và cặp
@@ -168,8 +172,10 @@ Các lệnh chính:
   lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và
   thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
   bảo vệ, không thể sửa qua `state.merge|replace`.
-- `support_schedule.assign`: Admin hoặc Nhân viên hỗ trợ KD, payload
-  `{targetUnit,employeeId,date,start,end,shiftName?,note?}`, trong đó
+- `support_schedule.assign|delete`: Admin hoặc Nhân viên hỗ trợ KD. Assign
+  nhận payload `{scheduleId?,targetUnit,employeeId,date,start,end,shiftName?,note?}`;
+  `scheduleId` dùng khi sửa. Delete nhận `{scheduleId,reason}` và bắt buộc lý do.
+  Trong đó
   `targetUnit` là `business_support` hoặc `office` (mặc định
   `business_support` để tương thích dữ liệu cũ). Nhân viên đích phải thuộc đúng
   nhóm đã chọn; Part-Time/Thực Tập Sinh bắt buộc tên ca, Full-Time dùng

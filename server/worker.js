@@ -81,6 +81,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'support_transfer.update',
   'support_work.update',
   'support_schedule.assign',
+  'support_schedule.delete',
 ])
 const ADDRESS_SUGGESTION_TYPES = new Set(['province', 'ward', 'street'])
 const ADDRESS_SUGGESTION_RATE_LIMIT = 30
@@ -932,9 +933,32 @@ const ownAccountSettings = (state, user) => {
   }
 }
 
+const employeeAccountAvatar = (state, employee = {}) => {
+  const authUserId = String(employee.authUserId || '')
+  const accountAvatar = authUserId && isPlainRecord(state.accountSettings?.[authUserId])
+    ? String(state.accountSettings[authUserId].avatar || '')
+    : ''
+  return accountAvatar || String(employee.avatar || '')
+}
+
+const withEmployeeAccountAvatar = (state, employee = {}) => {
+  const avatar = employeeAccountAvatar(state, employee)
+  return avatar ? { ...employee, avatar } : { ...employee }
+}
+
 export const projectSharedState = (rawState, user) => {
   const normalizedState = normalizeSharedStateForStorage(rawState)
-  let state = normalizedState
+  let state = {
+    ...normalizedState,
+    ...(Object.hasOwn(normalizedState, 'employees') ? {
+      employees: (Array.isArray(normalizedState.employees) ? normalizedState.employees : [])
+        .map((employee) => withEmployeeAccountAvatar(normalizedState, employee)),
+    } : {}),
+    ...(Object.hasOwn(normalizedState, 'attendance') ? {
+      attendance: (Array.isArray(normalizedState.attendance) ? normalizedState.attendance : [])
+        .map((record) => withSupportCompensation(normalizedState, record)),
+    } : {}),
+  }
   const common = {
     schemaVersion: state.schemaVersion,
     stateVersion: state.stateVersion,
@@ -956,12 +980,6 @@ export const projectSharedState = (rawState, user) => {
       settings: ownAccountSettings(state, user),
       session: null,
     }
-  }
-
-  state = {
-    ...normalizedState,
-    attendance: (Array.isArray(normalizedState.attendance) ? normalizedState.attendance : [])
-      .map((record) => withSupportCompensation(normalizedState, record)),
   }
 
   if (user.role === 'business_support') {
@@ -1302,23 +1320,23 @@ const availableRoleOptionsForUser = async (db, user) => {
   } else if (user.role === 'business_support') {
     add({ role: 'business_support', storeId: BUSINESS_SUPPORT_STORE_ID, employeeId: baseEmployeeId || rootProfile?.id || null, label: 'Hỗ trợ KD' })
   } else if (user.role === 'employee') {
-    add({ role: 'employee', storeId: rootProfile?.storeId || user.store_id || null, employeeId: baseEmployeeId || rootProfile?.id || null, label: 'Nhân viên' })
+    add({ role: 'employee', storeId: rootProfile?.storeId || user.store_id || null, employeeId: baseEmployeeId || rootProfile?.id || null, label: employeeUnit(rootProfile) === 'office' ? 'Nhân viên văn phòng' : 'Nhân viên' })
   } else if (user.role === 'store_manager') {
-    add({ role: 'store_manager', storeId: rootProfile?.storeId || user.store_id || null, employeeId: baseEmployeeId || rootProfile?.id || null, label: 'Quản lý' })
+    add({ role: 'store_manager', storeId: rootProfile?.storeId || user.store_id || null, employeeId: baseEmployeeId || rootProfile?.id || null, label: 'Quản lý CH' })
   }
 
   linkedManagerProfiles.forEach((profile) => add({
     role: 'store_manager',
     storeId: profile.storeId || null,
     employeeId: profile.id || profile.code || null,
-    label: 'Quản lý',
+    label: 'Quản lý CH',
     profileName: profile.name || '',
   }))
   linkedStoreProfiles.forEach((profile) => add({
     role: 'employee',
     storeId: profile.storeId || null,
     employeeId: profile.id || profile.code || null,
-    label: 'Nhân viên',
+    label: 'Nhân viên cửa hàng',
     profileName: profile.name || '',
   }))
   if (!options.length) {
@@ -4122,7 +4140,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         String(employee.id || employee.code || '') === linkedEmployeeId
         && (unit === 'store_manager'
           ? ['store', 'business_support'].includes(employeeUnit(employee))
-          : employeeUnit(employee) === 'business_support')
+          : ['business_support', 'office'].includes(employeeUnit(employee)))
         && !employee.deletedAt
         && !['da nghi viec', 'inactive'].includes(normalizeTextKey(employee.status))
       ))
@@ -4195,6 +4213,14 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   }
   if (linkedStoreEmployee && employeeUnit(linkedStoreEmployee) === 'store' && String(linkedStoreEmployee.storeId || '') !== storeId) {
     throw new ApiError(400, 'LINKED_EMPLOYEE_STORE_MISMATCH', 'Nhân viên được chọn không thuộc cửa hàng cần phân quyền quản lý.')
+  }
+  if (operation === 'create' && unit === 'store' && linkedEmployeeId && employees.some((employee) => (
+    employeeUnit(employee) === 'store'
+    && String(employee.storeId || '') === storeId
+    && String(employee.linkedEmployeeId || '') === linkedEmployeeId
+    && !employee.deletedAt
+  ))) {
+    throw new ApiError(409, 'LINKED_EMPLOYEE_ROLE_EXISTS', 'Nhân viên đã có vai trò Nhân viên tại cửa hàng này.')
   }
 
   if (operation === 'delete') {
@@ -4302,7 +4328,9 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     address: linkedStoreEmployee.address,
     addressDetails: linkedStoreEmployee.addressDetails,
     startDate: profilePayload.startDate || linkedStoreEmployee.startDate || linkedStoreEmployee.joinDate,
-    employmentType: profilePayload.employmentType || linkedStoreEmployee.employmentType || 'Full-Time',
+    employmentType: unit === 'store'
+      ? 'Part-Time'
+      : (profilePayload.employmentType || linkedStoreEmployee.employmentType || 'Full-Time'),
     linkedEmployeeId,
   } : profilePayload)
   if (creatingStoreEmployee) {
@@ -5095,10 +5123,28 @@ const accountSettingsCommand = async (db, actor, body, commandContext) => {
   const nextStateVersion = Number(current.version) + 1
   const nextState = {
     ...state,
+    employees: (Array.isArray(state.employees) ? state.employees : []).map((employee) => (
+      String(employee.authUserId || '') === userId
+        || String(employee.id || employee.code || '') === String(actor.employee_id || '')
+        || String(employee.linkedEmployeeId || '') === String(actor.employee_id || '')
+        ? { ...employee, avatar: next.avatar || '' }
+        : employee
+    )),
     accountSettings: { ...(isPlainRecord(state.accountSettings) ? state.accountSettings : {}), [userId]: next },
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
-  const responseUser = { ...publicUser(target), displayName: next.name, version: nextUserVersion }
+  const responseUser = {
+    ...publicUser({
+      ...target,
+      role: actor.role,
+      store_id: actor.store_id,
+      employee_id: actor.employee_id,
+      available_roles: actor.available_roles,
+      needs_role_selection: false,
+    }),
+    displayName: next.name,
+    version: nextUserVersion,
+  }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
     action: body.type,
     entityType: 'account-settings',
@@ -8511,11 +8557,43 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
   if (!['admin', 'business_support'].includes(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin và Nhân viên hỗ trợ KD được phân lịch làm việc.')
   }
-  if (body.type !== 'support_schedule.assign') {
+  if (!['support_schedule.assign', 'support_schedule.delete'].includes(body.type)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh phân lịch làm việc không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
+  const schedules = Array.isArray(state.supportWorkSchedules) ? state.supportWorkSchedules : []
+  if (body.type === 'support_schedule.delete') {
+    const scheduleId = String(payload.scheduleId || payload.id || '').trim()
+    const previous = schedules.find((record) => String(record.id || '') === scheduleId && !record.deletedAt)
+    if (!previous) throw new ApiError(404, 'SUPPORT_SCHEDULE_NOT_FOUND', 'Không tìm thấy lịch làm việc.')
+    const reason = String(payload.reason || '').trim().slice(0, 500)
+    if (!reason) throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do xóa lịch làm việc.')
+    const history = {
+      ...previous,
+      id: `swsh_${crypto.randomUUID()}`,
+      scheduleId,
+      action: 'Xóa lịch',
+      reason,
+      recordedAt: commandContext.now,
+      recordedBy: serverActorSnapshot(actor),
+    }
+    const nextState = {
+      ...state,
+      supportWorkSchedules: schedules.filter((record) => String(record.id || '') !== scheduleId),
+      supportWorkScheduleHistory: [history, ...(Array.isArray(state.supportWorkScheduleHistory) ? state.supportWorkScheduleHistory : [])],
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'support-work-schedule',
+      entityId: scheduleId,
+      before: previous,
+      after: null,
+      metadata: { employeeId: previous.employeeId, targetUnit: previous.targetUnit, date: previous.date, reason },
+      response: { command: body.type, schedule: previous, history },
+    }, commandContext)
+  }
   const employeeId = String(payload.employeeId || '').trim()
   const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
   const date = optionalCalendarDate(payload.date, 'Ngày làm việc')
@@ -8535,10 +8613,18 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
   const partTime = ['Part-Time', 'Thực Tập Sinh'].includes(employmentType)
   const shiftName = String(payload.shiftName || '').trim().slice(0, 80)
   if (partTime && !shiftName) throw new ApiError(400, 'SUPPORT_SCHEDULE_SHIFT_NAME_REQUIRED', 'Nhân viên Part-Time/Thực Tập Sinh cần tên ca làm việc.')
-  const schedules = Array.isArray(state.supportWorkSchedules) ? state.supportWorkSchedules : []
-  const previous = schedules.find((record) => (
-    String(record.employeeId || '') === employeeId && String(record.date || '') === date && !record.deletedAt
+  const requestedScheduleId = String(payload.scheduleId || '').trim()
+  const previous = requestedScheduleId
+    ? schedules.find((record) => String(record.id || '') === requestedScheduleId && !record.deletedAt)
+    : schedules.find((record) => String(record.employeeId || '') === employeeId && String(record.date || '') === date && !record.deletedAt)
+  if (requestedScheduleId && !previous) throw new ApiError(404, 'SUPPORT_SCHEDULE_NOT_FOUND', 'Không tìm thấy lịch làm việc cần sửa.')
+  const targetCollision = schedules.find((record) => (
+    String(record.id || '') !== String(previous?.id || '')
+    && String(record.employeeId || '') === employeeId
+    && String(record.date || '') === date
+    && !record.deletedAt
   ))
+  if (targetCollision) throw new ApiError(409, 'SUPPORT_SCHEDULE_EXISTS', 'Nhân viên đã có lịch làm việc trong ngày này.')
   const id = previous?.id || `sws_${crypto.randomUUID()}`
   const version = Number(previous?.version || 0) + 1
   const schedule = {

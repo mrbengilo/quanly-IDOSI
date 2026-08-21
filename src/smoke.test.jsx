@@ -289,6 +289,13 @@ describe('IDOSI page smoke tests', () => {
     expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()
 
+    fireEvent.click(screen.getByRole('button', { name: 'Mở trang tài khoản' }))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/account/settings'))
+    expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('link', { name: /^Tổng quan$/i }))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
+    expect(screen.getByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
+
     fireEvent.click(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i }))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/employees'))
     expect(screen.queryByText('QL-TNV-001')).toBeNull()

@@ -280,7 +280,7 @@ function ProfileList({ canCreate, canDelete, canEdit, canEditWorkingTime, config
             const type = profileType(profile)
             return <tr key={profile.id || roleProfileCode(profile)}>
               <td><strong>{roleProfileCode(profile)}</strong></td>
-              <td><div className="person-cell"><Avatar name={profile.name} color={profile.color} /><span><strong>{profile.name}</strong><small>{profile.username || 'Chưa có tên đăng nhập'}</small></span></div></td>
+              <td><div className="person-cell"><Avatar name={profile.name} src={profile.avatar} color={profile.color} /><span><strong>{profile.name}</strong><small>{profile.username || 'Chưa có tên đăng nhập'}</small></span></div></td>
               <td><Badge tone={employmentTypeTone(type)}>{type}</Badge></td>
               <td><strong>{formatRoleDate(profile.startDate || profile.joinDate || profile.employmentStartDate || profile.hireDate)}</strong></td>
               {roleKey === ROLE_KEYS.storeManager && <td><strong>{store?.name || storeId || '—'}</strong><small className="table-note">{store?.id || ''}</small></td>}

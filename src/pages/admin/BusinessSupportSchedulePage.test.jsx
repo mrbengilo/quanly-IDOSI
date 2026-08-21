@@ -5,6 +5,7 @@ import { BusinessSupportSchedulePage, MyBusinessSupportSchedulePage } from './Bu
 const mocked = vi.hoisted(() => ({
   app: {},
   saveBusinessSupportSchedule: vi.fn(),
+  deleteBusinessSupportSchedule: vi.fn(),
 }))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
@@ -14,6 +15,7 @@ describe('BusinessSupportSchedulePage', () => {
 
   beforeEach(() => {
     mocked.saveBusinessSupportSchedule.mockReset().mockResolvedValue({ ok: true })
+    mocked.deleteBusinessSupportSchedule.mockReset().mockResolvedValue({ ok: true })
     mocked.app = {
       session: { role: 'business_support', employeeId: 'HTKD-01', name: 'Hỗ trợ KD' },
       employees: [
@@ -24,8 +26,29 @@ describe('BusinessSupportSchedulePage', () => {
       supportWorkScheduleHistory: [],
       supportWorkSchedules: [],
       saveBusinessSupportSchedule: mocked.saveBusinessSupportSchedule,
+      deleteBusinessSupportSchedule: mocked.deleteBusinessSupportSchedule,
       settings: { avatar: '/avatar-office.jpg' },
     }
+  })
+
+  it('allows Business Support to edit and delete its current schedule from the assignment history', async () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Phân lịch nhầm')
+    mocked.app = {
+      ...mocked.app,
+      supportWorkSchedules: [{ id: 'SWS-01', employeeId: 'HTKD-01', employeeName: 'Hỗ trợ KD', targetUnit: 'business_support', date: '2026-08-24', employmentType: 'Full-Time', shiftName: 'Giờ hành chính', start: '08:00', end: '17:30' }],
+      supportWorkScheduleHistory: [{ id: 'H-01', scheduleId: 'SWS-01', employeeId: 'HTKD-01', employeeName: 'Hỗ trợ KD', targetUnit: 'business_support', date: '2026-08-24', employmentType: 'Full-Time', shiftName: 'Giờ hành chính', start: '08:00', end: '17:30', recordedAt: '2026-08-21T08:00:00.000Z' }],
+    }
+    render(<BusinessSupportSchedulePage />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sửa từ lịch sử của Hỗ trợ KD' }))
+    expect(screen.getByText('Chỉnh sửa lịch làm việc')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: 'SWS-01', end: '18:00' })))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa từ lịch sử của Hỗ trợ KD' }))
+    await waitFor(() => expect(mocked.deleteBusinessSupportSchedule).toHaveBeenCalledWith('SWS-01', 'Phân lịch nhầm'))
+    prompt.mockRestore()
   })
 
   it('filters the employee selector by group and saves an Office schedule with its target unit', async () => {
