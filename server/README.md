@@ -172,7 +172,11 @@ Các lệnh chính:
   lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và
   thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
   bảo vệ, không thể sửa qua `state.merge|replace`.
-- `support_schedule.assign|delete`: Admin hoặc Nhân viên hỗ trợ KD. Assign
+- `support_schedule.assign|delete`: Admin hoặc Nhân viên hỗ trợ KD được quản lý
+  lịch của cả hai nhóm; tài khoản `employee` thuộc Khối văn phòng chỉ được tạo,
+  sửa và xóa lịch của chính `employee_id` trong phiên đăng nhập. Worker ép
+  `targetUnit:'office'` và trả `403 SUPPORT_SCHEDULE_SELF_ONLY` nếu tài khoản
+  văn phòng gửi ID người khác hoặc thao tác trên lịch không thuộc mình. Assign
   nhận payload `{scheduleId?,targetUnit,employeeId,date,start,end,shiftName?,note?}`;
   `scheduleId` dùng khi sửa. Delete nhận `{scheduleId,reason}` và bắt buộc lý do.
   Trong đó

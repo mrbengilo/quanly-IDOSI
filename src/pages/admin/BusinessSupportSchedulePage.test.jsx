@@ -92,4 +92,50 @@ describe('BusinessSupportSchedulePage', () => {
     expect(screen.getAllByText('Không có lịch')).toHaveLength(5)
     expect(screen.getByAltText('Ảnh đại diện Kế toán văn phòng').getAttribute('src')).toBe('/avatar-office.jpg')
   })
+
+  it('lets an Office employee create, edit and delete only their own configured shift', async () => {
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Đổi lịch cá nhân')
+    mocked.app = {
+      ...mocked.app,
+      currentEmployee: {
+        id: 'VP-02', name: 'Thực tập Marketing', unit: 'office', employmentType: 'Thực Tập Sinh',
+        workShifts: [{ id: 'office_pm', name: 'Ca chiều', start: '13:00', end: '17:30' }],
+      },
+      session: { role: 'employee', employeeId: 'VP-02', name: 'Thực tập Marketing', unit: 'office' },
+      supportWorkSchedules: [
+        { id: 'SELF-01', employeeId: 'VP-02', targetUnit: 'office', date: '2026-08-21', shiftName: 'Ca chiều', start: '13:00', end: '17:30' },
+      ],
+    }
+    render(<MyBusinessSupportSchedulePage />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'TẠO LỊCH LÀM VIỆC' }))
+    expect(screen.queryByLabelText(/Chọn nhân viên/u)).toBeNull()
+    expect(screen.getByLabelText(/Chọn ca/u).textContent).toContain('Ca chiều · 13:00–17:30')
+    fireEvent.change(screen.getByLabelText(/Chọn ngày/u), { target: { value: '2026-08-24' } })
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
+      employeeId: 'VP-02', targetUnit: 'office', date: '2026-08-24', shiftName: 'Ca chiều', start: '13:00', end: '17:30',
+    })))
+
+    fireEvent.change(screen.getByDisplayValue('2026-08-24'), { target: { value: '2026-08-21' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Sửa lịch ngày 21/08/26' }))
+    fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: 'SELF-01', employeeId: 'VP-02', end: '18:00' })))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa lịch ngày 21/08/26' }))
+    await waitFor(() => expect(mocked.deleteBusinessSupportSchedule).toHaveBeenCalledWith('SELF-01', 'Đổi lịch cá nhân'))
+    prompt.mockRestore()
+  })
+
+  it('keeps self-management controls hidden from a Business Support personal schedule', () => {
+    mocked.app = {
+      ...mocked.app,
+      currentEmployee: { id: 'HTKD-01', name: 'Hỗ trợ KD', unit: 'business_support', employmentType: 'Full-Time' },
+      session: { role: 'business_support', employeeId: 'HTKD-01', name: 'Hỗ trợ KD' },
+    }
+    render(<MyBusinessSupportSchedulePage />)
+
+    expect(screen.queryByRole('button', { name: 'TẠO LỊCH LÀM VIỆC' })).toBeNull()
+  })
 })

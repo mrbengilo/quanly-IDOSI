@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { CalendarClock, ChevronLeft, ChevronRight, Edit3, History, Save, Trash2 } from 'lucide-react'
+import { CalendarClock, ChevronLeft, ChevronRight, Edit3, History, Plus, Save, Trash2 } from 'lucide-react'
 import { Avatar, Badge, Button, Card, Field, Input, PageHeader, Select, TableWrap } from '../../components/UI'
 import {
   supportScheduleDays,
@@ -39,6 +39,32 @@ const calendarDayLabel = (date) => new Intl.DateTimeFormat('vi-VN', {
 }).format(new Date(`${date}T00:00:00Z`))
 
 const emptyScheduleForm = () => ({ targetUnit: 'business_support', date: today(), employeeId: '', shiftName: '', start: '08:00', end: '17:30', note: '', scheduleId: '' })
+
+const configuredEmployeeShifts = (employee = {}) => {
+  const candidates = employee.workShifts || employee.workingTime?.shifts || []
+  return (Array.isArray(candidates) ? candidates : []).filter((shift) => (
+    shift?.name && /^\d{2}:\d{2}$/u.test(String(shift.start || '')) && /^\d{2}:\d{2}$/u.test(String(shift.end || ''))
+  )).map((shift, index) => ({
+    id: String(shift.id || `configured-${index + 1}`),
+    name: String(shift.name),
+    start: String(shift.start).slice(0, 5),
+    end: String(shift.end).slice(0, 5),
+  }))
+}
+
+const emptyPersonalScheduleForm = (employee = {}, shifts = []) => {
+  const shiftMode = supportScheduleEmploymentMode(employee) === 'shift'
+  const firstShift = shiftMode ? shifts[0] : null
+  return {
+    scheduleId: '',
+    date: today(),
+    shiftId: firstShift?.id || 'custom',
+    shiftName: firstShift?.name || '',
+    start: firstShift?.start || String(employee.workStart || '08:00').slice(0, 5),
+    end: firstShift?.end || String(employee.workEnd || '17:30').slice(0, 5),
+    note: '',
+  }
+}
 
 export function BusinessSupportSchedulePage() {
   const app = useApp()
@@ -117,26 +143,103 @@ export function MyBusinessSupportSchedulePage() {
   const [view, setView] = useState('week')
   const [anchorDate, setAnchorDate] = useState(today())
   const employee = app.currentEmployee || (app.employees || []).find((record) => String(record.id || record.code || '') === String(app.session?.employeeId || '')) || app.session || {}
+  const employeeId = String(employee.id || employee.code || app.session?.employeeId || '')
+  const canManageOwnSchedule = app.session?.role === 'employee' && employeeUnit(employee) === 'office' && Boolean(employeeId)
+  const configuredShifts = configuredEmployeeShifts(employee)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState(() => emptyPersonalScheduleForm())
+  const shiftMode = supportScheduleEmploymentMode(employee) === 'shift'
   const records = useMemo(() => supportSchedulesForView(app.supportWorkSchedules || [], {
-    employeeId: app.session?.employeeId,
+    employeeId,
     anchorDate,
     view,
-  }), [app.session?.employeeId, app.supportWorkSchedules, anchorDate, view])
+  }), [employeeId, app.supportWorkSchedules, anchorDate, view])
   const days = useMemo(() => supportScheduleDays(anchorDate, view), [anchorDate, view])
   const recordsByDate = useMemo(() => new Map(records.map((record) => [String(record.date), record])), [records])
   const range = useMemo(() => supportScheduleRange(anchorDate, view), [anchorDate, view])
   const rangeLabel = range.start === range.end ? shortDate(range.start) : `${shortDate(range.start)} – ${shortDate(range.end)}`
 
+  const openCreate = () => {
+    setForm(emptyPersonalScheduleForm(employee, configuredShifts))
+    setEditorOpen(true)
+  }
+  const closeEditor = () => {
+    setEditorOpen(false)
+    setForm(emptyPersonalScheduleForm(employee, configuredShifts))
+  }
+  const set = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }))
+  const selectShift = (event) => {
+    const shiftId = event.target.value
+    const selected = configuredShifts.find((shift) => shift.id === shiftId)
+    setForm((current) => selected
+      ? { ...current, shiftId, shiftName: selected.name, start: selected.start, end: selected.end }
+      : { ...current, shiftId: 'custom', shiftName: '', start: '08:00', end: '12:00' })
+  }
+  const save = async (event) => {
+    event.preventDefault()
+    if (!canManageOwnSchedule || saving) return
+    setSaving(true)
+    const result = await app.saveBusinessSupportSchedule?.({
+      scheduleId: form.scheduleId,
+      employeeId,
+      targetUnit: 'office',
+      date: form.date,
+      shiftName: shiftMode ? form.shiftName : 'Làm việc Full-Time',
+      start: form.start,
+      end: form.end,
+      note: form.note,
+    })
+    setSaving(false)
+    if (result?.ok) {
+      setAnchorDate(form.date)
+      closeEditor()
+    }
+  }
+  const editSchedule = (record) => {
+    if (!canManageOwnSchedule || String(record.employeeId || '') !== employeeId) return
+    const configured = configuredShifts.find((shift) => (
+      shift.name === record.shiftName && shift.start === record.start && shift.end === record.end
+    ))
+    setForm({
+      scheduleId: record.id,
+      date: record.date || today(),
+      shiftId: configured?.id || 'custom',
+      shiftName: record.shiftName || '',
+      start: record.start || '08:00',
+      end: record.end || '17:30',
+      note: record.note || '',
+    })
+    setEditorOpen(true)
+  }
+  const deleteSchedule = async (record) => {
+    if (!canManageOwnSchedule || String(record.employeeId || '') !== employeeId) return
+    const reason = window.prompt(`Nhập lý do xóa lịch ngày ${shortDate(record.date)}:`)
+    if (!reason?.trim()) return
+    await app.deleteBusinessSupportSchedule?.(record.id, reason.trim())
+  }
+
   return <div className="page support-schedule-page">
-    <PageHeader title="LỊCH LÀM VIỆC CỦA TÔI" subtitle="Theo dõi lịch làm việc được Admin hoặc Nhân viên hỗ trợ KD phân theo ngày, tuần và tháng." icon={CalendarClock} actions={<Input type="date" value={anchorDate} onChange={(event) => setAnchorDate(event.target.value)} />} />
+    <PageHeader title="LỊCH LÀM VIỆC CỦA TÔI" subtitle={canManageOwnSchedule ? 'Tự tạo và quản lý lịch làm việc của chính bạn theo ngày, tuần và tháng.' : 'Theo dõi lịch làm việc được Admin hoặc Nhân viên hỗ trợ KD phân theo ngày, tuần và tháng.'} icon={CalendarClock} actions={<div className="support-schedule-page-actions"><Input type="date" value={anchorDate} onChange={(event) => setAnchorDate(event.target.value)} />{canManageOwnSchedule && <Button type="button" icon={Plus} onClick={openCreate}>TẠO LỊCH LÀM VIỆC</Button>}</div>} />
+    {canManageOwnSchedule && editorOpen && <Card title={form.scheduleId ? 'Sửa lịch làm việc của tôi' : 'Tạo lịch làm việc của tôi'}>
+      <form className="personal-schedule-form" onSubmit={save}>
+        <Field label="Chọn ngày" required><Input type="date" value={form.date} onChange={set('date')} /></Field>
+        {shiftMode && <Field label="Chọn ca" required><Select value={form.shiftId} onChange={selectShift}>{configuredShifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.start}–{shift.end}</option>)}<option value="custom">Ca tự nhập</option></Select></Field>}
+        {shiftMode && form.shiftId === 'custom' && <Field label="Tên ca" required><Input value={form.shiftName} onChange={set('shiftName')} placeholder="Ví dụ: Ca chiều" /></Field>}
+        <Field label="Giờ bắt đầu" required><Input type="time" value={form.start} onChange={set('start')} /></Field>
+        <Field label="Giờ kết thúc" required><Input type="time" value={form.end} onChange={set('end')} /></Field>
+        <Field label="Ghi chú"><Input value={form.note} onChange={set('note')} placeholder="Thông tin bổ sung" /></Field>
+        <div className="card-actions personal-schedule-form__actions"><Button type="button" variant="outline" onClick={closeEditor}>HỦY</Button><Button type="submit" icon={Save} loading={saving}>LƯU</Button></div>
+      </form>
+    </Card>}
     <div className="tabs support-schedule-tabs">{[['day', 'Theo ngày'], ['week', 'Theo tuần'], ['month', 'Theo tháng']].map(([key, label]) => <button key={key} type="button" className={view === key ? 'active' : ''} onClick={() => setView(key)}>{label}</button>)}</div>
-    <Card title={`Bảng lịch làm việc · ${rangeLabel}`} action={<div className="support-schedule-navigation"><Button type="button" variant="outline" aria-label="Xem thời gian trước" onClick={() => setAnchorDate((current) => shiftAnchor(current, view, -1))}><ChevronLeft size={18} /></Button><History size={22} /><Button type="button" variant="outline" aria-label="Xem thời gian tiếp theo" onClick={() => setAnchorDate((current) => shiftAnchor(current, view, 1))}><ChevronRight size={18} /></Button></div>}>
+    <Card title={`${canManageOwnSchedule ? 'Bảng lịch làm việc đã tạo' : 'Bảng lịch làm việc'} · ${rangeLabel}`} action={<div className="support-schedule-navigation"><Button type="button" variant="outline" aria-label="Xem thời gian trước" onClick={() => setAnchorDate((current) => shiftAnchor(current, view, -1))}><ChevronLeft size={18} /></Button><History size={22} /><Button type="button" variant="outline" aria-label="Xem thời gian tiếp theo" onClick={() => setAnchorDate((current) => shiftAnchor(current, view, 1))}><ChevronRight size={18} /></Button></div>}>
       <div className="my-work-schedule-scroll">
         <table className="my-work-schedule-grid">
           <thead><tr><th className="my-work-schedule-grid__employee">Nhân viên</th>{days.map((date) => <th key={date}>{calendarDayLabel(date)}</th>)}</tr></thead>
           <tbody><tr><th scope="row" className="my-work-schedule-grid__employee"><span className="my-work-schedule-employee"><Avatar name={employee.name} src={app.settings?.avatar} size={44} /><span><strong>{employee.name || app.session?.name || 'Nhân viên'}</strong><small>{employee.id || employee.code || app.session?.employeeId || ''}</small><Badge tone={supportScheduleEmploymentMode(employee) === 'shift' ? 'orange' : 'blue'}>{employee.employmentType || employee.workTimeType || 'Full-Time'}</Badge></span></span></th>{days.map((date) => {
             const record = recordsByDate.get(date)
-            return <td key={date}>{record ? <span className="my-work-schedule-shift"><strong>{record.shiftName}</strong><small>{record.start}–{record.end}</small>{record.note && <em>{record.note}</em>}</span> : <span className="my-work-schedule-empty">Không có lịch</span>}</td>
+            return <td key={date}>{record ? <div className="my-work-schedule-shift"><strong>{record.shiftName}</strong><small>{record.start}–{record.end}</small>{record.note && <em>{record.note}</em>}{canManageOwnSchedule && <span className="my-work-schedule-shift__actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch ngày ${shortDate(record.date)}`}><Edit3 size={16} /></button><button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch ngày ${shortDate(record.date)}`}><Trash2 size={16} /></button></span>}</div> : <span className="my-work-schedule-empty">Không có lịch</span>}</td>
           })}</tr></tbody>
         </table>
       </div>

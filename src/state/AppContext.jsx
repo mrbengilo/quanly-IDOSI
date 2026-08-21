@@ -1989,11 +1989,20 @@ export function AppProvider({ children }) {
   }
 
   const saveBusinessSupportSchedule = async (payload = {}) => {
-    if (!['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))) {
-      return { ok: false, message: 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được phân lịch làm việc.' }
+    const actorRole = normalizeAuthRole(state.session?.role)
+    const actorEmployeeId = String(state.session?.employeeId || '').trim()
+    const actorEmployee = state.employees.find((record) => String(record.id || record.code || '') === actorEmployeeId)
+    const selfManagingOfficeSchedule = actorRole === 'employee'
+      && String(actorEmployee?.unit || actorEmployee?.unitType || '').toLowerCase() === 'office'
+    if (!['admin', 'business_support'].includes(actorRole) && !selfManagingOfficeSchedule) {
+      return { ok: false, message: 'Tài khoản không có quyền phân lịch làm việc.' }
     }
-    const employeeId = String(payload.employeeId || '').trim()
-    const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
+    const requestedEmployeeId = String(payload.employeeId || '').trim()
+    if (selfManagingOfficeSchedule && requestedEmployeeId && requestedEmployeeId !== actorEmployeeId) {
+      return { ok: false, message: 'Nhân viên văn phòng chỉ được tạo hoặc sửa lịch làm việc của chính mình.' }
+    }
+    const employeeId = selfManagingOfficeSchedule ? actorEmployeeId : requestedEmployeeId
+    const targetUnit = selfManagingOfficeSchedule ? 'office' : payload.targetUnit === 'office' ? 'office' : 'business_support'
     const date = String(payload.date || '').trim()
     const start = String(payload.start || '').slice(0, 5)
     const end = String(payload.end || '').slice(0, 5)
@@ -2028,6 +2037,10 @@ export function AppProvider({ children }) {
     const previous = payload.scheduleId
       ? (state.supportWorkSchedules || []).find((record) => String(record.id || '') === String(payload.scheduleId))
       : (state.supportWorkSchedules || []).find((record) => record.employeeId === employeeId && record.date === date)
+    if (selfManagingOfficeSchedule && previous && (
+      String(previous.employeeId || '') !== actorEmployeeId
+      || previous.targetUnit !== 'office'
+    )) return { ok: false, message: 'Nhân viên văn phòng chỉ được sửa lịch làm việc của chính mình.' }
     const schedule = {
       id: previous?.id || uid('SWS'),
       employeeId,
@@ -2053,10 +2066,19 @@ export function AppProvider({ children }) {
   }
 
   const deleteBusinessSupportSchedule = async (scheduleId, reason = '') => {
-    if (!['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))) return { ok: false, message: 'Tài khoản không có quyền xóa lịch làm việc.' }
+    const actorRole = normalizeAuthRole(state.session?.role)
+    const actorEmployeeId = String(state.session?.employeeId || '').trim()
+    const actorEmployee = state.employees.find((record) => String(record.id || record.code || '') === actorEmployeeId)
+    const selfManagingOfficeSchedule = actorRole === 'employee'
+      && String(actorEmployee?.unit || actorEmployee?.unitType || '').toLowerCase() === 'office'
+    if (!['admin', 'business_support'].includes(actorRole) && !selfManagingOfficeSchedule) return { ok: false, message: 'Tài khoản không có quyền xóa lịch làm việc.' }
     const previous = (state.supportWorkSchedules || []).find((record) => String(record.id || '') === String(scheduleId || ''))
     const normalizedReason = String(reason || '').trim()
     if (!previous) return { ok: false, message: 'Không tìm thấy lịch làm việc.' }
+    if (selfManagingOfficeSchedule && (
+      String(previous.employeeId || '') !== actorEmployeeId
+      || previous.targetUnit !== 'office'
+    )) return { ok: false, message: 'Nhân viên văn phòng chỉ được xóa lịch làm việc của chính mình.' }
     if (!normalizedReason) return { ok: false, message: 'Cần nhập lý do xóa lịch làm việc.' }
     if (apiRef.current.enabled) {
       try {

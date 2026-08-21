@@ -8554,19 +8554,32 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
 }
 
 const supportScheduleCommand = async (db, actor, body, commandContext) => {
-  if (!['admin', 'business_support'].includes(actor.role)) {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin và Nhân viên hỗ trợ KD được phân lịch làm việc.')
-  }
   if (!['support_schedule.assign', 'support_schedule.delete'].includes(body.type)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh phân lịch làm việc không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
   const schedules = Array.isArray(state.supportWorkSchedules) ? state.supportWorkSchedules : []
+  const actorEmployeeId = String(actor.employee_id || '').trim()
+  const actorEmployee = actorEmployeeId
+    ? (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+      String(record.id || record.code || '') === actorEmployeeId && !record.deletedAt
+    ))
+    : null
+  const selfManagingOfficeSchedule = actor.role === 'employee' && employeeUnit(actorEmployee) === 'office'
+  if (!['admin', 'business_support'].includes(actor.role) && !selfManagingOfficeSchedule) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc nhân viên văn phòng tự quản lý lịch của mình được thực hiện thao tác này.')
+  }
   if (body.type === 'support_schedule.delete') {
     const scheduleId = String(payload.scheduleId || payload.id || '').trim()
     const previous = schedules.find((record) => String(record.id || '') === scheduleId && !record.deletedAt)
     if (!previous) throw new ApiError(404, 'SUPPORT_SCHEDULE_NOT_FOUND', 'Không tìm thấy lịch làm việc.')
+    if (selfManagingOfficeSchedule && (
+      String(previous.employeeId || '') !== actorEmployeeId
+      || previous.targetUnit !== 'office'
+    )) {
+      throw new ApiError(403, 'SUPPORT_SCHEDULE_SELF_ONLY', 'Nhân viên văn phòng chỉ được xóa lịch làm việc của chính mình.')
+    }
     const reason = String(payload.reason || '').trim().slice(0, 500)
     if (!reason) throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do xóa lịch làm việc.')
     const history = {
@@ -8594,8 +8607,12 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
       response: { command: body.type, schedule: previous, history },
     }, commandContext)
   }
-  const employeeId = String(payload.employeeId || '').trim()
-  const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
+  const requestedEmployeeId = String(payload.employeeId || '').trim()
+  if (selfManagingOfficeSchedule && requestedEmployeeId && requestedEmployeeId !== actorEmployeeId) {
+    throw new ApiError(403, 'SUPPORT_SCHEDULE_SELF_ONLY', 'Nhân viên văn phòng chỉ được tạo hoặc sửa lịch làm việc của chính mình.')
+  }
+  const employeeId = selfManagingOfficeSchedule ? actorEmployeeId : requestedEmployeeId
+  const targetUnit = selfManagingOfficeSchedule ? 'office' : payload.targetUnit === 'office' ? 'office' : 'business_support'
   const date = optionalCalendarDate(payload.date, 'Ngày làm việc')
   if (!employeeId || !date) throw new ApiError(400, 'SUPPORT_SCHEDULE_REQUIRED', 'Cần chọn ngày và nhân viên.')
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
@@ -8618,6 +8635,12 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     ? schedules.find((record) => String(record.id || '') === requestedScheduleId && !record.deletedAt)
     : schedules.find((record) => String(record.employeeId || '') === employeeId && String(record.date || '') === date && !record.deletedAt)
   if (requestedScheduleId && !previous) throw new ApiError(404, 'SUPPORT_SCHEDULE_NOT_FOUND', 'Không tìm thấy lịch làm việc cần sửa.')
+  if (selfManagingOfficeSchedule && previous && (
+    String(previous.employeeId || '') !== actorEmployeeId
+    || previous.targetUnit !== 'office'
+  )) {
+    throw new ApiError(403, 'SUPPORT_SCHEDULE_SELF_ONLY', 'Nhân viên văn phòng chỉ được sửa lịch làm việc của chính mình.')
+  }
   const targetCollision = schedules.find((record) => (
     String(record.id || '') !== String(previous?.id || '')
     && String(record.employeeId || '') === employeeId

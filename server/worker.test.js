@@ -6636,6 +6636,62 @@ describe('IDOSI Worker security primitives', () => {
       expect(readHydratedState(env.DB.database).supportWorkSchedules).not.toEqual(expect.arrayContaining([
         expect.objectContaining({ id: scheduled.id }),
       ]))
+
+      const officeSelfCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 11,
+        payload: {
+          employeeId: office.id, targetUnit: 'office', date: '2026-08-22', shiftName: 'Ca sáng tự tạo',
+          start: '08:00', end: '12:00', note: 'Nhân viên văn phòng tự tạo',
+        },
+      }, { ...officeAuthorization, 'idempotency-key': 'office-self-schedule-create-0001' }), env)
+      expect(officeSelfCreated.status).toBe(200)
+      const officeSelfCreatedBody = await officeSelfCreated.json()
+      expect(officeSelfCreatedBody).toMatchObject({
+        version: 12,
+        schedule: {
+          employeeId: office.id, targetUnit: 'office', date: '2026-08-22',
+          shiftName: 'Ca sáng tự tạo', start: '08:00', end: '12:00',
+        },
+        history: { action: 'Tạo lịch', recordedBy: { role: 'employee' } },
+      })
+
+      const officeSelfSpoofed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 12,
+        payload: {
+          employeeId: support.id, targetUnit: 'business_support', date: '2026-08-23', shiftName: 'Ca giả mạo',
+          start: '08:00', end: '12:00',
+        },
+      }, { ...officeAuthorization, 'idempotency-key': 'office-self-schedule-spoof-0001' }), env)
+      expect(officeSelfSpoofed.status).toBe(403)
+      expect(await officeSelfSpoofed.json()).toMatchObject({ error: { code: 'SUPPORT_SCHEDULE_SELF_ONLY' } })
+
+      const officeSelfUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 12,
+        payload: {
+          scheduleId: officeSelfCreatedBody.schedule.id, employeeId: office.id, targetUnit: 'office',
+          date: '2026-08-23', shiftName: 'Ca sáng đã sửa', start: '08:30', end: '12:30',
+        },
+      }, { ...officeAuthorization, 'idempotency-key': 'office-self-schedule-update-0001' }), env)
+      expect(officeSelfUpdated.status).toBe(200)
+      expect(await officeSelfUpdated.json()).toMatchObject({
+        version: 13,
+        schedule: { id: officeSelfCreatedBody.schedule.id, employeeId: office.id, date: '2026-08-23', start: '08:30', end: '12:30' },
+        history: { action: 'Cập nhật lịch', recordedBy: { role: 'employee' } },
+      })
+
+      const officeSelfDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.delete', expectedVersion: 13,
+        payload: { scheduleId: officeSelfCreatedBody.schedule.id, reason: 'Nhân viên đổi ngày nghỉ' },
+      }, { ...officeAuthorization, 'idempotency-key': 'office-self-schedule-delete-0001' }), env)
+      expect(officeSelfDeleted.status).toBe(200)
+      expect(await officeSelfDeleted.json()).toMatchObject({
+        version: 14,
+        schedule: { id: officeSelfCreatedBody.schedule.id, employeeId: office.id },
+        history: { action: 'Xóa lịch', reason: 'Nhân viên đổi ngày nghỉ', recordedBy: { role: 'employee' } },
+      })
+      expect(readHydratedState(env.DB.database).supportWorkSchedules).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: officeSelfCreatedBody.schedule.id }),
+      ]))
     } finally {
       vi.useRealTimers()
     }
