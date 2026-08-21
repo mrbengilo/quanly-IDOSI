@@ -18,6 +18,7 @@ import {
   Menu,
   PackagePlus,
   ReceiptText,
+  Repeat2,
   Settings,
   ShoppingCart,
   Store,
@@ -63,27 +64,27 @@ const officeEmployeeMenu = [
   { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
   { label: 'Công việc được giao', path: '/employee/tasks', icon: ClipboardCheck },
   { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
-  { label: 'Lịch phân ca', path: '/employee/schedule', icon: CalendarCheck },
+  { label: 'Lịch làm việc của tôi', path: '/employee/schedule', icon: CalendarCheck },
   { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
   { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
 ]
 
 const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
-  systemOperations[1],
-  { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users },
-  businessSupportDirectoryOperation,
-  businessSupportScheduleOperation,
-  { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
-  officeOperation,
-  customerSurveyOperation,
-  systemOperations[2],
-  systemOperations[3],
-  { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
   { label: 'Công việc được giao', path: '/support/tasks', icon: ClipboardCheck },
   { label: 'Lịch làm việc của tôi', path: '/support/my-schedule', icon: CalendarCheck, badge: 'Mới' },
-  { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
+  businessSupportScheduleOperation,
+  businessSupportDirectoryOperation,
+  officeOperation,
+  systemOperations[1],
+  { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users },
+  { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
+  systemOperations[2],
+  systemOperations[3],
+  customerSurveyOperation,
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
+  { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
+  { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
 ]
 
 const systemMenus = {
@@ -164,6 +165,8 @@ export default function AppShell() {
     : isStoreWorkspace
       ? storeOperations
       : systemMenus[canonicalRole] || systemMenus.employee
+  const availableRoleOptions = Array.isArray(session?.availableRoles) ? session.availableRoles : []
+  const canSwitchRole = availableRoleOptions.length > 1
   const assignedStoreId = [session?.assignedStoreId, session?.storeId]
     .find((storeId) => stores.some((store) => store.id === storeId)) || ''
   const isStoreBoundRole = isEmployee || isStoreManager
@@ -370,6 +373,20 @@ export default function AppShell() {
             <div className="store-logo"><img src="/favicon.png" alt="Logo IDOSI" /><div><strong>{activeStore?.name || 'IDOSI'}</strong><small>{systemRoleLabel}</small></div></div>
           ) : <Brand subtitle={isBusinessSupport ? 'Hỗ trợ KD' : 'Quản lý toàn hệ thống'} />}
         </div>
+        {canSwitchRole && (
+          <button
+            type="button"
+            className="role-switcher-button"
+            onClick={() => {
+              setMobileOpen(false)
+              setNotificationOpen(false)
+              navigate('/select-role')
+            }}
+          >
+            <Repeat2 size={18} />
+            <span>Đổi vai trò</span>
+          </button>
+        )}
         {isStoreWorkspace && isSystemOperator && (
           <button className="back-system" onClick={returnToSystemOverview}>
             <ArrowLeft size={18} /> <span>Quay về trang quản lý chính</span>

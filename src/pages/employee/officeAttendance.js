@@ -34,6 +34,8 @@ export const officeLocationMapUrl = (location) => {
 }
 
 export const isOfficeProfile = (session = {}, employee = {}) => {
+  session = session || {}
+  employee = employee || {}
   const values = [
     session.unit,
     session.department,

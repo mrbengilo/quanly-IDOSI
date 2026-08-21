@@ -102,6 +102,13 @@ function EmployeeAttendanceRoute() {
     : <EmployeeAttendancePage />
 }
 
+function EmployeeScheduleRoute() {
+  const { session, currentEmployee } = useApp()
+  return isOfficeProfile(session, currentEmployee)
+    ? <MyBusinessSupportSchedulePage />
+    : <EmployeeSchedulePage />
+}
+
 function StoreEmployeeRoute({ children }) {
   const { session, currentEmployee } = useApp()
   return isOfficeProfile(session, currentEmployee)
@@ -181,7 +188,7 @@ export default function App() {
         <Route path="/employee/attendance" element={<EmployeeAttendanceRoute />} />
         <Route path="/employee/shifts" element={<Navigate to="/employee/work-history" replace />} />
         <Route path="/employee/work-history" element={<EmployeeShiftHistory />} />
-        <Route path="/employee/schedule" element={<EmployeeSchedulePage />} />
+        <Route path="/employee/schedule" element={<EmployeeScheduleRoute />} />
         <Route path="/employee/payroll" element={<EmployeePayrollPage />} />
         <Route path="/employee/cashflow" element={<StoreEmployeeRoute><EmployeeCashflow /></StoreEmployeeRoute>} />
       </Route>

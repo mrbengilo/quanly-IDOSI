@@ -1,6 +1,6 @@
 import { BriefcaseBusiness, ShieldCheck, Store, UserRound } from 'lucide-react'
 import { Navigate, useNavigate } from 'react-router-dom'
-import { Brand, Button } from '../components/UI'
+import { Avatar, Brand, Button } from '../components/UI'
 import { useApp } from '../state/AppContext'
 
 const destinations = {
@@ -13,12 +13,12 @@ const destinations = {
 const rolePresentation = {
   admin: { label: 'Admin', description: 'Quản trị toàn bộ hệ thống', icon: ShieldCheck },
   business_support: { label: 'Hỗ trợ KD', description: 'Không gian Nhân viên hỗ trợ kinh doanh', icon: BriefcaseBusiness },
-  store_manager: { label: 'Quản lý', description: 'Quản lý cửa hàng được phân quyền', icon: Store },
+  store_manager: { label: 'Quản lý CH', description: 'Quản lý cửa hàng được phân quyền', icon: Store },
   employee: { label: 'Nhân viên', description: 'Điểm danh, đơn hàng và công việc cá nhân', icon: UserRound },
 }
 
 export default function RoleSelectionPage() {
-  const { session, selectSessionRole } = useApp()
+  const { session, settings, selectSessionRole } = useApp()
   const navigate = useNavigate()
   const options = Array.isArray(session?.availableRoles) ? session.availableRoles : []
   if (!session) return <Navigate to="/login" replace />
@@ -31,11 +31,17 @@ export default function RoleSelectionPage() {
 
   return <main className="role-selection-page">
     <section className="role-selection-card">
-      <Brand blue />
+      <div className="role-selection-account">
+        <Brand blue />
+        <div className="role-selection-account__profile">
+          <Avatar name={session.name} src={settings?.avatar} size={52} />
+          <span><strong>{session.name || session.username}</strong><small>Chọn không gian làm việc</small></span>
+        </div>
+      </div>
       <div>
         <p className="eyebrow">IDOSI · TÀI KHOẢN ĐA VAI TRÒ</p>
         <h1>Chọn vai trò đăng nhập</h1>
-        <p>Mỗi vai trò mở đúng không gian và quyền hạn tương ứng. Bạn có thể đăng xuất để chọn lại.</p>
+        <p>Mỗi vai trò mở đúng không gian và quyền hạn tương ứng. Bạn có thể đổi lại vai trò bất cứ lúc nào.</p>
       </div>
       <div className="role-selection-grid">
         {options.map((option) => {
@@ -49,7 +55,11 @@ export default function RoleSelectionPage() {
             onClick={() => choose(option)}
           >
             <span className="role-selection-option__icon"><Icon size={28} /></span>
-            <span><strong>{option.label || presentation.label}</strong><small>{option.profileName || presentation.description}</small></span>
+            <span>
+              <strong>{presentation.label}</strong>
+              <small>{option.profileName || presentation.description}</small>
+              {option.role === session.role && <em>Vai trò hiện tại</em>}
+            </span>
           </Button>
         })}
       </div>

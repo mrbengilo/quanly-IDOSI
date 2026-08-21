@@ -169,11 +169,15 @@ Các lệnh chính:
   thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
   bảo vệ, không thể sửa qua `state.merge|replace`.
 - `support_schedule.assign`: Admin hoặc Nhân viên hỗ trợ KD, payload
-  `{employeeId,date,start,end,shiftName?,note?}`. Nhân viên đích phải thuộc nhóm
-  `business_support`; Part-Time/Thực Tập Sinh bắt buộc tên ca, Full-Time dùng
+  `{targetUnit,employeeId,date,start,end,shiftName?,note?}`, trong đó
+  `targetUnit` là `business_support` hoặc `office` (mặc định
+  `business_support` để tương thích dữ liệu cũ). Nhân viên đích phải thuộc đúng
+  nhóm đã chọn; Part-Time/Thực Tập Sinh bắt buộc tên ca, Full-Time dùng
   một khung giờ bắt đầu/kết thúc. Worker upsert lịch hiện hành theo
   `employeeId + date`, append snapshot vào `supportWorkScheduleHistory`, tạo
   notification cho đúng nhân viên và ưu tiên lịch ngày này khi chấm công.
+  Nhân viên Khối văn phòng đọc lịch cá nhân tại `/employee/schedule`; Nhân viên
+  hỗ trợ KD đọc tại `/support/my-schedule`.
 - `support_transfer.create|update`: `admin` hoặc `business_support`; `support_transfer.delete`
   chỉ dành cho `admin`, các role còn lại nhận `403`. Create nhận
   `{employeeId,fromStoreId?,toStoreId,fromDate,toDate,hourlySupportRate,allowance,note?}`;

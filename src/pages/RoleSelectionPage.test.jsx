@@ -6,10 +6,11 @@ import RoleSelectionPage from './RoleSelectionPage'
 const mocked = vi.hoisted(() => ({
   selectSessionRole: vi.fn(),
   session: null,
+  settings: { avatar: '/avatar-user.jpg' },
 }))
 
 vi.mock('../state/AppContext', () => ({
-  useApp: () => ({ session: mocked.session, selectSessionRole: mocked.selectSessionRole }),
+  useApp: () => ({ session: mocked.session, settings: mocked.settings, selectSessionRole: mocked.selectSessionRole }),
 }))
 
 describe('RoleSelectionPage', () => {
@@ -18,7 +19,7 @@ describe('RoleSelectionPage', () => {
   beforeEach(() => {
     mocked.selectSessionRole.mockReset().mockImplementation(async (option) => ({ ok: true, account: option }))
     mocked.session = {
-      role: 'business_support', needsRoleSelection: true,
+      role: 'business_support', name: 'Nguyễn Minh Khôi', needsRoleSelection: true,
       availableRoles: [
         { role: 'store_manager', label: 'Quản lý', employeeId: 'QLCH-01', storeId: 'S01' },
         { role: 'employee', label: 'Nhân viên', employeeId: 'E-STORE-01', storeId: 'S01' },
@@ -33,7 +34,9 @@ describe('RoleSelectionPage', () => {
       <Route path="/store/overview" element={<h1>Không gian quản lý</h1>} />
     </Routes></MemoryRouter>)
 
-    const managerButton = screen.getByRole('button', { name: /^Quản lý Quản lý cửa hàng/u })
+    expect(screen.getByRole('img', { name: 'Ảnh đại diện Nguyễn Minh Khôi' }).getAttribute('src')).toBe('/avatar-user.jpg')
+    expect(screen.getByText('Vai trò hiện tại')).toBeTruthy()
+    const managerButton = screen.getByRole('button', { name: /^Quản lý CH Quản lý cửa hàng/u })
     expect(managerButton).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Nhân viên Điểm danh/u })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Hỗ trợ KD Không gian/u })).toBeTruthy()

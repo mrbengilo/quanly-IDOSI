@@ -11,8 +11,6 @@ export const supportScheduleRange = (anchorDate, view = 'day') => {
   const start = new Date(anchor)
   const end = new Date(anchor)
   if (view === 'week') {
-    const offset = (anchor.getDay() + 6) % 7
-    start.setDate(anchor.getDate() - offset)
     end.setDate(start.getDate() + 6)
   } else if (view === 'month') {
     start.setDate(1)
@@ -20,6 +18,19 @@ export const supportScheduleRange = (anchorDate, view = 'day') => {
   }
   const format = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
   return { start: format(start), end: format(end) }
+}
+
+export const supportScheduleDays = (anchorDate, view = 'day') => {
+  const { start, end } = supportScheduleRange(anchorDate, view)
+  if (!start || !end) return []
+  const cursor = new Date(`${start}T00:00:00Z`)
+  const last = new Date(`${end}T00:00:00Z`)
+  const dates = []
+  while (cursor <= last) {
+    dates.push(cursor.toISOString().slice(0, 10))
+    cursor.setUTCDate(cursor.getUTCDate() + 1)
+  }
+  return dates
 }
 
 export const supportSchedulesForView = (records = [], { employeeId, anchorDate, view = 'day' } = {}) => {

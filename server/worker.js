@@ -1168,6 +1168,7 @@ export const projectSharedState = (rawState, user) => {
       taskAssignmentHistory: own('taskAssignmentHistory')
         .map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
       supportWorkAssignments: own('supportWorkAssignments'),
+      supportWorkSchedules: own('supportWorkSchedules'),
       supportTransfers: ownSupportTransfers,
       orders: filterArray(state, 'orders', (record) => orderCreatedByEmployee(record, employeeId)),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
@@ -8516,14 +8517,15 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
   const employeeId = String(payload.employeeId || '').trim()
+  const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
   const date = optionalCalendarDate(payload.date, 'Ngày làm việc')
   if (!employeeId || !date) throw new ApiError(400, 'SUPPORT_SCHEDULE_REQUIRED', 'Cần chọn ngày và nhân viên.')
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
     String(record.id || record.code || '') === employeeId
-    && employeeUnit(record) === 'business_support'
+    && employeeUnit(record) === targetUnit
     && !record.deletedAt
   ))
-  if (!employee) throw new ApiError(404, 'SUPPORT_EMPLOYEE_NOT_FOUND', 'Không tìm thấy Nhân viên hỗ trợ KD đang hoạt động.')
+  if (!employee) throw new ApiError(404, 'SUPPORT_EMPLOYEE_NOT_FOUND', `Không tìm thấy ${targetUnit === 'office' ? 'nhân viên Khối văn phòng' : 'Nhân viên hỗ trợ KD'} đang hoạt động.`)
   const start = parseShiftTime(payload.start)
   const end = parseShiftTime(payload.end)
   if (!start || !end || end.minuteOfDay <= start.minuteOfDay) {
@@ -8543,6 +8545,7 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     id,
     employeeId,
     employeeName: employee.name || employeeId,
+    targetUnit,
     date,
     employmentType,
     shiftName: partTime ? shiftName : (shiftName || 'Làm việc Full-Time'),
@@ -8568,6 +8571,8 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     type: 'support-schedule-assigned',
     employeeId,
     targetEmployeeId: employeeId,
+    targetUnit,
+    route: targetUnit === 'office' ? '/employee/schedule' : '/support/my-schedule',
     title: 'Lịch làm việc đã được cập nhật',
     message: `${date}: ${schedule.shiftName} ${schedule.start}–${schedule.end}`,
     scheduleId: id,
@@ -8590,7 +8595,7 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     entityId: id,
     before: previous,
     after: schedule,
-    metadata: { employeeId, date, version },
+    metadata: { employeeId, targetUnit, date, version },
     response: { command: body.type, schedule, history },
   }, commandContext)
 }

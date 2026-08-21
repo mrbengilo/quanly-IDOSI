@@ -6512,18 +6512,44 @@ describe('IDOSI Worker security primitives', () => {
       expect(await dailySchedule.json()).toMatchObject({
         version: 8,
         schedule: {
-          employeeId: support.id, date: '2026-08-21', employmentType: 'Part-Time',
+          employeeId: support.id, targetUnit: 'business_support', date: '2026-08-21', employmentType: 'Part-Time',
           shiftName: 'Ca tối', start: '18:00', end: '21:00', version: 1,
         },
         history: { action: 'Tạo lịch', recordedBy: { role: 'business_support' } },
       })
+      const officeDailySchedule = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 8,
+        payload: {
+          targetUnit: 'office', employeeId: office.id, date: '2026-08-21', shiftName: 'Ca văn phòng',
+          start: '08:00', end: '17:30', note: 'Lịch dành cho Khối văn phòng',
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'office-daily-schedule-0001' }), env)
+      expect(officeDailySchedule.status).toBe(200)
+      expect(await officeDailySchedule.json()).toMatchObject({
+        version: 9,
+        schedule: {
+          employeeId: office.id, targetUnit: 'office', date: '2026-08-21',
+          shiftName: 'Ca văn phòng', start: '08:00', end: '17:30', version: 1,
+        },
+      })
       const scheduledState = readHydratedState(env.DB.database)
-      expect(scheduledState.supportWorkSchedules).toEqual([
-        expect.objectContaining({ employeeId: support.id, date: '2026-08-21', shiftName: 'Ca tối' }),
-      ])
+      expect(scheduledState.supportWorkSchedules).toEqual(expect.arrayContaining([
+        expect.objectContaining({ employeeId: support.id, targetUnit: 'business_support', date: '2026-08-21', shiftName: 'Ca tối' }),
+        expect.objectContaining({ employeeId: office.id, targetUnit: 'office', date: '2026-08-21', shiftName: 'Ca văn phòng' }),
+      ]))
       expect(scheduledState.notifications).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: 'support-schedule-assigned', targetEmployeeId: support.id }),
+        expect.objectContaining({ type: 'support-schedule-assigned', targetEmployeeId: office.id, route: '/employee/schedule' }),
       ]))
+      const officeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'office.shifts', password: 'office-shifts-password',
+      }), env)
+      const officeAuthorization = { authorization: `Bearer ${(await officeLogin.json()).token}` }
+      const officeState = await worker.fetch(new Request('https://idosi.example/api/state', { headers: officeAuthorization }), env)
+      expect(officeState.status).toBe(200)
+      expect((await officeState.json()).state.supportWorkSchedules).toEqual([
+        expect.objectContaining({ employeeId: office.id, targetUnit: 'office', date: '2026-08-21' }),
+      ])
     } finally {
       vi.useRealTimers()
     }

@@ -14,6 +14,8 @@ const mocked = vi.hoisted(() => ({
   deleteOrder: vi.fn(),
   notifications: [],
   orders: [],
+  currentEmployee: undefined,
+  settings: { avatar: '/avatar-shell.jpg' },
 }))
 
 const baseNotifications = [
@@ -36,6 +38,8 @@ vi.mock('../state/AppContext', () => ({
     activeStoreId: mocked.activeStoreId,
     notifications: mocked.notifications,
     orders: mocked.orders,
+    currentEmployee: mocked.currentEmployee,
+    settings: mocked.settings,
     readNotification: mocked.readNotification,
     clearNotifications: mocked.clearNotifications,
     setActiveStoreId: mocked.setActiveStoreId,
@@ -60,6 +64,7 @@ describe('AppShell notifications', () => {
     mocked.activeStoreId = 'CH001'
     mocked.notifications = baseNotifications.map((item) => ({ ...item }))
     mocked.orders = [{ id: 'ORDER-CH002', code: 'CH2-00001', storeId: 'CH002' }]
+    mocked.currentEmployee = undefined
     sessionStorage.clear()
     mocked.readNotification.mockReset()
     mocked.clearNotifications.mockReset().mockResolvedValue({ ok: true, updatedCount: 2 })
@@ -238,6 +243,40 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
     expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
+    expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('span')?.textContent)).toEqual([
+      'Tổng quan', 'Công việc được giao', 'Lịch làm việc của tôi', 'Phân lịch làm việc',
+      'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
+      'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
+      'Khảo sát thông tin KH', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
+    ])
+  })
+
+  it('opens the role selector below the logo and keeps the account avatar for a multi-role account', async () => {
+    mocked.session = {
+      role: 'store_manager', name: 'Nhân viên đa vai trò', employeeId: 'QLCH01', storeId: 'CH001',
+      availableRoles: [
+        { role: 'store_manager', employeeId: 'QLCH01', storeId: 'CH001' },
+        { role: 'employee', employeeId: 'E01', storeId: 'CH001' },
+        { role: 'business_support', employeeId: 'HTKD01', storeId: 'BUSINESS_SUPPORT' },
+      ],
+    }
+    render(<MemoryRouter initialEntries={['/store/overview']}><Routes>
+      <Route element={<AppShell />}><Route path="*" element={<CurrentRoute />} /></Route>
+    </Routes></MemoryRouter>)
+
+    expect(document.querySelector('.sidebar__brand + .role-switcher-button')).toBeTruthy()
+    expect(document.querySelector('.sidebar__profile img')?.getAttribute('src')).toBe('/avatar-shell.jpg')
+    fireEvent.click(screen.getByRole('button', { name: 'Đổi vai trò' }))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/select-role'))
+  })
+
+  it('renames the Office employee schedule menu to Lịch làm việc của tôi', () => {
+    mocked.session = { role: 'employee', name: 'Nhân viên văn phòng', employeeId: 'VP01', storeId: 'OFFICE', unit: 'office' }
+    mocked.currentEmployee = { id: 'VP01', name: 'Nhân viên văn phòng', unit: 'office' }
+    render(<MemoryRouter initialEntries={['/employee/home']}><AppShell /></MemoryRouter>)
+
+    expect(screen.getByRole('link', { name: 'Lịch làm việc của tôi' }).getAttribute('href')).toBe('/employee/schedule')
+    expect(screen.queryByRole('link', { name: 'Lịch phân ca' })).toBeNull()
   })
 
   it('shows a support-work notification only to its assigned support employee', async () => {

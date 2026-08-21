@@ -766,6 +766,8 @@ const localRoleOptionsForSession = (current, session) => {
   const root = employees.find((profile) => String(profile.id || profile.code || '') === rootEmployeeId)
   if (normalizeAuthRole(session.role) === 'business_support') {
     add({ role: 'business_support', label: 'Hỗ trợ KD', employeeId: rootEmployeeId, storeId: 'BUSINESS_SUPPORT' })
+  } else if (normalizeAuthRole(session.role) === 'store_manager') {
+    add({ role: 'store_manager', label: 'Quản lý', employeeId: rootEmployeeId, storeId: root?.storeId || session.storeId || null })
   } else {
     add({ role: 'employee', label: 'Nhân viên', employeeId: rootEmployeeId, storeId: root?.storeId || session.storeId || null })
   }
@@ -1990,10 +1992,11 @@ export function AppProvider({ children }) {
       return { ok: false, message: 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được phân lịch làm việc.' }
     }
     const employeeId = String(payload.employeeId || '').trim()
+    const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
     const date = String(payload.date || '').trim()
     const start = String(payload.start || '').slice(0, 5)
     const end = String(payload.end || '').slice(0, 5)
-    const employee = state.employees.find((record) => String(record.id || record.code || '') === employeeId && String(record.unit || '').toLowerCase() === 'business_support')
+    const employee = state.employees.find((record) => String(record.id || record.code || '') === employeeId && String(record.unit || record.unitType || '').toLowerCase() === targetUnit)
     if (!employee || !/^\d{4}-\d{2}-\d{2}$/u.test(date) || timeToMinutes(start) == null || timeToMinutes(end) == null || timeToMinutes(end) <= timeToMinutes(start)) {
       return { ok: false, message: 'Ngày, nhân viên hoặc thời gian làm việc chưa hợp lệ.' }
     }
@@ -2001,6 +2004,7 @@ export function AppProvider({ children }) {
     const partTime = /part|thực tập/u.test(employmentType.toLocaleLowerCase('vi-VN'))
     const commandPayload = {
       employeeId,
+      targetUnit,
       date,
       start,
       end,
@@ -2011,7 +2015,7 @@ export function AppProvider({ children }) {
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('support_schedule.assign', commandPayload)
-        notify('Đã lưu lịch làm việc của Nhân viên hỗ trợ KD.')
+        notify(`Đã lưu lịch làm việc của ${targetUnit === 'office' ? 'nhân viên Khối văn phòng' : 'Nhân viên hỗ trợ KD'}.`)
         return { ok: true, schedule: result.schedule, history: result.history }
       } catch (error) {
         notify(error.message || 'Không thể lưu lịch làm việc.', 'info')
@@ -2024,6 +2028,7 @@ export function AppProvider({ children }) {
       id: previous?.id || uid('SWS'),
       employeeId,
       employeeName: employee.name || employeeId,
+      targetUnit,
       employmentType,
       ...commandPayload,
       version: Number(previous?.version || 0) + 1,
@@ -2039,7 +2044,7 @@ export function AppProvider({ children }) {
         : [schedule, ...(current.supportWorkSchedules || [])],
       supportWorkScheduleHistory: [history, ...(current.supportWorkScheduleHistory || [])],
     }))
-    notify('Đã lưu lịch làm việc của Nhân viên hỗ trợ KD.')
+    notify(`Đã lưu lịch làm việc của ${targetUnit === 'office' ? 'nhân viên Khối văn phòng' : 'Nhân viên hỗ trợ KD'}.`)
     return { ok: true, schedule, history }
   }
 
