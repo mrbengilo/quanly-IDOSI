@@ -61,6 +61,8 @@ import {
   roleProfilePayload,
   roleProfileToForm,
   roleProfilesFromApp,
+  resolveOriginalRoleProfile,
+  resolveRoleIdentityImage,
   validateRoleProfile,
 } from './roleManagementUtils'
 import { SupportWorkEvaluationTable } from './SupportWorkPages'
@@ -244,7 +246,7 @@ function RoleProfileDrawer({
   )
 }
 
-function ProfileList({ canCreate, canDelete, canEdit, canEditWorkingTime, config, imageBusyKey, onCreate, onDelete, onEdit, onEditWorkingTime, onViewImage, profiles, roleKey, stores }) {
+function ProfileList({ allProfiles, canCreate, canDelete, canEdit, canEditWorkingTime, config, imageBusyKey, onCreate, onDelete, onEdit, onEditWorkingTime, onViewImage, profiles, roleKey, stores }) {
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
   const [storeFilter, setStoreFilter] = useState('all')
@@ -278,9 +280,12 @@ function ProfileList({ canCreate, canDelete, canEdit, canEditWorkingTime, config
             const storeId = profile.storeId === 'OFFICE' ? '' : profile.storeId || profile.assignedStoreId
             const store = stores.find((item) => item.id === storeId)
             const type = profileType(profile)
+            const originalProfile = resolveOriginalRoleProfile(profile, allProfiles)
+            const frontIdentity = resolveRoleIdentityImage(profile, 'front', allProfiles)
+            const backIdentity = resolveRoleIdentityImage(profile, 'back', allProfiles)
             return <tr key={profile.id || roleProfileCode(profile)}>
               <td><strong>{roleProfileCode(profile)}</strong></td>
-              <td><div className="person-cell"><Avatar name={profile.name} src={profile.avatar} color={profile.color} /><span><strong>{profile.name}</strong><small>{profile.username || 'Chưa có tên đăng nhập'}</small></span></div></td>
+              <td><div className="person-cell"><Avatar name={profile.name} src={profile.avatar || originalProfile.avatar} color={profile.color || originalProfile.color} /><span><strong>{profile.name}</strong><small>{profile.username || originalProfile.username || 'Chưa có tên đăng nhập'}</small></span></div></td>
               <td><Badge tone={employmentTypeTone(type)}>{type}</Badge></td>
               <td><strong>{formatRoleDate(profile.startDate || profile.joinDate || profile.employmentStartDate || profile.hireDate)}</strong></td>
               {roleKey === ROLE_KEYS.storeManager && <td><strong>{store?.name || storeId || '—'}</strong><small className="table-note">{store?.id || ''}</small></td>}
@@ -288,11 +293,11 @@ function ProfileList({ canCreate, canDelete, canEdit, canEditWorkingTime, config
               <td className="address-cell">{roleProfileAddress(profile)}</td>
               <td>{profile.position || profile.workPosition || '—'}</td>
               <td><div className="row-actions identity-image-actions--stable">
-                {profile.identityImages?.front || profile.cccdFrontImage
-                  ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'front')} aria-label={`Xem mặt trước CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:front` ? 'Đang tải…' : <><Eye size={15} /> Trước</>}</button>
+                {frontIdentity.image
+                  ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'front', frontIdentity)} aria-label={`Xem mặt trước CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(frontIdentity.profile)}:front` ? 'Đang tải…' : <><Eye size={15} /> Trước</>}</button>
                   : <small>Chưa có mặt trước</small>}
-                {profile.identityImages?.back || profile.cccdBackImage
-                  ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'back')} aria-label={`Xem mặt sau CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(profile)}:back` ? 'Đang tải…' : <><Eye size={15} /> Sau</>}</button>
+                {backIdentity.image
+                  ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'back', backIdentity)} aria-label={`Xem mặt sau CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(backIdentity.profile)}:back` ? 'Đang tải…' : <><Eye size={15} /> Sau</>}</button>
                   : <small>Chưa có mặt sau</small>}
               </div></td>
               {(canEdit || canEditWorkingTime) && <td><div className="row-actions">{canEditWorkingTime && <button type="button" onClick={() => onEditWorkingTime(profile)} aria-label={`Cài giờ làm ${profile.name}`} title={`Cài giờ làm ${profile.name}`}><Clock3 size={17} /></button>}{canEdit && <button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button>}{canDelete && <button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button>}</div></td>}
@@ -407,13 +412,14 @@ function RoleManagement({ roleKey }) {
 
   const closeImageViewer = () => setImageViewer(null)
 
-  const viewIdentityImage = async (profile, side) => {
-    const employeeId = roleProfileCode(profile)
+  const viewIdentityImage = async (profile, side, resolvedIdentity = {}) => {
+    const sourceProfile = resolvedIdentity.profile || profile
+    const employeeId = roleProfileCode(sourceProfile)
     const busyKey = `${employeeId}:${side}`
     if (!employeeId || imageBusyKey) return
-    const localImage = side === 'front'
-      ? profile.identityImages?.front || profile.cccdFrontImage
-      : profile.identityImages?.back || profile.cccdBackImage
+    const localImage = resolvedIdentity.image || (side === 'front'
+      ? sourceProfile.identityImages?.front || sourceProfile.cccdFrontImage
+      : sourceProfile.identityImages?.back || sourceProfile.cccdBackImage)
     if (typeof localImage === 'string' && /^data:image\//u.test(localImage)) {
       setImageViewer({
         url: localImage,
@@ -578,7 +584,7 @@ function RoleManagement({ roleKey }) {
     {!canCreate && <InfoNote>Chỉ Admin được quản lý tài khoản; Admin và Hỗ trợ KD được cấu hình thời gian làm việc.</InfoNote>}
     {isBusinessSupport && roleKey === ROLE_KEYS.storeManager && <InfoNote>Nhân viên Hỗ trợ KD được tạo hoặc sửa Quản lý cửa hàng; chỉ Admin được xóa tài khoản.</InfoNote>}
     {roleKey === ROLE_KEYS.businessSupport && <div className="tabs"><button type="button" className={tab === 'profiles' ? 'active' : ''} onClick={() => setTab('profiles')}><Users />Danh sách nhân viên</button><button type="button" className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button><button type="button" className={tab === 'evaluation' ? 'active' : ''} onClick={() => setTab('evaluation')}><ShieldCheck />Chuyên cần</button>{canEdit && <button type="button" className={tab === 'work' ? 'active' : ''} onClick={() => setTab('work')}><ClipboardCheck />Công việc</button>}</div>}
-    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList canCreate={canCreate} canDelete={canDelete} canEdit={canEdit} canEditWorkingTime={canEditWorkingTime} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onEditWorkingTime={openWorkingTime} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
+    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList allProfiles={allProfiles} canCreate={canCreate} canDelete={canDelete} canEdit={canEdit} canEditWorkingTime={canEditWorkingTime} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onEditWorkingTime={openWorkingTime} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'attendance' && <BusinessSupportAttendance attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'evaluation' && <BusinessSupportEvaluation attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'work' && canEdit && <SupportWorkEvaluationTable assignments={app.supportWorkAssignments || []} profiles={profiles} />}

@@ -28,6 +28,7 @@ import {
   EmployeeShiftHistory,
 } from './pages/employee/EmployeePages'
 import { EmployeeSchedulePage } from './pages/employee/EmployeeSchedulePage'
+import { EmployeeAssignedTasksPage, EmployeeShiftExpensePage } from './pages/employee/EmployeeShiftOperations'
 import {
   EmployeeAttendancePage,
   EmployeeDashboardV2,
@@ -109,6 +110,13 @@ function EmployeeScheduleRoute() {
     : <EmployeeSchedulePage />
 }
 
+function EmployeeTasksRoute() {
+  const { session, currentEmployee } = useApp()
+  return isOfficeProfile(session, currentEmployee)
+    ? <SupportAssignedWorkPage />
+    : <EmployeeAssignedTasksPage />
+}
+
 function StoreEmployeeRoute({ children }) {
   const { session, currentEmployee } = useApp()
   return isOfficeProfile(session, currentEmployee)
@@ -183,7 +191,8 @@ export default function App() {
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
         <Route path="/employee/home" element={<EmployeeHomePage />} />
-        <Route path="/employee/tasks" element={<SupportAssignedWorkPage />} />
+        <Route path="/employee/tasks" element={<EmployeeTasksRoute />} />
+        <Route path="/employee/shift-expenses" element={<StoreEmployeeRoute><EmployeeShiftExpensePage /></StoreEmployeeRoute>} />
         <Route path="/employee/orders" element={<StoreEmployeeRoute><EmployeeOrdersPage /></StoreEmployeeRoute>} />
         <Route path="/employee/attendance" element={<EmployeeAttendanceRoute />} />
         <Route path="/employee/shifts" element={<Navigate to="/employee/work-history" replace />} />

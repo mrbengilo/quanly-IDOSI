@@ -164,7 +164,7 @@ describe('store employee current-shift orders', () => {
     ])
     fireEvent.change(screen.getByLabelText(/^Tên khách hàng/u), { target: { value: 'Khách hỗ trợ mới' } })
     fireEvent.change(screen.getByLabelText(/^Giới tính/u), { target: { value: 'Nữ' } })
-    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/u), { target: { value: 'Kế toán' } })
+    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/u), { target: { value: 'Nhân viên VP' } })
     fireEvent.change(screen.getByLabelText(/^Biết qua kênh nào/u), { target: { value: 'Facebook' } })
     fireEvent.change(screen.getByLabelText(/^Số tiền/u), { target: { value: '250' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
@@ -236,9 +236,17 @@ describe('store employee current-shift orders', () => {
       customerName: 'Khách A',
       amount: 159_000,
       gender: 'Nữ',
-      occupation: 'Nhân viên văn phòng',
+      occupation: 'Nhân viên VP',
       acquisitionChannel: 'Tiktok',
     })).toEqual({})
+
+    expect(validateEmployeeOrder({
+      customerName: 'Khách A',
+      amount: 159_000,
+      gender: 'Nữ',
+      occupation: 'Kế toán',
+      acquisitionChannel: 'Tiktok',
+    }).occupation).toBe('Vui lòng chọn nghề nghiệp trong danh sách.')
 
     expect(Object.keys(validateEmployeeOrder({ customerName: 'Khách A', amount: 159_000 }))).toEqual([
       'gender',
@@ -263,7 +271,7 @@ describe('store employee current-shift orders', () => {
     await screen.findByRole('dialog')
     fireEvent.change(screen.getByLabelText(/^Tên khách hàng/), { target: { value: 'Khách A' } })
     fireEvent.change(screen.getByLabelText(/^Giới tính/), { target: { value: 'Nữ' } })
-    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/), { target: { value: 'Kế toán' } })
+    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/), { target: { value: 'Nhân viên VP' } })
     fireEvent.change(screen.getByLabelText(/^Biết qua kênh nào/), { target: { value: 'Facebook' } })
     fireEvent.change(screen.getByLabelText(/^Số tiền/), { target: { value: '159' } })
 
@@ -276,7 +284,7 @@ describe('store employee current-shift orders', () => {
     expect(firstKey).toBeTruthy()
     expect(createOrder.mock.calls[1][0].idempotencyKey).toBe(firstKey)
 
-    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/), { target: { value: 'Marketing' } })
+    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/), { target: { value: 'Kỹ sư' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
     await waitFor(() => expect(createOrder).toHaveBeenCalledTimes(3))
     expect(createOrder.mock.calls[2][0].idempotencyKey).not.toBe(firstKey)

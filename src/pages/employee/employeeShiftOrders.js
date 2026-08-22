@@ -1,4 +1,5 @@
 import { businessDate } from '../../utils'
+import { CUSTOMER_OCCUPATIONS } from '../../domain/customerSurvey'
 
 const attendanceDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
 
@@ -94,7 +95,9 @@ export const validateEmployeeOrder = (form = {}) => {
   if (!String(form.customerName || '').trim()) errors.customerName = 'Vui lòng nhập tên khách hàng.'
   if (!(Number(form.amount) > 0)) errors.amount = 'Số tiền phải lớn hơn 0.'
   if (!ORDER_GENDERS.includes(form.gender)) errors.gender = 'Vui lòng chọn giới tính.'
-  if (!String(form.occupation || '').trim()) errors.occupation = 'Vui lòng nhập nghề nghiệp.'
+  if (!CUSTOMER_OCCUPATIONS.includes(String(form.occupation || '').trim())) {
+    errors.occupation = 'Vui lòng chọn nghề nghiệp trong danh sách.'
+  }
   if (!ACQUISITION_CHANNELS.includes(form.acquisitionChannel)) errors.acquisitionChannel = 'Vui lòng chọn kênh khách hàng biết đến.'
   return errors
 }

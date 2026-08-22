@@ -50,12 +50,49 @@ export const roleEmploymentType = (profile = {}) => {
   return 'Full-Time'
 }
 
-const identityImagesFromProfile = (profile = {}) => {
+export const identityImagesFromProfile = (profile = {}) => {
   const images = profile.identityImages && typeof profile.identityImages === 'object' ? profile.identityImages : {}
   return {
     front: images.front || profile.cccdFrontImage || '',
     back: images.back || profile.cccdBackImage || '',
   }
+}
+
+const linkedProfileCode = (profile = {}) => String(
+  profile.linkedEmployeeId
+  || profile.sourceEmployeeId
+  || profile.rootEmployeeId
+  || profile.originalEmployeeId
+  || '',
+)
+
+export const resolveOriginalRoleProfile = (profile = {}, profiles = []) => {
+  let current = profile
+  const visited = new Set()
+  while (current && !visited.has(profileCode(current))) {
+    visited.add(profileCode(current))
+    const linkedCode = linkedProfileCode(current)
+    if (!linkedCode) break
+    const linked = profiles.find((candidate) => profileCode(candidate) === linkedCode)
+    if (!linked) break
+    current = linked
+  }
+  return current || profile
+}
+
+export const resolveRoleIdentityImage = (profile = {}, side = 'front', profiles = []) => {
+  let current = profile
+  const visited = new Set()
+  while (current && !visited.has(profileCode(current))) {
+    visited.add(profileCode(current))
+    const image = identityImagesFromProfile(current)[side]
+    if (image) return { image, profile: current }
+    const linkedCode = linkedProfileCode(current)
+    current = linkedCode
+      ? profiles.find((candidate) => profileCode(candidate) === linkedCode)
+      : null
+  }
+  return { image: '', profile: resolveOriginalRoleProfile(profile, profiles) }
 }
 
 const profileAddressParts = (profile = {}) => {

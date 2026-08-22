@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer'
 import {
   ACCOUNT_AVATAR_MAX_BYTES,
   ACCOUNT_AVATAR_MAX_SOURCE_BYTES,
+  accountAvatarCrop,
   optimizeAccountAvatar,
   validateAccountAvatarDataUrl,
 } from './accountAvatar'
@@ -47,7 +48,50 @@ describe('account avatar image contract', () => {
     expect(result.bytes).toBeLessThanOrEqual(ACCOUNT_AVATAR_MAX_BYTES)
     expect(result).toMatchObject({ width: 1400, height: 1050, sourceBytes: 4 * 1024 * 1024 })
     expect(encodeImage).toHaveBeenCalledTimes(3)
+    expect(encodeImage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      sourceX: 0,
+      sourceY: 0,
+      sourceWidth: 3200,
+      sourceHeight: 2400,
+      width: 1400,
+      height: 1050,
+    }))
     expect(cleanup).toHaveBeenCalledOnce()
+  })
+
+  it('only creates a square output when an explicit avatar crop is supplied', async () => {
+    const encodeImage = vi.fn().mockResolvedValue(
+      new Blob([imageBytes('image/webp', 120_000)], { type: 'image/webp' }),
+    )
+
+    const result = await optimizeAccountAvatar({ type: 'image/png', size: 4 * 1024 * 1024 }, {
+      crop: { zoom: 2, positionX: 1, positionY: -1 },
+      decodeImage: vi.fn().mockResolvedValue({ source: {}, width: 3200, height: 2400 }),
+      encodeImage,
+    })
+
+    expect(result).toMatchObject({
+      width: 1024,
+      height: 1024,
+      crop: { sourceX: 2000, sourceY: 0, sourceWidth: 1200, sourceHeight: 1200 },
+    })
+    expect(encodeImage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      sourceX: 2000,
+      sourceY: 0,
+      sourceWidth: 1200,
+      sourceHeight: 1200,
+      width: 1024,
+      height: 1024,
+    }))
+  })
+
+  it('applies square crop zoom and positioning within the original image bounds', () => {
+    expect(accountAvatarCrop(3200, 2400, { zoom: 2, positionX: 1, positionY: -1 })).toEqual({
+      sourceX: 2000,
+      sourceY: 0,
+      sourceWidth: 1200,
+      sourceHeight: 1200,
+    })
   })
 
   it.each(['image/jpeg', 'image/png', 'image/webp'])('accepts %s at the exact 300 KiB final boundary', (mimeType) => {

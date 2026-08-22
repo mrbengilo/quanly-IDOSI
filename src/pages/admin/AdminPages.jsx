@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   BadgeDollarSign,
   BarChart3,
@@ -24,6 +24,7 @@ import {
   UserRound,
   Users,
   Wallet,
+  ZoomIn,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import {
@@ -48,13 +49,14 @@ import {
 } from '../../components/UI'
 import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
-import { optimizeAccountAvatar } from '../../domain/accountAvatar'
+import { optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
 import { useApp } from '../../state/AppContext'
 import { downloadCsv, money, shortDate, today, validateVietnamPhone } from '../../utils'
 
 const sum = (items, key) => items.reduce((total, item) => total + (Number(item[key]) || 0), 0)
 const percent = (value, total) => total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '0.00%'
 const emptyStoreForm = { name: '', location: '', address: '' }
+const initialAvatarCrop = Object.freeze({ positionX: 0, positionY: 0, zoom: 1 })
 
 function PasswordField({ id, label, visible, onToggle, ...props }) {
   const toggleLabel = `${visible ? 'Ẩn' : 'Hiện'} ${label.toLowerCase()}`
@@ -545,6 +547,7 @@ export function AdminSettings() {
   const [tab, setTab] = useState('profile')
   const [form, setForm] = useState(settings || {})
   const [photoProcessing, setPhotoProcessing] = useState(false)
+  const [photoCrop, setPhotoCrop] = useState(null)
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' })
   const [visiblePasswords, setVisiblePasswords] = useState({ current: false, next: false, confirm: false })
   const [notifications, setNotifications] = useState(() => ({
@@ -563,6 +566,10 @@ export function AdminSettings() {
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
   const togglePassword = (key) => setVisiblePasswords((current) => ({ ...current, [key]: !current[key] }))
 
+  useEffect(() => () => {
+    if (photoCrop?.previewUrl) URL.revokeObjectURL(photoCrop.previewUrl)
+  }, [photoCrop?.previewUrl])
+
   const saveProfile = async () => {
     if (!String(form.name || '').trim() || !String(form.email || '').trim()) return notify('Họ tên và email là trường bắt buộc.', 'info')
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(form.email))) return notify('Email không đúng định dạng.', 'info')
@@ -578,16 +585,47 @@ export function AdminSettings() {
     const file = input.files?.[0]
     if (!file) return
     input.value = ''
+    try {
+      validateAccountAvatarSource(file)
+      setPhotoCrop({
+        ...initialAvatarCrop,
+        file,
+        previewUrl: URL.createObjectURL(file),
+      })
+    } catch (error) {
+      notify(error?.message || 'Không thể xử lý ảnh đại diện. Vui lòng thử ảnh khác.', 'info')
+    }
+  }
+
+  const closePhotoCrop = () => {
+    if (photoProcessing) return
+    setPhotoCrop(null)
+  }
+
+  const applyPhotoCrop = async () => {
+    if (!photoCrop?.file || photoProcessing) return
     setPhotoProcessing(true)
     try {
-      const optimized = await optimizeAccountAvatar(file)
+      const optimized = await optimizeAccountAvatar(photoCrop.file, {
+        crop: {
+          positionX: photoCrop.positionX,
+          positionY: photoCrop.positionY,
+          zoom: photoCrop.zoom,
+        },
+      })
       setForm((current) => ({ ...current, avatar: optimized.dataUrl }))
-      notify(`Đã tối ưu ảnh đại diện còn ${Math.ceil(optimized.bytes / 1024)} KB. Nhấn "Lưu thay đổi" để hoàn tất.`, 'info')
+      setPhotoCrop(null)
+      notify(`Đã cắt vuông và tối ưu ảnh đại diện còn ${Math.ceil(optimized.bytes / 1024)} KB. Nhấn "Lưu thay đổi" để hoàn tất.`, 'info')
     } catch (error) {
       notify(error?.message || 'Không thể xử lý ảnh đại diện. Vui lòng thử ảnh khác.', 'info')
     } finally {
       setPhotoProcessing(false)
     }
+  }
+
+  const updatePhotoCrop = (field) => (event) => {
+    const value = Number(event.target.value)
+    setPhotoCrop((current) => current ? { ...current, [field]: value } : current)
   }
 
   const requestPasswordChange = async () => {
@@ -630,7 +668,7 @@ export function AdminSettings() {
           <Card className="settings-content">
             <h2>Thông tin cá nhân</h2><p>Cập nhật thông tin tài khoản của bạn.</p>
             <div className="profile-form">
-              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện tài khoản" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button><small>Ảnh gốc JPG, PNG, WebP tối đa 5 MB<br />Hệ thống tự tối ưu còn tối đa 300 KB</small></div>
+              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện tài khoản" /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button><small>Ảnh gốc JPG, PNG, WebP tối đa 5 MB<br />Cắt vuông, xem trước dạng tròn và tối ưu còn tối đa 300 KB</small></div>
               <div className="form-grid">
                 <Field label="Họ và tên"><Input value={form.name} onChange={set('name')} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} /></Field>
                 <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Input value={roleLabel} disabled /></Field>
@@ -646,6 +684,32 @@ export function AdminSettings() {
           <Card className="settings-content settings-placeholder"><ShieldCheck size={48} /><h2>{tab === 'password' ? 'Đổi mật khẩu' : 'Thiết lập thông báo'}</h2><p>{tab === 'password' ? 'Nhập mật khẩu mới để tăng cường bảo mật tài khoản.' : 'Chọn loại thông báo bạn muốn nhận từ hệ thống.'}</p><div className="form-stack">{tab === 'password' ? <><PasswordField id="account-current-password" label="Mật khẩu hiện tại" autoComplete="current-password" visible={visiblePasswords.current} onToggle={() => togglePassword('current')} value={passwordForm.current} onChange={(event) => setPasswordForm((current) => ({ ...current, current: event.target.value }))} /><PasswordField id="account-new-password" label="Mật khẩu mới" autoComplete="new-password" visible={visiblePasswords.next} onToggle={() => togglePassword('next')} value={passwordForm.next} onChange={(event) => setPasswordForm((current) => ({ ...current, next: event.target.value }))} /><PasswordField id="account-confirm-password" label="Xác nhận mật khẩu" autoComplete="new-password" visible={visiblePasswords.confirm} onToggle={() => togglePassword('confirm')} value={passwordForm.confirm} onChange={(event) => setPasswordForm((current) => ({ ...current, confirm: event.target.value }))} /></> : <><label className="switch-row"><span>Thông báo công việc mới</span><input type="checkbox" checked={notifications.tasks} onChange={(event) => setNotifications({ ...notifications, tasks: event.target.checked })} /></label><label className="switch-row"><span>Báo cáo doanh thu hàng ngày</span><input type="checkbox" checked={notifications.dailyReport} onChange={(event) => setNotifications({ ...notifications, dailyReport: event.target.checked })} /></label><label className="switch-row"><span>Cảnh báo chi phí</span><input type="checkbox" checked={notifications.expenseAlert} onChange={(event) => setNotifications({ ...notifications, expenseAlert: event.target.checked })} /></label></>}<Button onClick={tab === 'password' ? requestPasswordChange : saveNotifications}>Lưu thiết lập</Button></div></Card>
         )}
       </div>
+      <Modal
+        open={Boolean(photoCrop)}
+        onClose={closePhotoCrop}
+        title="Căn chỉnh ảnh đại diện"
+        footer={<><Button variant="outline" disabled={photoProcessing} onClick={closePhotoCrop}>Hủy</Button><Button icon={Save} disabled={photoProcessing} onClick={applyPhotoCrop}>{photoProcessing ? 'Đang tối ưu…' : 'Dùng ảnh này'}</Button></>}
+      >
+        {photoCrop && <div className="avatar-cropper">
+          <div className="avatar-cropper__preview" aria-label="Xem trước ảnh đại diện dạng tròn">
+            <img
+              src={photoCrop.previewUrl}
+              alt="Ảnh gốc đang căn chỉnh"
+              style={{
+                '--avatar-position-x': `${50 + photoCrop.positionX * 50}%`,
+                '--avatar-position-y': `${50 + photoCrop.positionY * 50}%`,
+                '--avatar-zoom': photoCrop.zoom,
+              }}
+            />
+          </div>
+          <div className="avatar-cropper__controls">
+            <label><span><ZoomIn size={17} /> Thu phóng</span><input aria-label="Thu phóng ảnh đại diện" type="range" min="1" max="3" step="0.05" value={photoCrop.zoom} onChange={updatePhotoCrop('zoom')} /></label>
+            <label><span>Căn ngang</span><input aria-label="Căn ngang ảnh đại diện" type="range" min="-1" max="1" step="0.05" value={photoCrop.positionX} onChange={updatePhotoCrop('positionX')} /></label>
+            <label><span>Căn dọc</span><input aria-label="Căn dọc ảnh đại diện" type="range" min="-1" max="1" step="0.05" value={photoCrop.positionY} onChange={updatePhotoCrop('positionY')} /></label>
+          </div>
+          <InfoNote>Kéo thanh thu phóng và căn vị trí để khuôn mặt nằm gọn trong khung tròn.</InfoNote>
+        </div>}
+      </Modal>
     </div>
   )
 }

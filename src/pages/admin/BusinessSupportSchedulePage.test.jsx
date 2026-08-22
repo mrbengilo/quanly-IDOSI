@@ -11,7 +11,10 @@ const mocked = vi.hoisted(() => ({
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 
 describe('BusinessSupportSchedulePage', () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
 
   beforeEach(() => {
     mocked.saveBusinessSupportSchedule.mockReset().mockResolvedValue({ ok: true })
@@ -73,6 +76,8 @@ describe('BusinessSupportSchedulePage', () => {
   })
 
   it('renders the personal weekly schedule horizontally with avatar and empty days', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-21T08:00:00+07:00'))
     mocked.app = {
       ...mocked.app,
       currentEmployee: { id: 'VP-01', name: 'Kế toán văn phòng', unit: 'office', employmentType: 'Full-Time' },
@@ -91,6 +96,7 @@ describe('BusinessSupportSchedulePage', () => {
     expect(screen.getByText('Họp đầu ca')).toBeTruthy()
     expect(screen.getAllByText('Không có lịch')).toHaveLength(5)
     expect(screen.getByAltText('Ảnh đại diện Kế toán văn phòng').getAttribute('src')).toBe('/avatar-office.jpg')
+    vi.useRealTimers()
   })
 
   it('lets an Office employee create, edit and delete only their own configured shift', async () => {

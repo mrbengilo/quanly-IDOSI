@@ -876,6 +876,7 @@ const canAccessNotification = (state, actor, record) => {
     ))
   }
   if (actor.role !== 'employee') return false
+  if (String(record.type || '') === 'store-task-progress-submitted') return false
   const employeeId = String(actor.employee_id || actor.user_id || '')
   const storeId = String(actor.store_id || '')
   if (!employeeId || !storeId || (recordStoreId && recordStoreId !== storeId)) return false
@@ -1189,6 +1190,7 @@ export const projectSharedState = (rawState, user) => {
       supportWorkSchedules: own('supportWorkSchedules'),
       supportTransfers: ownSupportTransfers,
       orders: filterArray(state, 'orders', (record) => orderCreatedByEmployee(record, employeeId)),
+      expenseEntries: own('expenseEntries'),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
         .map((record) => projectNotificationForActor(record, user)),
       officeAdjustments: own('officeAdjustments'),
@@ -7738,6 +7740,15 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   }
   const shiftExpense = officeEmployee || payload.expense == null ? 0 : asVnd(payload.expense, 'Chi phí trong ca')
   if (shiftExpense > 0) assertAccountingPeriodOpen(state, attendanceStoreId, attendancePeriod)
+  const expenseEntries = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
+  const recordedShiftExpense = officeEmployee ? 0 : expenseEntries
+    .filter((entry) => (
+      entry.recognized !== false
+      && String(entry.attendanceId || '') === String(openRecord.id || '')
+      && String(entry.sourceType || '') === 'shift-expense-item'
+    ))
+    .reduce((sum, entry) => safeMoneySum(sum, Number(entry.amount || 0), 'Tổng chi phí trong ca'), 0)
+  const totalShiftExpense = safeMoneySum(recordedShiftExpense, shiftExpense, 'Tổng chi phí trong ca')
   const updatedRecordBase = {
     ...openRecord,
     checkOut: localNow.time,
@@ -7775,7 +7786,8 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       })),
     } : {}),
     orderCount: relatedOrders.length,
-    expense: shiftExpense,
+    expense: totalShiftExpense,
+    shiftExpenseTotal: totalShiftExpense,
     tiktok: officeEmployee ? false : Boolean(payload.tiktok),
     updatedAt: commandContext.now,
   }
@@ -7839,7 +7851,6 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     createdAt: commandContext.now,
     actor: serverActorSnapshot(actor),
   } : null
-  const expenseEntries = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
   const cashTransactions = Array.isArray(state.cashTransactions) ? state.cashTransactions : []
   if (shiftExpenseEntry && expenseEntries.some((entry) => sourceMatch(entry, 'shift-expense', openRecord.id))) {
     throw new ApiError(409, 'SHIFT_EXPENSE_EXISTS', 'Chi phí của ca này đã được ghi nhận.')
@@ -7884,6 +7895,8 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       period: attendancePeriod,
       shiftId: openRecord.shiftId || openRecord.shift,
       shiftExpense,
+      recordedShiftExpense,
+      totalShiftExpense,
       supportExpense,
       supportTransferId: attendanceTransfer?.id || null,
       serverTimestamp: commandContext.now,
@@ -7909,6 +7922,23 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
 
 const ORDER_GENDERS = new Set(['Nam', 'Nữ', 'Khác'])
 const ORDER_ACQUISITION_CHANNELS = new Set(['Facebook', 'Tiktok', 'Zalo', 'Bạn Bè', 'Người thân', 'Khác'])
+const ORDER_CUSTOMER_OCCUPATIONS = new Set([
+  'Nhân viên VP',
+  'Kỹ sư',
+  'Bác sĩ',
+  'Giáo viên',
+  'Học sinh/Sinh viên',
+  'Lao động',
+  'Nội trợ',
+  'Buôn bán/kinh doanh',
+  'Tài xế',
+  'Giám đốc',
+  'Ca sỉ',
+  'Lao công',
+  'Bảo vệ',
+  'Công nhân',
+  'Khác',
+])
 
 const orderCustomerProfile = (payload, previous = null) => {
   const gender = String(payload.gender ?? payload.customerGender ?? previous?.gender ?? '').trim()
@@ -7916,8 +7946,8 @@ const orderCustomerProfile = (payload, previous = null) => {
     throw new ApiError(400, 'ORDER_GENDER_INVALID', 'Giới tính là bắt buộc và phải là Nam, Nữ hoặc Khác.')
   }
   const occupation = String(payload.occupation ?? payload.customerOccupation ?? previous?.occupation ?? '').trim()
-  if (!occupation || occupation.length > 160) {
-    throw new ApiError(400, 'ORDER_OCCUPATION_INVALID', 'Nghề nghiệp là bắt buộc và không được vượt quá 160 ký tự.')
+  if (!ORDER_CUSTOMER_OCCUPATIONS.has(occupation)) {
+    throw new ApiError(400, 'ORDER_OCCUPATION_INVALID', 'Nghề nghiệp không thuộc danh sách lựa chọn của hệ thống.')
   }
   const acquisitionChannel = String(
     payload.acquisitionChannel ?? payload.channel ?? payload.knownFrom ?? previous?.acquisitionChannel ?? '',
@@ -8180,8 +8210,8 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
     }
     if (payload.occupation !== undefined || payload.customerOccupation !== undefined) {
       const occupation = String(payload.occupation ?? payload.customerOccupation ?? '').trim()
-      if (!occupation || occupation.length > 160) {
-        throw new ApiError(400, 'ORDER_OCCUPATION_INVALID', 'Nghề nghiệp không được để trống và không quá 160 ký tự.')
+      if (!ORDER_CUSTOMER_OCCUPATIONS.has(occupation)) {
+        throw new ApiError(400, 'ORDER_OCCUPATION_INVALID', 'Nghề nghiệp không thuộc danh sách lựa chọn của hệ thống.')
       }
       candidate.occupation = occupation
     }
@@ -8818,6 +8848,336 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
       command: body.type,
       task: { ...next, completedBy: { [employeeId]: payload.done } },
     },
+  }, commandContext)
+}
+
+const taskProgressCommand = async (db, actor, body, commandContext) => {
+  if (actor.role !== 'employee') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên cửa hàng được gửi kết quả công việc trong ca.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const employeeId = String(actor.employee_id || actor.user_id || '').trim()
+  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+    [record.id, record.code, record.employeeId].map(String).includes(employeeId)
+  ))
+  if (!employee || employeeUnit(employee) !== 'store') {
+    throw new ApiError(403, 'STORE_EMPLOYEE_REQUIRED', 'Chức năng này chỉ dành cho nhân viên cửa hàng.')
+  }
+  const attendance = Array.isArray(state.attendance) ? state.attendance : []
+  const attendanceId = String(payload.attendanceId || '').trim()
+  const openAttendance = attendance.find((record) => (
+    belongsToEmployee(record, employeeId)
+    && (!attendanceId || String(record.id || '') === attendanceId)
+    && !record.deletedAt
+    && !record.checkOutAt
+    && !record.checkOut
+  ))
+  if (!openAttendance) {
+    throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để lưu kết quả công việc.')
+  }
+  const storeId = String(openAttendance.storeId || '')
+  const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
+  const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
+  const scopedTasks = (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
+    if (!taskAppliesToEmployee(task, employeeId, storeId)) return false
+    if (String(task.date || task.workDate || '').slice(0, 10) !== date) return false
+    const taskShiftId = String(task.shiftId || task.shift || '')
+    return !taskShiftId || taskShiftId === shiftId
+  })
+  if (!scopedTasks.length) {
+    throw new ApiError(404, 'TASKS_NOT_FOUND', 'Ca đang làm chưa có công việc được giao.')
+  }
+  if (!Array.isArray(payload.tasks) || payload.tasks.length < 1 || payload.tasks.length > 100) {
+    throw new ApiError(400, 'TASK_PROGRESS_INVALID', 'Cần gửi trạng thái của toàn bộ công việc trong ca.')
+  }
+  const scopedById = new Map(scopedTasks.map((task) => [String(task.id || ''), task]))
+  const submittedById = new Map()
+  for (const item of payload.tasks) {
+    const taskId = String(item?.id || item?.taskId || '').trim()
+    if (!taskId || !scopedById.has(taskId) || submittedById.has(taskId) || typeof item?.completed !== 'boolean') {
+      throw new ApiError(400, 'TASK_PROGRESS_INVALID', 'Danh sách kết quả có công việc không hợp lệ hoặc không thuộc ca đang làm.')
+    }
+    submittedById.set(taskId, item.completed)
+  }
+  if (submittedById.size !== scopedById.size || [...scopedById.keys()].some((taskId) => !submittedById.has(taskId))) {
+    throw new ApiError(400, 'TASK_PROGRESS_INCOMPLETE', 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.')
+  }
+  const incompleteReason = String(payload.incompleteReason || payload.note || '').trim()
+  if (incompleteReason.length > 1_000) {
+    throw new ApiError(400, 'INCOMPLETE_TASK_REASON_INVALID', 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.')
+  }
+  const incompleteTaskIds = [...submittedById].filter(([, completed]) => !completed).map(([taskId]) => taskId)
+  if (incompleteTaskIds.length && !incompleteReason) {
+    throw new ApiError(400, 'INCOMPLETE_TASK_REASON_REQUIRED', 'Cần nhập ghi chú khi chưa hoàn thành tất cả công việc.', {
+      taskIds: incompleteTaskIds,
+    })
+  }
+  const normalizedStatuses = [...submittedById].sort(([left], [right]) => left.localeCompare(right))
+  const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
+  const histories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
+  const existingSubmission = histories.flatMap((assignment) => (
+    Array.isArray(assignment.progressHistory) ? assignment.progressHistory : []
+  )).find((event) => (
+    event?.action === 'progress-submitted'
+    && String(event.employeeId || '') === employeeId
+    && String(event.attendanceId || '') === String(openAttendance.id || '')
+    && String(event.fingerprint || '') === submissionFingerprint
+  ))
+  if (existingSubmission) {
+    const completedTasks = normalizedStatuses.filter(([, completed]) => completed).length
+    const existingResult = {
+      attendanceId: openAttendance.id,
+      employeeId,
+      totalTasks: normalizedStatuses.length,
+      completedTasks,
+      completionRate: Math.round((completedTasks / normalizedStatuses.length) * 100),
+      incompleteReason,
+      submittedAt: existingSubmission.at,
+    }
+    return recordNoopCommand(db, actor, {
+      command: body.type,
+      version: Number(current.version),
+      ...existingResult,
+      existing: true,
+    }, 200, commandContext)
+  }
+
+  const nextTasks = (Array.isArray(state.tasks) ? state.tasks : []).map((task) => {
+    const taskId = String(task.id || '')
+    if (!submittedById.has(taskId)) return task
+    const completed = submittedById.get(taskId)
+    const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
+    if (Boolean(completedBy[employeeId]) === completed && Object.hasOwn(completedBy, employeeId)) return task
+    const event = { done: completed, at: commandContext.now, employeeId, actor: serverActorSnapshot(actor) }
+    return {
+      ...task,
+      completedBy: { ...completedBy, [employeeId]: completed },
+      completionHistory: [...(Array.isArray(task.completionHistory) ? task.completionHistory : []), event],
+      updatedAt: commandContext.now,
+      updatedBy: serverActorSnapshot(actor),
+    }
+  })
+  const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
+  const assignmentResults = []
+  const progressEventBase = {
+    action: 'progress-submitted',
+    employeeId,
+    employeeName: employee.name || employeeId,
+    attendanceId: openAttendance.id,
+    storeId,
+    date,
+    shiftId,
+    incompleteReason: incompleteTaskIds.length ? incompleteReason : '',
+    fingerprint: submissionFingerprint,
+    at: commandContext.now,
+    actor: serverActorSnapshot(actor),
+  }
+  const nextHistories = histories.map((assignment) => {
+    const assignmentId = String(assignment.assignmentId || assignment.id || '')
+    if (!assignmentIds.includes(assignmentId)) return assignment
+    const assignmentTaskIds = scopedTasks
+      .filter((task) => String(task.assignmentId || '') === assignmentId)
+      .map((task) => String(task.id || ''))
+    const completedTasks = assignmentTaskIds.filter((taskId) => submittedById.get(taskId) === true).length
+    const totalTasks = assignmentTaskIds.length
+    const completionRate = totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0
+    const result = { assignmentId, totalTasks, completedTasks, completionRate }
+    assignmentResults.push(result)
+    const progressEvent = { ...progressEventBase, ...result }
+    return {
+      ...assignment,
+      tasks: (Array.isArray(assignment.tasks) ? assignment.tasks : []).map((task) => {
+        const taskId = String(task.id || '')
+        if (!submittedById.has(taskId)) return task
+        return {
+          ...task,
+          completedBy: {
+            ...(isPlainRecord(task.completedBy) ? task.completedBy : {}),
+            [employeeId]: submittedById.get(taskId),
+          },
+        }
+      }),
+      status: completionRate === 100 ? 'completed' : 'incomplete',
+      completionRate,
+      completedTasks,
+      totalTasks,
+      incompleteReason: completionRate === 100 ? '' : incompleteReason,
+      completionByEmployee: {
+        ...(isPlainRecord(assignment.completionByEmployee) ? assignment.completionByEmployee : {}),
+        [employeeId]: {
+          completedTasks,
+          totalTasks,
+          completionRate,
+          incompleteReason: completionRate === 100 ? '' : incompleteReason,
+          submittedAt: commandContext.now,
+          attendanceId: openAttendance.id,
+        },
+      },
+      progressHistory: [...(Array.isArray(assignment.progressHistory) ? assignment.progressHistory : []), progressEvent],
+      submittedAt: commandContext.now,
+      updatedAt: commandContext.now,
+      updatedBy: serverActorSnapshot(actor),
+    }
+  })
+  const totalTasks = scopedTasks.length
+  const completedTasks = [...submittedById.values()].filter(Boolean).length
+  const completionRate = Math.round((completedTasks / totalTasks) * 100)
+  const notifications = (assignmentIds.length ? assignmentResults : [{ assignmentId: '', totalTasks, completedTasks, completionRate }])
+    .map((result) => ({
+      id: `ntf_${crypto.randomUUID()}`,
+      type: 'store-task-progress-submitted',
+      storeId,
+      employeeId,
+      attendanceId: openAttendance.id,
+      assignmentId: result.assignmentId || null,
+      route: `/store/tasks${result.assignmentId ? `?assignment=${encodeURIComponent(result.assignmentId)}` : ''}`,
+      title: `${employee.name || employeeId} đã gửi kết quả công việc`,
+      message: `Hoàn thành ${result.completedTasks}/${result.totalTasks} công việc (${result.completionRate}%).`,
+      createdAt: commandContext.now,
+      createdBy: serverActorSnapshot(actor),
+      readAt: null,
+    }))
+  const nextState = {
+    ...state,
+    tasks: nextTasks,
+    taskAssignmentHistory: nextHistories,
+    notifications: [...notifications, ...(Array.isArray(state.notifications) ? state.notifications : [])],
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  const result = {
+    attendanceId: openAttendance.id,
+    employeeId,
+    totalTasks,
+    completedTasks,
+    completionRate,
+    incompleteReason: incompleteTaskIds.length ? incompleteReason : '',
+    submittedAt: commandContext.now,
+    assignments: assignmentResults,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'task-progress',
+    entityId: `${openAttendance.id}:${employeeId}`,
+    before: scopedTasks.map((task) => ({ id: task.id, completed: Boolean(task.completedBy?.[employeeId]) })),
+    after: normalizedStatuses.map(([id, completed]) => ({ id, completed })),
+    metadata: { storeId, date, shiftId, attendanceId: openAttendance.id, completionRate, incompleteTaskIds },
+    response: { command: body.type, ...result, notifications },
+  }, commandContext)
+}
+
+const shiftExpenseCommand = async (db, actor, body, commandContext) => {
+  if (actor.role !== 'employee') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên cửa hàng được nhập chi phí trong ca.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const employeeId = String(actor.employee_id || actor.user_id || '').trim()
+  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+    [record.id, record.code, record.employeeId].map(String).includes(employeeId)
+  ))
+  if (!employee || employeeUnit(employee) !== 'store') {
+    throw new ApiError(403, 'STORE_EMPLOYEE_REQUIRED', 'Chức năng này chỉ dành cho nhân viên cửa hàng.')
+  }
+  const attendance = Array.isArray(state.attendance) ? state.attendance : []
+  const attendanceId = String(payload.attendanceId || '').trim()
+  const openAttendance = attendance.find((record) => (
+    belongsToEmployee(record, employeeId)
+    && (!attendanceId || String(record.id || '') === attendanceId)
+    && !record.deletedAt
+    && !record.checkOutAt
+    && !record.checkOut
+  ))
+  if (!openAttendance) {
+    throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để nhập chi phí.')
+  }
+  const storeId = String(openAttendance.storeId || '').trim()
+  requireStore(state, storeId)
+  if (String(actor.store_id || '') && String(actor.store_id || '') !== storeId) {
+    throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Ca đang mở không thuộc cửa hàng hiện tại của tài khoản.')
+  }
+  const name = String(payload.name || payload.expenseName || '').trim()
+  const note = String(payload.note || '').trim()
+  if (!name || name.length > 160) {
+    throw new ApiError(400, 'SHIFT_EXPENSE_NAME_INVALID', 'Tên chi phí là bắt buộc và không được vượt quá 160 ký tự.')
+  }
+  if (note.length > 1_000) {
+    throw new ApiError(400, 'SHIFT_EXPENSE_NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')
+  }
+  const amount = asVnd(payload.amount, 'Số tiền chi phí', { positive: true })
+  const period = asMonth(monthFromRecord(openAttendance), 'Kỳ chi phí')
+  assertAccountingPeriodOpen(state, storeId, period)
+  const expenseId = `exp_shift_item_${crypto.randomUUID()}`
+  const shiftId = openAttendance.shiftId || openAttendance.shift || null
+  const expense = {
+    id: expenseId,
+    storeId,
+    storeName: (Array.isArray(state.stores) ? state.stores : []).find((store) => String(store.id || '') === storeId)?.name || '',
+    employeeId,
+    employeeName: employee.name || employeeId,
+    attendanceId: openAttendance.id,
+    shiftId,
+    shiftName: openAttendance.shiftName || shiftId || '',
+    type: name,
+    name,
+    category: 'shift',
+    amount,
+    description: note || name,
+    note,
+    sourceType: 'shift-expense-item',
+    sourceId: expenseId,
+    recognized: true,
+    occurredAt: commandContext.now,
+    createdAt: commandContext.now,
+    createdBy: actor.user_id,
+    createdByActor: serverActorSnapshot(actor),
+  }
+  const transaction = {
+    id: `txn_shift_item_${crypto.randomUUID()}`,
+    storeId,
+    employeeId,
+    attendanceId: openAttendance.id,
+    shiftId,
+    type: name,
+    direction: 'out',
+    amount,
+    description: note || name,
+    sourceType: 'shift-expense-item',
+    sourceId: expenseId,
+    occurredAt: commandContext.now,
+    createdAt: commandContext.now,
+    actor: serverActorSnapshot(actor),
+  }
+  const previousShiftExpense = (Array.isArray(state.expenseEntries) ? state.expenseEntries : [])
+    .filter((entry) => (
+      entry.recognized !== false
+      && String(entry.attendanceId || '') === String(openAttendance.id || '')
+      && ['shift-expense-item', 'shift-expense'].includes(String(entry.sourceType || ''))
+    ))
+    .reduce((sum, entry) => safeMoneySum(sum, Number(entry.amount || 0), 'Tổng chi phí trong ca'), 0)
+  const totalShiftExpense = safeMoneySum(previousShiftExpense, amount, 'Tổng chi phí trong ca')
+  const updatedAttendance = {
+    ...openAttendance,
+    expense: totalShiftExpense,
+    shiftExpenseTotal: totalShiftExpense,
+    updatedAt: commandContext.now,
+  }
+  const nextState = {
+    ...state,
+    attendance: attendance.map((record) => String(record.id || '') === String(openAttendance.id || '') ? updatedAttendance : record),
+    expenseEntries: [expense, ...(Array.isArray(state.expenseEntries) ? state.expenseEntries : [])],
+    cashTransactions: [transaction, ...(Array.isArray(state.cashTransactions) ? state.cashTransactions : [])],
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'shift-expense',
+    entityId: expenseId,
+    before: null,
+    after: expense,
+    metadata: { storeId, employeeId, attendanceId: openAttendance.id, shiftId, period, amount, totalShiftExpense },
+    response: { command: body.type, expense, transaction, attendance: updatedAttendance },
+    status: 201,
   }, commandContext)
 }
 
@@ -10892,8 +11252,14 @@ const executeCommand = async (request, env, context) => {
     if (String(body.type || '').startsWith('support_schedule.')) {
       return await supportScheduleCommand(db, user, body, commandContext)
     }
+    if (body.type === 'task.progress.save') {
+      return await taskProgressCommand(db, user, body, commandContext)
+    }
     if (body.type === 'task.done' || body.type === 'task.set_done') {
       return await taskDoneCommand(db, user, body, commandContext)
+    }
+    if (body.type === 'shift_expense.create') {
+      return await shiftExpenseCommand(db, user, body, commandContext)
     }
     if (String(body.type || '').startsWith('fixed_expense.')
       || String(body.type || '').startsWith('expense.')) {

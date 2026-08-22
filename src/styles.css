@@ -1018,3 +1018,42 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   .my-work-schedule-grid__employee { width: 190px; min-width: 190px!important; }
   .my-work-schedule-grid th,.my-work-schedule-grid td { min-width: 142px; padding: 10px; }
 }
+
+/* Account avatar editor: square output with a circular, touch-friendly preview. */
+.profile-photo > div > img { display:block;width:100%;height:100%;border-radius:50%;object-fit:cover; }
+.avatar-cropper { display:grid;gap:18px; }
+.avatar-cropper__preview { position:relative;width:min(270px,72vw);aspect-ratio:1;margin-inline:auto;overflow:hidden;border:8px solid #e7f5eb;border-radius:50%;background:#e9efeb;box-shadow:0 0 0 1px #8fc4a1,0 16px 36px rgba(8,87,46,.16); }
+.avatar-cropper__preview::after { content:'';position:absolute;inset:0;border:2px solid rgba(255,255,255,.8);border-radius:50%;pointer-events:none; }
+.avatar-cropper__preview img { display:block;width:100%;height:100%;object-fit:cover;object-position:var(--avatar-position-x) var(--avatar-position-y);transform:scale(var(--avatar-zoom));transform-origin:var(--avatar-position-x) var(--avatar-position-y); }
+.avatar-cropper__controls { display:grid;gap:12px; }
+.avatar-cropper__controls label { display:grid;grid-template-columns:105px minmax(0,1fr);align-items:center;gap:12px;color:#263b30;font-size:12px;font-weight:700; }
+.avatar-cropper__controls label > span { display:flex;align-items:center;gap:7px; }
+.avatar-cropper__controls input[type='range'] { width:100%;accent-color:#078443;cursor:pointer; }
+
+/* Compact mobile density without allowing cards or form controls to overflow. */
+@media (max-width: 640px) {
+  .main-content { max-width:100vw;overflow-x:clip; }
+  .page,.page > *,.card,.card__body,.form-grid,.filter-grid,.page-header,.page-header__actions { min-width:0;max-width:100%; }
+  .card { padding:12px; }
+  .card__header { margin-bottom:11px; }
+  .card__header h2 { font-size:15px; }
+  .metric-grid,.metric-grid--compact,.metric-grid--four,.metric-grid--five,.metric-grid--six { grid-template-columns:repeat(2,minmax(0,1fr));gap:8px; }
+  .metric,.metric--compact,.metric-grid--five .metric,.metric-grid--six .metric { min-height:88px;padding:11px 9px;gap:8px;border-radius:10px; }
+  .metric__icon,.metric--compact .metric__icon,.metric-grid--six .metric__icon { width:34px;height:34px;border-radius:9px; }
+  .metric__icon svg { width:19px;height:19px; }
+  .metric__label,.metric--compact .metric__label { margin-bottom:4px;font-size:9px;line-height:1.25; }
+  .metric strong,.metric--compact strong,.metric-grid--six .metric strong { font-size:clamp(15px,4.3vw,18px);line-height:1.15;letter-spacing:-.25px; }
+  .metric em,.metric small,.metric--compact small { margin-top:4px;font-size:8.5px;line-height:1.35; }
+  .employee-top-grid { gap:8px; }
+  .employee-top-grid > .card { min-height:0;padding:12px; }
+  .employee-info-card dl { gap:8px; }
+  .employee-info-card dl > div { grid-template-columns:minmax(82px,42%) minmax(0,1fr);gap:8px; }
+  .current-shift-card > div { gap:3px 10px; }
+  .current-shift-card > div strong { font-size:17px; }
+  .current-shift-card > p { gap:8px;margin:12px 0; }
+  .checkin-card > strong { margin-bottom:8px;font-size:23px; }
+  .avatar-cropper { gap:14px; }
+  .avatar-cropper__controls label { grid-template-columns:86px minmax(0,1fr);gap:8px;font-size:11px; }
+  .identity-image-actions.identity-image-actions--stable,.row-actions.identity-image-actions--stable { grid-template-columns:repeat(2,minmax(54px,1fr));max-width:150px;gap:5px; }
+  .identity-image-actions.identity-image-actions--stable > button,.row-actions.identity-image-actions--stable > button { min-height:36px;padding-inline:7px; }
+}

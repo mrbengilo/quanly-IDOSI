@@ -109,6 +109,8 @@ const systemMenus = {
   employee: [
     { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
     { label: 'Đơn hàng', path: '/employee/orders', icon: ShoppingCart },
+    { label: 'Chi phí trong ca', path: '/employee/shift-expenses', icon: ReceiptText },
+    { label: 'Công việc được giao', path: '/employee/tasks', icon: ClipboardCheck },
     { label: 'Dòng tiền', path: '/employee/cashflow', icon: Banknote },
     { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
     { label: 'Lịch phân ca', path: '/employee/schedule', icon: CalendarCheck },
@@ -201,16 +203,18 @@ export default function AppShell() {
   const sessionEmployeeId = String(session?.employeeId || session?.code || '')
   const unreadNotifications = useMemo(() => notificationItems.filter((item) => {
     const targetEmployeeId = String(item?.targetEmployeeId || item?.target?.employeeId || item?.data?.employeeId || (['support-work-assigned', 'store-task-assigned'].includes(item?.type) ? item?.employeeId : '') || '')
+    const targetRole = String(item?.targetRole || item?.target?.role || '')
     const belongsToAccount = targetEmployeeId
       ? (!isAdmin && targetEmployeeId === sessionEmployeeId)
       : true
-    return belongsToAccount
+    return (!targetRole || targetRole === canonicalRole)
+    && belongsToAccount
     && (!scopedNotificationStoreId || !item?.storeId || String(item.storeId) === String(scopedNotificationStoreId))
     && !item?.read
     && !item?.isRead
     && !item?.readAt
     && !locallyReadNotificationIds.has(notificationKey(item))
-  }), [isAdmin, locallyReadNotificationIds, notificationItems, scopedNotificationStoreId, sessionEmployeeId])
+  }), [canonicalRole, isAdmin, locallyReadNotificationIds, notificationItems, scopedNotificationStoreId, sessionEmployeeId])
   const readNotification = app.readNotification || app.markNotificationRead || app.dismissNotification
   const clearNotifications = app.clearNotifications || app.clearAllNotifications || app.deleteAllNotifications
 

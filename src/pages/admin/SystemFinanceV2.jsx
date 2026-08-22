@@ -24,14 +24,30 @@ import {
 } from '../../components/UI'
 import { financeSummaryFromState } from '../../domain'
 import { useApp } from '../../state/AppContext'
-import { downloadCsv, money, shortDate, today } from '../../utils'
+import { businessDate, downloadCsv, money, shortDate, today } from '../../utils'
 
 const monthBounds = (period) => ({
   from: `${period}-01`,
   to: `${period}-${String(new Date(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 0).getDate()).padStart(2, '0')}`,
 })
 
-const transactionDate = (transaction = {}) => String(transaction.occurredAt || transaction.createdAt || '').slice(0, 10)
+const createFinanceFilter = () => ({
+  mode: 'month',
+  month: today().slice(0, 7),
+  date: today(),
+  storeId: 'all',
+})
+
+const boundsForFilter = (filter) => filter.mode === 'day'
+  ? { from: filter.date, to: filter.date }
+  : monthBounds(filter.month)
+
+const financeSummaryForFilter = (app, filter, storeId = filter.storeId) => financeSummaryFromState(app, {
+  ...(storeId === 'all' ? {} : { storeId }),
+  ...boundsForFilter(filter),
+})
+
+const transactionDate = (transaction = {}) => businessDate(transaction.occurredAt || transaction.createdAt)
 
 const summariesFor = (app, period) => {
   const bounds = monthBounds(period)
@@ -40,6 +56,11 @@ const summariesFor = (app, period) => {
     summary: financeSummaryFromState(app, { storeId: store.id, ...bounds }),
   }))
 }
+
+const summariesForFilter = (app, filter) => app.stores.map((store) => ({
+  store,
+  summary: financeSummaryForFilter(app, filter, store.id),
+}))
 
 const totalsFrom = (rows) => rows.reduce((totals, row) => ({
   revenue: totals.revenue + row.summary.revenue,
@@ -63,6 +84,39 @@ function SystemMetrics({ rows }) {
       <MetricCard label="CHI PHÍ" value={money(totals.expense)} icon={TrendingDown} tone="orange" compact />
       <MetricCard label="LỢI NHUẬN" value={money(totals.profit)} icon={Wallet} tone={totals.profit >= 0 ? 'green' : 'red'} compact />
       <MetricCard label="BIÊN LỢI NHUẬN" value={`${margin.toFixed(2)}%`} icon={BarChart3} tone="blue" compact />
+    </div>
+  )
+}
+
+function FinanceTableFilters({ filter, onChange, stores, scope }) {
+  const update = (field, value) => onChange((current) => ({ ...current, [field]: value }))
+  const isDay = filter.mode === 'day'
+  return (
+    <div className="toolbar-wrap" aria-label={`Bộ lọc ${scope}`}>
+      <Select
+        aria-label={`Chế độ lọc ${scope}`}
+        value={filter.mode}
+        onChange={(event) => update('mode', event.target.value)}
+      >
+        <option value="day">Theo ngày</option>
+        <option value="month">Theo tháng</option>
+      </Select>
+      <Input
+        aria-label={`${isDay ? 'Chọn ngày' : 'Chọn tháng'} ${scope}`}
+        type={isDay ? 'date' : 'month'}
+        value={isDay ? filter.date : filter.month}
+        onChange={(event) => {
+          if (event.target.value) update(isDay ? 'date' : 'month', event.target.value)
+        }}
+      />
+      <Select
+        aria-label={`Chọn cửa hàng ${scope}`}
+        value={filter.storeId}
+        onChange={(event) => update('storeId', event.target.value)}
+      >
+        <option value="all">Tất cả cửa hàng</option>
+        {stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+      </Select>
     </div>
   )
 }
@@ -113,18 +167,18 @@ export function AdminOverviewV2() {
 
 export function AdminCashflowV2() {
   const app = useApp()
-  const [period, setPeriod] = useState(today().slice(0, 7))
-  const [storeId, setStoreId] = useState('all')
-  const storeRows = useMemo(() => summariesFor(app, period), [app, period])
-  const visibleStoreRows = storeId === 'all' ? storeRows : storeRows.filter((row) => row.store.id === storeId)
-  const bounds = monthBounds(period)
-  const summary = financeSummaryFromState(app, {
-    ...(storeId === 'all' ? {} : { storeId }),
-    ...bounds,
-  })
+  const [dailyFilter, setDailyFilter] = useState(createFinanceFilter)
+  const [sourceFilter, setSourceFilter] = useState(createFinanceFilter)
+  const dailyStoreRows = useMemo(() => summariesForFilter(app, dailyFilter), [app, dailyFilter])
+  const visibleStoreRows = dailyFilter.storeId === 'all'
+    ? dailyStoreRows
+    : dailyStoreRows.filter((row) => row.store.id === dailyFilter.storeId)
+  const dailySummary = useMemo(() => financeSummaryForFilter(app, dailyFilter), [app, dailyFilter])
+  const sourceSummary = useMemo(() => financeSummaryForFilter(app, sourceFilter), [app, sourceFilter])
+  const storeNames = useMemo(() => new Map(app.stores.map((store) => [store.id, store.name])), [app.stores])
   const dailyRows = useMemo(() => {
     const grouped = new Map()
-    summary.transactions.forEach((transaction) => {
+    dailySummary.transactions.forEach((transaction) => {
       const date = transactionDate(transaction)
       if (!date) return
       const row = grouped.get(date) || { date, revenue: 0, expense: 0 }
@@ -133,17 +187,23 @@ export function AdminCashflowV2() {
       grouped.set(date, row)
     })
     return [...grouped.values()].map((row) => ({ ...row, profit: row.revenue - row.expense })).sort((left, right) => right.date.localeCompare(left.date))
-  }, [summary.transactions])
+  }, [dailySummary.transactions])
 
   return (
     <div className="page">
-      <PageHeader title="DÒNG TIỀN HỆ THỐNG" subtitle="Đơn hàng là nguồn doanh thu duy nhất; chi phí chỉ xuất hiện sau khi được ghi nhận." icon={Wallet} actions={<><Select value={storeId} onChange={(event) => setStoreId(event.target.value)}><option value="all">Tất cả cửa hàng</option>{app.stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} /></>} />
+      <PageHeader title="DÒNG TIỀN HỆ THỐNG" subtitle="Đơn hàng là nguồn doanh thu duy nhất; chi phí chỉ xuất hiện sau khi được ghi nhận." icon={Wallet} />
       <SystemMetrics rows={visibleStoreRows} />
-      <Card title="Dòng tiền theo ngày">
+      <Card
+        title="Dòng tiền theo ngày"
+        action={<FinanceTableFilters filter={dailyFilter} onChange={setDailyFilter} stores={app.stores} scope="dòng tiền theo ngày" />}
+      >
         <TableWrap><thead><tr><th>Ngày</th><th>Doanh thu từ đơn</th><th>Chi phí đã ghi nhận</th><th>Lợi nhuận</th></tr></thead><tbody>{dailyRows.map((row) => <tr key={row.date}><td>{shortDate(row.date)}</td><td className="green-text"><strong>{money(row.revenue)}</strong></td><td className="orange-text"><strong>{money(row.expense)}</strong></td><td><strong>{money(row.profit)}</strong></td></tr>)}{!dailyRows.length && <tr><td colSpan="4">Chưa có giao dịch trong kỳ đã chọn.</td></tr>}</tbody></TableWrap>
       </Card>
-      <Card title="Nguồn giao dịch">
-        <TableWrap><thead><tr><th>Thời gian</th><th>Cửa hàng</th><th>Loại</th><th>Nguồn</th><th>Thu / Chi</th><th>Số tiền</th></tr></thead><tbody>{summary.transactions.map((transaction) => <tr key={transaction.id}><td>{shortDate(transactionDate(transaction))}</td><td>{app.stores.find((store) => store.id === transaction.storeId)?.name || transaction.storeId}</td><td>{transaction.type}</td><td>{transaction.sourceType === 'order' ? 'Đơn hàng' : 'Chi phí'}</td><td><Badge tone={transaction.direction === 'in' ? 'green' : 'orange'}>{transaction.direction === 'in' ? 'Thu' : 'Chi'}</Badge></td><td><strong>{money(transaction.amount)}</strong></td></tr>)}</tbody></TableWrap>
+      <Card
+        title="Nguồn giao dịch"
+        action={<FinanceTableFilters filter={sourceFilter} onChange={setSourceFilter} stores={app.stores} scope="nguồn giao dịch" />}
+      >
+        <TableWrap><thead><tr><th>Thời gian</th><th>Cửa hàng</th><th>Loại</th><th>Nguồn</th><th>Thu / Chi</th><th>Số tiền</th></tr></thead><tbody>{sourceSummary.transactions.map((transaction) => <tr key={transaction.id}><td>{shortDate(transactionDate(transaction))}</td><td>{storeNames.get(transaction.storeId) || transaction.storeId}</td><td>{transaction.type}</td><td>{transaction.sourceType === 'order' ? 'Đơn hàng' : 'Chi phí'}</td><td><Badge tone={transaction.direction === 'in' ? 'green' : 'orange'}>{transaction.direction === 'in' ? 'Thu' : 'Chi'}</Badge></td><td><strong>{money(transaction.amount)}</strong></td></tr>)}{!sourceSummary.transactions.length && <tr><td colSpan="6">Chưa có giao dịch trong kỳ đã chọn.</td></tr>}</tbody></TableWrap>
       </Card>
     </div>
   )

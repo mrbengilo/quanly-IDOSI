@@ -5,6 +5,8 @@ export const ACCOUNT_AVATAR_MIME_TYPES = Object.freeze(['image/jpeg', 'image/png
 const AVATAR_DATA_URL = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]*(?:={0,2}))$/u
 const QUALITY_STEPS = [0.86, 0.76, 0.66, 0.56, 0.46]
 const OUTPUT_MIME_TYPES = ['image/webp', 'image/jpeg']
+const MAX_AVATAR_OUTPUT_EDGE = 1024
+const MAX_IMAGE_OUTPUT_EDGE = 1400
 
 export class AccountAvatarError extends Error {
   constructor(code, message) {
@@ -106,7 +108,16 @@ const decodeInBrowser = async (file) => {
   }
 }
 
-const encodeInBrowser = (source, { width, height, mimeType, quality }) => {
+const encodeInBrowser = (source, {
+  height,
+  mimeType,
+  quality,
+  sourceHeight,
+  sourceWidth,
+  sourceX,
+  sourceY,
+  width,
+}) => {
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
@@ -118,7 +129,17 @@ const encodeInBrowser = (source, { width, height, mimeType, quality }) => {
   }
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'
-  context.drawImage(source, 0, 0, width, height)
+  context.drawImage(
+    source,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    width,
+    height,
+  )
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => {
       if (blob?.size) resolve(blob)
@@ -134,11 +155,28 @@ const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
   reader.readAsDataURL(blob)
 })
 
+const clamp = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, Number(value) || 0))
+
 const fittedSize = (width, height, maxEdge) => {
   const ratio = Math.min(1, maxEdge / Math.max(width, height))
   return {
     width: Math.max(1, Math.round(width * ratio)),
     height: Math.max(1, Math.round(height * ratio)),
+  }
+}
+
+export function accountAvatarCrop(sourceWidth, sourceHeight, crop = {}) {
+  const width = Math.max(1, Number(sourceWidth) || 1)
+  const height = Math.max(1, Number(sourceHeight) || 1)
+  const zoom = clamp(crop.zoom || 1, 1, 3)
+  const cropEdge = Math.min(width, height) / zoom
+  const positionX = clamp(crop.positionX, -1, 1)
+  const positionY = clamp(crop.positionY, -1, 1)
+  return {
+    sourceX: (width - cropEdge) * ((positionX + 1) / 2),
+    sourceY: (height - cropEdge) * ((positionY + 1) / 2),
+    sourceWidth: cropEdge,
+    sourceHeight: cropEdge,
   }
 }
 
@@ -156,10 +194,23 @@ export async function optimizeAccountAvatar(file, options = {}) {
   }
 
   try {
-    let maxEdge = Math.min(1400, Math.max(sourceWidth, sourceHeight))
+    const hasExplicitAvatarCrop = Boolean(options.crop && typeof options.crop === 'object')
+    const crop = hasExplicitAvatarCrop
+      ? accountAvatarCrop(sourceWidth, sourceHeight, options.crop)
+      : {
+          sourceX: 0,
+          sourceY: 0,
+          sourceWidth,
+          sourceHeight,
+        }
+    let maxEdge = hasExplicitAvatarCrop
+      ? Math.max(96, Math.min(MAX_AVATAR_OUTPUT_EDGE, Math.floor(crop.sourceWidth)))
+      : Math.min(MAX_IMAGE_OUTPUT_EDGE, Math.max(sourceWidth, sourceHeight))
     const attemptedSizes = new Set()
     while (maxEdge >= 96) {
-      const size = fittedSize(sourceWidth, sourceHeight, maxEdge)
+      const size = hasExplicitAvatarCrop
+        ? { width: maxEdge, height: maxEdge }
+        : fittedSize(crop.sourceWidth, crop.sourceHeight, maxEdge)
       const sizeKey = `${size.width}x${size.height}`
       if (!attemptedSizes.has(sizeKey)) {
         attemptedSizes.add(sizeKey)
@@ -167,13 +218,19 @@ export async function optimizeAccountAvatar(file, options = {}) {
           for (const mimeType of OUTPUT_MIME_TYPES) {
             let blob
             try {
-              blob = await encodeImage(decoded.source, { ...size, mimeType, quality })
+              blob = await encodeImage(decoded.source, { ...crop, ...size, mimeType, quality })
             } catch {
               continue
             }
             if (!blob?.size || blob.size > ACCOUNT_AVATAR_MAX_BYTES || !ACCOUNT_AVATAR_MIME_TYPES.includes(blob.type)) continue
             const result = validateAccountAvatarDataUrl(await toDataUrl(blob), { allowEmpty: false })
-            return { ...result, width: size.width, height: size.height, sourceBytes: file.size }
+            return {
+              ...result,
+              width: size.width,
+              height: size.height,
+              sourceBytes: file.size,
+              ...(hasExplicitAvatarCrop ? { crop } : {}),
+            }
           }
         }
       }

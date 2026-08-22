@@ -214,6 +214,10 @@ const setupSupportTransferRuntime = async ({
   shiftDefinitions = [],
   orders = [],
   notifications = [],
+  tasks = [],
+  taskAssignmentHistory = [],
+  expenseEntries = [],
+  cashTransactions = [],
 } = {}) => {
   const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: token }
   const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
@@ -239,8 +243,8 @@ const setupSupportTransferRuntime = async ({
       shiftDefinitions,
       orders,
       notifications,
-      tasks: [], taskAssignmentHistory: [], orderAudit: [], expenseEntries: [], fixedExpenses: [],
-      cashTransactions: [], salaryAdjustments: [], salaryAdvances: [], payrollPayments: [],
+      tasks, taskAssignmentHistory, orderAudit: [], expenseEntries, fixedExpenses: [],
+      cashTransactions, salaryAdjustments: [], salaryAdvances: [], payrollPayments: [],
     },
   }, { 'x-idosi-bootstrap-token': token }), env)
   expect(bootstrap.status).toBe(201)
@@ -1490,7 +1494,7 @@ describe('IDOSI Worker security primitives', () => {
         storeId: 'S01',
         customerName: 'Khách hàng mới',
         gender: 'Nữ',
-        occupation: 'Kinh doanh',
+        occupation: 'Buôn bán/kinh doanh',
         acquisitionChannel: 'Facebook',
         amount: 25_000,
         paymentMethod: 'Chuyển khoản',
@@ -6158,6 +6162,15 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-order-profile-required-0001' }), env)
       expect(missingCustomerProfile.status).toBe(400)
       expect(await missingCustomerProfile.json()).toMatchObject({ error: { code: 'ORDER_GENDER_INVALID' } })
+      const invalidOccupation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.create', expectedVersion: 6,
+        payload: {
+          storeId: 'S01', customerName: 'Nghề ngoài danh mục', gender: 'Nữ', occupation: 'Kế toán',
+          acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt',
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-order-invalid-occupation-0001' }), env)
+      expect(invalidOccupation.status).toBe(400)
+      expect(await invalidOccupation.json()).toMatchObject({ error: { code: 'ORDER_OCCUPATION_INVALID' } })
       const spoofedOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'order.create', expectedVersion: 6,
         payload: {
@@ -6172,7 +6185,7 @@ describe('IDOSI Worker security primitives', () => {
         type: 'order.create', expectedVersion: 6,
         payload: {
           storeId: 'S01', employeeId: 'E02', attendanceId: 'ATT-SPOOF', customerName: 'Khách tiền mặt',
-          gender: 'Nữ', occupation: 'Kế toán', acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt',
+          gender: 'Nữ', occupation: 'Nhân viên VP', acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt',
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-cash-order-0001' }), env)
       expect(cashOrder.status).toBe(201)
@@ -6180,7 +6193,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(cashOrderBody).toMatchObject({
         version: 7,
         order: {
-          storeId: 'S01', employeeId: 'E01', attendanceId, gender: 'Nữ', occupation: 'Kế toán',
+          storeId: 'S01', employeeId: 'E01', attendanceId, gender: 'Nữ', occupation: 'Nhân viên VP',
           acquisitionChannel: 'Facebook', paymentMethod: 'Tiền mặt', amount: 100_000,
         },
       })
@@ -6194,6 +6207,12 @@ describe('IDOSI Worker security primitives', () => {
       expect(transferOrder.status).toBe(201)
       const transferOrderBody = await transferOrder.json()
       expect(transferOrderBody).toMatchObject({ version: 8, order: { attendanceId, acquisitionChannel: 'Tiktok' } })
+      const invalidOccupationUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.update', expectedVersion: 8,
+        payload: { orderId: transferOrderBody.order.id, occupation: 'Kế toán', reason: 'Thử nghề ngoài danh mục' },
+      }, { ...adminAuthorization, 'idempotency-key': 'admin-order-invalid-occupation-update-0001' }), env)
+      expect(invalidOccupationUpdate.status).toBe(400)
+      expect(await invalidOccupationUpdate.json()).toMatchObject({ error: { code: 'ORDER_OCCUPATION_INVALID' } })
       const updatedOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'order.update', expectedVersion: 8,
         payload: {
@@ -6396,6 +6415,141 @@ describe('IDOSI Worker security primitives', () => {
       }), env)
       expect(await employeeReturnedHome.json()).toMatchObject({ state: { activeStoreId: 'S01' } })
       expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('records idempotent employee shift expenses and submits scoped task completion to management', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-22T03:00:00.000Z'))
+      const attendanceId = 'ATT-SHIFT-OPS-01'
+      const assignmentId = 'TASK-ASSIGNMENT-SHIFT-OPS-01'
+      const { env, adminAuthorization, employeeAuthorization } = await setupSupportTransferRuntime({
+        token: 'bootstrap-shift-operations',
+        transfer: {
+          id: 'TRANSFER-CANCELLED', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+          startAt: '2026-08-20T08:00', endAt: '2026-08-20T12:00', status: 'Đã hủy', deletedAt: '2026-08-20T00:00:00.000Z',
+        },
+        attendance: [{
+          id: attendanceId, employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', storeId: 'S01',
+          date: '2026-08-22', shiftId: 'SHIFT-OPS', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00',
+          checkIn: '08:00', checkInAt: '2026-08-22T01:00:00.000Z', checkOut: null, checkOutAt: null,
+        }],
+        tasks: [{
+          id: 'TASK-OPS-01', assignmentId, storeId: 'S01', date: '2026-08-22', shiftId: 'SHIFT-OPS',
+          employeeIds: ['E01'], title: 'Kiểm tra quầy', completedBy: {},
+        }, {
+          id: 'TASK-OPS-02', assignmentId, storeId: 'S01', date: '2026-08-22', shiftId: 'SHIFT-OPS',
+          employeeIds: ['E01'], title: 'Báo cáo tồn kho', completedBy: {},
+        }],
+        taskAssignmentHistory: [{
+          id: assignmentId, assignmentId, action: 'assigned', storeId: 'S01', date: '2026-08-22', shiftId: 'SHIFT-OPS',
+          employeeIds: ['E01'], tasks: [
+            { id: 'TASK-OPS-01', title: 'Kiểm tra quầy', completedBy: {} },
+            { id: 'TASK-OPS-02', title: 'Báo cáo tồn kho', completedBy: {} },
+          ],
+          progressHistory: [],
+        }],
+      })
+
+      const expenseRequest = {
+        type: 'shift_expense.create', expectedVersion: 1,
+        payload: { attendanceId, name: 'Mua vật dụng vệ sinh', amount: 35_000, note: 'Mua trong ca sáng' },
+      }
+      const expense = await worker.fetch(jsonRequest('https://idosi.example/api/command', expenseRequest, {
+        ...employeeAuthorization, 'idempotency-key': 'shift-expense-idempotent-0001',
+      }), env)
+      expect(expense.status).toBe(201)
+      const expenseBody = await expense.json()
+      expect(expenseBody).toMatchObject({
+        version: 2,
+        expense: {
+          storeId: 'S01', employeeId: 'E01', attendanceId, shiftId: 'SHIFT-OPS',
+          name: 'Mua vật dụng vệ sinh', amount: 35_000, sourceType: 'shift-expense-item',
+        },
+        attendance: { id: attendanceId, expense: 35_000, shiftExpenseTotal: 35_000 },
+      })
+      const expenseReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', expenseRequest, {
+        ...employeeAuthorization, 'idempotency-key': 'shift-expense-idempotent-0001',
+      }), env)
+      expect(expenseReplay.status).toBe(201)
+      expect(await expenseReplay.json()).toMatchObject({ version: 2, expense: { id: expenseBody.expense.id } })
+
+      replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+        id: 'PAY-SHIFT-OPS', storeId: 'S01', period: '2026-08', status: 'Đã khóa', lockedAt: '2026-08-22T02:00:00.000Z',
+      }])
+      const lockedExpense = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'shift_expense.create', expectedVersion: 2,
+        payload: { attendanceId, name: 'Chi phí bị chặn', amount: 10_000 },
+      }, { ...employeeAuthorization, 'idempotency-key': 'shift-expense-locked-0001' }), env)
+      expect(lockedExpense.status).toBe(409)
+      expect(await lockedExpense.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+      replaceStateCollection(env.DB.database, 'payrollPeriods', [])
+
+      const missingReason = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.progress.save', expectedVersion: 2,
+        payload: { attendanceId, tasks: [{ id: 'TASK-OPS-01', completed: true }, { id: 'TASK-OPS-02', completed: false }] },
+      }, { ...employeeAuthorization, 'idempotency-key': 'task-progress-missing-reason-0001' }), env)
+      expect(missingReason.status).toBe(400)
+      expect(await missingReason.json()).toMatchObject({ error: { code: 'INCOMPLETE_TASK_REASON_REQUIRED' } })
+
+      const progressRequest = {
+        type: 'task.progress.save', expectedVersion: 2,
+        payload: {
+          attendanceId,
+          tasks: [{ id: 'TASK-OPS-01', completed: true }, { id: 'TASK-OPS-02', completed: false }],
+          incompleteReason: 'Chưa kiểm xong kho cuối ca',
+        },
+      }
+      const progress = await worker.fetch(jsonRequest('https://idosi.example/api/command', progressRequest, {
+        ...employeeAuthorization, 'idempotency-key': 'task-progress-idempotent-0001',
+      }), env)
+      expect(progress.status).toBe(200)
+      expect(await progress.json()).toMatchObject({
+        version: 3, attendanceId, employeeId: 'E01', completedTasks: 1, totalTasks: 2, completionRate: 50,
+        incompleteReason: 'Chưa kiểm xong kho cuối ca',
+        notifications: [{ type: 'store-task-progress-submitted', storeId: 'S01', employeeId: 'E01', assignmentId }],
+      })
+      const progressReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', progressRequest, {
+        ...employeeAuthorization, 'idempotency-key': 'task-progress-idempotent-0001',
+      }), env)
+      expect(progressReplay.status).toBe(200)
+      expect(await progressReplay.json()).toMatchObject({ version: 3, completionRate: 50 })
+
+      const employeeState = await worker.fetch(new Request('https://idosi.example/api/state', { headers: employeeAuthorization }), env)
+      const employeeStateBody = await employeeState.json()
+      expect(employeeStateBody.state.expenseEntries).toEqual([
+        expect.objectContaining({ id: expenseBody.expense.id, employeeId: 'E01', attendanceId, amount: 35_000 }),
+      ])
+      expect(employeeStateBody.state.notifications.some(({ type }) => type === 'store-task-progress-submitted')).toBe(false)
+      const adminState = await worker.fetch(new Request('https://idosi.example/api/state', { headers: adminAuthorization }), env)
+      expect((await adminState.json()).state.notifications).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'store-task-progress-submitted', assignmentId, employeeId: 'E01' }),
+      ]))
+
+      const checkout = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 3,
+        payload: {
+          attendanceId, cashRevenue: 0, transferRevenue: 0,
+          incompleteTaskReason: 'Chưa kiểm xong kho cuối ca',
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'shift-ops-checkout-0001' }), env)
+      expect(checkout.status).toBe(200)
+      expect(await checkout.json()).toMatchObject({
+        version: 4,
+        attendance: { id: attendanceId, expense: 35_000, shiftExpenseTotal: 35_000 },
+      })
+      const persisted = readHydratedState(env.DB.database)
+      expect(persisted.expenseEntries.filter(({ attendanceId: id }) => id === attendanceId)).toHaveLength(1)
+      expect(persisted.cashTransactions.filter(({ attendanceId: id }) => id === attendanceId)).toHaveLength(1)
+      expect(persisted.taskAssignmentHistory[0]).toMatchObject({
+        assignmentId, status: 'incomplete', completedTasks: 1, totalTasks: 2, completionRate: 50,
+        incompleteReason: 'Chưa kiểm xong kho cuối ca',
+        progressHistory: [expect.objectContaining({ action: 'progress-submitted', employeeId: 'E01', attendanceId, completionRate: 50 })],
+      })
     } finally {
       vi.useRealTimers()
     }
@@ -7076,7 +7230,7 @@ describe('IDOSI Worker security primitives', () => {
       const orderCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'order.create', expectedVersion: 2,
         payload: {
-          storeId: 'S02', customerName: 'Khách hỗ trợ', gender: 'Nữ', occupation: 'Kế toán',
+          storeId: 'S02', customerName: 'Khách hỗ trợ', gender: 'Nữ', occupation: 'Nhân viên VP',
           acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt',
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'cross-month-transfer-order-0001' }), env)

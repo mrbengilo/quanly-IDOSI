@@ -7,11 +7,13 @@ const mocked = vi.hoisted(() => ({
   notify: vi.fn(),
   optimizeAccountAvatar: vi.fn(),
   saveSettings: vi.fn(),
+  validateAccountAvatarSource: vi.fn(),
   verifyCurrentPassword: vi.fn(),
 }))
 
 vi.mock('../../domain/accountAvatar', () => ({
   optimizeAccountAvatar: mocked.optimizeAccountAvatar,
+  validateAccountAvatarSource: mocked.validateAccountAvatarSource,
 }))
 
 vi.mock('../../state/AppContext', () => ({
@@ -46,7 +48,10 @@ describe('AdminSettings password visibility', () => {
     mocked.verifyCurrentPassword.mockReset().mockResolvedValue(true)
     mocked.notify.mockReset()
     mocked.optimizeAccountAvatar.mockReset()
+    mocked.validateAccountAvatarSource.mockReset()
     mocked.saveSettings.mockReset().mockResolvedValue({ ok: true, settings: {} })
+    URL.createObjectURL = vi.fn(() => 'blob:avatar-preview')
+    URL.revokeObjectURL = vi.fn()
   })
 
   afterEach(cleanup)
@@ -111,11 +116,19 @@ describe('AdminSettings password visibility', () => {
     const input = document.querySelector('input[type="file"]')
     expect(input.accept).toBe('image/jpeg,image/png,image/webp')
     expect(screen.getByText(/Ảnh gốc JPG, PNG, WebP tối đa 5 MB/u)).toBeTruthy()
-    fireEvent.change(input, {
-      target: { files: [new File([new Uint8Array(4 * 1024 * 1024)], 'avatar.webp', { type: 'image/webp' })] },
-    })
+    const file = new File([new Uint8Array(4 * 1024 * 1024)], 'avatar.webp', { type: 'image/webp' })
+    fireEvent.change(input, { target: { files: [file] } })
 
-    await waitFor(() => expect(mocked.optimizeAccountAvatar).toHaveBeenCalledOnce())
+    expect(mocked.validateAccountAvatarSource).toHaveBeenCalledWith(file)
+    expect(screen.getByRole('dialog')).toBeTruthy()
+    expect(screen.getByAltText('Ảnh gốc đang căn chỉnh').getAttribute('src')).toBe('blob:avatar-preview')
+    fireEvent.change(screen.getByLabelText('Thu phóng ảnh đại diện'), { target: { value: '1.5' } })
+    fireEvent.change(screen.getByLabelText('Căn ngang ảnh đại diện'), { target: { value: '0.25' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Dùng ảnh này' }))
+
+    await waitFor(() => expect(mocked.optimizeAccountAvatar).toHaveBeenCalledWith(file, {
+      crop: { positionX: 0.25, positionY: 0, zoom: 1.5 },
+    }))
     await waitFor(() => expect(screen.getByAltText('Ảnh đại diện tài khoản').getAttribute('src')).toBe(avatar))
     expect(mocked.notify).toHaveBeenCalledWith(expect.stringContaining('245 KB'), 'info')
 

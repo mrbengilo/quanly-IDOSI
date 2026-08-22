@@ -17,6 +17,8 @@ import {
   roleEmploymentType,
   roleProfilePayload,
   roleProfilesFromApp,
+  resolveOriginalRoleProfile,
+  resolveRoleIdentityImage,
   validateRoleProfile,
 } from './roleManagementUtils'
 
@@ -102,6 +104,21 @@ describe('admin role management helpers', () => {
     expect(roleEmploymentType({ employmentType: 'Part-Time' })).toBe('Part-Time')
     expect(roleEmploymentType({ employmentType: 'Thực tập sinh' })).toBe('Thực Tập Sinh')
     expect(formatRoleDate('2026-08-17')).toBe('17/08/26')
+  })
+
+  it('resolves identity images and avatar from the original profile of a linked role', () => {
+    const source = {
+      id: 'ST-001',
+      avatar: '/avatar-source.webp',
+      identityImages: { front: 'data:image/webp;base64,front-source', back: 'data:image/webp;base64,back-source' },
+    }
+    const manager = { id: 'QLCH-001', linkedEmployeeId: source.id }
+
+    expect(resolveOriginalRoleProfile(manager, [manager, source])).toBe(source)
+    expect(resolveRoleIdentityImage(manager, 'front', [manager, source])).toEqual({
+      image: source.identityImages.front,
+      profile: source,
+    })
   })
 
   it('requires a start date and immutable assignment target for a new store manager', () => {
@@ -361,6 +378,31 @@ describe('role management permissions and form', () => {
     expect(labels).not.toContain('Giờ bắt đầu')
     expect(labels).not.toContain('Giới tính')
     expect(labels).not.toContain('Ngày sinh')
+  })
+
+  it('shows a linked store manager the CCCD and avatar stored on the original employee profile', () => {
+    const source = {
+      id: 'ST-001', unit: 'store', storeId: 'CH001', name: 'Nhân viên gốc', username: 'employee.source',
+      avatar: '/avatar-source.webp',
+      identityImages: {
+        front: 'data:image/png;base64,source-front',
+        back: 'data:image/png;base64,source-back',
+      },
+    }
+    mocked.app = {
+      ...baseApp('admin'),
+      employees: [source],
+      storeManagers: [{
+        id: 'QLCH-001', linkedEmployeeId: source.id, unit: 'store_manager', storeId: 'CH001',
+        name: 'Quản lý liên kết', employmentType: 'Full-Time', position: 'Quản lý cửa hàng',
+      }],
+    }
+
+    render(createElement(StoreManagerManagement))
+
+    expect(screen.getByAltText('Ảnh đại diện Quản lý liên kết').getAttribute('src')).toBe('/avatar-source.webp')
+    fireEvent.click(screen.getByRole('button', { name: 'Xem mặt trước CCCD Quản lý liên kết' }))
+    expect(screen.getByRole('img', { name: /Quản lý liên kết · Mặt trước CCCD/i })).toBeTruthy()
   })
 
   it('lets Business Support create and edit a store manager while keeping delete Admin-only', () => {

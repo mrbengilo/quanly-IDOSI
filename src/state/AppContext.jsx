@@ -35,6 +35,7 @@ import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateKpiBonuses, financeSummaryFromState } from '../domain'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
+import { CUSTOMER_OCCUPATIONS } from '../domain/customerSurvey'
 import {
   normalizeWorkTimeEffectiveDate,
   resolveEffectiveWorkingTime,
@@ -285,6 +286,7 @@ const canListAccounts = (role) => ['admin', 'business_support', 'manager', 'stor
 const isValidEmployeePhone = (value) => /^0\d{9}$/.test(normalizePhone(value))
 const ORDER_GENDERS = new Set(['Nam', 'Nữ', 'Khác'])
 const ORDER_ACQUISITION_CHANNELS = new Set(['Facebook', 'Tiktok', 'Zalo', 'Bạn Bè', 'Người thân', 'Khác'])
+const ORDER_CUSTOMER_OCCUPATIONS = new Set(CUSTOMER_OCCUPATIONS)
 
 const normalizeCredentialToken = (value = '') => String(value)
   .normalize('NFD')
@@ -1775,6 +1777,252 @@ export function AppProvider({ children }) {
     return { ok: true }
   }
 
+  const addShiftExpense = async (payload = {}) => {
+    const employeeId = String(state.session?.employeeId || state.session?.code || '')
+    const employee = state.employees.find((item) => accountKey(item) === employeeId)
+    const role = normalizeAuthRole(state.session?.role)
+    const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
+    if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
+      return { ok: false, message: 'Chức năng này chỉ dành cho nhân viên cửa hàng.' }
+    }
+    const attendanceId = String(payload.attendanceId || '')
+    const openAttendance = state.attendance.find((record) => (
+      String(record.employeeId || '') === employeeId
+      && (!attendanceId || String(record.id || '') === attendanceId)
+      && !record.deletedAt
+      && !record.checkOutAt
+      && !record.checkOut
+    ))
+    if (!openAttendance) return { ok: false, message: 'Bạn cần điểm danh và đang trong ca để nhập chi phí.' }
+    if (String(state.session?.storeId || '') && String(openAttendance.storeId || '') !== String(state.session.storeId)) {
+      return { ok: false, message: 'Ca đang mở không thuộc cửa hàng hiện tại của tài khoản.' }
+    }
+    const name = String(payload.name || payload.expenseName || '').trim()
+    const note = String(payload.note || '').trim()
+    const amount = nonNegativeInteger(payload.amount)
+    if (!name || name.length > 160) return { ok: false, message: 'Tên chi phí là bắt buộc và không được vượt quá 160 ký tự.' }
+    if (amount <= 0) return { ok: false, message: 'Số tiền chi phí phải lớn hơn 0.' }
+    if (note.length > 1_000) return { ok: false, message: 'Ghi chú không được vượt quá 1.000 ký tự.' }
+    const period = recordDate(openAttendance).slice(0, 7)
+    const lockedPeriod = state.payrollPeriods.find((item) => (
+      String(item.storeId || '') === String(openAttendance.storeId || '')
+      && String(item.period || '') === period
+      && (item.lockedAt || item.status === 'Đã khóa')
+    ))
+    if (lockedPeriod) return { ok: false, message: 'Kỳ lương liên quan đã khóa; không thể thay đổi số liệu.' }
+    const idempotencyKey = String(payload.idempotencyKey || `shift-expense:${crypto.randomUUID()}`)
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('shift_expense.create', {
+          attendanceId: openAttendance.id,
+          name,
+          amount,
+          note,
+        }, idempotencyKey)
+        notify('Đã lưu chi phí trong ca.')
+        return { ok: true, expense: result.expense, attendance: result.attendance, existing: result.existing }
+      } catch (error) {
+        notify(error.message || 'Không thể lưu chi phí trong ca.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const existing = state.expenseEntries.find((entry) => String(entry.idempotencyKey || '') === idempotencyKey)
+    if (existing) return { ok: true, expense: existing, existing: true }
+    const timestamp = new Date().toISOString()
+    const expense = {
+      id: uid('EXPCA'),
+      storeId: openAttendance.storeId,
+      employeeId,
+      employeeName: employee.name || employeeId,
+      attendanceId: openAttendance.id,
+      shiftId: openAttendance.shiftId || openAttendance.shift || null,
+      shiftName: openAttendance.shiftName || openAttendance.shift || '',
+      type: name,
+      name,
+      category: 'shift',
+      amount,
+      description: note || name,
+      note,
+      sourceType: 'shift-expense-item',
+      sourceId: null,
+      idempotencyKey,
+      recognized: true,
+      occurredAt: timestamp,
+      createdAt: timestamp,
+      createdBy: employeeId,
+      createdByActor: actorSnapshot(state.session),
+    }
+    expense.sourceId = expense.id
+    const transaction = {
+      id: uid('TXNCA'),
+      storeId: openAttendance.storeId,
+      employeeId,
+      attendanceId: openAttendance.id,
+      shiftId: expense.shiftId,
+      type: name,
+      direction: 'out',
+      amount,
+      description: note || name,
+      sourceType: 'shift-expense-item',
+      sourceId: expense.id,
+      occurredAt: timestamp,
+      createdAt: timestamp,
+      actor: actorSnapshot(state.session),
+    }
+    setState((current) => {
+      if (current.expenseEntries.some((entry) => String(entry.idempotencyKey || '') === idempotencyKey)) return current
+      const previousTotal = current.expenseEntries
+        .filter((entry) => entry.recognized !== false && String(entry.attendanceId || '') === String(openAttendance.id || '') && String(entry.sourceType || '') === 'shift-expense-item')
+        .reduce((total, entry) => total + nonNegativeInteger(entry.amount), 0)
+      const totalShiftExpense = previousTotal + amount
+      return {
+        ...current,
+        attendance: current.attendance.map((record) => String(record.id || '') === String(openAttendance.id || '')
+          ? { ...record, expense: totalShiftExpense, shiftExpenseTotal: totalShiftExpense, updatedAt: timestamp }
+          : record),
+        expenseEntries: [expense, ...current.expenseEntries],
+        cashTransactions: [transaction, ...current.cashTransactions],
+        auditLogs: [{ id: uid('AUD'), entity: 'shift-expense', entityId: expense.id, action: 'create', before: null, after: expense, actor: actorSnapshot(current.session), createdAt: timestamp }, ...current.auditLogs],
+        stateVersion: current.stateVersion + 1,
+      }
+    })
+    notify('Đã lưu chi phí trong ca.')
+    return { ok: true, expense }
+  }
+
+  const saveStoreTaskProgress = async (payload = {}) => {
+    const employeeId = String(state.session?.employeeId || state.session?.code || '')
+    const employee = state.employees.find((item) => accountKey(item) === employeeId)
+    const role = normalizeAuthRole(state.session?.role)
+    const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
+    if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
+      return { ok: false, message: 'Chức năng này chỉ dành cho nhân viên cửa hàng.' }
+    }
+    const attendanceId = String(payload.attendanceId || '')
+    const openAttendance = state.attendance.find((record) => (
+      String(record.employeeId || '') === employeeId
+      && (!attendanceId || String(record.id || '') === attendanceId)
+      && !record.deletedAt
+      && !record.checkOutAt
+      && !record.checkOut
+    ))
+    if (!openAttendance) return { ok: false, message: 'Bạn cần điểm danh và đang trong ca để lưu kết quả công việc.' }
+    const storeId = String(openAttendance.storeId || '')
+    const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
+    const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
+    const scopedTasks = state.tasks.filter((task) => {
+      if (task.deletedAt || String(task.storeId || '') !== storeId || String(task.date || task.workDate || '').slice(0, 10) !== date) return false
+      const assignees = [
+        task.employeeId,
+        ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
+        ...(Array.isArray(task.assigneeIds) ? task.assigneeIds : []),
+        ...(Array.isArray(task.assignedEmployeeIds) ? task.assignedEmployeeIds : []),
+      ].filter(Boolean).map(String)
+      const taskShiftId = String(task.shiftId || task.shift || '')
+      return (!assignees.length || assignees.includes(employeeId)) && (!taskShiftId || taskShiftId === shiftId)
+    })
+    if (!scopedTasks.length) return { ok: false, message: 'Ca đang làm chưa có công việc được giao.' }
+    const statuses = Array.isArray(payload.tasks) ? payload.tasks : []
+    const submitted = new Map()
+    const taskIds = new Set(scopedTasks.map((task) => String(task.id || '')))
+    for (const item of statuses) {
+      const taskId = String(item?.id || item?.taskId || '')
+      if (!taskIds.has(taskId) || submitted.has(taskId) || typeof item?.completed !== 'boolean') {
+        return { ok: false, message: 'Danh sách kết quả có công việc không hợp lệ hoặc không thuộc ca đang làm.' }
+      }
+      submitted.set(taskId, item.completed)
+    }
+    if (submitted.size !== taskIds.size) return { ok: false, message: 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.' }
+    const incompleteReason = String(payload.incompleteReason || payload.note || '').trim()
+    const incompleteTaskIds = [...submitted].filter(([, completed]) => !completed).map(([taskId]) => taskId)
+    if (incompleteReason.length > 1_000) return { ok: false, message: 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.' }
+    if (incompleteTaskIds.length && !incompleteReason) return { ok: false, message: 'Cần nhập ghi chú khi chưa hoàn thành tất cả công việc.' }
+    const idempotencyKey = String(payload.idempotencyKey || `task-progress:${crypto.randomUUID()}`)
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('task.progress.save', {
+          attendanceId: openAttendance.id,
+          tasks: [...submitted].map(([id, completed]) => ({ id, completed })),
+          incompleteReason,
+        }, idempotencyKey)
+        notify(`Đã lưu kết quả: hoàn thành ${result.completionRate || 0}%.`)
+        return { ok: true, ...result }
+      } catch (error) {
+        notify(error.message || 'Không thể lưu kết quả công việc.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const normalizedStatuses = [...submitted].sort(([left], [right]) => left.localeCompare(right))
+    const fingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
+    const existing = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
+      .find((event) => String(event.employeeId || '') === employeeId && String(event.fingerprint || '') === fingerprint)
+    const completedTasks = [...submitted.values()].filter(Boolean).length
+    const totalTasks = submitted.size
+    const completionRate = Math.round((completedTasks / totalTasks) * 100)
+    if (existing) return { ok: true, existing: true, completedTasks, totalTasks, completionRate, submittedAt: existing.at }
+    const timestamp = new Date().toISOString()
+    const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
+    const assignmentSummaries = (assignmentIds.length ? assignmentIds : ['']).map((assignmentId) => {
+      const scopedIds = scopedTasks
+        .filter((task) => !assignmentId || String(task.assignmentId || '') === assignmentId)
+        .map((task) => String(task.id || ''))
+      const scopedCompleted = scopedIds.filter((taskId) => submitted.get(taskId) === true).length
+      return {
+        assignmentId,
+        completedTasks: scopedCompleted,
+        totalTasks: scopedIds.length,
+        completionRate: scopedIds.length ? Math.round((scopedCompleted / scopedIds.length) * 100) : 0,
+      }
+    })
+    setState((current) => ({
+      ...current,
+      tasks: current.tasks.map((task) => submitted.has(String(task.id || '')) ? {
+        ...task,
+        completedBy: { ...(task.completedBy || {}), [employeeId]: submitted.get(String(task.id || '')) },
+        completionHistory: [...(task.completionHistory || []), { done: submitted.get(String(task.id || '')), at: timestamp, employeeId, actor: actorSnapshot(current.session) }],
+        updatedAt: timestamp,
+      } : task),
+      taskAssignmentHistory: current.taskAssignmentHistory.map((assignment) => {
+        const assignmentId = String(assignment.assignmentId || assignment.id || '')
+        if (!assignmentIds.includes(assignmentId)) return assignment
+        const assignmentTaskIds = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId).map((task) => String(task.id || ''))
+        const assignmentCompleted = assignmentTaskIds.filter((id) => submitted.get(id) === true).length
+        const assignmentRate = assignmentTaskIds.length ? Math.round((assignmentCompleted / assignmentTaskIds.length) * 100) : 0
+        const event = { action: 'progress-submitted', employeeId, employeeName: employee.name || employeeId, attendanceId: openAttendance.id, storeId, date, shiftId, assignmentId, completedTasks: assignmentCompleted, totalTasks: assignmentTaskIds.length, completionRate: assignmentRate, incompleteReason: assignmentRate === 100 ? '' : incompleteReason, fingerprint, at: timestamp, actor: actorSnapshot(current.session) }
+        return {
+          ...assignment,
+          status: assignmentRate === 100 ? 'completed' : 'incomplete',
+          completionRate: assignmentRate,
+          completedTasks: assignmentCompleted,
+          totalTasks: assignmentTaskIds.length,
+          incompleteReason: assignmentRate === 100 ? '' : incompleteReason,
+          progressHistory: [...(assignment.progressHistory || []), event],
+          updatedAt: timestamp,
+        }
+      }),
+      notifications: assignmentSummaries.flatMap((summary) => (
+        ['admin', 'business_support', 'store_manager'].map((targetRole) => ({
+          id: uid('NTF'),
+          type: 'store-task-progress-submitted',
+          targetRole,
+          storeId,
+          employeeId,
+          attendanceId: openAttendance.id,
+          assignmentId: summary.assignmentId || null,
+          route: `/store/tasks${summary.assignmentId ? `?assignment=${encodeURIComponent(summary.assignmentId)}` : ''}`,
+          title: `${employee.name || employeeId} đã gửi kết quả công việc`,
+          message: `Hoàn thành ${summary.completedTasks}/${summary.totalTasks} công việc (${summary.completionRate}%).`,
+          createdAt: timestamp,
+          readAt: null,
+        }))
+      )).concat(current.notifications || []),
+      auditLogs: [{ id: uid('AUD'), entity: 'task-progress', entityId: `${openAttendance.id}:${employeeId}`, action: 'submit', before: null, after: normalizedStatuses, actor: actorSnapshot(current.session), createdAt: timestamp }, ...current.auditLogs],
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify(`Đã lưu kết quả: hoàn thành ${completionRate}%.`)
+    return { ok: true, completedTasks, totalTasks, completionRate, incompleteReason, submittedAt: timestamp }
+  }
+
   const replaceTasks = async (input) => {
     const envelope = Array.isArray(input)
       ? { tasks: input }
@@ -2227,7 +2475,7 @@ export function AppProvider({ children }) {
     const occupation = String(payload.occupation || '').trim()
     const acquisitionChannel = String(payload.acquisitionChannel || '').trim()
     if (!ORDER_GENDERS.has(gender)) return { ok: false, message: 'Vui lòng chọn giới tính khách hàng.' }
-    if (!occupation) return { ok: false, message: 'Vui lòng nhập nghề nghiệp khách hàng.' }
+    if (!ORDER_CUSTOMER_OCCUPATIONS.has(occupation)) return { ok: false, message: 'Vui lòng chọn nghề nghiệp trong danh sách của hệ thống.' }
     if (!ORDER_ACQUISITION_CHANNELS.has(acquisitionChannel)) return { ok: false, message: 'Vui lòng chọn kênh khách hàng biết đến cửa hàng.' }
     const idempotencyKey = String(payload.idempotencyKey || '').trim()
     if (idempotencyKey && state.idempotencyKeys.includes(idempotencyKey)) {
@@ -2333,6 +2581,7 @@ export function AppProvider({ children }) {
       paymentMethod: payload.paymentMethod || previous.paymentMethod,
     }
     if (candidate.amount <= 0) return { ok: false, message: 'Số tiền đơn hàng phải lớn hơn 0.' }
+    if (payload.occupation != null && !ORDER_CUSTOMER_OCCUPATIONS.has(candidate.occupation)) return { ok: false, message: 'Vui lòng chọn nghề nghiệp trong danh sách của hệ thống.' }
     const changedFields = ['customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod']
       .filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(candidate[key]))
     if (!changedFields.length) return { ok: true, order: previous, existing: true }
@@ -3650,6 +3899,10 @@ export function AppProvider({ children }) {
       notify(message, 'info')
       return { ok: false, message, incompleteTaskIds: incompleteTasks.map((task) => task.id) }
     }
+    const recordedShiftExpense = state.expenseEntries
+      .filter((entry) => entry.recognized !== false && String(entry.attendanceId || '') === String(openRecord.id || '') && String(entry.sourceType || '') === 'shift-expense-item')
+      .reduce((total, entry) => total + nonNegativeInteger(entry.amount), 0)
+    const checkoutShiftExpense = nonNegativeInteger(payload.expense)
     const updated = {
       ...openRecord,
       ...payload.details,
@@ -3661,7 +3914,8 @@ export function AppProvider({ children }) {
       hours,
       workdayCredit: openRecord.unit === 'office' || openRecord.storeId === 'OFFICE' ? 1 : openRecord.workdayCredit,
       revenue: storeEmployeeAttendance ? expectedCashRevenue + expectedTransferRevenue : Number(payload.revenue ?? payload.totalRevenue ?? (Number(payload.cash || 0) + Number(payload.transfer || 0))) || Number(openRecord.revenue) || 0,
-      expense: Number(payload.expense) || Number(openRecord.expense) || 0,
+      expense: recordedShiftExpense + checkoutShiftExpense,
+      shiftExpenseTotal: recordedShiftExpense + checkoutShiftExpense,
       cash: storeEmployeeAttendance ? expectedCashRevenue : Number(payload.cash) || Number(openRecord.cash) || 0,
       transfer: storeEmployeeAttendance ? expectedTransferRevenue : Number(payload.transfer) || Number(openRecord.transfer) || 0,
       orderCount: storeEmployeeAttendance ? relatedOrders.length : Number(openRecord.orderCount) || 0,
@@ -3673,11 +3927,11 @@ export function AppProvider({ children }) {
     setState((current) => ({
       ...current,
       attendance: current.attendance.map((record) => record.id === openRecord.id ? updated : record),
-      expenseEntries: updated.expense > 0 && !current.expenseEntries.some((entry) => entry.sourceType === 'shift-expense' && entry.sourceId === openRecord.id)
-        ? [{ id: uid('EXP'), storeId: openRecord.storeId, type: 'Chi phí trong ca', category: 'shift', amount: updated.expense, description: `Chi phí ${openRecord.shiftName || openRecord.shift}`, sourceType: 'shift-expense', sourceId: openRecord.id, recognized: true, occurredAt: checkOutAt, createdAt: checkOutAt, createdBy: employeeId, employeeId, shiftId: openRecord.shift }, ...current.expenseEntries]
+      expenseEntries: checkoutShiftExpense > 0 && !current.expenseEntries.some((entry) => entry.sourceType === 'shift-expense' && entry.sourceId === openRecord.id)
+        ? [{ id: uid('EXP'), storeId: openRecord.storeId, type: 'Chi phí trong ca', category: 'shift', amount: checkoutShiftExpense, description: `Chi phí ${openRecord.shiftName || openRecord.shift}`, sourceType: 'shift-expense', sourceId: openRecord.id, attendanceId: openRecord.id, recognized: true, occurredAt: checkOutAt, createdAt: checkOutAt, createdBy: employeeId, employeeId, shiftId: openRecord.shift }, ...current.expenseEntries]
         : current.expenseEntries,
-      cashTransactions: updated.expense > 0 && !current.cashTransactions.some((entry) => entry.sourceType === 'shift-expense' && entry.sourceId === openRecord.id)
-        ? [{ id: uid('TXN'), storeId: openRecord.storeId, type: 'Chi phí trong ca', direction: 'out', amount: updated.expense, sourceType: 'shift-expense', sourceId: openRecord.id, occurredAt: checkOutAt, createdAt: checkOutAt, actor: actorSnapshot(current.session) }, ...current.cashTransactions]
+      cashTransactions: checkoutShiftExpense > 0 && !current.cashTransactions.some((entry) => entry.sourceType === 'shift-expense' && entry.sourceId === openRecord.id)
+        ? [{ id: uid('TXN'), storeId: openRecord.storeId, type: 'Chi phí trong ca', direction: 'out', amount: checkoutShiftExpense, sourceType: 'shift-expense', sourceId: openRecord.id, attendanceId: openRecord.id, occurredAt: checkOutAt, createdAt: checkOutAt, actor: actorSnapshot(current.session) }, ...current.cashTransactions]
         : current.cashTransactions,
       activeAttendanceId: null,
       checkedInAt: openRecord.checkIn || openRecord.checkInTime,
@@ -3789,6 +4043,8 @@ export function AppProvider({ children }) {
     updateImport,
     deleteImport,
     setTaskDone,
+    addShiftExpense,
+    saveStoreTaskProgress,
     replaceTasks,
     assignSupportWork,
     updateSupportWork,
