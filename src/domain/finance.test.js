@@ -59,6 +59,20 @@ describe('finance single-source ledger', () => {
     expect(result.transactions[0].amount).toBe(850_000)
   })
 
+  it('keeps the same logical source separate across stores', () => {
+    const firstStore = transaction({
+      id: 'A', storeId: 'CH001', sourceType: 'order', sourceId: 'ORDER-00001', amount: 800_000,
+    })
+    const secondStore = transaction({
+      id: 'B', storeId: 'CH002', sourceType: 'order', sourceId: 'ORDER-00001', amount: 900_000,
+    })
+    const inserted = upsertFinanceTransaction([firstStore], secondStore)
+    expect(inserted.inserted).toBe(true)
+    expect(inserted.transactions).toHaveLength(2)
+    expect(selectFinanceSummary(inserted.transactions, { storeId: 'CH001' }).revenue).toBe(800_000)
+    expect(selectFinanceSummary(inserted.transactions, { storeId: 'CH002' }).revenue).toBe(900_000)
+  })
+
   it('keeps multiple legitimate fixed-expense records even when their type and date match', () => {
     const rows = [
       transaction({ id: 'ELEC-1', sourceType: 'fixedExpense', sourceId: 'ELEC-1', direction: 'out', type: 'electricity', amount: 300_000 }),
