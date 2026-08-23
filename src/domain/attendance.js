@@ -22,18 +22,24 @@ const vietnamDateTimeParts = (value) => {
   }
 }
 
+const hasExplicitTimezone = (value) => /(?:Z|[+-]\d{2}:?\d{2})$/iu.test(String(value ?? '').trim())
+
 const timeParts = (value) => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     const local = vietnamDateTimeParts(value)
     return { minutes: local.minutes, timestamp: value.getTime() }
   }
   const source = String(value ?? '').trim()
+  const parsed = /\d{4}-\d{2}-\d{2}/.test(source) ? new Date(source) : null
+  if (parsed && !Number.isNaN(parsed.getTime()) && hasExplicitTimezone(source)) {
+    const local = vietnamDateTimeParts(parsed)
+    return { minutes: local.minutes, timestamp: parsed.getTime() }
+  }
   const match = source.match(/(?:^|T|\s)(\d{1,2}):(\d{2})/)
   if (!match) return null
   const hour = Number(match[1])
   const minute = Number(match[2])
   if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour > 23 || minute > 59) return null
-  const parsed = /\d{4}-\d{2}-\d{2}/.test(source) ? new Date(source) : null
   return {
     minutes: hour * 60 + minute,
     timestamp: parsed && !Number.isNaN(parsed.getTime()) ? parsed.getTime() : null,
@@ -80,7 +86,9 @@ const dateFrom = (value) => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return vietnamDateTimeParts(value)?.date || ''
   }
-  return String(value ?? '').match(/\d{4}-\d{2}-\d{2}/)?.[0] || ''
+  const source = String(value ?? '').trim()
+  if (hasExplicitTimezone(source)) return vietnamDateTimeParts(source)?.date || ''
+  return source.match(/\d{4}-\d{2}-\d{2}/)?.[0] || ''
 }
 
 const previousDate = (value) => {
