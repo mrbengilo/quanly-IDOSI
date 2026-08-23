@@ -70,7 +70,7 @@ export const financeTransactionKey = (transaction = {}) => {
   if (transaction.sourceType && transaction.sourceId) {
     return `source:${storeScope}:${transaction.sourceType}:${transaction.sourceId}:${transaction.type || transaction.category || ''}:${directionOf(transaction.direction)}`
   }
-  if (transaction.id) return `id:${String(transaction.id)}`
+  if (transaction.id) return `id:${storeScope}:${String(transaction.id)}`
   return ''
 }
 
