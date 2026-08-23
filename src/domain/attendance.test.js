@@ -17,6 +17,14 @@ describe('attendance rules', () => {
     expect(result.lateMinutes).toBe(17)
   })
 
+  it('normalizes explicit UTC timestamps to Vietnam wall time', () => {
+    expect(classifyAttendanceArrival({
+      actualTime: '2026-08-20T01:00:00.000Z',
+      shiftStart: '08:00',
+      toleranceMinutes: 0,
+    })).toMatchObject({ status: ATTENDANCE_STATUS.ON_TIME, differenceMinutes: 0 })
+  })
+
   it('handles a shift start around midnight', () => {
     expect(classifyAttendanceArrival({ actualTime: '00:10', shiftStart: '23:00', toleranceMinutes: 5 })).toMatchObject({
       status: 'Đi trễ',
@@ -49,6 +57,15 @@ describe('attendance rules', () => {
   it('handles overnight shifts as currently in progress', () => {
     const result = resolveShiftCandidates({ at: '01:00', shifts: [{ id: 'night', start: '23:00', end: '02:00' }] })
     expect(result.mode).toBe('confirm-single')
+    expect(result.currentShift.id).toBe('night')
+  })
+
+  it('uses the Vietnam calendar date for explicit UTC timestamps near midnight', () => {
+    const result = resolveShiftCandidates({
+      at: '2026-08-23T18:00:00.000Z',
+      shifts: [{ id: 'night', date: '2026-08-24', start: '00:30', end: '02:00' }],
+      earlyWindowMinutes: 120,
+    })
     expect(result.currentShift.id).toBe('night')
   })
 
