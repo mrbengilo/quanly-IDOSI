@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createFinanceTransaction,
+  financeTransactionKey,
   selectFinanceSummary,
   selectFinanceTransactions,
   upsertFinanceTransaction,
@@ -66,6 +67,7 @@ describe('finance single-source ledger', () => {
     const secondStore = transaction({
       id: 'B', storeId: 'CH002', sourceType: 'order', sourceId: 'ORDER-00001', amount: 900_000,
     })
+    expect(financeTransactionKey(firstStore)).not.toBe(financeTransactionKey(secondStore))
     const inserted = upsertFinanceTransaction([firstStore], secondStore)
     expect(inserted.inserted).toBe(true)
     expect(inserted.transactions).toHaveLength(2)
