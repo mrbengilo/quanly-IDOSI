@@ -67,7 +67,8 @@ export const normalizeVnd = (value, options) => amountFrom(value, 'amount', opti
 export const financeTransactionKey = (transaction = {}) => {
   if (transaction.idempotencyKey) return `idempotency:${String(transaction.idempotencyKey)}`
   if (transaction.sourceType && transaction.sourceId) {
-    return `source:${transaction.sourceType}:${transaction.sourceId}:${transaction.type || transaction.category || ''}:${directionOf(transaction.direction)}`
+    const storeScope = String(transaction.storeId || '')
+    return `source:${storeScope}:${transaction.sourceType}:${transaction.sourceId}:${transaction.type || transaction.category || ''}:${directionOf(transaction.direction)}`
   }
   if (transaction.id) return `id:${String(transaction.id)}`
   return ''
