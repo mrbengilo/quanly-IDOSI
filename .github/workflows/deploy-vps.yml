@@ -1,0 +1,127 @@
+name: Deploy IDOSI VPS
+
+on:
+  workflow_run:
+    workflows: ["Verify IDOSI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-production-vps
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+      VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+      VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+      VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+      VPS_PATH: ${{ secrets.IDOSI_VPS_PATH }}
+      HEALTH_URL: ${{ secrets.IDOSI_VPS_HEALTH_URL }}
+
+    steps:
+      - name: Validate deployment secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$VPS_HOST" || { echo "Missing IDOSI_VPS_HOST"; exit 1; }
+          test -n "$VPS_USER" || { echo "Missing IDOSI_VPS_USER"; exit 1; }
+          test -n "${{ secrets.IDOSI_VPS_SSH_KEY }}" || { echo "Missing IDOSI_VPS_SSH_KEY"; exit 1; }
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.IDOSI_VPS_SSH_KEY }}" > ~/.ssh/idosi_deploy_key
+          chmod 600 ~/.ssh/idosi_deploy_key
+          PORT="${VPS_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy verified main to VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          PORT="${VPS_PORT:-22}"
+          REMOTE_PATH="${VPS_PATH:-/opt/idosi}"
+          REMOTE_HEALTH_URL="${HEALTH_URL:-https://idosi.io.vn/api/health}"
+
+          ssh -i ~/.ssh/idosi_deploy_key -p "$PORT" "$VPS_USER@$VPS_HOST" \
+            "RELEASE_SHA='$RELEASE_SHA' IDOSI_PATH='$REMOTE_PATH' HEALTH_URL='$REMOTE_HEALTH_URL' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+
+          cd "$IDOSI_PATH"
+          CURRENT_SHA="$(git rev-parse HEAD)"
+          BACKUP_DIR="$IDOSI_PATH/deploy/vps/backups"
+          BACKUP_FILE="$BACKUP_DIR/idosi-data-$(date +%Y%m%d-%H%M%S)-$CURRENT_SHA.tar.gz"
+
+          if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+            echo "Tracked working tree changes detected on VPS. Refusing automatic deploy."
+            exit 1
+          fi
+
+          mkdir -p "$BACKUP_DIR"
+
+          echo "Backing up production data before release $RELEASE_SHA"
+          cd "$IDOSI_PATH/deploy/vps"
+          docker compose stop app
+          docker run --rm \
+            -v vps_idosi_data:/data \
+            -v "$BACKUP_DIR:/backup" \
+            alpine sh -c "tar czf '/backup/$(basename "$BACKUP_FILE")' -C /data ."
+          docker compose start app
+
+          cd "$IDOSI_PATH"
+          git fetch origin main
+          REMOTE_SHA="$(git rev-parse origin/main)"
+          if [ "$REMOTE_SHA" != "$RELEASE_SHA" ]; then
+            echo "origin/main ($REMOTE_SHA) does not match verified release ($RELEASE_SHA)."
+            exit 1
+          fi
+
+          git checkout main
+          git pull --ff-only origin main
+
+          cd "$IDOSI_PATH/deploy/vps"
+          docker compose up -d --build
+          docker compose ps
+
+          echo "Waiting for health check: $HEALTH_URL"
+          HEALTHY=0
+          for attempt in $(seq 1 24); do
+            if curl -fsS --max-time 10 "$HEALTH_URL" >/dev/null; then
+              HEALTHY=1
+              break
+            fi
+            sleep 5
+          done
+
+          if [ "$HEALTHY" -ne 1 ]; then
+            echo "Health check failed. Recent logs:"
+            docker compose logs --tail=150 app caddy || true
+            echo "Backup retained at: $BACKUP_FILE"
+            echo "Previous code SHA: $CURRENT_SHA"
+            exit 1
+          fi
+
+          docker compose logs --tail=80 app caddy || true
+          echo "DEPLOYED_SHA=$RELEASE_SHA"
+          echo "PREVIOUS_SHA=$CURRENT_SHA"
+          echo "BACKUP_FILE=$BACKUP_FILE"
+          echo "HEALTH=PASS"
+          REMOTE
+
+      - name: Cleanup SSH key
+        if: always()
+        shell: bash
+        run: rm -f ~/.ssh/idosi_deploy_key
