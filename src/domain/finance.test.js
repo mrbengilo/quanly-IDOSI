@@ -47,6 +47,15 @@ describe('finance single-source ledger', () => {
     expect(summary.revenue).toBe(1_000_000)
   })
 
+  it('keeps the same idempotency key separate across stores', () => {
+    const firstStore = transaction({ id: 'A', storeId: 'CH001', idempotencyKey: 'order:ORDER-00001', amount: 800_000 })
+    const secondStore = transaction({ id: 'B', storeId: 'CH002', idempotencyKey: 'order:ORDER-00001', amount: 900_000 })
+    expect(financeTransactionKey(firstStore)).not.toBe(financeTransactionKey(secondStore))
+    const inserted = upsertFinanceTransaction([firstStore], secondStore)
+    expect(inserted.inserted).toBe(true)
+    expect(inserted.transactions).toHaveLength(2)
+  })
+
   it('upserts a logical source instead of creating duplicate finance rows', () => {
     const initial = transaction({ id: 'A', sourceType: 'order', sourceId: 'SM234-00001', amount: 800_000 })
     const result = upsertFinanceTransaction([initial], {
