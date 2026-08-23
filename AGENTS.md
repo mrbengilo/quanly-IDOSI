@@ -2,13 +2,13 @@
 
 This file defines mandatory working rules for Codex and other coding agents modifying the IDOSI repository.
 
-## 1. Project mission
+## 1. Mission
 
-IDOSI is a production-oriented centralized management system for stores, office staff, and business-support operations. Changes must prioritize correctness, data integrity, authorization, auditability, maintainability, and regression safety over speed.
+IDOSI is a production system. Prioritize correctness, data integrity, authorization, auditability, maintainability, regression safety, and efficient execution.
 
-Never treat this repository as a throwaway prototype.
+Do not treat this repository as a prototype. Do not optimize for the most code or the longest analysis. Optimize for the smallest correct change with sufficient evidence.
 
-## 2. Current technical baseline
+## 2. Technical baseline
 
 - Node.js >= 22.13
 - React 19
@@ -16,200 +16,224 @@ Never treat this repository as a throwaway prototype.
 - React Router
 - Vitest
 - ESLint
-- Frontend source: `src/`
+- Frontend: `src/`
 - Business/domain logic: `src/domain/`
 - Shared state: `src/state/`
 - API client: `src/services/idosiApi.js`
 - Backend/runtime: `server/`
 - Database/migrations: `db/` and `drizzle/`
-- Sites production path: Worker API + D1.
-- VPS production path: Node.js runtime + SQLite + separate image storage under `server/vps/` and `deploy/vps/`.
-- `localStorage` is compatibility/demo/development state only and MUST NOT become the source of truth for production data.
+- Sites/Cloudflare production: Worker API + D1
+- VPS production: Node.js runtime + SQLite + separate image/file storage under `server/vps/` and deployment under `deploy/vps/`
 
-Before changing architecture, inspect the existing implementation and follow established repository conventions.
+`localStorage` is compatibility/demo/development state only and MUST NOT become the production source of truth.
 
-### Production targets
+## 3. Mandatory risk classification before deep work
 
-IDOSI currently has two supported production paths. Do not assume a persistence/runtime change for one target automatically applies to the other.
+Before deep analysis or editing, classify every request as exactly one of:
 
-**Sites/Cloudflare**
+`FAST | STANDARD | CRITICAL`
 
-- Worker API
-- D1 persistence
-- Sites build output under `dist/`
-- deployment/bootstrap behavior documented under `server/`
+Report briefly:
 
-**VPS**
+```text
+RISK LEVEL: FAST | STANDARD | CRITICAL
+Reason: <1-3 reasons>
+Expected scope: <module/file groups>
+Sensitive areas: <finance/payroll/auth/database/VPS/etc or none>
+Verification plan: <checks to run>
+```
 
-- Node.js production runtime (deployment currently uses Node.js 24)
-- SQLite persistence
-- separate image/file storage
-- runtime code under `server/vps/`
-- deployment and backup procedures under `deploy/vps/`
+### FAST
 
-If a task changes persistence, auth/session handling, storage, bootstrap, migrations, data shape, or runtime behavior, identify the affected deployment target(s) in the impact map and test each supported target that can be affected.
+Use only for low-risk presentation/documentation changes that do not change business rules, data contracts, mutations, persistence, auth, money, attendance calculations, or production runtime behavior.
 
-## 3. Mandatory workflow for every task
+Typical FAST tasks:
+- text/label/typo
+- color/spacing/icon/typography
+- small layout-only UI changes
+- documentation-only changes
+
+FAST flow:
+
+`classify -> targeted read -> focused branch -> minimal change -> targeted checks -> PR -> required CI -> merge`
+
+Do not scan the whole repository for a clearly scoped FAST task.
+
+### STANDARD
+
+Use for ordinary functionality that changes a non-sensitive flow or logic but does not directly alter finance/payroll/auth/schema/persistence or other CRITICAL areas.
+
+Typical STANDARD tasks:
+- ordinary CRUD flows
+- non-sensitive forms/validation
+- read-only reports
+- normal API/service/state/UI additions
+
+STANDARD flow:
+
+`classify -> analyze -> impact map -> branch -> tests -> implementation -> self-review -> full verification -> PR -> CI -> merge`
+
+### CRITICAL
+
+CRITICAL is mandatory if the request or discovered impact touches any of:
+- finance, revenue, expense, profit
+- KPI, payroll, salary, bonus, allowance, salary advance
+- order mutations affecting money/audit
+- attendance/worked-hours logic that feeds payroll/KPI
+- authorization, roles, store isolation
+- authentication/session/credentials
+- database/schema/migration/persistence
+- destructive delete/data repair
+- sensitive idempotency/concurrency/race conditions
+- production VPS runtime/storage/deployment behavior
+- core business-rule changes
+
+CRITICAL flow:
+
+`classify -> deep analyze -> impact map -> regression test -> minimal implementation -> security/data self-review -> full verification -> PR -> CI/review -> merge -> backup/deploy/health/smoke when production`
+
+### Escalation rules
+
+- Start with the lowest level justified by current evidence.
+- If code inspection reveals a more sensitive downstream impact, immediately upgrade the level and state why.
+- Never downgrade a confirmed CRITICAL task merely to save time or credit.
+- Credit efficiency must come from tighter scope, targeted search, reuse of analysis, and fewer redundant runs — never from skipping required CRITICAL checks.
+
+Detailed routing: `docs/DEVELOPMENT_WORKFLOW.md`.
+
+## 4. Mandatory workflow principles
 
 Before editing code:
 
-1. Read the relevant existing code.
-2. Identify the affected UI, state, domain, API, backend, database, authorization, deployment target, and tests.
-3. Search for an existing implementation before creating new logic.
-4. Build an impact map.
-5. Determine regression risks.
-6. Determine whether a database migration is actually required.
-7. Prefer the smallest coherent change that fully solves the requirement.
+1. Classify risk.
+2. Read relevant existing code.
+3. Search for existing implementation before creating new logic.
+4. Identify affected UI, state, domain, API/backend, database, authorization, deployment target, and tests at the depth appropriate to the risk level.
+5. Build an Impact Map for STANDARD/CRITICAL, and for FAST if a hidden dependency appears.
+6. Determine regression risk and whether migration is required.
+7. Prefer the smallest coherent change that fully solves the request.
 
-Recommended impact map:
+Recommended Impact Map:
 
-`requirement -> data -> domain -> API/backend -> state -> UI -> database -> deployment target -> tests -> affected features`
+`requirement -> data -> domain -> API/backend -> state -> UI -> database -> deployment target -> tests -> downstream features`
 
 Do not start by rewriting files based only on the task description.
 
-## 4. Architecture boundaries
+## 5. Architecture boundaries
 
 Preserve this dependency direction where practical:
 
 `UI/pages/components -> state -> domain -> API service -> backend -> database`
 
-### UI
+- UI handles presentation and interaction, not duplicated finance/payroll/KPI/attendance formulas.
+- Reusable business rules belong in `src/domain/` or the established equivalent.
+- Reuse/extend `src/services/idosiApi.js` rather than scattering direct fetch calls through components.
+- Do not change schema casually; use migrations and preserve production data.
 
-Pages and components are responsible for presentation and user interaction. Do not duplicate financial, payroll, KPI, attendance, authorization, or other reusable business formulas across components.
+## 6. Source of truth
 
-### Domain
+Never introduce a second production source of truth.
 
-Reusable business rules belong in `src/domain/` or the repository's existing equivalent abstraction.
-
-Examples include:
-
-- finance calculations
-- KPI calculations
-- attendance calculations
-- payroll calculations
-- eligibility and validation rules
-
-Prefer pure functions for calculations when possible so they can be unit-tested.
-
-### API
-
-Reuse and extend `src/services/idosiApi.js` rather than scattering direct fetch calls through UI components unless the existing architecture clearly requires otherwise.
-
-### Database
-
-Do not change schema casually. Any required production schema change must use the project's migration mechanism for the affected target and must preserve existing data unless the task explicitly defines a safe destructive migration.
-
-## 5. Source of truth
-
-Never introduce a second source of truth for production data.
-
-Do not solve backend persistence requirements by storing production records only in:
-
+Do not satisfy persistence requirements using only:
 - `localStorage`
 - component state
 - hard-coded JavaScript objects
 - mock data
 
-Demo/local compatibility behavior must remain clearly separated from production persistence.
+For persistence changes, inspect the actual target: D1 for Sites and SQLite/file storage for VPS where applicable.
 
-For persistence changes, inspect the actual production target: D1 for Sites and SQLite/file storage for VPS where applicable.
+## 7. Authorization and store isolation
 
-## 6. Authorization and store isolation
+Authorization must be enforced at backend/data boundaries, not only by hiding UI controls.
 
-Authorization must be enforced at the appropriate backend/data boundary, not only by hiding buttons in the UI.
-
-Current login role codes include:
-
+Current role codes include:
 - `admin`
 - `business_support`
 - `store_manager`
 - `employee`
 
-Always inspect current authorization code before changing permissions.
-
 Mandatory principles:
+- `store_manager` operations remain scoped to the assigned store unless an explicit approved rule says otherwise.
+- Employees must not access another employee's protected data by manipulating requests.
+- Backend mutations validate role plus relevant store/user/resource scope.
+- Never broaden a role's permission incidentally.
+- If requirements conflict with existing role behavior, report the conflict instead of silently changing authorization.
 
-- `store_manager` operations must remain scoped to the assigned store unless an explicit business rule says otherwise.
-- Employees must not gain access to another employee's protected data merely by modifying a request.
-- UI visibility is not authorization.
-- Backend endpoints must validate authorization and relevant store/user scope.
-- Never broaden a role's permissions as an incidental side effect of another feature.
+Any authorization/store-isolation change is CRITICAL.
 
-If requirements conflict with existing role behavior, report the conflict before silently changing the authorization model.
+## 8. Finance, payroll, KPI, and money
 
-## 7. Financial, payroll, KPI, and money rules
+Money-related work is always CRITICAL.
 
-Money-related code is high risk.
+Before modifying finance, payroll, advances, allowances, bonuses, expenses, revenue, profit, or KPI:
 
-Before modifying finance, payroll, advances, allowances, bonuses, expenses, revenue, profit, or KPI calculations:
+1. Find the canonical implementation.
+2. Understand inputs/outputs and all downstream consumers.
+3. Add/update regression tests before completion.
+4. Avoid duplicating formulas in UI/backend/domain.
+5. Do not invent a formula when requirements are ambiguous.
 
-1. Find the canonical existing domain implementation.
-2. Understand every input and output.
-3. Identify all screens/reports consuming the result.
-4. Update or add unit tests before considering the work complete.
-5. Avoid duplicating formulas in UI code.
-
-All monetary calculations must explicitly handle relevant edge cases, including where applicable:
-
-- positive values
-- zero
-- negative profit
-- missing/null values
-- employee with zero working hours
-- allowances
-- bonuses
-- salary advances
-- expenses
+Handle relevant edges such as:
+- positive/zero/negative values
+- null/missing data
+- zero working hours
+- allowances/bonuses/advances/expenses
 - edited/deleted orders
-- locked payroll/accounting periods
-- store boundaries
-- unauthorized users
+- locked/paid periods
+- wrong store/wrong role
+- duplicate/retry/idempotency
+- timezone/month boundaries where relevant
 
-Never invent a financial formula when requirements are ambiguous. Stop and report the ambiguity.
+Follow existing VND representation and rounding conventions; do not silently change units.
 
-Avoid unsafe floating-point assumptions for currency. Follow the existing repository's monetary representation; do not silently change units or rounding behavior.
+## 9. Attendance
 
-## 8. Attendance rules
+Attendance changes can feed working hours, payroll, KPI, history, and statistics.
 
-Attendance changes may affect payroll, working hours, statistics, and employee history.
+Changes affecting worked hours, shift resolution, check-in/out time calculations, or payroll/KPI downstream are CRITICAL.
 
-When changing attendance logic, inspect downstream dependencies before implementation. Test boundary cases such as missing checkout, late/early status, invalid timestamps, location permission behavior, and records crossing expected time boundaries where relevant.
+Test relevant boundaries such as missing checkout, late/early state, invalid timestamps, timezone/day rollover, overnight shifts, and location validation.
 
-Do not weaken location or attendance validation merely to make UI flows pass.
+Do not weaken attendance/location validation merely to make UI tests pass.
 
-## 9. Audit and destructive operations
+## 10. Audit and destructive operations
 
-Deletion and financial/history edits require special care.
-
-For sensitive records such as orders, payroll, financial records, attendance, employees, or configuration:
-
+For sensitive records such as orders, payroll, financial records, attendance, employees, and configuration:
 - preserve existing audit behavior
 - do not bypass audit logging
-- do not silently hard-delete data when the existing design uses soft deletion/history
-- record actor/time/relevant before-after information where the established audit model requires it
+- do not silently hard-delete where the design uses history/soft deletion
+- preserve actor/time/before-after data where required
 
-Never remove audit trails to simplify implementation.
+Sensitive destructive operations are CRITICAL.
 
-## 10. Tests are part of the implementation
+## 11. Tests are implementation
 
 A feature is not complete merely because the UI works manually.
 
-When business logic changes, update/add the closest relevant tests.
-
 Prefer:
+- domain unit tests for formulas/validation
+- API/service tests for request behavior
+- component/smoke tests for critical flows
+- regression tests for bugs
 
-- domain unit tests for formulas and validation
-- service/API tests for request behavior
-- smoke/component tests for critical user flows
-- regression tests for bugs being fixed
+For bug fixes, add a regression test whenever reasonably possible.
 
-For a bug fix, add a regression test whenever reasonably possible.
+Do not delete or weaken valid tests just to obtain green CI.
 
-Do not delete or weaken a valid test just to obtain a green test run. If an existing test is obsolete because the approved business rule changed, explain why and update it to the new rule.
+## 12. Verification by risk level
 
-## 11. Required verification before completion
+### FAST
 
-Run all of the following from the repository root:
+Run the smallest relevant local checks for the changed scope. At minimum:
+- targeted test if logic/test coverage exists
+- lint/build when the change can affect compile/style correctness
+- GitHub required CI `verify` must PASS before merge
+
+A documentation-only FAST change does not need agents to repeatedly execute the entire suite locally when CI will run it, unless repository tooling requires it or the change affects CI/tooling itself.
+
+### STANDARD
+
+Before claiming completion, run from repository root:
 
 ```bash
 npm run lint
@@ -218,184 +242,173 @@ npm run build
 npm run sites:verify
 ```
 
-If any command fails:
+Add VPS/runtime checks if VPS behavior can be affected.
 
-1. investigate the root cause
-2. fix failures caused by the change
-3. rerun the relevant check
-4. rerun the full verification sequence before claiming completion
+### CRITICAL
 
-Never claim the task is complete while a required check is failing unless the failure is demonstrably pre-existing and unrelated. In that case, report the exact failure and evidence clearly.
+Run the complete STANDARD verification plus all relevant targeted regression/security/data tests. For VPS/persistence/runtime changes, run the applicable VPS tests and follow backup/migration/rollback requirements.
 
-For changes affecting VPS runtime/persistence, also run the relevant VPS tests or documented health/bootstrap checks available in the repository. Do not treat `sites:verify` as proof that VPS behavior is correct.
+If a required check fails:
+1. identify root cause
+2. fix the cause
+3. rerun targeted check
+4. rerun the full required gate for that risk level before completion
 
-## 12. Git workflow
+Never claim completion while required verification is failing.
+
+## 13. Credit-efficiency rules
+
+To minimize Codex credit without reducing safety:
+
+- classify risk before deep reading
+- search symbols/files/modules before broad repository scans
+- reuse analysis already established in the same task
+- run targeted tests during iteration and the full required gate only when needed/final
+- do not repeatedly run identical expensive checks when code/input has not changed
+- avoid generating long reports during implementation; keep reports evidence-based and concise
+- avoid rewriting large files when a focused patch is enough
+- split overly broad requests into focused PRs
+- do not inspect finance/auth/database/VPS for a clearly isolated FAST UI task unless evidence links them
+
+## 14. Git workflow
 
 Do not intentionally develop feature work directly on `main`.
 
-Use a focused branch such as:
-
+Use focused branches such as:
 - `feature/<name>`
 - `fix/<name>`
 - `refactor/<name>`
+- `ui/<name>`
 - `chore/<name>`
+- `hotfix/<name>`
 
-Keep one coherent business scope per branch/PR.
+One coherent business scope per branch/PR.
 
-Avoid combining unrelated changes such as payroll + dashboard redesign + inventory refactor in one task.
-
-Before PR/merge:
-
-- review the diff
+Before merge:
+- review diff
 - ensure no unrelated files changed
-- run the full verification suite
-- document migrations and operational impact
+- complete verification required by Risk Level
+- document migrations/production impact when applicable
+- required GitHub check `verify` must PASS
 
-## 13. UI and design rules
+Do not bypass the `main` ruleset to save time.
 
-When a task is UI-only, do not change business logic unless required to fix an identified defect.
+## 15. UI and design
 
-Maintain:
+For UI-only work, do not change business logic unless an identified defect requires it.
 
-- consistent typography
-- valid Vietnamese text/diacritics
-- clear visual hierarchy
-- consistent button states
-- responsive behavior
-- accessible labels and interactions where practical
-- loading states
-- empty states
-- error states
-- disabled/submitting states for mutations
+Maintain consistent typography, valid Vietnamese text, hierarchy, responsive behavior, accessible interactions where practical, and loading/empty/error/disabled states.
 
-Do not introduce one-off styling if a reusable existing pattern/component already solves the problem.
+`src/styles.css` is already large. Avoid appending large unrelated style sections or repository-wide style refactors for small tasks.
 
-`src/styles.css` is already large. Avoid casually appending large unrelated style sections. Prefer reusable component/page organization when touching substantial UI areas, while avoiding unnecessary repository-wide refactors.
+## 16. Security
 
-## 14. Security rules
+Never commit production passwords, API secrets, session tokens, private keys, or real credential material.
 
-Never commit:
-
-- production passwords
-- API secrets
-- session tokens
-- private keys
-- real credential material
-
-Do not expose privileged backend operations solely through client-side checks.
-
-Do not log passwords, raw session tokens, or sensitive identity data.
-
-Follow existing credential/session hashing and storage mechanisms for the affected backend.
+Do not expose privileged operations only through client-side checks. Do not log passwords, raw session tokens, or sensitive identity data.
 
 Identity documents/images require controlled storage and must not be embedded into shared JSON/localStorage as a shortcut.
 
-## 15. API and mutation safety
+## 17. API and mutation safety
 
 For mutations:
-
 - validate inputs
-- validate authorization
-- validate store/user scope
+- validate authorization and scope
 - handle duplicate submissions where relevant
-- preserve existing idempotency conventions
+- preserve idempotency conventions
 - return meaningful errors
-- ensure UI handles failed requests without pretending success
+- ensure UI does not pretend a failed mutation succeeded
 
-Never update the UI optimistically in a way that can permanently misrepresent failed financial or destructive mutations.
+## 18. Database migration safety
 
-## 16. Database migration safety
+Database/persistence changes are CRITICAL.
 
 Before adding a migration:
-
-- identify the affected production target(s)
+- identify affected production target(s)
 - confirm schema change is necessary
-- inspect existing migrations for that target
-- make migration deterministic
-- preserve existing production data
-- consider defaults/nullability for existing rows
-- ensure old data remains readable by the new code
-- consider backup/rollback implications for VPS SQLite changes
+- inspect existing migrations
+- preserve existing data
+- handle defaults/nullability for existing rows
+- ensure new code can read old data as required
+- define VPS backup/restore implications
 
-Never reset, truncate, or recreate production tables as a convenience unless explicitly approved for a known disposable environment.
+Never reset/truncate/recreate production tables merely for convenience.
 
-## 17. Refactoring rules
+## 19. Refactoring
 
 Do not perform large unrelated refactors while implementing a feature or bug fix.
 
-Refactor when it materially reduces risk or duplication required by the current task. Otherwise document the follow-up opportunity separately.
+Refactor only when it materially reduces risk/duplication required by the current task. Otherwise create a follow-up issue/task.
 
-Do not rename broad sets of files, routes, API fields, or database columns without a clear requirement and migration/compatibility plan.
+If expected changed files or modules expand abnormally from the original request, stop and report scope expansion before continuing.
 
-## 18. No silent assumptions
+## 20. No silent assumptions
 
 Stop and report ambiguity when it affects:
-
-- money calculations
-- KPI formulas
-- payroll
+- money/KPI/payroll
 - authorization
-- deletion behavior
-- audit requirements
-- database schema/data migration
-- production deployment target
+- deletion/audit
+- schema/data migration
+- production deployment behavior
 
-For low-risk presentation details, follow existing UI conventions rather than blocking unnecessarily.
+For low-risk presentation details, follow existing UI conventions without unnecessary blocking.
 
-## 19. Definition of done
+## 21. Production targets and VPS
+
+IDOSI supports Sites/Cloudflare and VPS. Do not assume runtime/persistence compatibility automatically.
+
+When task impact includes persistence, auth/session, storage, bootstrap, migration, data shape, or runtime behavior, validate every affected supported target.
+
+VPS production currently uses Docker Compose, Node.js, SQLite, a persistent data volume, separate image storage, and Caddy. Follow `deploy/vps/README.md` and `docs/VPS_DEPLOYMENT_CHECKLIST.md`.
+
+Do not edit source files directly on production VPS. Deploy only code merged to `main` unless using an explicitly defined staging flow.
+
+## 22. Definition of Done
 
 A task is complete only when applicable items are satisfied:
-
-- requested behavior implemented
-- existing behavior preserved outside scope
-- authorization enforced
-- store isolation preserved
-- business rules centralized appropriately
-- affected deployment target(s) identified and validated
-- tests added/updated
-- lint passes
-- tests pass
-- build passes
-- sites verification passes when Sites can be affected
-- VPS verification performed when VPS can be affected
-- migrations are included and documented if needed
+- Risk Level is explicitly stated and justified
+- requested behavior is implemented
+- existing behavior outside scope is preserved
+- authorization/store isolation is preserved when relevant
+- business rules remain canonical and non-duplicated
+- affected production targets are identified
+- tests required by Risk Level are added/updated and pass
+- required verification for Risk Level passes
+- migrations/backup/rollback are documented when needed
 - no secrets introduced
 - diff reviewed for unrelated changes
-- manual verification requirements documented
+- manual/post-deploy checks documented/performed when applicable
 
-## 20. Required final report from coding agents
+## 23. Required final report
 
-At the end of an implementation, report concisely:
+Report concisely:
 
-1. Summary of completed behavior
-2. Files changed
-3. Business/domain logic changed
-4. Authorization impact
-5. API/backend changes
-6. Database/migration changes
-7. Production target impact (Sites/VPS/both)
-8. Tests added or updated
-9. Result of `npm run lint`
-10. Result of `npm test`
-11. Result of `npm run build`
-12. Result of `npm run sites:verify` when applicable
-13. VPS verification when applicable
-14. Remaining risks/manual checks
+1. Risk Level and reason
+2. Summary of behavior
+3. Files/modules changed
+4. Business/domain impact
+5. Authorization/store impact
+6. API/backend impact
+7. Database/migration impact
+8. Production target impact
+9. Tests/checks run and results
+10. Remaining risks/manual checks
+11. Rollback/deploy notes when applicable
 
-Never use the word "complete" or equivalent if required verification is still failing without clearly stating the failure.
+Do not pad the final report with unrelated analysis.
 
-## 21. IDOSI task execution order
+## 24. Execution objective
 
-For substantial features, prefer this order:
+For FAST:
 
-`analyze -> impact map -> tests/domain -> backend/API -> state -> UI -> deployment-target verification -> full verification -> diff review -> PR`
+`classify -> targeted analyze -> branch -> minimal change -> targeted verify -> PR -> CI`
 
-For UI-only tasks:
+For STANDARD:
 
-`analyze current screen -> preserve contracts/business rules -> UI implementation -> targeted tests -> full verification -> diff review`
+`classify -> impact map -> tests -> implement -> full verify -> PR -> CI`
 
-For bug fixes:
+For CRITICAL:
 
-`reproduce/identify root cause -> regression test -> minimal fix -> deployment-target verification -> full verification -> diff review`
+`classify -> deep impact map -> regression tests -> minimal implementation -> security/data review -> full verify -> PR -> CI/review -> production safeguards`
 
-The objective is not to generate the most code. The objective is to make the smallest correct, secure, testable change that preserves IDOSI's business integrity.
+The objective is to make the smallest correct, secure, testable change while spending analysis/test effort in proportion to actual risk.
