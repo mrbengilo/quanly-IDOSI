@@ -1,123 +1,210 @@
 # IDOSI VPS Deployment Checklist
 
-Checklist bắt buộc cho deploy production VPS.
+Checklist bắt buộc cho production VPS. Quy trình này phải phù hợp với `deploy/vps/README.md`: IDOSI chạy bằng Docker Compose, Node.js 24 trong container, SQLite + image storage trong volume dữ liệu, và Caddy cung cấp HTTPS.
 
-## A. Pre-deploy
+## A. Pre-deploy gate
 
 - [ ] PR đã merge vào `main`.
 - [ ] `Verify IDOSI` PASS.
 - [ ] Xác nhận commit SHA cần deploy.
-- [ ] VPS working tree sạch, không có sửa tay chưa commit.
+- [ ] Xác định last-known-good commit để rollback.
 - [ ] Xác định migration có/không.
-- [ ] Xác định rollback commit.
-- [ ] Xác nhận dung lượng disk còn đủ.
-- [ ] Xác nhận backup database/storage trước thay đổi rủi ro.
+- [ ] Xác định thay đổi có ảnh hưởng SQLite, image storage, auth/session hoặc bootstrap không.
+- [ ] VPS working tree sạch; không có source sửa tay chưa commit.
+- [ ] Đủ disk space cho image build và backup.
+- [ ] Không có incident đang xử lý hoặc deployment khác chạy song song.
 
-## B. Backup
+Nếu một gate bắt buộc không đạt: DỪNG DEPLOY.
 
-SQLite phải được backup nhất quán trước migration hoặc thay đổi dữ liệu rủi ro. Không copy tùy tiện file DB đang ghi nếu quy trình hiện tại yêu cầu cơ chế backup nhất quán.
+## B. Xác nhận trạng thái hiện tại
 
-Cần ghi lại:
-
-- thời gian backup
-- database backup location
-- image/file storage backup nếu task ảnh hưởng storage
-- commit SHA hiện đang chạy
-
-Không deploy migration phá schema khi chưa có backup có thể restore.
-
-## C. Prepare release
-
-Từ `main`:
+Trên VPS:
 
 ```bash
-git fetch --all --prune
-git checkout main
-git pull --ff-only
-npm ci
-npm run lint
-npm test
-npm run build
+cd /opt/idosi
+git status --short
+git rev-parse HEAD
+cd deploy/vps
+docker compose ps
+docker compose logs --tail=100 app caddy
+curl -fsS https://idosi.io.vn/api/health
 ```
 
-Nếu bất kỳ bước nào fail: DỪNG DEPLOY.
+Ghi lại commit SHA hiện đang chạy và trạng thái health trước deploy.
 
-Không dùng `npm install` tùy tiện trên production khi repo có lockfile và quy trình release yêu cầu reproducible install.
+Không tiếp tục nếu working tree có sửa tay chưa được xử lý rõ ràng.
 
-## D. Migration
+## C. Backup bắt buộc
 
-Nếu có migration:
+Backup trước mỗi lần cập nhật production, đặc biệt trước migration hoặc thay đổi persistence.
 
-- [ ] Đã review migration SQL.
-- [ ] Không truncate/reset production data.
-- [ ] Migration tương thích dữ liệu hiện có.
-- [ ] Có backup trước migration.
-- [ ] Có rollback/restore plan.
-- [ ] Migration hoàn thành không có foreign-key violation.
+Theo cơ chế hiện tại của repo:
 
-SQLite VPS runtime hiện tự áp dụng migration theo cơ chế repo; thay đổi cơ chế này phải được test riêng.
+```bash
+cd /opt/idosi/deploy/vps
+docker compose stop app
+docker run --rm -v vps_idosi_data:/data -v "$PWD/backups:/backup" alpine \
+  sh -c 'tar czf /backup/idosi-data-$(date +%Y%m%d-%H%M%S).tar.gz -C /data .'
+docker compose start app
+```
 
-## E. Restart / reload
+Sau backup:
 
-- [ ] Restart/reload service theo service manager hiện tại.
-- [ ] Service lên trạng thái healthy/running.
+- [ ] File backup tồn tại.
+- [ ] File có kích thước hợp lý, không phải 0 byte.
+- [ ] Ghi lại đường dẫn/tên backup.
+- [ ] `docker compose ps` cho thấy app chạy lại.
+- [ ] `/api/health` trả thành công.
+
+Không xóa volume `idosi_data` trong deploy thông thường.
+
+## D. Lấy release từ main
+
+Chỉ deploy code đã merge vào `main`.
+
+```bash
+cd /opt/idosi
+git fetch origin
+git checkout main
+git pull --ff-only origin main
+git rev-parse HEAD
+```
+
+Xác nhận SHA sau pull đúng commit/release dự kiến.
+
+Không deploy trực tiếp branch `feature/*`, `fix/*` hoặc source chưa merge.
+
+## E. Build và rollout
+
+Production hiện build/restart bằng Docker Compose:
+
+```bash
+cd /opt/idosi/deploy/vps
+docker compose up -d --build
+```
+
+Sau đó:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 app caddy
+```
+
+- [ ] App container ở trạng thái running/healthy theo cấu hình hiện tại.
+- [ ] Caddy chạy bình thường.
 - [ ] Không có crash loop.
-- [ ] Log startup không có lỗi migration/database/storage/auth.
+- [ ] Không có lỗi migration/database/storage/auth nghiêm trọng trong startup log.
 
-Không chỉnh source trực tiếp trên VPS để sửa lỗi sau deploy; tạo hotfix branch và đi lại pipeline.
+Không chạy `npm install` hoặc chỉnh dependency thủ công bên trong container production để chữa cháy.
 
-## F. Health check
+## F. Migration safety
 
-Kiểm tra endpoint health/bootstrap tương ứng của runtime và tối thiểu:
+SQLite runtime hiện áp dụng migration từ repo khi khởi động. Nếu release có migration:
 
-- HTTP status đúng
-- API phản hồi
-- database truy cập được
-- static assets tải được
-- file/image storage truy cập được nếu có liên quan
+- [ ] Migration SQL đã được review trong PR.
+- [ ] Không reset/truncate/recreate production data để tiện triển khai.
+- [ ] Existing rows có default/nullability phù hợp.
+- [ ] Có backup trước rollout.
+- [ ] Có restore plan nếu migration không backward-compatible.
+- [ ] Startup không báo migration failure.
+- [ ] Không có foreign-key violation được runtime báo.
 
-## G. Smoke test production
+Rollback code đơn thuần không phục hồi dữ liệu đã bị migration thay đổi/xóa. Khi cần, phải restore volume backup.
 
-Kiểm tra theo phạm vi thay đổi; tối thiểu khi phù hợp:
+## G. Health check bắt buộc
+
+```bash
+curl -fsS https://idosi.io.vn/api/health
+```
+
+Xác nhận tối thiểu:
+
+- [ ] HTTPS hoạt động.
+- [ ] `/api/health` thành công.
+- [ ] API phản hồi.
+- [ ] Database truy cập được qua flow ứng dụng.
+- [ ] Static assets tải đúng.
+- [ ] Image/file storage hoạt động nếu release liên quan storage.
+
+Health check fail => coi deploy chưa thành công.
+
+## H. Smoke test production
+
+Kiểm tra theo phạm vi thay đổi. Với release nghiệp vụ thông thường, tối thiểu khi phù hợp:
 
 - [ ] Login Admin.
+- [ ] Login Business Support nếu phạm vi liên quan.
 - [ ] Login store manager.
 - [ ] Login employee.
 - [ ] Dashboard tải được.
-- [ ] Read orders/attendance/finance/payroll.
-- [ ] Mutation liên quan task hoạt động đúng.
-- [ ] Permission denied đúng với role không có quyền.
+- [ ] Orders đọc đúng scope.
+- [ ] Attendance đọc/flow liên quan hoạt động.
+- [ ] Finance/payroll đọc đúng nếu release chạm nhóm này.
+- [ ] Mutation chính của task hoạt động.
+- [ ] Role không có quyền bị từ chối đúng.
 - [ ] Store isolation đúng.
-- [ ] Mobile/responsive nếu thay UI.
+- [ ] Mobile/responsive kiểm tra nếu thay UI.
 
-Không tạo dữ liệu production rác chỉ để smoke test; dùng flow test-safe hoặc rollback dữ liệu kiểm thử có chủ đích.
+Không tạo dữ liệu rác production chỉ để smoke test. Dùng test-safe flow hoặc dữ liệu có kế hoạch dọn/rollback rõ ràng.
 
-## H. Release record
+## I. Post-deploy observation
 
-Ghi lại:
+Sau rollout, kiểm tra lại:
+
+```bash
+cd /opt/idosi/deploy/vps
+docker compose ps
+docker compose logs --tail=200 app caddy
+curl -fsS https://idosi.io.vn/api/health
+```
+
+Tìm:
+
+- 5xx mới
+- crash/restart bất thường
+- migration/database errors
+- auth/session errors
+- storage errors
+- lỗi nghiệp vụ của chức năng vừa thay đổi
+
+## J. Release record
+
+Mỗi deploy cần ghi lại:
 
 - deployed commit SHA
 - deployment time
-- backup location
-- migration result
-- service status
-- health check result
+- previous stable commit
+- backup filename/path
+- migration: có/không + kết quả
+- Docker Compose status
+- health result
 - smoke-test result
 - rollback target
 
-## I. Rollback
+## K. Rollback
 
-Rollback khi có Critical/High production regression hoặc data-integrity risk.
+Rollback khi có Critical/High regression, permission/data leak hoặc data-integrity risk.
 
-Quy trình tổng quát:
+### Code rollback
 
-1. Dừng mutation rủi ro nếu cần.
-2. Xác định last-known-good commit.
-3. Roll code về commit đó.
-4. Restore database từ backup nếu migration/data change không backward-compatible.
-5. Restart service.
-6. Health check.
-7. Smoke test.
-8. Tạo hotfix issue/PR để xử lý root cause.
+1. Xác định last-known-good commit.
+2. Checkout/revert về release đó theo Git policy của đội.
+3. Từ `/opt/idosi/deploy/vps`, chạy lại:
 
-Không 'fix forward' trực tiếp trên VPS bằng cách sửa file thủ công.
+```bash
+docker compose up -d --build
+```
+
+4. Kiểm tra logs, health và smoke test.
+
+### Data rollback
+
+Nếu migration/data mutation không backward-compatible:
+
+1. Hạn chế/dừng app để tránh ghi thêm dữ liệu.
+2. Restore từ volume backup đã tạo trước deploy theo runbook vận hành.
+3. Đưa code về phiên bản tương thích với backup.
+4. Khởi động lại Docker Compose.
+5. Health check + smoke test.
+
+Không sửa source trực tiếp trên VPS. Nếu cần fix-forward, tạo `hotfix/<name>`, regression test, CI, PR, merge `main`, backup rồi deploy lại.
