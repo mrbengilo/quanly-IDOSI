@@ -65,12 +65,12 @@ export const FINANCE_STATUS = Object.freeze({
 export const normalizeVnd = (value, options) => amountFrom(value, 'amount', options)
 
 export const financeTransactionKey = (transaction = {}) => {
-  if (transaction.idempotencyKey) return `idempotency:${String(transaction.idempotencyKey)}`
+  const storeScope = String(transaction.storeId || '')
+  if (transaction.idempotencyKey) return `idempotency:${storeScope}:${String(transaction.idempotencyKey)}`
   if (transaction.sourceType && transaction.sourceId) {
-    const storeScope = String(transaction.storeId || '')
     return `source:${storeScope}:${transaction.sourceType}:${transaction.sourceId}:${transaction.type || transaction.category || ''}:${directionOf(transaction.direction)}`
   }
-  if (transaction.id) return `id:${String(transaction.id)}`
+  if (transaction.id) return `id:${storeScope}:${String(transaction.id)}`
   return ''
 }
 
