@@ -10,7 +10,7 @@ Never treat this repository as a throwaway prototype.
 
 ## 2. Current technical baseline
 
-- Node.js >= 22.5
+- Node.js >= 22.13
 - React 19
 - Vite 8
 - React Router
@@ -22,17 +22,39 @@ Never treat this repository as a throwaway prototype.
 - API client: `src/services/idosiApi.js`
 - Backend/runtime: `server/`
 - Database/migrations: `db/` and `drizzle/`
-- Production data is backend/Worker/D1-backed.
+- Sites production path: Worker API + D1.
+- VPS production path: Node.js runtime + SQLite + separate image storage under `server/vps/` and `deploy/vps/`.
 - `localStorage` is compatibility/demo/development state only and MUST NOT become the source of truth for production data.
 
 Before changing architecture, inspect the existing implementation and follow established repository conventions.
+
+### Production targets
+
+IDOSI currently has two supported production paths. Do not assume a persistence/runtime change for one target automatically applies to the other.
+
+**Sites/Cloudflare**
+
+- Worker API
+- D1 persistence
+- Sites build output under `dist/`
+- deployment/bootstrap behavior documented under `server/`
+
+**VPS**
+
+- Node.js production runtime (deployment currently uses Node.js 24)
+- SQLite persistence
+- separate image/file storage
+- runtime code under `server/vps/`
+- deployment and backup procedures under `deploy/vps/`
+
+If a task changes persistence, auth/session handling, storage, bootstrap, migrations, data shape, or runtime behavior, identify the affected deployment target(s) in the impact map and test each supported target that can be affected.
 
 ## 3. Mandatory workflow for every task
 
 Before editing code:
 
 1. Read the relevant existing code.
-2. Identify the affected UI, state, domain, API, backend, database, authorization, and tests.
+2. Identify the affected UI, state, domain, API, backend, database, authorization, deployment target, and tests.
 3. Search for an existing implementation before creating new logic.
 4. Build an impact map.
 5. Determine regression risks.
@@ -41,7 +63,7 @@ Before editing code:
 
 Recommended impact map:
 
-`requirement -> data -> domain -> API/backend -> state -> UI -> database -> tests -> affected features`
+`requirement -> data -> domain -> API/backend -> state -> UI -> database -> deployment target -> tests -> affected features`
 
 Do not start by rewriting files based only on the task description.
 
@@ -75,7 +97,7 @@ Reuse and extend `src/services/idosiApi.js` rather than scattering direct fetch 
 
 ### Database
 
-Do not change schema casually. Any required production schema change must use the project's migration mechanism and must preserve existing data unless the task explicitly defines a safe destructive migration.
+Do not change schema casually. Any required production schema change must use the project's migration mechanism for the affected target and must preserve existing data unless the task explicitly defines a safe destructive migration.
 
 ## 5. Source of truth
 
@@ -89,6 +111,8 @@ Do not solve backend persistence requirements by storing production records only
 - mock data
 
 Demo/local compatibility behavior must remain clearly separated from production persistence.
+
+For persistence changes, inspect the actual production target: D1 for Sites and SQLite/file storage for VPS where applicable.
 
 ## 6. Authorization and store isolation
 
@@ -203,6 +227,8 @@ If any command fails:
 
 Never claim the task is complete while a required check is failing unless the failure is demonstrably pre-existing and unrelated. In that case, report the exact failure and evidence clearly.
 
+For changes affecting VPS runtime/persistence, also run the relevant VPS tests or documented health/bootstrap checks available in the repository. Do not treat `sites:verify` as proof that VPS behavior is correct.
+
 ## 12. Git workflow
 
 Do not intentionally develop feature work directly on `main`.
@@ -260,7 +286,7 @@ Do not expose privileged backend operations solely through client-side checks.
 
 Do not log passwords, raw session tokens, or sensitive identity data.
 
-Follow existing credential/session hashing and storage mechanisms.
+Follow existing credential/session hashing and storage mechanisms for the affected backend.
 
 Identity documents/images require controlled storage and must not be embedded into shared JSON/localStorage as a shortcut.
 
@@ -282,12 +308,14 @@ Never update the UI optimistically in a way that can permanently misrepresent fa
 
 Before adding a migration:
 
+- identify the affected production target(s)
 - confirm schema change is necessary
-- inspect existing migrations
+- inspect existing migrations for that target
 - make migration deterministic
 - preserve existing production data
 - consider defaults/nullability for existing rows
 - ensure old data remains readable by the new code
+- consider backup/rollback implications for VPS SQLite changes
 
 Never reset, truncate, or recreate production tables as a convenience unless explicitly approved for a known disposable environment.
 
@@ -310,7 +338,7 @@ Stop and report ambiguity when it affects:
 - deletion behavior
 - audit requirements
 - database schema/data migration
-- production deployment
+- production deployment target
 
 For low-risk presentation details, follow existing UI conventions rather than blocking unnecessarily.
 
@@ -323,11 +351,13 @@ A task is complete only when applicable items are satisfied:
 - authorization enforced
 - store isolation preserved
 - business rules centralized appropriately
+- affected deployment target(s) identified and validated
 - tests added/updated
 - lint passes
 - tests pass
 - build passes
-- sites verification passes
+- sites verification passes when Sites can be affected
+- VPS verification performed when VPS can be affected
 - migrations are included and documented if needed
 - no secrets introduced
 - diff reviewed for unrelated changes
@@ -343,12 +373,14 @@ At the end of an implementation, report concisely:
 4. Authorization impact
 5. API/backend changes
 6. Database/migration changes
-7. Tests added or updated
-8. Result of `npm run lint`
-9. Result of `npm test`
-10. Result of `npm run build`
-11. Result of `npm run sites:verify`
-12. Remaining risks/manual checks
+7. Production target impact (Sites/VPS/both)
+8. Tests added or updated
+9. Result of `npm run lint`
+10. Result of `npm test`
+11. Result of `npm run build`
+12. Result of `npm run sites:verify` when applicable
+13. VPS verification when applicable
+14. Remaining risks/manual checks
 
 Never use the word "complete" or equivalent if required verification is still failing without clearly stating the failure.
 
@@ -356,7 +388,7 @@ Never use the word "complete" or equivalent if required verification is still fa
 
 For substantial features, prefer this order:
 
-`analyze -> impact map -> tests/domain -> backend/API -> state -> UI -> full verification -> diff review -> PR`
+`analyze -> impact map -> tests/domain -> backend/API -> state -> UI -> deployment-target verification -> full verification -> diff review -> PR`
 
 For UI-only tasks:
 
@@ -364,6 +396,6 @@ For UI-only tasks:
 
 For bug fixes:
 
-`reproduce/identify root cause -> regression test -> minimal fix -> full verification -> diff review`
+`reproduce/identify root cause -> regression test -> minimal fix -> deployment-target verification -> full verification -> diff review`
 
 The objective is not to generate the most code. The objective is to make the smallest correct, secure, testable change that preserves IDOSI's business integrity.
