@@ -412,3 +412,24 @@ For CRITICAL:
 `classify -> deep impact map -> regression tests -> minimal implementation -> security/data review -> full verify -> PR -> CI/review -> production safeguards`
 
 The objective is to make the smallest correct, secure, testable change while spending analysis/test effort in proportion to actual risk.
+
+## 25. Automatic repository delivery and VPS deployment
+
+For user-requested IDOSI source changes, the default delivery behavior is automatic after implementation. Do not ask for a separate confirmation to push, open the PR, merge a verified PR, or deploy the merged release unless the user explicitly asks to stop before one of those stages.
+
+Mandatory delivery chain:
+
+`change -> focused branch -> tests/checks by Risk Level -> PR -> required check verify -> merge main -> Verify IDOSI on main -> automatic VPS deploy workflow -> backup -> Docker Compose rebuild -> health check`
+
+Rules:
+- never push feature work directly to `main`
+- never bypass the `verify` required check
+- merge only after the PR is mergeable and required CI passes
+- after merge, do not perform ad-hoc SSH edits; `.github/workflows/deploy-vps.yml` owns production deployment
+- deployment must target the exact verified `main` SHA
+- production data must be backed up before the new release is pulled/built
+- if deployment or health check fails, report the failure and retained backup; do not silently declare success
+- do not automatically restore a production backup merely because a health check fails, because that may overwrite writes made after backup; rollback/restore must follow the documented incident procedure
+- user confirmation is still required only when the business requirement itself is ambiguous in a CRITICAL area (money, permissions, destructive data semantics, migrations with unclear intent), not for routine delivery steps after an already-approved implementation request
+
+One-time repository/VPS credential setup is documented in `docs/AUTOMATIC_DELIVERY.md`. Once configured, routine verified merges deploy without another user prompt.
