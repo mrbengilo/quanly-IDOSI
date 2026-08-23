@@ -67,6 +67,15 @@ const dateFrom = (value) => {
   return String(value ?? '').match(/\d{4}-\d{2}-\d{2}/)?.[0] || ''
 }
 
+const previousDate = (value) => {
+  const match = String(value ?? '').match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!match) return ''
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+  if (Number.isNaN(date.getTime())) return ''
+  date.setUTCDate(date.getUTCDate() - 1)
+  return date.toISOString().slice(0, 10)
+}
+
 export const ATTENDANCE_STATUS = Object.freeze({
   EARLY: 'Đi sớm',
   ON_TIME: 'Đúng giờ',
@@ -90,14 +99,26 @@ export function resolveShiftCandidates({ at, shifts = [], workDate, earlyWindowM
   const actual = timeParts(at)
   if (!actual) throw new TypeError('at must contain a valid HH:mm value.')
   const targetDate = workDate || dateFrom(at)
+  const priorDate = previousDate(targetDate)
   const normalized = shifts.flatMap((shift) => {
-    const shiftDate = shift.date || shift.workDate || shift.effectiveDate || ''
-    if (targetDate && shiftDate && String(shiftDate).slice(0, 10) !== targetDate) return []
     const times = shiftTimes(shift)
     if (!times) return []
     const elapsed = (actual.minutes - times.startMinutes + 1440) % 1440
     const minutesUntilStart = (times.startMinutes - actual.minutes + 1440) % 1440
-    return [{ ...shift, ...times, elapsedMinutes: elapsed, minutesUntilStart, isCurrent: elapsed < times.duration }]
+    const isCurrent = elapsed < times.duration
+    const shiftDate = String(shift.date || shift.workDate || shift.effectiveDate || '').slice(0, 10)
+    const isOvernight = times.endMinutes <= times.startMinutes
+    const belongsToTargetDate = !targetDate || !shiftDate || shiftDate === targetDate
+    const isPreviousDayOvernightContinuation = Boolean(
+      targetDate
+      && shiftDate
+      && priorDate
+      && shiftDate === priorDate
+      && isOvernight
+      && isCurrent,
+    )
+    if (!belongsToTargetDate && !isPreviousDayOvernightContinuation) return []
+    return [{ ...shift, ...times, elapsedMinutes: elapsed, minutesUntilStart, isCurrent }]
   })
 
   const currentShift = normalized
