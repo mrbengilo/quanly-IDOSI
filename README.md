@@ -32,7 +32,7 @@ Production được khởi tạo bằng biến môi trường riêng; không s�
 ## Phân hệ
 
 - Admin: toàn quyền quản lý chuỗi, cửa hàng, nhân viên, Khối Văn Phòng, chính sách, đơn hàng, chấm công và dữ liệu hệ thống.
-- Nhân viên hỗ trợ KD: dùng workspace vận hành ngoài Khối Văn Phòng, chỉ xem đơn hàng và có màn chấm công, lịch sử, thống kê chuyên cần riêng.
+- Nhân viên hỗ trợ KD (`business_support`): workspace vận hành liên cửa hàng với tập lệnh backend được allowlist riêng. Vai trò này có thể thực hiện các nghiệp vụ hỗ trợ đã được hệ thống cho phép như quản lý hồ sơ nhân sự liên quan, chỉnh chấm công có audit, vận hành đơn hàng, chính sách và một số nghiệp vụ tài chính/lương; đồng thời có màn chấm công, lịch sử và thống kê chuyên cần riêng. Đây không phải quyền Admin toàn phần: các lệnh tài khoản và thao tác Admin-only vẫn phải qua kiểm tra quyền backend. Khi thay đổi phạm vi này phải cập nhật đồng thời allowlist, UI và test phân quyền.
 - Quản lý cửa hàng: chỉ truy cập cửa hàng được Admin gán; quản lý nhân viên, ca/lịch, giao việc, nhập hàng, tài chính và báo cáo của cửa hàng đó; chỉ xem đơn hàng.
 - Nhân viên cửa hàng: điểm danh, công việc, kết ca, lịch sử, bảng lương và dòng tiền; hiển thị loại Full-Time hoặc Part-Time.
 - Nhân viên văn phòng: điểm danh và ra về có vị trí, lịch sử chấm công, trạng thái sớm/đúng giờ/trễ và bảng lương.
