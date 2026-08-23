@@ -52,6 +52,20 @@ describe('attendance rules', () => {
     expect(result.currentShift.id).toBe('night')
   })
 
+  it('keeps a dated overnight shift current after midnight on the following date', () => {
+    const result = resolveShiftCandidates({
+      at: '2026-08-24T01:00:00+07:00',
+      workDate: '2026-08-24',
+      shifts: [
+        { id: 'night', date: '2026-08-23', start: '23:00', end: '02:00' },
+        { id: 'next-night', date: '2026-08-24', start: '23:00', end: '02:00' },
+      ],
+    })
+    expect(result.mode).toBe('confirm-single')
+    expect(result.currentShift.id).toBe('night')
+    expect(result.candidates.map((shift) => shift.id)).toEqual(['night'])
+  })
+
   it('filters day-specific shift definitions without changing historical days', () => {
     const result = resolveShiftCandidates({
       at: '2026-08-14T07:00:00+07:00',

@@ -24,7 +24,10 @@ const baseApp = () => ({
 
 describe('employee shift operations', () => {
   beforeEach(() => { mocked.app = baseApp() })
-  afterEach(cleanup)
+  afterEach(() => {
+    vi.useRealTimers()
+    cleanup()
+  })
 
   it('saves an expense against the employee open attendance and displays only own shift history', async () => {
     mocked.app.expenseEntries = [{
@@ -78,6 +81,8 @@ describe('employee shift operations', () => {
   })
 
   it('keeps both forms read-only until the employee has an open attendance', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-22T03:00:00.000Z')
     mocked.app.attendance = []
     mocked.app.tasks = [{
       id: 'TASK-01', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
