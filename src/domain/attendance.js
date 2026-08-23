@@ -4,9 +4,28 @@ const integerAtLeastZero = (value, field) => {
   return number
 }
 
+const vietnamDateTimeParts = (value) => {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date).map(({ type, value: part }) => [type, part]))
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    minutes: Number(parts.hour) * 60 + Number(parts.minute),
+  }
+}
+
 const timeParts = (value) => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return { minutes: value.getHours() * 60 + value.getMinutes(), timestamp: value.getTime() }
+    const local = vietnamDateTimeParts(value)
+    return { minutes: local.minutes, timestamp: value.getTime() }
   }
   const source = String(value ?? '').trim()
   const match = source.match(/(?:^|T|\s)(\d{1,2}):(\d{2})/)
@@ -59,10 +78,7 @@ const shiftTimes = (shift = {}) => {
 
 const dateFrom = (value) => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    const year = value.getFullYear()
-    const month = String(value.getMonth() + 1).padStart(2, '0')
-    const day = String(value.getDate()).padStart(2, '0')
-    return `${year}-${month}-${day}`
+    return vietnamDateTimeParts(value)?.date || ''
   }
   return String(value ?? '').match(/\d{4}-\d{2}-\d{2}/)?.[0] || ''
 }
