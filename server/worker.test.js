@@ -6851,6 +6851,250 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 30_000)
 
+  it('preserves assigned store shift resolution for Store Manager attendance', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-24T01:05:00.000Z')) // 08:05 Vietnam
+      const env = { DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-manager-attendance-shift' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'manager-attendance-admin-password',
+        initialState: {
+          stores: [{ id: 'S01', short: 'TNV', name: 'IDOSI Tô Ngọc Vân', status: 'Đang hoạt động' }],
+          employees: [], attendance: [],
+          schedule: [{
+            id: 'MANAGER-ASSIGNMENT', storeId: 'S01', employeeId: 'QLCH-001', date: '2026-08-24',
+            shiftId: 'MANAGER_SHIFT', shiftIds: ['MANAGER_SHIFT'],
+          }],
+          shiftDefinitions: [{
+            id: 'MANAGER_SHIFT', storeId: 'S01', name: 'Ca quản lý cửa hàng', start: '08:00', end: '12:00', active: true,
+          }],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+      const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'manager-attendance-admin-password',
+      }), env)
+      const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+      const managerCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.create', expectedVersion: 1,
+        payload: {
+          unit: 'store_manager', storeId: 'S01', name: 'Quản lý giữ ca cửa hàng', phone: '0908777010',
+          cccd: '079777001010', address: 'TP. Hồ Chí Minh', startDate: '2026-08-20',
+          employmentType: 'Full-Time', position: 'Quản lý cửa hàng', username: 'manager.shift',
+          password: 'manager-shift-password', identityImages: testIdentityImages(),
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'manager-attendance-create' }), env)
+      expect(managerCreated.status).toBe(201)
+      expect((await managerCreated.json()).employee).toMatchObject({ id: 'QLCH-001', unit: 'store_manager' })
+      const managerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'manager.shift', password: 'manager-shift-password',
+      }), env)
+      const managerAuthorization = { authorization: `Bearer ${(await managerLogin.json()).token}` }
+      const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 2,
+        payload: {
+          shiftId: 'MANAGER_SHIFT',
+          location: { latitude: 10.8231, longitude: 106.6297, accuracy: 8 },
+        },
+      }, { ...managerAuthorization, 'idempotency-key': 'manager-attendance-check-in' }), env)
+      expect(checkedIn.status).toBe(201)
+      expect(await checkedIn.json()).toMatchObject({
+        version: 3,
+        attendance: {
+          employeeId: 'QLCH-001', shiftId: 'MANAGER_SHIFT', shiftName: 'Ca quản lý cửa hàng',
+          shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:05', minutesLate: 5,
+        },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('uses canonical daily schedules for Office and Business Support when a single submitted profile shift id is stale', async () => {
+    vi.useFakeTimers()
+    try {
+      // The UTC date is still 23/08, but the canonical business date in Vietnam
+      // is already 24/08. The daily schedule must be selected by that VN date.
+      vi.setSystemTime(new Date('2026-08-23T23:59:00.000Z')) // 06:59 24/08 Vietnam
+      const env = { DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-canonical-daily-attendance' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'canonical-daily-admin-password',
+        initialState: { stores: [], employees: [], attendance: [], schedule: [], shiftDefinitions: [] },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+      const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'canonical-daily-admin-password',
+      }), env)
+      const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+
+      const supportCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.create', expectedVersion: 1,
+        payload: {
+          unit: 'business_support', name: 'Hỗ trợ lịch ngày', phone: '0908777001', cccd: '079777000111',
+          address: 'TP. Hồ Chí Minh', startDate: '2026-08-20', employmentType: 'Part-Time', position: 'NV hỗ trợ KD',
+          username: 'support.daily', password: 'support-daily-password', identityImages: testIdentityImages(),
+          workShifts: [
+            { id: 'support_am', name: 'Ca hồ sơ sáng', start: '08:00', end: '12:00' },
+            { id: 'support_pm', name: 'Ca hồ sơ chiều', start: '13:00', end: '17:30' },
+          ],
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'canonical-daily-support-create' }), env)
+      expect(supportCreated.status).toBe(201)
+      const support = (await supportCreated.json()).employee
+
+      const officeCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.create', expectedVersion: 2,
+        payload: {
+          unit: 'office', storeId: 'OFFICE', name: 'Văn phòng lịch ngày', phone: '0908777002', cccd: '079777000222',
+          address: 'TP. Hồ Chí Minh', startDate: '2026-08-20', employmentType: 'Full-Time', position: 'Kế toán',
+          username: 'office.daily', password: 'office-daily-password', identityImages: testIdentityImages(),
+          workShifts: [{ id: 'full_time', name: 'Giờ hồ sơ', start: '08:00', end: '17:30' }],
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'canonical-daily-office-create' }), env)
+      expect(officeCreated.status).toBe(201)
+      const office = (await officeCreated.json()).employee
+
+      const supportDailyResponse = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 3,
+        payload: {
+          targetUnit: 'business_support', employeeId: support.id, date: '2026-08-24',
+          shiftName: 'Ca ngày hỗ trợ', start: '08:30', end: '17:00',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'canonical-daily-support-assign' }), env)
+      expect(supportDailyResponse.status).toBe(200)
+      const supportDaily = (await supportDailyResponse.json()).schedule
+      const officeDailyResponse = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 4,
+        payload: {
+          targetUnit: 'office', employeeId: office.id, date: '2026-08-24',
+          shiftName: 'Ca ngày văn phòng', start: '08:30', end: '17:00',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'canonical-daily-office-assign' }), env)
+      expect(officeDailyResponse.status).toBe(200)
+      const officeDaily = (await officeDailyResponse.json()).schedule
+
+      const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'support.daily', password: 'support-daily-password',
+      }), env)
+      const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+      const officeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'office.daily', password: 'office-daily-password',
+      }), env)
+      const officeAuthorization = { authorization: `Bearer ${(await officeLogin.json()).token}` }
+      const location = { latitude: 10.8231, longitude: 106.6297, accuracy: 8 }
+
+      const supportCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 5,
+        payload: {
+          shiftId: 'support_am', shiftName: 'Ca client không hợp lệ', start: '00:00', end: '00:01', location,
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'canonical-daily-support-check-in' }), env)
+      expect(supportCheckIn.status).toBe(201)
+      const supportAttendance = (await supportCheckIn.json()).attendance
+      expect(supportAttendance).toMatchObject({
+        employeeId: support.id, date: '2026-08-24', shiftId: supportDaily.id, shiftName: 'Ca ngày hỗ trợ',
+        shiftStart: '08:30', shiftEnd: '17:00', shiftSource: 'support-daily-schedule',
+        checkIn: '06:59', checkInAt: '2026-08-23T23:59:00.000Z', minutesEarly: 91, minutesLate: 0,
+        workdayCredit: 0,
+      })
+
+      vi.setSystemTime(new Date('2026-08-24T01:35:00.000Z')) // 08:35 Vietnam
+      const officeCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 6,
+        payload: {
+          shiftId: 'full_time', shiftName: 'Ca client không hợp lệ', start: '00:00', end: '00:01', location,
+        },
+      }, { ...officeAuthorization, 'idempotency-key': 'canonical-daily-office-check-in' }), env)
+      expect(officeCheckIn.status).toBe(201)
+      const officeAttendance = (await officeCheckIn.json()).attendance
+      expect(officeAttendance).toMatchObject({
+        employeeId: office.id, shiftId: officeDaily.id, shiftName: 'Ca ngày văn phòng',
+        shiftStart: '08:30', shiftEnd: '17:00', shiftSource: 'support-daily-schedule',
+        checkIn: '08:35', minutesLate: 5, workdayCredit: 0,
+      })
+
+      const supportDailyUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 7,
+        payload: {
+          scheduleId: supportDaily.id, targetUnit: 'business_support', employeeId: support.id,
+          date: '2026-08-24', shiftName: 'Ca ngày đã đổi', start: '09:00', end: '18:00',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'canonical-daily-support-update' }), env)
+      expect(supportDailyUpdated.status).toBe(200)
+
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z')) // 17:00 Vietnam
+      const supportCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 8,
+        payload: { attendanceId: supportAttendance.id, location },
+      }, { ...supportAuthorization, 'idempotency-key': 'canonical-daily-support-check-out' }), env)
+      expect(supportCheckOut.status).toBe(200)
+      expect(await supportCheckOut.json()).toMatchObject({
+        version: 9,
+        attendance: {
+          id: supportAttendance.id, shiftId: supportDaily.id, shiftName: 'Ca ngày hỗ trợ',
+          shiftStart: '08:30', shiftEnd: '17:00', workedSeconds: 36_060, workdayCredit: 1,
+        },
+      })
+
+      const officeCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 9,
+        payload: { attendanceId: officeAttendance.id, location },
+      }, { ...officeAuthorization, 'idempotency-key': 'canonical-daily-office-check-out' }), env)
+      expect(officeCheckOut.status).toBe(200)
+      expect(await officeCheckOut.json()).toMatchObject({
+        version: 10,
+        attendance: {
+          id: officeAttendance.id, shiftId: officeDaily.id,
+          shiftStart: '08:30', shiftEnd: '17:00', workedSeconds: 30_300, workdayCredit: 1,
+        },
+      })
+
+      vi.setSystemTime(new Date('2026-08-24T10:01:00.000Z'))
+      const duplicate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 10,
+        payload: { shiftId: 'support_am', location },
+      }, { ...supportAuthorization, 'idempotency-key': 'canonical-daily-support-duplicate' }), env)
+      expect(duplicate.status).toBe(409)
+      expect(await duplicate.json()).toMatchObject({ error: { code: 'OFFICE_ATTENDANCE_ALREADY_RECORDED' } })
+
+      vi.setSystemTime(new Date('2026-08-25T01:05:00.000Z')) // 08:05 Vietnam; no daily schedule
+      const nextDaySupportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'support.daily', password: 'support-daily-password',
+      }), env)
+      const nextDaySupportAuthorization = { authorization: `Bearer ${(await nextDaySupportLogin.json()).token}` }
+      const ambiguousStaleShift = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 10,
+        payload: { shiftId: 'removed_profile_shift', location },
+      }, { ...nextDaySupportAuthorization, 'idempotency-key': 'canonical-profile-stale-multiple' }), env)
+      expect(ambiguousStaleShift.status).toBe(400)
+      expect(await ambiguousStaleShift.json()).toMatchObject({ error: { code: 'SHIFT_INVALID' } })
+
+      const profileCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 10,
+        payload: { shiftId: 'support_am', location },
+      }, { ...nextDaySupportAuthorization, 'idempotency-key': 'canonical-profile-valid-next-date' }), env)
+      expect(profileCheckIn.status).toBe(201)
+      const profileAttendance = (await profileCheckIn.json()).attendance
+      expect(profileAttendance).toMatchObject({
+        employeeId: support.id, date: '2026-08-25', shiftId: 'support_am', shiftSource: 'profile-work-shift',
+        shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:05', minutesLate: 5,
+      })
+
+      vi.setSystemTime(new Date('2026-08-25T05:00:00.000Z')) // 12:00 Vietnam
+      const profileCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 11,
+        payload: { attendanceId: profileAttendance.id, location },
+      }, { ...nextDaySupportAuthorization, 'idempotency-key': 'canonical-profile-check-out-next-date' }), env)
+      expect(profileCheckOut.status).toBe(200)
+      expect(await profileCheckOut.json()).toMatchObject({
+        version: 12,
+        attendance: { id: profileAttendance.id, workedSeconds: 14_100, workdayCredit: 1 },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
   it('applies effective-dated Office and Business Support working time without rewriting attendance snapshots', async () => {
     vi.useFakeTimers()
     try {
@@ -6916,7 +7160,7 @@ describe('IDOSI Worker security primitives', () => {
         type: 'employee.working_time.set', expectedVersion: 5,
         payload: {
           employeeId: office.id, effectiveFrom: '2026-08-21', workTimeType: 'Full-Time',
-          workShifts: [{ id: 'full_time', name: 'Giờ hành chính mới', start: '09:00', end: '18:00' }],
+          workShifts: [{ id: 'full_time', name: 'Giờ hành chính mới', start: '08:30', end: '17:00' }],
         },
       }, { ...adminAuthorization, 'idempotency-key': 'effective-office-schedule-0001' }), env)
       expect(officeScheduled.status).toBe(200)
@@ -6947,17 +7191,17 @@ describe('IDOSI Worker security primitives', () => {
         type: 'employee.working_time.set', expectedVersion: 7,
         payload: {
           employeeId: support.id, effectiveFrom: '2026-08-22', workTimeType: 'Part-Time',
-          workShifts: [{ id: 'support_pm', name: 'Ca chiều mới', start: '14:00', end: '18:00' }],
+          workShifts: [{ id: 'support_pm', name: 'Ca hiệu lực 08:30', start: '08:30', end: '17:00' }],
         },
       }, { ...supportAuthorization, 'idempotency-key': 'effective-support-schedule-0002' }), env)
       expect(supportReplaced.status).toBe(200)
       const supportReplacedBody = await supportReplaced.json()
       expect(supportReplacedBody.employee.workTimeSchedule.filter(({ effectiveFrom }) => effectiveFrom === '2026-08-22')).toHaveLength(1)
       expect(supportReplacedBody.setting.workShifts).toEqual([
-        expect.objectContaining({ id: 'support_pm', name: 'Ca chiều mới', start: '14:00', end: '18:00' }),
+        expect.objectContaining({ id: 'support_pm', name: 'Ca hiệu lực 08:30', start: '08:30', end: '17:00' }),
       ])
 
-      vi.setSystemTime(new Date('2026-08-21T02:05:00.000Z')) // 09:05 Vietnam
+      vi.setSystemTime(new Date('2026-08-21T01:35:00.000Z')) // 08:35 Vietnam
       const refreshedOfficeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
         username: 'office.effective', password: 'office-effective-password',
       }), env)
@@ -6969,14 +7213,73 @@ describe('IDOSI Worker security primitives', () => {
       expect(newAttendance.status).toBe(201)
       const newAttendanceBody = await newAttendance.json()
       expect(newAttendanceBody.attendance).toMatchObject({
-        shiftName: 'Giờ hành chính mới', shiftStart: '09:00', shiftEnd: '18:00', minutesLate: 5,
+        shiftName: 'Giờ hành chính mới', shiftStart: '08:30', shiftEnd: '17:00', minutesLate: 5,
       })
-      const storedAttendance = readHydratedState(env.DB.database).attendance
+      let storedAttendance = readHydratedState(env.DB.database).attendance
       expect(storedAttendance.find(({ id }) => id === oldAttendanceBody.attendance.id)).toMatchObject({
         shiftStart: '08:00', shiftEnd: '17:30', checkOutAt: expect.any(String),
       })
       expect(storedAttendance.find(({ id }) => id === newAttendanceBody.attendance.id)).toMatchObject({
-        shiftStart: '09:00', shiftEnd: '18:00',
+        shiftStart: '08:30', shiftEnd: '17:00',
+      })
+
+      vi.setSystemTime(new Date('2026-08-21T10:00:00.000Z')) // 17:00 Vietnam
+      const newOfficeCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 9,
+        payload: { attendanceId: newAttendanceBody.attendance.id, location: { latitude: 10.81, longitude: 106.68, accuracy: 8 } },
+      }, { ...refreshedOfficeAuthorization, 'idempotency-key': 'effective-office-check-out-new' }), env)
+      expect(newOfficeCheckOut.status).toBe(200)
+      expect(await newOfficeCheckOut.json()).toMatchObject({
+        version: 10,
+        attendance: { shiftStart: '08:30', shiftEnd: '17:00', workdayCredit: 1 },
+      })
+
+      vi.setSystemTime(new Date('2026-08-22T01:35:00.000Z')) // 08:35 Vietnam
+      const refreshedSupportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'support.effective', password: 'support-effective-password',
+      }), env)
+      const refreshedSupportAuthorization = { authorization: `Bearer ${(await refreshedSupportLogin.json()).token}` }
+      const supportAttendance = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_in', expectedVersion: 10,
+        payload: { shiftId: 'support_pm', location: { latitude: 10.81, longitude: 106.68, accuracy: 8 } },
+      }, { ...refreshedSupportAuthorization, 'idempotency-key': 'effective-support-check-in-new' }), env)
+      expect(supportAttendance.status).toBe(201)
+      const supportAttendanceBody = await supportAttendance.json()
+      expect(supportAttendanceBody.attendance).toMatchObject({
+        shiftId: 'support_pm', shiftName: 'Ca hiệu lực 08:30',
+        shiftStart: '08:30', shiftEnd: '17:00', minutesLate: 5,
+      })
+
+      vi.setSystemTime(new Date('2026-08-22T10:00:00.000Z')) // 17:00 Vietnam
+      const supportCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 11,
+        payload: { attendanceId: supportAttendanceBody.attendance.id, location: { latitude: 10.81, longitude: 106.68, accuracy: 8 } },
+      }, { ...refreshedSupportAuthorization, 'idempotency-key': 'effective-support-check-out-new' }), env)
+      expect(supportCheckOut.status).toBe(200)
+      expect(await supportCheckOut.json()).toMatchObject({
+        version: 12,
+        attendance: { shiftStart: '08:30', shiftEnd: '17:00', workdayCredit: 1 },
+      })
+
+      const refreshedAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'effective-working-time-admin',
+      }), env)
+      const refreshedAdminAuthorization = { authorization: `Bearer ${(await refreshedAdminLogin.json()).token}` }
+      const payrollClosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 12, payload: { storeId: 'OFFICE', period: '2026-08' },
+      }, { ...refreshedAdminAuthorization, 'idempotency-key': 'effective-office-payroll-close' }), env)
+      expect(payrollClosed.status).toBe(201)
+      expect(await payrollClosed.json()).toMatchObject({
+        version: 13,
+        period: { rows: [expect.objectContaining({ employeeId: office.id, workedDays: 2 })] },
+      })
+
+      storedAttendance = readHydratedState(env.DB.database).attendance
+      expect(storedAttendance.find(({ id }) => id === newAttendanceBody.attendance.id)).toMatchObject({
+        shiftStart: '08:30', shiftEnd: '17:00', workdayCredit: 1,
+      })
+      expect(storedAttendance.find(({ id }) => id === supportAttendanceBody.attendance.id)).toMatchObject({
+        shiftStart: '08:30', shiftEnd: '17:00', workdayCredit: 1,
       })
     } finally {
       vi.useRealTimers()

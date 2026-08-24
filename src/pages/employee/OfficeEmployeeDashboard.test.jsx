@@ -21,6 +21,13 @@ const profile = {
   workEnd: '17:00',
 }
 
+const vietnamToday = () => new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Ho_Chi_Minh',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+}).format(new Date())
+
 const makeApp = (overrides = {}) => ({
   session: { role: 'store_manager', employeeId: profile.id, storeId: profile.storeId },
   currentEmployee: profile,
@@ -30,6 +37,7 @@ const makeApp = (overrides = {}) => ({
   payrollPeriods: [],
   salaryAdjustments: [],
   officeAdjustments: [],
+  supportWorkSchedules: [],
   checkIn: vi.fn().mockResolvedValue({ ok: true }),
   checkOut: vi.fn().mockResolvedValue({ ok: true }),
   notify: vi.fn(),
@@ -132,6 +140,91 @@ describe('operational-role attendance overview', () => {
     expect(screen.queryByText('Bảng lương theo ngày công')).toBeNull()
   })
 
+  it.each([
+    { label: 'Khối văn phòng', role: 'employee', unit: 'office', employeeId: 'VP-DAILY-001' },
+    { label: 'Hỗ trợ KD', role: 'business_support', unit: 'business_support', employeeId: 'HTKD-DAILY-001' },
+  ])('uses the exact daily schedule for $label attendance', async ({ role, unit, employeeId }) => {
+    const dailyProfile = {
+      ...profile,
+      id: employeeId,
+      code: employeeId,
+      unit,
+      employmentType: 'Full-Time',
+      workShifts: [{ id: 'full_time', name: 'Giờ mặc định', start: '08:00', end: '17:30' }],
+    }
+    mocked.app = makeApp({
+      session: { role, employeeId },
+      currentEmployee: dailyProfile,
+      employees: [dailyProfile],
+      supportWorkSchedules: [{
+        id: `sws_${employeeId}`,
+        employeeId,
+        targetUnit: unit,
+        date: vietnamToday(),
+        shiftName: 'Lịch ngày 08:30',
+        start: '08:30',
+        end: '17:00',
+        version: 2,
+      }],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+    expect(screen.getByText('Lịch ngày 08:30')).toBeTruthy()
+    expect(screen.getByText('08:30 – 17:00')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i }))
+
+    await waitFor(() => expect(mocked.app.checkIn).toHaveBeenCalledTimes(1))
+    expect(mocked.app.checkIn).toHaveBeenCalledWith(expect.objectContaining({
+      employeeId,
+      shiftId: `sws_${employeeId}`,
+      workShiftId: `sws_${employeeId}`,
+      shiftName: 'Lịch ngày 08:30',
+      shiftStart: '08:30',
+      shiftEnd: '17:00',
+    }))
+  })
+
+  it('reconciles the selected shift when an exact daily schedule arrives from a state refresh', async () => {
+    const supportProfile = {
+      ...profile,
+      id: 'HTKD-LIVE-001',
+      code: 'HTKD-LIVE-001',
+      unit: 'business_support',
+      employmentType: 'Full-Time',
+      workShifts: [{ id: 'profile_default', name: 'Giờ hồ sơ', start: '08:00', end: '17:30' }],
+    }
+    mocked.app = makeApp({
+      session: { role: 'business_support', employeeId: supportProfile.id },
+      currentEmployee: supportProfile,
+      employees: [supportProfile],
+    })
+    const { rerender } = render(<OfficeEmployeeDashboard />)
+    expect(screen.getByText('Giờ hồ sơ')).toBeTruthy()
+
+    mocked.app = {
+      ...mocked.app,
+      supportWorkSchedules: [{
+        id: 'sws_live_refresh',
+        employeeId: supportProfile.id,
+        targetUnit: 'business_support',
+        date: vietnamToday(),
+        shiftName: 'Lịch vừa tải',
+        start: '08:30',
+        end: '17:00',
+      }],
+    }
+    rerender(<OfficeEmployeeDashboard />)
+
+    await waitFor(() => expect(screen.getByText('Lịch vừa tải')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i }))
+    await waitFor(() => expect(mocked.app.checkIn).toHaveBeenCalledTimes(1))
+    expect(mocked.app.checkIn).toHaveBeenCalledWith(expect.objectContaining({
+      shiftId: 'sws_live_refresh',
+      shiftStart: '08:30',
+      shiftEnd: '17:00',
+    }))
+  })
+
   it('lets a Part-Time employee choose the configured afternoon shift before check-in', async () => {
     const partTimeProfile = {
       ...profile,
@@ -164,6 +257,92 @@ describe('operational-role attendance overview', () => {
       shiftName: 'Ca chiều',
       shiftStart: '13:00',
       shiftEnd: '17:30',
+    }))
+  })
+
+  it('clears a stale selection when a refreshed profile still has multiple shifts', async () => {
+    const initialProfile = {
+      ...profile,
+      id: 'VP-REFRESH-001',
+      code: 'VP-REFRESH-001',
+      unit: 'office',
+      employmentType: 'Part-Time',
+      workTimeType: 'Part-Time',
+      workShifts: [
+        { id: 'old_am', name: 'Ca sáng cũ', start: '08:00', end: '12:00' },
+        { id: 'old_pm', name: 'Ca chiều cũ', start: '13:00', end: '17:30' },
+      ],
+    }
+    mocked.app = makeApp({
+      session: { role: 'employee', employeeId: initialProfile.id },
+      currentEmployee: initialProfile,
+      employees: [initialProfile],
+    })
+    const { rerender } = render(<OfficeEmployeeDashboard />)
+    fireEvent.change(screen.getByLabelText('Chọn ca làm việc để điểm danh'), { target: { value: 'old_pm' } })
+
+    const refreshedProfile = {
+      ...initialProfile,
+      workShifts: [
+        { id: 'new_am', name: 'Ca sáng mới', start: '08:30', end: '12:30' },
+        { id: 'new_pm', name: 'Ca chiều mới', start: '13:30', end: '18:00' },
+      ],
+    }
+    mocked.app = {
+      ...mocked.app,
+      currentEmployee: refreshedProfile,
+      employees: [refreshedProfile],
+    }
+    rerender(<OfficeEmployeeDashboard />)
+
+    const shiftSelect = screen.getByLabelText('Chọn ca làm việc để điểm danh')
+    await waitFor(() => expect(shiftSelect.value).toBe(''))
+    expect(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i }).disabled).toBe(true)
+    expect(screen.getAllByText('Chọn ca làm việc').length).toBeGreaterThan(0)
+
+    fireEvent.change(shiftSelect, { target: { value: 'new_pm' } })
+    fireEvent.click(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i }))
+    await waitFor(() => expect(mocked.app.checkIn).toHaveBeenCalledTimes(1))
+    expect(mocked.app.checkIn).toHaveBeenCalledWith(expect.objectContaining({
+      shiftId: 'new_pm',
+      shiftStart: '13:30',
+      shiftEnd: '18:00',
+    }))
+  })
+
+  it('auto-selects the only valid shift after a profile refresh changes its id', async () => {
+    const initialProfile = {
+      ...profile,
+      id: 'HTKD-REFRESH-001',
+      code: 'HTKD-REFRESH-001',
+      unit: 'business_support',
+      workShifts: [{ id: 'old_full_time', name: 'Giờ cũ', start: '08:00', end: '17:30' }],
+    }
+    mocked.app = makeApp({
+      session: { role: 'business_support', employeeId: initialProfile.id },
+      currentEmployee: initialProfile,
+      employees: [initialProfile],
+    })
+    const { rerender } = render(<OfficeEmployeeDashboard />)
+
+    const refreshedProfile = {
+      ...initialProfile,
+      workShifts: [{ id: 'new_full_time', name: 'Giờ mới', start: '08:30', end: '17:00' }],
+    }
+    mocked.app = {
+      ...mocked.app,
+      currentEmployee: refreshedProfile,
+      employees: [refreshedProfile],
+    }
+    rerender(<OfficeEmployeeDashboard />)
+
+    await waitFor(() => expect(screen.getByText('Giờ mới')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i }))
+    await waitFor(() => expect(mocked.app.checkIn).toHaveBeenCalledTimes(1))
+    expect(mocked.app.checkIn).toHaveBeenCalledWith(expect.objectContaining({
+      shiftId: 'new_full_time',
+      shiftStart: '08:30',
+      shiftEnd: '17:00',
     }))
   })
 })

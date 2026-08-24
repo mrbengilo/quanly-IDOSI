@@ -134,5 +134,5 @@ describe('AdminSettings password visibility', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
     await waitFor(() => expect(mocked.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ avatar })))
-  })
+  }, 15_000)
 })

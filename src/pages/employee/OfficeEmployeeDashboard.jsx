@@ -23,7 +23,10 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
-import { resolveEffectiveWorkingTime } from '../../domain/workTimeSchedule'
+import {
+  reconcileAttendanceShiftId,
+  resolveAttendanceWorkingTime,
+} from '../../domain/attendanceWorkingTime'
 import { money, shortDate } from '../../utils'
 import { normalizeWorkingTimeForm } from '../office/workingTime'
 import {
@@ -214,14 +217,15 @@ export function OfficeEmployeeDashboard() {
   const [locationError, setLocationError] = useState('')
   const dateKey = vietnamDateKey(now)
   const effectiveEmployee = useMemo(
-    () => resolveEffectiveWorkingTime(employee, dateKey),
-    [dateKey, employee],
+    () => resolveAttendanceWorkingTime(employee, dateKey, app.supportWorkSchedules || []),
+    [app.supportWorkSchedules, dateKey, employee],
   )
-  const profileWorkShifts = useMemo(
-    () => normalizeWorkingTimeForm(effectiveEmployee, employee.employmentType).workShifts,
+  const attendanceWorkShifts = useMemo(
+    () => normalizeWorkingTimeForm(effectiveEmployee, effectiveEmployee.employmentType || employee.employmentType).workShifts,
     [effectiveEmployee, employee.employmentType],
   )
-  const [selectedShiftId, setSelectedShiftId] = useState(() => profileWorkShifts[0]?.id || '')
+  const [requestedShiftId, setRequestedShiftId] = useState(() => reconcileAttendanceShiftId(attendanceWorkShifts))
+  const selectedShiftId = reconcileAttendanceShiftId(attendanceWorkShifts, requestedShiftId)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1_000)
@@ -237,7 +241,8 @@ export function OfficeEmployeeDashboard() {
     : officeRecordDate(record).startsWith(filterValue))
   const monthRows = allRows.filter((record) => officeRecordDate(record).startsWith(selectedMonth))
   const stats = officeAttendanceStats(filteredRows, app.policies?.attendanceEvaluation)
-  const selectedShift = profileWorkShifts.find((shift) => shift.id === selectedShiftId) || profileWorkShifts[0]
+  const selectedShift = attendanceWorkShifts.find((shift) => shift.id === selectedShiftId)
+    || (attendanceWorkShifts.length === 1 ? attendanceWorkShifts[0] : null)
   const effectiveShiftId = selectedShift?.id || ''
 
   const changeFilterMode = (mode) => {
@@ -253,8 +258,10 @@ export function OfficeEmployeeDashboard() {
       app.notify?.(message, 'info')
       return
     }
-    if (action === 'in' && profileWorkShifts.length > 1 && !effectiveShiftId) {
-      const message = 'Vui lòng chọn ca làm việc trước khi điểm danh.'
+    if (action === 'in' && !effectiveShiftId) {
+      const message = attendanceWorkShifts.length
+        ? 'Vui lòng chọn ca làm việc trước khi điểm danh.'
+        : `Hồ sơ nhân viên ${unitLabel} chưa có thời gian làm việc hợp lệ.`
       setLocationError(message)
       app.notify?.(message, 'info')
       return
@@ -307,12 +314,13 @@ export function OfficeEmployeeDashboard() {
         </Card>
         <Card className="office-attendance-action">
           <div className="office-attendance-action__heading">
-            <div><span>CHẤM CÔNG HÔM NAY</span><strong>{selectedShift?.name || `Giờ làm ${unitLabel}`}</strong><small>{selectedShift?.start || effectiveEmployee.workStart || '08:00'} – {selectedShift?.end || effectiveEmployee.workEnd || '17:00'}</small></div>
+            <div><span>CHẤM CÔNG HÔM NAY</span><strong>{selectedShift?.name || (attendanceWorkShifts.length > 1 ? 'Chọn ca làm việc' : `Giờ làm ${unitLabel}`)}</strong><small>{selectedShift ? `${selectedShift.start} – ${selectedShift.end}` : attendanceWorkShifts.length > 1 ? '—' : `${effectiveEmployee.workStart || '08:00'} – ${effectiveEmployee.workEnd || '17:00'}`}</small></div>
             <Badge tone={statusTone(todayStatus)}>{todayStatus}</Badge>
           </div>
-          {profileWorkShifts.length > 1 && !todayRecord && <Field label="Chọn ca làm việc" required>
-            <Select value={effectiveShiftId} onChange={(event) => setSelectedShiftId(event.target.value)} aria-label="Chọn ca làm việc để điểm danh">
-              {profileWorkShifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.start}–{shift.end}</option>)}
+          {attendanceWorkShifts.length > 1 && !todayRecord && <Field label="Chọn ca làm việc" required>
+            <Select value={selectedShiftId} onChange={(event) => setRequestedShiftId(event.target.value)} aria-label="Chọn ca làm việc để điểm danh">
+              <option value="">Chọn ca làm việc</option>
+              {attendanceWorkShifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.start}–{shift.end}</option>)}
             </Select>
           </Field>}
           <div className="office-attendance-action__times">
@@ -320,7 +328,7 @@ export function OfficeEmployeeDashboard() {
             <p><span>Giờ ra</span><strong>{timeOnly(todayRecord?.checkOut || todayRecord?.checkOutAt)}</strong></p>
           </div>
           <div className="card-actions">
-            <Button icon={Fingerprint} loading={busy === 'in'} disabled={Boolean(openRecord || todayRecord?.checkOut || busy || (profileWorkShifts.length > 1 && !effectiveShiftId))} onClick={() => runLocatedAction('in')}>BẤM ĐIỂM DANH</Button>
+            <Button icon={Fingerprint} loading={busy === 'in'} disabled={Boolean(openRecord || todayRecord?.checkOut || busy || !effectiveShiftId)} onClick={() => runLocatedAction('in')}>BẤM ĐIỂM DANH</Button>
             <Button variant="danger" icon={LogOut} loading={busy === 'out'} disabled={!openRecord || Boolean(busy)} onClick={() => runLocatedAction('out')}>RA VỀ</Button>
           </div>
           <small className="office-location-hint"><MapPin aria-hidden="true" /> Hệ thống chỉ ghi nhận sau khi bạn chủ động bật và cho phép truy cập vị trí.</small>
