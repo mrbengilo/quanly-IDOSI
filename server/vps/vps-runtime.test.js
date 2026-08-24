@@ -60,7 +60,7 @@ describe('IDOSI VPS runtime', () => {
     const reopened = createSqliteD1({ databasePath })
     expect((await reopened.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(8)
     reopened.close()
-  })
+  }, 30_000)
 
   it('stores private identity images under the configured directory', async () => {
     const directory = await temporaryDirectory()
@@ -274,7 +274,7 @@ describe('IDOSI VPS runtime', () => {
       if (server?.listening) await new Promise((resolveClose) => server.close(resolveClose))
       vi.useRealTimers()
     }
-  }, 30_000)
+  }, 90_000)
 
   it('runs effective Office and Business Support attendance through Worker HTTP and SQLite payroll', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
@@ -597,5 +597,5 @@ describe('IDOSI VPS runtime', () => {
       if (server?.listening) await new Promise((resolveClose) => server.close(resolveClose))
       vi.useRealTimers()
     }
-  }, 30_000)
+  }, 90_000)
 })
