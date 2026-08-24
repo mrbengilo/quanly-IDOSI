@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createFinanceTransaction,
+  financeTransactionKey,
   selectFinanceSummary,
   selectFinanceTransactions,
   upsertFinanceTransaction,
@@ -46,6 +47,24 @@ describe('finance single-source ledger', () => {
     expect(summary.revenue).toBe(1_000_000)
   })
 
+  it('keeps the same idempotency key separate across stores', () => {
+    const firstStore = transaction({ id: 'A', storeId: 'CH001', idempotencyKey: 'order:ORDER-00001', amount: 800_000 })
+    const secondStore = transaction({ id: 'B', storeId: 'CH002', idempotencyKey: 'order:ORDER-00001', amount: 900_000 })
+    expect(financeTransactionKey(firstStore)).not.toBe(financeTransactionKey(secondStore))
+    const inserted = upsertFinanceTransaction([firstStore], secondStore)
+    expect(inserted.inserted).toBe(true)
+    expect(inserted.transactions).toHaveLength(2)
+  })
+
+  it('keeps the same fallback transaction id separate across stores', () => {
+    const firstStore = transaction({ id: 'TX-SHARED', storeId: 'CH001', amount: 800_000 })
+    const secondStore = transaction({ id: 'TX-SHARED', storeId: 'CH002', amount: 900_000 })
+    expect(financeTransactionKey(firstStore)).not.toBe(financeTransactionKey(secondStore))
+    const inserted = upsertFinanceTransaction([firstStore], secondStore)
+    expect(inserted.inserted).toBe(true)
+    expect(inserted.transactions).toHaveLength(2)
+  })
+
   it('upserts a logical source instead of creating duplicate finance rows', () => {
     const initial = transaction({ id: 'A', sourceType: 'order', sourceId: 'SM234-00001', amount: 800_000 })
     const result = upsertFinanceTransaction([initial], {
@@ -57,6 +76,21 @@ describe('finance single-source ledger', () => {
     expect(result.updated).toBe(true)
     expect(result.transactions).toHaveLength(1)
     expect(result.transactions[0].amount).toBe(850_000)
+  })
+
+  it('keeps the same logical source separate across stores', () => {
+    const firstStore = transaction({
+      id: 'A', storeId: 'CH001', sourceType: 'order', sourceId: 'ORDER-00001', amount: 800_000,
+    })
+    const secondStore = transaction({
+      id: 'B', storeId: 'CH002', sourceType: 'order', sourceId: 'ORDER-00001', amount: 900_000,
+    })
+    expect(financeTransactionKey(firstStore)).not.toBe(financeTransactionKey(secondStore))
+    const inserted = upsertFinanceTransaction([firstStore], secondStore)
+    expect(inserted.inserted).toBe(true)
+    expect(inserted.transactions).toHaveLength(2)
+    expect(selectFinanceSummary(inserted.transactions, { storeId: 'CH001' }).revenue).toBe(800_000)
+    expect(selectFinanceSummary(inserted.transactions, { storeId: 'CH002' }).revenue).toBe(900_000)
   })
 
   it('keeps multiple legitimate fixed-expense records even when their type and date match', () => {
