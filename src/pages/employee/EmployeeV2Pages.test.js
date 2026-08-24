@@ -372,7 +372,9 @@ describe('store employee current-shift orders', () => {
       stores: [{ id: 'S01', name: 'Dosii TNV' }, { id: 'S02', name: 'Dosii KVC' }],
       supportTransfers: [{
         id: 'TR-ATTENDANCE', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
-        startAt: '2026-08-20T07:00:00.000Z', endAt: '2026-08-20T14:00:00.000Z',
+        // A full VN-day window keeps this UI test independent from the host
+        // process timezone while still exercising an active transfer shift.
+        startAt: '2026-08-20T00:00:00.000Z', endAt: '2026-08-20T14:00:00.000Z',
         hourlySupportRate: 45_000, allowance: 180_000, status: 'Đã duyệt',
       }],
       attendance: [], orders: [], schedule: [], tasks: [], taskAssignmentHistory: [], shiftDefinitions: [],

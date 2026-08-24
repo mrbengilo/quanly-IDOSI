@@ -37,6 +37,10 @@ import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import { CUSTOMER_OCCUPATIONS } from '../domain/customerSurvey'
 import {
+  resolveAttendanceShiftSelection,
+  resolveAttendanceWorkingTime,
+} from '../domain/attendanceWorkingTime'
+import {
   normalizeWorkTimeEffectiveDate,
   resolveEffectiveWorkingTime,
   upsertEffectiveWorkingTime,
@@ -793,6 +797,31 @@ const localDateTime = (date) => {
 
 const timeLabel = (date) => date.toLocaleTimeString('vi-VN', { hour12: false })
 
+const vietnamAttendanceDateTimeFormatter = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Ho_Chi_Minh',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+})
+
+const vietnamAttendanceDateTimeParts = (date) => Object.fromEntries(
+  vietnamAttendanceDateTimeFormatter.formatToParts(date).map(({ type, value }) => [type, value]),
+)
+
+const vietnamAttendanceTimeLabel = (date) => {
+  const parts = vietnamAttendanceDateTimeParts(date)
+  return `${parts.hour}:${parts.minute}:${parts.second}`
+}
+
+const vietnamAttendanceDateTime = (date) => {
+  const parts = vietnamAttendanceDateTimeParts(date)
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}+07:00`
+}
+
 const resolveDate = (value) => {
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value
   if (value) {
@@ -814,6 +843,12 @@ const monthKey = (value = new Date()) => {
 const recordDate = (record = {}) => record.period
   ? `${String(record.period).slice(0, 7)}-01`
   : businessDate(record.date || record.workDate || record.occurredAt || record.createdAt)
+
+const attendanceRecordWorkDate = (record = {}) => businessDate(
+  record.date || record.workDate || record.attendanceDate || record.checkInAt || record.createdAt,
+)
+
+const attendanceClaimKey = (employeeId, workDate) => `${String(employeeId || '')}:${String(workDate || '')}`
 
 const isInMonth = (record, period) => !period || period === 'all' || recordDate(record).startsWith(String(period).slice(0, 7))
 
@@ -941,6 +976,15 @@ export function AppProvider({ children }) {
     lastSerialized: '',
     systemResetIdempotencyKey: null,
   })
+  const localAttendanceCheckInClaimsRef = useRef(new Set())
+
+  useEffect(() => {
+    localAttendanceCheckInClaimsRef.current = new Set(
+      (Array.isArray(state.attendance) ? state.attendance : [])
+        .filter((record) => !record.deletedAt && attendanceRecordWorkDate(record))
+        .map((record) => attendanceClaimKey(record.employeeId, attendanceRecordWorkDate(record))),
+    )
+  }, [state.attendance])
 
   const activateRemotePayload = (payload, loginUser, preferredActiveStoreId = null) => {
     const remoteUser = payload.user || loginUser
@@ -3710,21 +3754,51 @@ export function AppProvider({ children }) {
 
     const at = resolveDate(payload.at || payload.checkInAt)
     const workDate = payload.date || today(at)
+    const employeeUnitValue = employee.unit || employee.unitType || employee.department || employee.storeId
+    const canonicalOfficeAttendance = isOfficeUnit(employeeUnitValue) || isBusinessSupportUnit(employeeUnitValue)
+    const localAttendanceKey = canonicalOfficeAttendance ? attendanceClaimKey(employee.id, workDate) : ''
     const existing = state.attendance.find((record) => record.employeeId === employee.id && !record.deletedAt && !record.checkOut && !record.checkOutAt)
     if (existing) {
       setState((current) => ({ ...current, activeAttendanceId: existing.id, checkedInAt: existing.checkIn || existing.checkInTime, finishedShift: false }))
       notify('Bạn đã điểm danh ca làm việc này.', 'info')
       return { ok: true, record: existing, existing: true }
     }
+    if (canonicalOfficeAttendance && (
+      localAttendanceCheckInClaimsRef.current.has(localAttendanceKey)
+      || state.attendance.some((record) => (
+        String(record.employeeId || '') === String(employee.id || '')
+        && !record.deletedAt
+        && attendanceRecordWorkDate(record) === workDate
+      ))
+    )) {
+      const message = 'Bạn đã chấm công trong ngày hôm nay.'
+      notify(message, 'info')
+      return { ok: false, message }
+    }
 
     const scheduled = state.shiftDefinitions.find((shift) => shift.id === payload.shiftId && shift.active !== false)
       || shifts.find((shift) => shift.id === payload.shiftId)
-    const effectiveWorkingTime = resolveEffectiveWorkingTime(employee, workDate)
-    const profileShift = (effectiveWorkingTime.workShifts || []).find((shift) => String(shift.id) === String(payload.shiftId || payload.shift))
-    const shiftId = payload.shiftId || payload.shift || 'ca1'
-    const shiftStart = payload.shiftStart || scheduled?.start || profileShift?.start || effectiveWorkingTime.workStart || (employee.unit === 'office' ? '08:00' : '07:00')
-    const shiftEnd = payload.shiftEnd || scheduled?.end || profileShift?.end || effectiveWorkingTime.workEnd || (employee.unit === 'office' ? '17:00' : '12:00')
-    const checkInTime = timeLabel(at)
+    const effectiveWorkingTime = canonicalOfficeAttendance
+      ? resolveAttendanceWorkingTime(employee, workDate, state.supportWorkSchedules || [])
+      : resolveEffectiveWorkingTime(employee, workDate)
+    const requestedShiftId = payload.shiftId || payload.shift
+    const attendanceWorkShifts = Array.isArray(effectiveWorkingTime.workShifts) ? effectiveWorkingTime.workShifts : []
+    const canonicalSelection = canonicalOfficeAttendance && attendanceWorkShifts.length
+      ? resolveAttendanceShiftSelection(effectiveWorkingTime, requestedShiftId)
+      : null
+    if (canonicalSelection?.requiresSelection) {
+      const message = 'Vui lòng chọn ca làm việc hợp lệ trước khi điểm danh.'
+      notify(message, 'info')
+      return { ok: false, message }
+    }
+    const profileShift = canonicalSelection?.shift
+      || attendanceWorkShifts.find((shift) => String(shift.id) === String(requestedShiftId || ''))
+      || (!requestedShiftId && attendanceWorkShifts.length === 1 ? attendanceWorkShifts[0] : null)
+    const canonicalShift = canonicalOfficeAttendance ? profileShift : null
+    const shiftId = canonicalShift?.id || requestedShiftId || profileShift?.id || 'ca1'
+    const shiftStart = canonicalShift?.start || payload.shiftStart || scheduled?.start || profileShift?.start || effectiveWorkingTime.workStart || (employee.unit === 'office' ? '08:00' : '07:00')
+    const shiftEnd = canonicalShift?.end || payload.shiftEnd || scheduled?.end || profileShift?.end || effectiveWorkingTime.workEnd || (employee.unit === 'office' ? '17:00' : '12:00')
+    const checkInTime = canonicalOfficeAttendance ? vietnamAttendanceTimeLabel(at) : timeLabel(at)
     const storeName = state.stores.find((store) => store.id === employee.storeId)?.name
     const rawLocation = payload.location || payload.coords || (
       payload.latitude != null || payload.lat != null ? payload : null
@@ -3755,12 +3829,13 @@ export function AppProvider({ children }) {
       requiredWorkingDaysSnapshot: Number(employee.monthlyWorkdayTargets?.[workDate.slice(0, 7)] || employee.standardWorkDays || 26),
       standardWorkDaysSnapshot: Number(employee.monthlyWorkdayTargets?.[workDate.slice(0, 7)] || employee.standardWorkDays || 26),
       shift: shiftId,
-      shiftName: scheduled?.name || profileShift?.name || payload.shiftName || shiftId,
+      shiftId,
+      shiftName: canonicalShift?.name || scheduled?.name || profileShift?.name || payload.shiftName || shiftId,
       shiftStart,
       shiftEnd,
       checkIn: checkInTime,
       checkInTime,
-      checkInAt: localDateTime(at),
+      checkInAt: canonicalOfficeAttendance ? vietnamAttendanceDateTime(at) : localDateTime(at),
       checkInLocation: location,
       location,
       locationName: location?.label || '',
@@ -3777,6 +3852,7 @@ export function AppProvider({ children }) {
       workdayCredit: 0,
       note: arrivalTag === 'Đi trễ' ? 'Đi trễ so với giờ bắt đầu' : '',
     }
+    if (canonicalOfficeAttendance) localAttendanceCheckInClaimsRef.current.add(localAttendanceKey)
     setState((current) => ({
       ...current,
       attendance: [record, ...current.attendance],
@@ -3801,6 +3877,8 @@ export function AppProvider({ children }) {
     }
     const storeEmployeeAttendance = String(openRecord.unit || openRecord.unitType || 'store') === 'store'
       && !['OFFICE', 'BUSINESS_SUPPORT'].includes(String(openRecord.storeId || ''))
+    const attendanceUnitValue = openRecord.unit || openRecord.unitType || openRecord.department || openRecord.storeId
+    const canonicalOfficeAttendance = isOfficeUnit(attendanceUnitValue) || isBusinessSupportUnit(attendanceUnitValue)
 
     if (apiRef.current.enabled) {
       const rawLocation = payload.location || payload.coords || (
@@ -3850,13 +3928,13 @@ export function AppProvider({ children }) {
     }
 
     const at = resolveDate(payload.at || payload.checkOutAt)
-    const checkOutTime = timeLabel(at)
+    const checkOutTime = canonicalOfficeAttendance ? vietnamAttendanceTimeLabel(at) : timeLabel(at)
     const rawLocation = payload.location || payload.coords || (
       payload.latitude != null || payload.lat != null ? payload : null
     )
     const location = normalizeLocation(rawLocation, openRecord.locationName || 'IDOSI')
     const departureTag = getDepartureTag(checkOutTime, openRecord.shiftEnd, payload.toleranceMinutes ?? state.policies.lateToleranceMinutes)
-    const checkOutAt = localDateTime(at)
+    const checkOutAt = canonicalOfficeAttendance ? vietnamAttendanceDateTime(at) : localDateTime(at)
     const hours = calculateWorkedHours(openRecord.checkInAt || openRecord.checkIn, checkOutAt)
     const relatedOrders = state.orders.filter((order) => (
       !order.deletedAt
@@ -3912,7 +3990,7 @@ export function AppProvider({ children }) {
       checkOutLocation: location,
       departureTag,
       hours,
-      workdayCredit: openRecord.unit === 'office' || openRecord.storeId === 'OFFICE' ? 1 : openRecord.workdayCredit,
+      workdayCredit: canonicalOfficeAttendance ? 1 : openRecord.workdayCredit,
       revenue: storeEmployeeAttendance ? expectedCashRevenue + expectedTransferRevenue : Number(payload.revenue ?? payload.totalRevenue ?? (Number(payload.cash || 0) + Number(payload.transfer || 0))) || Number(openRecord.revenue) || 0,
       expense: recordedShiftExpense + checkoutShiftExpense,
       shiftExpenseTotal: recordedShiftExpense + checkoutShiftExpense,

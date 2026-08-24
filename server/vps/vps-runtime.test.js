@@ -3,12 +3,35 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FileR2 } from './file-r2.mjs'
 import { createSqliteD1 } from './sqlite-d1.mjs'
 import { createIdosiServer } from './server.mjs'
 
 const temporaryDirectories = []
+
+const vietnamDateKey = (date = new Date()) => Object.fromEntries(
+  new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date).filter(({ type }) => type !== 'literal').map(({ type, value }) => [type, value]),
+)
+
+const vietnamWorkDate = (date = new Date()) => {
+  const { year, month, day } = vietnamDateKey(date)
+  return `${year}-${month}-${day}`
+}
+
+const postJson = async (baseUrl, path, body, headers = {}) => {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  })
+  return { response, body: await response.json() }
+}
 
 const temporaryDirectory = async () => {
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-vps-'))
@@ -37,7 +60,7 @@ describe('IDOSI VPS runtime', () => {
     const reopened = createSqliteD1({ databasePath })
     expect((await reopened.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(8)
     reopened.close()
-  })
+  }, 30_000)
 
   it('stores private identity images under the configured directory', async () => {
     const directory = await temporaryDirectory()
@@ -110,4 +133,469 @@ describe('IDOSI VPS runtime', () => {
       await new Promise((resolveClose) => server.close(resolveClose))
     }
   })
+
+  it('persists daily Office attendance snapshots through the Worker and SQLite adapter', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-24T01:35:00.000Z')) // 08:35 Vietnam
+    let server
+    try {
+      const directory = await temporaryDirectory()
+      const staticDirectory = resolve(directory, 'client')
+      const databasePath = resolve(directory, 'idosi.sqlite')
+      const employeeId = 'VP-VPS-001'
+      const workDate = vietnamWorkDate()
+      await mkdir(staticDirectory, { recursive: true })
+      await writeFile(resolve(staticDirectory, 'index.html'), '<!doctype html><title>IDOSI VPS</title>')
+      const created = createIdosiServer({
+        databasePath,
+        imagesDirectory: resolve(directory, 'images'),
+        staticDirectory,
+        bootstrapToken: 'bootstrap-daily-attendance',
+      })
+      server = created.server
+      const { runtime } = created
+      await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+      const address = server.address()
+      const baseUrl = `http://127.0.0.1:${address.port}`
+      const bootstrap = await postJson(baseUrl, '/api/bootstrap', {
+        username: 'admin-daily-vps',
+        password: 'daily-vps-admin-password',
+        displayName: 'Admin Daily VPS',
+        initialState: {
+          stores: [],
+          employees: [{
+            id: employeeId,
+            code: employeeId,
+            name: 'Nhân viên văn phòng VPS',
+            storeId: 'OFFICE',
+            unit: 'office',
+            status: 'Đang làm việc',
+            employmentType: 'Full-Time',
+            monthlySalary: 12_000_000,
+            requiredWorkingDays: 26,
+            workTimeType: 'Full-Time',
+            workStart: '08:00',
+            workEnd: '17:30',
+            workShifts: [{ id: 'full_time', name: 'Giờ hành chính', start: '08:00', end: '17:30' }],
+          }],
+          attendance: [],
+          schedule: [],
+          shiftDefinitions: [],
+          supportWorkSchedules: [],
+          supportWorkScheduleHistory: [],
+          notifications: [],
+        },
+      }, { 'x-idosi-bootstrap-token': 'bootstrap-daily-attendance' })
+      expect(bootstrap.response.status).toBe(201)
+
+      const adminLogin = await postJson(baseUrl, '/api/login', {
+        username: 'admin-daily-vps', password: 'daily-vps-admin-password',
+      })
+      expect(adminLogin.response.status).toBe(200)
+      const adminHeaders = { authorization: `Bearer ${adminLogin.body.token}` }
+
+      const userCreated = await postJson(baseUrl, '/api/command', {
+        type: 'user.create',
+        payload: {
+          username: 'office.daily.vps',
+          password: 'office-daily-vps-password',
+          displayName: 'Nhân viên văn phòng VPS',
+          role: 'employee',
+          storeId: 'OFFICE',
+          employeeId,
+        },
+      }, { ...adminHeaders, 'idempotency-key': 'vps-daily-attendance-user' })
+      expect(userCreated.response.status).toBe(201)
+
+      const assigned = await postJson(baseUrl, '/api/command', {
+        type: 'support_schedule.assign',
+        expectedVersion: 1,
+        payload: {
+          targetUnit: 'office',
+          employeeId,
+          date: workDate,
+          shiftName: 'Lịch riêng VPS',
+          start: '00:00',
+          end: '23:59',
+          note: 'Kiểm thử Worker qua SQLite',
+        },
+      }, { ...adminHeaders, 'idempotency-key': 'vps-daily-attendance-schedule' })
+      expect(assigned.response.status).toBe(200)
+      expect(assigned.body.schedule).toMatchObject({ employeeId, date: workDate, start: '00:00', end: '23:59' })
+
+      const employeeLogin = await postJson(baseUrl, '/api/login', {
+        username: 'office.daily.vps', password: 'office-daily-vps-password',
+      })
+      expect(employeeLogin.response.status).toBe(200)
+      const checkedIn = await postJson(baseUrl, '/api/command', {
+        type: 'attendance.check_in',
+        expectedVersion: 2,
+        payload: {
+          shiftId: assigned.body.schedule.id,
+          location: { latitude: 10.8231, longitude: 106.6297, accuracy: 8, label: 'Văn phòng IDOSI' },
+        },
+      }, {
+        authorization: `Bearer ${employeeLogin.body.token}`,
+        'idempotency-key': 'vps-daily-attendance-check-in',
+      })
+      expect(checkedIn.response.status).toBe(201)
+      expect(checkedIn.body.attendance).toMatchObject({
+        employeeId,
+        workDate,
+        shiftId: assigned.body.schedule.id,
+        shiftName: 'Lịch riêng VPS',
+        shiftStart: '00:00',
+        shiftEnd: '23:59',
+        shiftVersion: 1,
+        shiftSource: 'support-daily-schedule',
+        monthlySalarySnapshot: 12_000_000,
+        requiredWorkingDaysSnapshot: 26,
+        workdayCredit: 0,
+        checkInLocation: { latitude: 10.8231, longitude: 106.6297 },
+      })
+
+      const storedRows = await runtime.database.prepare(`
+        SELECT value_json FROM state_entities
+        WHERE scope_key = ? AND collection_key = ?
+        ORDER BY entity_order
+      `).bind('global', 'attendance').all()
+      expect(storedRows.results.map(({ value_json: valueJson }) => JSON.parse(valueJson))).toEqual([
+        expect.objectContaining({
+          id: checkedIn.body.attendance.id,
+          employeeId,
+          workDate,
+          shiftId: assigned.body.schedule.id,
+          shiftStart: '00:00',
+          shiftEnd: '23:59',
+          shiftSource: 'support-daily-schedule',
+        }),
+      ])
+    } finally {
+      if (server?.listening) await new Promise((resolveClose) => server.close(resolveClose))
+      vi.useRealTimers()
+    }
+  }, 90_000)
+
+  it('runs effective Office and Business Support attendance through Worker HTTP and SQLite payroll', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-24T01:35:00.000Z')) // 08:35 Vietnam
+    let server
+    try {
+      const directory = await temporaryDirectory()
+      const staticDirectory = resolve(directory, 'client')
+      const databasePath = resolve(directory, 'idosi.sqlite')
+      const workDate = '2026-08-24'
+      const officeId = 'VP-VPS-EFFECTIVE'
+      const supportId = 'HTKD-VPS-EFFECTIVE'
+      await mkdir(staticDirectory, { recursive: true })
+      await writeFile(resolve(staticDirectory, 'index.html'), '<!doctype html><title>IDOSI VPS</title>')
+      const created = createIdosiServer({
+        databasePath,
+        imagesDirectory: resolve(directory, 'images'),
+        staticDirectory,
+        bootstrapToken: 'bootstrap-effective-attendance',
+      })
+      server = created.server
+      const { runtime } = created
+      await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+      const address = server.address()
+      const baseUrl = `http://127.0.0.1:${address.port}`
+      const location = { latitude: 10.8231, longitude: 106.6297, accuracy: 8, label: 'Văn phòng IDOSI' }
+      const bootstrap = await postJson(baseUrl, '/api/bootstrap', {
+        username: 'admin-effective-vps',
+        password: 'effective-vps-admin-password',
+        displayName: 'Admin Effective VPS',
+        initialState: {
+          stores: [],
+          employees: [{
+            id: officeId,
+            code: officeId,
+            name: 'Nhân viên văn phòng hiệu lực',
+            storeId: 'OFFICE',
+            unit: 'office',
+            status: 'Đang làm việc',
+            employmentType: 'Full-Time',
+            payBasis: 'monthly',
+            monthlySalary: 12_000_000,
+            standardWorkDays: 20,
+            monthlyWorkdayTargets: { '2026-08': 20 },
+            workTimeType: 'Full-Time',
+            workStart: '08:00',
+            workEnd: '17:30',
+            workShifts: [{ id: 'office_old', name: 'Giờ văn phòng cũ', start: '08:00', end: '17:30' }],
+          }, {
+            id: supportId,
+            code: supportId,
+            name: 'Nhân viên hỗ trợ hiệu lực',
+            storeId: 'BUSINESS_SUPPORT',
+            unit: 'business_support',
+            status: 'Đang làm việc',
+            employmentType: 'Full-Time',
+            payBasis: 'monthly',
+            monthlySalary: 12_000_000,
+            standardWorkDays: 20,
+            monthlyWorkdayTargets: { '2026-08': 20 },
+            workTimeType: 'Full-Time',
+            workStart: '08:00',
+            workEnd: '17:30',
+            workShifts: [{ id: 'support_old', name: 'Giờ hỗ trợ cũ', start: '08:00', end: '17:30' }],
+          }],
+          attendance: [],
+          schedule: [],
+          shiftDefinitions: [],
+          supportWorkSchedules: [],
+          payrollPeriods: [],
+          salaryAdjustments: [],
+          salaryAdvances: [],
+          orders: [],
+          expenseEntries: [],
+        },
+      }, { 'x-idosi-bootstrap-token': 'bootstrap-effective-attendance' })
+      expect(bootstrap.response.status).toBe(201)
+
+      const adminLogin = await postJson(baseUrl, '/api/login', {
+        username: 'admin-effective-vps', password: 'effective-vps-admin-password',
+      })
+      expect(adminLogin.response.status).toBe(200)
+      const adminHeaders = { authorization: `Bearer ${adminLogin.body.token}` }
+
+      for (const account of [{
+        username: 'office.effective.vps',
+        password: 'office-effective-vps-password',
+        displayName: 'Nhân viên văn phòng hiệu lực',
+        role: 'employee',
+        storeId: 'OFFICE',
+        employeeId: officeId,
+      }, {
+        username: 'support.effective.vps',
+        password: 'support-effective-vps-password',
+        displayName: 'Nhân viên hỗ trợ hiệu lực',
+        role: 'business_support',
+        storeId: 'BUSINESS_SUPPORT',
+        employeeId: supportId,
+      }]) {
+        const created = await postJson(baseUrl, '/api/command', {
+          type: 'user.create', payload: account,
+        }, { ...adminHeaders, 'idempotency-key': `vps-effective-user-${account.employeeId}` })
+        expect(created.response.status).toBe(201)
+      }
+
+      const officeWorkingTime = await postJson(baseUrl, '/api/command', {
+        type: 'employee.working_time.set',
+        expectedVersion: 1,
+        payload: {
+          employeeId: officeId,
+          effectiveFrom: workDate,
+          workTimeType: 'Full-Time',
+          workShifts: [{ id: 'office_effective', name: 'Giờ văn phòng 08:30', start: '08:30', end: '17:00' }],
+        },
+      }, { ...adminHeaders, 'idempotency-key': 'vps-effective-office-working-time' })
+      expect(officeWorkingTime.response.status).toBe(200)
+      expect(officeWorkingTime.body.employee).toMatchObject({
+        workStart: '08:30',
+        workEnd: '17:00',
+      })
+      expect(officeWorkingTime.body.employee.workTimeSchedule).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          effectiveFrom: workDate,
+          workShifts: [expect.objectContaining({ id: 'office_effective', start: '08:30', end: '17:00' })],
+        }),
+      ]))
+
+      const supportWorkingTime = await postJson(baseUrl, '/api/command', {
+        type: 'employee.working_time.set',
+        expectedVersion: 2,
+        payload: {
+          employeeId: supportId,
+          effectiveFrom: workDate,
+          workTimeType: 'Full-Time',
+          workShifts: [{ id: 'support_effective', name: 'Giờ hỗ trợ 08:30', start: '08:30', end: '17:00' }],
+        },
+      }, { ...adminHeaders, 'idempotency-key': 'vps-effective-support-working-time' })
+      expect(supportWorkingTime.response.status).toBe(200)
+      expect(supportWorkingTime.body.employee).toMatchObject({
+        workStart: '08:30',
+        workEnd: '17:00',
+      })
+      expect(supportWorkingTime.body.employee.workTimeSchedule).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          effectiveFrom: workDate,
+          workShifts: [expect.objectContaining({ id: 'support_effective', start: '08:30', end: '17:00' })],
+        }),
+      ]))
+
+      const officeLogin = await postJson(baseUrl, '/api/login', {
+        username: 'office.effective.vps', password: 'office-effective-vps-password',
+      })
+      const supportLogin = await postJson(baseUrl, '/api/login', {
+        username: 'support.effective.vps', password: 'support-effective-vps-password',
+      })
+      expect(officeLogin.response.status).toBe(200)
+      expect(supportLogin.response.status).toBe(200)
+      const officeHeaders = { authorization: `Bearer ${officeLogin.body.token}` }
+      const supportHeaders = { authorization: `Bearer ${supportLogin.body.token}` }
+
+      const officeCheckIn = await postJson(baseUrl, '/api/command', {
+        type: 'attendance.check_in',
+        expectedVersion: 3,
+        payload: { shiftId: 'office_old', location },
+      }, { ...officeHeaders, 'idempotency-key': 'vps-effective-office-check-in' })
+      expect(officeCheckIn.response.status).toBe(201)
+      expect(officeCheckIn.body.attendance).toMatchObject({
+        employeeId: officeId,
+        workDate,
+        shiftId: 'office_effective',
+        shiftName: 'Giờ văn phòng 08:30',
+        shiftStart: '08:30',
+        shiftEnd: '17:00',
+        shiftSource: 'profile-work-shift',
+        checkInAt: '2026-08-24T01:35:00.000Z',
+        checkInLocation: { latitude: 10.8231, longitude: 106.6297 },
+      })
+
+      const supportCheckIn = await postJson(baseUrl, '/api/command', {
+        type: 'attendance.check_in',
+        expectedVersion: 4,
+        payload: { shiftId: 'support_old', location },
+      }, { ...supportHeaders, 'idempotency-key': 'vps-effective-support-check-in' })
+      expect(supportCheckIn.response.status).toBe(201)
+      expect(supportCheckIn.body.attendance).toMatchObject({
+        employeeId: supportId,
+        workDate,
+        shiftId: 'support_effective',
+        shiftName: 'Giờ hỗ trợ 08:30',
+        shiftStart: '08:30',
+        shiftEnd: '17:00',
+        shiftSource: 'profile-work-shift',
+        checkInAt: '2026-08-24T01:35:00.000Z',
+        checkInLocation: { latitude: 10.8231, longitude: 106.6297 },
+      })
+
+      const persistedCheckIns = await runtime.database.prepare(`
+        SELECT value_json FROM state_entities
+        WHERE scope_key = ? AND collection_key = ?
+        ORDER BY entity_order
+      `).bind('global', 'attendance').all()
+      const persistedCheckInRows = persistedCheckIns.results.map(({ value_json: valueJson }) => JSON.parse(valueJson))
+      expect(persistedCheckInRows).toHaveLength(2)
+      expect(persistedCheckInRows).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          employeeId: officeId,
+          shiftId: 'office_effective',
+          shiftStart: '08:30',
+          shiftEnd: '17:00',
+        }),
+        expect.objectContaining({
+          employeeId: supportId,
+          shiftId: 'support_effective',
+          shiftStart: '08:30',
+          shiftEnd: '17:00',
+        }),
+      ]))
+
+      vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z')) // 17:00 Vietnam
+      const officeCheckOut = await postJson(baseUrl, '/api/command', {
+        type: 'attendance.check_out',
+        expectedVersion: 5,
+        payload: { attendanceId: officeCheckIn.body.attendance.id, location },
+      }, { ...officeHeaders, 'idempotency-key': 'vps-effective-office-check-out' })
+      expect(officeCheckOut.response.status).toBe(200)
+      expect(officeCheckOut.body.attendance).toMatchObject({
+        shiftId: 'office_effective', shiftStart: '08:30', shiftEnd: '17:00', workdayCredit: 1,
+      })
+
+      const supportCheckOut = await postJson(baseUrl, '/api/command', {
+        type: 'attendance.check_out',
+        expectedVersion: 6,
+        payload: { attendanceId: supportCheckIn.body.attendance.id, location },
+      }, { ...supportHeaders, 'idempotency-key': 'vps-effective-support-check-out' })
+      expect(supportCheckOut.response.status).toBe(200)
+      expect(supportCheckOut.body.attendance).toMatchObject({
+        shiftId: 'support_effective', shiftStart: '08:30', shiftEnd: '17:00', workdayCredit: 1,
+      })
+
+      const duplicate = await postJson(baseUrl, '/api/command', {
+        type: 'attendance.check_in',
+        expectedVersion: 7,
+        payload: { shiftId: 'office_old', location },
+      }, { ...officeHeaders, 'idempotency-key': 'vps-effective-office-duplicate' })
+      expect(duplicate.response.status).toBe(409)
+      expect(duplicate.body).toMatchObject({ error: { code: 'OFFICE_ATTENDANCE_ALREADY_RECORDED' } })
+
+      const officePayroll = await postJson(baseUrl, '/api/command', {
+        type: 'payroll.close', expectedVersion: 7, payload: { storeId: 'OFFICE', period: '2026-08' },
+      }, { ...adminHeaders, 'idempotency-key': 'vps-effective-office-payroll' })
+      expect(officePayroll.response.status).toBe(201)
+      expect(officePayroll.body.period.rows).toEqual([
+        expect.objectContaining({
+          employeeId: officeId,
+          workedDays: 1,
+          requiredWorkingDays: 20,
+          baseSalary: 600_000,
+          gross: 600_000,
+        }),
+      ])
+
+      const supportPayroll = await postJson(baseUrl, '/api/command', {
+        type: 'payroll.close', expectedVersion: 8, payload: { storeId: 'BUSINESS_SUPPORT', period: '2026-08' },
+      }, { ...adminHeaders, 'idempotency-key': 'vps-effective-support-payroll' })
+      expect(supportPayroll.response.status).toBe(201)
+      expect(supportPayroll.body.period.rows).toEqual([
+        expect.objectContaining({
+          employeeId: supportId,
+          workedDays: 1,
+          requiredWorkingDays: 20,
+          baseSalary: 600_000,
+          gross: 600_000,
+        }),
+      ])
+
+      const persistedAttendance = await runtime.database.prepare(`
+        SELECT value_json FROM state_entities
+        WHERE scope_key = ? AND collection_key = ?
+        ORDER BY entity_order
+      `).bind('global', 'attendance').all()
+      const persistedAttendanceRows = persistedAttendance.results.map(({ value_json: valueJson }) => JSON.parse(valueJson))
+      expect(persistedAttendanceRows).toHaveLength(2)
+      expect(persistedAttendanceRows).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          employeeId: officeId,
+          shiftId: 'office_effective',
+          shiftStart: '08:30',
+          shiftEnd: '17:00',
+          workdayCredit: 1,
+        }),
+        expect.objectContaining({
+          employeeId: supportId,
+          shiftId: 'support_effective',
+          shiftStart: '08:30',
+          shiftEnd: '17:00',
+          workdayCredit: 1,
+        }),
+      ]))
+
+      const persistedPayroll = await runtime.database.prepare(`
+        SELECT value_json FROM state_entities
+        WHERE scope_key = ? AND collection_key = ?
+        ORDER BY entity_order
+      `).bind('global', 'payrollPeriods').all()
+      const persistedPayrollPeriods = persistedPayroll.results.map(({ value_json: valueJson }) => JSON.parse(valueJson))
+      expect(persistedPayrollPeriods).toHaveLength(2)
+      expect(persistedPayrollPeriods).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          storeId: 'OFFICE',
+          period: '2026-08',
+          rows: [expect.objectContaining({ employeeId: officeId, workedDays: 1, gross: 600_000 })],
+        }),
+        expect.objectContaining({
+          storeId: 'BUSINESS_SUPPORT',
+          period: '2026-08',
+          rows: [expect.objectContaining({ employeeId: supportId, workedDays: 1, gross: 600_000 })],
+        }),
+      ]))
+    } finally {
+      if (server?.listening) await new Promise((resolveClose) => server.close(resolveClose))
+      vi.useRealTimers()
+    }
+  }, 90_000)
 })

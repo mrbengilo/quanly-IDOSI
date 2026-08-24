@@ -7460,14 +7460,25 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       && shiftTimes(record).end
     ))
     const profileShifts = officeEmployee ? configuredProfileWorkShifts(employee, localNow.date, state) : []
+    const canonicalProfileScheduleEmployee = ['office', 'business_support'].includes(employeeUnit(employee))
     let shiftId = String(payload.shiftId || payload.workShiftId || '').trim()
-    let shift = shiftId ? activeShifts.find((record) => String(record.id || '') === shiftId) : null
+    // Office and Business Support attendance is resolved exclusively from the
+    // server-side effective/daily schedule. A daily assignment can replace a
+    // profile shift with a new generated id, so reconcile a stale submitted id
+    // only when the canonical schedule is unambiguous. Never use client times.
+    let shift = !canonicalProfileScheduleEmployee && shiftId
+      ? activeShifts.find((record) => String(record.id || '') === shiftId)
+      : null
     let activeTransferBounds = null
     if (shiftId && !/^[A-Za-z0-9_-]{1,80}$/u.test(shiftId)) {
       throw new ApiError(400, 'SHIFT_INVALID', 'Cần chọn ca làm việc hợp lệ.')
     }
     if (!shift && officeEmployee && shiftId) {
       shift = profileShifts.find((record) => String(record.id || '') === shiftId) || null
+      if (!shift && canonicalProfileScheduleEmployee && profileShifts.length === 1) {
+        shift = profileShifts[0]
+        shiftId = String(shift.id || '')
+      }
     }
     if (shift && !['profile-work-shift', 'office-profile', 'support-daily-schedule'].includes(shift.source)
       && dayAssignments.length && !assignedShiftIds.has(shiftId)) {
@@ -7498,7 +7509,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
         source: 'support-transfer',
       }
     }
-    if (!shift && officeEmployee && !shiftId) {
+    if (!shift && officeEmployee && !canonicalProfileScheduleEmployee && !shiftId) {
       shift = activeShifts.find((record) => assignedShiftIds.has(String(record.id || ''))) || null
       shiftId = String(shift?.id || '')
     }
