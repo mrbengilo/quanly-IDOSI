@@ -1,15 +1,62 @@
-# IDOSI Professional Development Workflow — Fast Delivery v4
+# IDOSI Professional Development Workflow — Fast Delivery v5
 
-Mục tiêu: **user chỉ nói yêu cầu công việc; Codex tự biến yêu cầu đó thành execution prompt nội bộ, hiển thị nguyên nhân/nhu cầu + giải pháp + các việc sẽ làm + mức độ/phạm vi dự kiến, rồi triển khai nhanh nhất có thể mà không bỏ sót regression ở các luồng liên quan.**
+Mục tiêu: **user chỉ nói yêu cầu công việc; Codex tự hiểu thành execution prompt, hiển thị nguyên nhân/nhu cầu + giải pháp + việc sẽ làm + mức độ/phạm vi, rồi triển khai nhanh theo chuẩn senior/staff, test kỹ các luồng liên quan và không bịa khi chưa có bằng chứng.**
 
-## 1. User Request -> Automatic Execution Prompt
+## 1. Professional Engineering Standard
+
+Codex phải làm việc theo **chuẩn chất lượng senior/staff tương đương 10+ năm kinh nghiệm thực chiến**. Đây là tiêu chuẩn chất lượng, không phải tuyên bố lịch sử cá nhân.
+
+Khi task yêu cầu, Codex phải tự đảm nhiệm đầy đủ các góc nhìn:
+
+- product/UX và design
+- architecture/system design
+- frontend/backend/API/integration
+- database/migration/persistence
+- auth/security
+- performance/concurrency/reliability
+- coding/refactoring
+- testing/debugging/regression
+- code review
+- CI/CD/VPS/runtime/deployment
+
+Mọi thay đổi phải hướng tới: **đúng, đơn giản, hiệu quả, nhất quán, dễ test, an toàn, dễ bảo trì, responsive và production-ready**.
+
+Không được dựa vào giả định rằng mình “biết hết mọi ngôn ngữ/công nghệ”. Với công nghệ/API/library/version chưa chắc chắn hoặc thay đổi nhanh, phải kiểm chứng từ code hiện tại và tài liệu có thẩm quyền khi có thể.
+
+## 2. Evidence-First / Không bịa đặt
+
+Thứ tự bằng chứng:
+
+1. code/test/schema/config/migration/business rule hiện tại của IDOSI;
+2. output thực tế từ runtime/tool/test;
+3. tài liệu official/authoritative cho công nghệ bên ngoài hoặc version-sensitive;
+4. standards/specs/primary references;
+5. suy luận logic khi chưa có bằng chứng trực tiếp — nhưng phải ghi là giả thuyết cho đến khi kiểm chứng.
+
+Khi chưa rõ:
+
+- tách `FACTS / UNKNOWNS / HYPOTHESES`;
+- search đúng symbol/file/caller/consumer;
+- đối chiếu data flow;
+- tạo giả thuyết nhỏ nhất hợp lý;
+- kiểm tra bằng code/test/docs;
+- loại bỏ giả thuyết sai;
+- cập nhật root cause/solution theo bằng chứng;
+- nếu vẫn chưa chắc, nói rõ phần chưa xác minh thay vì bịa.
+
+Không bao giờ tự tạo ra root cause, API, method, flag, schema field, package capability, version support, business formula, permission, test PASS hoặc deploy success khi chưa quan sát được.
+
+## 3. User Request -> Automatic Execution Prompt
 
 Ngay khi nhận task, Codex tự compile thành:
 
 ```text
 GOAL: kết quả user cần
-ACCEPTANCE: điều kiện nghiệm thu có thể quan sát
+ACCEPTANCE: điều kiện nghiệm thu
+CAUSE/NEED: nguyên nhân đã xác minh hoặc nhu cầu; unknown phải đánh dấu
+SOLUTION: hướng xử lý dựa trên bằng chứng
 RISK: FAST | STANDARD | CRITICAL
+WORKLOAD: SMALL | MEDIUM | LARGE | CRITICAL
 MODEL: GPT-5.6 Terra | GPT-5.6 Sol | runtime fallback
 REASONING: HIGH | XHIGH
 SPEED: FAST | ULTRA FAST if supported
@@ -21,154 +68,132 @@ TEST MATRIX: targeted + related-flow regression + final gate
 DELIVERY: branch -> patch -> PR -> CI -> merge
 ```
 
-Quy tắc:
+User không cần viết prompt kỹ thuật, tên file, test plan hoặc command. Codex phải tự đọc repo để xác định chi tiết kỹ thuật có thể tự tìm được.
 
-- User **không cần** viết prompt kỹ thuật, tên file, kế hoạch test hay command Codex.
-- Codex phải tự đọc repo để tìm implementation hiện hữu thay vì hỏi user các chi tiết kỹ thuật có thể tự xác định.
-- Requirement đã biết từ task/current product rules phải được dùng trực tiếp, không bắt user lặp lại.
-- Low-risk ambiguity: theo convention hiện hữu và làm tiếp.
-- Chỉ surface ambiguity khi lựa chọn sai có thể thay đổi tiền/KPI/payroll, quyền truy cập, destructive behavior, schema/data migration hoặc production deployment semantics.
-- Không dành thời gian dài chỉ để viết plan; execution prompt là checklist kiểm soát ngắn rồi triển khai ngay.
+## 4. Visible Task Intake Report — bắt buộc
 
-## 2. Visible Task Intake Report — bắt buộc hiển thị trước khi làm
-
-Sau khi auto-compile request, Codex phải hiển thị ngắn gọn:
+Trước khi implementation sâu, hiển thị ngắn gọn:
 
 ```text
 NGUYÊN NHÂN / NHU CẦU:
-- <root cause đã xác định, hoặc nhu cầu nghiệp vụ/kỹ thuật>
+- <root cause đã xác minh hoặc nhu cầu; nếu chưa rõ ghi cần xác minh>
 
 GIẢI PHÁP:
-- <cách xử lý dự kiến>
+- <cách xử lý dự kiến dựa trên architecture/source of truth>
 
 CÔNG VIỆC SẼ THỰC HIỆN:
 1. <bước 1>
 2. <bước 2>
-3. <test luồng liên quan / delivery khi relevant>
+3. <related-flow tests / delivery khi relevant>
 
 MỨC ĐỘ & PHẠM VI DỰ KIẾN:
 - Risk: FAST | STANDARD | CRITICAL
 - Workload: SMALL | MEDIUM | LARGE | CRITICAL
-- Scope: <module/flow groups chính>
+- Scope: <module/flow chính>
 - Verification: <targeted / related-flow / final gate>
 ```
 
-Quy tắc:
+Bug chưa xác định root cause phải ghi `Nguyên nhân cần xác minh trong code`, không đoán. Feature/change dùng `NHU CẦU` thay vì bịa lỗi. Không hứa ETA theo phút/giờ; dùng Workload + Scope + số bước rồi triển khai ngay.
 
-- Bug: nêu root cause nếu đã có bằng chứng. Nếu chưa xác định, ghi rõ `Nguyên nhân cần xác minh trong code`, không được đoán.
-- Feature/change: dùng `NHU CẦU` hoặc lý do nghiệp vụ thay cho việc bịa nguyên nhân lỗi.
-- Giải pháp phải cụ thể theo architecture/source of truth hiện hữu.
-- Danh sách công việc phải actionable và đúng scope; functional change phải có related-flow tests.
-- Không hứa ETA chính xác theo phút/giờ hoặc thời điểm giao trong tương lai. Dùng `Workload + Scope + số bước` làm dự báo khối lượng, sau đó thực hiện ngay trong task hiện tại.
-- Không hỏi user xác nhận lại báo cáo này trừ khi có ambiguity thật sự có thể làm sai tiền/quyền/dữ liệu/deploy.
-- Chỉ cập nhật lại báo cáo khi root cause, giải pháp, Risk hoặc scope thay đổi đáng kể.
+## 5. Model routing
 
-## 3. Model routing
-
-- **HIGH reasoning là mức tối thiểu** cho task lập trình IDOSI nếu runtime hỗ trợ.
-- Task bình thường: **GPT-5.6 Terra + HIGH + FAST**.
-- Task cross-layer/khó hơn: **GPT-5.6 Sol + HIGH + FAST**.
-- Tiền/tài chính hoặc task khó: **GPT-5.6 Sol + HIGH + ULTRA FAST** nếu runtime có Ultra Fast; nếu không thì FAST/chế độ nhanh nhất khả dụng.
+- HIGH reasoning là mức tối thiểu nếu runtime hỗ trợ.
+- Bình thường: **GPT-5.6 Terra + HIGH + FAST**.
+- Cross-layer/khó hơn: **GPT-5.6 Sol + HIGH + FAST**.
+- Tiền/tài chính/task khó: **GPT-5.6 Sol + HIGH + ULTRA FAST** nếu có; nếu không dùng FAST/chế độ nhanh nhất khả dụng.
 - Sol ưu tiên cho revenue/expense/profit/payroll/salary/KPI/bonus/allowance/advance/order-money, auth/store isolation khó, schema/migration/persistence, destructive data, concurrency/idempotency, VPS/runtime/storage và core business rule khó.
-- Chỉ dùng XHIGH khi HIGH thực sự chưa đủ.
-- Chọn model một lần đầu task; switch tối đa một lần khi complexity/risk thay đổi đáng kể.
-- Nếu runtime không cho chọn model/reasoning/speed: ghi recommendation một lần và tiếp tục bằng runtime tốt nhất đang có, không block task.
+- XHIGH chỉ khi HIGH thực sự chưa đủ.
+- Chọn model một lần, switch tối đa một lần nếu bằng chứng mới làm complexity/risk thay đổi đáng kể.
+- Runtime không hỗ trợ chọn model/reasoning/speed: ghi recommendation một lần và tiếp tục bằng runtime hiện có; không giả vờ đã switch.
 
-## 4. Risk level
+## 6. Risk level
 
 ### FAST
+Presentation/docs/UI-only, không đổi business rule, mutation, persistence, auth, money formula, attendance calculation hoặc runtime.
 
-Text/label/typography/layout/docs hoặc presentation-only; không đổi business rule, mutation, persistence, auth, money formula, attendance calculation hay runtime.
-
-`REQUEST -> AUTO COMPILE -> INTAKE REPORT -> TARGETED READ -> BRANCH -> MINIMAL PATCH -> TARGETED CHECK -> PR -> CI -> MERGE`
+`REQUEST -> AUTO COMPILE -> INTAKE -> TARGETED READ -> MINIMAL PATCH -> TARGETED CHECK -> PR -> CI -> MERGE`
 
 ### STANDARD
+CRUD/form/validation/report/API/state/UI flow bình thường, không đổi canonical finance/payroll/auth/schema/persistence/core behavior.
 
-CRUD/form/validation/report/API/state/UI flow thông thường, không thay canonical finance/payroll/auth/schema/persistence/core production behavior.
-
-`REQUEST -> AUTO COMPILE -> INTAKE REPORT -> TARGETED IMPACT -> TARGETED TEST -> PATCH -> RELATED-FLOW REGRESSION -> FINAL GATE -> PR -> CI -> MERGE`
+`REQUEST -> AUTO COMPILE -> INTAKE -> TARGETED IMPACT -> TARGETED TEST -> PATCH -> RELATED-FLOW REGRESSION -> FINAL GATE -> PR -> CI -> MERGE`
 
 ### CRITICAL
+Finance/money, payroll/KPI, attendance feed payroll, order-money/audit, auth/store/session, schema/migration/persistence, destructive data, sensitive concurrency/idempotency, VPS/runtime/storage/deploy hoặc core rule có downstream impact lớn.
 
-Khi thay đổi trực tiếp finance/money, payroll/KPI, attendance feed payroll, order-money/audit, auth/store/session, schema/migration/persistence, destructive data, sensitive concurrency/idempotency, VPS/runtime/storage/deployment hoặc core business rule có downstream impact lớn.
-
-`REQUEST -> AUTO COMPILE -> INTAKE REPORT -> FOCUSED DEEP IMPACT -> REGRESSION MATRIX -> MINIMAL PATCH -> SECURITY/DATA REVIEW -> RELATED-FLOW REGRESSION -> ONE FULL FINAL GATE -> PR -> CI -> MERGE -> SAFEGUARDS`
+`REQUEST -> AUTO COMPILE -> INTAKE -> EVIDENCE-DRIVEN IMPACT -> REGRESSION MATRIX -> MINIMAL PATCH -> SECURITY/DATA REVIEW -> RELATED-FLOW REGRESSION -> ONE FULL FINAL GATE -> PR -> CI -> MERGE -> SAFEGUARDS`
 
 CRITICAL không đồng nghĩa scan toàn repo.
 
-## 5. Hard Scope Gate
+## 7. Hard Scope Gate
 
 - Search exact symbol/file/module trước broad scan.
 - Một PR mặc định = một mục tiêu nghiệp vụ coherent.
-- Nếu task có >3 mục tiêu độc lập hoặc dự kiến >20 source/test files: Codex tự split thành sub-scope/PR nhỏ và xử lý tuần tự.
-- Nếu diff bất ngờ >25 changed files: dừng mở rộng, tách phần độc lập còn lại.
-- Generated migration/metadata bắt buộc có thể không tính vào cap.
-- Không gom unrelated UI + database + VPS + settings + feature khác vào một PR chỉ vì cùng nằm trong một message.
+- >3 mục tiêu độc lập hoặc dự kiến >20 source/test files: tự split thành sub-scope/PR nhỏ.
+- Diff bất ngờ >25 files: dừng mở rộng và tách phần độc lập.
+- Không gom unrelated UI + DB + VPS + settings + feature khác chỉ vì cùng nằm trong một message.
 - Không hỏi lại requirement đã biết.
 
-## 6. Related-Flow Map — bắt buộc trước khi sửa logic
+## 8. Related-Flow Map — bắt buộc
 
-Codex phải xác định các luồng có thể bị ảnh hưởng theo dependency chain vừa đủ:
+Trace dependency vừa đủ:
 
 `input/event -> UI -> state -> domain -> API/backend -> persistence -> readers/reports -> finance/payroll/audit/auth/runtime downstream`
 
-Ví dụ một thay đổi không chỉ test màn hình chính mà phải kiểm tra các consumer thực sự phụ thuộc vào field/function/entity đó.
+Không broad-test module không liên quan. Mục tiêu là đủ dependency coverage.
 
-Không broad-test module không liên quan. Mục tiêu là **đủ dependency coverage**, không phải chạy mọi thứ ở mọi vòng.
+## 9. Related-Flow Regression Matrix
 
-## 7. Related-Flow Regression Matrix
+Mỗi functional change test tất cả category áp dụng:
 
-Mỗi functional change phải chọn và test tất cả category áp dụng:
-
-- happy path chính
-- behavior cũ/backward compatibility phải giữ
-- create/update/delete/read neighbor cùng entity/contract
-- UI/state/domain/API consumers của field/function đã đổi
+- happy path
+- backward compatibility
+- create/update/delete/read neighbor
+- UI/state/domain/API consumers
 - role/store/user isolation + denied path
-- duplicate/retry/idempotency cho mutation
-- persistence/reload/data-shape compatibility
-- downstream revenue/expense/profit/payroll/KPI nếu input có feed tiền
-- attendance/timezone/day/month/overnight nếu có thời gian
-- locked/closed/deleted lifecycle states
-- Sites/VPS compatibility nếu shared backend/persistence/runtime thay đổi
-- desktop/mobile/responsive nếu UI interaction/layout thay đổi
+- duplicate/retry/idempotency
+- persistence/reload/data-shape
+- revenue/expense/profit/payroll/KPI downstream
+- timezone/day/month/overnight
+- locked/closed/deleted lifecycle
+- Sites/VPS compatibility
+- desktop/mobile/responsive
 
-Task chưa hoàn tất nếu luồng chính pass nhưng một affected related flow fail.
+Task chưa hoàn tất nếu primary flow pass nhưng một affected flow fail.
 
-## 8. Quy trình thực thi nhanh
+## 10. Fast Expert Execution
 
 1. Latest `main` -> branch mới.
-2. Auto-compile request thành execution prompt.
-3. Hiển thị Visible Task Intake Report.
-4. Route Risk + Model + Reasoning + Speed.
-5. Targeted search/read module liên quan.
+2. Auto-compile request + intake report.
+3. Route model/risk.
+4. Targeted search/read.
+5. Xác định facts/unknowns/hypotheses và kiểm chứng điểm chưa chắc.
 6. Find canonical logic/source of truth.
 7. Build Related-Flow Map.
-8. Targeted tests/regression trước hoặc trong khi sửa khi hữu ích.
-9. Implement minimal patch.
-10. Trong vòng sửa chỉ rerun test/check bị invalidated.
-11. Chạy Related-Flow Regression Matrix.
-12. Khi patch ổn định mới chạy final local gate một lần.
-13. Open PR ngay; GitHub `verify` là repository-wide gate chính thức.
-14. CI fail -> đọc failing step -> reproduce targeted -> fix -> rerun phần bị invalidated.
-15. Merge khi required CI pass.
+8. Targeted tests/regression khi hữu ích.
+9. Implement minimal production-grade patch.
+10. Self-review theo vai trò designer + architect + coder + tester + security/reliability reviewer khi relevant.
+11. Rerun chỉ check bị invalidated.
+12. Chạy Regression Matrix.
+13. Final local gate đúng một lần sau khi patch ổn định.
+14. Open PR; GitHub `verify` là repository-wide gate chính thức.
+15. CI fail -> đọc evidence -> reproduce targeted -> fix root cause -> rerun phần bị invalidated.
+16. Merge khi required CI pass.
 
-Không lặp intake report/analysis/model-selection/full-test nếu code/input không thay đổi đáng kể.
+Không lặp analysis/model selection/full test nếu code/input không thay đổi đáng kể.
 
-## 9. Test policy
+## 11. Test policy
 
 ### Iteration
+- targeted tests cho changed path + related flows;
+- targeted lint khi practical;
+- không `npm test` sau mỗi edit;
+- không rerun expensive check nếu code ảnh hưởng check đó không đổi.
 
-- Targeted tests cho changed path + related flows.
-- Targeted lint khi practical.
-- Không `npm test` sau mỗi edit.
-- Không rerun expensive check khi code ảnh hưởng check đó không đổi.
+### FAST final gate
+Targeted checks hợp lý; docs-only không cần local full suite. GitHub `verify` vẫn phải PASS.
 
-### FAST final local gate
-
-Targeted checks hợp lý; lint/build nếu relevant. Docs-only không cần full local suite. Required GitHub `verify` vẫn phải PASS.
-
-### STANDARD final local gate
+### STANDARD final gate
 
 ```bash
 npm run lint
@@ -176,11 +201,9 @@ npm run build
 npm run sites:verify
 ```
 
-Kèm targeted tests + related-flow regressions. Chạy local full `npm test` khi shared/cross-cutting logic thay đổi hoặc targeted coverage không đủ.
+Kèm targeted tests + related-flow regressions. Local full `npm test` chỉ khi shared/cross-cutting logic hoặc targeted coverage chưa đủ.
 
-### CRITICAL final local gate
-
-Chạy một lần khi patch ổn định:
+### CRITICAL final gate
 
 ```bash
 npm run lint
@@ -189,79 +212,72 @@ npm run build
 npm run sites:verify
 ```
 
-Kèm targeted regression/security/data/VPS/persistence checks theo Related-Flow Matrix.
+Kèm targeted regression/security/data/VPS/persistence checks theo Regression Matrix.
 
-Nếu gate fail: root cause -> targeted fix -> targeted rerun -> chỉ rerun final gate bị invalidated.
+Không báo PASS nếu chưa thật sự chạy và quan sát kết quả PASS.
 
-## 10. Finance / Payroll / KPI / Attendance
+## 12. Finance / Payroll / KPI / Attendance
 
-Đây là vùng ưu tiên GPT-5.6 Sol.
+Đây là vùng ưu tiên Sol. Khi sửa canonical logic:
 
-Khi sửa money/payroll/KPI canonical logic:
+1. tìm implementation canonical;
+2. xác định inputs/outputs/persistence/downstream consumers;
+3. add/update targeted regression tests;
+4. test downstream money flows;
+5. không duplicate formula, không tự đoán công thức;
+6. giữ VND representation/rounding hiện hữu.
 
-1. Tìm implementation canonical.
-2. Xác định relevant inputs/outputs/persistence/downstream consumers.
-3. Add/update targeted regression tests.
-4. Test downstream money-related flows bị feed bởi input đó.
-5. Không duplicate formula, không tự đoán công thức mơ hồ.
-6. Giữ VND representation/rounding hiện hữu.
+Test relevant zero/negative/null, zero-hours, bonus/allowance/advance, locked period, duplicate/retry, wrong role/store, month/time boundary. Attendance feed payroll/KPI phải test schedule/date/timezone/overnight/missing checkout khi liên quan.
 
-Relevant edge cases: zero/negative/null, zero-hours, bonus/allowance/advance, locked period, duplicate/retry, wrong role/store, month/time boundary.
-
-Attendance feed payroll/KPI phải test schedule/date/timezone/overnight/missing checkout khi path thay đổi có liên quan.
-
-## 11. Auth / Store isolation / Persistence / Production
+## 13. Auth / Persistence / Production / Security
 
 - Enforce quyền tại backend/data boundary, không chỉ UI.
-- `store_manager` không vượt assigned store nếu requirement không đổi.
-- Employee không truy cập protected data người khác qua request manipulation.
-- Schema/persistence change phải safe/additive khi phù hợp, preserve existing rows và có rollback/backup implication.
-- Không reset/truncate production để tiện test/deploy.
-- Chỉ validate production target thực sự bị ảnh hưởng.
-- VPS change theo `deploy/vps/README.md` và `docs/VPS_DEPLOYMENT_CHECKLIST.md`.
+- Preserve assigned-store/user isolation nếu requirement không đổi.
+- Migration phải an toàn, preserve data và có backup/rollback implication.
+- Không reset/truncate production để tiện làm.
 - Không sửa source trực tiếp trên VPS.
+- Không commit password/token/secret/private key.
+- Preserve audit/history; không hard-delete nếu hệ thống dùng soft deletion/history.
 
-## 12. Git / conflict control
+## 14. Git / conflict control
 
 - Không feature trực tiếp `main`.
 - Mỗi task branch mới từ latest `main`.
-- Không reuse stale completed branch.
-- Không merge/rebase `main` lặp đi lặp lại.
+- Không reuse stale branch.
+- Không merge/rebase `main` lặp vô ích.
 - Sync trước PR chỉ khi overlap hoặc GitHub yêu cầu.
 - Resolve conflict narrowly.
-- Required GitHub `verify` phải PASS trước merge.
+- Required GitHub `verify` PASS trước merge.
 
-## 13. PR gate
+## 15. PR gate
 
-PR phải ghi ngắn gọn:
+PR phải ghi ngắn gọn và dựa trên evidence:
 
-- nguyên nhân/nhu cầu đã xác định
-- giải pháp đã chọn
+- cause/need đã xác định + mức độ chắc chắn
+- solution
 - execution goal/acceptance
 - routing
-- các công việc chính đã thực hiện
+- work completed
 - scope
-- affected/related flows
-- tests trong Regression Matrix
-- final local gate
-- required CI `verify`
-- rollback nếu relevant
+- affected flows
+- Regression Matrix + test evidence
+- final gate + CI
+- rollback/remaining uncertainty nếu relevant
 
-## 14. Definition of Done
+## 16. Definition of Done
 
-- user không phải tự viết prompt kỹ thuật
-- request đã auto-compile thành execution brief
-- Visible Task Intake Report đã được hiển thị trước implementation
-- nguyên nhân/nhu cầu và giải pháp không bị bịa/đoán sai
-- đúng requirement/scope
-- model/reasoning/speed route đúng policy
-- canonical logic/source-of-truth preserved
-- Related-Flow Map đầy đủ cho functional change
-- primary + applicable downstream/adjacent regressions PASS
-- auth/store isolation preserved
-- final local gate theo Risk PASS
-- GitHub `verify` PASS
-- diff không unrelated refactor
-- migration/production safeguards có khi relevant
+- user không phải tự viết prompt kỹ thuật;
+- request auto-compiled + intake report shown;
+- cause/solution dựa trên bằng chứng, không bịa;
+- implementation đạt chuẩn senior/staff production-quality;
+- không invent API/schema/test/deploy result;
+- canonical logic/source-of-truth preserved;
+- Related-Flow Map đầy đủ;
+- primary + applicable regressions PASS;
+- auth/store isolation preserved;
+- final gate theo Risk PASS;
+- GitHub `verify` PASS;
+- diff không unrelated refactor;
+- migration/production safeguards có khi relevant.
 
-Nguyên tắc cuối: **user nói yêu cầu nghiệp vụ, Codex tự hiểu thành prompt triển khai, hiển thị nguyên nhân/giải pháp/công việc/mức độ-phạm vi ngắn gọn rồi làm ngay. Tốc độ được tối ưu mạnh, nhưng mọi luồng thực sự bị ảnh hưởng bởi thay đổi phải được test kỹ trước khi chốt task.**
+Nguyên tắc cuối: **Codex phải làm như một kỹ sư phần mềm senior/staff giàu kinh nghiệm: design tốt, code chuẩn, test kỹ, review logic, tối ưu tốc độ và năng suất. Khi chưa biết hoặc chưa chắc, phải kiểm chứng và lập luận từ bằng chứng; tuyệt đối không bịa hoặc biến giả định thành sự thật.**
