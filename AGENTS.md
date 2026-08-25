@@ -1,12 +1,14 @@
 # AGENTS.md — IDOSI Engineering Guide
 
-This file defines mandatory working rules for Codex and other coding agents modifying IDOSI.
+Mandatory rules for Codex and coding agents modifying IDOSI.
 
-## 1. Mission: fast delivery without unsafe shortcuts
+## 1. Mission
 
-IDOSI is a production system. The default objective is **finish the user's task quickly with the smallest correct change**, while preserving data integrity, finance/payroll correctness, authorization, auditability, persistence safety, and regression protection.
+Finish the user's task **as fast as safely possible** with the smallest correct change. Preserve finance/payroll correctness, data integrity, authorization, auditability, persistence safety, responsive behavior, and regression protection.
 
-Do not optimize for long analysis, large refactors, many files, repeated full-test runs, or maximum compute by default. Prefer targeted inspection, focused patches, targeted verification during iteration, and one appropriate final gate.
+The user should be able to describe work in normal language. **Do not require the user to write a technical prompt, implementation plan, file list, test plan, or Codex command.** Convert the request into an internal execution brief automatically and start work.
+
+Speed comes from tight scope, correct model routing, targeted reads/tests, and removing redundant loops — never from skipping correctness checks on affected flows.
 
 ## 2. Technical baseline
 
@@ -24,108 +26,126 @@ Do not optimize for long analysis, large refactors, many files, repeated full-te
 
 `localStorage` is compatibility/demo/development state only and MUST NOT become the production source of truth.
 
-## 3. Mandatory routing: risk, model, reasoning, speed
+## 3. Automatic Request Compiler — mandatory
 
-Before deep work, classify briefly:
+For every user request, silently compile it into a concise internal execution brief before editing:
 
 ```text
+GOAL: exact user outcome
+ACCEPTANCE: observable behavior that must be true when done
 RISK: FAST | STANDARD | CRITICAL
 MODEL: GPT-5.6 Terra | GPT-5.6 Sol | runtime fallback
 REASONING: HIGH | XHIGH
 SPEED: FAST | ULTRA FAST if supported
-SCOPE: <expected modules/files>
-SENSITIVE: <none | finance/payroll/auth/database/VPS/...>
-VERIFY: <targeted checks + final gate>
+SCOPE: expected modules/files
+CANONICAL SOURCE: existing logic/data source to preserve/reuse
+AFFECTED FLOWS: primary flow + related/downstream flows
+INVARIANTS: behavior/data/permission rules that must not regress
+TEST MATRIX: targeted tests + related-flow regressions + final gate
+DELIVERY: branch -> patch -> PR -> CI -> merge
 ```
 
-### User-required model policy
+Rules:
 
-The quality floor for implementation tasks is **HIGH reasoning**. Do not intentionally route IDOSI coding work below HIGH unless the runtime does not expose that control.
+- Do not ask the user to rewrite the request as a prompt.
+- Do not ask for implementation details that can be discovered from the repository.
+- Use the current request, existing IDOSI conventions, canonical code, and previous established business rules to fill the execution brief.
+- If low-risk details are unspecified, follow existing UI/business conventions and continue.
+- Only surface ambiguity when choosing one interpretation could materially change money/KPI/payroll, authorization, destructive behavior, schema/data migration, or production deployment semantics. Otherwise make the safest compatible choice and proceed.
+- Never spend a long visible analysis phase before coding. The execution brief is an internal control, not a reason to delay implementation.
 
-- **Normal/default work:** prefer **GPT-5.6 Terra + HIGH + FAST** for speed/cost, or **GPT-5.6 Sol + HIGH + FAST** when the task is cross-layer or Terra is insufficient.
-- **Money/finance and difficult work:** prefer **GPT-5.6 Sol + HIGH + ULTRA FAST** when the current Codex runtime exposes an Ultra Fast speed mode; otherwise use the fastest available mode, at least FAST.
-- Finance-sensitive includes revenue, expense, profit, payroll, salary, KPI, bonus, allowance, advance, order-money mutations, closing periods, and calculations that feed those values.
-- Also prefer Sol for difficult auth/store isolation, schema/migration/persistence, destructive data repair, concurrency/idempotency, production VPS/runtime/storage, and complex cross-system business rules.
-- Use **XHIGH** only when HIGH is demonstrably insufficient for ambiguity, migration complexity, difficult concurrency, or correctness-sensitive cross-system reasoning. Do not raise reasoning merely because the task is large mechanically.
-- Choose the model once at task start. Switch at most once when new evidence materially changes complexity/risk. Do not waste time model-hopping.
-- If the runtime cannot programmatically select the requested model/reasoning/speed, state the recommended route once and continue with the best available current model. Never block the task and never claim a switch that did not happen.
+## 4. Model, reasoning, and speed routing
 
-## 4. Risk levels
+**HIGH reasoning is the minimum quality floor** for IDOSI implementation work when the runtime exposes that control.
+
+- Normal/default task: **GPT-5.6 Terra + HIGH + FAST**.
+- Cross-layer or clearly harder normal task: **GPT-5.6 Sol + HIGH + FAST**.
+- Money/finance/difficult task: **GPT-5.6 Sol + HIGH + ULTRA FAST** when the runtime exposes Ultra Fast; otherwise the fastest available mode, at least FAST.
+- Finance-sensitive includes revenue, expense, profit, payroll, salary, KPI, bonus, allowance, advance, order-money mutations, closing periods, and calculations feeding those values.
+- Prefer Sol also for difficult auth/store isolation, schema/migration/persistence, destructive data repair, concurrency/idempotency, VPS/runtime/storage, and complex cross-system rules.
+- Use XHIGH only when HIGH is demonstrably insufficient for difficult ambiguity, migration/concurrency, or correctness-sensitive cross-system reasoning.
+- Select the model once at task start. Switch at most once if new evidence materially changes complexity/risk.
+- If runtime cannot select the requested model/reasoning/speed, state the recommended route once and continue using the best available current runtime. Never block and never claim a switch that did not occur.
+
+## 5. Risk levels
 
 ### FAST
 
-Presentation/documentation-only work that does not change business rules, contracts, mutations, persistence, auth, finance formulas, attendance calculations, or production runtime behavior.
+Presentation/documentation-only work with no change to business rules, contracts, mutations, persistence, auth, finance formulas, attendance calculations, or production runtime.
 
-Examples: labels, copy, typography, spacing, icons, small layout/UI styling, docs.
-
-Flow:
-`classify -> targeted read -> branch -> minimal patch -> targeted check -> PR -> CI -> merge`
-
-Never scan the whole repository for a clearly scoped FAST task.
+Flow: `compile request -> targeted read -> branch -> minimal patch -> targeted check -> PR -> CI -> merge`
 
 ### STANDARD
 
-Ordinary functionality that changes non-sensitive application behavior without modifying canonical finance/payroll/auth/schema/persistence/core production rules.
+Ordinary non-sensitive CRUD/form/validation/report/API/state/UI behavior without modifying canonical finance/payroll/auth/schema/persistence/core production rules.
 
-Examples: normal CRUD, forms, validation, read-only reports, ordinary API/state/UI flows.
-
-Flow:
-`classify -> targeted impact map -> branch -> targeted tests -> implement -> targeted recheck -> final gate -> PR -> CI -> merge`
-
-A screen that only displays finance data can remain STANDARD if it does not change formulas, persistence, authorization, or money mutations; model routing may still use Sol when finance context is important.
+Flow: `compile request -> targeted impact -> branch -> targeted tests -> patch -> related-flow tests -> final gate -> PR -> CI -> merge`
 
 ### CRITICAL
 
-Use CRITICAL when the requested or discovered change modifies any of:
+Use when changing finance/money, payroll/KPI, attendance feeding payroll, order-money/audit mutations, authorization/store isolation/session, schema/migration/persistence, destructive data repair, sensitive idempotency/concurrency, production VPS runtime/storage/deployment, or other core rules with material downstream impact.
 
-- revenue, expense, profit, payroll, salary, KPI, bonus, allowance, salary advance formulas or money mutations
-- order mutations affecting money/audit
-- attendance/worked-hours logic that feeds payroll/KPI
-- authorization, roles, store/user isolation, authentication/session/credentials
-- database schema, migrations, persistence model, destructive data repair
-- sensitive idempotency/concurrency/race behavior
-- production VPS runtime/storage/deployment behavior
-- core business rules with material downstream impact
+Flow: `compile request -> focused deep impact -> regression matrix -> minimal patch -> security/data review -> related-flow tests -> one full final gate -> PR -> CI -> merge -> safeguards`
 
-Flow:
-`classify -> focused deep impact -> targeted regression tests -> minimal implementation -> targeted security/data review -> one final full gate -> PR -> CI -> merge -> production safeguards`
+CRITICAL means stronger testing of the affected dependency graph, **not** scanning or rewriting the whole repository.
 
-CRITICAL means stronger correctness checks, not permission to scan or rewrite unrelated modules.
+## 6. Hard Scope Gate
 
-## 5. Hard scope gate — prevent day-long mega tasks
+- Search exact feature names, routes, functions, tests, API handlers, and schema entities before broad scans.
+- One PR should normally contain one coherent business objective.
+- If a request has more than 3 independent objectives or is expected to exceed roughly 20 source/test files, automatically split it into focused sub-scopes/PRs and execute sequentially.
+- If a diff unexpectedly grows beyond 25 changed files, stop expanding and split independent remaining work.
+- Unavoidable generated migration/metadata files may be excluded from the cap.
+- Do not bundle unrelated UI redesign + database + VPS + settings + another feature simply because they were stated in one message.
+- Do not ask the user to repeat already-known requirements; split operationally yourself.
 
-Before implementation, establish a focused scope from exact symbols/files/modules.
+## 7. Fast execution sequence
 
-Mandatory rules:
+1. Start from latest `main`; create a fresh focused branch.
+2. Compile the user's request into the execution brief.
+3. Route Risk + Model + Reasoning + Speed.
+4. Targeted-search the directly relevant symbols/files/modules.
+5. Find and reuse canonical logic/source of truth.
+6. Build a **Related-Flow Map** before editing logic.
+7. Run targeted regression tests where useful.
+8. Implement the smallest coherent patch.
+9. During iteration, rerun only checks invalidated by the edit.
+10. Run the relevant **Related-Flow Regression Matrix**.
+11. Run the final local gate once after stabilization.
+12. Open PR promptly; GitHub `verify` is the authoritative repository-wide gate.
+13. If CI fails: inspect failing step -> reproduce targeted -> fix -> rerun invalidated checks only.
+14. Merge after required checks pass and repository rules allow it.
 
-- Search exact feature names, routes, functions, tests, API handlers, and schema entities before broad repository scans.
-- One PR should normally contain **one coherent business objective**.
-- If a request contains more than **3 independent objectives**, or expected changes exceed roughly **20 source/test files**, automatically split it into focused sub-scopes/PRs and execute them sequentially unless the files are inseparable parts of one migration/architecture change.
-- If implementation unexpectedly grows past **25 changed files**, stop expanding, identify why, and split remaining independent work before continuing.
-- Generated lockfiles/migration metadata do not count toward the cap when they are unavoidable, but unrelated cleanup does.
-- Never combine UI redesign, database migration, VPS tuning, unrelated settings, and another business feature into one PR merely because they arrived in the same user message.
-- Do not ask the user to restate already-known requirements. Split operationally yourself unless a genuine business-rule ambiguity would make implementation unsafe.
+Do not repeat repository analysis, model selection, or full verification when code/input has not materially changed.
 
-## 6. Fast execution sequence
+## 8. Related-Flow Map and Regression Matrix — mandatory
 
-For every task:
+Every functional change must identify what else can break because of it.
 
-1. Start from latest `main` and create a focused branch.
-2. Classify Risk + model/reasoning/speed.
-3. Search/read only the directly relevant code first.
-4. Reuse existing canonical logic; do not create parallel implementations.
-5. Build only the impact map needed for the actual risk.
-6. Run targeted test(s) before/while fixing when useful.
-7. Implement the smallest coherent patch.
-8. Re-run only affected tests/checks during iteration.
-9. Run the final gate **once** after the patch stabilizes.
-10. Open PR promptly; let required GitHub CI perform the authoritative repository-wide gate.
-11. If CI fails, inspect the failing step, reproduce targeted failure, fix it, and rerun. Do not blindly rerun every expensive local check.
-12. Merge after required checks pass and repository rules allow it.
+Trace only the relevant dependency chain:
 
-Do not repeat repository analysis or full verification when code/input has not materially changed.
+`input/event -> UI -> state -> domain -> API/backend -> database/persistence -> readers/reports -> downstream finance/payroll/audit/auth/runtime`
 
-## 7. Architecture and source of truth
+For the changed path, test applicable categories:
+
+- primary happy path
+- previous/legacy behavior that must remain valid
+- create/update/delete/read neighbors sharing the same entity or contract
+- API/state/domain consumers of the changed field/function
+- role/store/user isolation and permission-denied path when relevant
+- duplicate/retry/idempotency when mutations can repeat
+- persistence/reload/backward compatibility when data shape changes
+- finance/payroll/KPI downstream calculations when an input feeds money
+- attendance/timezone/day/month/overnight boundaries when time data is involved
+- locked/closed/deleted states when records have lifecycle rules
+- Sites/VPS compatibility when shared backend/persistence/runtime logic changes
+- desktop/mobile/responsive interaction when UI layout or interaction changes
+
+Do **not** test unrelated modules merely to appear thorough. The requirement is complete coverage of the affected dependency graph, not repository-wide manual testing on every edit.
+
+A task is not done if the primary screen works but an identified downstream/related flow regresses.
+
+## 9. Architecture and source of truth
 
 Preserve where practical:
 `UI/pages/components -> state -> domain -> API service -> backend -> database`
@@ -133,61 +153,51 @@ Preserve where practical:
 - UI handles presentation/interaction, not duplicate finance/payroll/KPI/attendance formulas.
 - Reusable business rules belong in `src/domain/` or established equivalent.
 - Reuse/extend `src/services/idosiApi.js` rather than scattering direct fetch calls.
-- Do not satisfy production persistence with component state, hard-coded objects, mocks, or `localStorage`.
-- Schema changes require additive/safe migrations and data preservation.
+- Do not satisfy production persistence with component state, mocks, hard-coded objects, or `localStorage`.
+- Schema changes require safe migrations and data preservation.
 
-## 8. Authorization and store isolation
-
-Current roles include `admin`, `business_support`, `store_manager`, `employee`.
-
-- Enforce authorization at backend/data boundaries, not UI only.
-- `store_manager` remains scoped to assigned store unless explicitly approved otherwise.
-- Employees must not access another employee's protected data through request manipulation.
-- Backend mutations validate role plus store/user/resource scope.
-- Never broaden permissions incidentally.
-
-Authorization/store-isolation logic changes are CRITICAL and should route to GPT-5.6 Sol.
-
-## 9. Finance, payroll, KPI and attendance
+## 10. Finance, payroll, KPI, attendance, auth, persistence
 
 For canonical money/payroll/KPI changes:
 
-1. Find the canonical implementation first.
-2. Understand only relevant inputs, outputs, persistence, and downstream consumers.
+1. Find canonical implementation.
+2. Identify relevant inputs, outputs, persistence, and downstream consumers.
 3. Add/update targeted regression tests.
-4. Avoid duplicated formulas.
-5. Do not invent ambiguous formulas.
+4. Test affected related flows before final gate.
+5. Avoid duplicated formulas and do not invent ambiguous formulas.
 6. Preserve VND representation and established rounding.
 
-Test relevant boundaries only, such as positive/zero/negative values, zero hours, bonus/allowance/advance, locked periods, duplicate/retry, wrong role/store, and time/month boundaries.
+Test relevant boundaries such as positive/zero/negative/null, zero hours, bonus/allowance/advance, locked periods, duplicate/retry, wrong role/store, month/time boundaries.
 
-Worked-hours/shift logic feeding payroll/KPI is CRITICAL. Test missing checkout, timezone/day rollover, overnight shifts, invalid timestamps, and schedule resolution only when relevant to the changed path.
+Worked-hours/shift logic feeding payroll/KPI is CRITICAL. When applicable, test missing checkout, timezone/day rollover, overnight shifts, invalid timestamps, and schedule resolution.
 
-## 10. Test and verification policy
+Authorization is enforced at backend/data boundaries, not UI only. `store_manager` remains scoped to assigned stores unless explicitly changed; employees must not access protected data of other employees through request manipulation.
 
-Tests are part of implementation, but repeated full suites are not.
+Migration/persistence changes must preserve existing rows and identify backup/rollback implications. Never reset/truncate production for convenience.
 
-### During iteration — all risk levels
+## 11. Test and verification policy
 
-- Run targeted test files/suites for the changed path.
-- Run targeted lint when practical.
-- Do not run `npm test` repeatedly after every small edit.
-- Do not rerun the same expensive check when code/input affecting it did not change.
+### During iteration
+
+- Run targeted test files/suites for the changed path and related flows.
+- Use targeted lint when practical.
+- Do not run `npm test` after every small edit.
+- Do not rerun the same expensive check when relevant code/input did not change.
 
 ### FAST final local gate
 
-Run only checks justified by the change: targeted lint/test/build as applicable. Documentation-only work does not need a local full suite. Required GitHub `verify` remains the final repository-wide gate.
+Only checks justified by the change. Documentation-only work does not require a local full suite. GitHub `verify` remains the repository-wide gate.
 
 ### STANDARD final local gate
 
 Default:
 
-- targeted tests for changed logic
+- targeted tests for changed logic + related-flow regressions
 - `npm run lint`
 - `npm run build`
 - `npm run sites:verify`
 
-Run local full `npm test` only when shared/cross-cutting logic changed or targeted coverage is insufficient. GitHub `verify` runs the authoritative full suite.
+Run local full `npm test` when shared/cross-cutting logic changed or targeted coverage is insufficient.
 
 ### CRITICAL final local gate
 
@@ -200,75 +210,55 @@ npm run build
 npm run sites:verify
 ```
 
-Plus relevant targeted regression/security/data/VPS/persistence checks. VPS checks are required only when VPS/runtime/storage is actually affected.
+Plus applicable targeted regression/security/data/VPS/persistence checks from the Related-Flow Matrix.
 
-If a final gate fails: root cause -> targeted fix -> targeted rerun -> rerun only the final gates invalidated by that fix.
+If a final gate fails: root cause -> targeted fix -> targeted rerun -> rerun only final gates invalidated by that fix.
 
-## 11. Git and conflict control
+## 12. Git, production, security
 
 - Never intentionally develop feature work directly on `main`.
-- Use focused `feature/`, `fix/`, `refactor/`, `ui/`, `chore/`, `hotfix/` branches.
-- Create each new task branch from latest `main`; do not reuse stale completed branches.
-- Sync/rebase/merge `main` only when needed. Avoid repeated merge-from-main cycles.
-- Before PR, if `main` advanced, sync only when files/dependencies overlap or GitHub reports the branch needs update.
-- Resolve conflicts narrowly; do not pull unrelated work into the task.
+- Create each task branch from latest `main`; do not reuse stale completed branches.
+- Avoid repeated merge-from-main cycles; sync only when needed for overlapping changes or GitHub requirements.
 - Required GitHub `verify` must PASS before merge.
-
-## 12. Production, database and destructive safety
-
-- Preserve audit/history behavior for sensitive records.
-- Do not silently hard-delete where soft deletion/history exists.
-- Never reset/truncate production for convenience.
-- Migration/persistence changes must preserve existing rows and identify backup/rollback implications.
-- IDOSI supports Sites/Cloudflare and VPS; validate only affected targets.
-- Follow `deploy/vps/README.md` and `docs/VPS_DEPLOYMENT_CHECKLIST.md` when VPS production behavior changes.
+- Preserve audit/history behavior for sensitive records; do not silently hard-delete where history/soft deletion exists.
+- Validate only affected production targets. Use `deploy/vps/README.md` and `docs/VPS_DEPLOYMENT_CHECKLIST.md` when VPS behavior changes.
 - Never edit production VPS source directly.
+- Never commit production passwords, secrets, tokens, or private keys.
 
-## 13. Security
-
-Never commit production passwords, secrets, tokens, private keys, or credential material. Validate inputs, authorization/scope, duplicate submissions/idempotency where relevant, and meaningful mutation errors.
-
-## 14. Refactoring discipline
-
-Do not perform unrelated large refactors. If a clean refactor is useful but not required to satisfy the task, leave it for a separate PR. The goal is the smallest safe patch, not the prettiest rewrite.
-
-## 15. Ambiguity
-
-Do not block on low-risk presentation details; follow existing conventions. For ambiguity that materially changes money/KPI/payroll, authorization, destructive behavior, schema/data migration, or production deployment semantics, do not invent rules. Preserve current behavior where possible and report the unresolved business decision clearly.
-
-## 16. Definition of Done
+## 13. Definition of Done
 
 Applicable items:
 
-- requested behavior implemented
-- correct model/reasoning/speed route recommended or used truthfully
-- scope remains focused; broad requests split when required
-- canonical business rules and source of truth preserved
+- user's natural-language request was converted into an execution brief automatically
+- requested behavior implemented without requiring the user to author a technical prompt
+- model/reasoning/speed route selected truthfully
+- scope remains focused; broad requests split when necessary
+- canonical logic/source of truth preserved
+- Related-Flow Map completed for functional changes
+- primary path and all applicable related/downstream regressions pass
 - authorization/store isolation preserved
-- targeted iteration checks passed
-- final local gate appropriate to Risk passed
-- required GitHub `verify` passed
-- no secrets introduced
-- diff reviewed for unrelated changes
+- final local gate appropriate to Risk passes
+- required GitHub `verify` passes
+- no unrelated changes or secrets introduced
 - migration/rollback/production safeguards documented when applicable
 
-## 17. Final report — concise
+## 14. Final report — concise
 
 Report only:
 
-1. Routing: Risk + model + reasoning + speed/fallback
+1. Routing used/recommended
 2. What changed
 3. Main files/modules
-4. Business/auth/database/production impact when relevant
-5. Tests/checks and results
+4. Related flows tested and result
+5. Final checks/CI result
 6. Remaining risk/rollback only when relevant
 
 Do not pad the report with repeated analysis.
 
-## 18. Execution objective
+## 15. Execution objective
 
-- FAST: `Terra HIGH FAST -> targeted read -> minimal patch -> targeted check -> PR -> CI`
-- STANDARD: `Terra/Sol HIGH FAST -> targeted impact -> targeted tests -> patch -> one final local gate -> PR -> CI`
-- CRITICAL / finance / difficult: `Sol HIGH ULTRA FAST if supported -> focused deep impact -> targeted regression -> minimal patch -> one full final gate -> PR -> CI -> safeguards`
+- FAST: `auto-compile request -> Terra HIGH FAST -> targeted patch -> targeted check -> PR -> CI`
+- STANDARD: `auto-compile request -> Terra/Sol HIGH FAST -> related-flow map -> targeted tests -> patch -> regression matrix -> one final gate -> PR -> CI`
+- CRITICAL/finance/difficult: `auto-compile request -> Sol HIGH ULTRA FAST if supported -> focused impact -> regression matrix -> minimal patch -> one full final gate -> PR -> CI -> safeguards`
 
-The overriding rule is: **HIGH reasoning is the minimum quality floor requested for IDOSI; speed comes from tighter scope, faster model mode, targeted reads/tests, and eliminating redundant work — never from skipping correctness safeguards where they matter.**
+Overriding rule: **the user states the business request; Codex automatically turns it into the best execution prompt and implements it quickly. Any flow affected by the change must be tested carefully before completion.**
