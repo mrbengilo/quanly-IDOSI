@@ -4,6 +4,7 @@
 
 ## Visible Task Intake Report
 - Nguyên nhân / Nhu cầu:
+- Mức độ chắc chắn của nguyên nhân: Confirmed / Needs verification / N/A feature
 - Giải pháp:
 - Công việc sẽ thực hiện:
   1. 
@@ -14,7 +15,7 @@
 - Scope dự kiến:
 - Verification dự kiến:
 
-> Không ghi ETA hứa hẹn theo phút/giờ. Dùng Workload + Scope + số bước làm dự báo khối lượng và triển khai ngay.
+> Không hứa ETA theo phút/giờ. Dùng Workload + Scope + số bước rồi triển khai ngay.
 
 ## Automatic Execution Brief
 - Goal:
@@ -25,7 +26,37 @@
 - Canonical source/logic:
 - Invariants phải giữ:
 
-> User không cần viết prompt kỹ thuật. Codex phải tự compile request thành execution brief rồi triển khai.
+## Professional Engineering Quality Gate
+
+Codex phải làm việc theo chuẩn senior/staff production-quality tương đương 10+ năm thực chiến về chất lượng.
+
+- [ ] Giải pháp là nhỏ nhất nhưng production-ready, không chỉ "chạy được".
+- [ ] Architecture/pattern/naming/design system hiện hữu được giữ nhất quán.
+- [ ] Không tạo abstraction/refactor ngoài scope nếu không cần thiết.
+- [ ] Performance/DB/network/concurrency impact đã được xem xét khi relevant.
+- [ ] Security/input validation/least privilege đã được xem xét khi relevant.
+- [ ] UI có responsive/loading/error/empty/disabled states khi relevant.
+- [ ] Code dễ đọc, testable, maintainable và không duplicate source of truth.
+- [ ] Đã self-review dưới các góc nhìn phù hợp: design / architecture / coder / tester / security / reliability / deployment.
+
+## Evidence-First / No Hallucination Gate
+
+- Facts đã xác minh:
+  - 
+- Unknowns còn lại:
+  - 
+- Hypotheses đã kiểm chứng/loại bỏ:
+  - 
+- External/version-sensitive behavior đã dùng nguồn nào để xác minh, nếu relevant:
+  - 
+
+Bắt buộc:
+- [ ] Không invent root cause khi chưa có evidence.
+- [ ] Không invent API/method/flag/schema field/file/function/package capability/version support.
+- [ ] Không invent business formula/permission/data semantics.
+- [ ] Không claim test PASS/deploy success/production state khi chưa quan sát.
+- [ ] Với phần chưa xác minh, đã ghi rõ uncertainty thay vì đoán như fact.
+- [ ] Khi công nghệ/API/version chưa chắc, đã kiểm tra repo và authoritative docs khi có thể.
 
 ## Scope Gate
 - [ ] Một mục tiêu nghiệp vụ coherent
@@ -46,16 +77,15 @@
 - [ ] VPS runtime / storage / deployment
 
 ## Work Completed
-Đối chiếu với danh sách công việc đã công bố lúc bắt đầu task:
-- [ ] Các bước đã hoàn thành hoặc có lý do rõ nếu thay đổi scope
-- [ ] Root cause/need được cập nhật nếu phát hiện khác ban đầu
+Đối chiếu với danh sách công việc lúc bắt đầu task:
+- [ ] Các bước đã hoàn thành hoặc scope change có lý do/evidence rõ
+- [ ] Root cause/need được cập nhật nếu evidence khác ban đầu
 - [ ] Giải pháp cuối cùng phù hợp canonical architecture/source of truth
 
 Chi tiết:
 - 
 
 ## Related-Flow Map
-Liệt kê các flow thực sự phụ thuộc vào phần thay đổi:
 - Primary flow:
 - Adjacent CRUD/readers/consumers:
 - Auth/store/user flows:
@@ -66,7 +96,7 @@ Liệt kê các flow thực sự phụ thuộc vào phần thay đổi:
 - Desktop/mobile impact:
 
 ## Regression Matrix
-Đánh dấu các category áp dụng và ghi test/evidence tương ứng:
+Đánh dấu category áp dụng và ghi evidence:
 - [ ] Happy path chính
 - [ ] Behavior cũ/backward compatibility
 - [ ] Create/update/delete/read neighbor cùng entity/contract
@@ -111,7 +141,7 @@ Test/evidence:
 ### Required CI
 - [ ] GitHub `verify` PASS
 
-## Self-review
+## Final Self-review
 - [ ] No unrelated changes/refactors
 - [ ] No duplicate business logic/source of truth
 - [ ] Primary flow PASS
@@ -120,6 +150,7 @@ Test/evidence:
 - [ ] Money/KPI/payroll boundaries reviewed when relevant
 - [ ] Idempotency/race/timezone reviewed when relevant
 - [ ] Migration/data-loss/Sites-VPS compatibility reviewed when relevant
+- [ ] Không có claim nào vượt quá evidence thực tế
 
 ## Speed / compute efficiency
 - [ ] Exact symbols/files searched before broad scan
@@ -134,11 +165,13 @@ Test/evidence:
 ## Rollback / manual checks
 - Rollback plan, if relevant:
 - Manual checks, if relevant:
-- Remaining risks, if any:
+- Remaining uncertainty/risks, if any:
 
 ## Definition of Done
 - [ ] User request auto-compiled; user không phải viết prompt kỹ thuật
-- [ ] Visible Task Intake Report đã hiển thị nguyên nhân/nhu cầu + giải pháp + công việc + workload/scope
+- [ ] Intake Report đã hiển thị cause/need + solution + work + workload/scope
+- [ ] Senior/staff engineering quality gate đạt
+- [ ] Evidence/no-hallucination gate đạt
 - [ ] Scope đúng yêu cầu và không thành mega-task
 - [ ] Routing đúng policy
 - [ ] Primary + applicable related-flow regressions PASS
