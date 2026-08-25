@@ -52,6 +52,7 @@ import {
   apiCommand,
   apiGetAccountAvatar,
   apiGetState,
+  apiGetStateMetadata,
   apiLogin,
   apiSelectSessionRole,
   apiListUsers,
@@ -170,7 +171,7 @@ const SERVER_EXCLUDED_FIELDS = new Set([
   'password', 'passwordHash', 'password_hash', 'passwordSalt', 'password_salt', 'passwordIterations',
   'legacyPassword', 'token', 'tokenHash', 'adminAccounts', 'managerAccounts', 'managerPayroll',
   'profitShares', 'policies', 'orderCounters', 'importCounter', 'idempotencyKeys',
-  'session', 'activeAttendanceId', 'checkedInAt', 'finishedShift',
+  'session', 'activeAttendanceId', 'checkedInAt', 'finishedShift', 'accountProfile',
 ])
 
 const sharedStateSnapshot = (state) => {
@@ -1023,6 +1024,7 @@ export function AppProvider({ children }) {
     role: null,
     user: null,
     version: 0,
+    hydratedVersion: 0,
     policyVersions: {},
     suppressNext: false,
     syncing: false,
@@ -1034,6 +1036,7 @@ export function AppProvider({ children }) {
   const localAttendanceCheckInClaimsRef = useRef(new Set())
   const avatarObjectUrlRef = useRef({ signature: '', url: '' })
   const avatarLoadRequestRef = useRef(0)
+  const activeStoreIdRef = useRef(state.activeStoreId)
 
   useEffect(() => {
     localAttendanceCheckInClaimsRef.current = new Set(
@@ -1047,6 +1050,7 @@ export function AppProvider({ children }) {
     const remoteUser = payload.user || loginUser
     const rememberedActiveStoreId = preferredActiveStoreId || readRememberedActiveStore(remoteUser)
     const hydrated = hydrateRemoteState(payload.state, remoteUser, payload.policies, rememberedActiveStoreId)
+    if (!Array.isArray(payload.policies)) hydrated.policies = state.policies
     const hydratedAvatarSignature = accountAvatarMetadataSignature(hydrated.settings?.avatarMetadata)
     if (hydratedAvatarSignature && avatarObjectUrlRef.current.signature === hydratedAvatarSignature) {
       hydrated.settings = {
@@ -1061,7 +1065,10 @@ export function AppProvider({ children }) {
     remote.role = normalizeAuthRole(remoteUser.role)
     remote.user = { ...remoteUser, role: normalizeAuthRole(remoteUser.role) }
     remote.version = Number(payload.version || 0)
-    remote.policyVersions = Object.fromEntries((payload.policies || []).map((policy) => [policy.key, Number(policy.version || 0)]))
+    remote.hydratedVersion = Number(payload.version || 0)
+    if (Array.isArray(payload.policies)) {
+      remote.policyVersions = Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
+    }
     remote.suppressNext = true
     remote.lastSerialized = JSON.stringify(sharedStateSnapshot(hydrated))
     if (typeof localStorage !== 'undefined') {
@@ -1070,6 +1077,7 @@ export function AppProvider({ children }) {
     }
     setApiStatus('connected')
     rememberActiveStore(remoteUser, hydrated.activeStoreId)
+    activeStoreIdRef.current = hydrated.activeStoreId
     setState(hydrated)
     return hydrated.session
   }
@@ -1082,19 +1090,32 @@ export function AppProvider({ children }) {
         idempotencyKey,
       })
       remote.version = Number(result.version)
-      try {
+      if (remote.role === 'admin') {
+        // Admin still has a small number of legacy local mutations that are
+        // persisted through a whole-state replace. Applying a domain-command
+        // refresh in the background could race with that snapshot and lose one
+        // of the two writes, so keep the ordered reconciliation for Admin.
         const latest = await apiGetState('global')
-        activateRemotePayload(latest, remote.user, state.activeStoreId)
-      } catch {
-        remote.suppressNext = true
-        setApiStatus('error')
+        activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
+        return result
       }
+      // The mutation is already durable when POST resolves. Do not keep the
+      // Save/Create button blocked behind another full shared-state download.
+      // Reconcile in the background; discard a response if a newer mutation
+      // completed while it was in flight.
+      const committedVersion = Number(result.version || 0)
+      void apiGetState('global').then((latest) => {
+        if (Number(latest?.version || 0) < Number(remote.version || committedVersion)) return
+        activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
+      }).catch(() => {
+        setApiStatus('error')
+      })
       return result
     } catch (error) {
       if (error.code === 'VERSION_CONFLICT') {
         try {
           const latest = await apiGetState('global')
-          activateRemotePayload(latest, remote.user, state.activeStoreId)
+          activateRemotePayload(latest, remote.user, activeStoreIdRef.current)
         } catch {
           setApiStatus('error')
         }
@@ -1130,7 +1151,10 @@ export function AppProvider({ children }) {
     setState((current) => accountAvatarMetadataSignature(current.settings?.avatarMetadata) === remoteAvatarSignature
       ? {
           ...current,
-          settings: { ...current.settings, avatar: '', avatarLoading: true, avatarError: '' },
+          // Keep the last confirmed image (or the just-submitted preview) visible
+          // while the private object is downloaded. Clearing it here caused the
+          // header to fall back to initials after a successful save.
+          settings: { ...current.settings, avatarLoading: true, avatarError: '' },
         }
       : current)
     apiGetAccountAvatar().then((blob) => {
@@ -1153,7 +1177,6 @@ export function AppProvider({ children }) {
             ...current,
             settings: {
               ...current.settings,
-              avatar: '',
               avatarLoading: false,
               avatarError: error?.message || 'Không thể tải ảnh đại diện.',
             },
@@ -1197,24 +1220,51 @@ export function AppProvider({ children }) {
     if (!credentialsReady || !remote.enabled || !state.session || !['business_support', 'store_manager', 'employee'].includes(role)) return undefined
     let active = true
     let busy = false
-    const refresh = async () => {
-      if (!active || busy || (typeof document !== 'undefined' && document.hidden)) return
+    let pendingForce = false
+    const refresh = async ({ force = false } = {}) => {
+      if (!active) return
+      // A support-transfer boundary is correctness-sensitive: dropping this
+      // refresh while the tab is hidden or another poll is in flight can leave
+      // an employee attached to the wrong store until the shared-state version
+      // changes. Remember the force request and drain it as soon as possible.
+      if (force) pendingForce = true
+      if (busy || (typeof document !== 'undefined' && document.hidden)) return
+      const forceRefresh = pendingForce
+      pendingForce = false
       busy = true
       try {
+        const metadata = forceRefresh ? null : await apiGetStateMetadata('global')
+        // A command can finish before its background projection download. Track
+        // the version actually rendered separately so a failed reconciliation
+        // is retried by the next lightweight metadata poll.
+        const stateVersionAdvanced = Number(metadata?.version || 0) > Number(remote.hydratedVersion || 0)
+        const metadataPolicyVersions = metadata?.policyVersions && typeof metadata.policyVersions === 'object'
+          ? metadata.policyVersions
+          : null
+        const policyKeys = metadataPolicyVersions
+          ? new Set([...Object.keys(metadataPolicyVersions), ...Object.keys(remote.policyVersions || {})])
+          : new Set()
+        const policiesChanged = [...policyKeys].some((key) => (
+          Number(metadataPolicyVersions?.[key] || 0) !== Number(remote.policyVersions?.[key] || 0)
+        ))
+        const metadataUserVersion = Number(metadata?.userVersion || 0)
+        const userChanged = metadataUserVersion > 0
+          && metadataUserVersion !== Number(remote.user?.version || 0)
+        const metadataChanged = forceRefresh || stateVersionAdvanced || policiesChanged || userChanged
+        if (!active || !metadataChanged) return
         const latest = await apiGetState('global')
-        const versionAdvanced = Number(latest.version || 0) > Number(remote.version || 0)
         const effectiveUserChanged = remoteEffectiveUserChanged(remote.user, latest.user)
-        const timeSensitiveProjection = ['store_manager', 'employee'].includes(role)
-        if (!active || (!versionAdvanced && !effectiveUserChanged && !timeSensitiveProjection)) return
-        if (versionAdvanced && canListAccounts(role)) {
+        if (!forceRefresh && !metadataChanged && !effectiveUserChanged) return
+        if (metadataChanged && canListAccounts(role)) {
           const users = await apiListUsers()
           latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
         }
-        if (active) activateRemotePayload(latest, latest.user || remote.user, state.activeStoreId)
+        if (active) activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
       } catch {
         // Polling is best-effort; the next interval or a foreground action will retry.
       } finally {
         busy = false
+        if (active && pendingForce && (typeof document === 'undefined' || !document.hidden)) void refresh()
       }
     }
     const timer = window.setInterval(refresh, 5000)
@@ -1223,8 +1273,10 @@ export function AppProvider({ children }) {
       : null
     const boundaryTimer = boundaryDelay == null
       ? null
-      : window.setTimeout(refresh, Math.min(boundaryDelay + 25, 2_147_000_000))
-    const refreshWhenVisible = () => { if (!document.hidden) refresh() }
+      : window.setTimeout(() => refresh({ force: true }), Math.min(boundaryDelay + 25, 2_147_000_000))
+    const refreshWhenVisible = () => {
+      if (!document.hidden) refresh({ force: pendingForce || ['store_manager', 'employee'].includes(role) })
+    }
     document.addEventListener('visibilitychange', refreshWhenVisible)
     return () => {
       active = false
@@ -1304,6 +1356,7 @@ export function AppProvider({ children }) {
               idempotencyKey: `state:${crypto.randomUUID()}`,
             })
             remote.version = Number(result.version)
+            remote.hydratedVersion = Number(result.version)
             remote.lastSerialized = pending.serialized
           } catch (error) {
             if (error.code !== 'VERSION_CONFLICT') throw error
@@ -1315,6 +1368,7 @@ export function AppProvider({ children }) {
               idempotencyKey: `state-merge:${crypto.randomUUID()}`,
             })
             remote.version = Number(result.version)
+            remote.hydratedVersion = Number(result.version)
             remote.lastSerialized = pending.serialized
             remote.suppressNext = true
             setState((current) => ({
@@ -1347,9 +1401,10 @@ export function AppProvider({ children }) {
       setApiStatus('connecting')
       const authenticated = await apiLogin(username, password)
       const isSystemOperator = canListAccounts(authenticated.user.role)
+      const embeddedUsers = Array.isArray(authenticated.users) ? { users: authenticated.users } : null
       const [bootstrap, users] = await Promise.all([
-        apiBootstrapState('global'),
-        isSystemOperator ? apiListUsers() : Promise.resolve(null),
+        authenticated.bootstrap ? Promise.resolve(authenticated.bootstrap) : apiBootstrapState('global'),
+        isSystemOperator ? (embeddedUsers || apiListUsers()) : Promise.resolve(null),
       ])
       if (users) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
@@ -1462,7 +1517,10 @@ export function AppProvider({ children }) {
     apiRef.current.enabled = false
     apiRef.current.role = null
     apiRef.current.user = null
+    apiRef.current.version = 0
+    apiRef.current.hydratedVersion = 0
     apiRef.current.pending = null
+    apiRef.current.suppressNext = false
     window.clearTimeout(apiRef.current.timer)
     setApiStatus('local')
     if (wasRemote) {
@@ -1470,7 +1528,9 @@ export function AppProvider({ children }) {
         localStorage.removeItem(STORAGE_KEY)
         localStorage.removeItem(LEGACY_STORAGE_KEY)
       }
-      setState(createInitialState())
+      const initialState = createInitialState()
+      activeStoreIdRef.current = initialState.activeStoreId
+      setState(initialState)
       return
     }
     setState((current) => ({ ...current, session: null, activeAttendanceId: null, checkedInAt: null, finishedShift: false }))
@@ -1483,6 +1543,7 @@ export function AppProvider({ children }) {
     if (state.session?.role === 'store_manager' && String(id) !== String(state.session.storeId)) return false
     if (!state.stores.some((store) => store.id === id)) return false
     rememberActiveStore(apiRef.current.user || state.session, id)
+    activeStoreIdRef.current = id
     setState((current) => ({ ...current, activeStoreId: id }))
     return true
   }
@@ -2573,21 +2634,76 @@ export function AppProvider({ children }) {
 
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('account_settings.update', payload)
+        // Account settings are fully returned by this command, so a second
+        // download of the complete global state is both unnecessary and very
+        // expensive for an avatar payload. Reuse one idempotency key while the
+        // server finishes any durable cleanup left by an interrupted upload;
+        // the cleanup response is emitted before the mutation executes.
+        const remote = apiRef.current
+        let result
+        for (let versionAttempt = 0; versionAttempt < 2; versionAttempt += 1) {
+          // A VERSION_CONFLICT represents a different mutation attempt because
+          // expectedVersion is part of the request contract. Cleanup retries,
+          // on the other hand, must keep the exact same key and payload.
+          const expectedVersion = remote.version
+          const idempotencyKey = `account_settings.update:${crypto.randomUUID()}`
+          try {
+            for (let cleanupAttempt = 0; cleanupAttempt < 3; cleanupAttempt += 1) {
+              try {
+                result = await apiCommand('account_settings.update', payload, {
+                  expectedVersion,
+                  idempotencyKey,
+                })
+                break
+              } catch (error) {
+                if (error?.code !== 'ACCOUNT_AVATAR_CLEANUP_RETRY' || cleanupAttempt === 2) throw error
+              }
+            }
+            break
+          } catch (error) {
+            if (error?.code !== 'VERSION_CONFLICT' || versionAttempt === 1) throw error
+            try {
+              const latest = await apiGetState('global')
+              activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
+            } catch {
+              const refreshError = new Error('Dữ liệu tài khoản vừa thay đổi nhưng không thể tải bản mới nhất. Ảnh và thông tin cũ vẫn được giữ nguyên; vui lòng thử lại.')
+              refreshError.code = 'VERSION_CONFLICT'
+              throw refreshError
+            }
+          }
+        }
+        remote.version = Math.max(Number(remote.version || 0), Number(result.version || 0))
+        remote.hydratedVersion = Math.max(Number(remote.hydratedVersion || 0), Number(result.version || 0))
         const remoteSettings = result.settings || {}
         const avatarMetadata = accountAvatarMetadata(remoteSettings.avatar)
         const avatarWasChanged = payload.avatar !== undefined
         const { avatar: submittedAvatar, ...safePayload } = payload
-        const existingObjectUrl = typeof state.settings?.avatar === 'string'
-          && state.settings.avatar.startsWith('blob:')
-          ? state.settings.avatar
+        const currentAvatar = typeof state.settings?.avatar === 'string' ? state.settings.avatar : ''
+        const legacyRemoteAvatar = typeof remoteSettings.avatar === 'string'
+          && !remoteSettings.avatar.startsWith('data:image/')
+          ? remoteSettings.avatar
           : ''
+        const immediateAvatar = avatarMetadata
+          ? (avatarWasChanged && submittedAvatar ? submittedAvatar : currentAvatar)
+          : legacyRemoteAvatar
+        const previousAvatarSignature = accountAvatarMetadataSignature(state.settings?.avatarMetadata)
+        const nextAvatarSignature = accountAvatarMetadataSignature(avatarMetadata)
+        const confirmedAvatarIsLoaded = Boolean(
+          nextAvatarSignature
+          && avatarObjectUrlRef.current.signature === nextAvatarSignature
+          && avatarObjectUrlRef.current.url,
+        )
+        const shouldLoadAvatar = Boolean(
+          avatarMetadata
+          && !confirmedAvatarIsLoaded
+          && (nextAvatarSignature !== previousAvatarSignature || state.settings?.avatarLoading),
+        )
         const persistedSettings = {
           ...safePayload,
           ...remoteSettings,
           avatarMetadata,
-          avatar: avatarMetadata ? existingObjectUrl : '',
-          avatarLoading: Boolean(avatarMetadata),
+          avatar: immediateAvatar,
+          avatarLoading: shouldLoadAvatar,
           avatarError: '',
         }
         applyPersistedSettings(persistedSettings, result.user)
@@ -2596,9 +2712,7 @@ export function AppProvider({ children }) {
           ok: true,
           settings: {
             ...persistedSettings,
-            avatar: avatarMetadata && avatarWasChanged && submittedAvatar
-              ? submittedAvatar
-              : persistedSettings.avatar,
+            avatar: persistedSettings.avatar,
           },
           user: result.user,
         }

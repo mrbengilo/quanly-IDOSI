@@ -48,11 +48,12 @@ function RegistrationGroup({ days, employees, group, records }) {
   ))), [records])
 
   return <Card
+    className="work-registration-group"
     title={group.label}
     action={<Badge tone={group.value === 'business_support' ? 'green' : 'blue'}>{employees.length} nhân viên</Badge>}
   >
-    <div className="my-work-schedule-scroll" data-testid={`work-registration-${group.value}`}>
-      <table className="my-work-schedule-grid" aria-label={`Lịch đăng ký làm việc của ${group.label}`}>
+    <div className="my-work-schedule-scroll work-registration-scroll" data-testid={`work-registration-${group.value}`}>
+      <table className="my-work-schedule-grid work-registration-grid" aria-label={`Lịch đăng ký làm việc của ${group.label}`}>
         <thead><tr><th className="my-work-schedule-grid__employee">Nhân viên</th>{days.map((date) => <th key={date}>{calendarDayLabel(date)}</th>)}</tr></thead>
         <tbody>
           {employees.map((employee) => {
@@ -154,7 +155,7 @@ export function AdminWorkRegistrationSchedulePage() {
     setAnchorDate(today())
   }
 
-  return <div className="page support-schedule-page">
+  return <div className="page support-schedule-page work-registration-page">
     <PageHeader
       title="LỊCH ĐĂNG KÝ LÀM VIỆC CỦA HTKD VÀ KVP"
       subtitle="Tổng hợp lịch đăng ký theo ngày, tuần hoặc tháng; dữ liệu chỉ đọc và không thay đổi lịch chấm công."

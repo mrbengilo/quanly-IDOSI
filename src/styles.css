@@ -986,6 +986,14 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
 .support-schedule-navigation .button { min-height: 38px; padding: 7px 10px; }
 .support-schedule-page-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
 .support-schedule-page-actions .input-wrap { min-width: 190px; }
+.support-schedule-presets { grid-column: 1/-1; display: grid; gap: 7px; }
+.support-schedule-presets__label { color: #263b30; font-size: 11px; font-weight: 700; }
+.support-schedule-presets__options { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 9px; }
+.support-schedule-preset { min-height: 48px; padding: 7px 12px; }
+.support-schedule-preset > span { flex-direction: column; gap: 2px; }
+.support-schedule-preset small { color: #667085; font-size: 9px; font-variant-numeric: tabular-nums; }
+.support-schedule-preset--selected { border-color: #08793d; background: #eaf7ed; box-shadow: inset 0 0 0 1px #08793d; }
+.support-schedule-preset--selected > span > svg { color: #08793d; }
 .personal-schedule-form { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; align-items: end; }
 .personal-schedule-form__actions { grid-column: 1/-1; margin-top: 0; }
 .my-work-schedule-scroll { width: 100%; overflow: auto; border: 1px solid #b9cfc1; border-radius: 12px; background: #fff; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch; }
@@ -1060,4 +1068,21 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   .avatar-cropper__controls label { grid-template-columns:86px minmax(0,1fr);gap:8px;font-size:11px; }
   .identity-image-actions.identity-image-actions--stable,.row-actions.identity-image-actions--stable { grid-template-columns:repeat(2,minmax(54px,1fr));max-width:150px;gap:5px; }
   .identity-image-actions.identity-image-actions--stable > button,.row-actions.identity-image-actions--stable > button { min-height:36px;padding-inline:7px; }
+  .support-schedule-presets__options { gap:6px; }
+  .support-schedule-preset { min-height:44px;padding:6px 4px;font-size:10px; }
+  .work-registration-page { gap:10px; }
+  .work-registration-group { padding:10px; }
+  .work-registration-scroll { border-radius:9px; }
+  .work-registration-grid .my-work-schedule-grid__employee { width:124px;min-width:124px!important; }
+  .work-registration-grid th,.work-registration-grid td { min-width:116px;height:100px;padding:7px; }
+  .work-registration-grid thead th { min-height:38px;padding-block:8px;font-size:9px; }
+  .work-registration-grid .my-work-schedule-employee { gap:5px; }
+  .work-registration-grid .my-work-schedule-employee .avatar { width:30px!important;height:30px!important; }
+  .work-registration-grid .my-work-schedule-employee strong { font-size:10px;line-height:1.25; }
+  .work-registration-grid .my-work-schedule-employee small { font-size:9px; }
+  .work-registration-grid .badge { padding:3px 5px;font-size:9px;white-space:normal; }
+  .work-registration-grid .my-work-schedule-shift { min-height:76px;gap:4px;padding:7px;border-left-width:3px;border-radius:8px; }
+  .work-registration-grid .my-work-schedule-shift strong { font-size:10px; }
+  .work-registration-grid .my-work-schedule-shift small,.work-registration-grid .my-work-schedule-shift em { font-size:9px;line-height:1.3; }
+  .work-registration-grid .my-work-schedule-empty { min-height:76px;font-size:9px; }
 }

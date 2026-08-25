@@ -89,6 +89,7 @@ export const apiSelectSessionRole = (selection) => request('/api/session/role', 
 
 export const apiBootstrapState = (scope = 'global') => request(`/api/bootstrap?scope=${encodeURIComponent(scope)}`)
 export const apiGetState = (scope = 'global') => request(`/api/state?scope=${encodeURIComponent(scope)}`)
+export const apiGetStateMetadata = (scope = 'global') => request(`/api/state-metadata?scope=${encodeURIComponent(scope)}`)
 
 export const apiCommand = (type, payload, {
   expectedVersion = 0,

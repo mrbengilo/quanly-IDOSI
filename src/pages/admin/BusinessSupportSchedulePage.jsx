@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
-import { CalendarClock, ChevronLeft, ChevronRight, Edit3, History, Plus, Save, Trash2 } from 'lucide-react'
+import { CalendarClock, Check, ChevronLeft, ChevronRight, Edit3, History, Plus, Save, Trash2 } from 'lucide-react'
 import { Avatar, Badge, Button, Card, Field, Input, PageHeader, Select, TableWrap } from '../../components/UI'
 import {
+  SUPPORT_SCHEDULE_PRESETS,
   supportScheduleDays,
   supportScheduleEmploymentMode,
   supportScheduleRange,
@@ -37,6 +38,28 @@ const shiftAnchor = (date, view, direction) => {
 const calendarDayLabel = (date) => new Intl.DateTimeFormat('vi-VN', {
   weekday: 'short', day: '2-digit', month: '2-digit', timeZone: 'UTC',
 }).format(new Date(`${date}T00:00:00Z`))
+
+function SchedulePresetButtons({ onSelect, selectedName = '', selectedStart = '', selectedEnd = '' }) {
+  return <div className="support-schedule-presets">
+    <span className="support-schedule-presets__label">Chọn nhanh khung giờ</span>
+    <div className="support-schedule-presets__options" role="group" aria-label="Chọn nhanh khung giờ làm việc">
+      {SUPPORT_SCHEDULE_PRESETS.map((preset) => {
+        const selected = preset.name === selectedName
+          && preset.start === selectedStart
+          && preset.end === selectedEnd
+        return <Button
+          key={preset.id}
+          type="button"
+          variant="outline"
+          className={`support-schedule-preset${selected ? ' support-schedule-preset--selected' : ''}`}
+          aria-label={`Chọn nhanh ${preset.name} ${preset.start}–${preset.end}`}
+          aria-pressed={selected}
+          onClick={() => onSelect(preset)}
+        >{selected && <Check aria-hidden="true" size={14} />}{preset.name}<small>{preset.start}–{preset.end}</small></Button>
+      })}
+    </div>
+  </div>
+}
 
 const emptyScheduleForm = () => ({ targetUnit: 'business_support', date: today(), employeeId: '', shiftName: '', start: '08:00', end: '17:30', note: '', scheduleId: '' })
 
@@ -80,6 +103,12 @@ export function BusinessSupportSchedulePage() {
   const canDelete = ['admin', 'business_support', 'manager'].includes(app.session?.role)
 
   const set = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }))
+  const selectPreset = (preset) => setForm((current) => ({
+    ...current,
+    shiftName: preset.name,
+    start: preset.start,
+    end: preset.end,
+  }))
   const save = async (event) => {
     event.preventDefault()
     if (saving) return
@@ -113,6 +142,7 @@ export function BusinessSupportSchedulePage() {
         <Field label="Loại nhân viên" required><Select value={form.targetUnit} onChange={(event) => setForm((current) => ({ ...current, targetUnit: event.target.value, employeeId: '', shiftName: '' }))}>{SCHEDULE_GROUPS.map((group) => <option key={group.value} value={group.value}>{group.label}</option>)}</Select></Field>
         <Field label="Chọn nhân viên" required><Select value={form.employeeId} onChange={set('employeeId')}><option value="">Chọn {scheduleGroupLabel(form.targetUnit)}</option>{employees.map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}</Select></Field>
         {shiftMode && <Field label="Tên ca" required><Input value={form.shiftName} onChange={set('shiftName')} placeholder="Ví dụ: Ca chiều" /></Field>}
+        <SchedulePresetButtons onSelect={selectPreset} selectedName={form.shiftName} selectedStart={form.start} selectedEnd={form.end} />
         <Field label="Giờ bắt đầu" required><Input type="time" value={form.start} onChange={set('start')} /></Field>
         <Field label="Giờ kết thúc" required><Input type="time" value={form.end} onChange={set('end')} /></Field>
         <Field label="Ghi chú"><Input value={form.note} onChange={set('note')} placeholder="Thông tin bổ sung" /></Field>
@@ -176,6 +206,18 @@ export function MyBusinessSupportSchedulePage() {
       ? { ...current, shiftId, shiftName: selected.name, start: selected.start, end: selected.end }
       : { ...current, shiftId: 'custom', shiftName: '', start: '08:00', end: '12:00' })
   }
+  const selectPreset = (preset) => {
+    const configured = configuredShifts.find((shift) => (
+      shift.name === preset.name && shift.start === preset.start && shift.end === preset.end
+    ))
+    setForm((current) => ({
+      ...current,
+      shiftId: configured?.id || 'custom',
+      shiftName: preset.name,
+      start: preset.start,
+      end: preset.end,
+    }))
+  }
   const save = async (event) => {
     event.preventDefault()
     if (!canManageOwnSchedule || saving) return
@@ -185,7 +227,7 @@ export function MyBusinessSupportSchedulePage() {
       employeeId,
       targetUnit: 'office',
       date: form.date,
-      shiftName: shiftMode ? form.shiftName : 'Làm việc Full-Time',
+      shiftName: form.shiftName || (shiftMode ? '' : 'Làm việc Full-Time'),
       start: form.start,
       end: form.end,
       note: form.note,
@@ -226,6 +268,7 @@ export function MyBusinessSupportSchedulePage() {
         <Field label="Chọn ngày" required><Input type="date" value={form.date} onChange={set('date')} /></Field>
         {shiftMode && <Field label="Chọn ca" required><Select value={form.shiftId} onChange={selectShift}>{configuredShifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.start}–{shift.end}</option>)}<option value="custom">Ca tự nhập</option></Select></Field>}
         {shiftMode && form.shiftId === 'custom' && <Field label="Tên ca" required><Input value={form.shiftName} onChange={set('shiftName')} placeholder="Ví dụ: Ca chiều" /></Field>}
+        <SchedulePresetButtons onSelect={selectPreset} selectedName={form.shiftName} selectedStart={form.start} selectedEnd={form.end} />
         <Field label="Giờ bắt đầu" required><Input type="time" value={form.start} onChange={set('start')} /></Field>
         <Field label="Giờ kết thúc" required><Input type="time" value={form.end} onChange={set('end')} /></Field>
         <Field label="Ghi chú"><Input value={form.note} onChange={set('note')} placeholder="Thông tin bổ sung" /></Field>

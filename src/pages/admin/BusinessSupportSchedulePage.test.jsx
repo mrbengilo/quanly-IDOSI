@@ -38,8 +38,8 @@ describe('BusinessSupportSchedulePage', () => {
     const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Phân lịch nhầm')
     mocked.app = {
       ...mocked.app,
-      supportWorkSchedules: [{ id: 'SWS-01', employeeId: 'HTKD-01', employeeName: 'Hỗ trợ KD', targetUnit: 'business_support', date: '2026-08-24', employmentType: 'Full-Time', shiftName: 'Giờ hành chính', start: '08:00', end: '17:30' }],
-      supportWorkScheduleHistory: [{ id: 'H-01', scheduleId: 'SWS-01', employeeId: 'HTKD-01', employeeName: 'Hỗ trợ KD', targetUnit: 'business_support', date: '2026-08-24', employmentType: 'Full-Time', shiftName: 'Giờ hành chính', start: '08:00', end: '17:30', recordedAt: '2026-08-21T08:00:00.000Z' }],
+      supportWorkSchedules: [{ id: 'SWS-01', employeeId: 'HTKD-01', employeeName: 'Hỗ trợ KD', targetUnit: 'business_support', date: '2026-08-24', employmentType: 'Full-Time', shiftName: 'Ca linh hoạt cũ', start: '08:00', end: '17:30' }],
+      supportWorkScheduleHistory: [{ id: 'H-01', scheduleId: 'SWS-01', employeeId: 'HTKD-01', employeeName: 'Hỗ trợ KD', targetUnit: 'business_support', date: '2026-08-24', employmentType: 'Full-Time', shiftName: 'Ca linh hoạt cũ', start: '08:00', end: '17:30', recordedAt: '2026-08-21T08:00:00.000Z' }],
     }
     render(<BusinessSupportSchedulePage />)
 
@@ -47,7 +47,7 @@ describe('BusinessSupportSchedulePage', () => {
     expect(screen.getByText('Chỉnh sửa lịch làm việc')).toBeTruthy()
     fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:00' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
-    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: 'SWS-01', end: '18:00' })))
+    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: 'SWS-01', shiftName: 'Ca linh hoạt cũ', end: '18:00' })))
 
     fireEvent.click(screen.getByRole('button', { name: 'Xóa từ lịch sử của Hỗ trợ KD' }))
     await waitFor(() => expect(mocked.deleteBusinessSupportSchedule).toHaveBeenCalledWith('SWS-01', 'Phân lịch nhầm'))
@@ -72,6 +72,33 @@ describe('BusinessSupportSchedulePage', () => {
 
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
       targetUnit: 'office', employeeId: 'VP-01', date: '2026-08-24', start: '08:00', end: '17:30',
+    })))
+  })
+
+  it('applies all established quick-select periods while leaving manual time inputs editable', async () => {
+    render(<BusinessSupportSchedulePage />)
+
+    fireEvent.change(screen.getByLabelText(/Loại nhân viên/u), { target: { value: 'office' } })
+    fireEvent.change(screen.getByLabelText(/Chọn nhân viên/u), { target: { value: 'VP-02' } })
+
+    const presets = [
+      ['Ca sáng', '08:00', '12:00'],
+      ['Ca chiều', '13:00', '17:30'],
+      ['Giờ hành chính', '08:00', '17:30'],
+    ]
+    for (const [name, start, end] of presets) {
+      const presetButton = screen.getByRole('button', { name: new RegExp(`Chọn nhanh ${name}`, 'u') })
+      fireEvent.click(presetButton)
+      expect(presetButton.getAttribute('aria-pressed')).toBe('true')
+      expect(screen.getByLabelText(/Tên ca/u).value).toBe(name)
+      expect(screen.getByLabelText(/Giờ bắt đầu/u).value).toBe(start)
+      expect(screen.getByLabelText(/Giờ kết thúc/u).value).toBe(end)
+    }
+
+    fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:15' } })
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
+      employeeId: 'VP-02', shiftName: 'Giờ hành chính', start: '08:00', end: '18:15',
     })))
   })
 
@@ -132,6 +159,36 @@ describe('BusinessSupportSchedulePage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Xóa lịch ngày 21/08/26' }))
     await waitFor(() => expect(mocked.deleteBusinessSupportSchedule).toHaveBeenCalledWith('SELF-01', 'Đổi lịch cá nhân'))
     prompt.mockRestore()
+  })
+
+  it('lets an Office employee use defaults without overwriting an existing custom schedule', async () => {
+    const currentDate = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' })
+    mocked.app = {
+      ...mocked.app,
+      currentEmployee: { id: 'VP-01', name: 'Kế toán văn phòng', unit: 'office', employmentType: 'Full-Time' },
+      session: { role: 'employee', employeeId: 'VP-01', name: 'Kế toán văn phòng', unit: 'office' },
+      supportWorkSchedules: [
+        { id: 'CUSTOM-01', employeeId: 'VP-01', targetUnit: 'office', date: currentDate, shiftName: 'Khung giờ cũ', start: '09:15', end: '16:45' },
+      ],
+    }
+    render(<MyBusinessSupportSchedulePage />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Sửa lịch ngày/u }))
+    expect(screen.getByLabelText(/Giờ bắt đầu/u).value).toBe('09:15')
+    expect(screen.getByLabelText(/Giờ kết thúc/u).value).toBe('16:45')
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
+      scheduleId: 'CUSTOM-01', shiftName: 'Khung giờ cũ', start: '09:15', end: '16:45',
+    })))
+
+    fireEvent.click(screen.getByRole('button', { name: 'TẠO LỊCH LÀM VIỆC' }))
+    fireEvent.click(screen.getByRole('button', { name: /Chọn nhanh Ca chiều/u }))
+    expect(screen.getByLabelText(/Giờ bắt đầu/u).value).toBe('13:00')
+    expect(screen.getByLabelText(/Giờ kết thúc/u).value).toBe('17:30')
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenLastCalledWith(expect.objectContaining({
+      scheduleId: '', shiftName: 'Ca chiều', start: '13:00', end: '17:30',
+    })))
   })
 
   it('keeps self-management controls hidden from a Business Support personal schedule', () => {

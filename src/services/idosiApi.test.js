@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiAddressSuggestions, apiGetAccountAvatar, apiGetIdentityImage, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
+import { apiAddressSuggestions, apiGetAccountAvatar, apiGetIdentityImage, apiGetStateMetadata, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
 
 afterEach(() => {
   clearApiSession()
@@ -58,6 +58,24 @@ describe('IDOSI private account avatar', () => {
         Accept: expect.stringContaining('image/gif'),
         Authorization: 'Bearer session-token',
       }),
+    }))
+  })
+})
+
+describe('IDOSI lightweight state synchronization', () => {
+  it('loads only state metadata with the active bearer session', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ token: 'session-token', user: { id: 'admin' } }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, scope: 'global', version: 12 }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiLogin('admin', 'secret')
+    await expect(apiGetStateMetadata()).resolves.toMatchObject({ scope: 'global', version: 12 })
+
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/state-metadata?scope=global')
+    expect(fetchMock.mock.calls[1][1]).toEqual(expect.objectContaining({
+      method: 'GET',
+      headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
     }))
   })
 })

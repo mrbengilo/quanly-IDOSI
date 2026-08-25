@@ -50,4 +50,12 @@ describe('responsive CSS contracts', () => {
     expect(declarations).toContain('white-space: normal')
     expect(declarations).not.toContain('text-overflow: ellipsis')
   })
+
+  it('uses admin work-registration hooks for a compact mobile schedule grid', () => {
+    expect(appStyles).toMatch(/@media \(max-width: 640px\)[\s\S]*?\.work-registration-page \{ gap:10px; \}/)
+    expect(declarationsFor(appStyles, '.work-registration-grid .my-work-schedule-grid__employee')).toContain('min-width:124px!important')
+    expect(declarationsFor(appStyles, '.work-registration-grid th,.work-registration-grid td')).toContain('min-width:116px')
+    expect(declarationsFor(appStyles, '.work-registration-grid .my-work-schedule-shift')).toContain('min-height:76px')
+    expect(declarationsFor(appStyles, '.work-registration-grid .my-work-schedule-employee .avatar')).toContain('width:30px!important')
+  })
 })

@@ -52,6 +52,7 @@ import { financeSummaryFromState } from '../../domain'
 import { optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
 import { useApp } from '../../state/AppContext'
 import { downloadCsv, money, shortDate, today, validateVietnamPhone } from '../../utils'
+import { resolveOriginalRoleProfile, roleProfileAddress, roleProfileCode } from './roleManagementUtils'
 
 const sum = (items, key) => items.reduce((total, item) => total + (Number(item[key]) || 0), 0)
 const percent = (value, total) => total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '0.00%'
@@ -543,7 +544,37 @@ export function AdminReports() {
 }
 
 export function AdminSettings() {
-  const { settings, session, saveSettings, changeAdminPassword, verifyCurrentPassword, resetDemo, notify } = useApp()
+  const app = useApp()
+  const { settings, session, saveSettings, changeAdminPassword, verifyCurrentPassword, resetDemo, notify } = app
+  const employeeProfiles = [
+    ...(Array.isArray(app.employees) ? app.employees : []),
+    ...(Array.isArray(app.businessSupportEmployees) ? app.businessSupportEmployees : []),
+    ...(Array.isArray(app.storeManagers) ? app.storeManagers : []),
+  ]
+  const sessionEmployeeId = String(session?.employeeId || session?.code || '')
+  const activeRoleProfile = session?.role === 'admin'
+    ? null
+    : app.currentEmployee || employeeProfiles.find((profile) => roleProfileCode(profile) === sessionEmployeeId)
+  const projectedAccountProfile = app.accountProfile && typeof app.accountProfile === 'object'
+    ? app.accountProfile
+    : null
+  const employeeProfile = projectedAccountProfile || (
+    activeRoleProfile && roleProfileCode(activeRoleProfile)
+      ? resolveOriginalRoleProfile(activeRoleProfile, employeeProfiles)
+      : null
+  )
+  const employeeAddress = employeeProfile ? roleProfileAddress(employeeProfile) : ''
+  const personnelProfile = employeeProfile ? {
+    code: roleProfileCode(employeeProfile),
+    name: String(employeeProfile.name || ''),
+    email: String(employeeProfile.email || employeeProfile.workEmail || settings?.email || ''),
+    phone: String(employeeProfile.phone || employeeProfile.phoneNumber || employeeProfile.mobile || ''),
+    cccd: String(employeeProfile.cccd || employeeProfile.citizenId || employeeProfile.identityNumber || ''),
+    birthday: String(employeeProfile.birthday || employeeProfile.birthDate || employeeProfile.dateOfBirth || employeeProfile.dob || '').slice(0, 10),
+    gender: String(employeeProfile.gender || employeeProfile.sex || ''),
+    address: employeeAddress === '—' ? '' : employeeAddress,
+    position: String(employeeProfile.position || employeeProfile.workPosition || employeeProfile.jobPosition || ''),
+  } : null
   const [tab, setTab] = useState('profile')
   const [form, setForm] = useState(settings || {})
   const [photoProcessing, setPhotoProcessing] = useState(false)
@@ -574,19 +605,18 @@ export function AdminSettings() {
   }, [photoCrop?.previewUrl])
 
   const saveProfile = async () => {
-    if (!String(form.name || '').trim() || !String(form.email || '').trim()) return notify('Họ tên và email là trường bắt buộc.', 'info')
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(form.email))) return notify('Email không đúng định dạng.', 'info')
-    if (form.phone && !validateVietnamPhone(form.phone)) return notify('Số điện thoại Việt Nam không đúng định dạng.', 'info')
+    if (!personnelProfile && (!String(form.name || '').trim() || !String(form.email || '').trim())) return notify('Họ tên và email là trường bắt buộc.', 'info')
+    if (!personnelProfile && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(form.email))) return notify('Email không đúng định dạng.', 'info')
+    if (!personnelProfile && form.phone && !validateVietnamPhone(form.phone)) return notify('Số điện thoại Việt Nam không đúng định dạng.', 'info')
     if (typeof saveSettings !== 'function') return notify('Chức năng lưu cài đặt chưa sẵn sàng.', 'info')
     setProfileSaving(true)
     try {
-      const result = await saveSettings({
-        ...settings,
-        ...form,
-        avatar: avatarUpdate,
-        notifications,
-      })
-      if (!result?.ok) return notify(result?.message || 'Không thể lưu thông tin tài khoản.', 'info')
+      const result = await saveSettings(personnelProfile
+        ? { bio: form.bio || '', avatar: avatarUpdate, notifications }
+        : { ...settings, ...form, avatar: avatarUpdate, notifications })
+      // saveSettings owns remote failure messaging. Avoid stacking a second
+      // toast for the same avatar/profile request.
+      if (!result?.ok) return
       setAvatarUpdate(undefined)
       setForm((current) => ({ ...current, ...(result.settings || {}), avatar: result.settings?.avatar || current.avatar || '' }))
     } finally {
@@ -663,8 +693,10 @@ export function AdminSettings() {
 
   const saveNotifications = async () => {
     if (typeof saveSettings !== 'function') return notify('Chức năng lưu cài đặt chưa sẵn sàng.', 'info')
-    const result = await saveSettings({ ...settings, ...form, avatar: undefined, notifications })
-    if (!result?.ok) return notify(result?.message || 'Không thể lưu thiết lập thông báo.', 'info')
+    const result = await saveSettings(personnelProfile
+      ? { bio: form.bio || '', avatar: undefined, notifications }
+      : { ...settings, ...form, avatar: undefined, notifications })
+    if (!result?.ok) return
     if (result.settings?.notifications) setNotifications(result.settings.notifications)
   }
 
@@ -687,14 +719,18 @@ export function AdminSettings() {
         </Card>
         {tab === 'profile' ? (
           <Card className="settings-content">
-            <h2>Thông tin cá nhân</h2><p>Cập nhật thông tin tài khoản của bạn.</p>
+            <h2>Thông tin cá nhân</h2><p>{personnelProfile ? 'Thông tin được lấy từ hồ sơ nhân sự liên kết với tài khoản hiện tại.' : 'Cập nhật thông tin tài khoản của bạn.'}</p>
             <div className="profile-form">
               <div className="profile-photo"><div>{displayedAvatar ? <img src={displayedAvatar} alt="Ảnh đại diện tài khoản" /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing || profileSaving} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button>{(displayedAvatar || settings?.avatarMetadata) && <Button variant="outline" icon={Trash2} disabled={photoProcessing || profileSaving} onClick={clearPhoto}>Xóa ảnh</Button>}<small>{settings?.avatarLoading ? 'Đang tải ảnh đại diện riêng tư…' : 'Ảnh gốc JPG, PNG, WebP tối đa 5 MB'}<br />Cắt vuông, xem trước dạng tròn và tối ưu còn tối đa 300 KB</small>{settings?.avatarError && <small role="alert">{settings.avatarError}</small>}</div>
               <div className="form-grid">
-                <Field label="Họ và tên"><Input value={form.name} onChange={set('name')} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} /></Field>
-                <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Input value={roleLabel} disabled /></Field>
-                <Field label="Ngày sinh"><Input type="date" value={form.birthday} onChange={set('birthday')} /></Field><Field label="Giới tính"><Select value={form.gender} onChange={set('gender')}><option>Nam</option><option>Nữ</option><option>Khác</option></Select></Field>
-                <Field label="Địa chỉ" className="span-2"><Input value={form.address} onChange={set('address')} /></Field>
+                {personnelProfile && <Field label="Mã nhân viên"><Input value={personnelProfile.code} readOnly /></Field>}
+                <Field label="Họ và tên"><Input value={personnelProfile?.name || form.name || ''} onChange={personnelProfile ? undefined : set('name')} readOnly={Boolean(personnelProfile)} /></Field>
+                {personnelProfile && <Field label="Số CCCD"><Input value={personnelProfile.cccd} readOnly /></Field>}
+                <Field label="Số điện thoại"><Input value={personnelProfile?.phone || form.phone || ''} onChange={personnelProfile ? undefined : set('phone')} readOnly={Boolean(personnelProfile)} /></Field>
+                <Field label="Email"><Input value={personnelProfile?.email || form.email || ''} onChange={personnelProfile ? undefined : set('email')} readOnly={Boolean(personnelProfile)} /></Field>
+                <Field label="Chức vụ"><Input value={personnelProfile?.position || roleLabel} disabled /></Field>
+                <Field label="Ngày sinh"><Input type="date" value={personnelProfile?.birthday || form.birthday || ''} onChange={personnelProfile ? undefined : set('birthday')} readOnly={Boolean(personnelProfile)} /></Field><Field label="Giới tính"><Select value={personnelProfile?.gender || form.gender || ''} onChange={personnelProfile ? undefined : set('gender')} disabled={Boolean(personnelProfile)}><option value="">—</option><option>Nam</option><option>Nữ</option><option>Khác</option></Select></Field>
+                <Field label="Địa chỉ" className="span-2"><Input value={personnelProfile?.address || form.address || ''} onChange={personnelProfile ? undefined : set('address')} readOnly={Boolean(personnelProfile)} /></Field>
                 <Field label="Giới thiệu" className="span-2"><textarea value={form.bio || ''} onChange={set('bio')} maxLength={200} /><small>{String(form.bio || '').length}/200</small></Field>
               </div>
             </div>

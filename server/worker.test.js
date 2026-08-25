@@ -1419,6 +1419,87 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerProjection.officeAdjustments).toEqual(state.officeAdjustments)
   })
 
+  it('projects only the signed-in actor canonical linked profile for account settings', () => {
+    const state = {
+      schemaVersion: 2,
+      stateVersion: 1,
+      stores: [{ id: 'S01', name: 'Store 01' }],
+      employees: [
+        {
+          id: 'HTKD-CANONICAL', unit: 'business_support', storeId: 'BUSINESS_SUPPORT',
+          name: 'Hồ sơ HTKD gốc', email: 'support@idosi.vn', phone: '0901234567',
+          cccd: '079123456789', birthday: '1995-04-12T00:00:00.000Z', gender: 'Nữ',
+          street: '12 Nguyễn Huệ', ward: 'Bến Nghé', province: 'TP. Hồ Chí Minh',
+          position: 'NV hỗ trợ KD', salary: 99_000_000,
+          identityImages: { front: 'private-front', back: 'private-back' }, authUserId: 'U-MANAGER',
+        },
+        {
+          id: 'QLCH-LINKED', unit: 'store_manager', storeId: 'S01', name: 'Snapshot quản lý',
+          linkedEmployeeId: 'HTKD-CANONICAL', authUserId: 'U-MANAGER',
+          avatarImage: {
+            key: 'account-avatars/U-MANAGER/avatar-v3.png', contentType: 'image/png', size: 128, version: 3,
+          },
+        },
+        { id: 'E-PEER', unit: 'store', storeId: 'S01', name: 'Nhân viên cùng cửa hàng' },
+        {
+          id: 'HTKD-FOREIGN', unit: 'business_support', storeId: 'BUSINESS_SUPPORT',
+          name: 'Hồ sơ HTKD khác', cccd: '000000000000', salary: 88_000_000,
+        },
+        {
+          id: 'VP-CANONICAL', unit: 'office', storeId: 'OFFICE', name: 'Hồ sơ KVP gốc',
+          phone: '0912345678', cccd: '012345678901', address: '1 Võ Văn Tần, Quận 3',
+          position: 'Kế toán', salary: 77_000_000, authUserId: 'U-EMPLOYEE',
+        },
+        {
+          id: 'E-LINKED', unit: 'store', storeId: 'S01', name: 'Snapshot nhân viên',
+          sourceEmployeeId: 'VP-CANONICAL', authUserId: 'U-EMPLOYEE',
+        },
+      ],
+      attendance: [], schedule: [], tasks: [], notifications: [], orders: [], expenseEntries: [],
+      supportTransfers: [], payrollPeriods: [],
+    }
+
+    const managerProjection = projectSharedState(state, {
+      role: 'store_manager', user_id: 'U-MANAGER', employee_id: 'QLCH-LINKED', store_id: 'S01',
+    })
+    expect(managerProjection.employees.map(({ id }) => id)).toEqual(['QLCH-LINKED', 'E-PEER', 'E-LINKED'])
+    expect(managerProjection.accountProfile).toEqual({
+      code: 'HTKD-CANONICAL',
+      name: 'Hồ sơ HTKD gốc',
+      email: 'support@idosi.vn',
+      phone: '0901234567',
+      cccd: '079123456789',
+      birthday: '1995-04-12',
+      gender: 'Nữ',
+      address: '12 Nguyễn Huệ, Bến Nghé, TP. Hồ Chí Minh',
+      position: 'NV hỗ trợ KD',
+    })
+    expect(managerProjection.accountProfile).not.toHaveProperty('salary')
+    expect(managerProjection.accountProfile).not.toHaveProperty('identityImages')
+    expect(managerProjection.settings.avatar).toMatchObject({
+      key: 'account-avatars/U-MANAGER/avatar-v3.png', version: 3,
+    })
+    expect(JSON.stringify(managerProjection)).not.toMatch(/Hồ sơ HTKD khác|000000000000|99000000|88000000|private-front/u)
+
+    const employeeProjection = projectSharedState(state, {
+      role: 'employee', user_id: 'U-EMPLOYEE', employee_id: 'E-LINKED', store_id: 'S01',
+    })
+    expect(employeeProjection.employees.map(({ id }) => id)).toEqual(['E-LINKED'])
+    expect(employeeProjection.accountProfile).toEqual({
+      code: 'VP-CANONICAL',
+      name: 'Hồ sơ KVP gốc',
+      email: '',
+      phone: '0912345678',
+      cccd: '012345678901',
+      birthday: '',
+      gender: '',
+      address: '1 Võ Văn Tần, Quận 3',
+      position: 'Kế toán',
+    })
+    expect(employeeProjection.accountProfile).not.toHaveProperty('salary')
+    expect(JSON.stringify(employeeProjection)).not.toMatch(/77000000|Hồ sơ HTKD gốc|Hồ sơ HTKD khác/u)
+  })
+
   it('preserves SPA fallback and exposes a no-cache API health response', async () => {
     const html = '<!doctype html><div id="root"></div>'
     const env = {
@@ -1808,6 +1889,9 @@ describe('IDOSI Worker security primitives', () => {
     }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
     expect(bootstrap.status).toBe(201)
     expect(await bootstrap.json()).toMatchObject({ ok: true, initialized: true })
+    expect(env.DB.database.prepare(`
+      SELECT meta_key FROM system_metadata WHERE meta_key = 'migration:account-avatars-v1'
+    `).get()).toEqual({ meta_key: 'migration:account-avatars-v1' })
 
     const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
       username: 'ADMIN',
@@ -1832,6 +1916,21 @@ describe('IDOSI Worker security primitives', () => {
     for (const key of ['managerAccounts', 'managerPayroll', 'profitShares', 'policies', 'orderCounters']) {
       expect(initialBody.state).not.toHaveProperty(key)
     }
+
+    const stateMetadata = await worker.fetch(new Request(
+      'https://idosi.example/api/state-metadata?scope=global',
+      { headers: authorization },
+    ), env)
+    expect(stateMetadata.status).toBe(200)
+    expect(await stateMetadata.json()).toMatchObject({
+      scope: 'global',
+      version: 1,
+      updatedAt: expect.any(String),
+      userVersion: 1,
+      policyVersions: expect.objectContaining({
+        late_tolerance_minutes: 1,
+      }),
+    })
 
     const createUserBody = {
       type: 'user.create',
@@ -1879,6 +1978,20 @@ describe('IDOSI Worker security primitives', () => {
     }), env)
     expect(employeeLogin.status).toBe(200)
     const employeeLoginBody = await employeeLogin.json()
+    expect(employeeLoginBody.bootstrap).toMatchObject({
+      scope: 'global',
+      projection: 'employee',
+      version: 1,
+      user: { role: 'employee', employeeId: 'NV001', storeId: 'SM234' },
+      state: {
+        stores: [{ id: 'SM234' }],
+        employees: [{ id: 'NV001' }],
+        orders: [{ code: 'SM234-00007' }],
+      },
+    })
+    expect(employeeLoginBody.bootstrap.policies).toHaveLength(8)
+    expect(employeeLoginBody).not.toHaveProperty('users')
+    expect(JSON.stringify(employeeLoginBody)).not.toMatch(/password_hash|passwordHash|password_salt|passwordSalt/u)
     const employeeAuthorization = { authorization: `Bearer ${employeeLoginBody.token}` }
 
     const updateUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -2053,7 +2166,6 @@ describe('IDOSI Worker security primitives', () => {
         amount: 1_250_000,
       },
     })
-
     const replayedOrder = await worker.fetch(jsonRequest(
       'https://idosi.example/api/command',
       orderBody,
@@ -3377,6 +3489,11 @@ describe('IDOSI Worker security primitives', () => {
       username: 'avatar.legacy.manager', password: 'avatar-legacy-manager-password',
     }), env)
     const managerAuthorization = { authorization: `Bearer ${(await managerLogin.json()).token}` }
+    // Model an upgraded database that predates the durable migration marker.
+    // Fresh installations are already clean and intentionally skip this scan.
+    env.DB.database.prepare(`
+      DELETE FROM system_metadata WHERE meta_key = 'migration:account-avatars-v1'
+    `).run()
     const legacyAvatar = testAvatarDataUrl('image/png', 2048)
     const stateRow = env.DB.database.prepare("SELECT value_json FROM app_state WHERE scope_key = 'global'").get()
     const compactState = JSON.parse(stateRow.value_json)
@@ -3462,6 +3579,70 @@ describe('IDOSI Worker security primitives', () => {
     bucket.put = originalPut
   })
 
+  it('keeps a canonical employee avatar readable through a multi-role proxy when its account-settings link is missing', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-profile-fallback' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-profile-fallback-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng' }],
+        employees: [
+          { id: 'EMP-OLD', name: 'Nhân viên gốc', storeId: 'OFFICE', unit: 'office', status: 'Đang làm việc' },
+          {
+            id: 'EMP-PROXY', name: 'Nhân viên cửa hàng', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+            linkedEmployeeId: 'EMP-OLD',
+          },
+        ],
+        attendance: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-profile-fallback-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create',
+      payload: {
+        username: 'employee.old.avatar', password: 'employee-old-avatar-password',
+        displayName: 'Nhân viên cửa hàng', role: 'employee', storeId: 'S01', employeeId: 'EMP-PROXY',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'employee-old-avatar-create' }), env)
+    expect(created.status).toBe(201)
+
+    const key = 'account-avatars/legacy-profile-EMP-OLD/avatar-v1.png'
+    const bytes = new Uint8Array(128)
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    await bucket.put(key, bytes, { httpMetadata: { contentType: 'image/png' } })
+    const stateRow = env.DB.database.prepare("SELECT value_json FROM app_state WHERE scope_key = 'global'").get()
+    const compactState = JSON.parse(stateRow.value_json)
+    compactState.accountSettings = {}
+    const employees = readHydratedState(env.DB.database).employees.map((employee) => employee.id === 'EMP-OLD'
+      ? { ...employee, avatarImage: { key, contentType: 'image/png', size: bytes.byteLength, version: 1 } }
+      : employee)
+    env.DB.database.prepare(`
+      UPDATE app_state SET value_json = ?, last_request_id = 'avatar-profile-fallback-fixture'
+      WHERE scope_key = 'global'
+    `).run(JSON.stringify(compactState))
+    replaceStateCollection(env.DB.database, 'employees', employees)
+
+    const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'employee.old.avatar', password: 'employee-old-avatar-password',
+    }), env)
+    const employeeAuthorization = { authorization: `Bearer ${(await employeeLogin.json()).token}` }
+    const employeeBootstrap = await worker.fetch(new Request('https://idosi.example/api/bootstrap', {
+      headers: employeeAuthorization,
+    }), env)
+    expect(employeeBootstrap.status).toBe(200)
+    expect((await employeeBootstrap.json()).state.settings.avatar).toMatchObject({ key, version: 1 })
+
+    const downloaded = await worker.fetch(new Request('https://idosi.example/api/account-avatar', {
+      headers: employeeAuthorization,
+    }), env)
+    expect(downloaded.status).toBe(200)
+    expect(downloaded.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes)
+  })
+
   it('tracks every legacy avatar upload durably through demo and full reset commits', async () => {
     for (const resetType of ['system.reset_demo', 'system.reset_all']) {
       const suffix = resetType.endsWith('demo') ? 'demo' : 'all'
@@ -3528,6 +3709,11 @@ describe('IDOSI Worker security primitives', () => {
     }), env)
     const loginBody = await login.json()
     const authorization = { authorization: `Bearer ${loginBody.token}` }
+    // Model an upgraded database that predates the durable migration marker.
+    // Fresh installations are already clean and intentionally skip this scan.
+    env.DB.database.prepare(`
+      DELETE FROM system_metadata WHERE meta_key = 'migration:account-avatars-v1'
+    `).run()
     const invalidAvatars = {
       gif: 'data:image/gif;base64,R0lGODlhAQABAIAAAAUEBA==',
       svg: `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64')}`,
