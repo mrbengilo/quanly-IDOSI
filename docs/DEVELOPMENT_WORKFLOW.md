@@ -1,89 +1,135 @@
-# IDOSI Professional Development Workflow
+# IDOSI Professional Development Workflow — Fast Delivery v2
 
-Quy trình bắt buộc khi thêm, sửa, refactor hoặc hotfix IDOSI. Mục tiêu là đúng, nhanh, ít credit và không gây regression.
+Quy trình bắt buộc khi thêm, sửa, refactor hoặc hotfix IDOSI. Mục tiêu: **nhanh, đúng, ít vòng lặp, không tạo mega-task và không giảm safety ở phần nhạy cảm**.
 
-## 1. Hai tầng routing tự động
+## 1. Routing ngay khi nhận task
 
-Ngay khi nhận yêu cầu, Codex phải phân loại:
+Codex phải xác định ngắn gọn:
 
 ```text
-RISK LEVEL: FAST | STANDARD | CRITICAL
-EFFORT: LOW | MEDIUM | HIGH
-MODEL ROUTING: AUTO / RECOMMEND <capability class>
-Reason: <1-3 lý do>
-Expected scope: <module/file groups>
-Sensitive areas: <none hoặc finance/payroll/auth/database/VPS/...>
-Verification plan: <checks>
+RISK: FAST | STANDARD | CRITICAL
+MODEL: GPT-5.6 Terra | GPT-5.6 Sol | runtime fallback
+REASONING: HIGH | XHIGH
+SPEED: FAST | ULTRA FAST if supported
+SCOPE: <module/file groups>
+SENSITIVE: <none hoặc finance/payroll/auth/database/VPS/...>
+VERIFY: <targeted checks + final gate>
 ```
 
-Risk quyết định mức an toàn/kiểm thử. Effort quyết định độ sâu reasoning/compute. Hai thứ không được đánh đồng.
+### Quy tắc model bắt buộc
 
-### FAST + LOW mặc định
+- **HIGH reasoning là mức tối thiểu** cho task lập trình IDOSI nếu runtime có control này.
+- Task bình thường: ưu tiên **GPT-5.6 Terra + HIGH + FAST**.
+- Task bình thường nhưng cross-layer/khó hơn: **GPT-5.6 Sol + HIGH + FAST**.
+- Task liên quan tiền/tài chính hoặc độ khó cao: ưu tiên **GPT-5.6 Sol + HIGH + ULTRA FAST** nếu Codex runtime có Ultra Fast; nếu không có thì dùng FAST hoặc chế độ nhanh nhất khả dụng.
+- Dùng Sol cho revenue/expense/profit/payroll/salary/KPI/bonus/allowance/advance/order-money, auth/store isolation khó, schema/migration/persistence, destructive data, concurrency/idempotency, VPS/runtime/storage và core business rule khó.
+- Chỉ nâng lên XHIGH khi HIGH thực sự chưa đủ. Không dùng XHIGH chỉ vì task nhiều file cơ học.
+- Chọn model một lần ở đầu task; chỉ switch tối đa một lần nếu phát hiện complexity/risk mới.
+- Nếu runtime không cho tự chọn model/reasoning/speed, ghi recommendation một lần và tiếp tục bằng model tốt nhất đang có. Không đứng chờ và không giả vờ đã switch.
 
-Dành cho text, label, typo, màu, spacing, icon, typography, layout nhỏ, docs và thay đổi presentation-only.
+## 2. Risk level
 
+### FAST
+
+Text, label, typo, màu, spacing, icon, typography, layout nhỏ, docs hoặc presentation-only; không đổi business rule, mutation, persistence, auth, money formula, attendance calculation hay runtime.
+
+Luồng:
 `REQUEST -> CLASSIFY -> TARGETED READ -> BRANCH -> MINIMAL PATCH -> TARGETED CHECK -> PR -> CI -> MERGE`
 
-Không scan toàn repo. Không dùng reasoning/model mạnh nếu không có bằng chứng cần thiết.
+Không scan toàn repo.
 
-### STANDARD + MEDIUM mặc định
+### STANDARD
 
-Dành cho CRUD/form/validation/report/API/state/UI flow thông thường không chạm nhóm nhạy cảm.
+CRUD/form/validation/report/API/state/UI flow thông thường không thay canonical finance/payroll/auth/schema/persistence/core production behavior.
 
-`REQUEST -> CLASSIFY -> IMPACT MAP -> BRANCH -> TEST -> IMPLEMENT -> REVIEW -> FULL VERIFY -> PR -> CI -> MERGE`
+Luồng:
+`REQUEST -> CLASSIFY -> TARGETED IMPACT -> BRANCH -> TARGETED TEST -> IMPLEMENT -> TARGETED RECHECK -> FINAL LOCAL GATE -> PR -> CI -> MERGE`
 
-### CRITICAL + HIGH mặc định
+### CRITICAL
 
-Bắt buộc khi chạm finance/revenue/expense/profit/KPI/payroll/salary/bonus/allowance/advance; order mutation ảnh hưởng tiền/audit; attendance feed payroll/KPI; auth/role/store isolation; session/credentials; database/schema/migration/persistence; destructive data; concurrency/idempotency nhạy cảm; production VPS runtime/storage/deployment; core business rules.
+Khi thay đổi trực tiếp:
 
-`REQUEST -> CLASSIFY -> DEEP IMPACT -> REGRESSION TEST -> MINIMAL FIX -> SECURITY/DATA REVIEW -> FULL VERIFY -> PR -> CI/REVIEW -> MERGE -> PRODUCTION SAFEGUARDS`
+- doanh thu/chi phí/lợi nhuận/lương/KPI/thưởng/phụ cấp/ứng lương hoặc money mutation
+- order mutation ảnh hưởng tiền/audit
+- chấm công/giờ làm feed payroll/KPI
+- auth/role/store isolation/session
+- schema/migration/persistence/data repair
+- idempotency/concurrency/race nhạy cảm
+- VPS/runtime/storage/deployment
+- core business rule có downstream impact lớn
 
-## 2. Model routing
+Luồng:
+`REQUEST -> CLASSIFY -> FOCUSED DEEP IMPACT -> TARGETED REGRESSION -> MINIMAL FIX -> SECURITY/DATA REVIEW -> ONE FULL FINAL GATE -> PR -> CI -> MERGE -> SAFEGUARDS`
 
-Không hard-code tên model vì model khả dụng và giá/khả năng có thể thay đổi.
+CRITICAL không đồng nghĩa scan cả repo.
 
-- Nếu Codex runtime hỗ trợ auto model routing: chọn model nhanh/rẻ nhất đủ năng lực cho Risk + Effort hiện tại.
-- Nếu runtime không cho agent tự đổi model: Codex ghi recommendation và tiếp tục với model hiện tại; không giả vờ đã switch.
-- FAST/LOW: ưu tiên fast coding/editing capability.
-- STANDARD/MEDIUM: ưu tiên balanced coding capability.
-- CRITICAL/HIGH: ưu tiên strongest appropriate coding/reasoning capability.
+## 3. Hard Scope Gate
 
-Có thể nâng Effort hoặc Risk khi phát hiện dependency/rủi ro mới. Không được hạ confirmed CRITICAL chỉ để tiết kiệm credit. Ngược lại, không giữ HIGH effort cho task nhỏ đã chứng minh là low-risk.
+Mục tiêu là chặn task chạy từ sáng đến tối vì phạm vi phình quá lớn.
 
-## 3. Credit efficiency
+- Search symbol/file/module cụ thể trước broad scan.
+- Một PR mặc định = một mục tiêu nghiệp vụ coherent.
+- Nếu user gửi hơn 3 mục tiêu độc lập hoặc dự kiến >20 source/test files, Codex tự chia thành các sub-scope/PR nhỏ và xử lý tuần tự.
+- Nếu diff bất ngờ vượt 25 changed files, không tiếp tục mở rộng vô hạn; tách phần độc lập còn lại.
+- Migration/generated metadata bắt buộc có thể không tính vào cap.
+- Không gom UI redesign + database + VPS + settings + feature khác vào một PR chỉ vì cùng nằm trong một prompt.
+- Không hỏi lại requirement đã biết. Chỉ dừng khi có business ambiguity thật sự có thể làm sai tiền/quyền/dữ liệu.
 
-- search symbol/file/module trước broad scan
-- reuse analysis trong cùng task
-- targeted test trong vòng sửa, full gate ở cuối theo Risk
-- không chạy lại test/analysis đắt tiền nếu code/input không đổi
-- patch nhỏ thay vì rewrite file lớn
-- không đọc finance/auth/database/VPS cho FAST UI task nếu không có dependency
-- chia task rộng thành PR nhỏ
-- báo cáo ngắn, evidence-based
-- dùng lowest sufficient model/effort khi runtime hỗ trợ
+## 4. Quy trình thực thi nhanh
 
-## 4. Branch & scope
+1. Lấy latest `main`, tạo branch mới cho task.
+2. Classify Risk + Model + Reasoning + Speed.
+3. Targeted search/read đúng module liên quan.
+4. Tìm canonical logic trước khi tạo logic mới.
+5. Lập impact map vừa đủ cho risk hiện tại.
+6. Chạy targeted regression/test cần thiết.
+7. Implement minimal patch.
+8. Trong vòng sửa chỉ rerun targeted test/check bị ảnh hưởng.
+9. Khi patch ổn định mới chạy final local gate một lần.
+10. Mở PR ngay sau final local gate; GitHub `verify` là repository-wide gate chính thức.
+11. Nếu CI fail: đọc failing step -> reproduce targeted -> fix -> rerun phần bị invalidated. Không blind-rerun toàn bộ local suite.
+12. Merge khi required CI pass và rules cho phép.
 
-Không sửa trực tiếp `main`. Mỗi task dùng branch `feature/`, `fix/`, `refactor/`, `ui/`, `hotfix/` hoặc `chore/`. Một PR = một mục tiêu nghiệp vụ. Scope lan rộng bất thường phải được phát hiện và báo trước.
+Không lặp lại toàn bộ analysis/test nếu code/input không thay đổi đáng kể.
 
 ## 5. Implementation order
 
 Khi phù hợp:
-`tests/domain -> backend/API -> state -> UI -> migration`
+`targeted regression/domain -> backend/API -> state -> UI -> migration`
 
-Không duplicate business formula. Không dùng `localStorage` làm production source of truth. Không hard-code dữ liệu đã có nguồn thật.
+Không duplicate business formula. Không dùng `localStorage` làm production source of truth. Không hard-code dữ liệu khi đã có nguồn thật.
 
 ## 6. Test policy
 
-Bugfix có regression test khi khả thi. Finance/KPI/payroll/attendance/auth/store isolation/persistence phải test trước hoặc cùng implementation. Edge cases tùy phạm vi: positive/zero/negative/null, duplicate/retry, wrong store/role, locked/deleted records, timezone/day/month boundary.
+### Trong lúc implement
 
-FAST presentation-only không tạo test vô nghĩa.
+- Ưu tiên test file/suite trực tiếp liên quan.
+- Có thể lint file/module liên quan thay vì full lint mỗi vòng.
+- Không chạy `npm test` sau mỗi edit.
+- Không rerun check đắt tiền nếu phần code ảnh hưởng đến check đó không đổi.
 
-## 7. Verification
+### FAST final local gate
 
-FAST: targeted checks phù hợp + required GitHub CI `verify`.
+Chỉ targeted checks hợp lý; lint/build khi thay đổi có thể ảnh hưởng compile/style. Docs-only không cần full local suite. Required GitHub `verify` vẫn phải PASS.
 
-STANDARD:
+### STANDARD final local gate
+
+Mặc định:
+
+```bash
+npm run lint
+npm run build
+npm run sites:verify
+```
+
+Kèm targeted tests cho logic đã sửa.
+
+Chỉ chạy local full `npm test` nếu shared/cross-cutting logic thay đổi hoặc targeted coverage không đủ. GitHub `verify` sẽ chạy full suite.
+
+### CRITICAL final local gate
+
+Chạy một lần sau khi patch ổn định:
+
 ```bash
 npm run lint
 npm test
@@ -91,37 +137,74 @@ npm run build
 npm run sites:verify
 ```
 
-CRITICAL: toàn bộ STANDARD + targeted regression/security/data tests + VPS/runtime checks nếu liên quan.
+Thêm targeted regression/security/data/VPS/persistence checks đúng phạm vi. Không chạy VPS tests nếu VPS không bị ảnh hưởng.
 
-Không merge khi required check fail.
+Nếu gate fail: root cause -> targeted fix -> targeted rerun -> chỉ chạy lại final gate bị invalidated.
 
-## 8. Self-review
+## 7. Finance / Payroll / KPI / Attendance
 
-FAST: unrelated changes, UI/build/lint regression.
+Đây là vùng ưu tiên GPT-5.6 Sol.
 
-STANDARD: thêm duplicate logic, flow regression, API/state contract.
+Khi sửa canonical money/payroll/KPI logic:
 
-CRITICAL: thêm permission bypass, cross-store leak, money/KPI/payroll mismatch, idempotency/race, timezone, migration/data loss, audit, Sites/VPS incompatibility.
+1. Tìm canonical implementation.
+2. Xác định inputs/outputs/persistence/downstream đúng phạm vi.
+3. Thêm/update targeted regression test.
+4. Không duplicate formula.
+5. Không tự đoán công thức mơ hồ.
+6. Giữ VND representation/rounding hiện hữu.
 
-Critical/High findings phải xử lý trước merge.
+Edge cases chỉ test khi relevant: zero/negative/null, zero-hours, bonus/allowance/advance, locked period, duplicate/retry, wrong role/store, month/time boundary.
 
-## 9. Pull Request gate
+Attendance feed payroll/KPI phải test schedule/date/timezone/overnight/missing checkout khi path thay đổi có liên quan.
 
-PR ghi Risk Level, Effort, routing reason, root cause, Impact Map phù hợp, business/auth/database/production impact, tests, verification và rollback khi cần. Required check `verify` phải PASS. Ruleset `main` không được bypass để tiết kiệm thời gian.
+## 8. Auth / Store isolation / Persistence
 
-## 10. Production
+- Backend/data boundary mới là nơi enforce quyền; UI check không đủ.
+- `store_manager` không được vượt assigned store nếu không có requirement rõ.
+- Employee không được truy cập protected data của người khác qua request manipulation.
+- Schema/persistence change phải additive/safe, preserve existing rows và có rollback/backup implication.
+- Không reset/truncate production để làm test/deploy cho tiện.
 
-Chỉ deploy code đã merge `main`. Không sửa source trực tiếp trên VPS. Production-sensitive task là CRITICAL/HIGH và tuân thủ backup/health/smoke/rollback theo tài liệu VPS.
+## 9. Branch & conflict control
 
-## 11. Definition of Done
+- Không feature trực tiếp trên `main`.
+- Mỗi task tạo branch mới từ latest `main`.
+- Không reuse stale completed branch.
+- Không merge `main` vào branch lặp đi lặp lại.
+- Nếu `main` thay đổi trong lúc làm, chỉ sync trước PR khi file/dependency overlap hoặc GitHub yêu cầu update branch.
+- Resolve conflict narrowly, không kéo unrelated change vào task.
 
-- Risk + Effort hợp lý
-- model routing/recommendation trung thực với runtime
-- đúng scope/business rule
-- tests/verification tương ứng PASS
-- không duplicate logic hoặc phá quyền/store isolation
-- migration/production safeguards có khi cần
-- diff reviewed
-- PR + CI gate hoàn tất
+## 10. PR gate
 
-Nguyên tắc cuối: **dùng mức compute thấp nhất đủ làm đúng việc; tăng compute khi bằng chứng yêu cầu, không giảm safety để tiết kiệm credit.**
+PR phải ngắn và evidence-based:
+
+- routing đã chọn
+- mục tiêu/root cause
+- scope chính
+- business/auth/database/production impact khi relevant
+- targeted tests + final local gate
+- required CI `verify`
+- rollback chỉ khi cần
+
+Không biến PR description thành một báo cáo dài làm chậm delivery.
+
+## 11. Production
+
+Chỉ deploy code đã merge `main`. Không sửa source trực tiếp VPS. Khi VPS/runtime/storage thực sự bị ảnh hưởng mới áp dụng backup/health/smoke/rollback theo `deploy/vps/README.md` và `docs/VPS_DEPLOYMENT_CHECKLIST.md`.
+
+## 12. Definition of Done
+
+- đúng requirement và scope
+- routing model/reasoning/speed trung thực
+- HIGH reasoning floor được giữ khi runtime hỗ trợ
+- mega-task đã split nếu vượt scope gate
+- canonical logic/source-of-truth preserved
+- auth/store isolation preserved
+- targeted checks PASS
+- final local gate theo Risk PASS
+- GitHub `verify` PASS
+- diff reviewed, không unrelated refactor
+- migration/production safeguards có khi relevant
+
+Nguyên tắc cuối: **IDOSI ưu tiên tốc độ bằng GPT-5.6 Terra/Sol ở HIGH reasoning với FAST/ULTRA FAST, scope nhỏ, targeted search/test và loại bỏ vòng lặp thừa; không ưu tiên tốc độ bằng cách bỏ kiểm tra correctness ở tiền, quyền hoặc dữ liệu.**
