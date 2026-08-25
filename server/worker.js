@@ -1537,6 +1537,117 @@ const normalizeAccountAvatarMetadata = (value, userId = '') => {
   }
 }
 
+const ownEmployeeProfile = (state, user) => {
+  const userId = String(user?.user_id || user?.id || '')
+  const employeeId = String(user?.employee_id || user?.employeeId || '')
+  return (Array.isArray(state?.employees) ? state.employees : []).find((profile) => {
+    if (!isPlainRecord(profile)) return false
+    if (userId && String(profile.authUserId || '') === userId) return true
+    if (!employeeId) return false
+    return [profile.id, profile.code, profile.employeeId].some((value) => String(value || '') === employeeId)
+  }) || null
+}
+
+const employeeProfileIdentifier = (profile = {}) => String(
+  profile.id || profile.code || profile.employeeId || profile.employeeCode || '',
+).trim()
+
+const actorRoleEmployeeProfile = (state, user) => {
+  const employees = Array.isArray(state?.employees) ? state.employees : []
+  const employeeId = String(user?.employee_id || user?.employeeId || '').trim()
+  if (employeeId) {
+    const exact = employees.find((profile) => (
+      isPlainRecord(profile)
+      && [profile.id, profile.code, profile.employeeId, profile.employeeCode]
+        .some((value) => String(value || '').trim() === employeeId)
+    ))
+    if (exact) return exact
+  }
+  const userId = String(user?.user_id || user?.id || '').trim()
+  return userId
+    ? employees.find((profile) => isPlainRecord(profile) && String(profile.authUserId || '').trim() === userId) || null
+    : null
+}
+
+const canonicalActorEmployeeProfile = (state, user) => {
+  const employees = Array.isArray(state?.employees) ? state.employees : []
+  let current = actorRoleEmployeeProfile(state, user)
+  const visited = new Set()
+  while (current) {
+    const currentId = employeeProfileIdentifier(current)
+    if (!currentId || visited.has(currentId)) break
+    visited.add(currentId)
+    const linkedId = String(
+      current.linkedEmployeeId
+      || current.sourceEmployeeId
+      || current.rootEmployeeId
+      || current.originalEmployeeId
+      || '',
+    ).trim()
+    if (!linkedId) break
+    const linked = employees.find((profile) => (
+      isPlainRecord(profile)
+      && [profile.id, profile.code, profile.employeeId, profile.employeeCode]
+        .some((value) => String(value || '').trim() === linkedId)
+    ))
+    if (!linked) break
+    current = linked
+  }
+  return current
+}
+
+const accountProfileScalar = (value) => (
+  ['string', 'number'].includes(typeof value) ? String(value).trim() : ''
+)
+
+const accountProfileAddress = (profile = {}) => {
+  if (typeof profile.address === 'string' && profile.address.trim()) return profile.address.trim()
+  const nested = isPlainRecord(profile.address) ? profile.address : {}
+  return [
+    profile.street || profile.addressStreet || nested.street,
+    profile.ward || profile.addressWard || nested.ward,
+    profile.province || profile.addressProvince || nested.province || nested.provinceCity,
+  ].map(accountProfileScalar).filter(Boolean).join(', ')
+}
+
+// Account settings only needs the signed-in person's canonical personnel
+// identity. Keep this deliberately smaller than an employee record so a
+// linked Store role cannot use the projection to inspect another unit/store.
+const projectActorAccountProfile = (state, user) => {
+  const profile = canonicalActorEmployeeProfile(state, user)
+  if (!profile) return null
+  return {
+    code: accountProfileScalar(profile.code || profile.employeeCode || profile.id || profile.employeeId),
+    name: accountProfileScalar(profile.name),
+    email: accountProfileScalar(profile.email || profile.workEmail),
+    phone: accountProfileScalar(profile.phone || profile.phoneNumber || profile.mobile),
+    cccd: accountProfileScalar(profile.cccd || profile.citizenId || profile.identityNumber),
+    birthday: accountProfileScalar(profile.birthday || profile.birthDate || profile.dateOfBirth || profile.dob).slice(0, 10),
+    gender: accountProfileScalar(profile.gender || profile.sex),
+    address: accountProfileAddress(profile),
+    position: accountProfileScalar(profile.position || profile.workPosition || profile.jobPosition),
+  }
+}
+
+const ownProfileAvatarMetadata = (profile, userId) => {
+  if (!isPlainRecord(profile)) return null
+  const direct = normalizeAccountAvatarMetadata(profile.avatarImage, userId)
+    || normalizeAccountAvatarMetadata(profile.avatar, userId)
+  if (direct) return direct
+
+  // Early versions migrated an employee image before the employee had an
+  // authUserId. Those objects used a deterministic legacy-profile owner. The
+  // current user may read that object only when their employee_id resolves to
+  // this exact profile; arbitrary account-avatar keys remain rejected.
+  const profileId = String(profile.id || profile.code || profile.employeeId || '')
+  const legacy = normalizeAccountAvatarMetadata(profile.avatarImage)
+    || normalizeAccountAvatarMetadata(profile.avatar)
+  const legacyPrefix = profileId
+    ? accountAvatarKeyPrefixForUser(`legacy-profile-${profileId}`)
+    : ''
+  return legacy && legacyPrefix && legacy.key.startsWith(legacyPrefix) ? legacy : null
+}
+
 const ownAccountSettings = (state, user) => {
   const userId = String(user.user_id || user.id || '')
   const stored = isPlainRecord(state.accountSettings?.[userId]) ? state.accountSettings[userId] : null
@@ -1562,7 +1673,31 @@ const ownAccountSettings = (state, user) => {
   }
   const metadata = normalizeAccountAvatarMetadata(settings.avatar, userId)
   if (metadata) settings.avatar = metadata
-  else if (isEmbeddedImageDataUrl(settings.avatar) || isPlainRecord(settings.avatar)) settings.avatar = null
+  else if (isEmbeddedImageDataUrl(settings.avatar) || isPlainRecord(settings.avatar) || !settings.avatar) {
+    const invalidEmbeddedAvatar = isEmbeddedImageDataUrl(settings.avatar) || isPlainRecord(settings.avatar)
+    // Multi-role accounts often sign in through a store-role proxy. Resolve
+    // the actor's canonical personnel chain before falling back to the proxy,
+    // otherwise a valid legacy avatar on the original HTKD/KVP profile is
+    // silently replaced by the default initials.
+    const candidates = [
+      canonicalActorEmployeeProfile(state, user),
+      actorRoleEmployeeProfile(state, user),
+      ownEmployeeProfile(state, user),
+    ].filter((profile, index, profiles) => profile && profiles.indexOf(profile) === index)
+    let profileMetadata = null
+    let legacyUrl = ''
+    for (const profile of candidates) {
+      profileMetadata ||= ownProfileAvatarMetadata(profile, userId)
+      legacyUrl ||= typeof profile.avatar === 'string' && !isEmbeddedImageDataUrl(profile.avatar)
+        ? profile.avatar
+        : (typeof profile.avatarImage === 'string' && !isEmbeddedImageDataUrl(profile.avatarImage)
+            ? profile.avatarImage
+            : '')
+      if (profileMetadata || legacyUrl) break
+    }
+    if (profileMetadata || legacyUrl) settings.avatar = profileMetadata || legacyUrl
+    else if (invalidEmbeddedAvatar) settings.avatar = null
+  }
   return settings
 }
 
@@ -1604,6 +1739,9 @@ export const projectSharedState = (rawState, user) => {
     activeAttendanceId: null,
     checkedInAt: null,
     finishedShift: false,
+    ...(user.role === 'admin' ? {} : {
+      accountProfile: projectActorAccountProfile(state, user),
+    }),
   }
   if (user.role === 'admin') {
     const { accountSettings, ...adminState } = state
@@ -1626,8 +1764,9 @@ export const projectSharedState = (rawState, user) => {
     const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
     const ownLatestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
-    const { accountSettings, ...operationalState } = state
+    const { accountSettings, accountProfile: persistedAccountProfile, ...operationalState } = state
     void accountSettings
+    void persistedAccountProfile
     return {
       ...operationalState,
       supportWorkAssignments: filterArray(state, 'supportWorkAssignments', (record) => (
@@ -1636,6 +1775,7 @@ export const projectSharedState = (rawState, user) => {
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
         .map((record) => projectNotificationForActor(record, user)),
       settings: ownAccountSettings(state, user),
+      accountProfile: projectActorAccountProfile(state, user),
       activeAttendanceId: ownOpenAttendance?.id || null,
       checkedInAt: ownOpenAttendance?.checkInAt || ownOpenAttendance?.checkIn || null,
       finishedShift: Boolean(!ownOpenAttendance && ownLatestAttendance?.checkOutAt),
@@ -1836,6 +1976,7 @@ export const projectSharedState = (rawState, user) => {
       payrollPeriods,
       payrollPayments: own('payrollPayments'),
       shiftDefinitions: filterArray(state, 'shiftDefinitions', (record) => !record.storeId || String(record.storeId) === storeId),
+      settings: ownAccountSettings(state, user),
       activeAttendanceId: openAttendance?.id || null,
       checkedInAt: openAttendance?.checkInAt || openAttendance?.checkIn || null,
       finishedShift: Boolean(!openAttendance && latestAttendance?.checkOutAt),
@@ -1919,12 +2060,13 @@ const addSeconds = (isoTimestamp, seconds) => new Date(Date.parse(isoTimestamp) 
 
 const roleOptionKey = (option = {}) => [option.role, option.storeId || '', option.employeeId || ''].join(':')
 
-const availableRoleOptionsForUser = async (db, user) => {
+const availableRoleOptionsForUser = async (db, user, preloadedState = null) => {
   if (user.role === 'admin') {
     return [{ role: 'admin', storeId: null, employeeId: user.employee_id || null, label: 'Admin' }]
   }
-  const stateRow = await loadState(db, 'global')
-  const state = stateRow ? normalizeSharedStateForStorage(parseStoredJson(stateRow.value_json, {})) : {}
+  const state = preloadedState == null
+    ? normalizeSharedStateForStorage(parseStoredJson((await loadState(db, 'global'))?.value_json, {}))
+    : normalizeSharedStateForStorage(preloadedState)
   const employees = Array.isArray(state.employees) ? state.employees : []
   const activeProfiles = employees.filter((profile) => (
     !profile.deletedAt && !['da nghi viec', 'inactive'].includes(normalizeTextKey(profile.status))
@@ -1985,8 +2127,8 @@ const availableRoleOptionsForUser = async (db, user) => {
   return options.sort((left, right) => (order[left.role] ?? 9) - (order[right.role] ?? 9))
 }
 
-const resolveSessionRole = async (db, session) => {
-  const options = await availableRoleOptionsForUser(db, session)
+const resolveSessionRole = async (db, session, preloadedState = null) => {
+  const options = await availableRoleOptionsForUser(db, session, preloadedState)
   const selected = options.find((option) => (
     option.role === session.active_role
     && (!session.active_store_id || String(option.storeId || '') === String(session.active_store_id || ''))
@@ -2025,7 +2167,7 @@ const bearerToken = (request) => {
   return match?.[1] || null
 }
 
-const requireSession = async (request, db, context) => {
+const requireSession = async (request, db, context, { resolveOperationalContext = true } = {}) => {
   const token = bearerToken(request)
   if (!token || token.length < 32 || token.length > 512) {
     throw new ApiError(401, 'AUTH_REQUIRED', 'Vui lòng đăng nhập để tiếp tục.')
@@ -2040,6 +2182,7 @@ const requireSession = async (request, db, context) => {
       s.active_store_id,
       s.active_employee_id,
       s.role_selected_at,
+      s.last_seen_at,
       u.id AS user_id,
       u.username,
       u.display_name,
@@ -2058,9 +2201,25 @@ const requireSession = async (request, db, context) => {
     LIMIT 1
   `, tokenHash, context.now)
   if (!session) throw new ApiError(401, 'SESSION_INVALID', 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.')
-  await run(db, 'UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?', context.now, tokenHash)
-  const assumed = await resolveSessionRole(db, session)
-  return resolveEffectiveEmployeeStore(db, assumed, context.now)
+  const lastSeenAt = Date.parse(String(session.last_seen_at || ''))
+  if (!Number.isFinite(lastSeenAt) || Date.parse(context.now) - lastSeenAt >= 60_000) {
+    await run(db, 'UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?', context.now, tokenHash)
+  }
+  if (!resolveOperationalContext) return session
+
+  let globalStateRow = null
+  let globalState = null
+  if (session.role !== 'admin') {
+    globalStateRow = await loadState(db, 'global')
+    globalState = parseStoredJson(globalStateRow?.value_json, {})
+  }
+  const assumed = await resolveSessionRole(db, session, globalState)
+  const effective = await resolveEffectiveEmployeeStore(db, assumed, context.now, globalState)
+  if (globalStateRow) {
+    Object.defineProperty(effective, '_globalStateRow', { value: globalStateRow, enumerable: false })
+    Object.defineProperty(effective, '_globalState', { value: globalState, enumerable: false })
+  }
+  return effective
 }
 
 const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state.supportTransfers)
@@ -2092,10 +2251,11 @@ const employeeWorksAtStoreOnDate = (state, employee, storeId, date) => (
   ))
 )
 
-const resolveEffectiveEmployeeStore = async (db, user, now) => {
+const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = null) => {
   if (user?.role !== 'employee' || !user?.employee_id) return user
-  const stateRow = await loadState(db, 'global')
-  const state = stateRow ? parseStoredJson(stateRow.value_json, {}) : {}
+  const state = preloadedState == null
+    ? parseStoredJson((await loadState(db, 'global'))?.value_json, {})
+    : preloadedState
   const transfer = activeSupportTransferFor(state, user.employee_id, now)
   if (!transfer?.toStoreId) return user
   return {
@@ -2839,6 +2999,17 @@ const bootstrapDatabase = async (request, env, context) => {
     stateCommit.mutation,
     ...stateCommit.externalStatements,
   ]
+  if (!hasLegacyAccountAvatarData(normalizedInitialState)) {
+    statements.push(db.prepare(`
+      INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
+      VALUES (?, ?, 1, ?)
+      ON CONFLICT(meta_key) DO NOTHING
+    `).bind(
+      ACCOUNT_AVATAR_MIGRATION_METADATA_KEY,
+      JSON.stringify({ completedAt: context.now, source: 'fresh-bootstrap' }),
+      context.now,
+    ))
+  }
   for (const [key, value] of Object.entries(DEFAULT_POLICIES)) {
     statements.push(db.prepare(`
       INSERT INTO policies (
@@ -2963,7 +3134,9 @@ const login = async (request, env, context) => {
   }
   if (!VALID_ROLES.has(user.role)) throw new ApiError(403, 'ROLE_INVALID', 'Vai trò tài khoản không hợp lệ.')
 
-  const availableRoles = await availableRoleOptionsForUser(db, user)
+  const globalStateRow = user.role === 'admin' ? null : await loadState(db, 'global')
+  const globalState = globalStateRow ? parseStoredJson(globalStateRow.value_json, {}) : null
+  const availableRoles = await availableRoleOptionsForUser(db, user, globalState)
   const initialRole = availableRoles.find((option) => option.role === user.role) || availableRoles[0]
   const roleSelectedAt = availableRoles.length === 1 ? context.now : null
 
@@ -3009,12 +3182,33 @@ const login = async (request, env, context) => {
     employee_id: initialRole.employeeId,
     available_roles: availableRoles,
     needs_role_selection: availableRoles.length > 1,
-  }, context.now)
+  }, context.now, globalState)
+  let bootstrapRow = globalStateRow || await loadState(db, 'global')
+  bootstrapRow = await migrateLegacyAccountAvatars(db, env, effectiveUser, context, bootstrapRow)
+  const policies = await listPolicies(db)
+  const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
+  const publicEffectiveUser = publicUser(effectiveUser)
+  const visibleUsers = OPERATIONS_ROLES.has(effectiveUser.role)
+    ? (await visibleUserRowsForActor(db, effectiveUser)).map(publicUser)
+    : null
   return jsonResponse(apiPayload(context, {
     token: rawToken,
     tokenType: 'Bearer',
     expiresAt,
-    user: publicUser(effectiveUser),
+    user: publicEffectiveUser,
+    // Login already resolved the actor and loaded the global snapshot. Return
+    // the same scoped bootstrap projection here so the client does not issue a
+    // second heavyweight request before it can render the first screen.
+    bootstrap: {
+      user: publicEffectiveUser,
+      scope: 'global',
+      projection: effectiveUser.role,
+      state: projectSharedState(bootstrapState, effectiveUser),
+      version: Number(bootstrapRow?.version || 0),
+      updatedAt: bootstrapRow?.updated_at || null,
+      policies,
+    },
+    ...(visibleUsers ? { users: visibleUsers } : {}),
   }))
 }
 
@@ -3050,7 +3244,7 @@ const selectSessionRole = async (request, env, context) => {
     active_employee_id: selected.employeeId || null,
     role_selected_at: context.now,
     needs_role_selection: false,
-  }, context.now)
+  }, context.now, actor._globalState || null)
   return jsonResponse(apiPayload(context, { user: publicUser(effective) }))
 }
 
@@ -3059,7 +3253,9 @@ const getBootstrap = async (request, env, context, url) => {
   const user = await requireSession(request, db, context)
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  let stateRow = await loadState(db, scope)
+  let stateRow = scope === 'global' && user._globalStateRow
+    ? user._globalStateRow
+    : await loadState(db, scope)
   if (scope === 'global') stateRow = await migrateLegacyAccountAvatars(db, env, user, context, stateRow)
   const policies = await listPolicies(db)
   const rawState = stateRow ? parseStoredJson(stateRow.value_json, {}) : {}
@@ -3079,7 +3275,9 @@ const getState = async (request, env, context, url) => {
   const user = await requireSession(request, db, context)
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  let row = await loadState(db, scope)
+  let row = scope === 'global' && user._globalStateRow
+    ? user._globalStateRow
+    : await loadState(db, scope)
   if (scope === 'global') row = await migrateLegacyAccountAvatars(db, env, user, context, row)
   const policies = await listPolicies(db)
   const rawState = row ? parseStoredJson(row.value_json, {}) : {}
@@ -3092,6 +3290,34 @@ const getState = async (request, env, context, url) => {
     updatedAt: row?.updated_at || null,
     updatedBy: row?.updated_by || null,
     policies,
+  }))
+}
+
+const getStateMetadata = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const user = await requireSession(request, db, context, { resolveOperationalContext: false })
+  const scope = url.searchParams.get('scope') || defaultScope(user)
+  assertScope(user, scope)
+  const row = await first(db, `
+    SELECT version, updated_at
+    FROM app_state
+    WHERE scope_key = ?
+    LIMIT 1
+  `, scope)
+  const policyRows = await all(db, `
+    SELECT policy_key, version
+    FROM policies
+    ORDER BY policy_key
+  `)
+  return jsonResponse(apiPayload(context, {
+    scope,
+    version: Number(row?.version || 0),
+    updatedAt: row?.updated_at || null,
+    userVersion: Number(user.version || 0),
+    policyVersions: Object.fromEntries(policyRows.map((policy) => [
+      policy.policy_key,
+      Number(policy.version || 0),
+    ])),
   }))
 }
 
@@ -3586,7 +3812,7 @@ const assertOperationalStoreAccess = (actor, storeId) => {
 
 const loadGlobalCommandState = async (db, body) => {
   const expectedVersion = validateExpectedVersion(body.expectedVersion)
-  const current = await loadState(db, 'global')
+  const current = body._preloadedGlobalStateRow || await loadState(db, 'global')
   const currentVersion = Number(current?.version || 0)
   if (!current || currentVersion !== expectedVersion) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
@@ -4735,6 +4961,12 @@ const markAccountAvatarMigrationComplete = (db, timestamp) => run(db, `
 const migrateLegacyAccountAvatars = async (db, env, actor, context, currentRow = null, attempt = 0) => {
   let current = currentRow || await loadState(db, 'global')
   if (!current) return current
+  const completedMarker = await first(
+    db,
+    'SELECT meta_key FROM system_metadata WHERE meta_key = ? LIMIT 1',
+    ACCOUNT_AVATAR_MIGRATION_METADATA_KEY,
+  )
+  if (completedMarker) return current
   const rawState = parseStoredJson(current.value_json, {})
   const ownerId = actor?.user_id || actor?.id || ''
   const avatarMutation = hasLegacyAccountAvatarData(rawState)
@@ -4758,26 +4990,6 @@ const migrateLegacyAccountAvatars = async (db, env, actor, context, currentRow =
     }
     throw error
   }
-  let marker
-  try {
-    marker = await first(db, 'SELECT meta_key FROM system_metadata WHERE meta_key = ? LIMIT 1', ACCOUNT_AVATAR_MIGRATION_METADATA_KEY)
-  } catch (error) {
-    if (avatarMutation) {
-      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
-        suppressFailure: true,
-      })
-    }
-    throw error
-  }
-  if (!prepared.changed && marker) {
-    if (avatarMutation) {
-      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
-        suppressFailure: true,
-      })
-    }
-    return current
-  }
-
   if (prepared.changed) {
     const requestId = `${context.requestId}:account-avatar-migration`
     let nextState
@@ -13512,19 +13724,19 @@ const executeCommand = async (request, env, context) => {
   const body = await readJson(request)
   const updatesAccountAvatar = body.type === 'account_settings.update' && accountSettingsUpdatesAvatar(body)
   const skipsAccountAvatarCleanup = body.type === 'account_settings.update' && !updatesAccountAvatar
-  if (!skipsAccountAvatarCleanup && await resumePendingAccountAvatarMutationCleanup(db, env, context)) {
-    throw new ApiError(
-      503,
-      'ACCOUNT_AVATAR_CLEANUP_RETRY',
-      'Ảnh đại diện tồn đọng đã được dọn; request này chưa được thực thi, vui lòng gửi lại.',
-    )
-  }
-  if (!skipsAccountAvatarCleanup && await resumePendingAccountAvatarCleanup(db, env, context)) {
-    throw new ApiError(
-      503,
-      'ACCOUNT_AVATAR_CLEANUP_RETRY',
-      'Ảnh đại diện tồn đọng đã được dọn; request này chưa được thực thi, vui lòng gửi lại.',
-    )
+  if (!skipsAccountAvatarCleanup) {
+    // Mutation fences and retired-object cleanup are distinct durable queues.
+    // Drain both in the same preflight so the client needs at most one safe,
+    // idempotent retry instead of one manual Save click for each queue.
+    const mutationCleanupFinished = await resumePendingAccountAvatarMutationCleanup(db, env, context)
+    const retiredObjectCleanupFinished = await resumePendingAccountAvatarCleanup(db, env, context)
+    if (mutationCleanupFinished || retiredObjectCleanupFinished) {
+      throw new ApiError(
+        503,
+        'ACCOUNT_AVATAR_CLEANUP_RETRY',
+        'Ảnh đại diện tồn đọng đã được dọn; request này chưa được thực thi, vui lòng gửi lại.',
+      )
+    }
   }
   if (body.type !== 'system.reset_all' && await loadPendingSystemResetAll(db)) {
     throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Hệ thống đang hoàn tất xóa ảnh CCCD của lần Reset toàn bộ dữ liệu; các lệnh ghi tạm thời bị khóa.')
@@ -13546,6 +13758,12 @@ const executeCommand = async (request, env, context) => {
     idempotencyKey,
     hash,
     userAgent: String(request.headers.get('user-agent') || '').slice(0, 512),
+  }
+  if (user._globalStateRow) {
+    Object.defineProperty(body, '_preloadedGlobalStateRow', {
+      value: user._globalStateRow,
+      enumerable: false,
+    })
   }
   try {
     if (body.type === 'state.replace' || body.type === 'state.merge') {
@@ -13671,38 +13889,37 @@ const logout = async (request, env, context) => {
   return jsonResponse(apiPayload(context, { loggedOut: true }))
 }
 
+const visibleUserRowsForActor = async (db, actor) => ['admin', 'business_support'].includes(actor.role)
+  ? await all(db, `
+        SELECT id, username, display_name, role, status, version, store_id, employee_id, last_login_at
+        FROM users
+        WHERE role IN ('employee', 'business_support', 'store_manager')
+        ORDER BY role DESC, display_name, username
+      `)
+  : await all(db, `
+        SELECT id, username, display_name, role, status, version, store_id, employee_id, last_login_at
+        FROM users
+        WHERE role = 'employee' AND store_id = ?
+        ORDER BY display_name, username
+      `, String(actor.store_id || ''))
+
 const listUsers = async (request, env, context) => {
   const db = getDatabase(env)
   const actor = await requireSession(request, db, context)
   if (!OPERATIONS_ROLES.has(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem danh sách tài khoản nhân sự.')
   }
-  const rows = ['admin', 'business_support'].includes(actor.role)
-    ? await all(db, `
-        SELECT id, username, display_name, role, status, version, store_id, employee_id, last_login_at
-        FROM users
-        WHERE role IN ('employee', 'business_support', 'store_manager')
-        ORDER BY role DESC, display_name, username
-      `)
-    : await all(db, `
-        SELECT id, username, display_name, role, status, version, store_id, employee_id, last_login_at
-        FROM users
-        WHERE role = 'employee' AND store_id = ?
-        ORDER BY display_name, username
-      `, String(actor.store_id || ''))
+  const rows = await visibleUserRowsForActor(db, actor)
   return jsonResponse(apiPayload(context, { users: rows.map(publicUser) }))
 }
 
 const getAccountAvatar = async (request, env, context) => {
   const db = getDatabase(env)
   const actor = await requireSession(request, db, context)
-  let current = await loadState(db, 'global')
+  let current = actor._globalStateRow || await loadState(db, 'global')
   current = await migrateLegacyAccountAvatars(db, env, actor, context, current)
   const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
-  const metadata = normalizeAccountAvatarMetadata(
-    state.accountSettings?.[actor.user_id]?.avatar,
-    actor.user_id,
-  )
+  const metadata = normalizeAccountAvatarMetadata(ownAccountSettings(state, actor).avatar)
   if (!metadata) throw new ApiError(404, 'ACCOUNT_AVATAR_NOT_FOUND', 'Tài khoản chưa có ảnh đại diện.')
   const bucket = env?.IDENTITY_IMAGES
   if (!bucket?.get) {
@@ -13963,6 +14180,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/state') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getState(request, env, context, url)
+  }
+  if (path === '/api/state-metadata') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getStateMetadata(request, env, context, url)
   }
   if (path === '/api/command') {
     if (request.method !== 'POST') return methodNotAllowed(['POST'])

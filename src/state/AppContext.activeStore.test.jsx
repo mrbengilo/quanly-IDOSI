@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   apiCommand: vi.fn(),
   apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
+  apiGetStateMetadata: vi.fn(),
   apiLogin: vi.fn(),
   apiListUsers: vi.fn(),
   apiLogout: vi.fn(),
@@ -19,6 +20,7 @@ vi.mock('../services/idosiApi', () => ({
   apiCommand: api.apiCommand,
   apiGetAccountAvatar: api.apiGetAccountAvatar,
   apiGetState: api.apiGetState,
+  apiGetStateMetadata: api.apiGetStateMetadata,
   apiLogin: api.apiLogin,
   apiListUsers: api.apiListUsers,
   apiLogout: api.apiLogout,
@@ -90,6 +92,7 @@ describe('remote command active-store preservation', () => {
     api.apiBootstrapState.mockImplementation(async () => bootstrap())
     api.apiListUsers.mockResolvedValue({ users: [supportUser] })
     api.apiGetState.mockImplementation(async () => bootstrap())
+    api.apiGetStateMetadata.mockResolvedValue({ version: 1 })
     api.apiCommand.mockResolvedValue({ version: 2, store: { id: 'STORE-A', name: 'Cửa hàng A mới' } })
   })
 
@@ -98,6 +101,7 @@ describe('remote command active-store preservation', () => {
     sessionStorage.clear()
     localStorage.clear()
     vi.useRealTimers()
+    vi.restoreAllMocks()
     vi.clearAllMocks()
   })
 
@@ -115,6 +119,94 @@ describe('remote command active-store preservation', () => {
 
     expect(api.apiGetState).toHaveBeenCalledWith('global')
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+  })
+
+  it('uses the authenticated bootstrap projection without a second full-state login request', async () => {
+    api.apiLogin.mockResolvedValue({
+      user: supportUser,
+      bootstrap: { user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 },
+      users: [supportUser],
+    })
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+
+    expect(api.apiBootstrapState).not.toHaveBeenCalled()
+    expect(api.apiListUsers).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
+  })
+
+  it('returns from a successful mutation before the background full-state reconciliation finishes', async () => {
+    let resolveRefresh
+    api.apiGetState.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+
+    await act(async () => {
+      const result = await appRef.current.updateStore('STORE-A', { name: 'Cửa hàng A mới' })
+      expect(result.ok).toBe(true)
+      expect(resolveRefresh).toBeTypeOf('function')
+      resolveRefresh({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 2 })
+      await Promise.resolve()
+    })
+  })
+
+  it('retries a failed background reconciliation from lightweight metadata', async () => {
+    vi.useFakeTimers()
+    api.apiGetState
+      .mockRejectedValueOnce(new Error('temporary state download failure'))
+      .mockResolvedValue({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 2 })
+    api.apiGetStateMetadata.mockResolvedValue({ version: 2, userVersion: 1, policyVersions: {} })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+    await act(async () => {
+      expect((await appRef.current.updateStore('STORE-A', { name: 'Cửa hàng A mới' })).ok).toBe(true)
+      await Promise.resolve()
+    })
+    expect(api.apiGetState).toHaveBeenCalledTimes(1)
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_010) })
+
+    expect(api.apiGetStateMetadata).toHaveBeenCalledWith('global')
+    expect(api.apiGetState).toHaveBeenCalledTimes(2)
+  })
+
+  it('polls lightweight metadata without downloading unchanged shared state', async () => {
+    vi.useFakeTimers()
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+    api.apiGetState.mockClear()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_010) })
+
+    expect(api.apiGetStateMetadata).toHaveBeenCalledWith('global')
+    expect(api.apiGetState).not.toHaveBeenCalled()
+  })
+
+  it('refreshes shared state when a policy version changes without a state mutation', async () => {
+    vi.useFakeTimers()
+    api.apiGetStateMetadata.mockResolvedValue({
+      version: 1,
+      userVersion: 1,
+      policyVersions: { late_tolerance_minutes: 2 },
+    })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+    api.apiGetState.mockClear()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_010) })
+
+    expect(api.apiGetState).toHaveBeenCalledWith('global')
   })
 
   it('switches an already-open employee session at the exact boundary even when state version is unchanged', async () => {
@@ -150,6 +242,93 @@ describe('remote command active-store preservation', () => {
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
     expect(appRef.current.session).toMatchObject({ storeId: 'STORE-B', homeStoreId: 'STORE-A', activeTransferId: 'TR-01' })
     expect(api.apiGetState).toHaveBeenCalledWith('global')
+  })
+
+  it('queues a hidden-tab transfer boundary and force-refreshes when the employee returns', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T06:59:00.000Z')
+    let hidden = true
+    vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden)
+    const transfer = {
+      id: 'TR-HIDDEN', employeeId: 'E01', fromStoreId: 'STORE-A', toStoreId: 'STORE-B',
+      startAt: '2026-08-20T14:00', endAt: '2026-08-20T21:00', status: 'Đã duyệt',
+    }
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{ id: 'E01', code: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc' }],
+      supportTransfers: [transfer],
+    }
+    const currentUser = () => Date.now() < Date.parse('2026-08-20T07:00:00.000Z')
+      ? employeeHomeUser
+      : { ...employeeHomeUser, storeId: 'STORE-B', activeTransferId: 'TR-HIDDEN' }
+    const payload = () => ({ user: currentUser(), state: employeeState, policies: [], version: 7 })
+    api.apiLogin.mockResolvedValue({ user: employeeHomeUser })
+    api.apiBootstrapState.mockImplementation(async () => payload())
+    api.apiGetState.mockImplementation(async () => payload())
+
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+    })
+    api.apiGetState.mockClear()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_030) })
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
+    expect(api.apiGetState).not.toHaveBeenCalled()
+
+    hidden = false
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await vi.advanceTimersByTimeAsync(1)
+    })
+
+    expect(api.apiGetState).toHaveBeenCalledWith('global')
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+    expect(appRef.current.session).toMatchObject({ storeId: 'STORE-B', homeStoreId: 'STORE-A', activeTransferId: 'TR-HIDDEN' })
+  })
+
+  it('drains a forced transfer-boundary refresh after an in-flight metadata poll finishes', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T06:59:54.000Z')
+    const transfer = {
+      id: 'TR-BUSY', employeeId: 'E01', fromStoreId: 'STORE-A', toStoreId: 'STORE-B',
+      startAt: '2026-08-20T14:00', endAt: '2026-08-20T21:00', status: 'Đã duyệt',
+    }
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{ id: 'E01', code: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc' }],
+      supportTransfers: [transfer],
+    }
+    const currentUser = () => Date.now() < Date.parse('2026-08-20T07:00:00.000Z')
+      ? employeeHomeUser
+      : { ...employeeHomeUser, storeId: 'STORE-B', activeTransferId: 'TR-BUSY' }
+    const payload = () => ({ user: currentUser(), state: employeeState, policies: [], version: 7 })
+    let resolveMetadata
+    api.apiLogin.mockResolvedValue({ user: employeeHomeUser })
+    api.apiBootstrapState.mockImplementation(async () => payload())
+    api.apiGetState.mockImplementation(async () => payload())
+    api.apiGetStateMetadata.mockImplementationOnce(() => new Promise((resolve) => { resolveMetadata = resolve }))
+
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+    })
+    api.apiGetState.mockClear()
+
+    act(() => { vi.advanceTimersByTime(5_000) })
+    expect(api.apiGetStateMetadata).toHaveBeenCalledWith('global')
+    act(() => { vi.advanceTimersByTime(1_030) })
+    expect(api.apiGetState).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveMetadata({ version: 7 })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(api.apiGetState).toHaveBeenCalledWith('global')
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+    expect(appRef.current.session).toMatchObject({ storeId: 'STORE-B', homeStoreId: 'STORE-A', activeTransferId: 'TR-BUSY' })
   })
 
   it('creates a reusable remote shift without requiring or sending an application date', async () => {

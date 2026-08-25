@@ -1,5 +1,11 @@
 const rawDateOnly = (value) => String(value || '').slice(0, 10)
 
+export const SUPPORT_SCHEDULE_PRESETS = Object.freeze([
+  Object.freeze({ id: 'morning', name: 'Ca sáng', start: '08:00', end: '12:00' }),
+  Object.freeze({ id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' }),
+  Object.freeze({ id: 'office-hours', name: 'Giờ hành chính', start: '08:00', end: '17:30' }),
+])
+
 const parseCalendarDate = (value) => {
   const text = rawDateOnly(value)
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/u)

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  SUPPORT_SCHEDULE_PRESETS,
   supportScheduleDays,
   shiftSupportScheduleAnchor,
   supportScheduleEmploymentMode,
@@ -8,6 +9,15 @@ import {
 } from './supportWorkSchedule'
 
 describe('support work schedule', () => {
+  it('provides the established quick-select work periods without removing custom schedules', () => {
+    expect(SUPPORT_SCHEDULE_PRESETS).toEqual([
+      { id: 'morning', name: 'Ca sáng', start: '08:00', end: '12:00' },
+      { id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' },
+      { id: 'office-hours', name: 'Giờ hành chính', start: '08:00', end: '17:30' },
+    ])
+    expect(Object.isFrozen(SUPPORT_SCHEDULE_PRESETS)).toBe(true)
+  })
+
   it('uses named shifts for Part-Time and intern profiles', () => {
     expect(supportScheduleEmploymentMode({ employmentType: 'Part-Time' })).toBe('shift')
     expect(supportScheduleEmploymentMode({ employmentType: 'Thực Tập Sinh' })).toBe('shift')
