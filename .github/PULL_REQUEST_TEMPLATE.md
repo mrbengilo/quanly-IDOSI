@@ -2,15 +2,18 @@
 
 > Quy trình: `docs/DEVELOPMENT_WORKFLOW.md`.
 
-## Routing
+## Automatic Execution Brief
+- Goal:
+- Acceptance criteria:
 - Risk: [ ] FAST  [ ] STANDARD  [ ] CRITICAL
 - Model: [ ] GPT-5.6 Terra  [ ] GPT-5.6 Sol  [ ] Runtime fallback
 - Reasoning: [ ] HIGH  [ ] XHIGH
 - Speed: [ ] FAST  [ ] ULTRA FAST if supported  [ ] Runtime fastest available
-- Lý do routing:
-- Expected scope:
+- Scope:
+- Canonical source/logic:
+- Invariants phải giữ:
 
-> HIGH reasoning là quality floor cho task lập trình IDOSI khi runtime hỗ trợ. Finance/money/difficult work ưu tiên GPT-5.6 Sol + HIGH + ULTRA FAST nếu có; task bình thường ưu tiên Terra HIGH FAST hoặc Sol HIGH FAST khi cross-layer/khó hơn.
+> User không cần viết prompt kỹ thuật. Codex phải tự compile request thành execution brief này rồi triển khai.
 
 ## Scope Gate
 - [ ] Một mục tiêu nghiệp vụ coherent
@@ -30,41 +33,47 @@
 - [ ] Auth / session / credentials
 - [ ] VPS runtime / storage / deployment
 
-## Mục tiêu / Root cause
+## Related-Flow Map
+Liệt kê các flow thực sự phụ thuộc vào phần thay đổi:
+- Primary flow:
+- Adjacent CRUD/readers/consumers:
+- Auth/store/user flows:
+- Finance/payroll/KPI downstream:
+- Persistence/backward compatibility:
+- Time/lifecycle boundaries:
+- Sites/VPS impact:
+- Desktop/mobile impact:
+
+## Regression Matrix
+Đánh dấu các category áp dụng và ghi test/evidence tương ứng:
+- [ ] Happy path chính
+- [ ] Behavior cũ/backward compatibility
+- [ ] Create/update/delete/read neighbor cùng entity/contract
+- [ ] UI/state/domain/API consumers
+- [ ] Role/store/user isolation + denied path
+- [ ] Duplicate/retry/idempotency
+- [ ] Persistence/reload/data shape
+- [ ] Revenue/expense/profit/payroll/KPI downstream
+- [ ] Timezone/day/month/overnight
+- [ ] Locked/closed/deleted lifecycle
+- [ ] Sites/VPS compatibility
+- [ ] Desktop/mobile/responsive
+
+Test/evidence:
 - 
-
-## Phạm vi thay đổi
-- [ ] UI/components
-- [ ] State
-- [ ] Domain/business logic
-- [ ] API/services
-- [ ] Backend/Worker
-- [ ] Database/migration
-- [ ] VPS runtime/storage
-- [ ] Test
-- [ ] CI/tooling
-- [ ] Documentation
-
-## Impact
-- Business rule changed:
-- Authorization/store impact:
-- Finance/payroll/KPI impact:
-- Database/persistence impact:
-- Production target: Sites / VPS / Both / Runtime-unaffected
-- Canonical logic/source of truth:
 
 ## Verification
 
 ### Iteration
-- [ ] Targeted tests/checks used while editing
-- [ ] Full suite was not rerun unnecessarily
+- [ ] Targeted tests/checks cho changed path + related flows
+- [ ] Không rerun full suite không cần thiết
 
 ### FAST final local gate
 - [ ] Targeted checks phù hợp
 - [ ] Lint/build only if relevant
 
 ### STANDARD final local gate
-- [ ] Targeted tests for changed logic
+- [ ] Targeted tests + related-flow regressions
 - [ ] `npm run lint`
 - [ ] `npm run build`
 - [ ] `npm run sites:verify`
@@ -84,7 +93,8 @@
 ## Self-review
 - [ ] No unrelated changes/refactors
 - [ ] No duplicate business logic/source of truth
-- [ ] API/state contract preserved when relevant
+- [ ] Primary flow PASS
+- [ ] All applicable related/downstream flows PASS
 - [ ] Permission/store isolation reviewed when relevant
 - [ ] Money/KPI/payroll boundaries reviewed when relevant
 - [ ] Idempotency/race/timezone reviewed when relevant
@@ -95,8 +105,9 @@
 - [ ] Model selected once; no unnecessary model-hopping
 - [ ] HIGH reasoning floor kept when runtime supports it
 - [ ] Targeted tests used during iteration
+- [ ] Related flows tested before final gate
 - [ ] Final full gate run once after patch stabilized
-- [ ] Failed CI/checks reproduced and fixed targeted instead of blind full reruns
+- [ ] Failed CI/checks fixed targeted instead of blind full reruns
 - [ ] Branch created from latest `main`; no repeated merge-from-main cycles
 
 ## Rollback / manual checks
@@ -105,8 +116,10 @@
 - Remaining risks, if any:
 
 ## Definition of Done
+- [ ] User request auto-compiled; user không phải viết prompt kỹ thuật
 - [ ] Scope đúng yêu cầu và không thành mega-task
-- [ ] Routing đúng policy và không giả vờ switch model/speed
+- [ ] Routing đúng policy
+- [ ] Primary + applicable related-flow regressions PASS
 - [ ] Tests/checks theo Risk PASS
 - [ ] Required CI `verify` PASS
 - [ ] Diff reviewed
