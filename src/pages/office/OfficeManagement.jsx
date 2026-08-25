@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import {
-  CalendarClock,
   CalendarDays,
   Clock3,
   Edit3,
@@ -49,7 +48,6 @@ import {
   validateOfficeEmployee,
 } from './officeEmployeeForm'
 import { WorkingTimeFields } from './WorkingTimeFields'
-import { WorkingTimeSettingsModal } from './WorkingTimeSettingsModal'
 import {
   normalizeWorkingTimeForm,
   withEmploymentWorkingTime,
@@ -194,7 +192,6 @@ export function OfficeManagement() {
   const [attendanceFrom, setAttendanceFrom] = useState('')
   const [attendanceTo, setAttendanceTo] = useState('')
   const [attendanceEmployeeId, setAttendanceEmployeeId] = useState('all')
-  const [workingTimeSettingsOpen, setWorkingTimeSettingsOpen] = useState(false)
   const editingRequiresPassword = Boolean(editingEmployee) && !(
     editingEmployee.authUserId || editingEmployee.authVersion || editingEmployee.passwordHash || editingEmployee.legacyPassword
   )
@@ -406,7 +403,6 @@ export function OfficeManagement() {
         title="KHỐI VĂN PHÒNG"
         subtitle="Thông tin nhân viên, lịch sử chấm công và đánh giá mức độ chuyên cần."
         icon={Users}
-        actions={canManageOffice ? <Button icon={CalendarClock} onClick={() => setWorkingTimeSettingsOpen(true)}>Cài đặt thời gian làm việc</Button> : null}
       />
       {!canManageOffice && <InfoNote>Chế độ chỉ xem. Tài khoản hiện tại không thể sửa hồ sơ nhân viên.</InfoNote>}
 
@@ -513,7 +509,7 @@ export function OfficeManagement() {
             <h3>Thời gian làm việc</h3>
             <WorkingTimeFields form={employeeForm} onChange={(workingTime) => setEmployeeForm((current) => ({ ...current, ...workingTime }))} />
           </>}
-          {editingEmployee && <InfoNote>Dùng chức năng “Cài đặt thời gian làm việc” để thay đổi giờ làm theo ngày áp dụng.</InfoNote>}
+          {editingEmployee && <InfoNote>Thời gian làm việc hiện tại được giữ nguyên khi cập nhật hồ sơ.</InfoNote>}
           <h3>Địa chỉ</h3>
           <AddressAutocomplete
             value={{ province: employeeForm.province, ward: employeeForm.ward, street: employeeForm.street }}
@@ -542,14 +538,6 @@ export function OfficeManagement() {
           <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư và chỉ tài khoản có quyền mới truy cập được. Hệ thống không hiển thị lại mật khẩu hiện tại.</InfoNote>
         </form>
       </Modal>}
-
-      <WorkingTimeSettingsModal
-        open={workingTimeSettingsOpen}
-        profiles={officeEmployees}
-        onClose={() => setWorkingTimeSettingsOpen(false)}
-        onSave={(employeeId, payload) => app.setEmployeeWorkingTime?.(employeeId, payload)}
-        title="Cài đặt thời gian làm việc · Khối văn phòng"
-      />
 
       <Modal wide open={Boolean(viewingImage)} onClose={() => setViewingImage(null)} title={viewingImage?.label || 'Ảnh CCCD'} footer={<Button variant="outline" onClick={() => setViewingImage(null)}>Đóng</Button>}>
         <IdentityDocumentViewer src={viewingImage?.url || ''} alt={viewingImage?.label || 'Ảnh CCCD'} />

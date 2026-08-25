@@ -548,6 +548,8 @@ export function AdminSettings() {
   const [form, setForm] = useState(settings || {})
   const [photoProcessing, setPhotoProcessing] = useState(false)
   const [photoCrop, setPhotoCrop] = useState(null)
+  const [avatarUpdate, setAvatarUpdate] = useState()
+  const [profileSaving, setProfileSaving] = useState(false)
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' })
   const [visiblePasswords, setVisiblePasswords] = useState({ current: false, next: false, confirm: false })
   const [notifications, setNotifications] = useState(() => ({
@@ -563,6 +565,7 @@ export function AdminSettings() {
       : session?.role === 'store_manager'
         ? 'Quản lý cửa hàng'
         : 'Nhân viên'
+  const displayedAvatar = avatarUpdate === undefined ? (settings?.avatar || form.avatar || '') : form.avatar
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
   const togglePassword = (key) => setVisiblePasswords((current) => ({ ...current, [key]: !current[key] }))
 
@@ -575,9 +578,20 @@ export function AdminSettings() {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(form.email))) return notify('Email không đúng định dạng.', 'info')
     if (form.phone && !validateVietnamPhone(form.phone)) return notify('Số điện thoại Việt Nam không đúng định dạng.', 'info')
     if (typeof saveSettings !== 'function') return notify('Chức năng lưu cài đặt chưa sẵn sàng.', 'info')
-    const result = await saveSettings({ ...settings, ...form, notifications })
-    if (!result?.ok) return notify(result?.message || 'Không thể lưu thông tin tài khoản.', 'info')
-    setForm((current) => ({ ...current, ...(result.settings || {}) }))
+    setProfileSaving(true)
+    try {
+      const result = await saveSettings({
+        ...settings,
+        ...form,
+        avatar: avatarUpdate,
+        notifications,
+      })
+      if (!result?.ok) return notify(result?.message || 'Không thể lưu thông tin tài khoản.', 'info')
+      setAvatarUpdate(undefined)
+      setForm((current) => ({ ...current, ...(result.settings || {}), avatar: result.settings?.avatar || current.avatar || '' }))
+    } finally {
+      setProfileSaving(false)
+    }
   }
 
   const choosePhoto = async (event) => {
@@ -614,6 +628,7 @@ export function AdminSettings() {
         },
       })
       setForm((current) => ({ ...current, avatar: optimized.dataUrl }))
+      setAvatarUpdate(optimized.dataUrl)
       setPhotoCrop(null)
       notify(`Đã cắt vuông và tối ưu ảnh đại diện còn ${Math.ceil(optimized.bytes / 1024)} KB. Nhấn "Lưu thay đổi" để hoàn tất.`, 'info')
     } catch (error) {
@@ -626,6 +641,12 @@ export function AdminSettings() {
   const updatePhotoCrop = (field) => (event) => {
     const value = Number(event.target.value)
     setPhotoCrop((current) => current ? { ...current, [field]: value } : current)
+  }
+
+  const clearPhoto = () => {
+    if (photoProcessing || profileSaving) return
+    setForm((current) => ({ ...current, avatar: '' }))
+    setAvatarUpdate('')
   }
 
   const requestPasswordChange = async () => {
@@ -642,7 +663,7 @@ export function AdminSettings() {
 
   const saveNotifications = async () => {
     if (typeof saveSettings !== 'function') return notify('Chức năng lưu cài đặt chưa sẵn sàng.', 'info')
-    const result = await saveSettings({ ...settings, ...form, notifications })
+    const result = await saveSettings({ ...settings, ...form, avatar: undefined, notifications })
     if (!result?.ok) return notify(result?.message || 'Không thể lưu thiết lập thông báo.', 'info')
     if (result.settings?.notifications) setNotifications(result.settings.notifications)
   }
@@ -668,7 +689,7 @@ export function AdminSettings() {
           <Card className="settings-content">
             <h2>Thông tin cá nhân</h2><p>Cập nhật thông tin tài khoản của bạn.</p>
             <div className="profile-form">
-              <div className="profile-photo"><div>{form.avatar ? <img src={form.avatar} alt="Ảnh đại diện tài khoản" /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button><small>Ảnh gốc JPG, PNG, WebP tối đa 5 MB<br />Cắt vuông, xem trước dạng tròn và tối ưu còn tối đa 300 KB</small></div>
+              <div className="profile-photo"><div>{displayedAvatar ? <img src={displayedAvatar} alt="Ảnh đại diện tài khoản" /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing || profileSaving} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button>{(displayedAvatar || settings?.avatarMetadata) && <Button variant="outline" icon={Trash2} disabled={photoProcessing || profileSaving} onClick={clearPhoto}>Xóa ảnh</Button>}<small>{settings?.avatarLoading ? 'Đang tải ảnh đại diện riêng tư…' : 'Ảnh gốc JPG, PNG, WebP tối đa 5 MB'}<br />Cắt vuông, xem trước dạng tròn và tối ưu còn tối đa 300 KB</small>{settings?.avatarError && <small role="alert">{settings.avatarError}</small>}</div>
               <div className="form-grid">
                 <Field label="Họ và tên"><Input value={form.name} onChange={set('name')} /></Field><Field label="Email"><Input value={form.email} onChange={set('email')} /></Field>
                 <Field label="Số điện thoại"><Input value={form.phone} onChange={set('phone')} /></Field><Field label="Chức vụ"><Input value={roleLabel} disabled /></Field>
@@ -678,7 +699,7 @@ export function AdminSettings() {
               </div>
             </div>
             <div className="login-info"><h3>Thông tin đăng nhập</h3><div className="form-grid"><Field label="Tên đăng nhập"><Input value={session?.username || ''} disabled /></Field><Field label="Vai trò"><Input value={roleLabel} disabled /></Field></div></div>
-            <div className="card-actions"><Button icon={Save} disabled={photoProcessing} onClick={saveProfile}>Lưu thay đổi</Button></div>
+            <div className="card-actions"><Button icon={Save} disabled={photoProcessing || profileSaving} onClick={saveProfile}>{profileSaving ? 'Đang lưu…' : 'Lưu thay đổi'}</Button></div>
           </Card>
         ) : (
           <Card className="settings-content settings-placeholder"><ShieldCheck size={48} /><h2>{tab === 'password' ? 'Đổi mật khẩu' : 'Thiết lập thông báo'}</h2><p>{tab === 'password' ? 'Nhập mật khẩu mới để tăng cường bảo mật tài khoản.' : 'Chọn loại thông báo bạn muốn nhận từ hệ thống.'}</p><div className="form-stack">{tab === 'password' ? <><PasswordField id="account-current-password" label="Mật khẩu hiện tại" autoComplete="current-password" visible={visiblePasswords.current} onToggle={() => togglePassword('current')} value={passwordForm.current} onChange={(event) => setPasswordForm((current) => ({ ...current, current: event.target.value }))} /><PasswordField id="account-new-password" label="Mật khẩu mới" autoComplete="new-password" visible={visiblePasswords.next} onToggle={() => togglePassword('next')} value={passwordForm.next} onChange={(event) => setPasswordForm((current) => ({ ...current, next: event.target.value }))} /><PasswordField id="account-confirm-password" label="Xác nhận mật khẩu" autoComplete="new-password" visible={visiblePasswords.confirm} onToggle={() => togglePassword('confirm')} value={passwordForm.confirm} onChange={(event) => setPasswordForm((current) => ({ ...current, confirm: event.target.value }))} /></> : <><label className="switch-row"><span>Thông báo công việc mới</span><input type="checkbox" checked={notifications.tasks} onChange={(event) => setNotifications({ ...notifications, tasks: event.target.checked })} /></label><label className="switch-row"><span>Báo cáo doanh thu hàng ngày</span><input type="checkbox" checked={notifications.dailyReport} onChange={(event) => setNotifications({ ...notifications, dailyReport: event.target.checked })} /></label><label className="switch-row"><span>Cảnh báo chi phí</span><input type="checkbox" checked={notifications.expenseAlert} onChange={(event) => setNotifications({ ...notifications, expenseAlert: event.target.checked })} /></label></>}<Button onClick={tab === 'password' ? requestPasswordChange : saveNotifications}>Lưu thiết lập</Button></div></Card>

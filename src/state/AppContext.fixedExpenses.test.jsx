@@ -6,6 +6,7 @@ import { AppProvider, createInitialState, useApp } from './AppContext'
 const api = vi.hoisted(() => ({
   apiBootstrapState: vi.fn(),
   apiCommand: vi.fn(),
+  apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
   apiLogin: vi.fn(),
   apiListUsers: vi.fn(),
@@ -16,6 +17,7 @@ const api = vi.hoisted(() => ({
 vi.mock('../services/idosiApi', () => ({
   apiBootstrapState: api.apiBootstrapState,
   apiCommand: api.apiCommand,
+  apiGetAccountAvatar: api.apiGetAccountAvatar,
   apiGetState: api.apiGetState,
   apiLogin: api.apiLogin,
   apiListUsers: api.apiListUsers,

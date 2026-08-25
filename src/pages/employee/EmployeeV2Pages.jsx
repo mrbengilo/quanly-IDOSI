@@ -29,8 +29,9 @@ import {
   TableFooter,
   TableWrap,
 } from '../../components/UI'
+import { SearchableSelect } from '../../components/SearchableSelect'
 import { resolveShiftCandidates } from '../../domain'
-import { CUSTOMER_OCCUPATIONS } from '../../domain/customerSurvey'
+import { activeOccupationLabels, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
@@ -58,8 +59,7 @@ const recordDate = (record = {}) => String(record.date || record.workDate || rec
 const employeeKey = (employee = {}) => String(employee?.id || employee?.code || employee?.employeeCode || '')
 const timestamp = shortDateTime24
 const periodLabel = (value) => value ? value.split('-').reverse().join('/') : '—'
-const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: 'Chuyển khoản' })
-const ORDER_OCCUPATIONS = CUSTOMER_OCCUPATIONS
+const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: '' })
 const actorLabel = (value) => {
   if (!value) return 'Chưa ghi nhận'
   if (typeof value === 'string') return value
@@ -478,10 +478,10 @@ export function EmployeeDashboardV2() {
       >
         <div className="form-grid">
           <Field label="Tiền mặt" required hint={`Theo đơn trong ca: ${money(expectedRevenue.cash)}`} error={cashRevenue && !reconciliation.cashMatches ? 'Số tiền mặt chưa khớp.' : ''}>
-            <MoneyInput value={cashRevenue} onChange={(event) => setCashRevenue(event.target.value)} placeholder="Nhập số nghìn" />
+            <MoneyInput value={cashRevenue} onChange={(event) => setCashRevenue(event.target.value)} placeholder="Nhập số tiền" />
           </Field>
           <Field label="Chuyển khoản" required hint={`Theo đơn trong ca: ${money(expectedRevenue.transfer)}`} error={transferRevenue && !reconciliation.transferMatches ? 'Số tiền chuyển khoản chưa khớp.' : ''}>
-            <MoneyInput value={transferRevenue} onChange={(event) => setTransferRevenue(event.target.value)} placeholder="Nhập số nghìn" />
+            <MoneyInput value={transferRevenue} onChange={(event) => setTransferRevenue(event.target.value)} placeholder="Nhập số tiền" />
           </Field>
           <InfoNote tone={reconciliation.matches ? 'green' : 'orange'}>
             Đã nhập {money(reconciliation.entered.total)} / Doanh thu đơn hàng {money(expectedRevenue.total)}. Hệ thống kiểm tra riêng tiền mặt và chuyển khoản.
@@ -502,7 +502,7 @@ export function EmployeeDashboardV2() {
 export function EmployeeOrdersPage() {
   const app = useApp()
   const [searchParams] = useSearchParams()
-  const { currentEmployee: employee, session, stores = [], orders = [], attendance = [], createOrder, notify } = app
+  const { currentEmployee: employee, session, stores = [], orders = [], attendance = [], orderInformationOptions = [], apiStatus, createOrder, notify } = app
   const [open, setOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [formErrors, setFormErrors] = useState({})
@@ -523,6 +523,8 @@ export function EmployeeOrdersPage() {
     && !record.checkOutAt
     && !record.checkOut
   ))
+  const occupations = activeOccupationLabels(orderInformationOptions)
+    .map((occupation) => ({ value: occupation, label: occupation }))
 
   const openCreate = () => {
     if (!openAttendance) {
@@ -561,7 +563,7 @@ export function EmployeeOrdersPage() {
       return
     }
     const normalizedForm = { ...form, amount: parseMoney(form.amount), occupation: form.occupation.trim() }
-    const errors = validateEmployeeOrder(normalizedForm)
+    const errors = validateEmployeeOrder(normalizedForm, { occupationOptions: orderInformationOptions })
     if (Object.keys(errors).length) {
       setFormErrors(errors)
       notify('Vui lòng nhập đủ các thông tin bắt buộc của đơn hàng.', 'info')
@@ -632,10 +634,10 @@ export function EmployeeOrdersPage() {
           <Field label="Số điện thoại"><Input inputMode="tel" value={form.customerPhone} onChange={(event) => updateForm('customerPhone', event.target.value)} /></Field>
           <Field label="Tuổi"><Input type="number" min="0" max="120" value={form.customerAge} onChange={(event) => updateForm('customerAge', event.target.value)} /></Field>
           <Field label="Giới tính" required hint="Hỏi khách hoặc đoán." error={formErrors.gender}><Select value={form.gender} onChange={(event) => updateForm('gender', event.target.value)}><option value="">Chọn giới tính</option>{ORDER_GENDERS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
-          <Field label="Nghề nghiệp" required hint="Hỏi khách hoặc đoán; gõ để tìm trong danh sách." error={formErrors.occupation}><Input list="employee-order-occupations" value={form.occupation} onChange={(event) => updateForm('occupation', event.target.value)} placeholder="Tìm hoặc chọn nghề nghiệp" /><datalist id="employee-order-occupations">{ORDER_OCCUPATIONS.map((occupation) => <option key={occupation} value={occupation} />)}</datalist></Field>
+          <Field label="Nghề nghiệp" required hint="Hỏi khách hoặc đoán; dùng ô tìm kiếm trong danh sách." error={formErrors.occupation}><SearchableSelect aria-label="Nghề nghiệp" value={form.occupation} onChange={(event) => updateForm('occupation', event.target.value)} options={occupations} placeholder="Chọn" loading={['connecting', 'syncing'].includes(apiStatus)} error={apiStatus === 'error' ? 'Không thể tải danh sách nghề nghiệp.' : ''} /></Field>
           <Field label="Biết qua kênh nào" required error={formErrors.acquisitionChannel}><Select value={form.acquisitionChannel} onChange={(event) => updateForm('acquisitionChannel', event.target.value)}><option value="">Chọn kênh</option>{ACQUISITION_CHANNELS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
-          <Field label="Số tiền" required error={formErrors.amount}><MoneyInput value={form.amount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số nghìn" /></Field>
-          <Field label="Hình thức thanh toán" required><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option>Chuyển khoản</option><option>Tiền mặt</option></Select></Field>
+          <Field label="Số tiền" required error={formErrors.amount}><MoneyInput value={form.amount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
+          <Field label="Hình thức thanh toán" required error={formErrors.paymentMethod}><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option value="">Chọn</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
           <InfoNote>Đơn sẽ tự gắn với {openAttendance?.shiftName || openAttendance?.shift}, {store?.name || 'cửa hàng trực thuộc'} và thời gian tạo thực tế.</InfoNote>
         </div>
       </Modal>

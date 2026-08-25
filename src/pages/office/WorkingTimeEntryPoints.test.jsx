@@ -7,7 +7,7 @@ const mocked = vi.hoisted(() => ({ app: {} }))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 
-describe('working-time settings entry points', () => {
+describe('working-time management entry points', () => {
   beforeEach(() => {
     mocked.app = {
       session: { role: 'admin' },
@@ -29,14 +29,26 @@ describe('working-time settings entry points', () => {
 
   afterEach(cleanup)
 
-  it('exposes a clearly labelled action in Khối văn phòng', () => {
-    render(<OfficeManagement />)
-    expect(screen.getByRole('button', { name: 'Cài đặt thời gian làm việc' })).toBeTruthy()
+  it.each(['admin', 'business_support'])('hides effective-dated settings actions from %s', (role) => {
+    mocked.app.session = { role }
+    const officeView = render(<OfficeManagement />)
+    expect(screen.queryByRole('button', { name: 'Cài đặt thời gian làm việc' })).toBeNull()
+    officeView.unmount()
+
+    render(<BusinessSupportManagement />)
+    expect(screen.queryByRole('button', { name: 'Cài đặt thời gian làm việc' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Cài giờ làm/u })).toBeNull()
   })
 
-  it('exposes a clearly labelled action for Nhân viên hỗ trợ KD', () => {
+  it('keeps initial working-time fields when Admin creates Office and Business Support profiles', () => {
+    const officeView = render(<OfficeManagement />)
+    fireEvent.click(screen.getByRole('button', { name: /Thêm nhân viên/u }))
+    expect(within(screen.getByRole('dialog')).getByText('Thời gian làm việc')).toBeTruthy()
+    officeView.unmount()
+
     render(<BusinessSupportManagement />)
-    expect(screen.getByRole('button', { name: 'Cài đặt thời gian làm việc' })).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('button', { name: /Thêm tài khoản/u })[0])
+    expect(within(screen.getByRole('dialog')).getByText('Thời gian làm việc')).toBeTruthy()
   })
 
   it('keeps Office profile edits separate from effective-dated working-time settings', () => {
@@ -44,7 +56,7 @@ describe('working-time settings entry points', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sửa Nhân viên văn phòng' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).queryByText('Thời gian làm việc')).toBeNull()
-    expect(within(dialog).getByText(/Dùng chức năng “Cài đặt thời gian làm việc”/)).toBeTruthy()
+    expect(within(dialog).getByText('Thời gian làm việc hiện tại được giữ nguyên khi cập nhật hồ sơ.')).toBeTruthy()
   })
 
   it('keeps Business Support profile edits separate from effective-dated working-time settings', () => {
@@ -52,6 +64,6 @@ describe('working-time settings entry points', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sửa Nhân viên hỗ trợ' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).queryByText('Thời gian làm việc')).toBeNull()
-    expect(within(dialog).getByText(/Dùng chức năng “Cài đặt thời gian làm việc”/)).toBeTruthy()
+    expect(within(dialog).getByText('Thời gian làm việc hiện tại được giữ nguyên khi cập nhật hồ sơ.')).toBeTruthy()
   })
 })

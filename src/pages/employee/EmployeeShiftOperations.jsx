@@ -86,8 +86,8 @@ export function EmployeeShiftExpensePage() {
           <Field label="Tên chi phí" required>
             <Input value={form.name} onChange={update('name')} maxLength="160" placeholder="Ví dụ: Mua vật dụng vệ sinh" />
           </Field>
-          <Field label="Số tiền" required hint={amount > 0 ? money(amount) : 'Nhập theo đơn vị nghìn đồng'}>
-            <MoneyInput value={form.amount} onChange={update('amount')} placeholder="Nhập số nghìn" />
+          <Field label="Số tiền" required hint={amount > 0 ? money(amount) : 'Nhập đúng số tiền bằng đồng'}>
+            <MoneyInput value={form.amount} onChange={update('amount')} placeholder="Nhập số tiền" />
           </Field>
           <Field label="Ghi chú" className="span-2" hint={`${form.note.length}/1.000 ký tự`} error={form.note.length > 1_000 ? 'Ghi chú không được vượt quá 1.000 ký tự.' : ''}>
             <textarea value={form.note} onChange={update('note')} maxLength="1000" placeholder="Thông tin bổ sung (nếu có)" />

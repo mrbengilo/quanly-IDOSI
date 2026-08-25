@@ -120,13 +120,11 @@ Các lệnh chính:
   Part-Time/Thực Tập Sinh có 1..12 ca đặt tên. `workStart`/`workEnd` là alias
   của ca đầu tiên để tương thích client cũ; mọi giờ theo `HH:mm`, giờ ra sau
   giờ vào trong cùng ngày, id/tên ca không trùng.
-  Sau khi tạo hồ sơ, mọi thay đổi giờ làm phải dùng
-  `employee.working_time.set` với `employeeId`, `effectiveFrom: YYYY-MM-DD` và
-  cấu hình canonical mới. `employee.update` gửi bất kỳ trường giờ làm nào sẽ
-  trả `WORK_TIME_UPDATE_COMMAND_REQUIRED`. Worker thêm hoặc thay đúng mốc trong
-  `workTimeSchedule`; khi mốc đầu tiên nằm sau ngày bắt đầu làm, cấu hình
-  baseline được carry-forward về ngày bắt đầu để các ngày cũ không đổi. Mỗi
-  ngày dùng mốc gần nhất có `effectiveFrom <= workDate`.
+  Sau khi tạo hồ sơ, cấu hình giờ làm baseline không được sửa trực tiếp qua
+  `employee.update`. Lệnh cũ `employee.working_time.set` đã ngừng sử dụng và trả
+  `COMMAND_RETIRED`; dữ liệu `workTimeSchedule` lịch sử vẫn được bảo toàn để đọc
+  đúng chấm công, KPI và lương cũ. Lịch đăng ký/phân lịch mới dùng luồng lịch làm
+  việc hiện hành, không ghi đè cấu hình hoặc snapshot quá khứ.
   Khi chấm công office-like, client gửi `shiftId` của ca đã chọn; Worker chụp
   bất biến `shiftId/name/start/end` và `shiftSource: profile-work-shift` vào bản
   ghi, nên chỉnh lịch tương lai không viết lại snapshot chấm công lịch sử.

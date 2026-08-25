@@ -7,6 +7,8 @@ import { createSqliteD1 } from './sqlite-d1.mjs'
 import { createStaticAssets } from './static-assets.mjs'
 
 const MAX_REQUEST_BYTES = 20 * 1024 * 1024
+const KEEP_ALIVE_TIMEOUT_MS = 65_000
+const HEADERS_TIMEOUT_MS = 70_000
 
 const readBody = (request) => new Promise((resolveBody, rejectBody) => {
   const chunks = []
@@ -93,6 +95,9 @@ export const createIdosiServer = (options = {}) => {
       if (status >= 500) console.error('Unhandled VPS runtime error', error)
     }
   })
+  // Retire proxy connections after Caddy's 30s pool timeout, never before it.
+  server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS
+  server.headersTimeout = HEADERS_TIMEOUT_MS
   server.on('close', () => runtime.database.close())
   return { server, runtime }
 }

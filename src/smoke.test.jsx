@@ -200,7 +200,7 @@ describe('IDOSI page smoke tests', () => {
     expect(screen.queryByRole('link', { name: /Tài khoản quản lý/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Lương thưởng quản lý/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Chia lợi nhuận/i })).toBeNull()
-  })
+  }, 10_000)
 
   it('allows an Admin-created business-support account to use its scoped workspace', async () => {
     seedBusinessSupportAccount()

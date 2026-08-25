@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { customerSurveySummary } from './customerSurvey'
+import { DEFAULT_ORDER_INFORMATION_OPTIONS } from './orderInformationSettings'
 
 describe('customerSurveySummary', () => {
   it('filters by store/month and produces stable customer insights', () => {
@@ -20,5 +21,18 @@ describe('customerSurveySummary', () => {
     expect(result.occupationTotal).toBe(2)
     expect(result.occupations).toEqual({ 'Nhân viên VP': 2 })
     expect(result.insights).toMatchObject({ topGender: 'Nam', topChannel: 'TikTok', topAge: '18–24', topOccupation: 'Nhân viên VP' })
+  })
+
+  it('keeps an inactive configured occupation in historical statistics', () => {
+    const occupationOptions = DEFAULT_ORDER_INFORMATION_OPTIONS.map((option) => (
+      option.label === 'Kỹ sư' ? { ...option, active: false, deletedAt: '2026-08-24T00:00:00+07:00' } : option
+    ))
+    const result = customerSurveySummary([
+      { id: '1', createdAt: '2026-08-22T08:00:00+07:00', occupation: 'Kỹ sư' },
+      { id: '2', createdAt: '2026-08-22T09:00:00+07:00', occupation: 'Giá trị không cấu hình' },
+    ], { occupationOptions })
+
+    expect(result.occupations).toEqual({ 'Kỹ sư': 1 })
+    expect(result.occupationTotal).toBe(1)
   })
 })

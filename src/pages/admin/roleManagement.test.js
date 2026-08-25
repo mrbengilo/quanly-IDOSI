@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createElement } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -273,22 +273,20 @@ describe('role management permissions and form', () => {
 
     expect(screen.getByText('Nguyễn An')).toBeTruthy()
     expect(screen.getByAltText('Ảnh đại diện Nguyễn An').getAttribute('src')).toBe('/avatar-nguyen-an.webp')
-    expect(screen.getByText('Chỉ Admin được quản lý tài khoản; Admin và Hỗ trợ KD được cấu hình thời gian làm việc.')).toBeTruthy()
+    expect(screen.getByText('Chỉ Admin được quản lý tài khoản; Hỗ trợ KD được xem danh sách và lịch sử liên quan.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Thêm tài khoản/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Sửa Nguyễn An/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Xóa Nguyễn An/i })).toBeNull()
-    expect(screen.getByRole('button', { name: /Cài giờ làm Nguyễn An/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Cài giờ làm Nguyễn An/i })).toBeNull()
     const viewFront = screen.getByRole('button', { name: /Xem mặt trước CCCD Nguyễn An/i })
     expect(viewFront.closest('.identity-image-actions--stable')).toBeTruthy()
     fireEvent.click(viewFront)
     expect(screen.getByRole('img', { name: /Nguyễn An · Mặt trước CCCD/i }).closest('.identity-document-viewer__frame')).toBeTruthy()
   })
 
-  it('submits an effective-dated working-time command when Business Support configures another support profile', async () => {
-    const setEmployeeWorkingTime = vi.fn().mockResolvedValue({ ok: true })
+  it('does not expose working-time settings to Admin on the Business Support list', () => {
     mocked.app = {
-      ...baseApp('business_support'),
-      setEmployeeWorkingTime,
+      ...baseApp('admin'),
       businessSupportEmployees: [{
         id: 'HTKD-002', name: 'Hỗ trợ ca', employmentType: 'Part-Time',
         workShifts: [
@@ -299,18 +297,10 @@ describe('role management permissions and form', () => {
     }
 
     render(createElement(BusinessSupportManagement))
-    fireEvent.click(screen.getByRole('button', { name: 'Cài giờ làm Hỗ trợ ca' }))
-    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
 
-    await waitFor(() => expect(setEmployeeWorkingTime).toHaveBeenCalledTimes(1))
-    const [employeeId, payload] = setEmployeeWorkingTime.mock.calls[0]
-    expect(employeeId).toBe('HTKD-002')
-    expect(Object.keys(payload).sort()).toEqual(['effectiveFrom', 'workEnd', 'workShifts', 'workStart', 'workTimeType', 'workingTime'].sort())
-    expect(payload.effectiveFrom).toBe(today())
-    expect(payload).toMatchObject({ workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00' })
-    expect(payload).not.toHaveProperty('username')
-    expect(payload).not.toHaveProperty('status')
-    expect(payload).not.toHaveProperty('salary')
+    expect(screen.queryByRole('button', { name: 'Cài đặt thời gian làm việc' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Cài giờ làm Hỗ trợ ca' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Sửa Hỗ trợ ca' })).toBeTruthy()
   })
 
   it('omits working-time fields from generic Business Support profile edits', () => {

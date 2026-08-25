@@ -44,11 +44,29 @@ afterEach(async () => {
 })
 
 describe('IDOSI VPS runtime', () => {
+  it('keeps Node upstream sockets alive longer than the Caddy proxy pool', async () => {
+    const directory = await temporaryDirectory()
+    const { server, runtime } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+    })
+    try {
+      expect(server.keepAliveTimeout).toBe(65_000)
+      expect(server.headersTimeout).toBe(70_000)
+      expect(server.headersTimeout).toBeGreaterThan(server.keepAliveTimeout)
+
+      const caddyfile = await readFile(resolve('deploy', 'vps', 'Caddyfile'), 'utf8')
+      expect(caddyfile).toMatch(/reverse_proxy app:3000\s*\{[\s\S]*?transport http\s*\{[\s\S]*?keepalive 30s/u)
+    } finally {
+      runtime.database.close()
+    }
+  })
+
   it('applies migrations once and rolls back a failed D1 batch', async () => {
     const directory = await temporaryDirectory()
     const databasePath = resolve(directory, 'idosi.sqlite')
     const db = createSqliteD1({ databasePath })
-    expect((await db.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(8)
+    expect((await db.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(9)
 
     await expect(db.batch([
       db.prepare("INSERT INTO system_metadata (meta_key, value_json, version, updated_at) VALUES ('rollback-check', '{}', 1, '2026-08-18T00:00:00.000Z')"),
@@ -58,7 +76,7 @@ describe('IDOSI VPS runtime', () => {
     db.close()
 
     const reopened = createSqliteD1({ databasePath })
-    expect((await reopened.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(8)
+    expect((await reopened.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(9)
     reopened.close()
   }, 30_000)
 
@@ -85,7 +103,7 @@ describe('IDOSI VPS runtime', () => {
     const staticDirectory = resolve(directory, 'client')
     await mkdir(staticDirectory, { recursive: true })
     await writeFile(resolve(staticDirectory, 'index.html'), '<!doctype html><title>IDOSI VPS</title>')
-    const { server } = createIdosiServer({
+    const { server, runtime } = createIdosiServer({
       databasePath: resolve(directory, 'idosi.sqlite'),
       imagesDirectory: resolve(directory, 'images'),
       staticDirectory,
@@ -109,6 +127,23 @@ describe('IDOSI VPS runtime', () => {
         }),
       })
       expect(bootstrapResponse.status).toBe(201)
+      const persistedDefaults = (await runtime.database.prepare(`
+        SELECT value_json FROM state_entities
+        WHERE scope_key = 'global' AND collection_key = 'orderInformationOptions'
+        ORDER BY entity_order, entity_key
+      `).all()).results.map(({ value_json: valueJson }) => JSON.parse(valueJson))
+      expect(persistedDefaults).toHaveLength(17)
+      expect(persistedDefaults.filter(({ kind }) => kind === 'occupation')).toHaveLength(15)
+      expect(persistedDefaults.filter(({ kind }) => kind === 'payment_method')).toEqual([
+        expect.objectContaining({ id: 'order-payment-001', label: 'Tiền mặt', system: true }),
+        expect.objectContaining({ id: 'order-payment-002', label: 'Chuyển khoản', system: true }),
+      ])
+      const bootstrapAudit = await runtime.database.prepare(`
+        SELECT metadata_json FROM audit_log WHERE action = 'system.bootstrap'
+      `).first()
+      expect(JSON.parse(bootstrapAudit.metadata_json)).toMatchObject({
+        orderInformationDefaults: { persisted: true, canonicalSeedCount: 17 },
+      })
 
       const loginResponse = await fetch(`${baseUrl}/api/login`, {
         method: 'POST',
@@ -323,6 +358,13 @@ describe('IDOSI VPS runtime', () => {
             workStart: '08:00',
             workEnd: '17:30',
             workShifts: [{ id: 'office_old', name: 'Giờ văn phòng cũ', start: '08:00', end: '17:30' }],
+            workTimeSchedule: [{
+              effectiveFrom: workDate,
+              employmentType: 'Full-Time',
+              workTimeType: 'Full-Time',
+              workShifts: [{ id: 'office_effective', name: 'Giờ văn phòng 08:30', start: '08:30', end: '17:00' }],
+              source: 'fixture',
+            }],
           }, {
             id: supportId,
             code: supportId,
@@ -339,6 +381,13 @@ describe('IDOSI VPS runtime', () => {
             workStart: '08:00',
             workEnd: '17:30',
             workShifts: [{ id: 'support_old', name: 'Giờ hỗ trợ cũ', start: '08:00', end: '17:30' }],
+            workTimeSchedule: [{
+              effectiveFrom: workDate,
+              employmentType: 'Full-Time',
+              workTimeType: 'Full-Time',
+              workShifts: [{ id: 'support_effective', name: 'Giờ hỗ trợ 08:30', start: '08:30', end: '17:00' }],
+              source: 'fixture',
+            }],
           }],
           attendance: [],
           schedule: [],
@@ -380,7 +429,7 @@ describe('IDOSI VPS runtime', () => {
         expect(created.response.status).toBe(201)
       }
 
-      const officeWorkingTime = await postJson(baseUrl, '/api/command', {
+      const retiredOfficeWorkingTime = await postJson(baseUrl, '/api/command', {
         type: 'employee.working_time.set',
         expectedVersion: 1,
         payload: {
@@ -390,21 +439,12 @@ describe('IDOSI VPS runtime', () => {
           workShifts: [{ id: 'office_effective', name: 'Giờ văn phòng 08:30', start: '08:30', end: '17:00' }],
         },
       }, { ...adminHeaders, 'idempotency-key': 'vps-effective-office-working-time' })
-      expect(officeWorkingTime.response.status).toBe(200)
-      expect(officeWorkingTime.body.employee).toMatchObject({
-        workStart: '08:30',
-        workEnd: '17:00',
-      })
-      expect(officeWorkingTime.body.employee.workTimeSchedule).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          effectiveFrom: workDate,
-          workShifts: [expect.objectContaining({ id: 'office_effective', start: '08:30', end: '17:00' })],
-        }),
-      ]))
+      expect(retiredOfficeWorkingTime.response.status).toBe(410)
+      expect(retiredOfficeWorkingTime.body).toMatchObject({ error: { code: 'COMMAND_RETIRED' } })
 
-      const supportWorkingTime = await postJson(baseUrl, '/api/command', {
+      const retiredSupportWorkingTime = await postJson(baseUrl, '/api/command', {
         type: 'employee.working_time.set',
-        expectedVersion: 2,
+        expectedVersion: 1,
         payload: {
           employeeId: supportId,
           effectiveFrom: workDate,
@@ -412,17 +452,8 @@ describe('IDOSI VPS runtime', () => {
           workShifts: [{ id: 'support_effective', name: 'Giờ hỗ trợ 08:30', start: '08:30', end: '17:00' }],
         },
       }, { ...adminHeaders, 'idempotency-key': 'vps-effective-support-working-time' })
-      expect(supportWorkingTime.response.status).toBe(200)
-      expect(supportWorkingTime.body.employee).toMatchObject({
-        workStart: '08:30',
-        workEnd: '17:00',
-      })
-      expect(supportWorkingTime.body.employee.workTimeSchedule).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          effectiveFrom: workDate,
-          workShifts: [expect.objectContaining({ id: 'support_effective', start: '08:30', end: '17:00' })],
-        }),
-      ]))
+      expect(retiredSupportWorkingTime.response.status).toBe(410)
+      expect(retiredSupportWorkingTime.body).toMatchObject({ error: { code: 'COMMAND_RETIRED' } })
 
       const officeLogin = await postJson(baseUrl, '/api/login', {
         username: 'office.effective.vps', password: 'office-effective-vps-password',
@@ -437,7 +468,7 @@ describe('IDOSI VPS runtime', () => {
 
       const officeCheckIn = await postJson(baseUrl, '/api/command', {
         type: 'attendance.check_in',
-        expectedVersion: 3,
+        expectedVersion: 1,
         payload: { shiftId: 'office_old', location },
       }, { ...officeHeaders, 'idempotency-key': 'vps-effective-office-check-in' })
       expect(officeCheckIn.response.status).toBe(201)
@@ -455,7 +486,7 @@ describe('IDOSI VPS runtime', () => {
 
       const supportCheckIn = await postJson(baseUrl, '/api/command', {
         type: 'attendance.check_in',
-        expectedVersion: 4,
+        expectedVersion: 2,
         payload: { shiftId: 'support_old', location },
       }, { ...supportHeaders, 'idempotency-key': 'vps-effective-support-check-in' })
       expect(supportCheckIn.response.status).toBe(201)
@@ -496,7 +527,7 @@ describe('IDOSI VPS runtime', () => {
       vi.setSystemTime(new Date('2026-08-24T10:00:00.000Z')) // 17:00 Vietnam
       const officeCheckOut = await postJson(baseUrl, '/api/command', {
         type: 'attendance.check_out',
-        expectedVersion: 5,
+        expectedVersion: 3,
         payload: { attendanceId: officeCheckIn.body.attendance.id, location },
       }, { ...officeHeaders, 'idempotency-key': 'vps-effective-office-check-out' })
       expect(officeCheckOut.response.status).toBe(200)
@@ -506,7 +537,7 @@ describe('IDOSI VPS runtime', () => {
 
       const supportCheckOut = await postJson(baseUrl, '/api/command', {
         type: 'attendance.check_out',
-        expectedVersion: 6,
+        expectedVersion: 4,
         payload: { attendanceId: supportCheckIn.body.attendance.id, location },
       }, { ...supportHeaders, 'idempotency-key': 'vps-effective-support-check-out' })
       expect(supportCheckOut.response.status).toBe(200)
@@ -516,14 +547,14 @@ describe('IDOSI VPS runtime', () => {
 
       const duplicate = await postJson(baseUrl, '/api/command', {
         type: 'attendance.check_in',
-        expectedVersion: 7,
+        expectedVersion: 5,
         payload: { shiftId: 'office_old', location },
       }, { ...officeHeaders, 'idempotency-key': 'vps-effective-office-duplicate' })
       expect(duplicate.response.status).toBe(409)
       expect(duplicate.body).toMatchObject({ error: { code: 'OFFICE_ATTENDANCE_ALREADY_RECORDED' } })
 
       const officePayroll = await postJson(baseUrl, '/api/command', {
-        type: 'payroll.close', expectedVersion: 7, payload: { storeId: 'OFFICE', period: '2026-08' },
+        type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'OFFICE', period: '2026-08' },
       }, { ...adminHeaders, 'idempotency-key': 'vps-effective-office-payroll' })
       expect(officePayroll.response.status).toBe(201)
       expect(officePayroll.body.period.rows).toEqual([
@@ -537,7 +568,7 @@ describe('IDOSI VPS runtime', () => {
       ])
 
       const supportPayroll = await postJson(baseUrl, '/api/command', {
-        type: 'payroll.close', expectedVersion: 8, payload: { storeId: 'BUSINESS_SUPPORT', period: '2026-08' },
+        type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'BUSINESS_SUPPORT', period: '2026-08' },
       }, { ...adminHeaders, 'idempotency-key': 'vps-effective-support-payroll' })
       expect(supportPayroll.response.status).toBe(201)
       expect(supportPayroll.body.period.rows).toEqual([

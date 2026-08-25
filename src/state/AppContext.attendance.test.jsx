@@ -6,6 +6,7 @@ import { AppProvider, createInitialState, STORAGE_KEY, useApp } from './AppConte
 vi.mock('../services/idosiApi', () => ({
   apiBootstrapState: vi.fn(),
   apiCommand: vi.fn(),
+  apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
   apiLogin: vi.fn(),
   apiSelectSessionRole: vi.fn(),

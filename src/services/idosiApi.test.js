@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiAddressSuggestions, apiGetIdentityImage, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
+import { apiAddressSuggestions, apiGetAccountAvatar, apiGetIdentityImage, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
 
 afterEach(() => {
   clearApiSession()
@@ -36,6 +36,28 @@ describe('IDOSI private identity images', () => {
     expect(fetchMock).toHaveBeenLastCalledWith('/api/identity-images/HTKD-001/front', expect.objectContaining({
       method: 'GET',
       headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
+    }))
+  })
+})
+
+describe('IDOSI private account avatar', () => {
+  it('loads the current account avatar with the active bearer session', async () => {
+    const image = new Blob(['avatar-bytes'], { type: 'image/gif' })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ token: 'session-token', user: { id: 'admin' } }) })
+      .mockResolvedValueOnce({ ok: true, blob: async () => image })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiLogin('admin', 'secret')
+    await expect(apiGetAccountAvatar()).resolves.toBe(image)
+
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/account-avatar', expect.objectContaining({
+      method: 'GET',
+      cache: 'no-store',
+      headers: expect.objectContaining({
+        Accept: expect.stringContaining('image/gif'),
+        Authorization: 'Bearer session-token',
+      }),
     }))
   })
 })

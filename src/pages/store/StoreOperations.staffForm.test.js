@@ -116,6 +116,18 @@ describe('Business Support store employee form', () => {
     })
   })
 
+  it('keeps salary inputs in exact VND units without thousands scaling', () => {
+    const partTime = buildStoreEmployeePayload(validForm({
+      employmentType: 'Part-Time',
+      salary: '35',
+      baseSalary: '',
+    }), { storeId: store.id, store })
+    const fullTime = buildStoreEmployeePayload(validForm({ baseSalary: '35' }), { storeId: store.id, store })
+
+    expect(partTime).toMatchObject({ salary: 35, hourlyRate: 35 })
+    expect(fullTime).toMatchObject({ salary: 35, monthlySalary: 35, baseSalary: 35 })
+  })
+
   it('never resubmits persisted private image metadata', () => {
     expect(freshIdentityImages({
       front: { key: 'private/front.webp', contentType: 'image/webp' },

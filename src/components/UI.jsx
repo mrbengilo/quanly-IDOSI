@@ -215,16 +215,24 @@ export function Input({ icon, className = '', type, onKeyDown, ...props }) {
 }
 
 const moneyUnitValue = (value) => {
-  const amount = Number(String(value ?? '').replace(/\D/gu, ''))
-  if (!Number.isFinite(amount) || amount <= 0) return value === 0 || value === '0' ? '0' : ''
-  return new Intl.NumberFormat('en-US').format(Math.round(amount / 1_000))
+  const source = String(value ?? '').trim()
+  if (!source) return ''
+  const negative = source.startsWith('-')
+  const digits = source.replace(/\D/gu, '')
+  if (!digits) return negative ? '-' : ''
+  const normalizedDigits = digits.replace(/^0+(?=\d)/u, '')
+  const formatted = normalizedDigits.replace(/\B(?=(\d{3})+(?!\d))/gu, ',')
+  return `${negative && !/^0+$/u.test(normalizedDigits) ? '-' : ''}${formatted}`
 }
 
 export function MoneyInput({ className = '', value = '', onChange, ...props }) {
   const displayValue = moneyUnitValue(value)
   const handleChange = (event) => {
-    const digits = String(event.target.value || '').replace(/\D/gu, '')
-    const actualValue = digits ? String(Number(digits) * 1_000) : ''
+    const source = String(event.target.value || '')
+    const negative = source.trimStart().startsWith('-')
+    const digits = source.replace(/\D/gu, '')
+    const normalizedDigits = digits.replace(/^0+(?=\d)/u, '')
+    const actualValue = digits ? `${negative && !/^0+$/u.test(normalizedDigits) ? '-' : ''}${normalizedDigits}` : ''
     onChange?.({
       target: { name: props.name, value: actualValue },
       currentTarget: { name: props.name, value: actualValue },
@@ -235,7 +243,7 @@ export function MoneyInput({ className = '', value = '', onChange, ...props }) {
   return (
     <span className={`input-wrap money-input-wrap ${className}`}>
       <input {...props} inputMode="numeric" value={displayValue} onChange={handleChange} />
-      {displayValue !== '' && <span className="money-input__suffix" aria-hidden="true">,000 đ</span>}
+      {displayValue !== '' && <span className="money-input__suffix" aria-hidden="true">đ</span>}
     </span>
   )
 }
@@ -384,8 +392,8 @@ export function Modal({ open, onClose, title, children, footer, wide = false }) 
   if (!open) return null
   return (
     <div className="overlay" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose?.()}>
-      <section className={`modal ${wide ? 'modal--wide' : ''}`} role="dialog" aria-modal="true">
-        <header><h2>{title}</h2><button className="icon-button" onClick={onClose}><X size={21} /></button></header>
+      <section className={`modal ${wide ? 'modal--wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+        <header><h2>{title}</h2><button className="icon-button" aria-label="Đóng hộp thoại" onClick={onClose}><X size={21} /></button></header>
         <div className="modal__body">{children}</div>
         {footer && <footer>{footer}</footer>}
       </section>

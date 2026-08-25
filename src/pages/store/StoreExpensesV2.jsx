@@ -203,7 +203,7 @@ export function StoreExpensesV2() {
               <span className="store-expense-line__index">{index + 1}</span>
               <Field label="Danh mục" required><Select value={item.category} onChange={(event) => updateLine(index, { category: event.target.value, ...(event.target.value !== 'Khác' ? { name: '', description: '' } : {}) })}>{STORE_EXPENSE_CATEGORIES.map((category) => <option key={category}>{category}</option>)}</Select></Field>
               {item.category === 'Khác' && <Field label="Tên khoản chi" required><Input value={item.name} onChange={(event) => updateLine(index, { name: event.target.value })} placeholder="Ví dụ: Sửa bảng hiệu" /></Field>}
-              <Field label="Số tiền" required><MoneyInput value={item.amount} onChange={(event) => updateLine(index, { amount: event.target.value })} placeholder="Nhập số nghìn" /></Field>
+              <Field label="Số tiền" required><MoneyInput value={item.amount} onChange={(event) => updateLine(index, { amount: event.target.value })} placeholder="Nhập số tiền" /></Field>
               {item.category === 'Khác' && <Field label="Mô tả" required><Input value={item.description} onChange={(event) => updateLine(index, { description: event.target.value })} placeholder="Mô tả bắt buộc" /></Field>}
               <button type="button" className="store-expense-line__remove" onClick={() => removeLine(index)} disabled={form.items.length === 1} aria-label={`Xóa khoản chi ${index + 1}`}><Trash2 size={18} /></button>
             </div>)}

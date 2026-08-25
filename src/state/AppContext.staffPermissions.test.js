@@ -30,6 +30,11 @@ describe('Business Support staff and policy permissions', () => {
       .toThrow(expect.objectContaining({ code: 'AVATAR_TOO_LARGE' }))
     expect(() => createAccountSettingsPayload({ avatar: 'data:image/png;base64,QUFBQQ==' }))
       .toThrow(expect.objectContaining({ code: 'AVATAR_INVALID' }))
+    expect(createAccountSettingsPayload({ avatar: 'blob:private-preview' })).not.toHaveProperty('avatar')
+    expect(createAccountSettingsPayload({
+      avatar: { key: 'account-avatars/usr_1/avatar.webp', contentType: 'image/webp', size: 12, version: 1 },
+    })).not.toHaveProperty('avatar')
+    expect(createAccountSettingsPayload({ avatar: '' })).toMatchObject({ avatar: '' })
   })
 
   it('can create office and store profiles without gaining employee update/delete authority', () => {

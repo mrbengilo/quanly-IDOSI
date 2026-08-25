@@ -1,4 +1,5 @@
 import { shifts } from '../data.js'
+import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'
 
 export const DOMAIN_SCHEMA_VERSION = 2
 
@@ -62,6 +63,7 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   schemaVersion: DOMAIN_SCHEMA_VERSION,
   stateVersion: 1,
   orders: stores.map(openingOrder),
+  orderInformationOptions: DEFAULT_ORDER_INFORMATION_OPTIONS.map((option) => ({ ...option })),
   orderCounters: Object.fromEntries(stores.map((store) => [store.id, 1])),
   orderAudit: [],
   notifications: [],
@@ -114,6 +116,7 @@ export const migrateDomainState = (stored, context) => {
     schemaVersion: DOMAIN_SCHEMA_VERSION,
     stateVersion: Math.max(1, Number(stored.stateVersion) || 1),
     orders: mergeArray(stored, defaults, 'orders'),
+    orderInformationOptions: mergeArray(stored, defaults, 'orderInformationOptions'),
     orderAudit: mergeArray(stored, defaults, 'orderAudit'),
     notifications: mergeArray(stored, defaults, 'notifications'),
     expenseEntries: mergeArray(stored, defaults, 'expenseEntries'),

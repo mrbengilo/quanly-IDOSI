@@ -133,4 +133,8 @@ export const migrations = [
   'drizzle/0002_attendance_evaluation_policies.sql',
   'drizzle/0003_state_entities.sql',
   'drizzle/0004_operational_roles.sql',
+  'drizzle/0005_admin_only_accounts.sql',
+  'drizzle/0006_recursive_profile_secret_scrub.sql',
+  'drizzle/0007_session_roles.sql',
+  'drizzle/0008_order_information_options.sql',
 ] as const

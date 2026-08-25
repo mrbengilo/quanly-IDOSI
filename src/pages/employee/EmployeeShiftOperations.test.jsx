@@ -49,7 +49,7 @@ describe('employee shift operations', () => {
 
     await waitFor(() => expect(mocked.app.addShiftExpense).toHaveBeenCalledTimes(1))
     expect(mocked.app.addShiftExpense).toHaveBeenCalledWith(expect.objectContaining({
-      attendanceId: 'ATT-01', name: 'Mua vật dụng vệ sinh', amount: 35_000, note: 'Mua trong ca sáng',
+      attendanceId: 'ATT-01', name: 'Mua vật dụng vệ sinh', amount: 35, note: 'Mua trong ca sáng',
       idempotencyKey: expect.stringMatching(/^shift-expense:/u),
     }))
   })

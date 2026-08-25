@@ -10,6 +10,12 @@ const STATE_ENTITY_ORDER_STEP = 1_000_000
 const STATE_ENTITY_PAGE_SIZE = 10_000
 const MAX_AVATAR_BYTES = 300 * 1024
 const MAX_IDENTITY_IMAGE_BYTES = 300 * 1024
+const ACCOUNT_AVATAR_KEY_PREFIX = 'account-avatars/'
+const ACCOUNT_AVATAR_MIGRATION_METADATA_KEY = 'migration:account-avatars-v1'
+const ACCOUNT_AVATAR_PENDING_CLEANUP_KEY = 'account-avatars:pending-cleanup'
+const ACCOUNT_AVATAR_MUTATION_CLEANUP_PREFIX = 'account-avatars:mutation-cleanup:'
+// Cancelled markers are permanent late-put fences, so bound them per owner without a cross-account cap.
+const MAX_ACCOUNT_AVATAR_MUTATION_MARKERS_PER_USER = 8
 const MAX_JSON_DEPTH = 64
 const MAX_MONEY_VND = 100_000_000_000
 const DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60
@@ -19,13 +25,553 @@ const MAX_PBKDF2_ITERATIONS = 100_000
 const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'employee'])
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
 
-const validAvatarImageSignature = (mimeType, binary) => {
-  const byte = (index) => binary.charCodeAt(index)
-  if (mimeType === 'image/png') {
-    return [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((value, index) => byte(index) === value)
+const ACCOUNT_AVATAR_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+const MAX_AVATAR_DIMENSION = 4096
+const MAX_AVATAR_PIXELS = 16 * 1024 * 1024
+const MAX_AVATAR_DECODED_BYTES = 32 * 1024 * 1024
+const MAX_GIF_AVATAR_PIXELS = 1024 * 1024
+
+const readUint16BigEndian = (bytes, offset) => (bytes[offset] * 0x100) + bytes[offset + 1]
+const readUint16LittleEndian = (bytes, offset) => bytes[offset] + (bytes[offset + 1] * 0x100)
+const readUint24LittleEndian = (bytes, offset) => bytes[offset] + (bytes[offset + 1] * 0x100) + (bytes[offset + 2] * 0x10000)
+const readUint32BigEndian = (bytes, offset) => (
+  (bytes[offset] * 0x1000000) + (bytes[offset + 1] * 0x10000) + (bytes[offset + 2] * 0x100) + bytes[offset + 3]
+) >>> 0
+const readUint32LittleEndian = (bytes, offset) => (
+  bytes[offset] + (bytes[offset + 1] * 0x100) + (bytes[offset + 2] * 0x10000) + (bytes[offset + 3] * 0x1000000)
+) >>> 0
+const asciiAt = (bytes, offset, length) => String.fromCharCode(...bytes.subarray(offset, offset + length))
+const validAvatarDimensions = (width, height, channels = 4, bytesPerChannel = 1) => {
+  const pixels = width * height
+  return Number.isSafeInteger(width) && Number.isSafeInteger(height)
+    && width > 0 && height > 0
+    && width <= MAX_AVATAR_DIMENSION && height <= MAX_AVATAR_DIMENSION
+    && Number.isSafeInteger(pixels) && pixels <= MAX_AVATAR_PIXELS
+    && pixels * channels * bytesPerChannel <= MAX_AVATAR_DECODED_BYTES
+}
+
+const crc32 = (bytes, start, end) => {
+  let crc = 0xffffffff
+  for (let index = start; index < end; index += 1) {
+    crc ^= bytes[index]
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
   }
-  if (mimeType === 'image/jpeg') return byte(0) === 0xff && byte(1) === 0xd8 && byte(2) === 0xff
-  if (mimeType === 'image/webp') return binary.slice(0, 4) === 'RIFF' && binary.slice(8, 12) === 'WEBP'
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+const pngRowPlan = (width, height, bitsPerPixel, interlace) => {
+  const passes = interlace
+    ? [[0, 0, 8, 8], [4, 0, 8, 8], [0, 4, 4, 8], [2, 0, 4, 4], [0, 2, 2, 4], [1, 0, 2, 2], [0, 1, 1, 2]]
+    : [[0, 0, 1, 1]]
+  const plan = []
+  let decodedBytes = 0
+  for (const [startX, startY, stepX, stepY] of passes) {
+    const passWidth = width > startX ? Math.ceil((width - startX) / stepX) : 0
+    const passHeight = height > startY ? Math.ceil((height - startY) / stepY) : 0
+    if (!passWidth || !passHeight) continue
+    const stride = 1 + Math.ceil((passWidth * bitsPerPixel) / 8)
+    decodedBytes += stride * passHeight
+    if (!Number.isSafeInteger(decodedBytes) || decodedBytes > MAX_AVATAR_DECODED_BYTES) return null
+    plan.push({ rows: passHeight, stride })
+  }
+  return { decodedBytes, plan }
+}
+
+const validInflatedPng = async (idatParts, rowPlan) => {
+  if (typeof Blob !== 'function' || typeof DecompressionStream !== 'function') return false
+  let reader
+  try {
+    reader = new Blob(idatParts).stream().pipeThrough(new DecompressionStream('deflate')).getReader()
+    const inflated = new Uint8Array(rowPlan.decodedBytes)
+    let written = 0
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!(value instanceof Uint8Array) || written + value.byteLength > inflated.byteLength) {
+        await reader.cancel().catch(() => {})
+        return false
+      }
+      inflated.set(value, written)
+      written += value.byteLength
+    }
+    if (written !== inflated.byteLength) return false
+    let offset = 0
+    for (const { rows, stride } of rowPlan.plan) {
+      for (let row = 0; row < rows; row += 1) {
+        if (inflated[offset] > 4) return false
+        offset += stride
+      }
+    }
+    return offset === inflated.byteLength
+  } catch {
+    await reader?.cancel().catch(() => {})
+    return false
+  }
+}
+
+const validPngAvatar = async (bytes) => {
+  if (bytes.length < 57
+    || ![0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a].every((value, index) => bytes[index] === value)) return false
+  let offset = 8
+  let colorType
+  let seenHeader = false
+  let seenPalette = false
+  let seenImageData = false
+  let imageDataClosed = false
+  let seenEnd = false
+  let rowPlan
+  const idatParts = []
+  while (offset < bytes.length) {
+    if (offset + 12 > bytes.length) return false
+    const length = readUint32BigEndian(bytes, offset)
+    const dataStart = offset + 8
+    const dataEnd = dataStart + length
+    if (!Number.isSafeInteger(dataEnd) || dataEnd + 4 > bytes.length) return false
+    const typeBytes = bytes.subarray(offset + 4, offset + 8)
+    if (![...typeBytes].every((value) => (value >= 65 && value <= 90) || (value >= 97 && value <= 122))
+      || (typeBytes[2] & 0x20) !== 0
+      || crc32(bytes, offset + 4, dataEnd) !== readUint32BigEndian(bytes, dataEnd)) return false
+    const type = asciiAt(bytes, offset + 4, 4)
+    if (!seenHeader && type !== 'IHDR') return false
+    if (seenEnd) return false
+    if (seenImageData && type !== 'IDAT') imageDataClosed = true
+    if (type === 'IHDR') {
+      if (seenHeader || length !== 13) return false
+      const width = readUint32BigEndian(bytes, dataStart)
+      const height = readUint32BigEndian(bytes, dataStart + 4)
+      const bitDepth = bytes[dataStart + 8]
+      colorType = bytes[dataStart + 9]
+      const channels = ({ 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 })[colorType]
+      const validDepths = ({ 0: [1, 2, 4, 8, 16], 2: [8, 16], 3: [1, 2, 4, 8], 4: [8, 16], 6: [8, 16] })[colorType]
+      if (!channels || !validDepths.includes(bitDepth)
+        || bytes[dataStart + 10] !== 0 || bytes[dataStart + 11] !== 0 || ![0, 1].includes(bytes[dataStart + 12])
+        || !validAvatarDimensions(width, height, channels, bitDepth === 16 ? 2 : 1)) return false
+      rowPlan = pngRowPlan(width, height, channels * bitDepth, bytes[dataStart + 12])
+      if (!rowPlan) return false
+      seenHeader = true
+    } else if (type === 'PLTE') {
+      if (!seenHeader || seenPalette || seenImageData || length < 3 || length > 768 || length % 3 !== 0 || [0, 4].includes(colorType)) return false
+      seenPalette = true
+    } else if (type === 'IDAT') {
+      if (!seenHeader || imageDataClosed || (colorType === 3 && !seenPalette)) return false
+      seenImageData = true
+      idatParts.push(bytes.slice(dataStart, dataEnd))
+    } else if (type === 'IEND') {
+      if (!seenImageData || length !== 0 || dataEnd + 4 !== bytes.length) return false
+      seenEnd = true
+    } else if ((typeBytes[0] & 0x20) === 0) {
+      return false
+    }
+    offset = dataEnd + 4
+  }
+  return seenHeader && seenImageData && seenEnd && await validInflatedPng(idatParts, rowPlan)
+}
+
+const validJpegAvatar = (bytes) => {
+  if (bytes.length < 32 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return false
+  const quantizationTables = new Set()
+  const huffmanTables = new Set()
+  const frameComponents = new Map()
+  const scannedComponents = new Set()
+  let frameMarker = 0
+  let seenScan = false
+  let restartInterval = 0
+  let offset = 2
+  while (offset < bytes.length) {
+    if (bytes[offset] !== 0xff) return false
+    while (offset < bytes.length && bytes[offset] === 0xff) offset += 1
+    if (offset >= bytes.length) return false
+    const marker = bytes[offset]
+    offset += 1
+    if (marker === 0xd9) {
+      return offset === bytes.length && Boolean(frameMarker) && seenScan
+        && [...frameComponents.keys()].every((componentId) => scannedComponents.has(componentId))
+        && [...frameComponents.values()].every(({ quantizationTable }) => quantizationTables.has(quantizationTable))
+    }
+    if (marker === 0x00 || marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7) || offset + 2 > bytes.length) return false
+    const segmentLength = readUint16BigEndian(bytes, offset)
+    const dataStart = offset + 2
+    const dataEnd = offset + segmentLength
+    if (segmentLength < 2 || dataEnd > bytes.length) return false
+    const isStartOfFrame = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)
+    if (isStartOfFrame) {
+      if (frameMarker || ![0xc0, 0xc1, 0xc2].includes(marker) || segmentLength < 11) return false
+      const precision = bytes[dataStart]
+      const height = readUint16BigEndian(bytes, dataStart + 1)
+      const width = readUint16BigEndian(bytes, dataStart + 3)
+      const componentCount = bytes[dataStart + 5]
+      if (precision !== 8 || componentCount < 1 || componentCount > 4
+        || segmentLength !== 8 + (3 * componentCount)
+        || !validAvatarDimensions(width, height, componentCount)) return false
+      let samplingUnits = 0
+      for (let index = 0; index < componentCount; index += 1) {
+        const componentOffset = dataStart + 6 + (index * 3)
+        const componentId = bytes[componentOffset]
+        const horizontalSampling = bytes[componentOffset + 1] >>> 4
+        const verticalSampling = bytes[componentOffset + 1] & 0x0f
+        const quantizationTable = bytes[componentOffset + 2]
+        if (frameComponents.has(componentId) || horizontalSampling < 1 || horizontalSampling > 4
+          || verticalSampling < 1 || verticalSampling > 4 || quantizationTable > 3) return false
+        samplingUnits += horizontalSampling * verticalSampling
+        frameComponents.set(componentId, { quantizationTable })
+      }
+      if (samplingUnits > 10) return false
+      frameMarker = marker
+    } else if (marker === 0xdb) {
+      let cursor = dataStart
+      while (cursor < dataEnd) {
+        const descriptor = bytes[cursor]
+        const precision = descriptor >>> 4
+        const tableId = descriptor & 0x0f
+        const tableBytes = precision === 0 ? 64 : (precision === 1 ? 128 : 0)
+        if (!tableBytes || tableId > 3 || cursor + 1 + tableBytes > dataEnd) return false
+        for (let index = cursor + 1; index < cursor + 1 + tableBytes; index += precision + 1) {
+          const value = precision ? readUint16BigEndian(bytes, index) : bytes[index]
+          if (value === 0) return false
+        }
+        quantizationTables.add(tableId)
+        cursor += 1 + tableBytes
+      }
+      if (cursor !== dataEnd) return false
+    } else if (marker === 0xc4) {
+      let cursor = dataStart
+      while (cursor < dataEnd) {
+        if (cursor + 17 > dataEnd) return false
+        const descriptor = bytes[cursor]
+        const tableClass = descriptor >>> 4
+        const tableId = descriptor & 0x0f
+        if (tableClass > 1 || tableId > 3) return false
+        let symbolCount = 0
+        let remainingCodes = 1
+        for (let index = 0; index < 16; index += 1) {
+          const count = bytes[cursor + 1 + index]
+          symbolCount += count
+          remainingCodes = (remainingCodes * 2) - count
+          if (remainingCodes < 0) return false
+        }
+        const symbolsStart = cursor + 17
+        if (!symbolCount || symbolCount > 256 || symbolsStart + symbolCount > dataEnd) return false
+        for (let index = symbolsStart; index < symbolsStart + symbolCount; index += 1) {
+          const symbol = bytes[index]
+          if ((tableClass === 0 && symbol > 11)
+            || (tableClass === 1 && ((symbol & 0x0f) > 10 || ((symbol & 0x0f) === 0 && ![0, 15].includes(symbol >>> 4))))) return false
+        }
+        huffmanTables.add(`${tableClass}:${tableId}`)
+        cursor = symbolsStart + symbolCount
+      }
+      if (cursor !== dataEnd) return false
+    } else if (marker === 0xdd) {
+      if (segmentLength !== 4) return false
+      restartInterval = readUint16BigEndian(bytes, dataStart)
+    } else if (marker === 0xda) {
+      if (!frameMarker || segmentLength < 8) return false
+      const componentCount = bytes[dataStart]
+      if (componentCount < 1 || componentCount > frameComponents.size || segmentLength !== 6 + (2 * componentCount)) return false
+      const scanComponents = new Set()
+      const spectralStart = bytes[dataEnd - 3]
+      const spectralEnd = bytes[dataEnd - 2]
+      const approximation = bytes[dataEnd - 1]
+      if ((frameMarker !== 0xc2 && (spectralStart !== 0 || spectralEnd !== 63 || approximation !== 0))
+        || (frameMarker === 0xc2 && (spectralStart > spectralEnd || spectralEnd > 63))) return false
+      for (let index = 0; index < componentCount; index += 1) {
+        const componentId = bytes[dataStart + 1 + (index * 2)]
+        const selectors = bytes[dataStart + 2 + (index * 2)]
+        const dcTable = selectors >>> 4
+        const acTable = selectors & 0x0f
+        if (!frameComponents.has(componentId) || scanComponents.has(componentId) || dcTable > 3 || acTable > 3
+          || (spectralStart === 0 && !huffmanTables.has(`0:${dcTable}`))
+          || (spectralEnd > 0 && !huffmanTables.has(`1:${acTable}`))) return false
+        scanComponents.add(componentId)
+        scannedComponents.add(componentId)
+      }
+      offset = dataEnd
+      let entropyBytes = 0
+      let foundMarker = false
+      while (offset < bytes.length) {
+        if (bytes[offset] !== 0xff) {
+          entropyBytes += 1
+          offset += 1
+          continue
+        }
+        const markerStart = offset
+        while (offset < bytes.length && bytes[offset] === 0xff) offset += 1
+        if (offset >= bytes.length) return false
+        const scanMarker = bytes[offset]
+        if (scanMarker === 0x00 && offset === markerStart + 1) {
+          entropyBytes += 1
+          offset += 1
+          continue
+        }
+        if (scanMarker >= 0xd0 && scanMarker <= 0xd7 && restartInterval > 0) {
+          offset += 1
+          continue
+        }
+        offset = markerStart
+        foundMarker = true
+        break
+      }
+      if (!entropyBytes || !foundMarker) return false
+      seenScan = true
+      continue
+    } else if (marker === 0xcc) {
+      return false
+    }
+    offset = dataEnd
+  }
+  return false
+}
+
+const readGifSubBlocks = (bytes, start) => {
+  const parts = []
+  let total = 0
+  let offset = start
+  while (offset < bytes.length) {
+    const length = bytes[offset]
+    offset += 1
+    if (length === 0) {
+      const data = new Uint8Array(total)
+      let cursor = 0
+      for (const part of parts) {
+        data.set(part, cursor)
+        cursor += part.byteLength
+      }
+      return { data, offset }
+    }
+    if (offset + length > bytes.length || total + length > MAX_AVATAR_BYTES) return null
+    parts.push(bytes.subarray(offset, offset + length))
+    total += length
+    offset += length
+  }
+  return null
+}
+
+const validGifLzw = (data, minimumCodeSize, expectedPixels, paletteSize) => {
+  if (minimumCodeSize < 2 || minimumCodeSize > 8 || !data.length) return false
+  const clearCode = 1 << minimumCodeSize
+  const endCode = clearCode + 1
+  const prefixes = new Int16Array(4096)
+  const suffixes = new Uint8Array(4096)
+  const stack = new Uint8Array(4096)
+  for (let index = 0; index < clearCode; index += 1) suffixes[index] = index
+  let available = endCode + 1
+  let codeSize = minimumCodeSize + 1
+  let bitOffset = 0
+  let previousCode = -1
+  let firstByte = 0
+  let outputPixels = 0
+  let sawClear = false
+  const readCode = () => {
+    if (bitOffset + codeSize > data.length * 8) return -1
+    let code = 0
+    for (let bit = 0; bit < codeSize; bit += 1) {
+      code |= ((data[(bitOffset + bit) >>> 3] >>> ((bitOffset + bit) & 7)) & 1) << bit
+    }
+    bitOffset += codeSize
+    return code
+  }
+  const emit = (value) => {
+    if (value >= paletteSize || outputPixels >= expectedPixels) return false
+    outputPixels += 1
+    return true
+  }
+  while (true) {
+    let code = readCode()
+    if (code < 0) return false
+    if (code === clearCode) {
+      available = endCode + 1
+      codeSize = minimumCodeSize + 1
+      previousCode = -1
+      sawClear = true
+      continue
+    }
+    if (!sawClear) return false
+    if (code === endCode) return outputPixels === expectedPixels
+    if (previousCode < 0) {
+      if (code >= clearCode || !emit(code)) return false
+      firstByte = code
+      previousCode = code
+      continue
+    }
+    const incomingCode = code
+    let stackSize = 0
+    if (code === available) {
+      stack[stackSize] = firstByte
+      stackSize += 1
+      code = previousCode
+    } else if (code > available) {
+      return false
+    }
+    while (code >= clearCode) {
+      if (code >= available || stackSize >= stack.length) return false
+      stack[stackSize] = suffixes[code]
+      stackSize += 1
+      code = prefixes[code]
+    }
+    firstByte = suffixes[code]
+    if (stackSize >= stack.length) return false
+    stack[stackSize] = firstByte
+    stackSize += 1
+    while (stackSize > 0) {
+      stackSize -= 1
+      if (!emit(stack[stackSize])) return false
+    }
+    if (available < 4096) {
+      prefixes[available] = previousCode
+      suffixes[available] = firstByte
+      available += 1
+      if (available === (1 << codeSize) && codeSize < 12) codeSize += 1
+    }
+    previousCode = incomingCode
+  }
+}
+
+const validGifAvatar = (bytes) => {
+  if (bytes.length < 20 || !['GIF87a', 'GIF89a'].includes(asciiAt(bytes, 0, 6))) return false
+  const logicalWidth = readUint16LittleEndian(bytes, 6)
+  const logicalHeight = readUint16LittleEndian(bytes, 8)
+  if (!validAvatarDimensions(logicalWidth, logicalHeight)) return false
+  const packed = bytes[10]
+  const globalPaletteSize = (packed & 0x80) ? 1 << ((packed & 0x07) + 1) : 0
+  let offset = 13 + (globalPaletteSize * 3)
+  if (offset > bytes.length || (globalPaletteSize && bytes[11] >= globalPaletteSize)) return false
+  let frames = 0
+  while (offset < bytes.length) {
+    const introducer = bytes[offset]
+    offset += 1
+    if (introducer === 0x3b) return offset === bytes.length && frames > 0
+    if (introducer === 0x21) {
+      if (offset >= bytes.length) return false
+      const label = bytes[offset]
+      offset += 1
+      if (label === 0xf9) {
+        if (offset + 6 > bytes.length || bytes[offset] !== 4 || bytes[offset + 5] !== 0) return false
+        offset += 6
+      } else {
+        const extension = readGifSubBlocks(bytes, offset)
+        if (!extension) return false
+        offset = extension.offset
+      }
+      continue
+    }
+    if (introducer !== 0x2c || offset + 9 > bytes.length) return false
+    const left = readUint16LittleEndian(bytes, offset)
+    const top = readUint16LittleEndian(bytes, offset + 2)
+    const width = readUint16LittleEndian(bytes, offset + 4)
+    const height = readUint16LittleEndian(bytes, offset + 6)
+    const imagePacked = bytes[offset + 8]
+    if (frames > 0 || width * height > MAX_GIF_AVATAR_PIXELS
+      || (imagePacked & 0x18) !== 0 || !validAvatarDimensions(width, height)
+      || left + width > logicalWidth || top + height > logicalHeight) return false
+    offset += 9
+    const localPaletteSize = (imagePacked & 0x80) ? 1 << ((imagePacked & 0x07) + 1) : 0
+    if (localPaletteSize) offset += localPaletteSize * 3
+    const paletteSize = localPaletteSize || globalPaletteSize
+    if (!paletteSize || offset >= bytes.length) return false
+    const minimumCodeSize = bytes[offset]
+    offset += 1
+    const imageData = readGifSubBlocks(bytes, offset)
+    if (!imageData || !validGifLzw(imageData.data, minimumCodeSize, width * height, paletteSize)) return false
+    offset = imageData.offset
+    frames += 1
+  }
+  return false
+}
+
+const webpDimensions = (type, payload) => {
+  if (type === 'VP8L') {
+    if (payload.length < 5 || payload[0] !== 0x2f) return null
+    const bits = readUint32LittleEndian(payload, 1)
+    if ((bits >>> 29) !== 0) return null
+    return {
+      width: (bits & 0x3fff) + 1,
+      height: ((bits >>> 14) & 0x3fff) + 1,
+      hasAlpha: Boolean(bits & 0x10000000),
+    }
+  }
+  if (type === 'VP8 ') {
+    if (payload.length < 10) return null
+    const frameTag = payload[0] + (payload[1] * 0x100) + (payload[2] * 0x10000)
+    const firstPartitionLength = frameTag >>> 5
+    if ((frameTag & 1) !== 0 || ((frameTag >>> 1) & 0x07) > 3 || ((frameTag >>> 4) & 1) !== 1
+      || firstPartitionLength < 1 || firstPartitionLength > payload.length - 10
+      || payload[3] !== 0x9d || payload[4] !== 0x01 || payload[5] !== 0x2a) return null
+    return {
+      width: readUint16LittleEndian(payload, 6) & 0x3fff,
+      height: readUint16LittleEndian(payload, 8) & 0x3fff,
+      hasAlpha: false,
+    }
+  }
+  return null
+}
+
+const validWebpAvatar = (bytes) => {
+  if (bytes.length < 30 || asciiAt(bytes, 0, 4) !== 'RIFF' || asciiAt(bytes, 8, 4) !== 'WEBP'
+    || readUint32LittleEndian(bytes, 4) !== bytes.length - 8) return false
+  let offset = 12
+  let extendedDimensions = null
+  let extendedFlags = 0
+  let imageDimensions = null
+  let imageChunks = 0
+  let imageType = ''
+  let alphaChunk = false
+  const metadataChunks = new Set()
+  while (offset < bytes.length) {
+    if (offset + 8 > bytes.length) return false
+    const type = asciiAt(bytes, offset, 4)
+    const length = readUint32LittleEndian(bytes, offset + 4)
+    const dataStart = offset + 8
+    const dataEnd = dataStart + length
+    const paddedEnd = dataEnd + (length & 1)
+    if (!Number.isSafeInteger(dataEnd) || paddedEnd > bytes.length || (length & 1 && bytes[dataEnd] !== 0)) return false
+    const payload = bytes.subarray(dataStart, dataEnd)
+    if (type === 'VP8X') {
+      if (offset !== 12 || extendedDimensions || length !== 10 || (payload[0] & 0xc3) !== 0 || (payload[0] & 0x02) !== 0
+        || payload[1] !== 0 || payload[2] !== 0 || payload[3] !== 0) return false
+      extendedFlags = payload[0]
+      extendedDimensions = {
+        width: readUint24LittleEndian(payload, 4) + 1,
+        height: readUint24LittleEndian(payload, 7) + 1,
+      }
+      if (!validAvatarDimensions(extendedDimensions.width, extendedDimensions.height)) return false
+    } else if (type === 'VP8 ' || type === 'VP8L') {
+      if (imageChunks) return false
+      imageDimensions = webpDimensions(type, payload)
+      if (!imageDimensions || !validAvatarDimensions(imageDimensions.width, imageDimensions.height)) return false
+      imageType = type
+      imageChunks += 1
+    } else if (type === 'ALPH') {
+      if (!extendedDimensions || imageChunks || alphaChunk || length < 2 || (payload[0] & 0xc0) !== 0 || (payload[0] & 0x03) > 1) return false
+      alphaChunk = true
+    } else if (['ANIM', 'ANMF'].includes(type)) {
+      return false
+    } else if (['ICCP', 'EXIF', 'XMP '].includes(type)) {
+      if (metadataChunks.has(type)) return false
+      metadataChunks.add(type)
+    } else if (type !== 'JUNK') {
+      return false
+    }
+    offset = paddedEnd
+  }
+  if (offset !== bytes.length || imageChunks !== 1) return false
+  if (extendedDimensions && (extendedDimensions.width !== imageDimensions.width || extendedDimensions.height !== imageDimensions.height)) return false
+  if (extendedDimensions) {
+    if (imageType === 'VP8 ' && Boolean(extendedFlags & 0x10) !== alphaChunk) return false
+    if (imageType === 'VP8L' && (alphaChunk || Boolean(extendedFlags & 0x10) !== imageDimensions.hasAlpha)) return false
+    if (metadataChunks.has('ICCP') !== Boolean(extendedFlags & 0x20)
+      || metadataChunks.has('EXIF') !== Boolean(extendedFlags & 0x08)
+      || metadataChunks.has('XMP ') !== Boolean(extendedFlags & 0x04)) return false
+  } else if (metadataChunks.size) {
+    return false
+  }
+  return true
+}
+
+const validAvatarImageStructure = async (mimeType, bytes) => {
+  if (!(bytes instanceof Uint8Array)) return false
+  if (mimeType === 'image/png') return validPngAvatar(bytes)
+  if (mimeType === 'image/jpeg') return validJpegAvatar(bytes)
+  if (mimeType === 'image/webp') return validWebpAvatar(bytes)
+  if (mimeType === 'image/gif') return validGifAvatar(bytes)
   return false
 }
 const BUSINESS_SUPPORT_STORE_ID = 'BUSINESS_SUPPORT'
@@ -45,7 +591,11 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'store.update',
   'employee.create',
   'employee.update',
-  'employee.working_time.set',
+  'order_information.create',
+  'order_information.update',
+  'order_information.disable',
+  'order_information.restore',
+  'order_information.reorder',
   'shift_definition.create',
   'shift_definition.update',
   'shift_definition.delete',
@@ -83,6 +633,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'support_schedule.assign',
   'support_schedule.delete',
 ])
+const RETIRED_COMMANDS = new Set(['employee.working_time.set'])
 const ADDRESS_SUGGESTION_TYPES = new Set(['province', 'ward', 'street'])
 const ADDRESS_SUGGESTION_RATE_LIMIT = 30
 const ADDRESS_SUGGESTION_RATE_WINDOW_MS = 60_000
@@ -160,6 +711,36 @@ const decodeIdentityImage = (value, side) => {
   return { bytes, contentType: type, extension }
 }
 
+const decodeAccountAvatar = async (value) => {
+  const source = String(value || '')
+  const match = source.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/]+={0,2})$/u)
+  if (!match) {
+    throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là dữ liệu ảnh JPG, PNG, WebP hoặc GIF hợp lệ.')
+  }
+  if (match[2].length > Math.ceil(MAX_AVATAR_BYTES / 3) * 4 + 4) {
+    throw new ApiError(413, 'AVATAR_TOO_LARGE', 'Ảnh đại diện sau khi tối ưu không được vượt quá 300 KB.')
+  }
+  let binary
+  let bytes
+  try {
+    binary = atob(match[2])
+    bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+  } catch {
+    throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là dữ liệu ảnh JPG, PNG, WebP hoặc GIF hợp lệ.')
+  }
+  if (!bytes.length || bytes.byteLength > MAX_AVATAR_BYTES) {
+    throw new ApiError(bytes.length ? 413 : 400, bytes.length ? 'AVATAR_TOO_LARGE' : 'AVATAR_INVALID', bytes.length
+      ? 'Ảnh đại diện sau khi tối ưu không được vượt quá 300 KB.'
+      : 'Ảnh đại diện không được để trống.')
+  }
+  if (!await validAvatarImageStructure(match[1], bytes)) {
+    throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là dữ liệu ảnh JPG, PNG, WebP hoặc GIF hợp lệ.')
+  }
+  const contentType = match[1]
+  const extension = contentType === 'image/jpeg' ? 'jpg' : contentType.slice('image/'.length)
+  return { bytes, contentType, extension }
+}
+
 const randomBytes = (length) => {
   const bytes = new Uint8Array(length)
   crypto.getRandomValues(bytes)
@@ -232,6 +813,29 @@ const sha256 = async (value) => {
 
 const normalizeUsername = (value) => String(value || '').trim().toLocaleLowerCase('vi-VN')
 const isPlainRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+const isEmbeddedImageDataUrl = (value) => typeof value === 'string'
+  && /^data:image(?:\/|-)[a-z0-9.+-]+;base64,/iu.test(value)
+
+const containsEmbeddedImageData = (value, depth = 0) => {
+  if (depth > MAX_JSON_DEPTH) return false
+  if (isEmbeddedImageDataUrl(value)) return true
+  if (Array.isArray(value)) return value.some((item) => containsEmbeddedImageData(item, depth + 1))
+  if (!isPlainRecord(value)) return false
+  return Object.values(value).some((item) => containsEmbeddedImageData(item, depth + 1))
+}
+
+const replaceEmbeddedImageData = (value, replacements = new Map(), depth = 0) => {
+  if (depth > MAX_JSON_DEPTH) return null
+  if (isEmbeddedImageDataUrl(value)) return replacements.get(value) || null
+  if (Array.isArray(value)) return value.map((item) => replaceEmbeddedImageData(item, replacements, depth + 1))
+  if (!isPlainRecord(value)) return value
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+    key,
+    replaceEmbeddedImageData(item, replacements, depth + 1),
+  ]))
+}
+
+const jsonTextContainsEmbeddedImageData = (value) => /["']data:image(?:\/|-)[a-z0-9.+-]+;base64,/iu.test(String(value || ''))
 const parseStoredJson = (value, fallback = null) => {
   try {
     return JSON.parse(value)
@@ -909,11 +1513,35 @@ const projectNotificationForActor = (record, actor) => {
   return { ...projected, readAt: notificationReadAtForActor(record, actor) }
 }
 
+const accountAvatarOwnerSegment = (value) => String(value || '')
+  .replace(/[^A-Za-z0-9_-]/gu, '_')
+  .slice(0, 120)
+
+const accountAvatarKeyPrefixForUser = (userId) => `${ACCOUNT_AVATAR_KEY_PREFIX}${accountAvatarOwnerSegment(userId)}/`
+
+const normalizeAccountAvatarMetadata = (value, userId = '') => {
+  if (!isPlainRecord(value)) return null
+  const key = String(value.key || '')
+  const contentType = String(value.contentType || value.mimeType || '')
+  const size = Number(value.size)
+  const version = Number(value.version)
+  if (!key.startsWith(userId ? accountAvatarKeyPrefixForUser(userId) : ACCOUNT_AVATAR_KEY_PREFIX)
+    || !ACCOUNT_AVATAR_CONTENT_TYPES.has(contentType)
+    || !Number.isSafeInteger(size) || size < 1 || size > MAX_AVATAR_BYTES
+    || !Number.isSafeInteger(version) || version < 1) return null
+  return {
+    key,
+    contentType,
+    size,
+    version,
+  }
+}
+
 const ownAccountSettings = (state, user) => {
   const userId = String(user.user_id || user.id || '')
   const stored = isPlainRecord(state.accountSettings?.[userId]) ? state.accountSettings[userId] : null
   const legacy = user.role === 'admin' && isPlainRecord(state.settings) ? state.settings : {}
-  return {
+  const settings = {
     name: user.display_name || user.displayName || user.username || '',
     email: '',
     phone: '',
@@ -932,14 +1560,21 @@ const ownAccountSettings = (state, user) => {
       ...(isPlainRecord(stored?.notifications) ? stored.notifications : {}),
     },
   }
+  const metadata = normalizeAccountAvatarMetadata(settings.avatar, userId)
+  if (metadata) settings.avatar = metadata
+  else if (isEmbeddedImageDataUrl(settings.avatar) || isPlainRecord(settings.avatar)) settings.avatar = null
+  return settings
 }
 
 const employeeAccountAvatar = (state, employee = {}) => {
   const authUserId = String(employee.authUserId || '')
   const accountAvatar = authUserId && isPlainRecord(state.accountSettings?.[authUserId])
-    ? String(state.accountSettings[authUserId].avatar || '')
+    ? state.accountSettings[authUserId].avatar
+    : null
+  if (typeof accountAvatar === 'string' && !isEmbeddedImageDataUrl(accountAvatar)) return accountAvatar
+  return typeof employee.avatar === 'string' && !isEmbeddedImageDataUrl(employee.avatar)
+    ? employee.avatar
     : ''
-  return accountAvatar || String(employee.avatar || '')
 }
 
 const withEmployeeAccountAvatar = (state, employee = {}) => {
@@ -951,6 +1586,7 @@ export const projectSharedState = (rawState, user) => {
   const normalizedState = normalizeSharedStateForStorage(rawState)
   let state = {
     ...normalizedState,
+    orderInformationOptions: orderInformationOptionsFromState(normalizedState),
     ...(Object.hasOwn(normalizedState, 'employees') ? {
       employees: (Array.isArray(normalizedState.employees) ? normalizedState.employees : [])
         .map((employee) => withEmployeeAccountAvatar(normalizedState, employee)),
@@ -963,6 +1599,7 @@ export const projectSharedState = (rawState, user) => {
   const common = {
     schemaVersion: state.schemaVersion,
     stateVersion: state.stateVersion,
+    orderInformationOptions: state.orderInformationOptions,
     session: null,
     activeAttendanceId: null,
     checkedInAt: null,
@@ -1820,6 +2457,9 @@ const packJsonArrayPayloads = (items, maximumBytes = MAX_STATE_BATCH_JSON_BYTES)
 }
 
 const prepareStatePersistencePlan = (current, nextState, now) => {
+  if (containsEmbeddedImageData(nextState)) {
+    throw new ApiError(400, 'EMBEDDED_IMAGE_STATE_FORBIDDEN', 'Ảnh riêng tư phải được lưu trong kho ảnh; trạng thái chỉ được chứa metadata.')
+  }
   const compactState = {}
   const nextCollections = new Map()
   for (const [key, value] of Object.entries(nextState)) {
@@ -2030,7 +2670,7 @@ const prepareStateCommit = (db, {
 
 const boundedAuditJson = (value) => {
   if (value === undefined) return null
-  const serialized = JSON.stringify(value)
+  const serialized = JSON.stringify(replaceEmbeddedImageData(value))
   if (jsonByteLength(serialized) <= MAX_AUDIT_JSON_BYTES) return serialized
   const summary = {
     truncated: true,
@@ -2063,6 +2703,9 @@ const receiptStatements = (db, {
   successBindings,
   enforceSuccess = false,
 }) => {
+  if (jsonTextContainsEmbeddedImageData(responseJson)) {
+    throw new ApiError(500, 'EMBEDDED_IMAGE_RECEIPT_FORBIDDEN', 'Biên nhận lệnh không được chứa dữ liệu ảnh nhúng.')
+  }
   const responseBytes = jsonByteLength(responseJson)
   const chunks = responseBytes > MAX_RECEIPT_INLINE_BYTES
     ? splitUtf8String(responseJson, MAX_RECEIPT_CHUNK_BYTES)
@@ -2150,7 +2793,12 @@ const bootstrapDatabase = async (request, env, context) => {
   }
   const initialState = body.initialState === undefined ? {} : body.initialState
   if (!isPlainRecord(initialState)) throw new ApiError(400, 'INVALID_STATE', 'Trạng thái ban đầu phải là một đối tượng JSON.')
-  const normalizedInitialState = normalizeSharedStateForStorage(initialState)
+  const sanitizedInitialState = normalizeSharedStateForStorage(initialState)
+  const normalizedInitialState = {
+    ...sanitizedInitialState,
+    orderInformationOptions: materializeDefaultOrderInformationOptions(sanitizedInitialState),
+  }
+  configuredOrderPaymentMethods(normalizedInitialState)
 
   const password = await hashPassword(body.password)
   const userId = `usr_${crypto.randomUUID()}`
@@ -2256,8 +2904,8 @@ const bootstrapDatabase = async (request, env, context) => {
   `).bind(
     requestId,
     userId,
-    JSON.stringify({ initialized: true }),
-    JSON.stringify({ source: 'bootstrap-api' }),
+    JSON.stringify({ initialized: true, orderInformationDefaults: orderInformationDefaultsSummary() }),
+    JSON.stringify({ source: 'bootstrap-api', orderInformationDefaults: orderInformationDefaultsSummary() }),
     context.now,
   ))
 
@@ -2411,7 +3059,9 @@ const getBootstrap = async (request, env, context, url) => {
   const user = await requireSession(request, db, context)
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  const [stateRow, policies] = await Promise.all([loadState(db, scope), listPolicies(db)])
+  let stateRow = await loadState(db, scope)
+  if (scope === 'global') stateRow = await migrateLegacyAccountAvatars(db, env, user, context, stateRow)
+  const policies = await listPolicies(db)
   const rawState = stateRow ? parseStoredJson(stateRow.value_json, {}) : {}
   return jsonResponse(apiPayload(context, {
     user: publicUser(user),
@@ -2429,7 +3079,9 @@ const getState = async (request, env, context, url) => {
   const user = await requireSession(request, db, context)
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  const [row, policies] = await Promise.all([loadState(db, scope), listPolicies(db)])
+  let row = await loadState(db, scope)
+  if (scope === 'global') row = await migrateLegacyAccountAvatars(db, env, user, context, row)
+  const policies = await listPolicies(db)
   const rawState = row ? parseStoredJson(row.value_json, {}) : {}
   return jsonResponse(apiPayload(context, {
     user: publicUser(user),
@@ -2450,6 +3102,7 @@ const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
   'taskAssignmentHistory',
   'orders',
   'orderAudit',
+  'orderInformationOptions',
   'operationalResetHistory',
   'supportTransfers',
   'supportWorkAssignments',
@@ -2476,6 +3129,9 @@ const SUPPORT_ATTENDANCE_PROJECTION_FIELDS = new Set([
 ])
 
 const protectedCollectionComparable = (key, value) => {
+  if (key === 'orderInformationOptions') {
+    return orderInformationOptionsFromState(Array.isArray(value) ? { orderInformationOptions: value } : {})
+  }
   if (key !== 'attendance' || !Array.isArray(value)) return value
   return value.map((record) => Object.fromEntries(Object.entries(record || {}).filter(([field]) => (
     !SUPPORT_ATTENDANCE_PROJECTION_FIELDS.has(field)
@@ -2566,8 +3222,11 @@ const stateCommand = async (db, user, body, commandContext) => {
   }
   nextState = normalizeSharedStateForStorage(nextState)
   if (scope === 'global') {
-    const currentAccountSettings = normalizeSharedStateForStorage(currentState).accountSettings
+    const normalizedCurrentState = normalizeSharedStateForStorage(currentState)
+    const currentAccountSettings = normalizedCurrentState.accountSettings
     nextState.accountSettings = isPlainRecord(currentAccountSettings) ? currentAccountSettings : {}
+    if (Object.hasOwn(normalizedCurrentState, 'settings')) nextState.settings = normalizedCurrentState.settings
+    else delete nextState.settings
     nextState.notifications = preserveNotificationReadReceipts(currentState, nextState)
   }
   const nextVersion = currentVersion + 1
@@ -3492,7 +4151,6 @@ const operationalPosition = (value, unit) => {
 
 const MAX_REQUIRED_MONTHLY_HOURS = 744
 const MAX_PROFILE_WORK_SHIFTS = 12
-const MAX_PROFILE_WORK_TIME_SCHEDULE_ENTRIES = 120
 
 const expectedWorkTimeType = (employmentType) => (
   employmentType === 'Full-Time' ? 'Full-Time' : 'Part-Time'
@@ -3761,6 +4419,491 @@ const prepareIdentityImageUpdate = async (env, payload, previous, employeeId, ti
   return { identityImages, uploadedKeys, retiredKeys }
 }
 
+const deleteAccountAvatarObjects = async (bucket, keys) => {
+  const targets = [...new Set((keys || []).filter((key) => String(key).startsWith(ACCOUNT_AVATAR_KEY_PREFIX)))]
+  if (!bucket?.delete) return targets
+  const failedKeys = []
+  for (const key of targets) {
+    try {
+      await bucket.delete(key)
+    } catch (error) {
+      failedKeys.push(key)
+      console.warn('Unable to clean up an IDOSI account avatar', { key, error: String(error) })
+    }
+  }
+  return failedKeys
+}
+
+const cleanupAccountAvatarObjects = async (db, bucket, keys, {
+  reason,
+  timestamp,
+  preservedKeys = [],
+} = {}) => {
+  const failedKeys = await deleteAccountAvatarObjects(bucket, keys)
+  if (failedKeys.length) {
+    await enqueuePendingAccountAvatarCleanup(db, failedKeys, { reason, timestamp, preservedKeys })
+  }
+  return failedKeys
+}
+
+const uploadAccountAvatarObject = async (bucket, source, userId, timestamp, version = 1, lifecycle = {}) => {
+  if (!bucket?.put || !bucket?.delete) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_STORAGE_UNAVAILABLE', 'Kho lưu ảnh đại diện chưa được cấu hình.')
+  }
+  const image = await decodeAccountAvatar(source)
+  const normalizedVersion = Math.max(1, Number(version) || 1)
+  const key = `${accountAvatarKeyPrefixForUser(userId)}${crypto.randomUUID()}.${image.extension}`
+  try {
+    if (typeof lifecycle.beforePut === 'function') await lifecycle.beforePut(key)
+    await bucket.put(key, image.bytes, {
+      httpMetadata: { contentType: image.contentType },
+      customMetadata: {
+        userId: String(userId || ''),
+        version: String(normalizedVersion),
+        uploadedAt: timestamp,
+      },
+    })
+    if (typeof lifecycle.afterPut === 'function') await lifecycle.afterPut(key)
+  } catch (error) {
+    if (error instanceof ApiError) throw error
+    throw new ApiError(503, 'ACCOUNT_AVATAR_STORAGE_FAILED', 'Không thể lưu ảnh đại diện vào kho riêng tư.')
+  }
+  return {
+    metadata: {
+      key,
+      contentType: image.contentType,
+      size: image.bytes.byteLength,
+      version: normalizedVersion,
+    },
+    key,
+  }
+}
+
+const prepareAccountAvatarUpdate = async (env, input, previous, userId, timestamp, lifecycle = {}) => {
+  const existing = normalizeAccountAvatarMetadata(previous, userId)
+  if (input === undefined) return { avatar: existing, uploadedKeys: [], retiredKeys: [] }
+  const source = String(input || '').trim()
+  if (!source) {
+    if (existing && !env?.IDENTITY_IMAGES?.delete) {
+      throw new ApiError(503, 'ACCOUNT_AVATAR_STORAGE_UNAVAILABLE', 'Kho lưu ảnh đại diện chưa được cấu hình.')
+    }
+    return { avatar: null, uploadedKeys: [], retiredKeys: existing ? [existing.key] : [] }
+  }
+  const uploaded = await uploadAccountAvatarObject(
+    env?.IDENTITY_IMAGES,
+    source,
+    userId,
+    timestamp,
+    Number(existing?.version || 0) + 1,
+    lifecycle,
+  )
+  return {
+    avatar: uploaded.metadata,
+    uploadedKeys: [uploaded.key],
+    retiredKeys: existing?.key && existing.key !== uploaded.key ? [existing.key] : [],
+  }
+}
+
+const hasLegacyAccountAvatarData = (state) => {
+  const accountSettings = isPlainRecord(state?.accountSettings) ? state.accountSettings : {}
+  return isEmbeddedImageDataUrl(state?.settings?.avatar)
+    || Object.values(accountSettings).some((settings) => isEmbeddedImageDataUrl(settings?.avatar))
+    || (Array.isArray(state?.employees) ? state.employees : []).some((employee) => isEmbeddedImageDataUrl(employee?.avatar))
+    || (Array.isArray(state?.deletedEmployees) ? state.deletedEmployees : [])
+      .some((employee) => isEmbeddedImageDataUrl(employee?.avatar))
+}
+
+const prepareLegacyAccountAvatarMigration = async (
+  env,
+  db,
+  rawState,
+  timestamp,
+  preferredUserId = '',
+  lifecycle = {},
+) => {
+  const state = isPlainRecord(rawState) ? rawState : {}
+  const accountSettings = Object.fromEntries(Object.entries(isPlainRecord(state.accountSettings) ? state.accountSettings : {})
+    .map(([userId, settings]) => [userId, isPlainRecord(settings) ? { ...settings } : settings]))
+  const employees = (Array.isArray(state.employees) ? state.employees : []).map((employee) => ({ ...employee }))
+  const deletedEmployees = (Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []).map((employee) => ({ ...employee }))
+  const legacyTopLevelAvatar = isEmbeddedImageDataUrl(state.settings?.avatar) ? state.settings.avatar : ''
+  const hasLegacy = hasLegacyAccountAvatarData(state)
+  if (!hasLegacy) {
+    return { changed: false, state, uploadedKeys: [], replacements: new Map(), quarantined: [] }
+  }
+
+  const bucket = env?.IDENTITY_IMAGES
+  const users = await all(db, 'SELECT id, employee_id, role FROM users ORDER BY created_at, id')
+  const userIdByEmployeeId = new Map(users
+    .filter((user) => user.employee_id)
+    .map((user) => [String(user.employee_id), String(user.id)]))
+  const preferredUser = users.find((user) => String(user.id) === String(preferredUserId || ''))
+  const defaultAdminId = String(
+    (preferredUser?.role === 'admin' ? preferredUser.id : '')
+    || users.find((user) => user.role === 'admin')?.id
+    || '',
+  )
+  const uploadedKeys = []
+  const replacements = new Map()
+  const quarantined = []
+  const metadataByOwnerAndSource = new Map()
+  const upload = async (source, ownerId) => {
+    const normalizedOwnerId = String(ownerId || `legacy-${crypto.randomUUID()}`)
+    const identity = `${normalizedOwnerId}\u0000${source}`
+    if (metadataByOwnerAndSource.has(identity)) return metadataByOwnerAndSource.get(identity)
+    const uploaded = await uploadAccountAvatarObject(bucket, source, normalizedOwnerId, timestamp, 1, lifecycle)
+    uploadedKeys.push(uploaded.key)
+    metadataByOwnerAndSource.set(identity, uploaded.metadata)
+    if (!replacements.has(source)) replacements.set(source, uploaded.metadata)
+    return uploaded.metadata
+  }
+  const migrateOrQuarantine = async (source, ownerId, location) => {
+    try {
+      await decodeAccountAvatar(source)
+    } catch (error) {
+      if (!(error instanceof ApiError) || !['AVATAR_INVALID', 'AVATAR_TOO_LARGE'].includes(error.code)) throw error
+      replacements.set(source, null)
+      quarantined.push({
+        location,
+        ownerId: String(ownerId || ''),
+        reason: error.code === 'AVATAR_TOO_LARGE' ? 'legacy-avatar-too-large' : 'legacy-avatar-invalid',
+      })
+      return null
+    }
+    return upload(source, ownerId)
+  }
+
+  try {
+    for (const [userId, settings] of Object.entries(accountSettings)) {
+      if (!isPlainRecord(settings) || !isEmbeddedImageDataUrl(settings.avatar)) continue
+      settings.avatar = await migrateOrQuarantine(settings.avatar, userId, `accountSettings.${userId}.avatar`)
+    }
+
+    if (legacyTopLevelAvatar) {
+      const ownerId = defaultAdminId || `legacy-admin-${crypto.randomUUID()}`
+      const metadata = await migrateOrQuarantine(legacyTopLevelAvatar, ownerId, 'settings.avatar')
+      if (metadata) {
+        accountSettings[ownerId] = {
+          ...(isPlainRecord(accountSettings[ownerId]) ? accountSettings[ownerId] : {}),
+          avatar: metadata,
+        }
+      }
+    }
+
+    for (const [collection, profiles] of [['employees', employees], ['deletedEmployees', deletedEmployees]]) {
+      for (const employee of profiles) {
+        if (!isEmbeddedImageDataUrl(employee.avatar)) continue
+        const source = employee.avatar
+        const employeeId = String(employee.id || employee.code || employee.employeeId || '')
+        const ownerId = String(employee.authUserId || userIdByEmployeeId.get(employeeId) || '')
+        const metadata = await migrateOrQuarantine(
+          source,
+          ownerId || `legacy-profile-${employeeId || crypto.randomUUID()}`,
+          `${collection}.${employeeId || 'unknown'}.avatar`,
+        )
+        delete employee.avatar
+        if (metadata) employee.avatarImage = metadata
+        if (metadata && ownerId && !normalizeAccountAvatarMetadata(accountSettings[ownerId]?.avatar, ownerId)) {
+          accountSettings[ownerId] = {
+            ...(isPlainRecord(accountSettings[ownerId]) ? accountSettings[ownerId] : {}),
+            avatar: metadata,
+          }
+        }
+      }
+    }
+  } catch (error) {
+    await cleanupAccountAvatarObjects(db, bucket, uploadedKeys, {
+      reason: 'legacy-avatar-migration-rollback',
+      timestamp,
+    })
+    throw error
+  }
+
+  const settings = isPlainRecord(state.settings) ? { ...state.settings } : state.settings
+  if (isPlainRecord(settings) && isEmbeddedImageDataUrl(settings.avatar)) delete settings.avatar
+  return {
+    changed: true,
+    state: {
+      ...state,
+      ...(settings === undefined ? {} : { settings }),
+      accountSettings,
+      employees,
+      deletedEmployees,
+    },
+    uploadedKeys,
+    replacements,
+    quarantined,
+  }
+}
+
+const legacyAvatarMigrationAudit = (migration) => ({
+  migratedObjects: Array.isArray(migration?.uploadedKeys) ? migration.uploadedKeys.length : 0,
+  quarantinedInvalidObjects: Array.isArray(migration?.quarantined) ? migration.quarantined.length : 0,
+  quarantined: (Array.isArray(migration?.quarantined) ? migration.quarantined : []).slice(0, 100),
+})
+
+const rewriteLegacyReceiptImages = async (db, row, replacements) => {
+  const loaded = await loadReceipt(db, row.actor_id, row.idempotency_key)
+  const responseJson = String(loaded?.response_json || '')
+  if (!jsonTextContainsEmbeddedImageData(responseJson)) return false
+  const parsed = parseStoredJson(responseJson, undefined)
+  if (parsed === undefined) {
+    throw new ApiError(500, 'ACCOUNT_AVATAR_MIGRATION_FAILED', 'Biên nhận cũ chứa ảnh nhúng nhưng không phải JSON hợp lệ.')
+  }
+  const sanitizedJson = JSON.stringify(replaceEmbeddedImageData(parsed, replacements))
+  const responseBytes = jsonByteLength(sanitizedJson)
+  const chunks = responseBytes > MAX_RECEIPT_INLINE_BYTES
+    ? splitUtf8String(sanitizedJson, MAX_RECEIPT_CHUNK_BYTES)
+    : []
+  const storedResponse = chunks.length
+    ? JSON.stringify({ __idosiChunkedResponse: 1, chunkCount: chunks.length, byteLength: responseBytes })
+    : sanitizedJson
+  await db.batch([
+    db.prepare(`
+      UPDATE command_receipts
+      SET response_json = ?
+      WHERE actor_id = ? AND idempotency_key = ? AND request_hash = ?
+    `).bind(storedResponse, row.actor_id, row.idempotency_key, row.request_hash),
+    db.prepare('DELETE FROM command_receipt_chunks WHERE actor_id = ? AND idempotency_key = ?')
+      .bind(row.actor_id, row.idempotency_key),
+    ...chunks.map((chunk, index) => db.prepare(`
+      INSERT INTO command_receipt_chunks (
+        actor_id, idempotency_key, chunk_index, chunk_text, chunk_bytes, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      row.actor_id,
+      row.idempotency_key,
+      index,
+      chunk,
+      jsonByteLength(chunk),
+      row.created_at,
+    )),
+  ])
+  return true
+}
+
+const scrubLegacyAvatarArtifacts = async (db, replacements = new Map()) => {
+  const auditRows = await all(db, `
+    SELECT id, before_json, after_json, metadata_json
+    FROM audit_log
+    WHERE before_json LIKE '%data:image%base64,%'
+       OR after_json LIKE '%data:image%base64,%'
+       OR metadata_json LIKE '%data:image%base64,%'
+  `)
+  for (const row of auditRows) {
+    const sanitizeJson = (value) => {
+      if (!value || !jsonTextContainsEmbeddedImageData(value)) return value
+      const parsed = parseStoredJson(value, undefined)
+      return parsed === undefined ? null : JSON.stringify(replaceEmbeddedImageData(parsed, replacements))
+    }
+    await run(db, `
+      UPDATE audit_log SET before_json = ?, after_json = ?, metadata_json = ? WHERE id = ?
+    `, sanitizeJson(row.before_json), sanitizeJson(row.after_json), sanitizeJson(row.metadata_json), row.id)
+  }
+
+  const receiptRows = await all(db, `
+    SELECT actor_id, idempotency_key, request_hash, response_json, created_at
+    FROM command_receipts
+    WHERE response_json LIKE '%data:image%base64,%'
+       OR response_json LIKE '%__idosiChunkedResponse%'
+  `)
+  for (const row of receiptRows) await rewriteLegacyReceiptImages(db, row, replacements)
+
+  const metadataRows = await all(db, `
+    SELECT meta_key, value_json FROM system_metadata
+    WHERE value_json LIKE '%data:image%base64,%'
+  `)
+  for (const row of metadataRows) {
+    const parsed = parseStoredJson(row.value_json, undefined)
+    const sanitized = parsed === undefined ? null : JSON.stringify(replaceEmbeddedImageData(parsed, replacements))
+    await run(db, `
+      UPDATE system_metadata SET value_json = ?, version = version + 1
+      WHERE meta_key = ? AND value_json = ?
+    `, sanitized, row.meta_key, row.value_json)
+  }
+}
+
+const markAccountAvatarMigrationComplete = (db, timestamp) => run(db, `
+  INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
+  VALUES (?, ?, 1, ?)
+  ON CONFLICT(meta_key) DO UPDATE SET
+    value_json = excluded.value_json,
+    version = system_metadata.version + 1,
+    updated_at = excluded.updated_at
+`, ACCOUNT_AVATAR_MIGRATION_METADATA_KEY, JSON.stringify({ completedAt: timestamp }), timestamp)
+
+const migrateLegacyAccountAvatars = async (db, env, actor, context, currentRow = null, attempt = 0) => {
+  let current = currentRow || await loadState(db, 'global')
+  if (!current) return current
+  const rawState = parseStoredJson(current.value_json, {})
+  const ownerId = actor?.user_id || actor?.id || ''
+  const avatarMutation = hasLegacyAccountAvatarData(rawState)
+    ? await beginAccountAvatarMutationCleanup(db, ownerId, `${context.requestId}:account-avatar-migration`, context.now)
+    : null
+  let prepared
+  try {
+    prepared = await prepareLegacyAccountAvatarMigration(
+      env,
+      db,
+      rawState,
+      context.now,
+      ownerId,
+      avatarMutation ? accountAvatarMutationLifecycle(db, env?.IDENTITY_IMAGES, avatarMutation) : {},
+    )
+  } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
+  let marker
+  try {
+    marker = await first(db, 'SELECT meta_key FROM system_metadata WHERE meta_key = ? LIMIT 1', ACCOUNT_AVATAR_MIGRATION_METADATA_KEY)
+  } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
+  if (!prepared.changed && marker) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
+        suppressFailure: true,
+      })
+    }
+    return current
+  }
+
+  if (prepared.changed) {
+    const requestId = `${context.requestId}:account-avatar-migration`
+    let nextState
+    let nextVersion
+    let stateCommit
+    try {
+      nextState = normalizeSharedStateForStorage(prepared.state)
+      nextVersion = Number(current.version) + 1
+      stateCommit = prepareStateCommit(db, {
+        current,
+        nextState,
+        scope: 'global',
+        currentVersion: Number(current.version),
+        nextVersion,
+        now: context.now,
+        actorId: actor?.user_id || actor?.id || 'system',
+        requestId,
+      })
+    } catch (error) {
+      if (avatarMutation) {
+        await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
+          suppressFailure: true,
+        })
+      }
+      throw error
+    }
+    const committedAvatarMutation = commitAccountAvatarMutationCleanup(
+      avatarMutation,
+      [],
+      [...accountAvatarKeysFromState(nextState)],
+      context.now,
+    )
+    const stateMutation = db.prepare(`
+      UPDATE app_state
+      SET value_json = ?, version = ?, updated_at = ?, updated_by = ?, last_request_id = ?
+      WHERE scope_key = 'global' AND version = ?
+        AND EXISTS (
+          SELECT 1 FROM system_metadata WHERE meta_key = ? AND value_json = ?
+        )
+    `).bind(
+      stateCommit.compactJson,
+      nextVersion,
+      context.now,
+      actor?.user_id || actor?.id || 'system',
+      requestId,
+      Number(current.version),
+      avatarMutation.metaKey,
+      avatarMutation.valueJson,
+    )
+    let results
+    try {
+      results = await db.batch([
+        stateMutation,
+        ...stateCommit.externalStatements,
+        db.prepare(`
+          UPDATE system_metadata
+          SET value_json = ?, version = version + 1, updated_at = ?
+          WHERE meta_key = ? AND value_json = ?
+            AND EXISTS (${stateSuccessSql})
+        `).bind(
+          committedAvatarMutation.valueJson,
+          context.now,
+          avatarMutation.metaKey,
+          avatarMutation.valueJson,
+          'global',
+          nextVersion,
+          requestId,
+        ),
+        db.prepare(`
+          INSERT INTO audit_log (
+            request_id, actor_id, actor_role, action, entity_type, entity_id,
+            before_json, after_json, metadata_json, server_timestamp
+          )
+          SELECT ?, ?, ?, 'account_avatar.migrate_legacy', 'account-avatar', 'legacy-inline', NULL, NULL, ?, ?
+          WHERE EXISTS (${stateSuccessSql})
+        `).bind(
+          requestId,
+          actor?.user_id || actor?.id || 'system',
+          actor?.role || 'system',
+          JSON.stringify(legacyAvatarMigrationAudit(prepared)),
+          context.now,
+          'global',
+          nextVersion,
+          requestId,
+        ),
+      ])
+    } catch (error) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
+        suppressFailure: true,
+      })
+      if (attempt < 1) return migrateLegacyAccountAvatars(db, env, actor, context, null, attempt + 1)
+      throw new ApiError(409, 'ACCOUNT_AVATAR_MIGRATION_CONFLICT', 'Ảnh đại diện cũ thay đổi trong lúc chuyển đổi; vui lòng thử lại.', {
+        cause: String(error),
+      })
+    }
+    if (changes(results?.[0]) !== 1) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
+        suppressFailure: true,
+      })
+      if (attempt < 1) return migrateLegacyAccountAvatars(db, env, actor, context, null, attempt + 1)
+      throw new ApiError(409, 'ACCOUNT_AVATAR_MIGRATION_CONFLICT', 'Ảnh đại diện cũ thay đổi trong lúc chuyển đổi; vui lòng thử lại.')
+    }
+    current = await loadState(db, 'global')
+    await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
+      suppressFailure: true,
+    })
+  }
+
+  if (!prepared.changed && avatarMutation) {
+    await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, context, {
+      suppressFailure: true,
+    })
+  }
+
+  try {
+    await scrubLegacyAvatarArtifacts(db, prepared.replacements)
+    await markAccountAvatarMigrationComplete(db, context.now)
+  } catch (error) {
+    if (error instanceof ApiError) throw error
+    throw new ApiError(503, 'ACCOUNT_AVATAR_MIGRATION_FAILED', 'Không thể hoàn tất làm sạch dữ liệu ảnh đại diện cũ.', {
+      cause: String(error),
+    })
+  }
+  return current
+}
+
 const normalizeOperationalEmployeeProfile = (payload, previous, store, state, unit) => {
   const unsupportedFields = Object.keys(payload).filter((key) => !OPERATIONAL_PROFILE_FIELDS.has(key))
   if (unsupportedFields.length) {
@@ -4021,101 +5164,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
   return profile
 }
 
-const employeeWorkingTimeCommand = async (db, actor, body, commandContext) => {
-  if (!['admin', 'business_support'].includes(actor.role)) {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được cài đặt thời gian làm việc.')
-  }
-  const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
-  const employeeId = String(payload.employeeId || '').trim()
-  const employees = Array.isArray(state.employees) ? state.employees : []
-  const previous = employees.find((employee) => (
-    String(employee.id || employee.code || '') === employeeId && !employee.deletedAt
-  ))
-  if (!previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
-  const unit = employeeUnit(previous)
-  if (!['office', 'business_support'].includes(unit)) {
-    throw new ApiError(400, 'WORK_TIME_UNIT_INVALID', 'Cài đặt này chỉ áp dụng cho Khối văn phòng và Nhân viên hỗ trợ KD.')
-  }
-  const effectiveFrom = optionalCalendarDate(payload.effectiveFrom, 'Ngày áp dụng')
-  if (!effectiveFrom) throw new ApiError(400, 'WORK_TIME_EFFECTIVE_DATE_REQUIRED', 'Cần chọn ngày áp dụng.')
-  const employmentStart = optionalCalendarDate(previous.startDate || previous.joinDate, 'Ngày bắt đầu làm') || '1970-01-01'
-  if (effectiveFrom < employmentStart) {
-    throw new ApiError(400, 'WORK_TIME_BEFORE_EMPLOYMENT', 'Ngày áp dụng không được trước ngày bắt đầu làm.')
-  }
-  const employmentType = officeEmploymentType(previous.employmentType || 'Full-Time')
-  const configuration = normalizeProfileWorkingTime(payload, previous, employmentType)
-  const existingEntries = profileWorkingTimeSchedule(previous)
-  if (existingEntries.length >= MAX_PROFILE_WORK_TIME_SCHEDULE_ENTRIES
-    && !existingEntries.some((entry) => entry.effectiveFrom === effectiveFrom)) {
-    throw new ApiError(
-      400,
-      'WORK_TIME_SCHEDULE_LIMIT',
-      `Mỗi nhân viên được lưu tối đa ${MAX_PROFILE_WORK_TIME_SCHEDULE_ENTRIES} mốc thời gian làm việc.`,
-    )
-  }
-  const scheduleEntries = [...existingEntries]
-  if (!scheduleEntries.length && employmentStart < effectiveFrom) {
-    scheduleEntries.push({
-      effectiveFrom: employmentStart,
-      employmentType,
-      ...normalizeProfileWorkingTime({}, previous, employmentType),
-      source: 'legacy-profile',
-      createdAt: previous.createdAt || commandContext.now,
-      createdBy: previous.createdBy || serverActorSnapshot(actor),
-    })
-  }
-  const previousEntry = scheduleEntries.find((entry) => entry.effectiveFrom === effectiveFrom)
-  const setting = {
-    ...(previousEntry || {}),
-    effectiveFrom,
-    employmentType,
-    ...configuration,
-    ...(previousEntry
-      ? { updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor) }
-      : { createdAt: commandContext.now, createdBy: serverActorSnapshot(actor) }),
-  }
-  const workTimeSchedule = [
-    ...scheduleEntries.filter((entry) => entry.effectiveFrom !== effectiveFrom),
-    setting,
-  ].sort((left, right) => left.effectiveFrom.localeCompare(right.effectiveFrom))
-  const active = resolveProfileWorkingTime(
-    { ...previous, workTimeSchedule },
-    localDateTimeParts(commandContext.now).date,
-  )
-  const saved = sanitizeStateValue({
-    ...previous,
-    workTimeType: active.workTimeType,
-    workStart: active.workStart,
-    workEnd: active.workEnd,
-    workShifts: active.workShifts,
-    workingTime: active.workingTime,
-    workTimeSchedule,
-    updatedAt: commandContext.now,
-    updatedBy: serverActorSnapshot(actor),
-  })
-  const nextState = {
-    ...state,
-    employees: employees.map((employee) => (
-      String(employee.id || employee.code || '') === employeeId ? saved : employee
-    )),
-    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
-  }
-  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
-    action: body.type,
-    entityType: 'employee-working-time',
-    entityId: employeeId,
-    before: previous,
-    after: saved,
-    metadata: { employeeId, unit, effectiveFrom, replaced: Boolean(previousEntry) },
-    response: { command: body.type, employee: saved, setting },
-  }, commandContext)
-}
-
 const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
-  if (body.type === 'employee.working_time.set') {
-    return employeeWorkingTimeCommand(db, actor, body, commandContext)
-  }
   assertOperationsRole(actor, 'Tài khoản không có quyền quản lý hồ sơ nhân viên.')
   const operation = body.type.split('.').at(-1)
   if (!['create', 'update', 'delete'].includes(operation)) {
@@ -4157,7 +5206,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     throw new ApiError(
       400,
       'WORK_TIME_UPDATE_COMMAND_REQUIRED',
-      'Dùng chức năng Cài đặt thời gian làm việc và chọn ngày áp dụng.',
+      'Không thể chỉnh sửa cấu hình giờ làm trực tiếp trong hồ sơ sau khi tạo.',
     )
   }
   const supportOperationAllowed = (
@@ -5043,16 +6092,71 @@ const optionalCalendarDate = (value, field) => {
   return date
 }
 
-const accountSettingsCommand = async (db, actor, body, commandContext) => {
+const accountSettingsPayload = (body) => (
+  isPlainRecord(body?.payload?.settings)
+    ? body.payload.settings
+    : (isPlainRecord(body?.payload) ? body.payload : {})
+)
+
+const accountSettingsUpdatesAvatar = (body) => accountSettingsPayload(body).avatar !== undefined
+
+const accountSettingsCommand = async (db, actor, body, commandContext, env) => {
   if (!VALID_ROLES.has(actor.role)) throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền cập nhật thiết lập tài khoản.')
   if (body.type !== 'account_settings.update') {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh thiết lập tài khoản không được hỗ trợ.')
   }
-  const payload = isPlainRecord(body.payload?.settings) ? body.payload.settings : (isPlainRecord(body.payload) ? body.payload : {})
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const payload = accountSettingsPayload(body)
+  const updatesAvatar = payload.avatar !== undefined
+  const { current, state: storedState } = await loadGlobalCommandState(db, body)
+  const avatarMutation = updatesAvatar
+    ? await beginAccountAvatarMutationCleanup(
+      db,
+      actor.user_id,
+      commandContext.requestId,
+      commandContext.now,
+    )
+    : null
+  const avatarLifecycle = avatarMutation
+    ? accountAvatarMutationLifecycle(db, env?.IDENTITY_IMAGES, avatarMutation)
+    : {}
+  let legacyMigration = {
+    changed: false,
+    state: storedState,
+    uploadedKeys: [],
+    replacements: new Map(),
+    quarantined: [],
+  }
+  if (avatarMutation) {
+    try {
+      legacyMigration = await prepareLegacyAccountAvatarMigration(
+        env,
+        db,
+        storedState,
+        commandContext.now,
+        actor.user_id,
+        avatarLifecycle,
+      )
+    } catch (error) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+      throw error
+    }
+  }
+  let committed = false
+  let avatarUpdate
+  try {
+  const state = normalizeSharedStateForStorage(legacyMigration.state)
+  const userId = String(actor.user_id)
   const target = await first(db, "SELECT * FROM users WHERE id = ? AND role IN ('admin', 'business_support', 'store_manager', 'employee') LIMIT 1", actor.user_id)
   if (!target) throw new ApiError(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản quản trị hiện tại.')
   const previous = ownAccountSettings(state, actor)
+  if (!updatesAvatar) {
+    const storedSettings = isPlainRecord(state.accountSettings?.[userId]) ? state.accountSettings[userId] : null
+    const legacySettings = actor.role === 'admin' && isPlainRecord(state.settings) ? state.settings : null
+    if (storedSettings && Object.hasOwn(storedSettings, 'avatar')) previous.avatar = storedSettings.avatar
+    else if (legacySettings && Object.hasOwn(legacySettings, 'avatar')) previous.avatar = legacySettings.avatar
+  }
   const next = { ...previous }
   if (payload.name !== undefined) next.name = String(payload.name || '').trim().slice(0, 160)
   if (!next.name) throw new ApiError(400, 'DISPLAY_NAME_INVALID', 'Họ tên không được để trống.')
@@ -5084,25 +6188,17 @@ const accountSettingsCommand = async (db, actor, body, commandContext) => {
     if (bio.length > 200) throw new ApiError(400, 'BIO_TOO_LONG', 'Giới thiệu không được vượt quá 200 ký tự.')
     next.bio = bio
   }
-  if (payload.avatar !== undefined) {
-    const avatar = String(payload.avatar || '')
-    if (avatar) {
-      const match = avatar.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/]*(?:={0,2}))$/u)
-      let binary
-      try {
-        if (!match?.[2] || match[2].length % 4 !== 0) throw new Error('invalid avatar encoding')
-        binary = atob(match[2])
-      } catch {
-        throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là dữ liệu ảnh JPG, PNG hoặc WebP hợp lệ.')
-      }
-      if (!validAvatarImageSignature(match[1], binary)) {
-        throw new ApiError(400, 'AVATAR_INVALID', 'Ảnh đại diện phải là dữ liệu ảnh JPG, PNG hoặc WebP hợp lệ.')
-      }
-      if (binary.length > MAX_AVATAR_BYTES) {
-        throw new ApiError(413, 'AVATAR_TOO_LARGE', 'Ảnh đại diện sau khi tối ưu không được vượt quá 300 KB.')
-      }
-    }
-    next.avatar = avatar
+  avatarUpdate = { avatar: previous.avatar, uploadedKeys: [], retiredKeys: [] }
+  if (updatesAvatar) {
+    avatarUpdate = await prepareAccountAvatarUpdate(
+      env,
+      payload.avatar,
+      previous.avatar,
+      actor.user_id,
+      commandContext.now,
+      avatarLifecycle,
+    )
+    next.avatar = avatarUpdate.avatar
   }
   if (payload.notifications !== undefined) {
     if (!isPlainRecord(payload.notifications)) {
@@ -5119,19 +6215,11 @@ const accountSettingsCommand = async (db, actor, body, commandContext) => {
     }
     next.notifications = notifications
   }
-  const userId = String(actor.user_id)
   const currentUserVersion = Number(target.version || 1)
   const nextUserVersion = currentUserVersion + 1
   const nextStateVersion = Number(current.version) + 1
   const nextState = {
     ...state,
-    employees: (Array.isArray(state.employees) ? state.employees : []).map((employee) => (
-      String(employee.authUserId || '') === userId
-        || String(employee.id || employee.code || '') === String(actor.employee_id || '')
-        || String(employee.linkedEmployeeId || '') === String(actor.employee_id || '')
-        ? { ...employee, avatar: next.avatar || '' }
-        : employee
-    )),
     accountSettings: { ...(isPlainRecord(state.accountSettings) ? state.accountSettings : {}), [userId]: next },
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
@@ -5147,35 +6235,106 @@ const accountSettingsCommand = async (db, actor, body, commandContext) => {
     displayName: next.name,
     version: nextUserVersion,
   }
-  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
-    action: body.type,
-    entityType: 'account-settings',
-    entityId: userId,
-    before: previous,
-    after: next,
-    response: { command: body.type, settings: next, user: responseUser },
-    stateGuard: {
-      sql: 'SELECT 1 FROM users WHERE id = ? AND version = ?',
-      bindings: [userId, currentUserVersion],
-    },
-    additionalStatements: [db.prepare(`
-      UPDATE users
-      SET display_name = ?, version = ?, updated_at = ?
-      WHERE id = ? AND version = ?
-        AND EXISTS (
-          SELECT 1 FROM app_state
-          WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
-        )
-    `).bind(
-      next.name,
-      nextUserVersion,
+  const committedAvatarMutation = avatarMutation
+    ? commitAccountAvatarMutationCleanup(
+      avatarMutation,
+      avatarUpdate.retiredKeys,
+      [...accountAvatarKeysFromState(nextState)],
       commandContext.now,
-      userId,
-      currentUserVersion,
-      nextStateVersion,
-      commandContext.requestId,
-    )],
-  }, commandContext)
+    )
+    : null
+  let response
+  try {
+    response = await commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'account-settings',
+      entityId: userId,
+      before: previous,
+      after: next,
+      metadata: legacyMigration.changed
+        ? { legacyAvatarMigration: legacyAvatarMigrationAudit(legacyMigration) }
+        : {},
+      response: { command: body.type, settings: next, user: responseUser },
+      stateGuard: avatarMutation
+        ? {
+            sql: `
+          SELECT 1 FROM users
+          WHERE id = ? AND version = ?
+            AND EXISTS (
+              SELECT 1 FROM system_metadata WHERE meta_key = ? AND value_json = ?
+            )
+        `,
+            bindings: [userId, currentUserVersion, avatarMutation.metaKey, avatarMutation.valueJson],
+          }
+        : {
+            sql: 'SELECT 1 FROM users WHERE id = ? AND version = ?',
+            bindings: [userId, currentUserVersion],
+          },
+      additionalStatements: [
+        db.prepare(`
+          UPDATE users
+          SET display_name = ?, version = ?, updated_at = ?
+          WHERE id = ? AND version = ?
+            AND EXISTS (
+              SELECT 1 FROM app_state
+              WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+            )
+        `).bind(
+          next.name,
+          nextUserVersion,
+          commandContext.now,
+          userId,
+          currentUserVersion,
+          nextStateVersion,
+          commandContext.requestId,
+        ),
+        ...(avatarMutation ? [db.prepare(`
+          UPDATE system_metadata
+          SET value_json = ?, version = version + 1, updated_at = ?
+          WHERE meta_key = ? AND value_json = ?
+            AND EXISTS (${stateSuccessSql})
+        `).bind(
+          committedAvatarMutation.valueJson,
+          commandContext.now,
+          avatarMutation.metaKey,
+          avatarMutation.valueJson,
+          'global',
+          nextStateVersion,
+          commandContext.requestId,
+        )] : []),
+      ],
+    }, commandContext)
+  } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
+  committed = true
+  if (avatarMutation) {
+    await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+      suppressFailure: true,
+    })
+  }
+  if (legacyMigration.changed) {
+    try {
+      await scrubLegacyAvatarArtifacts(db, legacyMigration.replacements)
+      await markAccountAvatarMigrationComplete(db, commandContext.now)
+    } catch (error) {
+      console.warn('Unable to finish legacy account-avatar artifact cleanup after a committed update', { error: String(error) })
+    }
+  }
+  return response
+  } catch (error) {
+    if (!committed && avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
 }
 
 const notificationUnread = (record, actor) => !notificationReadAtForActor(record, actor)
@@ -5547,6 +6706,7 @@ const RESET_ARRAY_COLLECTIONS = Object.freeze([
   'officeAdjustments',
   'orders',
   'orderAudit',
+  'orderInformationOptions',
   'notifications',
   'expenseEntries',
   'fixedExpenses',
@@ -5609,6 +6769,8 @@ const normalizeDemoResetState = (value, currentState) => {
   if (!Number.isInteger(schemaVersion) || schemaVersion < 1 || schemaVersion > 2) {
     throw new ApiError(400, 'RESET_STATE_INVALID', 'Phiên bản lược đồ dữ liệu mẫu không được hỗ trợ.')
   }
+  normalized.orderInformationOptions = materializeDefaultOrderInformationOptions(normalized)
+  configuredOrderPaymentMethods(normalized)
   return {
     ...normalized,
     schemaVersion,
@@ -5616,13 +6778,37 @@ const normalizeDemoResetState = (value, currentState) => {
   }
 }
 
-const systemResetDemoCommand = async (db, actor, body, commandContext) => {
+const systemResetDemoCommand = async (db, actor, body, commandContext, env) => {
   assertAdmin(actor, 'Chỉ Admin được Reset dữ liệu mẫu.')
   if (body.type !== 'system.reset_demo') {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh hệ thống không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state: storedState } = await loadGlobalCommandState(db, body)
+  const avatarMutation = hasLegacyAccountAvatarData(storedState)
+    ? await beginAccountAvatarMutationCleanup(db, actor.user_id, commandContext.requestId, commandContext.now)
+    : null
+  let legacyMigration
+  try {
+    legacyMigration = await prepareLegacyAccountAvatarMigration(
+      env,
+      db,
+      storedState,
+      commandContext.now,
+      actor.user_id,
+      avatarMutation ? accountAvatarMutationLifecycle(db, env?.IDENTITY_IMAGES, avatarMutation) : {},
+    )
+  } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
+  let committed = false
+  try {
+  const state = normalizeSharedStateForStorage(legacyMigration.state)
   const resetState = normalizeDemoResetState(payload.state, state)
   const adminSettings = isPlainRecord(resetState.accountSettings?.[actor.user_id])
     ? { [actor.user_id]: resetState.accountSettings[actor.user_id] }
@@ -5634,33 +6820,664 @@ const systemResetDemoCommand = async (db, actor, body, commandContext) => {
   }
   const projectedState = projectSharedState(nextState, actor)
   const nextStateVersion = Number(current.version) + 1
-  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
-    action: body.type,
-    entityType: 'system',
-    entityId: 'demo-state',
-    before: resetStateSummary(state),
-    after: resetStateSummary(nextState),
-    metadata: {
-      nonAdminAccountsPurged: true,
-      nonAdminSessionsPurged: true,
-      preservedAdminAccountSettings: true,
-    },
-    response: { command: body.type, state: projectedState, nonAdminAccountsPurged: true },
-    additionalStatements: [
-      db.prepare(`
-        DELETE FROM users
-        WHERE role <> 'admin'
-          AND EXISTS (
-            SELECT 1 FROM app_state
-            WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
-          )
-      `).bind(nextStateVersion, commandContext.requestId),
-    ],
-  }, commandContext)
+  const preservedKeys = [...accountAvatarKeysFromState({ accountSettings: adminSettings })]
+  let cleanupKeys
+  try {
+    cleanupKeys = await listAccountAvatarKeysForReset(env?.IDENTITY_IMAGES, state, preservedKeys)
+  } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
+  const cleanupMarker = JSON.stringify({
+    schema: 1,
+    reason: body.type,
+    keys: cleanupKeys,
+    preservedKeys,
+    createdAt: commandContext.now,
+  })
+  const committedAvatarMutation = avatarMutation
+    ? commitAccountAvatarMutationCleanup(avatarMutation, [], preservedKeys, commandContext.now)
+    : null
+  let response
+  try {
+    response = await commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'system',
+      entityId: 'demo-state',
+      before: resetStateSummary(state),
+      after: resetStateSummary(nextState),
+      metadata: {
+        nonAdminAccountsPurged: true,
+        nonAdminSessionsPurged: true,
+        preservedAdminAccountSettings: true,
+        accountAvatarObjectsTargeted: cleanupKeys.length,
+        ...(legacyMigration.changed
+          ? { legacyAvatarMigration: legacyAvatarMigrationAudit(legacyMigration) }
+          : {}),
+      },
+      response: { command: body.type, state: projectedState, nonAdminAccountsPurged: true },
+      ...(avatarMutation ? {
+        stateGuard: {
+          sql: 'SELECT 1 FROM system_metadata WHERE meta_key = ? AND value_json = ?',
+          bindings: [avatarMutation.metaKey, avatarMutation.valueJson],
+        },
+      } : {}),
+      additionalStatements: [
+        db.prepare(`
+          DELETE FROM users
+          WHERE role <> 'admin'
+            AND EXISTS (
+              SELECT 1 FROM app_state
+              WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+            )
+        `).bind(nextStateVersion, commandContext.requestId),
+        ...(avatarMutation ? [db.prepare(`
+          UPDATE system_metadata
+          SET value_json = ?, version = version + 1, updated_at = ?
+          WHERE meta_key = ? AND value_json = ?
+            AND EXISTS (${stateSuccessSql})
+        `).bind(
+          committedAvatarMutation.valueJson,
+          commandContext.now,
+          avatarMutation.metaKey,
+          avatarMutation.valueJson,
+          'global',
+          nextStateVersion,
+          commandContext.requestId,
+        )] : []),
+        db.prepare(`
+          INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
+          SELECT ?, ?, 1, ?
+          WHERE EXISTS (${stateSuccessSql})
+          ON CONFLICT(meta_key) DO UPDATE SET
+            value_json = excluded.value_json,
+            version = system_metadata.version + 1,
+            updated_at = excluded.updated_at
+        `).bind(
+          ACCOUNT_AVATAR_PENDING_CLEANUP_KEY,
+          cleanupMarker,
+          commandContext.now,
+          'global',
+          nextStateVersion,
+          commandContext.requestId,
+        ),
+      ],
+    }, commandContext)
+  } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
+  committed = true
+  if (avatarMutation) {
+    await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+      suppressFailure: true,
+    })
+  }
+  if (legacyMigration.changed) {
+    try {
+      await scrubLegacyAvatarArtifacts(db, legacyMigration.replacements)
+      await markAccountAvatarMigrationComplete(db, commandContext.now)
+    } catch (error) {
+      console.warn('Unable to finish legacy account-avatar artifact cleanup after a committed demo reset', { error: String(error) })
+    }
+  }
+  try {
+    await resumePendingAccountAvatarCleanup(db, env, commandContext)
+  } catch (error) {
+    const apiError = error instanceof ApiError
+      ? error
+      : new ApiError(503, 'RESET_CLEANUP_PENDING', 'Dữ liệu đã được Reset nhưng kho ảnh đại diện chưa xóa xong.')
+    return jsonResponse({
+      ok: false,
+      error: { code: apiError.code, message: apiError.message, ...(apiError.details ? { details: apiError.details } : {}) },
+      serverTime: commandContext.now,
+      requestId: commandContext.requestId,
+    }, apiError.status)
+  }
+  return response
+  } catch (error) {
+    if (!committed) {
+      if (avatarMutation) {
+        await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+          suppressFailure: true,
+        })
+      }
+    }
+    throw error
+  }
 }
 
 const RESET_ALL_PENDING_METADATA_KEY = 'system:reset_all_pending'
 const IDENTITY_IMAGE_KEY_PREFIX = 'identity-images/'
+
+const accountAvatarKeysFromState = (state) => {
+  const keys = new Set()
+  for (const settings of Object.values(isPlainRecord(state?.accountSettings) ? state.accountSettings : {})) {
+    const key = String(settings?.avatar?.key || '')
+    if (key.startsWith(ACCOUNT_AVATAR_KEY_PREFIX)) keys.add(key)
+  }
+  for (const collection of ['employees', 'deletedEmployees']) {
+    for (const profile of Array.isArray(state?.[collection]) ? state[collection] : []) {
+      for (const value of [profile?.avatar, profile?.avatarImage]) {
+        const key = String(value?.key || '')
+        if (key.startsWith(ACCOUNT_AVATAR_KEY_PREFIX)) keys.add(key)
+      }
+    }
+  }
+  return keys
+}
+
+const listAccountAvatarKeysForReset = async (bucket, state = null, preservedKeys = []) => {
+  if (!bucket?.list || !bucket?.delete) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_STORAGE_UNAVAILABLE', 'Reset dữ liệu cần kho ảnh đại diện có quyền liệt kê và xóa.')
+  }
+  const preserved = new Set((preservedKeys || []).filter((key) => String(key).startsWith(ACCOUNT_AVATAR_KEY_PREFIX)))
+  const keys = accountAvatarKeysFromState(state)
+  let cursor
+  const seenCursors = new Set()
+  try {
+    for (let pageIndex = 0; pageIndex < 10_000; pageIndex += 1) {
+      const page = await bucket.list({ prefix: ACCOUNT_AVATAR_KEY_PREFIX, ...(cursor ? { cursor } : {}) })
+      for (const object of Array.isArray(page?.objects) ? page.objects : []) {
+        const key = String(object?.key || '')
+        if (key.startsWith(ACCOUNT_AVATAR_KEY_PREFIX)) keys.add(key)
+      }
+      if (!page?.truncated) return [...keys].filter((key) => !preserved.has(key)).sort()
+      const nextCursor = String(page.cursor || '')
+      if (!nextCursor || seenCursors.has(nextCursor)) throw new Error('R2 pagination cursor is missing or repeated')
+      seenCursors.add(nextCursor)
+      cursor = nextCursor
+    }
+    throw new Error('R2 pagination exceeded the safety limit')
+  } catch (error) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_LIST_FAILED', 'Không thể kiểm kê đầy đủ kho ảnh đại diện trước khi Reset dữ liệu.', {
+      cause: String(error),
+    })
+  }
+}
+
+const purgeAndVerifyAccountAvatars = async (bucket, preservedKeys = [], initialKeys = null) => {
+  const preserved = new Set(normalizedAccountAvatarCleanupKeys(preservedKeys))
+  const targets = Array.isArray(initialKeys)
+    ? new Set(normalizedAccountAvatarCleanupKeys(initialKeys).filter((key) => !preserved.has(key)))
+    : null
+  const remainingKeys = async () => {
+    const listed = await listAccountAvatarKeysForReset(bucket, null, preservedKeys)
+    return targets ? listed.filter((key) => targets.has(key)) : listed
+  }
+  let keys = targets ? [...targets].sort() : await remainingKeys()
+  try {
+    for (let pass = 0; pass < 3; pass += 1) {
+      for (const key of keys) await bucket.delete(key)
+      keys = await remainingKeys()
+      if (!keys.length) return
+    }
+  } catch (error) {
+    throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Dữ liệu đã được Reset nhưng kho ảnh đại diện chưa xóa xong; hãy gửi lại đúng lệnh để tiếp tục.', {
+      cause: String(error),
+    })
+  }
+  throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Dữ liệu đã được Reset nhưng vẫn còn ảnh đại diện; hãy gửi lại đúng lệnh để tiếp tục.', {
+    remainingAccountAvatarObjects: keys.length,
+  })
+}
+
+const loadPendingAccountAvatarCleanup = (db) => first(db, `
+  SELECT value_json FROM system_metadata WHERE meta_key = ? LIMIT 1
+`, ACCOUNT_AVATAR_PENDING_CLEANUP_KEY)
+
+const normalizedAccountAvatarCleanupKeys = (values) => [...new Set((Array.isArray(values) ? values : [])
+  .map((value) => String(value || ''))
+  .filter((key) => key.startsWith(ACCOUNT_AVATAR_KEY_PREFIX)))]
+  .sort()
+
+const parseAccountAvatarMutationCleanupMarker = (value) => {
+  const marker = typeof value === 'string' ? parseStoredJson(value, null) : value
+  if (!isPlainRecord(marker) || !Array.isArray(marker.keys) || !Array.isArray(marker.preservedKeys)) {
+    throw new ApiError(500, 'ACCOUNT_AVATAR_CLEANUP_MARKER_INVALID', 'Trạng thái dọn ảnh đại diện đang cập nhật không hợp lệ.')
+  }
+  return {
+    ...marker,
+    schema: 1,
+    phase: ['committed', 'cancelled', 'acknowledged'].includes(marker.phase) ? marker.phase : 'prepared',
+    status: marker.status === 'cleaning' ? 'cleaning' : 'pending',
+    keys: normalizedAccountAvatarCleanupKeys(marker.keys),
+    pendingKeys: normalizedAccountAvatarCleanupKeys(marker.pendingKeys),
+    preservedKeys: normalizedAccountAvatarCleanupKeys(marker.preservedKeys),
+    ownerRequestId: String(marker.ownerRequestId || ''),
+  }
+}
+
+const beginAccountAvatarMutationCleanup = async (db, userId, requestId, timestamp) => {
+  const metaKey = `${ACCOUNT_AVATAR_MUTATION_CLEANUP_PREFIX}${crypto.randomUUID()}`
+  const marker = {
+    schema: 1,
+    phase: 'prepared',
+    status: 'pending',
+    userId: String(userId || ''),
+    requestId: String(requestId || ''),
+    ownerRequestId: String(requestId || ''),
+    keys: [],
+    pendingKeys: [],
+    preservedKeys: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }
+  const valueJson = JSON.stringify(marker)
+  const inserted = await run(db, `
+    INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
+    SELECT ?, ?, 1, ?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM system_metadata
+      WHERE meta_key LIKE ?
+        AND json_extract(value_json, '$.userId') = ?
+        AND COALESCE(json_extract(value_json, '$.phase'), 'prepared') <> 'cancelled'
+    )
+      AND (
+        SELECT COUNT(*) FROM system_metadata
+        WHERE meta_key LIKE ? AND json_extract(value_json, '$.userId') = ?
+      ) < ?
+  `,
+  metaKey, valueJson, timestamp,
+  `${ACCOUNT_AVATAR_MUTATION_CLEANUP_PREFIX}%`, marker.userId,
+  `${ACCOUNT_AVATAR_MUTATION_CLEANUP_PREFIX}%`, marker.userId, MAX_ACCOUNT_AVATAR_MUTATION_MARKERS_PER_USER)
+  if (changes(inserted) !== 1) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_QUEUE_FAILED', 'Không thể chuẩn bị cập nhật ảnh đại diện; vui lòng thử lại.')
+  }
+  return { metaKey, marker, valueJson }
+}
+
+const reserveAccountAvatarMutationObject = async (db, mutation, key, timestamp) => {
+  const marker = {
+    ...mutation.marker,
+    keys: normalizedAccountAvatarCleanupKeys([...mutation.marker.keys, key]),
+    pendingKeys: normalizedAccountAvatarCleanupKeys([...mutation.marker.pendingKeys, key]),
+    updatedAt: timestamp,
+  }
+  const valueJson = JSON.stringify(marker)
+  const updated = await run(db, `
+    UPDATE system_metadata
+    SET value_json = ?, version = version + 1, updated_at = ?
+    WHERE meta_key = ? AND value_json = ?
+  `, valueJson, timestamp, mutation.metaKey, mutation.valueJson)
+  if (changes(updated) !== 1) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_QUEUE_FAILED', 'Không thể ghi nhận ảnh đại diện mới trước khi lưu; vui lòng thử lại.')
+  }
+  mutation.marker = marker
+  mutation.valueJson = valueJson
+}
+
+const confirmAccountAvatarMutationObject = async (db, bucket, mutation, key, timestamp) => {
+  const marker = {
+    ...mutation.marker,
+    pendingKeys: mutation.marker.pendingKeys.filter((pendingKey) => pendingKey !== key),
+    updatedAt: timestamp,
+  }
+  const valueJson = JSON.stringify(marker)
+  let updated
+  let updateError
+  try {
+    updated = await run(db, `
+      UPDATE system_metadata
+      SET value_json = ?, version = version + 1, updated_at = ?
+      WHERE meta_key = ? AND value_json = ?
+    `, valueJson, timestamp, mutation.metaKey, mutation.valueJson)
+  } catch (error) {
+    updateError = error
+  }
+  if (!updateError && changes(updated) === 1) {
+    mutation.marker = marker
+    mutation.valueJson = valueJson
+    return
+  }
+
+  await acknowledgeCancelledAccountAvatarMutation(db, bucket, mutation, key, timestamp)
+  throw new ApiError(503, 'ACCOUNT_AVATAR_UPLOAD_CANCELLED', 'Lượt tải ảnh đại diện đã bị hủy an toàn; vui lòng thử lại.', {
+    ...(updateError ? { cause: String(updateError) } : {}),
+  })
+}
+
+const accountAvatarMutationLifecycle = (db, bucket, mutation) => ({
+  beforePut: (key) => reserveAccountAvatarMutationObject(db, mutation, key, new Date().toISOString()),
+  afterPut: (key) => confirmAccountAvatarMutationObject(db, bucket, mutation, key, new Date().toISOString()),
+})
+
+const commitAccountAvatarMutationCleanup = (mutation, cleanupKeys, preservedKeys, timestamp) => {
+  if (mutation.marker.pendingKeys.length) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_UPLOAD_PENDING', 'Ảnh đại diện chưa hoàn tất lưu trữ; vui lòng thử lại.')
+  }
+  const marker = {
+    ...mutation.marker,
+    phase: 'committed',
+    status: 'pending',
+    ownerRequestId: '',
+    keys: normalizedAccountAvatarCleanupKeys([...mutation.marker.keys, ...cleanupKeys]),
+    pendingKeys: [],
+    preservedKeys: normalizedAccountAvatarCleanupKeys(preservedKeys),
+    updatedAt: timestamp,
+  }
+  return { marker, valueJson: JSON.stringify(marker) }
+}
+
+const loadAccountAvatarMutationCleanup = (db, metaKey = '') => metaKey
+  ? first(db, `
+      SELECT meta_key, value_json FROM system_metadata WHERE meta_key = ? LIMIT 1
+    `, metaKey)
+  : first(db, `
+      SELECT meta_key, value_json FROM system_metadata
+      WHERE meta_key LIKE ?
+        AND COALESCE(json_extract(value_json, '$.phase'), 'prepared') <> 'cancelled'
+      ORDER BY updated_at, meta_key
+      LIMIT 1
+    `, `${ACCOUNT_AVATAR_MUTATION_CLEANUP_PREFIX}%`)
+
+const loadCancelledAccountAvatarMutationCleanup = (db) => first(db, `
+  SELECT meta_key, value_json FROM system_metadata
+  WHERE meta_key LIKE ? AND json_extract(value_json, '$.phase') = 'cancelled'
+  ORDER BY updated_at, meta_key
+  LIMIT 1
+`, `${ACCOUNT_AVATAR_MUTATION_CLEANUP_PREFIX}%`)
+
+const cleanupAccountAvatarMutation = async (db, bucket, metaKey, context = {}, {
+  suppressFailure = false,
+} = {}) => {
+  const row = await loadAccountAvatarMutationCleanup(db, metaKey)
+  if (!row) return false
+  const markerJson = String(row.value_json || '')
+  const marker = parseAccountAvatarMutationCleanupMarker(markerJson)
+  const now = String(context.now || new Date().toISOString())
+  const ownerRequestId = String(context.requestId || `account-avatar-mutation-cleanup-${crypto.randomUUID()}`)
+  const claimedMarker = {
+    ...marker,
+    status: 'cleaning',
+    ownerRequestId,
+    updatedAt: now,
+  }
+  const claimedJson = JSON.stringify(claimedMarker)
+  const claimed = await run(db, `
+    UPDATE system_metadata
+    SET value_json = ?, version = version + 1, updated_at = ?
+    WHERE meta_key = ? AND value_json = ?
+  `, claimedJson, now, row.meta_key, markerJson)
+  if (changes(claimed) !== 1) {
+    if (suppressFailure) return false
+    throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_PENDING', 'Một request khác đã nhận quyền dọn ảnh đại diện; vui lòng thử lại sau.')
+  }
+
+  let failedKeys
+  try {
+    const current = await loadState(db, 'global')
+    const state = parseStoredJson(current?.value_json, {})
+    const preservedKeys = new Set([
+      ...claimedMarker.preservedKeys,
+      ...accountAvatarKeysFromState(isPlainRecord(state) ? state : {}),
+    ])
+    const targets = claimedMarker.keys.filter((key) => !preservedKeys.has(key))
+    failedKeys = await deleteAccountAvatarObjects(bucket, targets)
+  } catch (error) {
+    const pendingMarker = {
+      ...claimedMarker,
+      status: 'pending',
+      ownerRequestId: '',
+      updatedAt: now,
+    }
+    await run(db, `
+      UPDATE system_metadata
+      SET value_json = ?, version = version + 1, updated_at = ?
+      WHERE meta_key = ? AND value_json = ?
+    `, JSON.stringify(pendingMarker), now, row.meta_key, claimedJson).catch(() => {})
+    if (suppressFailure) {
+      console.warn('Unable to finish durable account-avatar mutation cleanup', { metaKey: row.meta_key, error: String(error) })
+      return false
+    }
+    throw error
+  }
+
+  const requiresTombstone = claimedMarker.phase === 'cancelled' || claimedMarker.pendingKeys.length > 0
+  if (failedKeys.length) {
+    const pendingMarker = {
+      ...claimedMarker,
+      phase: requiresTombstone ? 'cancelled' : claimedMarker.phase,
+      status: 'pending',
+      ownerRequestId: '',
+      keys: requiresTombstone ? claimedMarker.keys : failedKeys,
+      updatedAt: now,
+    }
+    await run(db, `
+      UPDATE system_metadata
+      SET value_json = ?, version = version + 1, updated_at = ?
+      WHERE meta_key = ? AND value_json = ?
+    `, JSON.stringify(pendingMarker), now, row.meta_key, claimedJson)
+    if (suppressFailure) return false
+    throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_PENDING', 'Ảnh đại diện cũ chưa dọn xong; vui lòng thử lại sau.')
+  }
+
+  if (requiresTombstone) {
+    const cancelledMarker = {
+      ...claimedMarker,
+      phase: 'cancelled',
+      status: 'pending',
+      ownerRequestId: '',
+      updatedAt: now,
+    }
+    const cancelled = await run(db, `
+      UPDATE system_metadata
+      SET value_json = ?, version = version + 1, updated_at = ?
+      WHERE meta_key = ? AND value_json = ?
+    `, JSON.stringify(cancelledMarker), now, row.meta_key, claimedJson)
+    if (changes(cancelled) !== 1) {
+      if (suppressFailure) return false
+      throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_PENDING', 'Marker hủy tải ảnh đã thay đổi; vui lòng thử lại sau.')
+    }
+    return marker.phase !== 'cancelled'
+  }
+
+  const completed = await run(db, `
+    DELETE FROM system_metadata WHERE meta_key = ? AND value_json = ?
+  `, row.meta_key, claimedJson)
+  if (changes(completed) !== 1) {
+    if (suppressFailure) return false
+    throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_PENDING', 'Kho ảnh đã được dọn nhưng marker đã thay đổi; vui lòng thử lại sau.')
+  }
+  return true
+}
+
+const acknowledgeCancelledAccountAvatarMutation = async (db, bucket, mutation, key, timestamp) => {
+  const fallbackKeys = normalizedAccountAvatarCleanupKeys([...mutation.marker.keys, key])
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const row = await loadAccountAvatarMutationCleanup(db, mutation.metaKey)
+      if (!row) break
+      const markerJson = String(row.value_json || '')
+      const marker = parseAccountAvatarMutationCleanupMarker(markerJson)
+      const sameMutation = marker.requestId === mutation.marker.requestId
+        && marker.userId === mutation.marker.userId
+      if (!sameMutation || marker.phase === 'committed') break
+
+      let acknowledgedJson = markerJson
+      if (marker.phase !== 'acknowledged') {
+        const acknowledgedMarker = {
+          ...marker,
+          phase: 'acknowledged',
+          status: 'pending',
+          ownerRequestId: '',
+          pendingKeys: [],
+          updatedAt: timestamp,
+        }
+        acknowledgedJson = JSON.stringify(acknowledgedMarker)
+        const acknowledged = await run(db, `
+          UPDATE system_metadata
+          SET value_json = ?, version = version + 1, updated_at = ?
+          WHERE meta_key = ? AND value_json = ?
+        `, acknowledgedJson, timestamp, mutation.metaKey, markerJson)
+        if (changes(acknowledged) !== 1) continue
+      }
+
+      mutation.valueJson = acknowledgedJson
+      await cleanupAccountAvatarMutation(db, bucket, mutation.metaKey, {
+        now: timestamp,
+        requestId: `${mutation.marker.requestId}:acknowledge`,
+      }, { suppressFailure: true })
+      return
+    }
+  } catch (error) {
+    console.warn('Unable to acknowledge cancelled account-avatar upload', {
+      metaKey: mutation.metaKey,
+      error: String(error),
+    })
+  }
+
+  const failedKeys = await deleteAccountAvatarObjects(bucket, fallbackKeys)
+  if (failedKeys.length) {
+    await enqueuePendingAccountAvatarCleanup(db, failedKeys, {
+      reason: 'account-avatar-upload-ownership-lost', timestamp,
+    })
+  }
+}
+
+const resumePendingAccountAvatarMutationCleanup = async (db, env, context = {}) => {
+  const cancelled = await loadCancelledAccountAvatarMutationCleanup(db)
+  if (cancelled) {
+    await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, cancelled.meta_key, context, { suppressFailure: true })
+  }
+  const row = await loadAccountAvatarMutationCleanup(db)
+  if (!row) return false
+  return cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, row.meta_key, context)
+}
+
+const parseAccountAvatarCleanupMarker = (value) => {
+  const marker = typeof value === 'string' ? parseStoredJson(value, null) : value
+  if (!isPlainRecord(marker) || !Array.isArray(marker.keys) || !Array.isArray(marker.preservedKeys)) {
+    throw new ApiError(500, 'ACCOUNT_AVATAR_CLEANUP_MARKER_INVALID', 'Trạng thái tiếp tục xóa ảnh đại diện không hợp lệ.')
+  }
+  return {
+    ...marker,
+    schema: 2,
+    keys: normalizedAccountAvatarCleanupKeys(marker.keys),
+    preservedKeys: normalizedAccountAvatarCleanupKeys(marker.preservedKeys),
+    status: marker.status === 'cleaning' ? 'cleaning' : 'pending',
+    ownerRequestId: String(marker.ownerRequestId || ''),
+    leaseExpiresAt: String(marker.leaseExpiresAt || ''),
+    reasons: [...new Set((Array.isArray(marker.reasons) ? marker.reasons : [marker.reason])
+      .map((reason) => String(reason || '').slice(0, 120))
+      .filter(Boolean))].slice(-20),
+  }
+}
+
+const enqueuePendingAccountAvatarCleanup = async (db, keys, {
+  preservedKeys = [],
+  reason = 'account-avatar-delete-failed',
+  timestamp = new Date().toISOString(),
+} = {}) => {
+  const requestedKeys = normalizedAccountAvatarCleanupKeys(keys)
+  if (!requestedKeys.length) return false
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const row = await loadPendingAccountAvatarCleanup(db)
+    if (!row) {
+      const marker = {
+        schema: 2,
+        status: 'pending',
+        ownerRequestId: '',
+        leaseExpiresAt: '',
+        keys: requestedKeys,
+        preservedKeys: normalizedAccountAvatarCleanupKeys(preservedKeys),
+        reasons: [String(reason).slice(0, 120)],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }
+      const inserted = await run(db, `
+        INSERT OR IGNORE INTO system_metadata (meta_key, value_json, version, updated_at)
+        VALUES (?, ?, 1, ?)
+      `, ACCOUNT_AVATAR_PENDING_CLEANUP_KEY, JSON.stringify(marker), timestamp)
+      if (changes(inserted) === 1) return true
+      continue
+    }
+    const markerJson = String(row.value_json || '')
+    const marker = parseAccountAvatarCleanupMarker(markerJson)
+    const nextMarker = {
+      ...marker,
+      status: 'pending',
+      ownerRequestId: '',
+      leaseExpiresAt: '',
+      keys: normalizedAccountAvatarCleanupKeys([...marker.keys, ...requestedKeys]),
+      preservedKeys: normalizedAccountAvatarCleanupKeys([...marker.preservedKeys, ...preservedKeys]),
+      reasons: [...new Set([...marker.reasons, String(reason).slice(0, 120)].filter(Boolean))].slice(-20),
+      updatedAt: timestamp,
+    }
+    const updated = await run(db, `
+      UPDATE system_metadata
+      SET value_json = ?, version = version + 1, updated_at = ?
+      WHERE meta_key = ? AND value_json = ?
+    `, JSON.stringify(nextMarker), timestamp, ACCOUNT_AVATAR_PENDING_CLEANUP_KEY, markerJson)
+    if (changes(updated) === 1) return true
+  }
+  throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_QUEUE_FAILED', 'Không thể ghi nhận ảnh đại diện cần dọn; vui lòng thử lại.')
+}
+
+const resumePendingAccountAvatarCleanup = async (db, env, context = {}) => {
+  const row = await loadPendingAccountAvatarCleanup(db)
+  if (!row) return false
+  const markerJson = String(row.value_json || '')
+  const marker = parseAccountAvatarCleanupMarker(markerJson)
+  const now = String(context.now || new Date().toISOString())
+  const ownerRequestId = String(context.requestId || `account-avatar-cleanup-${crypto.randomUUID()}`)
+  const nowMs = Date.parse(now)
+  const leaseExpiresAtMs = Date.parse(marker.leaseExpiresAt)
+  if (marker.status === 'cleaning'
+    && marker.ownerRequestId !== ownerRequestId
+    && Number.isFinite(leaseExpiresAtMs)
+    && leaseExpiresAtMs > nowMs) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_PENDING', 'Một request khác đang dọn ảnh đại diện; vui lòng thử lại sau.')
+  }
+  const claimedMarker = {
+    ...marker,
+    status: 'cleaning',
+    ownerRequestId,
+    leaseExpiresAt: new Date((Number.isFinite(nowMs) ? nowMs : Date.now()) + 60_000).toISOString(),
+    updatedAt: now,
+  }
+  const claimedJson = JSON.stringify(claimedMarker)
+  const claimed = await run(db, `
+    UPDATE system_metadata
+    SET value_json = ?, version = version + 1, updated_at = ?
+    WHERE meta_key = ? AND value_json = ?
+  `, claimedJson, now, ACCOUNT_AVATAR_PENDING_CLEANUP_KEY, markerJson)
+  if (changes(claimed) !== 1) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_PENDING', 'Một request khác đã nhận quyền dọn ảnh đại diện; vui lòng thử lại sau.')
+  }
+  try {
+    await purgeAndVerifyAccountAvatars(env?.IDENTITY_IMAGES, claimedMarker.preservedKeys, claimedMarker.keys)
+  } catch (error) {
+    const pendingMarker = {
+      ...claimedMarker,
+      status: 'pending',
+      ownerRequestId: '',
+      leaseExpiresAt: '',
+      updatedAt: now,
+    }
+    await run(db, `
+      UPDATE system_metadata
+      SET value_json = ?, version = version + 1, updated_at = ?
+      WHERE meta_key = ? AND value_json = ?
+    `, JSON.stringify(pendingMarker), now, ACCOUNT_AVATAR_PENDING_CLEANUP_KEY, claimedJson)
+    throw error
+  }
+  const completed = await run(db, `
+    DELETE FROM system_metadata WHERE meta_key = ? AND value_json = ?
+  `, ACCOUNT_AVATAR_PENDING_CLEANUP_KEY, claimedJson)
+  if (changes(completed) !== 1) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_CLEANUP_PENDING', 'Kho ảnh đã được dọn nhưng hàng đợi có mục mới; vui lòng thử lại.')
+  }
+  return true
+}
 
 const identityImageKeysFromState = (state) => {
   const keys = new Set()
@@ -5823,10 +7640,38 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
       throw new ApiError(409, 'RESET_ALREADY_PENDING', 'Một lệnh Reset toàn bộ dữ liệu của Admin khác đang chờ xóa ảnh CCCD.')
     }
     await purgeAndVerifyIdentityImages(env?.IDENTITY_IMAGES)
+    await purgeAndVerifyAccountAvatars(
+      env?.IDENTITY_IMAGES,
+      Array.isArray(pending.preservedAccountAvatarKeys) ? pending.preservedAccountAvatarKeys : [],
+    )
     return finalizeSystemResetAll(db, pendingRow)
   }
 
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state: storedState } = await loadGlobalCommandState(db, body)
+  const avatarMutation = hasLegacyAccountAvatarData(storedState)
+    ? await beginAccountAvatarMutationCleanup(db, actor.user_id, commandContext.requestId, commandContext.now)
+    : null
+  let legacyMigration
+  try {
+    legacyMigration = await prepareLegacyAccountAvatarMigration(
+      env,
+      db,
+      storedState,
+      commandContext.now,
+      actor.user_id,
+      avatarMutation ? accountAvatarMutationLifecycle(db, env?.IDENTITY_IMAGES, avatarMutation) : {},
+    )
+  } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
+  let committed = false
+  try {
+  const state = normalizeSharedStateForStorage(legacyMigration.state)
   const [
     removableAccounts,
     removableAdminAccounts,
@@ -5859,7 +7704,20 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
     ? state.accountSettings[actor.user_id]
     : ownAccountSettings(state, actor)
   const preservedAccountSettings = { [actor.user_id]: actorAccountSettings }
-  const identityImageKeys = await listIdentityImageKeysForReset(env?.IDENTITY_IMAGES, state)
+  const preservedAccountAvatarKeys = [...accountAvatarKeysFromState({ accountSettings: preservedAccountSettings })]
+  let identityImageKeys
+  let accountAvatarKeys
+  try {
+    identityImageKeys = await listIdentityImageKeysForReset(env?.IDENTITY_IMAGES, state)
+    accountAvatarKeys = await listAccountAvatarKeysForReset(env?.IDENTITY_IMAGES, state, preservedAccountAvatarKeys)
+  } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
+    throw error
+  }
   const nextState = {
     schemaVersion: Number.isInteger(Number(state.schemaVersion)) && Number(state.schemaVersion) > 0
       ? Number(state.schemaVersion)
@@ -5867,6 +7725,7 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     accountSettings: preservedAccountSettings,
     ...Object.fromEntries(RESET_ARRAY_COLLECTIONS.map((key) => [key, []])),
+    orderInformationOptions: materializeDefaultOrderInformationOptions({}),
   }
   const purged = {
     accounts: Number(removableAccounts?.count || 0),
@@ -5882,6 +7741,7 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
     stateCollections: Number(stateCollections?.count || 0),
     stateEntities: Number(stateEntities?.count || 0),
     identityImageObjectsTargeted: identityImageKeys.length,
+    accountAvatarObjectsTargeted: accountAvatarKeys.length,
   }
   const nextStateVersion = Number(current.version) + 1
   const responseBody = apiPayload(commandContext, {
@@ -5895,6 +7755,8 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
       defaultPolicyCount: Object.keys(DEFAULT_POLICIES).length,
       identityImagePrefix: IDENTITY_IMAGE_KEY_PREFIX,
       identityImageStorageVerifiedEmpty: true,
+      accountAvatarPrefix: ACCOUNT_AVATAR_KEY_PREFIX,
+      accountAvatarStorageVerified: true,
     },
     version: nextStateVersion,
   })
@@ -5906,6 +7768,7 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
     requestHash: commandContext.hash,
     requestId: commandContext.requestId,
     serverTime: commandContext.now,
+    preservedAccountAvatarKeys,
     responseBody,
     audit: {
       before: resetStateSummary(state),
@@ -5918,6 +7781,11 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
         preservedAdminAccountSettings: Object.keys(preservedAccountSettings).sort(),
         defaultPoliciesRestored: Object.keys(DEFAULT_POLICIES).sort(),
         identityImagePrefix: IDENTITY_IMAGE_KEY_PREFIX,
+        accountAvatarPrefix: ACCOUNT_AVATAR_KEY_PREFIX,
+        preservedAccountAvatarKeys,
+        ...(legacyMigration.changed
+          ? { legacyAvatarMigration: legacyAvatarMigrationAudit(legacyMigration) }
+          : {}),
       },
     },
   }
@@ -5938,6 +7806,33 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
     actorId: actor.user_id,
     requestId: commandContext.requestId,
   })
+  const committedAvatarMutation = avatarMutation
+    ? commitAccountAvatarMutationCleanup(
+        avatarMutation,
+        [],
+        preservedAccountAvatarKeys,
+        commandContext.now,
+      )
+    : null
+  const stateMutation = avatarMutation
+    ? db.prepare(`
+        UPDATE app_state
+        SET value_json = ?, version = ?, updated_at = ?, updated_by = ?, last_request_id = ?
+        WHERE scope_key = 'global' AND version = ?
+          AND EXISTS (
+            SELECT 1 FROM system_metadata WHERE meta_key = ? AND value_json = ?
+          )
+      `).bind(
+        stateCommit.compactJson,
+        nextStateVersion,
+        commandContext.now,
+        actor.user_id,
+        commandContext.requestId,
+        Number(current.version),
+        avatarMutation.metaKey,
+        avatarMutation.valueJson,
+      )
+    : stateCommit.mutation
   const additionalStatements = [
     db.prepare(`DELETE FROM app_state WHERE scope_key <> 'global' AND ${guardSql}`)
       .bind(nextStateVersion, commandContext.requestId),
@@ -5971,6 +7866,19 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
     )),
     db.prepare(`DELETE FROM counters WHERE ${guardSql}`)
       .bind(nextStateVersion, commandContext.requestId),
+    ...(avatarMutation ? [db.prepare(`
+      UPDATE system_metadata
+      SET value_json = ?, version = version + 1, updated_at = ?
+      WHERE meta_key = ? AND value_json = ?
+        AND ${guardSql}
+    `).bind(
+      committedAvatarMutation.valueJson,
+      commandContext.now,
+      avatarMutation.metaKey,
+      avatarMutation.valueJson,
+      nextStateVersion,
+      commandContext.requestId,
+    )] : []),
     db.prepare(`
       INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
       SELECT ?, ?, 1, ?
@@ -5990,11 +7898,16 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
   let results
   try {
     results = await db.batch([
-      stateCommit.mutation,
+      stateMutation,
       ...stateCommit.externalStatements,
       ...additionalStatements,
     ])
   } catch (error) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
     const latest = await loadState(db, 'global')
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ trước khi Reset.', {
       currentVersion: Number(latest?.version || 0),
@@ -6002,13 +7915,35 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
     })
   }
   if (changes(results?.[0]) !== 1) {
+    if (avatarMutation) {
+      await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+        suppressFailure: true,
+      })
+    }
     const latest = await loadState(db, 'global')
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ trước khi Reset.', {
       currentVersion: Number(latest?.version || 0),
     })
   }
+  committed = true
+  if (avatarMutation) {
+    await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+      suppressFailure: true,
+    })
+  }
   await purgeAndVerifyIdentityImages(env?.IDENTITY_IMAGES, identityImageKeys)
+  await purgeAndVerifyAccountAvatars(env?.IDENTITY_IMAGES, preservedAccountAvatarKeys, accountAvatarKeys)
   return finalizeSystemResetAll(db, await loadPendingSystemResetAll(db))
+  } catch (error) {
+    if (!committed) {
+      if (avatarMutation) {
+        await cleanupAccountAvatarMutation(db, env?.IDENTITY_IMAGES, avatarMutation.metaKey, commandContext, {
+          suppressFailure: true,
+        })
+      }
+    }
+    throw error
+  }
 }
 
 const asVnd = (value, field, { positive = false } = {}) => {
@@ -7933,7 +9868,13 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
 
 const ORDER_GENDERS = new Set(['Nam', 'Nữ', 'Khác'])
 const ORDER_ACQUISITION_CHANNELS = new Set(['Facebook', 'Tiktok', 'Zalo', 'Bạn Bè', 'Người thân', 'Khác'])
-const ORDER_CUSTOMER_OCCUPATIONS = new Set([
+const ORDER_INFORMATION_KIND = 'occupation'
+const ORDER_PAYMENT_METHOD_KIND = 'payment_method'
+const ORDER_INFORMATION_KINDS = new Set([ORDER_INFORMATION_KIND, ORDER_PAYMENT_METHOD_KIND])
+const ORDER_INFORMATION_OPTION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,99}$/u
+const ORDER_INFORMATION_OPTION_CODE_PATTERN = /^[A-Z0-9][A-Z0-9_-]{1,39}$/u
+const MAX_ORDER_INFORMATION_OPTIONS = 1_000
+const DEFAULT_ORDER_OCCUPATION_LABELS = [
   'Nhân viên VP',
   'Kỹ sư',
   'Bác sĩ',
@@ -7949,17 +9890,144 @@ const ORDER_CUSTOMER_OCCUPATIONS = new Set([
   'Bảo vệ',
   'Công nhân',
   'Khác',
-])
+]
 
-const orderCustomerProfile = (payload, previous = null) => {
+const normalizeOrderInformationText = (value) => String(value ?? '')
+  .normalize('NFC')
+  .trim()
+  .replace(/\s+/gu, ' ')
+
+const normalizeOrderInformationLabel = (value) => normalizeOrderInformationText(value)
+  .toLocaleLowerCase('vi-VN')
+
+const DEFAULT_ORDER_OCCUPATION_OPTIONS = DEFAULT_ORDER_OCCUPATION_LABELS.map((label, index) => ({
+  id: `order-occupation-${String(index + 1).padStart(3, '0')}`,
+  kind: ORDER_INFORMATION_KIND,
+  code: `OCC-${String(index + 1).padStart(3, '0')}`,
+  label,
+  normalizedLabel: normalizeOrderInformationLabel(label),
+  active: true,
+  sortOrder: (index + 1) * 100,
+  system: false,
+  createdAt: '2026-08-25T00:00:00+07:00',
+  createdBy: 'SYSTEM',
+  updatedAt: '2026-08-25T00:00:00+07:00',
+  updatedBy: 'SYSTEM',
+  deletedAt: null,
+  deletedBy: null,
+}))
+
+const DEFAULT_ORDER_PAYMENT_METHOD_OPTIONS = [
+  { id: 'order-payment-001', code: 'PAY-001', label: 'Tiền mặt', sortOrder: 1600 },
+  { id: 'order-payment-002', code: 'PAY-002', label: 'Chuyển khoản', sortOrder: 1700 },
+].map((option) => ({
+  ...option,
+  kind: ORDER_PAYMENT_METHOD_KIND,
+  normalizedLabel: normalizeOrderInformationLabel(option.label),
+  active: true,
+  system: true,
+  createdAt: '2026-08-25T00:00:00+07:00',
+  createdBy: 'SYSTEM',
+  updatedAt: '2026-08-25T00:00:00+07:00',
+  updatedBy: 'SYSTEM',
+  deletedAt: null,
+  deletedBy: null,
+}))
+
+const DEFAULT_ORDER_INFORMATION_OPTIONS = [
+  ...DEFAULT_ORDER_OCCUPATION_OPTIONS,
+  ...DEFAULT_ORDER_PAYMENT_METHOD_OPTIONS,
+]
+
+const orderInformationDefaultsSummary = () => ({
+  persisted: true,
+  collectionKey: 'orderInformationOptions',
+  canonicalSeedCount: DEFAULT_ORDER_INFORMATION_OPTIONS.length,
+  occupationSeedCount: DEFAULT_ORDER_OCCUPATION_OPTIONS.length,
+  paymentMethodSeedCount: DEFAULT_ORDER_PAYMENT_METHOD_OPTIONS.length,
+})
+
+const orderInformationOptionsFromState = (state) => (
+  Array.isArray(state?.orderInformationOptions) ? state.orderInformationOptions : []
+)
+
+const orderInformationOptionKind = (option) => String(option?.kind || ORDER_INFORMATION_KIND)
+
+const materializeDefaultOrderInformationOptions = (state) => {
+  const options = orderInformationOptionsFromState(state).map((option) => sanitizeStateValue(option))
+  for (const defaultOption of DEFAULT_ORDER_INFORMATION_OPTIONS) {
+    const defaultCode = String(defaultOption.code).toUpperCase()
+    const exists = options.some((option) => (
+      String(option?.id || '') === defaultOption.id
+      || String(option?.code || '').trim().toUpperCase() === defaultCode
+      || (
+        orderInformationOptionKind(option) === defaultOption.kind
+        && normalizeOrderInformationLabel(option?.label) === defaultOption.normalizedLabel
+      )
+    ))
+    if (!exists) options.push({ ...defaultOption })
+  }
+  return options
+}
+
+const configuredOrderPaymentMethods = (state) => {
+  const options = orderInformationOptionsFromState(state)
+  const activePaymentOptions = options.filter((option) => (
+    isPlainRecord(option)
+    && orderInformationOptionKind(option) === ORDER_PAYMENT_METHOD_KIND
+    && orderInformationOptionIsActive(option)
+  ))
+  if (activePaymentOptions.length !== DEFAULT_ORDER_PAYMENT_METHOD_OPTIONS.length) {
+    throw new ApiError(409, 'ORDER_PAYMENT_CONFIGURATION_INVALID', 'Cấu hình hình thức thanh toán trong cơ sở dữ liệu không hợp lệ.')
+  }
+  const methods = DEFAULT_ORDER_PAYMENT_METHOD_OPTIONS.map((expected) => {
+    const matches = activePaymentOptions.filter((option) => (
+      normalizeOrderInformationLabel(option.label) === expected.normalizedLabel
+    ))
+    if (matches.length !== 1) {
+      throw new ApiError(409, 'ORDER_PAYMENT_CONFIGURATION_INVALID', 'Cấu hình hình thức thanh toán trong cơ sở dữ liệu không hợp lệ.')
+    }
+    return expected.label
+  })
+  return new Set(methods)
+}
+
+const orderInformationOptionIsActive = (option) => option?.active !== false && !option?.deletedAt
+
+const findOrderInformationOptionByLabel = (state, value) => {
+  const normalizedLabel = normalizeOrderInformationLabel(value)
+  if (!normalizedLabel) return null
+  return orderInformationOptionsFromState(state).find((option) => (
+    isPlainRecord(option)
+    && String(option.kind || ORDER_INFORMATION_KIND) === ORDER_INFORMATION_KIND
+    && normalizeOrderInformationLabel(option.label) === normalizedLabel
+  )) || null
+}
+
+const resolveOrderOccupation = (state, value, previousValue = '', allowUnchangedInactive = false) => {
+  const requested = normalizeOrderInformationText(value)
+  const option = findOrderInformationOptionByLabel(state, requested)
+  if (option && orderInformationOptionIsActive(option)) return normalizeOrderInformationText(option.label)
+  if (allowUnchangedInactive
+    && normalizeOrderInformationLabel(requested)
+      === normalizeOrderInformationLabel(previousValue)
+    && normalizeOrderInformationLabel(previousValue)) {
+    return String(previousValue)
+  }
+  throw new ApiError(400, 'ORDER_OCCUPATION_INVALID', 'Nghề nghiệp không thuộc danh sách đang hoạt động của hệ thống.')
+}
+
+const orderCustomerProfile = (payload, state, previous = null) => {
   const gender = String(payload.gender ?? payload.customerGender ?? previous?.gender ?? '').trim()
   if (!ORDER_GENDERS.has(gender)) {
     throw new ApiError(400, 'ORDER_GENDER_INVALID', 'Giới tính là bắt buộc và phải là Nam, Nữ hoặc Khác.')
   }
-  const occupation = String(payload.occupation ?? payload.customerOccupation ?? previous?.occupation ?? '').trim()
-  if (!ORDER_CUSTOMER_OCCUPATIONS.has(occupation)) {
-    throw new ApiError(400, 'ORDER_OCCUPATION_INVALID', 'Nghề nghiệp không thuộc danh sách lựa chọn của hệ thống.')
-  }
+  const occupation = resolveOrderOccupation(
+    state,
+    payload.occupation ?? payload.customerOccupation ?? previous?.occupation ?? '',
+    previous?.occupation,
+    Boolean(previous),
+  )
   const acquisitionChannel = String(
     payload.acquisitionChannel ?? payload.channel ?? payload.knownFrom ?? previous?.acquisitionChannel ?? '',
   ).trim()
@@ -7967,6 +10035,257 @@ const orderCustomerProfile = (payload, previous = null) => {
     throw new ApiError(400, 'ORDER_ACQUISITION_CHANNEL_INVALID', 'Kênh biết đến phải là Facebook, Tiktok, Zalo, Bạn Bè, Người thân hoặc Khác.')
   }
   return { gender, occupation, acquisitionChannel }
+}
+
+const validateOrderInformationOptionId = (value) => {
+  const optionId = String(value || '').trim()
+  if (!ORDER_INFORMATION_OPTION_ID_PATTERN.test(optionId)) {
+    throw new ApiError(400, 'ORDER_INFORMATION_OPTION_ID_INVALID', 'Mã định danh nghề nghiệp không hợp lệ.')
+  }
+  return optionId
+}
+
+const orderInformationOptionsForMutation = (state) => {
+  const options = orderInformationOptionsFromState(state)
+  if (options.length > MAX_ORDER_INFORMATION_OPTIONS) {
+    throw new ApiError(409, 'ORDER_INFORMATION_LIMIT', `Danh mục nghề nghiệp vượt quá ${MAX_ORDER_INFORMATION_OPTIONS} lựa chọn.`)
+  }
+  const ids = new Set()
+  for (const option of options) {
+    const id = String(option?.id || '').trim()
+    if (!isPlainRecord(option)
+      || !ORDER_INFORMATION_KINDS.has(orderInformationOptionKind(option))
+      || !ORDER_INFORMATION_OPTION_ID_PATTERN.test(id)
+      || ids.has(id)) {
+      throw new ApiError(409, 'ORDER_INFORMATION_STATE_INVALID', 'Danh mục nghề nghiệp đang có bản ghi không hợp lệ hoặc trùng mã định danh.')
+    }
+    ids.add(id)
+  }
+  return {
+    options,
+    occupations: options.filter((option) => orderInformationOptionKind(option) === ORDER_INFORMATION_KIND),
+  }
+}
+
+const validateOrderInformationOptionInput = (payload, options, currentId = '') => {
+  const label = normalizeOrderInformationText(payload.label)
+  const code = String(payload.code || '').trim().toUpperCase()
+  if (!label || label.length > 120) {
+    throw new ApiError(400, 'ORDER_INFORMATION_LABEL_INVALID', 'Tên hiển thị là bắt buộc và không được vượt quá 120 ký tự.')
+  }
+  if (!ORDER_INFORMATION_OPTION_CODE_PATTERN.test(code)) {
+    throw new ApiError(400, 'ORDER_INFORMATION_CODE_INVALID', 'Mã phải có 2–40 ký tự chữ in hoa, số, gạch ngang hoặc gạch dưới.')
+  }
+  const normalizedLabel = normalizeOrderInformationLabel(label)
+  const duplicate = options.find((option) => (
+    String(option.id || '') !== String(currentId)
+    && (
+      normalizeOrderInformationLabel(option.label) === normalizedLabel
+      || String(option.code || '').trim().toUpperCase() === code
+    )
+  ))
+  if (duplicate) {
+    throw new ApiError(409, 'ORDER_INFORMATION_DUPLICATE', 'Tên hiển thị hoặc mã đã tồn tại trong danh mục nghề nghiệp.', {
+      conflictingOptionId: duplicate.id,
+    })
+  }
+  return { label, code, normalizedLabel }
+}
+
+const orderInformationCommand = async (db, actor, body, commandContext) => {
+  if (!['admin', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý thông tin đơn hàng.')
+  }
+  const operation = String(body.type || '').split('.').at(-1)
+  if (!['create', 'update', 'disable', 'restore', 'reorder'].includes(operation)) {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh quản lý thông tin đơn hàng không được hỗ trợ.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  if (payload.kind !== undefined && String(payload.kind) !== ORDER_INFORMATION_KIND) {
+    throw new ApiError(400, 'ORDER_INFORMATION_KIND_INVALID', 'Hiện chỉ hỗ trợ danh mục nghề nghiệp; hình thức thanh toán là trường hệ thống.')
+  }
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const { options, occupations } = orderInformationOptionsForMutation(state)
+  const actorSnapshot = serverActorSnapshot(actor)
+
+  if (operation === 'create') {
+    if (Object.hasOwn(payload, 'id') || Object.hasOwn(payload, 'optionId')) {
+      throw new ApiError(400, 'ORDER_INFORMATION_OPTION_ID_SERVER_MANAGED', 'Mã định danh nghề nghiệp được máy chủ tự cấp.')
+    }
+    if (options.length >= MAX_ORDER_INFORMATION_OPTIONS) {
+      throw new ApiError(409, 'ORDER_INFORMATION_LIMIT', `Chỉ được lưu tối đa ${MAX_ORDER_INFORMATION_OPTIONS} nghề nghiệp.`)
+    }
+    const input = validateOrderInformationOptionInput(payload, options)
+    const option = sanitizeStateValue({
+      id: `order-occupation-${crypto.randomUUID()}`,
+      kind: ORDER_INFORMATION_KIND,
+      ...input,
+      active: true,
+      sortOrder: occupations.reduce((maximum, candidate, index) => (
+        Math.max(maximum, Number(candidate.sortOrder) || ((index + 1) * 100))
+      ), 0) + 100,
+      system: false,
+      createdAt: commandContext.now,
+      createdBy: actorSnapshot,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+      deletedAt: null,
+      deletedBy: null,
+    })
+    const nextState = {
+      ...state,
+      orderInformationOptions: [...options, option],
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'order-information-option',
+      entityId: option.id,
+      before: null,
+      after: option,
+      metadata: { kind: ORDER_INFORMATION_KIND },
+      response: { command: body.type, option },
+      status: 201,
+    }, commandContext)
+  }
+
+  if (operation === 'reorder') {
+    const orderedIds = Array.isArray(payload.orderedIds)
+      ? payload.orderedIds.map((id) => validateOrderInformationOptionId(id))
+      : []
+    const currentIds = occupations.map((option) => String(option.id))
+    if (orderedIds.length !== currentIds.length
+      || new Set(orderedIds).size !== orderedIds.length
+      || currentIds.some((id) => !orderedIds.includes(id))) {
+      throw new ApiError(400, 'ORDER_INFORMATION_ORDER_INVALID', 'Thứ tự nghề nghiệp phải chứa đúng một lần toàn bộ mã hiện có.')
+    }
+    if (orderedIds.every((id, index) => id === currentIds[index])) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        options: occupations,
+        existing: true,
+      }, 200, commandContext)
+    }
+    const byId = new Map(occupations.map((option) => [String(option.id), option]))
+    const nextOccupations = orderedIds.map((id, index) => sanitizeStateValue({
+      ...byId.get(id),
+      sortOrder: (index + 1) * 100,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+    }))
+    const nextOptions = [
+      ...nextOccupations,
+      ...options.filter((option) => orderInformationOptionKind(option) !== ORDER_INFORMATION_KIND),
+    ]
+    const nextState = {
+      ...state,
+      orderInformationOptions: nextOptions,
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'order-information-options',
+      entityId: ORDER_INFORMATION_KIND,
+      before: occupations,
+      after: nextOccupations,
+      metadata: { orderedIds },
+      response: { command: body.type, options: nextOccupations },
+    }, commandContext)
+  }
+
+  const optionId = validateOrderInformationOptionId(payload.optionId)
+  const index = options.findIndex((option) => String(option.id) === optionId)
+  if (index < 0) {
+    throw new ApiError(404, 'ORDER_INFORMATION_OPTION_NOT_FOUND', 'Không tìm thấy nghề nghiệp cần thay đổi.')
+  }
+  const previous = options[index]
+  if (orderInformationOptionKind(previous) !== ORDER_INFORMATION_KIND) {
+    throw new ApiError(403, 'ORDER_INFORMATION_SYSTEM_OPTION_PROTECTED', 'Hình thức thanh toán hệ thống không thể thay đổi bằng lệnh quản lý nghề nghiệp.')
+  }
+  let option
+  let metadata = { kind: ORDER_INFORMATION_KIND }
+  if (operation === 'update') {
+    const input = validateOrderInformationOptionInput({
+      label: payload.label === undefined ? previous.label : payload.label,
+      code: payload.code === undefined ? previous.code : payload.code,
+    }, options, optionId)
+    if (input.label === previous.label
+      && input.code === previous.code
+      && input.normalizedLabel === previous.normalizedLabel) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        option: previous,
+        existing: true,
+      }, 200, commandContext)
+    }
+    option = sanitizeStateValue({
+      ...previous,
+      ...input,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+    })
+  } else if (operation === 'disable') {
+    const reason = normalizeOrderInformationText(payload.reason)
+    if (!reason || reason.length > 500) {
+      throw new ApiError(400, 'ORDER_INFORMATION_REASON_REQUIRED', 'Cần nhập lý do vô hiệu hóa từ 1 đến 500 ký tự.')
+    }
+    if (!orderInformationOptionIsActive(previous)) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        option: previous,
+        existing: true,
+      }, 200, commandContext)
+    }
+    const usedByOrderCount = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
+      normalizeOrderInformationLabel(order.occupation) === normalizeOrderInformationLabel(previous.label)
+    )).length
+    option = sanitizeStateValue({
+      ...previous,
+      active: false,
+      deletedAt: commandContext.now,
+      deletedBy: actorSnapshot,
+      deleteReason: reason,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+    })
+    metadata = { ...metadata, reason, usedByOrderCount, deletionMode: 'soft-disable' }
+  } else {
+    if (orderInformationOptionIsActive(previous)) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        option: previous,
+        existing: true,
+      }, 200, commandContext)
+    }
+    option = sanitizeStateValue({
+      ...previous,
+      active: true,
+      deletedAt: null,
+      deletedBy: null,
+      deleteReason: null,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+    })
+  }
+  const nextOptions = options.map((candidate, candidateIndex) => candidateIndex === index ? option : candidate)
+  const nextState = {
+    ...state,
+    orderInformationOptions: nextOptions,
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'order-information-option',
+    entityId: optionId,
+    before: previous,
+    after: option,
+    metadata,
+    response: { command: body.type, option },
+  }, commandContext)
 }
 
 const orderCreateCommand = async (db, actor, body, commandContext) => {
@@ -8011,10 +10330,10 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
       throw new ApiError(400, 'CUSTOMER_AGE_INVALID', 'Tuổi khách hàng phải là số nguyên từ 0 đến 150.')
     }
   }
-  if (!['Tiền mặt', 'Chuyển khoản'].includes(payload.paymentMethod)) {
+  if (!configuredOrderPaymentMethods(state).has(payload.paymentMethod)) {
     throw new ApiError(400, 'PAYMENT_METHOD_INVALID', 'Hình thức thanh toán không hợp lệ.')
   }
-  const customerProfile = orderCustomerProfile(payload)
+  const customerProfile = orderCustomerProfile(payload, state)
   const employeeId = actor.role === 'employee'
     ? String(actor.employee_id || actor.user_id)
     : (String(payload.employeeId || '') || null)
@@ -8207,7 +10526,7 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
     }
     if (payload.amount !== undefined) candidate.amount = asVnd(payload.amount, 'Số tiền đơn hàng', { positive: true })
     if (payload.paymentMethod !== undefined) {
-      if (!['Tiền mặt', 'Chuyển khoản'].includes(payload.paymentMethod)) {
+      if (!configuredOrderPaymentMethods(state).has(payload.paymentMethod)) {
         throw new ApiError(400, 'PAYMENT_METHOD_INVALID', 'Hình thức thanh toán không hợp lệ.')
       }
       candidate.paymentMethod = payload.paymentMethod
@@ -8220,11 +10539,12 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
       candidate.gender = gender
     }
     if (payload.occupation !== undefined || payload.customerOccupation !== undefined) {
-      const occupation = String(payload.occupation ?? payload.customerOccupation ?? '').trim()
-      if (!ORDER_CUSTOMER_OCCUPATIONS.has(occupation)) {
-        throw new ApiError(400, 'ORDER_OCCUPATION_INVALID', 'Nghề nghiệp không thuộc danh sách lựa chọn của hệ thống.')
-      }
-      candidate.occupation = occupation
+      candidate.occupation = resolveOrderOccupation(
+        state,
+        payload.occupation ?? payload.customerOccupation ?? '',
+        previous.occupation,
+        true,
+      )
     }
     if (payload.acquisitionChannel !== undefined || payload.channel !== undefined || payload.knownFrom !== undefined) {
       const acquisitionChannel = String(
@@ -11190,8 +13510,27 @@ const executeCommand = async (request, env, context) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context)
   const body = await readJson(request)
+  const updatesAccountAvatar = body.type === 'account_settings.update' && accountSettingsUpdatesAvatar(body)
+  const skipsAccountAvatarCleanup = body.type === 'account_settings.update' && !updatesAccountAvatar
+  if (!skipsAccountAvatarCleanup && await resumePendingAccountAvatarMutationCleanup(db, env, context)) {
+    throw new ApiError(
+      503,
+      'ACCOUNT_AVATAR_CLEANUP_RETRY',
+      'Ảnh đại diện tồn đọng đã được dọn; request này chưa được thực thi, vui lòng gửi lại.',
+    )
+  }
+  if (!skipsAccountAvatarCleanup && await resumePendingAccountAvatarCleanup(db, env, context)) {
+    throw new ApiError(
+      503,
+      'ACCOUNT_AVATAR_CLEANUP_RETRY',
+      'Ảnh đại diện tồn đọng đã được dọn; request này chưa được thực thi, vui lòng gửi lại.',
+    )
+  }
   if (body.type !== 'system.reset_all' && await loadPendingSystemResetAll(db)) {
     throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Hệ thống đang hoàn tất xóa ảnh CCCD của lần Reset toàn bộ dữ liệu; các lệnh ghi tạm thời bị khóa.')
+  }
+  if (RETIRED_COMMANDS.has(String(body.type || ''))) {
+    throw new ApiError(410, 'COMMAND_RETIRED', 'Chức năng cài đặt thời gian làm việc đã ngừng sử dụng.')
   }
   if (user.role === 'business_support' && !businessSupportCommandAllowed(body)) {
     throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD không có quyền thực hiện thao tác này.')
@@ -11228,7 +13567,7 @@ const executeCommand = async (request, env, context) => {
       return await scheduleCommand(db, user, body, commandContext)
     }
     if (String(body.type || '').startsWith('account_settings.')) {
-      return await accountSettingsCommand(db, user, body, commandContext)
+      return await accountSettingsCommand(db, user, body, commandContext, env)
     }
     if (String(body.type || '').startsWith('notification.')) {
       return await notificationCommand(db, user, body, commandContext)
@@ -11243,7 +13582,7 @@ const executeCommand = async (request, env, context) => {
       return await systemResetAllCommand(db, user, body, commandContext, env)
     }
     if (body.type === 'system.reset_demo') {
-      return await systemResetDemoCommand(db, user, body, commandContext)
+      return await systemResetDemoCommand(db, user, body, commandContext, env)
     }
     if (body.type === 'policy.set') return await policyCommand(db, user, body, commandContext)
     if (body.type === 'policies.set') return await policiesCommand(db, user, body, commandContext)
@@ -11252,6 +13591,9 @@ const executeCommand = async (request, env, context) => {
     }
     if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
       return await attendanceCommand(db, user, body, commandContext)
+    }
+    if (String(body.type || '').startsWith('order_information.')) {
+      return await orderInformationCommand(db, user, body, commandContext)
     }
     if (body.type === 'order.create') return await orderCreateCommand(db, user, body, commandContext)
     if (body.type === 'order.update' || body.type === 'order.delete') {
@@ -11349,6 +13691,39 @@ const listUsers = async (request, env, context) => {
         ORDER BY display_name, username
       `, String(actor.store_id || ''))
   return jsonResponse(apiPayload(context, { users: rows.map(publicUser) }))
+}
+
+const getAccountAvatar = async (request, env, context) => {
+  const db = getDatabase(env)
+  const actor = await requireSession(request, db, context)
+  let current = await loadState(db, 'global')
+  current = await migrateLegacyAccountAvatars(db, env, actor, context, current)
+  const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
+  const metadata = normalizeAccountAvatarMetadata(
+    state.accountSettings?.[actor.user_id]?.avatar,
+    actor.user_id,
+  )
+  if (!metadata) throw new ApiError(404, 'ACCOUNT_AVATAR_NOT_FOUND', 'Tài khoản chưa có ảnh đại diện.')
+  const bucket = env?.IDENTITY_IMAGES
+  if (!bucket?.get) {
+    throw new ApiError(503, 'ACCOUNT_AVATAR_STORAGE_UNAVAILABLE', 'Kho lưu ảnh đại diện chưa được cấu hình.')
+  }
+  const object = await bucket.get(metadata.key)
+  if (!object?.body) throw new ApiError(404, 'ACCOUNT_AVATAR_NOT_FOUND', 'Không tìm thấy ảnh đại diện trong kho riêng tư.')
+  const extension = metadata.contentType === 'image/jpeg' ? 'jpg' : metadata.contentType.split('/')[1]
+  const headers = new Headers({
+    'Cache-Control': 'private, no-store',
+    'Content-Disposition': `inline; filename="avatar.${extension}"`,
+    'Content-Security-Policy': "default-src 'none'",
+    'Content-Type': metadata.contentType,
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Avatar-Version': String(metadata.version),
+  })
+  if (Number.isSafeInteger(metadata.size)) headers.set('Content-Length', String(metadata.size))
+  if (object.etag) headers.set('ETag', String(object.etag))
+  return new Response(object.body, { status: 200, headers })
 }
 
 const getIdentityImage = async (request, env, context, employeeId, side) => {
@@ -11568,6 +13943,7 @@ const handleApi = async (request, env, context, url) => {
       service: 'idosi-api',
       databaseConfigured: Boolean(env?.DB?.prepare && env?.DB?.batch),
       identityImageStorageConfigured: Boolean(env?.IDENTITY_IMAGES?.get && env?.IDENTITY_IMAGES?.put),
+      accountAvatarStorageConfigured: Boolean(env?.IDENTITY_IMAGES?.get && env?.IDENTITY_IMAGES?.put),
       addressSuggestionsConfigured: Boolean(String(env?.GOOGLE_MAPS_API_KEY || '').trim()),
     }))
   }
@@ -11603,6 +13979,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/address-suggestions') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getAddressSuggestions(request, env, context, url)
+  }
+  if (path === '/api/account-avatar') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getAccountAvatar(request, env, context)
   }
   const identityImageMatch = path.match(/^\/api\/identity-images\/([^/]+)\/(front|back)$/u)
   if (identityImageMatch) {

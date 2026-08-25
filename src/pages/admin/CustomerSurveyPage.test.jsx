@@ -1,10 +1,12 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CustomerSurveyPage } from './CustomerSurveyPage'
+import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../../domain/orderInformationSettings'
 
 vi.mock('../../state/AppContext', () => ({
   useApp: () => ({
     stores: [{ id: 'S01', name: 'Dosii KVC' }, { id: 'S02', name: 'Dosii TNV' }],
+    orderInformationOptions: DEFAULT_ORDER_INFORMATION_OPTIONS,
     orders: [
       { id: '1', storeId: 'S01', createdAt: '2026-08-01T08:00:00+07:00', gender: 'Nữ', customerAge: 22, acquisitionChannel: 'TikTok', occupation: 'Sinh viên' },
       { id: '2', storeId: 'S01', createdAt: '2026-08-02T08:00:00+07:00', gender: 'Nam', customerAge: 31, acquisitionChannel: 'Facebook', occupation: 'Nhân viên' },

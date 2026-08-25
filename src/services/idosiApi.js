@@ -110,6 +110,44 @@ export const apiAddressSuggestions = (params = {}) => {
   return request(`/api/address-suggestions?${query.toString()}`)
 }
 
+export const apiGetAccountAvatar = async ({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const token = memoryToken || readToken()
+    const response = await fetch('/api/account-avatar', {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      signal: controller.signal,
+      headers: {
+        Accept: 'image/jpeg,image/png,image/webp,image/gif',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    })
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null)
+      const error = payload?.error || {}
+      throw new IdosiApiError(error.message || `Máy chủ trả về lỗi ${response.status}.`, {
+        status: response.status,
+        code: error.code || `HTTP_${response.status}`,
+        details: error.details,
+      })
+    }
+    const blob = await response.blob()
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(String(blob.type || ''))) {
+      throw new IdosiApiError('Máy chủ trả về ảnh đại diện không hợp lệ.', { code: 'ACCOUNT_AVATAR_INVALID' })
+    }
+    return blob
+  } catch (error) {
+    if (error instanceof IdosiApiError) throw error
+    if (error?.name === 'AbortError') throw new IdosiApiError('Máy chủ phản hồi quá chậm. Vui lòng thử lại.', { code: 'TIMEOUT' })
+    throw new IdosiApiError('Không thể tải ảnh đại diện.', { code: 'NETWORK_ERROR', details: error?.message })
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
 export const apiGetIdentityImage = async (employeeId, side, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
   const normalizedSide = side === 'back' ? 'back' : 'front'
   const controller = new AbortController()
