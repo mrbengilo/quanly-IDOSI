@@ -54,7 +54,42 @@ Rules:
 - Only surface ambiguity when choosing one interpretation could materially change money/KPI/payroll, authorization, destructive behavior, schema/data migration, or production deployment semantics. Otherwise make the safest compatible choice and proceed.
 - Never spend a long visible analysis phase before coding. The execution brief is an internal control, not a reason to delay implementation.
 
-## 4. Model, reasoning, and speed routing
+## 4. Visible Task Intake Report — mandatory before implementation
+
+Immediately after receiving a task and before deep implementation, show the user a **short execution report**. Keep it concise enough that it does not become a planning bottleneck.
+
+Required format:
+
+```text
+NGUYÊN NHÂN / NHU CẦU:
+- <root cause if confirmed, otherwise the business/technical need>
+
+GIẢI PHÁP:
+- <proposed solution, preserving canonical logic/source of truth>
+
+CÔNG VIỆC SẼ THỰC HIỆN:
+1. <task step 1>
+2. <task step 2>
+3. <tests / related flows / delivery as applicable>
+
+MỨC ĐỘ & PHẠM VI DỰ KIẾN:
+- Risk: FAST | STANDARD | CRITICAL
+- Workload: SMALL | MEDIUM | LARGE | CRITICAL
+- Scope: <main modules/flow groups>
+- Verification: <targeted / related-flow / final gate>
+```
+
+Rules for this report:
+
+- For a bug: state the confirmed root cause if already known. If not yet confirmed, say `Nguyên nhân cần xác minh trong code` and state the leading evidence; do not invent a root cause.
+- For a new feature/change request: use `NHU CẦU` or the business reason instead of pretending there is a defect.
+- `GIẢI PHÁP` must describe the intended technical/business approach, not generic filler.
+- `CÔNG VIỆC SẼ THỰC HIỆN` must be actionable and scoped; include related-flow testing when a functional path changes.
+- Do **not** promise an exact completion time in minutes/hours or a future delivery time. Use `Workload` plus expected scope/steps as the forecast. The agent must perform the task in the current execution rather than defer work.
+- Do not ask the user to approve this report unless a genuine safety-critical/business-rule ambiguity requires a decision. After displaying it, proceed immediately.
+- Update the report only if root cause, Risk, scope, or solution materially changes. Do not repeatedly restate the same plan.
+
+## 5. Model, reasoning, and speed routing
 
 **HIGH reasoning is the minimum quality floor** for IDOSI implementation work when the runtime exposes that control.
 
@@ -67,29 +102,29 @@ Rules:
 - Select the model once at task start. Switch at most once if new evidence materially changes complexity/risk.
 - If runtime cannot select the requested model/reasoning/speed, state the recommended route once and continue using the best available current runtime. Never block and never claim a switch that did not occur.
 
-## 5. Risk levels
+## 6. Risk levels
 
 ### FAST
 
 Presentation/documentation-only work with no change to business rules, contracts, mutations, persistence, auth, finance formulas, attendance calculations, or production runtime.
 
-Flow: `compile request -> targeted read -> branch -> minimal patch -> targeted check -> PR -> CI -> merge`
+Flow: `compile request -> intake report -> targeted read -> branch -> minimal patch -> targeted check -> PR -> CI -> merge`
 
 ### STANDARD
 
 Ordinary non-sensitive CRUD/form/validation/report/API/state/UI behavior without modifying canonical finance/payroll/auth/schema/persistence/core production rules.
 
-Flow: `compile request -> targeted impact -> branch -> targeted tests -> patch -> related-flow tests -> final gate -> PR -> CI -> merge`
+Flow: `compile request -> intake report -> targeted impact -> branch -> targeted tests -> patch -> related-flow tests -> final gate -> PR -> CI -> merge`
 
 ### CRITICAL
 
 Use when changing finance/money, payroll/KPI, attendance feeding payroll, order-money/audit mutations, authorization/store isolation/session, schema/migration/persistence, destructive data repair, sensitive idempotency/concurrency, production VPS runtime/storage/deployment, or other core rules with material downstream impact.
 
-Flow: `compile request -> focused deep impact -> regression matrix -> minimal patch -> security/data review -> related-flow tests -> one full final gate -> PR -> CI -> merge -> safeguards`
+Flow: `compile request -> intake report -> focused deep impact -> regression matrix -> minimal patch -> security/data review -> related-flow tests -> one full final gate -> PR -> CI -> merge -> safeguards`
 
 CRITICAL means stronger testing of the affected dependency graph, **not** scanning or rewriting the whole repository.
 
-## 6. Hard Scope Gate
+## 7. Hard Scope Gate
 
 - Search exact feature names, routes, functions, tests, API handlers, and schema entities before broad scans.
 - One PR should normally contain one coherent business objective.
@@ -99,26 +134,27 @@ CRITICAL means stronger testing of the affected dependency graph, **not** scanni
 - Do not bundle unrelated UI redesign + database + VPS + settings + another feature simply because they were stated in one message.
 - Do not ask the user to repeat already-known requirements; split operationally yourself.
 
-## 7. Fast execution sequence
+## 8. Fast execution sequence
 
 1. Start from latest `main`; create a fresh focused branch.
 2. Compile the user's request into the execution brief.
-3. Route Risk + Model + Reasoning + Speed.
-4. Targeted-search the directly relevant symbols/files/modules.
-5. Find and reuse canonical logic/source of truth.
-6. Build a **Related-Flow Map** before editing logic.
-7. Run targeted regression tests where useful.
-8. Implement the smallest coherent patch.
-9. During iteration, rerun only checks invalidated by the edit.
-10. Run the relevant **Related-Flow Regression Matrix**.
-11. Run the final local gate once after stabilization.
-12. Open PR promptly; GitHub `verify` is the authoritative repository-wide gate.
-13. If CI fails: inspect failing step -> reproduce targeted -> fix -> rerun invalidated checks only.
-14. Merge after required checks pass and repository rules allow it.
+3. Show the short Visible Task Intake Report.
+4. Route Risk + Model + Reasoning + Speed.
+5. Targeted-search the directly relevant symbols/files/modules.
+6. Find and reuse canonical logic/source of truth.
+7. Build a **Related-Flow Map** before editing logic.
+8. Run targeted regression tests where useful.
+9. Implement the smallest coherent patch.
+10. During iteration, rerun only checks invalidated by the edit.
+11. Run the relevant **Related-Flow Regression Matrix**.
+12. Run the final local gate once after stabilization.
+13. Open PR promptly; GitHub `verify` is the authoritative repository-wide gate.
+14. If CI fails: inspect failing step -> reproduce targeted -> fix -> rerun invalidated checks only.
+15. Merge after required checks pass and repository rules allow it.
 
-Do not repeat repository analysis, model selection, or full verification when code/input has not materially changed.
+Do not repeat repository analysis, model selection, intake report, or full verification when code/input has not materially changed.
 
-## 8. Related-Flow Map and Regression Matrix — mandatory
+## 9. Related-Flow Map and Regression Matrix — mandatory
 
 Every functional change must identify what else can break because of it.
 
@@ -145,7 +181,7 @@ Do **not** test unrelated modules merely to appear thorough. The requirement is 
 
 A task is not done if the primary screen works but an identified downstream/related flow regresses.
 
-## 9. Architecture and source of truth
+## 10. Architecture and source of truth
 
 Preserve where practical:
 `UI/pages/components -> state -> domain -> API service -> backend -> database`
@@ -156,7 +192,7 @@ Preserve where practical:
 - Do not satisfy production persistence with component state, mocks, hard-coded objects, or `localStorage`.
 - Schema changes require safe migrations and data preservation.
 
-## 10. Finance, payroll, KPI, attendance, auth, persistence
+## 11. Finance, payroll, KPI, attendance, auth, persistence
 
 For canonical money/payroll/KPI changes:
 
@@ -175,7 +211,7 @@ Authorization is enforced at backend/data boundaries, not UI only. `store_manage
 
 Migration/persistence changes must preserve existing rows and identify backup/rollback implications. Never reset/truncate production for convenience.
 
-## 11. Test and verification policy
+## 12. Test and verification policy
 
 ### During iteration
 
@@ -214,7 +250,7 @@ Plus applicable targeted regression/security/data/VPS/persistence checks from th
 
 If a final gate fails: root cause -> targeted fix -> targeted rerun -> rerun only final gates invalidated by that fix.
 
-## 12. Git, production, security
+## 13. Git, production, security
 
 - Never intentionally develop feature work directly on `main`.
 - Create each task branch from latest `main`; do not reuse stale completed branches.
@@ -225,11 +261,12 @@ If a final gate fails: root cause -> targeted fix -> targeted rerun -> rerun onl
 - Never edit production VPS source directly.
 - Never commit production passwords, secrets, tokens, or private keys.
 
-## 13. Definition of Done
+## 14. Definition of Done
 
 Applicable items:
 
 - user's natural-language request was converted into an execution brief automatically
+- Visible Task Intake Report was shown once before implementation
 - requested behavior implemented without requiring the user to author a technical prompt
 - model/reasoning/speed route selected truthfully
 - scope remains focused; broad requests split when necessary
@@ -242,11 +279,11 @@ Applicable items:
 - no unrelated changes or secrets introduced
 - migration/rollback/production safeguards documented when applicable
 
-## 14. Final report — concise
+## 15. Final report — concise
 
 Report only:
 
-1. Routing used/recommended
+1. Confirmed cause/need and solution actually implemented
 2. What changed
 3. Main files/modules
 4. Related flows tested and result
@@ -255,10 +292,10 @@ Report only:
 
 Do not pad the report with repeated analysis.
 
-## 15. Execution objective
+## 16. Execution objective
 
-- FAST: `auto-compile request -> Terra HIGH FAST -> targeted patch -> targeted check -> PR -> CI`
-- STANDARD: `auto-compile request -> Terra/Sol HIGH FAST -> related-flow map -> targeted tests -> patch -> regression matrix -> one final gate -> PR -> CI`
-- CRITICAL/finance/difficult: `auto-compile request -> Sol HIGH ULTRA FAST if supported -> focused impact -> regression matrix -> minimal patch -> one full final gate -> PR -> CI -> safeguards`
+- FAST: `auto-compile request -> intake report -> Terra HIGH FAST -> targeted patch -> targeted check -> PR -> CI`
+- STANDARD: `auto-compile request -> intake report -> Terra/Sol HIGH FAST -> related-flow map -> targeted tests -> patch -> regression matrix -> one final gate -> PR -> CI`
+- CRITICAL/finance/difficult: `auto-compile request -> intake report -> Sol HIGH ULTRA FAST if supported -> focused impact -> regression matrix -> minimal patch -> one full final gate -> PR -> CI -> safeguards`
 
-Overriding rule: **the user states the business request; Codex automatically turns it into the best execution prompt and implements it quickly. Any flow affected by the change must be tested carefully before completion.**
+Overriding rule: **the user states the business request; Codex automatically turns it into the best execution prompt, displays the cause/solution/work plan/workload forecast briefly, and implements it quickly. Any flow affected by the change must be tested carefully before completion.**

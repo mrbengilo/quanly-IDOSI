@@ -2,18 +2,30 @@
 
 > Quy trình: `docs/DEVELOPMENT_WORKFLOW.md`.
 
+## Visible Task Intake Report
+- Nguyên nhân / Nhu cầu:
+- Giải pháp:
+- Công việc sẽ thực hiện:
+  1. 
+  2. 
+  3. 
+- Risk: [ ] FAST  [ ] STANDARD  [ ] CRITICAL
+- Workload: [ ] SMALL  [ ] MEDIUM  [ ] LARGE  [ ] CRITICAL
+- Scope dự kiến:
+- Verification dự kiến:
+
+> Không ghi ETA hứa hẹn theo phút/giờ. Dùng Workload + Scope + số bước làm dự báo khối lượng và triển khai ngay.
+
 ## Automatic Execution Brief
 - Goal:
 - Acceptance criteria:
-- Risk: [ ] FAST  [ ] STANDARD  [ ] CRITICAL
 - Model: [ ] GPT-5.6 Terra  [ ] GPT-5.6 Sol  [ ] Runtime fallback
 - Reasoning: [ ] HIGH  [ ] XHIGH
 - Speed: [ ] FAST  [ ] ULTRA FAST if supported  [ ] Runtime fastest available
-- Scope:
 - Canonical source/logic:
 - Invariants phải giữ:
 
-> User không cần viết prompt kỹ thuật. Codex phải tự compile request thành execution brief này rồi triển khai.
+> User không cần viết prompt kỹ thuật. Codex phải tự compile request thành execution brief rồi triển khai.
 
 ## Scope Gate
 - [ ] Một mục tiêu nghiệp vụ coherent
@@ -32,6 +44,15 @@
 - [ ] Database / migration / persistence
 - [ ] Auth / session / credentials
 - [ ] VPS runtime / storage / deployment
+
+## Work Completed
+Đối chiếu với danh sách công việc đã công bố lúc bắt đầu task:
+- [ ] Các bước đã hoàn thành hoặc có lý do rõ nếu thay đổi scope
+- [ ] Root cause/need được cập nhật nếu phát hiện khác ban đầu
+- [ ] Giải pháp cuối cùng phù hợp canonical architecture/source of truth
+
+Chi tiết:
+- 
 
 ## Related-Flow Map
 Liệt kê các flow thực sự phụ thuộc vào phần thay đổi:
@@ -117,6 +138,7 @@ Test/evidence:
 
 ## Definition of Done
 - [ ] User request auto-compiled; user không phải viết prompt kỹ thuật
+- [ ] Visible Task Intake Report đã hiển thị nguyên nhân/nhu cầu + giải pháp + công việc + workload/scope
 - [ ] Scope đúng yêu cầu và không thành mega-task
 - [ ] Routing đúng policy
 - [ ] Primary + applicable related-flow regressions PASS
