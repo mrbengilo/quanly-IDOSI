@@ -4,13 +4,79 @@ Mandatory rules for Codex and coding agents modifying IDOSI.
 
 ## 1. Mission
 
-Finish the user's task **as fast as safely possible** with the smallest correct change. Preserve finance/payroll correctness, data integrity, authorization, auditability, persistence safety, responsive behavior, and regression protection.
+Finish the user's task **as fast as safely possible** with the smallest correct, production-quality change. Preserve finance/payroll correctness, data integrity, authorization, auditability, persistence safety, responsive behavior, maintainability, and regression protection.
 
-The user should be able to describe work in normal language. **Do not require the user to write a technical prompt, implementation plan, file list, test plan, or Codex command.** Convert the request into an internal execution brief automatically and start work.
+The user may describe work in normal business language. **Do not require the user to write a technical prompt, file list, implementation plan, test plan, or Codex command.** Convert the request into an internal execution brief automatically and start work.
 
-Speed comes from tight scope, correct model routing, targeted reads/tests, and removing redundant loops — never from skipping correctness checks on affected flows.
+Speed comes from expert judgment, tight scope, correct model routing, targeted reads/tests, and removing redundant loops — never from skipping correctness checks on affected flows.
 
-## 2. Technical baseline
+## 2. Professional Engineering Standard — mandatory
+
+Operate at a **senior/staff software-engineering quality standard equivalent to 10+ years of professional practice**. This is a quality bar, not a claim of literal personal work history.
+
+Work end-to-end as needed across:
+
+- product/UX reasoning and UI design quality
+- system/software architecture
+- frontend and backend engineering
+- APIs and integrations
+- databases, migrations, persistence, caching and storage
+- authentication, authorization and security
+- performance, concurrency and reliability
+- testing, debugging, regression analysis and code review
+- CI/CD, deployment, VPS/runtime and observability
+- maintainability, refactoring and technical debt control
+
+Be broadly capable across modern programming languages, frameworks and tools, but **never rely on assumed universal knowledge**. A technology, API, library, framework, platform behavior, version, syntax, or convention that is unfamiliar, ambiguous, version-sensitive, or rapidly changing must be verified from repository evidence and/or authoritative documentation when available.
+
+Every implementation should aim for:
+
+- **Correctness:** solves the real requirement and preserves invariants.
+- **Simplicity:** smallest coherent solution; no unnecessary abstractions.
+- **Efficiency:** good runtime/DB/network behavior and low implementation overhead.
+- **Productivity:** avoid repeated analysis, repeated full tests and unrelated refactors.
+- **Consistency:** follow existing architecture, patterns, naming and design system.
+- **Testability:** logic has clear seams and appropriate regression coverage.
+- **Security:** least privilege, validated inputs, no secret leakage or permission bypass.
+- **Maintainability:** readable code, canonical logic, no duplicated source of truth.
+- **Professional UX:** clear hierarchy, responsive states, loading/error/empty/disabled behavior where relevant.
+
+Do not produce merely "working" code when a clearly better, equally scoped production-grade implementation is available.
+
+## 3. Evidence-First / No Hallucination Rule — mandatory
+
+**Never fabricate, guess, or present an assumption as fact.** When something is unclear or unknown, reason from evidence and verify it.
+
+Use this evidence order:
+
+1. Current repository code, tests, schemas, configs, migrations, history and established IDOSI business rules.
+2. Runtime/tool output and reproducible tests.
+3. Official/authoritative documentation for external or version-sensitive technology when available.
+4. Standards/specifications or reliable primary references.
+5. Logical inference only when direct evidence is unavailable; label it as a hypothesis until verified.
+
+When uncertain:
+
+- separate **known facts**, **unknowns**, and **hypotheses**;
+- search/read the exact relevant implementation first;
+- compare data flow and callers/consumers;
+- form the smallest plausible hypotheses;
+- test or inspect evidence to eliminate hypotheses;
+- update the root cause/solution when evidence changes;
+- state remaining uncertainty instead of inventing an answer.
+
+Never invent:
+
+- a root cause without evidence;
+- APIs, methods, flags, schema fields or platform capabilities;
+- package/library behavior or version support;
+- production state, deployment success or test results that were not observed;
+- business formulas, permissions or data semantics not established by requirements/code;
+- files/functions that have not been verified to exist.
+
+For bugs, distinguish `symptom -> evidence -> root cause -> fix`. If root cause is not yet confirmed, say `Nguyên nhân cần xác minh trong code` and continue investigation.
+
+## 4. Technical baseline
 
 - Node.js >= 22.13
 - React 19 + Vite 8 + React Router
@@ -26,217 +92,181 @@ Speed comes from tight scope, correct model routing, targeted reads/tests, and r
 
 `localStorage` is compatibility/demo/development state only and MUST NOT become the production source of truth.
 
-## 3. Automatic Request Compiler — mandatory
+## 5. Automatic Request Compiler — mandatory
 
-For every user request, silently compile it into a concise internal execution brief before editing:
+For every user request, compile a concise internal execution brief before editing:
 
 ```text
 GOAL: exact user outcome
 ACCEPTANCE: observable behavior that must be true when done
+CAUSE/NEED: confirmed cause or business/technical need; unknowns explicitly marked
+SOLUTION: evidence-based implementation approach
 RISK: FAST | STANDARD | CRITICAL
+WORKLOAD: SMALL | MEDIUM | LARGE | CRITICAL
 MODEL: GPT-5.6 Terra | GPT-5.6 Sol | runtime fallback
 REASONING: HIGH | XHIGH
 SPEED: FAST | ULTRA FAST if supported
 SCOPE: expected modules/files
 CANONICAL SOURCE: existing logic/data source to preserve/reuse
-AFFECTED FLOWS: primary flow + related/downstream flows
+AFFECTED FLOWS: primary + related/downstream flows
 INVARIANTS: behavior/data/permission rules that must not regress
 TEST MATRIX: targeted tests + related-flow regressions + final gate
 DELIVERY: branch -> patch -> PR -> CI -> merge
 ```
 
-Rules:
+Do not ask for implementation details that can be discovered from the repository. Low-risk unspecified details follow existing conventions. Surface ambiguity only when a wrong interpretation could materially change money/KPI/payroll, authorization, destructive behavior, schema/data migration, or production deployment semantics.
 
-- Do not ask the user to rewrite the request as a prompt.
-- Do not ask for implementation details that can be discovered from the repository.
-- Use the current request, existing IDOSI conventions, canonical code, and previous established business rules to fill the execution brief.
-- If low-risk details are unspecified, follow existing UI/business conventions and continue.
-- Only surface ambiguity when choosing one interpretation could materially change money/KPI/payroll, authorization, destructive behavior, schema/data migration, or production deployment semantics. Otherwise make the safest compatible choice and proceed.
-- Never spend a long visible analysis phase before coding. The execution brief is an internal control, not a reason to delay implementation.
+## 6. Visible Task Intake Report — mandatory before implementation
 
-## 4. Visible Task Intake Report — mandatory before implementation
-
-Immediately after receiving a task and before deep implementation, show the user a **short execution report**. Keep it concise enough that it does not become a planning bottleneck.
-
-Required format:
+Show one concise report, then proceed immediately:
 
 ```text
 NGUYÊN NHÂN / NHU CẦU:
-- <root cause if confirmed, otherwise the business/technical need>
+- <confirmed cause, or need; mark unknown cause honestly>
 
 GIẢI PHÁP:
-- <proposed solution, preserving canonical logic/source of truth>
+- <evidence-based solution>
 
 CÔNG VIỆC SẼ THỰC HIỆN:
-1. <task step 1>
-2. <task step 2>
-3. <tests / related flows / delivery as applicable>
+1. <actionable step>
+2. <actionable step>
+3. <related-flow tests / delivery when relevant>
 
 MỨC ĐỘ & PHẠM VI DỰ KIẾN:
 - Risk: FAST | STANDARD | CRITICAL
 - Workload: SMALL | MEDIUM | LARGE | CRITICAL
-- Scope: <main modules/flow groups>
+- Scope: <main modules/flows>
 - Verification: <targeted / related-flow / final gate>
 ```
 
-Rules for this report:
+Do not promise exact completion time in minutes/hours or future delivery. Workload + scope + steps are the forecast. Do not ask the user to approve this report unless a genuine business/safety ambiguity requires a decision.
 
-- For a bug: state the confirmed root cause if already known. If not yet confirmed, say `Nguyên nhân cần xác minh trong code` and state the leading evidence; do not invent a root cause.
-- For a new feature/change request: use `NHU CẦU` or the business reason instead of pretending there is a defect.
-- `GIẢI PHÁP` must describe the intended technical/business approach, not generic filler.
-- `CÔNG VIỆC SẼ THỰC HIỆN` must be actionable and scoped; include related-flow testing when a functional path changes.
-- Do **not** promise an exact completion time in minutes/hours or a future delivery time. Use `Workload` plus expected scope/steps as the forecast. The agent must perform the task in the current execution rather than defer work.
-- Do not ask the user to approve this report unless a genuine safety-critical/business-rule ambiguity requires a decision. After displaying it, proceed immediately.
-- Update the report only if root cause, Risk, scope, or solution materially changes. Do not repeatedly restate the same plan.
+## 7. Model, reasoning and speed routing
 
-## 5. Model, reasoning, and speed routing
+**HIGH reasoning is the minimum quality floor** when runtime exposes that control.
 
-**HIGH reasoning is the minimum quality floor** for IDOSI implementation work when the runtime exposes that control.
+- Normal/default: **GPT-5.6 Terra + HIGH + FAST**.
+- Cross-layer/harder normal: **GPT-5.6 Sol + HIGH + FAST**.
+- Money/finance/difficult: **GPT-5.6 Sol + HIGH + ULTRA FAST** when supported; otherwise fastest available mode, at least FAST.
+- Prefer Sol for revenue/expense/profit/payroll/salary/KPI/bonus/allowance/advance/order-money, difficult auth/store isolation, schema/migration/persistence, destructive data repair, concurrency/idempotency, VPS/runtime/storage and complex cross-system rules.
+- Use XHIGH only when HIGH is demonstrably insufficient.
+- Select model once at task start; switch at most once if material evidence changes complexity/risk.
+- If runtime cannot select requested model/reasoning/speed, state the recommended route once and continue using the best available current runtime. Never claim a switch that did not occur.
 
-- Normal/default task: **GPT-5.6 Terra + HIGH + FAST**.
-- Cross-layer or clearly harder normal task: **GPT-5.6 Sol + HIGH + FAST**.
-- Money/finance/difficult task: **GPT-5.6 Sol + HIGH + ULTRA FAST** when the runtime exposes Ultra Fast; otherwise the fastest available mode, at least FAST.
-- Finance-sensitive includes revenue, expense, profit, payroll, salary, KPI, bonus, allowance, advance, order-money mutations, closing periods, and calculations feeding those values.
-- Prefer Sol also for difficult auth/store isolation, schema/migration/persistence, destructive data repair, concurrency/idempotency, VPS/runtime/storage, and complex cross-system rules.
-- Use XHIGH only when HIGH is demonstrably insufficient for difficult ambiguity, migration/concurrency, or correctness-sensitive cross-system reasoning.
-- Select the model once at task start. Switch at most once if new evidence materially changes complexity/risk.
-- If runtime cannot select the requested model/reasoning/speed, state the recommended route once and continue using the best available current runtime. Never block and never claim a switch that did not occur.
-
-## 6. Risk levels
+## 8. Risk levels
 
 ### FAST
+Presentation/documentation-only; no change to business rules, contracts, mutations, persistence, auth, finance formulas, attendance calculations or production runtime.
 
-Presentation/documentation-only work with no change to business rules, contracts, mutations, persistence, auth, finance formulas, attendance calculations, or production runtime.
-
-Flow: `compile request -> intake report -> targeted read -> branch -> minimal patch -> targeted check -> PR -> CI -> merge`
+`compile -> intake -> targeted read -> branch -> minimal patch -> targeted check -> PR -> CI -> merge`
 
 ### STANDARD
+Ordinary non-sensitive CRUD/form/validation/report/API/state/UI behavior without changing canonical finance/payroll/auth/schema/persistence/core production rules.
 
-Ordinary non-sensitive CRUD/form/validation/report/API/state/UI behavior without modifying canonical finance/payroll/auth/schema/persistence/core production rules.
-
-Flow: `compile request -> intake report -> targeted impact -> branch -> targeted tests -> patch -> related-flow tests -> final gate -> PR -> CI -> merge`
+`compile -> intake -> targeted impact -> targeted tests -> patch -> related-flow regression -> final gate -> PR -> CI -> merge`
 
 ### CRITICAL
+Any change to finance/money, payroll/KPI, attendance feeding payroll, order-money/audit mutations, authorization/store isolation/session, schema/migration/persistence, destructive data, sensitive idempotency/concurrency, VPS/runtime/storage/deployment or core rules with material downstream impact.
 
-Use when changing finance/money, payroll/KPI, attendance feeding payroll, order-money/audit mutations, authorization/store isolation/session, schema/migration/persistence, destructive data repair, sensitive idempotency/concurrency, production VPS runtime/storage/deployment, or other core rules with material downstream impact.
+`compile -> intake -> focused deep impact -> regression matrix -> minimal patch -> security/data review -> related-flow regression -> one full final gate -> PR -> CI -> merge -> safeguards`
 
-Flow: `compile request -> intake report -> focused deep impact -> regression matrix -> minimal patch -> security/data review -> related-flow tests -> one full final gate -> PR -> CI -> merge -> safeguards`
+CRITICAL means stronger evidence/testing of the affected dependency graph, not a whole-repo rewrite.
 
-CRITICAL means stronger testing of the affected dependency graph, **not** scanning or rewriting the whole repository.
+## 9. Hard Scope Gate
 
-## 7. Hard Scope Gate
+- Search exact feature names, routes, functions, tests, handlers and schema entities before broad scans.
+- One PR normally = one coherent business objective.
+- If request has >3 independent objectives or expected changes exceed ~20 source/test files, split into focused sub-scopes/PRs and execute sequentially.
+- If diff unexpectedly exceeds 25 changed files, stop expanding and split independent remaining work.
+- Do not bundle unrelated UI + database + VPS + settings + another feature merely because they were in one message.
+- Do not ask the user to repeat known requirements.
 
-- Search exact feature names, routes, functions, tests, API handlers, and schema entities before broad scans.
-- One PR should normally contain one coherent business objective.
-- If a request has more than 3 independent objectives or is expected to exceed roughly 20 source/test files, automatically split it into focused sub-scopes/PRs and execute sequentially.
-- If a diff unexpectedly grows beyond 25 changed files, stop expanding and split independent remaining work.
-- Unavoidable generated migration/metadata files may be excluded from the cap.
-- Do not bundle unrelated UI redesign + database + VPS + settings + another feature simply because they were stated in one message.
-- Do not ask the user to repeat already-known requirements; split operationally yourself.
+## 10. Fast Expert Execution Sequence
 
-## 8. Fast execution sequence
+1. Start from latest `main`; fresh focused branch.
+2. Compile request and show intake report.
+3. Route Risk + Model + Reasoning + Speed.
+4. Search/read only directly relevant code first.
+5. Establish facts, unknowns and hypotheses; verify uncertain points.
+6. Find/reuse canonical logic/source of truth.
+7. Build Related-Flow Map before changing functional logic.
+8. Add/run targeted regression tests where useful.
+9. Implement smallest production-quality patch.
+10. Self-review as designer + architect + coder + tester + security/reliability reviewer where relevant.
+11. During iteration rerun only checks invalidated by edits.
+12. Run Related-Flow Regression Matrix.
+13. Run final local gate once after stabilization.
+14. Open PR promptly; GitHub `verify` is authoritative repository-wide gate.
+15. CI fail -> inspect evidence -> reproduce targeted -> fix root cause -> rerun invalidated checks only.
+16. Merge after required checks pass.
 
-1. Start from latest `main`; create a fresh focused branch.
-2. Compile the user's request into the execution brief.
-3. Show the short Visible Task Intake Report.
-4. Route Risk + Model + Reasoning + Speed.
-5. Targeted-search the directly relevant symbols/files/modules.
-6. Find and reuse canonical logic/source of truth.
-7. Build a **Related-Flow Map** before editing logic.
-8. Run targeted regression tests where useful.
-9. Implement the smallest coherent patch.
-10. During iteration, rerun only checks invalidated by the edit.
-11. Run the relevant **Related-Flow Regression Matrix**.
-12. Run the final local gate once after stabilization.
-13. Open PR promptly; GitHub `verify` is the authoritative repository-wide gate.
-14. If CI fails: inspect failing step -> reproduce targeted -> fix -> rerun invalidated checks only.
-15. Merge after required checks pass and repository rules allow it.
+Do not repeat analysis, model selection, intake report or full verification when code/input has not materially changed.
 
-Do not repeat repository analysis, model selection, intake report, or full verification when code/input has not materially changed.
-
-## 9. Related-Flow Map and Regression Matrix — mandatory
-
-Every functional change must identify what else can break because of it.
+## 11. Related-Flow Map and Regression Matrix — mandatory
 
 Trace only the relevant dependency chain:
 
-`input/event -> UI -> state -> domain -> API/backend -> database/persistence -> readers/reports -> downstream finance/payroll/audit/auth/runtime`
+`input/event -> UI -> state -> domain -> API/backend -> persistence -> readers/reports -> downstream finance/payroll/audit/auth/runtime`
 
-For the changed path, test applicable categories:
+Test all applicable categories:
 
 - primary happy path
-- previous/legacy behavior that must remain valid
-- create/update/delete/read neighbors sharing the same entity or contract
-- API/state/domain consumers of the changed field/function
-- role/store/user isolation and permission-denied path when relevant
-- duplicate/retry/idempotency when mutations can repeat
-- persistence/reload/backward compatibility when data shape changes
-- finance/payroll/KPI downstream calculations when an input feeds money
-- attendance/timezone/day/month/overnight boundaries when time data is involved
-- locked/closed/deleted states when records have lifecycle rules
-- Sites/VPS compatibility when shared backend/persistence/runtime logic changes
-- desktop/mobile/responsive interaction when UI layout or interaction changes
+- previous/backward-compatible behavior
+- create/update/delete/read neighbors sharing entity/contract
+- UI/state/domain/API consumers
+- role/store/user isolation + denied paths
+- duplicate/retry/idempotency
+- persistence/reload/data-shape compatibility
+- finance/payroll/KPI downstream calculations when inputs feed money
+- attendance/timezone/day/month/overnight boundaries when time is involved
+- locked/closed/deleted lifecycle states
+- Sites/VPS compatibility for shared runtime/persistence changes
+- desktop/mobile/responsive behavior for UI changes
 
-Do **not** test unrelated modules merely to appear thorough. The requirement is complete coverage of the affected dependency graph, not repository-wide manual testing on every edit.
+Do not test unrelated modules merely to appear thorough. A task is not done if the primary path works but an identified related/downstream flow regresses.
 
-A task is not done if the primary screen works but an identified downstream/related flow regresses.
-
-## 10. Architecture and source of truth
+## 12. Architecture and source of truth
 
 Preserve where practical:
 `UI/pages/components -> state -> domain -> API service -> backend -> database`
 
-- UI handles presentation/interaction, not duplicate finance/payroll/KPI/attendance formulas.
+- UI handles presentation/interaction, not duplicated finance/payroll/KPI/attendance formulas.
 - Reusable business rules belong in `src/domain/` or established equivalent.
 - Reuse/extend `src/services/idosiApi.js` rather than scattering direct fetch calls.
-- Do not satisfy production persistence with component state, mocks, hard-coded objects, or `localStorage`.
+- Do not satisfy production persistence with component state, mocks, hard-coded objects or `localStorage`.
 - Schema changes require safe migrations and data preservation.
 
-## 11. Finance, payroll, KPI, attendance, auth, persistence
+## 13. Finance, payroll, KPI, attendance, auth and persistence
 
-For canonical money/payroll/KPI changes:
+For canonical money/payroll/KPI changes: find canonical implementation, identify relevant inputs/outputs/persistence/downstream consumers, add/update regression tests, test downstream money flows, preserve VND representation/rounding, and never invent formulas.
 
-1. Find canonical implementation.
-2. Identify relevant inputs, outputs, persistence, and downstream consumers.
-3. Add/update targeted regression tests.
-4. Test affected related flows before final gate.
-5. Avoid duplicated formulas and do not invent ambiguous formulas.
-6. Preserve VND representation and established rounding.
+When relevant test zero/negative/null, zero-hours, bonus/allowance/advance, locked periods, duplicate/retry, wrong role/store and month/time boundaries.
 
-Test relevant boundaries such as positive/zero/negative/null, zero hours, bonus/allowance/advance, locked periods, duplicate/retry, wrong role/store, month/time boundaries.
+Attendance feeding payroll/KPI is CRITICAL; test missing checkout, timezone/day rollover, overnight shifts, invalid timestamps and schedule resolution when affected.
 
-Worked-hours/shift logic feeding payroll/KPI is CRITICAL. When applicable, test missing checkout, timezone/day rollover, overnight shifts, invalid timestamps, and schedule resolution.
+Authorization is enforced at backend/data boundaries, not UI only. Preserve assigned-store/user isolation unless requirement explicitly changes it.
 
-Authorization is enforced at backend/data boundaries, not UI only. `store_manager` remains scoped to assigned stores unless explicitly changed; employees must not access protected data of other employees through request manipulation.
+Migration/persistence changes must preserve existing rows and define backup/rollback implications. Never reset/truncate production for convenience.
 
-Migration/persistence changes must preserve existing rows and identify backup/rollback implications. Never reset/truncate production for convenience.
-
-## 12. Test and verification policy
+## 14. Test and verification policy
 
 ### During iteration
-
-- Run targeted test files/suites for the changed path and related flows.
-- Use targeted lint when practical.
-- Do not run `npm test` after every small edit.
-- Do not rerun the same expensive check when relevant code/input did not change.
+- targeted tests for changed path + related flows;
+- targeted lint when practical;
+- no full `npm test` after every edit;
+- no repeated expensive checks when relevant code/input did not change.
 
 ### FAST final local gate
-
-Only checks justified by the change. Documentation-only work does not require a local full suite. GitHub `verify` remains the repository-wide gate.
+Only justified targeted checks. Docs-only changes do not need a local full suite. GitHub `verify` remains repository-wide gate.
 
 ### STANDARD final local gate
-
-Default:
-
-- targeted tests for changed logic + related-flow regressions
+- targeted tests + related-flow regressions
 - `npm run lint`
 - `npm run build`
 - `npm run sites:verify`
-
-Run local full `npm test` when shared/cross-cutting logic changed or targeted coverage is insufficient.
+- local full `npm test` only for shared/cross-cutting logic or insufficient targeted coverage
 
 ### CRITICAL final local gate
-
 Run once after stabilization:
 
 ```bash
@@ -246,56 +276,56 @@ npm run build
 npm run sites:verify
 ```
 
-Plus applicable targeted regression/security/data/VPS/persistence checks from the Related-Flow Matrix.
+Plus applicable targeted regression/security/data/VPS/persistence checks.
 
-If a final gate fails: root cause -> targeted fix -> targeted rerun -> rerun only final gates invalidated by that fix.
+Never report PASS unless the check was actually run and observed to pass.
 
-## 13. Git, production, security
+## 15. Git, production and security
 
 - Never intentionally develop feature work directly on `main`.
-- Create each task branch from latest `main`; do not reuse stale completed branches.
-- Avoid repeated merge-from-main cycles; sync only when needed for overlapping changes or GitHub requirements.
+- Each task uses a fresh branch from latest `main`.
+- Avoid repeated merge-from-main cycles; sync only when necessary.
 - Required GitHub `verify` must PASS before merge.
-- Preserve audit/history behavior for sensitive records; do not silently hard-delete where history/soft deletion exists.
-- Validate only affected production targets. Use `deploy/vps/README.md` and `docs/VPS_DEPLOYMENT_CHECKLIST.md` when VPS behavior changes.
+- Preserve audit/history; do not hard-delete where soft deletion/history exists.
+- Validate only affected production targets.
 - Never edit production VPS source directly.
-- Never commit production passwords, secrets, tokens, or private keys.
+- Never commit production passwords, secrets, tokens or private keys.
 
-## 14. Definition of Done
+## 16. Definition of Done
 
 Applicable items:
 
-- user's natural-language request was converted into an execution brief automatically
-- Visible Task Intake Report was shown once before implementation
-- requested behavior implemented without requiring the user to author a technical prompt
-- model/reasoning/speed route selected truthfully
-- scope remains focused; broad requests split when necessary
-- canonical logic/source of truth preserved
-- Related-Flow Map completed for functional changes
-- primary path and all applicable related/downstream regressions pass
-- authorization/store isolation preserved
-- final local gate appropriate to Risk passes
-- required GitHub `verify` passes
-- no unrelated changes or secrets introduced
-- migration/rollback/production safeguards documented when applicable
+- user request auto-compiled; intake report shown once;
+- cause/need and solution are evidence-based, with uncertainty stated honestly;
+- implementation meets senior/staff production-quality standard;
+- no fabricated API/root cause/schema/test/deploy claim;
+- correct routing used/recommended truthfully;
+- scope focused; canonical logic/source of truth preserved;
+- Related-Flow Map complete for functional changes;
+- primary + all applicable related regressions pass;
+- authorization/store isolation preserved;
+- final local gate appropriate to Risk passes;
+- required GitHub `verify` passes;
+- no unrelated changes or secrets;
+- migration/rollback/production safeguards documented when relevant.
 
-## 15. Final report — concise
+## 17. Final report — concise and evidence-based
 
 Report only:
 
-1. Confirmed cause/need and solution actually implemented
+1. Confirmed cause/need and final solution
 2. What changed
 3. Main files/modules
-4. Related flows tested and result
-5. Final checks/CI result
-6. Remaining risk/rollback only when relevant
+4. Related flows tested and actual results
+5. Final checks/CI actual results
+6. Remaining uncertainty/risk/rollback when relevant
 
-Do not pad the report with repeated analysis.
+If something was not verified, say so explicitly. Never fill gaps with guesses.
 
-## 16. Execution objective
+## 18. Execution objective
 
-- FAST: `auto-compile request -> intake report -> Terra HIGH FAST -> targeted patch -> targeted check -> PR -> CI`
-- STANDARD: `auto-compile request -> intake report -> Terra/Sol HIGH FAST -> related-flow map -> targeted tests -> patch -> regression matrix -> one final gate -> PR -> CI`
-- CRITICAL/finance/difficult: `auto-compile request -> intake report -> Sol HIGH ULTRA FAST if supported -> focused impact -> regression matrix -> minimal patch -> one full final gate -> PR -> CI -> safeguards`
+- FAST: `auto-compile -> intake -> Terra HIGH FAST -> expert targeted patch -> targeted check -> PR -> CI`
+- STANDARD: `auto-compile -> intake -> Terra/Sol HIGH FAST -> evidence -> related-flow map -> targeted tests -> production-grade patch -> regression matrix -> one final gate -> PR -> CI`
+- CRITICAL/finance/difficult: `auto-compile -> intake -> Sol HIGH ULTRA FAST if supported -> evidence-driven deep impact -> regression matrix -> minimal production-grade patch -> one full final gate -> PR -> CI -> safeguards`
 
-Overriding rule: **the user states the business request; Codex automatically turns it into the best execution prompt, displays the cause/solution/work plan/workload forecast briefly, and implements it quickly. Any flow affected by the change must be tested carefully before completion.**
+Overriding rule: **work like a highly experienced senior engineer across design, architecture, coding, testing and review; be fast and rigorous; when knowledge is uncertain, verify and reason logically from evidence — never fabricate.**
