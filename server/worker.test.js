@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
+import { deflateSync } from 'node:zlib'
 import worker, {
   canReadScope,
   canUseCounter,
@@ -21,14 +22,179 @@ import worker, {
 
 const TEST_IDENTITY_IMAGE = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
 const testIdentityImages = () => ({ front: TEST_IDENTITY_IMAGE, back: TEST_IDENTITY_IMAGE })
-const testAvatarDataUrl = (mimeType, bytes, encodedMimeType = mimeType) => {
-  const buffer = Buffer.alloc(bytes, 0x41)
-  if (mimeType === 'image/png') Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buffer)
-  if (mimeType === 'image/jpeg') Buffer.from([0xff, 0xd8, 0xff]).copy(buffer)
-  if (mimeType === 'image/webp') {
-    Buffer.from('RIFF').copy(buffer, 0)
-    Buffer.from('WEBP').copy(buffer, 8)
+
+const testCrc32 = (bytes) => {
+  let crc = 0xffffffff
+  for (const byte of bytes) {
+    crc ^= byte
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
   }
+  return (crc ^ 0xffffffff) >>> 0
+}
+
+const pngChunk = (type, data = Buffer.alloc(0)) => {
+  const typeBytes = Buffer.from(type, 'ascii')
+  const chunk = Buffer.alloc(12 + data.length)
+  chunk.writeUInt32BE(data.length, 0)
+  typeBytes.copy(chunk, 4)
+  data.copy(chunk, 8)
+  chunk.writeUInt32BE(testCrc32(Buffer.concat([typeBytes, data])), 8 + data.length)
+  return chunk
+}
+
+const validPngBytes = (targetBytes) => {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const header = Buffer.alloc(13)
+  header.writeUInt32BE(1, 0)
+  header.writeUInt32BE(1, 4)
+  header.set([8, 6, 0, 0, 0], 8)
+  const chunks = [pngChunk('IHDR', header)]
+  const imageData = pngChunk('IDAT', deflateSync(Buffer.from([0, 0, 0, 0, 0])))
+  const imageEnd = pngChunk('IEND')
+  const baseBytes = signature.length + chunks[0].length + imageData.length + imageEnd.length
+  const paddingBytes = targetBytes - baseBytes
+  if (paddingBytes !== 0) {
+    if (paddingBytes < 12) throw new Error(`PNG test fixture cannot fit ${targetBytes} bytes`)
+    chunks.push(pngChunk('vpAg', Buffer.alloc(paddingBytes - 12, 0x41)))
+  }
+  return Buffer.concat([signature, ...chunks, imageData, imageEnd])
+}
+
+const jpegSegment = (marker, data) => {
+  const segment = Buffer.alloc(4 + data.length)
+  segment.set([0xff, marker], 0)
+  segment.writeUInt16BE(data.length + 2, 2)
+  data.copy(segment, 4)
+  return segment
+}
+
+const validJpegBytes = (targetBytes) => {
+  const quantizationTable = jpegSegment(0xdb, Buffer.from([0, ...Array(64).fill(1)]))
+  const frame = jpegSegment(0xc0, Buffer.from([8, 0, 1, 0, 1, 1, 1, 0x11, 0]))
+  const oneSymbolTable = (descriptor) => Buffer.from([descriptor, 1, ...Array(15).fill(0), 0])
+  const huffmanTables = jpegSegment(0xc4, Buffer.concat([oneSymbolTable(0), oneSymbolTable(0x10)]))
+  const scan = jpegSegment(0xda, Buffer.from([1, 1, 0, 0, 63, 0]))
+  const fixedParts = [Buffer.from([0xff, 0xd8]), quantizationTable, frame, huffmanTables]
+  const suffix = [scan, Buffer.from([0x3f, 0xff, 0xd9])]
+  const baseBytes = [...fixedParts, ...suffix].reduce((total, part) => total + part.length, 0)
+  let remaining = targetBytes - baseBytes
+  if (remaining !== 0 && remaining < 4) throw new Error(`JPEG test fixture cannot fit ${targetBytes} bytes`)
+  const comments = []
+  while (remaining > 0) {
+    let segmentBytes = Math.min(remaining, 65537)
+    if (remaining - segmentBytes > 0 && remaining - segmentBytes < 4) segmentBytes -= 4
+    comments.push(jpegSegment(0xfe, Buffer.alloc(segmentBytes - 4, 0x41)))
+    remaining -= segmentBytes
+  }
+  return Buffer.concat([...fixedParts, ...comments, ...suffix])
+}
+
+const validWebpBytes = (targetBytes) => {
+  const minimal = Buffer.from('UklGRh4AAABXRUJQVlA4TBEAAAAvAAAAAAfQ//73v/+BiOh/AAA=', 'base64')
+  if (targetBytes === minimal.length) return minimal
+  const paddingBytes = targetBytes - minimal.length
+  if (paddingBytes < 8 || paddingBytes % 2 !== 0) throw new Error(`WebP test fixture cannot fit ${targetBytes} bytes`)
+  const padding = Buffer.alloc(paddingBytes)
+  Buffer.from('JUNK').copy(padding, 0)
+  padding.writeUInt32LE(paddingBytes - 8, 4)
+  padding.fill(0x41, 8)
+  const result = Buffer.concat([minimal.subarray(0, 12), minimal.subarray(12), padding])
+  result.writeUInt32LE(result.length - 8, 4)
+  return result
+}
+
+const VALID_GIF_AVATAR = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAkwBADs=', 'base64')
+const testGifAvatarDataUrl = () => `data:image/gif;base64,${VALID_GIF_AVATAR.toString('base64')}`
+const ANIMATED_GIF_AVATAR = Buffer.concat([
+  VALID_GIF_AVATAR.subarray(0, -1),
+  VALID_GIF_AVATAR.subarray(19, -1),
+  Buffer.from([0x3b]),
+])
+const animatedGifAvatarDataUrl = () => `data:image/gif;base64,${ANIMATED_GIF_AVATAR.toString('base64')}`
+
+const generatedStaticGifAvatar = (width, height) => {
+  const minimumCodeSize = 2
+  const clearCode = 1 << minimumCodeSize
+  const endCode = clearCode + 1
+  let available = endCode + 1
+  let codeSize = minimumCodeSize + 1
+  let codeSizeIncreasePending = false
+  let bitBuffer = 0
+  let bitCount = 0
+  const compressed = []
+  const dictionary = new Map()
+  const emit = (code) => {
+    bitBuffer |= code << bitCount
+    bitCount += codeSize
+    while (bitCount >= 8) {
+      compressed.push(bitBuffer & 0xff)
+      bitBuffer >>>= 8
+      bitCount -= 8
+    }
+    if (codeSizeIncreasePending) {
+      codeSize += 1
+      codeSizeIncreasePending = false
+    }
+  }
+  const resetDictionary = () => {
+    dictionary.clear()
+    available = endCode + 1
+    codeSize = minimumCodeSize + 1
+    codeSizeIncreasePending = false
+  }
+  emit(clearCode)
+  let prefix = 0
+  for (let pixel = 1; pixel < width * height; pixel += 1) {
+    const key = `${prefix}:0`
+    const existing = dictionary.get(key)
+    if (existing !== undefined) {
+      prefix = existing
+      continue
+    }
+    emit(prefix)
+    if (available < 4096) {
+      dictionary.set(key, available)
+      available += 1
+      if (available === (1 << codeSize) && codeSize < 12) codeSizeIncreasePending = true
+    } else {
+      emit(clearCode)
+      resetDictionary()
+    }
+    prefix = 0
+  }
+  emit(prefix)
+  emit(endCode)
+  if (bitCount) compressed.push(bitBuffer & 0xff)
+  const imageData = []
+  for (let offset = 0; offset < compressed.length; offset += 255) {
+    const block = compressed.slice(offset, offset + 255)
+    imageData.push(block.length, ...block)
+  }
+  const le16 = (value) => [value & 0xff, (value >>> 8) & 0xff]
+  return Buffer.from([
+    ...Buffer.from('GIF89a'),
+    ...le16(width), ...le16(height), 0x80, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0xff, 0xff, 0xff,
+    0x2c, 0x00, 0x00, 0x00, 0x00, ...le16(width), ...le16(height), 0x00,
+    minimumCodeSize, ...imageData, 0x00, 0x3b,
+  ])
+}
+
+const generatedStaticGifAvatarDataUrl = (width, height) => {
+  const bytes = generatedStaticGifAvatar(width, height)
+  return `data:image/gif;base64,${bytes.toString('base64')}`
+}
+const legacyFakeWebpDataUrl = (bytes = 128) => {
+  const buffer = Buffer.alloc(bytes, 0x41)
+  Buffer.from('RIFF').copy(buffer, 0)
+  Buffer.from('WEBP').copy(buffer, 8)
+  return `data:image/webp;base64,${buffer.toString('base64')}`
+}
+
+const testAvatarDataUrl = (mimeType, bytes, encodedMimeType = mimeType) => {
+  const builders = { 'image/jpeg': validJpegBytes, 'image/png': validPngBytes, 'image/webp': validWebpBytes }
+  const buffer = builders[mimeType]?.(bytes)
+  if (!buffer) throw new Error(`Unsupported avatar test MIME: ${mimeType}`)
   return `data:${encodedMimeType};base64,${buffer.toString('base64')}`
 }
 
@@ -74,6 +240,7 @@ class MemoryD1 {
       'drizzle/0005_admin_only_accounts.sql',
       'drizzle/0006_recursive_profile_secret_scrub.sql',
       'drizzle/0007_session_roles.sql',
+      'drizzle/0008_order_information_options.sql',
     ]) {
       const migration = readFileSync(file, 'utf8').replaceAll('--> statement-breakpoint', '')
       this.database.exec(migration)
@@ -109,6 +276,7 @@ class MemoryR2 {
     this.deletedKeys = []
     this.pageSize = Number.POSITIVE_INFINITY
     this.failDeleteKeys = new Set()
+    this.beforeDelete = null
     this.repeatCursor = false
   }
 
@@ -148,6 +316,7 @@ class MemoryR2 {
   }
 
   async delete(key) {
+    if (this.beforeDelete) await this.beforeDelete(key)
     if (this.failDeleteKeys.has(key)) throw new Error(`delete failed for ${key}`)
     this.deletedKeys.push(key)
     this.objects.delete(key)
@@ -367,6 +536,52 @@ describe('IDOSI Worker security primitives', () => {
     expect(canUseCounter(employee, 'employee:employee-01:tasks')).toBe(false)
     expect(canUseCounter(employee, 'store:store-01:orders')).toBe(false)
     expect(canUseCounter(employee, 'store:store-02:orders')).toBe(false)
+  })
+
+  it('atomically persists occupation and payment defaults during an empty bootstrap', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-order-defaults' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.defaults', password: 'order-defaults-password', initialState: {},
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+
+    const rows = env.DB.database.prepare(`
+      SELECT value_json, value_bytes
+      FROM state_entities
+      WHERE scope_key = 'global' AND collection_key = 'orderInformationOptions'
+      ORDER BY entity_order, entity_key
+    `).all()
+    const options = rows.map(({ value_json: valueJson }) => JSON.parse(valueJson))
+    expect(options).toHaveLength(17)
+    expect(options.filter(({ kind }) => kind === 'occupation')).toHaveLength(15)
+    expect(options.filter(({ kind }) => kind === 'payment_method')).toEqual([
+      expect.objectContaining({ id: 'order-payment-001', code: 'PAY-001', label: 'Tiền mặt', active: true, system: true }),
+      expect.objectContaining({ id: 'order-payment-002', code: 'PAY-002', label: 'Chuyển khoản', active: true, system: true }),
+    ])
+    expect(rows.every(({ value_json: valueJson, value_bytes: valueBytes }) => Buffer.byteLength(valueJson) === valueBytes)).toBe(true)
+    expect(JSON.parse(env.DB.database.prepare("SELECT value_json FROM app_state WHERE scope_key = 'global'").get().value_json))
+      .not.toHaveProperty('orderInformationOptions')
+
+    const bootstrapAudit = env.DB.database.prepare(`
+      SELECT after_json, metadata_json FROM audit_log WHERE action = 'system.bootstrap'
+    `).get()
+    expect(JSON.parse(bootstrapAudit.after_json)).toMatchObject({
+      initialized: true,
+      orderInformationDefaults: { persisted: true, canonicalSeedCount: 17, occupationSeedCount: 15, paymentMethodSeedCount: 2 },
+    })
+    expect(JSON.parse(bootstrapAudit.metadata_json)).toMatchObject({
+      source: 'bootstrap-api',
+      orderInformationDefaults: { persisted: true, canonicalSeedCount: 17 },
+    })
+
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.defaults', password: 'order-defaults-password',
+    }), env)
+    const state = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: { authorization: `Bearer ${(await login.json()).token}` },
+    }), env)
+    expect(state.status).toBe(200)
+    expect((await state.json()).state.orderInformationOptions).toEqual(options)
   })
 
   it('purges non-admin credentials while preserving profiles, history, and atomic account reissue', async () => {
@@ -2510,16 +2725,891 @@ describe('IDOSI Worker security primitives', () => {
       'idempotency-key': 'employee-account-settings-avatar-0001',
     }), env)
     expect(employeeSettingsUpdated.status).toBe(200)
-    expect(await employeeSettingsUpdated.json()).toMatchObject({
+    const employeeSettingsBody = await employeeSettingsUpdated.json()
+    expect(employeeSettingsBody).toMatchObject({
       version: 15,
-      settings: { name: 'Nhân viên kế tiếp', email: 'employee.next@idosi.vn', avatar: employeeAvatar },
+      settings: {
+        name: 'Nhân viên kế tiếp',
+        email: 'employee.next@idosi.vn',
+        avatar: {
+          key: expect.stringMatching(/^account-avatars\/usr_[^/]+\//u),
+          contentType: 'image/png',
+          size: 200 * 1024,
+          version: 1,
+        },
+      },
       user: { role: 'employee', employeeId: 'TNV-003', version: 2 },
     })
-    expect(readHydratedState(env.DB.database).employees.find(({ id }) => id === 'TNV-003')).toMatchObject({ avatar: employeeAvatar })
+    expect(JSON.stringify(employeeSettingsBody)).not.toContain('base64')
+    const storedEmployeeSettings = readHydratedState(env.DB.database).accountSettings[employeeSettingsBody.user.id]
+    expect(storedEmployeeSettings.avatar).toMatchObject({ contentType: 'image/png', size: 200 * 1024, version: 1 })
+    expect(readHydratedState(env.DB.database).employees.find(({ id }) => id === 'TNV-003')).not.toHaveProperty('avatar')
+    const employeeAvatarResponse = await worker.fetch(new Request('https://idosi.example/api/account-avatar', {
+      headers: { authorization: `Bearer ${nextEmployeeToken}` },
+    }), env)
+    expect(employeeAvatarResponse.status).toBe(200)
+    expect(employeeAvatarResponse.headers.get('content-type')).toBe('image/png')
+    expect(new Uint8Array(await employeeAvatarResponse.arrayBuffer())).toHaveLength(200 * 1024)
+    expect((await worker.fetch(new Request('https://idosi.example/api/account-avatar'), env)).status).toBe(401)
   })
 
+  it('keeps account-avatar objects transactional across conflict, replacement, and clear', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-lifecycle' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-lifecycle-password',
+      initialState: { stores: [], employees: [], attendance: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-lifecycle-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const firstAvatar = testAvatarDataUrl('image/png', 1024)
+    const firstUpload = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1, payload: { avatar: firstAvatar },
+    }, { ...authorization, 'idempotency-key': 'avatar-lifecycle-first-0001' }), env)
+    expect(firstUpload.status).toBe(200)
+    const firstBody = await firstUpload.json()
+    const firstKey = firstBody.settings.avatar.key
+    expect(firstBody.settings.avatar).toMatchObject({ contentType: 'image/png', size: 1024, version: 1 })
+    expect(bucket.objects.has(firstKey)).toBe(true)
+
+    env.DB.beforeBatch = async ({ database }) => {
+      database.prepare(`
+        UPDATE app_state SET version = version + 1, last_request_id = 'avatar-test-race'
+        WHERE scope_key = 'global'
+      `).run()
+    }
+    const conflicted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 2,
+      payload: { avatar: testAvatarDataUrl('image/jpeg', 2048) },
+    }, { ...authorization, 'idempotency-key': 'avatar-lifecycle-conflict-0001' }), env)
+    expect(conflicted.status).toBe(409)
+    expect(await conflicted.json()).toMatchObject({ error: { code: 'VERSION_CONFLICT' } })
+    expect(bucket.objects.has(firstKey)).toBe(true)
+    expect([...bucket.objects.keys()]).toEqual([firstKey])
+    expect(bucket.deletedKeys.some((key) => key.startsWith('account-avatars/') && key !== firstKey)).toBe(true)
+
+    const replacement = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 3,
+      payload: { avatar: testAvatarDataUrl('image/webp', 4096) },
+    }, { ...authorization, 'idempotency-key': 'avatar-lifecycle-replace-0001' }), env)
+    expect(replacement.status).toBe(200)
+    const replacementBody = await replacement.json()
+    const replacementKey = replacementBody.settings.avatar.key
+    expect(replacementBody.settings.avatar).toMatchObject({ contentType: 'image/webp', size: 4096, version: 2 })
+    expect(bucket.objects.has(firstKey)).toBe(false)
+    expect(bucket.objects.has(replacementKey)).toBe(true)
+
+    const cleared = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 4, payload: { avatar: '' },
+    }, { ...authorization, 'idempotency-key': 'avatar-lifecycle-clear-0001' }), env)
+    expect(cleared.status).toBe(200)
+    expect(await cleared.json()).toMatchObject({ version: 5, settings: { avatar: null } })
+    expect(bucket.objects.has(replacementKey)).toBe(false)
+    expect((await worker.fetch(new Request('https://idosi.example/api/account-avatar', {
+      headers: authorization,
+    }), env)).status).toBe(404)
+    expect(JSON.stringify(readHydratedState(env.DB.database))).not.toContain('base64')
+  })
+
+  it('accepts structurally valid avatar formats and rejects fake or truncated image containers', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-structure' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-structure-password',
+      initialState: { stores: [], employees: [], attendance: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-structure-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const truncateDataUrl = (dataUrl) => {
+      const [prefix, payload] = dataUrl.split(',')
+      const bytes = Buffer.from(payload, 'base64')
+      return `${prefix},${bytes.subarray(0, -1).toString('base64')}`
+    }
+    const oversizedStaticGif = generatedStaticGifAvatar(1025, 1024)
+    expect(oversizedStaticGif.length).toBeLessThanOrEqual(300 * 1024)
+    const invalidAvatars = [
+      legacyFakeWebpDataUrl(),
+      truncateDataUrl(testAvatarDataUrl('image/jpeg', 512)),
+      truncateDataUrl(testAvatarDataUrl('image/png', 512)),
+      truncateDataUrl(testAvatarDataUrl('image/webp', 512)),
+      truncateDataUrl(testGifAvatarDataUrl()),
+      animatedGifAvatarDataUrl(),
+      `data:image/gif;base64,${oversizedStaticGif.toString('base64')}`,
+      `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64')}`,
+    ]
+    for (const [index, avatar] of invalidAvatars.entries()) {
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'account_settings.update', expectedVersion: 1, payload: { avatar },
+      }, { ...authorization, 'idempotency-key': `avatar-structure-invalid-${index}` }), env)
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({ error: { code: 'AVATAR_INVALID' } })
+    }
+    expect(bucket.objects.size).toBe(0)
+
+    const supported = [
+      ['image/jpeg', testAvatarDataUrl('image/jpeg', 512), 512, 'jpg'],
+      ['image/png', testAvatarDataUrl('image/png', 512), 512, 'png'],
+      ['image/webp', testAvatarDataUrl('image/webp', 512), 512, 'webp'],
+      ['image/gif', testGifAvatarDataUrl(), VALID_GIF_AVATAR.length, 'gif'],
+      ['image/gif', generatedStaticGifAvatarDataUrl(64, 64), generatedStaticGifAvatar(64, 64).length, 'gif'],
+    ]
+    for (const [index, [contentType, avatar, size, extension]] of supported.entries()) {
+      const expectedVersion = index + 1
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'account_settings.update', expectedVersion, payload: { avatar },
+      }, { ...authorization, 'idempotency-key': `avatar-structure-valid-${index}` }), env)
+      const body = await response.json()
+      expect(response.status, `${contentType}: ${JSON.stringify(body)}`).toBe(200)
+      expect(body.settings.avatar).toMatchObject({ contentType, size, version: index + 1 })
+      expect(body.settings.avatar.key).toMatch(new RegExp(`\\.${extension}$`, 'u'))
+      const downloaded = await worker.fetch(new Request('https://idosi.example/api/account-avatar', {
+        headers: authorization,
+      }), env)
+      expect(downloaded.status).toBe(200)
+      expect(downloaded.headers.get('content-type')).toBe(contentType)
+      expect(new Uint8Array(await downloaded.arrayBuffer())).toHaveLength(size)
+    }
+    expect(bucket.objects.size).toBe(1)
+  })
+
+  it('durably queues account-avatar cleanup after rollback, replacement, and clear delete failures', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-durable-cleanup' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-durable-cleanup-password',
+      initialState: { stores: [], employees: [], attendance: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-durable-cleanup-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const pendingMarker = () => env.DB.database.prepare(`
+      SELECT meta_key, value_json FROM system_metadata
+      WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+      ORDER BY meta_key LIMIT 1
+    `).get()
+
+    const originalPut = bucket.put.bind(bucket)
+    bucket.put = async (key, value, options) => {
+      if (key.startsWith('account-avatars/')) {
+        expect(JSON.parse(pendingMarker().value_json)).toMatchObject({
+          phase: 'prepared', keys: expect.arrayContaining([key]),
+        })
+      }
+      const result = await originalPut(key, value, options)
+      if (key.startsWith('account-avatars/')) bucket.failDeleteKeys.add(key)
+      return result
+    }
+    env.DB.beforeBatch = async ({ database }) => {
+      database.prepare(`
+        UPDATE app_state SET version = version + 1, last_request_id = 'avatar-durable-rollback-race'
+        WHERE scope_key = 'global'
+      `).run()
+    }
+    const rolledBack = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1,
+      payload: { avatar: testAvatarDataUrl('image/png', 1024) },
+    }, { ...authorization, 'idempotency-key': 'avatar-durable-rollback' }), env)
+    expect(rolledBack.status).toBe(409)
+    expect(await rolledBack.json()).toMatchObject({ error: { code: 'VERSION_CONFLICT' } })
+    const [rollbackOrphanKey] = [...bucket.objects.keys()]
+    expect(rollbackOrphanKey).toMatch(/^account-avatars\//u)
+    expect(JSON.parse(pendingMarker().value_json)).toMatchObject({
+      phase: 'prepared', status: 'pending', keys: [rollbackOrphanKey],
+    })
+    expect(readHydratedState(env.DB.database).accountSettings || {}).toEqual({})
+
+    bucket.put = originalPut
+    bucket.failDeleteKeys.clear()
+    const rollbackCleanupRequest = {
+      type: 'account_settings.update', expectedVersion: 2, payload: { avatar: '' },
+    }
+    const rollbackCleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', rollbackCleanupRequest, {
+      ...authorization, 'idempotency-key': 'avatar-durable-cleanup-rollback',
+    }), env)
+    expect(rollbackCleanup.status).toBe(503)
+    expect(await rollbackCleanup.json()).toMatchObject({ error: { code: 'ACCOUNT_AVATAR_CLEANUP_RETRY' } })
+    expect(bucket.objects.has(rollbackOrphanKey)).toBe(false)
+    expect(pendingMarker()).toBeUndefined()
+    const rollbackRetry = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 2, payload: { name: 'Admin sau rollback' },
+    }, {
+      ...authorization, 'idempotency-key': 'avatar-durable-cleanup-rollback-retry',
+    }), env)
+    expect(rollbackRetry.status).toBe(200)
+    expect(await rollbackRetry.json()).toMatchObject({ version: 3, settings: { name: 'Admin sau rollback' } })
+
+    const firstUpload = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 3,
+      payload: { avatar: testAvatarDataUrl('image/png', 2048) },
+    }, { ...authorization, 'idempotency-key': 'avatar-durable-first' }), env)
+    expect(firstUpload.status).toBe(200)
+    const firstKey = (await firstUpload.json()).settings.avatar.key
+    bucket.failDeleteKeys.add(firstKey)
+    bucket.beforeDelete = async (key) => {
+      if (key !== firstKey) return
+      expect(JSON.parse(pendingMarker().value_json)).toMatchObject({
+        phase: 'committed', keys: expect.arrayContaining([firstKey]),
+      })
+      const [activeSettings] = Object.values(readHydratedState(env.DB.database).accountSettings || {})
+      expect(activeSettings?.avatar?.key).not.toBe(firstKey)
+    }
+    const replacement = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 4,
+      payload: { avatar: testAvatarDataUrl('image/webp', 4096) },
+    }, { ...authorization, 'idempotency-key': 'avatar-durable-replacement' }), env)
+    expect(replacement.status).toBe(200)
+    const replacementKey = (await replacement.json()).settings.avatar.key
+    expect(bucket.objects.has(firstKey)).toBe(true)
+    expect(bucket.objects.has(replacementKey)).toBe(true)
+    expect(JSON.parse(pendingMarker().value_json)).toMatchObject({
+      phase: 'committed', keys: [firstKey], status: 'pending',
+    })
+
+    bucket.beforeDelete = null
+    bucket.failDeleteKeys.clear()
+    const retireCleanupRequest = {
+      type: 'account_settings.update', expectedVersion: 5, payload: { avatar: '' },
+    }
+    const retireCleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', retireCleanupRequest, {
+      ...authorization, 'idempotency-key': 'avatar-durable-cleanup-retired',
+    }), env)
+    expect(retireCleanup.status).toBe(503)
+    expect(bucket.objects.has(firstKey)).toBe(false)
+    expect(bucket.objects.has(replacementKey)).toBe(true)
+    const retireRetry = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 5, payload: { name: 'Admin sau replace' },
+    }, {
+      ...authorization, 'idempotency-key': 'avatar-durable-cleanup-retired-retry',
+    }), env)
+    expect(retireRetry.status).toBe(200)
+    expect(await retireRetry.json()).toMatchObject({ version: 6 })
+
+    bucket.failDeleteKeys.add(replacementKey)
+    const cleared = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 6, payload: { avatar: '' },
+    }, { ...authorization, 'idempotency-key': 'avatar-durable-clear' }), env)
+    expect(cleared.status).toBe(200)
+    expect(await cleared.json()).toMatchObject({ version: 7, settings: { avatar: null } })
+    expect(bucket.objects.has(replacementKey)).toBe(true)
+    expect(JSON.parse(pendingMarker().value_json)).toMatchObject({
+      phase: 'committed', keys: [replacementKey], status: 'pending',
+    })
+
+    bucket.failDeleteKeys.clear()
+    const clearCleanupRequest = {
+      type: 'account_settings.update', expectedVersion: 7, payload: { avatar: '' },
+    }
+    const clearCleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', clearCleanupRequest, {
+      ...authorization, 'idempotency-key': 'avatar-durable-cleanup-clear',
+    }), env)
+    expect(clearCleanup.status).toBe(503)
+    expect(bucket.objects.has(replacementKey)).toBe(false)
+    const clearRetry = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 7, payload: { name: 'Admin sau clear' },
+    }, {
+      ...authorization, 'idempotency-key': 'avatar-durable-cleanup-clear-retry',
+    }), env)
+    expect(clearRetry.status).toBe(200)
+    expect(await clearRetry.json()).toMatchObject({ version: 8, settings: { avatar: null } })
+    expect(pendingMarker()).toBeUndefined()
+  }, 30_000)
+
+  it('cancels an in-flight avatar put without committing a key after cleanup wins marker ownership', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-slow-put' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-slow-put-password',
+      initialState: { stores: [], employees: [], attendance: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-slow-put-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const markerRow = () => env.DB.database.prepare(`
+      SELECT meta_key, value_json FROM system_metadata
+      WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+      ORDER BY meta_key LIMIT 1
+    `).get()
+
+    let releasePut
+    let signalPutStarted
+    const putStarted = new Promise((resolve) => { signalPutStarted = resolve })
+    const putReleased = new Promise((resolve) => { releasePut = resolve })
+    const originalPut = bucket.put.bind(bucket)
+    bucket.put = async (key, value, options) => {
+      if (key.startsWith('account-avatars/')) {
+        signalPutStarted()
+        await putReleased
+      }
+      return originalPut(key, value, options)
+    }
+
+    const uploadPromise = worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1,
+      payload: { avatar: testAvatarDataUrl('image/png', 1024) },
+    }, { ...authorization, 'idempotency-key': 'avatar-slow-put-upload' }), env)
+    await putStarted
+    const reservedMarker = JSON.parse(markerRow().value_json)
+    expect(reservedMarker).toMatchObject({
+      phase: 'prepared', pendingKeys: [expect.stringMatching(/^account-avatars\//u)],
+    })
+    const [reservedKey] = reservedMarker.pendingKeys
+
+    const cleaner = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1, payload: { avatar: '' },
+    }, { ...authorization, 'idempotency-key': 'avatar-slow-put-cleaner' }), env)
+    expect(cleaner.status).toBe(503)
+    expect(await cleaner.json()).toMatchObject({ error: { code: 'ACCOUNT_AVATAR_CLEANUP_RETRY' } })
+    expect(JSON.parse(markerRow().value_json)).toMatchObject({
+      phase: 'cancelled', pendingKeys: [reservedKey], keys: [reservedKey],
+    })
+
+    releasePut()
+    const upload = await uploadPromise
+    expect(upload.status).toBe(503)
+    expect(await upload.json()).toMatchObject({ error: { code: 'ACCOUNT_AVATAR_UPLOAD_CANCELLED' } })
+    expect(bucket.objects.has(reservedKey)).toBe(false)
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 1 })
+    expect(readHydratedState(env.DB.database).accountSettings || {}).toEqual({})
+    expect(markerRow()).toBeUndefined()
+
+    const subsequent = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1, payload: { name: 'Admin sau race' },
+    }, { ...authorization, 'idempotency-key': 'avatar-slow-put-subsequent' }), env)
+    expect(subsequent.status).toBe(200)
+    expect(await subsequent.json()).toMatchObject({ version: 2, settings: { name: 'Admin sau race' } })
+    expect(markerRow()).toBeUndefined()
+  }, 30_000)
+
+  it('retains an acknowledged retry marker when cancellation cleanup cannot delete the uploaded object', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-cancel-delete-failure' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-cancel-delete-failure-password',
+      initialState: { stores: [], employees: [], attendance: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-cancel-delete-failure-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const markerRow = () => env.DB.database.prepare(`
+      SELECT meta_key, value_json FROM system_metadata
+      WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+      ORDER BY meta_key LIMIT 1
+    `).get()
+
+    let releasePut
+    let signalPutStarted
+    const putStarted = new Promise((resolve) => { signalPutStarted = resolve })
+    const putReleased = new Promise((resolve) => { releasePut = resolve })
+    const originalPut = bucket.put.bind(bucket)
+    bucket.put = async (key, value, options) => {
+      if (key.startsWith('account-avatars/')) {
+        signalPutStarted()
+        await putReleased
+      }
+      return originalPut(key, value, options)
+    }
+
+    const uploadPromise = worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1,
+      payload: { avatar: testAvatarDataUrl('image/png', 1024) },
+    }, { ...authorization, 'idempotency-key': 'avatar-cancel-delete-failure-upload' }), env)
+    await putStarted
+    const [reservedKey] = JSON.parse(markerRow().value_json).pendingKeys
+
+    const cleaner = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1, payload: { avatar: '' },
+    }, { ...authorization, 'idempotency-key': 'avatar-cancel-delete-failure-cleaner' }), env)
+    expect(cleaner.status).toBe(503)
+    expect(JSON.parse(markerRow().value_json)).toMatchObject({
+      phase: 'cancelled', pendingKeys: [reservedKey], keys: [reservedKey],
+    })
+
+    bucket.failDeleteKeys.add(reservedKey)
+    releasePut()
+    const upload = await uploadPromise
+    expect(upload.status).toBe(503)
+    expect(await upload.json()).toMatchObject({ error: { code: 'ACCOUNT_AVATAR_UPLOAD_CANCELLED' } })
+    expect(bucket.objects.has(reservedKey)).toBe(true)
+    expect(JSON.parse(markerRow().value_json)).toMatchObject({
+      phase: 'acknowledged', status: 'pending', pendingKeys: [], keys: [reservedKey],
+    })
+    expect(readHydratedState(env.DB.database).accountSettings || {}).toEqual({})
+
+    bucket.failDeleteKeys.clear()
+    const cleanupRequest = {
+      type: 'account_settings.update', expectedVersion: 1, payload: { avatar: '' },
+    }
+    const cleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', cleanupRequest, {
+      ...authorization, 'idempotency-key': 'avatar-cancel-delete-failure-retry',
+    }), env)
+    expect(cleanup.status).toBe(503)
+    expect(await cleanup.json()).toMatchObject({ error: { code: 'ACCOUNT_AVATAR_CLEANUP_RETRY' } })
+    expect(bucket.objects.has(reservedKey)).toBe(false)
+    expect(markerRow()).toBeUndefined()
+
+    const retry = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1, payload: { name: 'Admin sau retry' },
+    }, {
+      ...authorization, 'idempotency-key': 'avatar-cancel-delete-failure-settings-retry',
+    }), env)
+    expect(retry.status).toBe(200)
+    expect(await retry.json()).toMatchObject({ version: 2, settings: { name: 'Admin sau retry' } })
+  }, 30_000)
+
+  it('keeps non-avatar settings usable while bounding cancelled avatar lifecycles per account', async () => {
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-avatar-lifecycle-cap' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-lifecycle-cap-password',
+      initialState: { stores: [], employees: [], attendance: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-lifecycle-cap-password',
+    }), env)
+    const loginBody = await login.json()
+    const authorization = { authorization: `Bearer ${loginBody.token}` }
+    for (let index = 0; index < 8; index += 1) {
+      const timestamp = `2026-08-25T00:00:0${index}.000Z`
+      env.DB.database.prepare(`
+        INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
+        VALUES (?, ?, 1, ?)
+      `).run(`account-avatars:mutation-cleanup:crashed-${index}`, JSON.stringify({
+        schema: 1,
+        phase: 'cancelled',
+        status: 'pending',
+        userId: loginBody.user.id,
+        requestId: `crashed-${index}`,
+        ownerRequestId: '',
+        keys: [],
+        pendingKeys: [],
+        preservedKeys: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }), timestamp)
+    }
+
+    const lifecycleRows = () => env.DB.database.prepare(`
+      SELECT meta_key, value_json, version, updated_at FROM system_metadata
+      WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+        AND json_extract(value_json, '$.userId') = ?
+      ORDER BY meta_key
+    `).all(loginBody.user.id)
+    const lifecycleRowsBefore = lifecycleRows()
+    const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1, payload: { name: 'Admin vẫn cập nhật được' },
+    }, { ...authorization, 'idempotency-key': 'avatar-lifecycle-cap-update' }), env)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      version: 2,
+      settings: { name: 'Admin vẫn cập nhật được' },
+    })
+    expect(lifecycleRows()).toEqual(lifecycleRowsBefore)
+
+    const ninthAvatarMutation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 2,
+      payload: { avatar: testAvatarDataUrl('image/png', 1024) },
+    }, { ...authorization, 'idempotency-key': 'avatar-lifecycle-cap-ninth-avatar' }), env)
+    expect(ninthAvatarMutation.status).toBe(503)
+    expect(await ninthAvatarMutation.json()).toMatchObject({ error: { code: 'ACCOUNT_AVATAR_CLEANUP_QUEUE_FAILED' } })
+    expect(lifecycleRows()).toHaveLength(8)
+    expect(env.IDENTITY_IMAGES.objects.size).toBe(0)
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 2 })
+  })
+
+  it('does not let cancelled lifecycles from other accounts exhaust a global avatar cap', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-no-global-cap' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-no-global-cap-password',
+      initialState: { stores: [], employees: [], attendance: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-no-global-cap-password',
+    }), env)
+    const loginBody = await login.json()
+    const authorization = { authorization: `Bearer ${loginBody.token}` }
+    const timestamp = '2026-08-25T00:00:00.000Z'
+    const insertMarker = env.DB.database.prepare(`
+      INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
+      VALUES (?, ?, 1, ?)
+    `)
+    for (let index = 0; index < 1_000; index += 1) {
+      insertMarker.run(`account-avatars:mutation-cleanup:historical-${index}`, JSON.stringify({
+        schema: 1,
+        phase: 'cancelled',
+        status: 'pending',
+        userId: `historical-user-${index}`,
+        requestId: `historical-request-${index}`,
+        ownerRequestId: '',
+        keys: [],
+        pendingKeys: [],
+        preservedKeys: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }), timestamp)
+    }
+
+    const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1,
+      payload: { avatar: testAvatarDataUrl('image/png', 1024) },
+    }, { ...authorization, 'idempotency-key': 'avatar-no-global-cap-upload' }), env)
+    const body = await response.json()
+    expect(response.status, JSON.stringify(body)).toBe(200)
+    expect(body).toMatchObject({
+      version: 2,
+      settings: { avatar: { key: expect.stringMatching(/^account-avatars\//u) } },
+    })
+    expect(bucket.objects.has(body.settings.avatar.key)).toBe(true)
+    expect(env.DB.database.prepare(`
+      SELECT COUNT(*) AS total FROM system_metadata
+      WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+    `).get()).toEqual({ total: 1_000 })
+    expect(env.DB.database.prepare(`
+      SELECT COUNT(*) AS total FROM system_metadata
+      WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+        AND json_extract(value_json, '$.userId') = ?
+    `).get(loginBody.user.id)).toEqual({ total: 0 })
+  })
+
+  it('serializes pending avatar cleanup and never continues the cleaner request into a new mutation', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-cleanup-owner' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-cleanup-owner-password',
+      initialState: { stores: [], employees: [], attendance: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-cleanup-owner-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const staleKey = 'account-avatars/stale-owner/avatar.png'
+    await bucket.put(staleKey, new Uint8Array([0x89, 0x50, 0x4e, 0x47]))
+    env.DB.database.prepare(`
+      INSERT INTO system_metadata (meta_key, value_json, version, updated_at)
+      VALUES ('account-avatars:pending-cleanup', ?, 1, '2026-08-25T00:00:00.000Z')
+    `).run(JSON.stringify({
+      schema: 2, status: 'pending', ownerRequestId: '', leaseExpiresAt: '',
+      keys: [staleKey], preservedKeys: [], reasons: ['concurrency-fixture'],
+      createdAt: '2026-08-25T00:00:00.000Z', updatedAt: '2026-08-25T00:00:00.000Z',
+    }))
+
+    let releaseDeletion
+    let signalDeletionStarted
+    const deletionStarted = new Promise((resolve) => { signalDeletionStarted = resolve })
+    const deletionReleased = new Promise((resolve) => { releaseDeletion = resolve })
+    bucket.beforeDelete = async (key) => {
+      if (key !== staleKey) return
+      signalDeletionStarted()
+      await deletionReleased
+    }
+    const cleanerRequest = {
+      type: 'account_settings.update', expectedVersion: 1,
+      payload: { avatar: testAvatarDataUrl('image/png', 1024) },
+    }
+    const cleanerPromise = worker.fetch(jsonRequest('https://idosi.example/api/command', cleanerRequest, {
+      ...authorization, 'idempotency-key': 'avatar-cleanup-owner-first',
+    }), env)
+    await deletionStarted
+
+    const concurrent = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      ...cleanerRequest, payload: { avatar: testAvatarDataUrl('image/webp', 2048) },
+    }, { ...authorization, 'idempotency-key': 'avatar-cleanup-owner-concurrent' }), env)
+    expect(concurrent.status).toBe(503)
+    expect(await concurrent.json()).toMatchObject({ error: { code: 'ACCOUNT_AVATAR_CLEANUP_PENDING' } })
+    expect([...bucket.objects.keys()]).toEqual([staleKey])
+
+    releaseDeletion()
+    const cleaner = await cleanerPromise
+    expect(cleaner.status).toBe(503)
+    expect(await cleaner.json()).toMatchObject({ error: { code: 'ACCOUNT_AVATAR_CLEANUP_RETRY' } })
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 1 })
+    expect([...bucket.objects.keys()]).toEqual([])
+    bucket.beforeDelete = null
+
+    const retried = await worker.fetch(jsonRequest('https://idosi.example/api/command', cleanerRequest, {
+      ...authorization, 'idempotency-key': 'avatar-cleanup-owner-first',
+    }), env)
+    expect(retried.status).toBe(200)
+    const retriedBody = await retried.json()
+    expect(retriedBody).toMatchObject({ version: 2, settings: { avatar: { key: expect.stringMatching(/^account-avatars\//u) } } })
+    expect([...bucket.objects.keys()]).toEqual([retriedBody.settings.avatar.key])
+  }, 30_000)
+
+  it('migrates legacy inline account avatars and scrubs historical artifacts on authenticated bootstrap', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-legacy' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-legacy-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Legacy store' }],
+        employees: [{
+          id: 'QL-LEGACY', name: 'Quản lý legacy', storeId: 'S01', unit: 'store_manager', status: 'Đang làm việc',
+        }],
+        attendance: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-legacy-password',
+    }), env)
+    const loginBody = await login.json()
+    const authorization = { authorization: `Bearer ${loginBody.token}` }
+    const managerCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create',
+      payload: {
+        username: 'avatar.legacy.manager', password: 'avatar-legacy-manager-password',
+        displayName: 'Quản lý legacy', role: 'store_manager', storeId: 'S01', employeeId: 'QL-LEGACY',
+      },
+    }, { ...authorization, 'idempotency-key': 'avatar-legacy-manager-create-0001' }), env)
+    expect(managerCreated.status).toBe(201)
+    const managerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'avatar.legacy.manager', password: 'avatar-legacy-manager-password',
+    }), env)
+    const managerAuthorization = { authorization: `Bearer ${(await managerLogin.json()).token}` }
+    const legacyAvatar = testAvatarDataUrl('image/png', 2048)
+    const stateRow = env.DB.database.prepare("SELECT value_json FROM app_state WHERE scope_key = 'global'").get()
+    const compactState = JSON.parse(stateRow.value_json)
+    compactState.accountSettings = {
+      [loginBody.user.id]: { name: 'Admin legacy', avatar: legacyAvatar },
+    }
+    compactState.settings = { ...(compactState.settings || {}), avatar: legacyAvatar }
+    env.DB.database.prepare(`
+      UPDATE app_state SET value_json = ?, last_request_id = 'legacy-avatar-fixture' WHERE scope_key = 'global'
+    `).run(JSON.stringify(compactState))
+    env.DB.database.prepare(`
+      INSERT INTO audit_log (
+        request_id, actor_id, actor_role, action, entity_type, entity_id,
+        before_json, after_json, metadata_json, server_timestamp
+      ) VALUES ('legacy-avatar-audit', ?, 'admin', 'account_settings.update', 'account-settings', ?, NULL, ?, NULL, ?)
+    `).run(loginBody.user.id, loginBody.user.id, JSON.stringify({ avatar: legacyAvatar }), '2026-08-20T00:00:00.000Z')
+    env.DB.database.prepare(`
+      INSERT INTO command_receipts (
+        actor_id, idempotency_key, request_hash, response_json, status_code, created_at
+      ) VALUES (?, 'legacy-avatar-receipt-0001', 'legacy-hash', ?, 200, '2026-08-20T00:00:00.000Z')
+    `).run(loginBody.user.id, JSON.stringify({ ok: true, settings: { avatar: legacyAvatar } }))
+
+    const rejectedUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'account_settings.update', expectedVersion: 1, payload: { name: '' },
+    }, { ...managerAuthorization, 'idempotency-key': 'avatar-legacy-invalid-update-0001' }), env)
+    expect(rejectedUpdate.status).toBe(400)
+    expect(await rejectedUpdate.json()).toMatchObject({ error: { code: 'DISPLAY_NAME_INVALID' } })
+    expect([...bucket.objects.keys()]).toEqual([])
+    expect(JSON.stringify(readHydratedState(env.DB.database))).toContain('base64')
+
+    const originalPut = bucket.put.bind(bucket)
+    bucket.put = async (key, value, options) => {
+      if (key.startsWith('account-avatars/')) {
+        const mutationMarker = env.DB.database.prepare(`
+          SELECT value_json FROM system_metadata
+          WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+            AND COALESCE(json_extract(value_json, '$.phase'), 'prepared') <> 'cancelled'
+          ORDER BY meta_key LIMIT 1
+        `).get()
+        expect(JSON.parse(mutationMarker.value_json)).toMatchObject({
+          phase: 'prepared', pendingKeys: expect.arrayContaining([key]),
+        })
+      }
+      return originalPut(key, value, options)
+    }
+    const migratedAsManager = await worker.fetch(new Request('https://idosi.example/api/bootstrap', {
+      headers: managerAuthorization,
+    }), env)
+    expect(migratedAsManager.status).toBe(200)
+    const managerBody = await migratedAsManager.json()
+    expect(managerBody.version).toBe(2)
+    expect(managerBody.state.settings.avatar).toBe('')
+
+    const migrated = await worker.fetch(new Request('https://idosi.example/api/bootstrap', { headers: authorization }), env)
+    expect(migrated.status).toBe(200)
+    const migratedBody = await migrated.json()
+    expect(migratedBody.version).toBe(2)
+    expect(migratedBody.state.settings.avatar).toMatchObject({
+      key: expect.stringMatching(/^account-avatars\//u),
+      contentType: 'image/png',
+      size: 2048,
+      version: 1,
+    })
+    expect(JSON.stringify(migratedBody)).not.toContain('base64')
+    expect(JSON.stringify(readHydratedState(env.DB.database))).not.toContain('base64')
+    expect(env.DB.database.prepare(`
+      SELECT before_json, after_json, metadata_json FROM audit_log
+      WHERE request_id = 'legacy-avatar-audit'
+    `).get().after_json).not.toContain('base64')
+    expect(env.DB.database.prepare(`
+      SELECT response_json FROM command_receipts WHERE idempotency_key = 'legacy-avatar-receipt-0001'
+    `).get().response_json).not.toContain('base64')
+    expect([...bucket.objects.keys()]).toHaveLength(1)
+
+    const secondBootstrap = await worker.fetch(new Request('https://idosi.example/api/bootstrap', { headers: authorization }), env)
+    expect((await secondBootstrap.json()).version).toBe(2)
+    expect([...bucket.objects.keys()]).toHaveLength(1)
+    expect(env.DB.database.prepare(`
+      SELECT meta_key FROM system_metadata
+      WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+        AND COALESCE(json_extract(value_json, '$.phase'), 'prepared') <> 'cancelled'
+    `).get()).toBeUndefined()
+    bucket.put = originalPut
+  })
+
+  it('tracks every legacy avatar upload durably through demo and full reset commits', async () => {
+    for (const resetType of ['system.reset_demo', 'system.reset_all']) {
+      const suffix = resetType.endsWith('demo') ? 'demo' : 'all'
+      const bucket = new MemoryR2()
+      const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: `bootstrap-legacy-reset-${suffix}` }
+      await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: `legacy-reset-${suffix}-password`,
+        initialState: { stores: [], employees: [], attendance: [] },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: `legacy-reset-${suffix}-password`,
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+      const row = env.DB.database.prepare("SELECT value_json FROM app_state WHERE scope_key = 'global'").get()
+      const compactState = JSON.parse(row.value_json)
+      compactState.settings = { ...(compactState.settings || {}), avatar: testAvatarDataUrl('image/png', 1024) }
+      env.DB.database.prepare(`
+        UPDATE app_state SET value_json = ?, last_request_id = ? WHERE scope_key = 'global'
+      `).run(JSON.stringify(compactState), `legacy-reset-${suffix}-fixture`)
+
+      const originalPut = bucket.put.bind(bucket)
+      bucket.put = async (key, value, options) => {
+        if (key.startsWith('account-avatars/')) {
+          const marker = env.DB.database.prepare(`
+            SELECT value_json FROM system_metadata
+            WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+              AND COALESCE(json_extract(value_json, '$.phase'), 'prepared') <> 'cancelled'
+            ORDER BY meta_key LIMIT 1
+          `).get()
+          expect(JSON.parse(marker.value_json)).toMatchObject({
+            phase: 'prepared', pendingKeys: expect.arrayContaining([key]),
+          })
+        }
+        return originalPut(key, value, options)
+      }
+      const payload = resetType === 'system.reset_demo'
+        ? { state: { schemaVersion: 2, stateVersion: 1, stores: [], employees: [], attendance: [] } }
+        : { confirmation: 'RESET_ALL_DATA' }
+      const reset = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: resetType, expectedVersion: 1, payload,
+      }, { ...authorization, 'idempotency-key': `legacy-avatar-reset-${suffix}` }), env)
+      const resetBody = await reset.json()
+      expect(reset.status, `${resetType}: ${JSON.stringify(resetBody)}`).toBe(200)
+      expect(JSON.stringify(resetBody)).not.toContain('base64')
+      expect(JSON.stringify(readHydratedState(env.DB.database))).not.toContain('base64')
+      expect(env.DB.database.prepare(`
+        SELECT meta_key FROM system_metadata
+        WHERE meta_key LIKE 'account-avatars:mutation-cleanup:%'
+          AND COALESCE(json_extract(value_json, '$.phase'), 'prepared') <> 'cancelled'
+      `).get()).toBeUndefined()
+    }
+  }, 30_000)
+
+  it('quarantines invalid legacy inline avatars across settings and employee history without locking repair or reset', async () => {
+    const bucket = new MemoryR2()
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-avatar-quarantine' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'avatar-quarantine-password',
+      initialState: { stores: [], employees: [], deletedEmployees: [], attendance: [], orders: [] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'avatar-quarantine-password',
+    }), env)
+    const loginBody = await login.json()
+    const authorization = { authorization: `Bearer ${loginBody.token}` }
+    const invalidAvatars = {
+      gif: 'data:image/gif;base64,R0lGODlhAQABAIAAAAUEBA==',
+      svg: `data:image/svg+xml;base64,${Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64')}`,
+      jpgAlias: 'data:image/jpg;base64,/9j/2Q==',
+      corrupt: 'data:image/png;base64,not_base64',
+      hyphenMime: 'data:image-jpg;base64,/9j/2Q==',
+    }
+    const stateRow = env.DB.database.prepare("SELECT value_json FROM app_state WHERE scope_key = 'global'").get()
+    const compactState = JSON.parse(stateRow.value_json)
+    compactState.settings = { name: 'Admin legacy invalid', avatar: invalidAvatars.gif }
+    compactState.accountSettings = {
+      [loginBody.user.id]: { name: 'Admin legacy invalid', avatar: invalidAvatars.svg },
+    }
+    env.DB.database.prepare(`
+      UPDATE app_state SET value_json = ?, last_request_id = 'avatar-quarantine-fixture'
+      WHERE scope_key = 'global'
+    `).run(JSON.stringify(compactState))
+    replaceStateCollection(env.DB.database, 'employees', [
+      { id: 'EMP-JPG-INVALID', name: 'JPG alias', avatar: invalidAvatars.jpgAlias },
+      { id: 'EMP-BASE64-INVALID', name: 'Base64 corrupt', avatar: invalidAvatars.corrupt },
+    ])
+    replaceStateCollection(env.DB.database, 'deletedEmployees', [
+      { id: 'EMP-HYPHEN-INVALID', name: 'MIME dấu gạch', avatar: invalidAvatars.hyphenMime },
+    ])
+    env.DB.database.prepare(`
+      INSERT INTO audit_log (
+        request_id, actor_id, actor_role, action, entity_type, entity_id,
+        before_json, after_json, metadata_json, server_timestamp
+      ) VALUES ('avatar-quarantine-audit-fixture', ?, 'admin', 'legacy.fixture', 'account-avatar', ?, ?, NULL, NULL, ?)
+    `).run(loginBody.user.id, loginBody.user.id, JSON.stringify({ avatar: invalidAvatars.gif }), '2026-08-25T00:00:00.000Z')
+    env.DB.database.prepare(`
+      INSERT INTO command_receipts (
+        actor_id, idempotency_key, request_hash, response_json, status_code, created_at
+      ) VALUES (?, 'avatar-quarantine-receipt', 'avatar-quarantine-hash', ?, 200, '2026-08-25T00:00:00.000Z')
+    `).run(loginBody.user.id, JSON.stringify({ ok: true, settings: { avatar: invalidAvatars.svg } }))
+
+    const repaired = await worker.fetch(new Request('https://idosi.example/api/state', { headers: authorization }), env)
+    expect(repaired.status).toBe(200)
+    const repairedBody = await repaired.json()
+    expect(repairedBody.version).toBe(2)
+    expect(repairedBody.state.settings.avatar).toBeNull()
+    expect([...bucket.objects.keys()]).toEqual([])
+    const repairedState = readHydratedState(env.DB.database)
+    expect(JSON.stringify(repairedState)).not.toContain('data:image')
+    expect(repairedState.accountSettings[loginBody.user.id].avatar).toBeNull()
+    expect(repairedState.settings).not.toHaveProperty('avatar')
+    expect(repairedState.employees.every((employee) => !Object.hasOwn(employee, 'avatar'))).toBe(true)
+    expect(repairedState.deletedEmployees.every((employee) => !Object.hasOwn(employee, 'avatar'))).toBe(true)
+    expect(env.DB.database.prepare(`
+      SELECT before_json FROM audit_log WHERE request_id = 'avatar-quarantine-audit-fixture'
+    `).get().before_json).not.toContain('data:image')
+    expect(env.DB.database.prepare(`
+      SELECT response_json FROM command_receipts WHERE idempotency_key = 'avatar-quarantine-receipt'
+    `).get().response_json).not.toContain('data:image')
+    const migrationAudit = env.DB.database.prepare(`
+      SELECT metadata_json FROM audit_log WHERE action = 'account_avatar.migrate_legacy' ORDER BY id DESC LIMIT 1
+    `).get()
+    expect(JSON.parse(migrationAudit.metadata_json)).toMatchObject({
+      migratedObjects: 0,
+      quarantinedInvalidObjects: 5,
+      quarantined: expect.arrayContaining([
+        expect.objectContaining({ location: 'settings.avatar', reason: 'legacy-avatar-invalid' }),
+        expect.objectContaining({ location: `accountSettings.${loginBody.user.id}.avatar` }),
+        expect.objectContaining({ location: 'employees.EMP-JPG-INVALID.avatar' }),
+        expect.objectContaining({ location: 'employees.EMP-BASE64-INVALID.avatar' }),
+        expect.objectContaining({ location: 'deletedEmployees.EMP-HYPHEN-INVALID.avatar' }),
+      ]),
+    })
+
+    const reset = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'system.reset_demo', expectedVersion: 2,
+      payload: { state: { schemaVersion: 2, stateVersion: 1, stores: [], employees: [], attendance: [], orders: [] } },
+    }, { ...authorization, 'idempotency-key': 'avatar-quarantine-reset-demo' }), env)
+    expect(reset.status).toBe(200)
+    expect(await reset.json()).toMatchObject({ version: 3, state: { stores: [], employees: [], attendance: [], orders: [] } })
+    expect(env.DB.database.prepare(`
+      SELECT value_json FROM system_metadata WHERE meta_key = 'account-avatars:pending-cleanup'
+    `).get()).toBeUndefined()
+  }, 30_000)
+
   it('persists manager-safe transfers, store settings, account preferences, and admin demo reset', async () => {
-    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-persistence-gaps' }
+    const env = { DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-persistence-gaps' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin',
       password: 'persistence-admin-password',
@@ -2739,13 +3829,14 @@ describe('IDOSI Worker security primitives', () => {
     expect(avatarRejected.status).toBe(413)
     expect(await avatarRejected.json()).toMatchObject({ error: { code: 'AVATAR_TOO_LARGE' } })
     const unsupportedAvatar = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'account_settings.update', expectedVersion: 5, payload: { avatar: 'data:image/gif;base64,R0lGODlhAQABAIAAAAUEBA==' },
+      type: 'account_settings.update', expectedVersion: 5,
+      payload: { avatar: `data:image/svg+xml;base64,${Buffer.from('<svg/>').toString('base64')}` },
     }, { ...managerAuthorization, 'idempotency-key': 'account-settings-avatar-invalid-mime-0001' }), env)
     expect(unsupportedAvatar.status).toBe(400)
     expect(await unsupportedAvatar.json()).toMatchObject({ error: { code: 'AVATAR_INVALID' } })
     const spoofedAvatar = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'account_settings.update', expectedVersion: 5,
-      payload: { avatar: testAvatarDataUrl('image/jpeg', 128, 'image/png') },
+      payload: { avatar: testAvatarDataUrl('image/jpeg', 512, 'image/png') },
     }, { ...managerAuthorization, 'idempotency-key': 'account-settings-avatar-spoofed-mime-0001' }), env)
     expect(spoofedAvatar.status).toBe(400)
     expect(await spoofedAvatar.json()).toMatchObject({ error: { code: 'AVATAR_INVALID' } })
@@ -2765,15 +3856,39 @@ describe('IDOSI Worker security primitives', () => {
       },
     }, { ...managerAuthorization, 'idempotency-key': 'account-settings-update-0001' }), env)
     expect(settingsUpdated.status).toBe(200)
-    expect(await settingsUpdated.json()).toMatchObject({
+    const settingsUpdatedBody = await settingsUpdated.json()
+    expect(settingsUpdatedBody).toMatchObject({
       version: 6,
       settings: {
         name: 'Quản lý IDOSI', email: 'manager@idosi.vn', phone: '0907654321', birthday: '1991-10-20',
-        avatar: boundaryAvatar,
+        avatar: {
+          key: expect.stringMatching(/^account-avatars\/usr_[^/]+\//u),
+          contentType: 'image/webp',
+          size: 300 * 1024,
+          version: 1,
+        },
         notifications: { tasks: false, dailyReport: true, expenseAlert: true },
       },
       user: { id: managerCreatedBody.user.id, displayName: 'Quản lý IDOSI', version: 2 },
     })
+    const managerAvatarKey = settingsUpdatedBody.settings.avatar.key
+    expect(JSON.stringify(settingsUpdatedBody)).not.toContain('base64')
+    expect(env.IDENTITY_IMAGES.objects.has(managerAvatarKey)).toBe(true)
+    const managerAvatarResponse = await worker.fetch(new Request('https://idosi.example/api/account-avatar', {
+      headers: managerAuthorization,
+    }), env)
+    expect(managerAvatarResponse.status).toBe(200)
+    expect(managerAvatarResponse.headers.get('content-type')).toBe('image/webp')
+    expect(managerAvatarResponse.headers.get('x-avatar-version')).toBe('1')
+    expect(new Uint8Array(await managerAvatarResponse.arrayBuffer())).toHaveLength(300 * 1024)
+    expect(JSON.stringify(readHydratedState(env.DB.database))).not.toContain('base64')
+    expect(env.DB.database.prepare(`
+      SELECT COUNT(*) AS count FROM audit_log
+      WHERE before_json LIKE '%base64%' OR after_json LIKE '%base64%' OR metadata_json LIKE '%base64%'
+    `).get()).toEqual({ count: 0 })
+    expect(env.DB.database.prepare(`
+      SELECT COUNT(*) AS count FROM command_receipts WHERE response_json LIKE '%base64%'
+    `).get()).toEqual({ count: 0 })
 
     const adminStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
       headers: adminAuthorization,
@@ -2856,6 +3971,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(rawState).not.toHaveProperty('adminAccounts')
     expect(JSON.stringify(rawState)).not.toContain('must-be-removed')
     expect(rawState.accountSettings).toEqual({})
+    expect(env.IDENTITY_IMAGES.objects.has(managerAvatarKey)).toBe(false)
     const managerAfterReset = await worker.fetch(new Request('https://idosi.example/api/bootstrap', {
       headers: managerAuthorization,
     }), env)
@@ -4789,7 +5905,7 @@ describe('IDOSI Worker security primitives', () => {
   })
 
   it('creates complete office accounts with VP hyphen codes and private identity images', async () => {
-    const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+    const pngBytes = new Uint8Array(validPngBytes(512))
     const pngDataUrl = `data:image/png;base64,${Buffer.from(pngBytes).toString('base64')}`
     const env = {
       DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-office-profile', IDENTITY_IMAGES: new MemoryR2(),
@@ -5458,7 +6574,7 @@ describe('IDOSI Worker security primitives', () => {
     }), env)
     expect(secondAdminLogin.status).toBe(200)
     const secondAdminAuthorization = { authorization: `Bearer ${(await secondAdminLogin.json()).token}` }
-    const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01])
+    const pngBytes = new Uint8Array(validPngBytes(512))
     const pngDataUrl = `data:image/png;base64,${Buffer.from(pngBytes).toString('base64')}`
 
     const managerCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -5479,9 +6595,11 @@ describe('IDOSI Worker security primitives', () => {
     const managerAuthorization = { authorization: `Bearer ${(await managerLogin.json()).token}` }
     const settingsUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'account_settings.update', expectedVersion: 2,
-      payload: { name: 'Admin được giữ lại', email: 'admin@idosi.vn', notifications: { tasks: false } },
+      payload: { name: 'Admin được giữ lại', email: 'admin@idosi.vn', avatar: pngDataUrl, notifications: { tasks: false } },
     }, { ...currentAdminAuthorization, 'idempotency-key': 'reset-all-admin-settings-0001' }), env)
-    expect(settingsUpdated.status).toBe(200)
+    const settingsUpdatedBody = await settingsUpdated.json()
+    expect(settingsUpdated.status, JSON.stringify(settingsUpdatedBody)).toBe(200)
+    const preservedAdminAvatarKey = settingsUpdatedBody.settings.avatar.key
 
     env.DB.database.prepare(`
       INSERT INTO app_state (scope_key, value_json, version, updated_at, updated_by, last_request_id)
@@ -5492,7 +6610,9 @@ describe('IDOSI Worker security primitives', () => {
       VALUES ('private:reset-fixture', 'privateRecords', ?, ?)
     `).run('2026-08-18T00:00:00.000Z', '2026-08-18T00:00:00.000Z')
     const orphanKey = 'identity-images/orphan/front/orphan.png'
+    const orphanAccountAvatarKey = 'account-avatars/orphan/avatar.png'
     await bucket.put(orphanKey, pngBytes)
+    await bucket.put(orphanAccountAvatarKey, pngBytes)
     await bucket.put('other-prefix/must-survive.png', pngBytes)
 
     const missingConfirmation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -5569,6 +6689,7 @@ describe('IDOSI Worker security primitives', () => {
           commandReceipts: 2,
           privateStateScopes: 1,
           identityImageObjectsTargeted: 3,
+          accountAvatarObjectsTargeted: 1,
         },
         preservedAdminAccountIds: [adminId],
         preservedCurrentAdminSession: true,
@@ -5576,6 +6697,8 @@ describe('IDOSI Worker security primitives', () => {
         defaultPolicyCount: 8,
         identityImagePrefix: 'identity-images/',
         identityImageStorageVerifiedEmpty: true,
+        accountAvatarPrefix: 'account-avatars/',
+        accountAvatarStorageVerified: true,
       },
       state: { stores: [], employees: [], attendance: [], orders: [] },
     })
@@ -5596,7 +6719,12 @@ describe('IDOSI Worker security primitives', () => {
       { actor_id: adminId, idempotency_key: 'reset-all-runtime-0001' },
     ])
     expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM command_receipt_chunks').get()).toEqual({ count: 0 })
-    expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM state_entities').get()).toEqual({ count: 0 })
+    expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM state_entities').get()).toEqual({ count: 17 })
+    expect(env.DB.database.prepare(`
+      SELECT collection_key, COUNT(*) AS count
+      FROM state_entities
+      GROUP BY collection_key
+    `).all()).toEqual([{ collection_key: 'orderInformationOptions', count: 17 }])
     expect(env.DB.database.prepare('SELECT scope_key FROM app_state ORDER BY scope_key').all()).toEqual([{ scope_key: 'global' }])
     expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM counters').get()).toEqual({ count: 0 })
     expect(env.DB.database.prepare('SELECT policy_key, version FROM policies ORDER BY policy_key').all()).toEqual(
@@ -5616,12 +6744,16 @@ describe('IDOSI Worker security primitives', () => {
       'stores', 'employees', 'attendance', 'orders', 'orderAudit', 'notifications',
       'expenseEntries', 'payrollPeriods', 'supportTransfers', 'supportWorkAssignments',
     ]) expect(resetState[key]).toEqual([])
+    expect(resetState.orderInformationOptions).toHaveLength(17)
     expect(resetState.accountSettings[adminId]).toMatchObject({
-      name: 'Admin được giữ lại', email: 'admin@idosi.vn', notifications: { tasks: false },
+      name: 'Admin được giữ lại', email: 'admin@idosi.vn',
+      avatar: { key: preservedAdminAvatarKey, contentType: 'image/png', version: 1 },
+      notifications: { tasks: false },
     })
-    expect([...bucket.objects.keys()]).toEqual(['other-prefix/must-survive.png'])
+    expect([...bucket.objects.keys()].sort()).toEqual([preservedAdminAvatarKey, 'other-prefix/must-survive.png'].sort())
     expect(bucket.deletedKeys).toEqual(expect.arrayContaining([
       orphanKey,
+      orphanAccountAvatarKey,
       expect.stringMatching(/^identity-images\/QLCH-001\/front\//u),
       expect.stringMatching(/^identity-images\/QLCH-001\/back\//u),
     ]))
@@ -6555,7 +7687,290 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 30_000)
 
-  it('lets Business Support configure effective-dated Office and protected support work shifts and check in the selected shift', async () => {
+  it('protects order information settings with audited soft-disable, strict RBAC, and legacy-safe order validation', async () => {
+    const optionTimestamp = '2026-08-20T00:00:00.000Z'
+    const orderInformationOptions = [
+      { id: 'order-occupation-001', kind: 'occupation', code: 'OCC-001', label: 'Nhân viên VP', normalizedLabel: 'nhân viên vp', active: true, sortOrder: 100, createdAt: optionTimestamp, updatedAt: optionTimestamp },
+      { id: 'order-occupation-002', kind: 'occupation', code: 'OCC-002', label: 'Kỹ sư', normalizedLabel: 'kỹ sư', active: true, sortOrder: 200, createdAt: optionTimestamp, updatedAt: optionTimestamp },
+      { id: 'order-occupation-003', kind: 'occupation', code: 'OCC-003', label: 'Nghề đã nghỉ', normalizedLabel: 'nghề đã nghỉ', active: false, sortOrder: 300, deletedAt: optionTimestamp, createdAt: optionTimestamp, updatedAt: optionTimestamp },
+    ]
+    const historicalOrders = [
+      { id: 'ORDER-USED', code: 'LEGACY-USED', storeId: 'S01', customerName: 'Khách nghề đã dùng', gender: 'Nam', occupation: 'Kỹ sư', acquisitionChannel: 'Facebook', amount: 100_000, paymentMethod: 'Tiền mặt', status: 'Hoàn tất', source: 'order', createdAt: optionTimestamp },
+      { id: 'ORDER-LEGACY', code: 'LEGACY-UNKNOWN', storeId: 'S01', customerName: 'Khách nghề legacy', gender: 'Nữ', occupation: 'Nghề legacy ngoài danh mục', acquisitionChannel: 'Zalo', amount: 110_000, paymentMethod: 'Chuyển khoản', status: 'Hoàn tất', source: 'order', createdAt: optionTimestamp },
+      { id: 'ORDER-OTHER', code: 'LEGACY-OTHER', storeId: 'S01', customerName: 'Khách nghề khác', gender: 'Khác', occupation: 'Nhân viên VP', acquisitionChannel: 'Khác', amount: 120_000, paymentMethod: 'Tiền mặt', status: 'Hoàn tất', source: 'order', createdAt: optionTimestamp },
+    ]
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-order-information-settings' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'order-information-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', short: 'S01', name: 'IDOSI S01', status: 'Đang hoạt động' }],
+        employees: [
+          { id: 'HTKD-ORDER', code: 'HTKD-ORDER', name: 'Hỗ trợ đơn hàng', unit: 'business_support', storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc' },
+          { id: 'QLCH-ORDER', code: 'QLCH-ORDER', name: 'Quản lý đơn hàng', unit: 'store_manager', storeId: 'S01', status: 'Đang làm việc' },
+          { id: 'NV-ORDER', code: 'NV-ORDER', name: 'Nhân viên đơn hàng', unit: 'store', storeId: 'S01', status: 'Đang làm việc' },
+        ],
+        orderInformationOptions,
+        orders: historicalOrders,
+        orderAudit: [],
+        attendance: [],
+        payrollPeriods: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'order-information-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    for (const account of [
+      { username: 'support.order', password: 'support-order-password', displayName: 'Hỗ trợ đơn hàng', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-ORDER', role: 'business_support' },
+      { username: 'manager.order', password: 'manager-order-password', displayName: 'Quản lý đơn hàng', storeId: 'S01', employeeId: 'QLCH-ORDER', role: 'store_manager' },
+      { username: 'employee.order', password: 'employee-order-password', displayName: 'Nhân viên đơn hàng', storeId: 'S01', employeeId: 'NV-ORDER', role: 'employee' },
+    ]) {
+      const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create', payload: account,
+      }, { ...adminAuthorization, 'idempotency-key': `order-information-user-${account.role}` }), env)
+      expect(created.status, account.role).toBe(201)
+    }
+    const loginAs = async (username, password) => {
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username, password }), env)
+      expect(response.status).toBe(200)
+      return { authorization: `Bearer ${(await response.json()).token}` }
+    }
+    const supportAuthorization = await loginAs('support.order', 'support-order-password')
+    const managerAuthorization = await loginAs('manager.order', 'manager-order-password')
+    const employeeAuthorization = await loginAs('employee.order', 'employee-order-password')
+    const configuredOrderInformationOptions = readHydratedState(env.DB.database).orderInformationOptions
+    const configuredOccupations = configuredOrderInformationOptions.filter(({ kind }) => kind === 'occupation')
+    expect(configuredOccupations).toHaveLength(15)
+    expect(configuredOccupations).toEqual(expect.arrayContaining(orderInformationOptions))
+
+    for (const authorization of [adminAuthorization, supportAuthorization, managerAuthorization, employeeAuthorization]) {
+      const projected = await worker.fetch(new Request('https://idosi.example/api/state', { headers: authorization }), env)
+      expect(projected.status).toBe(200)
+      const projectedOptions = (await projected.json()).state.orderInformationOptions
+      expect(projectedOptions).toEqual(configuredOrderInformationOptions)
+      expect(projectedOptions.filter(({ kind }) => kind === 'payment_method')).toEqual([
+        expect.objectContaining({ id: 'order-payment-001', code: 'PAY-001', label: 'Tiền mặt', active: true, system: true }),
+        expect.objectContaining({ id: 'order-payment-002', code: 'PAY-002', label: 'Chuyển khoản', active: true, system: true }),
+      ])
+    }
+
+    const protectedMutation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'state.merge', expectedVersion: 1,
+      payload: { patch: { orderInformationOptions: [{ ...orderInformationOptions[0], label: 'Ghi đè trái phép' }] } },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-generic-mutation' }), env)
+    expect(protectedMutation.status).toBe(400)
+    expect(await protectedMutation.json()).toMatchObject({ error: { code: 'DOMAIN_COMMAND_REQUIRED' } })
+
+    const restrictedCommands = [
+      ['create', { label: 'Bị chặn', code: 'DEN-01' }],
+      ['update', { optionId: 'order-occupation-001', label: 'Bị chặn', code: 'DEN-02' }],
+      ['disable', { optionId: 'order-occupation-001', reason: 'Bị chặn' }],
+      ['restore', { optionId: 'order-occupation-003' }],
+      ['reorder', { orderedIds: configuredOccupations.map(({ id }) => id) }],
+    ]
+    for (const [role, authorization] of [['store_manager', managerAuthorization], ['employee', employeeAuthorization]]) {
+      for (const [operation, payload] of restrictedCommands) {
+        const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+          type: `order_information.${operation}`, expectedVersion: 1, payload,
+        }, { ...authorization, 'idempotency-key': `order-information-${role}-${operation}` }), env)
+        expect(denied.status, `${role}:${operation}`).toBe(403)
+        expect(await denied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
+      }
+    }
+
+    for (const [role, authorization] of [['admin', adminAuthorization], ['business_support', supportAuthorization]]) {
+      const retired = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.working_time.set', expectedVersion: 1,
+        payload: { employeeId: 'HTKD-ORDER', effectiveFrom: '2026-08-25', workTimeType: 'Full-Time' },
+      }, { ...authorization, 'idempotency-key': `retired-working-time-${role}` }), env)
+      expect(retired.status).toBe(410)
+      expect(await retired.json()).toMatchObject({ error: { code: 'COMMAND_RETIRED' } })
+    }
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 1 })
+    expect(readHydratedState(env.DB.database).employees).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'HTKD-ORDER' }),
+    ]))
+
+    const invalidRequests = [
+      ['client-id', { type: 'order_information.create', payload: { id: 'client-id', label: 'Kế toán', code: 'OCC-100' } }, 400, 'ORDER_INFORMATION_OPTION_ID_SERVER_MANAGED'],
+      ['payment-kind', { type: 'order_information.create', payload: { kind: 'payment', label: 'Thẻ', code: 'PAY-003' } }, 400, 'ORDER_INFORMATION_KIND_INVALID'],
+      ['bad-code', { type: 'order_information.create', payload: { label: 'Kế toán', code: 'Mã lỗi' } }, 400, 'ORDER_INFORMATION_CODE_INVALID'],
+      ['duplicate-label', { type: 'order_information.create', payload: { label: '  Kỹ   sư ', code: 'OCC-900' } }, 409, 'ORDER_INFORMATION_DUPLICATE'],
+      ['duplicate-inactive-code', { type: 'order_information.create', payload: { label: 'Nghề mới', code: 'occ-003' } }, 409, 'ORDER_INFORMATION_DUPLICATE'],
+      ['bad-option-id', { type: 'order_information.update', payload: { optionId: '../bad', label: 'Nghề mới', code: 'OCC-900' } }, 400, 'ORDER_INFORMATION_OPTION_ID_INVALID'],
+      ['missing-option-id', { type: 'order_information.update', payload: { optionId: 'order-occupation-999', label: 'Nghề mới', code: 'OCC-900' } }, 404, 'ORDER_INFORMATION_OPTION_NOT_FOUND'],
+      ['protected-payment', { type: 'order_information.disable', payload: { optionId: 'order-payment-001', reason: 'Không được phép' } }, 403, 'ORDER_INFORMATION_SYSTEM_OPTION_PROTECTED'],
+      ['hard-delete', { type: 'order_information.delete', payload: { optionId: 'order-occupation-002' } }, 400, 'COMMAND_UNKNOWN'],
+    ]
+    for (const [key, request, status, code] of invalidRequests) {
+      const rejected = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        ...request, expectedVersion: 1,
+      }, { ...adminAuthorization, 'idempotency-key': `order-information-invalid-${key}` }), env)
+      expect(rejected.status, key).toBe(status)
+      expect(await rejected.json()).toMatchObject({ error: { code } })
+    }
+
+    const createRequest = {
+      type: 'order_information.create', expectedVersion: 1,
+      payload: { label: 'Kế toán', code: 'occ-100', active: false },
+    }
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', createRequest, {
+      ...supportAuthorization, 'idempotency-key': 'order-information-create-accountant',
+    }), env)
+    expect(created.status).toBe(201)
+    const createdBody = await created.json()
+    expect(createdBody).toMatchObject({
+      version: 2,
+      option: { kind: 'occupation', label: 'Kế toán', code: 'OCC-100', active: true, createdBy: { role: 'business_support' } },
+    })
+    const optionId = createdBody.option.id
+    const replayed = await worker.fetch(jsonRequest('https://idosi.example/api/command', createRequest, {
+      ...supportAuthorization, 'idempotency-key': 'order-information-create-accountant',
+    }), env)
+    expect(replayed.status).toBe(201)
+    expect(await replayed.json()).toMatchObject({ version: 2, option: { id: optionId } })
+
+    const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.update', expectedVersion: 2,
+      payload: { optionId, label: 'Kế toán doanh nghiệp', code: 'OCC-100', active: false },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-update-accountant' }), env)
+    expect(updated.status).toBe(200)
+    expect(await updated.json()).toMatchObject({ version: 3, option: { id: optionId, label: 'Kế toán doanh nghiệp', active: true } })
+    const duplicateUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.update', expectedVersion: 3,
+      payload: { optionId, label: 'Kế toán doanh nghiệp', code: 'OCC-001' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-update-duplicate' }), env)
+    expect(duplicateUpdate.status).toBe(409)
+    expect(await duplicateUpdate.json()).toMatchObject({ error: { code: 'ORDER_INFORMATION_DUPLICATE' } })
+
+    const invalidReorder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.reorder', expectedVersion: 3, payload: { orderedIds: [optionId] },
+    }, { ...supportAuthorization, 'idempotency-key': 'order-information-reorder-invalid' }), env)
+    expect(invalidReorder.status).toBe(400)
+    expect(await invalidReorder.json()).toMatchObject({ error: { code: 'ORDER_INFORMATION_ORDER_INVALID' } })
+    const orderedIds = [optionId, ...configuredOccupations.map(({ id }) => id)]
+    const reordered = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.reorder', expectedVersion: 3, payload: { orderedIds },
+    }, { ...supportAuthorization, 'idempotency-key': 'order-information-reorder' }), env)
+    expect(reordered.status).toBe(200)
+    expect(await reordered.json()).toMatchObject({
+      version: 4,
+      options: orderedIds.map((id, index) => expect.objectContaining({ id, sortOrder: (index + 1) * 100 })),
+    })
+
+    const disabled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.disable', expectedVersion: 4,
+      payload: { optionId: 'order-occupation-002', reason: 'Ngừng dùng cho đơn mới' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-disable-used' }), env)
+    expect(disabled.status).toBe(200)
+    expect(await disabled.json()).toMatchObject({
+      version: 5,
+      option: { id: 'order-occupation-002', active: false, deletedAt: expect.any(String), deleteReason: 'Ngừng dùng cho đơn mới' },
+    })
+    let persisted = readHydratedState(env.DB.database)
+    expect(persisted.orderInformationOptions.filter(({ kind }) => kind === 'occupation')).toHaveLength(16)
+    expect(persisted.orderInformationOptions.filter(({ kind }) => kind === 'payment_method')).toHaveLength(2)
+    expect(persisted.orderInformationOptions.find(({ id }) => id === 'order-occupation-002')).toMatchObject({ active: false })
+    expect(persisted.orders.find(({ id }) => id === 'ORDER-USED')).toMatchObject({ occupation: 'Kỹ sư' })
+
+    const disabledNewOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.create', expectedVersion: 5,
+      payload: { storeId: 'S01', customerName: 'Không chọn nghề nghỉ', gender: 'Nam', occupation: 'Kỹ sư', acquisitionChannel: 'Facebook', amount: 90_000, paymentMethod: 'Tiền mặt' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-disabled-new-order' }), env)
+    expect(disabledNewOrder.status).toBe(400)
+    expect(await disabledNewOrder.json()).toMatchObject({ error: { code: 'ORDER_OCCUPATION_INVALID' } })
+    const invalidPayment = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.create', expectedVersion: 5,
+      payload: { storeId: 'S01', customerName: 'Sai thanh toán', gender: 'Nữ', occupation: 'Kế toán doanh nghiệp', acquisitionChannel: 'Zalo', amount: 90_000, paymentMethod: 'Chuyển khoản ' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-payment-invalid' }), env)
+    expect(invalidPayment.status).toBe(400)
+    expect(await invalidPayment.json()).toMatchObject({ error: { code: 'PAYMENT_METHOD_INVALID' } })
+    const transferPaymentRow = env.DB.database.prepare(`
+      SELECT entity_key, value_json FROM state_entities
+      WHERE scope_key = 'global'
+        AND collection_key = 'orderInformationOptions'
+        AND json_extract(value_json, '$.id') = 'order-payment-002'
+    `).get()
+    const inactiveTransferJson = JSON.stringify({ ...JSON.parse(transferPaymentRow.value_json), active: false })
+    env.DB.database.prepare(`
+      UPDATE state_entities SET value_json = ?, value_bytes = ?
+      WHERE scope_key = 'global' AND collection_key = 'orderInformationOptions' AND entity_key = ?
+    `).run(inactiveTransferJson, Buffer.byteLength(inactiveTransferJson), transferPaymentRow.entity_key)
+    const databaseBackedPayment = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.create', expectedVersion: 5,
+      payload: { storeId: 'S01', customerName: 'Nguồn thanh toán DB', gender: 'Nữ', occupation: 'Kế toán doanh nghiệp', acquisitionChannel: 'Zalo', amount: 90_000, paymentMethod: 'Chuyển khoản' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-payment-database-source' }), env)
+    expect(databaseBackedPayment.status).toBe(409)
+    expect(await databaseBackedPayment.json()).toMatchObject({ error: { code: 'ORDER_PAYMENT_CONFIGURATION_INVALID' } })
+    env.DB.database.prepare(`
+      UPDATE state_entities SET value_json = ?, value_bytes = ?
+      WHERE scope_key = 'global' AND collection_key = 'orderInformationOptions' AND entity_key = ?
+    `).run(transferPaymentRow.value_json, Buffer.byteLength(transferPaymentRow.value_json), transferPaymentRow.entity_key)
+    const activeNewOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.create', expectedVersion: 5,
+      payload: { storeId: 'S01', customerName: 'Nghề mới hợp lệ', gender: 'Nữ', occupation: 'Kế toán doanh nghiệp', acquisitionChannel: 'Zalo', amount: 90_000, paymentMethod: 'Chuyển khoản' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-active-new-order' }), env)
+    expect(activeNewOrder.status).toBe(201)
+    expect(await activeNewOrder.json()).toMatchObject({ version: 6, order: { occupation: 'Kế toán doanh nghiệp', paymentMethod: 'Chuyển khoản' } })
+
+    const legacyKept = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 6,
+      payload: { orderId: 'ORDER-LEGACY', occupation: 'Nghề legacy ngoài danh mục', amount: 115_000, reason: 'Sửa tiền, giữ nghề lịch sử' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-keep-legacy' }), env)
+    expect(legacyKept.status).toBe(200)
+    expect(await legacyKept.json()).toMatchObject({ version: 7, order: { occupation: 'Nghề legacy ngoài danh mục', amount: 115_000 } })
+    const inactiveKept = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 7,
+      payload: { orderId: 'ORDER-USED', occupation: 'Kỹ sư', amount: 105_000, reason: 'Sửa tiền, giữ nghề đã nghỉ' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-keep-inactive' }), env)
+    expect(inactiveKept.status).toBe(200)
+    expect(await inactiveKept.json()).toMatchObject({ version: 8, order: { occupation: 'Kỹ sư', amount: 105_000 } })
+    for (const [key, occupation] of [['inactive', 'Kỹ sư'], ['legacy', 'Nghề legacy ngoài danh mục']]) {
+      const cannotSelect = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.update', expectedVersion: 8,
+        payload: { orderId: 'ORDER-OTHER', occupation, reason: 'Không được chọn mới' },
+      }, { ...adminAuthorization, 'idempotency-key': `order-information-cannot-select-${key}` }), env)
+      expect(cannotSelect.status).toBe(400)
+      expect(await cannotSelect.json()).toMatchObject({ error: { code: 'ORDER_OCCUPATION_INVALID' } })
+    }
+
+    const restored = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.restore', expectedVersion: 8, payload: { optionId: 'order-occupation-002' },
+    }, { ...supportAuthorization, 'idempotency-key': 'order-information-restore-used' }), env)
+    expect(restored.status).toBe(200)
+    expect(await restored.json()).toMatchObject({
+      version: 9,
+      option: { id: 'order-occupation-002', active: true, deletedAt: null, deletedBy: null, deleteReason: null },
+    })
+    const newlySelectable = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 9,
+      payload: { orderId: 'ORDER-OTHER', occupation: 'Kỹ sư', reason: 'Nghề đã được khôi phục' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-information-select-restored' }), env)
+    expect(newlySelectable.status).toBe(200)
+    expect(await newlySelectable.json()).toMatchObject({ version: 10, order: { occupation: 'Kỹ sư' } })
+
+    persisted = readHydratedState(env.DB.database)
+    expect(persisted.orderInformationOptions.filter(({ kind }) => kind === 'occupation').map(({ id }) => id)).toEqual(orderedIds)
+    expect(persisted.orderInformationOptions.filter(({ kind }) => kind === 'payment_method').map(({ id }) => id)).toEqual([
+      'order-payment-001', 'order-payment-002',
+    ])
+    expect(persisted.orders.find(({ id }) => id === 'ORDER-LEGACY').occupation).toBe('Nghề legacy ngoài danh mục')
+    const optionAudits = env.DB.database.prepare(`
+      SELECT action, metadata_json FROM audit_log
+      WHERE entity_type IN ('order-information-option', 'order-information-options')
+      ORDER BY id
+    `).all()
+    expect(optionAudits.map(({ action }) => action)).toEqual([
+      'order_information.create', 'order_information.update', 'order_information.reorder',
+      'order_information.disable', 'order_information.restore',
+    ])
+    expect(JSON.parse(optionAudits.find(({ action }) => action === 'order_information.disable').metadata_json)).toMatchObject({
+      deletionMode: 'soft-disable', usedByOrderCount: 1,
+    })
+  }, 30_000)
+
+  it('blocks retired working-time configuration while preserving profile shifts and daily schedule operations', async () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(new Date('2026-08-20T06:05:00.000Z'))
@@ -6577,7 +7992,7 @@ describe('IDOSI Worker security primitives', () => {
           username: 'support.shifts', password: 'support-shifts-password', identityImages: testIdentityImages(),
           workShifts: [
             { id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' },
-            { id: 'support_pm', name: 'Ca chiều', start: '13:00', end: '17:30' },
+            { id: 'support_pm', name: 'Ca chiều mới', start: '13:00', end: '17:30' },
           ],
         },
       }, { ...adminAuthorization, 'idempotency-key': 'working-time-support-create-0001' }), env)
@@ -6627,28 +8042,22 @@ describe('IDOSI Worker security primitives', () => {
           ],
         },
       }, { ...supportAuthorization, 'idempotency-key': 'working-time-office-effective-update-0001' }), env)
-      expect(officeWorkingTimeUpdated.status).toBe(200)
-      expect(await officeWorkingTimeUpdated.json()).toMatchObject({
-        version: 5,
-        employee: {
-          workShifts: [{ id: 'office_am' }, { id: 'office_pm' }],
-          workTimeSchedule: [{ effectiveFrom: '2026-08-20' }],
-        },
-      })
+      expect(officeWorkingTimeUpdated.status).toBe(410)
+      expect(await officeWorkingTimeUpdated.json()).toMatchObject({ error: { code: 'COMMAND_RETIRED' } })
 
       const genericWorkingTimeUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'employee.update', expectedVersion: 5,
+        type: 'employee.update', expectedVersion: 4,
         payload: {
           employeeId: support.id, workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00',
           workShifts: [
             { id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' },
-            { id: 'support_pm', name: 'Ca chiều mới', start: '13:00', end: '17:30' },
+            { id: 'support_pm', name: 'Ca chiều trái phép', start: '13:00', end: '17:30' },
           ],
           workingTime: {
             type: 'Part-Time', mode: 'shifts',
             shifts: [
               { id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' },
-              { id: 'support_pm', name: 'Ca chiều mới', start: '13:00', end: '17:30' },
+              { id: 'support_pm', name: 'Ca chiều trái phép', start: '13:00', end: '17:30' },
             ],
           },
         },
@@ -6657,7 +8066,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(await genericWorkingTimeUpdate.json()).toMatchObject({ error: { code: 'WORK_TIME_UPDATE_COMMAND_REQUIRED' } })
 
       const supportUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'employee.working_time.set', expectedVersion: 5,
+        type: 'employee.working_time.set', expectedVersion: 4,
         payload: {
           employeeId: support.id, effectiveFrom: '2026-08-20',
           workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00',
@@ -6674,13 +8083,22 @@ describe('IDOSI Worker security primitives', () => {
           },
         },
       }, { ...supportAuthorization, 'idempotency-key': 'working-time-support-update-0001' }), env)
-      expect(supportUpdated.status).toBe(200)
-      expect(await supportUpdated.json()).toMatchObject({
-        version: 6,
-        employee: {
-          workShifts: [{ id: 'support_am' }, { id: 'support_pm', name: 'Ca chiều mới' }],
-          workTimeSchedule: [{ effectiveFrom: '2026-08-20' }],
-        },
+      expect(supportUpdated.status).toBe(410)
+      expect(await supportUpdated.json()).toMatchObject({ error: { code: 'COMMAND_RETIRED' } })
+
+      const officeMetadataUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.update', expectedVersion: 4,
+        payload: { employeeId: office.id, address: 'Địa chỉ mới đã xác nhận' },
+      }, { ...adminAuthorization, 'idempotency-key': 'working-time-office-metadata-update' }), env)
+      expect(officeMetadataUpdated.status).toBe(200)
+      expect(await officeMetadataUpdated.json()).toMatchObject({ version: 5, employee: { workShifts: [{ id: 'office_am' }] } })
+      const supportMetadataUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.update', expectedVersion: 5,
+        payload: { employeeId: support.id, address: 'TP. Hồ Chí Minh đã xác nhận' },
+      }, { ...adminAuthorization, 'idempotency-key': 'working-time-support-metadata-update' }), env)
+      expect(supportMetadataUpdated.status).toBe(200)
+      expect(await supportMetadataUpdated.json()).toMatchObject({
+        version: 6, employee: { workShifts: [{ id: 'support_am' }, { id: 'support_pm', name: 'Ca chiều mới' }] },
       })
 
       const protectedUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -7163,14 +8581,11 @@ describe('IDOSI Worker security primitives', () => {
           workShifts: [{ id: 'full_time', name: 'Giờ hành chính mới', start: '08:30', end: '17:00' }],
         },
       }, { ...adminAuthorization, 'idempotency-key': 'effective-office-schedule-0001' }), env)
-      expect(officeScheduled.status).toBe(200)
-      const officeScheduledBody = await officeScheduled.json()
-      expect(officeScheduledBody.employee).toMatchObject({ workStart: '08:00', workEnd: '17:30' })
-      expect(officeScheduledBody.employee.workTimeSchedule.map(({ effectiveFrom }) => effectiveFrom))
-        .toEqual(['2026-08-20', '2026-08-21'])
+      expect(officeScheduled.status).toBe(410)
+      expect(await officeScheduled.json()).toMatchObject({ error: { code: 'COMMAND_RETIRED' } })
 
       const supportScheduled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'employee.working_time.set', expectedVersion: 6,
+        type: 'employee.working_time.set', expectedVersion: 5,
         payload: {
           employeeId: support.id, effectiveFrom: '2026-08-22', workTimeType: 'Part-Time',
           workShifts: [
@@ -7179,27 +8594,45 @@ describe('IDOSI Worker security primitives', () => {
           ],
         },
       }, { ...supportAuthorization, 'idempotency-key': 'effective-support-schedule-0001' }), env)
-      expect(supportScheduled.status).toBe(200)
-      const supportScheduledBody = await supportScheduled.json()
-      expect(supportScheduledBody.employee).toMatchObject({ workTimeType: 'Part-Time', workStart: '08:00', workEnd: '12:00' })
-      expect(supportScheduledBody.setting).toMatchObject({
-        effectiveFrom: '2026-08-22', employmentType: 'Thực Tập Sinh', workTimeType: 'Part-Time',
-        workShifts: [{ id: 'support_pm' }, { id: 'support_evening' }],
-      })
+      expect(supportScheduled.status).toBe(410)
+      expect(await supportScheduled.json()).toMatchObject({ error: { code: 'COMMAND_RETIRED' } })
 
-      const supportReplaced = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'employee.working_time.set', expectedVersion: 7,
-        payload: {
-          employeeId: support.id, effectiveFrom: '2026-08-22', workTimeType: 'Part-Time',
-          workShifts: [{ id: 'support_pm', name: 'Ca hiệu lực 08:30', start: '08:30', end: '17:00' }],
-        },
-      }, { ...supportAuthorization, 'idempotency-key': 'effective-support-schedule-0002' }), env)
-      expect(supportReplaced.status).toBe(200)
-      const supportReplacedBody = await supportReplaced.json()
-      expect(supportReplacedBody.employee.workTimeSchedule.filter(({ effectiveFrom }) => effectiveFrom === '2026-08-22')).toHaveLength(1)
-      expect(supportReplacedBody.setting.workShifts).toEqual([
-        expect.objectContaining({ id: 'support_pm', name: 'Ca hiệu lực 08:30', start: '08:30', end: '17:00' }),
-      ])
+      const scheduledEmployees = readHydratedState(env.DB.database).employees.map((employee) => {
+        if (employee.id === office.id) return {
+          ...employee,
+          workTimeSchedule: [
+            { effectiveFrom: '2026-08-20', employmentType: 'Full-Time', workTimeType: 'Full-Time', workShifts: [{ id: 'full_time', name: 'Giờ hành chính', start: '08:00', end: '17:30' }], source: 'preserved-history' },
+            { effectiveFrom: '2026-08-21', employmentType: 'Full-Time', workTimeType: 'Full-Time', workShifts: [{ id: 'full_time', name: 'Giờ hành chính mới', start: '08:30', end: '17:00' }], source: 'preserved-history' },
+          ],
+        }
+        if (employee.id === support.id) return {
+          ...employee,
+          workTimeSchedule: [
+            { effectiveFrom: '2026-08-20', employmentType: 'Thực Tập Sinh', workTimeType: 'Part-Time', workShifts: [{ id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' }], source: 'preserved-history' },
+            { effectiveFrom: '2026-08-22', employmentType: 'Thực Tập Sinh', workTimeType: 'Part-Time', workShifts: [{ id: 'support_pm', name: 'Ca hiệu lực 08:30', start: '08:30', end: '17:00' }], source: 'preserved-history' },
+          ],
+        }
+        return employee
+      })
+      replaceStateCollection(env.DB.database, 'employees', scheduledEmployees)
+      expect(readHydratedState(env.DB.database).employees.find(({ id }) => id === office.id).workTimeSchedule)
+        .toHaveLength(2)
+
+      for (const [expectedVersion, employeeId, phone, key] of [
+        [5, office.id, '0908333445', 'office-one'],
+        [6, support.id, '0908111223', 'support'],
+        [7, office.id, '0908333446', 'office-two'],
+      ]) {
+        const metadataUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+          type: 'employee.update', expectedVersion, payload: { employeeId, phone },
+        }, { ...adminAuthorization, 'idempotency-key': `effective-metadata-${key}` }), env)
+        expect(metadataUpdated.status).toBe(200)
+      }
+      const preservedSchedules = readHydratedState(env.DB.database).employees
+      expect(preservedSchedules.find(({ id }) => id === office.id).workTimeSchedule.map(({ effectiveFrom }) => effectiveFrom))
+        .toEqual(['2026-08-20', '2026-08-21'])
+      expect(preservedSchedules.find(({ id }) => id === support.id).workTimeSchedule.filter(({ effectiveFrom }) => effectiveFrom === '2026-08-22'))
+        .toHaveLength(1)
 
       vi.setSystemTime(new Date('2026-08-21T01:35:00.000Z')) // 08:35 Vietnam
       const refreshedOfficeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {

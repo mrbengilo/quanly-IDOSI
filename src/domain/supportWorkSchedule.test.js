@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   supportScheduleDays,
+  shiftSupportScheduleAnchor,
   supportScheduleEmploymentMode,
   supportScheduleRange,
   supportSchedulesForView,
@@ -23,6 +24,9 @@ describe('support work schedule', () => {
       '2026-08-25', '2026-08-26', '2026-08-27',
     ])
     expect(supportScheduleDays('2026-02-14', 'month')).toHaveLength(28)
+    expect(supportScheduleDays('2028-02-14', 'month')).toHaveLength(29)
+    expect(shiftSupportScheduleAnchor('2026-01-31', 'month', 1)).toBe('2026-02-28')
+    expect(shiftSupportScheduleAnchor('2026-08-21', 'week', -1)).toBe('2026-08-14')
   })
 
   it('returns only the selected employee and view range in chronological order', () => {
@@ -36,5 +40,21 @@ describe('support work schedule', () => {
     expect(supportSchedulesForView(records, {
       employeeId: 'HTKD-01', anchorDate: '2026-08-21', view: 'week',
     }).map(({ id }) => id)).toEqual(['1', '3'])
+  })
+
+  it('filters the aggregate by target unit without mixing Office and Business Support rows', () => {
+    const records = [
+      { id: 'support', employeeId: 'HTKD-01', targetUnit: 'business_support', date: '2026-08-21', start: '08:00' },
+      { id: 'office', employeeId: 'VP-01', targetUnit: 'office', date: '2026-08-21', start: '08:30' },
+      { id: 'legacy-other', employeeId: 'HTKD-02', date: '2026-08-21', start: '09:00' },
+      { id: 'invalid-date', employeeId: 'VP-02', targetUnit: 'office', date: '2026-02-30', start: '09:00' },
+    ]
+
+    expect(supportSchedulesForView(records, {
+      targetUnit: 'office', anchorDate: '2026-08-21', view: 'day',
+    }).map(({ id }) => id)).toEqual(['office'])
+    expect(supportSchedulesForView(records, {
+      targetUnit: 'business_support', anchorDate: '2026-08-21', view: 'day',
+    }).map(({ id }) => id)).toEqual(['support'])
   })
 })

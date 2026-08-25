@@ -59,6 +59,8 @@ const officeOperation = { label: 'Khối văn phòng', path: '/office', icon: Bu
 const businessSupportDirectoryOperation = { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users }
 const businessSupportScheduleOperation = { label: 'Phân lịch làm việc', path: '/admin/business-support-schedule', icon: CalendarClock, badge: 'Mới' }
 const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/admin/customer-survey', icon: ClipboardList, badge: 'Mới' }
+const orderInformationSettingsOperation = { label: 'Cài đặt thông tin đơn hàng', path: '/admin/order-information-settings', icon: Settings, badge: 'Mới' }
+const workRegistrationScheduleOperation = { label: 'Lịch đăng ký làm việc của HTKD và KVP', path: '/admin/work-registration-schedules', icon: CalendarCheck, badge: 'Mới' }
 
 const officeEmployeeMenu = [
   { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
@@ -81,6 +83,7 @@ const businessSupportMenu = [
   { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
   systemOperations[2],
   systemOperations[3],
+  orderInformationSettingsOperation,
   customerSurveyOperation,
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
   { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
@@ -93,12 +96,14 @@ const systemMenus = {
     { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users, badge: 'Mới' },
     businessSupportDirectoryOperation,
     businessSupportScheduleOperation,
+    workRegistrationScheduleOperation,
     { label: 'Giao Việc', path: '/admin/tasks', icon: ClipboardCheck, badge: 'Mới' },
     { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
     customerSurveyOperation,
     { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
     ...systemOperations.slice(2, 4),
+    orderInformationSettingsOperation,
     { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
     systemOperations[4],
     { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },

@@ -9,6 +9,8 @@ import {
 import { BusinessSupportManagement, StoreManagerManagement } from './pages/admin/RoleManagement'
 import { CustomerSurveyPage } from './pages/admin/CustomerSurveyPage'
 import { AttendanceResetPage } from './pages/admin/AttendanceResetPage'
+import { AdminWorkRegistrationSchedulePage } from './pages/admin/AdminWorkRegistrationSchedulePage'
+import { OrderInformationSettingsPage } from './pages/admin/OrderInformationSettingsPage'
 import { AdminSupportWorkPage, SupportAssignedWorkPage } from './pages/admin/SupportWorkPages'
 import { BusinessSupportSchedulePage, MyBusinessSupportSchedulePage } from './pages/admin/BusinessSupportSchedulePage'
 import {
@@ -159,6 +161,7 @@ export default function App() {
         <Route path="/admin/order-audit" element={<OrderAuditPage />} />
         <Route path="/admin/customer-survey" element={<CustomerSurveyPage />} />
         <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
+        <Route path="/admin/order-information-settings" element={<OrderInformationSettingsPage />} />
       </Route>
 
       <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager']}><AppShell /></RoleGuard>}>
@@ -187,6 +190,7 @@ export default function App() {
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/admin/tasks" element={<AdminSupportWorkPage />} />
         <Route path="/admin/reset" element={<AttendanceResetPage />} />
+        <Route path="/admin/work-registration-schedules" element={<AdminWorkRegistrationSchedulePage />} />
       </Route>
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>

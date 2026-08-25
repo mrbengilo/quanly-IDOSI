@@ -66,7 +66,7 @@ describe('StoreExpensesV2', () => {
     expect(within(category).getAllByRole('option').map((option) => option.textContent)).toEqual(categories)
     fireEvent.change(category, { target: { value: 'Khác' } })
     fireEvent.change(within(dialog).getByLabelText(/Tên khoản chi/i), { target: { value: 'Bảo trì máy lạnh' } })
-    fireEvent.change(within(dialog).getByLabelText(/Số tiền/i), { target: { value: '350' } })
+    fireEvent.change(within(dialog).getByLabelText(/Số tiền/i), { target: { value: '35' } })
     fireEvent.change(within(dialog).getByLabelText(/Mô tả/i), { target: { value: 'Thay linh kiện dàn lạnh' } })
     expect(within(dialog).getByLabelText(/Mô tả/i)).toBeTruthy()
     fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU PHIẾU' }))
@@ -74,7 +74,7 @@ describe('StoreExpensesV2', () => {
     await waitFor(() => expect(mocked.app.addFixedExpense).toHaveBeenCalledTimes(1))
     expect(mocked.app.addFixedExpense.mock.calls[0][0]).toMatchObject({
       storeId: store.id,
-      items: [{ category: 'Khác', name: 'Bảo trì máy lạnh', amount: 350_000, description: 'Thay linh kiện dàn lạnh' }],
+      items: [{ category: 'Khác', name: 'Bảo trì máy lạnh', amount: 35, description: 'Thay linh kiện dàn lạnh' }],
     })
   })
 

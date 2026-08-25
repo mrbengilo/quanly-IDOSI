@@ -35,19 +35,22 @@ import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateKpiBonuses, financeSummaryFromState } from '../domain'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
-import { CUSTOMER_OCCUPATIONS } from '../domain/customerSurvey'
+import {
+  normalizeOrderInformationOptions,
+  occupationValueAllowed,
+  ORDER_INFORMATION_KIND,
+  ORDER_PAYMENT_METHODS,
+  validateOrderInformationOptionInput,
+} from '../domain/orderInformationSettings'
 import {
   resolveAttendanceShiftSelection,
   resolveAttendanceWorkingTime,
 } from '../domain/attendanceWorkingTime'
-import {
-  normalizeWorkTimeEffectiveDate,
-  resolveEffectiveWorkingTime,
-  upsertEffectiveWorkingTime,
-} from '../domain/workTimeSchedule'
+import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'
 import {
   apiBootstrapState,
   apiCommand,
+  apiGetAccountAvatar,
   apiGetState,
   apiLogin,
   apiSelectSessionRole,
@@ -72,7 +75,25 @@ const LOCAL_PROFILE_CREDENTIAL_KEYS = new Set([
   'passwordIterations', 'legacyPassword', 'authUserId', 'authVersion', 'username',
   'token', 'accessToken', 'refreshToken',
 ])
-const ACCOUNT_SETTINGS_KEYS = ['name', 'email', 'phone', 'birthday', 'gender', 'address', 'bio', 'avatar']
+const ACCOUNT_SETTINGS_KEYS = ['name', 'email', 'phone', 'birthday', 'gender', 'address', 'bio']
+
+const accountAvatarMetadata = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const key = String(value.key || '')
+  const contentType = String(value.contentType || '')
+  const size = Number(value.size)
+  const version = Number(value.version)
+  if (!key.startsWith('account-avatars/')
+    || !['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(contentType)
+    || !Number.isSafeInteger(size) || size < 1
+    || !Number.isSafeInteger(version) || version < 1) return null
+  return { ...value, key, contentType, size, version }
+}
+
+const accountAvatarMetadataSignature = (value) => {
+  const metadata = accountAvatarMetadata(value)
+  return metadata ? `${metadata.key}:${metadata.version}` : ''
+}
 
 export const createAccountSettingsPayload = (settings = {}) => {
   const payload = Object.fromEntries(ACCOUNT_SETTINGS_KEYS
@@ -85,7 +106,15 @@ export const createAccountSettingsPayload = (settings = {}) => {
       expenseAlert: Boolean(settings.notifications.expenseAlert),
     }
   }
-  if (payload.avatar !== undefined) payload.avatar = validateAccountAvatarDataUrl(payload.avatar).dataUrl
+  if (settings.avatar !== undefined) {
+    const avatar = typeof settings.avatar === 'string' ? settings.avatar.trim() : settings.avatar
+    if (avatar === '') payload.avatar = ''
+    else if (typeof avatar === 'string' && avatar.startsWith('data:image/')) {
+      payload.avatar = validateAccountAvatarDataUrl(avatar).dataUrl
+    } else if (avatar != null && typeof avatar !== 'string' && !accountAvatarMetadata(avatar)) {
+      throw new Error('Ảnh đại diện không hợp lệ.')
+    }
+  }
   return payload
 }
 
@@ -133,7 +162,7 @@ export const isRestorableOperationalAuditAction = (action, dataType) => (
 const clone = (value) => JSON.parse(JSON.stringify(value))
 const REMOTE_ARRAY_KEYS = [
   'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'officeAdjustments',
-  'orders', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
+  'orders', 'orderInformationOptions', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
   'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
 ]
@@ -144,9 +173,16 @@ const SERVER_EXCLUDED_FIELDS = new Set([
   'session', 'activeAttendanceId', 'checkedInAt', 'finishedShift',
 ])
 
-const sharedStateSnapshot = (state) => JSON.parse(JSON.stringify(state, (key, value) => (
-  SERVER_EXCLUDED_FIELDS.has(key) ? undefined : value
-)))
+const sharedStateSnapshot = (state) => {
+  const snapshot = JSON.parse(JSON.stringify(state, (key, value) => (
+    SERVER_EXCLUDED_FIELDS.has(key) ? undefined : value
+  )))
+  // Account settings are a per-user server projection. Keeping them out of the
+  // generic Admin state synchronizer also guarantees that blob/data preview URLs
+  // never reach state.replace.
+  delete snapshot.settings
+  return snapshot
+}
 
 const recordTimestamp = (record) => String(record?.updatedAt || record?.createdAt || record?.deletedAt || '')
 const mergeArrayRecordKey = (record, index, origin, collection) => {
@@ -290,7 +326,10 @@ const canListAccounts = (role) => ['admin', 'business_support', 'manager', 'stor
 const isValidEmployeePhone = (value) => /^0\d{9}$/.test(normalizePhone(value))
 const ORDER_GENDERS = new Set(['Nam', 'Nữ', 'Khác'])
 const ORDER_ACQUISITION_CHANNELS = new Set(['Facebook', 'Tiktok', 'Zalo', 'Bạn Bè', 'Người thân', 'Khác'])
-const ORDER_CUSTOMER_OCCUPATIONS = new Set(CUSTOMER_OCCUPATIONS)
+const normalizeOrderInformationFields = (payload = {}) => ({
+  label: String(payload.label || '').normalize('NFC').trim().replace(/\s+/gu, ' '),
+  code: String(payload.code || '').trim().toUpperCase(),
+})
 
 const normalizeCredentialToken = (value = '') => String(value)
   .normalize('NFD')
@@ -596,6 +635,22 @@ export const resolveRemoteActiveStoreId = ({ stores = [], session, remoteActiveS
   return stores[0]?.id || null
 }
 
+const hydrateRemoteAccountSettings = (settings = {}) => {
+  const source = settings && typeof settings === 'object' ? settings : {}
+  const avatarMetadata = accountAvatarMetadata(source.avatar)
+  const compatibleAvatar = typeof source.avatar === 'string'
+    && !source.avatar.startsWith('data:image/')
+    ? source.avatar
+    : ''
+  return {
+    ...source,
+    avatar: compatibleAvatar,
+    avatarMetadata,
+    avatarLoading: Boolean(avatarMetadata),
+    avatarError: '',
+  }
+}
+
 const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferredActiveStoreId = null) => {
   const emptyCollections = Object.fromEntries(REMOTE_ARRAY_KEYS.map((key) => [key, []]))
   const mappedPolicies = apiPolicyMap(policyRecords)
@@ -636,7 +691,7 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
     employees,
     stores,
     session: null,
-    settings: safeRemote.settings && typeof safeRemote.settings === 'object' ? safeRemote.settings : {},
+    settings: hydrateRemoteAccountSettings(safeRemote.settings),
     tasks: safeRemote.tasks.map((task) => normalizeTask(task, safeRemote.activeStoreId || session.storeId || stores[0]?.id)),
     activeStoreId: stores.some((store) => store.id === safeRemote.activeStoreId)
       ? safeRemote.activeStoreId
@@ -977,6 +1032,8 @@ export function AppProvider({ children }) {
     systemResetIdempotencyKey: null,
   })
   const localAttendanceCheckInClaimsRef = useRef(new Set())
+  const avatarObjectUrlRef = useRef({ signature: '', url: '' })
+  const avatarLoadRequestRef = useRef(0)
 
   useEffect(() => {
     localAttendanceCheckInClaimsRef.current = new Set(
@@ -990,6 +1047,15 @@ export function AppProvider({ children }) {
     const remoteUser = payload.user || loginUser
     const rememberedActiveStoreId = preferredActiveStoreId || readRememberedActiveStore(remoteUser)
     const hydrated = hydrateRemoteState(payload.state, remoteUser, payload.policies, rememberedActiveStoreId)
+    const hydratedAvatarSignature = accountAvatarMetadataSignature(hydrated.settings?.avatarMetadata)
+    if (hydratedAvatarSignature && avatarObjectUrlRef.current.signature === hydratedAvatarSignature) {
+      hydrated.settings = {
+        ...hydrated.settings,
+        avatar: avatarObjectUrlRef.current.url,
+        avatarLoading: false,
+        avatarError: '',
+      }
+    }
     const remote = apiRef.current
     remote.enabled = true
     remote.role = normalizeAuthRole(remoteUser.role)
@@ -1039,6 +1105,73 @@ export function AppProvider({ children }) {
       throw error
     }
   }
+
+  const remoteAvatarSignature = accountAvatarMetadataSignature(state.settings?.avatarMetadata)
+  const remoteAvatarSessionKey = state.session ? `${state.session.id || ''}:${state.session.role || ''}` : ''
+
+  useEffect(() => {
+    const revokeObjectUrl = (url) => {
+      if (url && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url)
+    }
+    const currentObjectUrl = avatarObjectUrlRef.current
+    if (!apiRef.current.enabled || !remoteAvatarSessionKey || !remoteAvatarSignature) {
+      avatarLoadRequestRef.current += 1
+      revokeObjectUrl(currentObjectUrl.url)
+      avatarObjectUrlRef.current = { signature: '', url: '' }
+      return undefined
+    }
+    if (currentObjectUrl.signature === remoteAvatarSignature && currentObjectUrl.url) return undefined
+
+    revokeObjectUrl(currentObjectUrl.url)
+    avatarObjectUrlRef.current = { signature: '', url: '' }
+    const requestId = avatarLoadRequestRef.current + 1
+    avatarLoadRequestRef.current = requestId
+    let active = true
+    setState((current) => accountAvatarMetadataSignature(current.settings?.avatarMetadata) === remoteAvatarSignature
+      ? {
+          ...current,
+          settings: { ...current.settings, avatar: '', avatarLoading: true, avatarError: '' },
+        }
+      : current)
+    apiGetAccountAvatar().then((blob) => {
+      if (!active || avatarLoadRequestRef.current !== requestId) return
+      if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+        throw new Error('Trình duyệt không hỗ trợ hiển thị ảnh đại diện riêng tư.')
+      }
+      const objectUrl = URL.createObjectURL(blob)
+      avatarObjectUrlRef.current = { signature: remoteAvatarSignature, url: objectUrl }
+      setState((current) => accountAvatarMetadataSignature(current.settings?.avatarMetadata) === remoteAvatarSignature
+        ? {
+            ...current,
+            settings: { ...current.settings, avatar: objectUrl, avatarLoading: false, avatarError: '' },
+          }
+        : current)
+    }).catch((error) => {
+      if (!active || avatarLoadRequestRef.current !== requestId) return
+      setState((current) => accountAvatarMetadataSignature(current.settings?.avatarMetadata) === remoteAvatarSignature
+        ? {
+            ...current,
+            settings: {
+              ...current.settings,
+              avatar: '',
+              avatarLoading: false,
+              avatarError: error?.message || 'Không thể tải ảnh đại diện.',
+            },
+          }
+        : current)
+    })
+    return () => { active = false }
+  }, [remoteAvatarSessionKey, remoteAvatarSignature])
+
+  useEffect(() => () => {
+    avatarLoadRequestRef.current += 1
+    if (avatarObjectUrlRef.current.url
+      && typeof URL !== 'undefined'
+      && typeof URL.revokeObjectURL === 'function') {
+      URL.revokeObjectURL(avatarObjectUrlRef.current.url)
+    }
+    avatarObjectUrlRef.current = { signature: '', url: '' }
+  }, [])
 
   useEffect(() => {
     if (!hasApiSession()) return undefined
@@ -1560,10 +1693,10 @@ export function AppProvider({ children }) {
     const previous = state.employees.find((employee) => accountKey(employee) === String(id))
     if (!previous) return { ok: false }
     if (Object.keys(payload || {}).some((field) => BUSINESS_SUPPORT_WORKING_TIME_FIELDS.includes(field))) {
-      return { ok: false, message: 'Dùng chức năng Cài đặt thời gian làm việc và chọn ngày áp dụng.' }
+      return { ok: false, message: 'Không thể chỉnh sửa cấu hình giờ làm trực tiếp trong hồ sơ sau khi tạo.' }
     }
     if (actorRole === 'business_support' && !canBusinessSupportUpdateEmployee(previous, payload)) {
-      return { ok: false, message: 'Hỗ trợ KD không được sửa hồ sơ Nhân viên hỗ trợ KD; hãy dùng Cài đặt thời gian làm việc.' }
+      return { ok: false, message: 'Hỗ trợ KD không được sửa hồ sơ Nhân viên hỗ trợ KD.' }
     }
     if (hasDuplicateAccount(payload, id)) {
       notify('Tên đăng nhập đã tồn tại.', 'info')
@@ -1612,60 +1745,6 @@ export function AppProvider({ children }) {
     })
     notify('Đã cập nhật nhân viên.')
     return { ok: true, employee }
-  }
-
-  const setEmployeeWorkingTime = async (id, payload = {}) => {
-    const actorRole = normalizeAuthRole(state.session?.role)
-    if (!['admin', 'business_support'].includes(actorRole)) {
-      return { ok: false, message: 'Tài khoản không có quyền cài đặt thời gian làm việc.' }
-    }
-    const previous = state.employees.find((employee) => accountKey(employee) === String(id))
-    if (!previous) return { ok: false, message: 'Không tìm thấy nhân viên.' }
-    const unit = normalizeText(previous.unit || previous.unitType || previous.department)
-    if (!['office', 'business_support'].includes(unit)) {
-      return { ok: false, message: 'Chỉ cài đặt giờ làm cho Khối văn phòng và Nhân viên hỗ trợ KD.' }
-    }
-    const effectiveFrom = normalizeWorkTimeEffectiveDate(payload.effectiveFrom)
-    if (!effectiveFrom) return { ok: false, message: 'Ngày áp dụng không hợp lệ.' }
-    if (apiRef.current.enabled) {
-      try {
-        const result = await runRemoteDomainCommand('employee.working_time.set', {
-          employeeId: previous.id,
-          ...payload,
-          effectiveFrom,
-        })
-        notify('Cài đặt thời gian làm việc đã được lưu và dùng lại cho các ngày sau.')
-        return { ok: true, employee: result.employee, setting: result.setting }
-      } catch (error) {
-        notify(error.message || 'Không thể lưu thời gian làm việc.', 'info')
-        return { ok: false, message: error.message }
-      }
-    }
-    const timestamp = new Date().toISOString()
-    const configuration = { ...payload, employmentType: previous.employmentType }
-    const workTimeSchedule = upsertEffectiveWorkingTime(previous, effectiveFrom, configuration, {
-      updatedAt: timestamp,
-      updatedBy: actorSnapshot(state.session),
-    })
-    const resolved = resolveEffectiveWorkingTime({ ...previous, workTimeSchedule }, today())
-    const employee = {
-      ...previous,
-      workTimeType: resolved.workTimeType,
-      workStart: resolved.workStart,
-      workEnd: resolved.workEnd,
-      workShifts: resolved.workShifts,
-      workingTime: resolved.workingTime,
-      workTimeSchedule,
-      updatedAt: timestamp,
-      updatedBy: actorSnapshot(state.session),
-    }
-    setState((current) => ({
-      ...current,
-      employees: current.employees.map((item) => accountKey(item) === String(id) ? employee : item),
-      session: current.session?.employeeId === id ? toSession(employee, current.session.role) : current.session,
-    }))
-    notify('Cài đặt thời gian làm việc đã được lưu và dùng lại cho các ngày sau.')
-    return { ok: true, employee, setting: workTimeSchedule.find((entry) => entry.effectiveFrom === effectiveFrom) }
   }
 
   const deleteEmployee = async (id) => {
@@ -2495,10 +2574,34 @@ export function AppProvider({ children }) {
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('account_settings.update', payload)
-        const persistedSettings = { ...payload, ...(result.settings || {}) }
+        const remoteSettings = result.settings || {}
+        const avatarMetadata = accountAvatarMetadata(remoteSettings.avatar)
+        const avatarWasChanged = payload.avatar !== undefined
+        const { avatar: submittedAvatar, ...safePayload } = payload
+        const existingObjectUrl = typeof state.settings?.avatar === 'string'
+          && state.settings.avatar.startsWith('blob:')
+          ? state.settings.avatar
+          : ''
+        const persistedSettings = {
+          ...safePayload,
+          ...remoteSettings,
+          avatarMetadata,
+          avatar: avatarMetadata ? existingObjectUrl : '',
+          avatarLoading: Boolean(avatarMetadata),
+          avatarError: '',
+        }
         applyPersistedSettings(persistedSettings, result.user)
         notify('Đã lưu thay đổi tài khoản.')
-        return { ok: true, settings: persistedSettings, user: result.user }
+        return {
+          ok: true,
+          settings: {
+            ...persistedSettings,
+            avatar: avatarMetadata && avatarWasChanged && submittedAvatar
+              ? submittedAvatar
+              : persistedSettings.avatar,
+          },
+          user: result.user,
+        }
       } catch (error) {
         notify(error.message || 'Không thể lưu cài đặt tài khoản.', 'info')
         return { ok: false, message: error.message }
@@ -2507,6 +2610,293 @@ export function AppProvider({ children }) {
     applyPersistedSettings(payload)
     notify('Đã lưu thay đổi tài khoản.')
     return { ok: true, settings: payload }
+  }
+
+  const canManageOrderInformationOptions = () => (
+    ['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))
+  )
+
+  const createOrderInformationOption = async (payload = {}) => {
+    if (!canManageOrderInformationOptions()) {
+      return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
+    }
+    const options = normalizeOrderInformationOptions(state.orderInformationOptions)
+    const input = normalizeOrderInformationFields(payload)
+    const validationMessage = validateOrderInformationOptionInput(input, options)
+    if (validationMessage) return { ok: false, message: validationMessage }
+
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('order_information.create', input)
+        notify('Đã thêm nghề nghiệp dùng cho đơn hàng.')
+        return { ok: true, option: result.option }
+      } catch (error) {
+        notify(error.message || 'Không thể thêm nghề nghiệp.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const sortOrder = options.reduce((maximum, option) => Math.max(maximum, Number(option.sortOrder) || 0), 0) + 100
+    const [option] = normalizeOrderInformationOptions([{
+      id: uid('OCC'),
+      kind: ORDER_INFORMATION_KIND.OCCUPATION,
+      ...input,
+      active: true,
+      sortOrder,
+      system: false,
+      createdAt: timestamp,
+      createdBy: actor,
+      updatedAt: timestamp,
+      updatedBy: actor,
+      deletedAt: null,
+      deletedBy: null,
+      deleteReason: '',
+    }])
+    const audit = {
+      id: uid('AUD'),
+      entity: 'order_information_option',
+      entityId: option.id,
+      action: 'create',
+      before: null,
+      after: option,
+      actor,
+      createdAt: timestamp,
+    }
+    setState((current) => ({
+      ...current,
+      orderInformationOptions: normalizeOrderInformationOptions([
+        ...normalizeOrderInformationOptions(current.orderInformationOptions),
+        option,
+      ]),
+      auditLogs: [audit, ...(current.auditLogs || [])],
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify('Đã thêm nghề nghiệp dùng cho đơn hàng.')
+    return { ok: true, option }
+  }
+
+  const updateOrderInformationOption = async (id, payload = {}) => {
+    if (!canManageOrderInformationOptions()) {
+      return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
+    }
+    const options = normalizeOrderInformationOptions(state.orderInformationOptions)
+    const previous = options.find((option) => String(option.id) === String(id))
+    if (!previous) return { ok: false, message: 'Không tìm thấy nghề nghiệp.' }
+    const input = normalizeOrderInformationFields(payload)
+    const validationMessage = validateOrderInformationOptionInput(input, options, { currentId: previous.id })
+    if (validationMessage) return { ok: false, message: validationMessage }
+    if (previous.label === input.label && previous.code === input.code) {
+      return { ok: true, option: previous, existing: true }
+    }
+
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('order_information.update', { optionId: previous.id, ...input })
+        notify('Đã cập nhật nghề nghiệp.')
+        return { ok: true, option: result.option }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật nghề nghiệp.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const [option] = normalizeOrderInformationOptions([{
+      ...previous,
+      ...input,
+      updatedAt: timestamp,
+      updatedBy: actor,
+    }])
+    const audit = {
+      id: uid('AUD'),
+      entity: 'order_information_option',
+      entityId: option.id,
+      action: 'update',
+      before: previous,
+      after: option,
+      actor,
+      createdAt: timestamp,
+    }
+    setState((current) => ({
+      ...current,
+      orderInformationOptions: normalizeOrderInformationOptions(
+        normalizeOrderInformationOptions(current.orderInformationOptions)
+          .map((item) => String(item.id) === String(option.id) ? option : item),
+      ),
+      auditLogs: [audit, ...(current.auditLogs || [])],
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify('Đã cập nhật nghề nghiệp.')
+    return { ok: true, option }
+  }
+
+  const deleteOrderInformationOption = async (id, reason = '') => {
+    if (!canManageOrderInformationOptions()) {
+      return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
+    }
+    const options = normalizeOrderInformationOptions(state.orderInformationOptions)
+    const previous = options.find((option) => String(option.id) === String(id))
+    if (!previous) return { ok: false, message: 'Không tìm thấy nghề nghiệp.' }
+    if (!previous.active) return { ok: true, option: previous, existing: true }
+    const normalizedReason = String(reason || '').trim()
+    if (!normalizedReason) return { ok: false, message: 'Cần nhập lý do vô hiệu hóa nghề nghiệp.' }
+
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('order_information.disable', {
+          optionId: previous.id,
+          reason: normalizedReason,
+        })
+        notify('Đã vô hiệu hóa nghề nghiệp.', 'info')
+        return { ok: true, option: result.option }
+      } catch (error) {
+        notify(error.message || 'Không thể vô hiệu hóa nghề nghiệp.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const option = {
+      ...previous,
+      active: false,
+      deletedAt: timestamp,
+      deletedBy: actor,
+      deleteReason: normalizedReason,
+      updatedAt: timestamp,
+      updatedBy: actor,
+    }
+    const audit = {
+      id: uid('AUD'),
+      entity: 'order_information_option',
+      entityId: option.id,
+      action: 'disable',
+      before: previous,
+      after: option,
+      reason: normalizedReason,
+      actor,
+      createdAt: timestamp,
+    }
+    setState((current) => ({
+      ...current,
+      orderInformationOptions: normalizeOrderInformationOptions(current.orderInformationOptions)
+        .map((item) => String(item.id) === String(option.id) ? option : item),
+      auditLogs: [audit, ...(current.auditLogs || [])],
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify('Đã vô hiệu hóa nghề nghiệp.', 'info')
+    return { ok: true, option }
+  }
+
+  const restoreOrderInformationOption = async (id) => {
+    if (!canManageOrderInformationOptions()) {
+      return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
+    }
+    const options = normalizeOrderInformationOptions(state.orderInformationOptions)
+    const previous = options.find((option) => String(option.id) === String(id))
+    if (!previous) return { ok: false, message: 'Không tìm thấy nghề nghiệp.' }
+    if (previous.active) return { ok: true, option: previous, existing: true }
+
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('order_information.restore', { optionId: previous.id })
+        notify('Đã khôi phục nghề nghiệp.')
+        return { ok: true, option: result.option }
+      } catch (error) {
+        notify(error.message || 'Không thể khôi phục nghề nghiệp.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const option = {
+      ...previous,
+      active: true,
+      deletedAt: null,
+      deletedBy: null,
+      deleteReason: '',
+      updatedAt: timestamp,
+      updatedBy: actor,
+    }
+    const audit = {
+      id: uid('AUD'),
+      entity: 'order_information_option',
+      entityId: option.id,
+      action: 'restore',
+      before: previous,
+      after: option,
+      actor,
+      createdAt: timestamp,
+    }
+    setState((current) => ({
+      ...current,
+      orderInformationOptions: normalizeOrderInformationOptions(current.orderInformationOptions)
+        .map((item) => String(item.id) === String(option.id) ? option : item),
+      auditLogs: [audit, ...(current.auditLogs || [])],
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify('Đã khôi phục nghề nghiệp.')
+    return { ok: true, option }
+  }
+
+  const reorderOrderInformationOptions = async (orderedIds = []) => {
+    if (!canManageOrderInformationOptions()) {
+      return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
+    }
+    const options = normalizeOrderInformationOptions(state.orderInformationOptions)
+    const normalizedIds = Array.isArray(orderedIds) ? orderedIds.map(String) : []
+    const knownIds = new Set(options.map((option) => String(option.id)))
+    if (normalizedIds.length !== options.length
+      || new Set(normalizedIds).size !== normalizedIds.length
+      || normalizedIds.some((id) => !knownIds.has(id))) {
+      return { ok: false, message: 'Thứ tự nghề nghiệp không hợp lệ.' }
+    }
+    if (normalizedIds.every((id, index) => id === String(options[index].id))) {
+      return { ok: true, options, existing: true }
+    }
+
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('order_information.reorder', { orderedIds: normalizedIds })
+        notify('Đã cập nhật thứ tự nghề nghiệp.')
+        return { ok: true, options: result.options }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật thứ tự nghề nghiệp.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const optionsById = new Map(options.map((option) => [String(option.id), option]))
+    const reordered = normalizedIds.map((id, index) => ({
+      ...optionsById.get(id),
+      sortOrder: (index + 1) * 100,
+      updatedAt: timestamp,
+      updatedBy: actor,
+    }))
+    const audit = {
+      id: uid('AUD'),
+      entity: 'order_information_option',
+      entityId: 'order-information-options',
+      action: 'reorder',
+      before: options.map((option) => option.id),
+      after: reordered.map((option) => option.id),
+      actor,
+      createdAt: timestamp,
+    }
+    setState((current) => ({
+      ...current,
+      orderInformationOptions: reordered,
+      auditLogs: [audit, ...(current.auditLogs || [])],
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify('Đã cập nhật thứ tự nghề nghiệp.')
+    return { ok: true, options: reordered }
   }
 
   const createOrder = async (payload = {}) => {
@@ -2518,9 +2908,13 @@ export function AppProvider({ children }) {
     const gender = String(payload.gender || '').trim()
     const occupation = String(payload.occupation || '').trim()
     const acquisitionChannel = String(payload.acquisitionChannel || '').trim()
+    const paymentMethod = String(payload.paymentMethod || '').trim()
     if (!ORDER_GENDERS.has(gender)) return { ok: false, message: 'Vui lòng chọn giới tính khách hàng.' }
-    if (!ORDER_CUSTOMER_OCCUPATIONS.has(occupation)) return { ok: false, message: 'Vui lòng chọn nghề nghiệp trong danh sách của hệ thống.' }
+    if (!occupationValueAllowed({ options: state.orderInformationOptions, value: occupation })) {
+      return { ok: false, message: 'Vui lòng chọn nghề nghiệp đang hoạt động trong danh sách của hệ thống.' }
+    }
     if (!ORDER_ACQUISITION_CHANNELS.has(acquisitionChannel)) return { ok: false, message: 'Vui lòng chọn kênh khách hàng biết đến cửa hàng.' }
+    if (!ORDER_PAYMENT_METHODS.includes(paymentMethod)) return { ok: false, message: 'Vui lòng chọn hình thức thanh toán.' }
     const idempotencyKey = String(payload.idempotencyKey || '').trim()
     if (idempotencyKey && state.idempotencyKeys.includes(idempotencyKey)) {
       const existing = state.orders.find((item) => item.idempotencyKey === idempotencyKey)
@@ -2531,7 +2925,7 @@ export function AppProvider({ children }) {
       try {
         const result = await runRemoteDomainCommand(
           'order.create',
-          { ...payload, gender, occupation, acquisitionChannel, amount, storeId, idempotencyKey: undefined },
+          { ...payload, gender, occupation, acquisitionChannel, paymentMethod, amount, storeId, idempotencyKey: undefined },
           idempotencyKey || `order:${crypto.randomUUID()}`,
         )
         notify(`Đã tạo đơn hàng ${result.order.code}.`)
@@ -2558,7 +2952,7 @@ export function AppProvider({ children }) {
       occupation,
       acquisitionChannel,
       amount,
-      paymentMethod: payload.paymentMethod === 'Tiền mặt' ? 'Tiền mặt' : 'Chuyển khoản',
+      paymentMethod,
       employeeId,
       employeeName: employee?.name || state.session?.name || 'Admin IDOSI',
       shiftId: openAttendance?.shift || payload.shiftId || null,
@@ -2602,17 +2996,6 @@ export function AppProvider({ children }) {
     if (!previous) return { ok: false, message: 'Không tìm thấy đơn hàng.' }
     const reason = String(payload.reason || '').trim()
     if (!reason) return { ok: false, message: 'Cần nhập lý do chỉnh sửa.' }
-    if (apiRef.current.enabled) {
-      try {
-        const result = await runRemoteDomainCommand('order.update', { orderId: id, ...payload, reason })
-        notify(`Đã cập nhật đơn hàng ${result.order.code}.`)
-        return { ok: true, order: result.order, existing: result.existing }
-      } catch (error) {
-        notify(error.message || 'Không thể cập nhật đơn hàng.', 'info')
-        return { ok: false, message: error.message }
-      }
-    }
-    const timestamp = new Date().toISOString()
     const candidate = {
       ...previous,
       customerName: payload.customerName == null ? previous.customerName : String(payload.customerName).trim(),
@@ -2622,13 +3005,41 @@ export function AppProvider({ children }) {
       occupation: payload.occupation == null ? previous.occupation : String(payload.occupation).trim(),
       acquisitionChannel: payload.acquisitionChannel == null ? previous.acquisitionChannel : String(payload.acquisitionChannel).trim(),
       amount: payload.amount == null ? previous.amount : nonNegativeInteger(payload.amount),
-      paymentMethod: payload.paymentMethod || previous.paymentMethod,
+      paymentMethod: payload.paymentMethod == null ? previous.paymentMethod : String(payload.paymentMethod).trim(),
     }
     if (candidate.amount <= 0) return { ok: false, message: 'Số tiền đơn hàng phải lớn hơn 0.' }
-    if (payload.occupation != null && !ORDER_CUSTOMER_OCCUPATIONS.has(candidate.occupation)) return { ok: false, message: 'Vui lòng chọn nghề nghiệp trong danh sách của hệ thống.' }
+    if (payload.occupation != null && !occupationValueAllowed({
+      options: state.orderInformationOptions,
+      value: candidate.occupation,
+      previousValue: previous.occupation,
+      allowUnchangedInactive: true,
+    })) {
+      return { ok: false, message: 'Chỉ được giữ nguyên nghề nghiệp đã vô hiệu hóa; hãy chọn giá trị đang hoạt động nếu thay đổi.' }
+    }
+    if (!ORDER_PAYMENT_METHODS.includes(candidate.paymentMethod)) {
+      return { ok: false, message: 'Vui lòng chọn hình thức thanh toán.' }
+    }
     const changedFields = ['customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod']
       .filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(candidate[key]))
     if (!changedFields.length) return { ok: true, order: previous, existing: true }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('order.update', {
+          ...payload,
+          orderId: id,
+          ...(payload.occupation != null ? { occupation: candidate.occupation } : {}),
+          ...(payload.paymentMethod != null ? { paymentMethod: candidate.paymentMethod } : {}),
+          ...(payload.amount != null ? { amount: candidate.amount } : {}),
+          reason,
+        })
+        notify(`Đã cập nhật đơn hàng ${result.order.code}.`)
+        return { ok: true, order: result.order, existing: result.existing }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật đơn hàng.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+    const timestamp = new Date().toISOString()
     const next = { ...candidate, updatedAt: timestamp }
     const actor = actorSnapshot(state.session)
     const audit = { id: uid('ODA'), action: 'Sửa', orderId: id, orderCode: previous.code, storeId: previous.storeId, before: previous, after: next, changedFields, revenueBefore: previous.amount, revenueAfter: next.amount, reason, actor, createdAt: timestamp }
@@ -4106,7 +4517,6 @@ export function AppProvider({ children }) {
     deleteStore,
     addEmployee,
     updateEmployee,
-    setEmployeeWorkingTime,
     deleteEmployee,
     addBusinessSupport,
     updateBusinessSupport,
@@ -4132,6 +4542,11 @@ export function AppProvider({ children }) {
     changeAdminPassword,
     verifyCurrentPassword,
     saveSettings,
+    createOrderInformationOption,
+    updateOrderInformationOption,
+    deleteOrderInformationOption,
+    restoreOrderInformationOption,
+    reorderOrderInformationOptions,
     createOrder,
     updateOrder,
     deleteOrder,

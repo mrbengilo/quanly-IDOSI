@@ -7,6 +7,7 @@ const mocked = vi.hoisted(() => ({
   notify: vi.fn(),
   optimizeAccountAvatar: vi.fn(),
   saveSettings: vi.fn(),
+  settings: {},
   validateAccountAvatarSource: vi.fn(),
   verifyCurrentPassword: vi.fn(),
 }))
@@ -27,6 +28,7 @@ vi.mock('../../state/AppContext', () => ({
       address: '',
       bio: '',
       notifications: {},
+      ...mocked.settings,
     },
     session: { id: 'ADMIN-001', username: 'admin', role: 'admin', name: 'Quản trị viên' },
     saveSettings: mocked.saveSettings,
@@ -50,6 +52,7 @@ describe('AdminSettings password visibility', () => {
     mocked.optimizeAccountAvatar.mockReset()
     mocked.validateAccountAvatarSource.mockReset()
     mocked.saveSettings.mockReset().mockResolvedValue({ ok: true, settings: {} })
+    mocked.settings = {}
     URL.createObjectURL = vi.fn(() => 'blob:avatar-preview')
     URL.revokeObjectURL = vi.fn()
   })
@@ -135,4 +138,27 @@ describe('AdminSettings password visibility', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
     await waitFor(() => expect(mocked.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ avatar })))
   }, 15_000)
+
+  it('shows private-avatar loading errors and sends an explicit clear operation', async () => {
+    mocked.settings = {
+      avatar: 'blob:private-account-avatar',
+      avatarMetadata: {
+        key: 'account-avatars/usr_admin/avatar.webp',
+        contentType: 'image/webp',
+        size: 128,
+        version: 2,
+      },
+      avatarLoading: true,
+      avatarError: 'Không thể tải ảnh đại diện.',
+    }
+    mocked.saveSettings.mockResolvedValue({ ok: true, settings: { avatar: '' } })
+    render(<AdminSettings />)
+
+    expect(screen.getByText(/Đang tải ảnh đại diện riêng tư…/)).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('Không thể tải ảnh đại diện.')
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa ảnh' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
+
+    await waitFor(() => expect(mocked.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ avatar: '' })))
+  })
 })

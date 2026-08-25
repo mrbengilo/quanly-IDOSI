@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   BriefcaseBusiness,
-  CalendarClock,
   CalendarDays,
   ClipboardCheck,
   Clock3,
@@ -67,7 +66,6 @@ import {
 } from './roleManagementUtils'
 import { SupportWorkEvaluationTable } from './SupportWorkPages'
 import { WorkingTimeFields } from '../office/WorkingTimeFields'
-import { WorkingTimeSettingsModal } from '../office/WorkingTimeSettingsModal'
 import {
   withEmploymentWorkingTime,
 } from '../office/workingTime'
@@ -212,7 +210,7 @@ function RoleProfileDrawer({
           <h3>Thời gian làm việc</h3>
           <WorkingTimeFields form={form} onChange={(workingTime) => onChange('__workingTime')({ target: { value: workingTime } })} />
         </>}
-        {roleKey === ROLE_KEYS.businessSupport && editingProfile && <InfoNote>Dùng chức năng “Cài đặt thời gian làm việc” để thay đổi giờ làm theo ngày áp dụng.</InfoNote>}
+        {roleKey === ROLE_KEYS.businessSupport && editingProfile && <InfoNote>Thời gian làm việc hiện tại được giữ nguyên khi cập nhật hồ sơ.</InfoNote>}
 
         <h3>Địa chỉ</h3>
         <AddressAutocomplete value={{ province: form.province, ward: form.ward, street: form.street }} onChange={onAddressChange} />
@@ -246,7 +244,7 @@ function RoleProfileDrawer({
   )
 }
 
-function ProfileList({ allProfiles, canCreate, canDelete, canEdit, canEditWorkingTime, config, imageBusyKey, onCreate, onDelete, onEdit, onEditWorkingTime, onViewImage, profiles, roleKey, stores }) {
+function ProfileList({ allProfiles, canCreate, canDelete, canEdit, config, imageBusyKey, onCreate, onDelete, onEdit, onViewImage, profiles, roleKey, stores }) {
   const [query, setQuery] = useState('')
   const [typeFilter, setTypeFilter] = useState('all')
   const [storeFilter, setStoreFilter] = useState('all')
@@ -274,7 +272,7 @@ function ProfileList({ allProfiles, canCreate, canDelete, canEdit, canEditWorkin
         </div>
       </div>
       <TableWrap>
-        <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th>{roleKey === ROLE_KEYS.storeManager && <th>Cửa hàng quản lý</th>}<th>Liên hệ / CCCD</th><th>Địa chỉ</th><th>Vị trí</th><th>Hình CCCD</th>{(canEdit || canEditWorkingTime) && <th>Thao tác</th>}</tr></thead>
+        <thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Loại nhân viên</th><th>Ngày bắt đầu</th>{roleKey === ROLE_KEYS.storeManager && <th>Cửa hàng quản lý</th>}<th>Liên hệ / CCCD</th><th>Địa chỉ</th><th>Vị trí</th><th>Hình CCCD</th>{canEdit && <th>Thao tác</th>}</tr></thead>
         <tbody>
           {rows.map((profile) => {
             const storeId = profile.storeId === 'OFFICE' ? '' : profile.storeId || profile.assignedStoreId
@@ -300,10 +298,10 @@ function ProfileList({ allProfiles, canCreate, canDelete, canEdit, canEditWorkin
                   ? <button type="button" disabled={Boolean(imageBusyKey)} onClick={() => onViewImage(profile, 'back', backIdentity)} aria-label={`Xem mặt sau CCCD ${profile.name}`}>{imageBusyKey === `${roleProfileCode(backIdentity.profile)}:back` ? 'Đang tải…' : <><Eye size={15} /> Sau</>}</button>
                   : <small>Chưa có mặt sau</small>}
               </div></td>
-              {(canEdit || canEditWorkingTime) && <td><div className="row-actions">{canEditWorkingTime && <button type="button" onClick={() => onEditWorkingTime(profile)} aria-label={`Cài giờ làm ${profile.name}`} title={`Cài giờ làm ${profile.name}`}><Clock3 size={17} /></button>}{canEdit && <button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button>}{canDelete && <button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button>}</div></td>}
+              {canEdit && <td><div className="row-actions"><button type="button" onClick={() => onEdit(profile)} aria-label={`Sửa ${profile.name}`} title={`Sửa ${profile.name}`}><Edit3 size={17} /></button>{canDelete && <button type="button" className="danger" onClick={() => onDelete(profile)} aria-label={`Xóa ${profile.name}`} title={`Xóa ${profile.name}`}><Trash2 size={17} /></button>}</div></td>}
             </tr>
           })}
-          {!rows.length && <tr><td colSpan={(roleKey === ROLE_KEYS.storeManager ? 9 : 8) + (canEdit || canEditWorkingTime ? 1 : 0)}>Chưa có {config.singular} phù hợp.</td></tr>}
+          {!rows.length && <tr><td colSpan={(roleKey === ROLE_KEYS.storeManager ? 9 : 8) + (canEdit ? 1 : 0)}>Chưa có {config.singular} phù hợp.</td></tr>}
         </tbody>
       </TableWrap>
       <TableFooter shown={rows.length} total={rows.length} />
@@ -393,15 +391,12 @@ function RoleManagement({ roleKey }) {
   const [imageViewer, setImageViewer] = useState(null)
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [workingTimeSettingsOpen, setWorkingTimeSettingsOpen] = useState(false)
-  const [workingTimeInitialProfileId, setWorkingTimeInitialProfileId] = useState('')
   const isAdmin = app.session?.role === 'admin'
   const isBusinessSupport = ['business_support', 'manager'].includes(app.session?.role)
   const canEdit = isAdmin || (isBusinessSupport && roleKey === ROLE_KEYS.storeManager)
   const canDelete = isAdmin
   const canCreate = isAdmin || (isBusinessSupport && roleKey === ROLE_KEYS.storeManager)
   const canView = isAdmin || isBusinessSupport
-  const canEditWorkingTime = roleKey === ROLE_KEYS.businessSupport && (isAdmin || isBusinessSupport)
   const requiresPassword = !editingProfile || !(
     editingProfile.authUserId || editingProfile.authVersion || editingProfile.passwordHash || editingProfile.legacyPassword
   )
@@ -482,16 +477,6 @@ function RoleManagement({ roleKey }) {
             ? { code: nextRoleCode(allProfiles, roleKey, stores.find((store) => store.id === value)) }
             : {}),
         }))
-  }
-
-  const openWorkingTime = (profile) => {
-    setWorkingTimeInitialProfileId(profile ? roleProfileCode(profile) : '')
-    setWorkingTimeSettingsOpen(true)
-  }
-
-  const closeWorkingTime = () => {
-    setWorkingTimeSettingsOpen(false)
-    setWorkingTimeInitialProfileId('')
   }
 
   const updateAddress = (address) => setForm((current) => ({
@@ -580,23 +565,15 @@ function RoleManagement({ roleKey }) {
   }
 
   return <div className="page">
-    <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={<>{canEditWorkingTime && <Button variant="outline" icon={CalendarClock} onClick={() => openWorkingTime(null)}>Cài đặt thời gian làm việc</Button>}{canCreate && <Button icon={Plus} onClick={openCreate}>Thêm tài khoản</Button>}</>} />
-    {!canCreate && <InfoNote>Chỉ Admin được quản lý tài khoản; Admin và Hỗ trợ KD được cấu hình thời gian làm việc.</InfoNote>}
+    <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={canCreate ? <Button icon={Plus} onClick={openCreate}>Thêm tài khoản</Button> : null} />
+    {!canCreate && <InfoNote>Chỉ Admin được quản lý tài khoản; Hỗ trợ KD được xem danh sách và lịch sử liên quan.</InfoNote>}
     {isBusinessSupport && roleKey === ROLE_KEYS.storeManager && <InfoNote>Nhân viên Hỗ trợ KD được tạo hoặc sửa Quản lý cửa hàng; chỉ Admin được xóa tài khoản.</InfoNote>}
     {roleKey === ROLE_KEYS.businessSupport && <div className="tabs"><button type="button" className={tab === 'profiles' ? 'active' : ''} onClick={() => setTab('profiles')}><Users />Danh sách nhân viên</button><button type="button" className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button><button type="button" className={tab === 'evaluation' ? 'active' : ''} onClick={() => setTab('evaluation')}><ShieldCheck />Chuyên cần</button>{canEdit && <button type="button" className={tab === 'work' ? 'active' : ''} onClick={() => setTab('work')}><ClipboardCheck />Công việc</button>}</div>}
-    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList allProfiles={allProfiles} canCreate={canCreate} canDelete={canDelete} canEdit={canEdit} canEditWorkingTime={canEditWorkingTime} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onEditWorkingTime={openWorkingTime} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
+    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList allProfiles={allProfiles} canCreate={canCreate} canDelete={canDelete} canEdit={canEdit} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'attendance' && <BusinessSupportAttendance attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'evaluation' && <BusinessSupportEvaluation attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'work' && canEdit && <SupportWorkEvaluationTable assignments={app.supportWorkAssignments || []} profiles={profiles} />}
     {canCreate && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onAddressChange={updateAddress} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} storeEmployees={storeEmployees} stores={stores} togglePassword={() => setShowPassword((current) => !current)} />}
-    <WorkingTimeSettingsModal
-      open={workingTimeSettingsOpen}
-      initialEmployeeId={workingTimeInitialProfileId}
-      profiles={profiles}
-      onClose={closeWorkingTime}
-      onSave={(employeeId, payload) => app.setEmployeeWorkingTime?.(employeeId, payload)}
-      title="Cài đặt thời gian làm việc · Nhân viên hỗ trợ KD"
-    />
     <Modal wide open={Boolean(imageViewer)} onClose={closeImageViewer} title={imageViewer?.title || 'Hình ảnh CCCD'} footer={<Button variant="outline" onClick={closeImageViewer}>Đóng</Button>}>
       <IdentityDocumentViewer src={imageViewer?.url || ''} alt={imageViewer?.title || 'Hình ảnh CCCD'} />
     </Modal>

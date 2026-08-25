@@ -30,6 +30,17 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+const chooseOccupation = async (label) => {
+  const input = screen.getByRole('combobox', { name: 'Nghề nghiệp' })
+  if (input.getAttribute('aria-expanded') !== 'true') fireEvent.click(input)
+  fireEvent.change(screen.getByRole('searchbox', { name: 'Tìm Nghề nghiệp' }), { target: { value: label } })
+  fireEvent.click(await screen.findByRole('option', { name: label }))
+}
+
+const choosePaymentMethod = (value = 'Tiền mặt') => {
+  fireEvent.change(screen.getByLabelText(/^Hình thức thanh toán/u), { target: { value } })
+}
+
 describe('store employee current-shift orders', () => {
   it('keeps only the signed-in employee orders from the open shift', () => {
     const openRecord = { id: 'ATT-01', date: '2026-08-18', shiftId: 'CA-01' }
@@ -143,36 +154,26 @@ describe('store employee current-shift orders', () => {
     fireEvent.click(screen.getByRole('button', { name: 'TẠO ĐƠN HÀNG' }))
     await screen.findByRole('dialog')
     expect(screen.getByRole('heading', { name: 'Tạo đơn hàng • Dosii KVC' })).toBeTruthy()
-    const occupationInput = screen.getByLabelText(/^Nghề nghiệp/u)
-    expect(occupationInput.getAttribute('list')).toBe('employee-order-occupations')
-    expect([...document.querySelectorAll('#employee-order-occupations option')].map((option) => option.value)).toEqual([
-      'Nhân viên VP',
-      'Kỹ sư',
-      'Bác sĩ',
-      'Giáo viên',
-      'Học sinh/Sinh viên',
-      'Lao động',
-      'Nội trợ',
-      'Buôn bán/kinh doanh',
-      'Tài xế',
-      'Giám đốc',
-      'Ca sỉ',
-      'Lao công',
-      'Bảo vệ',
-      'Công nhân',
-      'Khác',
-    ])
+    const occupationInput = screen.getByRole('combobox', { name: 'Nghề nghiệp' })
+    fireEvent.click(occupationInput)
+    expect(screen.getByRole('listbox', { name: 'Nghề nghiệp - danh sách' })).toBeTruthy()
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(expect.arrayContaining([
+      'Nhân viên VP', 'Kỹ sư', 'Bác sĩ', 'Giáo viên', 'Học sinh/Sinh viên', 'Lao động', 'Nội trợ',
+      'Buôn bán/kinh doanh', 'Tài xế', 'Giám đốc', 'Ca sỉ', 'Lao công', 'Bảo vệ', 'Công nhân', 'Khác',
+    ]))
     fireEvent.change(screen.getByLabelText(/^Tên khách hàng/u), { target: { value: 'Khách hỗ trợ mới' } })
     fireEvent.change(screen.getByLabelText(/^Giới tính/u), { target: { value: 'Nữ' } })
-    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/u), { target: { value: 'Nhân viên VP' } })
+    await chooseOccupation('Nhân viên VP')
     fireEvent.change(screen.getByLabelText(/^Biết qua kênh nào/u), { target: { value: 'Facebook' } })
-    fireEvent.change(screen.getByLabelText(/^Số tiền/u), { target: { value: '250' } })
+    fireEvent.change(screen.getByLabelText(/^Số tiền/u), { target: { value: '35' } })
+    choosePaymentMethod()
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
 
     await waitFor(() => expect(createOrder).toHaveBeenCalledWith(expect.objectContaining({
       employeeId: 'E01', storeId: 'S02', attendanceId: 'ATT-SUPPORT', shiftId: 'CA-SUPPORT', shiftName: 'Ca hỗ trợ',
+      amount: 35,
     })))
-  })
+  }, 10_000)
 
   it('reconciles checkout only with orders created by the signed-in employee', () => {
     vi.useFakeTimers()
@@ -238,6 +239,7 @@ describe('store employee current-shift orders', () => {
       gender: 'Nữ',
       occupation: 'Nhân viên VP',
       acquisitionChannel: 'Tiktok',
+      paymentMethod: 'Tiền mặt',
     })).toEqual({})
 
     expect(validateEmployeeOrder({
@@ -246,12 +248,14 @@ describe('store employee current-shift orders', () => {
       gender: 'Nữ',
       occupation: 'Kế toán',
       acquisitionChannel: 'Tiktok',
+      paymentMethod: 'Tiền mặt',
     }).occupation).toBe('Vui lòng chọn nghề nghiệp trong danh sách.')
 
     expect(Object.keys(validateEmployeeOrder({ customerName: 'Khách A', amount: 159_000 }))).toEqual([
       'gender',
       'occupation',
       'acquisitionChannel',
+      'paymentMethod',
     ])
   })
 
@@ -271,9 +275,10 @@ describe('store employee current-shift orders', () => {
     await screen.findByRole('dialog')
     fireEvent.change(screen.getByLabelText(/^Tên khách hàng/), { target: { value: 'Khách A' } })
     fireEvent.change(screen.getByLabelText(/^Giới tính/), { target: { value: 'Nữ' } })
-    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/), { target: { value: 'Nhân viên VP' } })
+    await chooseOccupation('Nhân viên VP')
     fireEvent.change(screen.getByLabelText(/^Biết qua kênh nào/), { target: { value: 'Facebook' } })
     fireEvent.change(screen.getByLabelText(/^Số tiền/), { target: { value: '159' } })
+    choosePaymentMethod()
 
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
     await waitFor(() => expect(createOrder).toHaveBeenCalledTimes(1))
@@ -284,7 +289,7 @@ describe('store employee current-shift orders', () => {
     expect(firstKey).toBeTruthy()
     expect(createOrder.mock.calls[1][0].idempotencyKey).toBe(firstKey)
 
-    fireEvent.change(screen.getByLabelText(/^Nghề nghiệp/), { target: { value: 'Kỹ sư' } })
+    await chooseOccupation('Kỹ sư')
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
     await waitFor(() => expect(createOrder).toHaveBeenCalledTimes(3))
     expect(createOrder.mock.calls[2][0].idempotencyKey).not.toBe(firstKey)

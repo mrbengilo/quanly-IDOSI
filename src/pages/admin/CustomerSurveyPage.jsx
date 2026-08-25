@@ -28,14 +28,15 @@ function DistributionTable({ title, label, counts, total }) {
 }
 
 export function CustomerSurveyPage() {
-  const { orders = [], stores = [] } = useApp()
+  const { orders = [], stores = [], orderInformationOptions = [] } = useApp()
   const [period, setPeriod] = useState(today().slice(0, 7))
   const [storeId, setStoreId] = useState('all')
-  const overview = useMemo(() => customerSurveySummary(orders, { period }), [orders, period])
+  const overview = useMemo(() => customerSurveySummary(orders, { period, occupationOptions: orderInformationOptions }), [orders, orderInformationOptions, period])
   const selected = useMemo(() => customerSurveySummary(orders, {
     period,
     storeId: storeId === 'all' ? '' : storeId,
-  }), [orders, period, storeId])
+    occupationOptions: orderInformationOptions,
+  }), [orders, orderInformationOptions, period, storeId])
   const selectedStore = stores.find((store) => String(store.id) === String(storeId))
   const { insights } = selected
 

@@ -121,8 +121,8 @@ describe('Input native temporal picker', () => {
   })
 })
 
-describe('MoneyInput thousands unit', () => {
-  it('stays visually empty until typing and converts 35 to 35,000 VND', () => {
+describe('MoneyInput VND value preservation', () => {
+  it('stays visually empty until typing and preserves 35 as 35 VND', () => {
     const onChange = vi.fn()
     const { container, rerender } = render(<MoneyInput aria-label="Số tiền" value="" onChange={onChange} />)
 
@@ -130,17 +130,34 @@ describe('MoneyInput thousands unit', () => {
     expect(container.querySelector('.money-input__suffix')).toBeNull()
 
     fireEvent.change(container.querySelector('input'), { target: { value: '35' } })
-    expect(onChange.mock.calls[0][0].target.value).toBe('35000')
+    expect(onChange.mock.calls[0][0].target.value).toBe('35')
 
     rerender(<MoneyInput aria-label="Số tiền" value="35000" onChange={onChange} />)
-    expect(container.querySelector('input').value).toBe('35')
-    expect(container.querySelector('.money-input__suffix').textContent).toBe(',000 đ')
+    expect(container.querySelector('input').value).toBe('35,000')
+    expect(container.querySelector('.money-input__suffix').textContent).toBe('đ')
   })
 
-  it('shows existing million values in thousands without changing the stored VND value', () => {
+  it('formats an existing VND amount without changing the stored value', () => {
     const { container } = render(<MoneyInput aria-label="Lương" value="8,000,000" onChange={() => {}} />)
 
-    expect(container.querySelector('input').value).toBe('8,000')
-    expect(container.textContent).toContain(',000 đ')
+    expect(container.querySelector('input').value).toBe('8,000,000')
+    expect(container.querySelector('.money-input__suffix').textContent).toBe('đ')
+  })
+
+  it('keeps zero and an allowed negative value exact', () => {
+    const { container, rerender } = render(<MoneyInput aria-label="Điều chỉnh" value="0" onChange={() => {}} />)
+    expect(container.querySelector('input').value).toBe('0')
+
+    rerender(<MoneyInput aria-label="Điều chỉnh" value="-35" onChange={() => {}} />)
+    expect(container.querySelector('input').value).toBe('-35')
+  })
+
+  it('does not round or scale a large integer string while editing', () => {
+    const onChange = vi.fn()
+    const { container } = render(<MoneyInput aria-label="Số tiền lớn" value="90071992547409931234" onChange={onChange} />)
+
+    expect(container.querySelector('input').value).toBe('90,071,992,547,409,931,234')
+    fireEvent.change(container.querySelector('input'), { target: { value: '00035' } })
+    expect(onChange.mock.calls[0][0].target.value).toBe('35')
   })
 })

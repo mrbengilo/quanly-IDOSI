@@ -15,9 +15,9 @@ vi.mock('../../utils', async (importOriginal) => ({
 }))
 
 const localDate = () => {
-  const value = new Date()
-  const offset = value.getTimezoneOffset() * 60_000
-  return new Date(value.getTime() - offset).toISOString().slice(0, 10)
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(new Date())
 }
 
 const store = { id: 'CH-TNV', name: 'Dosii TNV' }
@@ -93,6 +93,7 @@ describe('store schedule visual flow', () => {
     expect(within(metrics).getByText('Nhân viên đã xếp')).toBeTruthy()
     expect(screen.getAllByRole('button', { name: 'Theo ngày' }).length).toBeGreaterThan(0)
     expect(screen.getAllByRole('button', { name: 'Theo tuần' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: 'Theo tháng' }).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: 'Theo nhân viên' })).toBeTruthy()
     expect(screen.getAllByRole('table').length).toBeGreaterThan(0)
 
@@ -136,5 +137,36 @@ describe('store schedule visual flow', () => {
     })))
     const payload = mocked.app.createShiftDefinition.mock.calls[0][0]
     expect(payload).not.toHaveProperty('date')
+  })
+
+  it('keeps a legacy snapshot-only overnight shift visible in day, week and month views', () => {
+    mocked.app.shiftDefinitions = [
+      shift,
+      { id: 'CA-DEM-OLD', storeId: 'OTHER', name: 'Sai cửa hàng', start: '09:00', end: '17:00', active: true, color: '#000000' },
+      { id: 'CA-DEM-OLD', storeId: store.id, name: 'Ca đêm đã xóa', start: '22:00', end: '06:00', active: false, deletedAt: '2026-08-20T00:00:00Z' },
+    ]
+    mocked.app.schedule = [{
+      id: 'LICH-LEGACY',
+      storeId: store.id,
+      employeeId: employee.id,
+      date: localDate(),
+      shiftId: 'CA-DEM-OLD',
+      shiftSnapshots: [{ id: 'CA-DEM-OLD', name: 'Ca đêm lịch sử' }],
+      note: 'Ca qua đêm',
+    }]
+
+    const { container } = renderSchedule()
+    const board = container.querySelector('.schedule-board')
+    expect(within(board).getAllByText('Ca đêm lịch sử').length).toBeGreaterThan(0)
+    expect(within(board).getAllByText('22:00 - 06:00 (+1 ngày)').length).toBeGreaterThan(0)
+
+    fireEvent.click(within(board).getByRole('button', { name: 'Theo tuần' }))
+    expect(within(board).getByText('Ca đêm lịch sử')).toBeTruthy()
+    expect(within(board).getByText('22:00 - 06:00 (+1 ngày)')).toBeTruthy()
+    expect(board.querySelector('.schedule-matrix--week')).toBeTruthy()
+
+    fireEvent.click(within(board).getByRole('button', { name: 'Theo tháng' }))
+    expect(within(board).getByText('Ca đêm lịch sử')).toBeTruthy()
+    expect(board.querySelector('.schedule-matrix--month')).toBeTruthy()
   })
 })

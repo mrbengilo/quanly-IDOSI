@@ -1,0 +1,88 @@
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import App from './App'
+
+const mocked = vi.hoisted(() => ({
+  session: { role: 'admin', name: 'Admin' },
+}))
+
+vi.mock('./state/AppContext', () => ({
+  useApp: () => ({
+    authReady: true,
+    currentEmployee: undefined,
+    session: mocked.session,
+  }),
+}))
+
+vi.mock('./layout/AppShell', async () => {
+  const { Outlet } = await vi.importActual('react-router-dom')
+  return { default: () => <Outlet /> }
+})
+
+vi.mock('./pages/admin/OrderInformationSettingsPage', () => ({
+  OrderInformationSettingsPage: () => <div>Cài đặt thông tin đơn hàng route</div>,
+}))
+
+vi.mock('./pages/admin/AdminWorkRegistrationSchedulePage', () => ({
+  AdminWorkRegistrationSchedulePage: () => <div>Lịch đăng ký HTKD và KVP route</div>,
+}))
+
+vi.mock('./pages/admin/SystemFinanceV2', () => ({
+  AdminCashflowV2: () => <div>Admin cashflow</div>,
+  AdminOverviewV2: () => <div>Admin overview</div>,
+  AdminReportsV2: () => <div>Admin reports</div>,
+}))
+
+vi.mock('./pages/employee/OfficeEmployeeDashboard', () => ({
+  OfficeEmployeeDashboard: () => <div>Role home</div>,
+  OfficeEmployeePayrollPage: () => <div>Office payroll</div>,
+}))
+
+function CurrentRoute() {
+  const location = useLocation()
+  return <output data-testid="current-route">{location.pathname}</output>
+}
+
+const renderRoute = (path, role) => {
+  mocked.session = { role, name: role }
+  return render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
+}
+
+describe('App role routes', () => {
+  afterEach(cleanup)
+
+  it.each(['admin', 'business_support'])('allows %s to open order information settings', (role) => {
+    renderRoute('/admin/order-information-settings', role)
+
+    expect(screen.getByText('Cài đặt thông tin đơn hàng route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/admin/order-information-settings')
+  })
+
+  it('keeps order information settings unavailable to store managers', async () => {
+    renderRoute('/admin/order-information-settings', 'store_manager')
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
+    expect(screen.queryByText('Cài đặt thông tin đơn hàng route')).toBeNull()
+  })
+
+  it('allows Admin to open the aggregate work-registration schedule', () => {
+    renderRoute('/admin/work-registration-schedules', 'admin')
+
+    expect(screen.getByText('Lịch đăng ký HTKD và KVP route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/admin/work-registration-schedules')
+  })
+
+  it('keeps the aggregate work-registration schedule Admin-only', async () => {
+    renderRoute('/admin/work-registration-schedules', 'business_support')
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
+    expect(screen.queryByText('Lịch đăng ký HTKD và KVP route')).toBeNull()
+  })
+
+  it('does not expose the removed working-time settings through a direct URL', async () => {
+    renderRoute('/admin/working-time-settings', 'admin')
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/overview'))
+  })
+})

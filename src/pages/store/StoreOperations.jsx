@@ -701,7 +701,7 @@ export function StoreEmployees() {
           </div>}
           {linkingExistingProfile && form.linkedEmployeeId && <InfoNote>Đang phân thêm vai trò Nhân viên cửa hàng cho <strong>{form.name}</strong>. Hệ thống dùng chung tài khoản, hồ sơ và CCCD hiện có.</InfoNote>}
           {linkingExistingProfile ? <div className="form-grid">
-            <Field label="Mức lương theo giờ (đ/giờ)" required hint="Mức lương dùng khi tài khoản làm việc với vai trò Nhân viên cửa hàng"><MoneyInput value={form.salary} onChange={updateField('salary')} placeholder="Nhập số nghìn" /></Field>
+            <Field label="Mức lương theo giờ (đ/giờ)" required hint="Mức lương dùng khi tài khoản làm việc với vai trò Nhân viên cửa hàng"><MoneyInput value={form.salary} onChange={updateField('salary')} placeholder="Nhập số tiền" /></Field>
           </div> : <div className="form-grid">
             <Field label="Mã nhân viên" required hint="Hệ thống phát sinh tự động theo mã viết tắt của cửa hàng"><Input value={form.id} readOnly aria-readonly="true" /></Field>
             <><Field label="Tên nhân viên" required><Input value={form.name} onChange={updateField('name')} placeholder="Nhập họ và tên" /></Field>
@@ -710,11 +710,11 @@ export function StoreEmployees() {
             <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={updateField('startDate')} /></Field>
             <Field label="Loại nhân viên" required hint="Full-Time dùng định mức ngày, giờ và lương cơ bản; Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
             {isPartTime(form.employmentType)
-              ? <Field label="Lương mặc định theo giờ (đ/giờ)" required hint="Dùng để tính lương theo tổng giờ chấm công"><MoneyInput value={form.salary} onChange={updateField('salary')} placeholder="Nhập số nghìn" /></Field>
+              ? <Field label="Lương mặc định theo giờ (đ/giờ)" required hint="Dùng để tính lương theo tổng giờ chấm công"><MoneyInput value={form.salary} onChange={updateField('salary')} placeholder="Nhập số tiền" /></Field>
               : <>
                   <Field label="Số ngày công quy định/tháng" required hint="Từ 1 đến 31 ngày"><Input type="number" inputMode="numeric" min="1" max="31" step="1" value={form.standardWorkDays} onChange={updateField('standardWorkDays')} placeholder="26" /></Field>
                   <Field label="Tổng giờ làm quy định/tháng" required hint="Dùng làm mẫu số tính lương theo giờ thực tế"><Input type="number" inputMode="decimal" min="0.01" max="744" step="0.01" value={form.requiredMonthlyHours} onChange={updateField('requiredMonthlyHours')} placeholder="208" /></Field>
-                  <Field label="Lương cơ bản (đ/tháng)" required hint={storeEmployeePrefix(scopedStore) === 'SM234' ? 'SecondMall: giờ thực tế ÷ giờ quy định × lương cơ bản' : 'Mức lương cơ bản của kỳ lương tháng'}><MoneyInput value={form.baseSalary} onChange={updateField('baseSalary')} placeholder="Nhập số nghìn" /></Field>
+                  <Field label="Lương cơ bản (đ/tháng)" required hint={storeEmployeePrefix(scopedStore) === 'SM234' ? 'SecondMall: giờ thực tế ÷ giờ quy định × lương cơ bản' : 'Mức lương cơ bản của kỳ lương tháng'}><MoneyInput value={form.baseSalary} onChange={updateField('baseSalary')} placeholder="Nhập số tiền" /></Field>
                 </>}
             <Field label="Tuổi" required><Input inputMode="numeric" min="16" max="100" value={form.age} onChange={updateField('age')} placeholder="Ví dụ: 22" /></Field>
             <Field label="Vị trí công việc" required hint={isBusinessSupport && !editing ? 'Mặc định cho nhân viên do Hỗ trợ KD tạo' : undefined}>{isBusinessSupport && !editing
@@ -1005,8 +1005,8 @@ export function StoreImports() {
           <div className="form-grid"><Field label="Số lượng (bao)" required><Input type="number" min="1" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: event.target.value })} /></Field><Field label="Đơn vị"><Select value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })}><option>Bao</option><option>Kiện</option><option>Thùng</option></Select></Field></div>
           <Field label="Danh mục"><Select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}><option>Thời trang nữ</option><option>Thời trang nam</option><option>Đồ mặc nhà</option><option>Phụ kiện</option></Select></Field>
           <Field label="Cân nặng (kg)" required><Input type="number" value={form.weight} onChange={(event) => setForm({ ...form, weight: event.target.value })} placeholder="Nhập cân nặng" /></Field>
-          <Field label="Đơn giá nhập (đ/kg)" required><MoneyInput value={form.price} onChange={(event) => setForm({ ...form, price: event.target.value })} placeholder="Nhập số nghìn" /></Field>
-          <Field label="Phí vận chuyển (đ)"><MoneyInput value={form.shipping} onChange={(event) => setForm({ ...form, shipping: event.target.value })} placeholder="Nhập số nghìn" /></Field>
+          <Field label="Đơn giá nhập (đ/kg)" required><MoneyInput value={form.price} onChange={(event) => setForm({ ...form, price: event.target.value })} placeholder="Nhập số tiền" /></Field>
+          <Field label="Phí vận chuyển (đ)"><MoneyInput value={form.shipping} onChange={(event) => setForm({ ...form, shipping: event.target.value })} placeholder="Nhập số tiền" /></Field>
           <div className="calculated-total"><span>Thành tiền</span><strong>{money(formTotal)}</strong><small>= Cân nặng × Đơn giá nhập + Phí vận chuyển</small></div>
           <Field label="Ghi chú (tùy chọn)"><textarea value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} placeholder="Nhập ghi chú..." /></Field>
           <InfoNote><strong>Mẹo</strong><br />Đơn giá nhập là giá của 1kg. Thành tiền được tính tự động.</InfoNote>

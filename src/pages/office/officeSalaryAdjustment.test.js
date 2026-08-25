@@ -33,8 +33,8 @@ describe('Office salary adjustment submission', () => {
       addSalaryAdjustment,
       type: 'Phụ cấp',
       idempotencyKey: 'office-allowance-test',
-      form: { employeeId: 'VP002', date: '2026-09-01', amount: '200,000', content: 'Gửi xe' },
+      form: { employeeId: 'VP002', date: '2026-09-01', amount: '35', content: 'Gửi xe' },
     })
-    expect(addSalaryAdjustment).toHaveBeenCalledWith(expect.objectContaining({ type: 'Phụ cấp khác' }))
+    expect(addSalaryAdjustment).toHaveBeenCalledWith(expect.objectContaining({ type: 'Phụ cấp khác', amount: 35 }))
   })
 })

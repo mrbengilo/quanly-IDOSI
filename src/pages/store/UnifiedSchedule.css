@@ -2,6 +2,9 @@
   --schedule-border: #cfe0d5;
   --schedule-muted: #667085;
   gap: 18px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 .schedule-page-hero {
@@ -10,6 +13,8 @@
   align-items: center;
   gap: 24px;
   min-height: 92px;
+  min-width: 0;
+  max-width: 100%;
   padding: 4px 0 10px;
 }
 
@@ -77,6 +82,13 @@
   padding: 24px;
   border-color: var(--schedule-border);
   border-radius: 18px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.schedule-toolbar-card__copy,
+.schedule-toolbar-card__actions {
+  min-width: 0;
 }
 
 .schedule-toolbar-card__copy h2 {
@@ -113,6 +125,8 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .schedule-shift-card {
@@ -128,6 +142,7 @@
   border-radius: 16px;
   background: linear-gradient(135deg, color-mix(in srgb, var(--shift-color) 5%, white), #fff 70%);
   box-shadow: 0 10px 26px rgb(14 84 45 / 6%);
+  min-width: 0;
 }
 
 .schedule-shift-card__accent {
@@ -166,9 +181,10 @@
 
 .schedule-shift-card__content b {
   color: #101828;
-  font-size: clamp(19px, 1.8vw, 27px);
+  font-size: clamp(19px, 1.45vw, 24px);
   line-height: 1.15;
-  white-space: nowrap;
+  overflow-wrap: normal;
+  white-space: normal;
 }
 
 .schedule-shift-card__content span,
@@ -231,6 +247,8 @@
   border: 1px solid var(--schedule-border);
   border-radius: 16px;
   background: #fff;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .schedule-stat-strip article {
@@ -266,10 +284,16 @@
 .unified-schedule-page .schedule-board {
   border-color: var(--schedule-border);
   border-radius: 18px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .unified-schedule-page .schedule-board > .card__subheader {
   padding: 16px 20px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .unified-schedule-page .schedule-board .tabs {
@@ -303,6 +327,8 @@
 }
 
 .unified-schedule-page .schedule-matrix {
+  width: calc(100% - 32px);
+  max-width: calc(100% - 32px);
   margin: 0 16px 18px;
   border-color: #8fc6a2;
 }
@@ -315,9 +341,53 @@
   height: 92px;
 }
 
+.unified-schedule-page .schedule-matrix--period table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.unified-schedule-page .schedule-matrix--period th:not(:first-child),
+.unified-schedule-page .schedule-matrix--period td:not(:first-child) {
+  min-width: 158px;
+}
+
+.unified-schedule-page .schedule-matrix--period th:first-child,
+.unified-schedule-page .schedule-matrix--period td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  min-width: 260px;
+  background: #f8fcf9;
+  box-shadow: 7px 0 16px rgb(16 70 40 / 6%);
+}
+
+.unified-schedule-page .schedule-matrix--period thead th:first-child {
+  z-index: 3;
+}
+
+.schedule-view-shifts {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.schedule-view-shifts .schedule-shift-chip {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  max-width: 100%;
+}
+
+.schedule-view-shifts .schedule-shift-chip strong,
+.schedule-view-shifts .schedule-shift-chip small {
+  grid-column: 1;
+  overflow-wrap: anywhere;
+}
+
 .unified-schedule-page .created-schedule-card {
   border-color: var(--schedule-border);
   border-radius: 18px;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .unified-schedule-page .created-schedule-row {
@@ -485,7 +555,7 @@
 
   .unified-schedule-page .schedule-board .tabs {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     overflow: visible;
   }
 
@@ -496,6 +566,13 @@
   }
 
   .unified-schedule-page .schedule-matrix {
+    width: calc(100% - 16px);
+    max-width: calc(100% - 16px);
     margin: 0 8px 12px;
+  }
+
+  .unified-schedule-page .schedule-matrix--period th:first-child,
+  .unified-schedule-page .schedule-matrix--period td:first-child {
+    min-width: 190px;
   }
 }
