@@ -3,14 +3,21 @@
 > Quy trình: `docs/DEVELOPMENT_WORKFLOW.md`.
 
 ## Routing
-- Risk Level: [ ] FAST  [ ] STANDARD  [ ] CRITICAL
-- Effort: [ ] LOW  [ ] MEDIUM  [ ] HIGH
-- Model routing: AUTO / RECOMMEND:
-- Lý do:
+- Risk: [ ] FAST  [ ] STANDARD  [ ] CRITICAL
+- Model: [ ] GPT-5.6 Terra  [ ] GPT-5.6 Sol  [ ] Runtime fallback
+- Reasoning: [ ] HIGH  [ ] XHIGH
+- Speed: [ ] FAST  [ ] ULTRA FAST if supported  [ ] Runtime fastest available
+- Lý do routing:
 - Expected scope:
 
-Nếu Risk/Effort được nâng trong lúc làm, ghi lý do:
-- 
+> HIGH reasoning là quality floor cho task lập trình IDOSI khi runtime hỗ trợ. Finance/money/difficult work ưu tiên GPT-5.6 Sol + HIGH + ULTRA FAST nếu có; task bình thường ưu tiên Terra HIGH FAST hoặc Sol HIGH FAST khi cross-layer/khó hơn.
+
+## Scope Gate
+- [ ] Một mục tiêu nghiệp vụ coherent
+- [ ] Không quá 3 mục tiêu độc lập trong cùng PR
+- [ ] Dự kiến <=20 source/test files, hoặc có lý do kỹ thuật rõ vì sao inseparable
+- [ ] Nếu diff vượt 25 files, phần độc lập đã được tách
+- [ ] Không gom unrelated UI/database/VPS/settings/features vào cùng PR
 
 ## Sensitive areas
 - [ ] None
@@ -38,73 +45,68 @@ Nếu Risk/Effort được nâng trong lúc làm, ghi lý do:
 - [ ] CI/tooling
 - [ ] Documentation
 
-## Impact Map
-FAST có thể ghi scope ngắn nếu không có downstream business impact. STANDARD/CRITICAL:
-`Yêu cầu → dữ liệu → domain → API/backend → state → UI → database → production target → tests → downstream`
-
-## Business / permission / finance
+## Impact
 - Business rule changed:
 - Authorization/store impact:
 - Finance/payroll/KPI impact:
-- Canonical logic:
-
-Nếu chạm finance/payroll/KPI/auth/store/database/persistence/core production runtime → CRITICAL.
-
-## Database / production
-- Schema/persistence change: Có / Không
-- Migration:
-- Backward compatibility:
-- Target: Sites / VPS / Both / Runtime-unaffected
-- Backup/rollback implication:
+- Database/persistence impact:
+- Production target: Sites / VPS / Both / Runtime-unaffected
+- Canonical logic/source of truth:
 
 ## Verification
-FAST:
-- [ ] Targeted checks phù hợp
-- [ ] Lint/build nếu compile/style có thể bị ảnh hưởng
-- [ ] Required CI `verify` PASS
 
-STANDARD:
+### Iteration
+- [ ] Targeted tests/checks used while editing
+- [ ] Full suite was not rerun unnecessarily
+
+### FAST final local gate
+- [ ] Targeted checks phù hợp
+- [ ] Lint/build only if relevant
+
+### STANDARD final local gate
+- [ ] Targeted tests for changed logic
+- [ ] `npm run lint`
+- [ ] `npm run build`
+- [ ] `npm run sites:verify`
+- [ ] Full local `npm test` only if shared/cross-cutting logic required it
+
+### CRITICAL final local gate
 - [ ] `npm run lint`
 - [ ] `npm test`
 - [ ] `npm run build`
 - [ ] `npm run sites:verify`
-- [ ] VPS/runtime checks nếu liên quan
-- [ ] Required CI `verify` PASS
-
-CRITICAL:
-- [ ] Toàn bộ STANDARD gate
 - [ ] Targeted regression/security/data tests
-- [ ] Wrong-role/store/duplicate/boundary cases khi phù hợp
-- [ ] Migration/backup/rollback review khi liên quan
-- [ ] Required CI `verify` PASS
+- [ ] VPS/persistence checks only when affected
+
+### Required CI
+- [ ] GitHub `verify` PASS
 
 ## Self-review
-- [ ] Unrelated changes
-- [ ] Regression
-- [ ] Duplicate logic
-- [ ] API/state contract khi liên quan
-- [ ] Permission/cross-store khi liên quan
-- [ ] Money/KPI/payroll khi liên quan
-- [ ] Idempotency/race/timezone khi liên quan
-- [ ] Migration/data-loss/Sites-VPS khi liên quan
+- [ ] No unrelated changes/refactors
+- [ ] No duplicate business logic/source of truth
+- [ ] API/state contract preserved when relevant
+- [ ] Permission/store isolation reviewed when relevant
+- [ ] Money/KPI/payroll boundaries reviewed when relevant
+- [ ] Idempotency/race/timezone reviewed when relevant
+- [ ] Migration/data-loss/Sites-VPS compatibility reviewed when relevant
 
-## Credit / compute efficiency
-- [ ] Dùng mức Risk + Effort thấp nhất đủ an toàn.
-- [ ] Không hard-code model name nếu runtime/model catalog có thể thay đổi.
-- [ ] Không tuyên bố đã switch model nếu runtime không thực sự switch.
-- [ ] Search targeted trước broad scan.
-- [ ] Không rerun expensive checks khi code/input không đổi.
-- [ ] Không hạ CRITICAL để tiết kiệm credit.
-- [ ] Không giữ HIGH effort vô ích cho task đã chứng minh low-risk.
+## Speed / compute efficiency
+- [ ] Exact symbols/files searched before broad scan
+- [ ] Model selected once; no unnecessary model-hopping
+- [ ] HIGH reasoning floor kept when runtime supports it
+- [ ] Targeted tests used during iteration
+- [ ] Final full gate run once after patch stabilized
+- [ ] Failed CI/checks reproduced and fixed targeted instead of blind full reruns
+- [ ] Branch created from latest `main`; no repeated merge-from-main cycles
 
 ## Rollback / manual checks
-- Rollback plan:
-- Manual checks:
-- Remaining risks:
+- Rollback plan, if relevant:
+- Manual checks, if relevant:
+- Remaining risks, if any:
 
 ## Definition of Done
-- [ ] Risk + Effort hợp lý
-- [ ] Scope đúng yêu cầu
+- [ ] Scope đúng yêu cầu và không thành mega-task
+- [ ] Routing đúng policy và không giả vờ switch model/speed
 - [ ] Tests/checks theo Risk PASS
 - [ ] Required CI `verify` PASS
 - [ ] Diff reviewed
