@@ -44,6 +44,11 @@ afterEach(async () => {
 })
 
 describe('IDOSI VPS runtime', () => {
+  it('packages the shared domain modules imported by the Worker into the runtime image', async () => {
+    const dockerfile = await readFile(resolve('deploy', 'vps', 'Dockerfile'), 'utf8')
+    expect(dockerfile).toContain('COPY --from=build /app/src/domain ./src/domain')
+  })
+
   it('keeps Node upstream sockets alive longer than the Caddy proxy pool', async () => {
     const directory = await temporaryDirectory()
     const { server, runtime } = createIdosiServer({
