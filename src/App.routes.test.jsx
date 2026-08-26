@@ -5,12 +5,13 @@ import App from './App'
 
 const mocked = vi.hoisted(() => ({
   session: { role: 'admin', name: 'Admin' },
+  currentEmployee: undefined,
 }))
 
 vi.mock('./state/AppContext', () => ({
   useApp: () => ({
     authReady: true,
-    currentEmployee: undefined,
+    currentEmployee: mocked.currentEmployee,
     session: mocked.session,
   }),
 }))
@@ -39,6 +40,14 @@ vi.mock('./pages/employee/OfficeEmployeeDashboard', () => ({
   OfficeEmployeePayrollPage: () => <div>Office payroll</div>,
 }))
 
+vi.mock('./pages/compensation', () => ({
+  ManagerCompensationPage: () => <div>Quản lý thưởng phụ cấp</div>,
+  MyCompensationPage: () => <div>Thu nhập của tôi</div>,
+  MyViolationsPage: () => <div>Vi phạm của tôi</div>,
+  RevenueBonusPage: () => <div>Thưởng doanh thu ngày</div>,
+  ViolationManagementPage: ({ targetUnit }) => <div>{`Quản lý vi phạm ${targetUnit}`}</div>,
+}))
+
 function CurrentRoute() {
   const location = useLocation()
   return <output data-testid="current-route">{location.pathname}</output>
@@ -46,6 +55,7 @@ function CurrentRoute() {
 
 const renderRoute = (path, role) => {
   mocked.session = { role, name: role }
+  mocked.currentEmployee = undefined
   return render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
 }
 
@@ -84,5 +94,46 @@ describe('App role routes', () => {
     renderRoute('/admin/working-time-settings', 'admin')
 
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/overview'))
+  })
+
+  it.each(['admin', 'business_support'])('allows %s to manage compensation across operational stores', (role) => {
+    renderRoute('/admin/compensation/managers', role)
+
+    expect(screen.getByText('Quản lý thưởng phụ cấp')).toBeTruthy()
+  })
+
+  it('keeps manager-compensation mutations unavailable to store managers', async () => {
+    renderRoute('/admin/compensation/managers', 'store_manager')
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
+    expect(screen.queryByText('Quản lý thưởng phụ cấp')).toBeNull()
+  })
+
+  it('keeps HTKD violation management Admin-only', async () => {
+    renderRoute('/admin/violations/business-support', 'business_support')
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
+    expect(screen.queryByText('Quản lý vi phạm business_support')).toBeNull()
+  })
+
+  it('allows a store manager to read the scoped daily-revenue bonus', () => {
+    renderRoute('/store/revenue-bonus', 'store_manager')
+
+    expect(screen.getByText('Thưởng doanh thu ngày')).toBeTruthy()
+  })
+
+  it('allows an employee to read only their compensation statement', () => {
+    renderRoute('/employee/compensation', 'employee')
+
+    expect(screen.getByText('Thu nhập của tôi')).toBeTruthy()
+  })
+
+  it('keeps the store revenue bonus route unavailable to office employees', async () => {
+    mocked.session = { role: 'employee', name: 'Nhân viên văn phòng', employeeId: 'VP-001' }
+    mocked.currentEmployee = { id: 'VP-001', unit: 'office' }
+    render(<MemoryRouter initialEntries={['/employee/revenue-bonus']}><CurrentRoute /><App /></MemoryRouter>)
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/employee/home'))
+    expect(screen.queryByText('Thưởng doanh thu ngày')).toBeNull()
   })
 })

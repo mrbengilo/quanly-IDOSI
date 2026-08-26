@@ -1,7 +1,7 @@
 import { shifts } from '../data.js'
 import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'
 
-export const DOMAIN_SCHEMA_VERSION = 2
+export const DOMAIN_SCHEMA_VERSION = 4
 
 const pad = (value, length = 5) => String(value).padStart(length, '0')
 
@@ -45,11 +45,6 @@ const openingExpense = (store, index) => ({
 export const defaultPolicies = {
   lateToleranceMinutes: 10,
   earlyCheckInLimitMinutes: 120,
-  employeeKpiRates: {
-    from30000: 5,
-    from15000: 3,
-    from7000: 1,
-  },
   attendanceEvaluation: {
     maintainMaxLateCount: 2,
     improveMinLateCount: 3,
@@ -76,6 +71,15 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   salaryAdvances: [],
   payrollPeriods: [],
   payrollPayments: [],
+  storeShiftTaskTemplates: [],
+  compensationEntries: [],
+  violations: [],
+  revenueBonusDaily: [],
+  revenueBonusAllocations: [],
+  teamRewardClaims: [],
+  teamRewardParticipants: [],
+  periodReconciliations: [],
+  jobRuns: [],
   shiftDefinitions: shifts.map((shift) => ({
     ...shift,
     date: null,
@@ -108,7 +112,11 @@ const mergeArray = (stored, defaults, key) => Array.isArray(stored?.[key]) ? sto
 export const migrateDomainState = (stored, context) => {
   const defaults = createDomainState(context)
   if (!stored || typeof stored !== 'object') return defaults
-  const storedPolicies = Object.fromEntries(Object.entries(stored.policies || {}).filter(([key]) => !['managerMonthlySalary', 'managerKpiRate'].includes(key)))
+  const storedPolicies = Object.fromEntries(Object.entries(stored.policies || {}).filter(([key]) => ![
+    'employeeKpiRates',
+    'managerKpiRate',
+    'managerMonthlySalary',
+  ].includes(key)))
 
   return {
     ...defaults,
@@ -127,6 +135,15 @@ export const migrateDomainState = (stored, context) => {
     salaryAdvances: mergeArray(stored, defaults, 'salaryAdvances'),
     payrollPeriods: mergeArray(stored, defaults, 'payrollPeriods'),
     payrollPayments: mergeArray(stored, defaults, 'payrollPayments'),
+    storeShiftTaskTemplates: mergeArray(stored, defaults, 'storeShiftTaskTemplates'),
+    compensationEntries: mergeArray(stored, defaults, 'compensationEntries'),
+    violations: mergeArray(stored, defaults, 'violations'),
+    revenueBonusDaily: mergeArray(stored, defaults, 'revenueBonusDaily'),
+    revenueBonusAllocations: mergeArray(stored, defaults, 'revenueBonusAllocations'),
+    teamRewardClaims: mergeArray(stored, defaults, 'teamRewardClaims'),
+    teamRewardParticipants: mergeArray(stored, defaults, 'teamRewardParticipants'),
+    periodReconciliations: mergeArray(stored, defaults, 'periodReconciliations'),
+    jobRuns: mergeArray(stored, defaults, 'jobRuns'),
     shiftDefinitions: mergeArray(stored, defaults, 'shiftDefinitions'),
     importVouchers: mergeArray(stored, defaults, 'importVouchers'),
     auditLogs: mergeArray(stored, defaults, 'auditLogs'),
@@ -137,10 +154,6 @@ export const migrateDomainState = (stored, context) => {
     policies: {
       ...defaultPolicies,
       ...storedPolicies,
-      employeeKpiRates: {
-        ...defaultPolicies.employeeKpiRates,
-        ...(stored.policies?.employeeKpiRates || {}),
-      },
       attendanceEvaluation: {
         ...defaultPolicies.attendanceEvaluation,
         ...(stored.policies?.attendanceEvaluation || {}),

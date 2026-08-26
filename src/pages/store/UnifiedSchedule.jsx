@@ -230,7 +230,7 @@ export function UnifiedSchedule() {
   const renderPeriodSchedule = (dates, period) => <TableWrap className={`schedule-matrix schedule-matrix--period schedule-matrix--${period}`}>
     <thead><tr><th>Nhân viên</th>{dates.map((item) => <th key={item}>{displayDate(item)}</th>)}</tr></thead>
     <tbody>{employees.map((employee) => <tr key={employee.id || employee.code}>
-      <td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>
+      <td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>
       {dates.map((item) => <td key={item}>{renderScheduleCell(employee.id || employee.code, item)}</td>)}
     </tr>)}</tbody>
   </TableWrap>
@@ -502,7 +502,7 @@ export function UnifiedSchedule() {
           <tbody>{employees.map((employee) => {
             const record = scheduleForEmployeeDate(employee.id || employee.code, date)
             const assigned = new Set(scheduleShiftIds(record))
-            return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>{dayViewShifts.map((column) => {
+            return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>{dayViewShifts.map((column) => {
               const shift = assigned.has(String(column.id)) ? resolveScheduledShift(record, column.id) : column
               return <td key={column.id}>{assigned.has(String(column.id)) ? <span className="schedule-shift-chip" style={{ '--shift-color': shift.color }}><Check /> <strong>{shift.name}</strong><small>{scheduleShiftTimeLabel(shift)}</small></span> : <span className="schedule-empty-cell">—</span>}</td>
             })}</tr>
@@ -610,7 +610,7 @@ export function UnifiedSchedule() {
                     onChange={() => toggleEmployee(employee.id)}
                     aria-label={`Chọn nhân viên ${employee.name}`}
                   />
-                  <Avatar name={employee.name} color={employee.color} size={30} />
+                  <Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} />
                   <strong>{employee.name}</strong>
                   <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
                 </label>
@@ -650,7 +650,7 @@ export function UnifiedSchedule() {
                   onChange={() => toggleAssignmentEmployee(String(employee.id))}
                   aria-label={`Chọn ${employee.name} cho ${editingAssignment?.shift?.name || 'ca'}`}
                 />
-                <Avatar name={employee.name} color={employee.color} size={30} />
+                <Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} />
                 <strong>{employee.name}</strong>
                 <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
               </label>

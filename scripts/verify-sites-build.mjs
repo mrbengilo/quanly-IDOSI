@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict'
-import { access, readFile } from 'node:fs/promises'
+import { access, readFile, readdir } from 'node:fs/promises'
 import { extname, resolve } from 'node:path'
 
 const root = process.cwd()
 const client = resolve(root, 'dist', 'client')
 const workerPath = resolve(root, 'dist', 'server', 'index.js')
+const workerDomainFiles = [
+  'storeShiftChecklist.js',
+  'compensationPolicies.js',
+  'compensationAllocation.js',
+  'compensationSettlement.js',
+].map((fileName) => resolve(root, 'dist', 'src', 'domain', fileName))
 const hostingPath = resolve(root, 'dist', '.openai', 'hosting.json')
 const coreMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0000_idosi_core.sql')
 const managerMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0001_manager_role.sql')
@@ -15,9 +21,12 @@ const adminOnlyAccountsMigrationPath = resolve(root, 'dist', '.openai', 'drizzle
 const recursiveProfileSecretScrubMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0006_recursive_profile_secret_scrub.sql')
 const sessionRolesMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0007_session_roles.sql')
 const orderInformationOptionsMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0008_order_information_options.sql')
+const compensationFoundationMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0009_compensation_foundation.sql')
+const migrationsDirectory = resolve(root, 'dist', '.openai', 'drizzle')
 const migrationJournalPath = resolve(root, 'dist', '.openai', 'drizzle', 'meta', '_journal.json')
 
 await access(workerPath)
+for (const workerDomainFile of workerDomainFiles) await access(workerDomainFile)
 await access(hostingPath)
 await access(coreMigrationPath)
 await access(managerMigrationPath)
@@ -28,6 +37,7 @@ await access(adminOnlyAccountsMigrationPath)
 await access(recursiveProfileSecretScrubMigrationPath)
 await access(sessionRolesMigrationPath)
 await access(orderInformationOptionsMigrationPath)
+await access(compensationFoundationMigrationPath)
 await access(migrationJournalPath)
 
 const hosting = JSON.parse(await readFile(hostingPath, 'utf8'))
@@ -42,20 +52,15 @@ const adminOnlyAccountsMigration = await readFile(adminOnlyAccountsMigrationPath
 const recursiveProfileSecretScrubMigration = await readFile(recursiveProfileSecretScrubMigrationPath, 'utf8')
 const sessionRolesMigration = await readFile(sessionRolesMigrationPath, 'utf8')
 const orderInformationOptionsMigration = await readFile(orderInformationOptionsMigrationPath, 'utf8')
+const compensationFoundationMigration = await readFile(compensationFoundationMigrationPath, 'utf8')
 const migrationJournal = JSON.parse(await readFile(migrationJournalPath, 'utf8'))
 const workerSource = await readFile(workerPath, 'utf8')
 assert.equal(migrationJournal.dialect, 'sqlite')
-assert.deepEqual(migrationJournal.entries.map(({ tag }) => tag), [
-  '0000_idosi_core',
-  '0001_manager_role',
-  '0002_attendance_evaluation_policies',
-  '0003_state_entities',
-  '0004_operational_roles',
-  '0005_admin_only_accounts',
-  '0006_recursive_profile_secret_scrub',
-  '0007_session_roles',
-  '0008_order_information_options',
-])
+const migrationTags = (await readdir(migrationsDirectory))
+  .filter((name) => /^\d+.*\.sql$/u.test(name))
+  .sort((left, right) => left.localeCompare(right))
+  .map((name) => name.slice(0, -4))
+assert.deepEqual(migrationJournal.entries.map(({ tag }) => tag), migrationTags)
 for (const table of ['system_metadata', 'users', 'app_state', 'policies', 'audit_log', 'counters', 'sessions', 'command_receipts']) {
   assert.match(coreMigration, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}\\b`))
 }
@@ -110,6 +115,10 @@ assert.match(orderInformationOptionsMigration, /'canonicalSeedCount', 17/u)
 assert.match(orderInformationOptionsMigration, /WITH RECURSIVE order_information_seed[\s\S]*vietnamese_case_map/u)
 assert.match(orderInformationOptionsMigration, /ON CONFLICT \(scope_key, collection_key, entity_key\) DO NOTHING/u)
 assert.doesNotMatch(orderInformationOptionsMigration, /(?:UPDATE|DELETE\s+FROM)\s+(?:app_state|state_entities)\b/iu)
+assert.match(compensationFoundationMigration, /'compensationEntries'/u)
+assert.match(compensationFoundationMigration, /'employee_kpi_percent_30000'/u)
+assert.match(compensationFoundationMigration, /json_remove\(value_json, '\$\.kpiSnapshot'\)/u)
+assert.match(compensationFoundationMigration, /PRAGMA foreign_key_check/u)
 
 const { default: worker } = await import(`${new URL(`file:///${workerPath.replaceAll('\\', '/')}`).href}?v=${Date.now()}`)
 const contentTypes = {

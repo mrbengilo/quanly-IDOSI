@@ -32,7 +32,7 @@ import {
 import { createDomainState, defaultPolicies, migrateDomainState } from './initialDomainState'
 import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
-import { calculateKpiBonuses, financeSummaryFromState } from '../domain'
+import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
@@ -161,10 +161,27 @@ export const isRestorableOperationalAuditAction = (action, dataType) => (
 )
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
+
+const revenueBonusView = (dailyRecords = [], allocationRecords = []) => {
+  const allocations = Array.isArray(allocationRecords) ? allocationRecords : []
+  return (Array.isArray(dailyRecords) ? dailyRecords : []).map((record) => {
+    const recordId = String(record?.id || '')
+    const linked = allocations.filter((allocation) => (
+      String(allocation?.revenueBonusDailyId || allocation?.calculationId || '') === recordId
+    ))
+    return {
+      ...record,
+      allocations: linked.length ? linked : (Array.isArray(record?.allocations) ? record.allocations : []),
+    }
+  })
+}
+
 const REMOTE_ARRAY_KEYS = [
   'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'officeAdjustments',
   'orders', 'orderInformationOptions', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
+  'storeShiftTaskTemplates', 'compensationEntries', 'violations', 'revenueBonusDaily', 'revenueBonusAllocations',
+  'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
   'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
 ]
 const SERVER_EXCLUDED_FIELDS = new Set([
@@ -700,7 +717,6 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
     policies: {
       ...defaultPolicies,
       ...mappedPolicies,
-      employeeKpiRates: { ...defaultPolicies.employeeKpiRates, ...(mappedPolicies.employeeKpiRates || {}) },
       attendanceEvaluation: { ...defaultPolicies.attendanceEvaluation, ...(mappedPolicies.attendanceEvaluation || {}) },
     },
   }
@@ -939,14 +955,59 @@ const employeeGrossFor = (state, employeeId, period = monthKey()) => {
   const base = calculateEmployeeBasePay(salaryEmployee, { hours })
   const adjustments = state.salaryAdjustments
     .filter((item) => item.employeeId === employeeId && isInMonth(item, period) && item.status !== 'Đã hủy')
-    .reduce((sum, item) => sum + (normalizeText(item.type).includes('khấu trừ') ? -1 : 1) * nonNegativeInteger(item.amount), 0)
+  const adjustmentAmount = (matches) => adjustments
+    .filter((item) => matches(normalizeText(item.bonusSource || item.type)))
+    .reduce((sum, item) => sum + nonNegativeInteger(item.amount), 0)
+  const revenueBonus = adjustmentAmount((type) => type === 'revenue' || type.includes('thưởng doanh thu'))
+  const workBonus = adjustmentAmount((type) => type === 'work' || type.includes('thưởng công việc'))
+  const manualBonus = adjustmentAmount((type) => type === 'manual' || type.includes('thưởng khác') || type.includes('thưởng thủ công'))
+  const otherAllowance = adjustmentAmount((type) => type === 'allowance' || type.includes('phụ cấp'))
+  const violations = adjustmentAmount((type) => type === 'violation' || type.includes('khấu trừ') || type.includes('vi phạm'))
   const tiktokAllowance = nonNegativeInteger(employee.tiktokAllowance)
-  return Math.max(0, base + tiktokAllowance + adjustments)
+  return calculateAvailableSalary({
+    basePay: base,
+    revenueBonus,
+    workBonus,
+    manualBonus,
+    tiktokAllowance,
+    otherAllowance,
+    confirmedViolations: violations,
+  }).availableSalary
 }
 
 const advancePaidFor = (state, employeeId, period = monthKey()) => state.salaryAdvances
   .filter((item) => item.employeeId === employeeId && item.period === period && item.status === 'Đã chi')
   .reduce((sum, item) => sum + nonNegativeInteger(item.amount), 0)
+
+export const buildLocalPayrollFinanceSnapshot = ({ state, storeId, period, netPayrollExpense = 0 }) => {
+  const settlementSources = new Set(['payroll-accrual', 'payroll-payment', 'salary-advance'])
+  const withoutPayrollSettlements = {
+    ...state,
+    expenseEntries: (state.expenseEntries || []).filter((entry) => !(
+      String(entry.storeId || '') === String(storeId || '')
+      && isInMonth(entry, period)
+      && settlementSources.has(String(entry.sourceType || ''))
+    )),
+  }
+  const periodStart = `${period}-01`
+  const periodEnd = `${period}-${String(new Date(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 0).getDate()).padStart(2, '0')}`
+  const recognized = financeSummaryFromState(withoutPayrollSettlements, {
+    storeId,
+    from: periodStart,
+    to: periodEnd,
+  })
+  const payrollExpense = nonNegativeInteger(netPayrollExpense)
+  const expense = recognized.expense + payrollExpense
+  return {
+    ...recognized,
+    expense,
+    profit: recognized.revenue - expense,
+    recognizedExpense: recognized.expense,
+    nonPayrollExpense: recognized.expense,
+    earnedPayrollExpense: payrollExpense,
+    netPayrollExpense: payrollExpense,
+  }
+}
 
 const voucherDate = (value = new Date()) => {
   const date = resolveDate(value)
@@ -3239,12 +3300,11 @@ export function AppProvider({ children }) {
       ...payload,
       lateToleranceMinutes: Number(payload.lateToleranceMinutes ?? state.policies.lateToleranceMinutes),
       earlyCheckInLimitMinutes: Number(payload.earlyCheckInLimitMinutes ?? state.policies.earlyCheckInLimitMinutes),
-      employeeKpiRates: { ...state.policies.employeeKpiRates, ...(payload.employeeKpiRates || {}) },
       attendanceEvaluation: { ...state.policies.attendanceEvaluation, ...(payload.attendanceEvaluation || {}) },
       effectiveFrom: payload.effectiveFrom || today(),
       version: Number(state.policies.version || 1) + 1,
     }
-    const numericValues = [next.lateToleranceMinutes, next.earlyCheckInLimitMinutes, ...Object.values(next.employeeKpiRates), ...Object.values(next.attendanceEvaluation)]
+    const numericValues = [next.lateToleranceMinutes, next.earlyCheckInLimitMinutes, ...Object.values(next.attendanceEvaluation)]
     if (numericValues.some((value) => !Number.isFinite(Number(value)) || Number(value) < 0) || !Number.isInteger(next.lateToleranceMinutes)) {
       return { ok: false, message: 'Giá trị chính sách phải là số hợp lệ và không âm.' }
     }
@@ -3399,6 +3459,92 @@ export function AppProvider({ children }) {
     return { ok: true, expense: deleted }
   }
 
+  const requireCompensationOperator = (targetUnit = '') => {
+    const role = normalizeAuthRole(state.session?.role)
+    if (!['admin', 'business_support'].includes(role)) {
+      throw new Error('Chỉ Admin hoặc Nhân viên hỗ trợ KD được thực hiện thao tác này.')
+    }
+    if (targetUnit === 'business_support' && role !== 'admin') {
+      throw new Error('Chỉ Admin được quản lý vi phạm của Nhân viên hỗ trợ KD.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để cập nhật dữ liệu lương thưởng an toàn.')
+    }
+  }
+
+  const createCompensationEntry = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'compensation_entry.create',
+      payload,
+      payload.idempotencyKey || `compensation-entry:${crypto.randomUUID()}`,
+    )
+  }
+
+  const approveCompensationEntry = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'compensation_entry.approve',
+      payload,
+      payload.idempotencyKey || `compensation-approval:${crypto.randomUUID()}`,
+    )
+  }
+
+  const voidCompensationEntry = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'compensation_entry.void',
+      payload,
+      payload.idempotencyKey || `compensation-void:${crypto.randomUUID()}`,
+    )
+  }
+
+  const createViolation = async (payload = {}) => {
+    requireCompensationOperator(String(payload.targetUnit || ''))
+    return runRemoteDomainCommand(
+      'violation.create',
+      payload,
+      payload.idempotencyKey || `violation:${crypto.randomUUID()}`,
+    )
+  }
+
+  const voidViolation = async (payload = {}) => {
+    const violation = state.violations.find((record) => String(record.id || '') === String(payload.id || payload.violationId || ''))
+    requireCompensationOperator(String(violation?.targetUnit || ''))
+    return runRemoteDomainCommand(
+      'violation.void',
+      payload,
+      payload.idempotencyKey || `violation-void:${crypto.randomUUID()}`,
+    )
+  }
+
+  const calculateRevenueBonusDay = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'revenue_bonus.calculate_day',
+      payload,
+      payload.idempotencyKey || `revenue-bonus:${crypto.randomUUID()}`,
+    )
+  }
+
+  const approveRevenueBonusMilestone = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'revenue_bonus.approve_milestone',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-milestone-approve:${crypto.randomUUID()}`,
+    )
+  }
+
+  const rejectRevenueBonusMilestone = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'revenue_bonus.reject_milestone',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-milestone-reject:${crypto.randomUUID()}`,
+    )
+  }
+
   const addSalaryAdjustment = async (payload = {}) => {
     if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền tạo khoản lương thưởng.' }
     const employee = state.employees.find((item) => item.id === payload.employeeId)
@@ -3515,7 +3661,7 @@ export function AppProvider({ children }) {
     const actor = actorSnapshot(state.session)
     const confirmed = { ...previous, status: 'Đã chi', confirmedAt: timestamp, confirmedBy: actor, remainingAfter: available - previous.amount }
     const transaction = { id: uid('TXN'), storeId: previous.storeId, type: 'Ứng lương', direction: 'out', amount: previous.amount, sourceType: 'salary-advance', sourceId: previous.id, occurredAt: timestamp, createdAt: timestamp, actor }
-    const expense = { id: uid('EXP'), storeId: previous.storeId, type: 'Ứng lương', category: 'payroll', amount: previous.amount, description: `Ứng lương ${previous.employeeName}`, sourceType: 'salary-advance', sourceId: previous.id, recognized: true, occurredAt: timestamp, createdAt: timestamp, createdBy: actor.id }
+    const expense = { id: uid('EXP'), storeId: previous.storeId, type: 'Ứng lương', category: 'payroll', amount: previous.amount, description: `Ứng lương ${previous.employeeName}`, sourceType: 'salary-advance', sourceId: previous.id, recognized: false, occurredAt: timestamp, createdAt: timestamp, createdBy: actor.id }
     const audit = { id: uid('AUD'), entity: 'salary-advance', entityId: id, action: 'confirm', before: previous, after: confirmed, actor, createdAt: timestamp }
     setState((current) => ({ ...current, salaryAdvances: current.salaryAdvances.map((item) => item.id === id ? confirmed : item), cashTransactions: [transaction, ...current.cashTransactions], expenseEntries: [expense, ...current.expenseEntries], auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
     notify('Đã xác nhận chi ứng lương.')
@@ -3541,29 +3687,22 @@ export function AppProvider({ children }) {
       role: 'employee',
       hours: state.attendance.filter((record) => !record.deletedAt && record.employeeId === employee.id && isInMonth(record, period)).reduce((sum, record) => sum + Math.max(0, Number(record.hours) || 0), 0),
     }))
-    const periodStart = `${period}-01`
-    const periodEnd = `${period}-${String(new Date(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 0).getDate()).padStart(2, '0')}`
-    const summary = financeSummaryFromState(state, { storeId, from: periodStart, to: periodEnd })
-    const kpi = calculateKpiBonuses({
-      profit: summary.profit,
-      participants: employeeHours,
-      employeeTiers: [
-        { threshold: 30000, ratePercent: state.policies.employeeKpiRates.from30000 },
-        { threshold: 15000, ratePercent: state.policies.employeeKpiRates.from15000 },
-        { threshold: 7000, ratePercent: state.policies.employeeKpiRates.from7000 },
-      ],
-      policyId: `policy-v${state.policies.version}`,
-      policyEffectiveAt: state.policies.effectiveFrom,
-    })
     const rows = employees.map((employee) => {
-      const kpiBonus = kpi.results.find((result) => result.id === employee.id)?.amount || 0
-      const gross = employeeGrossFor(state, employee.id, period) + kpiBonus
+      const gross = employeeGrossFor(state, employee.id, period)
       const advancesPaid = advancePaidFor(state, employee.id, period)
-      return { employeeId: employee.id, employeeName: employee.name, hours: employeeHours.find((item) => item.id === employee.id)?.hours || 0, gross, kpiBonus, advancesPaid, remaining: Math.max(0, gross - advancesPaid), salarySnapshot: { salary: employee.salary, monthlySalary: employee.monthlySalary, hourlyRate: employee.hourlyRate, baseSalary: employee.baseSalary, requiredMonthlyHours: employee.requiredMonthlyHours, standardWorkDays: employee.standardWorkDays, payFormula: employee.payFormula, tiktokAllowance: employee.tiktokAllowance } }
+      return { employeeId: employee.id, employeeName: employee.name, hours: employeeHours.find((item) => item.id === employee.id)?.hours || 0, gross, advancesPaid, remaining: Math.max(0, gross - advancesPaid), salarySnapshot: { salary: employee.salary, monthlySalary: employee.monthlySalary, hourlyRate: employee.hourlyRate, baseSalary: employee.baseSalary, requiredMonthlyHours: employee.requiredMonthlyHours, standardWorkDays: employee.standardWorkDays, payFormula: employee.payFormula, tiktokAllowance: employee.tiktokAllowance } }
     })
     const timestamp = new Date().toISOString()
-    const periodRecord = { id: existing?.id || uid('PAY'), storeId, period, rows, kpiSnapshot: kpi, financeSnapshot: summary, policySnapshot: clone(state.policies), status: 'Đã chốt', closedAt: timestamp, closedBy: actorSnapshot(state.session), confirmedAt: existing?.confirmedAt || null, lockedAt: null }
-    setState((current) => ({ ...current, payrollPeriods: [periodRecord, ...current.payrollPeriods.filter((item) => !(item.storeId === storeId && item.period === period))], stateVersion: current.stateVersion + 1 }))
+    const netPayrollExpense = rows.reduce((sum, row) => sum + nonNegativeInteger(row.gross), 0)
+    const summary = buildLocalPayrollFinanceSnapshot({ state, storeId, period, netPayrollExpense })
+    const periodRecord = { id: existing?.id || uid('PAY'), storeId, period, rows, financeSnapshot: summary, policySnapshot: clone(state.policies), status: 'Đã chốt', closedAt: timestamp, closedBy: actorSnapshot(state.session), confirmedAt: existing?.confirmedAt || null, lockedAt: null }
+    const payrollAccrual = { id: `EXP-PAYROLL-${periodRecord.id}`, storeId, type: 'Chi phí lương trong kỳ', category: 'payroll', amount: netPayrollExpense, description: `Chi phí lương kỳ ${period}`, sourceType: 'payroll-accrual', sourceId: periodRecord.id, recognized: true, period, occurredAt: timestamp, createdAt: timestamp, createdBy: state.session?.id || state.session?.code || 'SYSTEM' }
+    setState((current) => ({
+      ...current,
+      payrollPeriods: [periodRecord, ...current.payrollPeriods.filter((item) => !(item.storeId === storeId && item.period === period))],
+      expenseEntries: [payrollAccrual, ...current.expenseEntries.filter((entry) => !(entry.sourceType === 'payroll-accrual' && String(entry.sourceId) === String(periodRecord.id)))],
+      stateVersion: current.stateVersion + 1,
+    }))
     notify(`Đã chốt sổ kỳ ${period}.`)
     return { ok: true, period: periodRecord }
   }
@@ -3588,7 +3727,7 @@ export function AppProvider({ children }) {
     const actor = actorSnapshot(state.session)
     const employeePayments = source.rows.filter((row) => row.remaining > 0).map((row) => ({ id: uid('PAYTX'), storeId, period, employeeId: row.employeeId, employeeName: row.employeeName, amount: row.remaining, type: 'Lương nhân viên', createdAt: timestamp, actor }))
     const payments = employeePayments
-    const expenses = payments.map((payment) => ({ id: uid('EXP'), storeId, type: payment.type, category: 'payroll', amount: payment.amount, description: `${payment.type} kỳ ${period}`, sourceType: 'payroll-payment', sourceId: payment.id, recognized: true, occurredAt: timestamp, createdAt: timestamp, createdBy: actor.id }))
+    const expenses = payments.map((payment) => ({ id: uid('EXP'), storeId, type: payment.type, category: 'payroll', amount: payment.amount, description: `${payment.type} kỳ ${period}`, sourceType: 'payroll-payment', sourceId: payment.id, recognized: false, occurredAt: timestamp, createdAt: timestamp, createdBy: actor.id }))
     const transactions = payments.map((payment) => ({ id: uid('TXN'), storeId, type: payment.type, direction: 'out', amount: payment.amount, sourceType: 'payroll-payment', sourceId: payment.id, occurredAt: timestamp, createdAt: timestamp, actor }))
     const confirmed = { ...source, confirmedAt: timestamp, confirmedBy: actor, status: 'Đã chi' }
     setState((current) => ({ ...current, payrollPeriods: [confirmed, ...current.payrollPeriods.filter((item) => !(item.storeId === storeId && item.period === period))], payrollPayments: [...payments, ...current.payrollPayments], expenseEntries: [...expenses, ...current.expenseEntries], cashTransactions: [...transactions, ...current.cashTransactions], stateVersion: current.stateVersion + 1 }))
@@ -4491,14 +4630,13 @@ export function AppProvider({ children }) {
         && (!assignees.size || assignees.has(String(employeeId || '')))
     })
     const incompleteTasks = scopedTasks.filter((task) => !(task.completedBy?.[employeeId] ?? task.done))
-    const incompleteTaskReason = String(payload.incompleteTaskReason || payload.incompleteReason || '').trim()
     if (storeEmployeeAttendance && (cashRevenue !== expectedCashRevenue || transferRevenue !== expectedTransferRevenue)) {
       const message = `Doanh thu kết ca chưa khớp: tiền mặt ${expectedCashRevenue.toLocaleString('en-US')} đ, chuyển khoản ${expectedTransferRevenue.toLocaleString('en-US')} đ.`
       notify(message, 'info')
       return { ok: false, message, expectedCashRevenue, expectedTransferRevenue }
     }
-    if (storeEmployeeAttendance && incompleteTasks.length && !incompleteTaskReason) {
-      const message = 'Cần nhập lý do cho các công việc chưa hoàn thành trước khi kết ca.'
+    if (storeEmployeeAttendance && incompleteTasks.length) {
+      const message = `Cần hoàn thành đủ ${incompleteTasks.length} công việc còn lại trước khi kết ca.`
       notify(message, 'info')
       return { ok: false, message, incompleteTaskIds: incompleteTasks.map((task) => task.id) }
     }
@@ -4522,7 +4660,7 @@ export function AppProvider({ children }) {
       cash: storeEmployeeAttendance ? expectedCashRevenue : Number(payload.cash) || Number(openRecord.cash) || 0,
       transfer: storeEmployeeAttendance ? expectedTransferRevenue : Number(payload.transfer) || Number(openRecord.transfer) || 0,
       orderCount: storeEmployeeAttendance ? relatedOrders.length : Number(openRecord.orderCount) || 0,
-      incompleteTaskReason: incompleteTasks.length ? incompleteTaskReason : '',
+      incompleteTaskReason: '',
       incompleteTaskIds: incompleteTasks.map((task) => task.id),
       tiktok: Boolean(payload.tiktok ?? openRecord.tiktok),
       note: payload.note ?? openRecord.note,
@@ -4611,9 +4749,11 @@ export function AppProvider({ children }) {
   const activeStore = state.stores.find((store) => store.id === selectedStoreId)
     || (state.session?.role === 'store_manager' || state.session?.role === 'employee' ? null : state.stores[0] || null)
   const currentEmployee = state.session?.employeeId ? state.employees.find((employee) => employee.id === state.session.employeeId) || null : null
+  const revenueBonuses = revenueBonusView(state.revenueBonusDaily, state.revenueBonusAllocations)
 
   const value = {
     ...state,
+    revenueBonuses,
     activeStore,
     currentEmployee,
     authReady: sessionRestoreReady,
@@ -4670,6 +4810,14 @@ export function AppProvider({ children }) {
     addFixedExpense,
     updateFixedExpense,
     deleteFixedExpense,
+    createCompensationEntry,
+    approveCompensationEntry,
+    voidCompensationEntry,
+    createViolation,
+    voidViolation,
+    calculateRevenueBonusDay,
+    approveRevenueBonusMilestone,
+    rejectRevenueBonusMilestone,
     addSalaryAdjustment,
     getAvailableSalary,
     createSalaryAdvance,

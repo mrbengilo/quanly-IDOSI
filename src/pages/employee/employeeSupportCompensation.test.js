@@ -139,11 +139,12 @@ describe('employee support compensation helpers', () => {
       supportAllowance: 50_000,
       supportPay: 137_000,
       supportHours: 3,
-      gross: 4_337_000,
+      gross: 4_137_000,
       advancesPaid: 500_000,
-      remaining: 3_837_000,
+      remaining: 3_637_000,
       locked: true,
     })
+    expect(summary.homeSnapshot.rows[0]).not.toHaveProperty('kpiBonus')
     expect(supportPayrollDetailRows({
       snapshotDetails: summary.supportDetails,
       stores: [{ id: 'S02', name: 'Dosii KVC' }],

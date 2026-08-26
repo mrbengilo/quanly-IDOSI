@@ -271,7 +271,20 @@ export const employeePayrollSnapshotSummary = ({ payrollPeriods = [], employeeId
   ))
   const rows = periods.flatMap((item) => item.rows
     .filter((row) => recordEmployeeId(row) === String(employeeId || ''))
-    .map((row) => ({ ...row, payrollStoreId: item.storeId, payrollStatus: item.status })))
+    .map((row) => {
+      // Old locked rows remain readable, but the retired KPI amount is deliberately
+      // excluded instead of being silently reclassified as another bonus source.
+      const legacyKpiBonus = firstMoney(row.kpiBonus) || 0
+      const normalized = {
+        ...row,
+        gross: Math.max(0, (firstMoney(row.gross) || 0) - legacyKpiBonus),
+        remaining: Math.max(0, (firstMoney(row.remaining) || 0) - legacyKpiBonus),
+        payrollStoreId: item.storeId,
+        payrollStatus: item.status,
+      }
+      delete normalized.kpiBonus
+      return normalized
+    }))
   if (!rows.length) return null
 
   const homeRows = rows.filter((row) => !isSupportSnapshotRow(row))
@@ -332,7 +345,6 @@ export const employeePayrollSnapshotSummary = ({ payrollPeriods = [], employeeId
     homeSnapshot: homeRows.length ? {
       rows: homeRows,
       baseSalary: sumRows(homeRows, 'baseSalary'),
-      kpiBonus: sumRows(homeRows, 'kpiBonus'),
       gross: sumRows(homeRows, 'gross'),
       advancesPaid: sumRows(homeRows, 'advancesPaid'),
       remaining: sumRows(homeRows, 'remaining'),
@@ -354,7 +366,6 @@ export const employeePayrollSnapshotSummary = ({ payrollPeriods = [], employeeId
     coveredSupportTransferIds,
     coveredSupportAttendanceIds,
     legacyCoveredSupportStoreIds,
-    kpiBonus: sum('kpiBonus'),
     gross,
     advancesPaid,
     remaining,

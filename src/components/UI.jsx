@@ -31,7 +31,8 @@ import {
   XAxis,
   YAxis,
 } from 'recharts'
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { loadEmployeeAvatarUrl, subscribeEmployeeAvatarUpdates } from '../services/employeeAvatarCache'
 import { money } from '../utils'
 
 const TEMPORAL_INPUT_TYPES = new Set(['date', 'time', 'month', 'datetime-local'])
@@ -47,16 +48,44 @@ export function Brand({ compact = false, blue = false, subtitle = 'hệ thống 
   )
 }
 
-export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38, src = '' }) {
-  const initials = name
+export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38, src = '', employeeId = '' }) {
+  const directSrc = typeof src === 'string' ? src.trim() : ''
+  const normalizedEmployeeId = String(employeeId || '').trim()
+  const [remoteAvatar, setRemoteAvatar] = useState({ employeeId: '', url: '' })
+  const [reloadVersion, setReloadVersion] = useState(0)
+  const initials = String(name || 'IDOSI')
     .split(' ')
     .slice(-2)
     .map((item) => item[0])
     .join('')
     .toUpperCase()
+
+  useEffect(() => {
+    if (directSrc || !normalizedEmployeeId) return undefined
+    let active = true
+    loadEmployeeAvatarUrl(normalizedEmployeeId)
+      .then((url) => {
+        if (active) setRemoteAvatar({ employeeId: normalizedEmployeeId, url })
+      })
+      .catch(() => {
+        if (active) setRemoteAvatar({ employeeId: normalizedEmployeeId, url: '' })
+      })
+    return () => { active = false }
+  }, [directSrc, normalizedEmployeeId, reloadVersion])
+
+  useEffect(() => {
+    if (!normalizedEmployeeId) return undefined
+    return subscribeEmployeeAvatarUpdates((changedEmployeeId) => {
+      if (!changedEmployeeId || changedEmployeeId === normalizedEmployeeId) {
+        setReloadVersion((current) => current + 1)
+      }
+    })
+  }, [normalizedEmployeeId])
+
+  const imageSrc = directSrc || (remoteAvatar.employeeId === normalizedEmployeeId ? remoteAvatar.url : '')
   return (
     <span className="avatar" style={{ '--avatar-color': color, width: size, height: size }}>
-      {src ? <img src={src} alt={`Ảnh đại diện ${name}`} /> : initials}
+      {imageSrc ? <img src={imageSrc} alt={`Ảnh đại diện ${name}`} /> : initials}
     </span>
   )
 }

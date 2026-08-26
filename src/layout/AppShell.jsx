@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
+  Award,
   Banknote,
   BarChart3,
   Bell,
@@ -20,6 +21,7 @@ import {
   ReceiptText,
   Repeat2,
   Settings,
+  ShieldAlert,
   ShoppingCart,
   Store,
   Users,
@@ -50,6 +52,9 @@ const storeOperations = [
   { label: 'Chi phí cửa hàng', path: '/store/expenses', icon: ReceiptText },
   { label: 'Chấm công cửa hàng', path: '/store/attendance', icon: Clock3 },
   { label: 'Lương thưởng nhân viên', path: '/store/payroll', icon: CircleDollarSign },
+  { label: 'Thưởng doanh thu ngày', path: '/store/revenue-bonus', icon: Award },
+  { label: 'Thu nhập của tôi', path: '/store/my-compensation', icon: WalletCards, roles: ['store_manager'] },
+  { label: 'Vi phạm của tôi', path: '/store/my-violations', icon: ShieldAlert, roles: ['store_manager'] },
   { label: 'Dòng tiền cửa hàng', path: '/store/cashflow', icon: Banknote },
   { label: 'Báo cáo cửa hàng', path: '/store/reports', icon: BarChart3 },
   { label: 'Cài đặt cửa hàng', path: '/store/settings', icon: Settings },
@@ -68,6 +73,8 @@ const officeEmployeeMenu = [
   { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
   { label: 'Lịch làm việc của tôi', path: '/employee/schedule', icon: CalendarCheck },
   { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
+  { label: 'Thu nhập của tôi', path: '/employee/compensation', icon: Award, badge: 'Mới' },
+  { label: 'Vi phạm của tôi', path: '/employee/violations', icon: ShieldAlert },
   { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
 ]
 
@@ -75,6 +82,8 @@ const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
   { label: 'Công việc được giao', path: '/support/tasks', icon: ClipboardCheck },
   { label: 'Lịch làm việc của tôi', path: '/support/my-schedule', icon: CalendarCheck, badge: 'Mới' },
+  { label: 'Thu nhập của tôi', path: '/support/my-compensation', icon: WalletCards, badge: 'Mới' },
+  { label: 'Vi phạm của tôi', path: '/support/my-violations', icon: ShieldAlert },
   businessSupportScheduleOperation,
   businessSupportDirectoryOperation,
   officeOperation,
@@ -85,6 +94,10 @@ const businessSupportMenu = [
   systemOperations[3],
   orderInformationSettingsOperation,
   customerSurveyOperation,
+  { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award, badge: 'Mới' },
+  { label: 'Thưởng doanh thu ngày', path: '/admin/compensation/revenue', icon: CircleDollarSign, badge: 'Mới' },
+  { label: 'Vi phạm nhân viên', path: '/admin/violations/store', icon: ShieldAlert, badge: 'Mới' },
+  { label: 'Vi phạm Khối văn phòng', path: '/admin/violations/office', icon: ShieldAlert },
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
   { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
   { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
@@ -101,6 +114,11 @@ const systemMenus = {
     { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
     customerSurveyOperation,
+    { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award, badge: 'Mới' },
+    { label: 'Thưởng doanh thu ngày', path: '/admin/compensation/revenue', icon: CircleDollarSign, badge: 'Mới' },
+    { label: 'Vi phạm nhân viên', path: '/admin/violations/store', icon: ShieldAlert, badge: 'Mới' },
+    { label: 'Vi phạm Khối văn phòng', path: '/admin/violations/office', icon: ShieldAlert },
+    { label: 'Vi phạm HTKD', path: '/admin/violations/business-support', icon: ShieldAlert },
     { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
     ...systemOperations.slice(2, 4),
     orderInformationSettingsOperation,
@@ -120,6 +138,9 @@ const systemMenus = {
     { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
     { label: 'Lịch phân ca', path: '/employee/schedule', icon: CalendarCheck },
     { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
+    { label: 'Thu nhập của tôi', path: '/employee/compensation', icon: Award, badge: 'Mới' },
+    { label: 'Vi phạm của tôi', path: '/employee/violations', icon: ShieldAlert },
+    { label: 'Thưởng doanh thu team', path: '/employee/revenue-bonus', icon: CircleDollarSign },
     { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
   ],
 }
@@ -167,11 +188,12 @@ export default function AppShell() {
   const isOfficeEmployee = isEmployee && isOfficeProfile(session, app.currentEmployee)
   const isStoreWorkspace = isStoreManager || (isStoreOperator && location.pathname.startsWith('/store/'))
   const isSystemWorkspace = isSystemOperator && !isStoreWorkspace
-  const roleMenus = isOfficeEmployee
+  const roleMenus = (isOfficeEmployee
     ? officeEmployeeMenu
     : isStoreWorkspace
       ? storeOperations
-      : systemMenus[canonicalRole] || systemMenus.employee
+      : systemMenus[canonicalRole] || systemMenus.employee)
+    .filter((item) => !item.roles || item.roles.includes(canonicalRole))
   const availableRoleOptions = Array.isArray(session?.availableRoles) ? session.availableRoles : []
   const canSwitchRole = availableRoleOptions.length > 1
   const assignedStoreId = [session?.assignedStoreId, session?.storeId]

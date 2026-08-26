@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -65,8 +65,12 @@ describe('IDOSI VPS runtime', () => {
   it('applies migrations once and rolls back a failed D1 batch', async () => {
     const directory = await temporaryDirectory()
     const databasePath = resolve(directory, 'idosi.sqlite')
+    const migrationFiles = (await readdir(resolve('drizzle')))
+      .filter((name) => /^\d+.*\.sql$/u.test(name))
+      .sort((left, right) => left.localeCompare(right))
     const db = createSqliteD1({ databasePath })
-    expect((await db.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(9)
+    expect((await db.prepare('SELECT migration_name FROM _vps_migrations ORDER BY migration_name').all()).results)
+      .toEqual(migrationFiles.map((migration_name) => ({ migration_name })))
 
     await expect(db.batch([
       db.prepare("INSERT INTO system_metadata (meta_key, value_json, version, updated_at) VALUES ('rollback-check', '{}', 1, '2026-08-18T00:00:00.000Z')"),
@@ -76,7 +80,8 @@ describe('IDOSI VPS runtime', () => {
     db.close()
 
     const reopened = createSqliteD1({ databasePath })
-    expect((await reopened.prepare('SELECT COUNT(*) AS count FROM _vps_migrations').first()).count).toBe(9)
+    expect((await reopened.prepare('SELECT migration_name FROM _vps_migrations ORDER BY migration_name').all()).results)
+      .toEqual(migrationFiles.map((migration_name) => ({ migration_name })))
     reopened.close()
   }, 30_000)
 

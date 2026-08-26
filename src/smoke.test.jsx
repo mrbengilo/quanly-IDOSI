@@ -220,7 +220,7 @@ describe('IDOSI page smoke tests', () => {
     expect(screen.getByRole('link', { name: /Danh sách nhân viên cửa hàng/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Nhân viên hỗ trợ KD$/i }).getAttribute('href')).toBe('/admin/business-support')
     expect(screen.getAllByText('Hỗ trợ KD').length).toBeGreaterThan(0)
-    expect(screen.getByRole('link', { name: /Khối văn phòng/i })).toBeTruthy()
+    expect(screen.getAllByRole('link').find((link) => link.getAttribute('href') === '/office')).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Điều chuyển nhân sự$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Công việc được giao/i })).toBeTruthy()

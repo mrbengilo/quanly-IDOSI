@@ -4,6 +4,7 @@ import {
   ACCOUNT_AVATAR_MAX_BYTES,
   ACCOUNT_AVATAR_MAX_SOURCE_BYTES,
   accountAvatarCrop,
+  mergeAccountPersonnelProfile,
   optimizeAccountAvatar,
   validateAccountAvatarDataUrl,
 } from './accountAvatar'
@@ -109,5 +110,26 @@ describe('account avatar image contract', () => {
       .toThrow(expect.objectContaining({ code: 'AVATAR_INVALID' }))
     expect(() => validateAccountAvatarDataUrl('data:image/png;base64,QUFBQQ=='))
       .toThrow(expect.objectContaining({ code: 'AVATAR_INVALID' }))
+  })
+
+  it('keeps canonical personnel fields when an older account projection is partial', () => {
+    expect(mergeAccountPersonnelProfile({
+      code: 'HTKD-001',
+      name: 'Nguyễn Hồ Sơ',
+      phone: '0901234567',
+      cccd: '079123456789',
+      address: 'Thành phố Hồ Chí Minh',
+    }, {
+      code: 'HTKD-001',
+      name: 'Nguyễn Hồ Sơ Mới',
+      phone: '',
+      cccd: null,
+    })).toMatchObject({
+      code: 'HTKD-001',
+      name: 'Nguyễn Hồ Sơ Mới',
+      phone: '0901234567',
+      cccd: '079123456789',
+      address: 'Thành phố Hồ Chí Minh',
+    })
   })
 })

@@ -61,7 +61,7 @@ function RegistrationGroup({ days, employees, group, records }) {
             return <tr key={id}>
               <th scope="row" className="my-work-schedule-grid__employee">
                 <span className="my-work-schedule-employee">
-                  <Avatar name={employee.name || id} src={employee.avatar} color={employee.color} size={44} />
+                  <Avatar name={employee.name || id} src={employee.avatar} employeeId={id} color={employee.color} size={44} />
                   <span>
                     <strong>{employee.name || employee.employeeName || id}</strong>
                     <small>{id}</small>
