@@ -25,6 +25,7 @@ import {
   getDepartureTag,
   normalizeLocation,
   normalizePhone,
+  resolveStoreEmployeeSalaryPolicy,
   timeToMinutes,
   today,
   uid,
@@ -47,6 +48,7 @@ import {
   resolveAttendanceWorkingTime,
 } from '../domain/attendanceWorkingTime'
 import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'
+import { resolveExactlyOneActiveStoreManager } from '../domain/managerRevenueBonus'
 import {
   apiBootstrapState,
   apiCommand,
@@ -180,6 +182,7 @@ const REMOTE_ARRAY_KEYS = [
   'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'officeAdjustments',
   'orders', 'orderInformationOptions', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
+  'storeEmployeeSalaryConfigs', 'workCatalogItems', 'workCatalogProgress',
   'storeShiftTaskTemplates', 'compensationEntries', 'violations', 'revenueBonusDaily', 'revenueBonusAllocations',
   'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
   'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
@@ -922,6 +925,34 @@ const attendanceRecordWorkDate = (record = {}) => businessDate(
 
 const attendanceClaimKey = (employeeId, workDate) => `${String(employeeId || '')}:${String(workDate || '')}`
 
+const localStoreSalaryConfigFor = (state, employee, store, period) => {
+  if (!employee || !store) return null
+  return resolveStoreEmployeeSalaryPolicy(employee, {
+    store,
+    salaryConfigs: state.storeEmployeeSalaryConfigs || [],
+    period,
+  })
+}
+
+export const calculateLocalStoreEmployeeBasePay = ({
+  state = {},
+  employee = {},
+  store = null,
+  period = monthKey(),
+  hours = 0,
+} = {}) => {
+  const salaryConfig = localStoreSalaryConfigFor(state, employee, store, period)
+  return {
+    baseSalary: calculateEmployeeBasePay(employee, {
+      hours,
+      salaryConfig,
+      store,
+      period,
+    }),
+    salaryConfig,
+  }
+}
+
 const isInMonth = (record, period) => !period || period === 'all' || recordDate(record).startsWith(String(period).slice(0, 7))
 
 const minuteDifference = (actual, scheduled) => {
@@ -941,18 +972,31 @@ const actorSnapshot = (session) => ({
 
 const visibleOrders = (orders = []) => orders.filter((order) => !order.deletedAt && order.status !== 'Đã xóa')
 
+export const localHomePayrollAttendance = ({ attendance = [], employee = {}, period = monthKey() } = {}) => (
+  attendance.filter((record) => (
+    !record.deletedAt
+    && String(record.employeeId || '') === String(employee.id || '')
+    && String(record.storeId || '') === String(employee.storeId || '')
+    && !record.supportTransferId
+    && !record.supportCompensation?.transferId
+    && !record.compensation?.support?.transferId
+    && isInMonth(record, period)
+  ))
+)
+
 const employeeGrossFor = (state, employeeId, period = monthKey()) => {
   const employee = state.employees.find((item) => item.id === employeeId)
   if (!employee) return 0
-  const attendance = state.attendance.filter((item) => item.employeeId === employeeId && isInMonth(item, period))
+  const attendance = localHomePayrollAttendance({ attendance: state.attendance, employee, period })
   const hours = attendance.reduce((sum, item) => sum + Math.max(0, Number(item.hours) || 0), 0)
   const employeeStore = state.stores.find((store) => String(store.id) === String(employee.storeId))
-  const salaryEmployee = isSecondMallStore(employeeStore)
-    && getEmployeeType(employee) === 'Full-Time'
-    && Number(employee.requiredMonthlyHours) > 0
-    ? { ...employee, payFormula: 'monthly-hours' }
-    : employee
-  const base = calculateEmployeeBasePay(salaryEmployee, { hours })
+  const { baseSalary: base } = calculateLocalStoreEmployeeBasePay({
+    state,
+    employee,
+    store: employeeStore,
+    period,
+    hours,
+  })
   const adjustments = state.salaryAdjustments
     .filter((item) => item.employeeId === employeeId && isInMonth(item, period) && item.status !== 'Đã hủy')
   const adjustmentAmount = (matches) => adjustments
@@ -1020,14 +1064,6 @@ const storeCode = (store = {}) => String(store.short || store.code || store.id |
   .replace(/[^A-Za-z0-9]/g, '')
   .toUpperCase()
   .slice(0, 12) || 'CH'
-
-const isSecondMallStore = (store = {}) => {
-  const key = `${store.id || ''} ${store.short || ''} ${store.name || ''} ${store.employeePrefix || ''}`
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/gu, '')
-    .toUpperCase()
-  return String(store.id || '') === 'CH001' || key.includes('SM234') || key.includes('SECOND MALL')
-}
 
 const employeePrefixForStore = (store = {}) => {
   const normalize = (value) => String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/gu, '').toUpperCase()
@@ -1730,10 +1766,6 @@ export function AppProvider({ children }) {
     const normalizedPayload = { ...payload, unit: requestedUnit, storeId: requestedUnit === 'store' ? scopedStoreId || state.activeStoreId : scopedStoreId }
     const linkedRolePromotion = ['store_manager', 'store'].includes(requestedUnit) && Boolean(normalizedPayload.linkedEmployeeId)
     const generatedCode = String(payload.id || payload.code || payload.employeeCode || nextEmployeeCode(normalizedPayload, state)).trim()
-    const employeeStore = state.stores.find((store) => String(store.id) === String(normalizedPayload.storeId))
-    const monthlyHoursFormula = requestedUnit === 'store'
-      && getEmployeeType(normalizedPayload) === 'Full-Time'
-      && isSecondMallStore(employeeStore)
     const employeePayload = {
       ...normalizedPayload,
       ...(requestedUnit === 'store' ? {
@@ -1744,7 +1776,21 @@ export function AppProvider({ children }) {
       id: generatedCode,
       code: generatedCode,
       employeeCode: generatedCode,
-      ...(monthlyHoursFormula ? { payFormula: 'monthly-hours' } : {}),
+    }
+    if (!apiRef.current.enabled && requestedUnit === 'store_manager') {
+      const managerStoreId = String(employeePayload.storeId || '').trim()
+      if (managerStoreId) {
+        const managerResolution = resolveExactlyOneActiveStoreManager({
+          storeId: managerStoreId,
+          managers: [
+            ...(Array.isArray(state.employees) ? state.employees : []),
+            ...(Array.isArray(state.managerAccounts) ? state.managerAccounts : []),
+          ],
+        })
+        if (managerResolution.ok || managerResolution.code === 'STORE_MANAGER_MULTIPLE_ACTIVE') {
+          return { ok: false, message: 'Cửa hàng đã có một Quản lý cửa hàng đang hoạt động.' }
+        }
+      }
     }
     const officeEmployee = requestedUnit === 'office'
     if (!linkedRolePromotion && !isValidEmployeePhone(employeePayload.phone)) return { ok: false, message: 'Số điện thoại phải gồm đúng 10 số và bắt đầu bằng số 0.' }
@@ -2179,9 +2225,12 @@ export function AppProvider({ children }) {
     }
     if (submitted.size !== taskIds.size) return { ok: false, message: 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.' }
     const incompleteReason = String(payload.incompleteReason || payload.note || '').trim()
-    const incompleteTaskIds = [...submitted].filter(([, completed]) => !completed).map(([taskId]) => taskId)
+    const requiredTaskIds = new Set(scopedTasks.filter((task) => task.required !== false).map((task) => String(task.id || '')))
+    const incompleteTaskIds = [...submitted]
+      .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && !completed)
+      .map(([taskId]) => taskId)
     if (incompleteReason.length > 1_000) return { ok: false, message: 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.' }
-    if (incompleteTaskIds.length && !incompleteReason) return { ok: false, message: 'Cần nhập ghi chú khi chưa hoàn thành tất cả công việc.' }
+    if (incompleteTaskIds.length && !incompleteReason) return { ok: false, message: 'Cần nhập ghi chú khi chưa hoàn thành công việc cố định.' }
     const idempotencyKey = String(payload.idempotencyKey || `task-progress:${crypto.randomUUID()}`)
     if (apiRef.current.enabled) {
       try {
@@ -2300,7 +2349,20 @@ export function AppProvider({ children }) {
           date,
           shiftId,
           ...(assigningEmployees ? { employeeIds } : {}),
-          tasks: nextTasks.map(({ title, detail }) => ({ title, detail })),
+          tasks: nextTasks.map((task) => ({
+            title: task.title,
+            detail: task.detail,
+            catalogItemId: task.catalogItemId,
+            catalogCode: task.catalogCode,
+            catalogVersion: task.catalogVersion,
+            kind: task.kind || task.catalogKind,
+            catalogKind: task.catalogKind || task.kind,
+            amountVnd: task.amountVnd,
+            required: task.required,
+            ...(task.catalogSnapshot && typeof task.catalogSnapshot === 'object'
+              ? { catalogSnapshot: { ...task.catalogSnapshot } }
+              : {}),
+          })),
         }, envelope.idempotencyKey || `tasks:${crypto.randomUUID()}`)
         notify('Đã lưu và gửi danh sách công việc.')
         return { ok: true, tasks: result.tasks || [], assignment: result.assignment || null, history: result.history || result.taskAssignmentHistory || null }
@@ -2322,7 +2384,13 @@ export function AppProvider({ children }) {
       date,
       shiftId,
       employeeIds,
-      tasks: assignedTasks.map(({ id, title, detail, completedBy = {} }) => ({ id, title, detail, completedBy })),
+      tasks: assignedTasks.map((task) => ({
+        ...task,
+        completedBy: task.completedBy || {},
+        ...(task.catalogSnapshot && typeof task.catalogSnapshot === 'object'
+          ? { catalogSnapshot: { ...task.catalogSnapshot } }
+          : {}),
+      })),
       assignedAt,
       assignedBy,
       status: 'Đã giao',
@@ -2362,7 +2430,15 @@ export function AppProvider({ children }) {
       ? isOfficeUnit(item.unit || item.unitType || item.department)
       : isBusinessSupportUnit(item.unit)))
     const tasks = (Array.isArray(payload.tasks) ? payload.tasks : [])
-      .map((task) => ({ id: String(task.id || uid('CVHT')), name: String(task.name || '').trim(), description: String(task.description || '').trim() }))
+      .map((task) => ({
+        ...task,
+        id: String(task.id || uid('CVHT')),
+        name: String(task.name || task.title || '').trim(),
+        description: String(task.description || task.detail || '').trim(),
+        ...(task.catalogSnapshot && typeof task.catalogSnapshot === 'object'
+          ? { catalogSnapshot: { ...task.catalogSnapshot } }
+          : {}),
+      }))
       .filter((task) => task.name)
     if (!/^\d{4}-\d{2}-\d{2}$/u.test(date)) return { ok: false, message: 'Ngày giao việc không hợp lệ.' }
     if (!employee) return { ok: false, message: 'Không tìm thấy nhân viên nhận việc.' }
@@ -3472,6 +3548,21 @@ export function AppProvider({ children }) {
     }
   }
 
+  const setStoreEmployeeSalaryConfig = async (payload = {}) => {
+    const role = normalizeAuthRole(state.session?.role)
+    if (!['admin', 'business_support'].includes(role)) {
+      throw new Error('Chỉ Admin hoặc Nhân viên hỗ trợ KD được cài đặt lương Full-Time.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để lưu cấu hình lương an toàn.')
+    }
+    return runRemoteDomainCommand(
+      'store_salary_config.set',
+      payload,
+      payload.idempotencyKey || `store-salary-config:${crypto.randomUUID()}`,
+    )
+  }
+
   const createCompensationEntry = async (payload = {}) => {
     requireCompensationOperator()
     return runRemoteDomainCommand(
@@ -3496,6 +3587,52 @@ export function AppProvider({ children }) {
       'compensation_entry.void',
       payload,
       payload.idempotencyKey || `compensation-void:${crypto.randomUUID()}`,
+    )
+  }
+
+  const requireWorkCatalogOperator = () => {
+    const role = normalizeAuthRole(state.session?.role)
+    if (!['admin', 'business_support'].includes(role)) {
+      throw new Error('Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý danh mục công việc và vi phạm.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để cập nhật danh mục an toàn.')
+    }
+  }
+
+  const createWorkCatalogItem = async (payload = {}) => {
+    requireWorkCatalogOperator()
+    return runRemoteDomainCommand(
+      'work_catalog.create',
+      payload,
+      payload.idempotencyKey || `work-catalog-create:${crypto.randomUUID()}`,
+    )
+  }
+
+  const updateWorkCatalogItem = async (payload = {}) => {
+    requireWorkCatalogOperator()
+    return runRemoteDomainCommand(
+      'work_catalog.update',
+      payload,
+      payload.idempotencyKey || `work-catalog-update:${crypto.randomUUID()}`,
+    )
+  }
+
+  const deleteWorkCatalogItem = async (payload = {}) => {
+    requireWorkCatalogOperator()
+    return runRemoteDomainCommand(
+      'work_catalog.delete',
+      payload,
+      payload.idempotencyKey || `work-catalog-delete:${crypto.randomUUID()}`,
+    )
+  }
+
+  const restoreWorkCatalogItem = async (payload = {}) => {
+    requireWorkCatalogOperator()
+    return runRemoteDomainCommand(
+      'work_catalog.restore',
+      payload,
+      payload.idempotencyKey || `work-catalog-restore:${crypto.randomUUID()}`,
     )
   }
 
@@ -3685,12 +3822,45 @@ export function AppProvider({ children }) {
     const employeeHours = employees.map((employee) => ({
       id: employee.id,
       role: 'employee',
-      hours: state.attendance.filter((record) => !record.deletedAt && record.employeeId === employee.id && isInMonth(record, period)).reduce((sum, record) => sum + Math.max(0, Number(record.hours) || 0), 0),
+      hours: localHomePayrollAttendance({ attendance: state.attendance, employee, period })
+        .reduce((sum, record) => sum + Math.max(0, Number(record.hours) || 0), 0),
     }))
     const rows = employees.map((employee) => {
+      const hours = employeeHours.find((item) => item.id === employee.id)?.hours || 0
+      const employeeStore = state.stores.find((store) => String(store.id) === String(employee.storeId))
+      const { baseSalary, salaryConfig } = calculateLocalStoreEmployeeBasePay({
+        state,
+        employee,
+        store: employeeStore,
+        period,
+        hours,
+      })
       const gross = employeeGrossFor(state, employee.id, period)
       const advancesPaid = advancePaidFor(state, employee.id, period)
-      return { employeeId: employee.id, employeeName: employee.name, hours: employeeHours.find((item) => item.id === employee.id)?.hours || 0, gross, advancesPaid, remaining: Math.max(0, gross - advancesPaid), salarySnapshot: { salary: employee.salary, monthlySalary: employee.monthlySalary, hourlyRate: employee.hourlyRate, baseSalary: employee.baseSalary, requiredMonthlyHours: employee.requiredMonthlyHours, standardWorkDays: employee.standardWorkDays, payFormula: employee.payFormula, tiktokAllowance: employee.tiktokAllowance } }
+      return {
+        employeeId: employee.id,
+        employeeName: employee.name,
+        hours,
+        baseSalary,
+        gross,
+        advancesPaid,
+        remaining: Math.max(0, gross - advancesPaid),
+        salarySnapshot: {
+          salary: employee.salary,
+          monthlySalary: employee.monthlySalary,
+          hourlyRate: employee.hourlyRate,
+          baseSalary: employee.baseSalary,
+          requiredMonthlyHours: employee.requiredMonthlyHours,
+          standardWorkDays: employee.standardWorkDays,
+          payBasis: salaryConfig ? 'tiered-hourly' : getPayBasis(employee),
+          payFormula: salaryConfig ? 'STORE_FULL_TIME_TIERED' : employee.payFormula,
+          salaryConfigSnapshot: salaryConfig ? { ...salaryConfig } : null,
+          thresholdHours: salaryConfig?.thresholdHours,
+          standardHourlyRateVnd: salaryConfig?.standardHourlyRateVnd,
+          excessHourlyRateVnd: salaryConfig?.excessHourlyRateVnd,
+          tiktokAllowance: employee.tiktokAllowance,
+        },
+      }
     })
     const timestamp = new Date().toISOString()
     const netPayrollExpense = rows.reduce((sum, row) => sum + nonNegativeInteger(row.gross), 0)
@@ -4629,14 +4799,16 @@ export function AppProvider({ children }) {
         && (!String(task.shiftId || task.shift || '') || String(task.shiftId || task.shift || '') === String(openRecord.shiftId || openRecord.shift || ''))
         && (!assignees.size || assignees.has(String(employeeId || '')))
     })
-    const incompleteTasks = scopedTasks.filter((task) => !(task.completedBy?.[employeeId] ?? task.done))
+    const incompleteTasks = scopedTasks.filter((task) => (
+      task.required !== false && !(task.completedBy?.[employeeId] ?? task.done)
+    ))
     if (storeEmployeeAttendance && (cashRevenue !== expectedCashRevenue || transferRevenue !== expectedTransferRevenue)) {
       const message = `Doanh thu kết ca chưa khớp: tiền mặt ${expectedCashRevenue.toLocaleString('en-US')} đ, chuyển khoản ${expectedTransferRevenue.toLocaleString('en-US')} đ.`
       notify(message, 'info')
       return { ok: false, message, expectedCashRevenue, expectedTransferRevenue }
     }
     if (storeEmployeeAttendance && incompleteTasks.length) {
-      const message = `Cần hoàn thành đủ ${incompleteTasks.length} công việc còn lại trước khi kết ca.`
+      const message = `Cần hoàn thành đủ ${incompleteTasks.length} công việc cố định còn lại trước khi kết ca.`
       notify(message, 'info')
       return { ok: false, message, incompleteTaskIds: incompleteTasks.map((task) => task.id) }
     }
@@ -4810,9 +4982,14 @@ export function AppProvider({ children }) {
     addFixedExpense,
     updateFixedExpense,
     deleteFixedExpense,
+    setStoreEmployeeSalaryConfig,
     createCompensationEntry,
     approveCompensationEntry,
     voidCompensationEntry,
+    createWorkCatalogItem,
+    updateWorkCatalogItem,
+    deleteWorkCatalogItem,
+    restoreWorkCatalogItem,
     createViolation,
     voidViolation,
     calculateRevenueBonusDay,

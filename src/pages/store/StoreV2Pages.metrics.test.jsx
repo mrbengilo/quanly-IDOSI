@@ -246,6 +246,36 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.getAllByText('80,000 đ').length).toBeGreaterThan(0)
   })
 
+  it('reads the canonical salaryConfig from a locked tiered payroll snapshot', () => {
+    const fullTimeEmployee = {
+      ...employee,
+      employmentType: 'Full-Time',
+      payBasis: 'tiered-hourly',
+      hourlyRate: null,
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [fullTimeEmployee],
+      payrollPeriods: [{
+        id: 'PAY-LOCKED-TIERED', storeId: store.id, period: today().slice(0, 7), status: 'Đã khóa',
+        rows: [{
+          employeeId: employee.id, hours: 4, baseSalary: 124_000, gross: 124_000, remaining: 124_000,
+          salarySnapshot: {
+            employmentType: 'Full-Time', payBasis: 'tiered-hourly',
+            salaryConfig: {
+              thresholdHours: 208, standardHourlyRateVnd: 31_000, excessHourlyRateVnd: 28_000,
+            },
+          },
+        }],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText('31,000 đ/giờ')).toBeTruthy()
+    expect(screen.getAllByText('124,000 đ').length).toBeGreaterThan(0)
+  })
+
   it('uses canonical approved compensation buckets without reviving voided records', () => {
     mocked.app = {
       ...baseApp(),
@@ -286,7 +316,13 @@ describe('store order, attendance, and payroll summaries', () => {
       attendance: [
         { id: 'A-01', storeId: store.id, employeeId: employee.id, date: today(), hours: 4, status: 'Đi sớm', minutesEarly: 12, minutesLate: 0 },
         { id: 'A-02', storeId: store.id, employeeId: employee.id, date: today(), hours: 1, status: 'Đi trễ', minutesEarly: 0, minutesLate: 8 },
+        {
+          id: 'A-SUPPORT-LEGACY', storeId: 'S02', employeeId: employee.id, date: today(), hours: 2,
+          compensation: { support: { transferId: 'TR-LEGACY', hours: 2, hourlyRate: 30_000, totalPay: 60_000 } },
+        },
       ],
+      stores: [store, { id: 'S02', name: 'Dosii TNV' }],
+      supportTransfers: [{ id: 'TR-LEGACY', employeeId: employee.id, fromStoreId: store.id, toStoreId: 'S02' }],
       salaryAdjustments: [],
       salaryAdvances: [],
       payrollPeriods: [],
@@ -296,6 +332,7 @@ describe('store order, attendance, and payroll summaries', () => {
 
     expect(screen.getByText((_, node) => node?.tagName === 'SMALL' && node.textContent.includes('20,000 đ/giờ'))).toBeTruthy()
     expect(screen.getAllByText('100,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('60,000 đ').length).toBeGreaterThan(0)
     expect(screen.getByRole('columnheader', { name: 'Tổng phút sớm' })).toBeTruthy()
     expect(screen.getByRole('columnheader', { name: 'Tổng phút trễ' })).toBeTruthy()
     expect(screen.getByText('12')).toBeTruthy()

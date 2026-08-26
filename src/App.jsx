@@ -11,6 +11,7 @@ import { CustomerSurveyPage } from './pages/admin/CustomerSurveyPage'
 import { AttendanceResetPage } from './pages/admin/AttendanceResetPage'
 import { AdminWorkRegistrationSchedulePage } from './pages/admin/AdminWorkRegistrationSchedulePage'
 import { OrderInformationSettingsPage } from './pages/admin/OrderInformationSettingsPage'
+import { WorkCatalogSettingsPage } from './pages/admin/WorkCatalogSettingsPage'
 import { AdminSupportWorkPage, SupportAssignedWorkPage } from './pages/admin/SupportWorkPages'
 import { BusinessSupportSchedulePage, MyBusinessSupportSchedulePage } from './pages/admin/BusinessSupportSchedulePage'
 import {
@@ -45,6 +46,7 @@ import { isOfficeProfile } from './pages/employee/officeAttendance'
 import { StoreEmployees, StoreTasks } from './pages/store/StoreOperations'
 import { StoreSettings } from './pages/store/StoreFinance'
 import { StoreExpensesV2 } from './pages/store/StoreExpensesV2'
+import { StoreSalarySettings } from './pages/store/StoreSalarySettings'
 import {
   StoreAttendanceV2,
   StoreCashflowV2,
@@ -169,6 +171,7 @@ export default function App() {
         <Route path="/admin/customer-survey" element={<CustomerSurveyPage />} />
         <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
         <Route path="/admin/order-information-settings" element={<OrderInformationSettingsPage />} />
+        <Route path="/admin/work-catalog" element={<WorkCatalogSettingsPage />} />
         <Route path="/admin/compensation/managers" element={<ManagerCompensationPage />} />
         <Route path="/admin/compensation/revenue" element={<RevenueBonusPage />} />
         <Route path="/admin/violations/store" element={<ViolationManagementPage targetUnit="store" />} />
@@ -186,6 +189,7 @@ export default function App() {
         <Route path="/store/expenses" element={<StoreExpensesV2 />} />
         <Route path="/store/attendance" element={<StoreAttendanceV2 />} />
         <Route path="/store/payroll" element={<StorePayrollV2 />} />
+        <Route path="/store/salary-settings" element={<RoleGuard roles={['admin', 'business_support']}><StoreSalarySettings /></RoleGuard>} />
         <Route path="/store/revenue-bonus" element={<RevenueBonusPage />} />
         <Route path="/store/my-compensation" element={<MyCompensationPage />} />
         <Route path="/store/my-violations" element={<MyViolationsPage />} />

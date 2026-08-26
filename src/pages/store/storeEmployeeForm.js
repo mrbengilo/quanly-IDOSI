@@ -11,8 +11,20 @@ export const formatStoreMoneyInput = (value) => {
   return amount ? new Intl.NumberFormat('en-US').format(amount) : ''
 }
 
-export const isPartTimeEmployee = (value) => String(value || '').toLowerCase() === 'part-time'
-export const normalizeStoreEmploymentType = (value) => isPartTimeEmployee(value) ? 'Part-Time' : 'Full-Time'
+const normalizedEmploymentType = (value) => String(value || '')
+  .trim()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase()
+
+export const isPartTimeEmployee = (value) => normalizedEmploymentType(value) === 'part-time'
+export const isTrialEmployee = (value) => normalizedEmploymentType(value) === 'thu viec'
+export const isHourlyStoreEmployee = (value) => isPartTimeEmployee(value) || isTrialEmployee(value)
+export const normalizeStoreEmploymentType = (value) => {
+  if (isPartTimeEmployee(value)) return 'Part-Time'
+  if (isTrialEmployee(value)) return 'Thử Việc'
+  return 'Full-Time'
+}
 
 const normalizeStoreKey = (value = '') => String(value)
   .normalize('NFD')
@@ -82,16 +94,17 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   const requireIdentityImages = Boolean(options.requireIdentityImages)
   const linkedEmployeeId = String(options.linkedEmployeeId || form.linkedEmployeeId || '').trim()
   const errors = []
+  const hourlyEmployee = Boolean(linkedEmployeeId) || isHourlyStoreEmployee(form.employmentType)
   const required = linkedEmployeeId
     ? [['Mã nhân viên', form.id], ['Lương theo giờ', form.salary], ['Cửa hàng', form.storeId]]
     : [
         ['Mã nhân viên', form.id],
         ['Ngày bắt đầu làm', form.startDate],
-        [isPartTimeEmployee(form.employmentType) ? 'Lương theo giờ' : 'Lương cơ bản', isPartTimeEmployee(form.employmentType) ? form.salary : form.baseSalary],
         ['Vị trí công việc', form.position],
         ['Tuổi', form.age],
         ['Cửa hàng', form.storeId],
       ]
+  if (!linkedEmployeeId && hourlyEmployee) required.push(['Lương theo giờ', form.salary])
   if (!linkedEmployeeId) required.push(
     ['Tên nhân viên', form.name],
     ['Số CCCD', form.cccd],
@@ -111,16 +124,7 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   if (!linkedEmployeeId && requireIdentityImages && !form.identityImages?.front) errors.push('Hình ảnh mặt trước CCCD là trường bắt buộc.')
   if (!linkedEmployeeId && requireIdentityImages && !form.identityImages?.back) errors.push('Hình ảnh mặt sau CCCD là trường bắt buộc.')
   if (!Number.isFinite(parseStoreMoneyInput(form.salary)) || parseStoreMoneyInput(form.salary) <= 0) {
-    if (linkedEmployeeId || isPartTimeEmployee(form.employmentType)) errors.push('Lương theo giờ phải là số lớn hơn 0.')
-  }
-  if (!linkedEmployeeId && !isPartTimeEmployee(form.employmentType)) {
-    if (parseStoreMoneyInput(form.baseSalary) <= 0) errors.push('Lương cơ bản phải là số lớn hơn 0.')
-    if (!Number.isInteger(Number(form.standardWorkDays)) || Number(form.standardWorkDays) < 1 || Number(form.standardWorkDays) > 31) {
-      errors.push('Số ngày công quy định phải là số nguyên từ 1 đến 31.')
-    }
-    if (!Number.isFinite(Number(form.requiredMonthlyHours)) || Number(form.requiredMonthlyHours) <= 0 || Number(form.requiredMonthlyHours) > 744) {
-      errors.push('Tổng giờ làm quy định/tháng phải lớn hơn 0 và không vượt quá 744 giờ.')
-    }
+    if (hourlyEmployee) errors.push('Lương theo giờ phải là số lớn hơn 0.')
   }
   if (!linkedEmployeeId && (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100)) {
     errors.push('Tuổi phải là số nguyên từ 16 đến 100.')
@@ -137,15 +141,16 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   return [...new Set(errors)]
 }
 
-export const buildStoreEmployeePayload = (form, { storeId, store } = {}) => {
+export const buildStoreEmployeePayload = (form, { storeId } = {}) => {
   const linkedEmployeeId = String(form.linkedEmployeeId || '').trim()
   const addressDetails = {
     province: form.province.trim(),
     ward: form.ward.trim(),
     street: form.street.trim(),
   }
-  const partTime = Boolean(linkedEmployeeId) || isPartTimeEmployee(form.employmentType)
-  const baseSalary = partTime ? 0 : parseStoreMoneyInput(form.baseSalary)
+  const hourlyEmployee = Boolean(linkedEmployeeId) || isHourlyStoreEmployee(form.employmentType)
+  const hourlyRate = hourlyEmployee ? parseStoreMoneyInput(form.salary) : 0
+  const employmentType = linkedEmployeeId ? 'Part-Time' : normalizeStoreEmploymentType(form.employmentType)
   const position = form.position.trim() || 'Nhân viên bán hàng'
   const identityImages = freshIdentityImages(form.identityImages)
   const payload = {
@@ -161,20 +166,22 @@ export const buildStoreEmployeePayload = (form, { storeId, store } = {}) => {
     address: [addressDetails.street, addressDetails.ward, addressDetails.province].join(', '),
     startDate: form.startDate,
     joinDate: form.startDate,
-    salary: partTime ? parseStoreMoneyInput(form.salary) : baseSalary,
-    payBasis: partTime ? 'hourly' : 'monthly',
-    salaryBasis: partTime ? 'hourly' : 'monthly',
-    salaryUnit: partTime ? 'hour' : 'month',
-    monthlySalary: partTime ? null : baseSalary,
-    baseSalary: partTime ? null : baseSalary,
-    hourlyRate: partTime ? parseStoreMoneyInput(form.salary) : null,
-    standardWorkDays: partTime ? null : Number(form.standardWorkDays),
-    requiredMonthlyHours: partTime ? null : Number(form.requiredMonthlyHours),
-    payFormula: !partTime && storeEmployeePrefix(store) === 'SM234' ? 'monthly-hours' : 'monthly',
-    compensationVersion: 2,
-    currency: 'VND',
-    employmentType: linkedEmployeeId ? 'Part-Time' : form.employmentType,
-    employeeType: linkedEmployeeId ? 'Part-Time' : form.employmentType,
+    ...(hourlyEmployee ? {
+      salary: hourlyRate,
+      payBasis: 'hourly',
+      salaryBasis: 'hourly',
+      salaryUnit: 'hour',
+      monthlySalary: null,
+      baseSalary: null,
+      hourlyRate,
+      standardWorkDays: null,
+      requiredMonthlyHours: null,
+      payFormula: 'monthly',
+      compensationVersion: 2,
+      currency: 'VND',
+    } : {}),
+    employmentType,
+    employeeType: employmentType,
     position,
     workPosition: position,
     role: position,

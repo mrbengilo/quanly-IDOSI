@@ -13,7 +13,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { money } from '../../utils'
-import { HTKD_VIOLATIONS, OFFICE_VIOLATIONS, STORE_VIOLATIONS } from '../../domain/compensationPolicies'
+import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import {
   canonicalRole,
   employeesForTarget,
@@ -45,12 +45,6 @@ const UNIT_LABELS = {
   business_support: 'Nhân viên hỗ trợ KD',
 }
 
-const POLICIES = {
-  store: STORE_VIOLATIONS,
-  office: OFFICE_VIOLATIONS,
-  business_support: HTKD_VIOLATIONS,
-}
-
 const routeTargetUnit = () => {
   const pathname = typeof window === 'undefined' ? '' : window.location.pathname.toLowerCase()
   if (pathname.includes('business-support') || pathname.includes('htkd')) return 'business_support'
@@ -73,15 +67,20 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
     targetUnit,
     storeId: selectedStoreId,
   }), [app.employees, targetUnit, selectedStoreId])
-  const policies = POLICIES[targetUnit] || []
   const [employeeSelection, setEmployeeSelection] = useState('')
-  const [policyCode, setPolicyCode] = useState('')
+  const [policyId, setPolicyId] = useState('')
   const [occurredOn, setOccurredOn] = useState(vietnamToday)
   const [note, setNote] = useState('')
   const [validation, setValidation] = useState('')
   const { busyKey, error, run } = useCompensationAction(app)
   const selectedEmployeeId = employeeSelection || entityId(employees[0])
-  const selectedPolicy = policies.find((policy) => policy.code === (policyCode || policies[0]?.code))
+  const policies = useMemo(() => activeWorkCatalogItems(app.workCatalogItems || [], {
+    targetGroup: targetUnit,
+    storeId: targetUnit === 'store' ? selectedStoreId : null,
+    date: occurredOn,
+    kinds: WORK_CATALOG_KIND.VIOLATION,
+  }), [app.workCatalogItems, targetUnit, selectedStoreId, occurredOn])
+  const selectedPolicy = policies.find((policy) => policy.id === policyId)
   const visibleEmployeeIds = useMemo(() => new Set(employees.map(entityId)), [employees])
   const rows = (app.violations || [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
@@ -109,8 +108,9 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
         targetUnit,
         employeeId: selectedEmployeeId,
         storeId: selectedStoreId || null,
+        catalogItemId: selectedPolicy.id,
         policyCode: selectedPolicy.code,
-        title: selectedPolicy.label,
+        title: selectedPolicy.name,
         amountVnd: selectedPolicy.amountVnd,
         occurredOn,
         note: note.trim(),
@@ -149,10 +149,14 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
               {employees.map((employee) => <option key={entityId(employee)} value={entityId(employee)}>{employee.name} — {entityId(employee)}</option>)}
             </Select>
           </Field>
-          <Field label="Nội dung vi phạm" required>
-            <Select aria-label="Nội dung vi phạm" value={selectedPolicy?.code || ''} onChange={(event) => setPolicyCode(event.target.value)}>
-              {policies.map((policy) => <option key={policy.code} value={policy.code}>{policy.label} — {money(policy.amountVnd)}</option>)}
-            </Select>
+          <Field label="Nội dung vi phạm" required className="compensation-form-span">
+            <div className="compensation-catalog-checklist" role="group" aria-label="Nội dung vi phạm">
+              {policies.map((policy) => <label key={policy.id} className={selectedPolicy?.id === policy.id ? 'selected' : ''}>
+                <input type="checkbox" checked={selectedPolicy?.id === policy.id} onChange={() => setPolicyId((current) => current === policy.id ? '' : policy.id)} />
+                <span><strong>{policy.name}</strong><small>{money(policy.amountVnd)}</small></span>
+              </label>)}
+              {!policies.length && <InfoNote tone="orange">Chưa có vi phạm đang hoạt động cho phạm vi và ngày đã chọn. Hãy thêm tại “Danh mục công việc & vi phạm”.</InfoNote>}
+            </div>
           </Field>
           <Field label="Số tiền phải thu">
             <Input aria-label="Số tiền phải thu" value={money(selectedPolicy?.amountVnd || 0)} readOnly />
@@ -168,7 +172,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
         <InfoNote>Vi phạm luôn là khoản phải thu dương. Khi quyết toán, hệ thống áp dụng theo thứ tự thưởng → phụ cấp → lương và không làm thực nhận âm.</InfoNote>
         {validation && <InfoNote tone="red">{validation}</InfoNote>}
         <ActionError message={error} />
-        <div className="compensation-actions"><Button icon={Plus} loading={busyKey === 'create'} disabled={!employees.length || Boolean(busyKey)} onClick={createViolation}>GHI NHẬN VI PHẠM</Button></div>
+        <div className="compensation-actions"><Button icon={Plus} loading={busyKey === 'create'} disabled={!employees.length || !selectedPolicy || Boolean(busyKey)} onClick={createViolation}>GHI NHẬN VI PHẠM</Button></div>
       </Card>
       <Card title="Lịch sử vi phạm" action={<Badge tone="red">{rows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
         <TableWrap className="compensation-table">

@@ -33,8 +33,9 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { resolveShiftCandidates } from '../../domain'
 import { activeOccupationLabels, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
+import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { useApp } from '../../state/AppContext'
-import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
+import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, resolveStoreEmployeeSalaryPolicy, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
 import { employeeTaskAssignmentById, employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
 import {
   ACQUISITION_CHANNELS,
@@ -84,6 +85,10 @@ const statusTone = (value) => {
 
 const attendanceEarlyMinutes = (record = {}) => Math.max(0, Number(record.minutesEarly ?? record.earlyMinutes) || 0)
 const attendanceLateMinutes = (record = {}) => Math.max(0, Number(record.minutesLate ?? record.lateMinutes) || 0)
+const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapshot?.kind || task.kind || '')
+const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
+const taskIsRequired = (task = {}) => task.required !== false
+const taskAmount = (task = {}) => Math.max(0, Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd) || 0)
 
 const workedHours = (record = {}) => {
   const explicit = Number(record.hours)
@@ -221,7 +226,8 @@ export function EmployeeDashboardV2() {
     const taskShiftId = String(task.shiftId || task.shift || '')
     return activeRecord && (!taskShiftId || taskShiftId === activeShiftId)
   })
-  const incompleteTasks = activeShiftTasks.filter((task) => !taskCompletedByEmployee(task, employeeId))
+  const incompleteTasks = activeShiftTasks.filter((task) => taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId))
+  const incompleteRewardTasks = activeShiftTasks.filter((task) => !taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId))
   const displayedTasks = requestedAssignment?.tasks || todayTasks
   const displayedTaskDate = requestedAssignment?.date || operationalDate
   const displayedTaskShiftId = String(requestedAssignment?.shiftId || '')
@@ -314,7 +320,7 @@ export function EmployeeDashboardV2() {
       return
     }
     if (incompleteTasks.length) {
-      notify?.(`Cần hoàn thành đủ ${incompleteTasks.length} công việc còn lại trước khi kết ca.`, 'info')
+      notify?.(`Cần hoàn thành đủ ${incompleteTasks.length} công việc cố định còn lại trước khi kết ca.`, 'info')
       return
     }
     setLocating('out')
@@ -413,6 +419,7 @@ export function EmployeeDashboardV2() {
         title={requestedAssignment ? 'CÔNG VIỆC TỪ THÔNG BÁO' : 'CÔNG VIỆC CẦN LÀM'}
         action={requestedAssignment ? <><Badge tone="blue">{shortDate(displayedTaskDate)}</Badge> <Badge tone="green">{displayedTaskShift?.name || displayedTaskShiftId || 'Chưa chọn ca'}</Badge></> : null}
       >
+        <InfoNote>Công việc cố định là bắt buộc để kết ca. Công việc nhận thưởng là tùy chọn và không cần nhập lý do nếu chưa thực hiện.</InfoNote>
         {requestedAssignment && (
           <InfoNote tone={displayedTaskDate === operationalDate ? 'green' : 'orange'}>
             Lượt giao {requestedAssignment.id} • {shortDate(displayedTaskDate)} • {displayedTaskShift?.name || displayedTaskShiftId || 'Chưa chọn ca'}{displayedTaskShift ? ` (${displayedTaskShift.start || '--:--'}–${displayedTaskShift.end || '--:--'})` : ''} • Người giao: {actorLabel(requestedAssignment.createdBy || requestedAssignment.assignedBy)}{requestedAssignment.createdAt || requestedAssignment.assignedAt ? ` • ${timestamp(requestedAssignment.createdAt || requestedAssignment.assignedAt)}` : ''}.
@@ -424,6 +431,8 @@ export function EmployeeDashboardV2() {
           {displayedTasks.map((task) => {
             const done = taskCompletedByEmployee(task, employeeId)
             const pending = String(pendingTaskId) === String(task.id)
+            const reward = taskIsReward(task)
+            const amount = taskAmount(task)
             const taskShiftId = String(task.shiftId || task.shift || '')
             const taskDate = String(task.date || task.workDate || displayedTaskDate)
             const canUpdate = Boolean(activeRecord) && taskDate === operationalDate && (!taskShiftId || taskShiftId === activeShiftId)
@@ -439,7 +448,11 @@ export function EmployeeDashboardV2() {
                 >
                   <CheckCircle2 size={18} />
                 </button>
-                <div><strong>{task.title || task.name || 'Công việc'}</strong></div>
+                <div>
+                  <strong>{task.title || task.name || 'Công việc'}</strong>
+                  {(task.detail || task.description) && <small className="table-note">{task.detail || task.description}</small>}
+                  <small className="table-note">{reward ? `Tùy chọn · Thưởng ${money(amount)}` : `Bắt buộc${amount > 0 ? ` · ${money(amount)}` : ''}`}</small>
+                </div>
                 <Badge tone={done ? 'green' : 'orange'}>{pending ? 'Đang cập nhật...' : done ? 'Đã hoàn thành' : canUpdate ? 'Chưa hoàn thành' : 'Chờ vào đúng ca'}</Badge>
               </div>
             )
@@ -487,7 +500,12 @@ export function EmployeeDashboardV2() {
           {expectedRevenue.unknown > 0 && <InfoNote tone="orange">Có {money(expectedRevenue.unknown)} dùng hình thức thanh toán chưa hỗ trợ. Vui lòng liên hệ quản lý trước khi kết ca.</InfoNote>}
           {incompleteTasks.length > 0 && (
             <InfoNote tone="red">
-              Còn {incompleteTasks.length} công việc chưa hoàn thành. Hãy tick đủ danh sách công việc của ca trước khi kết ca.
+              Còn {incompleteTasks.length} công việc cố định chưa hoàn thành. Hãy hoàn thành trước khi kết ca.
+            </InfoNote>
+          )}
+          {incompleteRewardTasks.length > 0 && (
+            <InfoNote>
+              Còn {incompleteRewardTasks.length} công việc nhận thưởng tùy chọn chưa hoàn thành; bạn vẫn có thể kết ca và không cần nhập lý do.
             </InfoNote>
           )}
         </div>
@@ -834,6 +852,7 @@ export function EmployeePayrollDetails() {
     salaryAdjustments = [],
     salaryAdvances = [],
     payrollPeriods = [],
+    storeEmployeeSalaryConfigs = [],
   } = app
   const employeeId = employeeKey(employee)
   const periods = [...new Set([
@@ -861,16 +880,39 @@ export function EmployeePayrollDetails() {
     attendanceRows: supportRows,
     stores,
   })
-  const homeRows = rows.filter((record) => !record.supportTransferId && !record.supportCompensation?.transferId)
+  const homeRows = rows.filter((record) => (
+    !record.supportTransferId
+    && !record.supportCompensation?.transferId
+    && !record.compensation?.support?.transferId
+  ))
   const hours = homeRows.reduce((sum, record) => sum + workedHours(record), 0)
   const basis = getPayBasis(employee || {})
-  const estimatedHomeBase = calculateEmployeeBasePay(employee || {}, { hours })
+  const homeStore = stores.find((store) => String(store.id) === String(employee?.storeId))
+  const liveSalaryPolicy = resolveStoreEmployeeSalaryPolicy(employee || {}, {
+    store: homeStore,
+    salaryConfigs: storeEmployeeSalaryConfigs,
+    period,
+  })
+  const snapshotSalary = snapshot?.homeSnapshot?.rows?.find((row) => row.salarySnapshot)?.salarySnapshot || null
+  const snapshotSalaryPolicy = snapshotSalary?.salaryConfigSnapshot || snapshotSalary?.salaryConfig || null
+  const displayedSalaryPolicy = snapshot?.homeSnapshot ? snapshotSalaryPolicy : liveSalaryPolicy
+  const effectiveBasis = displayedSalaryPolicy
+    ? 'tiered-hourly'
+    : snapshot?.homeSnapshot && snapshotSalary
+      ? getPayBasis({ ...(employee || {}), ...snapshotSalary })
+      : basis
+  const estimatedHomeBase = calculateEmployeeBasePay(employee || {}, {
+    hours,
+    store: homeStore,
+    salaryConfig: liveSalaryPolicy,
+    period,
+  })
   const base = snapshot?.homeSnapshot?.baseSalary ?? estimatedHomeBase
   const supportHourlyPay = (snapshot?.supportSnapshot?.hourlyPay || 0) + uncoveredSupportTotals.hourlyPay
   const supportAllowance = (snapshot?.supportSnapshot?.allowance || 0) + uncoveredSupportTotals.allowance
   const supportPay = (snapshot?.supportSnapshot?.pay || 0) + uncoveredSupportTotals.actualPay
   const supportHours = (snapshot?.supportSnapshot?.hours || 0) + uncoveredSupportTotals.hours
-  const explicitHourlyRate = getHourlyRate(employee || {})
+  const explicitHourlyRate = Number(displayedSalaryPolicy?.standardHourlyRateVnd || snapshotSalary?.hourlyRate || getHourlyRate(employee || {}))
   const configuredHourlyRate = explicitHourlyRate > 0
     ? explicitHourlyRate
     : Number(employee?.requiredMonthlyHours) > 0
@@ -902,7 +944,7 @@ export function EmployeePayrollDetails() {
     <div className="page">
       <PageHeader title="BẢNG LƯƠNG CỦA TÔI" subtitle="Dữ liệu cá nhân theo kỳ; các kỳ đã khóa dùng đúng bản chụp lương và chính sách." icon={Wallet} actions={<Select value={period} onChange={(event) => setPeriod(event.target.value)}><option value={period}>{periodLabel(period)}</option>{periods.filter((item) => item !== period).map((item) => <option key={item} value={item}>{periodLabel(item)}</option>)}</Select>} />
       <div className="metric-grid metric-grid--four">
-        <MetricCard label="LƯƠNG CỨNG" value={money(base)} helper={basis === 'hourly' ? `${hours.toFixed(2)} giờ × ${money(getHourlyRate(employee || {}))}` : usesMonthlyHoursFormula(employee || {}) ? `${hours.toFixed(2)} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || getMonthlySalary(employee || {}))}` : 'Theo mức lương tháng'} icon={Banknote} tone="blue" />
+        <MetricCard label="LƯƠNG CỨNG" value={money(base)} helper={displayedSalaryPolicy ? `${hours.toFixed(2)} giờ · Đến ${displayedSalaryPolicy.thresholdHours} giờ: ${money(displayedSalaryPolicy.standardHourlyRateVnd)}/giờ · Vượt: ${money(displayedSalaryPolicy.excessHourlyRateVnd)}/giờ` : effectiveBasis === 'hourly' ? `${hours.toFixed(2)} giờ × ${money(explicitHourlyRate)}` : usesMonthlyHoursFormula(snapshotSalary || employee || {}) ? `${hours.toFixed(2)} / ${(snapshotSalary || employee).requiredMonthlyHours} giờ × ${money((snapshotSalary || employee).baseSalary || getMonthlySalary(snapshotSalary || employee || {}))}` : 'Theo mức lương tháng'} icon={Banknote} tone="blue" />
         <MetricCard label="LƯƠNG CA HỖ TRỢ" value={money(supportPay)} helper={`${supportHours.toFixed(2)} giờ hỗ trợ • Gồm phụ cấp ${money(supportAllowance)}`} icon={CheckCircle2} tone="green" />
         <MetricCard label="ĐÃ ỨNG" value={money(advances)} icon={Wallet} tone="orange" />
         <MetricCard label="THỰC NHẬN" value={money(net)} helper={snapshot ? snapshot.statuses.join(' • ') : 'Tạm tính'} icon={Banknote} tone="green" />

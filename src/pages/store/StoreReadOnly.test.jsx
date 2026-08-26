@@ -204,7 +204,8 @@ describe('business-support store workspace permissions', () => {
     const taskView = renderPage(StoreTasks)
     expect(screen.getAllByText(/Kiểm kê quầy/).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: /^GỬI$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Thêm công việc/i })).toBeTruthy()
+    expect(screen.getByRole('group', { name: 'Danh mục công việc' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Thêm công việc/i })).toBeNull()
     expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`)).toBeTruthy()
     taskView.unmount()
 

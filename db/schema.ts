@@ -138,4 +138,6 @@ export const migrations = [
   'drizzle/0007_session_roles.sql',
   'drizzle/0008_order_information_options.sql',
   'drizzle/0009_compensation_foundation.sql',
+  'drizzle/0010_store_employee_salary_configs.sql',
+  'drizzle/0011_work_catalog.sql',
 ] as const

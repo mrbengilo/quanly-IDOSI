@@ -208,7 +208,7 @@ describe('store employee current-shift orders', () => {
     expect(screen.queryByText(/900,000 đ/u)).toBeNull()
   })
 
-  it('keeps checkout blocked until every active-shift task is completed', () => {
+  it('keeps checkout blocked until every fixed active-shift task is completed', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-08-20T09:00:00.000Z')
     mocked.app = {
@@ -223,7 +223,7 @@ describe('store employee current-shift orders', () => {
       orders: [], schedule: [], taskAssignmentHistory: [], shiftDefinitions: [], supportTransfers: [], policies: {},
       tasks: [{
         id: 'TASK-OPEN', storeId: 'S01', date: '2026-08-20', shiftId: 'CA-SAME',
-        employeeIds: ['E01'], title: 'Kiểm tra quầy', completedBy: {},
+        employeeIds: ['E01'], title: 'Kiểm tra quầy', catalogKind: 'FIXED_TASK', required: true, completedBy: {},
       }],
       checkIn: vi.fn(), checkOut: vi.fn(), setTaskDone: vi.fn(), notify: vi.fn(),
     }
@@ -233,8 +233,41 @@ describe('store employee current-shift orders', () => {
     fireEvent.change(screen.getByLabelText(/^Tiền mặt/u), { target: { value: '0' } })
     fireEvent.change(screen.getByLabelText(/^Chuyển khoản/u), { target: { value: '0' } })
 
-    expect(screen.getByText(/Còn 1 công việc chưa hoàn thành/u)).toBeTruthy()
+    expect(screen.getByText(/Còn 1 công việc cố định chưa hoàn thành/u)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'XÁC NHẬN KẾT CA' }).disabled).toBe(true)
+    expect(screen.queryByLabelText(/Lý do/u)).toBeNull()
+  })
+
+  it('shows reward money without making optional reward work block checkout or require a reason', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T09:00:00.000Z')
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01', homeStoreId: 'S01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }],
+      attendance: [{
+        id: 'ATT-E01', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+        shiftId: 'CA-SAME', shiftName: 'Ca chung', shiftStart: '08:00', shiftEnd: '17:00',
+        checkIn: '08:00', checkInAt: '2026-08-20T01:00:00.000Z',
+      }],
+      orders: [], schedule: [], taskAssignmentHistory: [], shiftDefinitions: [], supportTransfers: [], policies: {},
+      tasks: [{
+        id: 'TASK-REWARD', storeId: 'S01', date: '2026-08-20', shiftId: 'CA-SAME',
+        employeeIds: ['E01'], title: 'Quay clip sản phẩm', catalogKind: 'REWARD_TASK',
+        required: false, rewardEligible: true, amountVnd: 50_000, completedBy: {},
+      }],
+      checkIn: vi.fn(), checkOut: vi.fn(), setTaskDone: vi.fn(), notify: vi.fn(),
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeeDashboardV2)))
+
+    expect(screen.getByText('Tùy chọn · Thưởng 50,000 đ')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'KẾT CA' }))
+    fireEvent.change(screen.getByLabelText(/^Tiền mặt/u), { target: { value: '0' } })
+    fireEvent.change(screen.getByLabelText(/^Chuyển khoản/u), { target: { value: '0' } })
+
+    expect(screen.getByText(/bạn vẫn có thể kết ca và không cần nhập lý do/u)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN KẾT CA' }).disabled).toBe(false)
     expect(screen.queryByLabelText(/Lý do/u)).toBeNull()
   })
 

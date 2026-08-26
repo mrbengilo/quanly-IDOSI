@@ -398,6 +398,10 @@ describe('role management permissions and form', () => {
   it('lets Business Support create and edit a store manager while keeping delete Admin-only', () => {
     mocked.app = {
       ...baseApp('business_support'),
+      stores: [
+        { id: 'CH001', name: 'SecondMall SM234' },
+        { id: 'CH002', name: 'Dosii TNV' },
+      ],
       storeManagers: [{ id: 'QLCH-001', unit: 'store_manager', storeId: 'CH001', name: 'Quản lý một', employmentType: 'Full-Time' }],
       addStoreManager: vi.fn(),
     }
@@ -411,10 +415,25 @@ describe('role management permissions and form', () => {
     fireEvent.click(screen.getAllByRole('button', { name: /Thêm tài khoản/i })[0])
     const dialog = screen.getByRole('dialog')
     expect(dialog).toBeTruthy()
+    expect([...screen.getByLabelText(/Cửa hàng quản lý/i).options].map((option) => option.value)).toEqual(['', 'CH002'])
     expect(screen.queryByLabelText(/Lương cơ bản/i)).toBeNull()
     expect(screen.queryByLabelText(/Số ngày công quy định\/tháng/i)).toBeNull()
     expect(screen.queryByLabelText(/Số giờ làm quy định\/tháng/i)).toBeNull()
     expect([...screen.getByLabelText(/Loại nhân viên/i).options].map((option) => option.textContent)).toEqual(['Full-Time', 'Part-Time'])
+  })
+
+  it('prevents assigning a second active manager to the same store', () => {
+    mocked.app = {
+      ...baseApp('admin'),
+      storeManagers: [{
+        id: 'QLCH-001', unit: 'store_manager', storeId: 'CH001', name: 'Quản lý hiện tại',
+        employmentType: 'Full-Time', status: 'Đang làm việc',
+      }],
+    }
+    render(createElement(StoreManagerManagement))
+
+    expect(screen.getByText(/Mỗi cửa hàng hiện đã có đúng một Quản lý cửa hàng/i)).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: /Thêm tài khoản/i }).every((button) => button.disabled)).toBe(true)
   })
 })
 

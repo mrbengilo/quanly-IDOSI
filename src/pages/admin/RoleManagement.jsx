@@ -93,6 +93,8 @@ const ROLE_CONFIG = Object.freeze({
 
 const normalize = (value = '') => String(value).trim().toLocaleLowerCase('vi-VN')
 const recordEmployeeId = (record = {}) => String(record.employeeId || record.employeeCode || record.staffId || record.userId || '')
+const activeRoleProfile = (profile = {}) => !profile.deletedAt
+  && !['đã nghỉ việc', 'inactive', 'tạm ngưng', 'tạm nghỉ', 'locked'].includes(normalize(profile.status))
 
 const profileType = roleEmploymentType
 
@@ -376,8 +378,22 @@ function RoleManagement({ roleKey }) {
     ...(Array.isArray(app.storeManagers) ? app.storeManagers : []),
     ...(Array.isArray(app.deletedEmployees) ? app.deletedEmployees : []),
   ]
+  const occupiedManagerStoreIds = new Set(
+    roleKey === ROLE_KEYS.storeManager
+      ? profiles.filter(activeRoleProfile).map((profile) => String(profile.storeId || profile.assignedStoreId || '')).filter(Boolean)
+      : [],
+  )
+  const assignableStores = roleKey === ROLE_KEYS.storeManager
+    ? stores.filter((store) => !occupiedManagerStoreIds.has(String(store.id || '')))
+    : stores
+  const managerLinkedEmployeeIds = new Set(
+    roleKey === ROLE_KEYS.storeManager
+      ? profiles.filter(activeRoleProfile).map((profile) => String(profile.linkedEmployeeId || '')).filter(Boolean)
+      : [],
+  )
   const storeEmployees = (Array.isArray(app.employees) ? app.employees : []).filter((profile) => (
     ['store', 'business_support'].includes(String(profile.unit || 'store').toLowerCase()) && !profile.deletedAt
+    && !managerLinkedEmployeeIds.has(String(profile.id || profile.code || ''))
   ))
   const [tab, setTab] = useState('profiles')
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -445,6 +461,10 @@ function RoleManagement({ roleKey }) {
   }
 
   const openCreate = () => {
+    if (roleKey === ROLE_KEYS.storeManager && !assignableStores.length) {
+      app.notify?.('Tất cả cửa hàng hiện đã có một Quản lý cửa hàng đang hoạt động.', 'info')
+      return
+    }
     setEditingProfile(null)
     setForm({ ...emptyRoleProfile(roleKey), code: nextRoleCode(allProfiles, roleKey) })
     setErrors([])
@@ -565,15 +585,16 @@ function RoleManagement({ roleKey }) {
   }
 
   return <div className="page">
-    <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={canCreate ? <Button icon={Plus} onClick={openCreate}>Thêm tài khoản</Button> : null} />
+    <PageHeader title={config.title} subtitle={config.subtitle} icon={config.icon} actions={canCreate ? <Button icon={Plus} onClick={openCreate} disabled={roleKey === ROLE_KEYS.storeManager && !assignableStores.length}>Thêm tài khoản</Button> : null} />
     {!canCreate && <InfoNote>Chỉ Admin được quản lý tài khoản; Hỗ trợ KD được xem danh sách và lịch sử liên quan.</InfoNote>}
     {isBusinessSupport && roleKey === ROLE_KEYS.storeManager && <InfoNote>Nhân viên Hỗ trợ KD được tạo hoặc sửa Quản lý cửa hàng; chỉ Admin được xóa tài khoản.</InfoNote>}
+    {roleKey === ROLE_KEYS.storeManager && !assignableStores.length && <InfoNote tone="green">Mỗi cửa hàng hiện đã có đúng một Quản lý cửa hàng đang hoạt động. Muốn thay quản lý, hãy vô hiệu hóa hoặc xóa quyền quản lý hiện tại trước.</InfoNote>}
     {roleKey === ROLE_KEYS.businessSupport && <div className="tabs"><button type="button" className={tab === 'profiles' ? 'active' : ''} onClick={() => setTab('profiles')}><Users />Danh sách nhân viên</button><button type="button" className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công</button><button type="button" className={tab === 'evaluation' ? 'active' : ''} onClick={() => setTab('evaluation')}><ShieldCheck />Chuyên cần</button>{canEdit && <button type="button" className={tab === 'work' ? 'active' : ''} onClick={() => setTab('work')}><ClipboardCheck />Công việc</button>}</div>}
-    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList allProfiles={allProfiles} canCreate={canCreate} canDelete={canDelete} canEdit={canEdit} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
+    {(roleKey !== ROLE_KEYS.businessSupport || tab === 'profiles') && <ProfileList allProfiles={allProfiles} canCreate={canCreate && (roleKey !== ROLE_KEYS.storeManager || assignableStores.length > 0)} canDelete={canDelete} canEdit={canEdit} config={config} imageBusyKey={imageBusyKey} onCreate={openCreate} onDelete={setPendingDelete} onEdit={openEdit} onViewImage={viewIdentityImage} profiles={profiles} roleKey={roleKey} stores={stores} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'attendance' && <BusinessSupportAttendance attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'evaluation' && <BusinessSupportEvaluation attendance={attendance} policies={app.policies} profiles={profiles} />}
     {roleKey === ROLE_KEYS.businessSupport && tab === 'work' && canEdit && <SupportWorkEvaluationTable assignments={app.supportWorkAssignments || []} profiles={profiles} />}
-    {canCreate && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onAddressChange={updateAddress} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} storeEmployees={storeEmployees} stores={stores} togglePassword={() => setShowPassword((current) => !current)} />}
+    {canCreate && <RoleProfileDrawer config={config} editingProfile={editingProfile} errors={errors} form={form} imageBusy={imageBusy} isSaving={isSaving} onAddressChange={updateAddress} onChange={updateField} onClose={closeDrawer} onImageChange={updateIdentityImage} onSave={saveProfile} open={drawerOpen} requiresPassword={requiresPassword} roleKey={roleKey} showPassword={showPassword} storeEmployees={storeEmployees} stores={editingProfile ? stores : assignableStores} togglePassword={() => setShowPassword((current) => !current)} />}
     <Modal wide open={Boolean(imageViewer)} onClose={closeImageViewer} title={imageViewer?.title || 'Hình ảnh CCCD'} footer={<Button variant="outline" onClick={closeImageViewer}>Đóng</Button>}>
       <IdentityDocumentViewer src={imageViewer?.url || ''} alt={imageViewer?.title || 'Hình ảnh CCCD'} />
     </Modal>

@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { ClipboardCheck, Clock3, ReceiptText, Save, Store } from 'lucide-react'
 import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, TableWrap } from '../../components/UI'
+import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { useApp } from '../../state/AppContext'
 import { money, shortDateTime24, today } from '../../utils'
 import { taskAssignedToEmployee, taskCompletedByEmployee } from './taskScope'
@@ -8,6 +9,10 @@ import { taskAssignedToEmployee, taskCompletedByEmployee } from './taskScope'
 const employeeKey = (record = {}) => String(record.id || record.code || record.employeeId || '')
 const recordDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
 const shiftIdOf = (record = {}) => String(record.shiftId || record.shift || '')
+const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapshot?.kind || task.kind || '')
+const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
+const taskIsRequired = (task = {}) => task.required !== false
+const taskAmount = (task = {}) => Math.max(0, Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd) || 0)
 
 const currentEmployeeOf = (app) => {
   if (app.currentEmployee) return app.currentEmployee
@@ -136,7 +141,9 @@ export function EmployeeAssignedTasksPage() {
   const completedTasks = displayedTasks.filter(statusFor).length
   const completionRate = displayedTasks.length ? Math.round((completedTasks / displayedTasks.length) * 100) : 0
   const allCompleted = displayedTasks.length > 0 && completedTasks === displayedTasks.length
-  const noteRequired = displayedTasks.length > 0 && !allCompleted
+  const requiredTasks = displayedTasks.filter(taskIsRequired)
+  const incompleteRequiredTasks = requiredTasks.filter((task) => !statusFor(task))
+  const noteRequired = incompleteRequiredTasks.length > 0
   const ready = Boolean(attendance && displayedTasks.length && (!noteRequired || incompleteReason.trim()))
   const history = useMemo(() => (app.taskAssignmentHistory || []).flatMap((assignment) => (
     (assignment.progressHistory || []).filter((event) => String(event.employeeId || '') === employeeId).map((event) => ({
@@ -148,7 +155,8 @@ export function EmployeeAssignedTasksPage() {
   const submit = async () => {
     if (!ready || saving || typeof app.saveStoreTaskProgress !== 'function') return
     const tasks = displayedTasks.map((task) => ({ id: task.id, completed: statusFor(task) }))
-    const fingerprint = JSON.stringify({ attendanceId: attendance.id, tasks, incompleteReason: incompleteReason.trim() })
+    const normalizedReason = noteRequired ? incompleteReason.trim() : ''
+    const fingerprint = JSON.stringify({ attendanceId: attendance.id, tasks, incompleteReason: normalizedReason })
     if (!requestRef.current || requestRef.current.fingerprint !== fingerprint) {
       requestRef.current = { fingerprint, idempotencyKey: `task-progress:${crypto.randomUUID()}` }
     }
@@ -157,7 +165,7 @@ export function EmployeeAssignedTasksPage() {
       const result = await app.saveStoreTaskProgress({
         attendanceId: attendance.id,
         tasks,
-        incompleteReason: incompleteReason.trim(),
+        incompleteReason: normalizedReason,
         idempotencyKey: requestRef.current.idempotencyKey,
       })
       if (result?.ok) requestRef.current = null
@@ -172,9 +180,12 @@ export function EmployeeAssignedTasksPage() {
       {!attendance && <InfoNote tone="orange">Bạn có thể xem công việc hôm nay, nhưng chỉ được cập nhật sau khi điểm danh vào đúng ca.</InfoNote>}
       <Card title="Tiến độ công việc" action={<Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{displayedTasks.length} · {completionRate}%</Badge>}>
         <Progress value={completionRate} color={allCompleted ? '#07883f' : '#f28b16'} />
+        <InfoNote>Công việc cố định là bắt buộc. Công việc nhận thưởng là tùy chọn, không cần lý do nếu chưa thực hiện.</InfoNote>
         <div className="task-checklist">
           {displayedTasks.map((task) => {
             const checked = statusFor(task)
+            const reward = taskIsReward(task)
+            const amount = taskAmount(task)
             return <label key={task.id} className={checked ? 'done' : ''}>
               <input
                 type="checkbox"
@@ -182,14 +193,18 @@ export function EmployeeAssignedTasksPage() {
                 disabled={!attendance || saving}
                 onChange={(event) => setStatuses((current) => ({ ...current, [String(task.id)]: event.target.checked }))}
               />
-              <span><strong>{task.title || task.name || 'Công việc'}</strong>{(task.detail || task.description) && <small>{task.detail || task.description}</small>}</span>
+              <span>
+                <strong>{task.title || task.name || 'Công việc'}</strong>
+                {(task.detail || task.description) && <small>{task.detail || task.description}</small>}
+                <small>{reward ? `Tùy chọn · Thưởng ${money(amount)}` : `Bắt buộc${amount > 0 ? ` · ${money(amount)}` : ''}`}</small>
+              </span>
               <Badge tone={checked ? 'green' : 'orange'}>{checked ? 'Đã hoàn thành' : 'Chưa hoàn thành'}</Badge>
             </label>
           })}
           {!displayedTasks.length && <InfoNote>Chưa có công việc được giao trong phạm vi hôm nay.</InfoNote>}
         </div>
-        {displayedTasks.length > 0 && <Field label="Ghi chú khi chưa hoàn thành hết" required={noteRequired} error={noteRequired && !incompleteReason.trim() ? 'Bắt buộc nhập ghi chú nếu còn công việc chưa hoàn thành.' : ''}>
-          <textarea value={incompleteReason} maxLength="1000" onChange={(event) => setIncompleteReason(event.target.value)} placeholder="Nêu rõ lý do của các công việc chưa hoàn thành" />
+        {noteRequired && <Field label="Lý do công việc bắt buộc chưa hoàn thành" required hint="Không cần nhập cho công việc nhận thưởng tùy chọn." error={!incompleteReason.trim() ? 'Bắt buộc nhập lý do nếu còn công việc cố định chưa hoàn thành.' : ''}>
+          <textarea value={incompleteReason} maxLength="1000" onChange={(event) => setIncompleteReason(event.target.value)} placeholder="Nêu rõ lý do của công việc cố định chưa hoàn thành" />
         </Field>}
         <Button icon={Save} loading={saving} disabled={!ready || saving} onClick={submit}>LƯU KẾT QUẢ</Button>
       </Card>

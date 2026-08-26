@@ -38,6 +38,9 @@ describe('domain state migration', () => {
     const migrated = migrateDomainState({ schemaVersion: 2, stateVersion: 3 }, { stores: [], imports: [] })
 
     expect(migrated).toMatchObject({
+      storeEmployeeSalaryConfigs: [],
+      workCatalogItems: [],
+      workCatalogProgress: [],
       storeShiftTaskTemplates: [],
       compensationEntries: [],
       violations: [],

@@ -44,6 +44,15 @@ const normalizeTask = (task = {}, assignmentEmployeeIds = []) => {
     id: String(task.id || ''),
     title: String(task.title || task.name || '').trim(),
     detail: String(task.detail || task.description || '').trim(),
+    catalogItemId: String(task.catalogItemId || task.catalogSnapshot?.catalogItemId || ''),
+    catalogCode: String(task.catalogCode || task.catalogSnapshot?.catalogCode || ''),
+    catalogVersion: Number(task.catalogVersion || task.catalogSnapshot?.catalogVersion || 0),
+    kind: String(task.kind || task.catalogKind || task.catalogSnapshot?.kind || ''),
+    amountVnd: Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd ?? 0),
+    catalogRequired: task.required === true || task.catalogSnapshot?.required === true,
+    catalogSnapshot: task.catalogSnapshot && typeof task.catalogSnapshot === 'object'
+      ? { ...task.catalogSnapshot }
+      : null,
     employeeIds,
     completed: completion.completed,
     required: completion.required,
@@ -129,16 +138,57 @@ const normalizeAssignment = (assignment, employeeMap, shiftMap) => {
 
 export const canAssignStoreTasks = (role) => ['admin', 'store_manager', 'business_support'].includes(String(role || ''))
 
-export const buildStoreTaskAssignmentPayload = ({ storeId, date, shiftId, employeeIds = [], tasks = [] } = {}) => ({
-  storeId: String(storeId || '').trim(),
-  date: String(date || '').slice(0, 10),
-  shiftId: String(shiftId || '').trim(),
-  employeeIds: uniqueIds(employeeIds),
-  tasks: tasks.map((task) => ({
-    title: String(task.title || task.name || '').trim(),
-    detail: String(task.detail || task.description || '').trim(),
-  })).filter((task) => task.title),
-})
+const catalogTaskPayload = (task = {}, effectiveDate = '') => {
+  const title = String(task.title || task.name || '').trim()
+  const detail = String(task.detail || task.description || '').trim()
+  const catalogItemId = String(task.catalogItemId || '').trim()
+  if (!catalogItemId) return { title, detail }
+
+  const catalogVersion = Number(task.catalogVersion)
+  const amountVnd = Number(task.amountVnd)
+  const sortOrder = Number(task.sortOrder)
+  const kind = String(task.kind || task.catalogKind || '').trim()
+  const required = task.required === true
+  const catalogSnapshot = {
+    catalogItemId,
+    catalogCode: String(task.catalogCode || '').trim(),
+    catalogVersion: Number.isSafeInteger(catalogVersion) && catalogVersion > 0 ? catalogVersion : 1,
+    kind,
+    targetGroup: String(task.targetGroup || '').trim(),
+    storeId: task.storeId == null || task.storeId === '' ? null : String(task.storeId),
+    shiftId: task.shiftId == null || task.shiftId === '' ? null : String(task.shiftId),
+    shiftName: task.shiftName == null || task.shiftName === '' ? null : String(task.shiftName),
+    name: String(task.name || title).trim(),
+    amountVnd: Number.isSafeInteger(amountVnd) && amountVnd >= 0 ? amountVnd : 0,
+    required,
+    optional: !required,
+    sortOrder: Number.isSafeInteger(sortOrder) && sortOrder >= 0 ? sortOrder : 0,
+    effectiveDate: String(task.effectiveDate || effectiveDate).slice(0, 10),
+  }
+  return {
+    title,
+    detail,
+    catalogItemId,
+    catalogCode: catalogSnapshot.catalogCode,
+    catalogVersion: catalogSnapshot.catalogVersion,
+    kind,
+    catalogKind: kind,
+    amountVnd: catalogSnapshot.amountVnd,
+    required,
+    catalogSnapshot,
+  }
+}
+
+export const buildStoreTaskAssignmentPayload = ({ storeId, date, shiftId, employeeIds = [], tasks = [] } = {}) => {
+  const workDate = String(date || '').slice(0, 10)
+  return {
+    storeId: String(storeId || '').trim(),
+    date: workDate,
+    shiftId: String(shiftId || '').trim(),
+    employeeIds: uniqueIds(employeeIds),
+    tasks: tasks.map((task) => catalogTaskPayload(task, workDate)).filter((task) => task.title),
+  }
+}
 
 export const storeTaskHistory = ({ taskAssignmentHistory = [], tasks = [], storeId, employees = [], shiftDefinitions = [] } = {}) => {
   const employeeMap = new Map(employees.map((employee) => [employeeId(employee), employee]))

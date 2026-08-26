@@ -43,7 +43,7 @@ import { activeOccupationLabels, findOccupationOption, occupationValueAllowed, O
 import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
 import { useApp } from '../../state/AppContext'
 import { payrollCompensationTotalsForEmployee } from '../compensation/compensationViewModel'
-import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, money, shortDate, shortDateTime24, today } from '../../utils'
+import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, money, resolveStoreEmployeeSalaryPolicy, shortDate, shortDateTime24, today } from '../../utils'
 import { storeDailyReportRows, storeMonthlyReportRows } from './storeReportAnalytics'
 
 const parseMoney = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
@@ -681,6 +681,7 @@ export function StorePayrollV2() {
     salaryAdjustments = [],
     salaryAdvances = [],
     payrollPeriods = [],
+    storeEmployeeSalaryConfigs = [],
     compensationEntries = [],
     revenueBonusAllocations = [],
     violations: compensationViolations = [],
@@ -707,10 +708,23 @@ export function StorePayrollV2() {
       .find((row) => String(row.employeeId || '') === String(employee.id))
     const records = scopedAttendance.filter((record) => record.employeeId === employee.id)
     const hours = snapshotRow ? Number(snapshotRow.hours || 0) : records.reduce((sum, record) => sum + Number(record.hours || 0), 0)
-    const earnedBase = snapshotRow ? Number(snapshotRow.baseSalary || 0) : calculateEmployeeBasePay(employee, { hours })
+    const liveSalaryPolicy = resolveStoreEmployeeSalaryPolicy(employee, {
+      store,
+      salaryConfigs: storeEmployeeSalaryConfigs,
+      period,
+    })
+    const earnedBase = snapshotRow ? Number(snapshotRow.baseSalary || 0) : calculateEmployeeBasePay(employee, {
+      hours,
+      store,
+      salaryConfig: liveSalaryPolicy,
+      period,
+    })
+    const snapshotSalaryPolicy = snapshotRow?.salarySnapshot?.salaryConfigSnapshot
+      || snapshotRow?.salarySnapshot?.salaryConfig
+      || snapshotRow?.salarySnapshot
     const configuredHourlyRate = snapshotRow
-      ? Number(snapshotRow.salarySnapshot?.hourlyRate || 0)
-      : getHourlyRate(employee)
+      ? Number(snapshotSalaryPolicy?.standardHourlyRateVnd || snapshotRow.salarySnapshot?.hourlyRate || 0)
+      : Number(liveSalaryPolicy?.standardHourlyRateVnd || getHourlyRate(employee))
     const hourlyRate = configuredHourlyRate > 0
       ? configuredHourlyRate
       : Number(employee.requiredMonthlyHours) > 0

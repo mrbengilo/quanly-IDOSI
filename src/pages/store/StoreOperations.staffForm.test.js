@@ -3,6 +3,7 @@ import {
   buildStoreEmployeePayload,
   freshIdentityImages,
   nextStoreEmployeeCode,
+  normalizeStoreEmploymentType,
   storeEmployeePrefix,
   validateStoreEmployee,
 } from './storeEmployeeForm'
@@ -116,16 +117,54 @@ describe('Business Support store employee form', () => {
     })
   })
 
-  it('keeps salary inputs in exact VND units without thousands scaling', () => {
+  it('treats Thử Việc as an hourly employee type and keeps its canonical label', () => {
+    const trialForm = validForm({
+      employmentType: 'Thử Việc',
+      salary: '25,000',
+      baseSalary: '',
+      standardWorkDays: '',
+      requiredMonthlyHours: '',
+    })
+
+    expect(normalizeStoreEmploymentType('thử việc')).toBe('Thử Việc')
+    expect(normalizeStoreEmploymentType('THU VIEC')).toBe('Thử Việc')
+    expect(validateStoreEmployee(trialForm, [], '', true, { requireIdentityImages: true })).toEqual([])
+    expect(buildStoreEmployeePayload(trialForm, { storeId: store.id, store })).toMatchObject({
+      employmentType: 'Thử Việc',
+      employeeType: 'Thử Việc',
+      payBasis: 'hourly',
+      salaryUnit: 'hour',
+      salary: 25_000,
+      hourlyRate: 25_000,
+    })
+  })
+
+  it('keeps hourly salary inputs in exact VND units without thousands scaling', () => {
     const partTime = buildStoreEmployeePayload(validForm({
       employmentType: 'Part-Time',
       salary: '35',
       baseSalary: '',
     }), { storeId: store.id, store })
-    const fullTime = buildStoreEmployeePayload(validForm({ baseSalary: '35' }), { storeId: store.id, store })
 
     expect(partTime).toMatchObject({ salary: 35, hourlyRate: 35 })
-    expect(fullTime).toMatchObject({ salary: 35, monthlySalary: 35, baseSalary: 35 })
+  })
+
+  it('does not validate or resubmit legacy compensation fields for Full-Time employees', () => {
+    const fullTimeWithoutCompensation = validForm({
+      salary: '',
+      baseSalary: '',
+      standardWorkDays: '',
+      requiredMonthlyHours: '',
+    })
+
+    expect(validateStoreEmployee(fullTimeWithoutCompensation, [], '', true, { requireIdentityImages: true })).toEqual([])
+    const payload = buildStoreEmployeePayload(validForm({ salary: '29,000' }), { storeId: store.id, store })
+    expect(payload).toMatchObject({ employmentType: 'Full-Time', employeeType: 'Full-Time' })
+    const legacyCompensationFields = [
+      'salary', 'payBasis', 'salaryBasis', 'salaryUnit', 'monthlySalary', 'baseSalary', 'hourlyRate',
+      'standardWorkDays', 'requiredMonthlyHours', 'payFormula', 'compensationVersion', 'currency',
+    ]
+    legacyCompensationFields.forEach((field) => expect(payload).not.toHaveProperty(field))
   })
 
   it('never resubmits persisted private image metadata', () => {

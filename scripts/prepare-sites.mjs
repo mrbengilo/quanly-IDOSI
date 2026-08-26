@@ -11,6 +11,9 @@ const workerDomainSources = [
   'compensationPolicies.js',
   'compensationAllocation.js',
   'compensationSettlement.js',
+  'storeTieredPayroll.js',
+  'managerRevenueBonus.js',
+  'workCatalog.js',
 ]
 const migrationsSource = resolve(root, 'drizzle')
 const hostingSource = resolve(root, '.openai', 'hosting.json')
