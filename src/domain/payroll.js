@@ -1,4 +1,5 @@
 import { createFinanceTransaction, upsertFinanceTransaction } from './finance'
+import { applyAdvanceToNetPay, applyViolationWaterfall } from './compensationSettlement'
 
 const normalizeText = (value) => String(value ?? '')
   .trim()
@@ -16,6 +17,36 @@ const money = (value, field = 'amount') => {
 }
 
 const amountOf = (record) => money(record?.amount ?? record?.value ?? 0)
+
+const signedMoneyResult = (value, field) => {
+  const result = BigInt(value)
+  if (result < BigInt(Number.MIN_SAFE_INTEGER) || result > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError(`${field} exceeds the safe integer range.`)
+  }
+  return Number(result)
+}
+
+export const COMPENSATION_BONUS_SOURCE = Object.freeze({
+  REVENUE: 'REVENUE',
+  WORK: 'WORK',
+  MANUAL: 'MANUAL',
+})
+
+const bonusSourceOf = (record = {}) => {
+  const source = normalizeText(record.source || record.bonusSource || record.type)
+  if (source === 'revenue' || source === 'thuong doanh thu') return COMPENSATION_BONUS_SOURCE.REVENUE
+  if (source === 'work' || source === 'thuong cong viec') return COMPENSATION_BONUS_SOURCE.WORK
+  if (source === 'manual' || source === 'thuong khac' || source === 'thuong thu cong') return COMPENSATION_BONUS_SOURCE.MANUAL
+  return null
+}
+
+const sumBonusSource = (records, source) => {
+  if (!Array.isArray(records)) return 0
+  return records.reduce((total, record) => {
+    if (!record || bonusSourceOf(record) !== source) return total
+    return total + amountOf(record)
+  }, 0)
+}
 
 export const isConfirmedPayrollRecord = (record = {}) => {
   const status = normalizeText(record.status || record.paymentStatus || record.salaryPaymentStatus)
@@ -44,29 +75,97 @@ export const PAYROLL_PAYMENT_STATUS = Object.freeze({
 export function calculateAvailableSalary({
   basePay = 0,
   actualPay,
-  kpiBonus = 0,
-  otherBonus = 0,
+  revenueBonus = 0,
+  workBonus = 0,
+  manualBonus = 0,
   bonuses = [],
   tiktokAllowance = 0,
   otherAllowance = 0,
   allowances = [],
   confirmedAdvances = [],
+  confirmedViolations = [],
   confirmedDeductions = [],
 } = {}) {
   const salary = money(actualPay ?? basePay, 'basePay')
-  const bonus = money(kpiBonus, 'kpiBonus') + money(otherBonus, 'otherBonus') + sumValues(bonuses)
+  const bonusBySource = {
+    [COMPENSATION_BONUS_SOURCE.REVENUE]: money(revenueBonus, 'revenueBonus') + sumBonusSource(bonuses, COMPENSATION_BONUS_SOURCE.REVENUE),
+    [COMPENSATION_BONUS_SOURCE.WORK]: money(workBonus, 'workBonus') + sumBonusSource(bonuses, COMPENSATION_BONUS_SOURCE.WORK),
+    [COMPENSATION_BONUS_SOURCE.MANUAL]: money(manualBonus, 'manualBonus') + sumBonusSource(bonuses, COMPENSATION_BONUS_SOURCE.MANUAL),
+  }
+  const bonus = Object.values(bonusBySource).reduce((total, amount) => total + amount, 0)
   const allowance = money(tiktokAllowance, 'tiktokAllowance') + money(otherAllowance, 'otherAllowance') + sumValues(allowances)
   const advances = sumValues(confirmedAdvances, { confirmedOnly: Array.isArray(confirmedAdvances) })
-  const deductions = sumValues(confirmedDeductions, { confirmedOnly: Array.isArray(confirmedDeductions) })
+  const violations = sumValues(confirmedViolations, { confirmedOnly: Array.isArray(confirmedViolations) })
+    + sumValues(confirmedDeductions, { confirmedOnly: Array.isArray(confirmedDeductions) })
   const grossPay = salary + bonus + allowance
+  const violationSettlement = applyViolationWaterfall({
+    salaryVnd: salary,
+    bonusVnd: bonus,
+    allowanceVnd: allowance,
+    violationVnd: violations,
+  })
+  const advanceSettlement = applyAdvanceToNetPay({
+    netPayVnd: violationSettlement.netPayVnd,
+    advanceVnd: advances,
+  })
   return {
     basePay: salary,
     bonus,
+    bonusBySource,
     allowance,
     grossPay,
     confirmedAdvances: advances,
-    confirmedDeductions: deductions,
-    availableSalary: Math.max(0, grossPay - advances - deductions),
+    confirmedViolations: violations,
+    appliedViolation: violationSettlement.appliedViolationVnd,
+    violationReceivable: violationSettlement.remainingReceivableVnd,
+    netPayrollExpense: violationSettlement.netPayVnd,
+    appliedAdvance: advanceSettlement.appliedAdvanceVnd,
+    unappliedAdvance: advanceSettlement.unappliedAdvanceVnd,
+    netCashPay: advanceSettlement.netPayVnd,
+    availableSalary: advanceSettlement.netPayVnd,
+  }
+}
+
+/**
+ * Canonical period-level profitability calculation.
+ *
+ * Salary advances and payroll payments are cash settlements of the payroll
+ * liability. They affect `netCashPay`, but never reduce profit a second time.
+ */
+export function calculatePayrollFinancialSummary({
+  netRevenue = 0,
+  nonPayrollExpense = 0,
+  grossCompensation = 0,
+  appliedViolation = 0,
+  confirmedAdvance = 0,
+} = {}) {
+  const revenue = money(netRevenue, 'netRevenue')
+  const nonPayroll = money(nonPayrollExpense, 'nonPayrollExpense')
+  const gross = money(grossCompensation, 'grossCompensation')
+  const violation = money(appliedViolation, 'appliedViolation')
+  const advance = money(confirmedAdvance, 'confirmedAdvance')
+  if (violation > gross) throw new RangeError('appliedViolation cannot exceed grossCompensation.')
+
+  const netPayrollExpense = gross - violation
+  const appliedAdvance = Math.min(netPayrollExpense, advance)
+  const netCashPay = netPayrollExpense - appliedAdvance
+  const excessAdvanceReceivable = advance - appliedAdvance
+  const finalProfit = signedMoneyResult(
+    BigInt(revenue) - BigInt(nonPayroll) - BigInt(netPayrollExpense),
+    'finalProfit',
+  )
+
+  return {
+    netRevenue: revenue,
+    nonPayrollExpense: nonPayroll,
+    grossCompensation: gross,
+    appliedViolation: violation,
+    netPayrollExpense,
+    confirmedAdvance: advance,
+    appliedAdvance,
+    excessAdvanceReceivable,
+    netCashPay,
+    finalProfit,
   }
 }
 

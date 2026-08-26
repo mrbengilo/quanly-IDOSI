@@ -1646,7 +1646,8 @@ describe('IDOSI Worker security primitives', () => {
     expect(supportProjection.expenseEntries).toEqual(state.expenseEntries)
     expect(supportProjection.orderAudit).toEqual(state.orderAudit)
     expect(supportProjection.auditLogs).toEqual(state.auditLogs)
-    expect(supportProjection.payrollPeriods).toEqual(state.payrollPeriods)
+    expect(supportProjection.payrollPeriods.map(({ id }) => id)).toEqual(state.payrollPeriods.map(({ id }) => id))
+    expect(JSON.stringify(supportProjection.payrollPeriods)).not.toMatch(/kpiBonus|kpiSnapshot/u)
     expect(supportProjection).not.toHaveProperty('accountSettings')
     expect(supportProjection.settings.name).toBe('Support one settings')
     expect(JSON.stringify(supportProjection)).not.toContain('must-not-leak')
@@ -1667,12 +1668,9 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerProjection).not.toHaveProperty('orderAudit')
     expect(managerProjection).not.toHaveProperty('auditLogs')
     expect(managerProjection.payrollPeriods[0].rows).toEqual([
-      { employeeId: 'E01', gross: 8_000_000, hours: 10, kpiBonus: 1_000_000 },
+      { employeeId: 'E01', gross: 8_000_000, hours: 10 },
     ])
-    expect(managerProjection.payrollPeriods[0].kpiSnapshot).toMatchObject({
-      totalHours: 10, profitPerHour: 900_000, totalBonus: 1_000_000,
-      results: [{ id: 'E01', role: 'employee', hours: 10, ratePercent: 5, amount: 1_000_000 }],
-    })
+    expect(managerProjection.payrollPeriods[0]).not.toHaveProperty('kpiSnapshot')
     expect(managerProjection.deletedEmployees.map(({ id }) => id)).toEqual(['E-DELETED'])
     expect(JSON.stringify(managerProjection)).not.toMatch(/HTKD001|HTKD002|QL-S01-002|VP001/u)
   })
@@ -1912,7 +1910,7 @@ describe('IDOSI Worker security primitives', () => {
       version: 1,
       state: { stores: [{ id: 'SM234' }], employees: [{ id: 'NV001' }] },
     })
-    expect(initialBody.policies).toHaveLength(8)
+    expect(initialBody.policies).toHaveLength(5)
     for (const key of ['managerAccounts', 'managerPayroll', 'profitShares', 'policies', 'orderCounters']) {
       expect(initialBody.state).not.toHaveProperty(key)
     }
@@ -1989,7 +1987,7 @@ describe('IDOSI Worker security primitives', () => {
         orders: [{ code: 'SM234-00007' }],
       },
     })
-    expect(employeeLoginBody.bootstrap.policies).toHaveLength(8)
+    expect(employeeLoginBody.bootstrap.policies).toHaveLength(5)
     expect(employeeLoginBody).not.toHaveProperty('users')
     expect(JSON.stringify(employeeLoginBody)).not.toMatch(/password_hash|passwordHash|password_salt|passwordSalt/u)
     const employeeAuthorization = { authorization: `Bearer ${employeeLoginBody.token}` }
@@ -2019,7 +2017,7 @@ describe('IDOSI Worker security primitives', () => {
         orders: [{ code: 'SM234-00007' }],
       },
     })
-    expect(employeeBootstrapBody.policies).toHaveLength(8)
+    expect(employeeBootstrapBody.policies).toHaveLength(5)
     expect(employeeBootstrapBody.state.employees[0]).not.toHaveProperty('passwordHash')
 
     const employeeCannotReplace = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -2175,9 +2173,20 @@ describe('IDOSI Worker security primitives', () => {
     expect(replayedOrder.headers.get('idempotency-replayed')).toBe('true')
     expect((await replayedOrder.json()).order.code).toBe('SM234-00008')
 
+    const checklistCompleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save',
+      expectedVersion: 4,
+      payload: {
+        attendanceId,
+        tasks: checkedInBody.attendance.checklistSnapshot.tasks.map(({ id }) => ({ id, completed: true })),
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'attendance-checklist-complete-0001' }), env)
+    expect(checklistCompleted.status).toBe(200)
+    expect(await checklistCompleted.json()).toMatchObject({ version: 5, completionRate: 100 })
+
     const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'attendance.check_out',
-      expectedVersion: 4,
+      expectedVersion: 5,
       payload: {
         attendanceId,
         cashRevenue: 0,
@@ -2187,7 +2196,7 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...employeeAuthorization, 'idempotency-key': 'attendance-out-0001' }), env)
     expect(checkedOut.status).toBe(200)
     expect(await checkedOut.json()).toMatchObject({
-      version: 5,
+      version: 6,
       attendance: {
         id: attendanceId,
         orderCount: 1,
@@ -2203,7 +2212,7 @@ describe('IDOSI Worker security primitives', () => {
     ), env)
     expect(employeeState.status).toBe(200)
     const employeeStateBody = await employeeState.json()
-    expect(employeeStateBody.version).toBe(5)
+    expect(employeeStateBody.version).toBe(6)
     expect(employeeStateBody.state.orders).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'SM234-00008', employeeId: 'NV001', attendanceId }),
       expect.objectContaining({ code: 'SM234-00007', employeeId: 'NV001' }),
@@ -2276,6 +2285,7 @@ describe('IDOSI Worker security primitives', () => {
       'policies.set',
       'attendance.check_in',
       'order.create',
+      'task.progress.save',
       'attendance.check_out',
       'user.set_status',
       'user.reset_password',
@@ -3643,6 +3653,142 @@ describe('IDOSI Worker security primitives', () => {
     expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes)
   })
 
+  it('serves employee avatars only within active role scope without exposing profile existence', async () => {
+    const bucket = new MemoryR2()
+    const env = {
+      DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-employee-avatar-rbac',
+    }
+    const profiles = [
+      {
+        id: 'E-A', name: 'Nhân viên A', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+        authUserId: 'owner-E-A',
+      },
+      { id: 'E-B', name: 'Nhân viên B', storeId: 'S02', unit: 'store', status: 'Đang làm việc' },
+      { id: 'E-NONE', name: 'Chưa có avatar', storeId: 'S01', unit: 'store', status: 'Đang làm việc' },
+      { id: 'E-MISSING', name: 'Thiếu object', storeId: 'S01', unit: 'store', status: 'Đang làm việc' },
+      {
+        id: 'E-WRONG', name: 'Sai owner', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+        authUserId: 'owner-E-WRONG',
+      },
+      { id: 'E-INACTIVE', name: 'Nhân viên nghỉ', storeId: 'S02', unit: 'store', status: 'Đã nghỉ việc' },
+      { id: 'M-A', name: 'Quản lý A', storeId: 'S01', unit: 'store_manager', status: 'Đang làm việc' },
+      { id: 'HTKD-A', name: 'Hỗ trợ nội bộ', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', status: 'Đang làm việc' },
+      { id: 'OFFICE-A', name: 'Văn phòng', storeId: 'OFFICE', unit: 'office', status: 'Đang làm việc' },
+      { id: 'E-ROOT', name: 'Nhân viên gốc', storeId: 'S01', unit: 'store', status: 'Đang làm việc' },
+      {
+        id: 'E-PROXY', name: 'Nhân viên vai trò', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+        linkedEmployeeId: 'E-ROOT',
+      },
+      { id: 'E-COW', name: 'Đồng nghiệp', storeId: 'S01', unit: 'store', status: 'Đang làm việc' },
+    ]
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'employee-avatar-rbac-admin-password',
+      initialState: {
+        stores: [
+          { id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' },
+          { id: 'S02', name: 'Dosii S02', status: 'Đang hoạt động' },
+        ],
+        employees: profiles,
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'employee-avatar-rbac-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const accounts = [
+      {
+        username: 'avatar.support', password: 'avatar-support-password', displayName: 'Hỗ trợ',
+        role: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-A',
+      },
+      {
+        username: 'avatar.manager', password: 'avatar-manager-password', displayName: 'Quản lý',
+        role: 'store_manager', storeId: 'S01', employeeId: 'M-A',
+      },
+      {
+        username: 'avatar.employee', password: 'avatar-employee-password', displayName: 'Nhân viên',
+        role: 'employee', storeId: 'S01', employeeId: 'E-PROXY',
+      },
+    ]
+    for (const account of accounts) {
+      const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create', payload: account,
+      }, { ...adminAuthorization, 'idempotency-key': `employee-avatar-user-${account.role}` }), env)
+      expect(created.status, account.role).toBe(201)
+    }
+
+    const bytes = validPngBytes(128)
+    const avatarIds = [
+      'E-A', 'E-B', 'E-INACTIVE', 'M-A', 'HTKD-A', 'OFFICE-A', 'E-ROOT', 'E-COW', 'E-MISSING',
+    ]
+    const withAvatars = profiles.map((profile) => {
+      if (!avatarIds.includes(profile.id)) return profile
+      const key = profile.id === 'E-A'
+        ? 'account-avatars/owner-E-A/avatar-v1.png'
+        : `account-avatars/legacy-profile-${profile.id}/avatar-v1.png`
+      return { ...profile, avatarImage: { key, contentType: 'image/png', size: bytes.byteLength, version: 1 } }
+    }).map((profile) => profile.id === 'E-WRONG'
+      ? {
+          ...profile,
+          avatarImage: {
+            key: 'account-avatars/another-owner/avatar-v1.png',
+            contentType: 'image/png', size: bytes.byteLength, version: 1,
+          },
+        }
+      : profile)
+    for (const profileId of avatarIds.filter((id) => id !== 'E-MISSING')) {
+      const key = profileId === 'E-A'
+        ? 'account-avatars/owner-E-A/avatar-v1.png'
+        : `account-avatars/legacy-profile-${profileId}/avatar-v1.png`
+      await bucket.put(key, bytes)
+    }
+    await bucket.put('account-avatars/another-owner/avatar-v1.png', bytes)
+    replaceStateCollection(env.DB.database, 'employees', withAvatars)
+
+    const loginAs = async (username, password) => {
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username, password }), env)
+      expect(response.status).toBe(200)
+      return { authorization: `Bearer ${(await response.json()).token}` }
+    }
+    const supportAuthorization = await loginAs('avatar.support', 'avatar-support-password')
+    const managerAuthorization = await loginAs('avatar.manager', 'avatar-manager-password')
+    const employeeAuthorization = await loginAs('avatar.employee', 'avatar-employee-password')
+    const getAvatar = (id, authorization) => worker.fetch(new Request(
+      `https://idosi.example/api/account-avatars/${id}`,
+      { headers: authorization },
+    ), env)
+    const expectHidden = async (id, authorization) => {
+      const response = await getAvatar(id, authorization)
+      expect(response.status, id).toBe(404)
+      expect(await response.json()).toMatchObject({ error: { code: 'EMPLOYEE_AVATAR_NOT_FOUND' } })
+    }
+
+    const adminStoreAvatar = await getAvatar('E-A', adminAuthorization)
+    expect(adminStoreAvatar.status).toBe(200)
+    expect((await getAvatar('OFFICE-A', adminAuthorization)).status).toBe(200)
+    expect((await getAvatar('E-B', supportAuthorization)).status).toBe(200)
+    await expectHidden('HTKD-A', supportAuthorization)
+    await expectHidden('OFFICE-A', supportAuthorization)
+    await expectHidden('E-INACTIVE', supportAuthorization)
+    expect((await getAvatar('E-A', managerAuthorization)).status).toBe(200)
+    await expectHidden('E-B', managerAuthorization)
+    expect((await getAvatar('E-ROOT', employeeAuthorization)).status).toBe(200)
+    await expectHidden('E-COW', employeeAuthorization)
+
+    for (const id of ['UNKNOWN', 'E-NONE', 'E-MISSING', 'E-WRONG', '%2Fetc', '%E0%A4%A']) {
+      await expectHidden(id, adminAuthorization)
+    }
+    expect(adminStoreAvatar.headers.get('cache-control')).toBe('private, no-store')
+    expect(adminStoreAvatar.headers.get('content-security-policy')).toBe("default-src 'none'")
+    expect(adminStoreAvatar.headers.get('cross-origin-resource-policy')).toBe('same-origin')
+    expect(adminStoreAvatar.headers.get('referrer-policy')).toBe('no-referrer')
+    expect(adminStoreAvatar.headers.get('x-content-type-options')).toBe('nosniff')
+    expect(adminStoreAvatar.headers.get('x-avatar-version')).toBe('1')
+    expect(adminStoreAvatar.headers.get('content-disposition')).toBe('inline; filename="avatar.png"')
+    expect(adminStoreAvatar.headers.get('etag')).toContain('owner-E-A')
+    expect(Buffer.from(await adminStoreAvatar.arrayBuffer())).toEqual(bytes)
+  }, 30_000)
+
   it('tracks every legacy avatar upload durably through demo and full reset commits', async () => {
     for (const resetType of ['system.reset_demo', 'system.reset_all']) {
       const suffix = resetType.endsWith('demo') ? 'demo' : 'all'
@@ -4335,11 +4481,66 @@ describe('IDOSI Worker security primitives', () => {
       expect((await storeUsers.json()).users).toEqual([
         expect.objectContaining({ role: 'employee', storeId: 'S01', employeeId: 'TNV-001' }),
       ])
+      for (const [index, command] of [
+        {
+          type: 'salary_adjustment.create',
+          payload: { employeeId: 'TNV-001', period: '2026-08', type: 'Thưởng khác', amount: 500_000 },
+        },
+        {
+          type: 'salary_advance.create',
+          payload: { employeeId: 'TNV-001', period: '2026-08', amount: 100_000 },
+        },
+        { type: 'payroll.close', payload: { storeId: 'S01', period: '2026-08' } },
+        { type: 'payroll.pay', payload: { storeId: 'S01', period: '2026-08' } },
+        { type: 'payroll.lock', payload: { storeId: 'S01', period: '2026-08' } },
+      ].entries()) {
+        const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+          ...command, expectedVersion: 6,
+        }, {
+          ...storeManagerAuthorization,
+          'idempotency-key': `store-manager-payroll-mutation-denied-${String(index).padStart(4, '0')}`,
+        }), env)
+        expect(denied.status, command.type).toBe(403)
+        expect(await denied.json(), command.type).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
+      }
+      expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 6 })
+
+      const supportAdjustment = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'salary_adjustment.create', expectedVersion: 6,
+        payload: {
+          employeeId: 'TNV-001', period: '2026-08', type: 'Thưởng khác', amount: 500_000,
+          note: 'HTKD quản lý cửa hàng vận hành',
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-cross-store-salary-adjustment-0001' }), env)
+      expect(supportAdjustment.status).toBe(201)
+      expect(await supportAdjustment.json()).toMatchObject({
+        version: 7,
+        adjustment: { employeeId: 'TNV-001', storeId: 'S01', amount: 500_000 },
+      })
+
       const payrollClosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'S01', period: '2026-08' },
-      }, { ...storeManagerAuthorization, 'idempotency-key': 'store-manager-payroll-close-0001' }), env)
+        type: 'payroll.close', expectedVersion: 7, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-cross-store-payroll-close-0001' }), env)
       expect(payrollClosed.status).toBe(201)
       expect((await payrollClosed.json()).period.rows.map(({ employeeId }) => employeeId)).toEqual(['TNV-001'])
+
+      const payrollPaid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.pay', expectedVersion: 8, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-cross-store-payroll-pay-0001' }), env)
+      expect(payrollPaid.status).toBe(200)
+      expect(await payrollPaid.json()).toMatchObject({ version: 9, period: { status: 'Đã chi' } })
+
+      const supportLockDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.lock', expectedVersion: 9, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-payroll-lock-denied-0001' }), env)
+      expect(supportLockDenied.status).toBe(403)
+      expect(await supportLockDenied.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+
+      const payrollLocked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.lock', expectedVersion: 9, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'admin-payroll-lock-after-support-pay-0001' }), env)
+      expect(payrollLocked.status).toBe(200)
+      expect(await payrollLocked.json()).toMatchObject({ version: 10, period: { status: 'Đã khóa' } })
 
       const storeManagerState = await worker.fetch(new Request('https://idosi.example/api/state', {
         headers: storeManagerAuthorization,
@@ -4348,6 +4549,9 @@ describe('IDOSI Worker security primitives', () => {
       expect(storeManagerProjection.stores.map(({ id }) => id)).toEqual(['S01'])
       expect(storeManagerProjection.employees.map(({ id }) => id).sort()).toEqual(['QLCH-001', 'TNV-001'])
       expect(storeManagerProjection.attendance).toEqual([])
+      expect(storeManagerProjection.payrollPeriods).toEqual([
+        expect.objectContaining({ storeId: 'S01', period: '2026-08', status: 'Đã khóa' }),
+      ])
       expect(JSON.stringify(storeManagerProjection)).not.toContain('HTKD-001')
     } finally {
       vi.useRealTimers()
@@ -4414,7 +4618,7 @@ describe('IDOSI Worker security primitives', () => {
         }),
       }),
     ])
-    expect(payroll.kpiSnapshot.results.map(({ id }) => id)).toEqual(['HTKD001'])
+    expect(payroll).not.toHaveProperty('kpiSnapshot')
     expect(JSON.stringify(payroll)).not.toContain('QL-INTERNAL-001')
   })
 
@@ -6880,7 +7084,7 @@ describe('IDOSI Worker security primitives', () => {
         preservedAdminAccountIds: [adminId],
         preservedCurrentAdminSession: true,
         preservedAdminAccountSettings: [adminId],
-        defaultPolicyCount: 8,
+        defaultPolicyCount: 5,
         identityImagePrefix: 'identity-images/',
         identityImageStorageVerifiedEmpty: true,
         accountAvatarPrefix: 'account-avatars/',
@@ -6919,9 +7123,6 @@ describe('IDOSI Worker security primitives', () => {
         attendance_improve_min_late_minutes: 1,
         attendance_maintain_max_late_count: 1,
         early_check_in_limit_minutes: 1,
-        employee_kpi_percent_15000: 1,
-        employee_kpi_percent_30000: 1,
-        employee_kpi_percent_7000: 1,
         late_tolerance_minutes: 1,
       }).sort().map((policy_key) => ({ policy_key, version: 1 })),
     )
@@ -7467,7 +7668,10 @@ describe('IDOSI Worker security primitives', () => {
         payload: { shiftId: 'SHIFT-FUTURE', location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-future-check-in-0001' }), env)
       expect(checkedIn.status).toBe(201)
-      const attendanceId = (await checkedIn.json()).attendance.id
+      const checkedInBody = await checkedIn.json()
+      const attendanceId = checkedInBody.attendance.id
+      const checklistTasks = checkedInBody.attendance.checklistSnapshot.tasks
+      expect(checklistTasks.length).toBeGreaterThan(0)
       const completedTask = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'task.done', expectedVersion: 5, payload: { taskId: 'TASK-FUTURE-01', done: true },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-task-done-0001' }), env)
@@ -7563,8 +7767,36 @@ describe('IDOSI Worker security primitives', () => {
           },
         },
       })
-      const reasonRequired = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      const checklistBypassDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_out', expectedVersion: 9,
+        payload: {
+          attendanceId, cashRevenue: 100_000, transferRevenue: 200_000,
+          incompleteTaskReason: 'Lý do không được bỏ qua checklist bắt buộc',
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-checkout-checklist-bypass-denied-0001' }), env)
+      expect(checklistBypassDenied.status).toBe(409)
+      expect(await checklistBypassDenied.json()).toMatchObject({
+        error: { code: 'CHECKLIST_INCOMPLETE' },
+      })
+
+      const checklistCompleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.progress.save', expectedVersion: 9,
+        payload: {
+          attendanceId,
+          tasks: [
+            ...checklistTasks.map(({ id }) => ({ id, completed: true })),
+            { id: 'TASK-FUTURE-01', completed: true },
+            { id: 'TASK-FUTURE-02', completed: false },
+          ],
+          incompleteReason: 'Chưa hoàn tất kiểm hàng vì khách đông',
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-checklist-complete-0001' }), env)
+      expect(checklistCompleted.status).toBe(200)
+      expect(await checklistCompleted.json()).toMatchObject({ version: 10 })
+
+      const reasonRequired = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 10,
         payload: {
           attendanceId, cashRevenue: 100_000, transferRevenue: 200_000,
           location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
@@ -7575,7 +7807,7 @@ describe('IDOSI Worker security primitives', () => {
         error: { code: 'INCOMPLETE_TASK_REASON_REQUIRED', details: { taskIds: ['TASK-FUTURE-02'] } },
       })
       const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 9,
+        type: 'attendance.check_out', expectedVersion: 10,
         payload: {
           attendanceId, cashRevenue: 100_000, transferRevenue: 200_000,
           incompleteTaskReason: 'Chưa hoàn tất kiểm hàng vì khách đông',
@@ -7584,7 +7816,7 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-checkout-success-0001' }), env)
       expect(checkedOut.status).toBe(200)
       expect(await checkedOut.json()).toMatchObject({
-        version: 10,
+        version: 11,
         attendance: {
           id: attendanceId, orderCount: 2, revenue: 300_000, cash: 100_000, transfer: 200_000,
           declaredRevenue: { cash: 100_000, transfer: 200_000, total: 300_000 },
@@ -7596,20 +7828,23 @@ describe('IDOSI Worker security primitives', () => {
         },
       })
       const persistedState = readHydratedState(env.DB.database)
-      expect(persistedState.taskAssignmentHistory.map(({ action }) => action)).toEqual(['assigned'])
-      expect(persistedState.taskAssignmentHistory[0]).toMatchObject({
+      const assignedTaskHistory = persistedState.taskAssignmentHistory.find(({ action }) => action === 'assigned')
+      expect(assignedTaskHistory).toMatchObject({
         tasks: [
           { id: 'TASK-FUTURE-01', completedBy: { E01: true } },
-          { id: 'TASK-FUTURE-02', completedBy: {} },
+          { id: 'TASK-FUTURE-02', completedBy: { E01: false } },
         ],
-        progressHistory: [{ taskId: 'TASK-FUTURE-01', employeeId: 'E01', done: true }],
+        progressHistory: expect.arrayContaining([
+          expect.objectContaining({ taskId: 'TASK-FUTURE-01', employeeId: 'E01', done: true }),
+          expect.objectContaining({ action: 'progress-submitted', employeeId: 'E01', attendanceId }),
+        ]),
       })
       expect(persistedState.tasks.find(({ id }) => id === 'TASK-FUTURE-01').completionHistory).toEqual([
         expect.objectContaining({ employeeId: 'E01', done: true }),
       ])
 
       const transferCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'support_transfer.create', expectedVersion: 10,
+        type: 'support_transfer.create', expectedVersion: 11,
         payload: {
           employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
           startAt: '2026-08-21T08:00', endAt: '2026-08-21T12:00', hourlySupportRate: 45_000,
@@ -7619,7 +7854,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(transferCreated.status).toBe(201)
       const transferCreatedBody = await transferCreated.json()
       expect(transferCreatedBody).toMatchObject({
-        version: 11,
+        version: 12,
         transfer: {
           employeeId: 'E01', toStoreId: 'S02',
           startAt: '2026-08-21T01:00:00.000Z', endAt: '2026-08-21T05:00:00.000Z',
@@ -7668,19 +7903,29 @@ describe('IDOSI Worker security primitives', () => {
       })
 
       const destinationCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_in', expectedVersion: 11,
+        type: 'attendance.check_in', expectedVersion: 12,
         payload: { location: { latitude: 10.81, longitude: 106.68, accuracy: 7 } },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-support-check-in-0001' }), env)
       expect(destinationCheckIn.status).toBe(201)
       const destinationCheckInBody = await destinationCheckIn.json()
       expect(destinationCheckInBody).toMatchObject({
-        version: 12,
+        version: 13,
         attendance: {
           shiftName: 'Ca hỗ trợ cửa hàng', shiftSource: 'support-transfer',
           shiftStart: '08:00', shiftEnd: '12:00', arrivalTag: 'Đi đúng giờ', minutesLate: 0,
         },
       })
       const destinationAttendanceId = destinationCheckInBody.attendance.id
+      const destinationChecklistTasks = destinationCheckInBody.attendance.checklistSnapshot.tasks
+      const destinationChecklistCompleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.progress.save', expectedVersion: 13,
+        payload: {
+          attendanceId: destinationAttendanceId,
+          tasks: destinationChecklistTasks.map(({ id }) => ({ id, completed: true })),
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-support-checklist-complete-0001' }), env)
+      expect(destinationChecklistCompleted.status).toBe(200)
+      expect(await destinationChecklistCompleted.json()).toMatchObject({ version: 14, completionRate: 100 })
       vi.setSystemTime(new Date('2026-08-21T05:00:00.000Z'))
       const stateAtExclusiveEnd = await worker.fetch(new Request('https://idosi.example/api/state', {
         headers: employeeAuthorization,
@@ -7699,7 +7944,7 @@ describe('IDOSI Worker security primitives', () => {
       expect((await destinationAtExclusiveEnd.json()).state.employees.some(({ id }) => id === 'E01')).toBe(false)
       vi.setSystemTime(new Date('2026-08-21T07:00:00.000Z'))
       const destinationCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 12,
+        type: 'attendance.check_out', expectedVersion: 14,
         payload: {
           attendanceId: destinationAttendanceId, cashRevenue: 0, transferRevenue: 0,
           location: { latitude: 10.81, longitude: 106.68, accuracy: 7 },
@@ -7707,7 +7952,7 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-support-check-out-0001' }), env)
       expect(destinationCheckOut.status).toBe(200)
       expect(await destinationCheckOut.json()).toMatchObject({
-        version: 13,
+        version: 15,
         attendance: {
           storeId: 'S02', homeStoreId: 'S01', supportTransferId: transferCreatedBody.transfer.id,
           elapsedSeconds: 21_600, workedSeconds: 14_400, hours: 4,
@@ -7718,11 +7963,11 @@ describe('IDOSI Worker security primitives', () => {
         status: 'Hoàn tất',
       })
       const destinationPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'payroll.close', expectedVersion: 13, payload: { storeId: 'S02', period: '2026-08' },
+        type: 'payroll.close', expectedVersion: 15, payload: { storeId: 'S02', period: '2026-08' },
       }, { ...supportAuthorization, 'idempotency-key': 'support-destination-payroll-0001' }), env)
       expect(destinationPayroll.status).toBe(201)
       const destinationPayrollBody = await destinationPayroll.json()
-      expect(destinationPayrollBody).toMatchObject({ version: 14, period: { storeId: 'S02' } })
+      expect(destinationPayrollBody).toMatchObject({ version: 16, period: { storeId: 'S02' } })
       expect(destinationPayrollBody.period.rows.find(({ employeeId }) => employeeId === 'E01')).toMatchObject({
         employeeId: 'E01', hours: 4, baseSalary: 180_000, supportHourlyPay: 180_000,
         supportAllowance: 180_000, gross: 360_000,
@@ -8961,7 +9206,8 @@ describe('IDOSI Worker security primitives', () => {
         payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
       }, { ...employeeAuthorization, 'idempotency-key': 'open-payroll-guard-check-in-0001' }), env)
       expect(checkedIn.status).toBe(201)
-      const attendanceId = (await checkedIn.json()).attendance.id
+      const checkedInBody = await checkedIn.json()
+      const attendanceId = checkedInBody.attendance.id
 
       for (const operation of ['close', 'pay', 'lock']) {
         const blocked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -8973,22 +9219,32 @@ describe('IDOSI Worker security primitives', () => {
         })
       }
 
+      const checklistCompleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.progress.save', expectedVersion: 2,
+        payload: {
+          attendanceId,
+          tasks: checkedInBody.attendance.checklistSnapshot.tasks.map(({ id }) => ({ id, completed: true })),
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'open-payroll-guard-checklist-complete-0001' }), env)
+      expect(checklistCompleted.status).toBe(200)
+      expect(await checklistCompleted.json()).toMatchObject({ version: 3, completionRate: 100 })
+
       vi.setSystemTime(new Date('2026-08-20T03:00:00.000Z'))
       const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 2,
+        type: 'attendance.check_out', expectedVersion: 3,
         payload: {
           attendanceId, cashRevenue: 0, transferRevenue: 0,
           location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'open-payroll-guard-check-out-0001' }), env)
       expect(checkedOut.status).toBe(200)
-      expect(await checkedOut.json()).toMatchObject({ version: 3, attendance: { id: attendanceId, workedSeconds: 3_600 } })
+      expect(await checkedOut.json()).toMatchObject({ version: 4, attendance: { id: attendanceId, workedSeconds: 3_600 } })
 
       const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'payroll.close', expectedVersion: 3, payload: { storeId: 'S02', period: '2026-08' },
+        type: 'payroll.close', expectedVersion: 4, payload: { storeId: 'S02', period: '2026-08' },
       }, { ...adminAuthorization, 'idempotency-key': 'open-payroll-guard-close-after-checkout-0001' }), env)
       expect(closed.status).toBe(201)
-      expect(await closed.json()).toMatchObject({ version: 4, period: { storeId: 'S02', period: '2026-08', status: 'Đã chốt' } })
+      expect(await closed.json()).toMatchObject({ version: 5, period: { storeId: 'S02', period: '2026-08', status: 'Đã chốt' } })
     } finally {
       vi.useRealTimers()
     }
@@ -9146,7 +9402,8 @@ describe('IDOSI Worker security primitives', () => {
         payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
       }, { ...employeeAuthorization, 'idempotency-key': 'cross-month-transfer-check-in-0001' }), env)
       expect(checkedIn.status).toBe(201)
-      const attendanceId = (await checkedIn.json()).attendance.id
+      const checkedInBody = await checkedIn.json()
+      const attendanceId = checkedInBody.attendance.id
 
       vi.setSystemTime(new Date('2026-08-31T16:05:00.000Z'))
       const orderCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -9172,9 +9429,19 @@ describe('IDOSI Worker security primitives', () => {
       expect(cancelLinked.status).toBe(409)
       expect(await cancelLinked.json()).toMatchObject({ error: { code: 'SUPPORT_TRANSFER_ATTENDANCE_IMMUTABLE' } })
 
+      const checklistCompleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'task.progress.save', expectedVersion: 3,
+        payload: {
+          attendanceId,
+          tasks: checkedInBody.attendance.checklistSnapshot.tasks.map(({ id }) => ({ id, completed: true })),
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'cross-month-transfer-checklist-complete-0001' }), env)
+      expect(checklistCompleted.status).toBe(200)
+      expect(await checklistCompleted.json()).toMatchObject({ version: 4, completionRate: 100 })
+
       vi.setSystemTime(new Date('2026-08-31T21:00:00.000Z')) // 01/09 04:00, two hours after endAt
       const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 3,
+        type: 'attendance.check_out', expectedVersion: 4,
         payload: {
           attendanceId, cashRevenue: 100_000, transferRevenue: 0,
           location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
@@ -9182,7 +9449,7 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...employeeAuthorization, 'idempotency-key': 'cross-month-transfer-check-out-0001' }), env)
       expect(checkedOut.status).toBe(200)
       expect(await checkedOut.json()).toMatchObject({
-        version: 4,
+        version: 5,
         attendance: {
           storeId: 'S02', supportTransferId: transfer.id,
           elapsedSeconds: 18_000, workedSeconds: 10_800, workedMinutes: 180, hours: 3,
@@ -9218,7 +9485,7 @@ describe('IDOSI Worker security primitives', () => {
       })
 
       const augustPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'payroll.close', expectedVersion: 4, payload: { storeId: 'S02', period: '2026-08' },
+        type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-08' },
       }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-aug-0001' }), env)
       expect(augustPayroll.status).toBe(200)
       const augustPayrollBody = await augustPayroll.json()
@@ -9227,12 +9494,12 @@ describe('IDOSI Worker security primitives', () => {
         supportActualPay: 315_000, gross: 315_000, supportTransferIds: [transfer.id],
       })
       const septemberPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-09' },
+        type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'S02', period: '2026-09' },
       }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-sep-0001' }), env)
       expect(septemberPayroll.status).toBe(201)
       expect((await septemberPayroll.json()).period.rows.some(({ employeeId }) => employeeId === 'E01')).toBe(false)
       const homePayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'S01', period: '2026-08' },
+        type: 'payroll.close', expectedVersion: 7, payload: { storeId: 'S01', period: '2026-08' },
       }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-home-0001' }), env)
       expect(homePayroll.status).toBe(201)
       const homeEmployeeRow = (await homePayroll.json()).period.rows.find(({ employeeId }) => employeeId === 'E01')
@@ -9541,7 +9808,7 @@ describe('IDOSI Worker security primitives', () => {
         rows: [{
           employeeId: 'E01', hours: 5, baseSalary: 145_000, supportHourlyPay: 145_000,
           supportAllowance: 50_000, supportActualPay: 195_000, gross: 195_000, remaining: 195_000,
-          kpiBonus: 0, advancesPaid: 0,
+          advancesPaid: 0,
         }],
       },
     })
@@ -9560,6 +9827,9 @@ describe('IDOSI Worker security primitives', () => {
     expect(state.expenseEntries.find(({ sourceType }) => sourceType === 'payroll-payment')).toMatchObject({
       amount: 195_000, recognized: false, accruedAmount: 195_000,
     })
+    expect(state.expenseEntries.filter(({ sourceType }) => sourceType === 'payroll-accrual')).toEqual([
+      expect.objectContaining({ amount: 0, recognized: true, supportCompensationAccrued: 195_000 }),
+    ])
     expect(state.cashTransactions.find(({ sourceType }) => sourceType === 'payroll-payment')).toMatchObject({
       amount: 195_000, direction: 'out',
     })
@@ -9599,7 +9869,9 @@ describe('IDOSI Worker security primitives', () => {
     expect(paid.status).toBe(200)
     expect(await paid.json()).toMatchObject({ version: 3, payments: [] })
     const state = readHydratedState(env.DB.database)
-    expect(state.expenseEntries).toEqual([])
+    expect(state.expenseEntries).toEqual([
+      expect.objectContaining({ sourceType: 'payroll-accrual', amount: 0, recognized: true }),
+    ])
     expect(state.payrollPayments).toEqual([])
     expect(state.cashTransactions).toEqual([])
   }, 30_000)
@@ -9646,16 +9918,17 @@ describe('IDOSI Worker security primitives', () => {
       period: {
         financeSnapshot: {
           revenue: 500_000, recognizedExpense: 0, supportAccrualGap: 195_000,
-          expense: 195_000, profit: 305_000,
+          nonPayrollExpense: 0, recognizedSupportExpense: 0,
+          earnedPayrollExpense: 320_000, netPayrollExpense: 320_000,
+          expense: 320_000, profit: 180_000,
         },
-        kpiSnapshot: { profit: 305_000, totalHours: 10, profitPerHour: 30_500, employeeTier: { ratePercent: 5 } },
       },
     })
     expect(closedBody.period.rows.find(({ employeeId }) => employeeId === 'E01')).toMatchObject({
-      supportActualPay: 195_000, gross: 195_000, kpiBonus: 0,
+      supportActualPay: 195_000, gross: 195_000,
     })
     expect(closedBody.period.rows.find(({ employeeId }) => employeeId === 'E02')).toMatchObject({
-      hours: 5, baseSalary: 125_000, kpiBonus: 7_625, gross: 132_625,
+      hours: 5, baseSalary: 125_000, gross: 125_000,
     })
     const paid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'payroll.pay', expectedVersion: 2, payload: { storeId: 'S02', period: '2026-08' },
@@ -9663,10 +9936,14 @@ describe('IDOSI Worker security primitives', () => {
     expect(paid.status).toBe(200)
     const state = readHydratedState(env.DB.database)
     const recognized = state.expenseEntries.filter((entry) => entry.recognized !== false && !entry.deletedAt && !entry.voidedAt)
-    expect(recognized.find((entry) => entry.sourceType === 'payroll-payment' && entry.employeeId === 'E01')).toMatchObject({
-      sourceType: 'payroll-payment', amount: 195_000, recognizedAmount: 195_000, supportExpectedAmount: 195_000,
+    expect(recognized.find((entry) => entry.sourceType === 'payroll-accrual')).toMatchObject({
+      sourceType: 'payroll-accrual', amount: 320_000, supportCompensationAccrued: 0,
     })
-    expect(recognized.reduce((sum, entry) => sum + Number(entry.amount || 0), 0)).toBe(327_625)
+    expect(state.expenseEntries.filter((entry) => entry.sourceType === 'payroll-payment')).toEqual(expect.arrayContaining([
+      expect.objectContaining({ employeeId: 'E01', amount: 195_000, recognized: false }),
+      expect.objectContaining({ employeeId: 'E02', amount: 125_000, recognized: false }),
+    ]))
+    expect(recognized.reduce((sum, entry) => sum + Number(entry.amount || 0), 0)).toBe(320_000)
   }, 30_000)
 
   it('recognizes only the missing support payroll delta after a partial attendance accrual', async () => {
@@ -9710,11 +9987,298 @@ describe('IDOSI Worker security primitives', () => {
     const state = readHydratedState(env.DB.database)
     const paymentExpense = state.expenseEntries.find(({ sourceType }) => sourceType === 'payroll-payment')
     expect(paymentExpense).toMatchObject({
-      amount: 95_000, recognized: true, recognizedAmount: 95_000,
+      amount: 195_000, recognized: false, recognizedAmount: 0,
       accruedAmount: 100_000, supportExpectedAmount: 195_000,
+    })
+    expect(state.expenseEntries.find(({ sourceType }) => sourceType === 'payroll-accrual')).toMatchObject({
+      amount: 95_000, recognized: true, supportCompensationAccrued: 100_000,
     })
     const recognizedTotal = state.expenseEntries.filter((entry) => entry.recognized !== false && !entry.deletedAt && !entry.voidedAt)
       .reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
     expect(recognizedTotal).toBe(195_000)
   }, 30_000)
+
+  it('snapshots the canonical store checklist and never lets a reason bypass incomplete active tasks', async () => {
+    vi.setSystemTime(new Date('2026-08-20T01:00:00.000Z'))
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-canonical-shift-checklist' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'checklist-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Store 01', status: 'Đang hoạt động' }],
+        employees: [{ id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store', status: 'Đang làm việc' }],
+        shiftDefinitions: [{ id: 'SHIFT-MORNING', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+        schedule: [{ id: 'SCH-01', employeeId: 'E01', storeId: 'S01', date: '2026-08-20', shiftId: 'SHIFT-MORNING' }],
+        tasks: [], attendance: [], orders: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'checklist-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', payload: {
+        role: 'employee', employeeId: 'E01', storeId: 'S01', username: 'employee.checklist',
+        password: 'employee-checklist-password', displayName: 'Nhân viên checklist',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'checklist-employee-create-0001' }), env)
+    expect(created.status).toBe(201)
+    const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'employee.checklist', password: 'employee-checklist-password',
+    }), env)
+    const employeeAuthorization = { authorization: `Bearer ${(await employeeLogin.json()).token}` }
+    const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.check_in', expectedVersion: 1,
+      payload: { shiftId: 'SHIFT-MORNING', location: { latitude: 10.8, longitude: 106.7, accuracy: 5 } },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-checkin-0001' }), env)
+    expect(checkedIn.status).toBe(201)
+    const checkedInBody = await checkedIn.json()
+    const checklistTasks = checkedInBody.attendance.checklistSnapshot.tasks
+    expect(checklistTasks.length).toBeGreaterThan(0)
+    const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.check_out', expectedVersion: 2,
+      payload: {
+        attendanceId: checkedInBody.attendance.id, cashRevenue: 0, transferRevenue: 0,
+        incompleteTaskReason: 'Không dùng lý do để bỏ qua checklist',
+        location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-bypass-denied-0001' }), env)
+    expect(denied.status).toBe(409)
+    expect(await denied.json()).toMatchObject({ error: { code: 'CHECKLIST_INCOMPLETE' } })
+    const progress = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: 2,
+      payload: {
+        attendanceId: checkedInBody.attendance.id,
+        tasks: checklistTasks.map(({ id }) => ({ id, completed: true })),
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-progress-0001' }), env)
+    expect(progress.status).toBe(200)
+    expect(await progress.json()).toMatchObject({
+      version: 3, totalTasks: checklistTasks.length, completedTasks: checklistTasks.length, completionRate: 100,
+    })
+    const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.check_out', expectedVersion: 3,
+      payload: {
+        attendanceId: checkedInBody.attendance.id, cashRevenue: 0, transferRevenue: 0,
+        location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-checkout-0001' }), env)
+    expect(checkedOut.status).toBe(200)
+    expect(await checkedOut.json()).toMatchObject({ version: 4, attendance: { id: checkedInBody.attendance.id } })
+  }, 30_000)
+
+  it('recognizes payroll once at close while advances and payment mirrors only settle cash', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-payroll-accrual-invariant' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'payroll-accrual-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Store 01', status: 'Đang hoạt động' }],
+        employees: [{
+          id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store',
+          employmentType: 'Full-Time', payBasis: 'monthly', monthlySalary: 24_000_000,
+        }],
+        orders: [{
+          id: 'ORDER-ACCRUAL', storeId: 'S01', employeeId: 'E01', amount: 100_000_000,
+          status: 'Hoàn tất', createdAt: '2026-08-20T02:00:00.000Z',
+        }],
+        violations: [{
+          id: 'VIO-ACCRUAL', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+          amountVnd: 500_000, status: 'ACTIVE',
+        }],
+        salaryAdvances: [{
+          id: 'ADV-ACCRUAL', employeeId: 'E01', storeId: 'S01', period: '2026-08',
+          amount: 5_000_000, status: 'Đã chi', confirmedAt: '2026-08-20T03:00:00.000Z',
+        }],
+        expenseEntries: [{
+          id: 'EXP-NON-PAYROLL', storeId: 'S01', amount: 50_000_000, recognized: true,
+          sourceType: 'fixed-expense', sourceId: 'FIXED-01', occurredAt: '2026-08-20T02:00:00.000Z',
+        }, {
+          id: 'EXP-ADVANCE-MIRROR', storeId: 'S01', amount: 5_000_000, recognized: false,
+          sourceType: 'salary-advance', sourceId: 'ADV-ACCRUAL', occurredAt: '2026-08-20T03:00:00.000Z',
+        }],
+        cashTransactions: [{
+          id: 'TXN-ADVANCE', storeId: 'S01', amount: 5_000_000, direction: 'out',
+          sourceType: 'salary-advance', sourceId: 'ADV-ACCRUAL', occurredAt: '2026-08-20T03:00:00.000Z',
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'payroll-accrual-admin-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const closeCommand = {
+      type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+    }
+    const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', closeCommand, {
+      ...authorization, 'idempotency-key': 'payroll-accrual-close-0001',
+    }), env)
+    expect(closed.status).toBe(201)
+    const closedBody = await closed.json()
+    expect(closedBody).toMatchObject({
+      version: 2,
+      period: {
+        rows: [{ gross: 24_000_000, appliedViolationVnd: 500_000, remaining: 18_500_000 }],
+        financeSnapshot: {
+          revenue: 100_000_000,
+          nonPayrollExpense: 50_000_000,
+          earnedPayrollExpense: 23_500_000,
+          recognizedSupportExpense: 0,
+          netPayrollExpense: 23_500_000,
+          expense: 73_500_000,
+          profit: 26_500_000,
+        },
+      },
+      payrollAccrual: { amount: 23_500_000, recognized: true, sourceType: 'payroll-accrual' },
+    })
+    const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', closeCommand, {
+      ...authorization, 'idempotency-key': 'payroll-accrual-close-0001',
+    }), env)
+    expect(replay.status).toBe(201)
+    expect(replay.headers.get('idempotency-replayed')).toBe('true')
+    expect(await replay.json()).toEqual(closedBody)
+
+    const paid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.pay', expectedVersion: 2, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'payroll-accrual-pay-0001' }), env)
+    expect(paid.status).toBe(200)
+    expect(await paid.json()).toMatchObject({ payments: [{ amount: 18_500_000 }] })
+    const state = readHydratedState(env.DB.database)
+    expect(state.expenseEntries.filter(({ sourceType }) => sourceType === 'payroll-accrual')).toEqual([
+      expect.objectContaining({ amount: 23_500_000, recognized: true }),
+    ])
+    expect(state.expenseEntries.find(({ sourceType }) => sourceType === 'payroll-payment')).toMatchObject({
+      amount: 18_500_000, recognized: false,
+    })
+    const recognizedExpense = state.expenseEntries.filter((entry) => entry.recognized !== false)
+      .reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
+    const cashOut = state.cashTransactions.filter((entry) => entry.direction === 'out')
+      .reduce((sum, entry) => sum + Number(entry.amount || 0), 0)
+    expect(recognizedExpense).toBe(73_500_000)
+    expect(cashOut).toBe(23_500_000)
+    expect(100_000_000 - recognizedExpense).toBe(26_500_000)
+    expect(100_000_000 - 50_000_000 - cashOut).toBe(26_500_000)
+  }, 30_000)
+
+  it('keeps hot milestones pending until an authorized cross-store approval and protects coworker allocations', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-hot-approval' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'revenue-hot-admin-password',
+      initialState: {
+        stores: [
+          { id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' },
+          { id: 'S02', name: 'Dosii S02', status: 'Đang hoạt động' },
+        ],
+        employees: [
+          { id: 'HTKD-BONUS', name: 'Hỗ trợ toàn hệ thống', unit: 'business_support', storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc' },
+          { id: 'QL-S02', name: 'Quản lý S02', unit: 'store_manager', storeId: 'S02', status: 'Đang làm việc' },
+          { id: 'E-S02', name: 'Nhân viên S02', unit: 'store', storeId: 'S02', status: 'Đang làm việc' },
+        ],
+        orders: [{
+          id: 'ORDER-HOT-01', storeId: 'S02', employeeId: 'E-S02', amount: 16_000_001,
+          status: 'Hoàn tất', createdAt: '2026-08-20T03:00:00.000Z',
+        }],
+        attendance: [{
+          id: 'ATT-HOT-MANAGER', storeId: 'S02', employeeId: 'QL-S02', date: '2026-08-20',
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
+        }, {
+          id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'revenue-hot-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    for (const account of [
+      { username: 'support.bonus', password: 'support-bonus-password', displayName: 'Hỗ trợ thưởng', role: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-BONUS' },
+      { username: 'manager.bonus', password: 'manager-bonus-password', displayName: 'Quản lý S02', role: 'store_manager', storeId: 'S02', employeeId: 'QL-S02' },
+      { username: 'employee.bonus', password: 'employee-bonus-password', displayName: 'Nhân viên S02', role: 'employee', storeId: 'S02', employeeId: 'E-S02' },
+    ]) {
+      const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create', payload: account,
+      }, { ...adminAuthorization, 'idempotency-key': `revenue-hot-user-${account.role}` }), env)
+      expect(created.status, account.role).toBe(201)
+    }
+    const loginAs = async (username, password) => {
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username, password }), env)
+      expect(response.status).toBe(200)
+      return { authorization: `Bearer ${(await response.json()).token}` }
+    }
+    const supportAuthorization = await loginAs('support.bonus', 'support-bonus-password')
+    const managerAuthorization = await loginAs('manager.bonus', 'manager-bonus-password')
+    const employeeAuthorization = await loginAs('employee.bonus', 'employee-bonus-password')
+
+    const managerDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.calculate_day', expectedVersion: 1,
+      payload: { storeId: 'S02', businessDate: '2026-08-20' },
+    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-denied-0001' }), env)
+    expect(managerDenied.status).toBe(403)
+
+    const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.calculate_day', expectedVersion: 1,
+      payload: { storeId: 'S02', businessDate: '2026-08-20' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-calculate-0001' }), env)
+    expect(calculated.status).toBe(201)
+    const calculatedBody = await calculated.json()
+    expect(calculatedBody.revenueBonus).toMatchObject({
+      storeId: 'S02', milestoneId: 'dosii.daily.over_15_000_000', milestonePoolVnd: 0,
+      pendingMilestonePoolVnd: 250_000, milestoneStatus: 'PENDING',
+    })
+    expect(calculatedBody.revenueBonus.totalPoolVnd).toBe(calculatedBody.revenueBonus.percentagePoolVnd)
+    expect(calculatedBody.teamClaim).toMatchObject({ status: 'PENDING', amountVnd: 250_000 })
+    expect(calculatedBody.allocations.every(({ milestonePoolVnd, amountVnd, percentagePoolVnd }) => (
+      milestonePoolVnd === 0 && amountVnd === percentagePoolVnd
+    ))).toBe(true)
+    expect(calculatedBody.teamParticipants.every(({ status, amountVnd }) => status === 'PENDING' && amountVnd === 0)).toBe(true)
+
+    const managerStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: managerAuthorization }), env)
+    expect(managerStateResponse.status).toBe(200)
+    const managerState = (await managerStateResponse.json()).state
+    expect(managerState.revenueBonusDaily).toEqual([expect.not.objectContaining({ allocations: expect.anything() })])
+    expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(JSON.stringify({
+      daily: managerState.revenueBonusDaily,
+      allocations: managerState.revenueBonusAllocations,
+      participants: managerState.teamRewardParticipants,
+    })).not.toContain('E-S02')
+
+    const employeeStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: employeeAuthorization }), env)
+    expect(employeeStateResponse.status).toBe(200)
+    const employeeState = (await employeeStateResponse.json()).state
+    expect(employeeState.revenueBonusDaily).toEqual([expect.objectContaining({ pendingMilestonePoolVnd: 250_000 })])
+    expect(employeeState.revenueBonusDaily[0]).not.toHaveProperty('allocations')
+    expect(employeeState.revenueBonusAllocations.map(({ employeeId }) => employeeId)).toEqual(['E-S02'])
+    expect(employeeState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['E-S02'])
+    expect(JSON.stringify({
+      daily: employeeState.revenueBonusDaily,
+      allocations: employeeState.revenueBonusAllocations,
+      participants: employeeState.teamRewardParticipants,
+    })).not.toContain('QL-S02')
+
+    const approved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
+      payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-approve-0001' }), env)
+    expect(approved.status).toBe(200)
+    const approvedBody = await approved.json()
+    expect(approvedBody.teamClaim).toMatchObject({ status: 'APPROVED', amountVnd: 250_000 })
+    expect(approvedBody.revenueBonus).toMatchObject({
+      milestonePoolVnd: 250_000, pendingMilestonePoolVnd: 0, milestoneStatus: 'APPROVED',
+    })
+    expect(approvedBody.revenueBonus.totalPoolVnd).toBe(
+      approvedBody.revenueBonus.percentagePoolVnd + 250_000,
+    )
+    expect(approvedBody.allocations.reduce((sum, record) => sum + record.milestonePoolVnd, 0)).toBe(250_000)
+    const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
+      payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-approve-0001' }), env)
+    expect(replay.status).toBe(200)
+    expect(replay.headers.get('idempotency-replayed')).toBe('true')
+    expect(await replay.json()).toEqual(approvedBody)
+  }, 60_000)
 })

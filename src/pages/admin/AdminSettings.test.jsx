@@ -16,7 +16,8 @@ const mocked = vi.hoisted(() => ({
   verifyCurrentPassword: vi.fn(),
 }))
 
-vi.mock('../../domain/accountAvatar', () => ({
+vi.mock('../../domain/accountAvatar', async (importOriginal) => ({
+  ...await importOriginal(),
   optimizeAccountAvatar: mocked.optimizeAccountAvatar,
   validateAccountAvatarSource: mocked.validateAccountAvatarSource,
 }))
@@ -144,7 +145,8 @@ describe('AdminSettings password visibility', () => {
       crop: { positionX: 0.25, positionY: 0, zoom: 1.5 },
     }))
     await waitFor(() => expect(screen.getByAltText('Ảnh đại diện tài khoản').getAttribute('src')).toBe(avatar))
-    expect(mocked.notify).toHaveBeenCalledWith(expect.stringContaining('245 KB'), 'info')
+    expect(screen.getByText(/Ảnh sẵn sàng: 245 KB/u)).toBeTruthy()
+    expect(mocked.notify).not.toHaveBeenCalled()
 
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))
     await waitFor(() => expect(mocked.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ avatar })))

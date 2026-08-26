@@ -55,6 +55,13 @@ import {
   StoreReportsV2,
 } from './pages/store/StoreV2Pages'
 import UnifiedSchedule from './pages/store/UnifiedSchedule'
+import {
+  ManagerCompensationPage,
+  MyCompensationPage,
+  MyViolationsPage,
+  RevenueBonusPage,
+  ViolationManagementPage,
+} from './pages/compensation'
 import { useApp } from './state/AppContext'
 
 const canonicalRole = (role) => role === 'manager' ? 'business_support' : role
@@ -162,6 +169,10 @@ export default function App() {
         <Route path="/admin/customer-survey" element={<CustomerSurveyPage />} />
         <Route path="/admin/support-transfers" element={<SupportTransfersPage />} />
         <Route path="/admin/order-information-settings" element={<OrderInformationSettingsPage />} />
+        <Route path="/admin/compensation/managers" element={<ManagerCompensationPage />} />
+        <Route path="/admin/compensation/revenue" element={<RevenueBonusPage />} />
+        <Route path="/admin/violations/store" element={<ViolationManagementPage targetUnit="store" />} />
+        <Route path="/admin/violations/office" element={<ViolationManagementPage targetUnit="office" />} />
       </Route>
 
       <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager']}><AppShell /></RoleGuard>}>
@@ -175,6 +186,9 @@ export default function App() {
         <Route path="/store/expenses" element={<StoreExpensesV2 />} />
         <Route path="/store/attendance" element={<StoreAttendanceV2 />} />
         <Route path="/store/payroll" element={<StorePayrollV2 />} />
+        <Route path="/store/revenue-bonus" element={<RevenueBonusPage />} />
+        <Route path="/store/my-compensation" element={<MyCompensationPage />} />
+        <Route path="/store/my-violations" element={<MyViolationsPage />} />
         <Route path="/store/cashflow" element={<StoreCashflowV2 />} />
         <Route path="/store/reports" element={<StoreReportsV2 />} />
         <Route path="/store/settings" element={<StoreSettings />} />
@@ -185,12 +199,15 @@ export default function App() {
         <Route path="/support/attendance" element={<Navigate to="/support/overview" replace />} />
         <Route path="/support/tasks" element={<SupportAssignedWorkPage />} />
         <Route path="/support/my-schedule" element={<MyBusinessSupportSchedulePage />} />
+        <Route path="/support/my-compensation" element={<MyCompensationPage />} />
+        <Route path="/support/my-violations" element={<MyViolationsPage />} />
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/admin/tasks" element={<AdminSupportWorkPage />} />
         <Route path="/admin/reset" element={<AttendanceResetPage />} />
         <Route path="/admin/work-registration-schedules" element={<AdminWorkRegistrationSchedulePage />} />
+        <Route path="/admin/violations/business-support" element={<ViolationManagementPage targetUnit="business_support" />} />
       </Route>
 
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
@@ -203,6 +220,9 @@ export default function App() {
         <Route path="/employee/work-history" element={<EmployeeShiftHistory />} />
         <Route path="/employee/schedule" element={<EmployeeScheduleRoute />} />
         <Route path="/employee/payroll" element={<EmployeePayrollPage />} />
+        <Route path="/employee/compensation" element={<MyCompensationPage />} />
+        <Route path="/employee/violations" element={<MyViolationsPage />} />
+        <Route path="/employee/revenue-bonus" element={<StoreEmployeeRoute><RevenueBonusPage /></StoreEmployeeRoute>} />
         <Route path="/employee/cashflow" element={<StoreEmployeeRoute><EmployeeCashflow /></StoreEmployeeRoute>} />
       </Route>
 

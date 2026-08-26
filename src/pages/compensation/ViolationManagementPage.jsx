@@ -1,0 +1,214 @@
+import { useMemo, useState } from 'react'
+import { Plus, ShieldAlert, UserRoundCheck, XCircle } from 'lucide-react'
+import { useApp } from '../../state/AppContext'
+import {
+  Badge,
+  Button,
+  Card,
+  Field,
+  InfoNote,
+  Input,
+  PageHeader,
+  Select,
+  TableWrap,
+} from '../../components/UI'
+import { money } from '../../utils'
+import { HTKD_VIOLATIONS, OFFICE_VIOLATIONS, STORE_VIOLATIONS } from '../../domain/compensationPolicies'
+import {
+  canonicalRole,
+  employeesForTarget,
+  entityId,
+  entryAmount,
+  entryDate,
+  entryEmployeeId,
+  entryStoreId,
+  isVoided,
+  statusLabel,
+  statusTone,
+  storesVisibleToRole,
+  targetUnitOfViolation,
+} from './compensationViewModel'
+import {
+  AccessDenied,
+  ActionError,
+  displayDate,
+  employeeName,
+  storeName,
+  useCompensationAction,
+  vietnamToday,
+} from './compensationUi'
+import './compensation-page.css'
+
+const UNIT_LABELS = {
+  store: 'Nhân viên cửa hàng',
+  office: 'Khối văn phòng',
+  business_support: 'Nhân viên hỗ trợ KD',
+}
+
+const POLICIES = {
+  store: STORE_VIOLATIONS,
+  office: OFFICE_VIOLATIONS,
+  business_support: HTKD_VIOLATIONS,
+}
+
+const routeTargetUnit = () => {
+  const pathname = typeof window === 'undefined' ? '' : window.location.pathname.toLowerCase()
+  if (pathname.includes('business-support') || pathname.includes('htkd')) return 'business_support'
+  if (pathname.includes('office')) return 'office'
+  return 'store'
+}
+
+export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
+  const app = useApp()
+  const role = canonicalRole(app.session?.role)
+  const targetUnit = requestedTargetUnit || routeTargetUnit()
+  const permittedUnit = ['store', 'office', 'business_support'].includes(targetUnit)
+  const canManage = ['admin', 'business_support'].includes(role)
+    && (targetUnit !== 'business_support' || role === 'admin')
+  const stores = useMemo(() => storesVisibleToRole(app.stores, app.session), [app.stores, app.session])
+  const [storeSelection, setStoreSelection] = useState('')
+  const selectedStoreId = targetUnit === 'store' ? storeSelection || entityId(stores[0]) : ''
+  const employees = useMemo(() => employeesForTarget({
+    employees: app.employees,
+    targetUnit,
+    storeId: selectedStoreId,
+  }), [app.employees, targetUnit, selectedStoreId])
+  const policies = POLICIES[targetUnit] || []
+  const [employeeSelection, setEmployeeSelection] = useState('')
+  const [policyCode, setPolicyCode] = useState('')
+  const [occurredOn, setOccurredOn] = useState(vietnamToday)
+  const [note, setNote] = useState('')
+  const [validation, setValidation] = useState('')
+  const { busyKey, error, run } = useCompensationAction(app)
+  const selectedEmployeeId = employeeSelection || entityId(employees[0])
+  const selectedPolicy = policies.find((policy) => policy.code === (policyCode || policies[0]?.code))
+  const visibleEmployeeIds = useMemo(() => new Set(employees.map(entityId)), [employees])
+  const rows = (app.violations || [])
+    .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
+    .filter((entry) => targetUnit !== 'store' || entryStoreId(entry) === selectedStoreId)
+    .filter((entry) => visibleEmployeeIds.has(entryEmployeeId(entry)))
+    .sort((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || '')))
+
+  if (!permittedUnit || !canManage) {
+    const subtitle = targetUnit === 'business_support'
+      ? 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.'
+      : 'Chỉ Admin và Nhân viên hỗ trợ KD được quản lý vi phạm của đơn vị này.'
+    return <AccessDenied subtitle={subtitle} />
+  }
+
+  const createViolation = async () => {
+    if (!selectedEmployeeId || !selectedPolicy || !occurredOn) {
+      setValidation('Vui lòng chọn nhân viên, nội dung vi phạm và ngày phát sinh.')
+      return
+    }
+    setValidation('')
+    const saved = await run({
+      key: 'create',
+      action: app.createViolation,
+      payload: {
+        targetUnit,
+        employeeId: selectedEmployeeId,
+        storeId: selectedStoreId || null,
+        policyCode: selectedPolicy.code,
+        title: selectedPolicy.label,
+        amountVnd: selectedPolicy.amountVnd,
+        occurredOn,
+        note: note.trim(),
+      },
+      success: 'Đã ghi nhận vi phạm. Số tiền được lưu là khoản phải thu dương.',
+    })
+    if (saved) setNote('')
+  }
+
+  const voidViolation = (entry) => {
+    if (typeof window !== 'undefined' && !window.confirm('Hủy vi phạm này? Bản ghi vẫn được giữ trong lịch sử đối soát.')) return
+    run({
+      key: `void:${entry.id}`,
+      action: app.voidViolation,
+      payload: { id: entry.id, expectedVersion: entry.version, reason: 'Hủy từ màn hình quản lý vi phạm' },
+      success: 'Đã hủy vi phạm và giữ lại lịch sử.',
+    })
+  }
+
+  return (
+    <div className="page compensation-page violation-management-page">
+      <PageHeader
+        title={`QUẢN LÝ VI PHẠM — ${UNIT_LABELS[targetUnit].toUpperCase()}`}
+        subtitle={targetUnit === 'store' ? 'Admin và Nhân viên hỗ trợ KD quản lý vi phạm tại mọi cửa hàng vận hành.' : `Quản lý vi phạm của ${UNIT_LABELS[targetUnit].toLowerCase()} theo đúng phạm vi quyền.`}
+        icon={ShieldAlert}
+      />
+      <Card title="Ghi nhận vi phạm">
+        <div className="compensation-form-grid">
+          {targetUnit === 'store' && <Field label="Cửa hàng" required>
+            <Select aria-label="Cửa hàng" value={selectedStoreId} onChange={(event) => { setStoreSelection(event.target.value); setEmployeeSelection('') }}>
+              {stores.map((store) => <option key={entityId(store)} value={entityId(store)}>{store.name}</option>)}
+            </Select>
+          </Field>}
+          <Field label="Nhân viên" required>
+            <Select aria-label="Nhân viên" value={selectedEmployeeId} onChange={(event) => setEmployeeSelection(event.target.value)} disabled={!employees.length}>
+              {employees.map((employee) => <option key={entityId(employee)} value={entityId(employee)}>{employee.name} — {entityId(employee)}</option>)}
+            </Select>
+          </Field>
+          <Field label="Nội dung vi phạm" required>
+            <Select aria-label="Nội dung vi phạm" value={selectedPolicy?.code || ''} onChange={(event) => setPolicyCode(event.target.value)}>
+              {policies.map((policy) => <option key={policy.code} value={policy.code}>{policy.label} — {money(policy.amountVnd)}</option>)}
+            </Select>
+          </Field>
+          <Field label="Số tiền phải thu">
+            <Input aria-label="Số tiền phải thu" value={money(selectedPolicy?.amountVnd || 0)} readOnly />
+          </Field>
+          <Field label="Ngày phát sinh" required>
+            <Input aria-label="Ngày phát sinh" type="date" value={occurredOn} onChange={(event) => setOccurredOn(event.target.value)} />
+          </Field>
+          <Field label="Ghi chú" className="compensation-form-span">
+            <Input aria-label="Ghi chú" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Thông tin đối soát bổ sung (nếu có)" />
+          </Field>
+        </div>
+        {!employees.length && <InfoNote tone="orange">Không có nhân viên đang hoạt động trong phạm vi đã chọn.</InfoNote>}
+        <InfoNote>Vi phạm luôn là khoản phải thu dương. Khi quyết toán, hệ thống áp dụng theo thứ tự thưởng → phụ cấp → lương và không làm thực nhận âm.</InfoNote>
+        {validation && <InfoNote tone="red">{validation}</InfoNote>}
+        <ActionError message={error} />
+        <div className="compensation-actions"><Button icon={Plus} loading={busyKey === 'create'} disabled={!employees.length || Boolean(busyKey)} onClick={createViolation}>GHI NHẬN VI PHẠM</Button></div>
+      </Card>
+      <Card title="Lịch sử vi phạm" action={<Badge tone="red">{rows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
+        <TableWrap className="compensation-table">
+          <thead><tr><th>Ngày</th><th>Nhân viên</th>{targetUnit === 'store' && <th>Cửa hàng</th>}<th>Nội dung</th><th>Số tiền phải thu</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+          <tbody>
+            {rows.map((entry) => <tr key={entry.id}>
+              <td>{displayDate(entryDate(entry))}</td>
+              <td><strong>{employeeName(employees, entryEmployeeId(entry), entry.employeeName)}</strong><small className="compensation-subline">{entryEmployeeId(entry)}</small></td>
+              {targetUnit === 'store' && <td>{storeName(stores, entryStoreId(entry), entry.storeName)}</td>}
+              <td>{entry.title || entry.label || entry.reason || entry.policyCode || '—'}</td>
+              <td><strong className="compensation-debit">{money(Math.abs(entryAmount(entry)))}</strong></td>
+              <td>{entry.note || '—'}</td>
+              <td><Badge tone={statusTone(entry)}>{statusLabel(entry)}</Badge></td>
+              <td>{!isVoided(entry) && typeof app.voidViolation === 'function' ? <Button variant="danger" icon={XCircle} loading={busyKey === `void:${entry.id}`} disabled={Boolean(busyKey)} onClick={() => voidViolation(entry)}>Hủy</Button> : <span>—</span>}</td>
+            </tr>)}
+            {!rows.length && <tr><td colSpan={targetUnit === 'store' ? 8 : 7} className="compensation-empty">Chưa có vi phạm trong phạm vi này.</td></tr>}
+          </tbody>
+        </TableWrap>
+      </Card>
+    </div>
+  )
+}
+export function MyViolationsPage() {
+  const app = useApp()
+  const employeeId = entityId(app.currentEmployee) || String(app.session?.employeeId || '')
+  const rows = (app.violations || [])
+    .filter((entry) => entryEmployeeId(entry) === employeeId)
+    .sort((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || '')))
+  const outstandingVnd = rows.filter((entry) => !isVoided(entry)).reduce((sum, entry) => sum + Math.abs(entryAmount(entry)), 0)
+
+  return (
+    <div className="page compensation-page my-violations-page">
+      <PageHeader title="VI PHẠM CỦA TÔI" subtitle="Chỉ hiển thị dữ liệu gắn với tài khoản nhân viên đang đăng nhập." icon={UserRoundCheck} />
+      <div className="compensation-summary-strip"><span>Khoản phải thu đang ghi nhận</span><strong>{money(outstandingVnd)}</strong></div>
+      <Card title="Chi tiết và trạng thái đối soát">
+        <TableWrap className="compensation-table">
+          <thead><tr><th>Ngày</th><th>Đơn vị</th><th>Nội dung</th><th>Số tiền</th><th>Ghi chú</th><th>Trạng thái</th></tr></thead>
+          <tbody>{rows.map((entry) => <tr key={entry.id}><td>{displayDate(entryDate(entry))}</td><td>{UNIT_LABELS[targetUnitOfViolation(entry)]}</td><td>{entry.title || entry.label || entry.reason || entry.policyCode || '—'}</td><td><strong className="compensation-debit">{money(Math.abs(entryAmount(entry)))}</strong></td><td>{entry.note || '—'}</td><td><Badge tone={statusTone(entry)}>{statusLabel(entry)}</Badge></td></tr>)}{!rows.length && <tr><td colSpan="6" className="compensation-empty">Bạn chưa có bản ghi vi phạm.</td></tr>}</tbody>
+        </TableWrap>
+      </Card>
+    </div>
+  )
+}

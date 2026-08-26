@@ -1,0 +1,220 @@
+.compensation-page {
+  --compensation-border: #c8ded1;
+  --compensation-muted: #64748b;
+  --compensation-surface: #f7fbf8;
+  display: grid;
+  gap: 18px;
+}
+
+.compensation-page .card {
+  min-width: 0;
+}
+
+.compensation-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.compensation-form-span {
+  grid-column: span 2;
+}
+
+.compensation-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+.compensation-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.compensation-row-actions .button {
+  min-height: 38px;
+  padding: 8px 12px;
+}
+
+.compensation-subline {
+  display: block;
+  color: var(--compensation-muted);
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 3px;
+}
+
+.compensation-empty {
+  color: var(--compensation-muted);
+  padding: 28px 16px !important;
+  text-align: center;
+}
+
+.compensation-debit {
+  color: #dc2626;
+}
+
+.compensation-filter-card {
+  padding-block: 16px;
+}
+
+.compensation-filter-grid {
+  align-items: end;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 360px));
+  gap: 14px;
+}
+
+.compensation-fixed-scope {
+  align-items: flex-start;
+  background: var(--compensation-surface);
+  border: 1px solid var(--compensation-border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-height: 52px;
+  padding: 10px 14px;
+}
+
+.compensation-fixed-scope span {
+  color: var(--compensation-muted);
+  font-size: 12px;
+}
+
+.compensation-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.compensation-metrics--employee {
+  grid-template-columns: minmax(260px, 420px);
+}
+
+.compensation-summary-strip {
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 14px;
+  display: flex;
+  justify-content: space-between;
+  padding: 16px 20px;
+}
+
+.compensation-summary-strip span {
+  color: #9a3412;
+  font-weight: 650;
+}
+
+.compensation-summary-strip strong {
+  color: #dc2626;
+  font-size: 22px;
+}
+
+.compensation-statement-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 16px;
+}
+
+.compensation-statement-grid p {
+  align-items: center;
+  border-bottom: 1px solid #e1ebe5;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  margin: 0;
+  min-width: 0;
+  padding: 13px 16px;
+}
+
+.compensation-statement-grid p:nth-child(odd) {
+  border-right: 1px solid #e1ebe5;
+}
+
+.compensation-statement-grid span {
+  color: var(--compensation-muted);
+}
+
+.compensation-statement-grid strong {
+  text-align: right;
+}
+
+.compensation-statement-total {
+  background: #eef8f1;
+  color: #056b36;
+}
+
+.compensation-table {
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+.compensation-table table {
+  min-width: 780px;
+}
+
+.compensation-table th,
+.compensation-table td {
+  vertical-align: middle;
+}
+
+@media (max-width: 1120px) {
+  .compensation-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .compensation-metrics,
+  .compensation-metrics--statement {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .compensation-page {
+    gap: 12px;
+  }
+
+  .compensation-page .page-header__actions,
+  .compensation-page .page-header__actions > * {
+    width: 100%;
+  }
+
+  .compensation-form-grid,
+  .compensation-filter-grid,
+  .compensation-metrics,
+  .compensation-metrics--employee,
+  .compensation-metrics--statement,
+  .compensation-statement-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .compensation-form-span {
+    grid-column: auto;
+  }
+
+  .compensation-actions .button {
+    width: 100%;
+  }
+
+  .compensation-statement-grid p:nth-child(odd) {
+    border-right: 0;
+  }
+
+  .compensation-summary-strip {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+  }
+
+  .compensation-row-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .compensation-table table {
+    min-width: 700px;
+  }
+}

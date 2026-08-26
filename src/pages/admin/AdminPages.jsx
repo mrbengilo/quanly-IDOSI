@@ -49,7 +49,8 @@ import {
 } from '../../components/UI'
 import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
-import { optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
+import { mergeAccountPersonnelProfile, optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
+import { invalidateEmployeeAvatarCache } from '../../services/employeeAvatarCache'
 import { useApp } from '../../state/AppContext'
 import { downloadCsv, money, shortDate, today, validateVietnamPhone } from '../../utils'
 import { resolveOriginalRoleProfile, roleProfileAddress, roleProfileCode } from './roleManagementUtils'
@@ -558,11 +559,16 @@ export function AdminSettings() {
   const projectedAccountProfile = app.accountProfile && typeof app.accountProfile === 'object'
     ? app.accountProfile
     : null
-  const employeeProfile = projectedAccountProfile || (
+  const canonicalRoleProfile = (
     activeRoleProfile && roleProfileCode(activeRoleProfile)
       ? resolveOriginalRoleProfile(activeRoleProfile, employeeProfiles)
       : null
   )
+  const employeeProfile = (projectedAccountProfile || canonicalRoleProfile)
+    ? mergeAccountPersonnelProfile(canonicalRoleProfile
+      ? { ...canonicalRoleProfile, address: roleProfileAddress(canonicalRoleProfile) }
+      : {}, projectedAccountProfile || {})
+    : null
   const employeeAddress = employeeProfile ? roleProfileAddress(employeeProfile) : ''
   const personnelProfile = employeeProfile ? {
     code: roleProfileCode(employeeProfile),
@@ -580,6 +586,7 @@ export function AdminSettings() {
   const [photoProcessing, setPhotoProcessing] = useState(false)
   const [photoCrop, setPhotoCrop] = useState(null)
   const [avatarUpdate, setAvatarUpdate] = useState()
+  const [preparedAvatarBytes, setPreparedAvatarBytes] = useState(0)
   const [profileSaving, setProfileSaving] = useState(false)
   const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' })
   const [visiblePasswords, setVisiblePasswords] = useState({ current: false, next: false, confirm: false })
@@ -617,7 +624,11 @@ export function AdminSettings() {
       // saveSettings owns remote failure messaging. Avoid stacking a second
       // toast for the same avatar/profile request.
       if (!result?.ok) return
+      if (avatarUpdate !== undefined) {
+        invalidateEmployeeAvatarCache(personnelProfile?.code || sessionEmployeeId)
+      }
       setAvatarUpdate(undefined)
+      setPreparedAvatarBytes(0)
       setForm((current) => ({ ...current, ...(result.settings || {}), avatar: result.settings?.avatar || current.avatar || '' }))
     } finally {
       setProfileSaving(false)
@@ -659,8 +670,8 @@ export function AdminSettings() {
       })
       setForm((current) => ({ ...current, avatar: optimized.dataUrl }))
       setAvatarUpdate(optimized.dataUrl)
+      setPreparedAvatarBytes(optimized.bytes)
       setPhotoCrop(null)
-      notify(`Đã cắt vuông và tối ưu ảnh đại diện còn ${Math.ceil(optimized.bytes / 1024)} KB. Nhấn "Lưu thay đổi" để hoàn tất.`, 'info')
     } catch (error) {
       notify(error?.message || 'Không thể xử lý ảnh đại diện. Vui lòng thử ảnh khác.', 'info')
     } finally {
@@ -677,6 +688,7 @@ export function AdminSettings() {
     if (photoProcessing || profileSaving) return
     setForm((current) => ({ ...current, avatar: '' }))
     setAvatarUpdate('')
+    setPreparedAvatarBytes(0)
   }
 
   const requestPasswordChange = async () => {
@@ -721,7 +733,7 @@ export function AdminSettings() {
           <Card className="settings-content">
             <h2>Thông tin cá nhân</h2><p>{personnelProfile ? 'Thông tin được lấy từ hồ sơ nhân sự liên kết với tài khoản hiện tại.' : 'Cập nhật thông tin tài khoản của bạn.'}</p>
             <div className="profile-form">
-              <div className="profile-photo"><div>{displayedAvatar ? <img src={displayedAvatar} alt="Ảnh đại diện tài khoản" /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing || profileSaving} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button>{(displayedAvatar || settings?.avatarMetadata) && <Button variant="outline" icon={Trash2} disabled={photoProcessing || profileSaving} onClick={clearPhoto}>Xóa ảnh</Button>}<small>{settings?.avatarLoading ? 'Đang tải ảnh đại diện riêng tư…' : 'Ảnh gốc JPG, PNG, WebP tối đa 5 MB'}<br />Cắt vuông, xem trước dạng tròn và tối ưu còn tối đa 300 KB</small>{settings?.avatarError && <small role="alert">{settings.avatarError}</small>}</div>
+              <div className="profile-photo"><div>{displayedAvatar ? <img src={displayedAvatar} alt="Ảnh đại diện tài khoản" /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing || profileSaving} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button>{(displayedAvatar || settings?.avatarMetadata) && <Button variant="outline" icon={Trash2} disabled={photoProcessing || profileSaving} onClick={clearPhoto}>Xóa ảnh</Button>}<small>{settings?.avatarLoading ? 'Đang tải ảnh đại diện riêng tư…' : 'Ảnh gốc JPG, PNG, WebP tối đa 5 MB'}<br />Cắt vuông, xem trước dạng tròn và tối ưu còn tối đa 300 KB{preparedAvatarBytes > 0 && <><br /><strong>Ảnh sẵn sàng: {Math.ceil(preparedAvatarBytes / 1024)} KB</strong></>}</small>{settings?.avatarError && <small role="alert">{settings.avatarError}</small>}</div>
               <div className="form-grid">
                 {personnelProfile && <Field label="Mã nhân viên"><Input value={personnelProfile.code} readOnly /></Field>}
                 <Field label="Họ và tên"><Input value={personnelProfile?.name || form.name || ''} onChange={personnelProfile ? undefined : set('name')} readOnly={Boolean(personnelProfile)} /></Field>

@@ -27,7 +27,6 @@ const employee = {
 const policies = {
   version: 1,
   effectiveFrom: today(),
-  employeeKpiRates: { from30000: 0, from15000: 0, from7000: 0 },
   attendanceEvaluation: { improveMinLateCount: 3, improveMinLateMinutes: 30 },
 }
 
@@ -45,6 +44,9 @@ const baseApp = (role = 'admin') => ({
   salaryAdjustments: [],
   salaryAdvances: [],
   payrollPeriods: [],
+  compensationEntries: [],
+  revenueBonusAllocations: [],
+  violations: [],
   policies,
   updateOrder: vi.fn(),
   deleteOrder: vi.fn(),
@@ -242,6 +244,40 @@ describe('store order, attendance, and payroll summaries', () => {
 
     expect(screen.getByText('20,000 đ/giờ')).toBeTruthy()
     expect(screen.getAllByText('80,000 đ').length).toBeGreaterThan(0)
+  })
+
+  it('uses canonical approved compensation buckets without reviving voided records', () => {
+    mocked.app = {
+      ...baseApp(),
+      attendance: [{ id: 'A-01', storeId: store.id, employeeId: employee.id, date: today(), hours: 4, status: 'Đi đúng giờ' }],
+      salaryAdjustments: [{ id: 'LEGACY-01', storeId: store.id, employeeId: employee.id, period: today().slice(0, 7), type: 'Thưởng khác', amount: 10_000, status: 'Đã duyệt' }],
+      compensationEntries: [
+        { id: 'MANUAL-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'MANUAL', amountVnd: 30_000, status: 'APPROVED' },
+        { id: 'WORK-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'WORK', amountVnd: 15_000, status: 'APPROVED' },
+        { id: 'ALLOWANCE-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'ALLOWANCE', amountVnd: 7_000, status: 'APPROVED' },
+        { id: 'VOIDED-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'MANUAL', amountVnd: 999_000, status: 'APPROVED', voidedAt: `${today()}T12:00:00+07:00` },
+      ],
+      revenueBonusAllocations: [
+        { id: 'REVENUE-01', employeeId: employee.id, storeId: store.id, businessDate: today(), amountVnd: 20_000, status: 'APPROVED' },
+        { id: 'REVENUE-VOID', employeeId: employee.id, storeId: store.id, businessDate: today(), amountVnd: 999_000, status: 'APPROVED', voidedAt: `${today()}T12:00:00+07:00` },
+      ],
+      violations: [
+        { id: 'VIOLATION-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), amountVnd: 12_000, status: 'ACTIVE' },
+        { id: 'VIOLATION-VOID', employeeId: employee.id, storeId: store.id, effectiveDate: today(), amountVnd: 999_000, status: 'ACTIVE', voidedAt: `${today()}T12:00:00+07:00` },
+      ],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thưởng doanh thu' }).closest('table')
+    const row = within(table).getByText(employee.name).closest('tr')
+    const cells = within(row).getAllByRole('cell')
+    expect(cells[3].textContent).toBe('20,000 đ')
+    expect(cells[4].textContent).toBe('15,000 đ')
+    expect(cells[5].textContent).toBe('40,000 đ')
+    expect(cells[7].textContent).toBe('7,000 đ')
+    expect(cells[8].textContent).toBe('12,000 đ')
+    expect(cells[10].textContent).toBe('150,000 đ')
   })
 
   it('shows the configured hourly rate in employee income details and both punctuality minute totals', () => {

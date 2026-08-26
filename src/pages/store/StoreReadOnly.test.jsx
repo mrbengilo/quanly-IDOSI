@@ -101,7 +101,6 @@ const makeApp = () => {
     policies: {
       version: 1,
       effectiveFrom: date,
-      employeeKpiRates: { from30000: 0, from15000: 0, from7000: 0 },
       attendanceEvaluation: { improveMinLateCount: 3, improveMinLateMinutes: 30 },
     },
     getAvailableSalary: vi.fn(() => 0),
@@ -301,6 +300,7 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getAllByRole('button', { name: /TẠO ỨNG LƯƠNG/i }).length).toBeGreaterThan(0)
     expect(screen.getByRole('button', { name: /^XÁC NHẬN CHI$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^CHỐT SỔ$/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /KHÓA KỲ CHI LƯƠNG THƯỞNG/i })).toBeNull()
   })
 
   it('allows voucher mutations from import history', () => {
@@ -325,7 +325,7 @@ describe('business-support store workspace permissions', () => {
     mutationNames.forEach((name) => expect(mocked.app[name]).not.toHaveBeenCalled())
   })
 
-  it('keeps store-manager operations available while orders remain read-only', () => {
+  it('keeps store-manager operational tools while payroll and orders remain read-only', () => {
     mocked.app.session = { role: 'store_manager', employeeId: 'QLCH-001', storeId: store.id }
 
     const employeeView = renderPage(StoreEmployees)
@@ -337,8 +337,12 @@ describe('business-support store workspace permissions', () => {
     scheduleView.unmount()
 
     const payrollView = renderPage(StorePayrollV2)
-    expect(screen.getByRole('button', { name: /TẠO THƯỞNG/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^CHỐT SỔ$/i })).toBeTruthy()
+    expect(screen.getByText(/Quản lý cửa hàng chỉ xem số liệu cửa hàng mình/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /TẠO THƯỞNG/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /TẠO ỨNG LƯƠNG/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^XÁC NHẬN CHI$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^CHỐT SỔ$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /KHÓA KỲ CHI LƯƠNG THƯỞNG/i })).toBeNull()
     payrollView.unmount()
 
     const importView = renderPage(StoreImportsV2)
@@ -352,6 +356,13 @@ describe('business-support store workspace permissions', () => {
     renderPage(StoreOrdersPage)
     expect(screen.queryByRole('button', { name: /^Sửa$/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^Xóa$/i })).toBeNull()
+  })
+
+  it('reserves payroll-period locking for Admin', () => {
+    mocked.app.session = { role: 'admin', employeeId: 'ADMIN' }
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByRole('button', { name: /KHÓA KỲ CHI LƯƠNG THƯỞNG/i })).toBeTruthy()
   })
 
   it('persists store operating hours from the server response', async () => {

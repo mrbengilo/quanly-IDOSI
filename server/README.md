@@ -123,7 +123,7 @@ Các lệnh chính:
   Sau khi tạo hồ sơ, cấu hình giờ làm baseline không được sửa trực tiếp qua
   `employee.update`. Lệnh cũ `employee.working_time.set` đã ngừng sử dụng và trả
   `COMMAND_RETIRED`; dữ liệu `workTimeSchedule` lịch sử vẫn được bảo toàn để đọc
-  đúng chấm công, KPI và lương cũ. Lịch đăng ký/phân lịch mới dùng luồng lịch làm
+  đúng chấm công và lương lịch sử. Lịch đăng ký/phân lịch mới dùng luồng lịch làm
   việc hiện hành, không ghi đè cấu hình hoặc snapshot quá khứ.
   Khi chấm công office-like, client gửi `shiftId` của ca đã chọn; Worker chụp
   bất biến `shiftId/name/start/end` và `shiftSource: profile-work-shift` vào bản
@@ -328,15 +328,17 @@ Các lệnh chính:
   `advanceId` và cùng lúc ghi cash-out + expense.
 - `salary_adjustment.create`: admin/business_support/store_manager theo phạm vi cửa hàng, payload `employeeId`, `period`, `type`
   (`Thưởng khác`, `Phụ cấp khác` hoặc `Khấu trừ`), `amount`, `note?`.
-- `payroll.close|pay|lock`: admin/business_support/store_manager theo phạm vi cửa hàng, payload `storeId`, `period`. Server tự chốt
-  attendance, lương, KPI, ứng lương và finance; `pay` chỉ chi phần còn
+- `payroll.close|pay`: Admin hoặc business_support; `payroll.lock`: chỉ Admin.
+  HTKD áp dụng cho mọi cửa hàng vật lý đang hoạt động, còn quản lý chỉ có quyền
+  rà soát cửa hàng của mình. Payload gồm `storeId`, `period`. Server tự chốt
+  attendance, lương, ba nguồn thưởng hợp lệ, ứng lương và finance; `pay` chỉ chi phần còn
   lại, `lock` chỉ áp dụng sau khi đã chi. Nếu nguồn tài chính/lương
   đổi sau khi chốt, `pay` trả `PAYROLL_NEEDS_RECLOSE` cho đến khi chốt lại.
   Dòng lương điều chuyển chỉ gồm lương giờ hỗ trợ + phụ cấp phiếu, không cộng lặp
-  KPI/phụ cấp hồ sơ/điều chỉnh/ứng lương ở cửa hàng chính. Payment vẫn ghi cash
+  phụ cấp hồ sơ/điều chỉnh/ứng lương ở cửa hàng chính. Payment vẫn ghi cash
   out nhưng expense payroll tương ứng không được recognize lần hai vì chi phí đã
   accrual theo attendance tại cửa hàng nhận. Khi dữ liệu attendance lịch sử chưa
-  có bút toán accrual, bản chốt tự cộng `supportAccrualGap` vào finance/KPI và lúc
+  có bút toán accrual, bản chốt tự cộng `supportAccrualGap` vào finance/payroll và lúc
   chi chỉ recognize đúng phần còn thiếu; không có ca đã hoàn tất thì không phát
   sinh lương giờ hoặc phụ cấp hỗ trợ.
   Lương tháng `OFFICE` và `BUSINESS_SUPPORT` được chia theo ngày hoàn
@@ -348,7 +350,7 @@ Các lệnh chính:
   thưởng/phụ cấp/khấu trừ vẫn cộng sau đó. Thiếu cấu hình trả
   `SM234_PAYROLL_CONFIG_REQUIRED`; đổi cấu hình làm kỳ đã chốt cần chốt lại,
   còn kỳ hiện tại đã chi/khóa chặn cập nhật.
-  Profile `unit: store_manager` bị loại khỏi lịch phân ca và bảng lương/KPI của
+  Profile `unit: store_manager` bị loại khỏi lịch phân ca và bảng lương của
   nhân viên cửa hàng.
 - `policy.set`: admin/business_support, payload `key`, `value`, dùng version riêng của policy.
   Khi lưu nhiều ô cùng lúc, dùng `policies.set` với payload

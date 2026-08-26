@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiAddressSuggestions, apiGetAccountAvatar, apiGetIdentityImage, apiGetStateMetadata, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
+import { apiAddressSuggestions, apiGetAccountAvatar, apiGetEmployeeAvatar, apiGetIdentityImage, apiGetStateMetadata, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
 
 afterEach(() => {
   clearApiSession()
@@ -12,13 +12,13 @@ describe('IDOSI policy API mapping', () => {
     const policies = {
       lateToleranceMinutes: 10,
       earlyCheckInLimitMinutes: 120,
-      employeeKpiRates: { from30000: 5, from15000: 3, from7000: 1 },
       attendanceEvaluation: { maintainMaxLateCount: 2, improveMinLateCount: 4, improveMinLateMinutes: 45 },
     }
     const records = apiPolicyEntries(policies).map(([key, value]) => ({ key, value }))
     expect(apiPolicyMap(records)).toMatchObject({
       attendanceEvaluation: { maintainMaxLateCount: 2, improveMinLateCount: 4, improveMinLateMinutes: 45 },
     })
+    expect(records.map((record) => record.key)).not.toContain('employee_kpi_percent_30000')
   })
 })
 
@@ -59,6 +59,34 @@ describe('IDOSI private account avatar', () => {
         Authorization: 'Bearer session-token',
       }),
     }))
+  })
+
+  it('loads the authorized avatar for the requested canonical employee instead of the session avatar', async () => {
+    const image = new Blob(['employee-avatar-bytes'], { type: 'image/webp' })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ token: 'session-token', user: { id: 'support-user' } }) })
+      .mockResolvedValueOnce({ ok: true, blob: async () => image })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiLogin('htkd', 'secret')
+    await expect(apiGetEmployeeAvatar('NV KVC/001')).resolves.toBe(image)
+
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/account-avatars/NV%20KVC%2F001', expect.objectContaining({
+      method: 'GET',
+      cache: 'no-store',
+      headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
+    }))
+  })
+
+  it('rejects a missing employee id without making a request', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiGetEmployeeAvatar('  ')).rejects.toMatchObject({
+      code: 'EMPLOYEE_AVATAR_ID_REQUIRED',
+      status: 400,
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

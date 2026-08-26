@@ -38,10 +38,11 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { SearchableSelect } from '../../components/SearchableSelect'
-import { calculateKpiBonuses, financeSummaryFromState, financeTransactionsFromState } from '../../domain'
+import { calculateAvailableSalary, financeSummaryFromState, financeTransactionsFromState } from '../../domain'
 import { activeOccupationLabels, findOccupationOption, occupationValueAllowed, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
 import { useApp } from '../../state/AppContext'
+import { payrollCompensationTotalsForEmployee } from '../compensation/compensationViewModel'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, money, shortDate, shortDateTime24, today } from '../../utils'
 import { storeDailyReportRows, storeMonthlyReportRows } from './storeReportAnalytics'
 
@@ -55,6 +56,21 @@ const monthBounds = (period) => ({
 const recordInMonth = (record, period) => businessDate(record.date || record.workDate || record.createdAt || record.occurredAt).slice(0, 7) === period
 const statusTone = (status) => status === 'Đi trễ' ? 'red' : status === 'Đi sớm' ? 'green' : 'blue'
 const normalizedStatus = (status) => status === 'Đúng giờ' ? 'Đi đúng giờ' : status === 'Trễ' ? 'Đi trễ' : status || 'Chưa xác định'
+const normalizedAdjustmentType = (value) => String(value || '')
+  .trim()
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/đ/g, 'd')
+const adjustmentKind = (value) => {
+  const type = normalizedAdjustmentType(value)
+  if (type === 'revenue' || type.includes('thuong doanh thu')) return 'REVENUE'
+  if (type === 'work' || type.includes('thuong cong viec')) return 'WORK'
+  if (type === 'manual' || type.includes('thuong khac') || type.includes('thuong thu cong')) return 'MANUAL'
+  if (type === 'allowance' || type.includes('phu cap')) return 'ALLOWANCE'
+  if (type === 'violation' || type.includes('khau tru') || type.includes('vi pham')) return 'VIOLATION'
+  return null
+}
 const attendanceEarlyMinutes = (record = {}) => Math.max(0, Number(record.minutesEarly ?? record.earlyMinutes) || 0)
 const attendanceLateMinutes = (record = {}) => Math.max(0, Number(record.minutesLate ?? record.lateMinutes) || 0)
 const attendanceMinutesKind = (record = {}) => {
@@ -657,74 +673,174 @@ export function StoreAttendanceV2() {
 
 export function StorePayrollV2() {
   const app = useStoreData()
-  const { storeId, store, employees = [], attendance = [], salaryAdjustments = [], salaryAdvances = [], payrollPeriods = [], policies, addSalaryAdjustment, createSalaryAdvance, confirmSalaryAdvance, getAvailableSalary, closePayrollPeriod, confirmPayrollPayment, lockPayrollPeriod, notify } = app
+  const {
+    storeId,
+    store,
+    employees = [],
+    attendance = [],
+    salaryAdjustments = [],
+    salaryAdvances = [],
+    payrollPeriods = [],
+    compensationEntries = [],
+    revenueBonusAllocations = [],
+    violations: compensationViolations = [],
+    addSalaryAdjustment,
+    createSalaryAdvance,
+    confirmSalaryAdvance,
+    getAvailableSalary,
+    closePayrollPeriod,
+    confirmPayrollPayment,
+    lockPayrollPeriod,
+    notify,
+  } = app
   const [period, setPeriod] = useState(today().slice(0, 7))
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState({ employeeId: '', type: 'Thưởng khác', amount: '', note: '' })
-  const canManageStore = canManageStoreOperations(app.session?.role)
+  const payrollRole = String(app.session?.role || '').trim().toLowerCase()
+  const canOperatePayroll = ['admin', 'business_support', 'manager'].includes(payrollRole)
+  const canLockPayroll = payrollRole === 'admin'
   const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
   const scopedAttendance = attendance.filter((record) => !record.deletedAt && record.storeId === storeId && recordInMonth(record, period))
-  const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
-  const participants = [
-    ...scopedEmployees.map((employee) => ({ id: employee.id, role: 'employee', hours: scopedAttendance.filter((record) => record.employeeId === employee.id).reduce((sum, record) => sum + Number(record.hours || 0), 0) })),
-  ]
-  const kpi = calculateKpiBonuses({ profit: summary.profit, participants, employeeTiers: [{ threshold: 30000, ratePercent: policies.employeeKpiRates.from30000 }, { threshold: 15000, ratePercent: policies.employeeKpiRates.from15000 }, { threshold: 7000, ratePercent: policies.employeeKpiRates.from7000 }], policyId: `policy-v${policies.version}`, policyEffectiveAt: policies.effectiveFrom })
   const currentPeriod = payrollPeriods.find((item) => item.storeId === storeId && item.period === period)
   const rows = scopedEmployees.map((employee) => {
+    const snapshotRow = !currentPeriod?.needsReclose && (currentPeriod?.rows || [])
+      .find((row) => String(row.employeeId || '') === String(employee.id))
     const records = scopedAttendance.filter((record) => record.employeeId === employee.id)
-    const hours = records.reduce((sum, record) => sum + Number(record.hours || 0), 0)
-    const earnedBase = calculateEmployeeBasePay(employee, { hours })
-    const configuredHourlyRate = getHourlyRate(employee)
+    const hours = snapshotRow ? Number(snapshotRow.hours || 0) : records.reduce((sum, record) => sum + Number(record.hours || 0), 0)
+    const earnedBase = snapshotRow ? Number(snapshotRow.baseSalary || 0) : calculateEmployeeBasePay(employee, { hours })
+    const configuredHourlyRate = snapshotRow
+      ? Number(snapshotRow.salarySnapshot?.hourlyRate || 0)
+      : getHourlyRate(employee)
     const hourlyRate = configuredHourlyRate > 0
       ? configuredHourlyRate
       : Number(employee.requiredMonthlyHours) > 0
         ? Math.floor(getMonthlySalary(employee) / Number(employee.requiredMonthlyHours))
         : 0
-    const adjustments = salaryAdjustments.filter((item) => item.employeeId === employee.id && item.period === period && item.status !== 'Đã hủy')
-    const otherBonus = adjustments.filter((item) => item.type === 'Thưởng khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
-    const otherAllowance = adjustments.filter((item) => item.type === 'Phụ cấp khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
-    const deductions = adjustments.filter((item) => item.type === 'Khấu trừ').reduce((sum, item) => sum + Number(item.amount || 0), 0)
-    const kpiBonus = kpi.results.find((item) => item.id === employee.id)?.amount || 0
-    const advances = salaryAdvances.filter((item) => item.employeeId === employee.id && item.period === period && item.status === 'Đã chi').reduce((sum, item) => sum + Number(item.amount || 0), 0)
-    const gross = Math.max(0, earnedBase + Number(employee.tiktokAllowance || 0) + otherBonus + otherAllowance + kpiBonus - deductions)
-    return { employee, hours, earnedBase, hourlyRate, otherBonus, otherAllowance, deductions, kpiBonus, advances, gross, net: Math.max(0, gross - advances) }
+    const legacyAdjustmentNet = salaryAdjustments
+      .filter((item) => item.employeeId === employee.id && item.period === period && item.status !== 'Đã hủy' && !item.deletedAt)
+      .reduce((sum, item) => {
+        const amount = Number(item.amount || 0)
+        if (!Number.isSafeInteger(amount) || amount < 0) return sum
+        return sum + (adjustmentKind(item.bonusSource || item.type) === 'VIOLATION' ? -amount : amount)
+      }, 0)
+    const canonical = payrollCompensationTotalsForEmployee({
+      compensationEntries,
+      revenueBonusAllocations,
+      violations: compensationViolations,
+      employeeId: employee.id,
+      period,
+    })
+    const revenueBonus = snapshotRow ? Number(snapshotRow.revenueBonusVnd || 0) : canonical.revenue
+    const workBonus = snapshotRow ? Number(snapshotRow.workBonusVnd || 0) : canonical.work
+    const manualBonus = snapshotRow ? Number(snapshotRow.manualBonusVnd || 0) : canonical.manual + Math.max(0, legacyAdjustmentNet)
+    const tiktokAllowance = snapshotRow
+      ? Number(snapshotRow.salarySnapshot?.tiktokAllowance || 0)
+      : Number(employee.tiktokAllowance || 0)
+    const totalAllowance = snapshotRow ? Number(snapshotRow.allowanceVnd || 0) : tiktokAllowance + canonical.allowance
+    const otherAllowance = Math.max(0, totalAllowance - tiktokAllowance)
+    const violations = snapshotRow ? Number(snapshotRow.violationVnd || 0) : canonical.violations + Math.max(0, -legacyAdjustmentNet)
+    const advances = snapshotRow
+      ? Number(snapshotRow.advancesPaid ?? snapshotRow.appliedAdvanceVnd ?? 0)
+      : salaryAdvances.filter((item) => item.employeeId === employee.id && item.period === period && item.status === 'Đã chi').reduce((sum, item) => sum + Number(item.amount || 0), 0)
+    const settlement = calculateAvailableSalary({
+      basePay: earnedBase,
+      revenueBonus,
+      workBonus,
+      manualBonus,
+      tiktokAllowance,
+      otherAllowance,
+      confirmedViolations: violations,
+      confirmedAdvances: advances,
+    })
+    return {
+      employee,
+      hours,
+      earnedBase,
+      hourlyRate,
+      revenueBonus,
+      workBonus,
+      manualBonus,
+      tiktokAllowance,
+      otherAllowance,
+      violations,
+      advances,
+      gross: snapshotRow ? Number(snapshotRow.gross ?? snapshotRow.grossCompensationVnd ?? settlement.grossPay) : settlement.grossPay,
+      net: snapshotRow ? Number(snapshotRow.netPayVnd ?? snapshotRow.remaining ?? settlement.availableSalary) : settlement.availableSalary,
+    }
   })
-  const totals = rows.reduce((value, row) => ({ gross: value.gross + row.gross, advances: value.advances + row.advances, net: value.net + row.net, kpi: value.kpi + row.kpiBonus }), { gross: 0, advances: 0, net: 0, kpi: 0 })
+  const totals = rows.reduce((value, row) => ({
+    gross: value.gross + row.gross,
+    bonuses: value.bonuses + row.revenueBonus + row.workBonus + row.manualBonus,
+    advances: value.advances + row.advances,
+    net: value.net + row.net,
+  }), { gross: 0, bonuses: 0, advances: 0, net: 0 })
 
   const openAdjustment = (type) => {
-    if (!canManageStore) return
+    if (!canOperatePayroll) return
     setModal(type === 'Ứng lương' ? 'advance' : 'adjustment')
     setForm({ employeeId: scopedEmployees[0]?.id || '', type, amount: '', note: '' })
   }
   const saveAdjustment = async () => {
-    if (!canManageStore) return
+    if (!canOperatePayroll) return
     const payload = { ...form, storeId, period, amount: parseMoney(form.amount), idempotencyKey: `${form.type}:${form.employeeId}:${period}:${Date.now()}` }
     const result = modal === 'advance' ? await createSalaryAdvance(payload) : await addSalaryAdjustment(payload)
     if (!result.ok) return notify(result.message, 'info')
     setModal(null)
   }
   const handleConfirmAdvance = async (advanceId) => {
-    if (!canManageStore) return
+    if (!canOperatePayroll) return
     const result = await confirmSalaryAdvance(advanceId)
     if (!result.ok) notify(result.message, 'info')
   }
   const handleClosePayroll = async () => {
-    if (!canManageStore) return
+    if (!canOperatePayroll) return
     const result = await closePayrollPeriod(storeId, period)
     if (!result.ok) notify(result.message, 'info')
   }
   const handleConfirmPayroll = async () => {
-    if (!canManageStore) return
+    if (!canOperatePayroll) return
     const result = await confirmPayrollPayment(storeId, period)
     if (!result.ok) notify(result.message, 'info')
   }
   const handleLockPayroll = async () => {
-    if (!canManageStore) return
+    if (!canLockPayroll) return
     const result = await lockPayrollPeriod(storeId, period)
     if (!result.ok) notify(result.message, 'info')
   }
 
-  return <div className="page"><PageHeader title="LƯƠNG THƯỞNG NHÂN VIÊN" subtitle={`Kỳ ${period} — ${store?.name || ''}. KPI chỉ dùng tổng giờ thực tế của nhân viên và chính sách đang hiệu lực.`} icon={Banknote} actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />{canManageStore && <><Button icon={Gift} onClick={() => openAdjustment('Thưởng khác')}>TẠO THƯỞNG</Button><Button icon={Plus} onClick={() => openAdjustment('Phụ cấp khác')}>TẠO PHỤ CẤP</Button><Button variant="outline" icon={Wallet} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button></>}</>} />{!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể tạo khoản lương, xác nhận chi, chốt sổ hoặc khóa kỳ lương.</InfoNote>}<div className="metrics-grid metrics-grid--4"><MetricCard label="TỔNG THU NHẬP" value={money(totals.gross)} icon={TrendingUp} tone="green" /><MetricCard label="THƯỞNG KPI NHÂN VIÊN" value={money(totals.kpi)} helper={`${kpi.totalHours.toFixed(2)} giờ • ${money(Math.floor(kpi.profitPerHour))}/giờ`} icon={BadgeDollarSign} tone="blue" /><MetricCard label="ĐÃ ỨNG" value={money(totals.advances)} icon={Wallet} tone="orange" /><MetricCard label="CÒN PHẢI CHI" value={money(totals.net)} icon={Banknote} tone="green" /></div><Card title="Chi tiết lương thưởng"><TableWrap><thead><tr><th>Nhân viên</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng KPI</th><th>Thưởng khác</th><th>Phụ cấp TikTok</th><th>Phụ cấp khác</th><th>Khấu trừ</th><th>Đã ứng</th><th>Thực nhận</th></tr></thead><tbody>{rows.map((row) => <tr key={row.employee.id}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.kpiBonus)}</td><td>{money(row.otherBonus)}</td><td>{money(row.employee.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.deductions)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}<tr className="total-row"><td colSpan="9">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr></tbody></TableWrap></Card><Card title="Lịch sử ứng lương của nhân viên" action={canManageStore ? <Button icon={Plus} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button> : null}><TableWrap><thead><tr><th>Thời gian</th><th>Nhân viên</th><th>Số tiền ứng</th><th>Lương khả dụng lúc tạo</th><th>Còn lại</th><th>Người tạo</th><th>Ghi chú</th><th>Trạng thái</th>{canManageStore && <th>Hành động</th>}</tr></thead><tbody>{salaryAdvances.filter((item) => item.storeId === storeId && item.period === period).map((item) => <tr key={item.id}><td>{timestamp(item.createdAt)}</td><td><strong>{item.employeeName}</strong><small className="table-note">{item.employeeId}</small></td><td>{money(item.amount)}</td><td>{money(item.availableAtCreation)}</td><td>{money(item.remainingAfter)}</td><td>{item.createdBy?.name}</td><td>{item.note || '—'}</td><td><Badge tone={item.status === 'Đã chi' ? 'green' : 'orange'}>{item.status}</Badge></td>{canManageStore && <td>{item.status === 'Mới tạo' ? <Button icon={CheckCircle2} onClick={() => handleConfirmAdvance(item.id)}>XÁC NHẬN CHI</Button> : <span>{timestamp(item.confirmedAt)}</span>}</td>}</tr>)}{!salaryAdvances.some((item) => item.storeId === storeId && item.period === period) && <tr><td colSpan={canManageStore ? 9 : 8}>Chưa có khoản ứng lương.</td></tr>}</tbody></TableWrap></Card><Card title="Xử lý cuối kỳ" action={<Badge tone={currentPeriod?.status === 'Đã khóa' ? 'red' : currentPeriod?.confirmedAt ? 'green' : 'orange'}>{currentPeriod?.needsReclose ? 'Cần chốt lại' : currentPeriod?.status || 'Chưa chốt'}</Badge>}>{canManageStore ? <div className="period-actions"><Button variant="outline" icon={FileText} onClick={handleClosePayroll} disabled={currentPeriod?.status === 'Đã khóa'}>{currentPeriod?.needsReclose ? 'CHỐT LẠI SỔ' : 'CHỐT SỔ'}</Button><Button icon={Banknote} onClick={handleConfirmPayroll} disabled={Boolean(currentPeriod?.confirmedAt) || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>XÁC NHẬN CHI LƯƠNG</Button><Button variant="danger" icon={ShieldCheck} onClick={handleLockPayroll} disabled={!currentPeriod || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>KHÓA KỲ CHI LƯƠNG THƯỞNG</Button></div> : <InfoNote>Trạng thái kỳ lương chỉ được xem.</InfoNote>}</Card>{canManageStore && <Modal open={Boolean(modal)} onClose={() => setModal(null)} title={modal === 'advance' ? 'Tạo ứng lương' : `Tạo ${form.type.toLowerCase()}`} footer={<><Button variant="outline" onClick={() => setModal(null)}>Hủy</Button><Button icon={Save} onClick={saveAdjustment}>TẠO</Button></>}><div className="form-grid"><Field label="Nhân viên"><Select value={form.employeeId} onChange={(event) => setForm({ ...form, employeeId: event.target.value })}>{scopedEmployees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} — {employee.id}</option>)}</Select></Field>{modal !== 'advance' && <Field label="Loại"><Select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}><option>Thưởng khác</option><option>Phụ cấp khác</option><option>Khấu trừ</option></Select></Field>}<Field label="Số tiền"><MoneyInput value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="Nhập số tiền" /></Field>{modal === 'advance' && <InfoNote>Lương khả dụng hiện tại: <strong>{money(getAvailableSalary(form.employeeId, period))}</strong>. Khoản ứng phải nhỏ hơn mức này.</InfoNote>}<Field label="Ghi chú" className="span-2"><Input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field></div></Modal>}</div>
+  return (
+    <div className="page">
+      <PageHeader
+        title="LƯƠNG THƯỞNG NHÂN VIÊN"
+        subtitle={`Kỳ ${period} — ${store?.name || ''}. Thu nhập gồm lương, ba nguồn thưởng, phụ cấp và vi phạm đã ghi nhận.`}
+        icon={Banknote}
+        actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />{canOperatePayroll && <><Button icon={Gift} onClick={() => openAdjustment('Thưởng khác')}>TẠO THƯỞNG</Button><Button icon={Plus} onClick={() => openAdjustment('Phụ cấp khác')}>TẠO PHỤ CẤP</Button><Button variant="outline" icon={Wallet} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button></>}</>}
+      />
+      {!canOperatePayroll && <InfoNote>Chế độ rà soát. Quản lý cửa hàng chỉ xem số liệu cửa hàng mình; Admin hoặc Nhân viên hỗ trợ KD thực hiện chốt và chi kỳ lương.</InfoNote>}
+      <div className="metrics-grid metrics-grid--4">
+        <MetricCard label="TỔNG THU NHẬP" value={money(totals.gross)} icon={TrendingUp} tone="green" />
+        <MetricCard label="TỔNG THƯỞNG" value={money(totals.bonuses)} helper="Doanh thu • Công việc • Thủ công" icon={Gift} tone="blue" />
+        <MetricCard label="ĐÃ ỨNG" value={money(totals.advances)} icon={Wallet} tone="orange" />
+        <MetricCard label="CÒN PHẢI CHI" value={money(totals.net)} icon={Banknote} tone="green" />
+      </div>
+      <Card title="Chi tiết lương thưởng">
+        <TableWrap><thead><tr><th>Nhân viên</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng doanh thu</th><th>Thưởng công việc</th><th>Thưởng thủ công</th><th>Phụ cấp TikTok</th><th>Phụ cấp khác</th><th>Vi phạm</th><th>Đã ứng</th><th>Thực nhận</th></tr></thead><tbody>
+          {rows.map((row) => <tr key={row.employee.id}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
+          <tr className="total-row"><td colSpan="10">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr>
+        </tbody></TableWrap>
+      </Card>
+      <Card title="Lịch sử ứng lương của nhân viên" action={canOperatePayroll ? <Button icon={Plus} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button> : null}>
+        <TableWrap><thead><tr><th>Thời gian</th><th>Nhân viên</th><th>Số tiền ứng</th><th>Lương khả dụng lúc tạo</th><th>Còn lại</th><th>Người tạo</th><th>Ghi chú</th><th>Trạng thái</th>{canOperatePayroll && <th>Hành động</th>}</tr></thead><tbody>
+          {salaryAdvances.filter((item) => item.storeId === storeId && item.period === period).map((item) => <tr key={item.id}><td>{timestamp(item.createdAt)}</td><td><strong>{item.employeeName}</strong><small className="table-note">{item.employeeId}</small></td><td>{money(item.amount)}</td><td>{money(item.availableAtCreation)}</td><td>{money(item.remainingAfter)}</td><td>{item.createdBy?.name}</td><td>{item.note || '—'}</td><td><Badge tone={item.status === 'Đã chi' ? 'green' : 'orange'}>{item.status}</Badge></td>{canOperatePayroll && <td>{item.status === 'Mới tạo' ? <Button icon={CheckCircle2} onClick={() => handleConfirmAdvance(item.id)}>XÁC NHẬN CHI</Button> : <span>{timestamp(item.confirmedAt)}</span>}</td>}</tr>)}
+          {!salaryAdvances.some((item) => item.storeId === storeId && item.period === period) && <tr><td colSpan={canOperatePayroll ? 9 : 8}>Chưa có khoản ứng lương.</td></tr>}
+        </tbody></TableWrap>
+      </Card>
+      <Card title="Xử lý cuối kỳ" action={<Badge tone={currentPeriod?.status === 'Đã khóa' ? 'red' : currentPeriod?.confirmedAt ? 'green' : 'orange'}>{currentPeriod?.needsReclose ? 'Cần chốt lại' : currentPeriod?.status || 'Chưa chốt'}</Badge>}>
+        {canOperatePayroll ? <div className="period-actions"><Button variant="outline" icon={FileText} onClick={handleClosePayroll} disabled={currentPeriod?.status === 'Đã khóa'}>{currentPeriod?.needsReclose ? 'CHỐT LẠI SỔ' : 'CHỐT SỔ'}</Button><Button icon={Banknote} onClick={handleConfirmPayroll} disabled={Boolean(currentPeriod?.confirmedAt) || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>XÁC NHẬN CHI LƯƠNG</Button>{canLockPayroll && <Button variant="danger" icon={ShieldCheck} onClick={handleLockPayroll} disabled={!currentPeriod || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>KHÓA KỲ CHI LƯƠNG THƯỞNG</Button>}</div> : <InfoNote>Trạng thái kỳ lương chỉ được xem.</InfoNote>}
+      </Card>
+      {canOperatePayroll && <Modal open={Boolean(modal)} onClose={() => setModal(null)} title={modal === 'advance' ? 'Tạo ứng lương' : `Tạo ${form.type.toLowerCase()}`} footer={<><Button variant="outline" onClick={() => setModal(null)}>Hủy</Button><Button icon={Save} onClick={saveAdjustment}>TẠO</Button></>}><div className="form-grid"><Field label="Nhân viên"><Select value={form.employeeId} onChange={(event) => setForm({ ...form, employeeId: event.target.value })}>{scopedEmployees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} — {employee.id}</option>)}</Select></Field>{modal !== 'advance' && <Field label="Loại"><Select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}><option>Thưởng khác</option><option>Phụ cấp khác</option><option>Khấu trừ</option></Select></Field>}<Field label="Số tiền"><MoneyInput value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="Nhập số tiền" /></Field>{modal === 'advance' && <InfoNote>Lương khả dụng hiện tại: <strong>{money(getAvailableSalary(form.employeeId, period))}</strong>. Khoản ứng phải nhỏ hơn mức này.</InfoNote>}<Field label="Ghi chú" className="span-2"><Input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field></div></Modal>}
+    </div>
+  )
 }
 
 export function StoreImportsV2() {

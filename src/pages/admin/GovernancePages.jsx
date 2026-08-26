@@ -85,9 +85,6 @@ export function PolicySettings() {
   const [form, setForm] = useState(() => ({
     lateToleranceMinutes: policies.lateToleranceMinutes,
     earlyCheckInLimitMinutes: policies.earlyCheckInLimitMinutes,
-    from30000: policies.employeeKpiRates.from30000,
-    from15000: policies.employeeKpiRates.from15000,
-    from7000: policies.employeeKpiRates.from7000,
     maintainMaxLateCount: policies.attendanceEvaluation.maintainMaxLateCount,
     improveMinLateCount: policies.attendanceEvaluation.improveMinLateCount,
     improveMinLateMinutes: policies.attendanceEvaluation.improveMinLateMinutes,
@@ -103,11 +100,6 @@ export function PolicySettings() {
     const result = await savePolicies({
       lateToleranceMinutes: Number(form.lateToleranceMinutes),
       earlyCheckInLimitMinutes: Number(form.earlyCheckInLimitMinutes),
-      employeeKpiRates: {
-        from30000: Number(form.from30000),
-        from15000: Number(form.from15000),
-        from7000: Number(form.from7000),
-      },
       attendanceEvaluation: {
         maintainMaxLateCount: Number(form.maintainMaxLateCount),
         improveMinLateCount: Number(form.improveMinLateCount),
@@ -125,16 +117,8 @@ export function PolicySettings() {
         <Card title="Set thời gian đi trễ" className="policy-card">
           <Field label="Số phút được phép"><Input type="number" min="0" step="1" value={form.lateToleranceMinutes} onChange={set('lateToleranceMinutes')} /></Field>
           <Field label="Điểm danh sớm tối đa"><Input type="number" min="0" step="1" value={form.earlyCheckInLimitMinutes} onChange={set('earlyCheckInLimitMinutes')} /></Field>
-          <InfoNote>Đã lưu thời gian đi trễ: <strong>{policies.lateToleranceMinutes} phút</strong>. Phút trễ thực tế vẫn tính từ giờ bắt đầu ca.</InfoNote>
-        </Card>
-        <Card title="KPI nhân viên theo lợi nhuận/giờ" className="policy-card span-2">
-          <div className="form-grid form-grid--3">
-            <Field label="Từ 30,000đ/giờ (%)"><Input type="number" min="0" step="0.01" value={form.from30000} onChange={set('from30000')} /></Field>
-            <Field label="Từ 15,000đ/giờ (%)"><Input type="number" min="0" step="0.01" value={form.from15000} onChange={set('from15000')} /></Field>
-            <Field label="Từ 7,000đ/giờ (%)"><Input type="number" min="0" step="0.01" value={form.from7000} onChange={set('from7000')} /></Field>
-          </div>
           <Field label="Ngày hiệu lực"><Input type="date" value={form.effectiveFrom} onChange={set('effectiveFrom')} /></Field>
-          <InfoNote>Hệ thống chọn mốc cao nhất đạt được, không làm tròn giờ hoặc lợi nhuận/giờ trước khi tính thưởng.</InfoNote>
+          <InfoNote>Đã lưu thời gian đi trễ: <strong>{policies.lateToleranceMinutes} phút</strong>. Phút trễ thực tế vẫn tính từ giờ bắt đầu ca.</InfoNote>
         </Card>
         <Card title="Ngưỡng đánh giá chuyên cần" className="policy-card">
           <Field label="Tối đa số lần trễ — Cần duy trì"><Input type="number" min="0" step="1" value={form.maintainMaxLateCount} onChange={set('maintainMaxLateCount')} /></Field>

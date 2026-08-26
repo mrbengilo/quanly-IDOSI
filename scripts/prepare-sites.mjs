@@ -6,6 +6,12 @@ const dist = resolve(root, 'dist')
 const client = resolve(dist, 'client')
 const server = resolve(dist, 'server')
 const workerSource = resolve(root, 'server', 'worker.js')
+const workerDomainSources = [
+  'storeShiftChecklist.js',
+  'compensationPolicies.js',
+  'compensationAllocation.js',
+  'compensationSettlement.js',
+]
 const migrationsSource = resolve(root, 'drizzle')
 const hostingSource = resolve(root, '.openai', 'hosting.json')
 const hostingTarget = resolve(dist, '.openai', 'hosting.json')
@@ -23,6 +29,11 @@ for (const entry of await readdir(dist, { withFileTypes: true })) {
 
 await mkdir(server, { recursive: true })
 await cp(workerSource, resolve(server, 'index.js'))
+const workerDomainTarget = resolve(dist, 'src', 'domain')
+await mkdir(workerDomainTarget, { recursive: true })
+for (const fileName of workerDomainSources) {
+  await cp(resolve(root, 'src', 'domain', fileName), resolve(workerDomainTarget, fileName))
+}
 
 await mkdir(resolve(dist, '.openai'), { recursive: true })
 await cp(hostingSource, hostingTarget)

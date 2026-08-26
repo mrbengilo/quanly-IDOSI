@@ -3,8 +3,17 @@ export const ACCOUNT_AVATAR_MAX_BYTES = 300 * 1024
 export const ACCOUNT_AVATAR_MIME_TYPES = Object.freeze(['image/jpeg', 'image/png', 'image/webp'])
 
 const AVATAR_DATA_URL = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]*(?:={0,2}))$/u
-const QUALITY_STEPS = [0.86, 0.76, 0.66, 0.56, 0.46]
-const OUTPUT_MIME_TYPES = ['image/webp', 'image/jpeg']
+// Keep the number of expensive canvas encodes small on mobile. Two WebP
+// attempts preserve the preferred output; JPEG is a compatibility fallback.
+// When an output is still too large, optimizeAccountAvatar uses its measured
+// size to jump directly to a smaller edge instead of retrying many nearly
+// identical dimensions.
+const OUTPUT_ATTEMPTS = Object.freeze([
+  { mimeType: 'image/webp', quality: 0.82 },
+  { mimeType: 'image/webp', quality: 0.64 },
+  { mimeType: 'image/jpeg', quality: 0.78 },
+  { mimeType: 'image/jpeg', quality: 0.58 },
+])
 const MAX_AVATAR_OUTPUT_EDGE = 1024
 const MAX_IMAGE_OUTPUT_EDGE = 1400
 
@@ -67,6 +76,38 @@ export function validateAccountAvatarSource(file) {
     throw avatarError('AVATAR_SOURCE_TOO_LARGE', 'Ảnh gốc không được vượt quá 5 MB. Vui lòng chọn ảnh nhỏ hơn.')
   }
   return file
+}
+
+const accountProfileValue = (value) => (
+  ['string', 'number'].includes(typeof value) && String(value).trim()
+    ? String(value).trim()
+    : undefined
+)
+
+const accountProfileField = (profile = {}, key) => {
+  const values = {
+    code: [profile.code, profile.employeeCode, profile.employeeId, profile.id],
+    name: [profile.name],
+    email: [profile.email, profile.workEmail],
+    phone: [profile.phone, profile.phoneNumber, profile.mobile],
+    cccd: [profile.cccd, profile.citizenId, profile.identityNumber],
+    birthday: [profile.birthday, profile.birthDate, profile.dateOfBirth, profile.dob],
+    gender: [profile.gender, profile.sex],
+    address: [profile.address],
+    position: [profile.position, profile.workPosition, profile.jobPosition],
+  }
+  return (values[key] || []).map(accountProfileValue).find(Boolean)
+}
+
+// The API projection is authoritative, while the canonical employee record is
+// a compatibility fallback for deployments upgrading from older state. Empty
+// projected fields must not erase a still-valid personnel value.
+export function mergeAccountPersonnelProfile(fallback = {}, projected = {}) {
+  const keys = ['code', 'name', 'email', 'phone', 'cccd', 'birthday', 'gender', 'address', 'position']
+  return Object.fromEntries(keys.map((key) => [
+    key,
+    accountProfileField(projected, key) ?? accountProfileField(fallback, key) ?? '',
+  ]))
 }
 
 const decodeInBrowser = async (file) => {
@@ -212,30 +253,36 @@ export async function optimizeAccountAvatar(file, options = {}) {
         ? { width: maxEdge, height: maxEdge }
         : fittedSize(crop.sourceWidth, crop.sourceHeight, maxEdge)
       const sizeKey = `${size.width}x${size.height}`
+      let smallestOversizedBytes = Number.POSITIVE_INFINITY
       if (!attemptedSizes.has(sizeKey)) {
         attemptedSizes.add(sizeKey)
-        for (const quality of QUALITY_STEPS) {
-          for (const mimeType of OUTPUT_MIME_TYPES) {
-            let blob
-            try {
-              blob = await encodeImage(decoded.source, { ...crop, ...size, mimeType, quality })
-            } catch {
-              continue
-            }
-            if (!blob?.size || blob.size > ACCOUNT_AVATAR_MAX_BYTES || !ACCOUNT_AVATAR_MIME_TYPES.includes(blob.type)) continue
-            const result = validateAccountAvatarDataUrl(await toDataUrl(blob), { allowEmpty: false })
-            return {
-              ...result,
-              width: size.width,
-              height: size.height,
-              sourceBytes: file.size,
-              ...(hasExplicitAvatarCrop ? { crop } : {}),
-            }
+        for (const { mimeType, quality } of OUTPUT_ATTEMPTS) {
+          let blob
+          try {
+            blob = await encodeImage(decoded.source, { ...crop, ...size, mimeType, quality })
+          } catch {
+            continue
+          }
+          if (!blob?.size || !ACCOUNT_AVATAR_MIME_TYPES.includes(blob.type)) continue
+          if (blob.size > ACCOUNT_AVATAR_MAX_BYTES) {
+            smallestOversizedBytes = Math.min(smallestOversizedBytes, blob.size)
+            continue
+          }
+          const result = validateAccountAvatarDataUrl(await toDataUrl(blob), { allowEmpty: false })
+          return {
+            ...result,
+            width: size.width,
+            height: size.height,
+            sourceBytes: file.size,
+            ...(hasExplicitAvatarCrop ? { crop } : {}),
           }
         }
       }
       if (Math.max(size.width, size.height) <= 96) break
-      maxEdge = Math.max(96, Math.floor(maxEdge * 0.8))
+      const measuredScale = Number.isFinite(smallestOversizedBytes)
+        ? Math.sqrt(ACCOUNT_AVATAR_MAX_BYTES / smallestOversizedBytes) * 0.92
+        : 0.72
+      maxEdge = Math.max(96, Math.floor(maxEdge * Math.min(0.8, measuredScale)))
     }
   } finally {
     decoded.cleanup?.()

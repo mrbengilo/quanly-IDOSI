@@ -111,12 +111,12 @@ export const apiAddressSuggestions = (params = {}) => {
   return request(`/api/address-suggestions?${query.toString()}`)
 }
 
-export const apiGetAccountAvatar = async ({ timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
+const apiGetAvatarBlob = async (path, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   try {
     const token = memoryToken || readToken()
-    const response = await fetch('/api/account-avatar', {
+    const response = await fetch(path, {
       method: 'GET',
       cache: 'no-store',
       credentials: 'same-origin',
@@ -147,6 +147,25 @@ export const apiGetAccountAvatar = async ({ timeoutMs = DEFAULT_TIMEOUT_MS } = {
   } finally {
     window.clearTimeout(timeout)
   }
+}
+
+export const apiGetAccountAvatar = (options = {}) => apiGetAvatarBlob('/api/account-avatar', options)
+
+// Authorized personnel-avatar contract. The backend resolves the canonical
+// employee profile and enforces actor scope before returning any bytes:
+// Admin/HTKD may read every active store, Store Manager only their store, and
+// an Employee only their own profile. Keeping this separate from the current
+// account endpoint prevents list rows from accidentally reusing the session
+// avatar.
+export const apiGetEmployeeAvatar = (employeeId, options = {}) => {
+  const normalizedEmployeeId = String(employeeId || '').trim()
+  if (!normalizedEmployeeId) {
+    return Promise.reject(new IdosiApiError('Thiếu mã nhân viên cần tải ảnh đại diện.', {
+      status: 400,
+      code: 'EMPLOYEE_AVATAR_ID_REQUIRED',
+    }))
+  }
+  return apiGetAvatarBlob(`/api/account-avatars/${encodeURIComponent(normalizedEmployeeId)}`, options)
 }
 
 export const apiGetIdentityImage = async (employeeId, side, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
@@ -202,11 +221,6 @@ export const apiPolicyMap = (records = []) => {
   const mapped = {}
   if (values.late_tolerance_minutes != null) mapped.lateToleranceMinutes = Number(values.late_tolerance_minutes)
   if (values.early_check_in_limit_minutes != null) mapped.earlyCheckInLimitMinutes = Number(values.early_check_in_limit_minutes)
-  const employeeKpiRates = {}
-  if (values.employee_kpi_percent_30000 != null) employeeKpiRates.from30000 = Number(values.employee_kpi_percent_30000)
-  if (values.employee_kpi_percent_15000 != null) employeeKpiRates.from15000 = Number(values.employee_kpi_percent_15000)
-  if (values.employee_kpi_percent_7000 != null) employeeKpiRates.from7000 = Number(values.employee_kpi_percent_7000)
-  if (Object.keys(employeeKpiRates).length) mapped.employeeKpiRates = employeeKpiRates
   const attendanceEvaluation = {}
   if (values.attendance_maintain_max_late_count != null) attendanceEvaluation.maintainMaxLateCount = Number(values.attendance_maintain_max_late_count)
   if (values.attendance_improve_min_late_count != null) attendanceEvaluation.improveMinLateCount = Number(values.attendance_improve_min_late_count)
@@ -218,9 +232,6 @@ export const apiPolicyMap = (records = []) => {
 export const apiPolicyEntries = (policies = {}) => [
   ['late_tolerance_minutes', Number(policies.lateToleranceMinutes)],
   ['early_check_in_limit_minutes', Number(policies.earlyCheckInLimitMinutes)],
-  ['employee_kpi_percent_30000', Number(policies.employeeKpiRates?.from30000)],
-  ['employee_kpi_percent_15000', Number(policies.employeeKpiRates?.from15000)],
-  ['employee_kpi_percent_7000', Number(policies.employeeKpiRates?.from7000)],
   ['attendance_maintain_max_late_count', Number(policies.attendanceEvaluation?.maintainMaxLateCount)],
   ['attendance_improve_min_late_count', Number(policies.attendanceEvaluation?.improveMinLateCount)],
   ['attendance_improve_min_late_minutes', Number(policies.attendanceEvaluation?.improveMinLateMinutes)],

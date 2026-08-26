@@ -234,7 +234,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /^Tổng quan$/i }).getAttribute('href')).toBe('/support/overview')
     expect(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeTruthy()
     expect(screen.getAllByText('Hỗ trợ KD').length).toBeGreaterThan(0)
-    expect(screen.getByRole('link', { name: /Khối văn phòng/i })).toBeTruthy()
+    expect(screen.getAllByRole('link').find((link) => link.getAttribute('href') === '/office')).toBeTruthy()
     expect(screen.getByRole('link', { name: /Danh sách nhân viên cửa hàng/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Nhân viên hỗ trợ KD$/i }).getAttribute('href')).toBe('/admin/business-support')
     expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i })).toBeTruthy()
@@ -248,10 +248,11 @@ describe('AppShell notifications', () => {
     expect(screen.queryByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
     expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('span')?.textContent)).toEqual([
-      'Tổng quan', 'Công việc được giao', 'Lịch làm việc của tôi', 'Phân lịch làm việc',
+      'Tổng quan', 'Công việc được giao', 'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
-      'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
+      'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý', 'Thưởng doanh thu ngày',
+      'Vi phạm nhân viên', 'Vi phạm Khối văn phòng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
     ])
   })
 

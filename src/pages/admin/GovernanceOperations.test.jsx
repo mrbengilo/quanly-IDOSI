@@ -63,7 +63,6 @@ vi.mock('../../state/AppContext', () => ({
     policies: {
       lateToleranceMinutes: 5,
       earlyCheckInLimitMinutes: 30,
-      employeeKpiRates: { from30000: 5, from15000: 3, from7000: 1 },
       attendanceEvaluation: { maintainMaxLateCount: 1, improveMinLateCount: 3, improveMinLateMinutes: 30 },
       effectiveFrom: '2026-08-18',
     },

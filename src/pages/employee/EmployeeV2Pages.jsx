@@ -162,7 +162,6 @@ export function EmployeeDashboardV2() {
   const [locating, setLocating] = useState('')
   const [cashRevenue, setCashRevenue] = useState('')
   const [transferRevenue, setTransferRevenue] = useState('')
-  const [incompleteTaskReason, setIncompleteTaskReason] = useState('')
   const employeeId = employeeKey(employee)
   const workDate = today()
   const allOwnAttendance = employeeAttendance(attendance, employeeId)
@@ -234,7 +233,7 @@ export function EmployeeDashboardV2() {
     transferRevenue: parseMoney(transferRevenue),
   })
   const revenueDeclared = cashRevenue.trim() !== '' && transferRevenue.trim() !== ''
-  const checkoutReady = revenueDeclared && reconciliation.matches && (!incompleteTasks.length || incompleteTaskReason.trim())
+  const checkoutReady = revenueDeclared && reconciliation.matches && incompleteTasks.length === 0
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1_000)
@@ -314,8 +313,8 @@ export function EmployeeDashboardV2() {
       notify?.('Tiền mặt và chuyển khoản phải khớp riêng từng kênh với đơn hàng trong ca.', 'info')
       return
     }
-    if (incompleteTasks.length && !incompleteTaskReason.trim()) {
-      notify?.('Vui lòng nhập lý do cho công việc chưa hoàn thành.', 'info')
+    if (incompleteTasks.length) {
+      notify?.(`Cần hoàn thành đủ ${incompleteTasks.length} công việc còn lại trước khi kết ca.`, 'info')
       return
     }
     setLocating('out')
@@ -326,7 +325,6 @@ export function EmployeeDashboardV2() {
         location,
         cashRevenue: parseMoney(cashRevenue),
         transferRevenue: parseMoney(transferRevenue),
-        incompleteTaskReason: incompleteTaskReason.trim(),
       })
       if (!result?.ok) {
         notify?.(result?.message || 'Không thể kết ca.', 'info')
@@ -335,7 +333,6 @@ export function EmployeeDashboardV2() {
       setCheckoutOpen(false)
       setCashRevenue('')
       setTransferRevenue('')
-      setIncompleteTaskReason('')
     } catch (error) {
       notify?.(error.message, 'info')
     } finally {
@@ -489,9 +486,9 @@ export function EmployeeDashboardV2() {
           {!revenueDeclared && <InfoNote tone="orange">Vui lòng nhập rõ cả hai ô; nếu không phát sinh hãy nhập 0.</InfoNote>}
           {expectedRevenue.unknown > 0 && <InfoNote tone="orange">Có {money(expectedRevenue.unknown)} dùng hình thức thanh toán chưa hỗ trợ. Vui lòng liên hệ quản lý trước khi kết ca.</InfoNote>}
           {incompleteTasks.length > 0 && (
-            <Field label={`Lý do chưa hoàn thành ${incompleteTasks.length} công việc`} required className="span-2" error={!incompleteTaskReason.trim() ? 'Bắt buộc nhập lý do để kết ca.' : ''}>
-              <textarea maxLength="1000" value={incompleteTaskReason} onChange={(event) => setIncompleteTaskReason(event.target.value)} placeholder="Nhập lý do cụ thể..." />
-            </Field>
+            <InfoNote tone="red">
+              Còn {incompleteTasks.length} công việc chưa hoàn thành. Hãy tick đủ danh sách công việc của ca trước khi kết ca.
+            </InfoNote>
           )}
         </div>
       </Modal>
@@ -884,8 +881,7 @@ export function EmployeePayrollDetails() {
   const allowance = adjustments.filter((item) => item.type === 'Phụ cấp khác').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const deductions = adjustments.filter((item) => item.type === 'Khấu trừ').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const tiktok = Number(employee?.tiktokAllowance || 0)
-  const kpi = Number(snapshot?.homeSnapshot?.kpiBonus || 0)
-  const estimatedHomeGross = Math.max(0, base + bonus + allowance + tiktok + kpi - deductions)
+  const estimatedHomeGross = Math.max(0, base + bonus + allowance + tiktok - deductions)
   const gross = (snapshot?.homeSnapshot?.gross ?? estimatedHomeGross) + supportPay
   const estimatedAdvances = salaryAdvances.filter((item) => String(item.employeeId) === employeeId && item.period === period && item.status === 'Đã chi').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const advances = snapshot?.homeSnapshot?.advancesPaid ?? estimatedAdvances
@@ -904,7 +900,7 @@ export function EmployeePayrollDetails() {
 
   return (
     <div className="page">
-      <PageHeader title="BẢNG LƯƠNG CỦA TÔI" subtitle="Dữ liệu cá nhân theo kỳ; các kỳ đã khóa dùng đúng bản chụp lương, KPI và chính sách." icon={Wallet} actions={<Select value={period} onChange={(event) => setPeriod(event.target.value)}><option value={period}>{periodLabel(period)}</option>{periods.filter((item) => item !== period).map((item) => <option key={item} value={item}>{periodLabel(item)}</option>)}</Select>} />
+      <PageHeader title="BẢNG LƯƠNG CỦA TÔI" subtitle="Dữ liệu cá nhân theo kỳ; các kỳ đã khóa dùng đúng bản chụp lương và chính sách." icon={Wallet} actions={<Select value={period} onChange={(event) => setPeriod(event.target.value)}><option value={period}>{periodLabel(period)}</option>{periods.filter((item) => item !== period).map((item) => <option key={item} value={item}>{periodLabel(item)}</option>)}</Select>} />
       <div className="metric-grid metric-grid--four">
         <MetricCard label="LƯƠNG CỨNG" value={money(base)} helper={basis === 'hourly' ? `${hours.toFixed(2)} giờ × ${money(getHourlyRate(employee || {}))}` : usesMonthlyHoursFormula(employee || {}) ? `${hours.toFixed(2)} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || getMonthlySalary(employee || {}))}` : 'Theo mức lương tháng'} icon={Banknote} tone="blue" />
         <MetricCard label="LƯƠNG CA HỖ TRỢ" value={money(supportPay)} helper={`${supportHours.toFixed(2)} giờ hỗ trợ • Gồm phụ cấp ${money(supportAllowance)}`} icon={CheckCircle2} tone="green" />
@@ -916,7 +912,6 @@ export function EmployeePayrollDetails() {
           <p><span>Lương cứng ({hours.toFixed(2)} giờ tại cửa hàng chính)</span><strong>{money(base)} <small className="table-note">Mức cài đặt {money(configuredHourlyRate)}/giờ</small></strong></p>
           <p><span>Lương theo giờ các ca hỗ trợ</span><strong>{money(supportHourlyPay)}</strong></p>
           <p><span>Phụ cấp các ca hỗ trợ</span><strong>{money(supportAllowance)}</strong></p>
-          <p><span>Thưởng KPI</span><strong>{money(kpi)}</strong></p>
           <p><span>Thưởng khác</span><strong>{money(bonus)}</strong></p>
           <p><span>Phụ cấp TikTok (một lần trong tháng)</span><strong>{money(tiktok)}</strong></p>
           <p><span>Phụ cấp khác</span><strong>{money(allowance)}</strong></p>

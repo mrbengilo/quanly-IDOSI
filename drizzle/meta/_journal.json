@@ -64,6 +64,13 @@
       "when": 1787616000000,
       "tag": "0008_order_information_options",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1787702400000,
+      "tag": "0009_compensation_foundation",
+      "breakpoints": true
     }
   ]
 }
