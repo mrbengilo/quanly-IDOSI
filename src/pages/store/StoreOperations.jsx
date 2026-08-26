@@ -54,13 +54,19 @@ import {
   downloadCsv,
   getEmployeeType,
   getHourlyRate,
-  getMonthlySalary,
-  getPayBasis,
   money,
-  salaryBasisLabel,
   shortDate,
   today,
 } from '../../utils'
+import {
+  defaultStoreFullTimeSalaryPolicy,
+  effectiveStoreSalaryConfig,
+} from '../../domain/storeTieredPayroll'
+import {
+  snapshotActiveWorkCatalogItems,
+  WORK_CATALOG_KIND,
+  WORK_CATALOG_TARGET,
+} from '../../domain/workCatalog'
 import { selectTaskShiftForDate, taskShiftOptionsForDate } from './taskScope'
 import {
   buildStoreTaskAssignmentPayload,
@@ -72,10 +78,9 @@ import {
 import {
   buildStoreEmployeePayload,
   formatStoreMoneyInput,
-  isPartTimeEmployee,
+  isHourlyStoreEmployee,
   nextStoreEmployeeCode,
   normalizeStoreEmploymentType,
-  storeEmployeePrefix,
   validateStoreEmployee,
 } from './storeEmployeeForm'
 import '../task-assignment.css'
@@ -83,7 +88,7 @@ import '../task-assignment.css'
 const shiftById = (id) => shifts.find((shift) => shift.id === id)
 
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
-const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time']
+const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time', 'Thử Việc']
 const emptyEmployeeForm = {
   id: '',
   name: '',
@@ -110,7 +115,7 @@ const emptyEmployeeForm = {
 }
 
 const normalizeText = (value = '') => String(value).trim().toLowerCase()
-const isPartTime = isPartTimeEmployee
+const isHourlyEmployee = isHourlyStoreEmployee
 const normalizeEmploymentType = normalizeStoreEmploymentType
 const employmentTypeLabel = normalizeStoreEmploymentType
 const formatMoneyInput = formatStoreMoneyInput
@@ -170,8 +175,6 @@ const useTransferClock = () => {
   return moment
 }
 
-let storeTaskDraftSequence = 0
-const newStoreTaskRow = () => ({ id: `store-task-draft-${storeTaskDraftSequence += 1}`, title: '', detail: '' })
 const storeTaskStatusTone = (status) => status === 'Hoàn thành' ? 'green' : status === 'Đang thực hiện' ? 'blue' : 'orange'
 
 const readIdentityImage = async (file) => file ? (await optimizeIdentityImage(file)).dataUrl : ''
@@ -225,9 +228,6 @@ const employeeAddressLabel = (employee) => {
 
 const employeeType = getEmployeeType
 const employeePosition = (employee = {}) => employee.position || employee.role || 'Nhân viên bán hàng'
-const employeeSalary = (employee = {}) => getPayBasis(employee) === 'hourly' ? getHourlyRate(employee) : getMonthlySalary(employee)
-const employeeSalarySuffix = (employee = {}) => getPayBasis(employee) === 'hourly' ? '/ giờ' : '/ tháng'
-
 const employeeToForm = (employee = {}, storeId = '') => {
   const address = employeeAddressParts(employee)
   const employmentType = normalizeEmploymentType(employeeType(employee))
@@ -245,10 +245,10 @@ const employeeToForm = (employee = {}, storeId = '') => {
       front: employee.identityImages?.front || employee.cccdFrontImage || '',
       back: employee.identityImages?.back || employee.cccdBackImage || '',
     },
-    salary: isPartTime(employmentType) ? formatMoneyInput(employeeSalary(employee)) : '',
-    baseSalary: isPartTime(employmentType) ? '' : formatMoneyInput(employee.baseSalary || employeeSalary(employee)),
-    standardWorkDays: String(employee.standardWorkDays || 26),
-    requiredMonthlyHours: String(employee.requiredMonthlyHours || ''),
+    salary: isHourlyEmployee(employmentType) ? formatMoneyInput(getHourlyRate(employee)) : '',
+    baseSalary: '',
+    standardWorkDays: '',
+    requiredMonthlyHours: '',
     employmentType,
     position: employeePosition(employee),
     age: employee.age ?? '',
@@ -256,6 +256,24 @@ const employeeToForm = (employee = {}, storeId = '') => {
     password: '',
     status: employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc'),
     storeId: employee.storeId || storeId,
+  }
+}
+
+const fullTimeSalaryPolicyFor = ({ configs, employee, store, period }) => {
+  try {
+    const employeeId = employee.id || employee.code || employee.employeeId
+    const configured = effectiveStoreSalaryConfig(configs, {
+      employeeId,
+      storeId: store?.id,
+      period,
+      store,
+    })
+    return {
+      policy: configured || defaultStoreFullTimeSalaryPolicy(store),
+      configured: Boolean(configured),
+    }
+  } catch {
+    return null
   }
 }
 
@@ -417,6 +435,8 @@ export function StoreEmployees() {
   const employees = Array.isArray(app.employees) ? app.employees : []
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
   const stores = Array.isArray(app.stores) ? app.stores : []
+  const salaryConfigs = Array.isArray(app.storeEmployeeSalaryConfigs) ? app.storeEmployeeSalaryConfigs : []
+  const salaryPeriod = today().slice(0, 7)
   const { addEmployee, updateEmployee, deleteEmployee, notify, session, activeStoreId } = app
   const scopedStoreId = session?.role === 'employee'
     ? session.storeId
@@ -601,7 +621,14 @@ export function StoreEmployees() {
 
   const updateEmploymentType = (event) => {
     const employmentType = event.target.value
-    setForm((current) => ({ ...current, employmentType, salary: '', baseSalary: '' }))
+    setForm((current) => ({
+      ...current,
+      employmentType,
+      salary: '',
+      baseSalary: '',
+      standardWorkDays: '',
+      requiredMonthlyHours: '',
+    }))
     setErrors([])
   }
 
@@ -661,6 +688,13 @@ export function StoreEmployees() {
             {filtered.map((employee) => {
               const normalizedStatus = employee.status === 'Tạm nghỉ' ? 'Tạm ngưng' : (employee.status || 'Đang làm việc')
               const type = employeeType(employee)
+              const hourlyEmployee = isHourlyEmployee(type)
+              const fullTimeSalary = hourlyEmployee ? null : fullTimeSalaryPolicyFor({
+                configs: salaryConfigs,
+                employee,
+                store: scopedStore,
+                period: salaryPeriod,
+              })
               const outboundTransfer = activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId, transferClock)
               const supportStore = outboundTransfer
                 ? stores.find((store) => String(store.id) === String(outboundTransfer.toStoreId))
@@ -669,7 +703,7 @@ export function StoreEmployees() {
                 <td><strong>{employee.id}</strong></td>
                 <td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.age ? `${employee.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
                 <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{transferTimeLabel(employee.supportAssignment)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : outboundTransfer ? <div className="table-stack"><Badge tone="orange">Đang hỗ trợ {supportStore?.name || outboundTransfer.toStoreId}</Badge><small>{transferTimeLabel(outboundTransfer)}</small><small>{money(outboundTransfer.hourlySupportRate || 0)}/giờ · Phụ cấp {money(outboundTransfer.allowance || 0)}</small><small>Hồ sơ tạm khóa thao tác tại cửa hàng chính</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
-                <td><Badge tone={isPartTime(type) ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
+                <td><Badge tone={type === 'Thử Việc' ? 'orange' : hourlyEmployee ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
                 <td>{employeePosition(employee)}</td>
                 <td>
                   <span>{employee.cccd || employee.citizenId || '—'}</span>
@@ -680,7 +714,13 @@ export function StoreEmployees() {
                 </td>
                 <td>{employee.phone || '—'}</td>
                 <td className="address-cell">{employeeAddressLabel(employee)}</td>
-                <td>{employeeSalary(employee) > 0 ? <><strong>{money(employeeSalary(employee))}</strong><small className="table-sub">{employeeSalarySuffix(employee)} · {salaryBasisLabel(employee)}</small>{!isPartTime(type) && <small className="table-sub">{employee.standardWorkDays || 26} ngày · {employee.requiredMonthlyHours || '—'} giờ/tháng</small>}</> : <span className="orange-text">Chưa thiết lập</span>}</td>
+                <td>{hourlyEmployee
+                  ? getHourlyRate(employee) > 0
+                    ? <><strong>{money(getHourlyRate(employee))}</strong><small className="table-sub">/ giờ · {employmentTypeLabel(type)}</small></>
+                    : <span className="orange-text">Chưa thiết lập</span>
+                  : fullTimeSalary
+                    ? <><strong>{money(fullTimeSalary.policy.standardHourlyRateVnd)}/giờ</strong><small className="table-sub">Tới {fullTimeSalary.policy.thresholdHours} giờ; phần vượt {money(fullTimeSalary.policy.excessHourlyRateVnd)}/giờ</small><small className={`table-sub ${fullTimeSalary.configured ? 'green-text' : 'orange-text'}`}>{fullTimeSalary.configured ? 'Đã cài đặt theo nhân viên' : 'Đang dùng mức mặc định an toàn'}</small></>
+                    : <span className="orange-text">Cửa hàng chưa có chính sách lương</span>}</td>
                 <td>{employee.username || '—'}</td>
                 <td>{outboundTransfer ? <Badge tone="orange">Đang hỗ trợ</Badge> : <Badge tone={employeeStatusTone(normalizedStatus)}>{normalizedStatus}</Badge>}</td>
                 {canManageStore && <td>{canEditEmployee(employee) ? <div className="row-actions"><button onClick={() => openEdit(employee)} aria-label={`Sửa ${employee.name}`}><Edit3 /></button>{canDeleteEmployee && <button className="danger" onClick={() => window.confirm(`Xóa ${employee.name}?`) && deleteEmployee?.(employee.id)} aria-label={`Xóa ${employee.name}`}><Trash2 /></button>}</div> : <Badge tone="blue">Chỉ xem</Badge>}</td>}
@@ -708,14 +748,10 @@ export function StoreEmployees() {
             <Field label="Số CCCD" required hint="Chỉ gồm đúng 12 chữ số"><Input inputMode="numeric" maxLength={12} value={form.cccd} onChange={updateField('cccd')} placeholder="012345678901" /></Field>
             <Field label="Số điện thoại" required hint="Đủ 10 số và bắt đầu bằng số 0"><Input type="tel" inputMode="numeric" maxLength={10} pattern="0[0-9]{9}" value={form.phone} onChange={updateField('phone')} placeholder="0901234567" /></Field></>
             <Field label="Ngày bắt đầu làm" required hint="Hiển thị theo định dạng dd/mm/yy"><Input icon={CalendarDays} type="date" value={form.startDate} onChange={updateField('startDate')} /></Field>
-            <Field label="Loại nhân viên" required hint="Full-Time dùng định mức ngày, giờ và lương cơ bản; Part-Time hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
-            {isPartTime(form.employmentType)
+            <Field label="Loại nhân viên" required hint="Full-Time cài lương theo bậc giờ tại Cài đặt lương; Part-Time và Thử Việc hưởng lương theo giờ"><Select value={form.employmentType} onChange={updateEmploymentType}>{EMPLOYMENT_TYPES.map((type) => <option key={type} value={type}>{employmentTypeLabel(type)}</option>)}</Select></Field>
+            {isHourlyEmployee(form.employmentType)
               ? <Field label="Lương mặc định theo giờ (đ/giờ)" required hint="Dùng để tính lương theo tổng giờ chấm công"><MoneyInput value={form.salary} onChange={updateField('salary')} placeholder="Nhập số tiền" /></Field>
-              : <>
-                  <Field label="Số ngày công quy định/tháng" required hint="Từ 1 đến 31 ngày"><Input type="number" inputMode="numeric" min="1" max="31" step="1" value={form.standardWorkDays} onChange={updateField('standardWorkDays')} placeholder="26" /></Field>
-                  <Field label="Tổng giờ làm quy định/tháng" required hint="Dùng làm mẫu số tính lương theo giờ thực tế"><Input type="number" inputMode="decimal" min="0.01" max="744" step="0.01" value={form.requiredMonthlyHours} onChange={updateField('requiredMonthlyHours')} placeholder="208" /></Field>
-                  <Field label="Lương cơ bản (đ/tháng)" required hint={storeEmployeePrefix(scopedStore) === 'SM234' ? 'SecondMall: giờ thực tế ÷ giờ quy định × lương cơ bản' : 'Mức lương cơ bản của kỳ lương tháng'}><MoneyInput value={form.baseSalary} onChange={updateField('baseSalary')} placeholder="Nhập số tiền" /></Field>
-                </>}
+              : <div className="span-2"><InfoNote>Nhân viên Full-Time không nhập lương cố định tại đây. Sau khi lưu hồ sơ, Admin hoặc Nhân viên hỗ trợ KD cài hai mức lương theo giờ trong danh mục <strong>Cài đặt lương</strong> của cửa hàng.</InfoNote></div>}
             <Field label="Tuổi" required><Input inputMode="numeric" min="16" max="100" value={form.age} onChange={updateField('age')} placeholder="Ví dụ: 22" /></Field>
             <Field label="Vị trí công việc" required hint={isBusinessSupport && !editing ? 'Mặc định cho nhân viên do Hỗ trợ KD tạo' : undefined}>{isBusinessSupport && !editing
               ? <Input value="Nhân viên bán hàng" readOnly aria-readonly="true" />
@@ -774,6 +810,7 @@ export function StoreTasks() {
     tasks = [],
     taskAssignmentHistory = [],
     shiftDefinitions = [],
+    workCatalogItems = [],
     replaceTasks,
     notify,
     session,
@@ -795,7 +832,7 @@ export function StoreTasks() {
     shiftOptions: optionsForDate(initialDate),
   }))
   const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([])
-  const [rows, setRows] = useState(() => [newStoreTaskRow()])
+  const [selectedCatalogIds, setSelectedCatalogIds] = useState([])
   const [busy, setBusy] = useState(false)
   const assignmentRequestRef = useRef({ fingerprint: '', idempotencyKey: '' })
   const employees = storeEmployeesForDate(allEmployees, supportTransfers, storeId, date)
@@ -806,29 +843,33 @@ export function StoreTasks() {
   const selectedIds = selectedEmployeeIds.filter((id) => assignableEmployeeIds.has(String(id)))
   const selectedIdSet = new Set(selectedIds.map(String))
   const history = storeTaskHistory({ taskAssignmentHistory, tasks, storeId, employees, shiftDefinitions })
-  const reusableTasks = [...new Map(history.flatMap((assignment) => assignment.tasks || []).flatMap((task) => {
-    const title = String(task.title || '').trim()
-    return title ? [[title.toLocaleLowerCase('vi-VN'), { title }]] : []
-  })).entries()].map(([key, task]) => ({ key, ...task }))
+  const selectedShift = shiftOptions.find((shift) => String(shift.id) === String(shiftId))
+  const catalogTasks = date && shiftId ? snapshotActiveWorkCatalogItems({
+    items: workCatalogItems,
+    targetGroup: WORK_CATALOG_TARGET.STORE,
+    storeId,
+    shiftId,
+    shiftName: selectedShift?.name,
+    date,
+  }) : []
+  const selectedCatalogIdSet = new Set(selectedCatalogIds.map(String))
+  const selectedCatalogTasks = catalogTasks.filter((task) => selectedCatalogIdSet.has(String(task.catalogItemId)))
 
   const changeShift = (nextShiftId) => {
     if (!shiftOptions.some((shift) => String(shift.id) === String(nextShiftId))) return
     setShiftId(nextShiftId)
+    setSelectedCatalogIds([])
   }
   const changeDate = (nextDate) => {
     const nextShiftOptions = optionsForDate(nextDate)
     const nextShiftId = selectTaskShiftForDate({ tasks, storeId, date: nextDate, shiftOptions: nextShiftOptions })
     setDate(nextDate)
     setShiftId(nextShiftId)
+    setSelectedCatalogIds([])
   }
-  const updateRow = (index, key, value) => setRows((current) => current.map((item, rowIndex) => rowIndex === index ? { ...item, [key]: value } : item))
-  const removeRow = (index) => setRows((current) => current.length > 1 ? current.filter((_, rowIndex) => rowIndex !== index) : current)
-  const toggleReusableTask = (template) => setRows((current) => {
-    const index = current.findIndex((row) => String(row.templateKey || '') === template.key)
-    if (index >= 0) return current.filter((_, rowIndex) => rowIndex !== index)
-    const withoutEmptyStarter = current.length === 1 && !current[0].title && !current[0].detail ? [] : current
-    return [...withoutEmptyStarter, { ...newStoreTaskRow(), title: template.title, detail: '', templateKey: template.key }]
-  })
+  const toggleCatalogTask = (catalogItemId) => setSelectedCatalogIds((current) => current.some((id) => String(id) === String(catalogItemId))
+    ? current.filter((id) => String(id) !== String(catalogItemId))
+    : [...current, String(catalogItemId)])
   const toggleEmployee = (id) => setSelectedEmployeeIds((current) => current.some((item) => String(item) === String(id))
     ? current.filter((item) => String(item) !== String(id))
     : [...current, String(id)])
@@ -839,10 +880,10 @@ export function StoreTasks() {
       return notify?.('Ca làm việc không hợp lệ cho ngày đã chọn. Vui lòng chọn lại ca.', 'info')
     }
     if (!selectedIds.length) return notify?.('Vui lòng chọn ít nhất một nhân viên nhận việc.', 'info')
-    if (rows.some((item) => !String(item.title || '').trim())) return notify?.('Mỗi công việc cần có tên.', 'info')
+    if (!selectedCatalogTasks.length) return notify?.('Vui lòng tick ít nhất một công việc trong danh mục đang hoạt động.', 'info')
     if (typeof replaceTasks !== 'function') return notify?.('Chức năng giao việc chưa sẵn sàng.', 'info')
 
-    const payload = buildStoreTaskAssignmentPayload({ storeId, date, shiftId, employeeIds: selectedIds, tasks: rows })
+    const payload = buildStoreTaskAssignmentPayload({ storeId, date, shiftId, employeeIds: selectedIds, tasks: selectedCatalogTasks })
     const requestFingerprint = JSON.stringify(payload)
     if (assignmentRequestRef.current.fingerprint !== requestFingerprint) {
       assignmentRequestRef.current = {
@@ -855,7 +896,7 @@ export function StoreTasks() {
       const result = await replaceTasks({ ...payload, idempotencyKey: assignmentRequestRef.current.idempotencyKey })
       if (result?.ok === false) return notify?.(result.message || 'Chưa thể gửi danh sách công việc.', 'info')
       assignmentRequestRef.current = { fingerprint: '', idempotencyKey: '' }
-      setRows([newStoreTaskRow()])
+      setSelectedCatalogIds([])
       setSelectedEmployeeIds([])
     } catch (error) {
       notify?.(error.message || 'Chưa thể gửi danh sách công việc.', 'info')
@@ -902,29 +943,25 @@ export function StoreTasks() {
       </Card>}
       {canManageStore && <div className="split-layout split-layout--tasks">
         <Card title="Danh sách công việc" className="task-editor task-assignment-editor">
-          {reusableTasks.length > 0 && <>
-            <InfoNote>Tick các công việc đã nhập sẵn cần giao trong lần này. Có thể bổ sung công việc mới bên dưới.</InfoNote>
-            <div className="employee-picker task-template-picker" role="group" aria-label="Công việc nhập sẵn">
-              {reusableTasks.map((template) => {
-                const checked = rows.some((row) => row.templateKey === template.key)
-                return <label key={template.key} className={checked ? 'selected' : ''}><input type="checkbox" checked={checked} onChange={() => toggleReusableTask(template)} /><span><strong>{template.title}</strong></span></label>
-              })}
-            </div>
-          </>}
-          <div className="task-editor__head"><span>STT</span><span>Tên công việc</span><span /></div>
-          {rows.map((item, index) => (
-            <div className="task-editor__row" key={item.id}>
-              <b>{index + 1}</b>
-              <input value={item.title} maxLength={240} onChange={(event) => updateRow(index, 'title', event.target.value)} placeholder="Nhập tên công việc" aria-label={`Tên công việc ${index + 1}`} />
-              <button type="button" onClick={() => removeRow(index)} disabled={rows.length === 1} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>
-            </div>
-          ))}
-          <button type="button" className="add-row" onClick={() => setRows((current) => [...current, newStoreTaskRow()])}><Plus size={18} /> Thêm công việc</button>
+          <InfoNote>Tick trực tiếp công việc cần giao. Danh sách được lọc theo cửa hàng, ngày và ca đã chọn.</InfoNote>
+          <div className="employee-picker task-template-picker" role="group" aria-label="Danh mục công việc">
+            {catalogTasks.map((task) => {
+              const checked = selectedCatalogIdSet.has(String(task.catalogItemId))
+              const amountLabel = task.kind === WORK_CATALOG_KIND.REWARD_TASK
+                ? `Thưởng ${money(task.amountVnd)}`
+                : `Công việc cố định · ${money(task.amountVnd)}`
+              return <label key={task.catalogItemId} className={checked ? 'selected' : ''}>
+                <input type="checkbox" checked={checked} onChange={() => toggleCatalogTask(task.catalogItemId)} aria-label={`Chọn công việc ${task.name}`} />
+                <span><strong>{task.name}</strong><small>{amountLabel}</small></span>
+              </label>
+            })}
+          </div>
+          {!catalogTasks.length && <InfoNote tone="orange">Chưa có công việc đang hoạt động cho cửa hàng, ngày và ca đã chọn.</InfoNote>}
           <div className="support-work-actions"><Button icon={Send} loading={busy} disabled={busy} onClick={send}>GỬI</Button></div>
         </Card>
         <Card className="guide-card">
           <h2><Info size={22} /> Giao việc theo cửa hàng</h2>
-          <ol><li>Chọn ngày, kể cả ngày trong tương lai.</li><li>Chọn ca và một hoặc nhiều nhân viên cửa hàng.</li><li>Nhập danh sách công việc rồi nhấn “Gửi”.</li></ol>
+          <ol><li>Chọn ngày, kể cả ngày trong tương lai.</li><li>Chọn ca và một hoặc nhiều nhân viên cửa hàng.</li><li>Tick công việc trong danh mục đang hoạt động rồi nhấn “Gửi”.</li></ol>
           <InfoNote><strong>Không phụ thuộc chấm công</strong><br />Có thể giao trước khi nhân viên điểm danh hoặc bắt đầu ca.</InfoNote>
         </Card>
       </div>}

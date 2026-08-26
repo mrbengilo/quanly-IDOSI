@@ -1,3 +1,11 @@
+import {
+  calculateTieredHourlyPay,
+  defaultStoreTieredRates,
+  effectiveStoreSalaryConfig,
+  isHourlyStoreEmploymentType,
+  normalizeStoreEmploymentType,
+} from './domain/storeTieredPayroll'
+
 export const money = (value) => `${new Intl.NumberFormat('en-US').format(Number(value) || 0)} đ`
 
 export const parseMoneyInput = (value) => Number(String(value ?? '').replace(/\D/gu, '')) || 0
@@ -19,10 +27,16 @@ export const getEmployeeType = (employee = {}) => {
 
 export const getPayBasis = (employee = {}) => {
   const value = String(employee.payBasis || employee.salaryBasis || employee.salaryType || employee.salaryUnit || '').toLowerCase()
+  if (['tiered-hourly', 'tiered_hourly', 'store_full_time_tiered'].includes(value)
+    || String(employee.payFormula || '').trim().toUpperCase() === 'STORE_FULL_TIME_TIERED') return 'tiered-hourly'
   if (['hourly', 'hour', 'gio', 'giờ'].includes(value)) return 'hourly'
   if (['monthly', 'month', 'thang', 'tháng'].includes(value)) return 'monthly'
   if (value === 'legacy') return 'legacy'
-  return getEmployeeType(employee) === 'Part-Time' ? 'hourly' : 'monthly'
+  const employmentType = getEmployeeType(employee)
+  if (isHourlyStoreEmploymentType(employmentType)) return 'hourly'
+  const unit = String(employee.unit || employee.unitType || '').trim().toLowerCase()
+  if (normalizeStoreEmploymentType(employmentType) === 'Full-Time' && unit === 'store') return 'tiered-hourly'
+  return 'monthly'
 }
 
 export const getMonthlySalary = (employee = {}) => {
@@ -34,6 +48,10 @@ export const getMonthlySalary = (employee = {}) => {
 }
 
 export const getHourlyRate = (employee = {}) => {
+  if (getPayBasis(employee) === 'tiered-hourly') {
+    const standardRate = Number(employee.standardHourlyRateVnd || employee.regularHourlyRateVnd)
+    return Number.isFinite(standardRate) && standardRate > 0 ? standardRate : 0
+  }
   const explicit = Number(employee.hourlyRate)
   if (Number.isFinite(explicit) && explicit > 0) return explicit
   return getPayBasis(employee) === 'hourly' ? Math.max(0, Number(employee.salary) || 0) : 0
@@ -45,7 +63,75 @@ export const usesMonthlyHoursFormula = (employee = {}) => (
   && Number(employee.requiredMonthlyHours) > 0
 )
 
-export const calculateEmployeeBasePay = (employee = {}, { hours = 0, workedDays = 0, prorateMonthly = false } = {}) => {
+const isStoreFullTimeEmployee = (employee = {}, store = null) => {
+  if (!store || normalizeStoreEmploymentType(getEmployeeType(employee)) !== 'Full-Time') return false
+  const unit = String(employee.unit || employee.unitType || '').trim().toLowerCase()
+  return !unit || unit === 'store'
+}
+
+export const resolveStoreEmployeeSalaryPolicy = (employee = {}, {
+  store = null,
+  salaryConfig = null,
+  salaryConfigs = [],
+  period = '',
+} = {}) => {
+  if (!isStoreFullTimeEmployee(employee, store) && getPayBasis(employee) !== 'tiered-hourly') return null
+  const employeeId = String(employee.id || employee.code || employee.employeeId || '').trim()
+  let policy = salaryConfig || employee.salaryConfig || employee.salaryConfigSnapshot || null
+  if (!policy && employeeId && store?.id && period) {
+    try {
+      policy = effectiveStoreSalaryConfig(salaryConfigs, {
+        employeeId,
+        storeId: store.id,
+        period,
+        store,
+      })
+    } catch {
+      policy = null
+    }
+  }
+  if (!policy && store) {
+    try {
+      policy = defaultStoreTieredRates(store)
+    } catch {
+      policy = null
+    }
+  }
+  if (!policy) return null
+  const standardHourlyRateVnd = Number(policy.standardHourlyRateVnd ?? policy.regularHourlyRateVnd)
+  const excessHourlyRateVnd = Number(policy.excessHourlyRateVnd)
+  if (![standardHourlyRateVnd, excessHourlyRateVnd].every((value) => Number.isSafeInteger(value) && value > 0)) return null
+  return {
+    ...policy,
+    thresholdHours: Number(policy.thresholdHours) || 208,
+    standardHourlyRateVnd,
+    excessHourlyRateVnd,
+  }
+}
+
+export const calculateEmployeeBasePay = (employee = {}, {
+  hours = 0,
+  workedDays = 0,
+  prorateMonthly = false,
+  salaryConfig = null,
+  salaryConfigs = [],
+  store = null,
+  period = '',
+} = {}) => {
+  const tieredPolicy = resolveStoreEmployeeSalaryPolicy(employee, {
+    store,
+    salaryConfig,
+    salaryConfigs,
+    period,
+  })
+  if (tieredPolicy) {
+    return calculateTieredHourlyPay({
+      workedHours: Math.max(0, Number(hours) || 0),
+      thresholdHours: tieredPolicy.thresholdHours,
+      standardHourlyRateVnd: tieredPolicy.standardHourlyRateVnd,
+      excessHourlyRateVnd: tieredPolicy.excessHourlyRateVnd,
+    }).amountVnd
+  }
   if (getPayBasis(employee) === 'hourly') return Math.round(Math.max(0, Number(hours) || 0) * getHourlyRate(employee))
   const monthlySalary = getMonthlySalary(employee)
   if (usesMonthlyHoursFormula(employee)) {
@@ -58,6 +144,7 @@ export const calculateEmployeeBasePay = (employee = {}, { hours = 0, workedDays 
 
 export const salaryBasisLabel = (employee = {}) => {
   const basis = getPayBasis(employee)
+  if (basis === 'tiered-hourly') return 'Theo giờ lũy tiến'
   if (basis === 'hourly') return 'Theo giờ'
   if (basis === 'monthly') return 'Theo tháng'
   return 'Chưa thiết lập'

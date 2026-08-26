@@ -10,6 +10,9 @@ const workerDomainFiles = [
   'compensationPolicies.js',
   'compensationAllocation.js',
   'compensationSettlement.js',
+  'storeTieredPayroll.js',
+  'managerRevenueBonus.js',
+  'workCatalog.js',
 ].map((fileName) => resolve(root, 'dist', 'src', 'domain', fileName))
 const hostingPath = resolve(root, 'dist', '.openai', 'hosting.json')
 const coreMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0000_idosi_core.sql')

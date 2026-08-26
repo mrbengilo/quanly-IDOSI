@@ -48,6 +48,7 @@ const storeOperations = [
   { label: 'Giao việc', path: '/store/tasks', icon: ClipboardCheck },
   { label: 'Lịch phân ca', path: '/store/schedule', icon: CalendarCheck },
   { label: 'Nhân viên cửa hàng', path: '/store/employees', icon: Users },
+  { label: 'Cài đặt lương', path: '/store/salary-settings', icon: CircleDollarSign, roles: ['admin', 'business_support'] },
   { label: 'Nhập hàng', path: '/store/imports', icon: PackagePlus },
   { label: 'Chi phí cửa hàng', path: '/store/expenses', icon: ReceiptText },
   { label: 'Chấm công cửa hàng', path: '/store/attendance', icon: Clock3 },
@@ -60,12 +61,13 @@ const storeOperations = [
   { label: 'Cài đặt cửa hàng', path: '/store/settings', icon: Settings },
 ]
 
-const officeOperation = { label: 'Khối văn phòng', path: '/office', icon: Building2, badge: 'Mới' }
+const officeOperation = { label: 'Khối văn phòng', path: '/office', icon: Building2 }
 const businessSupportDirectoryOperation = { label: 'Nhân viên hỗ trợ KD', path: '/admin/business-support', icon: Users }
-const businessSupportScheduleOperation = { label: 'Phân lịch làm việc', path: '/admin/business-support-schedule', icon: CalendarClock, badge: 'Mới' }
-const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/admin/customer-survey', icon: ClipboardList, badge: 'Mới' }
-const orderInformationSettingsOperation = { label: 'Cài đặt thông tin đơn hàng', path: '/admin/order-information-settings', icon: Settings, badge: 'Mới' }
-const workRegistrationScheduleOperation = { label: 'Lịch đăng ký làm việc của HTKD và KVP', path: '/admin/work-registration-schedules', icon: CalendarCheck, badge: 'Mới' }
+const businessSupportScheduleOperation = { label: 'Phân lịch làm việc', path: '/admin/business-support-schedule', icon: CalendarClock }
+const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/admin/customer-survey', icon: ClipboardList }
+const orderInformationSettingsOperation = { label: 'Cài đặt thông tin đơn hàng', path: '/admin/order-information-settings', icon: Settings }
+const workCatalogSettingsOperation = { label: 'Danh mục công việc & vi phạm', path: '/admin/work-catalog', icon: ClipboardList }
+const workRegistrationScheduleOperation = { label: 'Lịch đăng ký làm việc của HTKD và KVP', path: '/admin/work-registration-schedules', icon: CalendarCheck }
 
 const officeEmployeeMenu = [
   { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
@@ -73,7 +75,7 @@ const officeEmployeeMenu = [
   { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
   { label: 'Lịch làm việc của tôi', path: '/employee/schedule', icon: CalendarCheck },
   { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
-  { label: 'Thu nhập của tôi', path: '/employee/compensation', icon: Award, badge: 'Mới' },
+  { label: 'Thu nhập của tôi', path: '/employee/compensation', icon: Award },
   { label: 'Vi phạm của tôi', path: '/employee/violations', icon: ShieldAlert },
   { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },
 ]
@@ -81,8 +83,8 @@ const officeEmployeeMenu = [
 const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
   { label: 'Công việc được giao', path: '/support/tasks', icon: ClipboardCheck },
-  { label: 'Lịch làm việc của tôi', path: '/support/my-schedule', icon: CalendarCheck, badge: 'Mới' },
-  { label: 'Thu nhập của tôi', path: '/support/my-compensation', icon: WalletCards, badge: 'Mới' },
+  { label: 'Lịch làm việc của tôi', path: '/support/my-schedule', icon: CalendarCheck },
+  { label: 'Thu nhập của tôi', path: '/support/my-compensation', icon: WalletCards },
   { label: 'Vi phạm của tôi', path: '/support/my-violations', icon: ShieldAlert },
   businessSupportScheduleOperation,
   businessSupportDirectoryOperation,
@@ -93,36 +95,38 @@ const businessSupportMenu = [
   systemOperations[2],
   systemOperations[3],
   orderInformationSettingsOperation,
+  workCatalogSettingsOperation,
   customerSurveyOperation,
-  { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award, badge: 'Mới' },
-  { label: 'Thưởng doanh thu ngày', path: '/admin/compensation/revenue', icon: CircleDollarSign, badge: 'Mới' },
-  { label: 'Vi phạm nhân viên', path: '/admin/violations/store', icon: ShieldAlert, badge: 'Mới' },
+  { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award },
+  { label: 'Thưởng doanh thu ngày', path: '/admin/compensation/revenue', icon: CircleDollarSign },
+  { label: 'Vi phạm nhân viên', path: '/admin/violations/store', icon: ShieldAlert },
   { label: 'Vi phạm Khối văn phòng', path: '/admin/violations/office', icon: ShieldAlert },
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
   { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
-  { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
+  { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings },
 ]
 
 const systemMenus = {
   admin: [
     ...systemOperations.slice(0, 2),
-    { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users, badge: 'Mới' },
+    { label: 'Danh sách nhân viên cửa hàng', path: '/admin/employees', icon: Users },
     businessSupportDirectoryOperation,
     businessSupportScheduleOperation,
     workRegistrationScheduleOperation,
-    { label: 'Giao Việc', path: '/admin/tasks', icon: ClipboardCheck, badge: 'Mới' },
+    { label: 'Giao Việc', path: '/admin/tasks', icon: ClipboardCheck },
     { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
     customerSurveyOperation,
-    { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award, badge: 'Mới' },
-    { label: 'Thưởng doanh thu ngày', path: '/admin/compensation/revenue', icon: CircleDollarSign, badge: 'Mới' },
-    { label: 'Vi phạm nhân viên', path: '/admin/violations/store', icon: ShieldAlert, badge: 'Mới' },
+    { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award },
+    { label: 'Thưởng doanh thu ngày', path: '/admin/compensation/revenue', icon: CircleDollarSign },
+    { label: 'Vi phạm nhân viên', path: '/admin/violations/store', icon: ShieldAlert },
     { label: 'Vi phạm Khối văn phòng', path: '/admin/violations/office', icon: ShieldAlert },
     { label: 'Vi phạm HTKD', path: '/admin/violations/business-support', icon: ShieldAlert },
     { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
     ...systemOperations.slice(2, 4),
     orderInformationSettingsOperation,
-    { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings, badge: 'Mới' },
+    workCatalogSettingsOperation,
+    { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings },
     systemOperations[4],
     { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },
     { label: 'Lịch sử sửa/xóa đơn hàng', path: '/admin/order-audit', icon: ClipboardCheck },
@@ -138,7 +142,7 @@ const systemMenus = {
     { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
     { label: 'Lịch phân ca', path: '/employee/schedule', icon: CalendarCheck },
     { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
-    { label: 'Thu nhập của tôi', path: '/employee/compensation', icon: Award, badge: 'Mới' },
+    { label: 'Thu nhập của tôi', path: '/employee/compensation', icon: Award },
     { label: 'Vi phạm của tôi', path: '/employee/violations', icon: ShieldAlert },
     { label: 'Thưởng doanh thu team', path: '/employee/revenue-bonus', icon: CircleDollarSign },
     { label: 'Lịch sử làm việc', path: '/employee/work-history', icon: CalendarCheck },

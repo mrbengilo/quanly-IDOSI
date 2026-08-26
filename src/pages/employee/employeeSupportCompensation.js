@@ -41,7 +41,12 @@ const workedHours = (record = {}) => firstNumber(
 ) || 0
 
 const linkedTransfer = (record, transfersById) => {
-  const transferId = String(record.supportCompensation?.transferId || record.supportTransferId || '').trim()
+  const transferId = String(
+    record.supportCompensation?.transferId
+    || record.compensation?.support?.transferId
+    || record.supportTransferId
+    || '',
+  ).trim()
   return transferId ? transfersById.get(transferId) || null : null
 }
 
@@ -86,7 +91,10 @@ export const supportAttendanceCompensationRows = ({
   ))
   for (const record of [...completedAttendance].sort((left, right) => recordTimeKey(left).localeCompare(recordTimeKey(right)))) {
     const transfer = linkedTransfer(record, transfersById)
-    const transferId = String(transfer?.id || record.supportTransferId || '').trim()
+    const transferId = String(
+      transfer?.id || record.supportCompensation?.transferId
+      || record.compensation?.support?.transferId || record.supportTransferId || '',
+    ).trim()
     if (transferId && !firstLinkedAttendanceId.has(transferId)) {
       firstLinkedAttendanceId.set(transferId, String(record.id || recordTimeKey(record)))
     }
@@ -94,7 +102,10 @@ export const supportAttendanceCompensationRows = ({
 
   return ownAttendance.map((record) => {
     const transfer = linkedTransfer(record, transfersById)
-    const transferId = String(transfer?.id || record.supportTransferId || '').trim()
+    const transferId = String(
+      transfer?.id || record.supportCompensation?.transferId
+      || record.compensation?.support?.transferId || record.supportTransferId || '',
+    ).trim()
     if (!transferId) return { record, isSupport: false, actualPay: null }
 
     const support = record.supportCompensation || record.compensation?.support || {}

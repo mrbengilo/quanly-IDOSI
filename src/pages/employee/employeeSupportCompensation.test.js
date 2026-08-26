@@ -106,6 +106,26 @@ describe('employee support compensation helpers', () => {
     expect(rows[0]).toMatchObject({ destinationStoreId: 'S02', destinationStoreName: 'Dosii KVC' })
   })
 
+  it('recognizes the legacy nested compensation.support transfer shape', () => {
+    const rows = supportAttendanceCompensationRows({
+      employeeId: 'E01',
+      supportTransfers: [transfer],
+      attendance: [{
+        id: 'ATT-NESTED', employeeId: 'E01', storeId: 'S02', hours: 3,
+        compensation: {
+          support: {
+            transferId: 'TR-01', hours: 3, hourlyRate: 29_000,
+            basePay: 87_000, allowance: 50_000, totalPay: 137_000,
+          },
+        },
+      }],
+    })
+
+    expect(rows[0]).toMatchObject({
+      transferId: 'TR-01', isSupport: true, hourlyPay: 87_000, allowance: 50_000, actualPay: 137_000,
+    })
+  })
+
   it('sums all home and support snapshots for the employee and preserves locked totals', () => {
     const summary = employeePayrollSnapshotSummary({
       employeeId: 'E01',

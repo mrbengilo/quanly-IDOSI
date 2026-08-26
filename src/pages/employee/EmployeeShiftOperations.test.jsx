@@ -54,13 +54,13 @@ describe('employee shift operations', () => {
     }))
   })
 
-  it('requires one reason for incomplete work and submits every task with the calculated progress', async () => {
+  it('requires one reason for incomplete fixed work and submits every task with the calculated progress', async () => {
     mocked.app.tasks = [{
       id: 'TASK-01', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
-      employeeIds: ['E01'], title: 'Kiểm tra quầy', completedBy: {},
+      employeeIds: ['E01'], title: 'Kiểm tra quầy', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
     }, {
       id: 'TASK-02', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
-      employeeIds: ['E01'], title: 'Báo cáo tồn kho', completedBy: {},
+      employeeIds: ['E01'], title: 'Báo cáo tồn kho', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
     }]
     render(<EmployeeAssignedTasksPage />)
 
@@ -68,7 +68,7 @@ describe('employee shift operations', () => {
     fireEvent.click(checkboxes[0])
     expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
     expect(screen.getByText('1/2 · 50%')).toBeTruthy()
-    fireEvent.change(screen.getByLabelText(/Ghi chú khi chưa hoàn thành hết/i), { target: { value: 'Chưa kiểm xong kho cuối ca' } })
+    fireEvent.change(screen.getByLabelText(/Lý do công việc bắt buộc chưa hoàn thành/i), { target: { value: 'Chưa kiểm xong kho cuối ca' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }))
 
     await waitFor(() => expect(mocked.app.saveStoreTaskProgress).toHaveBeenCalledTimes(1))
@@ -78,6 +78,29 @@ describe('employee shift operations', () => {
       incompleteReason: 'Chưa kiểm xong kho cuối ca',
       idempotencyKey: expect.stringMatching(/^task-progress:/u),
     }))
+  })
+
+  it('shows reward money and saves optional reward work without requiring a reason', async () => {
+    mocked.app.tasks = [{
+      id: 'TASK-FIXED', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
+      employeeIds: ['E01'], title: 'Mở cửa đúng quy trình', required: true, catalogKind: 'FIXED_TASK', completedBy: { E01: true },
+    }, {
+      id: 'TASK-REWARD', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
+      employeeIds: ['E01'], title: 'Quay clip sản phẩm', required: false, rewardEligible: true,
+      catalogKind: 'REWARD_TASK', amountVnd: 50_000, completedBy: {},
+    }]
+
+    render(<EmployeeAssignedTasksPage />)
+
+    expect(screen.getByText('Tùy chọn · Thưởng 50,000 đ')).toBeTruthy()
+    expect(screen.queryByLabelText(/Lý do công việc bắt buộc/u)).toBeNull()
+    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }))
+
+    await waitFor(() => expect(mocked.app.saveStoreTaskProgress).toHaveBeenCalledWith(expect.objectContaining({
+      incompleteReason: '',
+      tasks: [{ id: 'TASK-FIXED', completed: true }, { id: 'TASK-REWARD', completed: false }],
+    })))
   })
 
   it('keeps both forms read-only until the employee has an open attendance', () => {

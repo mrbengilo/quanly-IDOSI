@@ -225,6 +225,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.getByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i }).getAttribute('href')).toBe('/admin/work-registration-schedules')
+    expect(document.querySelector('.sidebar nav a em')).toBeNull()
   })
 
   it('gives business support its employee directory, policy and survey access without Reset dữ liệu', () => {
@@ -247,13 +248,29 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.queryByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
+    expect(document.querySelector('.sidebar nav a em')).toBeNull()
     expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('span')?.textContent)).toEqual([
       'Tổng quan', 'Công việc được giao', 'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
-      'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý', 'Thưởng doanh thu ngày',
+      'Cài đặt thông tin đơn hàng', 'Danh mục công việc & vi phạm', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý', 'Thưởng doanh thu ngày',
       'Vi phạm nhân viên', 'Vi phạm Khối văn phòng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
     ])
+  })
+
+  it('shows Cài đặt lương in the store workspace only to Admin and Business Support', () => {
+    const adminView = render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
+    expect(screen.getByRole('link', { name: 'Cài đặt lương' }).getAttribute('href')).toBe('/store/salary-settings')
+
+    adminView.unmount()
+    mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001' }
+    const supportView = render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
+    expect(screen.getByRole('link', { name: 'Cài đặt lương' }).getAttribute('href')).toBe('/store/salary-settings')
+
+    supportView.unmount()
+    mocked.session = { role: 'store_manager', name: 'Quản lý cửa hàng', storeId: 'CH001' }
+    render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
+    expect(screen.queryByRole('link', { name: 'Cài đặt lương' })).toBeNull()
   })
 
   it('opens the role selector below the logo and keeps the account avatar for a multi-role account', async () => {

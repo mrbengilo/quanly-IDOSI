@@ -37,6 +37,12 @@ const baseApp = (role = 'admin') => ({
   violations: [],
   revenueBonuses: [],
   payrollPeriods: [],
+  workCatalogItems: [{
+    id: 'violation-store-late', code: 'store.violation.late', kind: 'violation',
+    targetGroup: 'store', storeId: 'CH001', shiftId: null, shiftName: null,
+    name: 'Đi trễ', amountVnd: 2_000, sortOrder: 10, active: true,
+    version: 1, effectiveFrom: '2026-08-01', effectiveTo: null,
+  }],
   notify: vi.fn(),
   createCompensationEntry: vi.fn().mockResolvedValue({ ok: true }),
   approveCompensationEntry: vi.fn().mockResolvedValue({ ok: true }),
@@ -83,10 +89,11 @@ describe('compensation pages', () => {
 
   it('creates a policy-backed violation as a positive receivable amount', async () => {
     render(<ViolationManagementPage targetUnit="store" />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /Đi trễ/i }))
     fireEvent.click(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }))
 
     await waitFor(() => expect(mocked.app.createViolation).toHaveBeenCalledWith(expect.objectContaining({
-      targetUnit: 'store', employeeId: 'QL-01', storeId: 'CH001', amountVnd: 2_000,
+      targetUnit: 'store', employeeId: 'QL-01', storeId: 'CH001', catalogItemId: 'violation-store-late', amountVnd: 2_000,
     })))
   })
 
