@@ -19,6 +19,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 COPY --from=build /app/dist/client ./dist/client
 COPY --from=build /app/server ./server
+COPY --from=build /app/src/domain ./src/domain
 COPY --from=build /app/drizzle ./drizzle
 RUN mkdir -p /app/data && chown -R node:node /app
 
