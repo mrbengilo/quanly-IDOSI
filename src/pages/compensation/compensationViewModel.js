@@ -35,6 +35,8 @@ export const isApproved = (entry) => {
 export const isRejected = (entry) => Boolean(entry?.rejectedAt)
   || ['rejected', 'đã từ chối'].includes(normalize(entry?.status))
 
+export const isSuperseded = (entry) => normalize(entry?.status) === 'superseded'
+
 export const typeLabel = (type) => ({
   MANUAL: 'Thưởng thủ công',
   ALLOWANCE: 'Phụ cấp',
@@ -44,12 +46,13 @@ export const typeLabel = (type) => ({
 
 export const statusLabel = (entry) => {
   if (isVoided(entry)) return 'Đã hủy'
+  if (isSuperseded(entry)) return 'Đã thay thế'
   if (isRejected(entry)) return 'Đã từ chối'
   if (isApproved(entry)) return 'Đã duyệt'
   return normalize(entry?.status) === 'pending' ? 'Chờ duyệt' : String(entry?.status || 'Chờ duyệt')
 }
 
-export const statusTone = (entry) => isVoided(entry) || isRejected(entry) ? 'red' : isApproved(entry) ? 'green' : 'orange'
+export const statusTone = (entry) => isVoided(entry) || isRejected(entry) ? 'red' : isSuperseded(entry) ? 'blue' : isApproved(entry) ? 'green' : 'orange'
 
 const INTERNAL_STORE_IDS = new Set(['OFFICE', 'BUSINESS_SUPPORT', 'ADMIN', 'SYSTEM'])
 const INACTIVE_STORE_STATUSES = new Set([

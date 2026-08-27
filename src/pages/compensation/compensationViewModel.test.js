@@ -48,11 +48,17 @@ describe('compensation view models', () => {
     expect(targetUnitOfViolation({ unit: 'htkd' })).toBe('business_support')
   })
 
-  it('renders pending and rejected milestone decisions in Vietnamese with distinct tones', () => {
+  it('renders lifecycle statuses with explicit precedence over retained audit timestamps', () => {
+    expect(statusLabel({ status: 'DRAFT' })).toBe('DRAFT')
+    expect(statusTone({ status: 'DRAFT' })).toBe('orange')
     expect(statusLabel({ status: 'PENDING' })).toBe('Chờ duyệt')
     expect(statusTone({ status: 'PENDING' })).toBe('orange')
+    expect(statusLabel({ status: 'CONFIRMED' })).toBe('Đã duyệt')
+    expect(statusTone({ status: 'APPROVED' })).toBe('green')
     expect(statusLabel({ status: 'REJECTED' })).toBe('Đã từ chối')
     expect(statusTone({ status: 'REJECTED' })).toBe('red')
+    expect(statusLabel({ status: 'SUPERSEDED', approvedAt: '2026-08-20T08:00:00Z', approvedBy: { id: 'ADMIN' } })).toBe('Đã thay thế')
+    expect(statusTone({ status: 'SUPERSEDED', approvedAt: '2026-08-20T08:00:00Z', approvedBy: { id: 'ADMIN' } })).toBe('blue')
   })
 
   it('groups only active canonical payroll records without dropping revenue allocations', () => {

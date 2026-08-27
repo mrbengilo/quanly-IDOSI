@@ -1064,8 +1064,10 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
     && !record.checkOutAt
     && !record.checkOut
   ))
+  // Definitions remain valid historical references after they are deactivated or
+  // soft-deleted. The schedule, rather than the definition's current lifecycle
+  // state, is authoritative for an already assigned business date.
   const definitions = new Map((Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [])
-    .filter((definition) => !definition.deletedAt && definition.active !== false)
     .map((definition) => [String(definition.id || ''), definition]))
   const scheduledShifts = (Array.isArray(state.schedule) ? state.schedule : [])
     .filter((record) => String(record.storeId || '') === String(storeId || '')
@@ -1083,7 +1085,8 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
             if (times.start && times.end) return snapshot
           }
           const definition = definitions.get(id)
-          if (!definition) throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id })
+          const definitionTimes = shiftTimes(definition)
+          if (!definition || !definitionTimes.start || !definitionTimes.end) throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id })
           return definition
         })
       }
@@ -1092,7 +1095,11 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
           const times = shiftTimes(snapshot)
           if (times.start && times.end) return snapshot
           const id = String(snapshot?.id || '')
-          if (id && definitions.has(id)) return definitions.get(id)
+          if (id && definitions.has(id)) {
+            const definition = definitions.get(id)
+            const definitionTimes = shiftTimes(definition)
+            if (definitionTimes.start && definitionTimes.end) return definition
+          }
           throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id || null })
         })
       }
@@ -14413,18 +14420,60 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     && !record.supersededAt
     && !record.voidedAt
   ))
-  const currentDaily = activeDailyRecords.find((record) => normalizeTextKey(record.status) === 'draft')
-    || activeDailyRecords.find((record) => normalizeTextKey(record.status) === 'confirmed')
-  if (currentDaily?.fingerprint === fingerprint) {
+  const matchingDaily = activeDailyRecords.find((record) => (
+    normalizeTextKey(record.status) === 'confirmed' && record.fingerprint === fingerprint
+  )) || activeDailyRecords.find((record) => record.fingerprint === fingerprint)
+  const activeDrafts = activeDailyRecords.filter((record) => normalizeTextKey(record.status) === 'draft')
+  if (matchingDaily?.fingerprint === fingerprint) {
+    const staleDraftIds = new Set(activeDrafts
+      .filter((record) => String(record.id || '') !== String(matchingDaily.id || ''))
+      .map((record) => String(record.id || '')))
+    if (normalizeTextKey(matchingDaily.status) === 'confirmed' && staleDraftIds.size) {
+      const retireStaleDraft = (record) => staleDraftIds.has(String(record.revenueBonusDailyId || record.id || ''))
+        ? {
+          ...record,
+          status: 'SUPERSEDED',
+          supersededAt: commandContext.now,
+          supersededBy: matchingDaily.id,
+          updatedAt: commandContext.now,
+          version: Number(record.version || 1) + 1,
+        }
+        : record
+      const nextState = {
+        ...state,
+        revenueBonusDaily: (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []).map(retireStaleDraft),
+        revenueBonusAllocations: (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []).map(retireStaleDraft),
+        teamRewardClaims: (Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []).map(retireStaleDraft),
+        teamRewardParticipants: (Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : []).map(retireStaleDraft),
+        stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+      }
+      return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+        action: body.type,
+        entityType: 'revenue-bonus-day',
+        entityId: matchingDaily.id,
+        before: activeDrafts,
+        after: matchingDaily,
+        metadata: { storeId, businessDate, reusedConfirmed: true, retiredDraftIds: [...staleDraftIds] },
+        response: {
+          command: body.type,
+          revenueBonus: matchingDaily,
+          allocations: (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : [])
+            .filter((record) => String(record.revenueBonusDailyId || '') === String(matchingDaily.id || '')),
+          existing: true,
+        },
+      }, commandContext)
+    }
     return recordNoopCommand(db, actor, {
       command: body.type,
       version: Number(current.version),
-      revenueBonus: currentDaily,
+      revenueBonus: matchingDaily,
       allocations: (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : [])
-        .filter((record) => String(record.revenueBonusDailyId || '') === String(currentDaily.id || '')),
+        .filter((record) => String(record.revenueBonusDailyId || '') === String(matchingDaily.id || '')),
       existing: true,
     }, 200, commandContext)
   }
+  const currentDaily = activeDrafts[0]
+    || activeDailyRecords.find((record) => normalizeTextKey(record.status) === 'confirmed')
   const calculationId = `rbd_${crypto.randomUUID()}`
   const actorSnapshot = serverActorSnapshot(actor)
   const allocations = participants.map(({ id: employeeId, weightUnits }) => {

@@ -11076,7 +11076,7 @@ describe('IDOSI Worker security primitives', () => {
   it('resolves legacy scheduled shift IDs and fails closed for running or unresolved shifts', async () => {
     vi.useFakeTimers()
     try {
-      vi.setSystemTime(new Date('2026-08-27T06:00:00.000Z'))
+      vi.setSystemTime(new Date('2026-08-27T16:00:00.000Z'))
       const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-legacy-shifts' }
       await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
         username: 'admin', password: 'revenue-legacy-shifts-password',
@@ -11085,11 +11085,12 @@ describe('IDOSI Worker security primitives', () => {
           employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
           shiftDefinitions: [
             { id: 'SHIFT-AM', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00', active: true },
-            { id: 'SHIFT-PM', storeId: 'S01', name: 'Ca chiều', start: '12:00', end: '14:00', active: true },
+            { id: 'SHIFT-PM', storeId: 'S01', name: 'Ca chiều đã ngừng', start: '12:00', end: '14:00', active: false },
+            { id: 'SHIFT-NIGHT', storeId: 'S01', name: 'Ca đêm đã xóa', start: '23:00', end: '00:30', deletedAt: '2026-08-28T00:00:00.000Z' },
           ],
           schedule: [{
             id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27',
-            shiftId: 'SHIFT-AM', shiftIds: ['SHIFT-AM', 'SHIFT-PM'],
+            shiftId: 'SHIFT-AM', shiftIds: ['SHIFT-AM', 'SHIFT-PM', 'SHIFT-NIGHT'],
             shiftSnapshots: [{ id: 'SHIFT-AM', name: 'Ca sáng lịch sử', start: '08:00', end: '12:00' }],
           }],
           attendance: [{ id: 'ATT-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', checkInAt: '2026-08-27T01:00:00.000Z', checkOutAt: '2026-08-27T03:00:00.000Z', workedSeconds: 7_200 }],
@@ -11107,13 +11108,13 @@ describe('IDOSI Worker security primitives', () => {
       expect(running.status).toBe(409)
       expect(await running.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
 
-      vi.setSystemTime(new Date('2026-08-27T08:00:00.000Z'))
+      vi.setSystemTime(new Date('2026-08-27T18:00:00.000Z'))
       const completed = await calculate('legacy-completed-shift')
       expect(completed.status).toBe(201)
       const completedBody = await completed.json()
       expect(completedBody.revenueBonus).toMatchObject({ status: 'DRAFT' })
 
-      vi.setSystemTime(new Date('2026-08-27T04:00:00.000Z'))
+      vi.setSystemTime(new Date('2026-08-27T17:00:00.000Z'))
       const prematureConfirmation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'revenue_bonus.confirm_day', expectedVersion: completedBody.version,
         payload: { revenueBonusDailyId: completedBody.revenueBonus.id, expectedEntityVersion: 1 },
@@ -11121,15 +11122,29 @@ describe('IDOSI Worker security primitives', () => {
       expect(prematureConfirmation.status).toBe(409)
       expect(await prematureConfirmation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
 
-      const missingSchedule = JSON.stringify({ id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', shiftId: 'MISSING', shiftIds: ['MISSING'] })
-      env.DB.database.prepare("UPDATE state_entities SET value_json = ?, value_bytes = length(CAST(? AS BLOB)) WHERE scope_key = 'global' AND collection_key = 'schedule'").run(missingSchedule, missingSchedule)
+      const invalidSchedule = JSON.stringify({ id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', shiftId: 'SHIFT-INVALID', shiftIds: ['SHIFT-INVALID'] })
+      const invalidDefinition = JSON.stringify({ id: 'SHIFT-INVALID', storeId: 'S01', name: 'Ca thiếu giờ', start: '25:00', end: null, active: false, deletedAt: '2026-08-27T00:00:00.000Z' })
+      env.DB.database.prepare("UPDATE state_entities SET value_json = ?, value_bytes = length(CAST(? AS BLOB)) WHERE scope_key = 'global' AND collection_key = 'schedule'").run(invalidSchedule, invalidSchedule)
       env.DB.database.prepare("DELETE FROM state_entities WHERE scope_key = 'global' AND collection_key = 'shiftDefinitions'").run()
+      env.DB.database.prepare(`INSERT INTO state_entities
+        (scope_key, collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at)
+        VALUES ('global', 'shiftDefinitions', 'id:SHIFT-INVALID', 0, ?, ?, ?, ?)`)
+        .run(invalidDefinition, Buffer.byteLength(invalidDefinition), '2026-08-27T00:00:00.000Z', '2026-08-27T00:00:00.000Z')
       const unresolved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'revenue_bonus.confirm_day', expectedVersion: completedBody.version,
         payload: { revenueBonusDailyId: completedBody.revenueBonus.id, expectedEntityVersion: 1 },
       }, { ...authorization, 'idempotency-key': 'legacy-unresolved-confirm' }), env)
       expect(unresolved.status).toBe(409)
       expect(await unresolved.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
+
+      const missingSchedule = JSON.stringify({ id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', shiftId: 'SHIFT-MISSING', shiftIds: ['SHIFT-MISSING'] })
+      env.DB.database.prepare("UPDATE state_entities SET value_json = ?, value_bytes = length(CAST(? AS BLOB)) WHERE scope_key = 'global' AND collection_key = 'schedule'").run(missingSchedule, missingSchedule)
+      const missing = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.confirm_day', expectedVersion: completedBody.version,
+        payload: { revenueBonusDailyId: completedBody.revenueBonus.id, expectedEntityVersion: 1 },
+      }, { ...authorization, 'idempotency-key': 'legacy-missing-confirm' }), env)
+      expect(missing.status).toBe(409)
+      expect(await missing.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
     } finally {
       vi.useRealTimers()
     }
@@ -11191,6 +11206,87 @@ describe('IDOSI Worker security primitives', () => {
     expect(repeated.status).toBe(200)
     expect(await repeated.json()).toMatchObject({ existing: true })
     expect(readHydratedState(env.DB.database).periodReconciliations.filter(({ type }) => type === 'REVENUE_BONUS_CONFIRMATION')).toHaveLength(1)
+  })
+
+  it('reuses a matching confirmed fingerprint and retires only the stale replacement draft', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-reuse-confirmed' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'revenue-reuse-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+        employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+        orders: [{ id: 'O01', storeId: 'S01', employeeId: 'E01', amount: 35_000_000, status: 'Hoàn tất', createdAt: '2026-08-20T03:00:00.000Z' }],
+        attendance: [{ id: 'A01', storeId: 'S01', employeeId: 'E01', date: '2026-08-20', checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400 }],
+        payrollPeriods: [{ id: 'PP-S01-2026-08', storeId: 'S01', period: '2026-08', status: 'OPEN', version: 1 }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'revenue-reuse-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const command = (type, expectedVersion, payload, key) => worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type, expectedVersion, payload,
+    }, { ...authorization, 'idempotency-key': key }), env)
+
+    const firstCalculation = await command('revenue_bonus.calculate_day', 1, { storeId: 'S01', businessDate: '2026-08-20' }, 'reuse-f1-calculate')
+    expect(firstCalculation.status).toBe(201)
+    const firstBody = await firstCalculation.json()
+    const firstConfirmation = await command('revenue_bonus.confirm_day', firstBody.version, {
+      revenueBonusDailyId: firstBody.revenueBonus.id, expectedEntityVersion: 1,
+    }, 'reuse-f1-confirm')
+    expect(firstConfirmation.status).toBe(200)
+    const confirmedBody = await firstConfirmation.json()
+    const approved = await command('revenue_bonus.approve_milestone', confirmedBody.version, {
+      claimId: firstBody.teamClaim.id, expectedEntityVersion: 1,
+    }, 'reuse-f1-approve')
+    expect(approved.status).toBe(200)
+    const approvedBody = await approved.json()
+    expect(approvedBody.teamClaim).toMatchObject({ status: 'APPROVED' })
+
+    const orderRow = env.DB.database.prepare("SELECT entity_key, value_json FROM state_entities WHERE scope_key = 'global' AND collection_key = 'orders' AND json_extract(value_json, '$.id') = 'O01'").get()
+    const originalOrder = orderRow.value_json
+    const changedOrder = JSON.stringify({ ...JSON.parse(originalOrder), amount: 25_000_000 })
+    env.DB.database.prepare("UPDATE state_entities SET value_json = ?, value_bytes = ? WHERE scope_key = 'global' AND collection_key = 'orders' AND entity_key = ?")
+      .run(changedOrder, Buffer.byteLength(changedOrder), orderRow.entity_key)
+    const replacement = await command('revenue_bonus.calculate_day', approvedBody.version, { storeId: 'S01', businessDate: '2026-08-20' }, 'reuse-f2-calculate')
+    expect(replacement.status).toBe(201)
+    const replacementBody = await replacement.json()
+    expect(replacementBody.revenueBonus).toMatchObject({ status: 'DRAFT' })
+
+    env.DB.database.prepare("UPDATE state_entities SET value_json = ?, value_bytes = ? WHERE scope_key = 'global' AND collection_key = 'orders' AND entity_key = ?")
+      .run(originalOrder, Buffer.byteLength(originalOrder), orderRow.entity_key)
+    const beforeReuse = readHydratedState(env.DB.database)
+    const reused = await command('revenue_bonus.calculate_day', replacementBody.version, { storeId: 'S01', businessDate: '2026-08-20' }, 'reuse-f1-calculate-again')
+    expect(reused.status).toBe(200)
+    const reusedBody = await reused.json()
+    expect(reusedBody).toMatchObject({ existing: true, revenueBonus: { id: firstBody.revenueBonus.id, status: 'CONFIRMED' } })
+
+    let persisted = readHydratedState(env.DB.database)
+    expect(persisted.revenueBonusDaily).toHaveLength(2)
+    expect(persisted.revenueBonusDaily.find(({ id }) => id === firstBody.revenueBonus.id)).toMatchObject({ status: 'CONFIRMED' })
+    expect(persisted.revenueBonusDaily.find(({ id }) => id === replacementBody.revenueBonus.id)).toMatchObject({
+      status: 'SUPERSEDED', supersededBy: firstBody.revenueBonus.id,
+    })
+    expect(persisted.revenueBonusAllocations.find(({ revenueBonusDailyId }) => revenueBonusDailyId === firstBody.revenueBonus.id)).toMatchObject({ status: 'CONFIRMED' })
+    expect(persisted.teamRewardClaims.find(({ id }) => id === firstBody.teamClaim.id)).toMatchObject({
+      status: 'APPROVED', approvedAt: approvedBody.teamClaim.approvedAt,
+    })
+    expect(persisted.teamRewardClaims.find(({ revenueBonusDailyId }) => revenueBonusDailyId === replacementBody.revenueBonus.id)).toMatchObject({ status: 'SUPERSEDED' })
+    expect(persisted.periodReconciliations).toEqual(beforeReuse.periodReconciliations)
+    expect(persisted.payrollPeriods).toEqual(beforeReuse.payrollPeriods)
+
+    const repeatedCalculation = await command('revenue_bonus.calculate_day', reusedBody.version, { storeId: 'S01', businessDate: '2026-08-20' }, 'reuse-f1-calculate-repeat')
+    expect(repeatedCalculation.status).toBe(200)
+    expect(await repeatedCalculation.json()).toMatchObject({ existing: true, revenueBonus: { id: firstBody.revenueBonus.id } })
+    const repeatedConfirmation = await command('revenue_bonus.confirm_day', reusedBody.version, {
+      revenueBonusDailyId: firstBody.revenueBonus.id, expectedEntityVersion: 1,
+    }, 'reuse-f1-confirm-repeat')
+    expect(repeatedConfirmation.status).toBe(200)
+    expect(await repeatedConfirmation.json()).toMatchObject({ existing: true, revenueBonus: { id: firstBody.revenueBonus.id } })
+    persisted = readHydratedState(env.DB.database)
+    expect(persisted.revenueBonusDaily).toHaveLength(2)
+    expect(persisted.teamRewardClaims.find(({ id }) => id === firstBody.teamClaim.id)).toMatchObject({ status: 'APPROVED' })
+    expect(persisted.periodReconciliations).toEqual(beforeReuse.periodReconciliations)
   })
 
   it.each([
