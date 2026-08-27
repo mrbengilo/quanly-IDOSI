@@ -69,7 +69,11 @@ export function MyCompensationPage() {
   const activeApprovedEntries = ownEntries.filter((entry) => !isVoided(entry) && isApproved(entry))
   const ownViolations = violations.filter((entry) => entryEmployeeId(entry) === employeeId && samePeriod(entry, period))
   const activeViolations = ownViolations.filter((entry) => !isVoided(entry))
-  const ownAllocations = allocations.filter((entry) => entryEmployeeId(entry) === employeeId && samePeriod(entry, period))
+  const ownAllocations = allocations.filter((entry) => (
+    entryEmployeeId(entry) === employeeId
+    && samePeriod(entry, period)
+    && String(entry.status || '').toUpperCase() === 'CONFIRMED'
+  ))
   const payrollRows = payrollRowsFor(payrollPeriods, employeeId, period)
   const recorded = (type) => activeApprovedEntries.filter((entry) => entryType(entry) === type).reduce((sum, entry) => sum + entryAmount(entry), 0)
   const manualVnd = recorded('MANUAL')

@@ -109,10 +109,10 @@ describe('compensation pages', () => {
     mocked.app = {
       ...baseApp('employee'),
       revenueBonuses: [{
-        id: 'RB-01', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 134,
+        id: 'RB-01', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 134, status: 'CONFIRMED',
         allocations: [
-          { id: 'A-01', employeeId: 'NV-01', employeeName: 'Nhân viên Một', allocatedVnd: 35, status: 'Đã duyệt' },
-          { id: 'A-02', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 99, status: 'Đã duyệt' },
+          { id: 'A-01', employeeId: 'NV-01', employeeName: 'Nhân viên Một', allocatedVnd: 35, status: 'CONFIRMED' },
+          { id: 'A-02', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 99, status: 'CONFIRMED' },
         ],
       }],
     }
@@ -129,10 +129,10 @@ describe('compensation pages', () => {
     mocked.app = {
       ...baseApp('store_manager'),
       revenueBonuses: [{
-        id: 'RB-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 170,
+        id: 'RB-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 170, status: 'CONFIRMED',
         allocations: [
-          { id: 'A-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'QL-01', employeeName: 'Quản lý Một', allocatedVnd: 70, status: 'Đã duyệt' },
-          { id: 'A-COWORKER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 100, status: 'Đã duyệt' },
+          { id: 'A-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'QL-01', employeeName: 'Quản lý Một', allocatedVnd: 70, status: 'CONFIRMED' },
+          { id: 'A-COWORKER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 100, status: 'CONFIRMED' },
         ],
       }],
     }
@@ -159,6 +159,51 @@ describe('compensation pages', () => {
     await waitFor(() => expect(mocked.app.confirmRevenueBonusDay).toHaveBeenCalledWith({
       revenueBonusDailyId: 'RB-DRAFT', expectedVersion: 1,
     }))
+  })
+
+  it('shows a draft replacement separately without double-counting the confirmed result', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [
+        { id: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 2_000, totalPoolVnd: 200, status: 'DRAFT', allocations: [{ id: 'A-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-01', amountVnd: 200, status: 'DRAFT' }] },
+        { id: 'RB-CONFIRMED', storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 1_000, totalPoolVnd: 100, status: 'CONFIRMED', allocations: [{ id: 'A-CONFIRMED', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-01', amountVnd: 100, status: 'CONFIRMED' }] },
+      ],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('DOANH THU ĐỦ ĐIỀU KIỆN').parentElement.textContent).toContain('2,000')
+    expect(screen.getByText('DOANH THU ĐỦ ĐIỀU KIỆN').parentElement.textContent).not.toContain('3,000')
+    expect(screen.getAllByText('200 đ').length).toBeGreaterThan(0)
+    expect(screen.getByText('RB-CONFIRMED')).toBeTruthy()
+    expect(screen.getByText('RB-DRAFT')).toBeTruthy()
+  })
+
+  it('keeps milestone decisions hidden from store managers', () => {
+    mocked.app = {
+      ...baseApp('store_manager'),
+      revenueBonuses: [{ id: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', status: 'DRAFT' }],
+      teamRewardClaims: [{ id: 'CLAIM-01', revenueBonusDailyId: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', status: 'PENDING' }],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN THƯỞNG' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Duyệt' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Từ chối' })).toBeNull()
+  })
+
+  it('groups live revenue by the Vietnam business date', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      orders: [
+        { id: 'ORDER-IN-DAY', storeId: 'CH001', amount: 125, createdAt: '2026-08-25T18:30:00.000Z' },
+        { id: 'ORDER-PREVIOUS', storeId: 'CH001', amount: 999, createdAt: '2026-08-25T16:30:00.000Z' },
+      ],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('125 đ')).toBeTruthy()
+    expect(screen.queryByText('999 đ')).toBeNull()
   })
 
   it('lets privileged roles approve a pending highest-milestone claim', async () => {
@@ -212,6 +257,24 @@ describe('compensation pages', () => {
     expect(screen.getByText('Khoản của tôi')).toBeTruthy()
     expect(screen.queryByText('Khoản người khác')).toBeNull()
     expect(screen.queryByText('999 đ')).toBeNull()
+  })
+
+  it('excludes draft revenue allocations from personal approved income', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      revenueBonuses: [{
+        id: 'RB-MIXED', storeId: 'CH001', businessDate: '2026-08-26',
+        allocations: [
+          { id: 'A-CONFIRMED', employeeId: 'NV-01', businessDate: '2026-08-26', amountVnd: 50, status: 'CONFIRMED' },
+          { id: 'A-DRAFT', employeeId: 'NV-01', businessDate: '2026-08-26', amountVnd: 900, status: 'DRAFT' },
+        ],
+      }],
+    }
+    render(<MyCompensationPage />)
+
+    expect(screen.getAllByText('50 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('950 đ')).toBeNull()
+    expect(screen.queryByText('900 đ')).toBeNull()
   })
 
   it('aggregates and breaks down the signed-in employee payroll across stores', () => {

@@ -285,10 +285,10 @@ describe('store order, attendance, and payroll summaries', () => {
         { id: 'MANUAL-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'MANUAL', amountVnd: 30_000, status: 'APPROVED' },
         { id: 'WORK-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'WORK', amountVnd: 15_000, status: 'APPROVED' },
         { id: 'ALLOWANCE-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'ALLOWANCE', amountVnd: 7_000, status: 'APPROVED' },
-        { id: 'VOIDED-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'MANUAL', amountVnd: 999_000, status: 'APPROVED', voidedAt: `${today()}T12:00:00+07:00` },
+        { id: 'VOIDED-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'MANUAL', amountVnd: 999_000, status: 'CONFIRMED', voidedAt: `${today()}T12:00:00+07:00` },
       ],
       revenueBonusAllocations: [
-        { id: 'REVENUE-01', employeeId: employee.id, storeId: store.id, businessDate: today(), amountVnd: 20_000, status: 'APPROVED' },
+        { id: 'REVENUE-01', employeeId: employee.id, storeId: store.id, businessDate: today(), amountVnd: 20_000, status: 'CONFIRMED' },
         { id: 'REVENUE-VOID', employeeId: employee.id, storeId: store.id, businessDate: today(), amountVnd: 999_000, status: 'APPROVED', voidedAt: `${today()}T12:00:00+07:00` },
       ],
       violations: [

@@ -68,7 +68,8 @@ describe('compensation view models', () => {
         { employeeId: 'NV-02', effectiveDate: '2026-08-06', type: 'MANUAL', amountVnd: 999, status: 'APPROVED' },
       ],
       revenueBonusAllocations: [
-        { employeeId: 'NV-01', businessDate: '2026-08-07', amountVnd: 50, status: 'APPROVED' },
+        { employeeId: 'NV-01', businessDate: '2026-08-07', amountVnd: 50, status: 'CONFIRMED' },
+        { employeeId: 'NV-01', businessDate: '2026-08-07', amountVnd: 777, status: 'DRAFT' },
         { employeeId: 'NV-01', businessDate: '2026-08-08', amountVnd: 999, status: 'VOIDED', voidedAt: '2026-08-09T00:00:00Z' },
       ],
       violations: [

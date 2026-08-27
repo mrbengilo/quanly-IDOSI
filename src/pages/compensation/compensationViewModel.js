@@ -175,7 +175,9 @@ export const payrollCompensationTotalsForEmployee = ({
     const bucket = type === 'WORK' ? 'work' : type === 'ALLOWANCE' ? 'allowance' : type === 'REVENUE' ? 'revenue' : 'manual'
     totals[bucket] += safePayrollAmount(entry)
   })
-  revenueBonusAllocations.filter(belongsToPeriod).forEach((entry) => {
+  revenueBonusAllocations.filter((entry) => (
+    belongsToPeriod(entry) && normalize(entry.status) === 'confirmed'
+  )).forEach((entry) => {
     totals.revenue += safePayrollAmount(entry)
   })
   violations.filter(belongsToPeriod).forEach((entry) => {

@@ -1073,6 +1073,18 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
       const referencedIds = Array.isArray(record.shiftIds)
         ? record.shiftIds.map(String)
         : [String(record.shiftId || '')].filter(Boolean)
+      if (referencedIds.length) {
+        return referencedIds.map((id) => {
+          const snapshot = snapshots.find((item) => String(item?.id || '') === id)
+          if (snapshot) {
+            const times = shiftTimes(snapshot)
+            if (times.start && times.end) return snapshot
+          }
+          const definition = definitions.get(id)
+          if (!definition) throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id })
+          return definition
+        })
+      }
       if (snapshots.length) {
         return snapshots.map((snapshot) => {
           const times = shiftTimes(snapshot)
@@ -1080,13 +1092,6 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
           const id = String(snapshot?.id || '')
           if (id && definitions.has(id)) return definitions.get(id)
           throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id || null })
-        })
-      }
-      if (referencedIds.length) {
-        return referencedIds.map((id) => {
-          const definition = definitions.get(id)
-          if (!definition) throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id })
-          return definition
         })
       }
       return [record]
@@ -14016,6 +14021,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
   const previous = records.find((record) => String(record.id || '') === violationId)
   if (!previous) throw new ApiError(404, 'VIOLATION_NOT_FOUND', 'Không tìm thấy vi phạm.')
   expectedEntityVersion(payload, previous)
+  if (actor.role === 'store_manager' && previous.targetUnit !== 'store') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Quản lý cửa hàng chỉ được hủy vi phạm nhân viên tại cửa hàng của mình.')
+  }
   if (previous.targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được hủy vi phạm của Nhân viên hỗ trợ KD.')
   if (previous.targetUnit === 'store') {
     assertOperationalStoreAccess(actor, previous.storeId)
@@ -14094,6 +14102,9 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
   const daily = dailyRecords.find((record) => String(record.id || '') === String(claim.revenueBonusDailyId || ''))
   if (!daily || daily.supersededAt || daily.voidedAt) {
     throw new ApiError(409, 'REVENUE_BONUS_SUPERSEDED', 'Kết quả tính thưởng ngày đã thay đổi; không thể duyệt đề nghị cũ.')
+  }
+  if (normalizeTextKey(daily.status) !== 'confirmed') {
+    throw new ApiError(409, 'REVENUE_BONUS_NOT_CONFIRMED', 'Chỉ được duyệt hoặc từ chối thưởng mốc sau khi thưởng doanh thu ngày đã được xác nhận.')
   }
   if (String(daily.milestoneId || '') !== String(claim.milestoneId || '')
     || Number(daily.pendingMilestonePoolVnd || 0) !== Number(claim.amountVnd || 0)) {

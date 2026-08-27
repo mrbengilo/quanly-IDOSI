@@ -83,7 +83,8 @@ const officeEmployeeMenu = [
 
 const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
-  { label: 'Thưởng của tôi', path: '/support/tasks', icon: ClipboardCheck },
+  { label: 'Công việc được giao', path: '/support/tasks', icon: ClipboardCheck },
+  { label: 'Thưởng của tôi', path: '/support/my-compensation', icon: Award },
   { label: 'Lịch làm việc của tôi', path: '/support/my-schedule', icon: CalendarCheck },
   { label: 'Vi phạm của tôi', path: '/support/my-violations', icon: ShieldAlert },
   businessSupportScheduleOperation,

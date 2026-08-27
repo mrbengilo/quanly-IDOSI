@@ -10899,6 +10899,12 @@ describe('IDOSI Worker security primitives', () => {
           id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
         }],
+        violations: [
+          { id: 'V-OFFICE', targetUnit: 'office', storeId: 'OFFICE', employeeId: 'VP-01', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
+          { id: 'V-SUPPORT', targetUnit: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-BONUS', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
+          { id: 'V-OTHER-STORE', targetUnit: 'store', storeId: 'S01', employeeId: 'E-S01', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
+          { id: 'V-OWN-STORE', targetUnit: 'store', storeId: 'S02', employeeId: 'E-S02', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
+        ],
       },
     }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
     expect(bootstrap.status).toBe(201)
@@ -10925,6 +10931,12 @@ describe('IDOSI Worker security primitives', () => {
     const managerAuthorization = await loginAs('manager.bonus', 'manager-bonus-password')
     const employeeAuthorization = await loginAs('employee.bonus', 'employee-bonus-password')
 
+    for (const violationId of ['V-OFFICE', 'V-SUPPORT', 'V-OTHER-STORE']) {
+      const forbiddenVoid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'violation.void', expectedVersion: 1, payload: { violationId, expectedEntityVersion: 1, reason: 'Không thuộc phạm vi quản lý' },
+      }, { ...managerAuthorization, 'idempotency-key': `manager-void-${violationId}` }), env)
+      expect(forbiddenVoid.status, violationId).toBe(403)
+    }
     const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.calculate_day', expectedVersion: 1,
       payload: { storeId: 'S02', businessDate: '2026-08-20' },
@@ -10942,6 +10954,14 @@ describe('IDOSI Worker security primitives', () => {
     ))).toBe(true)
     expect(calculatedBody.allocations.every(({ status }) => status === 'DRAFT')).toBe(true)
     expect(calculatedBody.teamParticipants.every(({ status, amountVnd }) => status === 'PENDING' && amountVnd === 0)).toBe(true)
+
+    const draftDecision = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
+      payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-draft-milestone-forbidden' }), env)
+    expect(draftDecision.status).toBe(409)
+    expect(await draftDecision.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_NOT_CONFIRMED' } })
+    expect(readHydratedState(env.DB.database).periodReconciliations.filter(({ type }) => type === 'TEAM_REWARD_APPROVAL')).toEqual([])
 
     for (const type of ['revenue_bonus.approve_milestone', 'revenue_bonus.reject_milestone']) {
       const forbiddenDecision = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -11010,6 +11030,13 @@ describe('IDOSI Worker security primitives', () => {
     expect(replay.status).toBe(200)
     expect(replay.headers.get('idempotency-replayed')).toBe('true')
     expect(await replay.json()).toEqual(approvedBody)
+
+    const allowedVoid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.void', expectedVersion: approvedBody.version,
+      payload: { violationId: 'V-OWN-STORE', expectedEntityVersion: 1, reason: 'Điều chỉnh hợp lệ' },
+    }, { ...managerAuthorization, 'idempotency-key': 'manager-void-own-store' }), env)
+    expect(allowedVoid.status).toBe(200)
+    expect(await allowedVoid.json()).toMatchObject({ violation: { id: 'V-OWN-STORE', status: 'VOID' } })
   }, 60_000)
 
   it('rejects daily revenue bonus calculation while the store still has an open shift', async () => {
@@ -11038,15 +11065,22 @@ describe('IDOSI Worker security primitives', () => {
   it('resolves legacy scheduled shift IDs and fails closed for running or unresolved shifts', async () => {
     vi.useFakeTimers()
     try {
-      vi.setSystemTime(new Date('2026-08-27T04:00:00.000Z'))
+      vi.setSystemTime(new Date('2026-08-27T06:00:00.000Z'))
       const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-legacy-shifts' }
       await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
         username: 'admin', password: 'revenue-legacy-shifts-password',
         initialState: {
           stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
           employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
-          shiftDefinitions: [{ id: 'SHIFT-AM', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00', active: true }],
-          schedule: [{ id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', shiftId: 'SHIFT-AM', shiftIds: ['SHIFT-AM'] }],
+          shiftDefinitions: [
+            { id: 'SHIFT-AM', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00', active: true },
+            { id: 'SHIFT-PM', storeId: 'S01', name: 'Ca chiều', start: '12:00', end: '14:00', active: true },
+          ],
+          schedule: [{
+            id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27',
+            shiftId: 'SHIFT-AM', shiftIds: ['SHIFT-AM', 'SHIFT-PM'],
+            shiftSnapshots: [{ id: 'SHIFT-AM', name: 'Ca sáng lịch sử', start: '08:00', end: '12:00' }],
+          }],
           attendance: [{ id: 'ATT-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', checkInAt: '2026-08-27T01:00:00.000Z', checkOutAt: '2026-08-27T03:00:00.000Z', workedSeconds: 7_200 }],
         },
       }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
@@ -11062,7 +11096,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(running.status).toBe(409)
       expect(await running.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
 
-      vi.setSystemTime(new Date('2026-08-27T06:00:00.000Z'))
+      vi.setSystemTime(new Date('2026-08-27T08:00:00.000Z'))
       const completed = await calculate('legacy-completed-shift')
       expect(completed.status).toBe(201)
       const completedBody = await completed.json()
