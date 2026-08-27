@@ -1056,6 +1056,39 @@ const shiftTimes = (shift) => {
   return { start, end }
 }
 
+const revenueBonusScheduleShift = (record, shiftId, shiftDefinitions) => {
+  const id = String(shiftId || '').trim()
+  const storeId = String(record?.storeId || '').trim()
+  if (!id || !storeId) return null
+  const snapshots = Array.isArray(record.shiftSnapshots) ? record.shiftSnapshots : []
+  const snapshot = snapshots.find((item) => String(item?.id || '') === id) || null
+  const definitionCandidates = (Array.isArray(shiftDefinitions) ? shiftDefinitions : []).filter((definition) => {
+    const definitionStoreId = String(definition?.storeId || '').trim()
+    return String(definition?.id || '') === id && (!definitionStoreId || definitionStoreId === storeId)
+  })
+  const definition = definitionCandidates.find((item) => String(item?.storeId || '').trim() === storeId)
+    || definitionCandidates[0]
+    || null
+  const referencedIds = Array.isArray(record.shiftIds) && record.shiftIds.length
+    ? record.shiftIds.map((item) => String(item || '')).filter(Boolean)
+    : [String(record.shiftId || '')].filter(Boolean)
+  const legacyApplies = referencedIds.length <= 1 || String(record.shiftId || '') === id
+  const firstValidTime = (field, legacyField) => [snapshot?.[field], definition?.[field], legacyApplies ? record?.[legacyField] : null, legacyApplies ? record?.[field] : null]
+    .map(parseShiftTime)
+    .find(Boolean)?.label
+  const resolved = {
+    ...(definition || {}),
+    ...(snapshot || {}),
+    id,
+    storeId,
+    start: firstValidTime('start', 'shiftStart'),
+    end: firstValidTime('end', 'shiftEnd'),
+    time: snapshot?.time || definition?.time || (legacyApplies ? record.shiftTime : null),
+  }
+  const times = shiftTimes(resolved)
+  return times.start && times.end ? resolved : null
+}
+
 const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
   const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => (
     !record.deletedAt
@@ -1067,8 +1100,7 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
   // Definitions remain valid historical references after they are deactivated or
   // soft-deleted. The schedule, rather than the definition's current lifecycle
   // state, is authoritative for an already assigned business date.
-  const definitions = new Map((Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [])
-    .map((definition) => [String(definition.id || ''), definition]))
+  const definitions = Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []
   const scheduledShifts = (Array.isArray(state.schedule) ? state.schedule : [])
     .filter((record) => String(record.storeId || '') === String(storeId || '')
       && String(record.date || record.workDate || '') === businessDate && !record.deletedAt)
@@ -1079,27 +1111,16 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
         : [String(record.shiftId || '')].filter(Boolean)
       if (referencedIds.length) {
         return referencedIds.map((id) => {
-          const snapshot = snapshots.find((item) => String(item?.id || '') === id)
-          if (snapshot) {
-            const times = shiftTimes(snapshot)
-            if (times.start && times.end) return snapshot
-          }
-          const definition = definitions.get(id)
-          const definitionTimes = shiftTimes(definition)
-          if (!definition || !definitionTimes.start || !definitionTimes.end) throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id })
-          return definition
+          const shift = revenueBonusScheduleShift(record, id, definitions)
+          if (!shift) throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id })
+          return shift
         })
       }
       if (snapshots.length) {
         return snapshots.map((snapshot) => {
-          const times = shiftTimes(snapshot)
-          if (times.start && times.end) return snapshot
           const id = String(snapshot?.id || '')
-          if (id && definitions.has(id)) {
-            const definition = definitions.get(id)
-            const definitionTimes = shiftTimes(definition)
-            if (definitionTimes.start && definitionTimes.end) return definition
-          }
+          const shift = revenueBonusScheduleShift(record, id, definitions)
+          if (shift) return shift
           throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id || null })
         })
       }

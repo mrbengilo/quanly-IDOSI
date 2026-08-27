@@ -11087,6 +11087,9 @@ describe('IDOSI Worker security primitives', () => {
             { id: 'SHIFT-AM', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00', active: true },
             { id: 'SHIFT-PM', storeId: 'S01', name: 'Ca chiều đã ngừng', start: '12:00', end: '14:00', active: false },
             { id: 'SHIFT-NIGHT', storeId: 'S01', name: 'Ca đêm đã xóa', start: '23:00', end: '00:30', deletedAt: '2026-08-28T00:00:00.000Z' },
+            { id: 'SHIFT-AM', storeId: 'S02', name: 'Ca sáng cửa hàng khác', start: '10:00', end: '18:00', active: true },
+            { id: 'SHIFT-PM', storeId: 'S02', name: 'Ca chiều cửa hàng khác', start: '18:00', end: '22:00', active: false },
+            { id: 'SHIFT-NIGHT', storeId: 'S02', name: 'Ca đêm cửa hàng khác', start: '23:00', end: '06:00', deletedAt: '2026-08-28T00:00:00.000Z' },
           ],
           schedule: [{
             id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27',
@@ -11145,6 +11148,73 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...authorization, 'idempotency-key': 'legacy-missing-confirm' }), env)
       expect(missing.status).toBe(409)
       expect(await missing.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('falls back to valid legacy inline shift times without leaking another store definition', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-27T17:00:00.000Z'))
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-inline-shift' }
+      await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'revenue-inline-shift-password',
+        initialState: {
+          stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+          employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+          shiftDefinitions: [{ id: 'SHIFT-LEGACY', storeId: 'S02', name: 'Không thuộc S01', start: '08:00', end: '12:00' }],
+          schedule: [{
+            id: 'SCH-INLINE', storeId: 'S01', employeeId: 'E01', date: '2026-08-27',
+            shiftId: 'SHIFT-LEGACY', shiftStart: '23:00', shiftEnd: '01:00',
+          }],
+          attendance: [{
+            id: 'ATT-INLINE', storeId: 'S01', employeeId: 'E01', date: '2026-08-27',
+            checkInAt: '2026-08-27T16:00:00.000Z', checkOutAt: '2026-08-27T17:00:00.000Z', workedSeconds: 3_600,
+          }],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'revenue-inline-shift-password',
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+      const calculate = (expectedVersion, key) => worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.calculate_day', expectedVersion, payload: { storeId: 'S01', businessDate: '2026-08-27' },
+      }, { ...authorization, 'idempotency-key': key }), env)
+
+      const running = await calculate(1, 'inline-overnight-running')
+      expect(running.status).toBe(409)
+      expect(await running.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
+
+      vi.setSystemTime(new Date('2026-08-27T19:00:00.000Z'))
+      const calculated = await calculate(1, 'inline-overnight-completed')
+      expect(calculated.status).toBe(201)
+      const calculatedBody = await calculated.json()
+
+      vi.setSystemTime(new Date('2026-08-27T17:00:00.000Z'))
+      const premature = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.confirm_day', expectedVersion: calculatedBody.version,
+        payload: { revenueBonusDailyId: calculatedBody.revenueBonus.id, expectedEntityVersion: 1 },
+      }, { ...authorization, 'idempotency-key': 'inline-overnight-premature-confirm' }), env)
+      expect(premature.status).toBe(409)
+      expect(await premature.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
+
+      vi.setSystemTime(new Date('2026-08-27T19:00:00.000Z'))
+      const confirmed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.confirm_day', expectedVersion: calculatedBody.version,
+        payload: { revenueBonusDailyId: calculatedBody.revenueBonus.id, expectedEntityVersion: 1 },
+      }, { ...authorization, 'idempotency-key': 'inline-overnight-confirmed' }), env)
+      expect(confirmed.status).toBe(200)
+      const confirmedBody = await confirmed.json()
+      expect(confirmedBody.revenueBonus).toMatchObject({ status: 'CONFIRMED' })
+
+      const scheduleRow = env.DB.database.prepare("SELECT entity_key, value_json FROM state_entities WHERE scope_key = 'global' AND collection_key = 'schedule' LIMIT 1").get()
+      const invalidSchedule = JSON.stringify({ ...JSON.parse(scheduleRow.value_json), shiftStart: '25:00', shiftEnd: '01:00' })
+      env.DB.database.prepare("UPDATE state_entities SET value_json = ?, value_bytes = ? WHERE scope_key = 'global' AND collection_key = 'schedule' AND entity_key = ?")
+        .run(invalidSchedule, Buffer.byteLength(invalidSchedule), scheduleRow.entity_key)
+      const invalid = await calculate(confirmedBody.version, 'inline-invalid-time')
+      expect(invalid.status).toBe(409)
+      expect(await invalid.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
     } finally {
       vi.useRealTimers()
     }
