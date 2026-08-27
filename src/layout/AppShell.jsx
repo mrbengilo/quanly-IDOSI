@@ -97,6 +97,7 @@ const businessSupportMenu = [
   systemOperations[3],
   orderInformationSettingsOperation,
   customerSurveyOperation,
+  workCatalogSettingsOperation,
   { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award },
   { label: 'Vi phạm nhân viên cửa hàng', path: '/admin/violations/store', icon: ShieldAlert },
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },

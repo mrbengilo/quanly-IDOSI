@@ -13894,6 +13894,15 @@ const canonicalViolationPolicy = (targetUnit, policyCode) => {
   return policySet?.violations?.find((record) => record.code === policyCode) || null
 }
 
+const canonicalViolationTargetUnit = (record = {}) => {
+  const unit = normalizeTextKey(record.targetUnit || record.targetGroup || record.unit)
+  if (['business_support', 'business-support', 'support', 'htkd', 'nhan vien ho tro kd'].includes(unit)) return 'business_support'
+  if (['office', 'back_office', 'kvp', 'van phong', 'khoi van phong'].includes(unit)) return 'office'
+  // Legacy store violations predate targetUnit and readers have always treated
+  // an unknown/missing unit as a store-employee record.
+  return 'store'
+}
+
 const violationCommand = async (db, actor, body, commandContext) => {
   if (!PAYROLL_OPERATOR_ROLES.has(actor.role) && actor.role !== 'store_manager') {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc Quản lý cửa hàng được quản lý vi phạm.')
@@ -14021,11 +14030,12 @@ const violationCommand = async (db, actor, body, commandContext) => {
   const previous = records.find((record) => String(record.id || '') === violationId)
   if (!previous) throw new ApiError(404, 'VIOLATION_NOT_FOUND', 'Không tìm thấy vi phạm.')
   expectedEntityVersion(payload, previous)
-  if (actor.role === 'store_manager' && previous.targetUnit !== 'store') {
+  const targetUnit = canonicalViolationTargetUnit(previous)
+  if (actor.role === 'store_manager' && targetUnit !== 'store') {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Quản lý cửa hàng chỉ được hủy vi phạm nhân viên tại cửa hàng của mình.')
   }
-  if (previous.targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được hủy vi phạm của Nhân viên hỗ trợ KD.')
-  if (previous.targetUnit === 'store') {
+  if (targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được hủy vi phạm của Nhân viên hỗ trợ KD.')
+  if (targetUnit === 'store') {
     assertOperationalStoreAccess(actor, previous.storeId)
     requireActivePhysicalStore(state, previous.storeId)
   }
@@ -14077,6 +14087,71 @@ const revenueBonusProgramForStore = (store) => {
         programId: REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY,
         milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.DOSII_DAILY_REVENUE,
       }
+}
+
+const revenueBonusCalculationInputs = async (state, store, storeId, businessDate) => {
+  const orders = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
+    String(order.storeId || '') === storeId
+    && dateFromRecord(order) === businessDate
+    && !order.deletedAt
+    && String(order.status || '') !== 'Đã xóa'
+    && Number.isSafeInteger(Number(order.amount))
+    && Number(order.amount) >= 0
+  ))
+  const revenueVnd = orders.reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Doanh thu ngày'), 0)
+  const { programId, milestoneProgramId } = revenueBonusProgramForStore(store)
+  const percentage = calculateRevenueBonus({ programId, revenueVnd })
+  const milestone = calculateTeamMilestoneReward({ programId: milestoneProgramId, achievedUnits: revenueVnd })
+  const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
+    [employee.id, employee.code, employee.employeeId]
+      .filter(Boolean)
+      .map((id) => [String(id), employee])
+  )))
+  const participantWeights = new Map()
+  const relevantAttendance = []
+  for (const attendance of Array.isArray(state.attendance) ? state.attendance : []) {
+    const employeeId = String(attendance.employeeId || '').trim()
+    if (!employeeId || !employeeById.has(employeeId)
+      || String(attendance.storeId || '') !== storeId
+      || dateFromRecord(attendance) !== businessDate
+      || attendance.deletedAt
+      || (!attendance.checkOutAt && !attendance.checkOut)) continue
+    const weightUnits = Math.max(0, Math.trunc(Number(attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? 0)))
+    relevantAttendance.push({
+      id: String(attendance.id || ''), employeeId, weightUnits,
+      checkIn: attendance.checkInAt || attendance.checkIn || null,
+      checkOut: attendance.checkOutAt || attendance.checkOut || null,
+    })
+    if (weightUnits > 0) participantWeights.set(employeeId, (participantWeights.get(employeeId) || 0) + weightUnits)
+  }
+  const participants = [...participantWeights].map(([id, weightUnits]) => ({ id, weightUnits }))
+  const participantProfiles = participants.map(({ id }) => {
+    const employee = employeeById.get(id)
+    return {
+      id,
+      name: employee?.name || employee?.displayName || '',
+      storeId: String(employee?.storeId || ''),
+      unit: employeeUnit(employee),
+      status: String(employee?.status || ''),
+      deletedAt: employee?.deletedAt || null,
+    }
+  })
+  const fingerprint = await requestHash({
+    storeId,
+    businessDate,
+    programId,
+    revenueVnd,
+    percentage,
+    milestone,
+    participants,
+    participantProfiles,
+    orders: orders.map((order) => ({
+      id: String(order.id || ''), amount: Number(order.amount), status: String(order.status || ''),
+      employeeId: String(order.employeeId || ''), occurredAt: order.occurredAt || order.createdAt || null,
+    })),
+    attendance: relevantAttendance,
+  })
+  return { orders, revenueVnd, programId, milestoneProgramId, percentage, milestone, employeeById, participants, fingerprint }
 }
 
 const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, current, state, payload) => {
@@ -14250,6 +14325,11 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     expectedEntityVersion(payload, daily)
     assertPayrollNotPaidOrLocked(state, daily.storeId, daily.period)
     assertRevenueBonusShiftsEnded(state, daily.storeId, daily.businessDate, commandContext.now)
+    const currentStore = requireActivePhysicalStore(state, daily.storeId)
+    const currentInputs = await revenueBonusCalculationInputs(state, currentStore, daily.storeId, daily.businessDate)
+    if (String(daily.fingerprint || '') !== currentInputs.fingerprint) {
+      throw new ApiError(409, 'REVENUE_BONUS_DRAFT_STALE', 'Nguồn dữ liệu tính thưởng đã thay đổi. Vui lòng tính lại trước khi xác nhận.')
+    }
     const actorSnapshot = serverActorSnapshot(actor)
     const previousDaily = dailyRecords.find((record) => (
       String(record.id || '') !== calculationId
@@ -14330,35 +14410,9 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   const period = businessDate.slice(0, 7)
   assertPayrollNotPaidOrLocked(state, storeId, period)
   assertRevenueBonusShiftsEnded(state, storeId, businessDate, commandContext.now)
-  const orders = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
-    String(order.storeId || '') === storeId
-    && dateFromRecord(order) === businessDate
-    && !order.deletedAt
-    && String(order.status || '') !== 'Đã xóa'
-    && Number.isSafeInteger(Number(order.amount))
-    && Number(order.amount) >= 0
-  ))
-  const revenueVnd = orders.reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Doanh thu ngày'), 0)
-  const { programId, milestoneProgramId } = revenueBonusProgramForStore(store)
-  const percentage = calculateRevenueBonus({ programId, revenueVnd })
-  const milestone = calculateTeamMilestoneReward({ programId: milestoneProgramId, achievedUnits: revenueVnd })
-  const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
-    [employee.id, employee.code, employee.employeeId]
-      .filter(Boolean)
-      .map((id) => [String(id), employee])
-  )))
-  const participantWeights = new Map()
-  for (const attendance of Array.isArray(state.attendance) ? state.attendance : []) {
-    const employeeId = String(attendance.employeeId || '').trim()
-    if (!employeeId || !employeeById.has(employeeId)
-      || String(attendance.storeId || '') !== storeId
-      || dateFromRecord(attendance) !== businessDate
-      || attendance.deletedAt
-      || (!attendance.checkOutAt && !attendance.checkOut)) continue
-    const weightUnits = Math.max(0, Math.trunc(Number(attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? 0)))
-    if (weightUnits > 0) participantWeights.set(employeeId, (participantWeights.get(employeeId) || 0) + weightUnits)
-  }
-  const participants = [...participantWeights].map(([id, weightUnits]) => ({ id, weightUnits }))
+  const {
+    revenueVnd, programId, milestoneProgramId, percentage, milestone, employeeById, participants, fingerprint,
+  } = await revenueBonusCalculationInputs(state, store, storeId, businessDate)
   const allocate = (poolVnd) => participants.length
     ? allocateByLargestRemainder({ poolVnd, participants })
     : { poolVnd, totalWeightUnits: 0, allocatedVnd: 0, unallocatedVnd: poolVnd, allocations: [] }
@@ -14366,15 +14420,6 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   const milestoneAllocation = allocate(milestone.amountVnd)
   const percentageByEmployee = new Map(percentageAllocation.allocations.map((record) => [record.id, record.amountVnd]))
   const milestoneByEmployee = new Map(milestoneAllocation.allocations.map((record) => [record.id, record.amountVnd]))
-  const fingerprint = await requestHash({
-    storeId,
-    businessDate,
-    programId,
-    revenueVnd,
-    percentage,
-    milestone,
-    participants,
-  })
   const activeDailyRecords = (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []).filter((record) => (
     String(record.storeId || '') === storeId
     && String(record.businessDate || '') === businessDate

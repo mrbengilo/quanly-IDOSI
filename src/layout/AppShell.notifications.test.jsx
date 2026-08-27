@@ -224,6 +224,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Reset dữ liệu/i }).getAttribute('href')).toBe('/admin/reset')
     expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
+    expect(screen.getByRole('link', { name: /Danh mục công việc & vi phạm/i }).getAttribute('href')).toBe('/admin/work-catalog')
     expect(screen.getByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i }).getAttribute('href')).toBe('/admin/work-registration-schedules')
     expect(screen.getByRole('link', { name: /^Vi phạm nhân viên cửa hàng$/i }).getAttribute('href')).toBe('/admin/violations/store')
     expect(screen.getByRole('link', { name: /^Bảng vi phạm Khối văn phòng$/i }).getAttribute('href')).toBe('/admin/violations/office')
@@ -258,7 +259,7 @@ describe('AppShell notifications', () => {
       'Tổng quan', 'Công việc được giao', 'Thưởng của tôi', 'Lịch làm việc của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
-      'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý',
+      'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Danh mục công việc & vi phạm', 'Thưởng và phụ cấp quản lý',
       'Vi phạm nhân viên cửa hàng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
     ])
   })
