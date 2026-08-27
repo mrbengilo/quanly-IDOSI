@@ -10925,16 +10925,10 @@ describe('IDOSI Worker security primitives', () => {
     const managerAuthorization = await loginAs('manager.bonus', 'manager-bonus-password')
     const employeeAuthorization = await loginAs('employee.bonus', 'employee-bonus-password')
 
-    const managerDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.calculate_day', expectedVersion: 1,
-      payload: { storeId: 'S02', businessDate: '2026-08-20' },
-    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-denied-0001' }), env)
-    expect(managerDenied.status).toBe(403)
-
     const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.calculate_day', expectedVersion: 1,
       payload: { storeId: 'S02', businessDate: '2026-08-20' },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-calculate-0001' }), env)
+    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-calculate-0001' }), env)
     expect(calculated.status).toBe(201)
     const calculatedBody = await calculated.json()
     expect(calculatedBody.revenueBonus).toMatchObject({
@@ -10952,13 +10946,8 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerStateResponse.status).toBe(200)
     const managerState = (await managerStateResponse.json()).state
     expect(managerState.revenueBonusDaily).toEqual([expect.not.objectContaining({ allocations: expect.anything() })])
-    expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
-    expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
-    expect(JSON.stringify({
-      daily: managerState.revenueBonusDaily,
-      allocations: managerState.revenueBonusAllocations,
-      participants: managerState.teamRewardParticipants,
-    })).not.toContain('E-S02')
+    expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId).sort()).toEqual(['E-S02', 'QL-S02'])
+    expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId).sort()).toEqual(['E-S02', 'QL-S02'])
 
     const employeeStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: employeeAuthorization }), env)
     expect(employeeStateResponse.status).toBe(200)

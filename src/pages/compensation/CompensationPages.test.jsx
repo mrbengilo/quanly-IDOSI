@@ -124,7 +124,7 @@ describe('compensation pages', () => {
     expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
   })
 
-  it('shows a store manager only the team total and their own allocation', () => {
+  it('lets a store manager review the complete allocation for their assigned store', () => {
     mocked.app = {
       ...baseApp('store_manager'),
       revenueBonuses: [{
@@ -139,9 +139,9 @@ describe('compensation pages', () => {
 
     expect(screen.getAllByText('170 đ').length).toBeGreaterThan(0)
     expect(screen.getAllByText('70 đ').length).toBeGreaterThan(0)
-    expect(screen.queryByText('100 đ')).toBeNull()
-    expect(screen.queryByText('Nhân viên Hai')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+    expect(screen.getByText('100 đ')).toBeTruthy()
+    expect(screen.getByText('Nhân viên Hai')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
   })
 
   it('lets privileged roles approve a pending highest-milestone claim', async () => {

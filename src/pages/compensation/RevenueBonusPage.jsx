@@ -14,6 +14,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { money } from '../../utils'
+import { REVENUE_BONUS_PROGRAMS } from '../../domain/compensationPolicies'
 import {
   canonicalRole,
   entityId,
@@ -48,10 +49,10 @@ export function RevenueBonusPage() {
   const role = canonicalRole(app.session?.role)
   const currentEmployeeId = entityId(app.currentEmployee) || String(app.session?.employeeId || '')
   const currentStoreId = String(app.session?.storeId || app.currentEmployee?.storeId || '')
-  const privileged = ['admin', 'business_support'].includes(role)
+  const privileged = ['admin', 'business_support', 'store_manager'].includes(role)
   const storeManager = role === 'store_manager'
   const employeeView = ['employee', 'office'].includes(role)
-  const privateAllocationView = storeManager || employeeView
+  const privateAllocationView = employeeView
   const allowed = privileged || storeManager || employeeView
   const stores = useMemo(() => storesVisibleToRole(
     app.stores,
@@ -74,9 +75,16 @@ export function RevenueBonusPage() {
     .filter((allocation) => entryStoreId(allocation) === selectedStoreId && revenueRecordDate(allocation) === businessDate)
     .filter((allocation) => !privateAllocationView || entryEmployeeId(allocation) === currentEmployeeId)
   const poolTotal = records.reduce((sum, record) => sum + revenueRecordTotal(record), 0)
-  const revenueTotal = records.reduce((sum, record) => sum + recordRevenue(record), 0)
+  const liveRevenueTotal = (app.orders || [])
+    .filter((order) => entryStoreId(order) === selectedStoreId && revenueRecordDate(order) === businessDate)
+    .filter((order) => !order.deletedAt && order.status !== 'Đã xóa')
+    .reduce((sum, order) => sum + Math.max(0, Number(order.amount || 0)), 0)
+  const revenueTotal = records.length ? records.reduce((sum, record) => sum + recordRevenue(record), 0) : liveRevenueTotal
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
   const unallocatedTotal = records.reduce((sum, record) => sum + Number(record?.unallocatedVnd || 0), 0)
+  const totalApprovedHours = allocations.reduce((sum, allocation) => sum + Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? Number(allocation.weightUnits || 0) / 3600), 0)
+  const activeProgram = REVENUE_BONUS_PROGRAMS[records[0]?.programId]
+  const reachedTierId = activeProgram?.tiers.find((tier) => tier.id === records[0]?.tierId)?.id
 
   if (!allowed || !selectedStoreId) return <AccessDenied subtitle="Tài khoản này không có phạm vi cửa hàng để xem thưởng doanh thu." />
 
@@ -127,6 +135,18 @@ export function RevenueBonusPage() {
         <MetricCard compact label="CHƯA PHÂN BỔ" value={money(unallocatedTotal)} helper={unallocatedTotal > 0 ? 'Cần xử lý trước khi chốt sổ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
       </div>}
       {unallocatedTotal > 0 && privileged && <InfoNote tone="orange">Có quỹ chưa phân bổ do thiếu giờ bán hàng được duyệt. Kỳ liên quan phải được xử lý trước khi đóng sổ.</InfoNote>}
+      <Card title="Các mốc thưởng doanh thu" action={<Badge tone={reachedTierId ? 'green' : 'blue'}>{reachedTierId ? 'Đã đạt mốc cao nhất phù hợp' : 'Chưa đạt mốc'}</Badge>}>
+        <div className="revenue-tier-grid">
+          {(activeProgram?.tiers || []).map((tier) => {
+            const reached = tier.id === reachedTierId
+            const range = tier.maximumRevenueVnd == null
+              ? `Trên ${money(tier.minimumRevenueVnd)}`
+              : `${tier.minimumInclusive ? 'Từ' : 'Trên'} ${money(tier.minimumRevenueVnd)} đến ${money(tier.maximumRevenueVnd)}`
+            return <article key={tier.id} className={reached ? 'reached' : ''}><span>{reached ? '✓' : '○'}</span><div><strong>{range}</strong><small>{tier.rateBasisPoints / 100}% doanh thu</small></div></article>
+          })}
+          {!activeProgram && <InfoNote>Doanh thu đang cập nhật từ đơn hàng. Bấm “Tính thưởng ngày” sau khi toàn bộ ca đã kết thúc để chốt mốc áp dụng.</InfoNote>}
+        </div>
+      </Card>
       {privileged && <Card title="Duyệt thưởng mốc cao nhất" action={<Badge tone="orange">{milestoneClaims.filter((claim) => String(claim.status || '').toUpperCase() === 'PENDING').length} chờ duyệt</Badge>}>
         <TableWrap className="compensation-table">
           <thead><tr><th>Mốc thưởng</th><th>Ngày</th><th>Số tiền đề nghị</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
@@ -153,11 +173,12 @@ export function RevenueBonusPage() {
             {!privateAllocationView && <td><strong>{employeeName(app.employees || [], entryEmployeeId(allocation), allocation.employeeName)}</strong><small className="compensation-subline">{entryEmployeeId(allocation)}</small></td>}
             <td>{storeName(stores, entryStoreId(allocation), allocation.storeName)}</td>
             <td>{displayDate(revenueRecordDate(allocation))}</td>
-            <td>{Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? 0).toFixed(2)} giờ</td>
+            <td>{Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? Number(allocation.weightUnits || 0) / 3600).toFixed(2)} giờ</td>
             <td>{allocation.weightPercent != null ? `${Number(allocation.weightPercent).toFixed(2)}%` : allocation.weight != null ? `${(Number(allocation.weight) * 100).toFixed(2)}%` : '—'}</td>
             <td><strong>{money(allocationAmount(allocation))}</strong></td>
             <td><Badge tone={statusTone(allocation)}>{statusLabel(allocation)}</Badge></td>
           </tr>)}{!allocations.length && <tr><td colSpan={privateAllocationView ? 6 : 7} className="compensation-empty">Chưa có phân bổ thưởng doanh thu cho ngày đã chọn.</td></tr>}</tbody>
+          {allocations.length > 0 && <tfoot><tr>{!privateAllocationView && <th>Tổng</th>}<th colSpan="2">{allocations.length} nhân viên</th><th>{totalApprovedHours.toFixed(2)} giờ</th><th>100%</th><th>{money(allocationTotal)}</th><th>—</th></tr></tfoot>}
         </TableWrap>
       </Card>
       {!privateAllocationView && <Card title="Lịch sử tính quỹ trong ngày">

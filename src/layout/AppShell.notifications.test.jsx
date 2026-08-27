@@ -240,7 +240,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /^Nhân viên hỗ trợ KD$/i }).getAttribute('href')).toBe('/admin/business-support')
     expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Điều chuyển nhân sự$/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Công việc được giao/i }).getAttribute('href')).toBe('/support/tasks')
+    expect(screen.getByRole('link', { name: /Thưởng của tôi/i }).getAttribute('href')).toBe('/support/tasks')
     expect(screen.getByRole('link', { name: /Lịch sử chỉnh sửa đơn hàng/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Cài đặt$/i })).toBeNull()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
@@ -250,11 +250,11 @@ describe('AppShell notifications', () => {
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
     expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('span')?.textContent)).toEqual([
-      'Tổng quan', 'Công việc được giao', 'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
+      'Tổng quan', 'Thưởng của tôi', 'Lịch làm việc của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
-      'Cài đặt thông tin đơn hàng', 'Danh mục công việc & vi phạm', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý', 'Thưởng doanh thu ngày',
-      'Vi phạm nhân viên', 'Vi phạm Khối văn phòng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
+      'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý',
+      'Bảng vi phạm Khối văn phòng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
     ])
   })
 

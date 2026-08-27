@@ -1983,17 +1983,13 @@ export const projectSharedState = (rawState, user) => {
       violations: historicalVisibleScoped('violations'),
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => String(record.storeId || '') === storeId)
         .map(redactRevenueBonusDaily),
-      revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations', (record) => (
-        String(record.storeId || '') === storeId && belongsToEmployee(record, ownEmployeeId)
-      )),
+      revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations', (record) => String(record.storeId || '') === storeId),
       teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => String(record.storeId || '') === storeId),
-      teamRewardParticipants: filterArray(state, 'teamRewardParticipants', (record) => (
-        String(record.storeId || '') === storeId && belongsToEmployee(record, ownEmployeeId)
-      )),
+      teamRewardParticipants: filterArray(state, 'teamRewardParticipants', (record) => String(record.storeId || '') === storeId),
       periodReconciliations: filterArray(state, 'periodReconciliations', (record) => String(record.storeId || '') === storeId),
       jobRuns: filterArray(state, 'jobRuns', (record) => String(record.storeId || '') === storeId),
       shiftDefinitions: employeeScoped('shiftDefinitions'),
-      orders: historicalEmployeeScoped('orders'),
+      orders: historicalVisibleScoped('orders'),
       expenseEntries: historicalEmployeeScoped('expenseEntries'),
       fixedExpenses: historicalEmployeeScoped('fixedExpenses'),
       cashTransactions: historicalEmployeeScoped('cashTransactions'),
@@ -13835,7 +13831,9 @@ const canonicalViolationPolicy = (targetUnit, policyCode) => {
 }
 
 const violationCommand = async (db, actor, body, commandContext) => {
-  assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý vi phạm.')
+  if (!PAYROLL_OPERATOR_ROLES.has(actor.role) && actor.role !== 'store_manager') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc Quản lý cửa hàng được quản lý vi phạm.')
+  }
   const operation = body.type.split('.').at(-1)
   if (!['create', 'void'].includes(operation)) throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh vi phạm không được hỗ trợ.')
   const payload = isPlainRecord(body.payload) ? body.payload : {}
@@ -13848,6 +13846,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
       throw new ApiError(400, 'VIOLATION_UNIT_INVALID', 'Nhóm nhân viên vi phạm không hợp lệ.')
     }
     if (targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.')
+    if (actor.role === 'store_manager' && targetUnit !== 'store') {
+      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Quản lý cửa hàng chỉ được ghi nhận vi phạm nhân viên tại cửa hàng của mình.')
+    }
     const employee = compensationEmployee(state, payload.employeeId)
     const employeeId = String(employee.id || employee.code || employee.employeeId)
     const actualUnit = employeeUnit(employee)
@@ -14147,7 +14148,9 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
 }
 
 const revenueBonusCommand = async (db, actor, body, commandContext) => {
-  assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được tính thưởng doanh thu.')
+  if (!PAYROLL_OPERATOR_ROLES.has(actor.role) && actor.role !== 'store_manager') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc Quản lý cửa hàng được tính thưởng doanh thu.')
+  }
   if (!['revenue_bonus.calculate_day', 'revenue_bonus.approve_milestone', 'revenue_bonus.reject_milestone'].includes(body.type)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh thưởng doanh thu không được hỗ trợ.')
   }
