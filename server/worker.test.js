@@ -11227,6 +11227,94 @@ describe('IDOSI Worker security primitives', () => {
     }
   })
 
+  it.each([
+    ['missing inline end beside a valid row', [
+      { id: 'VALID', start: '08:00', end: '09:00' },
+      { id: 'MISSING-END', start: '10:00' },
+    ], [], 409],
+    ['malformed inline times', [{ id: 'MALFORMED', start: '25:00', end: 'noon' }], [], 409],
+    ['malformed explicit times with valid legacy aliases', [{ id: 'MALFORMED-WITH-ALIASES', start: '25:00', end: 'noon', shiftStart: '08:00', shiftEnd: '09:00' }], [], 409],
+    ['a valid id-less inline row', [{ id: 'INLINE', start: '08:00', end: '09:00' }], [], 201],
+    ['multiple valid inline rows', [
+      { id: 'FIRST', start: '08:00', end: '09:00' },
+      { id: 'SECOND', start: '10:00', end: '11:00' },
+    ], [], 201],
+    ['an unresolved shiftId', [{ id: 'MISSING-ID', shiftId: 'UNKNOWN' }], [], 409],
+    ['a valid snapshot', [{ id: 'SNAPSHOT', shiftSnapshots: [{ start: '08:00', end: '09:00' }] }], [], 201],
+    ['an inactive historical definition', [{ id: 'INACTIVE', shiftId: 'SHIFT-INACTIVE' }], [
+      { id: 'SHIFT-INACTIVE', storeId: 'S01', start: '08:00', end: '09:00', active: false },
+    ], 201],
+    ['legacy inline shiftStart and shiftEnd', [{ id: 'LEGACY-INLINE', shiftStart: '08:00', shiftEnd: '09:00' }], [], 201],
+    ['an overnight inline row', [{ id: 'OVERNIGHT', start: '23:00', end: '01:00' }], [], 201],
+  ])('resolves every schedule row atomically for %s', async (_label, scheduleRows, shiftDefinitions, expectedStatus) => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: `bootstrap-schedule-matrix-${String(scheduleRows[0].id).toLowerCase()}` }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'revenue-schedule-matrix-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+        employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+        shiftDefinitions,
+        schedule: scheduleRows.map((row) => ({ ...row, storeId: 'S01', employeeId: 'E01', date: '2026-08-20' })),
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'revenue-schedule-matrix-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const calculation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.calculate_day', expectedVersion: 1,
+      payload: { storeId: 'S01', businessDate: '2026-08-20' },
+    }, { ...authorization, 'idempotency-key': `schedule-matrix-${String(scheduleRows[0].id).toLowerCase()}` }), env)
+
+    expect(calculation.status).toBe(expectedStatus)
+    if (expectedStatus === 409) {
+      expect(await calculation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
+      expect(readHydratedState(env.DB.database).revenueBonusDaily || []).toEqual([])
+    } else {
+      expect(await calculation.json()).toMatchObject({ revenueBonus: { status: 'DRAFT' } })
+      expect(readHydratedState(env.DB.database).schedule).toHaveLength(scheduleRows.length)
+    }
+  })
+
+  it('rejects confirmation without side effects when any schedule row becomes unresolved', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-confirm-unresolved-inline' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'confirm-unresolved-inline-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+        employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+        schedule: [{ id: 'VALID', storeId: 'S01', employeeId: 'E01', date: '2026-08-20', start: '08:00', end: '09:00' }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'confirm-unresolved-inline-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const command = (type, expectedVersion, payload, key) => worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type, expectedVersion, payload,
+    }, { ...authorization, 'idempotency-key': key }), env)
+    const calculation = await command('revenue_bonus.calculate_day', 1, {
+      storeId: 'S01', businessDate: '2026-08-20',
+    }, 'confirm-unresolved-inline-calculate')
+    expect(calculation.status).toBe(201)
+    const calculated = await calculation.json()
+
+    const invalidRow = JSON.stringify({ id: 'INVALID', storeId: 'S01', employeeId: 'E01', date: '2026-08-20', start: '10:00' })
+    env.DB.database.prepare(`INSERT INTO state_entities
+      (scope_key, collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at)
+      VALUES ('global', 'schedule', 'id:INVALID', 1, ?, ?, ?, ?)`)
+      .run(invalidRow, Buffer.byteLength(invalidRow), '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z')
+    const beforeConfirmation = readHydratedState(env.DB.database)
+    const confirmation = await command('revenue_bonus.confirm_day', calculated.version, {
+      revenueBonusDailyId: calculated.revenueBonus.id, expectedEntityVersion: 1,
+    }, 'confirm-unresolved-inline-reject')
+
+    expect(confirmation.status).toBe(409)
+    expect(await confirmation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
+    expect(readHydratedState(env.DB.database)).toEqual(beforeConfirmation)
+  })
+
   it('falls back from empty shiftIds to legacy shiftId for calculation and confirmation', async () => {
     vi.useFakeTimers()
     try {

@@ -1092,6 +1092,48 @@ const revenueBonusScheduleShift = (record, shiftId, shiftDefinitions) => {
   return times.start && times.end ? resolved : null
 }
 
+const unresolvedRevenueBonusShift = (record, shiftId = null) => new ApiError(
+  409,
+  'REVENUE_BONUS_SHIFT_UNRESOLVED',
+  'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.',
+  { scheduleId: String(record?.id || '') || null, shiftId: String(shiftId || '') || null },
+)
+
+const revenueBonusScheduleShifts = (record, shiftDefinitions) => {
+  const referencedIds = scheduleShiftIds(record)
+  if (referencedIds.length) {
+    return referencedIds.map((id) => {
+      const shift = revenueBonusScheduleShift(record, id, shiftDefinitions)
+      if (!shift) throw unresolvedRevenueBonusShift(record, id)
+      return shift
+    })
+  }
+
+  const snapshots = Array.isArray(record?.shiftSnapshots) ? record.shiftSnapshots : []
+  if (snapshots.length) {
+    return snapshots.map((snapshot) => {
+      const id = String(snapshot?.id || '').trim()
+      const shift = id ? revenueBonusScheduleShift(record, id, shiftDefinitions) : snapshot
+      const times = shiftTimes(shift)
+      if (!times.start || !times.end) throw unresolvedRevenueBonusShift(record, id)
+      return shift
+    })
+  }
+
+  const inlineStart = record?.start === undefined || record?.start === null || record?.start === ''
+    ? record?.shiftStart
+    : record.start
+  const inlineEnd = record?.end === undefined || record?.end === null || record?.end === ''
+    ? record?.shiftEnd
+    : record.end
+  const start = parseShiftTime(inlineStart)?.label
+  const end = parseShiftTime(inlineEnd)?.label
+  const inlineShift = { ...record, start, end }
+  const times = shiftTimes(inlineShift)
+  if (!times.start || !times.end) throw unresolvedRevenueBonusShift(record)
+  return [inlineShift]
+}
+
 const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
   const currentBusinessDate = localDateTimeParts(now).date
   if (businessDate > currentBusinessDate) {
@@ -1114,32 +1156,14 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
   const scheduledShifts = (Array.isArray(state.schedule) ? state.schedule : [])
     .filter((record) => String(record.storeId || '') === String(storeId || '')
       && String(record.date || record.workDate || '') === businessDate && !record.deletedAt)
-    .flatMap((record) => {
-      const snapshots = Array.isArray(record.shiftSnapshots) ? record.shiftSnapshots : []
-      const referencedIds = scheduleShiftIds(record)
-      if (referencedIds.length) {
-        return referencedIds.map((id) => {
-          const shift = revenueBonusScheduleShift(record, id, definitions)
-          if (!shift) throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id })
-          return shift
-        })
-      }
-      if (snapshots.length) {
-        return snapshots.map((snapshot) => {
-          const id = String(snapshot?.id || '')
-          const shift = revenueBonusScheduleShift(record, id, definitions)
-          if (shift) return shift
-          throw new ApiError(409, 'REVENUE_BONUS_SHIFT_UNRESOLVED', 'Không thể xác định ca làm việc đã phân; chưa được tính hoặc xác nhận thưởng.', { shiftId: id || null })
-        })
-      }
-      return [record]
-    })
+    .flatMap((record) => revenueBonusScheduleShifts(record, definitions))
   const scheduledShiftEnds = scheduledShifts.map((shift) => {
     const times = shiftTimes(shift)
-    if (!times.start || !times.end) return null
+    // revenueBonusScheduleShifts validates every row atomically before an end
+    // boundary is derived, so a partial schedule can never reach this point.
     const endDate = times.end.minuteOfDay <= times.start.minuteOfDay ? shiftCalendarDate(businessDate, 1) : businessDate
     return transferDateTimeEpoch(`${endDate}T${times.end.label}`)
-  }).filter(Number.isFinite)
+  })
   const lastShiftEndMs = scheduledShiftEnds.length ? Math.max(...scheduledShiftEnds) : null
   // A schedule supplies explicit evidence that today's operating shifts ended.
   // Without one, a business day is complete only after Vietnam-local midnight,
