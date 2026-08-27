@@ -14,6 +14,7 @@ const workerDomainSources = [
   'violationTargetUnit.js',
   'employeeUnit.js',
   'recordCompatibility.js',
+  'scheduleResolution.js',
   'storeTieredPayroll.js',
   'managerRevenueBonus.js',
   'workCatalog.js',

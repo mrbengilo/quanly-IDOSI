@@ -54,7 +54,7 @@ export function RevenueBonusPage() {
   const compensationOperator = ['admin', 'business_support', 'store_manager'].includes(role)
   const payrollOperator = ['admin', 'business_support'].includes(role)
   const employeeView = ['employee', 'office'].includes(role)
-  const privateAllocationView = employeeView
+  const privateAllocationView = employeeView || role === 'store_manager'
   const allowed = compensationOperator || employeeView
   const stores = useMemo(() => storesVisibleToRole(
     app.stores,
@@ -72,7 +72,7 @@ export function RevenueBonusPage() {
     .filter((record) => !record.supersededAt && !record.voidedAt)
   const draftRecord = records.find((record) => String(record.status || '').toUpperCase() === 'DRAFT')
   const confirmedRecord = records.find(isConfirmedRevenueBonus)
-  const displayedRecords = privateAllocationView
+  const displayedRecords = employeeView
     ? (confirmedRecord ? [confirmedRecord] : [])
     : (draftRecord ? [draftRecord] : confirmedRecord ? [confirmedRecord] : [])
   const milestoneClaims = (app.teamRewardClaims || [])
@@ -91,7 +91,8 @@ export function RevenueBonusPage() {
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
   const unallocatedTotal = displayedRecords.reduce((sum, record) => sum + Number(record?.unallocatedVnd || 0), 0)
   const totalApprovedHours = allocations.reduce((sum, allocation) => sum + Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? Number(allocation.weightUnits || 0) / 3600), 0)
-  const teamWeightUnits = teamAllocations.reduce((sum, allocation) => sum + Math.max(0, Number(allocation.weightUnits || 0)), 0)
+  const aggregateTeamWeightUnits = displayedRecords.reduce((sum, record) => sum + Math.max(0, Number(record.teamTotalWeightUnits || 0)), 0)
+  const teamWeightUnits = aggregateTeamWeightUnits || teamAllocations.reduce((sum, allocation) => sum + Math.max(0, Number(allocation.weightUnits || 0)), 0)
   const visibleWeightUnits = allocations.reduce((sum, allocation) => sum + Math.max(0, Number(allocation.weightUnits || 0)), 0)
   const allocationWeightFooter = privateAllocationView
     ? (teamWeightUnits > 0 ? `${((visibleWeightUnits / teamWeightUnits) * 100).toFixed(2)}%` : '—')
@@ -207,7 +208,7 @@ export function RevenueBonusPage() {
           {allocations.length > 0 && <tfoot><tr>{!privateAllocationView && <th>Tổng</th>}<th colSpan="2">{allocations.length} nhân viên</th><th>{totalApprovedHours.toFixed(2)} giờ</th><th>{allocationWeightFooter}</th><th>{money(allocationTotal)}</th><th>—</th></tr></tfoot>}
         </TableWrap>
       </Card>
-      {!privateAllocationView && <Card title="Lịch sử tính quỹ trong ngày">
+      {compensationOperator && <Card title="Lịch sử tính quỹ trong ngày">
         {records.filter((record) => String(record.status || '').toUpperCase() === 'DRAFT').map((record) => <Button key={record.id} loading={busyKey === `confirm:${record.id}`} disabled={Boolean(busyKey)} onClick={() => confirmDraft(record)}>XÁC NHẬN THƯỞNG</Button>)}
         <TableWrap className="compensation-table"><thead><tr><th>Mã tính</th><th>Chương trình</th><th>Doanh thu</th><th>Quỹ tỷ lệ</th><th>Thưởng mốc cao nhất</th><th>Tổng quỹ</th><th>Trạng thái</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}><td>{record.id}</td><td>{record.programLabel || record.programId || '—'}</td><td>{money(recordRevenue(record))}</td><td>{money(record.percentagePoolVnd || 0)}</td><td>{money(record.milestonePoolVnd || record.hotPoolVnd || 0)}</td><td><strong>{money(revenueRecordTotal(record))}</strong></td><td><Badge tone={statusTone(record)}>{statusLabel(record)}</Badge></td></tr>)}{!records.length && <tr><td colSpan="7" className="compensation-empty">Chưa tính quỹ thưởng cho ngày này.</td></tr>}</tbody></TableWrap>
       </Card>}

@@ -127,7 +127,7 @@ describe('compensation pages', () => {
     expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
   })
 
-  it('lets a store manager review the complete allocation for their assigned store', () => {
+  it('gives a store manager team aggregates and only their own allocation detail', () => {
     mocked.app = {
       ...baseApp('store_manager'),
       revenueBonuses: [{
@@ -142,8 +142,9 @@ describe('compensation pages', () => {
 
     expect(screen.getAllByText('170 đ').length).toBeGreaterThan(0)
     expect(screen.getAllByText('70 đ').length).toBeGreaterThan(0)
-    expect(screen.getByText('100 đ')).toBeTruthy()
-    expect(screen.getByText('Nhân viên Hai')).toBeTruthy()
+    expect(screen.queryByText('100 đ')).toBeNull()
+    expect(screen.queryByText('Nhân viên Hai')).toBeNull()
+    expect(screen.getByText('Chi tiết thưởng của tôi')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
   })
 

@@ -10991,8 +10991,11 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerStateResponse.status).toBe(200)
     const managerState = (await managerStateResponse.json()).state
     expect(managerState.revenueBonusDaily).toEqual([expect.not.objectContaining({ allocations: expect.anything() })])
-    expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId).sort()).toEqual(['E-S02', 'QL-S02'])
-    expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId).sort()).toEqual(['E-S02', 'QL-S02'])
+    expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(managerState.revenueBonusDaily[0]).toMatchObject({ participantCount: 2, teamTotalWeightUnits: 28_800 })
+    expect(JSON.stringify({ allocations: managerState.revenueBonusAllocations, participants: managerState.teamRewardParticipants }))
+      .not.toContain('E-S02')
 
     const employeeStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: employeeAuthorization }), env)
     expect(employeeStateResponse.status).toBe(200)

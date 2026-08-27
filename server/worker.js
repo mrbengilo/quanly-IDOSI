@@ -15,8 +15,8 @@ import { canonicalEmployeeUnit } from '../src/domain/employeeUnit.js'
 import {
   isNonNegativeSafeIntegerAmount,
   recordBusinessDate,
-  scheduleShiftIds,
 } from '../src/domain/recordCompatibility.js'
+import { resolveCanonicalScheduleRecord, ScheduleResolutionError } from '../src/domain/scheduleResolution.js'
 import {
   STORE_EMPLOYMENT_TYPE,
   STORE_FULL_TIME_THRESHOLD_HOURS,
@@ -1061,37 +1061,6 @@ const shiftTimes = (shift) => {
   return { start, end }
 }
 
-const revenueBonusScheduleShift = (record, shiftId, shiftDefinitions) => {
-  const id = String(shiftId || '').trim()
-  const storeId = String(record?.storeId || '').trim()
-  if (!id || !storeId) return null
-  const snapshots = Array.isArray(record.shiftSnapshots) ? record.shiftSnapshots : []
-  const snapshot = snapshots.find((item) => String(item?.id || '') === id) || null
-  const definitionCandidates = (Array.isArray(shiftDefinitions) ? shiftDefinitions : []).filter((definition) => {
-    const definitionStoreId = String(definition?.storeId || '').trim()
-    return String(definition?.id || '') === id && (!definitionStoreId || definitionStoreId === storeId)
-  })
-  const definition = definitionCandidates.find((item) => String(item?.storeId || '').trim() === storeId)
-    || definitionCandidates[0]
-    || null
-  const referencedIds = scheduleShiftIds(record)
-  const legacyApplies = referencedIds.length <= 1 || String(record.shiftId || '') === id
-  const firstValidTime = (field, legacyField) => [snapshot?.[field], definition?.[field], legacyApplies ? record?.[legacyField] : null, legacyApplies ? record?.[field] : null]
-    .map(parseShiftTime)
-    .find(Boolean)?.label
-  const resolved = {
-    ...(definition || {}),
-    ...(snapshot || {}),
-    id,
-    storeId,
-    start: firstValidTime('start', 'shiftStart'),
-    end: firstValidTime('end', 'shiftEnd'),
-    time: snapshot?.time || definition?.time || (legacyApplies ? record.shiftTime : null),
-  }
-  const times = shiftTimes(resolved)
-  return times.start && times.end ? resolved : null
-}
-
 const unresolvedRevenueBonusShift = (record, shiftId = null) => new ApiError(
   409,
   'REVENUE_BONUS_SHIFT_UNRESOLVED',
@@ -1100,38 +1069,14 @@ const unresolvedRevenueBonusShift = (record, shiftId = null) => new ApiError(
 )
 
 const revenueBonusScheduleShifts = (record, shiftDefinitions) => {
-  const referencedIds = scheduleShiftIds(record)
-  if (referencedIds.length) {
-    return referencedIds.map((id) => {
-      const shift = revenueBonusScheduleShift(record, id, shiftDefinitions)
-      if (!shift) throw unresolvedRevenueBonusShift(record, id)
-      return shift
+  try {
+    return resolveCanonicalScheduleRecord({
+      record, shiftDefinitions, selectedStoreId: record.storeId, employeeStoreId: record.employeeStoreId,
     })
+  } catch (error) {
+    if (error instanceof ScheduleResolutionError) throw unresolvedRevenueBonusShift(record, error.shiftId)
+    throw error
   }
-
-  const snapshots = Array.isArray(record?.shiftSnapshots) ? record.shiftSnapshots : []
-  if (snapshots.length) {
-    return snapshots.map((snapshot) => {
-      const id = String(snapshot?.id || '').trim()
-      const shift = id ? revenueBonusScheduleShift(record, id, shiftDefinitions) : snapshot
-      const times = shiftTimes(shift)
-      if (!times.start || !times.end) throw unresolvedRevenueBonusShift(record, id)
-      return shift
-    })
-  }
-
-  const inlineStart = record?.start === undefined || record?.start === null || record?.start === ''
-    ? record?.shiftStart
-    : record.start
-  const inlineEnd = record?.end === undefined || record?.end === null || record?.end === ''
-    ? record?.shiftEnd
-    : record.end
-  const start = parseShiftTime(inlineStart)?.label
-  const end = parseShiftTime(inlineEnd)?.label
-  const inlineShift = { ...record, start, end }
-  const times = shiftTimes(inlineShift)
-  if (!times.start || !times.end) throw unresolvedRevenueBonusShift(record)
-  return [inlineShift]
 }
 
 const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
@@ -1153,9 +1098,19 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
   // soft-deleted. The schedule, rather than the definition's current lifecycle
   // state, is authoritative for an already assigned business date.
   const definitions = Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []
+  const employeeStoreById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
+    [employee.id, employee.code, employee.employeeId].filter(Boolean).map((id) => [String(id), String(employee.storeId || '')])
+  )))
   const scheduledShifts = (Array.isArray(state.schedule) ? state.schedule : [])
-    .filter((record) => String(record.storeId || '') === String(storeId || '')
-      && String(record.date || record.workDate || '') === businessDate && !record.deletedAt)
+    .filter((record) => String(record.date || record.workDate || '') === businessDate && !record.deletedAt)
+    .filter((record) => {
+      const explicitStoreId = String(record.storeId || '')
+      const employeeStoreId = employeeStoreById.get(String(record.employeeId || '')) || ''
+      if (explicitStoreId) return explicitStoreId === String(storeId)
+      return !employeeStoreId || employeeStoreId === String(storeId)
+    })
+    .map((record) => ({ ...record, storeId: record.storeId || storeId,
+      employeeStoreId: employeeStoreById.get(String(record.employeeId || '')) || '' }))
     .flatMap((record) => revenueBonusScheduleShifts(record, definitions))
   const scheduledShiftEnds = scheduledShifts.map((shift) => {
     const times = shiftTimes(shift)
@@ -1316,6 +1271,10 @@ const redactRevenueBonusDaily = (record) => {
   void participantDetails
   return safe
 }
+
+const ownRevenueBonusRows = (records, employeeId) => filterArray({ rows: records }, 'rows', (record) => (
+  belongsToEmployee(record, employeeId)
+))
 
 const normalizeSharedStateForStorage = (value) => {
   const sanitized = sanitizeStateValue(isPlainRecord(value) ? value : {})
@@ -2107,9 +2066,9 @@ export const projectSharedState = (rawState, user) => {
       violations: historicalVisibleScoped('violations'),
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => String(record.storeId || '') === storeId)
         .map(redactRevenueBonusDaily),
-      revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations', (record) => String(record.storeId || '') === storeId),
+      revenueBonusAllocations: ownRevenueBonusRows(state.revenueBonusAllocations, ownEmployeeId),
       teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => String(record.storeId || '') === storeId),
-      teamRewardParticipants: filterArray(state, 'teamRewardParticipants', (record) => String(record.storeId || '') === storeId),
+      teamRewardParticipants: ownRevenueBonusRows(state.teamRewardParticipants, ownEmployeeId),
       periodReconciliations: filterArray(state, 'periodReconciliations', (record) => String(record.storeId || '') === storeId),
       jobRuns: filterArray(state, 'jobRuns', (record) => String(record.storeId || '') === storeId),
       shiftDefinitions: employeeScoped('shiftDefinitions'),
@@ -3817,12 +3776,36 @@ const policyNumber = async (db, key, fallback) => {
   return Number.isFinite(value) ? value : fallback
 }
 
+const projectRevenueBonusCommandResponse = (response, actor) => {
+  if (actor.role !== 'store_manager') return response
+  const employeeId = String(actor.employee_id || actor.user_id || '')
+  const allocations = Array.isArray(response?.allocations) ? response.allocations : []
+  const participants = Array.isArray(response?.teamParticipants) ? response.teamParticipants : []
+  return {
+    ...response,
+    allocations: allocations.filter((record) => belongsToEmployee(record, employeeId)),
+    ...(Object.hasOwn(response || {}, 'teamParticipants') ? {
+      teamParticipants: participants.filter((record) => belongsToEmployee(record, employeeId)),
+    } : {}),
+    teamSummary: {
+      participantCount: Number(response?.revenueBonus?.participantCount || allocations.length || participants.length || 0),
+      totalWeightUnits: Number(response?.revenueBonus?.teamTotalWeightUnits || 0),
+      totalPoolVnd: Number(response?.revenueBonus?.totalPoolVnd || 0),
+      allocatedVnd: Number(response?.revenueBonus?.allocatedVnd || 0),
+      unallocatedVnd: Number(response?.revenueBonus?.unallocatedVnd || 0),
+    },
+  }
+}
+
 const commitGlobalStateDomainCommand = async (db, actor, current, nextState, options, commandContext) => {
   const currentVersion = Number(current.version)
   const nextVersion = currentVersion + 1
-  const receiptBody = apiPayload(commandContext, { ...options.response, version: nextVersion })
+  const commandResponse = String(options.action || '').startsWith('revenue_bonus.')
+    ? projectRevenueBonusCommandResponse(options.response, actor)
+    : options.response
+  const receiptBody = apiPayload(commandContext, { ...commandResponse, version: nextVersion })
   const responseBody = options.ephemeralResponse
-    ? apiPayload(commandContext, { ...options.response, ...options.ephemeralResponse, version: nextVersion })
+    ? apiPayload(commandContext, { ...commandResponse, ...options.ephemeralResponse, version: nextVersion })
     : receiptBody
   const responseJson = JSON.stringify(receiptBody)
   const stateGuardSql = options.stateGuard?.sql ? ` AND EXISTS (${options.stateGuard.sql})` : ''
@@ -14357,7 +14340,8 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
         version: Number(current.version),
         revenueBonus: daily,
         allocations: (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : [])
-          .filter((record) => String(record.revenueBonusDailyId || '') === calculationId),
+          .filter((record) => String(record.revenueBonusDailyId || '') === calculationId)
+          .filter((record) => actor.role !== 'store_manager' || belongsToEmployee(record, actor.employee_id || actor.user_id)),
         existing: true,
       }, 200, commandContext)
     }
@@ -14516,7 +14500,8 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
       version: Number(current.version),
       revenueBonus: matchingDaily,
       allocations: (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : [])
-        .filter((record) => String(record.revenueBonusDailyId || '') === String(matchingDaily.id || '')),
+        .filter((record) => String(record.revenueBonusDailyId || '') === String(matchingDaily.id || ''))
+        .filter((record) => actor.role !== 'store_manager' || belongsToEmployee(record, actor.employee_id || actor.user_id)),
       existing: true,
     }, 200, commandContext)
   }
@@ -14574,6 +14559,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     allocatedVnd: totalPoolVnd - unallocatedVnd,
     unallocatedVnd,
     participantCount: participants.length,
+    teamTotalWeightUnits: percentageAllocation.totalWeightUnits,
     fingerprint,
     status: 'DRAFT',
     calculatedAt: commandContext.now,
