@@ -69,6 +69,7 @@ const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/ad
 const orderInformationSettingsOperation = { label: 'Cài đặt thông tin đơn hàng', path: '/admin/order-information-settings', icon: Settings }
 const workCatalogSettingsOperation = { label: 'Danh mục công việc & vi phạm', path: '/admin/work-catalog', icon: ClipboardList }
 const workRegistrationScheduleOperation = { label: 'Lịch đăng ký làm việc của HTKD và KVP', path: '/admin/work-registration-schedules', icon: CalendarCheck }
+const revenueBonusOperation = { label: 'Thưởng doanh thu ngày', path: '/admin/compensation/revenue', icon: Award }
 
 const officeEmployeeMenu = [
   { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
@@ -99,6 +100,7 @@ const businessSupportMenu = [
   customerSurveyOperation,
   workCatalogSettingsOperation,
   { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award },
+  revenueBonusOperation,
   { label: 'Vi phạm nhân viên cửa hàng', path: '/admin/violations/store', icon: ShieldAlert },
   { label: 'Lịch sử chỉnh sửa đơn hàng', path: '/admin/order-audit', icon: CalendarClock },
   { label: 'Điều chuyển nhân sự', path: '/admin/support-transfers', icon: Users },
@@ -117,6 +119,7 @@ const systemMenus = {
     officeOperation,
     customerSurveyOperation,
     { label: 'Thưởng và phụ cấp quản lý', path: '/admin/compensation/managers', icon: Award },
+    revenueBonusOperation,
     { label: 'Vi phạm nhân viên cửa hàng', path: '/admin/violations/store', icon: ShieldAlert },
     { label: 'Bảng vi phạm Khối văn phòng', path: '/admin/violations/office', icon: ShieldAlert },
     { label: 'Vi phạm HTKD', path: '/admin/violations/business-support', icon: ShieldAlert },

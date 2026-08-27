@@ -225,6 +225,8 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.getByRole('link', { name: /Danh mục công việc & vi phạm/i }).getAttribute('href')).toBe('/admin/work-catalog')
+    expect(screen.getByRole('link', { name: /^Thưởng doanh thu ngày$/i }).getAttribute('href')).toBe('/admin/compensation/revenue')
+    expect(screen.getAllByRole('link').filter((link) => link.getAttribute('href') === '/admin/compensation/revenue')).toHaveLength(1)
     expect(screen.getByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i }).getAttribute('href')).toBe('/admin/work-registration-schedules')
     expect(screen.getByRole('link', { name: /^Vi phạm nhân viên cửa hàng$/i }).getAttribute('href')).toBe('/admin/violations/store')
     expect(screen.getByRole('link', { name: /^Bảng vi phạm Khối văn phòng$/i }).getAttribute('href')).toBe('/admin/violations/office')
@@ -250,6 +252,9 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
     expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
+    expect(screen.getByRole('link', { name: /Danh mục công việc & vi phạm/i }).getAttribute('href')).toBe('/admin/work-catalog')
+    expect(screen.getByRole('link', { name: /^Thưởng doanh thu ngày$/i }).getAttribute('href')).toBe('/admin/compensation/revenue')
+    expect(screen.getAllByRole('link').filter((link) => link.getAttribute('href') === '/admin/compensation/revenue')).toHaveLength(1)
     expect(screen.getByRole('link', { name: /^Vi phạm nhân viên cửa hàng$/i }).getAttribute('href')).toBe('/admin/violations/store')
     expect(screen.queryByRole('link', { name: /^Bảng vi phạm Khối văn phòng$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i })).toBeNull()
@@ -259,7 +264,7 @@ describe('AppShell notifications', () => {
       'Tổng quan', 'Công việc được giao', 'Thưởng của tôi', 'Lịch làm việc của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
-      'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Danh mục công việc & vi phạm', 'Thưởng và phụ cấp quản lý',
+      'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Danh mục công việc & vi phạm', 'Thưởng và phụ cấp quản lý', 'Thưởng doanh thu ngày',
       'Vi phạm nhân viên cửa hàng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
     ])
   })
@@ -370,7 +375,19 @@ describe('AppShell notifications', () => {
     expect(screen.getAllByText('Cua hang 2').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /^Thưởng doanh thu ngày$/i }).getAttribute('href')).toBe('/store/revenue-bonus')
+    expect(screen.getAllByRole('link').some((link) => link.getAttribute('href') === '/admin/compensation/revenue')).toBe(false)
+    expect(screen.queryByRole('link', { name: /Công việc được giao/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Quản lý nhân viên/i })).toBeNull()
     expect(screen.getByAltText('Logo IDOSI').getAttribute('src')).toBe('/favicon.png')
+  })
+
+  it('does not expose payroll-operator revenue navigation to employees', () => {
+    mocked.session = { role: 'employee', name: 'Nhân viên', employeeId: 'E01', storeId: 'CH001', unit: 'store' }
+    render(<MemoryRouter initialEntries={['/employee/home']}><AppShell /></MemoryRouter>)
+
+    expect(screen.queryByRole('link', { name: /^Thưởng doanh thu ngày$/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Danh mục công việc & vi phạm/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /^Thưởng doanh thu team$/i }).getAttribute('href')).toBe('/employee/revenue-bonus')
   })
 })
