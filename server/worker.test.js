@@ -5027,15 +5027,15 @@ describe('IDOSI Worker security primitives', () => {
     expect(closed.status).toBe(201)
     expect(await closed.json()).toMatchObject({
       period: {
-        rows: [expect.objectContaining({ employeeId: 'E01', baseSalary: 100_000, manualBonusVnd: 50_000, gross: 150_000 })],
+        rows: [],
         managerRevenueBonus: {
-          managerId: 'E01', managerCompensationVnd: 102_000,
-          profitBeforeManagerBonusVnd: 1_020_000, bonusVnd: 20_000, finalProfitVnd: 1_000_000,
+          managerId: 'E01', managerCompensationVnd: 152_000,
+          profitBeforeManagerBonusVnd: 1_120_000, bonusVnd: 21_960, finalProfitVnd: 1_098_040,
         },
         financeSnapshot: {
-          revenue: 1_372_000, nonPayrollExpense: 100_000, employeePayrollExpense: 150_000,
-          managerCompensationExpense: 102_000, managerRevenueBonusVnd: 20_000,
-          earnedPayrollExpense: 272_000, expense: 372_000, profit: 1_000_000,
+          revenue: 1_372_000, nonPayrollExpense: 100_000, employeePayrollExpense: 0,
+          managerCompensationExpense: 152_000, managerRevenueBonusVnd: 21_960,
+          earnedPayrollExpense: 173_960, expense: 273_960, profit: 1_098_040,
         },
       },
     })
@@ -10885,7 +10885,7 @@ describe('IDOSI Worker security primitives', () => {
         ],
         employees: [
           { id: 'HTKD-BONUS', name: 'Hỗ trợ toàn hệ thống', unit: 'business_support', storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc' },
-          { id: 'QL-S02', name: 'Quản lý S02', unit: 'store_manager', storeId: 'S02', status: 'Đang làm việc' },
+          { id: 'QL-S02', name: 'Quản lý S02', unit: 'store', storeId: 'S02', isStoreManager: true, position: 'QUẢN LÝ CỬA HÀNG', status: 'Đang làm việc' },
           { id: 'E-S02', name: 'Nhân viên S02', unit: 'store', storeId: 'S02', status: 'Đang làm việc' },
         ],
         orders: [{
@@ -10911,6 +10911,7 @@ describe('IDOSI Worker security primitives', () => {
           { id: 'V-LEGACY-OTHER', storeId: 'S01', employeeId: 'E-S01', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
           { id: 'V-LEGACY-OWN', storeId: 'S02', employeeId: 'E-S02', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
           { id: 'V-NONCANONICAL-OWN', targetUnit: 'Cửa hàng', storeId: 'S02', employeeId: 'E-S02', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
+          { id: 'V-SELF-MANAGER', targetUnit: 'store', storeId: 'S02', employeeId: 'QL-S02', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
         ],
       },
     }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
@@ -10938,11 +10939,32 @@ describe('IDOSI Worker security primitives', () => {
     const managerAuthorization = await loginAs('manager.bonus', 'manager-bonus-password')
     const employeeAuthorization = await loginAs('employee.bonus', 'employee-bonus-password')
 
+    const beforeManagerTargetCreate = readHydratedState(env.DB.database)
+    const managerTargetCreate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create', expectedVersion: 1,
+      payload: {
+        targetUnit: 'store', employeeId: 'QL-S02', storeId: 'S02',
+        policyCode: 'store.violation.late', amountVnd: 2_000, occurredOn: '2026-08-20', note: 'Target manager must be rejected',
+      },
+    }, { ...managerAuthorization, 'idempotency-key': 'manager-target-create-forbidden' }), env)
+    expect(managerTargetCreate.status).toBe(409)
+    expect(await managerTargetCreate.json()).toMatchObject({ error: { code: 'EMPLOYEE_UNIT_MISMATCH' } })
+    expect(readHydratedState(env.DB.database)).toEqual(beforeManagerTargetCreate)
+
     for (const violationId of ['V-OFFICE', 'V-SUPPORT', 'V-OTHER-STORE', 'V-LEGACY-OTHER']) {
       const forbiddenVoid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'violation.void', expectedVersion: 1, payload: { violationId, expectedEntityVersion: 1, reason: 'Không thuộc phạm vi quản lý' },
       }, { ...managerAuthorization, 'idempotency-key': `manager-void-${violationId}` }), env)
       expect(forbiddenVoid.status, violationId).toBe(403)
+    }
+    for (const violationId of ['V-SELF-MANAGER']) {
+      const before = readHydratedState(env.DB.database)
+      const forbiddenVoid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'violation.void', expectedVersion: 1,
+        payload: { violationId, expectedEntityVersion: 1, reason: 'Không được hủy vi phạm quản lý' },
+      }, { ...managerAuthorization, 'idempotency-key': `manager-target-forbidden-${violationId}` }), env)
+      expect(forbiddenVoid.status, violationId).toBe(403)
+      expect(readHydratedState(env.DB.database)).toEqual(before)
     }
     for (const violationId of ['V-LEGACY-OWN', 'V-NONCANONICAL-OWN']) {
       const allowedVoid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {

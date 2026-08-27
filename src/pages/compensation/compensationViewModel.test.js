@@ -34,10 +34,11 @@ describe('compensation view models', () => {
     const employees = [
       { id: 'NV-01', name: 'Nhân viên', unit: 'store', storeId: 'CH001' },
       { id: 'QL-01', name: 'Quản lý', unit: 'store_manager', storeId: 'CH001', isStoreManager: true },
+      { id: 'QL-LEGACY', name: 'Quản lý legacy', unit: 'store', storeId: 'CH001', position: 'QUẢN LÝ CỬA HÀNG' },
       { id: 'VP-01', name: 'Văn phòng', unit: 'office' },
       { id: 'HT-01', name: 'Hỗ trợ', unit: 'business_support' },
     ]
-    expect(managerCandidates({ employees, storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['QL-01'])
+    expect(managerCandidates({ employees, storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['QL-01', 'QL-LEGACY'])
     expect(employeesForTarget({ employees, targetUnit: 'office' }).map((employee) => employee.id)).toEqual(['VP-01'])
     expect(employeesForTarget({ employees, targetUnit: 'store', storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['NV-01'])
   })

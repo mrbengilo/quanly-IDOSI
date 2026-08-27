@@ -16,8 +16,8 @@ const stores = [
 ]
 
 const employees = [
-  { id: 'QL-01', name: 'Quản lý Một', unit: 'store_manager', storeId: 'CH001', isStoreManager: true },
-  { id: 'QL-02', name: 'Quản lý Hai', unit: 'store_manager', storeId: 'CH002', isStoreManager: true },
+  { id: 'QL-01', name: 'Quản lý Một', unit: 'store', storeId: 'CH001', title: 'QUẢN LÝ CỬA HÀNG' },
+  { id: 'QL-02', name: 'Quản lý Hai', unit: 'store', storeId: 'CH002', roles: ['store-manager'] },
   { id: 'NV-01', name: 'Nhân viên Một', unit: 'store', storeId: 'CH001' },
   { id: 'NV-02', name: 'Nhân viên Hai', unit: 'store', storeId: 'CH001' },
   { id: 'HT-01', name: 'Hỗ trợ Một', unit: 'business_support' },

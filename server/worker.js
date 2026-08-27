@@ -13690,12 +13690,9 @@ const compensationEntryCommand = async (db, actor, body, commandContext) => {
     }
     const targetUnit = String(payload.targetUnit || 'store_manager').trim()
     if (targetUnit === 'store_manager') {
-      const roles = Array.isArray(employee.roles) ? employee.roles.map(normalizeTextKey) : []
-      const manager = employeeUnit(employee) === 'store_manager'
-        || employee.isStoreManager === true
-        || roles.includes('store_manager')
-        || normalizeTextKey(employee.position).includes('quan ly cua hang')
-      if (!manager) throw new ApiError(409, 'STORE_MANAGER_REQUIRED', 'Khoản này chỉ áp dụng cho quản lý cửa hàng.')
+      if (employeeUnit(employee) !== 'store_manager') {
+        throw new ApiError(409, 'STORE_MANAGER_REQUIRED', 'Khoản này chỉ áp dụng cho quản lý cửa hàng.')
+      }
     }
     const effectiveDate = compensationDate(payload.effectiveDate, 'Ngày áp dụng')
     const period = effectiveDate.slice(0, 7)
@@ -14081,6 +14078,10 @@ const violationCommand = async (db, actor, body, commandContext) => {
   if (targetUnit === 'store') {
     assertOperationalStoreAccess(actor, previous.storeId)
     requireActivePhysicalStore(state, previous.storeId)
+  }
+  const targetEmployee = compensationEmployee(state, previous.employeeId)
+  if (actor.role === 'store_manager' && employeeUnit(targetEmployee) !== 'store') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Quản lý cửa hàng không được hủy vi phạm của quản lý hoặc nhân sự ngoài cửa hàng.')
   }
   const period = asMonth(previous.period || monthFromRecord(previous))
   assertPayrollNotPaidOrLocked(state, previous.storeId, period)

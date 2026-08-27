@@ -110,12 +110,11 @@ export const managerCandidates = ({ employees = [], managerAccounts = [], storeI
     .filter(Boolean))
   return activeEmployees(employees).filter((employee) => {
     if (storeId && String(employee?.storeId || '') !== String(storeId)) return false
-    const roles = Array.isArray(employee?.roles) ? employee.roles.map(normalize) : []
-    const position = normalize(employee?.position)
-    return employee?.isStoreManager === true
-      || roles.includes('store_manager')
-      || linkedManagerIds.has(entityId(employee))
-      || position.includes('quản lý cửa hàng')
+    const linkedManager = linkedManagerIds.has(entityId(employee))
+    return employeeUnit(linkedManager ? {
+      ...employee,
+      roles: [...(Array.isArray(employee?.roles) ? employee.roles : []), 'store_manager'],
+    } : employee) === 'store_manager'
   })
 }
 
