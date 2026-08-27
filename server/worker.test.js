@@ -11703,12 +11703,12 @@ describe('IDOSI Worker security primitives', () => {
       initialState: {
         stores: [{ id: 'S01', status: 'Đang hoạt động' }, { id: 'S02', status: 'Đang hoạt động' }],
         employees: [
-          { id: 'E01', unit: 'store', storeId: 'S01', status: 'Đang làm việc' },
+          { id: 'E01', employeeCode: 'LEGACY-E01', unit: 'store', storeId: 'S01', status: 'Đang làm việc' },
           { id: 'E02', unit: 'store', storeId: 'S02', status: 'Đang làm việc' },
         ],
         schedule: [
-          { id: 'S01-STORELESS', employeeId: 'E01', date: '2026-08-20', start: '08:00', end: '09:00' },
-          { id: 'S02-STORELESS', employeeId: 'E02', date: '2026-08-20', start: '10:00', end: '11:00' },
+          { id: 'S01-STORELESS', employeeCode: 'LEGACY-E01', date: '2026-08-20', start: '8:30', end: '9:05' },
+          { id: 'S02-STORELESS', employeeId: 'E02', date: '2026-08-20', start: '9:00', end: '1:00' },
           { id: 'EXPLICIT-S02', storeId: 'S02', employeeId: 'E02', date: '2026-08-20', start: '12:00', end: '13:00' },
           { id: 'ORPHAN', employeeId: 'UNKNOWN', date: '2026-08-20', shiftId: 'MISSING' },
         ],

@@ -1,10 +1,9 @@
-import { scheduleShiftIds } from './recordCompatibility.js'
+import { normalizeClock, scheduleShiftIds } from './recordCompatibility.js'
 
 const text = (value) => String(value || '').trim()
-const validClock = (value) => /^([01]\d|2[0-3]):[0-5]\d$/u.test(text(value))
 const firstClock = (...values) => {
   const value = values.map(text).find(Boolean) || ''
-  return validClock(value) ? value : ''
+  return normalizeClock(value)
 }
 
 export class ScheduleResolutionError extends Error {
@@ -115,7 +114,7 @@ export const displayScheduleRecordShifts = (options = {}) => {
   const result = resolveCanonicalScheduleRecordResult(options)
   if (result.status === 'resolved') return result.shifts
   const record = result.record
-  return [{ ...record, id: result.shiftId || text(record.id) || `unresolved-${text(record.employeeId)}`,
+  return [{ ...record, id: result.shiftId || text(record.id) || `unresolved-${text(record.employeeId || record.employeeCode)}`,
     name: text(record.shiftName || record.name) || 'Ca không xác định', start: '', end: '', time: '',
     source: 'unresolved', unresolved: true, resolutionCode: result.code, resolutionReason: 'Thiếu dữ liệu ca' }]
 }

@@ -1,5 +1,6 @@
 import { supportTransferBounds } from '../../domain/supportTransferTime'
 import { displayScheduleRecordShifts } from '../../domain/scheduleResolution'
+import { resolveRecordEmployee } from '../../domain/recordCompatibility'
 
 const dateValue = (value = new Date()) => {
   const date = value instanceof Date ? value : new Date(`${String(value).slice(0, 10)}T00:00:00`)
@@ -37,7 +38,7 @@ export function employeeScheduleRows({ schedule = [], shiftDefinitions = [], sup
   const employeeId = identity(employee.id || employee.code || employee.employeeId)
   const storesById = new Map(stores.map((store) => [identity(store.id), store]))
   const regularRows = (Array.isArray(schedule) ? schedule : []).flatMap((record) => {
-    if (identity(record.employeeId || record.employeeCode) !== employeeId) return []
+    if (resolveRecordEmployee(record, [employee]).status !== 'resolved') return []
     const date = String(record.date || record.workDate || '').slice(0, 10)
     if (!date || (range.from && date < range.from) || (range.to && date > range.to)) return []
     const selectedStoreId = identity(record.storeId || employee.storeId)

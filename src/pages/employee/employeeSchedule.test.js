@@ -33,4 +33,13 @@ describe('employee schedule view', () => {
     expect(rows[1]).toMatchObject({ shiftName: 'Ca không xác định', start: '', end: '', unresolved: true,
       resolutionNote: 'Thiếu dữ liệu ca', note: 'Audit' })
   })
+
+  it('renders legacy employeeCode rows with normalized single-digit clocks', () => {
+    const rows = employeeScheduleRows({
+      employee: { id: 'E01', employeeCode: 'LEGACY-01', storeId: 'S01' },
+      schedule: [{ id: 'LEGACY', employeeCode: 'LEGACY-01', storeId: 'S01', date: '2026-08-20', start: '8:30', end: '9:05' }],
+      range: { from: '2026-08-20', to: '2026-08-20' },
+    })
+    expect(rows).toMatchObject([{ start: '08:30', end: '09:05', unresolved: false }])
+  })
 })

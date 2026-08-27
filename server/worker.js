@@ -13,8 +13,11 @@ import { applyAdvanceToNetPay, applyViolationWaterfall } from '../src/domain/com
 import { canonicalViolationTargetUnit } from '../src/domain/violationTargetUnit.js'
 import { canonicalEmployeeUnit } from '../src/domain/employeeUnit.js'
 import {
+  clockMinuteOfDay,
   isNonNegativeSafeIntegerAmount,
+  normalizeClock,
   recordBusinessDate,
+  resolveRecordEmployee,
 } from '../src/domain/recordCompatibility.js'
 import {
   requireResolvedScheduleRecord,
@@ -1055,12 +1058,8 @@ const linkedSupportTransferForAttendance = (state, attendance, employeeId, store
 }
 
 const parseShiftTime = (value) => {
-  const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/u)
-  if (!match) return null
-  const hour = Number(match[1])
-  const minute = Number(match[2])
-  if (hour > 23 || minute > 59) return null
-  return { label: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`, minuteOfDay: (hour * 60) + minute }
+  const label = normalizeClock(value)
+  return label ? { label, minuteOfDay: clockMinuteOfDay(label) } : null
 }
 
 const shiftTimes = (shift) => {
@@ -1109,9 +1108,7 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
   // soft-deleted. The schedule, rather than the definition's current lifecycle
   // state, is authoritative for an already assigned business date.
   const definitions = Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []
-  const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
-    [employee.id, employee.code, employee.employeeId].filter(Boolean).map((id) => [String(id), employee])
-  )))
+  const employees = Array.isArray(state.employees) ? state.employees : []
   const scheduledShifts = (Array.isArray(state.schedule) ? state.schedule : [])
     .filter((record) => String(record.date || record.workDate || '') === businessDate && !record.deletedAt)
     .filter((record) => {
@@ -1119,17 +1116,25 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
       return !explicitStoreId || explicitStoreId === String(storeId)
     })
     .map((record) => {
-      const employee = employeeById.get(String(record.employeeId || ''))
+      const employeeResolution = resolveRecordEmployee(record, employees)
+      if (employeeResolution.status !== 'resolved'
+        && (record.employeeId || record.employeeCode)
+        && String(record.storeId || '') === String(storeId)) {
+        throw unresolvedRevenueBonusShift(record)
+      }
+      const employee = employeeResolution.employee
       return ({ ...record,
+        employeeResolutionStatus: employeeResolution.status,
         employeeStoreId: String(employee?.storeId || ''),
-        employeeWorksAtSelectedStore: employeeHistoricallyWorkedAtStoreOnDate({
+        employeeWorksAtSelectedStore: employee ? employeeHistoricallyWorkedAtStoreOnDate({
           supportTransfers: state.supportTransfers, employee, storeId, date: businessDate,
-        }),
-        effectiveEmployeeStoreId: effectiveEmployeeStoreOnDate({
-        supportTransfers: state.supportTransfers,
-        employee,
-        date: businessDate,
-      }) })
+        }) : false,
+        effectiveEmployeeStoreId: employee ? effectiveEmployeeStoreOnDate({
+          supportTransfers: state.supportTransfers,
+          employee,
+          date: businessDate,
+        }) : '',
+      })
     })
     .filter((record) => resolveScheduleRecordOwnership({
       record,

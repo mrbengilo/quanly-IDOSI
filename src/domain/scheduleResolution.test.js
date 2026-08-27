@@ -22,6 +22,8 @@ describe('canonical schedule resolution invariants', () => {
     ['partial snapshot', { storeId: 'S01', shiftIds: ['SAME', 'LATE'], shiftSnapshots: [{ id: 'SAME', start: '07:00', end: '15:00' }] }, {}, [['07:00', '15:00'], ['16:00', '00:30']]],
     ['legacy inline', { storeId: 'S01', shiftStart: '21:00', shiftEnd: '05:00' }, {}, [['21:00', '05:00']]],
     ['id-less inline', { storeId: 'S01', start: '09:00', end: '17:00' }, {}, [['09:00', '17:00']]],
+    ['single-digit inline', { storeId: 'S01', start: '8:30', end: '9:05' }, {}, [['08:30', '09:05']]],
+    ['single-digit overnight', { storeId: 'S01', start: '9:00', end: '1:00' }, {}, [['09:00', '01:00']]],
   ])('%s resolves every shift', (_name, record, extra, expected) => {
     const result = resolveCanonicalScheduleRecord({ record, shiftDefinitions: definitions, selectedStoreId: 'S01', ...extra })
     expect(result.map(({ start, end }) => [start, end])).toEqual(expected)
@@ -32,6 +34,7 @@ describe('canonical schedule resolution invariants', () => {
     ['storeless cross-store owner', { employeeId: 'E02', shiftId: 'SAME' }, 'S02'],
     ['unresolved id', { storeId: 'S01', shiftId: 'MISSING' }, ''],
     ['one malformed row', { storeId: 'S01', start: '25:00', end: '17:00' }, ''],
+    ['malformed minute', { storeId: 'S01', start: '8:3', end: '17:00' }, ''],
   ])('%s fails closed', (_name, record, employeeStoreId) => {
     expect(() => resolveCanonicalScheduleRecord({ record, shiftDefinitions: definitions, selectedStoreId: 'S01', employeeStoreId }))
       .toThrow(ScheduleResolutionError)

@@ -1,4 +1,4 @@
-import { scheduleShiftIds } from '../../domain/recordCompatibility'
+import { clockMinuteOfDay, scheduleShiftIds } from '../../domain/recordCompatibility'
 import { displayScheduleRecordShifts } from '../../domain/scheduleResolution'
 
 export const STORE_SHIFT_COLOR_PALETTE = Object.freeze([
@@ -75,8 +75,7 @@ export const moveStoreScheduleDate = (anchorDate, view = 'day', direction = 1) =
 }
 
 const clockMinutes = (value) => {
-  const match = String(value || '').match(/^([01]\d|2[0-3]):([0-5]\d)$/u)
-  return match ? Number(match[1]) * 60 + Number(match[2]) : null
+  return clockMinuteOfDay(value)
 }
 
 export const scheduleShiftIsOvernight = (shift = {}) => {

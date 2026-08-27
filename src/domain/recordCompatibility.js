@@ -30,3 +30,48 @@ export const scheduleShiftIds = (record = {}) => {
     : record.shiftId ? [record.shiftId] : []
   return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))]
 }
+
+export const normalizeClock = (value) => {
+  if (typeof value !== 'string') return ''
+  const match = value.trim().match(/^(\d{1,2}):([0-5]\d)$/u)
+  if (!match) return ''
+  const hour = Number(match[1])
+  if (hour > 23) return ''
+  return `${String(hour).padStart(2, '0')}:${match[2]}`
+}
+
+export const clockMinuteOfDay = (value) => {
+  const clock = normalizeClock(value)
+  if (!clock) return null
+  const [hour, minute] = clock.split(':').map(Number)
+  return (hour * 60) + minute
+}
+
+export const employeeIdentifierAliases = (employee = {}) => [...new Set([
+  employee.id, employee.employeeId, employee.code, employee.employeeCode,
+].filter((value) => typeof value === 'string').map((value) => value.trim()).filter(Boolean))]
+
+export const resolveRecordEmployee = (record = {}, employees = []) => {
+  const identifiers = [
+    ['employeeId', record.employeeId],
+    ['employeeCode', record.employeeCode],
+  ].filter(([, value]) => typeof value === 'string' && value.trim()).map(([field, value]) => [field, value.trim()])
+  if (!identifiers.length) return { status: 'missing', code: 'EMPLOYEE_IDENTIFIER_MISSING', employee: null }
+  const resolved = identifiers.map(([field, identifier]) => {
+    const matches = (Array.isArray(employees) ? employees : []).filter((employee) => (
+      employeeIdentifierAliases(employee).includes(identifier)
+    ))
+    return { field, identifier, matches }
+  })
+  const ambiguous = resolved.find(({ matches }) => matches.length > 1)
+  if (ambiguous) return { status: 'ambiguous', code: 'EMPLOYEE_IDENTIFIER_AMBIGUOUS', employee: null,
+    field: ambiguous.field, identifier: ambiguous.identifier }
+  const unknown = resolved.find(({ matches }) => matches.length === 0)
+  if (unknown) return { status: 'unknown', code: 'EMPLOYEE_IDENTIFIER_UNKNOWN', employee: null,
+    field: unknown.field, identifier: unknown.identifier }
+  const employee = resolved[0].matches[0]
+  if (resolved.some(({ matches }) => matches[0] !== employee)) {
+    return { status: 'conflict', code: 'EMPLOYEE_IDENTIFIER_CONFLICT', employee: null }
+  }
+  return { status: 'resolved', code: 'EMPLOYEE_IDENTIFIER_RESOLVED', employee }
+}
