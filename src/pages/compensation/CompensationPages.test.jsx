@@ -208,6 +208,27 @@ describe('compensation pages', () => {
     expect(screen.queryByText('999 đ')).toBeNull()
   })
 
+  it('matches server date precedence and canonical amount validation in live revenue', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      orders: [
+        { id: 'EXPLICIT', storeId: 'CH001', date: '2026-08-26', createdAt: '2026-08-25T16:30:00.000Z', amount: 100 },
+        { id: 'CREATED-AT', storeId: 'CH001', createdAt: '2026-08-25T18:30:00.000Z', amount: 200 },
+        { id: 'PREVIOUS-DAY', storeId: 'CH001', createdAt: '2026-08-25T16:30:00.000Z', amount: 400 },
+        { id: 'NEGATIVE', storeId: 'CH001', date: '2026-08-26', amount: -1 },
+        { id: 'FRACTIONAL', storeId: 'CH001', date: '2026-08-26', amount: 1.5 },
+        { id: 'NAN', storeId: 'CH001', date: '2026-08-26', amount: Number.NaN },
+        { id: 'INFINITY', storeId: 'CH001', date: '2026-08-26', amount: Number.POSITIVE_INFINITY },
+        { id: 'UNSAFE', storeId: 'CH001', date: '2026-08-26', amount: Number.MAX_SAFE_INTEGER + 1 },
+        { id: 'ZERO', storeId: 'CH001', date: '2026-08-26', amount: 0 },
+      ],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('DOANH THU ĐỦ ĐIỀU KIỆN').parentElement.textContent).toContain('300 đ')
+    expect(screen.queryByText('700 đ')).toBeNull()
+  })
+
   it('lets privileged roles approve a pending highest-milestone claim', async () => {
     mocked.app = {
       ...baseApp('business_support'),

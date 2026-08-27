@@ -13,8 +13,9 @@ import {
   Select,
   TableWrap,
 } from '../../components/UI'
-import { businessDate as vietnamBusinessDate, money } from '../../utils'
+import { money } from '../../utils'
 import { REVENUE_BONUS_PROGRAMS } from '../../domain/compensationPolicies'
+import { isNonNegativeSafeIntegerAmount, recordBusinessDate } from '../../domain/recordCompatibility'
 import {
   canonicalRole,
   entityId,
@@ -83,9 +84,9 @@ export function RevenueBonusPage() {
     .filter((allocation) => !privateAllocationView || entryEmployeeId(allocation) === currentEmployeeId)
   const poolTotal = displayedRecords.reduce((sum, record) => sum + revenueRecordTotal(record), 0)
   const liveRevenueTotal = (app.orders || [])
-    .filter((order) => entryStoreId(order) === selectedStoreId && vietnamBusinessDate(order.createdAt || order.date) === businessDate)
-    .filter((order) => !order.deletedAt && order.status !== 'Đã xóa')
-    .reduce((sum, order) => sum + Math.max(0, Number(order.amount || 0)), 0)
+    .filter((order) => entryStoreId(order) === selectedStoreId && recordBusinessDate(order) === businessDate)
+    .filter((order) => !order.deletedAt && order.status !== 'Đã xóa' && isNonNegativeSafeIntegerAmount(order.amount))
+    .reduce((sum, order) => sum + Number(order.amount), 0)
   const revenueTotal = displayedRecords.length ? displayedRecords.reduce((sum, record) => sum + recordRevenue(record), 0) : liveRevenueTotal
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
   const unallocatedTotal = displayedRecords.reduce((sum, record) => sum + Number(record?.unallocatedVnd || 0), 0)

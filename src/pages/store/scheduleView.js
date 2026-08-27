@@ -1,3 +1,5 @@
+import { scheduleShiftIds } from '../../domain/recordCompatibility'
+
 export const STORE_SHIFT_COLOR_PALETTE = Object.freeze([
   '#ff3d71', '#7c3aed', '#00a6fb', '#00b894', '#ff8a00',
   '#e84393', '#3a86ff', '#8ac926', '#ff595e', '#00c2d1',
@@ -112,12 +114,7 @@ export const stableScheduleShiftColor = (storeId, shiftId) => {
   return STORE_SHIFT_COLOR_PALETTE[(hash >>> 0) % STORE_SHIFT_COLOR_PALETTE.length]
 }
 
-export const scheduleShiftIds = (record = {}) => {
-  const values = Array.isArray(record.shiftIds) && record.shiftIds.length
-    ? record.shiftIds
-    : record.shiftId ? [record.shiftId] : []
-  return [...new Set(values.map(identity).filter(Boolean))]
-}
+export { scheduleShiftIds } from '../../domain/recordCompatibility'
 
 export const storeScheduleRecordMatches = (record = {}, storeId = '') => {
   const requestedStoreId = identity(storeId)

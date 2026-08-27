@@ -13,6 +13,11 @@ import { applyAdvanceToNetPay, applyViolationWaterfall } from '../src/domain/com
 import { canonicalViolationTargetUnit } from '../src/domain/violationTargetUnit.js'
 import { canonicalEmployeeUnit } from '../src/domain/employeeUnit.js'
 import {
+  isNonNegativeSafeIntegerAmount,
+  recordBusinessDate,
+  scheduleShiftIds,
+} from '../src/domain/recordCompatibility.js'
+import {
   STORE_EMPLOYMENT_TYPE,
   STORE_FULL_TIME_THRESHOLD_HOURS,
   STORE_PAYROLL_MODEL,
@@ -1069,9 +1074,7 @@ const revenueBonusScheduleShift = (record, shiftId, shiftDefinitions) => {
   const definition = definitionCandidates.find((item) => String(item?.storeId || '').trim() === storeId)
     || definitionCandidates[0]
     || null
-  const referencedIds = Array.isArray(record.shiftIds) && record.shiftIds.length
-    ? record.shiftIds.map((item) => String(item || '')).filter(Boolean)
-    : [String(record.shiftId || '')].filter(Boolean)
+  const referencedIds = scheduleShiftIds(record)
   const legacyApplies = referencedIds.length <= 1 || String(record.shiftId || '') === id
   const firstValidTime = (field, legacyField) => [snapshot?.[field], definition?.[field], legacyApplies ? record?.[legacyField] : null, legacyApplies ? record?.[field] : null]
     .map(parseShiftTime)
@@ -1106,9 +1109,7 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
       && String(record.date || record.workDate || '') === businessDate && !record.deletedAt)
     .flatMap((record) => {
       const snapshots = Array.isArray(record.shiftSnapshots) ? record.shiftSnapshots : []
-      const referencedIds = Array.isArray(record.shiftIds)
-        ? record.shiftIds.map(String)
-        : [String(record.shiftId || '')].filter(Boolean)
+      const referencedIds = scheduleShiftIds(record)
       if (referencedIds.length) {
         return referencedIds.map((id) => {
           const shift = revenueBonusScheduleShift(record, id, definitions)
@@ -8577,14 +8578,7 @@ const asMonth = (value, field = 'Kỳ') => {
   return period
 }
 
-const dateFromRecord = (record) => {
-  const businessDate = String(record?.workDate || record?.attendanceDate || record?.date || '').trim()
-  if (/^\d{4}-\d{2}-\d{2}$/u.test(businessDate)) return businessDate
-  const source = String(record?.occurredAt || record?.createdAt || '').trim()
-  if (/^\d{4}-\d{2}-\d{2}$/u.test(source)) return source
-  const timestamp = Date.parse(source)
-  return Number.isFinite(timestamp) ? localDateTimeParts(new Date(timestamp).toISOString()).date : source.slice(0, 10)
-}
+const dateFromRecord = recordBusinessDate
 
 export const monthFromRecord = (record) => {
   const period = String(record?.period || '').trim()
@@ -9014,8 +9008,7 @@ const revenueFor = (state, storeId, period) => (Array.isArray(state.orders) ? st
     && monthFromRecord(order) === period
     && !order.deletedAt
     && order.status !== 'Đã xóa'
-    && Number.isSafeInteger(Number(order.amount))
-    && Number(order.amount) >= 0
+    && isNonNegativeSafeIntegerAmount(order.amount)
   ))
   .reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Tổng doanh thu trong kỳ'), 0)
 
@@ -14110,8 +14103,7 @@ const revenueBonusCalculationInputs = async (state, store, storeId, businessDate
     && dateFromRecord(order) === businessDate
     && !order.deletedAt
     && String(order.status || '') !== 'Đã xóa'
-    && Number.isSafeInteger(Number(order.amount))
-    && Number(order.amount) >= 0
+    && isNonNegativeSafeIntegerAmount(order.amount)
   ))
   const revenueVnd = orders.reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Doanh thu ngày'), 0)
   const { programId, milestoneProgramId } = revenueBonusProgramForStore(store)

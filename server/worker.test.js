@@ -11153,6 +11153,58 @@ describe('IDOSI Worker security primitives', () => {
     }
   })
 
+  it('falls back from empty shiftIds to legacy shiftId for calculation and confirmation', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-27T04:00:00.000Z'))
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-empty-shift-ids' }
+      await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'revenue-empty-shift-ids-password',
+        initialState: {
+          stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+          employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+          shiftDefinitions: [{ id: 'SHIFT-LEGACY', storeId: 'S01', start: '08:00', end: '12:00' }],
+          schedule: [{ id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', shiftIds: [], shiftId: 'SHIFT-LEGACY' }],
+          attendance: [{ id: 'ATT-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', checkInAt: '2026-08-27T01:00:00.000Z', checkOutAt: '2026-08-27T02:00:00.000Z', workedSeconds: 3_600 }],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'revenue-empty-shift-ids-password',
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+      const command = (type, expectedVersion, payload, key) => worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type, expectedVersion, payload,
+      }, { ...authorization, 'idempotency-key': key }), env)
+
+      const prematureCalculation = await command('revenue_bonus.calculate_day', 1, { storeId: 'S01', businessDate: '2026-08-27' }, 'empty-shifts-premature-calculate')
+      expect(prematureCalculation.status).toBe(409)
+      expect(await prematureCalculation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
+
+      vi.setSystemTime(new Date('2026-08-27T06:00:00.000Z'))
+      const calculation = await command('revenue_bonus.calculate_day', 1, { storeId: 'S01', businessDate: '2026-08-27' }, 'empty-shifts-completed-calculate')
+      expect(calculation.status).toBe(201)
+      const calculated = await calculation.json()
+
+      vi.setSystemTime(new Date('2026-08-27T04:00:00.000Z'))
+      const prematureConfirmation = await command('revenue_bonus.confirm_day', calculated.version, {
+        revenueBonusDailyId: calculated.revenueBonus.id, expectedEntityVersion: 1,
+      }, 'empty-shifts-premature-confirm')
+      expect(prematureConfirmation.status).toBe(409)
+      expect(await prematureConfirmation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
+
+      const unresolvedSchedule = JSON.stringify({ id: 'SCH-01', storeId: 'S01', employeeId: 'E01', date: '2026-08-27', shiftIds: [], shiftId: 'SHIFT-MISSING' })
+      env.DB.database.prepare("UPDATE state_entities SET value_json = ?, value_bytes = ? WHERE scope_key = 'global' AND collection_key = 'schedule'")
+        .run(unresolvedSchedule, Buffer.byteLength(unresolvedSchedule))
+      const unresolved = await command('revenue_bonus.confirm_day', calculated.version, {
+        revenueBonusDailyId: calculated.revenueBonus.id, expectedEntityVersion: 1,
+      }, 'empty-shifts-unresolved-confirm')
+      expect(unresolved.status).toBe(409)
+      expect(await unresolved.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('falls back to valid legacy inline shift times without leaking another store definition', async () => {
     vi.useFakeTimers()
     try {

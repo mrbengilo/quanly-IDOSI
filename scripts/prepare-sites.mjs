@@ -13,6 +13,7 @@ const workerDomainSources = [
   'compensationSettlement.js',
   'violationTargetUnit.js',
   'employeeUnit.js',
+  'recordCompatibility.js',
   'storeTieredPayroll.js',
   'managerRevenueBonus.js',
   'workCatalog.js',
