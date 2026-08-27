@@ -1057,6 +1057,37 @@ const linkedSupportTransferForAttendance = (state, attendance, employeeId, store
   )) || null
 }
 
+const resolveRevenueBonusAttendanceStore = (state, attendance, businessDate) => {
+  const explicitStoreId = String(attendance.storeId || '').trim()
+  const employees = Array.isArray(state.employees) ? state.employees : []
+  const employeeResolution = resolveRecordEmployee(attendance, employees)
+  if (employeeResolution.status !== 'resolved') {
+    return explicitStoreId && !attendance.supportTransferId
+      ? { status: 'resolved', storeId: explicitStoreId, employee: null, employeeId: String(attendance.employeeId || attendance.employeeCode || '') }
+      : { status: 'unresolved', reason: 'employee' }
+  }
+  const employee = employeeResolution.employee
+  const employeeId = String(employee.id || employee.code || employee.employeeId || '')
+  const employeeAliases = new Set([employee.id, employee.code, employee.employeeId]
+    .map((value) => String(value || '').trim()).filter(Boolean))
+  const transfers = Array.isArray(state.supportTransfers) ? state.supportTransfers : []
+  const transferId = String(attendance.supportTransferId || '').trim()
+  const exactTransfer = transferId ? transfers.find((record) => (
+    [record.id, record.code].some((value) => String(value || '') === transferId)
+    && [record.employeeId, record.employeeCode].some((value) => employeeAliases.has(String(value || '').trim()))
+    && supportTransferOverlapsDate(record, businessDate)
+  )) : null
+  if (transferId && !exactTransfer) return { status: 'unresolved', reason: 'transfer' }
+  const transferStoreId = String(exactTransfer?.toStoreId || '').trim()
+  if (explicitStoreId && transferStoreId && explicitStoreId !== transferStoreId) {
+    return { status: 'unresolved', reason: 'conflict' }
+  }
+  const storeId = explicitStoreId || transferStoreId || effectiveEmployeeStoreOnDate({
+    supportTransfers: transfers, employee, date: businessDate,
+  })
+  return storeId ? { status: 'resolved', storeId, employee, employeeId } : { status: 'unresolved', reason: 'ownership' }
+}
+
 const parseShiftTime = (value) => {
   const label = normalizeClock(value)
   return label ? { label, minuteOfDay: clockMinuteOfDay(label) } : null
@@ -1097,13 +1128,17 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
       currentBusinessDate,
     })
   }
-  const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => (
-    !record.deletedAt
-    && String(record.storeId || '') === String(storeId || '')
-    && dateFromRecord(record) === businessDate
-    && !record.checkOutAt
-    && !record.checkOut
-  ))
+  const openAttendance = []
+  for (const record of Array.isArray(state.attendance) ? state.attendance : []) {
+    if (record.deletedAt || dateFromRecord(record) !== businessDate || record.checkOutAt || record.checkOut) continue
+    const ownership = resolveRevenueBonusAttendanceStore(state, record, businessDate)
+    if (ownership.status !== 'resolved') {
+      throw new ApiError(409, 'REVENUE_BONUS_ATTENDANCE_STORE_UNRESOLVED', 'Không thể xác định cửa hàng của chấm công đang mở; cần đối soát trước khi tính thưởng.', {
+        attendanceId: String(record.id || '') || null,
+      })
+    }
+    if (ownership.storeId === String(storeId || '')) openAttendance.push(record)
+  }
   // Definitions remain valid historical references after they are deactivated or
   // soft-deleted. The schedule, rather than the definition's current lifecycle
   // state, is authoritative for an already assigned business date.
@@ -13225,6 +13260,41 @@ const assertPayrollNotPaidOrLocked = (state, storeId, period) => {
   return payroll
 }
 
+const activeRevenueBonusDraftsForPeriod = (state, storeId, period) => (
+  (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []).filter((record) => (
+    String(record.storeId || '') === String(storeId || '')
+    && String(record.period || monthFromRecord(record)) === String(period || '')
+    && normalizeTextKey(record.status) === 'draft'
+    && !record.deletedAt && !record.voidedAt && !record.supersededAt && !record.replacedAt && !record.replacedBy
+  ))
+)
+
+const assertPayrollRevenueBonusFinalized = (state, storeId, period, { requireMilestones = false } = {}) => {
+  const drafts = activeRevenueBonusDraftsForPeriod(state, storeId, period)
+  if (drafts.length) {
+    throw new ApiError(409, 'PAYROLL_REVENUE_BONUS_DRAFT', 'Kỳ lương còn thưởng doanh thu ở trạng thái bản nháp; cần xác nhận hoặc hủy bản nháp trước.', {
+      revenueBonusDailyIds: drafts.map((record) => String(record.id || '')).filter(Boolean),
+    })
+  }
+  if (!requireMilestones) return
+  const activeDailyIds = new Set((Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
+    .filter((record) => String(record.storeId || '') === String(storeId || '')
+      && String(record.period || monthFromRecord(record)) === String(period || '')
+      && normalizeTextKey(record.status) === 'confirmed'
+      && !record.deletedAt && !record.voidedAt && !record.supersededAt)
+    .map((record) => String(record.id || '')))
+  const pendingClaims = (Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []).filter((record) => (
+    activeDailyIds.has(String(record.revenueBonusDailyId || ''))
+    && normalizeTextKey(record.status) === 'pending'
+    && !record.deletedAt && !record.voidedAt && !record.supersededAt
+  ))
+  if (pendingClaims.length) {
+    throw new ApiError(409, 'PAYROLL_MILESTONE_PENDING', 'Kỳ lương còn đề nghị thưởng mốc đang chờ xử lý; cần duyệt hoặc từ chối trước khi chi.', {
+      claimIds: pendingClaims.map((record) => String(record.id || '')).filter(Boolean),
+    })
+  }
+}
+
 const SALARY_ADJUSTMENT_TYPES = new Set(['Thưởng khác', 'Phụ cấp khác', 'Khấu trừ'])
 
 const salaryAdjustmentCommand = async (db, actor, body, commandContext) => {
@@ -14079,9 +14149,15 @@ const violationCommand = async (db, actor, body, commandContext) => {
     assertOperationalStoreAccess(actor, previous.storeId)
     requireActivePhysicalStore(state, previous.storeId)
   }
-  const targetEmployee = compensationEmployee(state, previous.employeeId)
-  if (actor.role === 'store_manager' && employeeUnit(targetEmployee) !== 'store') {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Quản lý cửa hàng không được hủy vi phạm của quản lý hoặc nhân sự ngoài cửa hàng.')
+  if (actor.role === 'store_manager') {
+    const targetResolution = resolveRecordEmployee({ employeeId: previous.employeeId }, Array.isArray(state.employees) ? state.employees : [])
+    const targetEmployee = targetResolution.status === 'resolved' ? targetResolution.employee : null
+    const actorEmployeeId = String(actor.employee_id || actor.user_id || '')
+    if (!targetEmployee || employeeUnit(targetEmployee) !== 'store'
+      || [targetEmployee.id, targetEmployee.code, targetEmployee.employeeId].some((id) => String(id || '') === actorEmployeeId)
+      || String(targetEmployee.storeId || '') !== String(previous.storeId || '')) {
+      throw new ApiError(403, 'ROLE_FORBIDDEN', 'Quản lý cửa hàng chỉ được hủy vi phạm của nhân viên cửa hàng thông thường thuộc đúng cửa hàng.')
+    }
   }
   const period = asMonth(previous.period || monthFromRecord(previous))
   assertPayrollNotPaidOrLocked(state, previous.storeId, period)
@@ -14153,12 +14229,19 @@ const revenueBonusCalculationInputs = async (state, store, storeId, businessDate
   const participantWeights = new Map()
   const relevantAttendance = []
   for (const attendance of Array.isArray(state.attendance) ? state.attendance : []) {
-    const employeeId = String(attendance.employeeId || '').trim()
-    if (!employeeId || !employeeById.has(employeeId)
-      || String(attendance.storeId || '') !== storeId
-      || dateFromRecord(attendance) !== businessDate
+    const attendanceDate = dateFromRecord(attendance)
+    if (attendanceDate !== businessDate
       || attendance.deletedAt
       || (!attendance.checkOutAt && !attendance.checkOut)) continue
+    const ownership = resolveRevenueBonusAttendanceStore(state, attendance, businessDate)
+    if (ownership.status !== 'resolved') {
+      throw new ApiError(409, 'REVENUE_BONUS_ATTENDANCE_STORE_UNRESOLVED', 'Không thể xác định cửa hàng của chấm công; cần đối soát trước khi tính thưởng.', {
+        attendanceId: String(attendance.id || '') || null,
+      })
+    }
+    if (ownership.storeId !== storeId) continue
+    const employeeId = ownership.employeeId
+    if (!employeeId || !employeeById.has(employeeId)) continue
     const weightUnits = Math.max(0, Math.trunc(Number(attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? 0)))
     relevantAttendance.push({
       id: String(attendance.id || ''), employeeId, weightUnits,
@@ -14223,6 +14306,13 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
   }
   if (normalizeTextKey(daily.status) !== 'confirmed') {
     throw new ApiError(409, 'REVENUE_BONUS_NOT_CONFIRMED', 'Chỉ được duyệt hoặc từ chối thưởng mốc sau khi thưởng doanh thu ngày đã được xác nhận.')
+  }
+  assertPayrollNotPaidOrLocked(state, daily.storeId, daily.period)
+  assertRevenueBonusShiftsEnded(state, daily.storeId, daily.businessDate, commandContext.now)
+  const store = requireActivePhysicalStore(state, daily.storeId)
+  const currentInputs = await revenueBonusCalculationInputs(state, store, daily.storeId, daily.businessDate)
+  if (String(daily.fingerprint || '') !== currentInputs.fingerprint) {
+    throw new ApiError(409, 'REVENUE_BONUS_DAILY_STALE', 'Nguồn dữ liệu thưởng doanh thu đã thay đổi. Vui lòng tính lại và xác nhận bản thay thế trước khi xử lý thưởng mốc.')
   }
   if (String(daily.milestoneId || '') !== String(claim.milestoneId || '')
     || Number(daily.pendingMilestonePoolVnd || 0) !== Number(claim.amountVnd || 0)) {
@@ -14798,6 +14888,9 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   const existing = payrollPeriodFor(state, storeId, period)
   const actorSnapshot = serverActorSnapshot(actor)
   assertPayrollHasNoOpenAttendance(state, storeId, period)
+  if (operation === 'close' || operation === 'pay' || operation === 'lock') {
+    assertPayrollRevenueBonusFinalized(state, storeId, period, { requireMilestones: operation === 'pay' })
+  }
 
   if (operation === 'close') {
     if (existing?.lockedAt || existing?.status === 'Đã khóa') {

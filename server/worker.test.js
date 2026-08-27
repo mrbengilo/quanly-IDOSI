@@ -11780,4 +11780,53 @@ describe('IDOSI Worker security primitives', () => {
     expect(await rejected.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
   })
 
+  it('blocks payroll finalization for active bonus drafts without side effects', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-payroll-bonus-finality' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'payroll-bonus-finality-password', initialState: {
+        stores: [{ id: 'S01', name: 'Store 01', status: 'Đang hoạt động' }],
+        employees: [{ id: 'E01', name: 'Employee', storeId: 'S01', unit: 'store', monthlySalary: 1_000_000 }],
+        revenueBonusDaily: [{ id: 'DRAFT-ZERO', storeId: 'S01', period: '2026-08', businessDate: '2026-08-20', status: 'DRAFT', totalPoolVnd: 0 }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'payroll-bonus-finality-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const before = readHydratedState(env.DB.database)
+    const close = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'draft-blocks-close' }), env)
+    expect(close.status).toBe(409)
+    expect(await close.json()).toMatchObject({ error: { code: 'PAYROLL_REVENUE_BONUS_DRAFT' } })
+    expect(readHydratedState(env.DB.database)).toEqual(before)
+  })
+
+  it('rejects milestone decisions after payroll is paid or locked before touching persisted state', async () => {
+    for (const payroll of [
+      { id: 'PAY-PAID', storeId: 'S01', period: '2026-08', status: 'Đã chi', confirmedAt: '2026-08-31T00:00:00.000Z' },
+      { id: 'PAY-LOCKED', storeId: 'S01', period: '2026-08', status: 'Đã khóa', lockedAt: '2026-08-31T00:00:00.000Z' },
+    ]) {
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: `bootstrap-${payroll.id}` }
+      await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'milestone-finality-password', initialState: {
+          stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }], payrollPeriods: [payroll],
+          revenueBonusDaily: [{ id: 'DAY', storeId: 'S01', period: '2026-08', businessDate: '2026-08-20', status: 'CONFIRMED', milestoneId: 'M1', pendingMilestonePoolVnd: 1, fingerprint: 'stale-is-not-reached' }],
+          teamRewardClaims: [{ id: 'CLAIM', revenueBonusDailyId: 'DAY', storeId: 'S01', period: '2026-08', businessDate: '2026-08-20', milestoneId: 'M1', amountVnd: 1, status: 'PENDING', version: 1 }],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username: 'admin', password: 'milestone-finality-password' }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+      for (const type of ['revenue_bonus.approve_milestone', 'revenue_bonus.reject_milestone']) {
+        const before = readHydratedState(env.DB.database)
+        const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+          type, expectedVersion: 1, payload: { claimId: 'CLAIM', expectedEntityVersion: 1 },
+        }, { ...authorization, 'idempotency-key': `${payroll.id}-${type}` }), env)
+        expect(response.status).toBe(409)
+        expect((await response.json()).error.code).toBe(payroll.lockedAt ? 'PAYROLL_PERIOD_LOCKED' : 'PAYROLL_PERIOD_PAID')
+        expect(readHydratedState(env.DB.database)).toEqual(before)
+      }
+    }
+  })
+
 })
