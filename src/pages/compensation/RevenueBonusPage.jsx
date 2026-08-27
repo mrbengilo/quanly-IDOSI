@@ -96,6 +96,14 @@ export function RevenueBonusPage() {
     unavailable: 'Chức năng tính thưởng doanh thu đang được đồng bộ với máy chủ. Dữ liệu đã tính trước đó vẫn được giữ nguyên.',
   })
 
+  const confirmDraft = (record) => run({
+    key: `confirm:${record.id}`,
+    action: app.confirmRevenueBonusDay,
+    payload: { revenueBonusDailyId: record.id, expectedVersion: record.version },
+    success: `Đã xác nhận thưởng doanh thu ngày ${displayDate(record.businessDate)}.`,
+    unavailable: 'Chức năng xác nhận thưởng đang được đồng bộ với máy chủ.',
+  })
+
   const decideMilestone = (claim, approve) => {
     if (!approve && typeof window !== 'undefined' && !window.confirm('Từ chối đề nghị thưởng mốc này? Quyết định sẽ được lưu để đối soát.')) return
     run({
@@ -135,6 +143,7 @@ export function RevenueBonusPage() {
         <MetricCard compact label="CHƯA PHÂN BỔ" value={money(unallocatedTotal)} helper={unallocatedTotal > 0 ? 'Cần xử lý trước khi chốt sổ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
       </div>}
       {unallocatedTotal > 0 && privileged && <InfoNote tone="orange">Có quỹ chưa phân bổ do thiếu giờ bán hàng được duyệt. Kỳ liên quan phải được xử lý trước khi đóng sổ.</InfoNote>}
+      {privileged && records.some((record) => String(record.status || '').toUpperCase() === 'DRAFT') && <InfoNote tone="orange">Kết quả đang ở trạng thái nháp và chưa được ghi vào lương. Hãy đối soát trước khi xác nhận.</InfoNote>}
       <Card title="Các mốc thưởng doanh thu" action={<Badge tone={reachedTierId ? 'green' : 'blue'}>{reachedTierId ? 'Đã đạt mốc cao nhất phù hợp' : 'Chưa đạt mốc'}</Badge>}>
         <div className="revenue-tier-grid">
           {(activeProgram?.tiers || []).map((tier) => {
@@ -182,6 +191,7 @@ export function RevenueBonusPage() {
         </TableWrap>
       </Card>
       {!privateAllocationView && <Card title="Lịch sử tính quỹ trong ngày">
+        {records.filter((record) => String(record.status || '').toUpperCase() === 'DRAFT').map((record) => <Button key={record.id} loading={busyKey === `confirm:${record.id}`} disabled={Boolean(busyKey)} onClick={() => confirmDraft(record)}>XÁC NHẬN THƯỞNG</Button>)}
         <TableWrap className="compensation-table"><thead><tr><th>Mã tính</th><th>Chương trình</th><th>Doanh thu</th><th>Quỹ tỷ lệ</th><th>Thưởng mốc cao nhất</th><th>Tổng quỹ</th><th>Trạng thái</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}><td>{record.id}</td><td>{record.programLabel || record.programId || '—'}</td><td>{money(recordRevenue(record))}</td><td>{money(record.percentagePoolVnd || 0)}</td><td>{money(record.milestonePoolVnd || record.hotPoolVnd || 0)}</td><td><strong>{money(revenueRecordTotal(record))}</strong></td><td><Badge tone={statusTone(record)}>{statusLabel(record)}</Badge></td></tr>)}{!records.length && <tr><td colSpan="7" className="compensation-empty">Chưa tính quỹ thưởng cho ngày này.</td></tr>}</tbody></TableWrap>
       </Card>}
     </div>

@@ -3664,6 +3664,15 @@ export function AppProvider({ children }) {
     )
   }
 
+  const confirmRevenueBonusDay = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'revenue_bonus.confirm_day',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-confirm:${crypto.randomUUID()}`,
+    )
+  }
+
   const approveRevenueBonusMilestone = async (payload = {}) => {
     requireCompensationOperator()
     return runRemoteDomainCommand(
@@ -4993,6 +5002,7 @@ export function AppProvider({ children }) {
     createViolation,
     voidViolation,
     calculateRevenueBonusDay,
+    confirmRevenueBonusDay,
     approveRevenueBonusMilestone,
     rejectRevenueBonusMilestone,
     addSalaryAdjustment,

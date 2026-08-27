@@ -50,6 +50,7 @@ const baseApp = (role = 'admin') => ({
   createViolation: vi.fn().mockResolvedValue({ ok: true }),
   voidViolation: vi.fn().mockResolvedValue({ ok: true }),
   calculateRevenueBonusDay: vi.fn().mockResolvedValue({ ok: true }),
+  confirmRevenueBonusDay: vi.fn().mockResolvedValue({ ok: true }),
   approveRevenueBonusMilestone: vi.fn().mockResolvedValue({ ok: true }),
   rejectRevenueBonusMilestone: vi.fn().mockResolvedValue({ ok: true }),
 })
@@ -142,6 +143,22 @@ describe('compensation pages', () => {
     expect(screen.getByText('100 đ')).toBeTruthy()
     expect(screen.getByText('Nhân viên Hai')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
+  })
+
+  it('requires an explicit confirmation for a draft daily revenue bonus', async () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [{
+        id: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', period: '2026-08',
+        revenueVnd: 1_000_000, percentagePoolVnd: 10_000, totalPoolVnd: 10_000,
+        allocatedVnd: 10_000, unallocatedVnd: 0, status: 'DRAFT', version: 1,
+      }],
+    }
+    render(<RevenueBonusPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'XÁC NHẬN THƯỞNG' }))
+    await waitFor(() => expect(mocked.app.confirmRevenueBonusDay).toHaveBeenCalledWith({
+      revenueBonusDailyId: 'RB-DRAFT', expectedVersion: 1,
+    }))
   })
 
   it('lets privileged roles approve a pending highest-milestone claim', async () => {

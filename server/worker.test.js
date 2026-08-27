@@ -10933,13 +10933,14 @@ describe('IDOSI Worker security primitives', () => {
     const calculatedBody = await calculated.json()
     expect(calculatedBody.revenueBonus).toMatchObject({
       storeId: 'S02', milestoneId: 'dosii.daily.over_15_000_000', milestonePoolVnd: 0,
-      pendingMilestonePoolVnd: 250_000, milestoneStatus: 'PENDING',
+      pendingMilestonePoolVnd: 250_000, milestoneStatus: 'PENDING', status: 'DRAFT',
     })
     expect(calculatedBody.revenueBonus.totalPoolVnd).toBe(calculatedBody.revenueBonus.percentagePoolVnd)
     expect(calculatedBody.teamClaim).toMatchObject({ status: 'PENDING', amountVnd: 250_000 })
     expect(calculatedBody.allocations.every(({ milestonePoolVnd, amountVnd, percentagePoolVnd }) => (
       milestonePoolVnd === 0 && amountVnd === percentagePoolVnd
     ))).toBe(true)
+    expect(calculatedBody.allocations.every(({ status }) => status === 'DRAFT')).toBe(true)
     expect(calculatedBody.teamParticipants.every(({ status, amountVnd }) => status === 'PENDING' && amountVnd === 0)).toBe(true)
 
     const managerStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: managerAuthorization }), env)
@@ -10962,8 +10963,25 @@ describe('IDOSI Worker security primitives', () => {
       participants: employeeState.teamRewardParticipants,
     })).not.toContain('QL-S02')
 
+    const confirmed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.confirm_day', expectedVersion: calculatedBody.version,
+      payload: { revenueBonusDailyId: calculatedBody.revenueBonus.id, expectedEntityVersion: 1 },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-confirm-0001' }), env)
+    expect(confirmed.status).toBe(200)
+    const confirmedBody = await confirmed.json()
+    expect(confirmedBody.revenueBonus).toMatchObject({ status: 'CONFIRMED', version: 2 })
+    expect(confirmedBody.allocations.every(({ status }) => status === 'CONFIRMED')).toBe(true)
+    const repeatedConfirmation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.confirm_day', expectedVersion: confirmedBody.version,
+      payload: { revenueBonusDailyId: calculatedBody.revenueBonus.id, expectedEntityVersion: 1 },
+    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-confirm-repeat-0001' }), env)
+    expect(repeatedConfirmation.status).toBe(200)
+    expect(await repeatedConfirmation.json()).toMatchObject({ existing: true, revenueBonus: { status: 'CONFIRMED', version: 2 } })
+    const persistedAfterRepeat = readHydratedState(env.DB.database)
+    expect(persistedAfterRepeat.periodReconciliations.filter(({ type }) => type === 'REVENUE_BONUS_CONFIRMATION')).toHaveLength(1)
+
     const approved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
+      type: 'revenue_bonus.approve_milestone', expectedVersion: confirmedBody.version,
       payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
     }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-approve-0001' }), env)
     expect(approved.status).toBe(200)
@@ -10977,11 +10995,34 @@ describe('IDOSI Worker security primitives', () => {
     )
     expect(approvedBody.allocations.reduce((sum, record) => sum + record.milestonePoolVnd, 0)).toBe(250_000)
     const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
+      type: 'revenue_bonus.approve_milestone', expectedVersion: confirmedBody.version,
       payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
     }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-approve-0001' }), env)
     expect(replay.status).toBe(200)
     expect(replay.headers.get('idempotency-replayed')).toBe('true')
     expect(await replay.json()).toEqual(approvedBody)
   }, 60_000)
+
+  it('rejects daily revenue bonus calculation while the store still has an open shift', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-open-shift' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'revenue-open-shift-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+        employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+        attendance: [{ id: 'ATT-OPEN', storeId: 'S01', employeeId: 'E01', date: '2026-08-20', checkInAt: '2026-08-20T01:00:00.000Z' }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'revenue-open-shift-password',
+    }), env)
+    const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.calculate_day', expectedVersion: 1,
+      payload: { storeId: 'S01', businessDate: '2026-08-20' },
+    }, { authorization: `Bearer ${(await login.json()).token}`, 'idempotency-key': 'revenue-open-shift-calculate' }), env)
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
+    expect(readHydratedState(env.DB.database).revenueBonusDaily || []).toEqual([])
+  })
 })
