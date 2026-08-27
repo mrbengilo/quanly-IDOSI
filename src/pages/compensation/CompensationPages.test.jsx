@@ -16,8 +16,8 @@ const stores = [
 ]
 
 const employees = [
-  { id: 'QL-01', name: 'Quản lý Một', unit: 'store', storeId: 'CH001', isStoreManager: true },
-  { id: 'QL-02', name: 'Quản lý Hai', unit: 'store', storeId: 'CH002', isStoreManager: true },
+  { id: 'QL-01', name: 'Quản lý Một', unit: 'store_manager', storeId: 'CH001', isStoreManager: true },
+  { id: 'QL-02', name: 'Quản lý Hai', unit: 'store_manager', storeId: 'CH002', isStoreManager: true },
   { id: 'NV-01', name: 'Nhân viên Một', unit: 'store', storeId: 'CH001' },
   { id: 'NV-02', name: 'Nhân viên Hai', unit: 'store', storeId: 'CH001' },
   { id: 'HT-01', name: 'Hỗ trợ Một', unit: 'business_support' },
@@ -101,7 +101,7 @@ describe('compensation pages', () => {
     fireEvent.click(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }))
 
     await waitFor(() => expect(mocked.app.createViolation).toHaveBeenCalledWith(expect.objectContaining({
-      targetUnit: 'store', employeeId: 'QL-01', storeId: 'CH001', catalogItemId: 'violation-store-late', amountVnd: 2_000,
+      targetUnit: 'store', employeeId: 'NV-01', storeId: 'CH001', catalogItemId: 'violation-store-late', amountVnd: 2_000,
     })))
   })
 
@@ -214,7 +214,7 @@ describe('compensation pages', () => {
       revenueBonuses: [{
         id: 'RB-PENDING', storeId: 'CH001', businessDate: '2026-08-26',
         percentagePoolVnd: 50, pendingMilestonePoolVnd: 100, totalPoolVnd: 50,
-        status: 'APPROVED',
+        status: 'Đã xác nhận',
       }],
       teamRewardClaims: [{
         id: 'CLAIM-01', revenueBonusDailyId: 'RB-PENDING', storeId: 'CH001',
@@ -231,6 +231,41 @@ describe('compensation pages', () => {
     await waitFor(() => expect(mocked.app.approveRevenueBonusMilestone).toHaveBeenCalledWith({
       claimId: 'CLAIM-01', expectedVersion: 3,
     }))
+  })
+
+  it('blocks pending milestone commands until the linked daily bonus is confirmed', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [{ id: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', status: 'DRAFT', version: 1 }],
+      teamRewardClaims: [{ id: 'CLAIM-DRAFT', revenueBonusDailyId: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', status: 'PENDING', version: 2 }],
+    }
+    render(<RevenueBonusPage />)
+
+    const approve = screen.getByRole('button', { name: 'Duyệt' })
+    const reject = screen.getByRole('button', { name: 'Từ chối' })
+    expect(approve.disabled).toBe(true)
+    expect(reject.disabled).toBe(true)
+    expect(screen.getByText('Phải XÁC NHẬN THƯỞNG trước.')).toBeTruthy()
+    fireEvent.click(approve)
+    fireEvent.click(reject)
+    expect(mocked.app.approveRevenueBonusMilestone).not.toHaveBeenCalled()
+    expect(mocked.app.rejectRevenueBonusMilestone).not.toHaveBeenCalled()
+  })
+
+  it('excludes store managers from store employee violations and submits a valid store employee', async () => {
+    mocked.app = baseApp('store_manager')
+    render(<ViolationManagementPage targetUnit="store" />)
+
+    const employeeSelect = screen.getByLabelText('Nhân viên')
+    expect(within(employeeSelect).queryByRole('option', { name: /Quản lý Một/ })).toBeNull()
+    expect(within(employeeSelect).getByRole('option', { name: /Nhân viên Một/ })).toBeTruthy()
+    expect(employeeSelect.value).toBe('NV-01')
+    fireEvent.click(screen.getByRole('checkbox', { name: /Đi trễ/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }))
+
+    await waitFor(() => expect(mocked.app.createViolation).toHaveBeenCalledWith(expect.objectContaining({
+      targetUnit: 'store', employeeId: 'NV-01', storeId: 'CH001',
+    })))
   })
 
   it('defaults privileged revenue bonus work to the active operational store', async () => {

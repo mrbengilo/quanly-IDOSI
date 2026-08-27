@@ -11,6 +11,7 @@ import {
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { applyAdvanceToNetPay, applyViolationWaterfall } from '../src/domain/compensationSettlement.js'
 import { canonicalViolationTargetUnit } from '../src/domain/violationTargetUnit.js'
+import { canonicalEmployeeUnit } from '../src/domain/employeeUnit.js'
 import {
   STORE_EMPLOYMENT_TYPE,
   STORE_FULL_TIME_THRESHOLD_HOURS,
@@ -1471,13 +1472,7 @@ const filterArray = (state, key, predicate) => (Array.isArray(state[key]) ? stat
 
 const hasExplicitNotificationAudience = (record) => employeeReferences(record).length > 0
 
-const employeeUnit = (record) => {
-  const explicit = String(record?.unit || record?.unitType || record?.department || '').trim().toLowerCase()
-  if (['business_support', 'business-support', 'support'].includes(explicit)) return 'business_support'
-  if (['store_manager', 'store-manager', 'manager'].includes(explicit)) return 'store_manager'
-  if (explicit === 'office' || String(record?.storeId || '') === OFFICE_STORE_ID || record?.isOffice === true) return 'office'
-  return 'store'
-}
+const employeeUnit = (record) => canonicalEmployeeUnit(record, { officeStoreId: OFFICE_STORE_ID })
 
 const officeLikeEmployee = (record) => ['office', 'business_support', 'store_manager'].includes(employeeUnit(record))
 

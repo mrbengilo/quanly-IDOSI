@@ -20,6 +20,7 @@ import {
   entityId,
   entryEmployeeId,
   entryStoreId,
+  isConfirmedRevenueBonus,
   revenueAllocations,
   revenueRecordDate,
   revenueRecordTotal,
@@ -69,7 +70,7 @@ export function RevenueBonusPage() {
     .filter((record) => entryStoreId(record) === selectedStoreId && revenueRecordDate(record) === businessDate)
     .filter((record) => !record.supersededAt && !record.voidedAt)
   const draftRecord = records.find((record) => String(record.status || '').toUpperCase() === 'DRAFT')
-  const confirmedRecord = records.find((record) => String(record.status || '').toUpperCase() === 'CONFIRMED')
+  const confirmedRecord = records.find(isConfirmedRevenueBonus)
   const displayedRecords = privateAllocationView
     ? (confirmedRecord ? [confirmedRecord] : [])
     : (draftRecord ? [draftRecord] : confirmedRecord ? [confirmedRecord] : [])
@@ -172,14 +173,18 @@ export function RevenueBonusPage() {
           <thead><tr><th>Mốc thưởng</th><th>Ngày</th><th>Số tiền đề nghị</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>{milestoneClaims.map((claim) => {
             const pending = String(claim.status || '').toUpperCase() === 'PENDING'
+            const linkedDaily = records.find((record) => String(record.id || '') === String(claim.revenueBonusDailyId || ''))
+            const dailyConfirmed = isConfirmedRevenueBonus(linkedDaily)
+            const decisionDisabled = Boolean(busyKey) || !dailyConfirmed
             return <tr key={claim.id}>
               <td><strong>{claim.milestoneLabel || claim.milestoneId || claim.programId || 'Mốc cao nhất'}</strong><small className="compensation-subline">{claim.id}</small></td>
               <td>{displayDate(revenueRecordDate(claim))}</td>
               <td><strong>{money(Number(claim.amountVnd || 0))}</strong></td>
               <td><Badge tone={statusTone(claim)}>{statusLabel(claim)}</Badge></td>
               <td><div className="compensation-row-actions">
-                {pending && <Button variant="outline" icon={CheckCircle2} loading={busyKey === `approve:${claim.id}`} disabled={Boolean(busyKey)} onClick={() => decideMilestone(claim, true)}>Duyệt</Button>}
-                {pending && <Button variant="danger" icon={XCircle} loading={busyKey === `reject:${claim.id}`} disabled={Boolean(busyKey)} onClick={() => decideMilestone(claim, false)}>Từ chối</Button>}
+                {pending && <Button title={!dailyConfirmed ? 'Phải XÁC NHẬN THƯỞNG trước khi duyệt mốc.' : undefined} variant="outline" icon={CheckCircle2} loading={busyKey === `approve:${claim.id}`} disabled={decisionDisabled} onClick={() => decideMilestone(claim, true)}>Duyệt</Button>}
+                {pending && <Button title={!dailyConfirmed ? 'Phải XÁC NHẬN THƯỞNG trước khi từ chối mốc.' : undefined} variant="danger" icon={XCircle} loading={busyKey === `reject:${claim.id}`} disabled={decisionDisabled} onClick={() => decideMilestone(claim, false)}>Từ chối</Button>}
+                {pending && !dailyConfirmed && <small className="compensation-subline">Phải XÁC NHẬN THƯỞNG trước.</small>}
                 {!pending && <span>—</span>}
               </div></td>
             </tr>

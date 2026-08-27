@@ -1,4 +1,5 @@
 import { canonicalViolationTargetUnit } from '../../domain/violationTargetUnit'
+import { canonicalEmployeeUnit } from '../../domain/employeeUnit'
 
 const normalize = (value) => String(value ?? '').trim().toLowerCase()
 
@@ -70,12 +71,11 @@ export const storesVisibleToRole = (stores = [], session = {}) => {
   return list.filter((store) => entityId(store) === storeId)
 }
 
-export const employeeUnit = (employee = {}) => {
-  const unit = normalize(employee?.unit || employee?.unitType || employee?.department)
-  if (['business_support', 'business-support', 'support', 'htkd'].includes(unit)) return 'business_support'
-  if (['office', 'back_office', 'kvp', 'văn phòng', 'khối văn phòng'].includes(unit)) return 'office'
-  return 'store'
-}
+export const employeeUnit = canonicalEmployeeUnit
+
+export const isConfirmedRevenueBonus = (record = {}) => (
+  ['confirmed', 'approved', 'đã duyệt', 'đã xác nhận'].includes(normalize(record?.status))
+)
 
 export const activeEmployees = (employees = []) => employees.filter((employee) => (
   !employee?.deletedAt && !['đã nghỉ việc', 'inactive'].includes(normalize(employee?.status))

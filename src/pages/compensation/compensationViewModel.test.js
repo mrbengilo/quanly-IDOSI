@@ -33,13 +33,13 @@ describe('compensation view models', () => {
   it('resolves managers and employee units from linked production profiles', () => {
     const employees = [
       { id: 'NV-01', name: 'Nhân viên', unit: 'store', storeId: 'CH001' },
-      { id: 'QL-01', name: 'Quản lý', unit: 'store', storeId: 'CH001', isStoreManager: true },
+      { id: 'QL-01', name: 'Quản lý', unit: 'store_manager', storeId: 'CH001', isStoreManager: true },
       { id: 'VP-01', name: 'Văn phòng', unit: 'office' },
       { id: 'HT-01', name: 'Hỗ trợ', unit: 'business_support' },
     ]
     expect(managerCandidates({ employees, storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['QL-01'])
     expect(employeesForTarget({ employees, targetUnit: 'office' }).map((employee) => employee.id)).toEqual(['VP-01'])
-    expect(employeesForTarget({ employees, targetUnit: 'store', storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['NV-01', 'QL-01'])
+    expect(employeesForTarget({ employees, targetUnit: 'store', storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['NV-01'])
   })
 
   it('normalizes nested revenue allocations without leaking unrelated records', () => {
