@@ -10,6 +10,7 @@ import {
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { applyAdvanceToNetPay, applyViolationWaterfall } from '../src/domain/compensationSettlement.js'
+import { canonicalViolationTargetUnit } from '../src/domain/violationTargetUnit.js'
 import {
   STORE_EMPLOYMENT_TYPE,
   STORE_FULL_TIME_THRESHOLD_HOURS,
@@ -13892,15 +13893,6 @@ const canonicalViolationPolicy = (targetUnit, policyCode) => {
     ? WORKBOOK_COMPENSATION_POLICY.businessSupport
     : WORKBOOK_COMPENSATION_POLICY[targetUnit]
   return policySet?.violations?.find((record) => record.code === policyCode) || null
-}
-
-const canonicalViolationTargetUnit = (record = {}) => {
-  const unit = normalizeTextKey(record.targetUnit || record.targetGroup || record.unit)
-  if (['business_support', 'business-support', 'support', 'htkd', 'nhan vien ho tro kd'].includes(unit)) return 'business_support'
-  if (['office', 'back_office', 'kvp', 'van phong', 'khoi van phong'].includes(unit)) return 'office'
-  // Legacy store violations predate targetUnit and readers have always treated
-  // an unknown/missing unit as a store-employee record.
-  return 'store'
 }
 
 const violationCommand = async (db, actor, body, commandContext) => {

@@ -1,3 +1,5 @@
+import { canonicalViolationTargetUnit } from '../../domain/violationTargetUnit'
+
 const normalize = (value) => String(value ?? '').trim().toLowerCase()
 
 export const canonicalRole = (role) => normalize(role) === 'manager' ? 'business_support' : normalize(role)
@@ -102,12 +104,7 @@ export const managerCandidates = ({ employees = [], managerAccounts = [], storeI
   })
 }
 
-export const targetUnitOfViolation = (entry = {}) => {
-  const value = normalize(entry?.targetUnit || entry?.unit || entry?.employeeUnit)
-  if (['business_support', 'business-support', 'support', 'htkd'].includes(value)) return 'business_support'
-  if (['office', 'kvp', 'back_office'].includes(value)) return 'office'
-  return 'store'
-}
+export const targetUnitOfViolation = canonicalViolationTargetUnit
 
 export const revenueRecordDate = (record) => String(
   record?.businessDate || record?.date || record?.calculationDate || record?.createdAt || '',

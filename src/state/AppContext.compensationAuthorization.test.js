@@ -10,6 +10,27 @@ describe('compensation client command authorization', () => {
     }
   })
 
+  it.each(['store', 'store_employee', 'STORE EMPLOYEE', 'retail', ''])(
+    'normalizes the legacy store unit %j before assigned-store authorization',
+    (targetUnit) => {
+      expect(assertCompensationCommandAuthorization({
+        command: 'violation.void', role: 'store_manager', actorStoreId: 'S01', storeId: 'S01', targetUnit,
+      })).toBe(true)
+      expect(() => assertCompensationCommandAuthorization({
+        command: 'violation.void', role: 'store_manager', actorStoreId: 'S01', storeId: 'S02', targetUnit,
+      })).toThrow(/đúng cửa hàng/u)
+    },
+  )
+
+  it.each(['office', 'Văn phòng', 'business_support', 'Hỗ trợ kinh doanh'])(
+    'keeps the forbidden violation unit %j unavailable to store managers',
+    (targetUnit) => {
+      expect(() => assertCompensationCommandAuthorization({
+        command: 'violation.void', role: 'store_manager', actorStoreId: 'S01', storeId: 'S01', targetUnit,
+      })).toThrow(/vi phạm/u)
+    },
+  )
+
   it('rejects cross-store manager operations and milestone monetary decisions', () => {
     expect(() => assertCompensationCommandAuthorization({
       command: 'revenue_bonus.calculate_day', role: 'store_manager', actorStoreId: 'S01', storeId: 'S02',

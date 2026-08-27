@@ -35,6 +35,7 @@ import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
+import { canonicalViolationTargetUnit } from '../domain/violationTargetUnit'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
   normalizeOrderInformationOptions,
@@ -281,16 +282,19 @@ const normalizeAuthRole = (role) => normalizeText(role) === 'manager' ? 'busines
 
 export const assertCompensationCommandAuthorization = ({ command, role: rawRole, actorStoreId, storeId, targetUnit = '' }) => {
   const role = normalizeAuthRole(rawRole)
+  const normalizedTargetUnit = command.startsWith('violation.')
+    ? canonicalViolationTargetUnit({ targetUnit })
+    : ''
   const managerCommands = new Set([
     'revenue_bonus.calculate_day', 'revenue_bonus.confirm_day', 'violation.create', 'violation.void',
   ])
   const allowed = ['admin', 'business_support'].includes(role)
     || (role === 'store_manager' && managerCommands.has(command))
   if (!allowed) throw new Error('Tài khoản không có quyền thực hiện thao tác lương thưởng này.')
-  if (targetUnit === 'business_support' && role !== 'admin') {
+  if (normalizedTargetUnit === 'business_support' && role !== 'admin') {
     throw new Error('Chỉ Admin được quản lý vi phạm của Nhân viên hỗ trợ KD.')
   }
-  if (role === 'store_manager' && targetUnit && targetUnit !== 'store') {
+  if (role === 'store_manager' && command.startsWith('violation.') && normalizedTargetUnit !== 'store') {
     throw new Error('Quản lý cửa hàng chỉ được quản lý vi phạm nhân viên cửa hàng.')
   }
   if (role === 'store_manager' && (!storeId || String(storeId) !== String(actorStoreId || ''))) {
@@ -3680,7 +3684,7 @@ export function AppProvider({ children }) {
   const voidViolation = async (payload = {}) => {
     const violation = state.violations.find((record) => String(record.id || '') === String(payload.id || payload.violationId || ''))
     requireCompensationCommand('violation.void', {
-      targetUnit: String(violation?.targetUnit || ''),
+      targetUnit: canonicalViolationTargetUnit(violation),
       storeId: String(violation?.storeId || ''),
     })
     return runRemoteDomainCommand(

@@ -76,8 +76,9 @@ export function RevenueBonusPage() {
   const milestoneClaims = (app.teamRewardClaims || [])
     .filter((claim) => entryStoreId(claim) === selectedStoreId && revenueRecordDate(claim) === businessDate)
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
-  const allocations = revenueAllocations(displayedRecords)
+  const teamAllocations = revenueAllocations(displayedRecords)
     .filter((allocation) => entryStoreId(allocation) === selectedStoreId && revenueRecordDate(allocation) === businessDate)
+  const allocations = teamAllocations
     .filter((allocation) => !privateAllocationView || entryEmployeeId(allocation) === currentEmployeeId)
   const poolTotal = displayedRecords.reduce((sum, record) => sum + revenueRecordTotal(record), 0)
   const liveRevenueTotal = (app.orders || [])
@@ -88,6 +89,11 @@ export function RevenueBonusPage() {
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
   const unallocatedTotal = displayedRecords.reduce((sum, record) => sum + Number(record?.unallocatedVnd || 0), 0)
   const totalApprovedHours = allocations.reduce((sum, allocation) => sum + Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? Number(allocation.weightUnits || 0) / 3600), 0)
+  const teamWeightUnits = teamAllocations.reduce((sum, allocation) => sum + Math.max(0, Number(allocation.weightUnits || 0)), 0)
+  const visibleWeightUnits = allocations.reduce((sum, allocation) => sum + Math.max(0, Number(allocation.weightUnits || 0)), 0)
+  const allocationWeightFooter = privateAllocationView
+    ? (teamWeightUnits > 0 ? `${((visibleWeightUnits / teamWeightUnits) * 100).toFixed(2)}%` : '—')
+    : '100%'
   const activeProgram = REVENUE_BONUS_PROGRAMS[displayedRecords[0]?.programId]
   const reachedTierId = activeProgram?.tiers.find((tier) => tier.id === displayedRecords[0]?.tierId)?.id
 
@@ -192,7 +198,7 @@ export function RevenueBonusPage() {
             <td><strong>{money(allocationAmount(allocation))}</strong></td>
             <td><Badge tone={statusTone(allocation)}>{statusLabel(allocation)}</Badge></td>
           </tr>)}{!allocations.length && <tr><td colSpan={privateAllocationView ? 6 : 7} className="compensation-empty">Chưa có phân bổ thưởng doanh thu cho ngày đã chọn.</td></tr>}</tbody>
-          {allocations.length > 0 && <tfoot><tr>{!privateAllocationView && <th>Tổng</th>}<th colSpan="2">{allocations.length} nhân viên</th><th>{totalApprovedHours.toFixed(2)} giờ</th><th>100%</th><th>{money(allocationTotal)}</th><th>—</th></tr></tfoot>}
+          {allocations.length > 0 && <tfoot><tr>{!privateAllocationView && <th>Tổng</th>}<th colSpan="2">{allocations.length} nhân viên</th><th>{totalApprovedHours.toFixed(2)} giờ</th><th>{allocationWeightFooter}</th><th>{money(allocationTotal)}</th><th>—</th></tr></tfoot>}
         </TableWrap>
       </Card>
       {!privateAllocationView && <Card title="Lịch sử tính quỹ trong ngày">

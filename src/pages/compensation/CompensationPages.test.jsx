@@ -111,8 +111,8 @@ describe('compensation pages', () => {
       revenueBonuses: [{
         id: 'RB-01', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 134, status: 'CONFIRMED',
         allocations: [
-          { id: 'A-01', employeeId: 'NV-01', employeeName: 'Nhân viên Một', allocatedVnd: 35, status: 'CONFIRMED' },
-          { id: 'A-02', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 99, status: 'CONFIRMED' },
+          { id: 'A-01', employeeId: 'NV-01', employeeName: 'Nhân viên Một', allocatedVnd: 35, weightUnits: 900, status: 'CONFIRMED' },
+          { id: 'A-02', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 99, weightUnits: 2700, status: 'CONFIRMED' },
         ],
       }],
     }
@@ -122,6 +122,8 @@ describe('compensation pages', () => {
     expect(screen.getAllByText('35 đ').length).toBeGreaterThan(0)
     expect(screen.queryByText('99 đ')).toBeNull()
     expect(screen.queryByText('Nhân viên Hai')).toBeNull()
+    expect(screen.getByText('25.00%')).toBeTruthy()
+    expect(screen.queryByText('100%')).toBeNull()
     expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
   })
 
