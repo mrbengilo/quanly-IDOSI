@@ -1093,6 +1093,13 @@ const revenueBonusScheduleShift = (record, shiftId, shiftDefinitions) => {
 }
 
 const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
+  const currentBusinessDate = localDateTimeParts(now).date
+  if (businessDate > currentBusinessDate) {
+    throw new ApiError(409, 'REVENUE_BONUS_FUTURE_DATE', 'Không được tính hoặc xác nhận thưởng cho ngày nghiệp vụ trong tương lai.', {
+      businessDate,
+      currentBusinessDate,
+    })
+  }
   const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => (
     !record.deletedAt
     && String(record.storeId || '') === String(storeId || '')
@@ -1134,7 +1141,11 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
     return transferDateTimeEpoch(`${endDate}T${times.end.label}`)
   }).filter(Number.isFinite)
   const lastShiftEndMs = scheduledShiftEnds.length ? Math.max(...scheduledShiftEnds) : null
-  if (openAttendance.length || (lastShiftEndMs !== null && Date.parse(now) < lastShiftEndMs)) {
+  // A schedule supplies explicit evidence that today's operating shifts ended.
+  // Without one, a business day is complete only after Vietnam-local midnight,
+  // which means the selected date must already be historical.
+  const missingCurrentDayBoundary = lastShiftEndMs === null && businessDate === currentBusinessDate
+  if (openAttendance.length || missingCurrentDayBoundary || (lastShiftEndMs !== null && Date.parse(now) < lastShiftEndMs)) {
     throw new ApiError(409, 'REVENUE_BONUS_SHIFT_OPEN', 'Chỉ được tính hoặc xác nhận thưởng sau khi ca cuối cùng của ngày đã kết thúc.', {
       attendanceIds: openAttendance.map((record) => String(record.id || '')).filter(Boolean),
       lastShiftEndAt: lastShiftEndMs === null ? null : new Date(lastShiftEndMs).toISOString(),

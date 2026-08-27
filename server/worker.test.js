@@ -10899,6 +10899,10 @@ describe('IDOSI Worker security primitives', () => {
           id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
         }],
+        schedule: [{
+          id: 'SCH-HOT', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
+          start: '00:00', end: '00:30',
+        }],
         violations: [
           { id: 'V-OFFICE', targetUnit: 'office', storeId: 'OFFICE', employeeId: 'VP-01', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
           { id: 'V-SUPPORT', targetUnit: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-BONUS', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
@@ -11071,6 +11075,76 @@ describe('IDOSI Worker security primitives', () => {
     expect(response.status).toBe(409)
     expect(await response.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
     expect(readHydratedState(env.DB.database).revenueBonusDaily || []).toEqual([])
+  })
+
+  it('enforces Vietnam business-day completion before calculation or confirmation', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-27T16:59:59.999Z')) // 23:59:59.999 in Vietnam
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-business-day-boundary' }
+      await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'revenue-business-day-password',
+        initialState: {
+          stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+          employees: [{ id: 'E01', name: 'Nhân viên', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'revenue-business-day-password',
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+      const command = (type, expectedVersion, payload, key) => worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type, expectedVersion, payload,
+      }, { ...authorization, 'idempotency-key': key }), env)
+
+      const futureCalculation = await command('revenue_bonus.calculate_day', 1, {
+        storeId: 'S01', businessDate: '2026-08-28',
+      }, 'business-day-future-calculation')
+      expect(futureCalculation.status).toBe(409)
+      expect(await futureCalculation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_FUTURE_DATE' } })
+      expect(readHydratedState(env.DB.database).revenueBonusDaily || []).toEqual([])
+
+      const currentDayCalculation = await command('revenue_bonus.calculate_day', 1, {
+        storeId: 'S01', businessDate: '2026-08-27',
+      }, 'business-day-current-calculation')
+      expect(currentDayCalculation.status).toBe(409)
+      expect(await currentDayCalculation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_OPEN' } })
+      expect(readHydratedState(env.DB.database).revenueBonusDaily || []).toEqual([])
+
+      const historicalDraft = await command('revenue_bonus.calculate_day', 1, {
+        storeId: 'S01', businessDate: '2026-08-26',
+      }, 'business-day-historical-calculation')
+      expect(historicalDraft.status).toBe(201)
+      const historicalBody = await historicalDraft.json()
+      expect(historicalBody.revenueBonus).toMatchObject({ businessDate: '2026-08-26', status: 'DRAFT' })
+
+      const dailyRow = env.DB.database.prepare("SELECT entity_key, value_json FROM state_entities WHERE scope_key = 'global' AND collection_key = 'revenueBonusDaily' LIMIT 1").get()
+      const futureDraft = JSON.stringify({ ...JSON.parse(dailyRow.value_json), businessDate: '2026-08-28', period: '2026-08' })
+      env.DB.database.prepare("UPDATE state_entities SET value_json = ?, value_bytes = ? WHERE scope_key = 'global' AND collection_key = 'revenueBonusDaily' AND entity_key = ?")
+        .run(futureDraft, Buffer.byteLength(futureDraft), dailyRow.entity_key)
+      const beforeConfirmation = readHydratedState(env.DB.database)
+      const futureConfirmation = await command('revenue_bonus.confirm_day', historicalBody.version, {
+        revenueBonusDailyId: historicalBody.revenueBonus.id, expectedEntityVersion: 1,
+      }, 'business-day-future-confirmation')
+      expect(futureConfirmation.status).toBe(409)
+      expect(await futureConfirmation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_FUTURE_DATE' } })
+      expect(readHydratedState(env.DB.database)).toEqual(beforeConfirmation)
+
+      vi.setSystemTime(new Date('2026-08-27T17:00:00.000Z')) // 00:00 on 2026-08-28 in Vietnam
+      const boundaryCalculation = await command('revenue_bonus.calculate_day', historicalBody.version, {
+        storeId: 'S01', businessDate: '2026-08-27',
+      }, 'business-day-midnight-boundary')
+      expect(boundaryCalculation.status).toBe(201)
+      const boundaryBody = await boundaryCalculation.json()
+      expect(boundaryBody).toMatchObject({ revenueBonus: { businessDate: '2026-08-27', status: 'DRAFT' } })
+      const boundaryConfirmation = await command('revenue_bonus.confirm_day', boundaryBody.version, {
+        revenueBonusDailyId: boundaryBody.revenueBonus.id, expectedEntityVersion: 1,
+      }, 'business-day-midnight-confirmation')
+      expect(boundaryConfirmation.status).toBe(200)
+      expect(await boundaryConfirmation.json()).toMatchObject({ revenueBonus: { businessDate: '2026-08-27', status: 'CONFIRMED' } })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('resolves legacy scheduled shift IDs and fails closed for running or unresolved shifts', async () => {
