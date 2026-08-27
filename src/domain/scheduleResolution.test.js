@@ -89,6 +89,57 @@ describe('canonical schedule resolution invariants', () => {
     expect(fallback[0]).not.toHaveProperty('unresolved')
   })
 
+  it.each([
+    ['orphan first', ['MISSING-A', 'SAME', 'LATE']],
+    ['orphan middle', ['SAME', 'MISSING-A', 'LATE']],
+    ['orphan last', ['SAME', 'LATE', 'MISSING-A']],
+  ])('preserves resolved shifts when an %s reference is unresolved', (_name, shiftIds) => {
+    const options = { record: { id: 'PARTIAL', storeId: 'S01', shiftIds }, shiftDefinitions: definitions,
+      selectedStoreId: 'S01' }
+    const result = resolveCanonicalScheduleRecordResult(options)
+    expect(result).toMatchObject({
+      status: 'partial',
+      shifts: [{ id: 'SAME' }, { id: 'LATE' }],
+      unresolvedShifts: [{ shiftId: 'MISSING-A', code: 'SHIFT_UNRESOLVED' }],
+      record: { id: 'PARTIAL' },
+    })
+    expect(displayScheduleRecordShifts(options).map((shift) => shift.id)).toEqual(shiftIds)
+    expect(displayScheduleRecordShifts(options).filter((shift) => shift.unresolved)).toEqual([
+      expect.objectContaining({ id: 'MISSING-A', shiftId: 'MISSING-A', resolutionReason: 'Thiếu dữ liệu ca' }),
+    ])
+    expect(() => requireResolvedScheduleRecord(options)).toThrow(ScheduleResolutionError)
+  })
+
+  it('keeps stable order for two valid and two unresolved references without duplicating snapshot-backed shifts', () => {
+    const options = {
+      record: { id: 'MIXED', storeId: 'S01', shiftIds: ['SAME', 'LOST-1', 'LATE', 'LOST-2'],
+        shiftSnapshots: [{ id: 'SAME', name: 'Ca snapshot', start: '07:30', end: '15:30' }] },
+      shiftDefinitions: definitions,
+      selectedStoreId: 'S01',
+    }
+    const result = resolveCanonicalScheduleRecordResult(options)
+    expect(result.entries.map((entry) => entry.status === 'resolved' ? entry.shift.id : entry.shiftId))
+      .toEqual(['SAME', 'LOST-1', 'LATE', 'LOST-2'])
+    expect(result.shifts).toHaveLength(2)
+    expect(result.unresolvedShifts).toHaveLength(2)
+    expect(displayScheduleRecordShifts(options)).toMatchObject([
+      { id: 'SAME', name: 'Ca snapshot', start: '07:30' },
+      { id: 'LOST-1', unresolved: true },
+      { id: 'LATE', start: '16:00' },
+      { id: 'LOST-2', unresolved: true },
+    ])
+  })
+
+  it('renders one explicit placeholder per reference when every shift is unresolved', () => {
+    const shifts = displayScheduleRecordShifts({
+      record: { id: 'ALL-LOST', storeId: 'S01', shiftIds: ['LOST-1', 'LOST-2'] }, selectedStoreId: 'S01',
+    })
+    expect(shifts).toMatchObject([
+      { id: 'LOST-1', shiftId: 'LOST-1', unresolved: true, start: '', end: '' },
+      { id: 'LOST-2', shiftId: 'LOST-2', unresolved: true, start: '', end: '' },
+    ])
+  })
+
   it('does not hide unexpected resolver errors in display policy', () => {
     const record = { storeId: 'S01', shiftId: 'BROKEN' }
     Object.defineProperty(record, 'shiftSnapshots', { get: () => { throw new TypeError('programming error') } })

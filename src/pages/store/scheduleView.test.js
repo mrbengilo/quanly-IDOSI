@@ -95,4 +95,16 @@ describe('store schedule read model', () => {
       resolutionReason: 'Thiếu dữ liệu ca', note: 'Giữ audit',
     })])
   })
+
+  it('renders valid and unresolved shifts from the same historical record in input order', () => {
+    const resolved = resolveStoreScheduleRecordShifts({
+      record: { id: 'HIST-PARTIAL', storeId: 'S1', shiftIds: ['REMOVED', 'DAY'] },
+      storeId: 'S1',
+      shiftDefinitions: [{ id: 'DAY', storeId: 'S1', name: 'Ca ngày', start: '08:00', end: '17:00' }],
+    })
+    expect(resolved).toMatchObject([
+      { id: 'REMOVED', shiftId: 'REMOVED', unresolved: true, start: '', end: '' },
+      { id: 'DAY', name: 'Ca ngày', start: '08:00', end: '17:00' },
+    ])
+  })
 })

@@ -42,4 +42,19 @@ describe('employee schedule view', () => {
     })
     expect(rows).toMatchObject([{ start: '08:30', end: '09:05', unresolved: false }])
   })
+
+  it('keeps partial multi-shift history in stable order without exposing fake times', () => {
+    const rows = employeeScheduleRows({
+      employee: { id: 'E01', storeId: 'S01' },
+      schedule: [{ id: 'PARTIAL', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+        shiftIds: ['DAY', 'REMOVED'] }],
+      shiftDefinitions: [{ id: 'DAY', storeId: 'S01', name: 'Ca ngày', start: '08:00', end: '17:00' }],
+      range: { from: '2026-08-20', to: '2026-08-20' },
+    })
+    expect(rows).toMatchObject([
+      { shiftName: 'Ca không xác định', start: '', end: '', unresolved: true,
+        resolutionNote: 'Thiếu dữ liệu ca' },
+      { shiftName: 'Ca ngày', start: '08:00', end: '17:00', unresolved: false },
+    ])
+  })
 })

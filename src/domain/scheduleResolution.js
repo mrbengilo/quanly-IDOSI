@@ -58,14 +58,14 @@ export const resolveScheduleRecordStore = ({
   return ownership.status === 'selected' ? ownership.storeId : ''
 }
 
-export const resolveCanonicalScheduleRecord = ({
+const resolveCanonicalScheduleRecordEntries = ({
   record = {}, shiftDefinitions = [], selectedStoreId = '', employeeStoreId = '',
   employeeWorksAtSelectedStore, effectiveEmployeeStoreId = '',
 } = {}) => {
   const storeId = resolveScheduleRecordStore({
     record, selectedStoreId, employeeStoreId, employeeWorksAtSelectedStore, effectiveEmployeeStoreId,
   })
-  if (!storeId) throw new ScheduleResolutionError(record)
+  if (!storeId) return [{ status: 'unresolved', error: new ScheduleResolutionError(record) }]
   const ids = scheduleShiftIds(record)
   const snapshots = Array.isArray(record.shiftSnapshots) ? record.shiftSnapshots : []
   const resolveId = (id) => {
@@ -75,9 +75,9 @@ export const resolveCanonicalScheduleRecord = ({
     const legacyApplies = ids.length <= 1 || text(record.shiftId) === shiftId
     const start = firstClock(snapshot?.start, definition?.start, legacyApplies && record.shiftStart, legacyApplies && record.start)
     const end = firstClock(snapshot?.end, definition?.end, legacyApplies && record.shiftEnd, legacyApplies && record.end)
-    if (!shiftId || !start || !end) throw new ScheduleResolutionError(record, shiftId)
-    return { ...(definition || {}), ...(snapshot || {}), id: shiftId, storeId, start, end,
-      source: snapshot ? 'snapshot' : definition ? 'definition' : 'record' }
+    if (!shiftId || !start || !end) return { status: 'unresolved', error: new ScheduleResolutionError(record, shiftId) }
+    return { status: 'resolved', shift: { ...(definition || {}), ...(snapshot || {}), id: shiftId, storeId, start, end,
+      source: snapshot ? 'snapshot' : definition ? 'definition' : 'record' } }
   }
   if (ids.length) return ids.map(resolveId)
   if (snapshots.length) return snapshots.map((snapshot) => {
@@ -85,36 +85,62 @@ export const resolveCanonicalScheduleRecord = ({
     if (id) return resolveId(id)
     const start = firstClock(snapshot?.start)
     const end = firstClock(snapshot?.end)
-    if (!start || !end) throw new ScheduleResolutionError(record)
-    return { ...snapshot, storeId, start, end, source: 'snapshot' }
+    if (!start || !end) return { status: 'unresolved', error: new ScheduleResolutionError(record) }
+    return { status: 'resolved', shift: { ...snapshot, storeId, start, end, source: 'snapshot' } }
   })
   const start = firstClock(record.start, record.shiftStart)
   const end = firstClock(record.end, record.shiftEnd)
-  if (!start || !end) throw new ScheduleResolutionError(record)
-  return [{ ...record, storeId, start, end, source: 'record' }]
+  if (!start || !end) return [{ status: 'unresolved', error: new ScheduleResolutionError(record) }]
+  return [{ status: 'resolved', shift: { ...record, storeId, start, end, source: 'record' } }]
 }
 
 export const resolveCanonicalScheduleRecordResult = (options = {}) => {
-  try {
-    return { status: 'resolved', shifts: resolveCanonicalScheduleRecord(options) }
-  } catch (error) {
-    if (!(error instanceof ScheduleResolutionError)) throw error
+  const record = options.record || {}
+  const entries = resolveCanonicalScheduleRecordEntries(options).map((entry) => {
+    if (entry.status === 'resolved') return entry
+    const error = entry.error
     return { status: 'unresolved', code: error.code, reason: error.message,
-      scheduleId: error.scheduleId, shiftId: error.shiftId, record: options.record || {} }
+      scheduleId: error.scheduleId, shiftId: error.shiftId, record }
+  })
+  const shifts = entries.filter((entry) => entry.status === 'resolved').map((entry) => entry.shift)
+  const unresolvedShifts = entries.filter((entry) => entry.status === 'unresolved')
+  const firstUnresolved = unresolvedShifts[0] || {}
+  return {
+    status: unresolvedShifts.length ? shifts.length ? 'partial' : 'unresolved' : 'resolved',
+    shifts,
+    unresolvedShifts,
+    entries,
+    record,
+    // Compatibility aliases for consumers of the former all-or-error result.
+    code: firstUnresolved.code,
+    reason: firstUnresolved.reason,
+    scheduleId: firstUnresolved.scheduleId,
+    shiftId: firstUnresolved.shiftId,
   }
 }
 
 export const requireResolvedScheduleRecord = (options = {}) => {
   const result = resolveCanonicalScheduleRecordResult(options)
-  if (result.status === 'resolved') return result.shifts
-  throw new ScheduleResolutionError(result.record, result.shiftId, result.code)
+  if (!result.unresolvedShifts.length) return result.shifts
+  const unresolved = result.unresolvedShifts[0]
+  throw new ScheduleResolutionError(result.record, unresolved.shiftId, unresolved.code)
+}
+
+// Backward-compatible strict API. Display readers must opt into
+// displayScheduleRecordShifts() so partial records remain renderable.
+export const resolveCanonicalScheduleRecord = (options = {}) => requireResolvedScheduleRecord(options)
+
+const unresolvedDisplayShift = (entry, index) => {
+  const record = entry.record
+  const identifier = entry.shiftId || text(record.id) || `unresolved-${text(record.employeeId || record.employeeCode)}-${index}`
+  return { ...record, id: identifier, shiftId: entry.shiftId || text(record.shiftId),
+    name: text(record.shiftName || record.name) || 'Ca không xác định', start: '', end: '', time: '',
+    source: 'unresolved', unresolved: true, resolutionCode: entry.code, resolutionReason: 'Thiếu dữ liệu ca' }
 }
 
 export const displayScheduleRecordShifts = (options = {}) => {
   const result = resolveCanonicalScheduleRecordResult(options)
-  if (result.status === 'resolved') return result.shifts
-  const record = result.record
-  return [{ ...record, id: result.shiftId || text(record.id) || `unresolved-${text(record.employeeId || record.employeeCode)}`,
-    name: text(record.shiftName || record.name) || 'Ca không xác định', start: '', end: '', time: '',
-    source: 'unresolved', unresolved: true, resolutionCode: result.code, resolutionReason: 'Thiếu dữ liệu ca' }]
+  return result.entries.map((entry, index) => (
+    entry.status === 'resolved' ? entry.shift : unresolvedDisplayShift(entry, index)
+  ))
 }

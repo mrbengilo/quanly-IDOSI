@@ -11243,6 +11243,10 @@ describe('IDOSI Worker security primitives', () => {
       { id: 'SECOND', start: '10:00', end: '11:00' },
     ], [], 201],
     ['an unresolved shiftId', [{ id: 'MISSING-ID', shiftId: 'UNKNOWN' }], [], 409],
+    ['one valid and one unresolved shiftId in the same record', [{
+      id: 'PARTIAL-MULTI', shiftIds: ['KNOWN', 'UNKNOWN'],
+      shiftSnapshots: [{ id: 'KNOWN', start: '08:00', end: '09:00' }],
+    }], [], 409],
     ['a valid snapshot', [{ id: 'SNAPSHOT', shiftSnapshots: [{ start: '08:00', end: '09:00' }] }], [], 201],
     ['an inactive historical definition', [{ id: 'INACTIVE', shiftId: 'SHIFT-INACTIVE' }], [
       { id: 'SHIFT-INACTIVE', storeId: 'S01', start: '08:00', end: '09:00', active: false },
@@ -11303,7 +11307,10 @@ describe('IDOSI Worker security primitives', () => {
     expect(calculation.status).toBe(201)
     const calculated = await calculation.json()
 
-    const invalidRow = JSON.stringify({ id: 'INVALID', storeId: 'S01', employeeId: 'E01', date: '2026-08-20', start: '10:00' })
+    const invalidRow = JSON.stringify({
+      id: 'INVALID', storeId: 'S01', employeeId: 'E01', date: '2026-08-20',
+      shiftIds: ['KNOWN', 'MISSING'], shiftSnapshots: [{ id: 'KNOWN', start: '10:00', end: '11:00' }],
+    })
     env.DB.database.prepare(`INSERT INTO state_entities
       (scope_key, collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at)
       VALUES ('global', 'schedule', 'id:INVALID', 1, ?, ?, ?, ?)`)
