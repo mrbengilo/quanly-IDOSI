@@ -55,8 +55,15 @@ const baseApp = (role = 'admin') => ({
 })
 
 describe('compensation pages', () => {
-  beforeEach(() => { mocked.app = baseApp() })
-  afterEach(cleanup)
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-08-26T05:00:00.000Z'))
+    mocked.app = baseApp()
+  })
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
 
   it('lets HTKD manage managers across all operational stores and preserves exact VND input', async () => {
     mocked.app = baseApp('business_support')
