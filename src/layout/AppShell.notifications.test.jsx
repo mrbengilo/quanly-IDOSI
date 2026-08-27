@@ -225,6 +225,8 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.getByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i }).getAttribute('href')).toBe('/admin/work-registration-schedules')
+    expect(screen.getByRole('link', { name: /^Vi phạm nhân viên cửa hàng$/i }).getAttribute('href')).toBe('/admin/violations/store')
+    expect(screen.getByRole('link', { name: /^Bảng vi phạm Khối văn phòng$/i }).getAttribute('href')).toBe('/admin/violations/office')
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
   })
 
@@ -246,6 +248,8 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
     expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
+    expect(screen.getByRole('link', { name: /^Vi phạm nhân viên cửa hàng$/i }).getAttribute('href')).toBe('/admin/violations/store')
+    expect(screen.queryByRole('link', { name: /^Bảng vi phạm Khối văn phòng$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
@@ -254,7 +258,7 @@ describe('AppShell notifications', () => {
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
       'Cài đặt thông tin đơn hàng', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý',
-      'Bảng vi phạm Khối văn phòng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
+      'Vi phạm nhân viên cửa hàng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
     ])
   })
 
@@ -271,6 +275,7 @@ describe('AppShell notifications', () => {
     mocked.session = { role: 'store_manager', name: 'Quản lý cửa hàng', storeId: 'CH001' }
     render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
     expect(screen.queryByRole('link', { name: 'Cài đặt lương' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Vi phạm nhân viên' }).getAttribute('href')).toBe('/store/violations')
   })
 
   it('opens the role selector below the logo and keeps the account avatar for a multi-role account', async () => {
