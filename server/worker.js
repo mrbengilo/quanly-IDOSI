@@ -16,7 +16,11 @@ import {
   isNonNegativeSafeIntegerAmount,
   recordBusinessDate,
 } from '../src/domain/recordCompatibility.js'
-import { resolveCanonicalScheduleRecord, ScheduleResolutionError } from '../src/domain/scheduleResolution.js'
+import {
+  requireResolvedScheduleRecord,
+  resolveScheduleRecordOwnership,
+  ScheduleResolutionError,
+} from '../src/domain/scheduleResolution.js'
 import {
   effectiveEmployeeStoreOnDate,
   employeeWorksAtStoreOnDate as canonicalEmployeeWorksAtStoreOnDate,
@@ -1074,7 +1078,7 @@ const unresolvedRevenueBonusShift = (record, shiftId = null) => new ApiError(
 
 const revenueBonusScheduleShifts = (record, shiftDefinitions) => {
   try {
-    return resolveCanonicalScheduleRecord({
+    return requireResolvedScheduleRecord({
       record, shiftDefinitions, selectedStoreId: record.storeId, employeeStoreId: record.employeeStoreId,
       employeeWorksAtSelectedStore: record.employeeWorksAtSelectedStore,
       effectiveEmployeeStoreId: record.effectiveEmployeeStoreId,
@@ -1115,7 +1119,7 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
     })
     .map((record) => {
       const employee = employeeById.get(String(record.employeeId || ''))
-      return ({ ...record, storeId: record.storeId || storeId,
+      return ({ ...record,
         employeeStoreId: String(employee?.storeId || ''),
         employeeWorksAtSelectedStore: employeeWorksAtStoreOnDate(state, employee, storeId, businessDate),
         effectiveEmployeeStoreId: effectiveEmployeeStoreOnDate({
@@ -1124,6 +1128,14 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
         date: businessDate,
       }) })
     })
+    .filter((record) => resolveScheduleRecordOwnership({
+      record,
+      selectedStoreId: storeId,
+      employeeStoreId: record.employeeStoreId,
+      employeeWorksAtSelectedStore: record.employeeWorksAtSelectedStore,
+      effectiveEmployeeStoreId: record.effectiveEmployeeStoreId,
+    }).status === 'selected')
+    .map((record) => ({ ...record, storeId }))
     .flatMap((record) => revenueBonusScheduleShifts(record, definitions))
   const scheduledShiftEnds = scheduledShifts.map((shift) => {
     const times = shiftTimes(shift)

@@ -8,12 +8,37 @@ const firstClock = (...values) => {
 }
 
 export class ScheduleResolutionError extends Error {
-  constructor(record, shiftId = '') {
+  constructor(record, shiftId = '', code = 'SHIFT_UNRESOLVED') {
     super('SCHEDULE_SHIFT_UNRESOLVED')
     this.name = 'ScheduleResolutionError'
     this.scheduleId = text(record?.id)
     this.shiftId = text(shiftId)
+    this.code = code
   }
+}
+
+export const resolveScheduleRecordOwnership = ({
+  record = {}, selectedStoreId = '', employeeWorksAtSelectedStore,
+  effectiveEmployeeStoreId = '', employeeStoreId = '',
+} = {}) => {
+  const selected = text(selectedStoreId)
+  const explicit = text(record.storeId)
+  const effective = text(effectiveEmployeeStoreId)
+  const home = text(employeeStoreId)
+  if (!selected) return { status: 'unresolved', code: 'SELECTED_STORE_MISSING', storeId: '' }
+  if (explicit) return explicit === selected
+    ? { status: 'selected', code: 'EXPLICIT_SELECTED_STORE', storeId: explicit }
+    : { status: 'other', code: 'EXPLICIT_OTHER_STORE', storeId: explicit }
+  if (employeeWorksAtSelectedStore !== undefined) {
+    if (effective) return effective === selected && employeeWorksAtSelectedStore
+      ? { status: 'selected', code: 'EFFECTIVE_SELECTED_STORE', storeId: effective }
+      : { status: 'other', code: 'EFFECTIVE_OTHER_STORE', storeId: effective }
+    return { status: 'unresolved', code: 'EMPLOYEE_STORE_UNRESOLVED', storeId: '' }
+  }
+  if (home) return home === selected
+    ? { status: 'selected', code: 'LEGACY_HOME_STORE', storeId: home }
+    : { status: 'other', code: 'LEGACY_OTHER_HOME_STORE', storeId: home }
+  return { status: 'selected', code: 'CALLER_SCOPED_DISPLAY', storeId: selected }
 }
 
 const definitionFor = (definitions, shiftId, storeId) => {
@@ -28,17 +53,10 @@ export const resolveScheduleRecordStore = ({
   record = {}, selectedStoreId = '', employeeStoreId = '',
   employeeWorksAtSelectedStore, effectiveEmployeeStoreId = '',
 } = {}) => {
-  const selected = text(selectedStoreId)
-  const explicit = text(record.storeId)
-  const owned = text(employeeStoreId)
-  const effective = text(effectiveEmployeeStoreId)
-  if (!selected || (explicit && explicit !== selected)) return ''
-  if (employeeWorksAtSelectedStore === false) return ''
-  if (!explicit && employeeWorksAtSelectedStore !== undefined && effective !== selected) return ''
-  // Backward-compatible reader context: callers without canonical employee
-  // eligibility evidence may still scope storeless rows by known home ownership.
-  if (employeeWorksAtSelectedStore === undefined && owned && owned !== selected) return ''
-  return explicit || (employeeWorksAtSelectedStore !== undefined ? effective : owned || selected)
+  const ownership = resolveScheduleRecordOwnership({
+    record, selectedStoreId, employeeStoreId, employeeWorksAtSelectedStore, effectiveEmployeeStoreId,
+  })
+  return ownership.status === 'selected' ? ownership.storeId : ''
 }
 
 export const resolveCanonicalScheduleRecord = ({
@@ -75,4 +93,29 @@ export const resolveCanonicalScheduleRecord = ({
   const end = firstClock(record.end, record.shiftEnd)
   if (!start || !end) throw new ScheduleResolutionError(record)
   return [{ ...record, storeId, start, end, source: 'record' }]
+}
+
+export const resolveCanonicalScheduleRecordResult = (options = {}) => {
+  try {
+    return { status: 'resolved', shifts: resolveCanonicalScheduleRecord(options) }
+  } catch (error) {
+    if (!(error instanceof ScheduleResolutionError)) throw error
+    return { status: 'unresolved', code: error.code, reason: error.message,
+      scheduleId: error.scheduleId, shiftId: error.shiftId, record: options.record || {} }
+  }
+}
+
+export const requireResolvedScheduleRecord = (options = {}) => {
+  const result = resolveCanonicalScheduleRecordResult(options)
+  if (result.status === 'resolved') return result.shifts
+  throw new ScheduleResolutionError(result.record, result.shiftId, result.code)
+}
+
+export const displayScheduleRecordShifts = (options = {}) => {
+  const result = resolveCanonicalScheduleRecordResult(options)
+  if (result.status === 'resolved') return result.shifts
+  const record = result.record
+  return [{ ...record, id: result.shiftId || text(record.id) || `unresolved-${text(record.employeeId)}`,
+    name: text(record.shiftName || record.name) || 'Ca không xác định', start: '', end: '', time: '',
+    source: 'unresolved', unresolved: true, resolutionCode: result.code, resolutionReason: 'Thiếu dữ liệu ca' }]
 }

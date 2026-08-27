@@ -1,4 +1,5 @@
 import { supportTransferBounds } from '../../domain/supportTransferTime'
+import { displayScheduleRecordShifts } from '../../domain/scheduleResolution'
 
 const dateValue = (value = new Date()) => {
   const date = value instanceof Date ? value : new Date(`${String(value).slice(0, 10)}T00:00:00`)
@@ -35,15 +36,15 @@ const transferIsVisible = (transfer = {}) => !transfer.deletedAt && !['Đã xóa
 export function employeeScheduleRows({ schedule = [], shiftDefinitions = [], supportTransfers = [], stores = [], employee = {}, range = {} } = {}) {
   const employeeId = identity(employee.id || employee.code || employee.employeeId)
   const storesById = new Map(stores.map((store) => [identity(store.id), store]))
-  const definitionsById = new Map(shiftDefinitions.map((shift) => [identity(shift.id), shift]))
   const regularRows = (Array.isArray(schedule) ? schedule : []).flatMap((record) => {
     if (identity(record.employeeId || record.employeeCode) !== employeeId) return []
     const date = String(record.date || record.workDate || '').slice(0, 10)
     if (!date || (range.from && date < range.from) || (range.to && date > range.to)) return []
-    const shiftIds = record.shiftIds?.length ? record.shiftIds : record.shiftId ? [record.shiftId] : []
-    return shiftIds.map((shiftId, index) => {
-      const snapshot = record.shiftSnapshots?.find((item) => identity(item.id) === identity(shiftId))
-      const shift = snapshot || definitionsById.get(identity(shiftId)) || {}
+    const selectedStoreId = identity(record.storeId || employee.storeId)
+    return displayScheduleRecordShifts({
+      record, shiftDefinitions, selectedStoreId, employeeStoreId: identity(employee.storeId),
+    }).map((shift, index) => {
+      const shiftId = identity(shift.id)
       const storeId = identity(record.storeId || shift.storeId || employee.storeId)
       return {
         id: `${record.id || `${employeeId}-${date}`}:${shiftId || index}`,
@@ -51,9 +52,11 @@ export function employeeScheduleRows({ schedule = [], shiftDefinitions = [], sup
         date,
         storeId,
         storeName: storesById.get(storeId)?.name || record.storeName || storeId || 'Cửa hàng chính',
-        shiftName: shift.name || record.shiftName || identity(shiftId) || 'Ca làm việc',
+        shiftName: shift.unresolved ? 'Ca không xác định' : shift.name || record.shiftName || shiftId || 'Ca làm việc',
         start: shift.start || record.shiftStart || '',
         end: shift.end || record.shiftEnd || '',
+        unresolved: Boolean(shift.unresolved),
+        resolutionNote: shift.unresolved ? 'Thiếu dữ liệu ca' : '',
         note: record.note || '',
       }
     })

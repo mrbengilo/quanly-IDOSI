@@ -84,4 +84,15 @@ describe('store schedule read model', () => {
     expect(columns[0].name).toBe('Ca mới')
     expect(columns[1]).toMatchObject({ name: 'Ca cũ', time: '21:00 - 05:00 (+1 ngày)', snapshot: true })
   })
+
+  it('renders a missing historical definition as an explicit unresolved placeholder', () => {
+    const resolved = resolveStoreScheduleRecordShifts({
+      record: { id: 'HIST-MISSING', storeId: 'S1', shiftId: 'REMOVED', note: 'Giữ audit' },
+      storeId: 'S1', shiftDefinitions: [],
+    })
+    expect(resolved).toEqual([expect.objectContaining({
+      name: 'Ca không xác định', start: '', end: '', unresolved: true,
+      resolutionReason: 'Thiếu dữ liệu ca', note: 'Giữ audit',
+    })])
+  })
 })

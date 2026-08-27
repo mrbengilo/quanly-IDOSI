@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { resolveCanonicalScheduleRecord, ScheduleResolutionError } from './scheduleResolution'
+import {
+  displayScheduleRecordShifts,
+  requireResolvedScheduleRecord,
+  resolveCanonicalScheduleRecord,
+  resolveCanonicalScheduleRecordResult,
+  resolveScheduleRecordOwnership,
+  ScheduleResolutionError,
+} from './scheduleResolution'
 
 const definitions = [
   { id: 'SAME', storeId: 'S01', start: '08:00', end: '16:00', active: false },
@@ -42,14 +49,46 @@ describe('canonical schedule resolution invariants', () => {
     expect(result).toMatchObject([{ storeId: 'S02', start: '10:00', end: '18:00' }])
   })
 
-  it('rejects explicit and storeless rows without canonical selected-store evidence', () => {
-    expect(() => resolveCanonicalScheduleRecord({
+  it('uses explicit ownership while rejecting storeless rows without canonical evidence', () => {
+    expect(resolveCanonicalScheduleRecord({
       record: { storeId: 'S02', start: '08:00', end: '09:00' }, selectedStoreId: 'S02',
       employeeStoreId: 'S01', employeeWorksAtSelectedStore: false,
-    })).toThrow(ScheduleResolutionError)
+    })).toMatchObject([{ storeId: 'S02', start: '08:00', end: '09:00' }])
     expect(() => resolveCanonicalScheduleRecord({
       record: { employeeId: 'E01', start: '08:00', end: '09:00' }, selectedStoreId: 'S02',
       employeeStoreId: 'S01', employeeWorksAtSelectedStore: true, effectiveEmployeeStoreId: '',
     })).toThrow(ScheduleResolutionError)
+  })
+
+  it('returns typed ownership without assigning other-store or orphan rows to every store', () => {
+    expect(resolveScheduleRecordOwnership({ record: { storeId: 'S02' }, selectedStoreId: 'S01' }))
+      .toMatchObject({ status: 'other', storeId: 'S02' })
+    expect(resolveScheduleRecordOwnership({
+      record: { employeeId: 'E02' }, selectedStoreId: 'S01', employeeWorksAtSelectedStore: false,
+      effectiveEmployeeStoreId: 'S02',
+    })).toMatchObject({ status: 'other', storeId: 'S02' })
+    expect(resolveScheduleRecordOwnership({
+      record: { employeeId: 'ORPHAN' }, selectedStoreId: 'S01', employeeWorksAtSelectedStore: false,
+    })).toMatchObject({ status: 'unresolved', code: 'EMPLOYEE_STORE_UNRESOLVED' })
+  })
+
+  it('keeps strict payroll and tolerant display policies independent', () => {
+    const options = { record: { id: 'HIST-1', storeId: 'S01', shiftId: 'MISSING', note: 'audit' }, selectedStoreId: 'S01' }
+    expect(resolveCanonicalScheduleRecordResult(options)).toMatchObject({ status: 'unresolved', shiftId: 'MISSING' })
+    expect(() => requireResolvedScheduleRecord(options)).toThrow(ScheduleResolutionError)
+    expect(displayScheduleRecordShifts(options)).toEqual([expect.objectContaining({
+      name: 'Ca không xác định', start: '', end: '', unresolved: true, resolutionReason: 'Thiếu dữ liệu ca', note: 'audit',
+    })])
+    const fallback = displayScheduleRecordShifts({
+      ...options, record: { ...options.record, shiftStart: '08:00', shiftEnd: '17:00' },
+    })
+    expect(fallback).toEqual([expect.objectContaining({ start: '08:00', end: '17:00' })])
+    expect(fallback[0]).not.toHaveProperty('unresolved')
+  })
+
+  it('does not hide unexpected resolver errors in display policy', () => {
+    const record = { storeId: 'S01', shiftId: 'BROKEN' }
+    Object.defineProperty(record, 'shiftSnapshots', { get: () => { throw new TypeError('programming error') } })
+    expect(() => displayScheduleRecordShifts({ record, selectedStoreId: 'S01' })).toThrow(TypeError)
   })
 })

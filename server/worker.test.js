@@ -11695,4 +11695,59 @@ describe('IDOSI Worker security primitives', () => {
     expect(await confirmation.json()).toMatchObject({ revenueBonus: { storeId: 'S02', status: 'CONFIRMED' } })
   })
 
+  it('scopes storeless schedules by effective ownership for calculation and confirmation', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-storeless-scope' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'storeless-scope-password',
+      initialState: {
+        stores: [{ id: 'S01', status: 'Đang hoạt động' }, { id: 'S02', status: 'Đang hoạt động' }],
+        employees: [
+          { id: 'E01', unit: 'store', storeId: 'S01', status: 'Đang làm việc' },
+          { id: 'E02', unit: 'store', storeId: 'S02', status: 'Đang làm việc' },
+        ],
+        schedule: [
+          { id: 'S01-STORELESS', employeeId: 'E01', date: '2026-08-20', start: '08:00', end: '09:00' },
+          { id: 'S02-STORELESS', employeeId: 'E02', date: '2026-08-20', start: '10:00', end: '11:00' },
+          { id: 'EXPLICIT-S02', storeId: 'S02', employeeId: 'E02', date: '2026-08-20', start: '12:00', end: '13:00' },
+          { id: 'ORPHAN', employeeId: 'UNKNOWN', date: '2026-08-20', shiftId: 'MISSING' },
+        ],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'storeless-scope-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    let version = 1
+    for (const storeId of ['S01', 'S02']) {
+      const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.calculate_day', expectedVersion: version,
+        payload: { storeId, businessDate: '2026-08-20' },
+      }, { ...authorization, 'idempotency-key': `storeless-${storeId}-calculate` }), env)
+      expect(calculated.status).toBe(201)
+      const body = await calculated.json()
+      version = body.version
+      const confirmed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.confirm_day', expectedVersion: version,
+        payload: { revenueBonusDailyId: body.revenueBonus.id, expectedEntityVersion: 1 },
+      }, { ...authorization, 'idempotency-key': `storeless-${storeId}-confirm` }), env)
+      expect(confirmed.status).toBe(200)
+      const confirmedBody = await confirmed.json()
+      version = confirmedBody.version
+      expect(confirmedBody.revenueBonus).toMatchObject({ storeId, status: 'CONFIRMED' })
+    }
+
+    const badSelectedRow = JSON.stringify({ id: 'S01-BAD', employeeId: 'E01', date: '2026-08-21', shiftId: 'MISSING' })
+    env.DB.database.prepare(`INSERT INTO state_entities
+      (scope_key, collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at)
+      VALUES ('global', 'schedule', 'id:S01-BAD', 4, ?, ?, ?, ?)`).run(
+      badSelectedRow, Buffer.byteLength(badSelectedRow), '2026-08-21T00:00:00.000Z', '2026-08-21T00:00:00.000Z',
+    )
+    const rejected = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.calculate_day', expectedVersion: version,
+      payload: { storeId: 'S01', businessDate: '2026-08-21' },
+    }, { ...authorization, 'idempotency-key': 'storeless-selected-unresolved' }), env)
+    expect(rejected.status).toBe(409)
+    expect(await rejected.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_SHIFT_UNRESOLVED' } })
+  })
+
 })

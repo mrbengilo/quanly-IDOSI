@@ -1,5 +1,5 @@
 import { scheduleShiftIds } from '../../domain/recordCompatibility'
-import { resolveCanonicalScheduleRecord } from '../../domain/scheduleResolution'
+import { displayScheduleRecordShifts } from '../../domain/scheduleResolution'
 
 export const STORE_SHIFT_COLOR_PALETTE = Object.freeze([
   '#ff3d71', '#7c3aed', '#00a6fb', '#00b894', '#ff8a00',
@@ -176,9 +176,9 @@ export const resolveStoreScheduleShift = ({ record = {}, shiftId, shiftDefinitio
 }
 
 export const resolveStoreScheduleRecordShifts = ({ record = {}, shiftDefinitions = [], storeId = '' } = {}) => {
-  const canonical = resolveCanonicalScheduleRecord({ record, shiftDefinitions, selectedStoreId: storeId })
+  const canonical = displayScheduleRecordShifts({ record, shiftDefinitions, selectedStoreId: storeId })
   return canonical.map((shift) => (
-    shift.id ? resolveStoreScheduleShift({ record, shiftId: shift.id, shiftDefinitions, storeId }) : shift
+    shift.unresolved ? shift : shift.id ? resolveStoreScheduleShift({ record, shiftId: shift.id, shiftDefinitions, storeId }) : shift
   ))
 }
 
