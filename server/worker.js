@@ -18,6 +18,10 @@ import {
 } from '../src/domain/recordCompatibility.js'
 import { resolveCanonicalScheduleRecord, ScheduleResolutionError } from '../src/domain/scheduleResolution.js'
 import {
+  effectiveEmployeeStoreOnDate,
+  employeeWorksAtStoreOnDate as canonicalEmployeeWorksAtStoreOnDate,
+} from '../src/domain/employeeWorkStore.js'
+import {
   STORE_EMPLOYMENT_TYPE,
   STORE_FULL_TIME_THRESHOLD_HOURS,
   STORE_PAYROLL_MODEL,
@@ -1072,6 +1076,8 @@ const revenueBonusScheduleShifts = (record, shiftDefinitions) => {
   try {
     return resolveCanonicalScheduleRecord({
       record, shiftDefinitions, selectedStoreId: record.storeId, employeeStoreId: record.employeeStoreId,
+      employeeWorksAtSelectedStore: record.employeeWorksAtSelectedStore,
+      effectiveEmployeeStoreId: record.effectiveEmployeeStoreId,
     })
   } catch (error) {
     if (error instanceof ScheduleResolutionError) throw unresolvedRevenueBonusShift(record, error.shiftId)
@@ -1098,19 +1104,26 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
   // soft-deleted. The schedule, rather than the definition's current lifecycle
   // state, is authoritative for an already assigned business date.
   const definitions = Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []
-  const employeeStoreById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
-    [employee.id, employee.code, employee.employeeId].filter(Boolean).map((id) => [String(id), String(employee.storeId || '')])
+  const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
+    [employee.id, employee.code, employee.employeeId].filter(Boolean).map((id) => [String(id), employee])
   )))
   const scheduledShifts = (Array.isArray(state.schedule) ? state.schedule : [])
     .filter((record) => String(record.date || record.workDate || '') === businessDate && !record.deletedAt)
     .filter((record) => {
       const explicitStoreId = String(record.storeId || '')
-      const employeeStoreId = employeeStoreById.get(String(record.employeeId || '')) || ''
-      if (explicitStoreId) return explicitStoreId === String(storeId)
-      return !employeeStoreId || employeeStoreId === String(storeId)
+      return !explicitStoreId || explicitStoreId === String(storeId)
     })
-    .map((record) => ({ ...record, storeId: record.storeId || storeId,
-      employeeStoreId: employeeStoreById.get(String(record.employeeId || '')) || '' }))
+    .map((record) => {
+      const employee = employeeById.get(String(record.employeeId || ''))
+      return ({ ...record, storeId: record.storeId || storeId,
+        employeeStoreId: String(employee?.storeId || ''),
+        employeeWorksAtSelectedStore: employeeWorksAtStoreOnDate(state, employee, storeId, businessDate),
+        effectiveEmployeeStoreId: effectiveEmployeeStoreOnDate({
+        supportTransfers: state.supportTransfers,
+        employee,
+        date: businessDate,
+      }) })
+    })
     .flatMap((record) => revenueBonusScheduleShifts(record, definitions))
   const scheduledShiftEnds = scheduledShifts.map((shift) => {
     const times = shiftTimes(shift)
@@ -2429,25 +2442,9 @@ const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
-const supportTransferToStoreOnDate = (state, employeeId, storeId, at) => (Array.isArray(state.supportTransfers)
-  ? state.supportTransfers
-  : [])
-  .filter((record) => (
-    String(record.employeeId || '') === String(employeeId || '')
-    && String(record.toStoreId || '') === String(storeId || '')
-    && supportTransferMatchesTime(record, at)
-  ))
-  .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
-
-const employeeWorksAtStoreOnDate = (state, employee, storeId, date) => (
-  String(employee?.storeId || '') === String(storeId || '')
-  || Boolean(supportTransferToStoreOnDate(
-    state,
-    String(employee?.id || employee?.code || ''),
-    storeId,
-    date,
-  ))
-)
+const employeeWorksAtStoreOnDate = (state, employee, storeId, date) => canonicalEmployeeWorksAtStoreOnDate({
+  supportTransfers: state.supportTransfers, employee, storeId, date,
+})
 
 const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = null) => {
   if (user?.role !== 'employee' || !user?.employee_id) return user

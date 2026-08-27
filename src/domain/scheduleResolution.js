@@ -24,18 +24,30 @@ const definitionFor = (definitions, shiftId, storeId) => {
   return matches.find((definition) => text(definition.storeId) === storeId) || matches[0] || null
 }
 
-export const resolveScheduleRecordStore = ({ record = {}, selectedStoreId = '', employeeStoreId = '' } = {}) => {
+export const resolveScheduleRecordStore = ({
+  record = {}, selectedStoreId = '', employeeStoreId = '',
+  employeeWorksAtSelectedStore, effectiveEmployeeStoreId = '',
+} = {}) => {
   const selected = text(selectedStoreId)
   const explicit = text(record.storeId)
   const owned = text(employeeStoreId)
-  if (!selected || (explicit && explicit !== selected) || (owned && owned !== selected)) return ''
-  return explicit || owned || selected
+  const effective = text(effectiveEmployeeStoreId)
+  if (!selected || (explicit && explicit !== selected)) return ''
+  if (employeeWorksAtSelectedStore === false) return ''
+  if (!explicit && employeeWorksAtSelectedStore !== undefined && effective !== selected) return ''
+  // Backward-compatible reader context: callers without canonical employee
+  // eligibility evidence may still scope storeless rows by known home ownership.
+  if (employeeWorksAtSelectedStore === undefined && owned && owned !== selected) return ''
+  return explicit || (employeeWorksAtSelectedStore !== undefined ? effective : owned || selected)
 }
 
 export const resolveCanonicalScheduleRecord = ({
   record = {}, shiftDefinitions = [], selectedStoreId = '', employeeStoreId = '',
+  employeeWorksAtSelectedStore, effectiveEmployeeStoreId = '',
 } = {}) => {
-  const storeId = resolveScheduleRecordStore({ record, selectedStoreId, employeeStoreId })
+  const storeId = resolveScheduleRecordStore({
+    record, selectedStoreId, employeeStoreId, employeeWorksAtSelectedStore, effectiveEmployeeStoreId,
+  })
   if (!storeId) throw new ScheduleResolutionError(record)
   const ids = scheduleShiftIds(record)
   const snapshots = Array.isArray(record.shiftSnapshots) ? record.shiftSnapshots : []

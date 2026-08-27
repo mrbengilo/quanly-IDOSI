@@ -29,4 +29,27 @@ describe('canonical schedule resolution invariants', () => {
     expect(() => resolveCanonicalScheduleRecord({ record, shiftDefinitions: definitions, selectedStoreId: 'S01', employeeStoreId }))
       .toThrow(ScheduleResolutionError)
   })
+
+  it('uses canonical destination eligibility instead of vetoing with the home store', () => {
+    const result = resolveCanonicalScheduleRecord({
+      record: { id: 'TRANSFERRED', storeId: 'S02', employeeId: 'E01', shiftId: 'SAME' },
+      shiftDefinitions: definitions,
+      selectedStoreId: 'S02',
+      employeeStoreId: 'S01',
+      employeeWorksAtSelectedStore: true,
+      effectiveEmployeeStoreId: 'S02',
+    })
+    expect(result).toMatchObject([{ storeId: 'S02', start: '10:00', end: '18:00' }])
+  })
+
+  it('rejects explicit and storeless rows without canonical selected-store evidence', () => {
+    expect(() => resolveCanonicalScheduleRecord({
+      record: { storeId: 'S02', start: '08:00', end: '09:00' }, selectedStoreId: 'S02',
+      employeeStoreId: 'S01', employeeWorksAtSelectedStore: false,
+    })).toThrow(ScheduleResolutionError)
+    expect(() => resolveCanonicalScheduleRecord({
+      record: { employeeId: 'E01', start: '08:00', end: '09:00' }, selectedStoreId: 'S02',
+      employeeStoreId: 'S01', employeeWorksAtSelectedStore: true, effectiveEmployeeStoreId: '',
+    })).toThrow(ScheduleResolutionError)
+  })
 })

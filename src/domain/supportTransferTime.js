@@ -124,7 +124,11 @@ export const supportTransferBounds = (record = {}) => {
 
 export const supportTransferIsUsable = (record = {}) => (
   !record.deletedAt
-  && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+  && !record.revokedAt
+  && !record.cancelledAt
+  && record.active !== false
+  && !['đã xóa', 'đã hủy', 'hoàn tất', 'inactive', 'cancelled', 'canceled', 'revoked', 'deleted']
+    .includes(String(record.status || '').trim().toLocaleLowerCase('vi'))
 )
 
 export const isSupportTransferActiveAt = (record, at = new Date()) => {

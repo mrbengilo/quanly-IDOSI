@@ -11645,4 +11645,54 @@ describe('IDOSI Worker security primitives', () => {
     expect(after.revenueBonusDaily.find(({ id }) => id === 'RBD-OFFICIAL')).toMatchObject({ status: 'CONFIRMED' })
     expect(after.revenueBonusDaily.find(({ id }) => id === calculatedBody.revenueBonus.id)).toMatchObject({ status: 'DRAFT' })
   })
+
+  it('honors destination-store schedules through the canonical transfer assignment for calculation and confirmation', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-transfer-destination-bonus' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'transfer-destination-password',
+      initialState: {
+        stores: [
+          { id: 'S01', name: 'Home', status: 'Đang hoạt động' },
+          { id: 'S02', name: 'Destination', status: 'Đang hoạt động' },
+        ],
+        employees: [{ id: 'E01', name: 'Nhân viên hỗ trợ', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+        supportTransfers: [{
+          id: 'TR-01', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+          startAt: '2026-08-20T08:00', endAt: '2026-08-21T02:00', status: 'Đã duyệt',
+        }],
+        shiftDefinitions: [
+          { id: 'SAME', storeId: 'S01', start: '08:00', end: '22:00' },
+          { id: 'SAME', storeId: 'S02', start: '08:00', end: '10:00' },
+        ],
+        schedule: [
+          { id: 'SCH-TRANSFER', storeId: 'S02', employeeId: 'E01', date: '2026-08-20', shiftId: 'SAME' },
+          { id: 'SCH-TRANSFER-LEGACY', employeeId: 'E01', date: '2026-08-20', shiftId: 'SAME' },
+        ],
+        orders: [{ id: 'O01', storeId: 'S02', employeeId: 'E01', amount: 10_000_000, status: 'Hoàn tất', date: '2026-08-20' }],
+        attendance: [{
+          id: 'ATT-01', storeId: 'S02', employeeId: 'E01', date: '2026-08-20',
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T03:00:00.000Z', workedSeconds: 7_200,
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'transfer-destination-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const calculation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.calculate_day', expectedVersion: 1,
+      payload: { storeId: 'S02', businessDate: '2026-08-20' },
+    }, { ...authorization, 'idempotency-key': 'transfer-destination-calculate' }), env)
+    expect(calculation.status).toBe(201)
+    const calculated = await calculation.json()
+    expect(calculated.revenueBonus).toMatchObject({ storeId: 'S02', status: 'DRAFT' })
+
+    const confirmation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.confirm_day', expectedVersion: calculated.version,
+      payload: { revenueBonusDailyId: calculated.revenueBonus.id, expectedEntityVersion: 1 },
+    }, { ...authorization, 'idempotency-key': 'transfer-destination-confirm' }), env)
+    expect(confirmation.status).toBe(200)
+    expect(await confirmation.json()).toMatchObject({ revenueBonus: { storeId: 'S02', status: 'CONFIRMED' } })
+  })
+
 })
