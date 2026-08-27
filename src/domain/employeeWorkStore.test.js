@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   activeSupportDestinationStoreIdsOnDate,
   effectiveEmployeeStoreOnDate,
+  employeeHistoricallyWorkedAtStoreOnDate,
   employeeWorksAtStoreOnDate,
 } from './employeeWorkStore'
 
@@ -37,4 +38,20 @@ describe('canonical employee work-store eligibility', () => {
     expect(activeSupportDestinationStoreIdsOnDate(transfers, employee, '2026-08-20')).toEqual(['S02', 'S03'])
     expect(effectiveEmployeeStoreOnDate({ supportTransfers: transfers, employee, date: '2026-08-20' })).toBe('')
   })
+
+  it('separates completed historical ownership from current transfer authorization', () => {
+    const completed = { ...active, status: 'Hoàn tất', completedAt: '2026-08-20T18:00:00+07:00' }
+    expect(employeeWorksAtStoreOnDate({ supportTransfers: [completed], employee, storeId: 'S02', date: '2026-08-20' })).toBe(false)
+    expect(employeeHistoricallyWorkedAtStoreOnDate({ supportTransfers: [completed], employee, storeId: 'S02', date: '2026-08-20' })).toBe(true)
+    expect(effectiveEmployeeStoreOnDate({ supportTransfers: [completed], employee, date: '2026-08-20' })).toBe('S02')
+    expect(employeeHistoricallyWorkedAtStoreOnDate({ supportTransfers: [completed], employee, storeId: 'S02', date: '2026-08-19' })).toBe(false)
+    expect(employeeHistoricallyWorkedAtStoreOnDate({ supportTransfers: [completed], employee, storeId: 'S02', date: '2026-08-22' })).toBe(false)
+  })
+
+  it.each(['Đã hủy', 'cancelled', 'rejected', 'Đã từ chối'])(
+    'does not derive historical ownership from %s transfers',
+    (status) => expect(employeeHistoricallyWorkedAtStoreOnDate({
+      supportTransfers: [{ ...active, status }], employee, storeId: 'S02', date: '2026-08-20',
+    })).toBe(false),
+  )
 })

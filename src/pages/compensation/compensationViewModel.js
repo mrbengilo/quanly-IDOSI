@@ -47,12 +47,24 @@ export const typeLabel = (type) => ({
 export const statusLabel = (entry) => {
   if (isVoided(entry)) return 'Đã hủy'
   if (isSuperseded(entry)) return 'Đã thay thế'
+  const status = normalize(entry?.status)
+  if (status === 'draft') return 'Bản nháp'
+  if (status === 'confirmed') return 'Đã xác nhận'
+  if (status === 'pending') return 'Chờ duyệt'
+  if (status === 'approved') return 'Đã duyệt'
   if (isRejected(entry)) return 'Đã từ chối'
   if (isApproved(entry)) return 'Đã duyệt'
-  return normalize(entry?.status) === 'pending' ? 'Chờ duyệt' : String(entry?.status || 'Chờ duyệt')
+  return String(entry?.status || 'Chờ duyệt')
 }
 
-export const statusTone = (entry) => isVoided(entry) || isRejected(entry) ? 'red' : isSuperseded(entry) ? 'blue' : isApproved(entry) ? 'green' : 'orange'
+export const statusTone = (entry) => {
+  if (isVoided(entry) || isRejected(entry)) return 'red'
+  if (isSuperseded(entry)) return 'blue'
+  const status = normalize(entry?.status)
+  if (status === 'draft' || status === 'pending') return 'orange'
+  if (status === 'confirmed' || status === 'approved') return 'green'
+  return isApproved(entry) ? 'green' : 'orange'
+}
 
 const INTERNAL_STORE_IDS = new Set(['OFFICE', 'BUSINESS_SUPPORT', 'ADMIN', 'SYSTEM'])
 const INACTIVE_STORE_STATUSES = new Set([

@@ -11646,7 +11646,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(after.revenueBonusDaily.find(({ id }) => id === calculatedBody.revenueBonus.id)).toMatchObject({ status: 'DRAFT' })
   })
 
-  it('honors destination-store schedules through the canonical transfer assignment for calculation and confirmation', async () => {
+  it('retains completed destination-store schedule ownership for calculation and confirmation', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-transfer-destination-bonus' }
     await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'transfer-destination-password',
@@ -11658,7 +11658,8 @@ describe('IDOSI Worker security primitives', () => {
         employees: [{ id: 'E01', name: 'Nhân viên hỗ trợ', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
         supportTransfers: [{
           id: 'TR-01', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
-          startAt: '2026-08-20T08:00', endAt: '2026-08-21T02:00', status: 'Đã duyệt',
+          startAt: '2026-08-20T08:00', endAt: '2026-08-21T02:00', status: 'Hoàn tất',
+          completedAt: '2026-08-20T10:00:00.000Z', completedAttendanceId: 'ATT-01',
         }],
         shiftDefinitions: [
           { id: 'SAME', storeId: 'S01', start: '08:00', end: '22:00' },

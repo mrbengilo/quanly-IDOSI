@@ -23,6 +23,7 @@ import {
 } from '../src/domain/scheduleResolution.js'
 import {
   effectiveEmployeeStoreOnDate,
+  employeeHistoricallyWorkedAtStoreOnDate,
   employeeWorksAtStoreOnDate as canonicalEmployeeWorksAtStoreOnDate,
 } from '../src/domain/employeeWorkStore.js'
 import {
@@ -1121,7 +1122,9 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
       const employee = employeeById.get(String(record.employeeId || ''))
       return ({ ...record,
         employeeStoreId: String(employee?.storeId || ''),
-        employeeWorksAtSelectedStore: employeeWorksAtStoreOnDate(state, employee, storeId, businessDate),
+        employeeWorksAtSelectedStore: employeeHistoricallyWorkedAtStoreOnDate({
+          supportTransfers: state.supportTransfers, employee, storeId, date: businessDate,
+        }),
         effectiveEmployeeStoreId: effectiveEmployeeStoreOnDate({
         supportTransfers: state.supportTransfers,
         employee,

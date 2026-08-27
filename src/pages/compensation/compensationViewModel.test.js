@@ -49,16 +49,22 @@ describe('compensation view models', () => {
   })
 
   it('renders lifecycle statuses with explicit precedence over retained audit timestamps', () => {
-    expect(statusLabel({ status: 'DRAFT' })).toBe('DRAFT')
+    expect(statusLabel({ status: 'DRAFT' })).toBe('Bản nháp')
+    expect(statusLabel({ status: 'draft' })).toBe('Bản nháp')
     expect(statusTone({ status: 'DRAFT' })).toBe('orange')
     expect(statusLabel({ status: 'PENDING' })).toBe('Chờ duyệt')
     expect(statusTone({ status: 'PENDING' })).toBe('orange')
-    expect(statusLabel({ status: 'CONFIRMED' })).toBe('Đã duyệt')
+    expect(statusLabel({ status: 'CONFIRMED' })).toBe('Đã xác nhận')
+    expect(statusLabel({ status: 'confirmed' })).toBe('Đã xác nhận')
+    expect(statusTone({ status: 'CONFIRMED' })).toBe('green')
+    expect(statusLabel({ status: 'APPROVED' })).toBe('Đã duyệt')
     expect(statusTone({ status: 'APPROVED' })).toBe('green')
     expect(statusLabel({ status: 'REJECTED' })).toBe('Đã từ chối')
     expect(statusTone({ status: 'REJECTED' })).toBe('red')
     expect(statusLabel({ status: 'SUPERSEDED', approvedAt: '2026-08-20T08:00:00Z', approvedBy: { id: 'ADMIN' } })).toBe('Đã thay thế')
     expect(statusTone({ status: 'SUPERSEDED', approvedAt: '2026-08-20T08:00:00Z', approvedBy: { id: 'ADMIN' } })).toBe('blue')
+    expect(statusLabel({ status: 'CUSTOM' })).toBe('CUSTOM')
+    expect(statusTone({ status: 'CUSTOM' })).toBe('orange')
   })
 
   it('groups only active canonical payroll records without dropping revenue allocations', () => {
