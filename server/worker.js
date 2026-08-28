@@ -16977,6 +16977,128 @@ const assertPayrollHasNoOpenAttendance = (state, storeId, period) => {
   }
 }
 
+const revenueBonusDailyUnallocatedAmount = (record = {}) => {
+  const explicit = Number(record.unallocatedVnd)
+  if (record.unallocatedVnd != null && Number.isSafeInteger(explicit) && explicit > 0) return explicit
+  const totalPoolVnd = Number(record.totalPoolVnd)
+  const allocatedVnd = Number(record.allocatedVnd)
+  return Number.isSafeInteger(totalPoolVnd)
+    && Number.isSafeInteger(allocatedVnd)
+    && totalPoolVnd > allocatedVnd
+    ? totalPoolVnd - allocatedVnd
+    : 0
+}
+
+const revenueBonusRecordPeriod = (record = {}) => {
+  const explicitPeriod = String(record.period || '').trim()
+  if (/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(explicitPeriod)) return explicitPeriod
+  return String(record.businessDate || record.date || '').slice(0, 7)
+}
+
+const revenueBonusDailyTargetsPayrollStore = (state, daily, payrollStoreId) => {
+  const targetStoreId = String(payrollStoreId || '').trim()
+  if (!targetStoreId) return false
+  const dailyId = String(daily?.id || '').trim()
+  const targetStoreIds = new Set([
+    daily?.storeId,
+    ...(Array.isArray(daily?.payrollStoreIds) ? daily.payrollStoreIds : []),
+  ].map((value) => String(value || '').trim()).filter(Boolean))
+  const addRecordPayrollStore = (record = {}) => {
+    const recordPayrollStoreId = inferredPayrollStoreIdFor(
+      state,
+      record,
+      record.employeeId || record.employee_id,
+    )
+    if (recordPayrollStoreId) targetStoreIds.add(recordPayrollStoreId)
+  }
+  const claims = (Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : [])
+    .filter((record) => String(record.revenueBonusDailyId || '') === dailyId)
+  for (const claim of claims) {
+    for (const claimStoreId of Array.isArray(claim.payrollStoreIds) ? claim.payrollStoreIds : []) {
+      const normalizedStoreId = String(claimStoreId || '').trim()
+      if (normalizedStoreId) targetStoreIds.add(normalizedStoreId)
+    }
+  }
+  const claimIds = new Set(claims.map((record) => String(record.id || '')).filter(Boolean))
+  for (const allocation of Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []) {
+    if (String(allocation.revenueBonusDailyId || '') === dailyId) addRecordPayrollStore(allocation)
+  }
+  for (const participant of Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : []) {
+    if (String(participant.revenueBonusDailyId || '') === dailyId
+      || claimIds.has(String(participant.claimId || ''))) addRecordPayrollStore(participant)
+  }
+  return targetStoreIds.has(targetStoreId)
+}
+
+const assertPayrollHasNoUnallocatedRevenueBonus = (state, storeId, period) => {
+  const unresolved = (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
+    .map((record) => ({ record, unallocatedVnd: revenueBonusDailyUnallocatedAmount(record) }))
+    .filter(({ record, unallocatedVnd }) => (
+      !record.deletedAt
+      && !record.voidedAt
+      && !record.supersededAt
+      && revenueBonusRecordPeriod(record) === period
+      && unallocatedVnd > 0
+      && revenueBonusDailyTargetsPayrollStore(state, record, storeId)
+    ))
+  if (!unresolved.length) return
+  throw new ApiError(
+    409,
+    'PAYROLL_REVENUE_BONUS_UNALLOCATED',
+    'Kỳ lương còn quỹ thưởng doanh thu chưa phân bổ; cần xử lý trước khi chốt hoặc chi lương.',
+    {
+      revenueBonusDailyIds: unresolved.map(({ record }) => String(record.id || '')).filter(Boolean),
+      businessDates: [...new Set(unresolved.map(({ record }) => (
+        String(record.businessDate || record.date || '').slice(0, 10)
+      )).filter(Boolean))],
+      unallocatedVnd: unresolved.reduce((sum, record) => safeMoneySum(
+        sum,
+        record.unallocatedVnd,
+        'Tổng quỹ thưởng doanh thu chưa phân bổ',
+      ), 0),
+    },
+  )
+}
+
+const assertPayrollHasNoPendingRevenueMilestone = (state, storeId, period) => {
+  const activeDailyRecords = (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
+    .filter((record) => !record.deletedAt && !record.voidedAt && !record.supersededAt)
+  const dailyById = new Map(activeDailyRecords.map((record) => [String(record.id || ''), record]))
+  const pendingDailyRecords = activeDailyRecords.filter((daily) => (
+    revenueBonusRecordPeriod(daily) === period
+    && Number(daily.pendingMilestonePoolVnd || 0) > 0
+    && revenueBonusDailyTargetsPayrollStore(state, daily, storeId)
+  ))
+  const pendingClaims = (Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : [])
+    .filter((claim) => {
+      if (claim.deletedAt || claim.voidedAt || claim.supersededAt
+        || normalizeTextKey(claim.status) !== 'pending'
+        || Number(claim.amountVnd || 0) <= 0) return false
+      const daily = dailyById.get(String(claim.revenueBonusDailyId || ''))
+      const claimPeriod = revenueBonusRecordPeriod(claim) || revenueBonusRecordPeriod(daily)
+      if (claimPeriod !== period) return false
+      const directTarget = [
+        claim.storeId,
+        ...(Array.isArray(claim.payrollStoreIds) ? claim.payrollStoreIds : []),
+      ].some((claimStoreId) => String(claimStoreId || '') === String(storeId || ''))
+      return directTarget || Boolean(daily && revenueBonusDailyTargetsPayrollStore(state, daily, storeId))
+    })
+  if (!pendingClaims.length && !pendingDailyRecords.length) return
+  throw new ApiError(
+    409,
+    'PAYROLL_REVENUE_MILESTONE_PENDING',
+    'Kỳ lương còn thưởng mốc doanh thu chờ duyệt; cần duyệt hoặc từ chối trước khi chi hoặc khóa lương.',
+    {
+      teamRewardClaimIds: pendingClaims.map((claim) => String(claim.id || '')).filter(Boolean),
+      revenueBonusDailyIds: pendingDailyRecords.map((daily) => String(daily.id || '')).filter(Boolean),
+      businessDates: [...new Set([
+        ...pendingClaims,
+        ...pendingDailyRecords,
+      ].map((record) => String(record.businessDate || record.date || '').slice(0, 10)).filter(Boolean))],
+    },
+  )
+}
+
 const upsertManagerRevenueBonusEntry = (state, managerRevenueBonus, actorSnapshot, timestamp, storeId, period) => {
   const entries = Array.isArray(state.compensationEntries) ? state.compensationEntries : []
   const scopedAutomaticEntry = (entry) => (
@@ -17083,6 +17205,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     if (existing?.confirmedAt || existing?.status === 'Đã chi') {
       throw new ApiError(409, 'PAYROLL_PERIOD_PAID', 'Kỳ lương đã chi; không thể chốt lại.')
     }
+    assertPayrollHasNoUnallocatedRevenueBonus(state, storeId, period)
     const snapshot = await calculatePayrollSnapshot(db, state, storeId, period)
     const managerBonusState = upsertManagerRevenueBonusEntry(
       state,
@@ -17184,6 +17307,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     if (!existing.confirmedAt || existing.status !== 'Đã chi') {
       throw new ApiError(409, 'PAYROLL_NOT_PAID', 'Chỉ được khóa kỳ lương sau khi đã chi.')
     }
+    assertPayrollHasNoPendingRevenueMilestone(state, storeId, period)
     const locked = {
       ...existing,
       status: 'Đã khóa',
@@ -17229,6 +17353,8 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   if (existing.status !== 'Đã chốt' || !Array.isArray(existing.rows)) {
     throw new ApiError(409, 'PAYROLL_NOT_CLOSED', 'Kỳ lương chưa có bản chốt hợp lệ.')
   }
+  assertPayrollHasNoUnallocatedRevenueBonus(state, storeId, period)
+  assertPayrollHasNoPendingRevenueMilestone(state, storeId, period)
   const existingPayments = Array.isArray(state.payrollPayments) ? state.payrollPayments : []
   const expenses = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
   const transactions = Array.isArray(state.cashTransactions) ? state.cashTransactions : []

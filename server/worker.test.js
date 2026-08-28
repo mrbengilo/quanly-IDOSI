@@ -11633,6 +11633,187 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 30_000)
 
+  it('blocks payroll close and pay while a relevant revenue bonus pool remains unallocated', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-unallocated-revenue-payroll-guard' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'unallocated-revenue-payroll-admin-password',
+      initialState: {
+        stores: [
+          { id: 'S01', name: 'IDOSI Home', status: 'Đang hoạt động' },
+          { id: 'S02', name: 'IDOSI Work', status: 'Đang hoạt động' },
+        ],
+        employees: [{
+          id: 'E01', name: 'Nhân viên S01', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+          employmentType: 'Part-Time', hourlyRate: 30_000,
+        }],
+        attendance: [], payrollPeriods: [],
+        revenueBonusDaily: [{
+          id: 'RBD-UNALLOCATED-CROSS-STORE', storeId: 'S02', businessDate: '2026-08-20', period: '2026-08',
+          payrollStoreIds: ['S02', 'S01'], totalPoolVnd: 100_000, allocatedVnd: 0,
+          unallocatedVnd: 100_000, status: 'APPROVED', version: 1,
+        }, {
+          id: 'RBD-VOIDED-IGNORED', storeId: 'S01', businessDate: '2026-08-19', period: '2026-08',
+          totalPoolVnd: 90_000, allocatedVnd: 0, unallocatedVnd: 90_000,
+          status: 'VOID', voidedAt: '2026-08-20T00:00:00.000Z', version: 2,
+        }, {
+          id: 'RBD-OTHER-PERIOD-IGNORED', storeId: 'S01', businessDate: '2026-07-20', period: '2026-07',
+          totalPoolVnd: 80_000, allocatedVnd: 0, unallocatedVnd: 80_000,
+          status: 'APPROVED', version: 1,
+        }],
+        revenueBonusAllocations: [], teamRewardClaims: [], teamRewardParticipants: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'unallocated-revenue-payroll-admin-password',
+    }), env)
+    expect(login.status).toBe(200)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const blockedClose = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'unallocated-revenue-payroll-close-0001' }), env)
+    expect(blockedClose.status).toBe(409)
+    expect(await blockedClose.json()).toMatchObject({
+      error: {
+        code: 'PAYROLL_REVENUE_BONUS_UNALLOCATED',
+        details: {
+          revenueBonusDailyIds: ['RBD-UNALLOCATED-CROSS-STORE'],
+          businessDates: ['2026-08-20'],
+          unallocatedVnd: 100_000,
+        },
+      },
+    })
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get())
+      .toEqual({ version: 1 })
+
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+      id: 'PAY-S01-2026-08', storeId: 'S01', period: '2026-08', status: 'Đã chốt',
+      rows: [], confirmedAt: null, lockedAt: null, needsReclose: false,
+    }])
+    const blockedPay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.pay', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'unallocated-revenue-payroll-pay-0001' }), env)
+    expect(blockedPay.status).toBe(409)
+    expect(await blockedPay.json()).toMatchObject({
+      error: { code: 'PAYROLL_REVENUE_BONUS_UNALLOCATED' },
+    })
+    expect(readHydratedState(env.DB.database).payrollPeriods).toEqual([
+      expect.objectContaining({ id: 'PAY-S01-2026-08', status: 'Đã chốt', confirmedAt: null }),
+    ])
+
+    replaceStateCollection(env.DB.database, 'revenueBonusDaily', readHydratedState(env.DB.database).revenueBonusDaily
+      .map((record) => record.id === 'RBD-UNALLOCATED-CROSS-STORE'
+        ? { ...record, supersededAt: '2026-08-21T00:00:00.000Z' }
+        : record))
+    const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'unallocated-revenue-payroll-close-resolved-0001' }), env)
+    expect(closed.status).toBe(200)
+    expect(await closed.json()).toMatchObject({
+      version: 2, period: { storeId: 'S01', period: '2026-08', status: 'Đã chốt' },
+    })
+  }, 30_000)
+
+  it('blocks payroll payment until a pending revenue milestone is decided', async () => {
+    const pendingClaim = {
+      id: 'TRC-PENDING-MILESTONE', revenueBonusDailyId: 'RBD-PENDING-MILESTONE',
+      storeId: 'S01', payrollStoreIds: ['S01'], businessDate: '2026-08-20', period: '2026-08',
+      milestoneId: 'dosii.daily.over_15_000_000', amountVnd: 250_000,
+      status: 'PENDING', version: 1,
+    }
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-pending-milestone-payroll-guard' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'pending-milestone-payroll-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'IDOSI S01', status: 'Đang hoạt động' }],
+        employees: [{
+          id: 'E01', name: 'Nhân viên S01', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+          employmentType: 'Part-Time', hourlyRate: 30_000,
+        }],
+        attendance: [],
+        payrollPeriods: [{
+          id: 'PAY-S01-PENDING-MILESTONE', storeId: 'S01', period: '2026-08', status: 'Đã chốt',
+          rows: [], confirmedAt: null, lockedAt: null, needsReclose: false,
+        }],
+        revenueBonusDaily: [{
+          id: 'RBD-PENDING-MILESTONE', storeId: 'S01', businessDate: '2026-08-20', period: '2026-08',
+          payrollStoreIds: ['S01'], percentagePoolVnd: 0, totalPoolVnd: 0,
+          allocatedVnd: 0, unallocatedVnd: 0, milestoneId: 'dosii.daily.over_15_000_000',
+          pendingMilestonePoolVnd: 250_000, milestonePoolVnd: 0, milestoneStatus: 'PENDING',
+          status: 'APPROVED', version: 1,
+        }],
+        revenueBonusAllocations: [],
+        teamRewardClaims: [],
+        teamRewardParticipants: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'pending-milestone-payroll-admin-password',
+    }), env)
+    expect(login.status).toBe(200)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const blockedPay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.pay', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'pending-milestone-payroll-pay-0001' }), env)
+    expect(blockedPay.status).toBe(409)
+    expect(await blockedPay.json()).toMatchObject({
+      error: {
+        code: 'PAYROLL_REVENUE_MILESTONE_PENDING',
+        details: {
+          teamRewardClaimIds: [],
+          revenueBonusDailyIds: ['RBD-PENDING-MILESTONE'],
+          businessDates: ['2026-08-20'],
+        },
+      },
+    })
+    expect(readHydratedState(env.DB.database).payrollPeriods).toEqual([
+      expect.objectContaining({ id: 'PAY-S01-PENDING-MILESTONE', status: 'Đã chốt', confirmedAt: null }),
+    ])
+
+    replaceStateCollection(env.DB.database, 'teamRewardClaims', [pendingClaim])
+    const rejected = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.reject_milestone', expectedVersion: 1,
+      payload: { claimId: 'TRC-PENDING-MILESTONE', expectedEntityVersion: 1 },
+    }, { ...authorization, 'idempotency-key': 'pending-milestone-reject-0001' }), env)
+    expect(rejected.status).toBe(200)
+    const rejectedBody = await rejected.json()
+    expect(rejectedBody).toMatchObject({
+      version: 2,
+      teamClaim: { id: 'TRC-PENDING-MILESTONE', status: 'REJECTED' },
+      revenueBonus: { milestoneStatus: 'REJECTED', pendingMilestonePoolVnd: 0, unallocatedVnd: 0 },
+    })
+
+    const paid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.pay', expectedVersion: rejectedBody.version, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'pending-milestone-payroll-pay-resolved-0001' }), env)
+    expect(paid.status).toBe(200)
+    expect(await paid.json()).toMatchObject({
+      version: 3, period: { storeId: 'S01', period: '2026-08', status: 'Đã chi' },
+    })
+
+    replaceStateCollection(env.DB.database, 'teamRewardClaims', [])
+    replaceStateCollection(env.DB.database, 'revenueBonusDaily', readHydratedState(env.DB.database).revenueBonusDaily
+      .map((record) => record.id === 'RBD-PENDING-MILESTONE'
+        ? { ...record, pendingMilestonePoolVnd: 250_000, milestoneStatus: 'PENDING' }
+        : record))
+    const blockedLock = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.lock', expectedVersion: 3, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'pending-milestone-payroll-lock-0001' }), env)
+    expect(blockedLock.status).toBe(409)
+    expect(await blockedLock.json()).toMatchObject({
+      error: {
+        code: 'PAYROLL_REVENUE_MILESTONE_PENDING',
+        details: { revenueBonusDailyIds: ['RBD-PENDING-MILESTONE'] },
+      },
+    })
+    expect(readHydratedState(env.DB.database).payrollPeriods).toEqual([
+      expect.objectContaining({ id: 'PAY-S01-PENDING-MILESTONE', status: 'Đã chi', lockedAt: null }),
+    ])
+  }, 30_000)
+
   it('lets business support correct destination attendance and Admin restore it within exact transfer bounds', async () => {
     const transfer = {
       id: 'TR-HISTORICAL-CORRECTION', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
