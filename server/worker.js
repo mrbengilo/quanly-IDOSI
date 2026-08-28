@@ -13,7 +13,12 @@ import { applyAdvanceToNetPay, applyViolationWaterfall } from '../src/domain/com
 import { canonicalViolationTargetUnit } from '../src/domain/violationTargetUnit.js'
 import { canonicalEmployeeUnit } from '../src/domain/employeeUnit.js'
 import {
+  attendanceCheckIn,
+  attendanceCheckOut,
+  attendanceHasCheckOut,
+  canonicalEmployeeIdentity,
   clockMinuteOfDay,
+  employeeIdentifierAliases,
   isNonNegativeSafeIntegerAmount,
   normalizeClock,
   recordBusinessDate,
@@ -29,6 +34,7 @@ import {
   employeeHistoricallyWorkedAtStoreOnDate,
   employeeWorksAtStoreOnDate as canonicalEmployeeWorksAtStoreOnDate,
 } from '../src/domain/employeeWorkStore.js'
+import { supportTransferOverlapsDate as historicalSupportTransferOverlapsDate } from '../src/domain/supportTransferTime.js'
 import {
   STORE_EMPLOYMENT_TYPE,
   STORE_FULL_TIME_THRESHOLD_HOURS,
@@ -1067,15 +1073,14 @@ const resolveRevenueBonusAttendanceStore = (state, attendance, businessDate) => 
       : { status: 'unresolved', reason: 'employee' }
   }
   const employee = employeeResolution.employee
-  const employeeId = String(employee.id || employee.code || employee.employeeId || '')
-  const employeeAliases = new Set([employee.id, employee.code, employee.employeeId]
-    .map((value) => String(value || '').trim()).filter(Boolean))
+  const employeeId = canonicalEmployeeIdentity(employee)
+  const employeeAliases = new Set(employeeIdentifierAliases(employee))
   const transfers = Array.isArray(state.supportTransfers) ? state.supportTransfers : []
   const transferId = String(attendance.supportTransferId || '').trim()
   const exactTransfer = transferId ? transfers.find((record) => (
     [record.id, record.code].some((value) => String(value || '') === transferId)
     && [record.employeeId, record.employeeCode].some((value) => employeeAliases.has(String(value || '').trim()))
-    && supportTransferOverlapsDate(record, businessDate)
+    && historicalSupportTransferOverlapsDate(record, businessDate)
   )) : null
   if (transferId && !exactTransfer) return { status: 'unresolved', reason: 'transfer' }
   const transferStoreId = String(exactTransfer?.toStoreId || '').trim()
@@ -1130,7 +1135,7 @@ const assertRevenueBonusShiftsEnded = (state, storeId, businessDate, now) => {
   }
   const openAttendance = []
   for (const record of Array.isArray(state.attendance) ? state.attendance : []) {
-    if (record.deletedAt || dateFromRecord(record) !== businessDate || record.checkOutAt || record.checkOut) continue
+    if (record.deletedAt || dateFromRecord(record) !== businessDate || attendanceHasCheckOut(record)) continue
     const ownership = resolveRevenueBonusAttendanceStore(state, record, businessDate)
     if (ownership.status !== 'resolved') {
       throw new ApiError(409, 'REVENUE_BONUS_ATTENDANCE_STORE_UNRESOLVED', 'Không thể xác định cửa hàng của chấm công đang mở; cần đối soát trước khi tính thưởng.', {
@@ -1699,10 +1704,10 @@ const canAccessNotification = (state, actor, record) => {
     const eventEpoch = Date.parse(eventTime)
     return referencedEmployeeIds.every((reference) => (
       (Array.isArray(state.employees) ? state.employees : []).some((employee) => (
-        [employee.id, employee.code, employee.employeeId].map(String).includes(reference)
+        employeeIdentifierAliases(employee).includes(reference)
         && String(employee.storeId || '') === storeId
         && (employeeUnit(employee) === 'store'
-          || [employee.id, employee.code, employee.employeeId].map(String).includes(String(actor.employee_id || '')))
+          || employeeIdentifierAliases(employee).includes(String(actor.employee_id || '')))
       ))
       || (Number.isFinite(eventEpoch) && (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).some((transfer) => {
         if (String(transfer.employeeId || '') !== reference
@@ -1999,7 +2004,7 @@ export const projectSharedState = (rawState, user) => {
   if (user.role === 'business_support') {
     const ownEmployeeId = String(user.employee_id || '')
     const ownAttendance = filterArray(state, 'attendance', (record) => belongsToEmployee(record, ownEmployeeId))
-    const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
+    const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !attendanceHasCheckOut(record))
     const ownLatestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
     const { accountSettings, accountProfile: persistedAccountProfile, ...operationalState } = state
@@ -2016,7 +2021,7 @@ export const projectSharedState = (rawState, user) => {
       accountProfile: projectActorAccountProfile(state, user),
       activeAttendanceId: ownOpenAttendance?.id || null,
       checkedInAt: ownOpenAttendance?.checkInAt || ownOpenAttendance?.checkIn || null,
-      finishedShift: Boolean(!ownOpenAttendance && ownLatestAttendance?.checkOutAt),
+      finishedShift: Boolean(!ownOpenAttendance && attendanceHasCheckOut(ownLatestAttendance)),
       session: null,
     }
   }
@@ -2026,7 +2031,7 @@ export const projectSharedState = (rawState, user) => {
     if (!storeId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].includes(storeId)) return common
     const ownEmployeeId = String(user.employee_id || '')
     const ownAttendance = filterArray(state, 'attendance', (record) => belongsToEmployee(record, ownEmployeeId))
-    const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
+    const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !attendanceHasCheckOut(record))
     const ownLatestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
     const homeEmployees = filterArray(state, 'employees', (record) => (
@@ -2129,7 +2134,7 @@ export const projectSharedState = (rawState, user) => {
       activeStoreId: storeId,
       activeAttendanceId: ownOpenAttendance?.id || null,
       checkedInAt: ownOpenAttendance?.checkInAt || ownOpenAttendance?.checkIn || null,
-      finishedShift: Boolean(!ownOpenAttendance && ownLatestAttendance?.checkOutAt),
+      finishedShift: Boolean(!ownOpenAttendance && attendanceHasCheckOut(ownLatestAttendance)),
       stores: filterArray(state, 'stores', (record) => String(record.id || '') === storeId),
       employees,
       attendance: historicalVisibleScoped('attendance'),
@@ -2192,7 +2197,7 @@ export const projectSharedState = (rawState, user) => {
     const own = (key) => filterArray(state, key, (record) => belongsToEmployee(record, employeeId))
     const ownAttendance = own('attendance')
     const ownSupportTransfers = own('supportTransfers')
-    const openAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
+    const openAttendance = ownAttendance.find((record) => !record.deletedAt && !attendanceHasCheckOut(record))
     const latestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
     const visibleStoreIds = new Set([
@@ -2269,7 +2274,7 @@ export const projectSharedState = (rawState, user) => {
       settings: ownAccountSettings(state, user),
       activeAttendanceId: openAttendance?.id || null,
       checkedInAt: openAttendance?.checkInAt || openAttendance?.checkIn || null,
-      finishedShift: Boolean(!openAttendance && latestAttendance?.checkOutAt),
+      finishedShift: Boolean(!openAttendance && attendanceHasCheckOut(latestAttendance)),
     }
   }
   return common
@@ -5256,7 +5261,7 @@ const prepareLegacyAccountAvatarMigration = async (
       for (const employee of profiles) {
         if (!isEmbeddedImageDataUrl(employee.avatar)) continue
         const source = employee.avatar
-        const employeeId = String(employee.id || employee.code || employee.employeeId || '')
+        const employeeId = canonicalEmployeeIdentity(employee)
         const ownerId = String(employee.authUserId || userIdByEmployeeId.get(employeeId) || '')
         const metadata = await migrateOrQuarantine(
           source,
@@ -8859,7 +8864,7 @@ const linkedAttendanceForSupportTransfer = (state, transfer) => {
 
 const supportAllowanceAttendanceId = (state, transfer) => {
   const completed = linkedAttendanceForSupportTransfer(state, transfer)
-    .filter((record) => attendanceWorkedHours(record) > 0 && Boolean(record.checkOutAt || record.checkOut || record.checkOutTime))
+    .filter((record) => attendanceWorkedHours(record) > 0 && attendanceHasCheckOut(record))
     .sort((left, right) => {
       const leftEpoch = Date.parse(String(left.checkInAt || left.createdAt || ''))
       const rightEpoch = Date.parse(String(right.checkInAt || right.createdAt || ''))
@@ -9060,7 +9065,7 @@ const workedDaysFor = (state, employeeId, storeId, period) => {
       || !belongsToEmployee(record, employeeId)
       || String(record.storeId || '') !== String(storeId || '')
       || monthFromRecord(record) !== period) continue
-    const completed = Boolean(record.checkOutAt || record.checkOut || record.checkOutTime)
+    const completed = attendanceHasCheckOut(record)
     if (!completed) continue
     const workedSeconds = Number(record.workedSeconds ?? (Number(record.hours || 0) * 3_600))
     if (!Number.isFinite(workedSeconds) || workedSeconds <= 0) continue
@@ -9609,7 +9614,7 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   const linkedEmployee = [
     ...(Array.isArray(state.employees) ? state.employees : []),
     ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
-  ].find((employee) => [employee.id, employee.code, employee.employeeId].map(String).includes(employeeId))
+  ].find((employee) => employeeIdentifierAliases(employee).includes(employeeId))
   const linkedTransfer = linkedSupportTransferForAttendance(state, previous, employeeId, storeId)
   const linkedTransferBounds = linkedTransfer ? supportTransferTimeBounds(linkedTransfer) : null
   if (previous.supportTransferId && (!linkedTransfer || !linkedTransferBounds)) {
@@ -10381,8 +10386,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   const ownOpenRecords = attendance.filter((record) => (
     belongsToEmployee(record, employeeId)
     && !record.deletedAt
-    && !record.checkOut
-    && !record.checkOutAt
+    && !attendanceHasCheckOut(record)
   ))
   const localNow = localDateTimeParts(commandContext.now)
 
@@ -11476,8 +11480,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
         belongsToEmployee(record, employeeId)
         && String(record.storeId || '') === storeId
         && !record.deletedAt
-        && !record.checkOut
-        && !record.checkOutAt
+        && !attendanceHasCheckOut(record)
       ))
     : null
   if (actor.role === 'employee' && !openAttendance) {
@@ -12250,8 +12253,7 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
     const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
       belongsToEmployee(record, employeeId)
       && !record.deletedAt
-      && !record.checkOutAt
-      && !record.checkOut
+      && !attendanceHasCheckOut(record)
     ))
     if (!openAttendance || String(openAttendance.shiftId || openAttendance.shift || '') !== taskShiftId) {
       throw new ApiError(409, 'TASK_SHIFT_INVALID', 'Công việc không thuộc ca đang mở của bạn.')
@@ -12354,8 +12356,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     belongsToEmployee(record, employeeId)
     && (!attendanceId || String(record.id || '') === attendanceId)
     && !record.deletedAt
-    && !record.checkOutAt
-    && !record.checkOut
+    && !attendanceHasCheckOut(record)
   ))
   if (!openAttendance) {
     throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để lưu kết quả công việc.')
@@ -12594,8 +12595,7 @@ const shiftExpenseCommand = async (db, actor, body, commandContext) => {
     belongsToEmployee(record, employeeId)
     && (!attendanceId || String(record.id || '') === attendanceId)
     && !record.deletedAt
-    && !record.checkOutAt
-    && !record.checkOut
+    && !attendanceHasCheckOut(record)
   ))
   if (!openAttendance) {
     throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để nhập chi phí.')
@@ -13835,7 +13835,7 @@ const compensationEntryCommand = async (db, actor, body, commandContext) => {
       throw new ApiError(400, 'COMPENSATION_TYPE_INVALID', 'Loại thưởng/phụ cấp không hợp lệ.')
     }
     const employee = compensationEmployee(state, payload.employeeId)
-    const employeeId = String(employee.id || employee.code || employee.employeeId)
+    const employeeId = canonicalEmployeeIdentity(employee)
     const storeId = String(payload.storeId || employee.storeId || '').trim()
     assertOperationalStoreAccess(actor, storeId)
     requireActivePhysicalStore(state, storeId)
@@ -14117,7 +14117,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       throw new ApiError(403, 'ROLE_FORBIDDEN', 'Quản lý cửa hàng chỉ được ghi nhận vi phạm nhân viên tại cửa hàng của mình.')
     }
     const employee = compensationEmployee(state, payload.employeeId)
-    const employeeId = String(employee.id || employee.code || employee.employeeId)
+    const employeeId = canonicalEmployeeIdentity(employee)
     const actualUnit = employeeUnit(employee)
     if (actualUnit !== targetUnit) throw new ApiError(409, 'EMPLOYEE_UNIT_MISMATCH', 'Nhân viên không thuộc nhóm đã chọn.')
     const storeId = targetUnit === 'store'
@@ -14321,7 +14321,7 @@ const revenueBonusCalculationInputs = async (state, store, storeId, businessDate
   const percentage = calculateRevenueBonus({ programId, revenueVnd })
   const milestone = calculateTeamMilestoneReward({ programId: milestoneProgramId, achievedUnits: revenueVnd })
   const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
-    [employee.id, employee.code, employee.employeeId]
+    employeeIdentifierAliases(employee)
       .filter(Boolean)
       .map((id) => [String(id), employee])
   )))
@@ -14331,7 +14331,7 @@ const revenueBonusCalculationInputs = async (state, store, storeId, businessDate
     const attendanceDate = dateFromRecord(attendance)
     if (attendanceDate !== businessDate
       || attendance.deletedAt
-      || (!attendance.checkOutAt && !attendance.checkOut)) continue
+      || !attendanceHasCheckOut(attendance)) continue
     const ownership = resolveRevenueBonusAttendanceStore(state, attendance, businessDate)
     if (ownership.status !== 'resolved') {
       throw new ApiError(409, 'REVENUE_BONUS_ATTENDANCE_STORE_UNRESOLVED', 'Không thể xác định cửa hàng của chấm công; cần đối soát trước khi tính thưởng.', {
@@ -14344,8 +14344,8 @@ const revenueBonusCalculationInputs = async (state, store, storeId, businessDate
     const weightUnits = revenueBonusAttendanceWeightUnits(attendance)
     relevantAttendance.push({
       id: String(attendance.id || ''), employeeId, weightUnits,
-      checkIn: attendance.checkInAt || attendance.checkIn || null,
-      checkOut: attendance.checkOutAt || attendance.checkOut || null,
+      checkIn: attendanceCheckIn(attendance),
+      checkOut: attendanceCheckOut(attendance),
     })
     if (weightUnits > 0) participantWeights.set(employeeId, (participantWeights.get(employeeId) || 0) + weightUnits)
   }
@@ -14879,8 +14879,7 @@ const assertPayrollHasNoOpenAttendance = (state, storeId, period) => {
     !record.deletedAt
     && String(record.storeId || '') === String(storeId || '')
     && monthFromRecord(record) === period
-    && !record.checkOut
-    && !record.checkOutAt
+    && !attendanceHasCheckOut(record)
   ))
   if (openAttendance.length) {
     throw new ApiError(

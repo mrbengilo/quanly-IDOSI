@@ -48,8 +48,20 @@ export const clockMinuteOfDay = (value) => {
 }
 
 export const employeeIdentifierAliases = (employee = {}) => [...new Set([
-  employee.id, employee.employeeId, employee.code, employee.employeeCode,
+  employee.id, employee.code, employee.employeeId, employee.employeeCode,
 ].filter((value) => typeof value === 'string').map((value) => value.trim()).filter(Boolean))]
+
+export const canonicalEmployeeIdentity = (employee = {}) => employeeIdentifierAliases(employee)[0] || ''
+
+export const attendanceCheckIn = (attendance = {}) => (
+  attendance.checkInAt || attendance.checkIn || attendance.checkInTime || null
+)
+
+export const attendanceCheckOut = (attendance = {}) => (
+  attendance.checkOutAt || attendance.checkOut || attendance.checkOutTime || null
+)
+
+export const attendanceHasCheckOut = (attendance = {}) => Boolean(attendanceCheckOut(attendance))
 
 export const resolveRecordEmployee = (record = {}, employees = []) => {
   const identifiers = [

@@ -10887,6 +10887,7 @@ describe('IDOSI Worker security primitives', () => {
           { id: 'HTKD-BONUS', name: 'Hỗ trợ toàn hệ thống', unit: 'business_support', storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc' },
           { id: 'QL-S02', name: 'Quản lý S02', unit: 'store', storeId: 'S02', isStoreManager: true, position: 'QUẢN LÝ CỬA HÀNG', status: 'Đang làm việc' },
           { id: 'E-S02', name: 'Nhân viên S02', unit: 'store', storeId: 'S02', status: 'Đang làm việc' },
+          { employeeCode: 'LEGACY-S02', name: 'Nhân viên legacy S02', unit: 'store', storeId: 'S01', status: 'Đang làm việc' },
         ],
         orders: [{
           id: 'ORDER-HOT-01', storeId: 'S02', employeeId: 'E-S02', amount: 16_000_001,
@@ -10898,6 +10899,13 @@ describe('IDOSI Worker security primitives', () => {
         }, {
           id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', hours: 4,
+        }, {
+          id: 'ATT-HOT-LEGACY', storeId: 'S02', employeeCode: 'LEGACY-S02', date: '2026-08-20',
+          supportTransferId: 'TRANSFER-HOT-COMPLETED', checkInTime: '08:00', checkOutTime: '12:00', hours: 4,
+        }],
+        supportTransfers: [{
+          id: 'TRANSFER-HOT-COMPLETED', employeeCode: 'LEGACY-S02', fromStoreId: 'S01', toStoreId: 'S02',
+          startAt: '2026-08-20T00:00:00+07:00', endAt: '2026-08-21T00:00:00+07:00', status: 'Hoàn tất',
         }],
         schedule: [{
           id: 'SCH-HOT', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
@@ -11007,6 +11015,7 @@ describe('IDOSI Worker security primitives', () => {
       .toEqual([
         { employeeId: 'QL-S02', weightUnits: 14_400 },
         { employeeId: 'E-S02', weightUnits: 14_400 },
+        { employeeId: 'LEGACY-S02', weightUnits: 14_400 },
       ])
     expect(calculatedBody.teamParticipants.every(({ status, amountVnd }) => status === 'PENDING' && amountVnd === 0)).toBe(true)
 
@@ -11035,7 +11044,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
     expect(managerState.revenueBonusAllocations.map(({ storeId }) => storeId)).toEqual(['S02'])
     expect(managerState.teamRewardParticipants.map(({ storeId }) => storeId)).toEqual(['S02'])
-    expect(managerState.revenueBonusDaily[0]).toMatchObject({ participantCount: 2, teamTotalWeightUnits: 28_800 })
+    expect(managerState.revenueBonusDaily[0]).toMatchObject({ participantCount: 3, teamTotalWeightUnits: 43_200 })
     expect(JSON.stringify({ allocations: managerState.revenueBonusAllocations, participants: managerState.teamRewardParticipants }))
       .not.toContain('E-S02')
 

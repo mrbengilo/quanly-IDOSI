@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  attendanceCheckIn,
+  attendanceCheckOut,
+  attendanceHasCheckOut,
+  canonicalEmployeeIdentity,
   clockMinuteOfDay,
   normalizeClock,
   resolveRecordEmployee,
@@ -43,5 +47,16 @@ describe('record compatibility rules', () => {
     const employees = [{ id: 'E01', employeeCode: 'DUP' }, { id: 'E02', code: 'DUP' }]
     expect(resolveRecordEmployee({ employeeCode: 'DUP' }, employees))
       .toMatchObject({ status: 'ambiguous', code: 'EMPLOYEE_IDENTIFIER_AMBIGUOUS', employee: null })
+  })
+
+  it('uses canonical identity precedence and attendance time aliases', () => {
+    expect(canonicalEmployeeIdentity({ id: 'ID', code: 'CODE', employeeId: 'EMP', employeeCode: 'LEGACY' })).toBe('ID')
+    expect(canonicalEmployeeIdentity({ code: 'CODE', employeeId: 'EMP', employeeCode: 'LEGACY' })).toBe('CODE')
+    expect(canonicalEmployeeIdentity({ employeeId: 'EMP', employeeCode: 'LEGACY' })).toBe('EMP')
+    expect(canonicalEmployeeIdentity({ employeeCode: 'LEGACY' })).toBe('LEGACY')
+    expect(attendanceCheckIn({ checkInTime: '08:00' })).toBe('08:00')
+    expect(attendanceCheckOut({ checkOutTime: '17:00' })).toBe('17:00')
+    expect(attendanceHasCheckOut({ checkOutTime: '17:00' })).toBe(true)
+    expect(attendanceHasCheckOut({})).toBe(false)
   })
 })
