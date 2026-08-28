@@ -11753,6 +11753,68 @@ describe('IDOSI Worker security primitives', () => {
       Object.keys(assignment.completionByEmployee || {}).every((identifier) => identifier === 'PROFILE-E01')
       && assignment.progressHistory.length === 1
     ))).toBe(true)
+    const aliasOnlyRewardProgress = persisted.workCatalogProgress
+    const aliasOnlyRewardClaims = persisted.compensationEntries
+    const aliasOnlyNotificationCount = persisted.notifications.length
+    const aliasOnlyProgressHistoryLengths = persisted.taskAssignmentHistory
+      .map((assignment) => assignment.progressHistory.length)
+    replaceStateCollection(env.DB.database, 'tasks', persisted.tasks.map((task) => ({
+      ...task,
+      completedBy: { 'PROFILE-E01': false, E01: true },
+    })))
+    replaceStateCollection(env.DB.database, 'taskAssignmentHistory', persisted.taskAssignmentHistory.map((assignment) => ({
+      ...assignment,
+      tasks: persisted.tasks
+        .filter((task) => String(task.assignmentId || '') === String(assignment.assignmentId || assignment.id || ''))
+        .map((task) => ({ ...task, completedBy: { 'PROFILE-E01': false, E01: true } })),
+      completionByEmployee: Object.keys(assignment.completionByEmployee || {}).length
+        ? {
+            'PROFILE-E01': {
+              ...Object.values(assignment.completionByEmployee)[0],
+              completedTasks: 0,
+              completionRate: 0,
+            },
+            E01: Object.values(assignment.completionByEmployee)[0],
+          }
+        : assignment.completionByEmployee,
+    })))
+    const aliasOnlyCleanupVersion = currentVersion()
+    const aliasOnlyCleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: aliasOnlyCleanupVersion, payload: progressPayload(true),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-alias-map-only-cleanup-0001' }), env)
+    expect(aliasOnlyCleanup.status).toBe(200)
+    expect(await aliasOnlyCleanup.json()).toMatchObject({
+      completedTasks: 2,
+      completionRate: 100,
+      rewardProgress: [],
+      rewardClaims: [],
+    })
+    expect(currentVersion()).toBe(aliasOnlyCleanupVersion + 1)
+    persisted = readHydratedState(env.DB.database)
+    expect(persisted.workCatalogProgress).toEqual(aliasOnlyRewardProgress)
+    expect(persisted.compensationEntries).toEqual(aliasOnlyRewardClaims)
+    expect(persisted.notifications).toHaveLength(aliasOnlyNotificationCount)
+    expect(persisted.tasks.every((task) => (
+      JSON.stringify(task.completedBy) === JSON.stringify({ 'PROFILE-E01': true })
+    ))).toBe(true)
+    expect(persisted.taskAssignmentHistory.every((assignment) => (
+      Object.keys(assignment.completionByEmployee || {}).every((identifier) => identifier === 'PROFILE-E01')
+      && assignment.completionByEmployee['PROFILE-E01'].completedTasks === 1
+      && assignment.completionByEmployee['PROFILE-E01'].completionRate === 100
+      && assignment.tasks.every((task) => (
+        JSON.stringify(task.completedBy) === JSON.stringify({ 'PROFILE-E01': true })
+      ))
+    ))).toBe(true)
+    expect(persisted.taskAssignmentHistory.map((assignment) => assignment.progressHistory.length))
+      .toEqual(aliasOnlyProgressHistoryLengths)
+    const aliasOnlyAudit = env.DB.database.prepare(`
+      SELECT after_json FROM audit_log
+      WHERE action = 'task.progress.save' ORDER BY id DESC LIMIT 1
+    `).get()
+    expect(JSON.parse(aliasOnlyAudit.after_json).tasks).toEqual([
+      { id: 'TASK-REWARD-ASSIGNED', completed: true },
+      { id: 'TASK-REWARD-CHECKLIST', completed: true },
+    ])
     const aliasEmployeeProjectionResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
       headers: employeeAuthorization,
     }), env)

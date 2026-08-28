@@ -12593,7 +12593,27 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
         : lineageRepairs.filter(cleanupSafeLineageRepair))
     : rewardLineageStates
   const rewardOccurrencesForWrite = rewardLineageStatesForWrite.map((lineage) => lineage.occurrence)
-  const reconcileExistingSubmission = Boolean(existingSubmission && rewardLineageStatesForWrite.length)
+  const assignmentIdSet = new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))
+  const employeeAliasMapNeedsCleanup = (record) => {
+    if (!isPlainRecord(record)) return false
+    const matchingIdentifiers = employeeIdentifiers.filter((identifier) => Object.hasOwn(record, identifier))
+    return matchingIdentifiers.some((identifier) => identifier !== employeeId)
+      || matchingIdentifiers.length > 1
+  }
+  const employeeAliasMapsNeedCleanup = Boolean(existingSubmission && (
+    scopedTasks.some((task) => employeeAliasMapNeedsCleanup(task.completedBy))
+    || histories.some((assignment) => (
+      assignmentIdSet.has(String(assignment.assignmentId || assignment.id || ''))
+      && (employeeAliasMapNeedsCleanup(assignment.completionByEmployee)
+        || (Array.isArray(assignment.tasks) ? assignment.tasks : [])
+          .some((task) => (
+            submittedById.has(String(task.id || ''))
+            && employeeAliasMapNeedsCleanup(task.completedBy)
+          )))
+    ))
+  ))
+  const reconcileExistingSubmission = Boolean(existingSubmission
+    && (rewardLineageStatesForWrite.length || employeeAliasMapsNeedCleanup))
   if (existingSubmission && !reconcileExistingSubmission) {
     const completedTasks = normalizedStatuses.filter(([, completed]) => completed).length
     const existingResult = {
@@ -12618,13 +12638,15 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       .filter(([identifier]) => !employeeIdentifierSet.has(identifier))),
     [employeeId]: value,
   })
-  const canonicalizeExistingEmployeeKeyedRecord = (record) => {
-    if (!isPlainRecord(record)) return record
-    const source = record
+  const canonicalizeExistingEmployeeKeyedRecord = (record, authoritativeValue) => {
+    const source = isPlainRecord(record) ? record : {}
+    if (authoritativeValue !== undefined) {
+      return canonicalEmployeeKeyedRecord(source, authoritativeValue)
+    }
     const authoritativeIdentifier = employeeIdentifiers.find((identifier) => Object.hasOwn(source, identifier))
     return authoritativeIdentifier
       ? canonicalEmployeeKeyedRecord(source, source[authoritativeIdentifier])
-      : source
+      : record
   }
   const nextTasks = (Array.isArray(state.tasks) ? state.tasks : []).map((task) => {
     const taskId = String(task.id || '')
@@ -12632,7 +12654,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     if (existingSubmission) {
       return {
         ...task,
-        completedBy: canonicalizeExistingEmployeeKeyedRecord(task.completedBy),
+        completedBy: canonicalizeExistingEmployeeKeyedRecord(task.completedBy, submittedById.get(taskId)),
       }
     }
     const completed = submittedById.get(taskId)
@@ -12651,7 +12673,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       updatedBy: serverActorSnapshot(actor),
     }
   })
-  const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
+  const assignmentIds = [...assignmentIdSet]
   const assignmentResults = []
   const progressEventBase = {
     action: 'progress-submitted',
@@ -12672,13 +12694,50 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     const assignmentId = String(assignment.assignmentId || assignment.id || '')
     if (!assignmentIds.includes(assignmentId)) return assignment
     if (existingSubmission) {
+      const assignmentTasks = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId)
+      const assignmentTaskIds = assignmentTasks.map((task) => String(task.id || ''))
+      const assignmentRequiredTaskIds = assignmentTasks
+        .filter(workTaskIsRequired)
+        .map((task) => String(task.id || ''))
+      const completedTasks = assignmentTaskIds.filter((taskId) => submittedById.get(taskId) === true).length
+      const completedRequiredTasks = assignmentRequiredTaskIds
+        .filter((taskId) => submittedById.get(taskId) === true)
+        .length
+      const totalTasks = assignmentTaskIds.length
+      const requiredTasks = assignmentRequiredTaskIds.length
+      const requiredComplete = completedRequiredTasks === requiredTasks
+      const completionRate = totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0
+      const previousCompletionIdentifier = employeeIdentifiers.find((identifier) => (
+        Object.hasOwn(isPlainRecord(assignment.completionByEmployee) ? assignment.completionByEmployee : {}, identifier)
+      ))
+      const previousCompletion = previousCompletionIdentifier
+        ? assignment.completionByEmployee[previousCompletionIdentifier]
+        : null
+      const canonicalCompletion = {
+        ...(isPlainRecord(previousCompletion) ? previousCompletion : {}),
+        completedTasks,
+        totalTasks,
+        completionRate,
+        requiredTasks,
+        completedRequiredTasks,
+        incompleteReason: requiredComplete ? '' : incompleteReason,
+        submittedAt: existingSubmission.at || previousCompletion?.submittedAt || assignment.submittedAt || commandContext.now,
+        attendanceId: openAttendance.id,
+      }
       return {
         ...assignment,
-        tasks: (Array.isArray(assignment.tasks) ? assignment.tasks : []).map((task) => ({
-          ...task,
-          completedBy: canonicalizeExistingEmployeeKeyedRecord(task.completedBy),
-        })),
-        completionByEmployee: canonicalizeExistingEmployeeKeyedRecord(assignment.completionByEmployee),
+        tasks: (Array.isArray(assignment.tasks) ? assignment.tasks : []).map((task) => {
+          const taskId = String(task.id || '')
+          if (!submittedById.has(taskId)) return task
+          return {
+            ...task,
+            completedBy: canonicalizeExistingEmployeeKeyedRecord(task.completedBy, submittedById.get(taskId)),
+          }
+        }),
+        completionByEmployee: canonicalizeExistingEmployeeKeyedRecord(
+          assignment.completionByEmployee,
+          canonicalCompletion,
+        ),
       }
     }
     const assignmentTasks = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId)
