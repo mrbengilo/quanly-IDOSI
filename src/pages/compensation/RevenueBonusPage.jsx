@@ -15,6 +15,7 @@ import {
 } from '../../components/UI'
 import { money } from '../../utils'
 import {
+  calculateRevenueBonus,
   REVENUE_BONUS_PROGRAMS,
   revenueBonusProgramsForStore,
 } from '../../domain/compensationPolicies'
@@ -35,6 +36,7 @@ import {
   AccessDenied,
   ActionError,
   displayDate,
+  displayDateTime,
   employeeName,
   storeName,
   useCompensationAction,
@@ -68,9 +70,37 @@ const allocationWeightPercent = (allocation = {}) => {
 
 const recordRevenue = (record) => Number(record?.revenueVnd ?? record?.dailyRevenueVnd ?? record?.revenue ?? 0) || 0
 
-const operationalDate = (record = {}) => String(
-  record.businessDate || record.workDate || record.attendanceDate || record.date || record.createdAt || '',
-).slice(0, 10)
+const isZeroHourCandidate = (record = {}) => {
+  const percentagePoolVnd = Number(record.percentagePoolVnd || 0)
+  const totalPoolVnd = Number(record.totalPoolVnd || 0)
+  const unallocatedVnd = Number(record.unallocatedVnd || 0)
+  return percentagePoolVnd > 0
+    && percentagePoolVnd === totalPoolVnd
+    && totalPoolVnd === unallocatedVnd
+    && Number(record.allocatedVnd || 0) === 0
+    && Number(record.milestonePoolVnd || 0) === 0
+    && Number(record.participantCount || 0) === 0
+}
+
+const vietnamDateFromTimestamp = (value) => {
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return String(value || '').slice(0, 10)
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(parsed).map(({ type, value: partValue }) => [type, partValue]))
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
+
+// Keep this aligned with the server's dateFromRecord helper because stale
+// calculation checks must group orders and attendance into the same VN day.
+const operationalDate = (record = {}) => {
+  const businessDate = String(record.workDate || record.attendanceDate || record.date || '').trim()
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(businessDate)) return businessDate
+  const source = String(record.occurredAt || record.createdAt || '').trim()
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(source)) return source
+  return vietnamDateFromTimestamp(source)
+}
 
 const identifiers = (...values) => new Set(values
   .flat()
@@ -143,6 +173,27 @@ export function RevenueBonusPage() {
       app.stores,
       privileged ? app.session : { ...app.session, storeId: currentStoreId },
     )
+    if (privileged) {
+      const reconciliationStoreIds = new Set((Array.isArray(app.revenueBonuses) ? app.revenueBonuses : [])
+        .filter((record) => !record.voidedAt && (
+          Number(record.unallocatedVnd || 0) > 0
+          || record.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS'
+          || (!record.supersededAt && Number(record.pendingMilestonePoolVnd || 0) > 0)
+        ))
+        .map(entryStoreId)
+        .filter(Boolean))
+      for (const claim of Array.isArray(app.teamRewardClaims) ? app.teamRewardClaims : []) {
+        if (!claim.deletedAt && !claim.voidedAt && !claim.supersededAt
+          && String(claim.status || '').toUpperCase() === 'PENDING'
+          && Number(claim.amountVnd || 0) > 0
+          && entryStoreId(claim)) reconciliationStoreIds.add(entryStoreId(claim))
+      }
+      const historicalReconciliationStores = (Array.isArray(app.stores) ? app.stores : [])
+        .filter((store) => reconciliationStoreIds.has(entityId(store)) && !store.deletedAt)
+        .filter((store) => !['OFFICE', 'BUSINESS_SUPPORT', 'ADMIN', 'SYSTEM'].includes(entityId(store).toUpperCase()))
+      return [...new Map([...roleScopedStores, ...historicalReconciliationStores]
+        .map((store) => [entityId(store), store])).values()]
+    }
     if (!employeeView) return roleScopedStores
     const ownRevenueStoreIds = new Set([currentStoreId].filter(Boolean))
     for (const record of Array.isArray(app.revenueBonuses) ? app.revenueBonuses : []) {
@@ -156,6 +207,7 @@ export function RevenueBonusPage() {
     app.stores,
     app.session,
     app.revenueBonuses,
+    app.teamRewardClaims,
     privileged,
     employeeView,
     currentStoreId,
@@ -168,18 +220,23 @@ export function RevenueBonusPage() {
   const defaultPrivateStoreId = stores.some((store) => entityId(store) === currentStoreId)
     ? currentStoreId
     : entityId(stores[0])
-  const selectedStoreId = storeSelection || activeOperationalStoreId || defaultPrivateStoreId || currentStoreId
+  const validStoreSelection = stores.some((store) => entityId(store) === storeSelection)
+    ? storeSelection
+    : ''
+  const selectedStoreId = validStoreSelection || activeOperationalStoreId || defaultPrivateStoreId || currentStoreId
   const [businessDate, setBusinessDate] = useState(vietnamToday)
   const [historyMode, setHistoryMode] = useState('day')
   const [historyDate, setHistoryDate] = useState(vietnamToday)
   const [historyMonth, setHistoryMonth] = useState(() => vietnamToday().slice(0, 7))
   const { busyKey, error, run } = useCompensationAction(app)
-  const allActiveRecords = (app.revenueBonuses || [])
+  const allRecords = Array.isArray(app.revenueBonuses) ? app.revenueBonuses : []
+  const allActiveRecords = allRecords
     .filter((record) => !record.supersededAt && !record.voidedAt)
   const activeRecords = allActiveRecords
     .filter((record) => entryStoreId(record) === selectedStoreId)
   const records = activeRecords.filter((record) => revenueRecordDate(record) === businessDate)
   const milestoneClaims = (app.teamRewardClaims || [])
+    .filter((claim) => !claim.deletedAt && !claim.voidedAt && !claim.supersededAt)
     .filter((claim) => entryStoreId(claim) === selectedStoreId && revenueRecordDate(claim) === businessDate)
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
   const allocations = revenueAllocations(records)
@@ -190,16 +247,109 @@ export function RevenueBonusPage() {
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
   const unallocatedTotal = records.reduce((sum, record) => sum + Number(record?.unallocatedVnd || 0), 0)
   const activeStore = stores.find((store) => entityId(store) === selectedStoreId) || {}
+  const activeStoreOperational = operationalStores([activeStore]).length > 0
+  const knownEmployeeIdentifiers = useMemo(() => new Set([
+    ...(Array.isArray(app.employees) ? app.employees : []),
+    ...(Array.isArray(app.deletedEmployees) ? app.deletedEmployees : []),
+  ].flatMap((employee) => [...employeeIdentifiers(employee)])), [app.employees, app.deletedEmployees])
+  const reconciliationBlockedDays = useMemo(() => new Set(
+    (Array.isArray(app.attendance) ? app.attendance : [])
+      .filter((attendance) => !attendance.deletedAt)
+      .filter((attendance) => (
+        !attendance.checkOutAt && !attendance.checkOut
+        || (knownEmployeeIdentifiers.has(String(attendance.employeeId || '').trim())
+          && Math.max(0, Math.trunc(Number(
+            attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? 0,
+          ))) > 0)
+      ))
+      .map((attendance) => `${entryStoreId(attendance)}:${operationalDate(attendance)}`),
+  ), [app.attendance, knownEmployeeIdentifiers])
+  const hasCurrentEligibleAttendance = (record) => reconciliationBlockedDays.has(
+    `${entryStoreId(record)}:${revenueRecordDate(record)}`,
+  )
+  const orderRevenueByDay = useMemo(() => {
+    if (!Array.isArray(app.orders)) return null
+    const totals = new Map()
+    for (const order of app.orders) {
+      const amountVnd = Number(order.amount)
+      if (order.deletedAt || String(order.status || '') === 'Đã xóa'
+        || !Number.isSafeInteger(amountVnd) || amountVnd < 0) continue
+      const key = `${entryStoreId(order)}:${operationalDate(order)}`
+      const totalVnd = (totals.get(key) || 0) + amountVnd
+      totals.set(key, Number.isSafeInteger(totalVnd) ? totalVnd : Number.NaN)
+    }
+    return totals
+  }, [app.orders])
+  const recordCalculationIsCurrent = (record) => {
+    if (!orderRevenueByDay) return true
+    const revenueKey = `${entryStoreId(record)}:${revenueRecordDate(record)}`
+    const currentRevenueVnd = orderRevenueByDay.has(revenueKey) ? orderRevenueByDay.get(revenueKey) : 0
+    if (!Number.isSafeInteger(currentRevenueVnd) || currentRevenueVnd < 0) return false
+    const recordStore = (Array.isArray(app.stores) ? app.stores : [])
+      .find((store) => entityId(store) === entryStoreId(record)) || {}
+    const { programId: currentProgramId, milestoneProgramId: currentMilestoneProgramId } = revenueBonusProgramsForStore(recordStore)
+    const currentPercentage = calculateRevenueBonus({ programId: currentProgramId, revenueVnd: currentRevenueVnd })
+    const qualifiedPercentagePoolVnd = Number(record.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS'
+      ? record.qualifiedPercentagePoolVnd
+      : record.percentagePoolVnd)
+    return recordRevenue(record) === currentRevenueVnd
+      && String(record.programId || '') === currentProgramId
+      && String(record.milestoneProgramId || '') === currentMilestoneProgramId
+      && String(record.tierId || '') === String(currentPercentage.tierId || '')
+      && Number(record.rateBasisPoints || 0) === Number(currentPercentage.rateBasisPoints || 0)
+      && qualifiedPercentagePoolVnd === Number(currentPercentage.bonusVnd || 0)
+  }
+  const zeroHourCandidates = records.filter(isZeroHourCandidate)
+  const reconciliationRecordIsStale = (record) => (
+    hasCurrentEligibleAttendance(record) || !recordCalculationIsCurrent(record)
+  )
+  const zeroHourRecords = zeroHourCandidates.filter((record) => !reconciliationRecordIsStale(record))
+  const resolvedRecordsRequiringRecalculation = records.filter((record) => (
+    record.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS'
+    && reconciliationRecordIsStale(record)
+  ))
+  const recalculationRequiredRecords = [
+    ...zeroHourCandidates.filter(reconciliationRecordIsStale),
+    ...resolvedRecordsRequiringRecalculation,
+  ]
+  const historicalPendingZeroHourRecords = activeRecords
+    .filter(isZeroHourCandidate)
+    .filter((record) => revenueRecordDate(record) !== businessDate)
+    .sort((left, right) => revenueRecordDate(right).localeCompare(revenueRecordDate(left)))
+  const historicalPendingMilestoneClaims = (Array.isArray(app.teamRewardClaims) ? app.teamRewardClaims : [])
+    .filter((claim) => !claim.deletedAt && !claim.voidedAt && !claim.supersededAt)
+    .filter((claim) => entryStoreId(claim) === selectedStoreId)
+    .filter((claim) => String(claim.status || '').toUpperCase() === 'PENDING' && Number(claim.amountVnd || 0) > 0)
+    .filter((claim) => revenueRecordDate(claim) && revenueRecordDate(claim) !== businessDate)
+  const historicalReconciliationRows = [
+    ...historicalPendingZeroHourRecords.map((record) => ({
+      id: `zero-hour:${record.id}`,
+      date: revenueRecordDate(record),
+      label: 'Quỹ 0 giờ chưa phân bổ',
+      amountVnd: Number(record.unallocatedVnd || 0),
+    })),
+    ...historicalPendingMilestoneClaims.map((claim) => ({
+      id: `milestone:${claim.id}`,
+      date: revenueRecordDate(claim),
+      label: 'Thưởng mốc chờ duyệt',
+      amountVnd: Number(claim.amountVnd || 0),
+    })),
+  ].sort((left, right) => right.date.localeCompare(left.date))
+  const zeroHourResolutionRecords = allRecords
+    .filter((record) => entryStoreId(record) === selectedStoreId)
+    .filter((record) => record.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS')
+    .sort((left, right) => String(right.unallocatedResolvedAt || '').localeCompare(String(left.unallocatedResolvedAt || '')))
   const dailyRevenueCollectionAvailable = Array.isArray(app.storeDailyRevenue)
   const aggregateRevenue = (dailyRevenueCollectionAvailable ? app.storeDailyRevenue : []).find((record) => (
     entryStoreId(record) === selectedStoreId && revenueRecordDate(record) === businessDate
   ))
-  const orderRevenue = (app.orders || []).filter((order) => (
-    entryStoreId(order) === selectedStoreId
-    && operationalDate(order) === businessDate
-    && !order.deletedAt
-    && String(order.status || '') !== 'Đã xóa'
-  )).reduce((sum, order) => sum + (Number.isSafeInteger(Number(order.amount)) ? Number(order.amount) : 0), 0)
+  const selectedRevenueKey = `${selectedStoreId}:${businessDate}`
+  const selectedOrderRevenue = orderRevenueByDay?.has(selectedRevenueKey)
+    ? orderRevenueByDay.get(selectedRevenueKey)
+    : 0
+  const orderRevenue = Number.isSafeInteger(selectedOrderRevenue) && selectedOrderRevenue >= 0
+    ? selectedOrderRevenue
+    : 0
   const fallbackRevenueVnd = privileged || storeManager ? orderRevenue : revenueTotal || orderRevenue
   const liveRevenueVnd = Number(dailyRevenueCollectionAvailable
     ? aggregateRevenue?.revenueVnd ?? 0
@@ -244,6 +394,36 @@ export function RevenueBonusPage() {
     })
   }
 
+  const resolveZeroHourPool = (record) => {
+    if (typeof window === 'undefined') return
+    const reason = String(window.prompt(
+      `Nhập lý do xác nhận ${money(record.unallocatedVnd || 0)} không có giờ bán hàng đủ điều kiện:`,
+      '',
+    ) || '').trim()
+    if (!reason) return
+    if (reason.length < 10) {
+      window.alert('Lý do cần có ít nhất 10 ký tự.')
+      return
+    }
+    if (reason.length > 500) {
+      window.alert('Lý do không được vượt quá 500 ký tự.')
+      return
+    }
+    if (!window.confirm('Xác nhận không phân bổ quỹ này? Quyết định và số tiền gốc sẽ được lưu để đối soát.')) return
+    run({
+      key: `resolve-zero-hour:${record.id}`,
+      action: app.resolveRevenueBonusZeroHourPool,
+      payload: {
+        revenueBonusDailyId: record.id,
+        expectedVersion: record.version,
+        resolution: 'NO_ELIGIBLE_HOURS',
+        reason,
+      },
+      success: 'Đã xác nhận quỹ không có giờ đủ điều kiện và lưu lịch sử đối soát.',
+      unavailable: 'Chức năng xử lý quỹ chưa phân bổ đang được đồng bộ với máy chủ.',
+    })
+  }
+
   return (
     <div className="page compensation-page revenue-bonus-page">
       <PageHeader
@@ -252,7 +432,7 @@ export function RevenueBonusPage() {
           ? 'Hiển thị tổng quỹ của cửa hàng và khoản thưởng của chính bạn; không hiển thị phần của đồng nghiệp.'
           : `Theo dõi quỹ và phân bổ thưởng theo giờ bán hàng được duyệt tại ${storeName(stores, selectedStoreId)}.`}
         icon={CircleDollarSign}
-        actions={privileged && <Button icon={Calculator} loading={busyKey === 'calculate'} disabled={Boolean(busyKey)} onClick={calculate}>TÍNH THƯỞNG NGÀY</Button>}
+        actions={privileged && (activeStoreOperational || records.length > 0) && <Button icon={Calculator} loading={busyKey === 'calculate'} disabled={Boolean(busyKey)} onClick={calculate}>TÍNH THƯỞNG NGÀY</Button>}
       />
       <Card className="compensation-filter-card">
         <div className="compensation-filter-grid">
@@ -288,6 +468,42 @@ export function RevenueBonusPage() {
         <InfoNote>Doanh thu được cập nhật từ đơn hàng hợp lệ. Các mốc đã vượt qua đều được đánh dấu; hệ thống chỉ dùng mốc cao nhất để tính thưởng.</InfoNote>
       </Card>}
       {unallocatedTotal > 0 && privileged && <InfoNote tone="orange">Có quỹ chưa phân bổ do thiếu giờ bán hàng được duyệt. Kỳ liên quan phải được xử lý trước khi đóng sổ.</InfoNote>}
+      {privileged && historicalReconciliationRows.length > 0 && <Card title="Ngày có đối soát chờ xử lý" action={<Badge tone="orange">{historicalReconciliationRows.length} chờ xử lý</Badge>}>
+        <TableWrap className="compensation-table">
+          <thead><tr><th>Ngày</th><th>Nội dung</th><th>Số tiền</th><th>Thao tác</th></tr></thead>
+          <tbody>{historicalReconciliationRows.map((row) => <tr key={row.id}>
+            <td>{displayDate(row.date)}</td>
+            <td>{row.label}</td>
+            <td><strong>{money(row.amountVnd)}</strong></td>
+            <td><Button variant="outline" onClick={() => setBusinessDate(row.date)}>XEM NGÀY</Button></td>
+          </tr>)}</tbody>
+        </TableWrap>
+      </Card>}
+      {privileged && recalculationRequiredRecords.length > 0 && <InfoNote tone="orange">Doanh thu, chính sách thưởng hoặc giờ bán hàng của ngày này đã thay đổi. Hãy hoàn tất chấm công và bấm TÍNH THƯỞNG NGÀY trước khi xử lý quỹ.</InfoNote>}
+      {privileged && zeroHourRecords.length > 0 && <Card title="Xử lý quỹ không có giờ đủ điều kiện" action={<Badge tone="orange">{zeroHourRecords.length} chờ xử lý</Badge>}>
+        <TableWrap className="compensation-table">
+          <thead><tr><th>Ngày</th><th>Quỹ chưa phân bổ</th><th>Điều kiện</th><th>Thao tác</th></tr></thead>
+          <tbody>{zeroHourRecords.map((record) => <tr key={record.id}>
+            <td>{displayDate(revenueRecordDate(record))}</td>
+            <td><strong>{money(record.unallocatedVnd || 0)}</strong></td>
+            <td>0 giờ bán hàng được duyệt</td>
+            <td><Button variant="outline" loading={busyKey === `resolve-zero-hour:${record.id}`} disabled={Boolean(busyKey)} onClick={() => resolveZeroHourPool(record)}>XÁC NHẬN KHÔNG CÓ GIỜ ĐỦ ĐIỀU KIỆN</Button></td>
+          </tr>)}</tbody>
+        </TableWrap>
+        <InfoNote>Hệ thống giữ nguyên quỹ đủ điều kiện ban đầu, lý do và người xác nhận trong lịch sử đối soát. Nếu đã có giờ hợp lệ, hãy tính lại thay vì xác nhận.</InfoNote>
+      </Card>}
+      {privileged && zeroHourResolutionRecords.length > 0 && <Card title="Lịch sử xử lý quỹ 0 giờ" action={<Badge tone="green">{zeroHourResolutionRecords.length} bản ghi</Badge>}>
+        <TableWrap className="compensation-table">
+          <thead><tr><th>Ngày</th><th>Quỹ gốc không phân bổ</th><th>Lý do</th><th>Người xác nhận</th><th>Thời gian</th></tr></thead>
+          <tbody>{zeroHourResolutionRecords.map((record) => <tr key={`zero-hour-history:${record.id}`}>
+            <td>{displayDate(revenueRecordDate(record))}</td>
+            <td><strong>{money(record.zeroHourUnawardedVnd || record.qualifiedPercentagePoolVnd || 0)}</strong></td>
+            <td>{record.unallocatedResolutionReason || '—'}</td>
+            <td>{record.unallocatedResolvedBy?.name || record.unallocatedResolvedBy?.displayName || record.unallocatedResolvedBy?.username || '—'}</td>
+            <td>{displayDateTime(record.unallocatedResolvedAt)}</td>
+          </tr>)}</tbody>
+        </TableWrap>
+      </Card>}
       {privileged && <Card title="Duyệt thưởng mốc cao nhất" action={<Badge tone="orange">{milestoneClaims.filter((claim) => String(claim.status || '').toUpperCase() === 'PENDING').length} chờ duyệt</Badge>}>
         <TableWrap className="compensation-table">
           <thead><tr><th>Mốc thưởng</th><th>Ngày</th><th>Số tiền đề nghị</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
@@ -299,7 +515,7 @@ export function RevenueBonusPage() {
               <td><strong>{money(Number(claim.amountVnd || 0))}</strong></td>
               <td><Badge tone={statusTone(claim)}>{statusLabel(claim)}</Badge></td>
               <td><div className="compensation-row-actions">
-                {pending && <Button variant="outline" icon={CheckCircle2} loading={busyKey === `approve:${claim.id}`} disabled={Boolean(busyKey)} onClick={() => decideMilestone(claim, true)}>Duyệt</Button>}
+                {pending && activeStoreOperational && <Button variant="outline" icon={CheckCircle2} loading={busyKey === `approve:${claim.id}`} disabled={Boolean(busyKey)} onClick={() => decideMilestone(claim, true)}>Duyệt</Button>}
                 {pending && <Button variant="danger" icon={XCircle} loading={busyKey === `reject:${claim.id}`} disabled={Boolean(busyKey)} onClick={() => decideMilestone(claim, false)}>Từ chối</Button>}
                 {!pending && <span>—</span>}
               </div></td>

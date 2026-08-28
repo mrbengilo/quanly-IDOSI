@@ -61,8 +61,20 @@ const baseApp = (role = 'admin') => ({
   createViolation: vi.fn().mockResolvedValue({ ok: true }),
   voidViolation: vi.fn().mockResolvedValue({ ok: true }),
   calculateRevenueBonusDay: vi.fn().mockResolvedValue({ ok: true }),
+  resolveRevenueBonusZeroHourPool: vi.fn().mockResolvedValue({ ok: true }),
   approveRevenueBonusMilestone: vi.fn().mockResolvedValue({ ok: true }),
   rejectRevenueBonusMilestone: vi.fn().mockResolvedValue({ ok: true }),
+})
+
+const canonicalZeroHourRevenue = (overrides = {}) => ({
+  id: 'RB-ZERO-HOUR-CANONICAL', storeId: 'CH001', businessDate: '2026-08-26',
+  programId: 'revenue-bonus.store-dosii-daily.v1',
+  milestoneProgramId: 'team-milestone.store-dosii-daily-revenue.v1',
+  revenueVnd: 2_000_000, tierId: 'dosii.daily.1_500_000_through_2_000_000',
+  rateBasisPoints: 100, percentagePoolVnd: 20_000, milestonePoolVnd: 0,
+  totalPoolVnd: 20_000, allocatedVnd: 0, unallocatedVnd: 20_000,
+  participantCount: 0, status: 'APPROVED', version: 1,
+  ...overrides,
 })
 
 describe('compensation pages', () => {
@@ -160,6 +172,11 @@ describe('compensation pages', () => {
         employeeName: 'Nhân viên Không Liên Quan', storeId: 'CH001', occurredOn: '2026-08-26',
         shiftId: 'SHIFT-MORNING', title: 'Vi phạm ngoài phạm vi', amountVnd: 2_000,
         status: 'ACTIVE',
+      }, {
+        id: 'VIO-OTHER-STORE', targetUnit: 'store', employeeId: 'NV-UNRELATED',
+        employeeName: 'Nhân viên Cửa Hàng Khác', storeId: 'CH002', occurredOn: '2026-08-26',
+        shiftId: 'SHIFT-MORNING', title: 'Vi phạm cửa hàng khác', amountVnd: 2_000,
+        status: 'ACTIVE',
       }],
     }
     render(<ViolationManagementPage targetUnit="store" />)
@@ -172,7 +189,8 @@ describe('compensation pages', () => {
       name: 'Nhân viên Không Liên Quan — NV-UNRELATED',
     })).toBeNull()
     expect(screen.getByText('Vi phạm alias điều chuyển')).toBeTruthy()
-    expect(screen.queryByText('Vi phạm ngoài phạm vi')).toBeNull()
+    expect(screen.getByText('Vi phạm ngoài phạm vi')).toBeTruthy()
+    expect(screen.queryByText('Vi phạm cửa hàng khác')).toBeNull()
     fireEvent.change(employeeSelect, { target: { value: 'PROFILE-TRANSFER' } })
     expect(within(screen.getByLabelText('Ca vi phạm')).getByRole('option', {
       name: 'Ca sáng điều chuyển · 07:30 – 11:30 · Đã chấm công',
@@ -190,6 +208,80 @@ describe('compensation pages', () => {
     expect(within(employeeSelect).queryByRole('option', {
       name: 'Nhân viên Điều Chuyển — PROFILE-TRANSFER',
     })).toBeNull()
+    expect(screen.getByText('Vi phạm alias điều chuyển')).toBeTruthy()
+    expect(screen.getByText('Vi phạm ngoài phạm vi')).toBeTruthy()
+    expect(screen.queryByText('Vi phạm cửa hàng khác')).toBeNull()
+    expect(screen.getAllByRole('button', { name: 'Hủy' })).toHaveLength(2)
+  })
+
+  it('keeps projected non-store violation history after the employee leaves the current picker', () => {
+    mocked.app = {
+      ...baseApp(),
+      violations: [{
+        id: 'VIO-FORMER-OFFICE', targetUnit: 'office', employeeId: 'FORMER-OFFICE-01',
+        employeeName: 'Nhân viên văn phòng cũ', occurredOn: '2026-08-20',
+        title: 'Vi phạm cần lưu lịch sử', amountVnd: 5_000, status: 'ACTIVE',
+      }],
+    }
+    render(<ViolationManagementPage targetUnit="office" />)
+
+    expect(screen.getByText('Vi phạm cần lưu lịch sử')).toBeTruthy()
+    expect(screen.getByText('Nhân viên văn phòng cũ')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Hủy' })).toBeTruthy()
+  })
+
+  it('keeps inactive-store violation history reachable but blocks new assignments there', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      stores: [...stores, {
+        id: 'CH003', name: 'Dosii lịch sử', status: 'Ngưng hoạt động', active: false,
+      }],
+      employees: [...employees, {
+        id: 'NV-03', name: 'Nhân viên Lịch Sử', unit: 'store', storeId: 'CH003',
+      }],
+      schedule: [{
+        id: 'SCHEDULE-NV-03', employeeId: 'NV-03', storeId: 'CH003', date: '2026-08-26',
+        shiftIds: ['SHIFT-MORNING'],
+        shiftSnapshots: [{ id: 'SHIFT-MORNING', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+      }],
+      workCatalogItems: [{
+        id: 'violation-inactive-store', code: 'store.violation.inactive', kind: 'violation',
+        targetGroup: 'store', storeId: 'CH003', shiftId: null, shiftName: null,
+        name: 'Không mở nhạc', amountVnd: 2_000, sortOrder: 10, active: true,
+        version: 1, effectiveFrom: '2026-08-01', effectiveTo: null,
+      }],
+      violations: [{
+        id: 'VIO-INACTIVE-HISTORICAL', targetUnit: 'store', employeeId: 'FORMER-NV-03',
+        employeeName: 'Nhân viên cũ CH003', storeId: 'CH003', occurredOn: '2026-07-15',
+        shiftId: 'SHIFT-MORNING', shiftName: 'Ca sáng lịch sử', title: 'Vi phạm tại cửa hàng đã đóng',
+        amountVnd: 5_000, status: 'ACTIVE',
+      }, {
+        id: 'VIO-OPERATIONAL-STORE', targetUnit: 'store', employeeId: 'NV-01',
+        employeeName: 'Nhân viên Một', storeId: 'CH001', occurredOn: '2026-08-26',
+        shiftId: 'SHIFT-MORNING', title: 'Vi phạm cửa hàng đang mở', amountVnd: 2_000,
+        status: 'ACTIVE',
+      }],
+    }
+    render(<ViolationManagementPage targetUnit="store" />)
+
+    const storeSelect = screen.getByLabelText('Cửa hàng')
+    expect(within(storeSelect).getByRole('option', {
+      name: 'Dosii lịch sử — Ngừng hoạt động (chỉ xem lịch sử)',
+    })).toBeTruthy()
+    fireEvent.change(storeSelect, { target: { value: 'CH003' } })
+
+    expect(screen.getByText('Vi phạm tại cửa hàng đã đóng')).toBeTruthy()
+    expect(screen.getByText('Nhân viên cũ CH003')).toBeTruthy()
+    expect(screen.queryByText('Vi phạm cửa hàng đang mở')).toBeNull()
+    expect(screen.getByText(/chỉ dùng để xem lịch sử/i)).toBeTruthy()
+    expect(screen.getByLabelText('Nhân viên').disabled).toBe(true)
+    expect(screen.getByRole('checkbox', { name: /Không mở nhạc/i }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Hủy' })).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Ngày phát sinh'), { target: { value: '2026-08-25' } })
+    expect(screen.getByText('Vi phạm tại cửa hàng đã đóng')).toBeTruthy()
+    expect(mocked.app.createViolation).not.toHaveBeenCalled()
   })
 
   it('shows each private violation with its store, shift, date and total deduction', () => {
@@ -444,6 +536,244 @@ describe('compensation pages', () => {
     await waitFor(() => expect(mocked.app.approveRevenueBonusMilestone).toHaveBeenCalledWith({
       claimId: 'CLAIM-01', expectedVersion: 3,
     }))
+  })
+
+  it('lets privileged roles resolve a fully unallocated zero-hour revenue pool with an audit reason', async () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [{
+        id: 'RB-ZERO-HOUR', storeId: 'CH001', businessDate: '2026-08-26',
+        percentagePoolVnd: 50_000, milestonePoolVnd: 0, totalPoolVnd: 50_000,
+        allocatedVnd: 0, unallocatedVnd: 50_000, participantCount: 0,
+        status: 'APPROVED', version: 3,
+      }],
+    }
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Không có giờ bán hàng được duyệt trong ngày.')
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<RevenueBonusPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'XÁC NHẬN KHÔNG CÓ GIỜ ĐỦ ĐIỀU KIỆN' }))
+
+    await waitFor(() => expect(mocked.app.resolveRevenueBonusZeroHourPool).toHaveBeenCalledWith({
+      revenueBonusDailyId: 'RB-ZERO-HOUR', expectedVersion: 3,
+      resolution: 'NO_ELIGIBLE_HOURS', reason: 'Không có giờ bán hàng được duyệt trong ngày.',
+    }))
+    expect(prompt).toHaveBeenCalled()
+    expect(confirm).toHaveBeenCalled()
+    prompt.mockRestore()
+    confirm.mockRestore()
+  })
+
+  it('keeps an inactive store and its resolved zero-hour audit history selectable after reload', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      stores: [...stores, { id: 'CH003', name: 'Dosii đã ngưng hoạt động', status: 'Ngưng hoạt động', active: false }],
+      revenueBonuses: [{
+        id: 'RB-ZERO-HOUR-INACTIVE', storeId: 'CH003', businessDate: '2026-08-26',
+        percentagePoolVnd: 0, milestonePoolVnd: 0, totalPoolVnd: 0,
+        allocatedVnd: 0, unallocatedVnd: 0, participantCount: 0,
+        qualifiedPercentagePoolVnd: 40_000, zeroHourUnawardedVnd: 40_000,
+        unallocatedResolutionCode: 'NO_ELIGIBLE_HOURS',
+        unallocatedResolutionReason: 'Không có giờ hợp lệ trước khi đóng cửa.',
+        unallocatedResolvedBy: { name: 'Hỗ trợ Lịch sử' },
+        unallocatedResolvedAt: '2026-08-26T06:00:00.000Z',
+        supersededAt: '2026-08-27T06:00:00.000Z',
+        status: 'RESOLVED_NO_ELIGIBLE_HOURS', version: 2,
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    const storeSelect = screen.getByLabelText('Cửa hàng')
+    expect(within(storeSelect).getByRole('option', { name: 'Dosii đã ngưng hoạt động' })).toBeTruthy()
+    fireEvent.change(storeSelect, { target: { value: 'CH003' } })
+    const history = screen.getByRole('heading', { name: 'Lịch sử xử lý quỹ 0 giờ' }).closest('.card')
+    expect(within(history).getByText('40,000 đ')).toBeTruthy()
+    expect(within(history).getByText('Hỗ trợ Lịch sử')).toBeTruthy()
+    expect(within(history).getByText(/13:00/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+  })
+
+  it('surfaces an inactive store historical zero-hour date and opens it for reconciliation', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      stores: [...stores, { id: 'CH003', name: 'Dosii lịch sử', status: 'Ngưng hoạt động', active: false }],
+      revenueBonuses: [{
+        id: 'RB-ZERO-HOUR-HISTORICAL', storeId: 'CH003', businessDate: '2026-08-20',
+        percentagePoolVnd: 40_000, milestonePoolVnd: 0, totalPoolVnd: 40_000,
+        allocatedVnd: 0, unallocatedVnd: 40_000, participantCount: 0,
+        status: 'APPROVED', version: 1,
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    fireEvent.change(screen.getByLabelText('Cửa hàng'), { target: { value: 'CH003' } })
+    expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+    expect(screen.getByText('20/08/2026')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'XEM NGÀY' }))
+
+    expect(screen.getByLabelText('Ngày kinh doanh').value).toBe('2026-08-20')
+    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN KHÔNG CÓ GIỜ ĐỦ ĐIỀU KIỆN' })).toBeTruthy()
+  })
+
+  it('keeps an inactive store with a historical pending milestone reachable for decision', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      stores: [...stores, { id: 'CH003', name: 'Dosii chờ duyệt', status: 'Ngưng hoạt động', active: false }],
+      teamRewardClaims: [{
+        id: 'CLAIM-INACTIVE-HISTORICAL', storeId: 'CH003', businessDate: '2026-08-19',
+        amountVnd: 250_000, status: 'PENDING', version: 2,
+      }],
+    }
+    const view = render(<RevenueBonusPage />)
+
+    const storeSelect = screen.getByLabelText('Cửa hàng')
+    expect(within(storeSelect).getByRole('option', { name: 'Dosii chờ duyệt' })).toBeTruthy()
+    fireEvent.change(storeSelect, { target: { value: 'CH003' } })
+    expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+    expect(screen.getByText('Thưởng mốc chờ duyệt')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'XEM NGÀY' }))
+
+    expect(screen.getByLabelText('Ngày kinh doanh').value).toBe('2026-08-19')
+    expect(screen.queryByRole('button', { name: 'Duyệt' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Từ chối' })).toBeTruthy()
+
+    mocked.app = baseApp('business_support')
+    view.rerender(<RevenueBonusPage />)
+
+    expect(screen.getByLabelText('Cửa hàng').value).toBe('CH001')
+    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
+  })
+
+  it('requires recalculation instead of offering zero-hour resolution when a shift is open or hours arrived later', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [{
+        id: 'RB-ZERO-HOUR-STALE', storeId: 'CH001', businessDate: '2026-08-26',
+        percentagePoolVnd: 50_000, milestonePoolVnd: 0, totalPoolVnd: 50_000,
+        allocatedVnd: 0, unallocatedVnd: 50_000, participantCount: 0,
+        status: 'APPROVED', version: 3,
+      }],
+      attendance: [{
+        id: 'ATT-LATE-HOURS', employeeId: 'NV-01', storeId: 'CH001', date: '2026-08-26',
+        checkInAt: '2026-08-26T01:00:00.000Z', checkOutAt: '2026-08-26T02:00:00.000Z',
+        workedSeconds: 3_600, approvedSalesSeconds: 3_600,
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.queryByRole('button', { name: 'XÁC NHẬN KHÔNG CÓ GIỜ ĐỦ ĐIỀU KIỆN' })).toBeNull()
+    expect(screen.getByText(/Hãy hoàn tất chấm công và bấm TÍNH THƯỞNG NGÀY/)).toBeTruthy()
+  })
+
+  it('requires recalculation when orders change the stored revenue result', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [canonicalZeroHourRevenue()],
+      orders: [{
+        id: 'ORDER-BASE', storeId: 'CH001', amount: 2_000_000,
+        status: 'Hoàn tất', createdAt: '2026-08-26T01:00:00.000Z',
+      }, {
+        id: 'ORDER-LATE', storeId: 'CH001', amount: 1,
+        status: 'Hoàn tất', createdAt: '2026-08-26T02:00:00.000Z',
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.queryByRole('button', { name: 'XÁC NHẬN KHÔNG CÓ GIỜ ĐỦ ĐIỀU KIỆN' })).toBeNull()
+    expect(screen.getByText(/Doanh thu, chính sách thưởng hoặc giờ bán hàng/)).toBeTruthy()
+  })
+
+  it('requires recalculation when the stored revenue program or tier no longer matches the store', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [canonicalZeroHourRevenue({
+        programId: 'revenue-bonus.store-sm-daily.v1',
+        milestoneProgramId: 'team-milestone.store-sm-daily-revenue.v1',
+        tierId: 'sm.daily.2_500_000_through_6_000_000',
+      })],
+      orders: [{
+        id: 'ORDER-PROGRAM-CURRENT', storeId: 'CH001', amount: 2_000_000,
+        status: 'Hoàn tất', createdAt: '2026-08-26T01:00:00.000Z',
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.queryByRole('button', { name: 'XÁC NHẬN KHÔNG CÓ GIỜ ĐỦ ĐIỀU KIỆN' })).toBeNull()
+    expect(screen.getByText(/Doanh thu, chính sách thưởng hoặc giờ bán hàng/)).toBeTruthy()
+  })
+
+  it('matches the server day boundary and ignores negative orders when checking freshness', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [canonicalZeroHourRevenue({
+        revenueVnd: 2_000_001,
+        tierId: 'dosii.daily.over_2_000_000_through_4_000_000',
+        rateBasisPoints: 200,
+        percentagePoolVnd: 40_000,
+        totalPoolVnd: 40_000,
+        unallocatedVnd: 40_000,
+      })],
+      orders: [{
+        id: 'ORDER-VN-DAY', storeId: 'CH001', amount: 2_000_000,
+        status: 'Hoàn tất', createdAt: '2026-08-25T18:30:00.000Z',
+      }, {
+        id: 'ORDER-VN-DAY-ONE', storeId: 'CH001', amount: 1,
+        status: 'Hoàn tất', createdAt: '2026-08-26T02:00:00.000Z',
+      }, {
+        id: 'ORDER-NEGATIVE-IGNORED', storeId: 'CH001', amount: -1_000_000,
+        status: 'Hoàn tất', createdAt: '2026-08-26T02:30:00.000Z',
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN KHÔNG CÓ GIỜ ĐỦ ĐIỀU KIỆN' })).toBeTruthy()
+    expect(screen.queryByText(/Doanh thu, chính sách thưởng hoặc giờ bán hàng/)).toBeNull()
+  })
+
+  it('warns when a previously resolved zero-hour day becomes stale', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [{
+        id: 'RB-ZERO-HOUR-RESOLVED-STALE', storeId: 'CH001', businessDate: '2026-08-26',
+        revenueVnd: 2_000_000, percentagePoolVnd: 0, totalPoolVnd: 0,
+        allocatedVnd: 0, unallocatedVnd: 0, qualifiedPercentagePoolVnd: 20_000,
+        zeroHourUnawardedVnd: 20_000, unallocatedResolutionCode: 'NO_ELIGIBLE_HOURS',
+        status: 'RESOLVED_NO_ELIGIBLE_HOURS', version: 2,
+      }],
+      attendance: [{
+        id: 'ATT-RESOLVED-LATE', employeeId: 'NV-01', storeId: 'CH001', date: '2026-08-26',
+        checkInAt: '2026-08-26T01:00:00.000Z', checkOutAt: '2026-08-26T02:00:00.000Z',
+        workedSeconds: 3_600, approvedSalesSeconds: 3_600,
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText(/Hãy hoàn tất chấm công và bấm TÍNH THƯỞNG NGÀY/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
+  })
+
+  it('shows the original zero-hour amount and audit metadata after resolution', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [{
+        id: 'RB-ZERO-HOUR-RESOLVED', storeId: 'CH001', businessDate: '2026-08-26',
+        percentagePoolVnd: 0, totalPoolVnd: 0, allocatedVnd: 0, unallocatedVnd: 0,
+        qualifiedPercentagePoolVnd: 50_000, zeroHourUnawardedVnd: 50_000,
+        unallocatedResolutionCode: 'NO_ELIGIBLE_HOURS',
+        unallocatedResolutionReason: 'Không có giờ bán hàng được duyệt trong ngày.',
+        unallocatedResolvedAt: '2026-08-26T06:00:00.000Z',
+        unallocatedResolvedBy: { name: 'Hỗ trợ Một' },
+        supersededAt: '2026-08-27T06:00:00.000Z',
+        status: 'RESOLVED_NO_ELIGIBLE_HOURS', version: 4,
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    const history = screen.getByRole('heading', { name: 'Lịch sử xử lý quỹ 0 giờ' }).closest('.card')
+    expect(within(history).getByText('50,000 đ')).toBeTruthy()
+    expect(within(history).getByText('Không có giờ bán hàng được duyệt trong ngày.')).toBeTruthy()
+    expect(within(history).getByText('Hỗ trợ Một')).toBeTruthy()
   })
 
   it('defaults privileged revenue bonus work to the active operational store', async () => {

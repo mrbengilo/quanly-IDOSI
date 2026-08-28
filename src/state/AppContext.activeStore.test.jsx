@@ -854,6 +854,37 @@ describe('remote command active-store preservation', () => {
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
   })
 
+  it('refreshes state for an entity version conflict while preserving its code and selected store', async () => {
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+    act(() => appRef.current.setActiveStoreId('STORE-B'))
+    api.apiGetState.mockClear()
+    api.apiCommand.mockRejectedValueOnce(Object.assign(new Error('stale entity'), { code: 'ENTITY_VERSION_CONFLICT' }))
+
+    let receivedError
+    await act(async () => {
+      try {
+        await appRef.current.resolveRevenueBonusZeroHourPool({
+          storeId: 'STORE-A',
+          date: '2026-08-28',
+          reason: 'Đối soát quỹ không có giờ đủ điều kiện',
+        })
+      } catch (error) {
+        receivedError = error
+      }
+    })
+
+    expect(receivedError).toMatchObject({
+      code: 'ENTITY_VERSION_CONFLICT',
+      message: 'Dữ liệu vừa thay đổi trên máy chủ. Nội dung mới nhất đã được tải; vui lòng thực hiện lại thao tác.',
+    })
+    expect(api.apiGetState).toHaveBeenCalledTimes(1)
+    expect(api.apiGetState).toHaveBeenCalledWith('global')
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
+  })
+
   it('retries pending reset cleanup with the exact payload and same idempotency key', async () => {
     const adminBootstrap = () => ({ user: adminUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
     api.apiLogin.mockResolvedValue({ user: adminUser })

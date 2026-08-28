@@ -1283,7 +1283,8 @@ export function AppProvider({ children }) {
       })
       return result
     } catch (error) {
-      if (error.code === 'VERSION_CONFLICT') {
+      const conflictCode = String(error?.code || '')
+      if (['VERSION_CONFLICT', 'ENTITY_VERSION_CONFLICT'].includes(conflictCode)) {
         try {
           const latest = await apiGetState('global')
           activateRemotePayload(latest, remote.user, activeStoreIdRef.current)
@@ -1291,7 +1292,7 @@ export function AppProvider({ children }) {
           setApiStatus('error')
         }
         const conflict = new Error('Dữ liệu vừa thay đổi trên máy chủ. Nội dung mới nhất đã được tải; vui lòng thực hiện lại thao tác.')
-        conflict.code = 'VERSION_CONFLICT'
+        conflict.code = conflictCode
         throw conflict
       }
       throw error
@@ -3861,6 +3862,15 @@ export function AppProvider({ children }) {
     )
   }
 
+  const resolveRevenueBonusZeroHourPool = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'revenue_bonus.resolve_zero_hour_pool',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-zero-hour:${crypto.randomUUID()}`,
+    )
+  }
+
   const approveRevenueBonusMilestone = async (payload = {}) => {
     requireCompensationOperator()
     return runRemoteDomainCommand(
@@ -5194,6 +5204,7 @@ export function AppProvider({ children }) {
     createViolationBatch,
     voidViolation,
     calculateRevenueBonusDay,
+    resolveRevenueBonusZeroHourPool,
     approveRevenueBonusMilestone,
     rejectRevenueBonusMilestone,
     addSalaryAdjustment,

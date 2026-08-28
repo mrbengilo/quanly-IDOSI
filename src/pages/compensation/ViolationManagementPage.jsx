@@ -76,10 +76,32 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
   const permittedUnit = ['store', 'office', 'business_support'].includes(targetUnit)
   const canManage = ['admin', 'business_support'].includes(role)
     && (targetUnit !== 'business_support' || role === 'admin')
-  const stores = useMemo(() => storesVisibleToRole(app.stores, app.session), [app.stores, app.session])
+  const operationalStoreList = useMemo(
+    () => storesVisibleToRole(app.stores, app.session),
+    [app.stores, app.session],
+  )
+  const stores = useMemo(() => {
+    if (targetUnit !== 'store' || !canManage) return operationalStoreList
+
+    const historicalStoreIds = new Set((Array.isArray(app.violations) ? app.violations : [])
+      .filter((entry) => targetUnitOfViolation(entry) === 'store')
+      .map(entryStoreId)
+      .filter(Boolean))
+    const historicalPhysicalStores = (Array.isArray(app.stores) ? app.stores : [])
+      .filter((store) => historicalStoreIds.has(entityId(store)) && !store.deletedAt)
+      .filter((store) => !['OFFICE', 'BUSINESS_SUPPORT', 'ADMIN', 'SYSTEM'].includes(entityId(store).toUpperCase()))
+
+    return [...new Map([...operationalStoreList, ...historicalPhysicalStores]
+      .map((store) => [entityId(store), store])).values()]
+  }, [app.stores, app.violations, targetUnit, canManage, operationalStoreList])
+  const operationalStoreIds = useMemo(
+    () => new Set(operationalStoreList.map(entityId)),
+    [operationalStoreList],
+  )
   const [storeSelection, setStoreSelection] = useState('')
   const [occurredOn, setOccurredOn] = useState(vietnamToday)
   const selectedStoreId = targetUnit === 'store' ? storeSelection || entityId(stores[0]) : ''
+  const selectedStoreOperational = targetUnit !== 'store' || operationalStoreIds.has(selectedStoreId)
   const employees = useMemo(() => {
     const currentEmployees = employeesForTarget({
       employees: app.employees,
@@ -105,9 +127,6 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
   const [validation, setValidation] = useState('')
   const { busyKey, error, run } = useCompensationAction(app)
   const visibleEmployeeIds = useMemo(() => new Set(employees.map(entityId)), [employees])
-  const visibleEmployeeIdentifiers = useMemo(() => new Set(
-    employees.flatMap(employeeIdentifiers),
-  ), [employees])
   const selectedEmployeeId = visibleEmployeeIds.has(employeeSelection)
     ? employeeSelection
     : entityId(employees[0])
@@ -139,7 +158,8 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
   const rows = (app.violations || [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
     .filter((entry) => targetUnit !== 'store' || entryStoreId(entry) === selectedStoreId)
-    .filter((entry) => visibleEmployeeIdentifiers.has(entryEmployeeId(entry)))
+    // Picker eligibility is current/date-scoped; audit history is already
+    // privacy-projected by the server and must retain former staff records.
     .sort((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || '')))
 
   if (!permittedUnit || !canManage) {
@@ -150,6 +170,10 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
   }
 
   const createViolation = async () => {
+    if (!selectedStoreOperational) {
+      setValidation('Cửa hàng đã ngừng hoạt động chỉ cho phép xem và đối soát lịch sử vi phạm.')
+      return
+    }
     if (!selectedEmployeeId || !selectedPolicy || !occurredOn || (targetUnit === 'store' && !selectedShift)) {
       setValidation('Vui lòng chọn nhân viên, nội dung vi phạm, ngày phát sinh và ca làm việc.')
       return
@@ -201,23 +225,25 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
         <div className="compensation-form-grid">
           {targetUnit === 'store' && <Field label="Cửa hàng" required>
             <Select aria-label="Cửa hàng" value={selectedStoreId} onChange={(event) => { setStoreSelection(event.target.value); setEmployeeSelection(''); setShiftSelection(''); setPolicyId('') }}>
-              {stores.map((store) => <option key={entityId(store)} value={entityId(store)}>{store.name}</option>)}
+              {stores.map((store) => <option key={entityId(store)} value={entityId(store)}>
+                {store.name}{operationalStoreIds.has(entityId(store)) ? '' : ' — Ngừng hoạt động (chỉ xem lịch sử)'}
+              </option>)}
             </Select>
           </Field>}
           <Field label="Nhân viên" required>
-            <Select aria-label="Nhân viên" value={selectedEmployeeId} onChange={(event) => { setEmployeeSelection(event.target.value); setShiftSelection(''); setPolicyId('') }} disabled={!employees.length}>
+            <Select aria-label="Nhân viên" value={selectedEmployeeId} onChange={(event) => { setEmployeeSelection(event.target.value); setShiftSelection(''); setPolicyId('') }} disabled={!employees.length || !selectedStoreOperational}>
               {employees.map((employee) => <option key={entityId(employee)} value={entityId(employee)}>{employee.name} — {entityId(employee)}</option>)}
             </Select>
           </Field>
           {targetUnit === 'store' && <Field label="Ca vi phạm" required>
-            <Select aria-label="Ca vi phạm" value={selectedShiftId} onChange={(event) => setShiftSelection(event.target.value)} disabled={!shifts.length}>
+            <Select aria-label="Ca vi phạm" value={selectedShiftId} onChange={(event) => setShiftSelection(event.target.value)} disabled={!shifts.length || !selectedStoreOperational}>
               {shifts.map((shift) => <option key={entityId(shift)} value={entityId(shift)}>{shift.name} · {shift.time || `${shift.start} – ${shift.end}`} · {shift.sourceLabel}</option>)}
             </Select>
           </Field>}
           <Field label="Nội dung vi phạm" required className="compensation-form-span">
             <div className="compensation-catalog-checklist" role="group" aria-label="Nội dung vi phạm">
               {policies.map((policy) => <label key={policy.id} className={selectedPolicy?.id === policy.id ? 'selected' : ''}>
-                <input type="checkbox" checked={selectedPolicy?.id === policy.id} onChange={() => setPolicyId((current) => current === policy.id ? '' : policy.id)} />
+                <input type="checkbox" checked={selectedPolicy?.id === policy.id} disabled={!selectedStoreOperational} onChange={() => setPolicyId((current) => current === policy.id ? '' : policy.id)} />
                 <span><strong>{policy.name}</strong><small>{money(policy.amountVnd)}</small></span>
               </label>)}
               {!policies.length && <InfoNote tone="orange">Chưa có vi phạm đang hoạt động cho phạm vi và ngày đã chọn. Hãy thêm tại “Danh mục công việc & vi phạm”.</InfoNote>}
@@ -233,12 +259,13 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
             <Input aria-label="Ghi chú" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Thông tin đối soát bổ sung (nếu có)" />
           </Field>
         </div>
+        {!selectedStoreOperational && <InfoNote tone="orange">Cửa hàng đã ngừng hoạt động. Dữ liệu vi phạm tại đây chỉ dùng để xem lịch sử; không thể ghi nhận hoặc hủy vi phạm.</InfoNote>}
         {!employees.length && <InfoNote tone="orange">Không có nhân viên đang hoạt động trong phạm vi đã chọn.</InfoNote>}
         {targetUnit === 'store' && !shifts.length && <InfoNote tone="orange">Nhân viên chưa có lịch phân ca hoặc chấm công tại cửa hàng trong ngày đã chọn.</InfoNote>}
         <InfoNote>Vi phạm luôn là khoản phải thu dương. Khi quyết toán, hệ thống áp dụng theo thứ tự thưởng → phụ cấp → lương và không làm thực nhận âm.</InfoNote>
         {validation && <InfoNote tone="red">{validation}</InfoNote>}
         <ActionError message={error} />
-        <div className="compensation-actions"><Button icon={Plus} loading={busyKey === 'create'} disabled={!employees.length || !selectedPolicy || (targetUnit === 'store' && !selectedShift) || Boolean(busyKey)} onClick={createViolation}>GHI NHẬN VI PHẠM</Button></div>
+        <div className="compensation-actions"><Button icon={Plus} loading={busyKey === 'create'} disabled={!selectedStoreOperational || !employees.length || !selectedPolicy || (targetUnit === 'store' && !selectedShift) || Boolean(busyKey)} onClick={createViolation}>GHI NHẬN VI PHẠM</Button></div>
       </Card>
       <Card title="Lịch sử vi phạm" action={<Badge tone="red">{rows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
         <TableWrap className="compensation-table">
@@ -253,7 +280,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
               <td><strong className="compensation-debit">{money(Math.abs(entryAmount(entry)))}</strong></td>
               <td>{entry.note || '—'}</td>
               <td><Badge tone={statusTone(entry)}>{statusLabel(entry)}</Badge></td>
-              <td>{!isVoided(entry) && typeof app.voidViolation === 'function' ? <Button variant="danger" icon={XCircle} loading={busyKey === `void:${entry.id}`} disabled={Boolean(busyKey)} onClick={() => voidViolation(entry)}>Hủy</Button> : <span>—</span>}</td>
+              <td>{!isVoided(entry) && (targetUnit !== 'store' || selectedStoreOperational) && typeof app.voidViolation === 'function' ? <Button variant="danger" icon={XCircle} loading={busyKey === `void:${entry.id}`} disabled={Boolean(busyKey)} onClick={() => voidViolation(entry)}>Hủy</Button> : <span>—</span>}</td>
             </tr>)}
             {!rows.length && <tr><td colSpan={targetUnit === 'store' ? 9 : 7} className="compensation-empty">Chưa có vi phạm trong phạm vi này.</td></tr>}
           </tbody>

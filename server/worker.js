@@ -685,6 +685,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'violation.create_batch',
   'violation.void',
   'revenue_bonus.calculate_day',
+  'revenue_bonus.resolve_zero_hour_pool',
   'revenue_bonus.approve_milestone',
   'revenue_bonus.reject_milestone',
 ])
@@ -4396,8 +4397,16 @@ const storeCommand = async (db, actor, body, commandContext) => {
       String(employee.storeId || '') === storeId && !employee.deletedAt
       && !['Đã nghỉ việc', 'inactive'].includes(String(employee.status || ''))
     ))
-    if (hasOrders || hasEmployees) {
-      throw new ApiError(409, 'STORE_IN_USE', 'Không thể xóa cửa hàng đang có đơn hàng hoặc nhân viên.')
+    const hasRevenueBonusHistory = (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
+      .some((record) => String(record.storeId || '') === storeId)
+    if (hasOrders || hasEmployees || hasRevenueBonusHistory) {
+      throw new ApiError(
+        409,
+        'STORE_IN_USE',
+        hasRevenueBonusHistory
+          ? 'Không thể xóa cửa hàng đã có lịch sử thưởng doanh thu; hãy chuyển cửa hàng sang trạng thái ngừng hoạt động để giữ đối soát.'
+          : 'Không thể xóa cửa hàng đang có đơn hàng hoặc nhân viên.',
+      )
     }
     const deleted = { ...existing, deletedAt: commandContext.now, deletedBy: serverActorSnapshot(actor) }
     const nextState = {
@@ -4476,10 +4485,55 @@ const storeCommand = async (db, actor, body, commandContext) => {
       existing: true,
     }, 200, commandContext)
   }
+  const previousRevenuePrograms = revenueBonusProgramsForStore(existing)
+  const nextRevenuePrograms = revenueBonusProgramsForStore(candidate)
+  const revenueProgramChanged = previousRevenuePrograms.programId !== nextRevenuePrograms.programId
+    || previousRevenuePrograms.milestoneProgramId !== nextRevenuePrograms.milestoneProgramId
+  const revenueProgramPayrollTargets = []
+  if (revenueProgramChanged) {
+    const targetKeys = new Set()
+    const addTarget = (targetStoreId, period) => {
+      const normalizedStoreId = String(targetStoreId || '').trim()
+      if (!normalizedStoreId || !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(String(period || ''))) return
+      const key = `${normalizedStoreId}:${period}`
+      if (targetKeys.has(key)) return
+      targetKeys.add(key)
+      revenueProgramPayrollTargets.push({ storeId: normalizedStoreId, period })
+    }
+    const activeRevenueDays = (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
+      .filter((record) => (
+        String(record.storeId || '') === storeId
+        && !record.deletedAt
+        && !record.voidedAt
+        && !record.supersededAt
+      ))
+    const payrollPeriods = Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []
+    for (const daily of activeRevenueDays) {
+      const period = revenueBonusRecordPeriod(daily)
+      addTarget(storeId, period)
+      for (const payroll of payrollPeriods) {
+        if (String(payroll.period || '') !== period) continue
+        if (revenueBonusDailyTargetsPayrollStore(state, daily, payroll.storeId)) {
+          addTarget(payroll.storeId, period)
+        }
+      }
+    }
+    for (const target of revenueProgramPayrollTargets) {
+      assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
+    }
+  }
   const updated = { ...candidate, updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor) }
   const nextState = {
     ...state,
     stores: stores.map((store) => String(store.id || '') === storeId ? updated : store),
+    payrollPeriods: revenueProgramChanged
+      ? invalidateClosedPayrollPeriods(
+          state,
+          revenueProgramPayrollTargets,
+          commandContext.now,
+          body.type,
+        )
+      : state.payrollPeriods,
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -4488,7 +4542,15 @@ const storeCommand = async (db, actor, body, commandContext) => {
     entityId: storeId,
     before: existing,
     after: updated,
-    metadata: { changedFields },
+    metadata: {
+      changedFields,
+      revenueProgramChanged,
+      ...(revenueProgramChanged ? {
+        previousRevenuePrograms,
+        nextRevenuePrograms,
+        payrollTargets: revenueProgramPayrollTargets,
+      } : {}),
+    },
     response: { command: body.type, store: updated },
   }, commandContext)
 }
@@ -9817,6 +9879,7 @@ const managerProfileEligibleForPayrollPeriod = (profile, storeId, period) => {
   const roleStartedMs = managerRoleEpoch(roleStartedAt)
   const roleEndedMs = managerRoleEpoch(roleEndedAt, { endOfDate: true })
   if ((roleStartedAt && roleStartedMs == null) || (roleEndedAt && roleEndedMs == null)) return false
+  if (roleStartedMs != null && roleEndedMs != null && roleStartedMs >= roleEndedMs) return false
   return (roleStartedMs == null || roleStartedMs < periodBounds.endMs)
     && (roleEndedMs == null || roleEndedMs > periodBounds.startMs)
 }
@@ -9828,6 +9891,44 @@ const resolveStoreManagerForPayrollPeriod = (state, storeId, period) => {
     ...(Array.isArray(state.managerAccounts) ? state.managerAccounts : []),
   ].filter((profile) => managerProfileEligibleForPayrollPeriod(profile, storeId, period))
   const periodBounds = managerPayrollPeriodBounds(period)
+  const syntheticManager = (profile) => ({
+    ...profile,
+    active: true,
+    isActive: true,
+    enabled: true,
+    status: 'Đang làm việc',
+    deletedAt: null,
+  })
+  const compareEpoch = (left, right) => left === right ? 0 : left < right ? -1 : 1
+  const candidateWindows = candidates.map((profile) => {
+    const { roleStartedAt, roleEndedAt } = managerRoleEffectiveWindow(profile)
+    return {
+      profile,
+      startMs: managerRoleEpoch(roleStartedAt) ?? Number.NEGATIVE_INFINITY,
+      endMs: managerRoleEpoch(roleEndedAt, { endOfDate: true }) ?? Number.POSITIVE_INFINITY,
+      profileId: employeeProfileIdentifier(profile),
+    }
+  }).sort((left, right) => (
+    compareEpoch(left.startMs, right.startMs)
+    || compareEpoch(left.endMs, right.endMs)
+    || left.profileId.localeCompare(right.profileId)
+  ))
+  if (periodBounds) {
+    for (let leftIndex = 0; leftIndex < candidateWindows.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < candidateWindows.length; rightIndex += 1) {
+        const left = candidateWindows[leftIndex]
+        const right = candidateWindows[rightIndex]
+        const overlapStartMs = Math.max(left.startMs, right.startMs, periodBounds.startMs)
+        const overlapEndMs = Math.min(left.endMs, right.endMs, periodBounds.endMs)
+        if (overlapStartMs >= overlapEndMs) continue
+        const overlapResolution = resolveExactlyOneActiveStoreManager({
+          storeId,
+          managers: [syntheticManager(left.profile), syntheticManager(right.profile)],
+        })
+        if (overlapResolution.code === 'STORE_MANAGER_MULTIPLE_ACTIVE') return overlapResolution
+      }
+    }
+  }
   // The monthly result follows the assignment that remains effective at the
   // end of the period. If the store had no manager at month-end, use the last
   // assignment that ended during the month. Truly concurrent assignments are
@@ -9850,14 +9951,7 @@ const resolveStoreManagerForPayrollPeriod = (state, storeId, period) => {
       ) === latestEndedMs)
   const originalsBySynthetic = new Map()
   const syntheticCandidates = periodCandidates.map((profile) => {
-    const synthetic = {
-      ...profile,
-      active: true,
-      isActive: true,
-      enabled: true,
-      status: 'Đang làm việc',
-      deletedAt: null,
-    }
+    const synthetic = syntheticManager(profile)
     originalsBySynthetic.set(synthetic, profile)
     return synthetic
   })
@@ -12523,6 +12617,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
     updatedAt: commandContext.now,
     deletedAt: null,
   }
+  assertPayrollNotPaidOrLocked(state, storeId, monthFromRecord(order))
   const notification = {
     id: `ntf_${crypto.randomUUID()}`,
     type: 'order.created',
@@ -15268,15 +15363,24 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
-const requireActivePhysicalStore = (state, storeId) => {
+const requirePhysicalStore = (state, storeId) => {
   const normalizedStoreId = String(storeId || '').trim()
   if (!normalizedStoreId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID, 'ADMIN', 'SYSTEM'].includes(normalizedStoreId)) {
-    throw new ApiError(400, 'STORE_INVALID', 'Cần chọn cửa hàng vật lý đang hoạt động.')
+    throw new ApiError(400, 'STORE_INVALID', 'Cần chọn cửa hàng vật lý hợp lệ.')
   }
-  const store = requireStore(state, normalizedStoreId)
+  return requireStore(state, normalizedStoreId)
+}
+
+const physicalStoreIsOperational = (store = {}) => {
   const status = normalizeTextKey(store.status)
-  if (store.active === false || store.isOperational === false
-    || ['da dong', 'ngung hoat dong', 'tam ngung', 'inactive', 'closed'].includes(status)) {
+  return store.active !== false
+    && store.isOperational !== false
+    && !['da dong', 'ngung hoat dong', 'tam ngung', 'inactive', 'closed'].includes(status)
+}
+
+const requireActivePhysicalStore = (state, storeId) => {
+  const store = requirePhysicalStore(state, storeId)
+  if (!physicalStoreIsOperational(store)) {
     throw new ApiError(409, 'STORE_INACTIVE', 'Cửa hàng đã ngừng hoạt động.')
   }
   return store
@@ -15440,8 +15544,9 @@ const assertViolationDateNotFuture = (occurredOn, now) => {
 }
 
 const expectedEntityVersion = (payload, previous) => {
-  if (payload.expectedVersion === undefined || payload.expectedVersion === null || payload.expectedVersion === '') return
-  const expected = Number(payload.expectedVersion)
+  const rawExpected = payload.expectedVersion ?? payload.expectedEntityVersion
+  if (rawExpected === undefined || rawExpected === null || rawExpected === '') return
+  const expected = Number(rawExpected)
   if (!Number.isSafeInteger(expected) || expected < 1 || expected !== Number(previous.version || 1)) {
     throw new ApiError(409, 'ENTITY_VERSION_CONFLICT', 'Bản ghi đã thay đổi; vui lòng tải lại dữ liệu.')
   }
@@ -16308,6 +16413,210 @@ const violationCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+const revenueBonusDailyHasVerifiableInputs = (daily = {}) => (
+  daily.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS'
+  || Number(daily.fingerprintVersion || 0) >= 2
+  || /^[a-f0-9]{64}$/iu.test(String(daily.fingerprint || ''))
+)
+
+const revenueBonusDailyInputStatus = (state, daily = {}) => {
+  const storeId = String(daily.storeId || '').trim()
+  const businessDate = String(daily.businessDate || '').trim()
+  const store = (Array.isArray(state.stores) ? state.stores : []).find((record) => (
+    String(record.id || '') === storeId
+    && !record.deletedAt
+    && ![OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID, 'ADMIN', 'SYSTEM'].includes(storeId)
+  ))
+  const empty = {
+    current: false,
+    calculationCurrent: false,
+    financialCurrent: false,
+    allocationsCurrent: false,
+    currentRevenueVnd: null,
+    openAttendance: null,
+    eligibleAttendance: null,
+    participants: [],
+  }
+  if (!store || !/^\d{4}-\d{2}-\d{2}$/u.test(businessDate)) return empty
+
+  const currentRevenueVnd = (Array.isArray(state.orders) ? state.orders : [])
+    .filter((order) => (
+      String(order.storeId || '') === storeId
+      && dateFromRecord(order) === businessDate
+      && !order.deletedAt
+      && String(order.status || '') !== 'Đã xóa'
+      && Number.isSafeInteger(Number(order.amount))
+      && Number(order.amount) >= 0
+    ))
+    .reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Doanh thu ngày'), 0)
+  const { programId, milestoneProgramId } = revenueBonusProgramsForStore(store)
+  const percentage = calculateRevenueBonus({ programId, revenueVnd: currentRevenueVnd })
+  const milestone = calculateTeamMilestoneReward({
+    programId: milestoneProgramId,
+    achievedUnits: currentRevenueVnd,
+  })
+  const employeeByIdentifier = new Map()
+  for (const employee of [
+    ...(Array.isArray(state.employees) ? state.employees : []),
+    ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
+  ].filter(isPlainRecord)) {
+    for (const identifier of employeeProfileIdentifiers(employee)) {
+      if (!employeeByIdentifier.has(identifier)) employeeByIdentifier.set(identifier, employee)
+    }
+  }
+  const sameDayAttendance = (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => (
+    String(record.storeId || '') === storeId
+    && dateFromRecord(record) === businessDate
+    && !record.deletedAt
+  ))
+  const openAttendance = sameDayAttendance.find((record) => !record.checkOutAt && !record.checkOut) || null
+  const participantWeights = new Map()
+  let eligibleAttendance = null
+  for (const attendance of sameDayAttendance) {
+    if (!attendance.checkOutAt && !attendance.checkOut) continue
+    const employee = employeeByIdentifier.get(String(attendance.employeeId || '').trim())
+    const employeeId = employeeProfileIdentifier(employee)
+    const weightUnits = Math.max(0, Math.trunc(Number(
+      attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? 0,
+    )))
+    if (!employeeId || weightUnits <= 0) continue
+    if (!eligibleAttendance) eligibleAttendance = attendance
+    participantWeights.set(employeeId, (participantWeights.get(employeeId) || 0) + weightUnits)
+  }
+  const participants = [...participantWeights]
+    .map(([id, weightUnits]) => ({
+      id,
+      weightUnits,
+      payrollStoreId: String(employeeByIdentifier.get(id)?.storeId || storeId),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id))
+  const allocate = (poolVnd) => participants.length
+    ? allocateByLargestRemainder({ poolVnd, participants })
+    : { poolVnd, totalWeightUnits: 0, allocatedVnd: 0, unallocatedVnd: poolVnd, allocations: [] }
+  const percentageAllocation = allocate(percentage.bonusVnd)
+  const milestoneAllocation = allocate(milestone.amountVnd)
+  const percentageByEmployee = new Map(
+    percentageAllocation.allocations.map((record) => [record.id, record.amountVnd]),
+  )
+  const milestoneByEmployee = new Map(
+    milestoneAllocation.allocations.map((record) => [record.id, record.amountVnd]),
+  )
+  const activeAllocations = (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : [])
+    .filter((record) => (
+      String(record.revenueBonusDailyId || '') === String(daily.id || '')
+      && !record.deletedAt
+      && !record.voidedAt
+      && !record.supersededAt
+    ))
+  const allocationByEmployee = new Map()
+  let allocationRecordsValid = true
+  for (const allocation of activeAllocations) {
+    const employee = employeeByIdentifier.get(String(allocation.employeeId || '').trim())
+    const employeeId = employeeProfileIdentifier(employee)
+    const weightUnits = Number(allocation.weightUnits ?? allocation.approvedSalesSeconds ?? 0)
+    const percentagePoolVnd = Number(allocation.percentagePoolVnd || 0)
+    const milestonePoolVnd = Number(allocation.milestonePoolVnd || 0)
+    const amountVnd = Number(allocation.amountVnd || 0)
+    if (!employeeId || ![weightUnits, percentagePoolVnd, milestonePoolVnd, amountVnd]
+      .every((value) => Number.isSafeInteger(value) && value >= 0)) {
+      allocationRecordsValid = false
+      continue
+    }
+    const grouped = allocationByEmployee.get(employeeId) || {
+      weightUnits: 0,
+      percentagePoolVnd: 0,
+      milestonePoolVnd: 0,
+      amountVnd: 0,
+      payrollStoreIds: new Set(),
+    }
+    grouped.weightUnits += weightUnits
+    grouped.percentagePoolVnd += percentagePoolVnd
+    grouped.milestonePoolVnd += milestonePoolVnd
+    grouped.amountVnd += amountVnd
+    if (allocation.payrollStoreId) grouped.payrollStoreIds.add(String(allocation.payrollStoreId))
+    allocationByEmployee.set(employeeId, grouped)
+  }
+  const milestoneStatus = normalizeTextKey(daily.milestoneStatus)
+  const approvedMilestone = milestoneStatus === 'approved'
+  const allocationsCurrent = allocationRecordsValid
+    && allocationByEmployee.size === participants.length
+    && participants.every((participant) => {
+      const allocation = allocationByEmployee.get(participant.id)
+      const expectedPercentageVnd = Number(percentageByEmployee.get(participant.id) || 0)
+      const expectedMilestoneVnd = approvedMilestone
+        ? Number(milestoneByEmployee.get(participant.id) || 0)
+        : 0
+      return allocation
+        && allocation.weightUnits === participant.weightUnits
+        && allocation.percentagePoolVnd === expectedPercentageVnd
+        && allocation.milestonePoolVnd === expectedMilestoneVnd
+        && allocation.amountVnd === expectedPercentageVnd + expectedMilestoneVnd
+        && [...allocation.payrollStoreIds].every((payrollStoreId) => (
+          payrollStoreId === participant.payrollStoreId
+        ))
+    })
+  const pendingMilestonePoolVnd = Number(daily.pendingMilestonePoolVnd || 0)
+  const approvedMilestonePoolVnd = Number(daily.milestonePoolVnd || 0)
+  const rejectedMilestonePoolVnd = Number(daily.rejectedMilestonePoolVnd || 0)
+  const milestoneAmountsValid = [pendingMilestonePoolVnd, approvedMilestonePoolVnd, rejectedMilestonePoolVnd]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)
+  const milestoneCurrent = milestoneAmountsValid
+    && String(daily.milestoneId || '') === String(milestone.milestoneId || '')
+    && pendingMilestonePoolVnd + approvedMilestonePoolVnd + rejectedMilestonePoolVnd === milestone.amountVnd
+    && (milestone.amountVnd > 0
+      ? ['pending', 'approved', 'rejected'].includes(milestoneStatus)
+      : ['not_eligible', ''].includes(milestoneStatus))
+  const qualifiedPercentagePoolVnd = Number(
+    daily.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS'
+      ? daily.qualifiedPercentagePoolVnd
+      : daily.percentagePoolVnd,
+  )
+  const calculationCurrent = Number(daily.revenueVnd) === currentRevenueVnd
+    && String(daily.programId || '') === programId
+    && String(daily.milestoneProgramId || '') === milestoneProgramId
+    && String(daily.tierId || '') === String(percentage.tierId || '')
+    && Number(daily.rateBasisPoints || 0) === Number(percentage.rateBasisPoints || 0)
+    && qualifiedPercentagePoolVnd === Number(percentage.bonusVnd || 0)
+    && milestoneCurrent
+  const resolvedZeroHour = daily.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS'
+  const expectedMilestonePoolVnd = approvedMilestone ? milestone.amountVnd : 0
+  const expectedTotalPoolVnd = safeMoneySum(
+    Number(percentage.bonusVnd || 0),
+    expectedMilestonePoolVnd,
+    'Tổng quỹ thưởng doanh thu hiện tại',
+  )
+  const expectedAllocatedVnd = safeMoneySum(
+    Number(percentageAllocation.allocatedVnd || 0),
+    approvedMilestone ? Number(milestoneAllocation.allocatedVnd || 0) : 0,
+    'Tổng thưởng doanh thu phân bổ hiện tại',
+  )
+  const financialCurrent = resolvedZeroHour
+    ? participants.length === 0
+      && activeAllocations.length === 0
+      && [daily.percentagePoolVnd, daily.totalPoolVnd, daily.allocatedVnd, daily.unallocatedVnd]
+        .every((value) => Number(value || 0) === 0)
+    : Number(daily.percentagePoolVnd || 0) === Number(percentage.bonusVnd || 0)
+      && Number(daily.totalPoolVnd || 0) === expectedTotalPoolVnd
+      && Number(daily.allocatedVnd || 0) === expectedAllocatedVnd
+      && Number(daily.unallocatedVnd || 0) === expectedTotalPoolVnd - expectedAllocatedVnd
+  const participantCountCurrent = daily.participantCount == null
+    || Number(daily.participantCount) === participants.length
+  return {
+    current: calculationCurrent
+      && financialCurrent
+      && allocationsCurrent
+      && participantCountCurrent
+      && !openAttendance,
+    calculationCurrent,
+    financialCurrent,
+    allocationsCurrent,
+    currentRevenueVnd,
+    openAttendance,
+    eligibleAttendance,
+    participants,
+  }
+}
+
 const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, current, state, payload) => {
   const approve = body.type === 'revenue_bonus.approve_milestone'
   const claimId = String(payload.claimId || payload.teamRewardClaimId || '').trim()
@@ -16315,7 +16624,7 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
   const claim = claims.find((record) => String(record.id || '') === claimId)
   if (!claim) throw new ApiError(404, 'TEAM_REWARD_CLAIM_NOT_FOUND', 'Không tìm thấy đề nghị thưởng nóng.')
   assertOperationalStoreAccess(actor, claim.storeId)
-  requireActivePhysicalStore(state, claim.storeId)
+  requirePhysicalStore(state, claim.storeId)
   expectedEntityVersion(payload, claim)
   const normalizedStatus = normalizeTextKey(claim.status)
   const finalStatus = approve ? 'approved' : 'rejected'
@@ -16324,6 +16633,14 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
       command: body.type, version: Number(current.version), teamClaim: claim, existing: true,
     }, 200, commandContext)
   }
+  if (approve && claim.reconciliationOnly) {
+    throw new ApiError(
+      409,
+      'TEAM_REWARD_RECONCILIATION_REJECT_ONLY',
+      'Kỳ lương đã chi; đề nghị được tái tạo chỉ để từ chối và hoàn tất đối soát.',
+    )
+  }
+  if (approve) requireActivePhysicalStore(state, claim.storeId)
   if (normalizedStatus !== 'pending') {
     throw new ApiError(409, 'TEAM_REWARD_CLAIM_FINALIZED', 'Đề nghị thưởng nóng đã được xử lý.')
   }
@@ -16335,6 +16652,24 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
   if (String(daily.milestoneId || '') !== String(claim.milestoneId || '')
     || Number(daily.pendingMilestonePoolVnd || 0) !== Number(claim.amountVnd || 0)) {
     throw new ApiError(409, 'TEAM_REWARD_NOT_HIGHEST', 'Chỉ được duyệt mốc thưởng cao nhất đang hiệu lực.')
+  }
+  if (approve && revenueBonusDailyHasVerifiableInputs(daily)) {
+    const inputStatus = revenueBonusDailyInputStatus(state, daily)
+    if (!inputStatus.current) {
+      throw new ApiError(
+        409,
+        'REVENUE_BONUS_RECALCULATION_REQUIRED',
+        'Doanh thu, chính sách hoặc giờ bán hàng đã thay đổi; cần tính lại thưởng trước khi duyệt mốc.',
+        {
+          revenueBonusDailyId: String(daily.id || '') || null,
+          businessDate: String(daily.businessDate || '').slice(0, 10) || null,
+          storedRevenueVnd: Number(daily.revenueVnd || 0),
+          currentRevenueVnd: inputStatus.currentRevenueVnd,
+          openAttendanceId: inputStatus.openAttendance?.id || null,
+          eligibleAttendanceId: inputStatus.eligibleAttendance?.id || null,
+        },
+      )
+    }
   }
   const participants = (Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : [])
     .filter((record) => String(record.claimId || '') === claimId)
@@ -16392,6 +16727,103 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
     }
   }
   const actorSnapshot = serverActorSnapshot(actor)
+  if (claim.reconciliationOnly) {
+    if (Number(daily.milestonePoolVnd || 0) !== 0
+      || Number(daily.rejectedMilestonePoolVnd || 0) !== 0) {
+      throw new ApiError(
+        409,
+        'TEAM_REWARD_RECONCILIATION_INVALID',
+        'Đề nghị đối soát không còn khớp trạng thái thưởng mốc đã chi.',
+      )
+    }
+    const decidedClaim = {
+      ...claim,
+      status: 'REJECTED',
+      approvedAt: null,
+      approvedBy: null,
+      rejectedAt: commandContext.now,
+      rejectedBy: actorSnapshot,
+      decisionNote: String(payload.note || '').trim().slice(0, 500),
+      updatedAt: commandContext.now,
+      version: Number(claim.version || 1) + 1,
+    }
+    const decidedParticipants = participants.map((record) => ({
+      ...record,
+      status: 'REJECTED',
+      approvedAt: null,
+      approvedBy: null,
+      rejectedAt: commandContext.now,
+      rejectedBy: actorSnapshot,
+      updatedAt: commandContext.now,
+      version: Number(record.version || 1) + 1,
+    }))
+    const decidedDaily = {
+      ...daily,
+      pendingMilestonePoolVnd: 0,
+      rejectedMilestonePoolVnd: Number(claim.amountVnd || 0),
+      milestoneStatus: 'REJECTED',
+      updatedAt: commandContext.now,
+      version: Number(daily.version || 1) + 1,
+    }
+    const totalPoolVnd = Number(daily.totalPoolVnd || 0)
+    const allocatedVnd = Number(daily.allocatedVnd || 0)
+    const unallocatedVnd = Number(daily.unallocatedVnd || 0)
+    const reconciliation = {
+      id: `prc_${crypto.randomUUID()}`,
+      storeId: claim.storeId,
+      period,
+      businessDate: claim.businessDate,
+      type: 'TEAM_REWARD_RECONCILIATION_REJECTION',
+      sourceId: claimId,
+      rejectedVnd: Number(claim.amountVnd || 0),
+      totalPoolVnd,
+      allocatedVnd,
+      unallocatedVnd,
+      balanced: Number.isSafeInteger(totalPoolVnd)
+        && Number.isSafeInteger(allocatedVnd)
+        && Number.isSafeInteger(unallocatedVnd)
+        && allocatedVnd + unallocatedVnd === totalPoolVnd,
+      financialMutation: false,
+      createdAt: commandContext.now,
+      createdBy: actorSnapshot,
+    }
+    const participantIds = new Set(participants.map((record) => String(record.id || '')))
+    const nextState = {
+      ...state,
+      revenueBonusDaily: dailyRecords.map((record) => (
+        String(record.id || '') === String(daily.id || '') ? decidedDaily : record
+      )),
+      teamRewardClaims: claims.map((record) => String(record.id || '') === claimId ? decidedClaim : record),
+      teamRewardParticipants: (Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : [])
+        .map((record) => participantIds.has(String(record.id || ''))
+          ? decidedParticipants.find((participant) => String(participant.id || '') === String(record.id || ''))
+          : record),
+      periodReconciliations: [reconciliation, ...(Array.isArray(state.periodReconciliations) ? state.periodReconciliations : [])],
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'team-reward-claim-reconciliation',
+      entityId: claimId,
+      before: claim,
+      after: decidedClaim,
+      metadata: {
+        storeId: claim.storeId,
+        businessDate: claim.businessDate,
+        amountVnd: claim.amountVnd,
+        payrollTargets: milestonePayrollTargets,
+        financialMutation: false,
+      },
+      response: {
+        command: body.type,
+        revenueBonus: decidedDaily,
+        teamClaim: decidedClaim,
+        allocations: revenueBonusAllocationViewRecords(dailyAllocationRecords),
+        teamParticipants: decidedParticipants,
+        reconciliation,
+      },
+    }, commandContext)
+  }
   const decidedClaim = {
     ...claim,
     payrollStoreIds: milestonePayrollTargets.map((target) => target.storeId),
@@ -16552,19 +16984,195 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
   }, commandContext)
 }
 
+const revenueBonusZeroHourInputStatus = (state, daily = {}) => {
+  return revenueBonusDailyInputStatus(state, daily)
+}
+
+const revenueBonusZeroHourResolution = async (db, actor, body, commandContext, current, state, payload) => {
+  const dailyId = String(payload.revenueBonusDailyId || payload.dailyId || '').trim()
+  const dailyRecords = Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []
+  const daily = dailyRecords.find((record) => String(record.id || '') === dailyId)
+  if (!daily) throw new ApiError(404, 'REVENUE_BONUS_DAILY_NOT_FOUND', 'Không tìm thấy kết quả thưởng doanh thu ngày.')
+  assertOperationalStoreAccess(actor, daily.storeId)
+  // Historical reconciliation must remain possible after a store is closed;
+  // otherwise its payroll can remain permanently fenced by the unresolved pool.
+  requirePhysicalStore(state, daily.storeId)
+  expectedEntityVersion(payload, daily)
+  if (daily.deletedAt || daily.voidedAt || daily.supersededAt) {
+    throw new ApiError(409, 'REVENUE_BONUS_SUPERSEDED', 'Kết quả thưởng doanh thu ngày không còn hiệu lực.')
+  }
+  if (daily.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS'
+    && normalizeTextKey(daily.status) === 'resolved_no_eligible_hours') {
+    return recordNoopCommand(db, actor, {
+      command: body.type, version: Number(current.version), revenueBonus: daily, existing: true,
+    }, 200, commandContext)
+  }
+  if (String(payload.resolution || '') !== 'NO_ELIGIBLE_HOURS') {
+    throw new ApiError(400, 'REVENUE_BONUS_RESOLUTION_INVALID', 'Cách xử lý quỹ chưa phân bổ không hợp lệ.')
+  }
+  const reason = String(payload.reason || '').trim()
+  if (reason.length < 10 || reason.length > 500) {
+    throw new ApiError(400, 'REVENUE_BONUS_RESOLUTION_REASON_REQUIRED', 'Cần nhập lý do xác nhận từ 10 đến 500 ký tự.')
+  }
+  const percentagePoolVnd = Number(daily.percentagePoolVnd)
+  const totalPoolVnd = Number(daily.totalPoolVnd)
+  const allocatedVnd = Number(daily.allocatedVnd)
+  const unallocatedVnd = Number(daily.unallocatedVnd)
+  const validZeroHourPool = [percentagePoolVnd, totalPoolVnd, allocatedVnd, unallocatedVnd]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)
+    && percentagePoolVnd > 0
+    && percentagePoolVnd === totalPoolVnd
+    && totalPoolVnd === unallocatedVnd
+    && allocatedVnd === 0
+    && Number(daily.milestonePoolVnd || 0) === 0
+  const activeAllocations = (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : [])
+    .filter((record) => (
+      String(record.revenueBonusDailyId || '') === dailyId
+      && !record.deletedAt
+      && !record.voidedAt
+      && !record.supersededAt
+    ))
+  const activeClaims = (Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : [])
+    .filter((record) => (
+      String(record.revenueBonusDailyId || '') === dailyId
+      && !record.deletedAt
+      && !record.voidedAt
+      && !record.supersededAt
+    ))
+  const activeClaimIds = new Set(activeClaims.map((record) => String(record.id || '')).filter(Boolean))
+  const activeParticipants = (Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : [])
+    .filter((record) => (
+      (String(record.revenueBonusDailyId || '') === dailyId
+        || activeClaimIds.has(String(record.claimId || '')))
+      && !record.deletedAt
+      && !record.voidedAt
+      && !record.supersededAt
+    ))
+  const participantCount = daily.participantCount
+  const validParticipantCount = participantCount === undefined || participantCount === null
+    || (Number.isSafeInteger(Number(participantCount)) && Number(participantCount) === 0)
+  if (!validZeroHourPool
+    || !validParticipantCount
+    || activeAllocations.length > 0
+    || activeParticipants.length > 0) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_ZERO_HOUR_RESOLUTION_INVALID',
+      'Chỉ được xác nhận quỹ tỷ lệ chưa phân bổ toàn bộ và không có người nhận đủ điều kiện.',
+    )
+  }
+  const businessDate = compensationDate(daily.businessDate, 'Ngày tính thưởng')
+  const inputStatus = revenueBonusZeroHourInputStatus(state, daily)
+  if (!inputStatus.calculationCurrent) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_RECALCULATION_REQUIRED',
+      'Doanh thu hoặc chính sách thưởng đã thay đổi; cần tính lại trước khi xử lý quỹ.',
+      { storedRevenueVnd: Number(daily.revenueVnd || 0), currentRevenueVnd: inputStatus.currentRevenueVnd },
+    )
+  }
+  if (inputStatus.openAttendance) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_ATTENDANCE_OPEN',
+      'Ca làm việc vẫn đang mở; cần chấm công ra và tính lại trước khi xử lý quỹ.',
+      { attendanceId: inputStatus.openAttendance.id || null },
+    )
+  }
+  if (inputStatus.eligibleAttendance) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_RECALCULATION_REQUIRED',
+      'Đã có giờ bán hàng đủ điều kiện; cần tính lại thưởng thay vì xác nhận không có người nhận.',
+      { attendanceId: inputStatus.eligibleAttendance.id || null },
+    )
+  }
+  const period = asMonth(daily.period || businessDate.slice(0, 7), 'Kỳ thưởng doanh thu')
+  const payrollStoreIds = new Set([
+    daily.storeId,
+    ...(Array.isArray(daily.payrollStoreIds) ? daily.payrollStoreIds : []),
+    ...activeClaims.flatMap((record) => Array.isArray(record.payrollStoreIds) ? record.payrollStoreIds : []),
+  ].map((value) => String(value || '').trim()).filter(Boolean))
+  for (const record of [...activeAllocations, ...activeClaims, ...activeParticipants]) {
+    const payrollStoreId = inferredPayrollStoreIdFor(state, record, record.employeeId)
+    if (payrollStoreId) payrollStoreIds.add(payrollStoreId)
+  }
+  const payrollTargets = payrollTargetsForStores([...payrollStoreIds], period)
+  for (const target of payrollTargets) assertAccountingPeriodOpen(state, target.storeId, target.period)
+  const actorSnapshot = serverActorSnapshot(actor)
+  const resolved = {
+    ...daily,
+    qualifiedPercentagePoolVnd: percentagePoolVnd,
+    zeroHourUnawardedVnd: unallocatedVnd,
+    percentagePoolVnd: 0,
+    totalPoolVnd: 0,
+    allocatedVnd: 0,
+    unallocatedVnd: 0,
+    status: 'RESOLVED_NO_ELIGIBLE_HOURS',
+    unallocatedResolutionCode: 'NO_ELIGIBLE_HOURS',
+    unallocatedResolutionReason: reason,
+    unallocatedResolvedAt: commandContext.now,
+    unallocatedResolvedBy: actorSnapshot,
+    updatedAt: commandContext.now,
+    version: Number(daily.version || 1) + 1,
+  }
+  const reconciliation = {
+    id: `prc_${crypto.randomUUID()}`,
+    storeId: daily.storeId,
+    period,
+    businessDate,
+    type: 'REVENUE_BONUS_ZERO_HOUR_RESOLUTION',
+    sourceId: daily.id,
+    totalPoolVnd: 0,
+    allocatedVnd: 0,
+    unallocatedVnd: 0,
+    qualifiedPercentagePoolVnd: percentagePoolVnd,
+    unawardedVnd: unallocatedVnd,
+    resolutionCode: 'NO_ELIGIBLE_HOURS',
+    reason,
+    balanced: true,
+    createdAt: commandContext.now,
+    createdBy: actorSnapshot,
+  }
+  const nextState = {
+    ...state,
+    revenueBonusDaily: dailyRecords.map((record) => String(record.id || '') === dailyId ? resolved : record),
+    periodReconciliations: [reconciliation, ...(Array.isArray(state.periodReconciliations) ? state.periodReconciliations : [])],
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'revenue-bonus-day',
+    entityId: daily.id,
+    before: daily,
+    after: resolved,
+    metadata: { storeId: daily.storeId, businessDate, period, payrollTargets, reason },
+    response: { command: body.type, revenueBonus: resolved, reconciliation },
+  }, commandContext)
+}
+
 const revenueBonusCommand = async (db, actor, body, commandContext) => {
   assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được tính thưởng doanh thu.')
-  if (!['revenue_bonus.calculate_day', 'revenue_bonus.approve_milestone', 'revenue_bonus.reject_milestone'].includes(body.type)) {
+  if (![
+    'revenue_bonus.calculate_day',
+    'revenue_bonus.resolve_zero_hour_pool',
+    'revenue_bonus.approve_milestone',
+    'revenue_bonus.reject_milestone',
+  ].includes(body.type)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh thưởng doanh thu không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
+  if (body.type === 'revenue_bonus.resolve_zero_hour_pool') {
+    return revenueBonusZeroHourResolution(db, actor, body, commandContext, current, state, payload)
+  }
   if (body.type !== 'revenue_bonus.calculate_day') {
     return revenueBonusMilestoneDecision(db, actor, body, commandContext, current, state, payload)
   }
   const storeId = String(payload.storeId || '').trim()
   assertOperationalStoreAccess(actor, storeId)
-  const store = requireActivePhysicalStore(state, storeId)
+  const store = requirePhysicalStore(state, storeId)
+  const storeOperational = physicalStoreIsOperational(store)
   const businessDate = compensationDate(payload.businessDate, 'Ngày tính thưởng')
   const period = businessDate.slice(0, 7)
   const orders = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
@@ -16690,8 +17298,8 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     storeId,
     ...participants.map(({ payrollStoreId }) => payrollStoreId),
   ], period)
-  const mutationRevenuePayrollTargets = payrollTargetsForStores([
-    ...currentRevenuePayrollTargets.map((target) => target.storeId),
+  const persistedRevenuePayrollTargets = payrollTargetsForStores([
+    storeId,
     ...(Array.isArray(currentDaily?.payrollStoreIds) ? currentDaily.payrollStoreIds : []),
     ...currentDailyClaims.flatMap((record) => (
       Array.isArray(record.payrollStoreIds) ? record.payrollStoreIds : []
@@ -16710,6 +17318,10 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
       || historicalEmployeeById.get(String(record.employeeId || '').trim())?.storeId
       || record.storeId
     )),
+  ], period)
+  const mutationRevenuePayrollTargets = payrollTargetsForStores([
+    ...currentRevenuePayrollTargets.map((target) => target.storeId),
+    ...persistedRevenuePayrollTargets.map((target) => target.storeId),
   ], period)
   const canonicalRevenueEmployeeId = (rawEmployeeId) => {
     const normalizedEmployeeId = String(rawEmployeeId || '').trim()
@@ -16859,6 +17471,90 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
       allocations: revenueBonusAllocationViewRecords(currentDailyAllocations),
       existing: true,
     }, 200, commandContext)
+  }
+  const pendingMilestoneVnd = Number(currentDaily?.pendingMilestonePoolVnd || 0)
+  const paidPersistedPayrollTargets = persistedRevenuePayrollTargets.filter((target) => {
+    const payroll = payrollPeriodFor(state, target.storeId, target.period)
+    return Boolean(payroll?.confirmedAt || payroll?.status === 'Đã chi')
+      && !payroll?.lockedAt
+      && payroll?.status !== 'Đã khóa'
+  })
+  const canReconstructPaidMilestone = Boolean(
+    currentDaily
+    && paidPersistedPayrollTargets.length > 0
+    && pendingMilestoneVnd > 0
+    && Number.isSafeInteger(pendingMilestoneVnd)
+    && Number(currentDaily.milestonePoolVnd || 0) === 0
+    && Number(currentDaily.rejectedMilestonePoolVnd || 0) === 0
+    && milestoneStatus === 'pending'
+    && String(currentDaily.milestoneId || '').trim()
+    && activeCurrentClaims.length === 0
+  )
+  if (canReconstructPaidMilestone) {
+    const actorSnapshot = serverActorSnapshot(actor)
+    const reconstructedClaim = {
+      id: `trc_${crypto.randomUUID()}`,
+      revenueBonusDailyId: currentDaily.id,
+      storeId: currentDaily.storeId,
+      businessDate: currentDaily.businessDate,
+      period: currentDaily.period || period,
+      programId: currentDaily.milestoneProgramId || currentDaily.programId,
+      milestoneId: currentDaily.milestoneId,
+      achievedUnits: Number(currentDaily.revenueVnd || 0),
+      amountVnd: pendingMilestoneVnd,
+      payrollStoreIds: persistedRevenuePayrollTargets.map((target) => target.storeId),
+      status: 'PENDING',
+      reconciliationOnly: true,
+      reconstructedFromOrphan: true,
+      approvedAt: null,
+      approvedBy: null,
+      createdAt: commandContext.now,
+      createdBy: actorSnapshot,
+      version: 1,
+    }
+    const nextState = {
+      ...state,
+      teamRewardClaims: [reconstructedClaim, ...(Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : [])],
+      teamRewardParticipants: (Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : [])
+        .map((record) => activeCurrentParticipants.includes(record)
+          ? {
+              ...record,
+              status: 'SUPERSEDED',
+              supersededAt: commandContext.now,
+              supersededBy: reconstructedClaim.id,
+              updatedAt: commandContext.now,
+              version: Number(record.version || 1) + 1,
+            }
+          : record),
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'team-reward-claim-reconstruction',
+      entityId: reconstructedClaim.id,
+      before: null,
+      after: reconstructedClaim,
+      metadata: {
+        storeId: currentDaily.storeId,
+        businessDate: currentDaily.businessDate,
+        period: currentDaily.period || period,
+        revenueBonusDailyId: currentDaily.id,
+        payrollTargets: persistedRevenuePayrollTargets,
+        financialMutation: false,
+      },
+      response: {
+        command: body.type,
+        revenueBonus: currentDaily,
+        allocations: revenueBonusAllocationViewRecords(currentDailyAllocations),
+        teamClaim: reconstructedClaim,
+        teamParticipants: [],
+        reconstructed: true,
+      },
+      status: 201,
+    }, commandContext)
+  }
+  if (!storeOperational && !currentDaily) {
+    throw new ApiError(409, 'STORE_INACTIVE', 'Cửa hàng đã ngừng hoạt động.')
   }
   for (const target of mutationRevenuePayrollTargets) {
     assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
@@ -17110,20 +17806,46 @@ const revenueBonusDailyTargetsPayrollStore = (state, daily, payrollStoreId) => {
     if (String(participant.revenueBonusDailyId || '') === dailyId
       || claimIds.has(String(participant.claimId || ''))) addRecordPayrollStore(participant)
   }
+  for (const participant of revenueBonusDailyInputStatus(state, daily).participants) {
+    const currentPayrollStoreId = String(participant.payrollStoreId || '').trim()
+    if (currentPayrollStoreId) targetStoreIds.add(currentPayrollStoreId)
+  }
   return targetStoreIds.has(targetStoreId)
 }
 
 const assertPayrollHasNoUnallocatedRevenueBonus = (state, storeId, period) => {
-  const unresolved = (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
-    .map((record) => ({ record, unallocatedVnd: revenueBonusDailyUnallocatedAmount(record) }))
-    .filter(({ record, unallocatedVnd }) => (
+  const relevantRecords = (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
+    .filter((record) => (
       !record.deletedAt
       && !record.voidedAt
       && !record.supersededAt
       && revenueBonusRecordPeriod(record) === period
-      && unallocatedVnd > 0
       && revenueBonusDailyTargetsPayrollStore(state, record, storeId)
     ))
+  const staleRevenueCalculations = relevantRecords
+    .filter(revenueBonusDailyHasVerifiableInputs)
+    .map((record) => ({ record, inputStatus: revenueBonusDailyInputStatus(state, record) }))
+    .filter(({ inputStatus }) => !inputStatus.current)
+  if (staleRevenueCalculations.length) {
+    throw new ApiError(
+      409,
+      'PAYROLL_REVENUE_BONUS_RECALCULATION_REQUIRED',
+      'Dữ liệu doanh thu hoặc giờ làm đã thay đổi sau khi xử lý quỹ; cần tính lại thưởng trước khi chốt, chi hoặc khóa lương.',
+      {
+        revenueBonusDailyIds: staleRevenueCalculations.map(({ record }) => String(record.id || '')).filter(Boolean),
+        businessDates: [...new Set(staleRevenueCalculations.map(({ record }) => (
+          String(record.businessDate || record.date || '').slice(0, 10)
+        )).filter(Boolean))],
+        openAttendanceIds: staleRevenueCalculations
+          .map(({ inputStatus }) => String(inputStatus.openAttendance?.id || '')).filter(Boolean),
+        eligibleAttendanceIds: staleRevenueCalculations
+          .map(({ inputStatus }) => String(inputStatus.eligibleAttendance?.id || '')).filter(Boolean),
+      },
+    )
+  }
+  const unresolved = relevantRecords
+    .map((record) => ({ record, unallocatedVnd: revenueBonusDailyUnallocatedAmount(record) }))
+    .filter(({ unallocatedVnd }) => unallocatedVnd > 0)
   if (!unresolved.length) return
   throw new ApiError(
     409,
@@ -17390,6 +18112,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     if (!existing.confirmedAt || existing.status !== 'Đã chi') {
       throw new ApiError(409, 'PAYROLL_NOT_PAID', 'Chỉ được khóa kỳ lương sau khi đã chi.')
     }
+    assertPayrollHasNoUnallocatedRevenueBonus(state, storeId, period)
     assertPayrollHasNoPendingRevenueMilestone(state, storeId, period)
     const locked = {
       ...existing,
