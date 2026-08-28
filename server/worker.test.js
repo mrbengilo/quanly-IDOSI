@@ -8898,6 +8898,158 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 30_000)
 
+  it('persists one standalone progress receipt for unassigned and orphaned task sets', async () => {
+    const attendanceId = 'ATT-STANDALONE-PROGRESS-01'
+    const rewardSnapshot = {
+      catalogItemId: 'CAT-STANDALONE-REWARD', catalogCode: 'store.reward.standalone', catalogVersion: 1,
+      kind: 'REWARD_TASK', targetGroup: 'store', storeId: 'S01', shiftId: 'SHIFT-STANDALONE',
+      shiftName: 'Ca độc lập', name: 'Công việc thưởng độc lập', amountVnd: 8_000,
+      required: false, optional: true, effectiveDate: '2026-08-22',
+    }
+    const { env, employeeAuthorization } = await setupSupportTransferRuntime({
+      token: 'bootstrap-standalone-task-progress',
+      transfer: {
+        id: 'TRANSFER-STANDALONE-DELETED', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-01T08:00', endAt: '2026-08-01T12:00', status: 'Đã hủy', deletedAt: '2026-08-01T00:00:00.000Z',
+      },
+      attendance: [{
+        id: attendanceId, employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', storeId: 'S01',
+        date: '2026-08-22', shiftId: 'SHIFT-STANDALONE', shiftName: 'Ca độc lập',
+        shiftStart: '08:00', shiftEnd: '12:00', checkInAt: '2026-08-22T01:00:00.000Z', checkOutAt: null,
+      }],
+      tasks: [{
+        id: 'TASK-STANDALONE-MANUAL', storeId: 'S01', date: '2026-08-22', shiftId: 'SHIFT-STANDALONE',
+        employeeIds: ['E01'], title: 'Công việc bắt buộc độc lập', required: true, completedBy: {},
+      }, {
+        id: 'TASK-STANDALONE-REWARD', storeId: 'S01', date: '2026-08-22', shiftId: 'SHIFT-STANDALONE',
+        employeeIds: ['E01'], title: rewardSnapshot.name, required: false,
+        catalogItemId: rewardSnapshot.catalogItemId, catalogCode: rewardSnapshot.catalogCode,
+        catalogVersion: rewardSnapshot.catalogVersion, catalogKind: rewardSnapshot.kind,
+        amountVnd: rewardSnapshot.amountVnd, catalogSnapshot: rewardSnapshot, completedBy: {},
+      }],
+      taskAssignmentHistory: [],
+    })
+    const command = (completedReward, expectedVersion, idempotencyKey) => worker.fetch(jsonRequest(
+      'https://idosi.example/api/command',
+      {
+        type: 'task.progress.save', expectedVersion,
+        payload: {
+          attendanceId,
+          tasks: [
+            { id: 'TASK-STANDALONE-MANUAL', completed: true },
+            { id: 'TASK-STANDALONE-REWARD', completed: completedReward },
+          ],
+        },
+      },
+      { ...employeeAuthorization, 'idempotency-key': idempotencyKey },
+    ), env)
+
+    const first = await command(true, 1, 'standalone-task-progress-first-0001')
+    expect(first.status).toBe(200)
+    expect(await first.json()).toMatchObject({
+      version: 2, attendanceId, totalTasks: 2, completedTasks: 2,
+      rewardTasks: 1, completedRewardTasks: 1,
+      notifications: [{ type: 'store-task-progress-submitted', assignmentId: null }],
+    })
+    const afterFirst = readHydratedState(env.DB.database)
+    const firstReceipts = afterFirst.taskAssignmentHistory.filter(({ source }) => source === 'task-progress-receipt')
+    expect(firstReceipts).toHaveLength(1)
+    expect(firstReceipts[0]).toMatchObject({
+      id: `task_progress_receipt:${attendanceId}`, receiptOnly: true, assignmentId: null,
+      employeeId: 'E01', employeeIds: ['E01'], attendanceId, storeId: 'S01', shiftId: 'SHIFT-STANDALONE',
+      taskIds: ['TASK-STANDALONE-MANUAL', 'TASK-STANDALONE-REWARD'], tasks: [],
+      progressHistory: [expect.objectContaining({
+        action: 'progress-submitted', attendanceId, employeeId: 'E01', totalTasks: 2, completedTasks: 2,
+        rewardTaskSnapshots: [expect.objectContaining({
+          taskId: 'TASK-STANDALONE-REWARD', catalogItemId: 'CAT-STANDALONE-REWARD', completed: true,
+        })],
+        completedRewardTaskSnapshots: [expect.objectContaining({ taskId: 'TASK-STANDALONE-REWARD' })],
+      })],
+    })
+    expect(afterFirst.notifications.filter(({ type }) => type === 'store-task-progress-submitted')).toHaveLength(1)
+    expect(afterFirst.workCatalogProgress).toHaveLength(1)
+    expect(afterFirst.compensationEntries).toEqual([
+      expect.objectContaining({ type: 'WORK', amountVnd: 8_000, status: 'ACTIVE' }),
+    ])
+    const firstInvariant = {
+      stateVersion: afterFirst.stateVersion,
+      tasks: afterFirst.tasks,
+      taskAssignmentHistory: afterFirst.taskAssignmentHistory,
+      notifications: afterFirst.notifications,
+      workCatalogProgress: afterFirst.workCatalogProgress,
+      compensationEntries: afterFirst.compensationEntries,
+    }
+
+    const firstSemanticRetry = await command(true, 2, 'standalone-task-progress-first-retry-0001')
+    expect(firstSemanticRetry.status).toBe(200)
+    expect(await firstSemanticRetry.json()).toMatchObject({ version: 2, existing: true, attendanceId })
+    expect(readHydratedState(env.DB.database)).toMatchObject(firstInvariant)
+
+    const changed = await command(false, 2, 'standalone-task-progress-changed-0001')
+    expect(changed.status).toBe(200)
+    expect(await changed.json()).toMatchObject({ version: 3, completedTasks: 1, completedRewardTasks: 0 })
+    const afterChanged = readHydratedState(env.DB.database)
+    expect(afterChanged.taskAssignmentHistory.filter(({ source }) => source === 'task-progress-receipt')).toHaveLength(1)
+    expect(afterChanged.taskAssignmentHistory.find(({ source }) => source === 'task-progress-receipt').progressHistory)
+      .toHaveLength(2)
+    expect(afterChanged.notifications.filter(({ type }) => type === 'store-task-progress-submitted')).toHaveLength(2)
+    expect(afterChanged.compensationEntries).toEqual([
+      expect.objectContaining({ type: 'WORK', amountVnd: 8_000, status: 'VOID', voidSource: 'task-progress' }),
+    ])
+    const changedInvariant = {
+      stateVersion: afterChanged.stateVersion,
+      tasks: afterChanged.tasks,
+      taskAssignmentHistory: afterChanged.taskAssignmentHistory,
+      notifications: afterChanged.notifications,
+      workCatalogProgress: afterChanged.workCatalogProgress,
+      compensationEntries: afterChanged.compensationEntries,
+    }
+    const changedSemanticRetry = await command(false, 3, 'standalone-task-progress-changed-retry-0001')
+    expect(changedSemanticRetry.status).toBe(200)
+    expect(await changedSemanticRetry.json()).toMatchObject({ version: 3, existing: true, attendanceId })
+    expect(readHydratedState(env.DB.database)).toMatchObject(changedInvariant)
+
+    replaceStateCollection(env.DB.database, 'tasks', afterChanged.tasks.map((task) => ({
+      ...task, assignmentId: 'ASSIGNMENT-WITHOUT-HISTORY',
+    })))
+    const orphanedAssignment = await command(true, 3, 'standalone-task-progress-orphaned-0001')
+    expect(orphanedAssignment.status).toBe(200)
+    expect(await orphanedAssignment.json()).toMatchObject({
+      version: 4, completedTasks: 2,
+      notifications: [{ type: 'store-task-progress-submitted', assignmentId: null }],
+    })
+    const afterOrphanedAssignment = readHydratedState(env.DB.database)
+    const finalReceipts = afterOrphanedAssignment.taskAssignmentHistory
+      .filter(({ source }) => source === 'task-progress-receipt')
+    expect(finalReceipts).toHaveLength(1)
+    expect(finalReceipts[0].progressHistory).toHaveLength(3)
+    expect(finalReceipts[0].progressHistory[2]).toMatchObject({
+      fingerprint: expect.any(String), rewardTaskSnapshots: [expect.objectContaining({
+        assignmentId: 'ASSIGNMENT-WITHOUT-HISTORY', completed: true,
+      })],
+    })
+    expect(afterOrphanedAssignment.notifications.filter(({ type }) => type === 'store-task-progress-submitted'))
+      .toHaveLength(3)
+    expect(afterOrphanedAssignment.compensationEntries).toEqual([
+      expect.objectContaining({ type: 'WORK', amountVnd: 8_000, status: 'ACTIVE' }),
+    ])
+    const orphanInvariant = {
+      stateVersion: afterOrphanedAssignment.stateVersion,
+      tasks: afterOrphanedAssignment.tasks,
+      taskAssignmentHistory: afterOrphanedAssignment.taskAssignmentHistory,
+      notifications: afterOrphanedAssignment.notifications,
+      workCatalogProgress: afterOrphanedAssignment.workCatalogProgress,
+      compensationEntries: afterOrphanedAssignment.compensationEntries,
+    }
+    const orphanSemanticRetry = await command(true, 4, 'standalone-task-progress-orphaned-retry-0001')
+    expect(orphanSemanticRetry.status).toBe(200)
+    expect(await orphanSemanticRetry.json()).toMatchObject({ version: 4, existing: true, attendanceId })
+    expect(readHydratedState(env.DB.database)).toMatchObject(orphanInvariant)
+    expect(env.DB.database.prepare(`
+      SELECT COUNT(*) AS count FROM audit_log WHERE action = 'task.progress.save'
+    `).get()).toEqual({ count: 3 })
+  }, 30_000)
+
   it('protects order information settings with audited soft-disable, strict RBAC, and legacy-safe order validation', async () => {
     const optionTimestamp = '2026-08-20T00:00:00.000Z'
     const orderInformationOptions = [
@@ -10886,6 +11038,95 @@ describe('IDOSI Worker security primitives', () => {
           id: checkedInBody.attendance.id, incompleteTaskReason: null, incompleteTasksSnapshot: [],
         },
       })
+
+    const stateAfterFirstCheckout = readHydratedState(env.DB.database)
+    const manualTask = {
+      id: 'TASK-MANUAL-RECHECK', storeId: 'S01', date: '2026-08-20', shiftId: 'SHIFT-MORNING',
+      employeeIds: ['E01'], title: 'Kiểm tra công việc thủ công', required: true, completedBy: {},
+    }
+    replaceStateCollection(env.DB.database, 'tasks', [
+      manualTask,
+      ...stateAfterFirstCheckout.tasks.map((task) => (
+        task.id === fixedTask.id ? { ...task, checklistAttendanceId: undefined, completedBy: {} } : task
+      )),
+    ])
+    const checkedInAgain = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.check_in', expectedVersion: 4,
+      payload: { shiftId: 'SHIFT-MORNING', location: { latitude: 10.8, longitude: 106.7, accuracy: 5 } },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-recheckin-0001' }), env)
+    expect(checkedInAgain.status).toBe(201)
+    const checkedInAgainBody = await checkedInAgain.json()
+    const currentChecklistTasks = checkedInAgainBody.attendance.checklistSnapshot.tasks
+    const currentFixedTask = currentChecklistTasks.find(({ catalogItemId }) => catalogItemId === 'CAT-CHECKLIST-FIXED')
+    const currentRewardTask = currentChecklistTasks.find(({ catalogItemId }) => catalogItemId === 'CAT-CHECKLIST-REWARD')
+    expect(currentChecklistTasks).toHaveLength(2)
+    expect(currentChecklistTasks.map(({ id }) => id)).not.toEqual(expect.arrayContaining([fixedTask.id, rewardTask.id]))
+
+    const beforeHistoricalTaskMutation = readHydratedState(env.DB.database)
+    const rejectedHistoricalTaskMutation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.done', expectedVersion: 5, payload: { taskId: fixedTask.id, done: true },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-old-task-done-0001' }), env)
+    expect(rejectedHistoricalTaskMutation.status).toBe(409)
+    expect(await rejectedHistoricalTaskMutation.json()).toMatchObject({ error: { code: 'TASK_ATTENDANCE_INVALID' } })
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 5 })
+    expect(readHydratedState(env.DB.database).tasks.find(({ id }) => id === fixedTask.id)).toEqual(
+      beforeHistoricalTaskMutation.tasks.find(({ id }) => id === fixedTask.id),
+    )
+
+    const employeeState = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: employeeAuthorization,
+    }), env)
+    expect(employeeState.status).toBe(200)
+    const employeeStateBody = await employeeState.json()
+    const visibleTaskIds = employeeStateBody.state.tasks.map(({ id }) => id)
+    expect(employeeStateBody.state.activeAttendanceId).toBe(checkedInAgainBody.attendance.id)
+    expect(visibleTaskIds.sort()).toEqual([
+      manualTask.id, currentFixedTask.id, currentRewardTask.id,
+    ].sort())
+    expect(new Set(visibleTaskIds).size).toBe(visibleTaskIds.length)
+
+    const currentProgress = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: 5,
+      payload: {
+        attendanceId: checkedInAgainBody.attendance.id,
+        tasks: [
+          { id: manualTask.id, completed: true },
+          { id: currentFixedTask.id, completed: true },
+          { id: currentRewardTask.id, completed: false },
+        ],
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-current-progress-0001' }), env)
+    expect(currentProgress.status).toBe(200)
+    expect(await currentProgress.json()).toMatchObject({
+      version: 6, attendanceId: checkedInAgainBody.attendance.id,
+      totalTasks: 3, completedTasks: 2, requiredTasks: 2, completedRequiredTasks: 2,
+    })
+
+    const beforeSecondCheckout = readHydratedState(env.DB.database)
+    replaceStateCollection(env.DB.database, 'tasks', beforeSecondCheckout.tasks.map((task) => (
+      task.id === currentFixedTask.id
+        ? { ...task, checklistAttendanceId: undefined }
+        : task
+    )))
+
+    const checkedOutAgain = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.check_out', expectedVersion: 6,
+      payload: {
+        attendanceId: checkedInAgainBody.attendance.id, cashRevenue: 0, transferRevenue: 0,
+        location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-recheckout-0001' }), env)
+    expect(checkedOutAgain.status).toBe(200)
+    expect(await checkedOutAgain.json()).toMatchObject({
+      version: 7, attendance: { id: checkedInAgainBody.attendance.id, incompleteTasksSnapshot: [] },
+    })
+    const stateAfterRecheck = readHydratedState(env.DB.database)
+    expect(stateAfterRecheck.tasks).toHaveLength(5)
+    expect(new Set(stateAfterRecheck.tasks.map(({ id }) => id)).size).toBe(5)
+    const checklistAssignments = stateAfterRecheck.taskAssignmentHistory
+      .filter(({ source }) => source === 'store-shift-checklist')
+    expect(checklistAssignments).toHaveLength(2)
+    expect(new Set(checklistAssignments.map(({ id }) => id)).size).toBe(2)
     } finally {
       vi.useRealTimers()
     }
@@ -11876,6 +12117,12 @@ describe('IDOSI Worker security primitives', () => {
     replaceStateCollection(env.DB.database, 'workCatalogProgress', [legacyProgressSnapshot])
     replaceStateCollection(env.DB.database, 'compensationEntries', [legacyClaimSnapshot])
     const originalAttendance = persisted.attendance[0]
+    const originalRewardTasks = readHydratedState(env.DB.database).tasks
+    replaceStateCollection(env.DB.database, 'tasks', originalRewardTasks.map((task) => (
+      task.checklistAttendanceId
+        ? { ...task, checklistAttendanceId: 'att_reward_02' }
+        : task
+    )))
     replaceStateCollection(env.DB.database, 'attendance', [{
       ...originalAttendance,
       checkOutAt: '2026-08-20T03:00:00.000Z',
@@ -11903,6 +12150,7 @@ describe('IDOSI Worker security primitives', () => {
       status: 'VOID', voidSource: 'reward-key-migration', migratedToClaimId: claimId,
     })
     replaceStateCollection(env.DB.database, 'attendance', [originalAttendance])
+    replaceStateCollection(env.DB.database, 'tasks', originalRewardTasks)
 
     replaceStateCollection(env.DB.database, 'workCatalogProgress', [])
     replaceStateCollection(env.DB.database, 'compensationEntries', [])

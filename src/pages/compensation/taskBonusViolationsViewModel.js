@@ -512,7 +512,9 @@ export const selectRewardSubmissionRows = ({
           context: {
             ...assignment,
             ...event,
-            assignmentId: event.assignmentId || assignment.assignmentId || assignment.id,
+            assignmentId: assignment.receiptOnly === true
+              ? ''
+              : event.assignmentId || assignment.assignmentId || assignment.id,
             submittedAt: event.at || event.submittedAt,
           },
         })

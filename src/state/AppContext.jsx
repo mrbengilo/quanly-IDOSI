@@ -49,6 +49,8 @@ import {
 } from '../domain/attendanceWorkingTime'
 import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'
 import { resolveExactlyOneActiveStoreManager } from '../domain/managerRevenueBonus'
+import { taskMatchesAttendanceChecklist } from '../domain/taskAttendanceScope'
+import { WORK_CATALOG_KIND } from '../domain/workCatalog'
 import {
   apiBootstrapState,
   apiCommand,
@@ -554,6 +556,33 @@ const normalizeTask = (task = {}, fallbackStoreId = null) => ({
   ].map(String).filter(Boolean))],
   done: Boolean(task.done),
 })
+
+const localRewardTaskSnapshotForProgress = (task = {}, completed = false) => {
+  const catalogSnapshot = task.catalogSnapshot && typeof task.catalogSnapshot === 'object' && !Array.isArray(task.catalogSnapshot)
+    ? task.catalogSnapshot
+    : null
+  const catalogItemId = String(task.catalogItemId || catalogSnapshot?.catalogItemId || catalogSnapshot?.id || '').trim()
+  const kind = String(catalogSnapshot?.kind || task.catalogKind || task.kind || '').trim().toUpperCase()
+  const amountVnd = Number(catalogSnapshot?.amountVnd ?? task.amountVnd)
+  if (!catalogSnapshot
+    || !catalogItemId
+    || kind !== WORK_CATALOG_KIND.REWARD_TASK
+    || !Number.isSafeInteger(amountVnd)
+    || amountVnd <= 0) return null
+
+  return {
+    taskId: String(task.id || ''),
+    assignmentId: String(task.assignmentId || '') || null,
+    catalogItemId,
+    catalogCode: String(catalogSnapshot.catalogCode || task.catalogCode || '').trim(),
+    catalogVersion: Number(catalogSnapshot.catalogVersion || task.catalogVersion || 1),
+    targetGroup: String(catalogSnapshot.targetGroup || '').trim(),
+    name: String(catalogSnapshot.name || task.title || task.name || '').trim(),
+    amountVnd,
+    completed: completed === true,
+    catalogSnapshot: { ...catalogSnapshot },
+  }
+}
 
 export const createInitialState = () => {
   const employees = employeesSeed.map((employee) => normalizeEmployee(clone(employee)))
@@ -2204,6 +2233,7 @@ export function AppProvider({ children }) {
     const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
     const scopedTasks = state.tasks.filter((task) => {
       if (task.deletedAt || String(task.storeId || '') !== storeId || String(task.date || task.workDate || '').slice(0, 10) !== date) return false
+      if (!taskMatchesAttendanceChecklist(task, openAttendance)) return false
       const assignees = [
         task.employeeId,
         ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
@@ -2225,13 +2255,14 @@ export function AppProvider({ children }) {
       submitted.set(taskId, item.completed)
     }
     if (submitted.size !== taskIds.size) return { ok: false, message: 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.' }
-    const incompleteReason = String(payload.incompleteReason || payload.note || '').trim()
+    const requestedIncompleteReason = String(payload.incompleteReason || payload.note || '').trim()
     const requiredTaskIds = new Set(scopedTasks.filter((task) => task.required !== false).map((task) => String(task.id || '')))
     const incompleteTaskIds = [...submitted]
       .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && !completed)
       .map(([taskId]) => taskId)
-    if (incompleteReason.length > 1_000) return { ok: false, message: 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.' }
-    if (incompleteTaskIds.length && !incompleteReason) return { ok: false, message: 'Cần nhập ghi chú khi chưa hoàn thành công việc cố định.' }
+    if (requestedIncompleteReason.length > 1_000) return { ok: false, message: 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.' }
+    if (incompleteTaskIds.length && !requestedIncompleteReason) return { ok: false, message: 'Cần nhập ghi chú khi chưa hoàn thành công việc cố định.' }
+    const incompleteReason = incompleteTaskIds.length ? requestedIncompleteReason : ''
     const idempotencyKey = String(payload.idempotencyKey || `task-progress:${crypto.randomUUID()}`)
     if (apiRef.current.enabled) {
       try {
@@ -2249,71 +2280,162 @@ export function AppProvider({ children }) {
     }
     const normalizedStatuses = [...submitted].sort(([left], [right]) => left.localeCompare(right))
     const fingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
-    const existing = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
-      .find((event) => String(event.employeeId || '') === employeeId && String(event.fingerprint || '') === fingerprint)
+    const latestSubmission = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
+      .filter((event) => (
+        event?.action === 'progress-submitted'
+        && String(event.employeeId || '') === employeeId
+        && String(event.attendanceId || '') === String(openAttendance.id || '')
+      ))
+      .reduce((latest, event) => (
+        !latest || String(event.at || '').localeCompare(String(latest.at || '')) >= 0 ? event : latest
+      ), null)
+    const existing = String(latestSubmission?.fingerprint || '') === fingerprint ? latestSubmission : null
     const completedTasks = [...submitted.values()].filter(Boolean).length
     const totalTasks = submitted.size
     const completionRate = Math.round((completedTasks / totalTasks) * 100)
+    const completedRequiredTasks = [...submitted]
+      .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && completed)
+      .length
+    const rewardTaskSnapshots = scopedTasks
+      .map((task) => localRewardTaskSnapshotForProgress(task, submitted.get(String(task.id || '')) === true))
+      .filter(Boolean)
+    const completedRewardTaskSnapshots = rewardTaskSnapshots.filter((snapshot) => snapshot.completed)
     if (existing) return { ok: true, existing: true, completedTasks, totalTasks, completionRate, submittedAt: existing.at }
     const timestamp = new Date().toISOString()
     const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
-    const assignmentSummaries = (assignmentIds.length ? assignmentIds : ['']).map((assignmentId) => {
-      const scopedIds = scopedTasks
-        .filter((task) => !assignmentId || String(task.assignmentId || '') === assignmentId)
-        .map((task) => String(task.id || ''))
-      const scopedCompleted = scopedIds.filter((taskId) => submitted.get(taskId) === true).length
-      return {
-        assignmentId,
-        completedTasks: scopedCompleted,
-        totalTasks: scopedIds.length,
-        completionRate: scopedIds.length ? Math.round((scopedCompleted / scopedIds.length) * 100) : 0,
-      }
-    })
-    setState((current) => ({
-      ...current,
-      tasks: current.tasks.map((task) => submitted.has(String(task.id || '')) ? {
-        ...task,
-        completedBy: { ...(task.completedBy || {}), [employeeId]: submitted.get(String(task.id || '')) },
-        completionHistory: [...(task.completionHistory || []), { done: submitted.get(String(task.id || '')), at: timestamp, employeeId, actor: actorSnapshot(current.session) }],
-        updatedAt: timestamp,
-      } : task),
-      taskAssignmentHistory: current.taskAssignmentHistory.map((assignment) => {
+    const progressEventBase = {
+      action: 'progress-submitted',
+      employeeId,
+      employeeName: employee.name || employeeId,
+      attendanceId: openAttendance.id,
+      storeId,
+      date,
+      shiftId,
+      incompleteReason,
+      rewardTaskSnapshots,
+      completedRewardTaskSnapshots,
+      fingerprint,
+      at: timestamp,
+      actor: actorSnapshot(state.session),
+    }
+    setState((current) => {
+      const matchedAssignmentIds = new Set()
+      const updatedHistories = current.taskAssignmentHistory.map((assignment) => {
         const assignmentId = String(assignment.assignmentId || assignment.id || '')
         if (!assignmentIds.includes(assignmentId)) return assignment
+        matchedAssignmentIds.add(assignmentId)
         const assignmentTaskIds = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId).map((task) => String(task.id || ''))
+        const assignmentRequiredTaskIds = scopedTasks
+          .filter((task) => String(task.assignmentId || '') === assignmentId && task.required !== false)
+          .map((task) => String(task.id || ''))
         const assignmentCompleted = assignmentTaskIds.filter((id) => submitted.get(id) === true).length
+        const assignmentCompletedRequired = assignmentRequiredTaskIds.filter((id) => submitted.get(id) === true).length
         const assignmentRate = assignmentTaskIds.length ? Math.round((assignmentCompleted / assignmentTaskIds.length) * 100) : 0
-        const event = { action: 'progress-submitted', employeeId, employeeName: employee.name || employeeId, attendanceId: openAttendance.id, storeId, date, shiftId, assignmentId, completedTasks: assignmentCompleted, totalTasks: assignmentTaskIds.length, completionRate: assignmentRate, incompleteReason: assignmentRate === 100 ? '' : incompleteReason, fingerprint, at: timestamp, actor: actorSnapshot(current.session) }
+        const requiredComplete = assignmentCompletedRequired === assignmentRequiredTaskIds.length
+        const event = {
+          ...progressEventBase,
+          assignmentId,
+          completedTasks: assignmentCompleted,
+          totalTasks: assignmentTaskIds.length,
+          completionRate: assignmentRate,
+          requiredTasks: assignmentRequiredTaskIds.length,
+          completedRequiredTasks: assignmentCompletedRequired,
+        }
         return {
           ...assignment,
-          status: assignmentRate === 100 ? 'completed' : 'incomplete',
+          status: requiredComplete ? 'completed' : 'incomplete',
           completionRate: assignmentRate,
           completedTasks: assignmentCompleted,
           totalTasks: assignmentTaskIds.length,
-          incompleteReason: assignmentRate === 100 ? '' : incompleteReason,
+          incompleteReason: requiredComplete ? '' : incompleteReason,
           progressHistory: [...(assignment.progressHistory || []), event],
           updatedAt: timestamp,
         }
-      }),
-      notifications: assignmentSummaries.flatMap((summary) => (
-        ['admin', 'business_support', 'store_manager'].map((targetRole) => ({
-          id: uid('NTF'),
-          type: 'store-task-progress-submitted',
-          targetRole,
+      })
+      const taskAssignmentHistory = matchedAssignmentIds.size ? updatedHistories : (() => {
+        const receiptId = `task_progress_receipt:${String(openAttendance.id || '')}`
+        const receiptIndex = updatedHistories.findIndex((record) => (
+          String(record.id || '') === receiptId
+          && record.source === 'task-progress-receipt'
+        ))
+        const previousReceipt = receiptIndex >= 0 ? updatedHistories[receiptIndex] : null
+        const progressEvent = {
+          ...progressEventBase,
+          assignmentId: null,
+          completedTasks,
+          totalTasks,
+          completionRate,
+          requiredTasks: requiredTaskIds.size,
+          completedRequiredTasks,
+        }
+        const receipt = {
+          ...(previousReceipt || {}),
+          id: receiptId,
+          historyId: previousReceipt?.historyId || receiptId,
+          assignmentId: null,
+          action: 'progress-receipt',
+          source: 'task-progress-receipt',
+          receiptOnly: true,
           storeId,
-          employeeId,
+          date,
+          shiftId,
           attendanceId: openAttendance.id,
-          assignmentId: summary.assignmentId || null,
-          route: `/store/tasks${summary.assignmentId ? `?assignment=${encodeURIComponent(summary.assignmentId)}` : ''}`,
-          title: `${employee.name || employeeId} đã gửi kết quả công việc`,
-          message: `Hoàn thành ${summary.completedTasks}/${summary.totalTasks} công việc (${summary.completionRate}%).`,
-          createdAt: timestamp,
-          readAt: null,
-        }))
-      )).concat(current.notifications || []),
-      auditLogs: [{ id: uid('AUD'), entity: 'task-progress', entityId: `${openAttendance.id}:${employeeId}`, action: 'submit', before: null, after: normalizedStatuses, actor: actorSnapshot(current.session), createdAt: timestamp }, ...current.auditLogs],
-      stateVersion: current.stateVersion + 1,
-    }))
+          employeeId,
+          employeeIds: [employeeId],
+          taskIds: scopedTasks.map((task) => String(task.id || '')).filter(Boolean),
+          tasks: [],
+          progressHistory: [...(previousReceipt?.progressHistory || []), progressEvent],
+          createdAt: previousReceipt?.createdAt || timestamp,
+          createdBy: previousReceipt?.createdBy || progressEvent.actor,
+          updatedAt: timestamp,
+          updatedBy: progressEvent.actor,
+        }
+        if (receiptIndex < 0) return [receipt, ...updatedHistories]
+        return updatedHistories.map((record, index) => index === receiptIndex ? receipt : record)
+      })()
+      const assignmentSummaries = (matchedAssignmentIds.size
+        ? assignmentIds.filter((assignmentId) => matchedAssignmentIds.has(assignmentId))
+        : ['']).map((assignmentId) => {
+        const scopedIds = scopedTasks
+          .filter((task) => !assignmentId || String(task.assignmentId || '') === assignmentId)
+          .map((task) => String(task.id || ''))
+        const scopedCompleted = scopedIds.filter((taskId) => submitted.get(taskId) === true).length
+        return {
+          assignmentId,
+          completedTasks: scopedCompleted,
+          totalTasks: scopedIds.length,
+          completionRate: scopedIds.length ? Math.round((scopedCompleted / scopedIds.length) * 100) : 0,
+        }
+      })
+      return {
+        ...current,
+        tasks: current.tasks.map((task) => submitted.has(String(task.id || '')) ? {
+          ...task,
+          completedBy: { ...(task.completedBy || {}), [employeeId]: submitted.get(String(task.id || '')) },
+          completionHistory: [...(task.completionHistory || []), { done: submitted.get(String(task.id || '')), at: timestamp, employeeId, actor: actorSnapshot(current.session) }],
+          updatedAt: timestamp,
+        } : task),
+        taskAssignmentHistory,
+        notifications: assignmentSummaries.flatMap((summary) => (
+          ['admin', 'business_support', 'store_manager'].map((targetRole) => ({
+            id: uid('NTF'),
+            type: 'store-task-progress-submitted',
+            targetRole,
+            storeId,
+            employeeId,
+            attendanceId: openAttendance.id,
+            assignmentId: summary.assignmentId || null,
+            route: `/store/tasks${summary.assignmentId ? `?assignment=${encodeURIComponent(summary.assignmentId)}` : ''}`,
+            title: `${employee.name || employeeId} đã gửi kết quả công việc`,
+            message: `Hoàn thành ${summary.completedTasks}/${summary.totalTasks} công việc (${summary.completionRate}%).`,
+            createdAt: timestamp,
+            readAt: null,
+          }))
+        )).concat(current.notifications || []),
+        auditLogs: [{ id: uid('AUD'), entity: 'task-progress', entityId: `${openAttendance.id}:${employeeId}`, action: 'submit', before: null, after: normalizedStatuses, actor: actorSnapshot(current.session), createdAt: timestamp }, ...current.auditLogs],
+        stateVersion: current.stateVersion + 1,
+      }
+    })
     notify(`Đã lưu kết quả: hoàn thành ${completionRate}%.`)
     return { ok: true, completedTasks, totalTasks, completionRate, incompleteReason, submittedAt: timestamp }
   }
@@ -4818,6 +4940,7 @@ export function AppProvider({ children }) {
         ...(task.employeeId ? [task.employeeId] : []),
       ].map(String))
       return !task.deletedAt
+        && taskMatchesAttendanceChecklist(task, openRecord)
         && String(task.storeId || '') === String(openRecord.storeId || '')
         && String(task.date || task.workDate || '') === String(openRecord.date || openRecord.workDate || '')
         && (!String(task.shiftId || task.shift || '') || String(task.shiftId || task.shift || '') === String(openRecord.shiftId || openRecord.shift || ''))

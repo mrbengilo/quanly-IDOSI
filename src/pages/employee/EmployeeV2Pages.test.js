@@ -238,6 +238,54 @@ describe('store employee current-shift orders', () => {
     expect(screen.queryByLabelText(/Lý do/u)).toBeNull()
   })
 
+  it('keeps only the current generated checklist and manual tasks in the active dashboard shift', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T09:00:00.000Z')
+    const setTaskDone = vi.fn().mockResolvedValue({ ok: true })
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01', homeStoreId: 'S01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }],
+      attendance: [{
+        id: 'ATT-E01', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+        shiftId: 'CA-SAME', shiftName: 'Ca chung', shiftStart: '08:00', shiftEnd: '17:00',
+        checkIn: '08:00', checkInAt: '2026-08-20T01:00:00.000Z',
+      }],
+      orders: [], schedule: [], taskAssignmentHistory: [], shiftDefinitions: [], supportTransfers: [], policies: {},
+      tasks: [{
+        id: 'TASK-OLD', assignmentId: 'catalog_checklist_ATT-OLD', storeId: 'S01', date: '2026-08-20', shiftId: 'CA-SAME',
+        employeeIds: ['E01'], title: 'Checklist của lần điểm danh cũ', catalogKind: 'FIXED_TASK', required: true, completedBy: {},
+      }, {
+        id: 'TASK-CURRENT', assignmentId: 'catalog_checklist_ATT-E01', storeId: 'S01', date: '2026-08-20', shiftId: 'CA-SAME',
+        employeeIds: ['E01'], title: 'Checklist của ca hiện tại', catalogKind: 'FIXED_TASK', required: true, completedBy: { E01: true },
+      }, {
+        id: 'TASK-MANUAL', storeId: 'S01', date: '2026-08-20', shiftId: 'CA-SAME',
+        employeeIds: ['E01'], title: 'Công việc giao thủ công', catalogKind: 'FIXED_TASK', required: true, completedBy: { E01: true },
+      }],
+      checkIn: vi.fn(), checkOut: vi.fn(), setTaskDone, notify: vi.fn(),
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeeDashboardV2)))
+
+    expect(screen.queryByText('Checklist của lần điểm danh cũ')).toBeNull()
+    expect(screen.getByText('Checklist của ca hiện tại')).toBeTruthy()
+    expect(screen.getByText('Công việc giao thủ công')).toBeTruthy()
+    expect(screen.getByText('2/2')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mở lại công việc Checklist của ca hiện tại' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Mở lại công việc Công việc giao thủ công' }))
+    expect(setTaskDone).toHaveBeenCalledTimes(2)
+    expect(setTaskDone).toHaveBeenNthCalledWith(1, 'TASK-CURRENT', false, 'E01')
+    expect(setTaskDone).toHaveBeenNthCalledWith(2, 'TASK-MANUAL', false, 'E01')
+
+    fireEvent.click(screen.getByRole('button', { name: 'KẾT CA' }))
+    fireEvent.change(screen.getByLabelText(/^Tiền mặt/u), { target: { value: '0' } })
+    fireEvent.change(screen.getByLabelText(/^Chuyển khoản/u), { target: { value: '0' } })
+
+    expect(screen.queryByText(/Còn 1 công việc cố định chưa hoàn thành/u)).toBeNull()
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN KẾT CA' }).disabled).toBe(false)
+  })
+
   it('shows reward money without making optional reward work block checkout or require a reason', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-08-20T09:00:00.000Z')

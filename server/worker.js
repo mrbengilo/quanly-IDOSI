@@ -1405,6 +1405,23 @@ const taskAppliesToEmployee = (task, employeeId, storeId) => {
   return !assignees.length || assignees.includes(String(employeeId || ''))
 }
 
+const taskChecklistAttendanceId = (task) => {
+  const explicitAttendanceId = String(task?.checklistAttendanceId || '').trim()
+  if (explicitAttendanceId) return explicitAttendanceId
+  // Older generated checklist rows can be identified by their deterministic
+  // assignment id even when they predate the explicit checklistAttendanceId.
+  const assignmentId = String(task?.assignmentId || '').trim()
+  const prefix = 'catalog_checklist_'
+  return assignmentId.startsWith(prefix) ? assignmentId.slice(prefix.length) : ''
+}
+
+const taskMatchesOpenAttendanceChecklist = (task, openAttendanceId) => {
+  const checklistAttendanceId = taskChecklistAttendanceId(task)
+  return !checklistAttendanceId
+    || (Boolean(String(openAttendanceId || '').trim())
+      && checklistAttendanceId === String(openAttendanceId).trim())
+}
+
 const filterArray = (state, key, predicate) => (Array.isArray(state[key]) ? state[key].filter(predicate) : [])
 
 const aggregateStoreDailyRevenue = (state, allowedStoreIds = new Set()) => {
@@ -2109,7 +2126,8 @@ export const projectSharedState = (rawState, user) => {
       ))))
     const taskStoreIds = new Set([storeId, String(openAttendance?.storeId || '')].filter(Boolean))
     const tasks = filterArray(state, 'tasks', (record) => (
-      [...taskStoreIds].some((taskStoreId) => [...ownEmployeeIdentifiers]
+      taskMatchesOpenAttendanceChecklist(record, openAttendance?.id)
+      && [...taskStoreIds].some((taskStoreId) => [...ownEmployeeIdentifiers]
         .some((identifier) => taskAppliesToEmployee(record, identifier, taskStoreId)))
     )).map((record) => redactEmployeeReferences(record, ownEmployeeIdentifiers))
     const payrollPeriods = (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []).flatMap((period) => {
@@ -10646,7 +10664,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   const attendanceShiftId = String(openRecord.shiftId || openRecord.shift || '')
   const checklistTasks = Array.isArray(openRecord.checklistSnapshot?.tasks)
     ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => (
-        String(task.checklistAttendanceId || '') === String(openRecord.id || '')
+        taskChecklistAttendanceId(task) === String(openRecord.id || '')
         && !task.deletedAt
       ))
     : []
@@ -10694,7 +10712,10 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   }
   const incompleteTasks = storeEmployee
       ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
-        if (String(task.checklistAttendanceId || '') === String(openRecord.id || '')) return false
+        // Every attendance-generated checklist is validated against its immutable
+        // attendance snapshot. Never let a prior check-in generation leak into
+        // this generic/manual-task gate after an employee checks in again.
+        if (taskChecklistAttendanceId(task)) return false
         if (!workTaskIsRequired(task)) return false
         if (!taskAppliesToEmployee(task, employeeId, attendanceStoreId)) return false
         if (String(task.date || task.workDate || '') !== attendanceDate) return false
@@ -12173,16 +12194,21 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(409, 'TASK_DATE_INVALID', 'Chỉ được cập nhật công việc của ngày hiện tại.')
   }
   const taskShiftId = String(previous.shiftId || previous.shift || '')
+  const openAttendance = (taskShiftId || taskChecklistAttendanceId(previous))
+    ? (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
+        belongsToEmployee(record, employeeId)
+        && !record.deletedAt
+        && !record.checkOutAt
+        && !record.checkOut
+      ))
+    : null
   if (taskShiftId) {
-    const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
-      belongsToEmployee(record, employeeId)
-      && !record.deletedAt
-      && !record.checkOutAt
-      && !record.checkOut
-    ))
     if (!openAttendance || String(openAttendance.shiftId || openAttendance.shift || '') !== taskShiftId) {
       throw new ApiError(409, 'TASK_SHIFT_INVALID', 'Công việc không thuộc ca đang mở của bạn.')
     }
+  }
+  if (!taskMatchesOpenAttendanceChecklist(previous, openAttendance?.id)) {
+    throw new ApiError(409, 'TASK_ATTENDANCE_INVALID', 'Checklist không thuộc lần điểm danh đang mở của bạn.')
   }
   const completedBy = isPlainRecord(previous.completedBy) ? previous.completedBy : {}
   if (Boolean(completedBy[employeeId]) === payload.done && Object.hasOwn(completedBy, employeeId)) {
@@ -12301,6 +12327,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
   const scopedTasks = (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
     if (!employeeIdentifiers.some((identifier) => taskAppliesToEmployee(task, identifier, storeId))) return false
+    if (!taskMatchesOpenAttendanceChecklist(task, openAttendance.id)) return false
     if (String(task.date || task.workDate || '').slice(0, 10) !== date) return false
     const taskShiftId = String(task.shiftId || task.shift || '')
     return !taskShiftId || taskShiftId === shiftId
@@ -12690,7 +12717,19 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     at: commandContext.now,
     actor: serverActorSnapshot(actor),
   }
-  const nextHistories = histories.map((assignment) => {
+  const totalTasks = scopedTasks.length
+  const completedTasks = [...submittedById.values()].filter(Boolean).length
+  const requiredTasks = requiredTaskIds.size
+  const completedRequiredTasks = [...submittedById]
+    .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && completed)
+    .length
+  const rewardTasks = totalTasks - requiredTasks
+  const completedRewardTasks = [...submittedById]
+    .filter(([taskId, completed]) => !requiredTaskIds.has(taskId) && completed)
+    .length
+  const completionRate = Math.round((completedTasks / totalTasks) * 100)
+  let persistedProgressEventCount = 0
+  let nextHistories = histories.map((assignment) => {
     const assignmentId = String(assignment.assignmentId || assignment.id || '')
     if (!assignmentIds.includes(assignmentId)) return assignment
     if (existingSubmission) {
@@ -12756,6 +12795,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     const result = { assignmentId, totalTasks, completedTasks, completionRate, requiredTasks, completedRequiredTasks }
     assignmentResults.push(result)
     const progressEvent = { ...progressEventBase, ...result }
+    persistedProgressEventCount += 1
     return {
       ...assignment,
       tasks: (Array.isArray(assignment.tasks) ? assignment.tasks : []).map((task) => {
@@ -12789,18 +12829,55 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       updatedBy: serverActorSnapshot(actor),
     }
   })
-  const totalTasks = scopedTasks.length
-  const completedTasks = [...submittedById.values()].filter(Boolean).length
-  const requiredTasks = requiredTaskIds.size
-  const completedRequiredTasks = [...submittedById]
-    .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && completed)
-    .length
-  const rewardTasks = totalTasks - requiredTasks
-  const completedRewardTasks = [...submittedById]
-    .filter(([taskId, completed]) => !requiredTaskIds.has(taskId) && completed)
-    .length
-  const completionRate = Math.round((completedTasks / totalTasks) * 100)
-  const notifications = existingSubmission ? [] : (assignmentIds.length
+  if (!existingSubmission && persistedProgressEventCount === 0) {
+    const receiptId = `task_progress_receipt:${String(openAttendance.id || '')}`
+    const receiptIndex = nextHistories.findIndex((record) => (
+      String(record.id || '') === receiptId
+      && record.source === 'task-progress-receipt'
+    ))
+    const previousReceipt = receiptIndex >= 0 ? nextHistories[receiptIndex] : null
+    const receipt = {
+      ...(previousReceipt || {}),
+      id: receiptId,
+      historyId: previousReceipt?.historyId || receiptId,
+      assignmentId: null,
+      action: 'progress-receipt',
+      source: 'task-progress-receipt',
+      receiptOnly: true,
+      storeId,
+      date,
+      shiftId,
+      attendanceId: openAttendance.id,
+      employeeId,
+      employeeIds: [employeeId],
+      taskIds: scopedTasks.map((task) => String(task.id || '')).filter(Boolean),
+      tasks: [],
+      progressHistory: [
+        ...(Array.isArray(previousReceipt?.progressHistory) ? previousReceipt.progressHistory : []),
+        {
+          ...progressEventBase,
+          assignmentId: null,
+          totalTasks,
+          completedTasks,
+          completionRate,
+          requiredTasks,
+          completedRequiredTasks,
+        },
+      ],
+      createdAt: previousReceipt?.createdAt || commandContext.now,
+      createdBy: previousReceipt?.createdBy || progressEventBase.actor,
+      updatedAt: commandContext.now,
+      updatedBy: progressEventBase.actor,
+    }
+    if (receiptIndex >= 0) {
+      nextHistories[receiptIndex] = receipt
+    } else {
+      // Append a new receipt so an equal-timestamp legacy assignment event
+      // cannot win the latest-submission tie on the next semantic retry.
+      nextHistories = [...nextHistories, receipt]
+    }
+  }
+  const notifications = existingSubmission ? [] : (assignmentResults.length
     ? assignmentResults
     : [{ assignmentId: '', totalTasks, completedTasks, completionRate }])
     .map((result) => ({

@@ -106,6 +106,63 @@ describe('employee shift operations', () => {
     })))
   })
 
+  it('scopes generated checklist tasks to the open attendance while keeping manual assignments', async () => {
+    mocked.app.tasks = [{
+      id: 'TASK-OLD-CHECKLIST', assignmentId: 'catalog_checklist_ATT-OLD',
+      storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1', employeeIds: ['E01'],
+      title: 'Công việc từ lần điểm danh cũ', required: false, rewardEligible: true, completedBy: {},
+    }, {
+      id: 'TASK-CURRENT-CHECKLIST', assignmentId: 'catalog_checklist_ATT-01',
+      storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1', employeeIds: ['E01'],
+      title: 'Công việc của lần điểm danh hiện tại', required: false, rewardEligible: true, completedBy: {},
+    }, {
+      id: 'TASK-MANUAL', assignmentId: 'ASSIGN-MANUAL',
+      storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1', employeeIds: ['E01'],
+      title: 'Công việc quản lý giao thủ công', required: false, rewardEligible: true, completedBy: {},
+    }]
+
+    render(<EmployeeAssignedTasksPage />)
+
+    expect(screen.queryByText('Công việc từ lần điểm danh cũ')).toBeNull()
+    expect(screen.getByText('Công việc của lần điểm danh hiện tại')).toBeTruthy()
+    expect(screen.getByText('Công việc quản lý giao thủ công')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }))
+
+    await waitFor(() => expect(mocked.app.saveStoreTaskProgress).toHaveBeenCalledWith(expect.objectContaining({
+      attendanceId: 'ATT-01',
+      tasks: [
+        { id: 'TASK-CURRENT-CHECKLIST', completed: false },
+        { id: 'TASK-MANUAL', completed: false },
+      ],
+    })))
+  })
+
+  it('shows receipt progress totals without exposing the internal receipt id as an assignment', () => {
+    const receiptId = 'task_progress_receipt:ATT-01'
+    mocked.app.taskAssignmentHistory = [{
+      id: receiptId,
+      assignmentId: null,
+      receiptOnly: true,
+      source: 'task-progress-receipt',
+      progressHistory: [{
+        employeeId: 'E01',
+        at: '2026-08-22T04:30:00.000Z',
+        completedTasks: 2,
+        totalTasks: 3,
+        completionRate: 67,
+        incompleteReason: 'Còn một công việc chưa hoàn thành',
+      }],
+    }]
+
+    render(<EmployeeAssignedTasksPage />)
+
+    const row = screen.getByText('2/3').closest('tr')
+    expect(row?.textContent).toContain('—')
+    expect(row?.textContent).not.toContain(receiptId)
+    expect(row?.textContent).toContain('67%')
+    expect(row?.textContent).toContain('Còn một công việc chưa hoàn thành')
+  })
+
   it('keeps both forms read-only until the employee has an open attendance', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-08-22T03:00:00.000Z')

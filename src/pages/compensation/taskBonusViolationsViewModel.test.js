@@ -219,6 +219,49 @@ describe('selectRewardSubmissionRows', () => {
     })])
   })
 
+  it('never exposes the internal standalone receipt id as an assignment reference', () => {
+    const receiptId = 'task_progress_receipt:ATT-RECEIPT'
+    const rows = selectRewardSubmissionRows({
+      ...common,
+      taskAssignmentHistory: [{
+        id: receiptId,
+        receiptOnly: true,
+        source: 'task-progress-receipt',
+        assignmentId: null,
+        employeeId: 'NV-01',
+        employeeIds: ['NV-01'],
+        attendanceId: 'ATT-RECEIPT',
+        storeId: 'CH001',
+        date: '2026-08-28',
+        shiftId: 'MORNING',
+        progressHistory: [{
+          action: 'progress-submitted',
+          employeeId: 'NV-01',
+          attendanceId: 'ATT-RECEIPT',
+          storeId: 'CH001',
+          date: '2026-08-28',
+          shiftId: 'MORNING',
+          at: '2026-08-28T03:00:00.000Z',
+          rewardTaskSnapshots: [{
+            taskId: 'TASK-RECEIPT-REWARD',
+            catalogItemId: 'REWARD-FLOOR',
+            kind: 'REWARD_TASK',
+            name: 'Lau nhà từ receipt',
+            amountVnd: 2_000,
+            completed: true,
+          }],
+        }],
+      }],
+    })
+
+    expect(rows).toEqual([expect.objectContaining({
+      assignmentId: '',
+      taskId: 'TASK-RECEIPT-REWARD',
+      name: 'Lau nhà từ receipt',
+    })])
+    expect(JSON.stringify(rows)).not.toContain(receiptId)
+  })
+
   it('collapses re-check-ins within one shift but preserves genuine distinct shift rewards', () => {
     const progress = [{
       id: 'PROGRESS-MORNING-FIRST',

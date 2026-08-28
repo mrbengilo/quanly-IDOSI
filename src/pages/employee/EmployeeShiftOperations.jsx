@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { ClipboardCheck, Clock3, ReceiptText, Save, Store } from 'lucide-react'
 import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, TableWrap } from '../../components/UI'
+import { taskMatchesAttendanceChecklist } from '../../domain/taskAttendanceScope'
 import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { useApp } from '../../state/AppContext'
 import { money, shortDateTime24, today } from '../../utils'
@@ -33,6 +34,7 @@ const taskMatchesAttendance = (task, attendance, employeeId) => (
   && recordDate(task) === recordDate(attendance)
   && taskAssignedToEmployee(task, employeeId)
   && (!shiftIdOf(task) || shiftIdOf(task) === shiftIdOf(attendance))
+  && taskMatchesAttendanceChecklist(task, attendance)
 )
 
 export function EmployeeShiftExpensePage() {
@@ -150,7 +152,7 @@ export function EmployeeAssignedTasksPage() {
   const history = useMemo(() => (app.taskAssignmentHistory || []).flatMap((assignment) => (
     (assignment.progressHistory || []).filter((event) => String(event.employeeId || '') === employeeId).map((event) => ({
       ...event,
-      assignmentId: event.assignmentId || assignment.assignmentId || assignment.id,
+      assignmentId: assignment.receiptOnly === true ? '' : event.assignmentId || assignment.assignmentId || assignment.id,
     }))
   )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || ''))), [app.taskAssignmentHistory, employeeId])
   const activeStore = (app.stores || []).find((store) => String(store.id || '') === String(attendance?.storeId || app.session?.storeId || ''))

@@ -1,9 +1,10 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { createRef, forwardRef, useImperativeHandle } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AppProvider, createInitialState, SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY, useApp } from './AppContext'
+import { AppProvider, createInitialState, STORAGE_KEY, SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY, useApp } from './AppContext'
 
 const api = vi.hoisted(() => ({
+  localFallbackAllowed: false,
   apiBootstrapState: vi.fn(),
   apiCommand: vi.fn(),
   apiGetAccountAvatar: vi.fn(),
@@ -28,7 +29,7 @@ vi.mock('../services/idosiApi', () => ({
   apiPolicyMap: () => ({}),
   clearApiSession: api.clearApiSession,
   hasApiSession: () => false,
-  isLocalApiFallbackAllowed: () => false,
+  isLocalApiFallbackAllowed: () => api.localFallbackAllowed,
 }))
 
 const supportUser = {
@@ -90,6 +91,7 @@ const renderProvider = () => render(<AppProvider><AppProbe ref={appRef} /></AppP
 describe('remote command active-store preservation', () => {
   beforeEach(() => {
     appRef = createRef()
+    api.localFallbackAllowed = false
     sessionStorage.clear()
     localStorage.clear()
     const bootstrap = () => ({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
@@ -360,6 +362,224 @@ describe('remote command active-store preservation', () => {
     const command = api.apiCommand.mock.calls.find(([type]) => type === 'shift_definition.create')
     expect(command?.[1]).toEqual({ storeId: 'STORE-A', name: 'Ca sáng', start: '08:00', end: '12:00' })
     expect(Object.hasOwn(command?.[1] || {}, 'date')).toBe(false)
+  })
+
+  it('submits only the open-attendance checklist plus manual tasks to the remote progress command', async () => {
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{
+        id: 'E01', code: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc',
+      }],
+      attendance: [{
+        id: 'ATT-CURRENT', employeeId: 'E01', storeId: 'STORE-A', date: '2026-08-28',
+        shiftId: 'SHIFT-MORNING', unit: 'store', checkInAt: '2026-08-28T01:00:00.000Z',
+      }],
+      tasks: [{
+        id: 'TASK-OLD-CHECKLIST', assignmentId: 'catalog_checklist_ATT-OLD', storeId: 'STORE-A', date: '2026-08-28',
+        shiftId: 'SHIFT-MORNING', employeeIds: ['E01'], title: 'Checklist cũ', required: true,
+      }, {
+        id: 'TASK-CURRENT-CHECKLIST', assignmentId: 'catalog_checklist_ATT-CURRENT', storeId: 'STORE-A', date: '2026-08-28',
+        shiftId: 'SHIFT-MORNING', employeeIds: ['E01'], title: 'Checklist hiện tại', required: true,
+      }, {
+        id: 'TASK-MANUAL', storeId: 'STORE-A', date: '2026-08-28', shiftId: 'SHIFT-MORNING',
+        employeeIds: ['E01'], title: 'Công việc giao thủ công', required: false,
+      }],
+      taskAssignmentHistory: [],
+    }
+    const bootstrap = { user: employeeHomeUser, state: employeeState, policies: [], version: 7 }
+    api.apiLogin.mockResolvedValue({ user: employeeHomeUser, bootstrap })
+    api.apiGetState.mockResolvedValue(bootstrap)
+    api.apiCommand.mockResolvedValue({ version: 8, completionRate: 100, completedTasks: 2, totalTasks: 2 })
+
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+    })
+    await act(async () => {
+      expect(await appRef.current.saveStoreTaskProgress({
+        attendanceId: 'ATT-CURRENT',
+        tasks: [
+          { id: 'TASK-CURRENT-CHECKLIST', completed: true },
+          { id: 'TASK-MANUAL', completed: true },
+        ],
+        idempotencyKey: 'task-progress:current-attendance',
+      })).toMatchObject({ ok: true, totalTasks: 2 })
+    })
+
+    expect(api.apiCommand).toHaveBeenCalledWith('task.progress.save', {
+      attendanceId: 'ATT-CURRENT',
+      tasks: [
+        { id: 'TASK-CURRENT-CHECKLIST', completed: true },
+        { id: 'TASK-MANUAL', completed: true },
+      ],
+      incompleteReason: '',
+    }, expect.objectContaining({
+      expectedVersion: 7,
+      idempotencyKey: 'task-progress:current-attendance',
+    }))
+  })
+
+  it('stores one local semantic receipt without matching assignment history and ignores stale checklists at checkout', async () => {
+    const initial = createInitialState()
+    const employee = {
+      id: 'E-LOCAL', code: 'E-LOCAL', username: 'employee-local', password: 'password',
+      name: 'Nhân viên local', unit: 'store', storeId: 'STORE-LOCAL', status: 'Đang làm việc',
+    }
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      ...initial,
+      stores: [{ id: 'STORE-LOCAL', name: 'Cửa hàng local', status: 'Đang hoạt động' }],
+      employees: [employee],
+      adminAccounts: [],
+      managerAccounts: [],
+      activeStoreId: 'STORE-LOCAL',
+      activeAttendanceId: 'ATT-LOCAL-CURRENT',
+      attendance: [{
+        id: 'ATT-LOCAL-CURRENT', employeeId: employee.id, employeeName: employee.name,
+        storeId: 'STORE-LOCAL', date: '2026-08-28', workDate: '2026-08-28',
+        shiftId: 'SHIFT-MORNING', shift: 'SHIFT-MORNING', shiftEnd: '12:00', unit: 'store',
+        checkIn: '08:00:00', checkInAt: '2026-08-28T08:00:00+07:00', checkOut: null, checkOutAt: null,
+      }],
+      tasks: [{
+        id: 'TASK-LOCAL-OLD', assignmentId: 'catalog_checklist_ATT-LOCAL-OLD', storeId: 'STORE-LOCAL', date: '2026-08-28',
+        shiftId: 'SHIFT-MORNING', employeeIds: [employee.id], title: 'Checklist cũ chưa xong', required: true, completedBy: {},
+      }, {
+        id: 'TASK-LOCAL-CURRENT', assignmentId: 'catalog_checklist_ATT-LOCAL-CURRENT',
+        storeId: 'STORE-LOCAL', date: '2026-08-28', shiftId: 'SHIFT-MORNING', employeeIds: [employee.id],
+        title: 'Checklist thưởng hiện tại', catalogItemId: 'CAT-LOCAL-REWARD', catalogKind: 'REWARD_TASK',
+        amountVnd: 8_000, required: false, completedBy: {},
+        catalogSnapshot: {
+          catalogItemId: 'CAT-LOCAL-REWARD', catalogCode: 'store.reward.local', catalogVersion: 1,
+          kind: 'REWARD_TASK', targetGroup: 'store', name: 'Checklist thưởng hiện tại', amountVnd: 8_000,
+        },
+      }, {
+        id: 'TASK-LOCAL-CURRENT-REQUIRED', assignmentId: 'catalog_checklist_ATT-LOCAL-CURRENT',
+        storeId: 'STORE-LOCAL', date: '2026-08-28', shiftId: 'SHIFT-MORNING', employeeIds: [employee.id],
+        title: 'Checklist bắt buộc hiện tại', required: true, completedBy: {},
+      }, {
+        id: 'TASK-LOCAL-MANUAL', storeId: 'STORE-LOCAL', date: '2026-08-28', shiftId: 'SHIFT-MORNING',
+        assignmentId: 'ASSIGNMENT-ORPHAN', employeeIds: [employee.id],
+        title: 'Công việc giao thủ công', required: true, completedBy: {},
+      }],
+      taskAssignmentHistory: [],
+      notifications: [],
+      orders: [],
+    }))
+    api.localFallbackAllowed = true
+    api.apiLogin.mockRejectedValue(Object.assign(new Error('offline'), { code: 'API_UNAVAILABLE' }))
+
+    renderProvider()
+    let loginResult
+    await act(async () => {
+      loginResult = await appRef.current.login('employee-local', 'password')
+    })
+    expect(loginResult).toMatchObject({ ok: true })
+    const progress = {
+      attendanceId: 'ATT-LOCAL-CURRENT',
+      tasks: [
+        { id: 'TASK-LOCAL-CURRENT', completed: true },
+        { id: 'TASK-LOCAL-CURRENT-REQUIRED', completed: true },
+        { id: 'TASK-LOCAL-MANUAL', completed: true },
+      ],
+    }
+    await act(async () => {
+      expect(await appRef.current.saveStoreTaskProgress({
+        ...progress,
+        idempotencyKey: 'task-progress:first-local-save',
+      })).toMatchObject({ ok: true, completedTasks: 3, totalTasks: 3 })
+    })
+
+    expect(appRef.current.tasks.find((task) => task.id === 'TASK-LOCAL-OLD')?.completedBy).toEqual({})
+    expect(appRef.current.tasks.find((task) => task.id === 'TASK-LOCAL-CURRENT')?.completedBy).toEqual({ 'E-LOCAL': true })
+    expect(appRef.current.tasks.find((task) => task.id === 'TASK-LOCAL-CURRENT-REQUIRED')?.completedBy).toEqual({ 'E-LOCAL': true })
+    expect(appRef.current.tasks.find((task) => task.id === 'TASK-LOCAL-MANUAL')?.completedBy).toEqual({ 'E-LOCAL': true })
+    expect(appRef.current.taskAssignmentHistory).toEqual([
+      expect.objectContaining({
+        id: 'task_progress_receipt:ATT-LOCAL-CURRENT',
+        source: 'task-progress-receipt',
+        taskIds: ['TASK-LOCAL-CURRENT', 'TASK-LOCAL-CURRENT-REQUIRED', 'TASK-LOCAL-MANUAL'],
+        progressHistory: [expect.objectContaining({
+          fingerprint: expect.any(String),
+          requiredTasks: 2,
+          completedRequiredTasks: 2,
+          rewardTaskSnapshots: [expect.objectContaining({
+            taskId: 'TASK-LOCAL-CURRENT', catalogItemId: 'CAT-LOCAL-REWARD', amountVnd: 8_000, completed: true,
+          })],
+          completedRewardTaskSnapshots: [expect.objectContaining({ taskId: 'TASK-LOCAL-CURRENT' })],
+        })],
+      }),
+    ])
+    expect(appRef.current.notifications).toHaveLength(3)
+
+    await act(async () => {
+      expect(await appRef.current.saveStoreTaskProgress({
+        ...progress,
+        idempotencyKey: 'task-progress:semantic-retry',
+      })).toMatchObject({ ok: true, existing: true, completedTasks: 3, totalTasks: 3 })
+    })
+    expect(appRef.current.taskAssignmentHistory[0].progressHistory).toHaveLength(1)
+    expect(appRef.current.notifications).toHaveLength(3)
+
+    const changedProgress = {
+      ...progress,
+      tasks: progress.tasks.map((task) => (
+        task.id === 'TASK-LOCAL-CURRENT' ? { ...task, completed: false } : task
+      )),
+    }
+    await act(async () => {
+      expect(await appRef.current.saveStoreTaskProgress({
+        ...changedProgress,
+        idempotencyKey: 'task-progress:changed-local-save',
+      })).toMatchObject({ ok: true, completedTasks: 2, totalTasks: 3 })
+    })
+    expect(appRef.current.taskAssignmentHistory[0].progressHistory).toHaveLength(2)
+    expect(appRef.current.notifications).toHaveLength(6)
+
+    await act(async () => {
+      expect(await appRef.current.saveStoreTaskProgress({
+        ...changedProgress,
+        idempotencyKey: 'task-progress:changed-semantic-retry',
+      })).toMatchObject({ ok: true, existing: true, completedTasks: 2, totalTasks: 3 })
+    })
+    expect(appRef.current.taskAssignmentHistory[0].progressHistory).toHaveLength(2)
+    expect(appRef.current.notifications).toHaveLength(6)
+
+    let restoredProgress
+    await act(async () => {
+      restoredProgress = await appRef.current.saveStoreTaskProgress({
+        ...progress,
+        idempotencyKey: 'task-progress:restore-earlier-status',
+      })
+    })
+    expect(restoredProgress).toMatchObject({ ok: true, completedTasks: 3, totalTasks: 3 })
+    expect(restoredProgress.existing).not.toBe(true)
+    expect(appRef.current.taskAssignmentHistory[0].progressHistory).toHaveLength(3)
+    expect(appRef.current.notifications).toHaveLength(9)
+
+    const checkoutPayload = {
+      employeeId: employee.id,
+      attendanceId: 'ATT-LOCAL-CURRENT',
+      at: '2026-08-28T05:00:00.000Z',
+      cashRevenue: 0,
+      transferRevenue: 0,
+      location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
+    }
+    await act(async () => {
+      expect(await appRef.current.setTaskDone('TASK-LOCAL-CURRENT-REQUIRED', false, employee.id)).toMatchObject({ ok: true })
+    })
+    await act(async () => {
+      expect(await appRef.current.checkOut(checkoutPayload)).toMatchObject({
+        ok: false,
+        incompleteTaskIds: ['TASK-LOCAL-CURRENT-REQUIRED'],
+      })
+    })
+    expect(appRef.current.attendance.find((record) => record.id === 'ATT-LOCAL-CURRENT')?.checkOutAt).toBeNull()
+
+    await act(async () => {
+      expect(await appRef.current.setTaskDone('TASK-LOCAL-CURRENT-REQUIRED', true, employee.id)).toMatchObject({ ok: true })
+    })
+    await act(async () => {
+      expect(await appRef.current.checkOut(checkoutPayload)).toMatchObject({ ok: true, record: { id: 'ATT-LOCAL-CURRENT' } })
+    })
   })
 
   it('sends one violation batch command with the caller idempotency key', async () => {
