@@ -55,6 +55,11 @@ const employeeHomeUser = {
   role: 'employee', storeId: 'STORE-A', homeStoreId: 'STORE-A', status: 'active', version: 1,
 }
 
+const storeManagerUser = {
+  id: 'USER-MANAGER-A', employeeId: 'MANAGER-A', username: 'manager-a', displayName: 'Quản lý A',
+  role: 'store_manager', storeId: 'STORE-A', status: 'active', version: 1,
+}
+
 const makeRemoteState = (activeStoreId = 'STORE-A') => ({
   ...createInitialState(),
   stores: [
@@ -355,6 +360,64 @@ describe('remote command active-store preservation', () => {
     const command = api.apiCommand.mock.calls.find(([type]) => type === 'shift_definition.create')
     expect(command?.[1]).toEqual({ storeId: 'STORE-A', name: 'Ca sáng', start: '08:00', end: '12:00' })
     expect(Object.hasOwn(command?.[1] || {}, 'date')).toBe(false)
+  })
+
+  it('sends one violation batch command with the caller idempotency key', async () => {
+    api.apiCommand.mockResolvedValueOnce({
+      version: 2,
+      batchId: 'VIO-BATCH-01',
+      violations: [{ id: 'VIO-01' }, { id: 'VIO-02' }],
+      totalAmountVnd: 4_000,
+    })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+
+    const payload = {
+      targetUnit: 'store',
+      storeId: 'STORE-A',
+      employeeId: 'E01',
+      occurredOn: '2026-08-28',
+      shiftId: 'SHIFT-MORNING',
+      policyCodes: ['store.violation.late', 'store.violation.forgot_attendance'],
+      idempotencyKey: 'violation-batch:stable-test',
+    }
+    await act(async () => {
+      expect(await appRef.current.createViolationBatch(payload)).toMatchObject({ batchId: 'VIO-BATCH-01' })
+    })
+
+    expect(api.apiCommand).toHaveBeenCalledWith('violation.create_batch', payload, expect.objectContaining({
+      idempotencyKey: 'violation-batch:stable-test',
+    }))
+  })
+
+  it('limits a store manager violation batch to the assigned store', async () => {
+    const bootstrap = () => ({ user: storeManagerUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
+    api.apiLogin.mockResolvedValue({ user: storeManagerUser })
+    api.apiBootstrapState.mockImplementation(async () => bootstrap())
+    api.apiGetState.mockImplementation(async () => bootstrap())
+    api.apiCommand.mockResolvedValue({ version: 2, batchId: 'VIO-MANAGER-OWN' })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('manager-a', 'password')).ok).toBe(true)
+    })
+
+    await act(async () => {
+      await expect(appRef.current.createViolationBatch({
+        targetUnit: 'store', storeId: 'STORE-B', employeeId: 'E02', occurredOn: '2026-08-28',
+        shiftId: 'SHIFT-MORNING', policyCodes: ['store.violation.late'],
+      })).rejects.toThrow('chỉ được ghi nhận vi phạm tại cửa hàng được phân quyền')
+    })
+    expect(api.apiCommand).not.toHaveBeenCalled()
+
+    await act(async () => {
+      expect(await appRef.current.createViolationBatch({
+        targetUnit: 'store', storeId: 'STORE-A', employeeId: 'E01', occurredOn: '2026-08-28',
+        shiftId: 'SHIFT-MORNING', policyCodes: ['store.violation.late'], idempotencyKey: 'manager-own-store',
+      })).toMatchObject({ batchId: 'VIO-MANAGER-OWN' })
+    })
+    expect(api.apiCommand.mock.calls.find(([type]) => type === 'violation.create_batch')?.[1]).toMatchObject({ storeId: 'STORE-A' })
   })
 
   it('stores a reusable local shift with a null date', async () => {

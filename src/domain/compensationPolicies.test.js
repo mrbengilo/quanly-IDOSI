@@ -183,24 +183,24 @@ describe('workbook reward and violation constants', () => {
     ])
   })
 
-  it('keeps exact store violation amounts', () => {
-    expect(amountMap(STORE_VIOLATIONS)).toEqual({
-      'store.violation.late': 2_000,
-      'store.violation.forgot_attendance': 2_000,
-      'store.violation.ignore_customer': 2_000,
-      'store.violation.dark_hot_no_music': 2_000,
-      'store.violation.dirty_restroom': 5_000,
-      'store.violation.dirty_altar_table': 2_000,
-      'store.violation.dirty_floor': 8_000,
-      'store.violation.clothes_or_hangers_on_floor': 2_000,
-      'store.violation.empty_hangers': 2_000,
-      'store.violation.empty_rack_not_filled': 2_000,
-      'store.violation.no_sorting': 8_000,
-      'store.violation.wrong_payment_location': 5_000,
-      'store.violation.wrong_app_info_requires_manager': 2_000,
-      'store.violation.merged_or_wrong_time_order': 5_000,
-      'store.violation.phone_over_30_minutes': 5_000,
-    })
+  it('keeps the exact store violation codes, labels, and amounts from the approved catalog', () => {
+    expect(STORE_VIOLATIONS.map(({ code, label, amountVnd }) => ({ code, label, amountVnd }))).toEqual([
+      { code: 'store.violation.late', label: 'Đi trễ', amountVnd: 2_000 },
+      { code: 'store.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 2_000 },
+      { code: 'store.violation.ignore_customer', label: 'Mặc kệ khách ra/vào, không tương tác', amountVnd: 2_000 },
+      { code: 'store.violation.dark_hot_no_music', label: 'Để shop tối, nóng, không mở nhạc', amountVnd: 2_000 },
+      { code: 'store.violation.dirty_restroom', label: 'Nhà vệ sinh dơ', amountVnd: 5_000 },
+      { code: 'store.violation.dirty_altar_table', label: 'Bàn thần tài dơ', amountVnd: 2_000 },
+      { code: 'store.violation.dirty_floor', label: 'Sàn nhà dơ', amountVnd: 8_000 },
+      { code: 'store.violation.clothes_or_hangers_on_floor', label: 'Quần áo/móc rơi dưới sàn', amountVnd: 2_000 },
+      { code: 'store.violation.empty_hangers', label: 'Sào có móc trống', amountVnd: 2_000 },
+      { code: 'store.violation.empty_rack_not_filled', label: 'Để sào trống không fill', amountVnd: 2_000 },
+      { code: 'store.violation.no_sorting', label: 'Không lọc hàng', amountVnd: 8_000 },
+      { code: 'store.violation.wrong_payment_location', label: 'Thanh toán sai vị trí', amountVnd: 5_000 },
+      { code: 'store.violation.wrong_app_info_requires_manager', label: 'Nhập sai thông tin phần mềm => kêu quản lý điều chỉnh', amountVnd: 2_000 },
+      { code: 'store.violation.merged_or_wrong_time_order', label: 'Nhập đơn gộp, sai thời điểm', amountVnd: 5_000 },
+      { code: 'store.violation.phone_over_30_minutes', label: 'Ngồi 1 chỗ bấm điện thoại (chơi) trên 30 phút/lần', amountVnd: 5_000 },
+    ])
   })
 
   it('keeps exact office and HTKD policy amounts and team references', () => {

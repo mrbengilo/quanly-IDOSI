@@ -1,6 +1,6 @@
 import { createElement } from 'react'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   EmployeeAttendancePage,
@@ -269,6 +269,47 @@ describe('store employee current-shift orders', () => {
     expect(screen.getByText(/bạn vẫn có thể kết ca và không cần nhập lý do/u)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'XÁC NHẬN KẾT CA' }).disabled).toBe(false)
     expect(screen.queryByLabelText(/Lý do/u)).toBeNull()
+  })
+
+  it('routes reward work to the dedicated save flow while fixed work still uses task.done', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T09:00:00.000Z')
+    const setTaskDone = vi.fn().mockResolvedValue({ ok: true })
+    const notify = vi.fn()
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01', homeStoreId: 'S01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }],
+      attendance: [{
+        id: 'ATT-E01', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+        shiftId: 'CA-SAME', shiftName: 'Ca chung', shiftStart: '08:00', shiftEnd: '17:00',
+        checkIn: '08:00', checkInAt: '2026-08-20T01:00:00.000Z',
+      }],
+      orders: [], schedule: [], taskAssignmentHistory: [], shiftDefinitions: [], supportTransfers: [], policies: {},
+      tasks: [{
+        id: 'TASK-FIXED', storeId: 'S01', date: '2026-08-20', shiftId: 'CA-SAME',
+        employeeIds: ['E01'], title: 'Kiểm tra quầy', catalogKind: 'FIXED_TASK', required: true, completedBy: {},
+      }, {
+        id: 'TASK-REWARD', storeId: 'S01', date: '2026-08-20', shiftId: 'CA-SAME',
+        employeeIds: ['E01'], title: 'Quay clip sản phẩm', catalogKind: 'REWARD_TASK',
+        required: false, rewardEligible: true, amountVnd: 50_000, completedBy: {},
+      }],
+      checkIn: vi.fn(), checkOut: vi.fn(), setTaskDone, notify,
+    }
+
+    render(createElement(MemoryRouter, { initialEntries: ['/employee/home'] }, createElement(Routes, null,
+      createElement(Route, { path: '/employee/home', element: createElement(EmployeeDashboardV2) }),
+      createElement(Route, { path: '/employee/tasks', element: createElement('div', null, 'Luồng lưu công việc tính thưởng') }),
+    )))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hoàn thành công việc Kiểm tra quầy' }))
+    expect(setTaskDone).toHaveBeenCalledWith('TASK-FIXED', true, 'E01')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hoàn thành công việc Quay clip sản phẩm' }))
+
+    expect(screen.getByText('Luồng lưu công việc tính thưởng')).toBeTruthy()
+    expect(setTaskDone).toHaveBeenCalledTimes(1)
+    expect(notify).toHaveBeenCalledWith(expect.stringMatching(/tick và bấm LƯU/u), 'info')
   })
 
   it('reconciles cash and transfer separately instead of only comparing the total', () => {

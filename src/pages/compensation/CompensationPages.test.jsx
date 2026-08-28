@@ -38,6 +38,11 @@ const baseApp = (role = 'admin') => ({
   revenueBonuses: [],
   storeDailyRevenue: [],
   attendance: [],
+  schedule: [{
+    id: 'SCHEDULE-QL-01', employeeId: 'QL-01', storeId: 'CH001', date: '2026-08-26',
+    shiftIds: ['SHIFT-MORNING'],
+    shiftSnapshots: [{ id: 'SHIFT-MORNING', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+  }],
   shiftDefinitions: [
     { id: 'SHIFT-MORNING', storeId: 'CH001', name: 'Ca sáng', start: '08:00', end: '12:00', active: true },
     { id: 'SHIFT-AFTERNOON', storeId: 'CH001', name: 'Ca chiều', start: '12:00', end: '17:00', active: true },
@@ -109,6 +114,27 @@ describe('compensation pages', () => {
       targetUnit: 'store', employeeId: 'QL-01', storeId: 'CH001', catalogItemId: 'violation-store-late', amountVnd: 2_000,
       shiftId: 'SHIFT-MORNING', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00',
     })))
+  })
+
+  it('limits violation shifts to the selected employee day and prefers attendance history', () => {
+    mocked.app = {
+      ...baseApp(),
+      schedule: [],
+      attendance: [{
+        id: 'ATT-QL-HISTORICAL', employeeId: 'QL-01', storeId: 'CH001', date: '2026-08-26',
+        shiftId: 'SHIFT-MORNING', shiftName: 'Ca sáng lịch sử', shiftStart: '07:30', shiftEnd: '11:30',
+      }],
+    }
+    render(<ViolationManagementPage targetUnit="store" />)
+
+    expect(within(screen.getByLabelText('Ca vi phạm')).getByRole('option', {
+      name: 'Ca sáng lịch sử · 07:30 – 11:30 · Đã chấm công',
+    })).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Nhân viên'), { target: { value: 'NV-01' } })
+    expect(screen.getByLabelText('Ca vi phạm').disabled).toBe(true)
+    expect(screen.getByText('Nhân viên chưa có lịch phân ca hoặc chấm công tại cửa hàng trong ngày đã chọn.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }).disabled).toBe(true)
   })
 
   it('shows each private violation with its store, shift, date and total deduction', () => {
@@ -193,6 +219,48 @@ describe('compensation pages', () => {
     expect(screen.getByText('12/08/2026')).toBeTruthy()
     expect(screen.getByText('20,000 đ')).toBeTruthy()
     expect(screen.queryByText('145,000 đ')).toBeNull()
+  })
+
+  it('treats a missing canonical daily-revenue row as zero while preserving the legacy fallback when the collection is unavailable', () => {
+    const staleRevenueBonus = {
+      id: 'RB-STALE', storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 4_500_001,
+      totalPoolVnd: 180_000, allocations: [],
+    }
+    mocked.app = {
+      ...baseApp('employee'),
+      storeDailyRevenue: [],
+      revenueBonuses: [staleRevenueBonus],
+    }
+    const view = render(<RevenueBonusPage />)
+
+    let revenueMetric = screen.getByText('DOANH THU CỬA HÀNG TRONG NGÀY').closest('.metric')
+    expect(within(revenueMetric).getByText('0 đ')).toBeTruthy()
+    expect(screen.getByText('Chưa đạt mốc')).toBeTruthy()
+    view.unmount()
+
+    mocked.app = {
+      ...baseApp('employee'),
+      storeDailyRevenue: undefined,
+      revenueBonuses: [staleRevenueBonus],
+    }
+    render(<RevenueBonusPage />)
+
+    revenueMetric = screen.getByText('DOANH THU CỬA HÀNG TRONG NGÀY').closest('.metric')
+    expect(within(revenueMetric).getByText('4,500,001 đ')).toBeTruthy()
+  })
+
+  it('derives elapsed time for an open attendance whose persisted counters are still zero', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      attendance: [{
+        id: 'ATT-OPEN-ZERO', employeeId: 'NV-01', storeId: 'CH001', date: '2026-08-26',
+        checkInAt: '2026-08-26T01:00:00.000Z', checkOutAt: null, workedSeconds: 0, hours: 0,
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    const hoursMetric = screen.getByText('TỔNG GIỜ LÀM CỦA TÔI').closest('.metric')
+    expect(within(hoursMetric).getByText('4.00 giờ')).toBeTruthy()
   })
 
   it('shows a store manager only the team total and their own allocation', () => {

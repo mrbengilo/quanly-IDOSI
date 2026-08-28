@@ -247,6 +247,11 @@ export function EmployeeDashboardV2() {
   }, [])
 
   const toggleTask = async (task) => {
+    if (taskIsReward(task)) {
+      notify?.('Công việc tính thưởng chỉ được xác nhận tại trang Công việc được giao sau khi bạn tick và bấm LƯU.', 'info')
+      navigate('/employee/tasks')
+      return
+    }
     const taskShiftId = String(task.shiftId || task.shift || '')
     const taskDate = String(task.date || task.workDate || '')
     if (!activeRecord || (taskDate && taskDate !== operationalDate) || (taskShiftId && taskShiftId !== activeShiftId)) {

@@ -34,6 +34,8 @@ import {
   normalizeWorkCatalogItem,
   snapshotActiveWorkCatalogItems,
   softDeleteWorkCatalogItem,
+  workCatalogClaimKey,
+  workCatalogProgressKey,
 } from '../src/domain/workCatalog.js'
 
 const API_PREFIX = '/api/'
@@ -680,6 +682,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'compensation_entry.approve',
   'compensation_entry.void',
   'violation.create',
+  'violation.create_batch',
   'violation.void',
   'revenue_bonus.calculate_day',
   'revenue_bonus.approve_milestone',
@@ -4185,11 +4188,42 @@ const requestedWorkCatalogItemId = (task) => String(
   || '',
 ).trim()
 
+const workTaskIsRewardCatalogTask = (task) => String(
+  task?.kind || task?.catalogKind || task?.catalogSnapshot?.kind || '',
+).trim().toUpperCase() === WORK_CATALOG_KIND.REWARD_TASK
+
 const workTaskIsRequired = (task) => {
   if (task?.required === true) return true
   if (task?.required === false) return false
-  const catalogKind = String(task?.kind || task?.catalogKind || task?.catalogSnapshot?.kind || '').trim().toUpperCase()
-  return catalogKind !== WORK_CATALOG_KIND.REWARD_TASK
+  return !workTaskIsRewardCatalogTask(task)
+}
+
+const rewardTaskSnapshotForProgress = (task, completed) => {
+  const catalogSnapshot = isPlainRecord(task?.catalogSnapshot) ? task.catalogSnapshot : null
+  const catalogItemId = requestedWorkCatalogItemId(task)
+  const kind = String(
+    catalogSnapshot?.kind || task?.catalogKind || task?.kind || '',
+  ).trim().toUpperCase()
+  if (!catalogSnapshot || !catalogItemId || kind !== WORK_CATALOG_KIND.REWARD_TASK) return null
+  const amountVnd = Number(catalogSnapshot.amountVnd ?? task.amountVnd)
+  if (!Number.isSafeInteger(amountVnd) || amountVnd <= 0 || amountVnd > MAX_MONEY_VND) {
+    throw new ApiError(409, 'WORK_REWARD_DATA_INVALID', 'Snapshot công việc tính thưởng không có số tiền hợp lệ.', {
+      taskId: String(task?.id || ''),
+      catalogItemId,
+    })
+  }
+  return {
+    taskId: String(task.id || ''),
+    assignmentId: String(task.assignmentId || '') || null,
+    catalogItemId,
+    catalogCode: String(catalogSnapshot.catalogCode || task.catalogCode || '').trim(),
+    catalogVersion: Number(catalogSnapshot.catalogVersion || task.catalogVersion || 1),
+    targetGroup: String(catalogSnapshot.targetGroup || '').trim(),
+    name: String(catalogSnapshot.name || task.title || '').trim(),
+    amountVnd,
+    completed,
+    catalogSnapshot: { ...catalogSnapshot },
+  }
 }
 
 const activeCatalogTaskSnapshots = (state, rawTasks, {
@@ -12082,6 +12116,9 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
   if (!taskAppliesToEmployee(previous, employeeId, storeId)) {
     throw new ApiError(403, 'TASK_FORBIDDEN', 'Công việc không thuộc cửa hàng của bạn.')
   }
+  if (workTaskIsRewardCatalogTask(previous)) {
+    throw new ApiError(409, 'WORK_REWARD_PROGRESS_REQUIRED', 'Công việc tính thưởng chỉ được cập nhật bằng thao tác lưu kết quả toàn ca.')
+  }
   const localNow = localDateTimeParts(commandContext.now)
   const taskDate = String(previous.date || previous.workDate || '')
   if (taskDate && taskDate !== localNow.date) {
@@ -12244,17 +12281,117 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   }
   const incompleteReason = incompleteTaskIds.length ? requestedIncompleteReason : ''
   const normalizedStatuses = [...submittedById].sort(([left], [right]) => left.localeCompare(right))
+  const rewardTaskSnapshots = scopedTasks
+    .map((task) => rewardTaskSnapshotForProgress(task, submittedById.get(String(task.id || '')) === true))
+    .filter(Boolean)
+  const rewardGroups = new Map()
+  for (const snapshot of rewardTaskSnapshots) {
+    const group = rewardGroups.get(snapshot.catalogItemId) || []
+    group.push(snapshot)
+    rewardGroups.set(snapshot.catalogItemId, group)
+  }
+  const rewardOccurrences = [...rewardGroups].map(([catalogItemId, snapshots]) => {
+    const statuses = new Set(snapshots.map((snapshot) => snapshot.completed))
+    if (statuses.size > 1) {
+      throw new ApiError(409, 'WORK_REWARD_STATUS_CONFLICT', 'Một công việc tính thưởng xuất hiện nhiều lần nhưng có trạng thái không đồng nhất.', {
+        catalogItemId,
+        taskIds: snapshots.map((snapshot) => snapshot.taskId),
+      })
+    }
+    const selected = [...snapshots].sort((left, right) => (
+      Number(right.catalogVersion || 0) - Number(left.catalogVersion || 0)
+      || String(left.taskId).localeCompare(String(right.taskId))
+    ))[0]
+    let progressKey
+    let claimKey
+    try {
+      const identity = {
+        employeeId,
+        workDate: date,
+        shiftRef: String(openAttendance.id || ''),
+        catalogItemId,
+      }
+      progressKey = workCatalogProgressKey(identity)
+      claimKey = workCatalogClaimKey(identity)
+    } catch {
+      throw new ApiError(409, 'WORK_REWARD_DATA_INVALID', 'Không thể tạo định danh công việc tính thưởng từ dữ liệu ca hiện tại.', {
+        catalogItemId,
+      })
+    }
+    const payable = selected.targetGroup === WORK_CATALOG_TARGET.STORE
+      && targetUnit === 'store'
+      && String(employee.storeId || '') === storeId
+    return {
+      ...selected,
+      completed: [...statuses][0] === true,
+      sourceTaskIds: snapshots.map((snapshot) => snapshot.taskId).sort(),
+      progressKey,
+      claimKey,
+      payable,
+      payableReason: payable
+        ? null
+        : (selected.targetGroup === WORK_CATALOG_TARGET.STORE
+            ? 'TRANSFER_RECONCILIATION_REQUIRED'
+            : 'NON_STORE_REWARD'),
+    }
+  })
+  const completedRewardTaskSnapshots = rewardTaskSnapshots.filter((snapshot) => snapshot.completed)
+  const period = asMonth(date.slice(0, 7), 'Kỳ thưởng công việc')
+  const existingRewardProgress = Array.isArray(state.workCatalogProgress) ? state.workCatalogProgress : []
+  const existingCompensationEntries = Array.isArray(state.compensationEntries) ? state.compensationEntries : []
+  const progressById = new Map(existingRewardProgress.map((record) => [String(record.id || ''), record]))
+  const claimById = new Map(existingCompensationEntries.map((record) => [String(record.id || ''), record]))
+  const payrollActiveClaim = (claim) => Boolean(claim
+    && !claim.deletedAt
+    && !claim.voidedAt
+    && ['active', 'approved', 'confirmed', 'da duyet', 'da xac nhan'].includes(normalizeTextKey(claim.status)))
+  const taskProgressVoidedClaim = (claim) => Boolean(claim
+    && claim.voidedAt
+    && normalizeTextKey(claim.voidSource) === 'task-progress')
+  const rewardClaimShouldBeActive = (occurrence, previousClaim) => Boolean(
+    occurrence.completed
+    && occurrence.payable
+    && (!previousClaim || payrollActiveClaim(previousClaim) || taskProgressVoidedClaim(previousClaim)),
+  )
   const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
   const histories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
-  const existingSubmission = histories.flatMap((assignment) => (
+  const latestSubmission = histories.flatMap((assignment) => (
     Array.isArray(assignment.progressHistory) ? assignment.progressHistory : []
-  )).find((event) => (
+  )).filter((event) => (
     event?.action === 'progress-submitted'
     && String(event.employeeId || '') === employeeId
     && String(event.attendanceId || '') === String(openAttendance.id || '')
-    && String(event.fingerprint || '') === submissionFingerprint
+  )).reduce((latest, event) => (
+    !latest || String(event.at || '').localeCompare(String(latest.at || '')) >= 0 ? event : latest
+  ), null)
+  const existingSubmission = String(latestSubmission?.fingerprint || '') === submissionFingerprint
+    ? latestSubmission
+    : null
+  // Reconciliation is deliberately narrow: only a resubmission carrying the same
+  // immutable reward snapshots may repair canonical rows that are missing. Older
+  // history events without those snapshots remain no-ops, so this cannot backpay
+  // arbitrary historical task data.
+  const existingSnapshotByTaskId = new Map(
+    (Array.isArray(existingSubmission?.rewardTaskSnapshots) ? existingSubmission.rewardTaskSnapshots : [])
+      .map((snapshot) => [String(snapshot?.taskId || ''), snapshot]),
+  )
+  const existingRewardSnapshotsMatch = Boolean(existingSubmission && rewardTaskSnapshots.length
+    && existingSnapshotByTaskId.size === rewardTaskSnapshots.length
+    && rewardTaskSnapshots.every((snapshot) => {
+      const previousSnapshot = existingSnapshotByTaskId.get(snapshot.taskId)
+      return previousSnapshot
+        && String(previousSnapshot.catalogItemId || '') === snapshot.catalogItemId
+        && Number(previousSnapshot.catalogVersion || 0) === snapshot.catalogVersion
+        && Number(previousSnapshot.amountVnd || 0) === snapshot.amountVnd
+        && String(previousSnapshot.targetGroup || '') === snapshot.targetGroup
+        && previousSnapshot.completed === snapshot.completed
+    }))
+  const missingCanonicalRewardArtifact = rewardOccurrences.some((occurrence) => (
+    !progressById.has(occurrence.progressKey)
+    || (occurrence.completed && occurrence.payable && !claimById.has(occurrence.claimKey))
   ))
-  if (existingSubmission) {
+  const reconcileExistingSubmission = existingRewardSnapshotsMatch && missingCanonicalRewardArtifact
+  if (existingSubmission && !reconcileExistingSubmission) {
     const completedTasks = normalizedStatuses.filter(([, completed]) => completed).length
     const existingResult = {
       attendanceId: openAttendance.id,
@@ -12299,6 +12436,8 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     date,
     shiftId,
     incompleteReason: incompleteTaskIds.length ? incompleteReason : '',
+    rewardTaskSnapshots,
+    completedRewardTaskSnapshots,
     fingerprint: submissionFingerprint,
     at: commandContext.now,
     actor: serverActorSnapshot(actor),
@@ -12385,10 +12524,156 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       createdBy: serverActorSnapshot(actor),
       readAt: null,
     }))
+  let rewardFinancialChange = false
+  for (const occurrence of rewardOccurrences) {
+    const previousClaim = claimById.get(occurrence.claimKey)
+    const desiredActive = rewardClaimShouldBeActive(occurrence, previousClaim)
+    if (payrollActiveClaim(previousClaim) !== desiredActive
+      || (desiredActive && Number(previousClaim?.amountVnd ?? previousClaim?.amount) !== occurrence.amountVnd)) {
+      rewardFinancialChange = true
+    }
+  }
+  if (rewardFinancialChange) assertPayrollNotPaidOrLocked(state, storeId, period)
+
+  const actorSnapshot = serverActorSnapshot(actor)
+  const systemActor = { id: 'SYSTEM', name: 'Hệ thống', role: 'system' }
+  const rewardProgressUpdates = new Map()
+  const rewardClaimUpdates = new Map()
+  const newRewardProgress = []
+  const newRewardClaims = []
+  for (const occurrence of rewardOccurrences) {
+    const previousProgress = progressById.get(occurrence.progressKey)
+    const progress = {
+      ...(previousProgress || {}),
+      id: occurrence.progressKey,
+      employeeId,
+      employeeName: employee.name || employeeId,
+      employeeSnapshot: {
+        id: employeeId,
+        name: employee.name || employeeId,
+        storeId: employee.storeId || null,
+        unit: targetUnit,
+      },
+      storeId,
+      storeName: storeNameForId(state, storeId),
+      attendanceId: openAttendance.id,
+      workDate: date,
+      date,
+      period,
+      shiftId,
+      shiftName: openAttendance.shiftName || shiftId,
+      shiftStart: openAttendance.shiftStart || null,
+      shiftEnd: openAttendance.shiftEnd || null,
+      shiftVersion: Number(openAttendance.shiftVersion || 1),
+      catalogItemId: occurrence.catalogItemId,
+      catalogCode: occurrence.catalogCode,
+      catalogVersion: occurrence.catalogVersion,
+      targetGroup: occurrence.targetGroup,
+      catalogSnapshot: { ...occurrence.catalogSnapshot },
+      sourceTaskIds: occurrence.sourceTaskIds,
+      amountVnd: occurrence.amountVnd,
+      completed: occurrence.completed,
+      status: occurrence.completed ? 'COMPLETED' : 'NOT_COMPLETED',
+      payable: occurrence.payable,
+      payableReason: occurrence.payableReason,
+      completedAt: occurrence.completed ? (previousProgress?.completedAt || commandContext.now) : null,
+      submittedAt: commandContext.now,
+      submittedBy: actorSnapshot,
+      version: Number(previousProgress?.version || 0) + 1,
+      createdAt: previousProgress?.createdAt || commandContext.now,
+      createdBy: previousProgress?.createdBy || actorSnapshot,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+      deletedAt: null,
+    }
+    if (previousProgress) rewardProgressUpdates.set(progress.id, progress)
+    else newRewardProgress.push(progress)
+
+    const previousClaim = claimById.get(occurrence.claimKey)
+    const desiredActive = rewardClaimShouldBeActive(occurrence, previousClaim)
+    if (desiredActive) {
+      if (payrollActiveClaim(previousClaim)
+        && Number(previousClaim.amountVnd ?? previousClaim.amount) === occurrence.amountVnd) continue
+      const claim = {
+        ...(previousClaim || {}),
+        id: occurrence.claimKey,
+        type: 'WORK',
+        targetUnit: 'store',
+        employeeId,
+        employeeName: employee.name || employeeId,
+        storeId,
+        amountVnd: occurrence.amountVnd,
+        effectiveDate: date,
+        period,
+        note: `Thưởng công việc: ${occurrence.name}`,
+        status: 'ACTIVE',
+        sourceType: 'work-catalog-reward',
+        sourceId: occurrence.claimKey,
+        workCatalogProgressId: occurrence.progressKey,
+        attendanceId: openAttendance.id,
+        shiftId,
+        shiftName: openAttendance.shiftName || shiftId,
+        catalogItemId: occurrence.catalogItemId,
+        catalogCode: occurrence.catalogCode,
+        catalogVersion: occurrence.catalogVersion,
+        rewardTaskSnapshot: {
+          catalogItemId: occurrence.catalogItemId,
+          catalogCode: occurrence.catalogCode,
+          catalogVersion: occurrence.catalogVersion,
+          name: occurrence.name,
+          amountVnd: occurrence.amountVnd,
+          catalogSnapshot: { ...occurrence.catalogSnapshot },
+          sourceTaskIds: occurrence.sourceTaskIds,
+        },
+        version: Number(previousClaim?.version || 0) + 1,
+        createdAt: previousClaim?.createdAt || commandContext.now,
+        createdBy: previousClaim?.createdBy || actorSnapshot,
+        activatedAt: commandContext.now,
+        activatedBy: systemActor,
+        updatedAt: commandContext.now,
+        updatedBy: systemActor,
+        deletedAt: null,
+        voidedAt: null,
+        voidedBy: null,
+        voidReason: null,
+        voidSource: null,
+      }
+      if (previousClaim) rewardClaimUpdates.set(claim.id, claim)
+      else newRewardClaims.push(claim)
+    } else if (previousClaim && !previousClaim.voidedAt && normalizeTextKey(previousClaim.status) !== 'void') {
+      rewardClaimUpdates.set(previousClaim.id, {
+        ...previousClaim,
+        status: 'VOID',
+        voidedAt: commandContext.now,
+        voidedBy: actorSnapshot,
+        voidReason: occurrence.payable
+          ? 'Nhân viên bỏ chọn công việc tính thưởng trước khi kết ca.'
+          : 'Công việc cần đối soát điều chuyển trước khi ghi nhận thưởng.',
+        voidSource: 'task-progress',
+        updatedAt: commandContext.now,
+        updatedBy: actorSnapshot,
+        version: Number(previousClaim.version || 1) + 1,
+      })
+    }
+  }
+  const nextWorkCatalogProgress = [
+    ...newRewardProgress,
+    ...existingRewardProgress.map((record) => rewardProgressUpdates.get(String(record.id || '')) || record),
+  ]
+  const nextCompensationEntries = [
+    ...newRewardClaims,
+    ...existingCompensationEntries.map((record) => rewardClaimUpdates.get(String(record.id || '')) || record),
+  ]
+  const changedRewardClaims = [...newRewardClaims, ...rewardClaimUpdates.values()]
   const nextState = {
     ...state,
     tasks: nextTasks,
     taskAssignmentHistory: nextHistories,
+    workCatalogProgress: nextWorkCatalogProgress,
+    compensationEntries: nextCompensationEntries,
+    payrollPeriods: rewardFinancialChange
+      ? invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type)
+      : state.payrollPeriods,
     notifications: [...notifications, ...(Array.isArray(state.notifications) ? state.notifications : [])],
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
@@ -12405,14 +12690,32 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     incompleteReason: incompleteTaskIds.length ? incompleteReason : '',
     submittedAt: commandContext.now,
     assignments: assignmentResults,
+    rewardProgress: rewardOccurrences.map((occurrence) => (
+      rewardProgressUpdates.get(occurrence.progressKey)
+      || newRewardProgress.find((record) => record.id === occurrence.progressKey)
+    )),
+    rewardClaims: changedRewardClaims,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
     action: body.type,
     entityType: 'task-progress',
     entityId: `${openAttendance.id}:${employeeId}`,
-    before: scopedTasks.map((task) => ({ id: task.id, completed: Boolean(task.completedBy?.[employeeId]) })),
-    after: normalizedStatuses.map(([id, completed]) => ({ id, completed })),
-    metadata: { storeId, date, shiftId, attendanceId: openAttendance.id, completionRate, incompleteTaskIds },
+    before: {
+      tasks: scopedTasks.map((task) => ({ id: task.id, completed: Boolean(task.completedBy?.[employeeId]) })),
+      rewardProgress: rewardOccurrences.map((occurrence) => progressById.get(occurrence.progressKey)).filter(Boolean),
+      rewardClaims: rewardOccurrences.map((occurrence) => claimById.get(occurrence.claimKey)).filter(Boolean),
+    },
+    after: {
+      tasks: normalizedStatuses.map(([id, completed]) => ({ id, completed })),
+      rewardProgress: result.rewardProgress,
+      rewardClaims: changedRewardClaims,
+    },
+    metadata: {
+      storeId, date, shiftId, attendanceId: openAttendance.id, completionRate, incompleteTaskIds,
+      rewardProgressIds: result.rewardProgress.map((record) => record.id),
+      rewardClaimIds: changedRewardClaims.map((record) => record.id),
+      rewardFinancialChange,
+    },
     response: { command: body.type, ...result, notifications },
   }, commandContext)
 }
@@ -13865,14 +14168,15 @@ const violationShiftIds = (record = {}) => [
   ...(Array.isArray(record.shiftIds) ? record.shiftIds.map((value) => String(value || '').trim()) : []),
 ].filter(Boolean)
 
+const violationShiftSnapshotTimes = (record = {}) => ({
+  start: parseShiftTime(record.shiftStart || record.start || String(record.time || '').split(/[–—-]/u)[0]),
+  end: parseShiftTime(record.shiftEnd || record.end || String(record.time || '').split(/[–—-]/u)[1]),
+})
+
 const violationShiftSnapshot = ({ state, employeeId, storeId, occurredOn, requestedShiftId }) => {
-  const activeShifts = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).filter((record) => (
-    record.active !== false
-    && !record.deletedAt
-    && (!record.storeId || String(record.storeId) === storeId)
+  const shiftDefinitions = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).filter((record) => (
+    (!record.storeId || String(record.storeId) === storeId)
     && (!record.date || String(record.date) === occurredOn)
-    && shiftTimes(record).start
-    && shiftTimes(record).end
   ))
   const workRecords = [
     ...(Array.isArray(state.schedule) ? state.schedule : []),
@@ -13885,40 +14189,289 @@ const violationShiftSnapshot = ({ state, employeeId, storeId, occurredOn, reques
   ))
   const assignedShiftIds = new Set(workRecords.flatMap(violationShiftIds))
   let shiftId = String(requestedShiftId || '').trim()
-  if (shiftId && !/^[A-Za-z0-9_-]{1,80}$/u.test(shiftId)) {
+  if (shiftId && !/^[A-Za-z0-9_-]{1,160}$/u.test(shiftId)) {
     throw new ApiError(400, 'VIOLATION_SHIFT_INVALID', 'Ca vi phạm không hợp lệ.')
   }
   if (!shiftId && assignedShiftIds.size === 1) shiftId = [...assignedShiftIds][0]
   if (!shiftId) {
     throw new ApiError(400, 'VIOLATION_SHIFT_REQUIRED', 'Cần chọn chính xác ca làm việc xảy ra vi phạm.')
   }
-  const shift = activeShifts.find((record) => String(record.id || '') === shiftId)
-  if (!shift) throw new ApiError(400, 'VIOLATION_SHIFT_INVALID', 'Ca vi phạm không tồn tại hoặc không còn hoạt động.')
-  if (assignedShiftIds.size && !assignedShiftIds.has(shiftId)) {
+  const shiftDefinition = shiftDefinitions.find((record) => String(record.id || '') === shiftId)
+  if (!assignedShiftIds.has(shiftId) && !shiftDefinition) {
+    throw new ApiError(400, 'VIOLATION_SHIFT_INVALID', 'Ca vi phạm không tồn tại.')
+  }
+  if (!assignedShiftIds.has(shiftId)) {
     throw new ApiError(409, 'VIOLATION_SHIFT_NOT_ASSIGNED', 'Ca vi phạm không thuộc lịch hoặc chấm công của nhân viên trong ngày đã chọn.')
   }
-  const times = shiftTimes(shift)
   const attendance = workRecords.find((record) => (
     String(record.id || '').startsWith('att_') || record.checkInAt || record.checkIn
   ) && violationShiftIds(record).includes(shiftId))
+  const schedule = workRecords.find((record) => (
+    record !== attendance && violationShiftIds(record).includes(shiftId)
+  ))
+  const scheduleSnapshot = (Array.isArray(schedule?.shiftSnapshots) ? schedule.shiftSnapshots : [])
+    .find((record) => String(record.id || record.shiftId || '') === shiftId)
+  const snapshotSource = [attendance, scheduleSnapshot, schedule, shiftDefinition]
+    .find((record) => {
+      const times = violationShiftSnapshotTimes(record)
+      return times.start && times.end
+    })
+  if (!snapshotSource) {
+    throw new ApiError(409, 'VIOLATION_SHIFT_SNAPSHOT_MISSING', 'Ca làm việc thiếu snapshot thời gian để ghi nhận vi phạm an toàn.')
+  }
+  const times = violationShiftSnapshotTimes(snapshotSource)
   return {
     shiftId,
-    shiftName: shift.name || shiftId,
+    shiftName: snapshotSource.shiftName || snapshotSource.name || shiftDefinition?.name || shiftId,
     shiftStart: times.start.label,
     shiftEnd: times.end.label,
-    shiftVersion: Number(shift.version || 1),
+    shiftVersion: Number(snapshotSource.shiftVersion || snapshotSource.version || shiftDefinition?.version || 1),
     attendanceId: attendance?.id || null,
   }
 }
 
+const violationOccurrenceKey = ({ employeeId, occurredOn, shiftId, catalogRef }) => [
+  'violation-occurrence:v1',
+  employeeId,
+  occurredOn,
+  shiftId,
+  catalogRef,
+].map((value, index) => index ? encodeURIComponent(String(value || '')) : value).join(':')
+
+const violationRecordIsActive = (record) => Boolean(record
+  && !record.deletedAt
+  && !record.voidedAt
+  && !['void', 'voided', 'cancelled', 'da huy'].includes(normalizeTextKey(record.status)))
+
+const violationRecordMatchesOccurrence = (record, occurrence) => {
+  if (!violationRecordIsActive(record)
+    || String(record.employeeId || '') !== occurrence.employeeId
+    || String(record.occurredOn || dateFromRecord(record)) !== occurrence.occurredOn
+    || (occurrence.shiftId
+      ? !violationShiftIds(record).includes(occurrence.shiftId)
+      : violationShiftIds(record).length > 0)) return false
+  if (String(record.occurrenceKey || '') === occurrence.occurrenceKey) return true
+  if (occurrence.catalogItemId && String(record.catalogItemId || '') === occurrence.catalogItemId) return true
+  const recordCode = String(record.catalogCode || record.policyCode || '').trim()
+  return Boolean(recordCode && recordCode === occurrence.policyCode)
+}
+
 const violationCommand = async (db, actor, body, commandContext) => {
-  assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý vi phạm.')
   const operation = body.type.split('.').at(-1)
-  if (!['create', 'void'].includes(operation)) throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh vi phạm không được hỗ trợ.')
+  if (!['create', 'create_batch', 'void'].includes(operation)) throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh vi phạm không được hỗ trợ.')
+  if (operation === 'create_batch') {
+    assertOperationsRole(actor, 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc Quản lý cửa hàng được ghi nhận vi phạm cửa hàng.')
+  } else {
+    assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý vi phạm.')
+  }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
   const records = Array.isArray(state.violations) ? state.violations : []
   const actorSnapshot = serverActorSnapshot(actor)
+  if (operation === 'create_batch') {
+    if (payload.targetUnit && String(payload.targetUnit).trim() !== WORK_CATALOG_TARGET.STORE) {
+      throw new ApiError(400, 'VIOLATION_UNIT_INVALID', 'Ghi nhận nhiều vi phạm chỉ áp dụng cho nhân viên cửa hàng.')
+    }
+    const storeId = String(payload.storeId || '').trim()
+    assertOperationalStoreAccess(actor, storeId)
+    const store = requireActivePhysicalStore(state, storeId)
+    const employee = compensationEmployee(state, payload.employeeId)
+    const employeeId = String(employee.id || employee.code || employee.employeeId)
+    if (employeeUnit(employee) !== 'store') {
+      throw new ApiError(409, 'EMPLOYEE_UNIT_MISMATCH', 'Nhân viên không thuộc nhóm cửa hàng.')
+    }
+    if (String(employee.storeId || '') !== storeId) {
+      throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng đã chọn.')
+    }
+    const occurredOn = compensationDate(payload.occurredOn, 'Ngày phát sinh')
+    const shiftSnapshot = violationShiftSnapshot({
+      state,
+      employeeId,
+      storeId,
+      occurredOn,
+      requestedShiftId: payload.shiftId || payload.shift,
+    })
+    const period = occurredOn.slice(0, 7)
+    assertPayrollNotPaidOrLocked(state, storeId, period)
+    const note = String(payload.note || '').trim()
+    if (note.length > 1_000) throw new ApiError(400, 'NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')
+
+    let activeCatalog
+    try {
+      activeCatalog = activeWorkCatalogItems(state.workCatalogItems, {
+        targetGroup: WORK_CATALOG_TARGET.STORE,
+        storeId,
+        date: occurredOn,
+        shiftId: shiftSnapshot.shiftId,
+        shiftName: shiftSnapshot.shiftName,
+        kinds: WORK_CATALOG_KIND.VIOLATION,
+      })
+    } catch (error) {
+      throw new ApiError(409, 'WORK_CATALOG_DATA_INVALID', 'Danh mục vi phạm đang có dữ liệu không hợp lệ.', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
+    const requestedCatalogIds = Array.isArray(payload.catalogItemIds)
+      ? payload.catalogItemIds.map((value) => String(value || '').trim())
+      : []
+    const requestedPolicyCodes = Array.isArray(payload.policyCodes)
+      ? payload.policyCodes.map((value) => String(value || '').trim())
+      : []
+    const requestedRefs = activeCatalog.length ? requestedCatalogIds : requestedPolicyCodes
+    if (requestedRefs.length < 1 || requestedRefs.length > 50 || requestedRefs.some((value) => !value || value.length > 160)) {
+      throw new ApiError(400, 'VIOLATION_BATCH_INVALID', activeCatalog.length
+        ? 'Cần chọn từ 1 đến 50 nội dung vi phạm trong danh mục.'
+        : 'Cần chọn từ 1 đến 50 mã chính sách vi phạm hiện hành.')
+    }
+    if (new Set(requestedRefs).size !== requestedRefs.length) {
+      throw new ApiError(400, 'VIOLATION_BATCH_DUPLICATE_ITEM', 'Không được chọn trùng một nội dung vi phạm trong cùng lượt lưu.')
+    }
+    if (activeCatalog.length && requestedPolicyCodes.length) {
+      throw new ApiError(400, 'VIOLATION_CATALOG_REQUIRED', 'Danh mục vi phạm đang hoạt động; cần gửi mã mục danh mục thay vì dữ liệu chính sách cũ.')
+    }
+    if (!activeCatalog.length && requestedCatalogIds.length) {
+      throw new ApiError(400, 'VIOLATION_POLICY_REQUIRED', 'Chưa có danh mục vi phạm hoạt động; cần dùng mã chính sách canonical.')
+    }
+    const catalogById = new Map(activeCatalog.map((record) => [String(record.id || ''), record]))
+    const resolved = requestedRefs.map((reference) => {
+      if (activeCatalog.length) {
+        const catalogItem = catalogById.get(reference)
+        if (!catalogItem) {
+          throw new ApiError(400, 'VIOLATION_CATALOG_INVALID', 'Nội dung vi phạm không còn hoạt động hoặc không thuộc cửa hàng/ca đã chọn.', {
+            catalogItemId: reference,
+          })
+        }
+        return {
+          catalogItem,
+          catalogItemId: catalogItem.id,
+          catalogRef: catalogItem.id,
+          policyCode: catalogItem.code,
+          title: catalogItem.name,
+          amountVnd: asVnd(catalogItem.amountVnd, 'Số tiền vi phạm', { positive: true }),
+        }
+      }
+      const policy = canonicalViolationPolicy('store', reference)
+      if (!policy) {
+        throw new ApiError(400, 'VIOLATION_POLICY_INVALID', 'Nội dung vi phạm không thuộc chính sách canonical hiện hành.', {
+          policyCode: reference,
+        })
+      }
+      return {
+        catalogItem: null,
+        catalogItemId: null,
+        catalogRef: `policy:${policy.code}`,
+        policyCode: policy.code,
+        title: policy.label,
+        amountVnd: asVnd(policy.amountVnd, 'Số tiền vi phạm', { positive: true }),
+        policy,
+      }
+    }).map((item) => {
+      const occurrenceKey = violationOccurrenceKey({
+        employeeId,
+        occurredOn,
+        shiftId: shiftSnapshot.shiftId,
+        catalogRef: item.catalogRef,
+      })
+      return { ...item, employeeId, occurredOn, shiftId: shiftSnapshot.shiftId, occurrenceKey }
+    })
+    const duplicate = resolved.find((occurrence) => records.some((record) => (
+      violationRecordMatchesOccurrence(record, occurrence)
+    )))
+    if (duplicate) {
+      throw new ApiError(409, 'VIOLATION_DUPLICATE', 'Vi phạm này đã được ghi nhận cho nhân viên trong cùng ngày và ca.', {
+        employeeId,
+        occurredOn,
+        shiftId: shiftSnapshot.shiftId,
+        catalogItemId: duplicate.catalogItemId,
+        policyCode: duplicate.policyCode,
+        occurrenceKey: duplicate.occurrenceKey,
+      })
+    }
+    const batchId = `vio_batch_${crypto.randomUUID()}`
+    const employeeSnapshot = {
+      id: employeeId,
+      name: employee.name || employee.displayName || employeeId,
+      storeId: employee.storeId || storeId,
+      unit: employeeUnit(employee),
+    }
+    const storeSnapshot = { id: storeId, name: store.name || storeId }
+    const violations = resolved.map((item) => ({
+      id: `vio_${crypto.randomUUID()}`,
+      batchId,
+      occurrenceKey: item.occurrenceKey,
+      targetUnit: 'store',
+      employeeId,
+      employeeName: employeeSnapshot.name,
+      employeeSnapshot,
+      storeId,
+      storeName: storeSnapshot.name,
+      storeSnapshot,
+      policyCode: item.policyCode,
+      title: item.title,
+      amountVnd: item.amountVnd,
+      ...shiftSnapshot,
+      ...(item.catalogItem ? {
+        catalogItemId: item.catalogItem.id,
+        catalogCode: item.catalogItem.code,
+        catalogVersion: item.catalogItem.version,
+        catalogSnapshot: {
+          id: item.catalogItem.id,
+          code: item.catalogItem.code,
+          name: item.catalogItem.name,
+          amountVnd: item.catalogItem.amountVnd,
+          targetGroup: item.catalogItem.targetGroup,
+          storeId: item.catalogItem.storeId || null,
+          shiftId: item.catalogItem.shiftId || null,
+          shiftName: item.catalogItem.shiftName || null,
+          kind: item.catalogItem.kind,
+          version: item.catalogItem.version,
+        },
+      } : {
+        policySnapshot: {
+          code: item.policy.code,
+          label: item.policy.label,
+          amountVnd: item.policy.amountVnd,
+          source: 'WORKBOOK_COMPENSATION_POLICY',
+        },
+      }),
+      occurredOn,
+      period,
+      note,
+      status: 'ACTIVE',
+      version: 1,
+      createdAt: commandContext.now,
+      createdBy: actorSnapshot,
+      updatedAt: commandContext.now,
+      deletedAt: null,
+      voidedAt: null,
+    }))
+    const totalAmountVnd = violations.reduce((sum, violation) => safeMoneySum(
+      sum,
+      violation.amountVnd,
+      'Tổng tiền vi phạm',
+    ), 0)
+    const nextState = {
+      ...state,
+      violations: [...violations, ...records],
+      payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'violation-batch',
+      entityId: batchId,
+      before: null,
+      after: violations,
+      metadata: {
+        batchId, storeId, employeeId, occurredOn, period, shiftId: shiftSnapshot.shiftId,
+        occurrenceKeys: violations.map((record) => record.occurrenceKey),
+        violationIds: violations.map((record) => record.id),
+        totalAmountVnd,
+      },
+      response: { command: body.type, batchId, violations, totalAmountVnd },
+      status: 201,
+    }, commandContext)
+  }
   if (operation === 'create') {
     const targetUnit = String(payload.targetUnit || 'store').trim()
     if (!['store', 'office', 'business_support'].includes(targetUnit)) {
@@ -13960,6 +14513,8 @@ const violationCommand = async (db, actor, body, commandContext) => {
           targetGroup: targetUnit,
           storeId: targetUnit === WORK_CATALOG_TARGET.STORE ? storeId : null,
           date: occurredOn,
+          shiftId: shiftSnapshot?.shiftId || null,
+          shiftName: shiftSnapshot?.shiftName || null,
           kinds: WORK_CATALOG_KIND.VIOLATION,
         }).find((record) => record.id === catalogItemId) || null
       } catch (error) {
@@ -13987,8 +14542,29 @@ const violationCommand = async (db, actor, body, commandContext) => {
     }
     const note = String(payload.note || '').trim()
     if (note.length > 1_000) throw new ApiError(400, 'NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')
+    const occurrence = {
+      employeeId,
+      occurredOn,
+      shiftId: shiftSnapshot?.shiftId || '',
+      catalogItemId: catalogItem?.id || null,
+      policyCode,
+      catalogRef: catalogItem?.id || `policy:${policyCode}`,
+    }
+    occurrence.occurrenceKey = violationOccurrenceKey(occurrence)
+    const duplicate = records.find((record) => violationRecordMatchesOccurrence(record, occurrence))
+    if (duplicate) {
+      throw new ApiError(409, 'VIOLATION_DUPLICATE', 'Vi phạm này đã được ghi nhận cho nhân viên trong cùng ngày và ca.', {
+        employeeId,
+        occurredOn,
+        shiftId: occurrence.shiftId || null,
+        catalogItemId: occurrence.catalogItemId,
+        policyCode,
+        occurrenceKey: occurrence.occurrenceKey,
+      })
+    }
     const violation = {
       id: `vio_${crypto.randomUUID()}`,
+      occurrenceKey: occurrence.occurrenceKey,
       targetUnit,
       employeeId,
       employeeName: employee.name || employee.displayName || employeeId,
@@ -14034,7 +14610,10 @@ const violationCommand = async (db, actor, body, commandContext) => {
       entityId: violation.id,
       before: null,
       after: violation,
-      metadata: { targetUnit, storeId, employeeId, period, policyCode, amountVnd, shiftId: shiftSnapshot?.shiftId || null },
+      metadata: {
+        targetUnit, storeId, employeeId, period, policyCode, amountVnd,
+        shiftId: shiftSnapshot?.shiftId || null, occurrenceKey: occurrence.occurrenceKey,
+      },
       response: { command: body.type, violation },
       status: 201,
     }, commandContext)

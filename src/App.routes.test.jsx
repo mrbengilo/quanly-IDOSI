@@ -45,6 +45,7 @@ vi.mock('./pages/compensation', () => ({
   MyCompensationPage: () => <div>Thu nhập của tôi</div>,
   MyViolationsPage: () => <div>Vi phạm của tôi</div>,
   RevenueBonusPage: () => <div>Thưởng doanh thu ngày</div>,
+  StoreTaskBonusViolationsPage: () => <div>Công việc tính thưởng và Vi phạm route</div>,
   ViolationManagementPage: ({ targetUnit }) => <div>{`Quản lý vi phạm ${targetUnit}`}</div>,
 }))
 
@@ -120,6 +121,20 @@ describe('App role routes', () => {
     renderRoute('/store/revenue-bonus', 'store_manager')
 
     expect(screen.getByText('Thưởng doanh thu ngày')).toBeTruthy()
+  })
+
+  it.each(['admin', 'business_support', 'store_manager'])('allows %s to open store task bonus and violations', (role) => {
+    renderRoute('/store/task-bonus-violations', role)
+
+    expect(screen.getByText('Công việc tính thưởng và Vi phạm route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/store/task-bonus-violations')
+  })
+
+  it('keeps store task bonus and violations unavailable to employees', async () => {
+    renderRoute('/store/task-bonus-violations', 'employee')
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/employee/home'))
+    expect(screen.queryByText('Công việc tính thưởng và Vi phạm route')).toBeNull()
   })
 
   it('allows an employee to read only their compensation statement', () => {

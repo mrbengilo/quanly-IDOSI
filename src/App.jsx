@@ -62,6 +62,7 @@ import {
   MyCompensationPage,
   MyViolationsPage,
   RevenueBonusPage,
+  StoreTaskBonusViolationsPage,
   ViolationManagementPage,
 } from './pages/compensation'
 import { useApp } from './state/AppContext'
@@ -185,6 +186,7 @@ export default function App() {
         <Route path="/store/employees" element={<StoreEmployees />} />
         <Route path="/store/orders" element={<StoreOrdersPage />} />
         <Route path="/store/tasks" element={<StoreTasks />} />
+        <Route path="/store/task-bonus-violations" element={<StoreTaskBonusViolationsPage />} />
         <Route path="/store/imports" element={<StoreImportsV2 />} />
         <Route path="/store/expenses" element={<StoreExpensesV2 />} />
         <Route path="/store/attendance" element={<StoreAttendanceV2 />} />

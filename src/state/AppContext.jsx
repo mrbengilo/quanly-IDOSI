@@ -3646,6 +3646,29 @@ export function AppProvider({ children }) {
     )
   }
 
+  const createViolationBatch = async (payload = {}) => {
+    const role = normalizeAuthRole(state.session?.role)
+    const targetUnit = String(payload.targetUnit || 'store')
+    const requestedStoreId = String(payload.storeId || '')
+    if (targetUnit !== 'store') {
+      throw new Error('Chức năng lưu nhiều vi phạm chỉ áp dụng cho nhân viên cửa hàng.')
+    }
+    if (!['admin', 'business_support', 'store_manager'].includes(role)) {
+      throw new Error('Tài khoản không có quyền ghi nhận vi phạm nhân viên cửa hàng.')
+    }
+    if (role === 'store_manager' && (!requestedStoreId || requestedStoreId !== String(state.session?.storeId || ''))) {
+      throw new Error('Quản lý cửa hàng chỉ được ghi nhận vi phạm tại cửa hàng được phân quyền.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để cập nhật dữ liệu vi phạm an toàn.')
+    }
+    return runRemoteDomainCommand(
+      'violation.create_batch',
+      payload,
+      payload.idempotencyKey || `violation-batch:${crypto.randomUUID()}`,
+    )
+  }
+
   const voidViolation = async (payload = {}) => {
     const violation = state.violations.find((record) => String(record.id || '') === String(payload.id || payload.violationId || ''))
     requireCompensationOperator(String(violation?.targetUnit || ''))
@@ -4992,6 +5015,7 @@ export function AppProvider({ children }) {
     deleteWorkCatalogItem,
     restoreWorkCatalogItem,
     createViolation,
+    createViolationBatch,
     voidViolation,
     calculateRevenueBonusDay,
     approveRevenueBonusMilestone,

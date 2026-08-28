@@ -52,10 +52,11 @@ const operationalDate = (record = {}) => String(
 ).slice(0, 10)
 
 const attendanceSeconds = (record = {}, now = Date.now()) => {
+  const closed = Boolean(record.checkOutAt || record.checkOut)
   const explicit = Number(record.approvedSalesSeconds ?? record.approvedSalesSec ?? record.workedSeconds)
-  if (Number.isFinite(explicit) && explicit >= 0 && (explicit > 0 || record.checkOutAt || record.checkOut)) return explicit
+  if (Number.isFinite(explicit) && explicit >= 0 && (explicit > 0 || closed)) return explicit
   const hours = Number(record.hours)
-  if (Number.isFinite(hours) && hours >= 0) return Math.round(hours * 3_600)
+  if (Number.isFinite(hours) && hours >= 0 && (hours > 0 || closed)) return Math.round(hours * 3_600)
   const checkIn = Date.parse(record.checkInAt || '')
   const checkOut = Date.parse(record.checkOutAt || '')
   if (!Number.isFinite(checkIn)) return 0
@@ -112,7 +113,8 @@ export function RevenueBonusPage() {
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
   const unallocatedTotal = records.reduce((sum, record) => sum + Number(record?.unallocatedVnd || 0), 0)
   const activeStore = stores.find((store) => entityId(store) === selectedStoreId) || {}
-  const aggregateRevenue = (app.storeDailyRevenue || []).find((record) => (
+  const dailyRevenueCollectionAvailable = Array.isArray(app.storeDailyRevenue)
+  const aggregateRevenue = (dailyRevenueCollectionAvailable ? app.storeDailyRevenue : []).find((record) => (
     entryStoreId(record) === selectedStoreId && revenueRecordDate(record) === businessDate
   ))
   const orderRevenue = (app.orders || []).filter((order) => (
@@ -121,9 +123,10 @@ export function RevenueBonusPage() {
     && !order.deletedAt
     && String(order.status || '') !== 'Đã xóa'
   )).reduce((sum, order) => sum + (Number.isSafeInteger(Number(order.amount)) ? Number(order.amount) : 0), 0)
-  const liveRevenueVnd = Number(aggregateRevenue?.revenueVnd ?? (privileged || storeManager
-    ? orderRevenue
-    : revenueTotal || orderRevenue)) || 0
+  const fallbackRevenueVnd = privileged || storeManager ? orderRevenue : revenueTotal || orderRevenue
+  const liveRevenueVnd = Number(dailyRevenueCollectionAvailable
+    ? aggregateRevenue?.revenueVnd ?? 0
+    : fallbackRevenueVnd) || 0
   const ownDailySeconds = (app.attendance || []).filter((record) => (
     entryEmployeeId(record) === currentEmployeeId
     && entryStoreId(record) === selectedStoreId

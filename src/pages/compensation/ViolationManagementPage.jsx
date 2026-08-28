@@ -14,7 +14,7 @@ import {
 } from '../../components/UI'
 import { money } from '../../utils'
 import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
-import { activeStoreShiftDefinitions } from '../store/scheduleView'
+import { selectWorkedShiftOptions } from './taskBonusViolationsViewModel'
 import {
   canonicalRole,
   employeesForTarget,
@@ -82,16 +82,27 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
   const { busyKey, error, run } = useCompensationAction(app)
   const selectedEmployeeId = employeeSelection || entityId(employees[0])
   const shifts = useMemo(() => targetUnit === 'store'
-    ? activeStoreShiftDefinitions(app.shiftDefinitions || [], { storeId: selectedStoreId, date: occurredOn })
-    : [], [app.shiftDefinitions, targetUnit, selectedStoreId, occurredOn])
-  const selectedShiftId = shiftSelection || entityId(shifts[0])
+    ? selectWorkedShiftOptions({
+        attendance: app.attendance || [],
+        schedule: app.schedule || [],
+        shiftDefinitions: app.shiftDefinitions || [],
+        employeeId: selectedEmployeeId,
+        storeId: selectedStoreId,
+        date: occurredOn,
+      })
+    : [], [app.attendance, app.schedule, app.shiftDefinitions, targetUnit, selectedEmployeeId, selectedStoreId, occurredOn])
+  const selectedShiftId = shifts.some((shift) => entityId(shift) === shiftSelection)
+    ? shiftSelection
+    : entityId(shifts[0])
   const selectedShift = shifts.find((shift) => entityId(shift) === selectedShiftId)
   const policies = useMemo(() => activeWorkCatalogItems(app.workCatalogItems || [], {
     targetGroup: targetUnit,
     storeId: targetUnit === 'store' ? selectedStoreId : null,
+    shiftId: selectedShift?.id || null,
+    shiftName: selectedShift?.name || null,
     date: occurredOn,
     kinds: WORK_CATALOG_KIND.VIOLATION,
-  }), [app.workCatalogItems, targetUnit, selectedStoreId, occurredOn])
+  }), [app.workCatalogItems, targetUnit, selectedStoreId, selectedShift, occurredOn])
   const selectedPolicy = policies.find((policy) => policy.id === policyId)
   const visibleEmployeeIds = useMemo(() => new Set(employees.map(entityId)), [employees])
   const rows = (app.violations || [])
@@ -158,18 +169,18 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
       <Card title="Ghi nhận vi phạm">
         <div className="compensation-form-grid">
           {targetUnit === 'store' && <Field label="Cửa hàng" required>
-            <Select aria-label="Cửa hàng" value={selectedStoreId} onChange={(event) => { setStoreSelection(event.target.value); setEmployeeSelection(''); setShiftSelection('') }}>
+            <Select aria-label="Cửa hàng" value={selectedStoreId} onChange={(event) => { setStoreSelection(event.target.value); setEmployeeSelection(''); setShiftSelection(''); setPolicyId('') }}>
               {stores.map((store) => <option key={entityId(store)} value={entityId(store)}>{store.name}</option>)}
             </Select>
           </Field>}
           <Field label="Nhân viên" required>
-            <Select aria-label="Nhân viên" value={selectedEmployeeId} onChange={(event) => setEmployeeSelection(event.target.value)} disabled={!employees.length}>
+            <Select aria-label="Nhân viên" value={selectedEmployeeId} onChange={(event) => { setEmployeeSelection(event.target.value); setShiftSelection(''); setPolicyId('') }} disabled={!employees.length}>
               {employees.map((employee) => <option key={entityId(employee)} value={entityId(employee)}>{employee.name} — {entityId(employee)}</option>)}
             </Select>
           </Field>
           {targetUnit === 'store' && <Field label="Ca vi phạm" required>
             <Select aria-label="Ca vi phạm" value={selectedShiftId} onChange={(event) => setShiftSelection(event.target.value)} disabled={!shifts.length}>
-              {shifts.map((shift) => <option key={entityId(shift)} value={entityId(shift)}>{shift.name} · {shift.time || `${shift.start} – ${shift.end}`}</option>)}
+              {shifts.map((shift) => <option key={entityId(shift)} value={entityId(shift)}>{shift.name} · {shift.time || `${shift.start} – ${shift.end}`} · {shift.sourceLabel}</option>)}
             </Select>
           </Field>}
           <Field label="Nội dung vi phạm" required className="compensation-form-span">
@@ -185,14 +196,14 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
             <Input aria-label="Số tiền phải thu" value={money(selectedPolicy?.amountVnd || 0)} readOnly />
           </Field>
           <Field label="Ngày phát sinh" required>
-            <Input aria-label="Ngày phát sinh" type="date" value={occurredOn} onChange={(event) => { setOccurredOn(event.target.value); setShiftSelection('') }} />
+            <Input aria-label="Ngày phát sinh" type="date" value={occurredOn} onChange={(event) => { setOccurredOn(event.target.value); setShiftSelection(''); setPolicyId('') }} />
           </Field>
           <Field label="Ghi chú" className="compensation-form-span">
             <Input aria-label="Ghi chú" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Thông tin đối soát bổ sung (nếu có)" />
           </Field>
         </div>
         {!employees.length && <InfoNote tone="orange">Không có nhân viên đang hoạt động trong phạm vi đã chọn.</InfoNote>}
-        {targetUnit === 'store' && !shifts.length && <InfoNote tone="orange">Chưa có ca làm việc đang hoạt động cho cửa hàng và ngày đã chọn.</InfoNote>}
+        {targetUnit === 'store' && !shifts.length && <InfoNote tone="orange">Nhân viên chưa có lịch phân ca hoặc chấm công tại cửa hàng trong ngày đã chọn.</InfoNote>}
         <InfoNote>Vi phạm luôn là khoản phải thu dương. Khi quyết toán, hệ thống áp dụng theo thứ tự thưởng → phụ cấp → lương và không làm thực nhận âm.</InfoNote>
         {validation && <InfoNote tone="red">{validation}</InfoNote>}
         <ActionError message={error} />
