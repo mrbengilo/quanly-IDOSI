@@ -13730,8 +13730,17 @@ const compensationEntryCommand = async (db, actor, body, commandContext) => {
   const previous = entries.find((record) => String(record.id || '') === entryId)
   if (!previous) throw new ApiError(404, 'COMPENSATION_ENTRY_NOT_FOUND', 'Không tìm thấy khoản thưởng/phụ cấp.')
   expectedEntityVersion(payload, previous)
-  assertOperationalStoreAccess(actor, previous.storeId)
-  requireActivePhysicalStore(state, previous.storeId)
+  const previousStoreId = String(previous.storeId || '').trim()
+  if (previousStoreId === OFFICE_STORE_ID) {
+    assertAdmin(actor, 'Chỉ Admin được điều chỉnh khoản thưởng của Khối văn phòng.')
+  } else if (previousStoreId === BUSINESS_SUPPORT_STORE_ID) {
+    if (!['admin', 'business_support'].includes(actor.role)) {
+      throw new ApiError(403, 'COMPENSATION_SCOPE_FORBIDDEN', 'Tài khoản không có quyền điều chỉnh khoản thưởng của Nhân viên hỗ trợ KD.')
+    }
+  } else {
+    assertOperationalStoreAccess(actor, previousStoreId)
+    requireActivePhysicalStore(state, previousStoreId)
+  }
   const period = asMonth(previous.period || monthFromRecord(previous))
   assertPayrollNotPaidOrLocked(state, previous.storeId, period)
   if (previous.voidedAt || normalizeTextKey(previous.status) === 'void') {
@@ -14399,15 +14408,48 @@ const resolveViolationShiftSnapshot = (state, employee, employeeId, storeId, tar
     if (!shiftId || (requestedShiftId && requestedShiftId !== shiftId)) {
       throw new ApiError(400, 'VIOLATION_SHIFT_MISMATCH', 'Ca làm việc không khớp với bản ghi chấm công.')
     }
+    const hasCompleteSnapshot = Boolean(attendance.shiftStart && attendance.shiftEnd
+      && Number.isSafeInteger(Number(attendance.shiftVersion)) && Number(attendance.shiftVersion) > 0)
+    if (hasCompleteSnapshot) {
+      return {
+        attendanceId: String(attendance.id || '').trim(),
+        shiftId,
+        shiftName: String(attendance.shiftName || shiftId).trim(),
+        shiftStart: attendance.shiftStart,
+        shiftEnd: attendance.shiftEnd,
+        shiftVersion: Number(attendance.shiftVersion),
+        shiftSource: attendance.shiftSource || 'attendance-snapshot',
+        employmentTypeSnapshot: attendance.employmentTypeSnapshot || employee.employmentType || null,
+      }
+    }
+    let fallback = null
+    if (targetUnit === WORK_CATALOG_TARGET.STORE) {
+      fallback = resolveStoreViolationShiftSnapshot(state, employee, employeeId, storeId, occurredOn, shiftId)
+    } else {
+      const configuredShift = configuredProfileWorkShifts(employee, occurredOn, state)
+        .find((record) => String(record.id || '') === shiftId) || null
+      const start = configuredShift?.start || configuredShift?.shiftStart || null
+      const end = configuredShift?.end || configuredShift?.shiftEnd || null
+      if (configuredShift && start && end) {
+        fallback = {
+          attendanceId: null,
+          shiftId,
+          shiftName: String(configuredShift.name || configuredShift.shiftName || shiftId).trim(),
+          shiftStart: start,
+          shiftEnd: end,
+          shiftVersion: Number(configuredShift.version || 1),
+          shiftSource: configuredShift.source || 'profile-work-shift',
+          employmentTypeSnapshot: employee.employmentType || null,
+        }
+      }
+    }
+    if (!fallback?.shiftStart || !fallback?.shiftEnd) {
+      throw new ApiError(409, 'VIOLATION_SHIFT_SNAPSHOT_MISSING', 'Ca chấm công cũ thiếu snapshot ca và không thể khôi phục từ lịch làm việc; không ghi nhận vi phạm.')
+    }
     return {
+      ...fallback,
       attendanceId: String(attendance.id || '').trim(),
-      shiftId,
-      shiftName: String(attendance.shiftName || shiftId).trim(),
-      shiftStart: attendance.shiftStart || null,
-      shiftEnd: attendance.shiftEnd || null,
-      shiftVersion: Number(attendance.shiftVersion || 1),
-      shiftSource: attendance.shiftSource || 'attendance-snapshot',
-      employmentTypeSnapshot: attendance.employmentTypeSnapshot || employee.employmentType || null,
+      employmentTypeSnapshot: attendance.employmentTypeSnapshot || fallback.employmentTypeSnapshot || employee.employmentType || null,
     }
   }
   if (targetUnit === WORK_CATALOG_TARGET.STORE) {
@@ -14549,13 +14591,27 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const employeeName = employee.name || employee.displayName || employeeId
     const selected = []
     const created = []
+    const reactivated = []
     for (const catalogItemId of catalogItemIds) {
       const catalogItem = catalogById.get(catalogItemId)
       const identity = { employeeId, occurredOn, shiftId: shiftSnapshot.shiftId, catalogItemId }
       const occurrenceKey = violationOccurrenceKey(identity)
       const existing = records.find((record) => violationMatchesOccurrence(record, occurrenceKey, identity)) || null
       if (existing) {
-        selected.push(existing)
+        if (existing.voidedAt || normalizeTextKey(existing.status) === 'void') {
+          const revived = {
+            ...existing,
+            status: 'ACTIVE',
+            voidedAt: null,
+            voidedBy: null,
+            voidReason: null,
+            updatedAt: commandContext.now,
+            updatedBy: actorSnapshot,
+            version: Number(existing.version || 1) + 1,
+          }
+          reactivated.push(revived)
+          selected.push(revived)
+        } else selected.push(existing)
         continue
       }
       const catalogSnapshot = {
@@ -14606,7 +14662,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       created.push(violation)
       selected.push(violation)
     }
-    if (!created.length) {
+    if (!created.length && !reactivated.length) {
       return recordNoopCommand(db, actor, {
         command: body.type,
         version: Number(current.version),
@@ -14618,7 +14674,10 @@ const violationCommand = async (db, actor, body, commandContext) => {
     }
     const nextState = {
       ...state,
-      violations: [...created, ...records],
+      violations: [
+        ...created,
+        ...records.map((record) => reactivated.find((item) => String(item.id || '') === String(record.id || '')) || record),
+      ],
       payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
@@ -14631,15 +14690,17 @@ const violationCommand = async (db, actor, body, commandContext) => {
       metadata: {
         targetUnit, storeId, employeeId, period, shiftId: shiftSnapshot.shiftId,
         attendanceId: shiftSnapshot.attendanceId, createdCount: created.length,
-        existingCount: selected.length - created.length,
+        reactivatedCount: reactivated.length,
+        existingCount: selected.length - created.length - reactivated.length,
       },
       response: {
         command: body.type,
         violations: selected,
         createdCount: created.length,
-        existingCount: selected.length - created.length,
+        reactivatedCount: reactivated.length,
+        existingCount: selected.length - created.length - reactivated.length,
       },
-      status: 201,
+      status: created.length ? 201 : 200,
     }, commandContext)
   }
   if (operation === 'create') {
@@ -14718,6 +14779,34 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const occurrenceKey = violationOccurrenceKey(occurrenceIdentity)
     const existing = records.find((record) => violationMatchesOccurrence(record, occurrenceKey, occurrenceIdentity)) || null
     if (existing) {
+      if (existing.voidedAt || normalizeTextKey(existing.status) === 'void') {
+        const revived = {
+          ...existing,
+          status: 'ACTIVE',
+          voidedAt: null,
+          voidedBy: null,
+          voidReason: null,
+          updatedAt: commandContext.now,
+          updatedBy: actorSnapshot,
+          version: Number(existing.version || 1) + 1,
+        }
+        const nextState = {
+          ...state,
+          violations: records.map((record) => String(record.id || '') === String(existing.id || '') ? revived : record),
+          payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
+          stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+        }
+        return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+          action: body.type,
+          entityType: 'violation',
+          entityId: revived.id,
+          before: existing,
+          after: revived,
+          metadata: { targetUnit, storeId, employeeId, period, shiftId: shiftSnapshot.shiftId, reactivated: true },
+          response: { command: body.type, violation: revived, existing: true, reactivated: true },
+          status: 200,
+        }, commandContext)
+      }
       return recordNoopCommand(db, actor, {
         command: body.type,
         version: Number(current.version),
