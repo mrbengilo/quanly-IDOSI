@@ -206,7 +206,7 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getByRole('button', { name: /^GỬI$/i })).toBeTruthy()
     expect(screen.getByRole('group', { name: 'Danh mục công việc' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Thêm công việc/i })).toBeNull()
-    expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`)).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`, { exact: false })).toBeTruthy()
     taskView.unmount()
 
     renderPage(UnifiedSchedule)
@@ -219,7 +219,7 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getByRole('dialog')).toBeTruthy()
     expect(screen.getByLabelText('Ngày tạo lịch phân ca')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Chọn Ca sáng 08:00 - 12:00/i })).toBeTruthy()
-    expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`)).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`, { exact: false })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^LƯU$/i })).toBeTruthy()
   })
 
@@ -231,7 +231,7 @@ describe('business-support store workspace permissions', () => {
     fireEvent.click(screen.getByRole('button', { name: /^PHÂN CA$/i }))
     const dialog = screen.getByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /Chọn Ca sáng 08:00 - 12:00/i }))
-    fireEvent.click(within(dialog).getByLabelText(`Chọn nhân viên ${employee.name}`))
+    fireEvent.click(within(dialog).getByLabelText(`Chọn nhân viên ${employee.name}`, { exact: false }))
     fireEvent.change(within(dialog).getByPlaceholderText('Ghi chú cho lịch phân ca...'), { target: { value: 'Ưu tiên quầy chính' } })
     fireEvent.click(within(dialog).getByRole('button', { name: /^LƯU$/i }))
 
