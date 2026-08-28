@@ -92,6 +92,9 @@ describe('employee shift operations', () => {
 
     render(<EmployeeAssignedTasksPage />)
 
+    expect(screen.getByRole('heading', { name: 'Công việc bắt buộc' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Công việc tính thưởng' })).toBeTruthy()
+    expect(screen.getByText(/Ca sáng/)).toBeTruthy()
     expect(screen.getByText('Tùy chọn · Thưởng 50,000 đ')).toBeTruthy()
     expect(screen.queryByLabelText(/Lý do công việc bắt buộc/u)).toBeNull()
     expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(false)

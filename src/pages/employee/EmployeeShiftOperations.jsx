@@ -141,6 +141,8 @@ export function EmployeeAssignedTasksPage() {
   const completedTasks = displayedTasks.filter(statusFor).length
   const completionRate = displayedTasks.length ? Math.round((completedTasks / displayedTasks.length) * 100) : 0
   const allCompleted = displayedTasks.length > 0 && completedTasks === displayedTasks.length
+  const fixedTasks = displayedTasks.filter((task) => !taskIsReward(task))
+  const rewardTasks = displayedTasks.filter(taskIsReward)
   const requiredTasks = displayedTasks.filter(taskIsRequired)
   const incompleteRequiredTasks = requiredTasks.filter((task) => !statusFor(task))
   const noteRequired = incompleteRequiredTasks.length > 0
@@ -151,6 +153,27 @@ export function EmployeeAssignedTasksPage() {
       assignmentId: event.assignmentId || assignment.assignmentId || assignment.id,
     }))
   )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || ''))), [app.taskAssignmentHistory, employeeId])
+  const activeStore = (app.stores || []).find((store) => String(store.id || '') === String(attendance?.storeId || app.session?.storeId || ''))
+
+  const taskRow = (task) => {
+    const checked = statusFor(task)
+    const reward = taskIsReward(task)
+    const amount = taskAmount(task)
+    return <label key={task.id} className={`task-checklist__item${checked ? ' done' : ''}`}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={!attendance || saving}
+        onChange={(event) => setStatuses((current) => ({ ...current, [String(task.id)]: event.target.checked }))}
+      />
+      <span>
+        <strong>{task.title || task.name || 'Công việc'}</strong>
+        {(task.detail || task.description) && <small>{task.detail || task.description}</small>}
+        <small>{reward ? `Tùy chọn · Thưởng ${money(amount)}` : `Bắt buộc${amount > 0 ? ` · ${money(amount)}` : ''}`}</small>
+      </span>
+      <Badge tone={checked ? 'green' : reward ? 'blue' : 'orange'}>{checked ? 'Đã hoàn thành' : reward && amount > 0 ? `+${money(amount)}` : 'Chưa hoàn thành'}</Badge>
+    </label>
+  }
 
   const submit = async () => {
     if (!ready || saving || typeof app.saveStoreTaskProgress !== 'function') return
@@ -178,30 +201,19 @@ export function EmployeeAssignedTasksPage() {
     <div className="page employee-assigned-tasks-page">
       <PageHeader title="CÔNG VIỆC ĐƯỢC GIAO" subtitle="Cập nhật kết quả trong ca và gửi tỷ lệ hoàn thành cho quản lý." icon={ClipboardCheck} />
       {!attendance && <InfoNote tone="orange">Bạn có thể xem công việc hôm nay, nhưng chỉ được cập nhật sau khi điểm danh vào đúng ca.</InfoNote>}
+      {attendance && <InfoNote><strong>{attendance.shiftName || attendance.shift || 'Ca làm việc'}</strong> · {attendance.shiftStart && attendance.shiftEnd ? `${attendance.shiftStart}–${attendance.shiftEnd} · ` : ''}{activeStore?.name || attendance.storeName || attendance.storeId} · {recordDate(attendance)}</InfoNote>}
       <Card title="Tiến độ công việc" action={<Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{displayedTasks.length} · {completionRate}%</Badge>}>
         <Progress value={completionRate} color={allCompleted ? '#07883f' : '#f28b16'} />
         <InfoNote>Công việc cố định là bắt buộc. Công việc nhận thưởng là tùy chọn, không cần lý do nếu chưa thực hiện.</InfoNote>
-        <div className="task-checklist">
-          {displayedTasks.map((task) => {
-            const checked = statusFor(task)
-            const reward = taskIsReward(task)
-            const amount = taskAmount(task)
-            return <label key={task.id} className={checked ? 'done' : ''}>
-              <input
-                type="checkbox"
-                checked={checked}
-                disabled={!attendance || saving}
-                onChange={(event) => setStatuses((current) => ({ ...current, [String(task.id)]: event.target.checked }))}
-              />
-              <span>
-                <strong>{task.title || task.name || 'Công việc'}</strong>
-                {(task.detail || task.description) && <small>{task.detail || task.description}</small>}
-                <small>{reward ? `Tùy chọn · Thưởng ${money(amount)}` : `Bắt buộc${amount > 0 ? ` · ${money(amount)}` : ''}`}</small>
-              </span>
-              <Badge tone={checked ? 'green' : 'orange'}>{checked ? 'Đã hoàn thành' : 'Chưa hoàn thành'}</Badge>
-            </label>
-          })}
-          {!displayedTasks.length && <InfoNote>Chưa có công việc được giao trong phạm vi hôm nay.</InfoNote>}
+        <div className="task-groups">
+          <section className="task-group" aria-labelledby="required-task-heading">
+            <div className="task-group__header"><div><h3 id="required-task-heading">Công việc bắt buộc</h3><p>Danh sách cố định của ca đang làm</p></div><Badge tone="orange">{fixedTasks.filter(statusFor).length}/{fixedTasks.length}</Badge></div>
+            <div className="task-checklist">{fixedTasks.map(taskRow)}{!fixedTasks.length && <InfoNote>Chưa có công việc bắt buộc được giao cho ca này.</InfoNote>}</div>
+          </section>
+          <section className="task-group task-group--reward" aria-labelledby="reward-task-heading">
+            <div className="task-group__header"><div><h3 id="reward-task-heading">Công việc tính thưởng</h3><p>Tùy chọn · Chỉ ghi nhận thưởng khi đã tick và lưu</p></div><Badge tone="blue">{rewardTasks.filter(statusFor).length}/{rewardTasks.length}</Badge></div>
+            <div className="task-checklist">{rewardTasks.map(taskRow)}{!rewardTasks.length && <InfoNote>Chưa có công việc tính thưởng đang hoạt động.</InfoNote>}</div>
+          </section>
         </div>
         {noteRequired && <Field label="Lý do công việc bắt buộc chưa hoàn thành" required hint="Không cần nhập cho công việc nhận thưởng tùy chọn." error={!incompleteReason.trim() ? 'Bắt buộc nhập lý do nếu còn công việc cố định chưa hoàn thành.' : ''}>
           <textarea value={incompleteReason} maxLength="1000" onChange={(event) => setIncompleteReason(event.target.value)} placeholder="Nêu rõ lý do của công việc cố định chưa hoàn thành" />

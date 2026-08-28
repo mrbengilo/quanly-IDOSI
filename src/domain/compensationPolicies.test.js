@@ -8,6 +8,7 @@ import {
   OFFICE_VIOLATIONS,
   REVENUE_BONUS_PROGRAM_IDS,
   REVENUE_BONUS_PROGRAMS,
+  revenueBonusProgramsForStore,
   selectHighestTeamMilestone,
   STORE_VIOLATIONS,
   STORE_WORK_REWARDS,
@@ -29,6 +30,17 @@ describe('canonical revenue bonus programs', () => {
     })
     expect(Object.isFrozen(REVENUE_BONUS_PROGRAMS)).toBe(true)
     expect(Object.isFrozen(REVENUE_BONUS_PROGRAMS[REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY].tiers)).toBe(true)
+  })
+
+  it('maps SM and DOSII store identities to one canonical program pair', () => {
+    expect(revenueBonusProgramsForStore({ name: 'SM TNV' })).toEqual({
+      programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,
+      milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE,
+    })
+    expect(revenueBonusProgramsForStore({ name: 'Dosii Nguyễn Trãi' })).toEqual({
+      programId: REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY,
+      milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.DOSII_DAILY_REVENUE,
+    })
   })
 
   it.each([

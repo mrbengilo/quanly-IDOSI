@@ -89,7 +89,86 @@
 }
 
 .compensation-metrics--employee {
-  grid-template-columns: minmax(260px, 420px);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.revenue-tier-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.revenue-tier {
+  align-items: center;
+  background: #f8faf9;
+  border: 1px solid #dce7e0;
+  border-radius: 13px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 102px;
+  padding: 14px;
+}
+
+.revenue-tier > .badge {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+
+.revenue-tier.is-reached {
+  background: #f0f9f3;
+  border-color: #a9d8b7;
+}
+
+.revenue-tier.is-highest {
+  background: #e6f6eb;
+  border-color: #07883f;
+  box-shadow: 0 0 0 2px rgb(7 136 63 / 9%);
+}
+
+.revenue-tier__check {
+  align-items: center;
+  background: #edf1ef;
+  border-radius: 50%;
+  color: #66756d;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 750;
+  height: 30px;
+  justify-content: center;
+  width: 30px;
+}
+
+.is-reached .revenue-tier__check {
+  background: #07883f;
+  color: white;
+}
+
+.revenue-tier__copy,
+.revenue-tier__copy strong,
+.revenue-tier__copy small {
+  display: block;
+  min-width: 0;
+}
+
+.revenue-tier__copy strong {
+  color: #163c29;
+  font-size: 14px;
+}
+
+.revenue-tier__copy small {
+  color: var(--compensation-muted);
+  line-height: 1.45;
+  margin-top: 4px;
+}
+
+.compensation-history-filter {
+  align-items: end;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 280px));
+  gap: 12px;
+  margin-bottom: 16px;
 }
 
 .compensation-summary-strip {
@@ -166,8 +245,13 @@
   }
 
   .compensation-metrics,
-  .compensation-metrics--statement {
+  .compensation-metrics--statement,
+  .compensation-metrics--employee {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .revenue-tier-list {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -187,6 +271,10 @@
   .compensation-metrics--employee,
   .compensation-metrics--statement,
   .compensation-statement-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .compensation-history-filter {
     grid-template-columns: minmax(0, 1fr);
   }
 

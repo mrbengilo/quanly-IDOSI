@@ -3,10 +3,10 @@ import {
 } from '../src/domain/storeShiftChecklist.js'
 import {
   REVENUE_BONUS_PROGRAM_IDS,
-  TEAM_MILESTONE_PROGRAM_IDS,
   WORKBOOK_COMPENSATION_POLICY,
   calculateRevenueBonus,
   calculateTeamMilestoneReward,
+  revenueBonusProgramsForStore,
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { applyAdvanceToNetPay, applyViolationWaterfall } from '../src/domain/compensationSettlement.js'
@@ -1404,6 +1404,30 @@ const taskAppliesToEmployee = (task, employeeId, storeId) => {
 
 const filterArray = (state, key, predicate) => (Array.isArray(state[key]) ? state[key].filter(predicate) : [])
 
+const aggregateStoreDailyRevenue = (state, allowedStoreIds = new Set()) => {
+  const totals = new Map()
+  for (const order of Array.isArray(state.orders) ? state.orders : []) {
+    const storeId = String(order?.storeId || '').trim()
+    const businessDate = dateFromRecord(order)
+    const amount = Number(order?.amount)
+    if (!allowedStoreIds.has(storeId)
+      || !/^\d{4}-\d{2}-\d{2}$/u.test(businessDate)
+      || order?.deletedAt
+      || String(order?.status || '') === 'Đã xóa'
+      || !Number.isSafeInteger(amount)
+      || amount < 0) continue
+    const id = `store-revenue:${storeId}:${businessDate}`
+    const previous = totals.get(id) || { id, storeId, businessDate, revenueVnd: 0, orderCount: 0 }
+    const revenueVnd = previous.revenueVnd + amount
+    if (!Number.isSafeInteger(revenueVnd)) continue
+    totals.set(id, { ...previous, revenueVnd, orderCount: previous.orderCount + 1 })
+  }
+  return [...totals.values()].sort((left, right) => (
+    String(right.businessDate).localeCompare(String(left.businessDate))
+    || String(left.storeId).localeCompare(String(right.storeId))
+  ))
+}
+
 const hasExplicitNotificationAudience = (record) => employeeReferences(record).length > 0
 
 const employeeUnit = (record) => {
@@ -1983,6 +2007,7 @@ export const projectSharedState = (rawState, user) => {
       violations: historicalVisibleScoped('violations'),
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => String(record.storeId || '') === storeId)
         .map(redactRevenueBonusDaily),
+      storeDailyRevenue: aggregateStoreDailyRevenue(state, new Set([storeId])),
       revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations', (record) => (
         String(record.storeId || '') === storeId && belongsToEmployee(record, ownEmployeeId)
       )),
@@ -2089,6 +2114,7 @@ export const projectSharedState = (rawState, user) => {
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => (
         visibleStoreIds.has(String(record.storeId || ''))
       )).map(redactRevenueBonusDaily),
+      storeDailyRevenue: aggregateStoreDailyRevenue(state, visibleStoreIds),
       revenueBonusAllocations: own('revenueBonusAllocations'),
       teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => (
         visibleStoreIds.has(String(record.storeId || ''))
@@ -13834,6 +13860,57 @@ const canonicalViolationPolicy = (targetUnit, policyCode) => {
   return policySet?.violations?.find((record) => record.code === policyCode) || null
 }
 
+const violationShiftIds = (record = {}) => [
+  String(record.shiftId || record.shift || '').trim(),
+  ...(Array.isArray(record.shiftIds) ? record.shiftIds.map((value) => String(value || '').trim()) : []),
+].filter(Boolean)
+
+const violationShiftSnapshot = ({ state, employeeId, storeId, occurredOn, requestedShiftId }) => {
+  const activeShifts = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).filter((record) => (
+    record.active !== false
+    && !record.deletedAt
+    && (!record.storeId || String(record.storeId) === storeId)
+    && (!record.date || String(record.date) === occurredOn)
+    && shiftTimes(record).start
+    && shiftTimes(record).end
+  ))
+  const workRecords = [
+    ...(Array.isArray(state.schedule) ? state.schedule : []),
+    ...(Array.isArray(state.attendance) ? state.attendance : []),
+  ].filter((record) => (
+    belongsToEmployee(record, employeeId)
+    && String(record.storeId || storeId) === storeId
+    && dateFromRecord(record) === occurredOn
+    && !record.deletedAt
+  ))
+  const assignedShiftIds = new Set(workRecords.flatMap(violationShiftIds))
+  let shiftId = String(requestedShiftId || '').trim()
+  if (shiftId && !/^[A-Za-z0-9_-]{1,80}$/u.test(shiftId)) {
+    throw new ApiError(400, 'VIOLATION_SHIFT_INVALID', 'Ca vi phạm không hợp lệ.')
+  }
+  if (!shiftId && assignedShiftIds.size === 1) shiftId = [...assignedShiftIds][0]
+  if (!shiftId) {
+    throw new ApiError(400, 'VIOLATION_SHIFT_REQUIRED', 'Cần chọn chính xác ca làm việc xảy ra vi phạm.')
+  }
+  const shift = activeShifts.find((record) => String(record.id || '') === shiftId)
+  if (!shift) throw new ApiError(400, 'VIOLATION_SHIFT_INVALID', 'Ca vi phạm không tồn tại hoặc không còn hoạt động.')
+  if (assignedShiftIds.size && !assignedShiftIds.has(shiftId)) {
+    throw new ApiError(409, 'VIOLATION_SHIFT_NOT_ASSIGNED', 'Ca vi phạm không thuộc lịch hoặc chấm công của nhân viên trong ngày đã chọn.')
+  }
+  const times = shiftTimes(shift)
+  const attendance = workRecords.find((record) => (
+    String(record.id || '').startsWith('att_') || record.checkInAt || record.checkIn
+  ) && violationShiftIds(record).includes(shiftId))
+  return {
+    shiftId,
+    shiftName: shift.name || shiftId,
+    shiftStart: times.start.label,
+    shiftEnd: times.end.label,
+    shiftVersion: Number(shift.version || 1),
+    attendanceId: attendance?.id || null,
+  }
+}
+
 const violationCommand = async (db, actor, body, commandContext) => {
   assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý vi phạm.')
   const operation = body.type.split('.').at(-1)
@@ -13861,6 +13938,15 @@ const violationCommand = async (db, actor, body, commandContext) => {
       if (String(employee.storeId || '') !== storeId) throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng đã chọn.')
     }
     const occurredOn = compensationDate(payload.occurredOn, 'Ngày phát sinh')
+    const shiftSnapshot = targetUnit === 'store'
+      ? violationShiftSnapshot({
+          state,
+          employeeId,
+          storeId,
+          occurredOn,
+          requestedShiftId: payload.shiftId || payload.shift,
+        })
+      : null
     const period = occurredOn.slice(0, 7)
     assertPayrollNotPaidOrLocked(state, storeId, period)
     const catalogItemId = String(payload.catalogItemId || '').trim()
@@ -13910,6 +13996,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       policyCode,
       title,
       amountVnd,
+      ...(shiftSnapshot || {}),
       ...(catalogItem ? {
         catalogItemId: catalogItem.id,
         catalogCode: catalogItem.code,
@@ -13947,7 +14034,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       entityId: violation.id,
       before: null,
       after: violation,
-      metadata: { targetUnit, storeId, employeeId, period, policyCode, amountVnd },
+      metadata: { targetUnit, storeId, employeeId, period, policyCode, amountVnd, shiftId: shiftSnapshot?.shiftId || null },
       response: { command: body.type, violation },
       status: 201,
     }, commandContext)
@@ -13995,20 +14082,6 @@ const violationCommand = async (db, actor, body, commandContext) => {
     metadata: { targetUnit: previous.targetUnit, storeId: previous.storeId, employeeId: previous.employeeId, period },
     response: { command: body.type, violation: next },
   }, commandContext)
-}
-
-const revenueBonusProgramForStore = (store) => {
-  const identity = normalizeTextKey([store.name, store.short, store.code].filter(Boolean).join(' '))
-  const isSm = identity.includes('secondmall') || /(^|\s)sm($|\s)/u.test(identity)
-  return isSm
-    ? {
-        programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,
-        milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE,
-      }
-    : {
-        programId: REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY,
-        milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.DOSII_DAILY_REVENUE,
-      }
 }
 
 const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, current, state, payload) => {
@@ -14171,7 +14244,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     && Number(order.amount) >= 0
   ))
   const revenueVnd = orders.reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Doanh thu ngày'), 0)
-  const { programId, milestoneProgramId } = revenueBonusProgramForStore(store)
+  const { programId, milestoneProgramId } = revenueBonusProgramsForStore(store)
   const percentage = calculateRevenueBonus({ programId, revenueVnd })
   const milestone = calculateTeamMilestoneReward({ programId: milestoneProgramId, achievedUnits: revenueVnd })
   const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (

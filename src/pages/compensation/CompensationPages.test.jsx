@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ManagerCompensationPage } from './ManagerCompensationPage'
 import { MyCompensationPage } from './MyCompensationPage'
 import { RevenueBonusPage } from './RevenueBonusPage'
-import { ViolationManagementPage } from './ViolationManagementPage'
+import { MyViolationsPage, ViolationManagementPage } from './ViolationManagementPage'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
@@ -36,6 +36,12 @@ const baseApp = (role = 'admin') => ({
   compensationEntries: [],
   violations: [],
   revenueBonuses: [],
+  storeDailyRevenue: [],
+  attendance: [],
+  shiftDefinitions: [
+    { id: 'SHIFT-MORNING', storeId: 'CH001', name: 'Ca sáng', start: '08:00', end: '12:00', active: true },
+    { id: 'SHIFT-AFTERNOON', storeId: 'CH001', name: 'Ca chiều', start: '12:00', end: '17:00', active: true },
+  ],
   payrollPeriods: [],
   workCatalogItems: [{
     id: 'violation-store-late', code: 'store.violation.late', kind: 'violation',
@@ -101,7 +107,32 @@ describe('compensation pages', () => {
 
     await waitFor(() => expect(mocked.app.createViolation).toHaveBeenCalledWith(expect.objectContaining({
       targetUnit: 'store', employeeId: 'QL-01', storeId: 'CH001', catalogItemId: 'violation-store-late', amountVnd: 2_000,
+      shiftId: 'SHIFT-MORNING', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00',
     })))
+  })
+
+  it('shows each private violation with its store, shift, date and total deduction', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      violations: [{
+        id: 'VIO-01', targetUnit: 'store', employeeId: 'NV-01', storeId: 'CH001',
+        occurredOn: '2026-08-26', shiftId: 'SHIFT-MORNING', shiftName: 'Ca sáng',
+        shiftStart: '08:00', shiftEnd: '12:00', title: 'Đi trễ', amountVnd: 2_000, status: 'ACTIVE',
+      }, {
+        id: 'VIO-OTHER', targetUnit: 'store', employeeId: 'NV-02', storeId: 'CH001',
+        occurredOn: '2026-08-26', shiftName: 'Ca chiều', title: 'Không được xem', amountVnd: 99_000, status: 'ACTIVE',
+      }],
+    }
+    render(<MyViolationsPage />)
+
+    expect(screen.getByText('TỔNG SỐ TIỀN BỊ TRỪ')).toBeTruthy()
+    expect(screen.getAllByText('2,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getByText('Dosii NTL')).toBeTruthy()
+    expect(screen.getByText('Ca sáng')).toBeTruthy()
+    expect(screen.getByText('08:00 – 12:00')).toBeTruthy()
+    expect(screen.getByText('26/08/2026')).toBeTruthy()
+    expect(screen.queryByText('Không được xem')).toBeNull()
+    expect(screen.queryByText('99,000 đ')).toBeNull()
   })
 
   it('keeps employee revenue bonus data private to the signed-in employee', () => {
@@ -122,6 +153,46 @@ describe('compensation pages', () => {
     expect(screen.queryByText('99 đ')).toBeNull()
     expect(screen.queryByText('Nhân viên Hai')).toBeNull()
     expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+  })
+
+  it('shows live daily revenue, own work hours, crossed tiers and day/month reward history', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      storeDailyRevenue: [{
+        id: 'daily-revenue:CH001:2026-08-26', storeId: 'CH001', businessDate: '2026-08-26',
+        revenueVnd: 4_500_001, orderCount: 12,
+      }],
+      attendance: [{
+        id: 'ATT-01', employeeId: 'NV-01', storeId: 'CH001', date: '2026-08-26',
+        checkInAt: '2026-08-26T01:00:00.000Z', checkOutAt: '2026-08-26T06:00:00.000Z', workedSeconds: 18_000,
+      }],
+      revenueBonuses: [{
+        id: 'RB-TODAY', storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 4_500_001,
+        totalPoolVnd: 180_000, allocations: [
+          { id: 'A-TODAY', employeeId: 'NV-01', allocatedVnd: 35_000, status: 'APPROVED', approvedSalesHours: 5 },
+          { id: 'A-PRIVATE', employeeId: 'NV-02', allocatedVnd: 145_000, status: 'APPROVED' },
+        ],
+      }, {
+        id: 'RB-PAST', storeId: 'CH001', businessDate: '2026-08-12', revenueVnd: 2_500_000,
+        totalPoolVnd: 50_000, allocations: [
+          { id: 'A-PAST', employeeId: 'NV-01', allocatedVnd: 20_000, status: 'APPROVED', approvedSalesHours: 4 },
+        ],
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('TỔNG GIỜ LÀM CỦA TÔI')).toBeTruthy()
+    expect(screen.getAllByText('5.00 giờ').length).toBeGreaterThan(0)
+    expect(screen.getByText('DOANH THU CỬA HÀNG TRONG NGÀY')).toBeTruthy()
+    expect(screen.getByText('4,500,001 đ')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Mốc thưởng doanh thu' })).toBeTruthy()
+    expect(screen.getAllByText('Đã đạt').length).toBe(2)
+    expect(screen.getByText('Mốc cao nhất được tính')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Kiểu thống kê'), { target: { value: 'month' } })
+    expect(screen.getByText('12/08/2026')).toBeTruthy()
+    expect(screen.getByText('20,000 đ')).toBeTruthy()
+    expect(screen.queryByText('145,000 đ')).toBeNull()
   })
 
   it('shows a store manager only the team total and their own allocation', () => {

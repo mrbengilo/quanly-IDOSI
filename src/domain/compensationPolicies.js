@@ -176,6 +176,25 @@ export const TEAM_MILESTONE_PROGRAMS = deepFreeze({
   },
 })
 
+export function revenueBonusProgramsForStore(store = {}) {
+  const identity = [store.name, store.short, store.code]
+    .filter(Boolean)
+    .join(' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/gu, '')
+    .toLowerCase()
+  const isSm = identity.includes('secondmall') || /(^|\s)sm($|\s)/u.test(identity)
+  return isSm
+    ? {
+        programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,
+        milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE,
+      }
+    : {
+        programId: REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY,
+        milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.DOSII_DAILY_REVENUE,
+      }
+}
+
 const milestoneIsEligible = (achievedUnits, milestone) => milestone.comparison === 'GTE'
   ? achievedUnits >= milestone.thresholdUnits
   : achievedUnits > milestone.thresholdUnits

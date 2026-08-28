@@ -1430,6 +1430,40 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerProjection.officeAdjustments).toEqual(state.officeAdjustments)
   })
 
+  it('projects aggregate daily store revenue without exposing coworker orders', () => {
+    const state = {
+      schemaVersion: 2,
+      stateVersion: 1,
+      stores: [{ id: 'S01', name: 'Dosii S01' }],
+      employees: [
+        { id: 'E01', storeId: 'S01', unit: 'store', name: 'Nhân viên 1' },
+        { id: 'E02', storeId: 'S01', unit: 'store', name: 'Nhân viên 2' },
+      ],
+      attendance: [], schedule: [], tasks: [], notifications: [], payrollPeriods: [],
+      orders: [{
+        id: 'ORDER-OWN', storeId: 'S01', employeeId: 'E01', createdByEmployeeId: 'E01',
+        amount: 1_200_000, status: 'Hoàn tất', createdAt: '2026-08-26T02:00:00.000Z',
+      }, {
+        id: 'ORDER-COWORKER', storeId: 'S01', employeeId: 'E02', createdByEmployeeId: 'E02',
+        amount: 3_300_000, status: 'Hoàn tất', createdAt: '2026-08-26T03:00:00.000Z',
+      }, {
+        id: 'ORDER-DELETED', storeId: 'S01', employeeId: 'E02', createdByEmployeeId: 'E02',
+        amount: 99_000_000, status: 'Đã xóa', createdAt: '2026-08-26T04:00:00.000Z',
+      }],
+    }
+
+    const projection = projectSharedState(state, {
+      role: 'employee', user_id: 'U01', employee_id: 'E01', store_id: 'S01',
+    })
+
+    expect(projection.orders.map(({ id }) => id)).toEqual(['ORDER-OWN'])
+    expect(projection.storeDailyRevenue).toEqual([{
+      id: 'store-revenue:S01:2026-08-26', storeId: 'S01', businessDate: '2026-08-26',
+      revenueVnd: 4_500_000, orderCount: 2,
+    }])
+    expect(JSON.stringify(projection.orders)).not.toContain('ORDER-COWORKER')
+  })
+
   it('projects only the signed-in actor canonical linked profile for account settings', () => {
     const state = {
       schemaVersion: 2,
@@ -10872,6 +10906,55 @@ describe('IDOSI Worker security primitives', () => {
     expect(cashOut).toBe(23_500_000)
     expect(100_000_000 - recognizedExpense).toBe(26_500_000)
     expect(100_000_000 - 50_000_000 - cashOut).toBe(26_500_000)
+  }, 30_000)
+
+  it('validates and snapshots the exact store shift on a new violation', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-violation-shift' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'violation-shift-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+        employees: [{ id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store', status: 'Đang làm việc' }],
+        shiftDefinitions: [{
+          id: 'SHIFT-MORNING', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00', active: true,
+        }],
+        schedule: [{ id: 'SCH-01', employeeId: 'E01', storeId: 'S01', date: '2026-08-20', shiftId: 'SHIFT-MORNING' }],
+        workCatalogItems: [{
+          id: 'VIO-LATE', code: 'store.violation.late', version: 1, kind: 'VIOLATION',
+          targetGroup: 'store', storeId: 'S01', shiftId: null, shiftName: null,
+          name: 'Đi trễ', amountVnd: 2_000, active: true, sortOrder: 1,
+          effectiveFrom: '2026-08-01', effectiveTo: null,
+        }],
+        violations: [], payrollPeriods: [], attendance: [], orders: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'violation-shift-admin-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const invalid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create', expectedVersion: 1, payload: {
+        targetUnit: 'store', employeeId: 'E01', storeId: 'S01', catalogItemId: 'VIO-LATE',
+        amountVnd: 2_000, occurredOn: '2026-08-20', shiftId: 'SHIFT-UNKNOWN',
+      },
+    }, { ...authorization, 'idempotency-key': 'violation-shift-invalid-0001' }), env)
+    expect(invalid.status).toBe(400)
+    expect(await invalid.json()).toMatchObject({ error: { code: 'VIOLATION_SHIFT_INVALID' } })
+
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create', expectedVersion: 1, payload: {
+        targetUnit: 'store', employeeId: 'E01', storeId: 'S01', catalogItemId: 'VIO-LATE',
+        amountVnd: 2_000, occurredOn: '2026-08-20', shiftId: 'SHIFT-MORNING',
+      },
+    }, { ...authorization, 'idempotency-key': 'violation-shift-valid-0001' }), env)
+    expect(created.status).toBe(201)
+    expect(await created.json()).toMatchObject({
+      violation: {
+        shiftId: 'SHIFT-MORNING', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00',
+      },
+    })
   }, 30_000)
 
   it('keeps hot milestones pending until an authorized cross-store approval and protects coworker allocations', async () => {
