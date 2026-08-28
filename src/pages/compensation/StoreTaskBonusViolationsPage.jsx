@@ -190,7 +190,7 @@ function RewardSubmissionsTab({ app, storeId, employees }) {
       </div>
 
       <Card title="Lịch sử công việc tính thưởng" action={<Badge tone="blue">{filteredRows.length} công việc</Badge>}>
-        <InfoNote>Thông tin tên công việc và số tiền lấy từ bản chụp tại thời điểm nhân viên gửi. Khoản chờ đối soát điều chuyển chưa được cộng vào tổng thưởng đủ điều kiện.</InfoNote>
+        <InfoNote>Thông tin tên công việc và số tiền lấy từ bản chụp tại thời điểm nhân viên gửi. Thưởng của ca điều chuyển hợp lệ được cộng vào kỳ lương tại cửa hàng chính; dữ liệu cũ thiếu liên kết vẫn hiển thị chờ đối soát.</InfoNote>
         {filteredRows.length ? <TableWrap className="compensation-table task-bonus-table">
           <thead><tr><th>Nhân viên</th><th>Công việc</th><th>Tiền thưởng</th><th>Ngày</th><th>Ca làm</th><th>Thời gian gửi</th><th>Trạng thái</th><th>Chi tiết</th></tr></thead>
           <tbody>{filteredRows.map((row) => <tr key={row.id}>

@@ -26,6 +26,7 @@ import {
   revenueAllocations,
   revenueRecordDate,
   revenueRecordTotal,
+  operationalStores,
   statusLabel,
   statusTone,
   storesVisibleToRole,
@@ -45,6 +46,26 @@ const allocationAmount = (allocation) => Number(
   allocation?.allocatedVnd ?? allocation?.amountVnd ?? allocation?.amount ?? allocation?.bonusVnd ?? 0,
 ) || 0
 
+const allocationApprovedHours = (allocation = {}) => {
+  const explicitHours = Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours)
+  if (Number.isFinite(explicitHours) && explicitHours >= 0) return explicitHours
+  const weightUnits = Number(allocation.weightUnits ?? allocation.approvedSalesSeconds)
+  return Number.isFinite(weightUnits) && weightUnits >= 0 ? weightUnits / 3_600 : 0
+}
+
+const allocationWeightPercent = (allocation = {}) => {
+  const explicitPercent = Number(allocation.weightPercent)
+  if (allocation.weightPercent != null && Number.isFinite(explicitPercent)) return explicitPercent
+  const legacyWeight = Number(allocation.weight)
+  if (allocation.weight != null && Number.isFinite(legacyWeight)) return legacyWeight * 100
+  const weightUnits = Number(allocation.weightUnits ?? allocation.approvedSalesSeconds)
+  const totalWeightUnits = Number(allocation.totalWeightUnits)
+  return Number.isFinite(weightUnits) && weightUnits >= 0
+    && Number.isFinite(totalWeightUnits) && totalWeightUnits > 0
+    ? (weightUnits / totalWeightUnits) * 100
+    : null
+}
+
 const recordRevenue = (record) => Number(record?.revenueVnd ?? record?.dailyRevenueVnd ?? record?.revenue ?? 0) || 0
 
 const operationalDate = (record = {}) => String(
@@ -60,11 +81,17 @@ const employeeIdentifiers = (employee = {}) => identifiers(
   employee?.id,
   employee?.code,
   employee?.employeeId,
+  employee?.employee_id,
   employee?.employeeCode,
+  employee?.linkedEmployeeId,
+  employee?.sourceEmployeeId,
+  employee?.rootEmployeeId,
+  employee?.originalEmployeeId,
 )
 
 const attendanceEmployeeIdentifiers = (record = {}) => identifiers(
   record.employeeId,
+  record.employee_id,
   record.employeeCode,
   record.targetEmployeeId,
   record.employee?.id,
@@ -99,41 +126,65 @@ const tierRangeLabel = (tier) => {
 export function RevenueBonusPage() {
   const app = useApp()
   const role = canonicalRole(app.session?.role)
-  const currentEmployeeId = entityId(app.currentEmployee) || String(app.session?.employeeId || '')
-  const currentEmployeeIdentifiers = identifiers(
+  const currentEmployeeIdentifiers = useMemo(() => identifiers(
     [...employeeIdentifiers(app.currentEmployee)],
     app.session?.employeeId,
-  )
+    app.session?.code,
+    app.session?.id,
+  ), [app.currentEmployee, app.session?.employeeId, app.session?.code, app.session?.id])
   const currentStoreId = String(app.session?.storeId || app.currentEmployee?.storeId || '')
   const privileged = ['admin', 'business_support'].includes(role)
   const storeManager = role === 'store_manager'
   const employeeView = ['employee', 'office'].includes(role)
   const privateAllocationView = storeManager || employeeView
   const allowed = privileged || storeManager || employeeView
-  const stores = useMemo(() => storesVisibleToRole(
+  const stores = useMemo(() => {
+    const roleScopedStores = storesVisibleToRole(
+      app.stores,
+      privileged ? app.session : { ...app.session, storeId: currentStoreId },
+    )
+    if (!employeeView) return roleScopedStores
+    const ownRevenueStoreIds = new Set([currentStoreId].filter(Boolean))
+    for (const record of Array.isArray(app.revenueBonuses) ? app.revenueBonuses : []) {
+      const hasOwnAllocation = revenueAllocations([record]).some((allocation) => (
+        currentEmployeeIdentifiers.has(entryEmployeeId(allocation))
+      ))
+      if (hasOwnAllocation && entryStoreId(record)) ownRevenueStoreIds.add(entryStoreId(record))
+    }
+    return operationalStores(app.stores).filter((store) => ownRevenueStoreIds.has(entityId(store)))
+  }, [
     app.stores,
-    privileged ? app.session : { ...app.session, storeId: currentStoreId },
-  ), [app.stores, app.session, privileged, currentStoreId])
+    app.session,
+    app.revenueBonuses,
+    privileged,
+    employeeView,
+    currentStoreId,
+    currentEmployeeIdentifiers,
+  ])
   const [storeSelection, setStoreSelection] = useState('')
   const activeOperationalStoreId = privileged && stores.some((store) => entityId(store) === String(app.activeStoreId || ''))
     ? String(app.activeStoreId)
     : ''
-  const selectedStoreId = storeSelection || activeOperationalStoreId || entityId(stores[0]) || currentStoreId
+  const defaultPrivateStoreId = stores.some((store) => entityId(store) === currentStoreId)
+    ? currentStoreId
+    : entityId(stores[0])
+  const selectedStoreId = storeSelection || activeOperationalStoreId || defaultPrivateStoreId || currentStoreId
   const [businessDate, setBusinessDate] = useState(vietnamToday)
   const [historyMode, setHistoryMode] = useState('day')
   const [historyDate, setHistoryDate] = useState(vietnamToday)
   const [historyMonth, setHistoryMonth] = useState(() => vietnamToday().slice(0, 7))
   const { busyKey, error, run } = useCompensationAction(app)
-  const activeRecords = (app.revenueBonuses || [])
-    .filter((record) => entryStoreId(record) === selectedStoreId)
+  const allActiveRecords = (app.revenueBonuses || [])
     .filter((record) => !record.supersededAt && !record.voidedAt)
+  const activeRecords = allActiveRecords
+    .filter((record) => entryStoreId(record) === selectedStoreId)
   const records = activeRecords.filter((record) => revenueRecordDate(record) === businessDate)
   const milestoneClaims = (app.teamRewardClaims || [])
     .filter((claim) => entryStoreId(claim) === selectedStoreId && revenueRecordDate(claim) === businessDate)
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
   const allocations = revenueAllocations(records)
     .filter((allocation) => entryStoreId(allocation) === selectedStoreId && revenueRecordDate(allocation) === businessDate)
-    .filter((allocation) => !privateAllocationView || entryEmployeeId(allocation) === currentEmployeeId)
+    .filter((allocation) => !privateAllocationView || currentEmployeeIdentifiers.has(entryEmployeeId(allocation)))
   const poolTotal = records.reduce((sum, record) => sum + revenueRecordTotal(record), 0)
   const revenueTotal = records.reduce((sum, record) => sum + recordRevenue(record), 0)
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
@@ -164,11 +215,11 @@ export function RevenueBonusPage() {
   const revenueProgram = REVENUE_BONUS_PROGRAMS[programId]
   const reachedTiers = revenueProgram.tiers.filter((tier) => tierReached(tier, liveRevenueVnd))
   const highestReachedTier = reachedTiers.at(-1) || null
-  const historyRecords = activeRecords.filter((record) => historyMode === 'month'
+  const historyRecords = (privateAllocationView ? allActiveRecords : activeRecords).filter((record) => historyMode === 'month'
     ? revenueRecordDate(record).startsWith(historyMonth)
     : revenueRecordDate(record) === historyDate)
   const historyAllocations = revenueAllocations(historyRecords)
-    .filter((allocation) => !privateAllocationView || entryEmployeeId(allocation) === currentEmployeeId)
+    .filter((allocation) => !privateAllocationView || currentEmployeeIdentifiers.has(entryEmployeeId(allocation)))
     .sort((left, right) => revenueRecordDate(right).localeCompare(revenueRecordDate(left)))
   const historyTotal = historyAllocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
 
@@ -268,8 +319,8 @@ export function RevenueBonusPage() {
           <tbody>{historyAllocations.map((allocation, index) => <tr key={allocation.id || `${entryEmployeeId(allocation)}-${index}`}>
             <td><strong>{displayDate(revenueRecordDate(allocation))}</strong></td>
             <td>{storeName(stores, entryStoreId(allocation), allocation.storeName)}</td>
-            <td>{Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? 0).toFixed(2)} giờ</td>
-            <td>{allocation.weightPercent != null ? `${Number(allocation.weightPercent).toFixed(2)}%` : allocation.weight != null ? `${(Number(allocation.weight) * 100).toFixed(2)}%` : '—'}</td>
+            <td>{allocationApprovedHours(allocation).toFixed(2)} giờ</td>
+            <td>{allocationWeightPercent(allocation) == null ? '—' : `${allocationWeightPercent(allocation).toFixed(2)}%`}</td>
             <td><strong>{money(allocationAmount(allocation))}</strong></td>
             <td><Badge tone={statusTone(allocation)}>{statusLabel(allocation)}</Badge></td>
           </tr>)}{!historyAllocations.length && <tr><td colSpan="6" className="compensation-empty">Chưa có thưởng trong thời gian đã chọn.</td></tr>}</tbody>
@@ -281,8 +332,8 @@ export function RevenueBonusPage() {
             {!privateAllocationView && <td><strong>{employeeName(app.employees || [], entryEmployeeId(allocation), allocation.employeeName)}</strong><small className="compensation-subline">{entryEmployeeId(allocation)}</small></td>}
             <td>{storeName(stores, entryStoreId(allocation), allocation.storeName)}</td>
             <td>{displayDate(revenueRecordDate(allocation))}</td>
-            <td>{Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? 0).toFixed(2)} giờ</td>
-            <td>{allocation.weightPercent != null ? `${Number(allocation.weightPercent).toFixed(2)}%` : allocation.weight != null ? `${(Number(allocation.weight) * 100).toFixed(2)}%` : '—'}</td>
+            <td>{allocationApprovedHours(allocation).toFixed(2)} giờ</td>
+            <td>{allocationWeightPercent(allocation) == null ? '—' : `${allocationWeightPercent(allocation).toFixed(2)}%`}</td>
             <td><strong>{money(allocationAmount(allocation))}</strong></td>
             <td><Badge tone={statusTone(allocation)}>{statusLabel(allocation)}</Badge></td>
           </tr>)}{!allocations.length && <tr><td colSpan={privateAllocationView ? 6 : 7} className="compensation-empty">Chưa có phân bổ thưởng doanh thu cho ngày đã chọn.</td></tr>}</tbody>

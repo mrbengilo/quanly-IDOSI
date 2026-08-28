@@ -39,6 +39,10 @@ describe('RevenueBonusPage employee attendance aliases', () => {
           checkInAt: '2026-08-26T02:00:00.000Z', checkOutAt: '2026-08-26T03:00:00.000Z', workedSeconds: 3_600,
         },
         {
+          id: 'ATT-SNAKE-CASE', employee_id: 'NV-01', storeId: 'CH001', date: '2026-08-26',
+          checkInAt: '2026-08-26T02:00:00.000Z', checkOutAt: '2026-08-26T03:00:00.000Z', workedSeconds: 3_600,
+        },
+        {
           id: 'ATT-EMPLOYEE-CODE-OPEN', employeeCode: 'STAFF-NV-01', storeId: 'CH001', date: '2026-08-26',
           checkInAt: '2026-08-26T03:00:00.000Z', checkOutAt: null, workedSeconds: 0, hours: 0,
         },
@@ -60,6 +64,6 @@ describe('RevenueBonusPage employee attendance aliases', () => {
     render(<RevenueBonusPage />)
 
     const hoursMetric = screen.getByText('TỔNG GIỜ LÀM CỦA TÔI').closest('.metric')
-    expect(within(hoursMetric).getByText('5.00 giờ')).toBeTruthy()
+    expect(within(hoursMetric).getByText('6.00 giờ')).toBeTruthy()
   })
 })

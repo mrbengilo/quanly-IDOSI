@@ -86,7 +86,7 @@ describe('employee shift operations', () => {
       employeeIds: ['E01'], title: 'Mở cửa đúng quy trình', required: true, catalogKind: 'FIXED_TASK', completedBy: { E01: true },
     }, {
       id: 'TASK-REWARD', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
-      employeeIds: ['E01'], title: 'Quay clip sản phẩm', required: false, rewardEligible: true,
+      employeeIds: ['E01'], title: 'Quay clip sản phẩm',
       catalogKind: 'REWARD_TASK', amountVnd: 50_000, completedBy: {},
     }]
 
@@ -161,6 +161,83 @@ describe('employee shift operations', () => {
     expect(row?.textContent).not.toContain(receiptId)
     expect(row?.textContent).toContain('67%')
     expect(row?.textContent).toContain('Còn một công việc chưa hoàn thành')
+  })
+
+  it('keeps attendance, task state and private histories connected across employee profile aliases', () => {
+    mocked.app = {
+      ...baseApp(),
+      session: { role: 'employee', employeeId: 'CODE-E01', code: 'CODE-E01', storeId: 'S01' },
+      currentEmployee: {
+        id: 'PROFILE-E01', code: 'CODE-E01', employeeId: 'LEGACY-E01', employeeCode: 'STAFF-E01',
+        name: 'Nguyễn An', storeId: 'S01', unit: 'store',
+      },
+      employees: [{
+        id: 'PROFILE-E01', code: 'CODE-E01', employeeId: 'LEGACY-E01', employeeCode: 'STAFF-E01',
+        name: 'Nguyễn An', storeId: 'S01', unit: 'store',
+      }],
+      attendance: [{
+        id: 'ATT-ALIAS', employeeId: 'LEGACY-E01', storeId: 'S01', date: '2026-08-22',
+        shiftId: 'CA-1', shiftName: 'Ca sáng alias', checkIn: '08:00', checkInAt: '2026-08-22T01:00:00.000Z',
+        checkOut: null, checkOutAt: null,
+      }],
+      expenseEntries: [{
+        id: 'EXP-ALIAS', sourceType: 'shift-expense-item', employeeId: 'STAFF-E01',
+        storeId: 'S01', shiftName: 'Ca sáng alias', name: 'Chi phí theo mã cũ', amount: 12_000,
+        occurredAt: '2026-08-22T02:00:00.000Z',
+      }, {
+        id: 'EXP-OTHER', sourceType: 'shift-expense-item', employeeId: 'E02',
+        storeId: 'S01', name: 'Chi phí người khác', amount: 99_000,
+      }],
+      tasks: [{
+        id: 'TASK-ALIAS', assignmentId: 'ASSIGN-ALIAS', storeId: 'S01', date: '2026-08-22',
+        shiftId: 'CA-1', employeeIds: ['CODE-E01'], title: 'Công việc theo mã cũ',
+        required: true, catalogKind: 'FIXED_TASK', completedBy: { 'LEGACY-E01': true },
+      }],
+      taskAssignmentHistory: [{
+        id: 'ASSIGN-ALIAS', progressHistory: [{
+          employeeId: 'STAFF-E01', at: '2026-08-22T04:00:00.000Z',
+          completedTasks: 1, totalTasks: 1, completionRate: 100,
+        }, {
+          employeeId: 'E02', at: '2026-08-22T05:00:00.000Z',
+          completedTasks: 99, totalTasks: 99, completionRate: 100,
+        }],
+      }],
+    }
+
+    const view = render(<EmployeeShiftExpensePage />)
+    expect(screen.getByText('Chi phí theo mã cũ')).toBeTruthy()
+    expect(screen.queryByText('Chi phí người khác')).toBeNull()
+    expect(screen.queryByText(/Bạn cần điểm danh/u)).toBeNull()
+    view.unmount()
+
+    render(<EmployeeAssignedTasksPage />)
+    expect(screen.getByText('Công việc theo mã cũ')).toBeTruthy()
+    expect(screen.getByRole('checkbox').checked).toBe(true)
+    expect(screen.getByText('1/1 · 100%')).toBeTruthy()
+    const historyCard = screen.getByRole('heading', { name: 'Lịch sử gửi kết quả' }).closest('section')
+    expect(historyCard?.textContent).toContain('1/1')
+    expect(historyCard?.textContent).not.toContain('99/99')
+    expect(screen.queryByText('99/99')).toBeNull()
+    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(false)
+  })
+
+  it('prefers the direct employee profile over an earlier linked manager proxy', () => {
+    mocked.app = {
+      ...baseApp(),
+      currentEmployee: null,
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01' },
+      employees: [{
+        id: 'QLCH-01', linkedEmployeeId: 'E01', name: 'Vai trò quản lý',
+        storeId: 'S01', unit: 'store_manager',
+      }, {
+        id: 'E01', name: 'Nguyễn An', storeId: 'S01', unit: 'store',
+      }],
+    }
+
+    render(<EmployeeShiftExpensePage />)
+
+    expect(screen.queryByText(/Bạn cần điểm danh/u)).toBeNull()
+    expect(screen.getByLabelText(/Tên chi phí/i).disabled).toBe(false)
   })
 
   it('keeps both forms read-only until the employee has an open attendance', () => {

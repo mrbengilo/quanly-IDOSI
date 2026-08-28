@@ -7,32 +7,76 @@ import { useApp } from '../../state/AppContext'
 import { money, shortDateTime24, today } from '../../utils'
 import { taskAssignedToEmployee, taskCompletedByEmployee } from './taskScope'
 
-const employeeKey = (record = {}) => String(record.id || record.code || record.employeeId || '')
+const employeeKey = (record) => String(record?.id || record?.code || record?.employeeId || '')
+const directEmployeeIdentifiers = (...records) => new Set(records.flatMap((record) => [
+  record?.id,
+  record?.code,
+  record?.employeeId,
+  record?.employee_id,
+  record?.employeeCode,
+]).map((value) => String(value || '').trim()).filter(Boolean))
+const employeeIdentifiers = (...records) => new Set(records.flatMap((record) => [
+  record?.id,
+  record?.code,
+  record?.employeeId,
+  record?.employee_id,
+  record?.employeeCode,
+  record?.linkedEmployeeId,
+  record?.sourceEmployeeId,
+  record?.rootEmployeeId,
+  record?.originalEmployeeId,
+]).map((value) => String(value || '').trim()).filter(Boolean))
+const recordEmployeeIdentifiers = (record) => [
+  record?.employeeId,
+  record?.employee_id,
+  record?.employeeCode,
+  record?.targetEmployeeId,
+].map((value) => String(value || '').trim()).filter(Boolean)
+const belongsToEmployee = (record, identifiers) => recordEmployeeIdentifiers(record)
+  .some((identifier) => identifiers.has(identifier))
+const taskAssignedToIdentifiers = (task, identifiers) => [...identifiers]
+  .some((identifier) => taskAssignedToEmployee(task, identifier))
+const taskCompletedByIdentifiers = (task, identifiers) => [...identifiers]
+  .some((identifier) => taskCompletedByEmployee(task, identifier))
 const recordDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
 const shiftIdOf = (record = {}) => String(record.shiftId || record.shift || '')
 const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapshot?.kind || task.kind || '')
 const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
-const taskIsRequired = (task = {}) => task.required !== false
+const taskIsRequired = (task = {}) => !taskIsReward(task) && task.required !== false
 const taskAmount = (task = {}) => Math.max(0, Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd) || 0)
 
 const currentEmployeeOf = (app) => {
   if (app.currentEmployee) return app.currentEmployee
-  const keys = [app.session?.employeeId, app.session?.code, app.session?.id].filter(Boolean).map(String)
-  return (app.employees || []).find((employee) => keys.includes(employeeKey(employee))) || app.session || {}
+  const directSessionIdentifiers = directEmployeeIdentifiers(app.session)
+  const exact = (app.employees || []).find((employee) => (
+    [...directEmployeeIdentifiers(employee)].some((identifier) => directSessionIdentifiers.has(identifier))
+  ))
+  if (exact) return exact
+  const sessionIdentifiers = employeeIdentifiers(app.session)
+  const linked = (app.employees || []).filter((employee) => (
+    [...employeeIdentifiers(employee)].some((identifier) => sessionIdentifiers.has(identifier))
+  ))
+  const requestedRole = String(app.session?.role || '').trim()
+  return linked.find((employee) => {
+    const unit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
+    if (requestedRole === 'store_manager') return unit === 'store_manager' || employee?.isStoreManager === true
+    if (requestedRole === 'business_support') return unit === 'business_support'
+    return !['store_manager', 'business_support'].includes(unit)
+  }) || linked[0] || app.session || {}
 }
 
-const ownOpenAttendance = (attendance, employeeId) => (Array.isArray(attendance) ? attendance : []).find((record) => (
+const ownOpenAttendance = (attendance, identifiers) => (Array.isArray(attendance) ? attendance : []).find((record) => (
   !record.deletedAt
-  && String(record.employeeId || '') === employeeId
+  && belongsToEmployee(record, identifiers)
   && !record.checkOutAt
   && !record.checkOut
 )) || null
 
-const taskMatchesAttendance = (task, attendance, employeeId) => (
+const taskMatchesAttendance = (task, attendance, identifiers) => (
   !task.deletedAt
   && String(task.storeId || '') === String(attendance.storeId || '')
   && recordDate(task) === recordDate(attendance)
-  && taskAssignedToEmployee(task, employeeId)
+  && taskAssignedToIdentifiers(task, identifiers)
   && (!shiftIdOf(task) || shiftIdOf(task) === shiftIdOf(attendance))
   && taskMatchesAttendanceChecklist(task, attendance)
 )
@@ -41,7 +85,14 @@ export function EmployeeShiftExpensePage() {
   const app = useApp()
   const employee = currentEmployeeOf(app)
   const employeeId = employeeKey(employee)
-  const attendance = useMemo(() => ownOpenAttendance(app.attendance, employeeId), [app.attendance, employeeId])
+  const ownEmployeeIdentifiers = useMemo(
+    () => employeeIdentifiers(employee, app.session),
+    [employee, app.session],
+  )
+  const attendance = useMemo(
+    () => ownOpenAttendance(app.attendance, ownEmployeeIdentifiers),
+    [app.attendance, ownEmployeeIdentifiers],
+  )
   const [form, setForm] = useState({ name: '', amount: '', note: '' })
   const [saving, setSaving] = useState(false)
   const requestRef = useRef(null)
@@ -49,9 +100,9 @@ export function EmployeeShiftExpensePage() {
     .filter((entry) => (
       entry.recognized !== false
       && String(entry.sourceType || '') === 'shift-expense-item'
-      && String(entry.employeeId || '') === employeeId
+      && belongsToEmployee(entry, ownEmployeeIdentifiers)
     ))
-    .sort((left, right) => String(right.occurredAt || right.createdAt || '').localeCompare(String(left.occurredAt || left.createdAt || ''))), [app.expenseEntries, employeeId])
+    .sort((left, right) => String(right.occurredAt || right.createdAt || '').localeCompare(String(left.occurredAt || left.createdAt || ''))), [app.expenseEntries, ownEmployeeIdentifiers])
   const activeStore = (app.stores || []).find((store) => String(store.id || '') === String(attendance?.storeId || app.session?.storeId || ''))
   const amount = Number(form.amount || 0)
   const ready = Boolean(attendance && form.name.trim() && amount > 0 && form.note.length <= 1_000)
@@ -125,13 +176,23 @@ export function EmployeeShiftExpensePage() {
 export function EmployeeAssignedTasksPage() {
   const app = useApp()
   const employee = currentEmployeeOf(app)
-  const employeeId = employeeKey(employee)
-  const attendance = useMemo(() => ownOpenAttendance(app.attendance, employeeId), [app.attendance, employeeId])
+  const ownEmployeeIdentifiers = useMemo(
+    () => employeeIdentifiers(employee, app.session),
+    [employee, app.session],
+  )
+  const attendance = useMemo(
+    () => ownOpenAttendance(app.attendance, ownEmployeeIdentifiers),
+    [app.attendance, ownEmployeeIdentifiers],
+  )
   const displayedTasks = useMemo(() => {
     const tasks = Array.isArray(app.tasks) ? app.tasks : []
-    if (attendance) return tasks.filter((task) => taskMatchesAttendance(task, attendance, employeeId))
-    return tasks.filter((task) => !task.deletedAt && recordDate(task) === today() && taskAssignedToEmployee(task, employeeId))
-  }, [app.tasks, attendance, employeeId])
+    if (attendance) return tasks.filter((task) => taskMatchesAttendance(task, attendance, ownEmployeeIdentifiers))
+    return tasks.filter((task) => (
+      !task.deletedAt
+      && recordDate(task) === today()
+      && taskAssignedToIdentifiers(task, ownEmployeeIdentifiers)
+    ))
+  }, [app.tasks, attendance, ownEmployeeIdentifiers])
   const [statuses, setStatuses] = useState({})
   const [incompleteReason, setIncompleteReason] = useState('')
   const [saving, setSaving] = useState(false)
@@ -139,7 +200,7 @@ export function EmployeeAssignedTasksPage() {
 
   const statusFor = (task) => Object.hasOwn(statuses, String(task.id))
     ? statuses[String(task.id)]
-    : taskCompletedByEmployee(task, employeeId)
+    : taskCompletedByIdentifiers(task, ownEmployeeIdentifiers)
   const completedTasks = displayedTasks.filter(statusFor).length
   const completionRate = displayedTasks.length ? Math.round((completedTasks / displayedTasks.length) * 100) : 0
   const allCompleted = displayedTasks.length > 0 && completedTasks === displayedTasks.length
@@ -150,11 +211,11 @@ export function EmployeeAssignedTasksPage() {
   const noteRequired = incompleteRequiredTasks.length > 0
   const ready = Boolean(attendance && displayedTasks.length && (!noteRequired || incompleteReason.trim()))
   const history = useMemo(() => (app.taskAssignmentHistory || []).flatMap((assignment) => (
-    (assignment.progressHistory || []).filter((event) => String(event.employeeId || '') === employeeId).map((event) => ({
+    (assignment.progressHistory || []).filter((event) => belongsToEmployee(event, ownEmployeeIdentifiers)).map((event) => ({
       ...event,
       assignmentId: assignment.receiptOnly === true ? '' : event.assignmentId || assignment.assignmentId || assignment.id,
     }))
-  )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || ''))), [app.taskAssignmentHistory, employeeId])
+  )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || ''))), [app.taskAssignmentHistory, ownEmployeeIdentifiers])
   const activeStore = (app.stores || []).find((store) => String(store.id || '') === String(attendance?.storeId || app.session?.storeId || ''))
 
   const taskRow = (task) => {

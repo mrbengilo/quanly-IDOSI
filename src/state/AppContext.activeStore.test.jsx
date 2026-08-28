@@ -145,6 +145,166 @@ describe('remote command active-store preservation', () => {
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
   })
 
+  it('resolves the signed-in employee through legacy profile aliases', async () => {
+    const aliasedState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{
+        id: 'PROFILE-MANAGER-A', code: 'QL-A', employeeId: 'MANAGER-A', employeeCode: 'LEGACY-QL-A',
+        name: 'Quản lý A', unit: 'store_manager', storeId: 'STORE-A', status: 'Đang làm việc',
+      }],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: storeManagerUser,
+      bootstrap: { user: storeManagerUser, state: aliasedState, policies: [], version: 1 },
+      users: [storeManagerUser],
+    })
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('manager-a', 'password')).ok).toBe(true)
+    })
+
+    expect(appRef.current.currentEmployee).toMatchObject({
+      id: 'PROFILE-MANAGER-A', employeeId: 'MANAGER-A', employeeCode: 'LEGACY-QL-A',
+    })
+  })
+
+  it('prefers a direct employee profile over an earlier linked manager proxy', async () => {
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{
+        id: 'QLCH-01', linkedEmployeeId: 'E01', name: 'Vai trò quản lý',
+        unit: 'store_manager', storeId: 'STORE-A', status: 'Đang làm việc',
+      }, {
+        id: 'E01', code: 'E01', name: 'Nhân viên 01',
+        unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc',
+      }],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: employeeHomeUser,
+      bootstrap: { user: employeeHomeUser, state: employeeState, policies: [], version: 1 },
+    })
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+    })
+
+    expect(appRef.current.currentEmployee).toMatchObject({ id: 'E01', unit: 'store' })
+  })
+
+  it('lets an aliased employee submit shift expense and task progress through legacy record keys', async () => {
+    const aliasedState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{
+        id: 'PROFILE-E01', code: 'CODE-E01', employeeId: 'LEGACY-E01', employeeCode: 'STAFF-E01',
+        name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc',
+      }],
+      attendance: [{
+        id: 'ATT-ALIAS', employeeId: 'LEGACY-E01', storeId: 'STORE-A', date: '2026-08-28',
+        shiftId: 'SHIFT-AM', shiftName: 'Ca sáng', checkInAt: '2026-08-28T01:00:00.000Z',
+        checkOutAt: null, checkOut: null,
+      }],
+      tasks: [{
+        id: 'TASK-ALIAS', assignmentId: 'ASSIGN-ALIAS', employeeIds: ['STAFF-E01'],
+        storeId: 'STORE-A', date: '2026-08-28', shiftId: 'SHIFT-AM', title: 'Mở cửa', required: false,
+      }],
+    }
+    const aliasedUser = { ...employeeHomeUser, employeeId: 'CODE-E01' }
+    api.apiLogin.mockResolvedValue({
+      user: aliasedUser,
+      bootstrap: { user: aliasedUser, state: aliasedState, policies: [], version: 1 },
+    })
+    api.apiCommand
+      .mockResolvedValueOnce({ version: 2, expense: { id: 'EXP-ALIAS' } })
+      .mockResolvedValueOnce({ version: 3, completionRate: 100 })
+    api.apiGetState.mockImplementation(() => new Promise(() => {}))
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+    })
+    await act(async () => {
+      expect((await appRef.current.addShiftExpense({
+        attendanceId: 'ATT-ALIAS', name: 'Mua vật dụng', amount: 35, note: 'Trong ca',
+        idempotencyKey: 'expense-alias-0001',
+      })).ok).toBe(true)
+      expect((await appRef.current.saveStoreTaskProgress({
+        attendanceId: 'ATT-ALIAS', tasks: [{ id: 'TASK-ALIAS', completed: true }],
+        incompleteReason: '', idempotencyKey: 'task-alias-0001',
+      })).ok).toBe(true)
+    })
+
+    expect(api.apiCommand).toHaveBeenNthCalledWith(1, 'shift_expense.create', {
+      attendanceId: 'ATT-ALIAS', name: 'Mua vật dụng', amount: 35, note: 'Trong ca',
+    }, { expectedVersion: 1, idempotencyKey: 'expense-alias-0001' })
+    expect(api.apiCommand).toHaveBeenNthCalledWith(2, 'task.progress.save', {
+      attendanceId: 'ATT-ALIAS', tasks: [{ id: 'TASK-ALIAS', completed: true }], incompleteReason: '',
+    }, { expectedVersion: 2, idempotencyKey: 'task-alias-0001' })
+  })
+
+  it('keeps a legacy reward task optional when required is omitted', async () => {
+    const rewardState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{
+        id: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc',
+      }],
+      attendance: [{
+        id: 'ATT-REWARD', employeeId: 'E01', storeId: 'STORE-A', date: '2026-08-28',
+        shiftId: 'SHIFT-AM', checkInAt: '2026-08-28T01:00:00.000Z', checkOutAt: null,
+      }],
+      tasks: [{
+        id: 'TASK-REWARD', employeeId: 'E01', storeId: 'STORE-A', date: '2026-08-28',
+        shiftId: 'SHIFT-AM', catalogKind: 'REWARD_TASK', title: 'Quay clip sản phẩm',
+      }],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: employeeHomeUser,
+      bootstrap: { user: employeeHomeUser, state: rewardState, policies: [], version: 1 },
+    })
+    api.apiCommand.mockResolvedValue({ version: 2, completionRate: 0 })
+    api.apiGetState.mockImplementation(() => new Promise(() => {}))
+    renderProvider()
+
+    let saveResult
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+    })
+    await act(async () => {
+      saveResult = await appRef.current.saveStoreTaskProgress({
+        attendanceId: 'ATT-REWARD',
+        tasks: [{ id: 'TASK-REWARD', completed: false }],
+        incompleteReason: '',
+        idempotencyKey: 'reward-optional-0001',
+      })
+    })
+    expect(saveResult).toEqual({ ok: true, version: 2, completionRate: 0 })
+
+    expect(api.apiCommand).toHaveBeenCalledWith('task.progress.save', {
+      attendanceId: 'ATT-REWARD', tasks: [{ id: 'TASK-REWARD', completed: false }], incompleteReason: '',
+    }, { expectedVersion: 1, idempotencyKey: 'reward-optional-0001' })
+  })
+
+  it('returns the employee-only preflight error when no profile is linked to the session', async () => {
+    const unlinkedState = { ...makeRemoteState('STORE-A'), employees: [] }
+    api.apiLogin.mockResolvedValue({
+      user: employeeHomeUser,
+      bootstrap: { user: employeeHomeUser, state: unlinkedState, policies: [], version: 1 },
+    })
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
+    })
+    await act(async () => {
+      await expect(appRef.current.addShiftExpense({ name: 'Không hợp lệ', amount: 1 }))
+        .resolves.toMatchObject({ ok: false, message: 'Chức năng này chỉ dành cho nhân viên cửa hàng.' })
+      await expect(appRef.current.saveStoreTaskProgress({ tasks: [] }))
+        .resolves.toMatchObject({ ok: false, message: 'Chức năng này chỉ dành cho nhân viên cửa hàng.' })
+    })
+    expect(api.apiCommand).not.toHaveBeenCalled()
+  })
+
   it('returns from a successful mutation before the background full-state reconciliation finishes', async () => {
     let resolveRefresh
     api.apiGetState.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))

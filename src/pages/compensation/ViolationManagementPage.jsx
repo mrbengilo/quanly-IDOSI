@@ -57,11 +57,16 @@ const violationShiftName = (entry = {}) => entry.shiftName || entry.shiftId || '
 const violationShiftTime = (entry = {}) => entry.shiftStart && entry.shiftEnd
   ? `${entry.shiftStart} – ${entry.shiftEnd}`
   : ''
-const employeeIdentifiers = (employee = {}) => [...new Set([
-  employee.id,
-  employee.code,
-  employee.employeeId,
-  employee.employee_id,
+const employeeIdentifiers = (employee) => [...new Set([
+  employee?.id,
+  employee?.code,
+  employee?.employeeId,
+  employee?.employee_id,
+  employee?.employeeCode,
+  employee?.linkedEmployeeId,
+  employee?.sourceEmployeeId,
+  employee?.rootEmployeeId,
+  employee?.originalEmployeeId,
 ].map((value) => String(value || '').trim()).filter(Boolean))]
 
 export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
@@ -259,9 +264,12 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
 }
 export function MyViolationsPage() {
   const app = useApp()
-  const employeeId = entityId(app.currentEmployee) || String(app.session?.employeeId || '')
+  const ownEmployeeIdentifiers = new Set([
+    ...employeeIdentifiers(app.currentEmployee),
+    ...employeeIdentifiers(app.session),
+  ])
   const rows = (app.violations || [])
-    .filter((entry) => entryEmployeeId(entry) === employeeId)
+    .filter((entry) => ownEmployeeIdentifiers.has(entryEmployeeId(entry)))
     .sort((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || '')))
   const outstandingVnd = rows.filter((entry) => !isVoided(entry)).reduce((sum, entry) => sum + Math.abs(entryAmount(entry)), 0)
 

@@ -216,6 +216,57 @@ describe('compensation pages', () => {
     expect(screen.queryByText('99,000 đ')).toBeNull()
   })
 
+  it('shows only the signed-in employee violations across strict profile aliases', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      session: { role: 'employee', employeeId: 'CODE-NV-01', storeId: 'CH001' },
+      currentEmployee: {
+        id: 'PROFILE-NV-01', code: 'CODE-NV-01', employeeId: 'LEGACY-NV-01', employeeCode: 'STAFF-NV-01',
+        name: 'Nhân viên Một', unit: 'store', storeId: 'CH001',
+      },
+      violations: [{
+        id: 'VIO-ALIAS', targetUnit: 'store', employeeId: 'LEGACY-NV-01', storeId: 'CH001',
+        occurredOn: '2026-08-26', shiftName: 'Ca alias', title: 'Vi phạm của mã cũ',
+        amountVnd: 3_000, status: 'ACTIVE',
+      }, {
+        id: 'VIO-OTHER', targetUnit: 'store', employeeId: 'NV-02', storeId: 'CH001',
+        occurredOn: '2026-08-26', shiftName: 'Ca khác', title: 'Vi phạm người khác',
+        amountVnd: 99_000, status: 'ACTIVE',
+      }],
+    }
+
+    render(<MyViolationsPage />)
+
+    expect(screen.getByText('Vi phạm của mã cũ')).toBeTruthy()
+    expect(screen.getAllByText('3,000 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Vi phạm người khác')).toBeNull()
+    expect(screen.queryByText('99,000 đ')).toBeNull()
+  })
+
+  it('falls back to the authenticated session when the current employee profile is unavailable', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      currentEmployee: null,
+      session: { role: 'employee', employeeId: 'LEGACY-NV-01', storeId: 'CH001' },
+      violations: [{
+        id: 'VIO-SESSION-ONLY', employeeId: 'LEGACY-NV-01', storeId: 'CH001',
+        occurredOn: '2026-08-26', shiftName: 'Ca phiên đăng nhập', title: 'Vi phạm theo phiên',
+        amountVnd: 3_000, status: 'ACTIVE',
+      }],
+      compensationEntries: [{
+        id: 'CMP-SESSION-ONLY', employeeId: 'LEGACY-NV-01', type: 'WORK', amountVnd: 5_000,
+        effectiveDate: '2026-08-26', note: 'Thưởng theo phiên', status: 'APPROVED',
+      }],
+    }
+
+    const { unmount } = render(<MyViolationsPage />)
+    expect(screen.getByText('Vi phạm theo phiên')).toBeTruthy()
+    unmount()
+
+    render(<MyCompensationPage />)
+    expect(screen.getByText('Thưởng theo phiên')).toBeTruthy()
+  })
+
   it('keeps employee revenue bonus data private to the signed-in employee', () => {
     mocked.app = {
       ...baseApp('employee'),
@@ -250,13 +301,19 @@ describe('compensation pages', () => {
       revenueBonuses: [{
         id: 'RB-TODAY', storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 4_500_001,
         totalPoolVnd: 180_000, allocations: [
-          { id: 'A-TODAY', employeeId: 'NV-01', allocatedVnd: 35_000, status: 'APPROVED', approvedSalesHours: 5 },
+          {
+            id: 'A-TODAY', employeeId: 'NV-01', allocatedVnd: 35_000, status: 'APPROVED',
+            weightUnits: 18_000, totalWeightUnits: 36_000,
+          },
           { id: 'A-PRIVATE', employeeId: 'NV-02', allocatedVnd: 145_000, status: 'APPROVED' },
         ],
       }, {
         id: 'RB-PAST', storeId: 'CH001', businessDate: '2026-08-12', revenueVnd: 2_500_000,
         totalPoolVnd: 50_000, allocations: [
-          { id: 'A-PAST', employeeId: 'NV-01', allocatedVnd: 20_000, status: 'APPROVED', approvedSalesHours: 4 },
+          {
+            id: 'A-PAST', employeeId: 'NV-01', allocatedVnd: 20_000, status: 'APPROVED',
+            weightUnits: 14_400, totalWeightUnits: 28_800,
+          },
         ],
       }],
     }
@@ -264,6 +321,7 @@ describe('compensation pages', () => {
 
     expect(screen.getByText('TỔNG GIỜ LÀM CỦA TÔI')).toBeTruthy()
     expect(screen.getAllByText('5.00 giờ').length).toBeGreaterThan(0)
+    expect(screen.getByText('50.00%')).toBeTruthy()
     expect(screen.getByText('DOANH THU CỬA HÀNG TRONG NGÀY')).toBeTruthy()
     expect(screen.getByText('4,500,001 đ')).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Mốc thưởng doanh thu' })).toBeTruthy()
@@ -274,6 +332,26 @@ describe('compensation pages', () => {
     expect(screen.getByText('12/08/2026')).toBeTruthy()
     expect(screen.getByText('20,000 đ')).toBeTruthy()
     expect(screen.queryByText('145,000 đ')).toBeNull()
+  })
+
+  it('keeps a completed transfer-store allocation in private reward history', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      revenueBonuses: [{
+        id: 'RB-TRANSFER-HISTORY', storeId: 'CH002', businessDate: '2026-08-26',
+        revenueVnd: 3_000_000, totalPoolVnd: 60_000, allocations: [{
+          id: 'A-TRANSFER-HISTORY', storeId: 'CH002', businessDate: '2026-08-26',
+          employeeId: 'NV-01', allocatedVnd: 25_000, status: 'APPROVED',
+          weightUnits: 14_400, totalWeightUnits: 28_800,
+        }],
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    const history = screen.getByRole('heading', { name: 'Lịch sử nhận thưởng' }).closest('.card')
+    expect(within(history).getByText('SM TNV')).toBeTruthy()
+    expect(within(history).getAllByText('25,000 đ').length).toBeGreaterThan(0)
+    expect(within(history).getByText('4.00 giờ')).toBeTruthy()
   })
 
   it('treats a missing canonical daily-revenue row as zero while preserving the legacy fallback when the collection is unavailable', () => {
@@ -321,10 +399,15 @@ describe('compensation pages', () => {
   it('shows a store manager only the team total and their own allocation', () => {
     mocked.app = {
       ...baseApp('store_manager'),
+      session: { role: 'store_manager', employeeId: 'LEGACY-QL-01', storeId: 'CH001' },
+      currentEmployee: {
+        id: 'PROFILE-QL-01', code: 'QL-01', employeeId: 'LEGACY-QL-01',
+        name: 'Quản lý Một', unit: 'store_manager', storeId: 'CH001',
+      },
       revenueBonuses: [{
         id: 'RB-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 170,
         allocations: [
-          { id: 'A-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'QL-01', employeeName: 'Quản lý Một', allocatedVnd: 70, status: 'Đã duyệt' },
+          { id: 'A-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'PROFILE-QL-01', employeeName: 'Quản lý Một', allocatedVnd: 70, status: 'Đã duyệt' },
           { id: 'A-COWORKER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 100, status: 'Đã duyệt' },
         ],
       }],
@@ -388,6 +471,49 @@ describe('compensation pages', () => {
 
     expect(screen.getByText('Khoản của tôi')).toBeTruthy()
     expect(screen.queryByText('Khoản người khác')).toBeNull()
+    expect(screen.queryByText('999 đ')).toBeNull()
+  })
+
+  it('reconciles private compensation sources across strict profile aliases without widening privacy', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      session: { role: 'employee', employeeId: 'CODE-NV-01', storeId: 'CH001' },
+      currentEmployee: {
+        id: 'PROFILE-NV-01', code: 'CODE-NV-01', employeeId: 'LEGACY-NV-01', employeeCode: 'STAFF-NV-01',
+        name: 'Nhân viên Một', unit: 'store', storeId: 'CH001',
+      },
+      compensationEntries: [{
+        id: 'C-ALIAS', employeeId: 'CODE-NV-01', type: 'WORK', amountVnd: 40,
+        effectiveDate: '2026-08-26', note: 'Thưởng công việc mã cũ', status: 'APPROVED',
+      }, {
+        id: 'C-OTHER', employeeId: 'NV-02', type: 'WORK', amountVnd: 999,
+        effectiveDate: '2026-08-26', note: 'Thưởng người khác', status: 'APPROVED',
+      }],
+      violations: [{
+        id: 'V-ALIAS', employeeId: 'STAFF-NV-01', amountVnd: 10,
+        occurredOn: '2026-08-26', title: 'Khấu trừ mã cũ', status: 'ACTIVE',
+      }],
+      revenueBonuses: [{
+        id: 'RB-ALIAS', storeId: 'CH001', businessDate: '2026-08-26', allocations: [{
+          id: 'RA-ALIAS', employeeId: 'PROFILE-NV-01', amountVnd: 20, status: 'APPROVED',
+        }],
+      }],
+      payrollPeriods: [{
+        id: 'PAY-ALIAS', storeId: 'CH001', storeName: 'Dosii NTL', period: '2026-08', status: 'Đã chốt',
+        rows: [{
+          employeeId: 'LEGACY-NV-01', salaryVnd: 100, grossCompensationVnd: 160,
+          appliedViolationVnd: 10, advancesPaid: 0, netPayVnd: 150,
+        }, { employeeId: 'NV-02', salaryVnd: 999, netPayVnd: 999 }],
+      }],
+    }
+
+    render(<MyCompensationPage />)
+
+    expect(screen.getByText('Thưởng công việc mã cũ')).toBeTruthy()
+    expect(screen.getByText('Khấu trừ mã cũ')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Quyết toán theo cửa hàng' })).toBeTruthy()
+    expect(screen.getAllByText('150 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Thưởng người khác')).toBeNull()
     expect(screen.queryByText('999 đ')).toBeNull()
   })
 

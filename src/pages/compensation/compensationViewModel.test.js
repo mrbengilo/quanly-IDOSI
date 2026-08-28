@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   employeesForTarget,
+  entryEmployeeId,
   managerCandidates,
   operationalStores,
   payrollCompensationTotalsForEmployee,
@@ -22,6 +23,12 @@ const stores = [
 ]
 
 describe('compensation view models', () => {
+  it('uses the frozen payee identity while preserving a historical source identity', () => {
+    expect(entryEmployeeId({ employeeId: 'QLCH-001', payeeEmployeeId: 'E01' })).toBe('E01')
+    expect(entryEmployeeId({ employee_id: 'LEGACY-E01' })).toBe('LEGACY-E01')
+    expect(entryEmployeeId({ employeeCode: 'STAFF-E01' })).toBe('STAFF-E01')
+  })
+
   it('gives business support every operational store without assigned-store filtering', () => {
     expect(operationalStores(stores).map((store) => store.id)).toEqual(['CH001', 'CH002'])
     expect(storesVisibleToRole(stores, { role: 'business_support', assignedStoreIds: ['CH001'] }).map((store) => store.id))

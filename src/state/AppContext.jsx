@@ -711,7 +711,7 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
   }
   const remoteRole = normalizeAuthRole(remoteUser?.role)
   const employeeId = remoteUser?.employeeId || remoteUser?.employee_id
-  const remoteEmployee = safeRemote.employees.find((employee) => String(employee.id || employee.code) === String(employeeId))
+  const remoteEmployee = employeeProfileFor(safeRemote.employees, { employeeId })
   const isAdminAccount = remoteRole === 'admin'
   const session = isAdminAccount
     ? { id: remoteUser.id, code: 'ADMIN', name: remoteUser.displayName || remoteUser.username, username: remoteUser.username, role: 'admin', accountType: 'admin', authVersion: remoteUser.version, availableRoles: remoteUser.availableRoles || [], needsRoleSelection: Boolean(remoteUser.needsRoleSelection) }
@@ -834,7 +834,51 @@ const rememberActiveStore = (account, storeId) => {
   }
 }
 
-const accountKey = (account = {}) => String(account.id || account.code || account.employeeCode || '')
+const accountKey = (account) => String(account?.id || account?.code || account?.employeeCode || '')
+const directEmployeeIdentifiers = (...records) => new Set(records.flatMap((record) => [
+  record?.id,
+  record?.code,
+  record?.employeeId,
+  record?.employee_id,
+  record?.employeeCode,
+]).map((value) => String(value || '').trim()).filter(Boolean))
+const employeeAccountIdentifiers = (...records) => new Set(records.flatMap((record) => [
+  record?.id,
+  record?.code,
+  record?.employeeId,
+  record?.employee_id,
+  record?.employeeCode,
+  record?.linkedEmployeeId,
+  record?.sourceEmployeeId,
+  record?.rootEmployeeId,
+  record?.originalEmployeeId,
+]).map((value) => String(value || '').trim()).filter(Boolean))
+const employeeProfileFor = (employees = [], ...identitySources) => {
+  const requestedDirect = directEmployeeIdentifiers(...identitySources)
+  const exact = employees.find((employee) => (
+    [...directEmployeeIdentifiers(employee)].some((identifier) => requestedDirect.has(identifier))
+  ))
+  if (exact) return exact
+  const requested = employeeAccountIdentifiers(...identitySources)
+  const linked = employees.filter((employee) => (
+    [...employeeAccountIdentifiers(employee)].some((identifier) => requested.has(identifier))
+  ))
+  const requestedRole = normalizeAuthRole(identitySources.find((source) => source?.role)?.role)
+  if (!requestedRole) return linked[0] || null
+  return linked.find((employee) => {
+    const unit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
+    if (requestedRole === 'store_manager') return unit === 'store_manager' || employee?.isStoreManager === true
+    if (requestedRole === 'business_support') return unit === 'business_support'
+    return !['store_manager', 'business_support'].includes(unit)
+  }) || linked[0] || null
+}
+const employeeRecordMatches = (record = {}, identifiers = new Set()) => [
+  record.employeeId,
+  record.employee_id,
+  record.employeeCode,
+  record.targetEmployeeId,
+].map((value) => String(value || '').trim()).filter(Boolean)
+  .some((identifier) => identifiers.has(identifier))
 
 const toSession = (account, source) => {
   const common = {
@@ -2099,8 +2143,9 @@ export function AppProvider({ children }) {
   }
 
   const addShiftExpense = async (payload = {}) => {
-    const employeeId = String(state.session?.employeeId || state.session?.code || '')
-    const employee = state.employees.find((item) => accountKey(item) === employeeId)
+    const employee = employeeProfileFor(state.employees, state.session)
+    const employeeId = accountKey(employee) || String(state.session?.employeeId || state.session?.code || '')
+    const ownEmployeeIdentifiers = employeeAccountIdentifiers(employee, state.session)
     const role = normalizeAuthRole(state.session?.role)
     const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
     if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
@@ -2108,7 +2153,7 @@ export function AppProvider({ children }) {
     }
     const attendanceId = String(payload.attendanceId || '')
     const openAttendance = state.attendance.find((record) => (
-      String(record.employeeId || '') === employeeId
+      employeeRecordMatches(record, ownEmployeeIdentifiers)
       && (!attendanceId || String(record.id || '') === attendanceId)
       && !record.deletedAt
       && !record.checkOutAt
@@ -2212,8 +2257,9 @@ export function AppProvider({ children }) {
   }
 
   const saveStoreTaskProgress = async (payload = {}) => {
-    const employeeId = String(state.session?.employeeId || state.session?.code || '')
-    const employee = state.employees.find((item) => accountKey(item) === employeeId)
+    const employee = employeeProfileFor(state.employees, state.session)
+    const employeeId = accountKey(employee) || String(state.session?.employeeId || state.session?.code || '')
+    const ownEmployeeIdentifiers = employeeAccountIdentifiers(employee, state.session)
     const role = normalizeAuthRole(state.session?.role)
     const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
     if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
@@ -2221,7 +2267,7 @@ export function AppProvider({ children }) {
     }
     const attendanceId = String(payload.attendanceId || '')
     const openAttendance = state.attendance.find((record) => (
-      String(record.employeeId || '') === employeeId
+      employeeRecordMatches(record, ownEmployeeIdentifiers)
       && (!attendanceId || String(record.id || '') === attendanceId)
       && !record.deletedAt
       && !record.checkOutAt
@@ -2241,7 +2287,8 @@ export function AppProvider({ children }) {
         ...(Array.isArray(task.assignedEmployeeIds) ? task.assignedEmployeeIds : []),
       ].filter(Boolean).map(String)
       const taskShiftId = String(task.shiftId || task.shift || '')
-      return (!assignees.length || assignees.includes(employeeId)) && (!taskShiftId || taskShiftId === shiftId)
+      return (!assignees.length || assignees.some((identifier) => ownEmployeeIdentifiers.has(identifier)))
+        && (!taskShiftId || taskShiftId === shiftId)
     })
     if (!scopedTasks.length) return { ok: false, message: 'Ca đang làm chưa có công việc được giao.' }
     const statuses = Array.isArray(payload.tasks) ? payload.tasks : []
@@ -2256,7 +2303,11 @@ export function AppProvider({ children }) {
     }
     if (submitted.size !== taskIds.size) return { ok: false, message: 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.' }
     const requestedIncompleteReason = String(payload.incompleteReason || payload.note || '').trim()
-    const requiredTaskIds = new Set(scopedTasks.filter((task) => task.required !== false).map((task) => String(task.id || '')))
+    const requiredTaskIds = new Set(scopedTasks.filter((task) => {
+      const kind = String(task.catalogSnapshot?.kind || task.catalogKind || task.kind || '').trim().toUpperCase()
+      const rewardTask = task.rewardEligible === true || kind === WORK_CATALOG_KIND.REWARD_TASK
+      return !rewardTask && task.required !== false
+    }).map((task) => String(task.id || '')))
     const incompleteTaskIds = [...submitted]
       .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && !completed)
       .map(([taskId]) => taskId)
@@ -2283,7 +2334,7 @@ export function AppProvider({ children }) {
     const latestSubmission = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
       .filter((event) => (
         event?.action === 'progress-submitted'
-        && String(event.employeeId || '') === employeeId
+        && employeeRecordMatches(event, ownEmployeeIdentifiers)
         && String(event.attendanceId || '') === String(openAttendance.id || '')
       ))
       .reduce((latest, event) => (
@@ -5067,7 +5118,9 @@ export function AppProvider({ children }) {
     : state.activeStoreId || state.session?.storeId
   const activeStore = state.stores.find((store) => store.id === selectedStoreId)
     || (state.session?.role === 'store_manager' || state.session?.role === 'employee' ? null : state.stores[0] || null)
-  const currentEmployee = state.session?.employeeId ? state.employees.find((employee) => employee.id === state.session.employeeId) || null : null
+  const currentEmployee = state.session?.employeeId
+    ? employeeProfileFor(state.employees, state.session)
+    : null
   const revenueBonuses = revenueBonusView(state.revenueBonusDaily, state.revenueBonusAllocations)
 
   const value = {

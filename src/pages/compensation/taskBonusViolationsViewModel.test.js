@@ -176,6 +176,30 @@ describe('selectRewardSubmissionRows', () => {
     expect(rows.filter((row) => row.payable).reduce((sum, row) => sum + row.amountVnd, 0)).toBe(2_000)
   })
 
+  it('treats an authorized transferred reward linked to the home payroll as recorded', () => {
+    const rows = selectRewardSubmissionRows({
+      ...common,
+      workCatalogProgress: [{
+        id: 'PROGRESS-TRANSFER-ACTIVE', employeeId: 'NV-02', employeeName: 'Lê Bình',
+        storeId: 'CH001', payrollStoreId: 'CH002', supportTransferId: 'TRANSFER-01',
+        workDate: '2026-08-28', shiftRef: 'AFTERNOON', catalogItemId: 'REWARD-MUSIC',
+        catalogCode: 'store.reward.music', kind: 'REWARD_TASK', name: 'Mở nhạc ca hỗ trợ',
+        amountVnd: 1_000, completed: true, payable: true, submittedAt: '2026-08-28T04:00:00.000Z',
+      }],
+      compensationEntries: [{
+        id: 'WORK-TRANSFER-ACTIVE', workCatalogProgressId: 'PROGRESS-TRANSFER-ACTIVE',
+        employeeId: 'NV-02', storeId: 'CH001', payrollStoreId: 'CH002',
+        type: 'WORK', status: 'ACTIVE', amountVnd: 1_000,
+      }],
+      taskAssignmentHistory: [],
+    })
+
+    expect(rows).toEqual([expect.objectContaining({
+      employeeId: 'NV-02', storeId: 'CH001', name: 'Mở nhạc ca hỗ trợ', amountVnd: 1_000,
+      payable: true, status: 'Đã ghi nhận', statusTone: 'green',
+    })])
+  })
+
   it('excludes mutable completedBy/task.done state until the employee submits it', () => {
     const rows = selectRewardSubmissionRows({
       ...common,
