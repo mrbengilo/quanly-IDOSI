@@ -1636,6 +1636,14 @@ describe('IDOSI Worker security primitives', () => {
       employees: [
         { id: 'E01', storeId: 'S01', unit: 'store', name: 'Store employee' },
         { id: 'E-PEER-PAYEE', storeId: 'S01', unit: 'store', name: 'Peer manager payee' },
+        {
+          id: 'PROFILE-RETIRED-IN-PLACE', storeId: 'S01', unit: 'store', status: 'Đã nghỉ việc',
+          name: 'Retired employee retained in active collection',
+        },
+        {
+          id: 'PROFILE-RETIRED-OTHER', storeId: 'S02', unit: 'store', status: 'inactive',
+          name: 'Other-store retired employee',
+        },
         { id: 'E-INBOUND', storeId: 'S02', unit: 'store', name: 'Former inbound support employee' },
         { id: 'HTKD001', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', name: 'Support one', salary: 10_000_000 },
         { id: 'HTKD002', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', name: 'Support two', salary: 11_000_000 },
@@ -1714,6 +1722,14 @@ describe('IDOSI Worker security primitives', () => {
           id: 'P-S01', storeId: 'S01', period: '2026-08', rows: [
             { employeeId: 'E01', gross: 8_000_000, hours: 10, kpiBonus: 1_000_000 },
             { employeeId: 'E-PEER-PAYEE', gross: 7_500_000, hours: 9 },
+            {
+              employeeId: 'PROFILE-RETIRED-IN-PLACE', gross: 7_250_000, hours: 8,
+              finalSettlement: true, kpiBonus: 725_000,
+            },
+            {
+              employeeId: 'PROFILE-RETIRED-OTHER', gross: 7_100_000, hours: 8,
+              finalSettlement: true,
+            },
             { employeeId: 'E-DELETED', gross: 7_000_000, hours: 7, finalSettlement: true, kpiBonus: 700_000 },
             {
               employeeId: 'E-DELETED-SUPPORT', gross: 6_000_000, hours: 6, finalSettlement: true,
@@ -1837,7 +1853,9 @@ describe('IDOSI Worker security primitives', () => {
       role: 'store_manager', user_id: 'U-M1', employee_id: 'QL-S01-001', store_id: 'S01',
     })
     expect(managerProjection.employees.map(({ id }) => id))
-      .toEqual(['E01', 'E-PEER-PAYEE', 'QL-S01-001', 'E-INBOUND'])
+      .toEqual([
+        'E01', 'E-PEER-PAYEE', 'PROFILE-RETIRED-IN-PLACE', 'QL-S01-001', 'E-INBOUND',
+      ])
     expect(managerProjection.attendance.map(({ id }) => id)).toEqual(['A-E01', 'A-M1', 'A-E-DELETED'])
     expect(managerProjection.notifications.map(({ id }) => id)).toEqual(['N-E01', 'N-M1'])
     expect(managerProjection.schedule.map(({ id }) => id)).toEqual(['SCH-E'])
@@ -1855,6 +1873,10 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerProjection.payrollPeriods[0].rows).toEqual([
       { employeeId: 'E01', gross: 8_000_000, hours: 10 },
       { employeeId: 'E-PEER-PAYEE', gross: 7_500_000, hours: 9 },
+      {
+        employeeId: 'PROFILE-RETIRED-IN-PLACE', gross: 7_250_000, hours: 8,
+        finalSettlement: true,
+      },
       { employeeId: 'E-DELETED', gross: 7_000_000, hours: 7, finalSettlement: true },
       {
         employeeId: 'E-DELETED-SUPPORT', gross: 6_000_000, hours: 6, finalSettlement: true,
@@ -1883,7 +1905,7 @@ describe('IDOSI Worker security primitives', () => {
     })
     expect(managerProjection.deletedEmployees.map(({ id }) => id)).toEqual(['E-DELETED', 'E-COLLIDE'])
     expect(JSON.stringify(managerProjection.payrollPeriods))
-      .not.toMatch(/E-FOREIGN|E-ORPHAN-SUPPORT|SHARED-PAYROLL|QL-S01-002/u)
+      .not.toMatch(/PROFILE-RETIRED-OTHER|E-FOREIGN|E-ORPHAN-SUPPORT|SHARED-PAYROLL|QL-S01-002/u)
     expect(JSON.stringify({ ...managerProjection, payrollPeriods: [] }))
       .not.toMatch(/HTKD001|HTKD002|QL-S01-002|E-DELETED-SUPPORT|E-FOREIGN|VP001/u)
   })

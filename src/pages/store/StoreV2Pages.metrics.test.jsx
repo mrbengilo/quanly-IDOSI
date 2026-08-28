@@ -473,6 +473,115 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(within(table).queryByText(lowerPriorityManager.name)).toBeNull()
   })
 
+  it.each([{
+    label: 'legacy employee identifier',
+    rowIdentity: {},
+    payableIdentity: {},
+  }, {
+    label: 'explicit manager profile',
+    rowIdentity: { managerProfileId: 'QL-S01-SNAPSHOT' },
+    payableIdentity: { managerProfileId: 'QL-S01-SNAPSHOT' },
+  }])('does not append a duplicate manager payable already captured by $label', ({ rowIdentity, payableIdentity }) => {
+    const manager = {
+      ...employee,
+      id: payableIdentity.managerProfileId || employee.id,
+      name: 'Quản lý đã có trong snapshot',
+      unit: 'store_manager',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [manager],
+      payrollPeriods: [{
+        id: 'PAY-MANAGER-ALREADY-IN-ROWS', storeId: store.id, period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: employee.id,
+          employeeName: manager.name,
+          ...rowIdentity,
+          hours: 8,
+          baseSalary: 15_000_000,
+          gross: 15_000_000,
+          remaining: 15_000_000,
+          netPayVnd: 15_000_000,
+          salarySnapshot: { hourlyRate: 0, tiktokAllowance: 0 },
+        }],
+        managerPayable: {
+          employeeId: employee.id,
+          employeeName: manager.name,
+          ...payableIdentity,
+          amountVnd: 15_000_000,
+        },
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    expect(within(table).queryByText('Thưởng/phụ cấp quản lý')).toBeNull()
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('15,000,000 đ')).toBeTruthy()
+  })
+
+  it.each(['gross', 'amountVnd'])('uses a legacy %s-only manager row as the authoritative payout', (payoutField) => {
+    mocked.app = {
+      ...baseApp(),
+      payrollPeriods: [{
+        id: `PAY-MANAGER-${payoutField.toUpperCase()}-ONLY`, storeId: store.id,
+        period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: employee.id,
+          employeeName: employee.name,
+          [payoutField]: 15_000_000,
+          salarySnapshot: { hourlyRate: 0, tiktokAllowance: 0 },
+        }],
+        managerPayable: {
+          employeeId: employee.id,
+          employeeName: employee.name,
+          amountVnd: 15_000_000,
+        },
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    expect(within(table).queryByText('Thưởng/phụ cấp quản lý')).toBeNull()
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('15,000,000 đ')).toBeTruthy()
+  })
+
+  it('keeps a legacy same-payee manager payable when its amount differs from the salary row', () => {
+    mocked.app = {
+      ...baseApp(),
+      payrollPeriods: [{
+        id: 'PAY-LEGACY-MANAGER-DISTINCT-AMOUNT', storeId: store.id,
+        period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: employee.id,
+          employeeName: employee.name,
+          hours: 3,
+          baseSalary: 60_000,
+          gross: 60_000,
+          remaining: 60_000,
+          netPayVnd: 60_000,
+          salarySnapshot: { hourlyRate: 20_000, tiktokAllowance: 0 },
+        }],
+        managerPayable: {
+          employeeId: employee.id,
+          employeeName: employee.name,
+          amountVnd: 50_000,
+        },
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    const managerRow = within(table).getByText('Thưởng/phụ cấp quản lý').closest('tr')
+    expect(within(managerRow).getByText('50,000 đ')).toBeTruthy()
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('110,000 đ')).toBeTruthy()
+  })
+
   it('includes a same-payee manager payable in the authoritative closed total', () => {
     const manager = {
       id: 'QL-S01-CURRENT',

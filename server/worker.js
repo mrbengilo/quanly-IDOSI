@@ -2221,7 +2221,7 @@ export const projectSharedState = (rawState, user) => {
     for (const profile of filterArray(state, 'employees', (record) => (
       String(record.storeId || '') === storeId
       && employeeUnit(record) === 'store'
-      && activeEmployeeIdentityProfile(record)
+      && !record.deletedAt
     ))) addSafeWorkerProfile(profile)
     for (const profile of filterArray(state, 'deletedEmployees', (record) => (
       String(record.storeId || '') === storeId && employeeUnit(record) === 'store'

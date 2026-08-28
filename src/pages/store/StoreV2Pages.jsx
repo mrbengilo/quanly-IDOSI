@@ -741,6 +741,25 @@ export function StorePayrollV2() {
   const managerPayable = hasAuthoritativeSnapshot && Number(currentPeriod.managerPayable?.amountVnd || 0) > 0
     ? currentPeriod.managerPayable
     : null
+  const authoritativeSnapshotPayoutVnd = (snapshotRow = {}, fallbackVnd) => Number(
+    snapshotRow.netPayVnd
+    ?? snapshotRow.remaining
+    ?? snapshotRow.gross
+    ?? snapshotRow.amountVnd
+    ?? fallbackVnd,
+  )
+  const managerPayableAlreadyInRows = Boolean(managerPayable && currentPeriod.rows.some((snapshotRow = {}) => {
+    const managerProfileId = String(managerPayable.managerProfileId || '').trim()
+    const explicitRowProfileIds = [snapshotRow.managerProfileId, snapshotRow.settlementProfileId]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+    const sameManagerIdentity = managerProfileId
+      ? explicitRowProfileIds.includes(managerProfileId)
+      : explicitRowProfileIds.length === 0
+        && String(snapshotRow.employeeId || '').trim() === String(managerPayable.employeeId || '').trim()
+    const authoritativePayoutVnd = authoritativeSnapshotPayoutVnd(snapshotRow)
+    return sameManagerIdentity && authoritativePayoutVnd === Number(managerPayable.amountVnd)
+  }))
   const managerCompensation = currentPeriod?.managerRevenueBonus?.compensation || {}
   const managerCompensationVnd = Math.max(0, Number(managerPayable?.compensationVnd || 0))
   const managerCompensationBreakdownVnd = ['manual', 'work', 'allowance', 'revenue']
@@ -752,7 +771,7 @@ export function StorePayrollV2() {
           snapshotRow,
           rowKey: `snapshot:${snapshotRow.settlementProfileId || snapshotRow.managerProfileId || snapshotRow.employeeId || 'unknown'}:${index}`,
         })),
-        ...(managerPayable ? [{
+        ...(managerPayable && !managerPayableAlreadyInRows ? [{
           snapshotRow: {
             employeeId: managerPayable.employeeId,
             managerProfileId: managerPayable.managerProfileId,
@@ -871,7 +890,7 @@ export function StorePayrollV2() {
       violations,
       advances,
       gross: snapshotRow ? Number(snapshotRow.gross ?? snapshotRow.grossCompensationVnd ?? settlement.grossPay) : settlement.grossPay,
-      net: snapshotRow ? Number(snapshotRow.netPayVnd ?? snapshotRow.remaining ?? settlement.availableSalary) : settlement.availableSalary,
+      net: snapshotRow ? authoritativeSnapshotPayoutVnd(snapshotRow, settlement.availableSalary) : settlement.availableSalary,
     }
   })
   const totals = rows.reduce((value, row) => ({
