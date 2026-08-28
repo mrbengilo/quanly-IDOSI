@@ -16,6 +16,12 @@ const safeAmount = (value) => {
 }
 const array = (value) => Array.isArray(value) ? value : []
 const unique = (values) => [...new Set(values.map(text).filter(Boolean))]
+const employeeIdentifiers = (employee = {}) => unique([
+  employee.id,
+  employee.code,
+  employee.employeeId,
+  employee.employee_id,
+])
 const normalizedProfileLabel = (value) => text(value)
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/gu, '')
@@ -98,23 +104,27 @@ export const selectWorkedShiftOptions = ({
   schedule = [],
   shiftDefinitions = [],
   employeeId = '',
+  employee = null,
   storeId = '',
   date = '',
 } = {}) => {
-  const requestedEmployeeId = text(employeeId)
+  const requestedEmployeeIds = new Set(unique([
+    employeeId,
+    ...employeeIdentifiers(employee || {}),
+  ]))
   const requestedStoreId = text(storeId)
   const requestedDate = text(date).slice(0, 10)
-  if (!requestedEmployeeId || !requestedStoreId || !requestedDate) return []
+  if (!requestedEmployeeIds.size || !requestedStoreId || !requestedDate) return []
 
   const attendanceRows = array(attendance)
     .filter((record) => !record?.deletedAt)
-    .filter((record) => employeeIdOf(record) === requestedEmployeeId)
+    .filter((record) => requestedEmployeeIds.has(employeeIdOf(record)))
     .filter((record) => storeIdOf(record) === requestedStoreId)
     .filter((record) => dateOf(record) === requestedDate)
     .sort((left, right) => text(right.checkInAt || right.createdAt).localeCompare(text(left.checkInAt || left.createdAt)))
   const scheduleRows = array(schedule)
     .filter((record) => !record?.deletedAt)
-    .filter((record) => employeeIdOf(record) === requestedEmployeeId)
+    .filter((record) => requestedEmployeeIds.has(employeeIdOf(record)))
     .filter((record) => storeIdOf(record) === requestedStoreId)
     .filter((record) => dateOf(record) === requestedDate)
     .sort((left, right) => text(right.updatedAt || right.createdAt).localeCompare(text(left.updatedAt || left.createdAt)))
@@ -167,7 +177,8 @@ export const selectStoreEmployees = ({
     && !['inactive', 'đã nghỉ việc'].includes(text(employee.status).toLocaleLowerCase('vi'))
     && !isStoreManagerProfile(employee)
     && employeeUnit(employee) === 'store'
-    && (storeIdOf(employee) === requestedStoreId || historicalEmployeeIds.has(entityId(employee)))
+    && (storeIdOf(employee) === requestedStoreId
+      || employeeIdentifiers(employee).some((employeeId) => historicalEmployeeIds.has(employeeId)))
   )).sort((left, right) => (
     text(left.name).localeCompare(text(right.name), 'vi') || entityId(left).localeCompare(entityId(right))
   ))

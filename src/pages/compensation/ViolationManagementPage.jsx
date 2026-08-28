@@ -81,16 +81,18 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
   const [validation, setValidation] = useState('')
   const { busyKey, error, run } = useCompensationAction(app)
   const selectedEmployeeId = employeeSelection || entityId(employees[0])
+  const selectedEmployee = employees.find((employee) => entityId(employee) === selectedEmployeeId) || null
   const shifts = useMemo(() => targetUnit === 'store'
     ? selectWorkedShiftOptions({
         attendance: app.attendance || [],
         schedule: app.schedule || [],
         shiftDefinitions: app.shiftDefinitions || [],
         employeeId: selectedEmployeeId,
+        employee: selectedEmployee,
         storeId: selectedStoreId,
         date: occurredOn,
       })
-    : [], [app.attendance, app.schedule, app.shiftDefinitions, targetUnit, selectedEmployeeId, selectedStoreId, occurredOn])
+    : [], [app.attendance, app.schedule, app.shiftDefinitions, targetUnit, selectedEmployeeId, selectedEmployee, selectedStoreId, occurredOn])
   const selectedShiftId = shifts.some((shift) => entityId(shift) === shiftSelection)
     ? shiftSelection
     : entityId(shifts[0])

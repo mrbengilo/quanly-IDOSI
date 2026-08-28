@@ -227,14 +227,16 @@ function ViolationEntryTab({ app, storeId, store }) {
   }), [app.employees, app.attendance, app.schedule, storeId, occurredOn])
   const employeeIds = new Set(employees.map(entityId))
   const selectedEmployeeId = employeeIds.has(employeeSelection) ? employeeSelection : entityId(employees[0])
+  const selectedEmployee = employees.find((employee) => entityId(employee) === selectedEmployeeId) || null
   const shifts = useMemo(() => selectWorkedShiftOptions({
     attendance: app.attendance,
     schedule: app.schedule,
     shiftDefinitions: app.shiftDefinitions,
     employeeId: selectedEmployeeId,
+    employee: selectedEmployee,
     storeId,
     date: occurredOn,
-  }), [app.attendance, app.schedule, app.shiftDefinitions, selectedEmployeeId, storeId, occurredOn])
+  }), [app.attendance, app.schedule, app.shiftDefinitions, selectedEmployeeId, selectedEmployee, storeId, occurredOn])
   const selectedShiftId = shifts.some((shift) => shift.id === shiftSelection) ? shiftSelection : shifts[0]?.id || ''
   const selectedShift = shifts.find((shift) => shift.id === selectedShiftId) || null
   const catalogState = useMemo(() => activeViolationOptions({

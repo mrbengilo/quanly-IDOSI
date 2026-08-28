@@ -19,6 +19,7 @@ import worker, {
   supportTransferTimeBounds,
   verifyPassword,
 } from './worker'
+import { workCatalogClaimKey, workCatalogProgressKey } from '../src/domain/workCatalog'
 
 const TEST_IDENTITY_IMAGE = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
 const testIdentityImages = () => ({ front: TEST_IDENTITY_IMAGE, back: TEST_IDENTITY_IMAGE })
@@ -1462,6 +1463,49 @@ describe('IDOSI Worker security primitives', () => {
       revenueVnd: 4_500_000, orderCount: 2,
     }])
     expect(JSON.stringify(projection.orders)).not.toContain('ORDER-COWORKER')
+  })
+
+  it('keeps canonical reward lineage visible to the historical store through employee aliases', () => {
+    const state = {
+      schemaVersion: 2,
+      stateVersion: 1,
+      stores: [{ id: 'S01', name: 'Store lịch sử' }, { id: 'S02', name: 'Store hiện tại' }],
+      employees: [{
+        id: 'M-S01', name: 'Quản lý S01', unit: 'store_manager', storeId: 'S01',
+      }, {
+        id: 'PROFILE-E01', code: 'E01', employeeId: 'LEGACY-E01', name: 'Nhân viên điều chuyển',
+        unit: 'store', storeId: 'S02', status: 'Đang làm việc', salary: 99_000_000,
+      }],
+      attendance: [{
+        id: 'ATT-HISTORICAL', employeeId: 'E01', storeId: 'S01', date: '2026-08-20', shiftId: 'SHIFT-AM',
+      }],
+      schedule: [], tasks: [], taskAssignmentHistory: [], notifications: [], payrollPeriods: [],
+      workCatalogProgress: [{
+        id: 'PROGRESS-CANONICAL', employeeId: 'PROFILE-E01', storeId: 'S01', workDate: '2026-08-20',
+        shiftId: 'SHIFT-AM', catalogItemId: 'CAT-REWARD', completed: true,
+      }],
+      compensationEntries: [{
+        id: 'CLAIM-CANONICAL', employeeId: 'PROFILE-E01', storeId: 'S01', effectiveDate: '2026-08-20',
+        shiftId: 'SHIFT-AM', catalogItemId: 'CAT-REWARD', sourceType: 'work-catalog-reward', status: 'ACTIVE',
+      }],
+      violations: [],
+    }
+
+    const projection = projectSharedState(state, {
+      role: 'store_manager', user_id: 'U-M-S01', employee_id: 'M-S01', store_id: 'S01',
+    })
+
+    expect(projection.employees).toEqual([
+      expect.objectContaining({ id: 'M-S01' }),
+      expect.objectContaining({ id: 'PROFILE-E01', code: 'E01', historicalStoreId: 'S01', historicalOnly: true }),
+    ])
+    expect(projection.employees[1]).not.toHaveProperty('salary')
+    expect(projection.workCatalogProgress).toEqual([
+      expect.objectContaining({ id: 'PROGRESS-CANONICAL', employeeId: 'PROFILE-E01', storeId: 'S01' }),
+    ])
+    expect(projection.compensationEntries).toEqual([
+      expect.objectContaining({ id: 'CLAIM-CANONICAL', employeeId: 'PROFILE-E01', storeId: 'S01' }),
+    ])
   })
 
   it('projects only the signed-in actor canonical linked profile for account settings', () => {
@@ -10954,6 +10998,10 @@ describe('IDOSI Worker security primitives', () => {
           { id: 'QL-S01', name: 'Quản lý S01', storeId: 'S01', unit: 'store_manager', status: 'Đang làm việc' },
           { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store', status: 'Đang làm việc' },
           { id: 'E02', name: 'Nhân viên 02', storeId: 'S02', unit: 'store', status: 'Đang làm việc' },
+          {
+            id: 'PROFILE-E03', code: 'CODE-E03', employeeId: 'LEGACY-E03', name: 'Nhân viên alias',
+            storeId: 'S02', unit: 'store', status: 'Đang làm việc',
+          },
           { id: 'HTKD-BATCH', name: 'Hỗ trợ batch', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', status: 'Đang làm việc' },
         ],
         shiftDefinitions: [{
@@ -10973,6 +11021,9 @@ describe('IDOSI Worker security primitives', () => {
         }, {
           id: 'SCH-S02-FUTURE', employeeId: 'E02', storeId: 'S02', date: '2026-08-22', shiftIds: ['SHIFT-S02'],
           shiftSnapshots: [{ id: 'SHIFT-S02', name: 'Ca chiều tương lai', start: '12:00', end: '17:00', version: 4 }],
+        }, {
+          id: 'SCH-S02-ALIAS', employeeId: 'LEGACY-E03', storeId: 'S02', date: '2026-08-20', shiftIds: ['SHIFT-S02'],
+          shiftSnapshots: [{ id: 'SHIFT-S02', name: 'Ca chiều theo mã legacy', start: '12:00', end: '17:00', version: 4 }],
         }, {
           id: 'SCH-LEGACY-NO-STORE', employeeId: 'E01', date: '2026-08-20', shiftIds: ['SHIFT-LEGACY-NO-STORE'],
           shiftSnapshots: [{ id: 'SHIFT-LEGACY-NO-STORE', name: 'Ca legacy thiếu cửa hàng', start: '17:00', end: '21:00' }],
@@ -11160,6 +11211,19 @@ describe('IDOSI Worker security primitives', () => {
         policySnapshot: { source: 'WORKBOOK_COMPENSATION_POLICY' },
       }],
     })
+    const aliasBackedShift = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: currentVersion(), payload: {
+        storeId: 'S02', employeeId: 'PROFILE-E03', occurredOn: '2026-08-20', shiftId: 'SHIFT-S02',
+        policyCodes: ['store.violation.forgot_attendance'],
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-batch-alias-shift-0001' }), env)
+    expect(aliasBackedShift.status).toBe(201)
+    expect(await aliasBackedShift.json()).toMatchObject({
+      violations: [{
+        employeeId: 'PROFILE-E03', storeId: 'S02',
+        shiftId: 'SHIFT-S02', shiftName: 'Ca chiều theo mã legacy',
+      }],
+    })
     const supportBatch = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'violation.create_batch', expectedVersion: currentVersion(), payload: {
         storeId: 'S02', employeeId: 'E02', occurredOn: '2026-08-20', shiftId: 'SHIFT-S02',
@@ -11281,7 +11345,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(blockedLegacyVoid.status).toBe(409)
     expect(await blockedLegacyVoid.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
     persisted = readHydratedState(env.DB.database)
-    expect(persisted.violations).toHaveLength(7)
+    expect(persisted.violations).toHaveLength(8)
     expect(persisted.violations.find((violation) => violation.id === historicalViolation.id)).toMatchObject({ status: 'VOID' })
     expect(persisted.violations.find((violation) => violation.id === legacyViolation.id)).toMatchObject({ status: 'ACTIVE' })
   }, 30_000)
@@ -11421,12 +11485,334 @@ describe('IDOSI Worker security primitives', () => {
     expect(persisted.workCatalogProgress).toHaveLength(1)
     expect(persisted.compensationEntries).toHaveLength(1)
     const claimId = persisted.compensationEntries[0].id
+    const canonicalProgressId = persisted.workCatalogProgress[0].id
+    const canonicalProgressSnapshot = persisted.workCatalogProgress[0]
+    const canonicalClaimSnapshot = persisted.compensationEntries[0]
+    const canonicalTaskSnapshots = persisted.tasks
+    const canonicalHistorySnapshots = persisted.taskAssignmentHistory
+    const legacyIdentity = {
+      employeeId: 'E01', workDate: '2026-08-20', shiftRef: 'att_reward_01',
+      catalogItemId: 'CAT-REWARD-CLEAN',
+    }
+    const legacyProgressId = workCatalogProgressKey(legacyIdentity)
+    const legacyClaimId = workCatalogClaimKey(legacyIdentity)
+    const legacyProgressSnapshot = {
+      ...canonicalProgressSnapshot, id: legacyProgressId, attendanceId: 'att_reward_01',
+    }
+    const legacyClaimSnapshot = {
+      ...canonicalClaimSnapshot, id: legacyClaimId, sourceId: legacyClaimId,
+      workCatalogProgressId: legacyProgressId, attendanceId: 'att_reward_01',
+    }
+    const historyWithoutRewardSnapshots = canonicalHistorySnapshots.map((assignment) => ({
+      ...assignment,
+      progressHistory: assignment.progressHistory.map((event) => {
+        const nextEvent = { ...event }
+        delete nextEvent.rewardTaskSnapshots
+        delete nextEvent.completedRewardTaskSnapshots
+        return nextEvent
+      }),
+    }))
     expect(persisted.compensationEntries[0]).toMatchObject({ id: claimId, sourceId: claimId, status: 'ACTIVE' })
     expect(persisted.taskAssignmentHistory.every((assignment) => (
       assignment.progressHistory[0].rewardTaskSnapshots.length === 2
       && assignment.progressHistory[0].completedRewardTaskSnapshots.length === 2
     ))).toBe(true)
 
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [canonicalProgressSnapshot, legacyProgressSnapshot])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [canonicalClaimSnapshot, legacyClaimSnapshot])
+    replaceStateCollection(env.DB.database, 'taskAssignmentHistory', historyWithoutRewardSnapshots)
+    const hybridDuplicateCleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(true),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-hybrid-duplicate-cleanup-0001' }), env)
+    expect(hybridDuplicateCleanup.status).toBe(200)
+    persisted = readHydratedState(env.DB.database)
+    expect(persisted.compensationEntries.filter((entry) => entry.status === 'ACTIVE')).toEqual([
+      expect.objectContaining({ id: claimId, amountVnd: 8_000 }),
+    ])
+    expect(persisted.compensationEntries.find(({ id }) => id === legacyClaimId)).toMatchObject({
+      status: 'VOID', voidSource: 'reward-key-migration', migratedToClaimId: claimId,
+    })
+    const lineageAudit = env.DB.database.prepare(`
+      SELECT before_json, after_json, metadata_json FROM audit_log
+      WHERE action = 'task.progress.save' ORDER BY id DESC LIMIT 1
+    `).get()
+    expect(JSON.parse(lineageAudit.before_json)).toMatchObject({
+      rewardProgress: expect.arrayContaining([
+        expect.objectContaining({ id: canonicalProgressId }),
+        expect.objectContaining({ id: legacyProgressId }),
+      ]),
+      rewardClaims: expect.arrayContaining([
+        expect.objectContaining({ id: claimId }),
+        expect.objectContaining({ id: legacyClaimId }),
+      ]),
+    })
+    expect(JSON.parse(lineageAudit.after_json)).toMatchObject({
+      rewardProgress: expect.arrayContaining([
+        expect.objectContaining({ id: canonicalProgressId, status: 'COMPLETED' }),
+        expect.objectContaining({ id: legacyProgressId, status: 'MIGRATED' }),
+      ]),
+      rewardClaims: expect.arrayContaining([
+        expect.objectContaining({ id: claimId, status: 'ACTIVE' }),
+        expect.objectContaining({ id: legacyClaimId, status: 'VOID' }),
+      ]),
+    })
+    expect(JSON.parse(lineageAudit.metadata_json)).toMatchObject({
+      migratedRewardProgressIds: [legacyProgressId],
+      migratedRewardClaimIds: [legacyClaimId],
+    })
+
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [canonicalProgressSnapshot, legacyProgressSnapshot])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [canonicalClaimSnapshot, {
+      ...legacyClaimSnapshot,
+      status: 'VOID',
+      voidedAt: '2026-08-20T04:00:00.000Z',
+      voidedBy: { id: 'ADMIN-LEGACY', role: 'admin' },
+      voidReason: 'Admin legacy từ chối thưởng',
+      voidSource: null,
+    }])
+    replaceStateCollection(env.DB.database, 'taskAssignmentHistory', historyWithoutRewardSnapshots)
+    const hybridManualVoidCleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(true),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-hybrid-manual-void-cleanup-0001' }), env)
+    expect(hybridManualVoidCleanup.status).toBe(200)
+    persisted = readHydratedState(env.DB.database)
+    expect(persisted.compensationEntries.find(({ id }) => id === claimId)).toMatchObject({
+      status: 'VOID', voidSource: 'manual-review-migration', voidReason: 'Admin legacy từ chối thưởng',
+    })
+    expect(persisted.compensationEntries.filter((entry) => entry.status === 'ACTIVE')).toEqual([])
+
+    const secondRewardSnapshot = {
+      ...rewardSnapshot,
+      catalogItemId: 'CAT-REWARD-BONUS-B',
+      catalogCode: 'store.reward.bonus-b',
+      name: 'Thưởng thứ hai không được backpay',
+      amountVnd: 5_000,
+    }
+    const secondRewardTask = {
+      id: 'TASK-REWARD-BONUS-B', assignmentId: 'ASSIGN-03', employeeIds: ['E01'], storeId: 'S01',
+      date: '2026-08-20', shiftId: 'SHIFT-AM', title: secondRewardSnapshot.name, required: false,
+      catalogItemId: secondRewardSnapshot.catalogItemId, catalogCode: secondRewardSnapshot.catalogCode,
+      catalogVersion: secondRewardSnapshot.catalogVersion, catalogKind: 'REWARD_TASK', amountVnd: 5_000,
+      catalogSnapshot: secondRewardSnapshot, completedBy: { E01: true },
+    }
+    const secondProgressId = workCatalogProgressKey({
+      employeeId: 'E01', workDate: '2026-08-20', storeId: 'S01', shiftId: 'SHIFT-AM',
+      catalogItemId: secondRewardSnapshot.catalogItemId,
+    })
+    const secondProgressSnapshot = {
+      ...canonicalProgressSnapshot,
+      id: secondProgressId,
+      catalogItemId: secondRewardSnapshot.catalogItemId,
+      catalogCode: secondRewardSnapshot.catalogCode,
+      catalogSnapshot: secondRewardSnapshot,
+      amountVnd: 5_000,
+      sourceTaskIds: [secondRewardTask.id],
+    }
+    const mixedFingerprint = JSON.stringify({
+      attendanceId: 'att_reward_01',
+      tasks: [
+        ['TASK-REWARD-ASSIGNED', true],
+        ['TASK-REWARD-BONUS-B', true],
+        ['TASK-REWARD-CHECKLIST', true],
+      ],
+      incompleteReason: '',
+    })
+    const mixedHistoryWithoutSnapshots = [
+      ...canonicalHistorySnapshots,
+      { id: 'ASSIGN-03', assignmentId: 'ASSIGN-03', employeeIds: ['E01'], tasks: [], progressHistory: [] },
+    ].map((assignment) => ({
+      ...assignment,
+      progressHistory: [{
+        action: 'progress-submitted', employeeId: 'E01', attendanceId: 'att_reward_01',
+        fingerprint: mixedFingerprint, at: '2026-08-20T04:30:00.000Z',
+      }],
+    }))
+    replaceStateCollection(env.DB.database, 'tasks', [...canonicalTaskSnapshots, secondRewardTask])
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [
+      canonicalProgressSnapshot, legacyProgressSnapshot, secondProgressSnapshot,
+    ])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [canonicalClaimSnapshot, {
+      ...legacyClaimSnapshot,
+      status: 'VOID', voidedAt: '2026-08-20T04:00:00.000Z', voidedBy: { id: 'ADMIN-LEGACY', role: 'admin' },
+      voidReason: 'Admin legacy từ chối thưởng', voidSource: null,
+    }])
+    replaceStateCollection(env.DB.database, 'taskAssignmentHistory', mixedHistoryWithoutSnapshots)
+    const mixedCleanupWithoutBackpay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: {
+        attendanceId: 'att_reward_01',
+        tasks: [
+          { id: 'TASK-REWARD-ASSIGNED', completed: true },
+          { id: 'TASK-REWARD-CHECKLIST', completed: true },
+          { id: 'TASK-REWARD-BONUS-B', completed: true },
+        ],
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-mixed-safe-cleanup-0001' }), env)
+    expect(mixedCleanupWithoutBackpay.status).toBe(200)
+    persisted = readHydratedState(env.DB.database)
+    expect(persisted.compensationEntries.filter((entry) => entry.status === 'ACTIVE')).toEqual([])
+    expect(persisted.compensationEntries.some((entry) => (
+      entry.catalogItemId === secondRewardSnapshot.catalogItemId
+    ))).toBe(false)
+    expect(persisted.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory)
+      .every((event) => !event.rewardTaskSnapshots)).toBe(true)
+
+    replaceStateCollection(env.DB.database, 'tasks', canonicalTaskSnapshots)
+
+    const uncheckedFingerprint = JSON.stringify({
+      attendanceId: 'att_reward_01',
+      tasks: [
+        ['TASK-REWARD-ASSIGNED', false],
+        ['TASK-REWARD-CHECKLIST', false],
+      ],
+      incompleteReason: '',
+    })
+    const uncheckedHistoryWithoutSnapshots = historyWithoutRewardSnapshots.map((assignment) => ({
+      ...assignment,
+      progressHistory: assignment.progressHistory.map((event) => ({
+        ...event, fingerprint: uncheckedFingerprint,
+      })),
+    }))
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [{
+      ...canonicalProgressSnapshot, completed: false, status: 'NOT_COMPLETED', completedAt: null,
+    }, legacyProgressSnapshot])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [legacyClaimSnapshot])
+    replaceStateCollection(env.DB.database, 'taskAssignmentHistory', uncheckedHistoryWithoutSnapshots)
+    const hybridUncheckedCleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(false),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-hybrid-unchecked-cleanup-0001' }), env)
+    expect(hybridUncheckedCleanup.status).toBe(200)
+    expect(readHydratedState(env.DB.database).compensationEntries.filter((entry) => entry.status === 'ACTIVE')).toEqual([])
+
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [canonicalProgressSnapshot, legacyProgressSnapshot])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [canonicalClaimSnapshot, legacyClaimSnapshot])
+    replaceStateCollection(env.DB.database, 'taskAssignmentHistory', historyWithoutRewardSnapshots)
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+      id: 'PAY-HYBRID-LOCKED', storeId: 'S01', period: '2026-08', status: 'Đã khóa',
+      lockedAt: '2026-09-01T00:00:00.000Z',
+    }])
+    const beforeLockedHybrid = readHydratedState(env.DB.database)
+    const lockedHybridCleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(true),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-hybrid-locked-cleanup-0001' }), env)
+    expect(lockedHybridCleanup.status).toBe(409)
+    expect(await lockedHybridCleanup.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+    expect(readHydratedState(env.DB.database)).toMatchObject({
+      workCatalogProgress: beforeLockedHybrid.workCatalogProgress,
+      compensationEntries: beforeLockedHybrid.compensationEntries,
+    })
+
+    replaceStateCollection(env.DB.database, 'employees', [{
+      ...persisted.employees[0], id: 'PROFILE-E01', code: 'E01', employeeId: 'LEGACY-E01',
+    }])
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [canonicalProgressSnapshot])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [canonicalClaimSnapshot])
+    replaceStateCollection(env.DB.database, 'taskAssignmentHistory', historyWithoutRewardSnapshots)
+    const lockedAliasAttribution = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(true),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-alias-v2-locked-0001' }), env)
+    expect(lockedAliasAttribution.status).toBe(409)
+    expect(await lockedAliasAttribution.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+    expect(readHydratedState(env.DB.database).compensationEntries).toEqual([
+      expect.objectContaining({ id: claimId, employeeId: 'E01', status: 'ACTIVE' }),
+    ])
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+      id: 'PAY-ALIAS-CLOSED', storeId: 'S01', period: '2026-08', status: 'Đã chốt',
+      confirmedAt: null, lockedAt: null, needsReclose: false,
+    }])
+    const aliasV2Cleanup = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(true),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-alias-v2-cleanup-0001' }), env)
+    expect(aliasV2Cleanup.status).toBe(200)
+    persisted = readHydratedState(env.DB.database)
+    const canonicalAliasProgressId = workCatalogProgressKey({
+      employeeId: 'PROFILE-E01', workDate: '2026-08-20', storeId: 'S01', shiftId: 'SHIFT-AM',
+      catalogItemId: 'CAT-REWARD-CLEAN',
+    })
+    const canonicalAliasClaimId = workCatalogClaimKey({
+      employeeId: 'PROFILE-E01', workDate: '2026-08-20', storeId: 'S01', shiftId: 'SHIFT-AM',
+      catalogItemId: 'CAT-REWARD-CLEAN',
+    })
+    expect(persisted.workCatalogProgress.filter((record) => !record.deletedAt)).toEqual([
+      expect.objectContaining({ id: canonicalAliasProgressId, employeeId: 'PROFILE-E01' }),
+    ])
+    expect(persisted.compensationEntries.filter((entry) => entry.status === 'ACTIVE')).toEqual([
+      expect.objectContaining({ id: canonicalAliasClaimId, employeeId: 'PROFILE-E01' }),
+    ])
+    expect(persisted.compensationEntries.find(({ id }) => id === claimId)).toMatchObject({
+      status: 'VOID', voidSource: 'reward-key-migration', migratedToClaimId: canonicalAliasClaimId,
+    })
+    expect(persisted.payrollPeriods).toEqual([
+      expect.objectContaining({
+        id: 'PAY-ALIAS-CLOSED', needsReclose: true, invalidationReason: 'task.progress.save',
+      }),
+    ])
+    expect(persisted.tasks.every((task) => (
+      JSON.stringify(task.completedBy) === JSON.stringify({ 'PROFILE-E01': true })
+    ))).toBe(true)
+    expect(persisted.taskAssignmentHistory.every((assignment) => (
+      Object.keys(assignment.completionByEmployee || {}).every((identifier) => identifier === 'PROFILE-E01')
+      && assignment.progressHistory.length === 1
+    ))).toBe(true)
+    const aliasEmployeeProjectionResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: employeeAuthorization,
+    }), env)
+    expect(aliasEmployeeProjectionResponse.status).toBe(200)
+    const aliasEmployeeProjection = await aliasEmployeeProjectionResponse.json()
+    expect(aliasEmployeeProjection.state).toMatchObject({
+      employees: [expect.objectContaining({ id: 'PROFILE-E01', code: 'E01', employeeId: 'LEGACY-E01' })],
+      workCatalogProgress: expect.arrayContaining([
+        expect.objectContaining({ id: canonicalAliasProgressId, employeeId: 'PROFILE-E01' }),
+      ]),
+      compensationEntries: expect.arrayContaining([
+        expect.objectContaining({ id: canonicalAliasClaimId, employeeId: 'PROFILE-E01', status: 'ACTIVE' }),
+      ]),
+    })
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [])
+    const aliasUnchecked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(false),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-alias-uncheck-0001' }), env)
+    expect(aliasUnchecked.status).toBe(200)
+    const aliasUncheckedState = readHydratedState(env.DB.database)
+    expect(aliasUncheckedState.tasks.every((task) => (
+      JSON.stringify(task.completedBy) === JSON.stringify({ 'PROFILE-E01': false })
+    ))).toBe(true)
+    expect(aliasUncheckedState.taskAssignmentHistory.every((assignment) => (
+      Object.keys(assignment.completionByEmployee || {}).every((identifier) => identifier === 'PROFILE-E01')
+    ))).toBe(true)
+
+    replaceStateCollection(env.DB.database, 'employees', [{
+      ...persisted.employees[0], id: 'E01', code: undefined, employeeId: undefined,
+    }])
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [legacyProgressSnapshot])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [{
+      ...legacyClaimSnapshot,
+      status: 'VOID',
+      voidedAt: '2026-08-20T04:45:00.000Z',
+      voidedBy: { id: 'E01', role: 'employee' },
+      voidReason: 'Nhân viên đã bỏ chọn trước đó',
+      voidSource: 'task-progress',
+    }])
+    replaceStateCollection(env.DB.database, 'taskAssignmentHistory', canonicalHistorySnapshots)
+    const legacySystemVoidReactivated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(true),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-legacy-system-void-reactivate-0001' }), env)
+    expect(legacySystemVoidReactivated.status).toBe(200)
+    expect(readHydratedState(env.DB.database).compensationEntries.filter((entry) => entry.status === 'ACTIVE')).toEqual([
+      expect.objectContaining({ id: claimId, amountVnd: 8_000 }),
+    ])
+
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [legacyProgressSnapshot])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [{
+      ...legacyClaimSnapshot, storeId: 'S02',
+    }])
+    const conflictingLegacyClaim = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(true),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-legacy-conflict-0001' }), env)
+    expect(conflictingLegacyClaim.status).toBe(409)
+    expect(await conflictingLegacyClaim.json()).toMatchObject({ error: { code: 'WORK_REWARD_LEGACY_CONFLICT' } })
+
+    replaceStateCollection(env.DB.database, 'workCatalogProgress', [legacyProgressSnapshot])
+    replaceStateCollection(env.DB.database, 'compensationEntries', [legacyClaimSnapshot])
     const originalAttendance = persisted.attendance[0]
     replaceStateCollection(env.DB.database, 'attendance', [{
       ...originalAttendance,
@@ -11442,10 +11828,18 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-same-shift-second-attendance-0001' }), env)
     expect(sameShiftResubmission.status).toBe(200)
     persisted = readHydratedState(env.DB.database)
-    expect(persisted.workCatalogProgress).toHaveLength(1)
-    expect(persisted.compensationEntries).toEqual([
+    expect(persisted.workCatalogProgress.filter((record) => !record.deletedAt)).toEqual([
+      expect.objectContaining({ id: canonicalProgressId, attendanceId: 'att_reward_02' }),
+    ])
+    expect(persisted.workCatalogProgress.find(({ id }) => id === legacyProgressId)).toMatchObject({
+      status: 'MIGRATED', migratedToProgressId: canonicalProgressId, deletedAt: expect.any(String),
+    })
+    expect(persisted.compensationEntries.filter((entry) => entry.status === 'ACTIVE')).toEqual([
       expect.objectContaining({ id: claimId, status: 'ACTIVE', amountVnd: 8_000 }),
     ])
+    expect(persisted.compensationEntries.find(({ id }) => id === legacyClaimId)).toMatchObject({
+      status: 'VOID', voidSource: 'reward-key-migration', migratedToClaimId: claimId,
+    })
     replaceStateCollection(env.DB.database, 'attendance', [originalAttendance])
 
     replaceStateCollection(env.DB.database, 'workCatalogProgress', [])

@@ -1631,7 +1631,8 @@ const ownEmployeeProfile = (state, user) => {
     if (!isPlainRecord(profile)) return false
     if (userId && String(profile.authUserId || '') === userId) return true
     if (!employeeId) return false
-    return [profile.id, profile.code, profile.employeeId].some((value) => String(value || '') === employeeId)
+    return [profile.id, profile.code, profile.employeeId, profile.employeeCode]
+      .some((value) => String(value || '') === employeeId)
   }) || null
 }
 
@@ -2042,7 +2043,7 @@ export const projectSharedState = (rawState, user) => {
         && (!record.storeId || String(record.storeId) === storeId)
         && !record.deletedAt
       )),
-      workCatalogProgress: historicalEmployeeScoped('workCatalogProgress'),
+      workCatalogProgress: historicalVisibleScoped('workCatalogProgress'),
       storeShiftTaskTemplates: state.storeShiftTaskTemplates,
       compensationEntries: historicalVisibleScoped('compensationEntries'),
       violations: historicalVisibleScoped('violations'),
@@ -2075,16 +2076,23 @@ export const projectSharedState = (rawState, user) => {
   }
 
   const storeId = String(user.store_id || '')
-  const employeeId = String(user.employee_id || user.user_id || '')
-  if (user.role === 'employee' && employeeId) {
-    const ownEmployee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-      [record.id, record.code, record.employeeId].map(String).includes(employeeId)
-    ))
+  const accountEmployeeId = String(user.employee_id || user.user_id || '')
+  if (user.role === 'employee' && accountEmployeeId) {
+    const ownEmployee = actorRoleEmployeeProfile(state, user)
+    const ownEmployeeIdentifiers = new Set([
+      ownEmployee?.id,
+      ownEmployee?.code,
+      ownEmployee?.employeeId,
+      ownEmployee?.employeeCode,
+      accountEmployeeId,
+    ].map((value) => String(value || '').trim()).filter(Boolean))
     const ownUnit = ownEmployee ? employeeUnit(ownEmployee) : 'store'
     const ownCatalogTarget = ownUnit === 'office'
       ? WORK_CATALOG_TARGET.OFFICE
       : WORK_CATALOG_TARGET.STORE
-    const own = (key) => filterArray(state, key, (record) => belongsToEmployee(record, employeeId))
+    const belongsToOwnEmployee = (record) => [...ownEmployeeIdentifiers]
+      .some((identifier) => belongsToEmployee(record, identifier))
+    const own = (key) => filterArray(state, key, belongsToOwnEmployee)
     const ownAttendance = own('attendance')
     const ownSupportTransfers = own('supportTransfers')
     const openAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
@@ -2101,11 +2109,12 @@ export const projectSharedState = (rawState, user) => {
       ))))
     const taskStoreIds = new Set([storeId, String(openAttendance?.storeId || '')].filter(Boolean))
     const tasks = filterArray(state, 'tasks', (record) => (
-      [...taskStoreIds].some((taskStoreId) => taskAppliesToEmployee(record, employeeId, taskStoreId))
-    )).map((record) => redactEmployeeReferences(record, new Set([employeeId])))
+      [...taskStoreIds].some((taskStoreId) => [...ownEmployeeIdentifiers]
+        .some((identifier) => taskAppliesToEmployee(record, identifier, taskStoreId)))
+    )).map((record) => redactEmployeeReferences(record, ownEmployeeIdentifiers))
     const payrollPeriods = (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []).flatMap((period) => {
       const rows = Array.isArray(period.rows)
-        ? period.rows.filter((row) => belongsToEmployee(row, employeeId))
+        ? period.rows.filter(belongsToOwnEmployee)
         : []
       if (!rows.length) return []
       const { financeSnapshot, kpiSnapshot, closedBy, ...safePeriod } = period
@@ -2118,16 +2127,17 @@ export const projectSharedState = (rawState, user) => {
       ...common,
       activeStoreId: storeId || null,
       stores,
-      employees: filterArray(state, 'employees', (record) => String(record.id || record.employeeId || record.code || '') === employeeId),
+      employees: ownEmployee ? [ownEmployee] : [],
       attendance: ownAttendance,
       schedule: own('schedule'),
       tasks,
       taskAssignmentHistory: own('taskAssignmentHistory')
-        .map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
+        .map((record) => redactEmployeeReferences(record, ownEmployeeIdentifiers)),
       supportWorkAssignments: own('supportWorkAssignments'),
       supportWorkSchedules: own('supportWorkSchedules'),
       supportTransfers: ownSupportTransfers,
-      orders: filterArray(state, 'orders', (record) => orderCreatedByEmployee(record, employeeId)),
+      orders: filterArray(state, 'orders', (record) => [...ownEmployeeIdentifiers]
+        .some((identifier) => orderCreatedByEmployee(record, identifier))),
       expenseEntries: own('expenseEntries'),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
         .map((record) => projectNotificationForActor(record, user)),
@@ -2138,9 +2148,9 @@ export const projectSharedState = (rawState, user) => {
       payrollPayments: own('payrollPayments'),
       storeEmployeeSalaryConfigs: filterArray(state, 'storeEmployeeSalaryConfigs', (record) => (
         !record.deletedAt
-        && String(record.employeeId || record.employee_id || '') === employeeId
+        && ownEmployeeIdentifiers.has(String(record.employeeId || record.employee_id || ''))
         && (!record.storeId || visibleStoreIds.has(String(record.storeId)))
-      )).map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
+      )).map((record) => redactEmployeeReferences(record, ownEmployeeIdentifiers)),
       workCatalogItems: filterArray(state, 'workCatalogItems', (record) => (
         String(record.targetGroup || '') === ownCatalogTarget
         && (ownCatalogTarget !== WORK_CATALOG_TARGET.STORE
@@ -12257,18 +12267,27 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
-  const employeeId = String(actor.employee_id || actor.user_id || '').trim()
+  const actorEmployeeId = String(actor.employee_id || actor.user_id || '').trim()
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-    [record.id, record.code, record.employeeId].map(String).includes(employeeId)
+    [record.id, record.code, record.employeeId, record.employeeCode].map(String).includes(actorEmployeeId)
   ))
   const targetUnit = employee ? employeeUnit(employee) : ''
   if (!employee || !['store', 'office', 'business_support'].includes(targetUnit)) {
     throw new ApiError(403, 'EMPLOYEE_PROFILE_REQUIRED', 'Tài khoản chưa được liên kết với hồ sơ nhân viên hợp lệ.')
   }
+  const employeeId = employeeProfileIdentifier(employee)
+  const employeeIdentifiers = [...new Set([
+    employee.id,
+    employee.code,
+    employee.employeeId,
+    employee.employeeCode,
+    actorEmployeeId,
+  ].map((value) => String(value || '').trim()).filter(Boolean))]
+  const employeeIdentifierSet = new Set(employeeIdentifiers)
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
   const attendanceId = String(payload.attendanceId || '').trim()
   const openAttendance = attendance.find((record) => (
-    belongsToEmployee(record, employeeId)
+    employeeIdentifiers.some((identifier) => belongsToEmployee(record, identifier))
     && (!attendanceId || String(record.id || '') === attendanceId)
     && !record.deletedAt
     && !record.checkOutAt
@@ -12281,7 +12300,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
   const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
   const scopedTasks = (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
-    if (!taskAppliesToEmployee(task, employeeId, storeId)) return false
+    if (!employeeIdentifiers.some((identifier) => taskAppliesToEmployee(task, identifier, storeId))) return false
     if (String(task.date || task.workDate || '').slice(0, 10) !== date) return false
     const taskShiftId = String(task.shiftId || task.shift || '')
     return !taskShiftId || taskShiftId === shiftId
@@ -12383,25 +12402,159 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const existingCompensationEntries = Array.isArray(state.compensationEntries) ? state.compensationEntries : []
   const progressById = new Map(existingRewardProgress.map((record) => [String(record.id || ''), record]))
   const claimById = new Map(existingCompensationEntries.map((record) => [String(record.id || ''), record]))
+  const rewardRecordEmployeeIdentifiers = (record) => [...new Set([
+    record.employeeId,
+    record.employee_id,
+  ].map((value) => String(value || '').trim()).filter(Boolean))]
+  const rewardRecordMatchesOccurrence = (record, occurrence) => {
+    const recordEmployeeIdentifiers = rewardRecordEmployeeIdentifiers(record)
+    return recordEmployeeIdentifiers.length > 0
+    && recordEmployeeIdentifiers.every((identifier) => employeeIdentifierSet.has(identifier))
+    && String(record.storeId || '') === storeId
+    && String(record.workDate || record.date || record.effectiveDate || '').slice(0, 10) === date
+    && String(record.shiftId || record.shift || '') === shiftId
+    && String(
+      record.catalogItemId
+      || record.catalogSnapshot?.catalogItemId
+      || record.rewardTaskSnapshot?.catalogItemId
+      || '',
+    ) === occurrence.catalogItemId
+  }
+  const rewardRecordConflictsWithOccurrence = (record, occurrence) => (
+    rewardRecordEmployeeIdentifiers(record).some((identifier) => !employeeIdentifierSet.has(identifier))
+    || [
+    [record.storeId, storeId],
+    [record.workDate || record.date || record.effectiveDate, date],
+    [record.shiftId || record.shift, shiftId],
+    [
+      record.catalogItemId
+        || record.catalogSnapshot?.catalogItemId
+        || record.rewardTaskSnapshot?.catalogItemId,
+      occurrence.catalogItemId,
+    ],
+  ].some(([actual, expected], index) => {
+    const normalizedActual = index === 1
+      ? String(actual || '').slice(0, 10)
+      : String(actual || '').trim()
+    return normalizedActual && normalizedActual !== String(expected || '')
+  }))
+  const workRewardProgressId = (record) => /^work-catalog-progress:v[12]:/u.test(String(record.id || ''))
+  const workRewardClaimId = (record) => /^work-catalog-claim:v1:work-catalog-progress:v[12]:/u.test(String(record.id || ''))
+  for (const occurrence of rewardOccurrences) {
+    occurrence.legacyProgress = existingRewardProgress.filter((record) => (
+      String(record.id || '') !== occurrence.progressKey
+      && workRewardProgressId(record)
+      && rewardRecordMatchesOccurrence(record, occurrence)
+    ))
+    const canonicalProgress = progressById.get(occurrence.progressKey)
+    const canonicalClaim = claimById.get(occurrence.claimKey)
+    if ((canonicalProgress && rewardRecordConflictsWithOccurrence(canonicalProgress, occurrence))
+      || (canonicalClaim && rewardRecordConflictsWithOccurrence(canonicalClaim, occurrence))) {
+      throw new ApiError(409, 'WORK_REWARD_LEGACY_CONFLICT', 'Dữ liệu thưởng hiện tại mâu thuẫn với ca làm việc được định danh.', {
+        progressId: canonicalProgress?.id || null,
+        claimId: canonicalClaim?.id || null,
+        catalogItemId: occurrence.catalogItemId,
+      })
+    }
+    const legacyProgressIds = new Set(occurrence.legacyProgress.map((record) => String(record.id || '')))
+    occurrence.legacyClaims = existingCompensationEntries.filter((record) => {
+      if (String(record.id || '') === occurrence.claimKey
+        || !workRewardClaimId(record)
+        || normalizeTextKey(record.sourceType) !== 'work-catalog-reward') return false
+      const linkedToMatchedProgress = legacyProgressIds.has(String(record.workCatalogProgressId || ''))
+      if (linkedToMatchedProgress && rewardRecordConflictsWithOccurrence(record, occurrence)) {
+        throw new ApiError(409, 'WORK_REWARD_LEGACY_CONFLICT', 'Dữ liệu thưởng phiên bản trước mâu thuẫn với ca làm việc hiện tại.', {
+          claimId: String(record.id || ''),
+          progressId: String(record.workCatalogProgressId || ''),
+          catalogItemId: occurrence.catalogItemId,
+        })
+      }
+      return rewardRecordMatchesOccurrence(record, occurrence) || linkedToMatchedProgress
+    })
+  }
   const payrollActiveClaim = (claim) => Boolean(claim
     && !claim.deletedAt
     && !claim.voidedAt
     && ['active', 'approved', 'confirmed', 'da duyet', 'da xac nhan'].includes(normalizeTextKey(claim.status)))
-  const taskProgressVoidedClaim = (claim) => Boolean(claim
+  const systemVoidedRewardClaim = (claim) => Boolean(claim
     && claim.voidedAt
-    && normalizeTextKey(claim.voidSource) === 'task-progress')
+    && ['task-progress', 'reward-key-migration'].includes(normalizeTextKey(claim.voidSource)))
+  const manuallyVoidedRewardClaim = (claim) => Boolean(claim
+    && !payrollActiveClaim(claim)
+    && (claim.voidedAt || normalizeTextKey(claim.status) === 'void')
+    && !systemVoidedRewardClaim(claim))
   const rewardClaimShouldBeActive = (occurrence, previousClaim) => Boolean(
     occurrence.completed
     && occurrence.payable
-    && (!previousClaim || payrollActiveClaim(previousClaim) || taskProgressVoidedClaim(previousClaim)),
+    && (!previousClaim || payrollActiveClaim(previousClaim) || systemVoidedRewardClaim(previousClaim)),
   )
+  const newestRewardClaim = (claims) => [...claims].sort((left, right) => (
+    String(right.updatedAt || right.voidedAt || right.createdAt || '')
+      .localeCompare(String(left.updatedAt || left.voidedAt || left.createdAt || ''))
+    || String(right.id || '').localeCompare(String(left.id || ''))
+  ))[0] || null
+  const rewardClaimCandidates = (occurrence) => [
+    claimById.get(occurrence.claimKey),
+    ...occurrence.legacyClaims,
+  ].filter(Boolean)
+  const rewardClaimAuthority = (occurrence) => {
+    const candidates = rewardClaimCandidates(occurrence)
+    return newestRewardClaim(candidates.filter(manuallyVoidedRewardClaim))
+      || claimById.get(occurrence.claimKey)
+      || newestRewardClaim(candidates.filter(payrollActiveClaim))
+      || newestRewardClaim(candidates.filter(systemVoidedRewardClaim))
+      || newestRewardClaim(candidates)
+  }
+  const rewardLineageState = (occurrence) => {
+    const canonicalProgress = progressById.get(occurrence.progressKey)
+    const canonicalClaim = claimById.get(occurrence.claimKey)
+    const authority = rewardClaimAuthority(occurrence)
+    const desiredActive = rewardClaimShouldBeActive(occurrence, authority)
+    const activeClaims = rewardClaimCandidates(occurrence).filter(payrollActiveClaim)
+    const currentActiveAmount = activeClaims.reduce(
+      (sum, claim) => sum + Number(claim.amountVnd ?? claim.amount ?? 0),
+      0,
+    )
+    const desiredActiveAmount = desiredActive ? occurrence.amountVnd : 0
+    const canonicalClaimMatches = desiredActive
+      ? payrollActiveClaim(canonicalClaim)
+        && Number(canonicalClaim.amountVnd ?? canonicalClaim.amount) === occurrence.amountVnd
+      : !payrollActiveClaim(canonicalClaim)
+    const legacyProgressNeedsMigration = occurrence.legacyProgress.some((record) => (
+      normalizeTextKey(record.status) !== 'migrated'
+      || String(record.migratedToProgressId || '') !== occurrence.progressKey
+      || !record.deletedAt
+    ))
+    const lineageNeedsRepair = !canonicalProgress
+      || !canonicalClaimMatches
+      || activeClaims.some((claim) => String(claim.id || '') !== occurrence.claimKey)
+      || legacyProgressNeedsMigration
+    return {
+      occurrence,
+      authority,
+      desiredActive,
+      currentActiveAmount,
+      desiredActiveAmount,
+      hasDesiredActiveClaim: activeClaims.some((claim) => (
+        Number(claim.amountVnd ?? claim.amount) === occurrence.amountVnd
+      )),
+      lineageNeedsRepair,
+      hasExistingArtifact: Boolean(
+        canonicalProgress
+        || canonicalClaim
+        || occurrence.legacyProgress.length
+        || occurrence.legacyClaims.length
+      ),
+    }
+  }
+  const rewardLineageStates = rewardOccurrences.map(rewardLineageState)
   const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
   const histories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
   const latestSubmission = histories.flatMap((assignment) => (
     Array.isArray(assignment.progressHistory) ? assignment.progressHistory : []
   )).filter((event) => (
     event?.action === 'progress-submitted'
-    && String(event.employeeId || '') === employeeId
+    && employeeIdentifierSet.has(String(event.employeeId || ''))
     && String(event.attendanceId || '') === String(openAttendance.id || '')
   )).reduce((latest, event) => (
     !latest || String(event.at || '').localeCompare(String(latest.at || '')) >= 0 ? event : latest
@@ -12409,10 +12562,9 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const existingSubmission = String(latestSubmission?.fingerprint || '') === submissionFingerprint
     ? latestSubmission
     : null
-  // Reconciliation is deliberately narrow: only a resubmission carrying the same
-  // immutable reward snapshots may repair canonical rows that are missing. Older
-  // history events without those snapshots remain no-ops, so this cannot backpay
-  // arbitrary historical task data.
+  // Immutable snapshots authorize full artifact repair. Older history events may
+  // only normalize an existing lineage without increasing its active amount, so
+  // cleanup can remove duplicates/manual-void conflicts without creating backpay.
   const existingSnapshotByTaskId = new Map(
     (Array.isArray(existingSubmission?.rewardTaskSnapshots) ? existingSubmission.rewardTaskSnapshots : [])
       .map((snapshot) => [String(snapshot?.taskId || ''), snapshot]),
@@ -12428,11 +12580,20 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
         && String(previousSnapshot.targetGroup || '') === snapshot.targetGroup
         && previousSnapshot.completed === snapshot.completed
     }))
-  const missingCanonicalRewardArtifact = rewardOccurrences.some((occurrence) => (
-    !progressById.has(occurrence.progressKey)
-    || (occurrence.completed && occurrence.payable && !claimById.has(occurrence.claimKey))
-  ))
-  const reconcileExistingSubmission = existingRewardSnapshotsMatch && missingCanonicalRewardArtifact
+  const lineageRepairs = rewardLineageStates.filter((lineage) => lineage.lineageNeedsRepair)
+  const cleanupSafeLineageRepair = (lineage) => Boolean(
+    lineage.lineageNeedsRepair
+    && lineage.hasExistingArtifact
+    && lineage.desiredActiveAmount <= lineage.currentActiveAmount
+    && (!lineage.desiredActiveAmount || lineage.hasDesiredActiveClaim)
+  )
+  const rewardLineageStatesForWrite = existingSubmission
+    ? (existingRewardSnapshotsMatch
+        ? lineageRepairs
+        : lineageRepairs.filter(cleanupSafeLineageRepair))
+    : rewardLineageStates
+  const rewardOccurrencesForWrite = rewardLineageStatesForWrite.map((lineage) => lineage.occurrence)
+  const reconcileExistingSubmission = Boolean(existingSubmission && rewardLineageStatesForWrite.length)
   if (existingSubmission && !reconcileExistingSubmission) {
     const completedTasks = normalizedStatuses.filter(([, completed]) => completed).length
     const existingResult = {
@@ -12449,19 +12610,42 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       version: Number(current.version),
       ...existingResult,
       existing: true,
-    }, 200, commandContext)
+      }, 200, commandContext)
   }
 
+  const canonicalEmployeeKeyedRecord = (record, value) => ({
+    ...Object.fromEntries(Object.entries(isPlainRecord(record) ? record : {})
+      .filter(([identifier]) => !employeeIdentifierSet.has(identifier))),
+    [employeeId]: value,
+  })
+  const canonicalizeExistingEmployeeKeyedRecord = (record) => {
+    if (!isPlainRecord(record)) return record
+    const source = record
+    const authoritativeIdentifier = employeeIdentifiers.find((identifier) => Object.hasOwn(source, identifier))
+    return authoritativeIdentifier
+      ? canonicalEmployeeKeyedRecord(source, source[authoritativeIdentifier])
+      : source
+  }
   const nextTasks = (Array.isArray(state.tasks) ? state.tasks : []).map((task) => {
     const taskId = String(task.id || '')
     if (!submittedById.has(taskId)) return task
+    if (existingSubmission) {
+      return {
+        ...task,
+        completedBy: canonicalizeExistingEmployeeKeyedRecord(task.completedBy),
+      }
+    }
     const completed = submittedById.get(taskId)
     const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
-    if (Boolean(completedBy[employeeId]) === completed && Object.hasOwn(completedBy, employeeId)) return task
+    const employeeCompletionIdentifiers = employeeIdentifiers
+      .filter((identifier) => Object.hasOwn(completedBy, identifier))
+    if (employeeCompletionIdentifiers.length === 1
+      && employeeCompletionIdentifiers[0] === employeeId
+      && Boolean(completedBy[employeeId]) === completed) return task
     const event = { done: completed, at: commandContext.now, employeeId, actor: serverActorSnapshot(actor) }
     return {
       ...task,
-      completedBy: { ...completedBy, [employeeId]: completed },
+      completedBy: canonicalEmployeeKeyedRecord(completedBy, completed),
       completionHistory: [...(Array.isArray(task.completionHistory) ? task.completionHistory : []), event],
       updatedAt: commandContext.now,
       updatedBy: serverActorSnapshot(actor),
@@ -12487,6 +12671,16 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const nextHistories = histories.map((assignment) => {
     const assignmentId = String(assignment.assignmentId || assignment.id || '')
     if (!assignmentIds.includes(assignmentId)) return assignment
+    if (existingSubmission) {
+      return {
+        ...assignment,
+        tasks: (Array.isArray(assignment.tasks) ? assignment.tasks : []).map((task) => ({
+          ...task,
+          completedBy: canonicalizeExistingEmployeeKeyedRecord(task.completedBy),
+        })),
+        completionByEmployee: canonicalizeExistingEmployeeKeyedRecord(assignment.completionByEmployee),
+      }
+    }
     const assignmentTasks = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId)
     const assignmentTaskIds = assignmentTasks.map((task) => String(task.id || ''))
     const assignmentRequiredTaskIds = assignmentTasks
@@ -12510,10 +12704,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
         if (!submittedById.has(taskId)) return task
         return {
           ...task,
-          completedBy: {
-            ...(isPlainRecord(task.completedBy) ? task.completedBy : {}),
-            [employeeId]: submittedById.get(taskId),
-          },
+          completedBy: canonicalEmployeeKeyedRecord(task.completedBy, submittedById.get(taskId)),
         }
       }),
       status: requiredComplete ? 'completed' : 'incomplete',
@@ -12522,8 +12713,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       totalTasks,
       incompleteReason: requiredComplete ? '' : incompleteReason,
       completionByEmployee: {
-        ...(isPlainRecord(assignment.completionByEmployee) ? assignment.completionByEmployee : {}),
-        [employeeId]: {
+        ...canonicalEmployeeKeyedRecord(assignment.completionByEmployee, {
           completedTasks,
           totalTasks,
           completionRate,
@@ -12532,7 +12722,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
           incompleteReason: requiredComplete ? '' : incompleteReason,
           submittedAt: commandContext.now,
           attendanceId: openAttendance.id,
-        },
+        }),
       },
       progressHistory: [...(Array.isArray(assignment.progressHistory) ? assignment.progressHistory : []), progressEvent],
       submittedAt: commandContext.now,
@@ -12551,7 +12741,9 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     .filter(([taskId, completed]) => !requiredTaskIds.has(taskId) && completed)
     .length
   const completionRate = Math.round((completedTasks / totalTasks) * 100)
-  const notifications = (assignmentIds.length ? assignmentResults : [{ assignmentId: '', totalTasks, completedTasks, completionRate }])
+  const notifications = existingSubmission ? [] : (assignmentIds.length
+    ? assignmentResults
+    : [{ assignmentId: '', totalTasks, completedTasks, completionRate }])
     .map((result) => ({
       id: `ntf_${crypto.randomUUID()}`,
       type: 'store-task-progress-submitted',
@@ -12567,11 +12759,15 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       readAt: null,
     }))
   let rewardFinancialChange = false
-  for (const occurrence of rewardOccurrences) {
-    const previousClaim = claimById.get(occurrence.claimKey)
-    const desiredActive = rewardClaimShouldBeActive(occurrence, previousClaim)
-    if (payrollActiveClaim(previousClaim) !== desiredActive
-      || (desiredActive && Number(previousClaim?.amountVnd ?? previousClaim?.amount) !== occurrence.amountVnd)) {
+  for (const lineage of rewardLineageStatesForWrite) {
+    const activeClaimsUseCanonicalEmployee = rewardClaimCandidates(lineage.occurrence)
+      .filter(payrollActiveClaim)
+      .every((claim) => {
+        const identifiers = rewardRecordEmployeeIdentifiers(claim)
+        return identifiers.length === 1 && identifiers[0] === employeeId
+      })
+    if (lineage.currentActiveAmount !== lineage.desiredActiveAmount
+      || !activeClaimsUseCanonicalEmployee) {
       rewardFinancialChange = true
     }
   }
@@ -12583,8 +12779,9 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const rewardClaimUpdates = new Map()
   const newRewardProgress = []
   const newRewardClaims = []
-  for (const occurrence of rewardOccurrences) {
-    const previousProgress = progressById.get(occurrence.progressKey)
+  for (const occurrence of rewardOccurrencesForWrite) {
+    const canonicalProgress = progressById.get(occurrence.progressKey)
+    const previousProgress = canonicalProgress || newestRewardClaim(occurrence.legacyProgress)
     const progress = {
       ...(previousProgress || {}),
       id: occurrence.progressKey,
@@ -12618,6 +12815,9 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       status: occurrence.completed ? 'COMPLETED' : 'NOT_COMPLETED',
       payable: occurrence.payable,
       payableReason: occurrence.payableReason,
+      migratedToProgressId: null,
+      migratedAt: null,
+      migratedBy: null,
       completedAt: occurrence.completed ? (previousProgress?.completedAt || commandContext.now) : null,
       submittedAt: commandContext.now,
       submittedBy: actorSnapshot,
@@ -12628,73 +12828,119 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       updatedBy: actorSnapshot,
       deletedAt: null,
     }
-    if (previousProgress) rewardProgressUpdates.set(progress.id, progress)
+    if (canonicalProgress) rewardProgressUpdates.set(progress.id, progress)
     else newRewardProgress.push(progress)
+    for (const legacyProgress of occurrence.legacyProgress) {
+      if (normalizeTextKey(legacyProgress.status) === 'migrated'
+        && String(legacyProgress.migratedToProgressId || '') === occurrence.progressKey
+        && legacyProgress.deletedAt) continue
+      rewardProgressUpdates.set(String(legacyProgress.id || ''), {
+        ...legacyProgress,
+        status: 'MIGRATED',
+        migratedToProgressId: occurrence.progressKey,
+        migratedAt: commandContext.now,
+        migratedBy: systemActor,
+        updatedAt: commandContext.now,
+        updatedBy: systemActor,
+        deletedAt: legacyProgress.deletedAt || commandContext.now,
+        version: Number(legacyProgress.version || 1) + 1,
+      })
+    }
 
-    const previousClaim = claimById.get(occurrence.claimKey)
+    const canonicalClaim = claimById.get(occurrence.claimKey)
+    const previousClaim = rewardClaimAuthority(occurrence)
     const desiredActive = rewardClaimShouldBeActive(occurrence, previousClaim)
     if (desiredActive) {
-      if (payrollActiveClaim(previousClaim)
-        && Number(previousClaim.amountVnd ?? previousClaim.amount) === occurrence.amountVnd) continue
-      const claim = {
-        ...(previousClaim || {}),
-        id: occurrence.claimKey,
-        type: 'WORK',
-        targetUnit: 'store',
-        employeeId,
-        employeeName: employee.name || employeeId,
-        storeId,
-        amountVnd: occurrence.amountVnd,
-        effectiveDate: date,
-        period,
-        note: `Thưởng công việc: ${occurrence.name}`,
-        status: 'ACTIVE',
-        sourceType: 'work-catalog-reward',
-        sourceId: occurrence.claimKey,
-        workCatalogProgressId: occurrence.progressKey,
-        attendanceId: openAttendance.id,
-        shiftId,
-        shiftName: openAttendance.shiftName || shiftId,
-        catalogItemId: occurrence.catalogItemId,
-        catalogCode: occurrence.catalogCode,
-        catalogVersion: occurrence.catalogVersion,
-        rewardTaskSnapshot: {
+      if (!payrollActiveClaim(canonicalClaim)
+        || Number(canonicalClaim.amountVnd ?? canonicalClaim.amount) !== occurrence.amountVnd) {
+        const claim = {
+          ...(previousClaim || {}),
+          id: occurrence.claimKey,
+          type: 'WORK',
+          targetUnit: 'store',
+          employeeId,
+          employeeName: employee.name || employeeId,
+          storeId,
+          amountVnd: occurrence.amountVnd,
+          effectiveDate: date,
+          period,
+          note: `Thưởng công việc: ${occurrence.name}`,
+          status: 'ACTIVE',
+          sourceType: 'work-catalog-reward',
+          sourceId: occurrence.claimKey,
+          workCatalogProgressId: occurrence.progressKey,
+          attendanceId: openAttendance.id,
+          shiftId,
+          shiftName: openAttendance.shiftName || shiftId,
           catalogItemId: occurrence.catalogItemId,
           catalogCode: occurrence.catalogCode,
           catalogVersion: occurrence.catalogVersion,
-          name: occurrence.name,
-          amountVnd: occurrence.amountVnd,
-          catalogSnapshot: { ...occurrence.catalogSnapshot },
-          sourceTaskIds: occurrence.sourceTaskIds,
-        },
-        version: Number(previousClaim?.version || 0) + 1,
-        createdAt: previousClaim?.createdAt || commandContext.now,
-        createdBy: previousClaim?.createdBy || actorSnapshot,
-        activatedAt: commandContext.now,
-        activatedBy: systemActor,
-        updatedAt: commandContext.now,
-        updatedBy: systemActor,
-        deletedAt: null,
-        voidedAt: null,
-        voidedBy: null,
-        voidReason: null,
-        voidSource: null,
+          rewardTaskSnapshot: {
+            catalogItemId: occurrence.catalogItemId,
+            catalogCode: occurrence.catalogCode,
+            catalogVersion: occurrence.catalogVersion,
+            name: occurrence.name,
+            amountVnd: occurrence.amountVnd,
+            catalogSnapshot: { ...occurrence.catalogSnapshot },
+            sourceTaskIds: occurrence.sourceTaskIds,
+          },
+          version: Number(previousClaim?.version || 0) + 1,
+          createdAt: previousClaim?.createdAt || commandContext.now,
+          createdBy: previousClaim?.createdBy || actorSnapshot,
+          activatedAt: commandContext.now,
+          activatedBy: systemActor,
+          updatedAt: commandContext.now,
+          updatedBy: systemActor,
+          deletedAt: null,
+          voidedAt: null,
+          voidedBy: null,
+          voidReason: null,
+          voidSource: null,
+          migratedToClaimId: null,
+        }
+        if (canonicalClaim) rewardClaimUpdates.set(claim.id, claim)
+        else newRewardClaims.push(claim)
       }
-      if (previousClaim) rewardClaimUpdates.set(claim.id, claim)
-      else newRewardClaims.push(claim)
-    } else if (previousClaim && !previousClaim.voidedAt && normalizeTextKey(previousClaim.status) !== 'void') {
-      rewardClaimUpdates.set(previousClaim.id, {
-        ...previousClaim,
+    } else if (payrollActiveClaim(canonicalClaim)) {
+      const preserveManualVoid = manuallyVoidedRewardClaim(previousClaim)
+      rewardClaimUpdates.set(canonicalClaim.id, {
+        ...canonicalClaim,
         status: 'VOID',
         voidedAt: commandContext.now,
-        voidedBy: actorSnapshot,
-        voidReason: occurrence.payable
-          ? 'Nhân viên bỏ chọn công việc tính thưởng trước khi kết ca.'
-          : 'Công việc cần đối soát điều chuyển trước khi ghi nhận thưởng.',
-        voidSource: 'task-progress',
+        voidedBy: preserveManualVoid ? (previousClaim.voidedBy || actorSnapshot) : actorSnapshot,
+        voidReason: preserveManualVoid
+          ? (previousClaim.voidReason || 'Bảo toàn quyết định hủy thưởng thủ công từ dữ liệu phiên bản trước.')
+          : (occurrence.payable
+              ? 'Nhân viên bỏ chọn công việc tính thưởng trước khi kết ca.'
+              : 'Công việc cần đối soát điều chuyển trước khi ghi nhận thưởng.'),
+        voidSource: preserveManualVoid ? 'manual-review-migration' : 'task-progress',
         updatedAt: commandContext.now,
         updatedBy: actorSnapshot,
-        version: Number(previousClaim.version || 1) + 1,
+        version: Number(canonicalClaim.version || 1) + 1,
+      })
+    }
+    for (const legacyClaim of occurrence.legacyClaims) {
+      if (!payrollActiveClaim(legacyClaim)) continue
+      const preserveManualVoid = manuallyVoidedRewardClaim(previousClaim)
+      rewardClaimUpdates.set(String(legacyClaim.id || ''), {
+        ...legacyClaim,
+        status: 'VOID',
+        voidedAt: commandContext.now,
+        voidedBy: preserveManualVoid ? (previousClaim.voidedBy || actorSnapshot) : systemActor,
+        voidReason: preserveManualVoid
+          ? (previousClaim.voidReason || 'Bảo toàn quyết định hủy thưởng thủ công từ dữ liệu phiên bản trước.')
+          : (desiredActive
+              ? 'Đã hợp nhất vào định danh thưởng theo cửa hàng và ca làm việc.'
+              : (occurrence.payable
+                  ? 'Nhân viên bỏ chọn công việc tính thưởng trước khi kết ca.'
+                  : 'Công việc cần đối soát điều chuyển trước khi ghi nhận thưởng.')),
+        voidSource: preserveManualVoid
+          ? 'manual-review-migration'
+          : (desiredActive ? 'reward-key-migration' : 'task-progress'),
+        migratedToClaimId: desiredActive ? occurrence.claimKey : null,
+        updatedAt: commandContext.now,
+        updatedBy: systemActor,
+        version: Number(legacyClaim.version || 1) + 1,
       })
     }
   }
@@ -12732,30 +12978,64 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     incompleteReason: incompleteTaskIds.length ? incompleteReason : '',
     submittedAt: commandContext.now,
     assignments: assignmentResults,
-    rewardProgress: rewardOccurrences.map((occurrence) => (
+    rewardProgress: rewardOccurrencesForWrite.map((occurrence) => (
       rewardProgressUpdates.get(occurrence.progressKey)
       || newRewardProgress.find((record) => record.id === occurrence.progressKey)
-    )),
+    )).filter(Boolean),
     rewardClaims: changedRewardClaims,
   }
+  const uniqueRewardRecords = (records) => [...new Map(records.filter(Boolean).map((record) => (
+    [String(record.id || ''), record]
+  ))).values()]
+  const previousRewardProgress = uniqueRewardRecords(rewardOccurrencesForWrite.flatMap((occurrence) => [
+    progressById.get(occurrence.progressKey),
+    ...occurrence.legacyProgress,
+  ]))
+  const previousRewardClaims = uniqueRewardRecords(rewardOccurrencesForWrite.flatMap((occurrence) => [
+    claimById.get(occurrence.claimKey),
+    ...occurrence.legacyClaims,
+  ]))
+  const nextRewardProgressById = new Map(nextWorkCatalogProgress.map((record) => [String(record.id || ''), record]))
+  const nextRewardClaimById = new Map(nextCompensationEntries.map((record) => [String(record.id || ''), record]))
+  const currentRewardProgress = uniqueRewardRecords(rewardOccurrencesForWrite.flatMap((occurrence) => [
+    nextRewardProgressById.get(occurrence.progressKey),
+    ...occurrence.legacyProgress.map((record) => nextRewardProgressById.get(String(record.id || ''))),
+  ]))
+  const currentRewardClaims = uniqueRewardRecords(rewardOccurrencesForWrite.flatMap((occurrence) => [
+    nextRewardClaimById.get(occurrence.claimKey),
+    ...occurrence.legacyClaims.map((record) => nextRewardClaimById.get(String(record.id || ''))),
+  ]))
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
     action: body.type,
     entityType: 'task-progress',
     entityId: `${openAttendance.id}:${employeeId}`,
     before: {
-      tasks: scopedTasks.map((task) => ({ id: task.id, completed: Boolean(task.completedBy?.[employeeId]) })),
-      rewardProgress: rewardOccurrences.map((occurrence) => progressById.get(occurrence.progressKey)).filter(Boolean),
-      rewardClaims: rewardOccurrences.map((occurrence) => claimById.get(occurrence.claimKey)).filter(Boolean),
+      tasks: scopedTasks.map((task) => ({
+        id: task.id,
+        completed: employeeIdentifiers.some((identifier) => Boolean(task.completedBy?.[identifier])),
+      })),
+      rewardProgress: previousRewardProgress,
+      rewardClaims: previousRewardClaims,
     },
     after: {
       tasks: normalizedStatuses.map(([id, completed]) => ({ id, completed })),
-      rewardProgress: result.rewardProgress,
-      rewardClaims: changedRewardClaims,
+      rewardProgress: currentRewardProgress,
+      rewardClaims: currentRewardClaims,
     },
     metadata: {
       storeId, date, shiftId, attendanceId: openAttendance.id, completionRate, incompleteTaskIds,
       rewardProgressIds: result.rewardProgress.map((record) => record.id),
       rewardClaimIds: changedRewardClaims.map((record) => record.id),
+      migratedRewardProgressIds: rewardOccurrencesForWrite.flatMap((occurrence) => (
+        occurrence.legacyProgress
+          .map((record) => String(record.id || ''))
+          .filter((recordId) => rewardProgressUpdates.has(recordId))
+      )),
+      migratedRewardClaimIds: rewardOccurrencesForWrite.flatMap((occurrence) => (
+        occurrence.legacyClaims
+          .map((record) => String(record.id || ''))
+          .filter((recordId) => rewardClaimUpdates.has(recordId))
+      )),
       rewardFinancialChange,
     },
     response: { command: body.type, ...result, notifications },
@@ -13906,6 +14186,12 @@ const compensationEmployee = (state, employeeId) => {
   return employee
 }
 
+const compensationEmployeeIdentifiers = (employee = {}) => [...new Set([
+  employee.id,
+  employee.code,
+  employee.employeeId,
+].map((value) => String(value || '').trim()).filter(Boolean))]
+
 const compensationDate = (value, field) => {
   const normalized = String(value || '').trim()
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(normalized)) {
@@ -14221,11 +14507,16 @@ const violationShiftSnapshotTimes = (record = {}) => ({
   end: parseShiftTime(record.shiftEnd || record.end || String(record.time || '').split(/[–—-]/u)[1]),
 })
 
-const employeeHasStoreShiftWorkEvidenceOnDate = (state, employeeId, storeId, date, shiftId) => [
+const workRecordBelongsToEmployee = (record, employeeIds) => (
+  (Array.isArray(employeeIds) ? employeeIds : [employeeIds])
+    .some((employeeId) => employeeId && belongsToEmployee(record, employeeId))
+)
+
+const employeeHasStoreShiftWorkEvidenceOnDate = (state, employeeIds, storeId, date, shiftId) => [
   ...(Array.isArray(state.schedule) ? state.schedule : []),
   ...(Array.isArray(state.attendance) ? state.attendance : []),
 ].some((record) => (
-  belongsToEmployee(record, employeeId)
+  workRecordBelongsToEmployee(record, employeeIds)
   && String(record.storeId || '') === String(storeId || '')
   && dateFromRecord(record) === date
   && violationShiftIds(record).includes(String(shiftId || ''))
@@ -14237,7 +14528,7 @@ const violationPayrollTargets = (storeId, payrollStoreId, period) => [...new Set
   String(payrollStoreId || '').trim(),
 ].filter(Boolean))].map((targetStoreId) => ({ storeId: targetStoreId, period }))
 
-const violationShiftSnapshot = ({ state, employeeId, storeId, occurredOn, requestedShiftId }) => {
+const violationShiftSnapshot = ({ state, employeeIds, storeId, occurredOn, requestedShiftId }) => {
   const shiftDefinitions = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).filter((record) => (
     (!record.storeId || String(record.storeId) === storeId)
     && (!record.date || String(record.date) === occurredOn)
@@ -14246,7 +14537,7 @@ const violationShiftSnapshot = ({ state, employeeId, storeId, occurredOn, reques
     ...(Array.isArray(state.schedule) ? state.schedule : []),
     ...(Array.isArray(state.attendance) ? state.attendance : []),
   ].filter((record) => (
-    belongsToEmployee(record, employeeId)
+    workRecordBelongsToEmployee(record, employeeIds)
     && String(record.storeId || storeId) === storeId
     && dateFromRecord(record) === occurredOn
     && !record.deletedAt
@@ -14340,7 +14631,8 @@ const violationCommand = async (db, actor, body, commandContext) => {
     assertOperationalStoreAccess(actor, storeId)
     const store = requireActivePhysicalStore(state, storeId)
     const employee = compensationEmployee(state, payload.employeeId)
-    const employeeId = String(employee.id || employee.code || employee.employeeId)
+    const employeeIdentifiers = compensationEmployeeIdentifiers(employee)
+    const employeeId = employeeIdentifiers[0]
     if (employeeUnit(employee) !== 'store') {
       throw new ApiError(409, 'EMPLOYEE_UNIT_MISMATCH', 'Nhân viên không thuộc nhóm cửa hàng.')
     }
@@ -14349,13 +14641,13 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const canonicalStoreMembership = employeeWorksAtStoreOnDate(state, employee, storeId, occurredOn)
     const shiftSnapshot = violationShiftSnapshot({
       state,
-      employeeId,
+      employeeIds: employeeIdentifiers,
       storeId,
       occurredOn,
       requestedShiftId: payload.shiftId || payload.shift,
     })
     if (!canonicalStoreMembership && !employeeHasStoreShiftWorkEvidenceOnDate(
-      state, employeeId, storeId, occurredOn, shiftSnapshot.shiftId,
+      state, employeeIdentifiers, storeId, occurredOn, shiftSnapshot.shiftId,
     )) {
       throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng và ca đã chọn trong ngày phát sinh.')
     }
@@ -14551,7 +14843,8 @@ const violationCommand = async (db, actor, body, commandContext) => {
     }
     if (targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.')
     const employee = compensationEmployee(state, payload.employeeId)
-    const employeeId = String(employee.id || employee.code || employee.employeeId)
+    const employeeIdentifiers = compensationEmployeeIdentifiers(employee)
+    const employeeId = employeeIdentifiers[0]
     const actualUnit = employeeUnit(employee)
     if (actualUnit !== targetUnit) throw new ApiError(409, 'EMPLOYEE_UNIT_MISMATCH', 'Nhân viên không thuộc nhóm đã chọn.')
     const storeId = targetUnit === 'store'
@@ -14568,14 +14861,14 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const shiftSnapshot = targetUnit === 'store'
       ? violationShiftSnapshot({
           state,
-          employeeId,
+          employeeIds: employeeIdentifiers,
           storeId,
           occurredOn,
           requestedShiftId: payload.shiftId || payload.shift,
         })
       : null
     if (targetUnit === 'store' && !canonicalStoreMembership && !employeeHasStoreShiftWorkEvidenceOnDate(
-      state, employeeId, storeId, occurredOn, shiftSnapshot.shiftId,
+      state, employeeIdentifiers, storeId, occurredOn, shiftSnapshot.shiftId,
     )) {
       throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng và ca đã chọn trong ngày phát sinh.')
     }

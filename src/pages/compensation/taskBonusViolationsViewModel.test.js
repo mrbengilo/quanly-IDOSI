@@ -49,6 +49,22 @@ describe('selectWorkedShiftOptions', () => {
       schedule: [{ id: 'SCH-01', employeeId: 'NV-01', storeId: 'CH001', date: '2026-08-28', shiftIds: ['MORNING'] }],
     })).toEqual([expect.objectContaining({ id: 'MORNING', sourceLabel: 'Theo lịch phân ca' })])
   })
+
+  it('matches historical work evidence through strict profile identifier aliases', () => {
+    expect(selectWorkedShiftOptions({
+      employeeId: 'PROFILE-01',
+      employee: { id: 'PROFILE-01', code: 'CODE-01', employeeId: 'NV-01' },
+      storeId: 'CH001',
+      date: '2026-08-28',
+      shiftDefinitions: shifts,
+      attendance: [{
+        id: 'ATT-ALIAS', employeeId: 'NV-01', storeId: 'CH001', date: '2026-08-28',
+        shiftId: 'MORNING', shiftName: 'Ca sáng theo mã nhân viên', shiftStart: '08:00', shiftEnd: '12:00',
+      }],
+    })).toEqual([
+      expect.objectContaining({ id: 'MORNING', attendanceId: 'ATT-ALIAS', source: 'attendance' }),
+    ])
+  })
 })
 
 describe('selectStoreEmployees', () => {
@@ -74,7 +90,8 @@ describe('selectStoreEmployees', () => {
       employees: [
         { id: 'NV-HOME', name: 'Nhân viên nhà', unit: 'store', storeId: 'CH001' },
         {
-          id: 'NV-TRANSFER', name: 'Nhân viên hỗ trợ', unit: 'store', storeId: 'CH002',
+          id: 'PROFILE-TRANSFER', code: 'CODE-TRANSFER', employeeId: 'NV-TRANSFER',
+          name: 'Nhân viên hỗ trợ', unit: 'store', storeId: 'CH002',
           historicalStoreId: 'CH001', historicalOnly: true,
         },
         { id: 'NV-UNRELATED', name: 'Nhân viên ngoài phạm vi', unit: 'store', storeId: 'CH004' },
@@ -84,7 +101,7 @@ describe('selectStoreEmployees', () => {
       }],
     }
 
-    expect(selectStoreEmployees(input).map((employee) => employee.id).sort()).toEqual(['NV-HOME', 'NV-TRANSFER'])
+    expect(selectStoreEmployees(input).map((employee) => employee.id).sort()).toEqual(['NV-HOME', 'PROFILE-TRANSFER'])
     expect(selectStoreEmployees({ ...input, date: '2026-08-27' }).map((employee) => employee.id)).toEqual(['NV-HOME'])
     expect(selectStoreEmployees({ ...input, storeId: 'CH003' })).toEqual([])
   })
