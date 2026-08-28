@@ -33,6 +33,7 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { resolveShiftCandidates } from '../../domain'
 import { activeOccupationLabels, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
+import { taskMatchesAttendanceChecklist } from '../../domain/taskAttendanceScope'
 import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, resolveStoreEmployeeSalaryPolicy, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
@@ -89,6 +90,7 @@ const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapsho
 const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
 const taskIsRequired = (task = {}) => task.required !== false
 const taskAmount = (task = {}) => Math.max(0, Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd) || 0)
+const taskBelongsToAttendance = taskMatchesAttendanceChecklist
 
 const workedHours = (record = {}) => {
   const explicit = Number(record.hours)
@@ -209,6 +211,7 @@ export function EmployeeDashboardV2() {
   const ownOrders = employeeCreatedOrders(orders, employeeId, workingStoreId)
   const monthOrders = ownOrders.filter((order) => businessDate(order.createdAt).startsWith(workDate.slice(0, 7)))
   const todayTasks = employeeTasksForDate({ tasks, schedule, attendance, employee: dashboardEmployee, workDate: operationalDate })
+    .filter((task) => taskBelongsToAttendance(task, activeRecord))
   const completedTasks = todayTasks.filter((task) => taskCompletedByEmployee(task, employeeId)).length
   const scheduledShifts = findScheduledShifts(app, dashboardEmployee, operationalDate)
   const transferBounds = supportTransferBounds(activeTransfer || {})
@@ -228,7 +231,9 @@ export function EmployeeDashboardV2() {
   })
   const incompleteTasks = activeShiftTasks.filter((task) => taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId))
   const incompleteRewardTasks = activeShiftTasks.filter((task) => !taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId))
-  const displayedTasks = requestedAssignment?.tasks || todayTasks
+  const displayedTasks = requestedAssignment
+    ? requestedAssignment.tasks.filter((task) => taskBelongsToAttendance(task, activeRecord))
+    : todayTasks
   const displayedTaskDate = requestedAssignment?.date || operationalDate
   const displayedTaskShiftId = String(requestedAssignment?.shiftId || '')
   const displayedTaskShift = shiftDefinitions.find((shift) => String(shift.id) === displayedTaskShiftId)
@@ -247,9 +252,19 @@ export function EmployeeDashboardV2() {
   }, [])
 
   const toggleTask = async (task) => {
+    if (taskIsReward(task)) {
+      notify?.('Công việc tính thưởng chỉ được xác nhận tại trang Công việc được giao sau khi bạn tick và bấm LƯU.', 'info')
+      navigate('/employee/tasks')
+      return
+    }
     const taskShiftId = String(task.shiftId || task.shift || '')
     const taskDate = String(task.date || task.workDate || '')
-    if (!activeRecord || (taskDate && taskDate !== operationalDate) || (taskShiftId && taskShiftId !== activeShiftId)) {
+    if (
+      !activeRecord
+      || !taskBelongsToAttendance(task, activeRecord)
+      || (taskDate && taskDate !== operationalDate)
+      || (taskShiftId && taskShiftId !== activeShiftId)
+    ) {
       notify?.('Bạn chỉ có thể cập nhật công việc sau khi điểm danh vào đúng ca.', 'info')
       return
     }
@@ -435,7 +450,10 @@ export function EmployeeDashboardV2() {
             const amount = taskAmount(task)
             const taskShiftId = String(task.shiftId || task.shift || '')
             const taskDate = String(task.date || task.workDate || displayedTaskDate)
-            const canUpdate = Boolean(activeRecord) && taskDate === operationalDate && (!taskShiftId || taskShiftId === activeShiftId)
+            const canUpdate = Boolean(activeRecord)
+              && taskBelongsToAttendance(task, activeRecord)
+              && taskDate === operationalDate
+              && (!taskShiftId || taskShiftId === activeShiftId)
             return (
               <div key={task.id} className={done ? 'done' : ''}>
                 <button

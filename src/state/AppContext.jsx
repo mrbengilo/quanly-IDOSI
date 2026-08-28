@@ -49,6 +49,8 @@ import {
 } from '../domain/attendanceWorkingTime'
 import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'
 import { resolveExactlyOneActiveStoreManager } from '../domain/managerRevenueBonus'
+import { taskMatchesAttendanceChecklist } from '../domain/taskAttendanceScope'
+import { WORK_CATALOG_KIND } from '../domain/workCatalog'
 import {
   apiBootstrapState,
   apiCommand,
@@ -184,6 +186,7 @@ const REMOTE_ARRAY_KEYS = [
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
   'storeEmployeeSalaryConfigs', 'workCatalogItems', 'workCatalogProgress',
   'storeShiftTaskTemplates', 'compensationEntries', 'violations', 'revenueBonusDaily', 'revenueBonusAllocations',
+  'storeDailyRevenue',
   'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
   'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
 ]
@@ -554,6 +557,33 @@ const normalizeTask = (task = {}, fallbackStoreId = null) => ({
   done: Boolean(task.done),
 })
 
+const localRewardTaskSnapshotForProgress = (task = {}, completed = false) => {
+  const catalogSnapshot = task.catalogSnapshot && typeof task.catalogSnapshot === 'object' && !Array.isArray(task.catalogSnapshot)
+    ? task.catalogSnapshot
+    : null
+  const catalogItemId = String(task.catalogItemId || catalogSnapshot?.catalogItemId || catalogSnapshot?.id || '').trim()
+  const kind = String(catalogSnapshot?.kind || task.catalogKind || task.kind || '').trim().toUpperCase()
+  const amountVnd = Number(catalogSnapshot?.amountVnd ?? task.amountVnd)
+  if (!catalogSnapshot
+    || !catalogItemId
+    || kind !== WORK_CATALOG_KIND.REWARD_TASK
+    || !Number.isSafeInteger(amountVnd)
+    || amountVnd <= 0) return null
+
+  return {
+    taskId: String(task.id || ''),
+    assignmentId: String(task.assignmentId || '') || null,
+    catalogItemId,
+    catalogCode: String(catalogSnapshot.catalogCode || task.catalogCode || '').trim(),
+    catalogVersion: Number(catalogSnapshot.catalogVersion || task.catalogVersion || 1),
+    targetGroup: String(catalogSnapshot.targetGroup || '').trim(),
+    name: String(catalogSnapshot.name || task.title || task.name || '').trim(),
+    amountVnd,
+    completed: completed === true,
+    catalogSnapshot: { ...catalogSnapshot },
+  }
+}
+
 export const createInitialState = () => {
   const employees = employeesSeed.map((employee) => normalizeEmployee(clone(employee)))
   const stores = countStoreEmployees(clone(storesSeed), employees)
@@ -681,7 +711,7 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
   }
   const remoteRole = normalizeAuthRole(remoteUser?.role)
   const employeeId = remoteUser?.employeeId || remoteUser?.employee_id
-  const remoteEmployee = safeRemote.employees.find((employee) => String(employee.id || employee.code) === String(employeeId))
+  const remoteEmployee = employeeProfileFor(safeRemote.employees, { employeeId })
   const isAdminAccount = remoteRole === 'admin'
   const session = isAdminAccount
     ? { id: remoteUser.id, code: 'ADMIN', name: remoteUser.displayName || remoteUser.username, username: remoteUser.username, role: 'admin', accountType: 'admin', authVersion: remoteUser.version, availableRoles: remoteUser.availableRoles || [], needsRoleSelection: Boolean(remoteUser.needsRoleSelection) }
@@ -804,7 +834,51 @@ const rememberActiveStore = (account, storeId) => {
   }
 }
 
-const accountKey = (account = {}) => String(account.id || account.code || account.employeeCode || '')
+const accountKey = (account) => String(account?.id || account?.code || account?.employeeCode || '')
+const directEmployeeIdentifiers = (...records) => new Set(records.flatMap((record) => [
+  record?.id,
+  record?.code,
+  record?.employeeId,
+  record?.employee_id,
+  record?.employeeCode,
+]).map((value) => String(value || '').trim()).filter(Boolean))
+const employeeAccountIdentifiers = (...records) => new Set(records.flatMap((record) => [
+  record?.id,
+  record?.code,
+  record?.employeeId,
+  record?.employee_id,
+  record?.employeeCode,
+  record?.linkedEmployeeId,
+  record?.sourceEmployeeId,
+  record?.rootEmployeeId,
+  record?.originalEmployeeId,
+]).map((value) => String(value || '').trim()).filter(Boolean))
+const employeeProfileFor = (employees = [], ...identitySources) => {
+  const requestedDirect = directEmployeeIdentifiers(...identitySources)
+  const exact = employees.find((employee) => (
+    [...directEmployeeIdentifiers(employee)].some((identifier) => requestedDirect.has(identifier))
+  ))
+  if (exact) return exact
+  const requested = employeeAccountIdentifiers(...identitySources)
+  const linked = employees.filter((employee) => (
+    [...employeeAccountIdentifiers(employee)].some((identifier) => requested.has(identifier))
+  ))
+  const requestedRole = normalizeAuthRole(identitySources.find((source) => source?.role)?.role)
+  if (!requestedRole) return linked[0] || null
+  return linked.find((employee) => {
+    const unit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
+    if (requestedRole === 'store_manager') return unit === 'store_manager' || employee?.isStoreManager === true
+    if (requestedRole === 'business_support') return unit === 'business_support'
+    return !['store_manager', 'business_support'].includes(unit)
+  }) || linked[0] || null
+}
+const employeeRecordMatches = (record = {}, identifiers = new Set()) => [
+  record.employeeId,
+  record.employee_id,
+  record.employeeCode,
+  record.targetEmployeeId,
+].map((value) => String(value || '').trim()).filter(Boolean)
+  .some((identifier) => identifiers.has(identifier))
 
 const toSession = (account, source) => {
   const common = {
@@ -1209,7 +1283,8 @@ export function AppProvider({ children }) {
       })
       return result
     } catch (error) {
-      if (error.code === 'VERSION_CONFLICT') {
+      const conflictCode = String(error?.code || '')
+      if (['VERSION_CONFLICT', 'ENTITY_VERSION_CONFLICT'].includes(conflictCode)) {
         try {
           const latest = await apiGetState('global')
           activateRemotePayload(latest, remote.user, activeStoreIdRef.current)
@@ -1217,7 +1292,7 @@ export function AppProvider({ children }) {
           setApiStatus('error')
         }
         const conflict = new Error('Dữ liệu vừa thay đổi trên máy chủ. Nội dung mới nhất đã được tải; vui lòng thực hiện lại thao tác.')
-        conflict.code = 'VERSION_CONFLICT'
+        conflict.code = conflictCode
         throw conflict
       }
       throw error
@@ -2069,8 +2144,9 @@ export function AppProvider({ children }) {
   }
 
   const addShiftExpense = async (payload = {}) => {
-    const employeeId = String(state.session?.employeeId || state.session?.code || '')
-    const employee = state.employees.find((item) => accountKey(item) === employeeId)
+    const employee = employeeProfileFor(state.employees, state.session)
+    const employeeId = accountKey(employee) || String(state.session?.employeeId || state.session?.code || '')
+    const ownEmployeeIdentifiers = employeeAccountIdentifiers(employee, state.session)
     const role = normalizeAuthRole(state.session?.role)
     const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
     if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
@@ -2078,7 +2154,7 @@ export function AppProvider({ children }) {
     }
     const attendanceId = String(payload.attendanceId || '')
     const openAttendance = state.attendance.find((record) => (
-      String(record.employeeId || '') === employeeId
+      employeeRecordMatches(record, ownEmployeeIdentifiers)
       && (!attendanceId || String(record.id || '') === attendanceId)
       && !record.deletedAt
       && !record.checkOutAt
@@ -2182,8 +2258,9 @@ export function AppProvider({ children }) {
   }
 
   const saveStoreTaskProgress = async (payload = {}) => {
-    const employeeId = String(state.session?.employeeId || state.session?.code || '')
-    const employee = state.employees.find((item) => accountKey(item) === employeeId)
+    const employee = employeeProfileFor(state.employees, state.session)
+    const employeeId = accountKey(employee) || String(state.session?.employeeId || state.session?.code || '')
+    const ownEmployeeIdentifiers = employeeAccountIdentifiers(employee, state.session)
     const role = normalizeAuthRole(state.session?.role)
     const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
     if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
@@ -2191,7 +2268,7 @@ export function AppProvider({ children }) {
     }
     const attendanceId = String(payload.attendanceId || '')
     const openAttendance = state.attendance.find((record) => (
-      String(record.employeeId || '') === employeeId
+      employeeRecordMatches(record, ownEmployeeIdentifiers)
       && (!attendanceId || String(record.id || '') === attendanceId)
       && !record.deletedAt
       && !record.checkOutAt
@@ -2203,6 +2280,7 @@ export function AppProvider({ children }) {
     const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
     const scopedTasks = state.tasks.filter((task) => {
       if (task.deletedAt || String(task.storeId || '') !== storeId || String(task.date || task.workDate || '').slice(0, 10) !== date) return false
+      if (!taskMatchesAttendanceChecklist(task, openAttendance)) return false
       const assignees = [
         task.employeeId,
         ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
@@ -2210,7 +2288,8 @@ export function AppProvider({ children }) {
         ...(Array.isArray(task.assignedEmployeeIds) ? task.assignedEmployeeIds : []),
       ].filter(Boolean).map(String)
       const taskShiftId = String(task.shiftId || task.shift || '')
-      return (!assignees.length || assignees.includes(employeeId)) && (!taskShiftId || taskShiftId === shiftId)
+      return (!assignees.length || assignees.some((identifier) => ownEmployeeIdentifiers.has(identifier)))
+        && (!taskShiftId || taskShiftId === shiftId)
     })
     if (!scopedTasks.length) return { ok: false, message: 'Ca đang làm chưa có công việc được giao.' }
     const statuses = Array.isArray(payload.tasks) ? payload.tasks : []
@@ -2224,13 +2303,18 @@ export function AppProvider({ children }) {
       submitted.set(taskId, item.completed)
     }
     if (submitted.size !== taskIds.size) return { ok: false, message: 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.' }
-    const incompleteReason = String(payload.incompleteReason || payload.note || '').trim()
-    const requiredTaskIds = new Set(scopedTasks.filter((task) => task.required !== false).map((task) => String(task.id || '')))
+    const requestedIncompleteReason = String(payload.incompleteReason || payload.note || '').trim()
+    const requiredTaskIds = new Set(scopedTasks.filter((task) => {
+      const kind = String(task.catalogSnapshot?.kind || task.catalogKind || task.kind || '').trim().toUpperCase()
+      const rewardTask = task.rewardEligible === true || kind === WORK_CATALOG_KIND.REWARD_TASK
+      return !rewardTask && task.required !== false
+    }).map((task) => String(task.id || '')))
     const incompleteTaskIds = [...submitted]
       .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && !completed)
       .map(([taskId]) => taskId)
-    if (incompleteReason.length > 1_000) return { ok: false, message: 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.' }
-    if (incompleteTaskIds.length && !incompleteReason) return { ok: false, message: 'Cần nhập ghi chú khi chưa hoàn thành công việc cố định.' }
+    if (requestedIncompleteReason.length > 1_000) return { ok: false, message: 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.' }
+    if (incompleteTaskIds.length && !requestedIncompleteReason) return { ok: false, message: 'Cần nhập ghi chú khi chưa hoàn thành công việc cố định.' }
+    const incompleteReason = incompleteTaskIds.length ? requestedIncompleteReason : ''
     const idempotencyKey = String(payload.idempotencyKey || `task-progress:${crypto.randomUUID()}`)
     if (apiRef.current.enabled) {
       try {
@@ -2248,71 +2332,162 @@ export function AppProvider({ children }) {
     }
     const normalizedStatuses = [...submitted].sort(([left], [right]) => left.localeCompare(right))
     const fingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
-    const existing = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
-      .find((event) => String(event.employeeId || '') === employeeId && String(event.fingerprint || '') === fingerprint)
+    const latestSubmission = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
+      .filter((event) => (
+        event?.action === 'progress-submitted'
+        && employeeRecordMatches(event, ownEmployeeIdentifiers)
+        && String(event.attendanceId || '') === String(openAttendance.id || '')
+      ))
+      .reduce((latest, event) => (
+        !latest || String(event.at || '').localeCompare(String(latest.at || '')) >= 0 ? event : latest
+      ), null)
+    const existing = String(latestSubmission?.fingerprint || '') === fingerprint ? latestSubmission : null
     const completedTasks = [...submitted.values()].filter(Boolean).length
     const totalTasks = submitted.size
     const completionRate = Math.round((completedTasks / totalTasks) * 100)
+    const completedRequiredTasks = [...submitted]
+      .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && completed)
+      .length
+    const rewardTaskSnapshots = scopedTasks
+      .map((task) => localRewardTaskSnapshotForProgress(task, submitted.get(String(task.id || '')) === true))
+      .filter(Boolean)
+    const completedRewardTaskSnapshots = rewardTaskSnapshots.filter((snapshot) => snapshot.completed)
     if (existing) return { ok: true, existing: true, completedTasks, totalTasks, completionRate, submittedAt: existing.at }
     const timestamp = new Date().toISOString()
     const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
-    const assignmentSummaries = (assignmentIds.length ? assignmentIds : ['']).map((assignmentId) => {
-      const scopedIds = scopedTasks
-        .filter((task) => !assignmentId || String(task.assignmentId || '') === assignmentId)
-        .map((task) => String(task.id || ''))
-      const scopedCompleted = scopedIds.filter((taskId) => submitted.get(taskId) === true).length
-      return {
-        assignmentId,
-        completedTasks: scopedCompleted,
-        totalTasks: scopedIds.length,
-        completionRate: scopedIds.length ? Math.round((scopedCompleted / scopedIds.length) * 100) : 0,
-      }
-    })
-    setState((current) => ({
-      ...current,
-      tasks: current.tasks.map((task) => submitted.has(String(task.id || '')) ? {
-        ...task,
-        completedBy: { ...(task.completedBy || {}), [employeeId]: submitted.get(String(task.id || '')) },
-        completionHistory: [...(task.completionHistory || []), { done: submitted.get(String(task.id || '')), at: timestamp, employeeId, actor: actorSnapshot(current.session) }],
-        updatedAt: timestamp,
-      } : task),
-      taskAssignmentHistory: current.taskAssignmentHistory.map((assignment) => {
+    const progressEventBase = {
+      action: 'progress-submitted',
+      employeeId,
+      employeeName: employee.name || employeeId,
+      attendanceId: openAttendance.id,
+      storeId,
+      date,
+      shiftId,
+      incompleteReason,
+      rewardTaskSnapshots,
+      completedRewardTaskSnapshots,
+      fingerprint,
+      at: timestamp,
+      actor: actorSnapshot(state.session),
+    }
+    setState((current) => {
+      const matchedAssignmentIds = new Set()
+      const updatedHistories = current.taskAssignmentHistory.map((assignment) => {
         const assignmentId = String(assignment.assignmentId || assignment.id || '')
         if (!assignmentIds.includes(assignmentId)) return assignment
+        matchedAssignmentIds.add(assignmentId)
         const assignmentTaskIds = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId).map((task) => String(task.id || ''))
+        const assignmentRequiredTaskIds = scopedTasks
+          .filter((task) => String(task.assignmentId || '') === assignmentId && task.required !== false)
+          .map((task) => String(task.id || ''))
         const assignmentCompleted = assignmentTaskIds.filter((id) => submitted.get(id) === true).length
+        const assignmentCompletedRequired = assignmentRequiredTaskIds.filter((id) => submitted.get(id) === true).length
         const assignmentRate = assignmentTaskIds.length ? Math.round((assignmentCompleted / assignmentTaskIds.length) * 100) : 0
-        const event = { action: 'progress-submitted', employeeId, employeeName: employee.name || employeeId, attendanceId: openAttendance.id, storeId, date, shiftId, assignmentId, completedTasks: assignmentCompleted, totalTasks: assignmentTaskIds.length, completionRate: assignmentRate, incompleteReason: assignmentRate === 100 ? '' : incompleteReason, fingerprint, at: timestamp, actor: actorSnapshot(current.session) }
+        const requiredComplete = assignmentCompletedRequired === assignmentRequiredTaskIds.length
+        const event = {
+          ...progressEventBase,
+          assignmentId,
+          completedTasks: assignmentCompleted,
+          totalTasks: assignmentTaskIds.length,
+          completionRate: assignmentRate,
+          requiredTasks: assignmentRequiredTaskIds.length,
+          completedRequiredTasks: assignmentCompletedRequired,
+        }
         return {
           ...assignment,
-          status: assignmentRate === 100 ? 'completed' : 'incomplete',
+          status: requiredComplete ? 'completed' : 'incomplete',
           completionRate: assignmentRate,
           completedTasks: assignmentCompleted,
           totalTasks: assignmentTaskIds.length,
-          incompleteReason: assignmentRate === 100 ? '' : incompleteReason,
+          incompleteReason: requiredComplete ? '' : incompleteReason,
           progressHistory: [...(assignment.progressHistory || []), event],
           updatedAt: timestamp,
         }
-      }),
-      notifications: assignmentSummaries.flatMap((summary) => (
-        ['admin', 'business_support', 'store_manager'].map((targetRole) => ({
-          id: uid('NTF'),
-          type: 'store-task-progress-submitted',
-          targetRole,
+      })
+      const taskAssignmentHistory = matchedAssignmentIds.size ? updatedHistories : (() => {
+        const receiptId = `task_progress_receipt:${String(openAttendance.id || '')}`
+        const receiptIndex = updatedHistories.findIndex((record) => (
+          String(record.id || '') === receiptId
+          && record.source === 'task-progress-receipt'
+        ))
+        const previousReceipt = receiptIndex >= 0 ? updatedHistories[receiptIndex] : null
+        const progressEvent = {
+          ...progressEventBase,
+          assignmentId: null,
+          completedTasks,
+          totalTasks,
+          completionRate,
+          requiredTasks: requiredTaskIds.size,
+          completedRequiredTasks,
+        }
+        const receipt = {
+          ...(previousReceipt || {}),
+          id: receiptId,
+          historyId: previousReceipt?.historyId || receiptId,
+          assignmentId: null,
+          action: 'progress-receipt',
+          source: 'task-progress-receipt',
+          receiptOnly: true,
           storeId,
-          employeeId,
+          date,
+          shiftId,
           attendanceId: openAttendance.id,
-          assignmentId: summary.assignmentId || null,
-          route: `/store/tasks${summary.assignmentId ? `?assignment=${encodeURIComponent(summary.assignmentId)}` : ''}`,
-          title: `${employee.name || employeeId} đã gửi kết quả công việc`,
-          message: `Hoàn thành ${summary.completedTasks}/${summary.totalTasks} công việc (${summary.completionRate}%).`,
-          createdAt: timestamp,
-          readAt: null,
-        }))
-      )).concat(current.notifications || []),
-      auditLogs: [{ id: uid('AUD'), entity: 'task-progress', entityId: `${openAttendance.id}:${employeeId}`, action: 'submit', before: null, after: normalizedStatuses, actor: actorSnapshot(current.session), createdAt: timestamp }, ...current.auditLogs],
-      stateVersion: current.stateVersion + 1,
-    }))
+          employeeId,
+          employeeIds: [employeeId],
+          taskIds: scopedTasks.map((task) => String(task.id || '')).filter(Boolean),
+          tasks: [],
+          progressHistory: [...(previousReceipt?.progressHistory || []), progressEvent],
+          createdAt: previousReceipt?.createdAt || timestamp,
+          createdBy: previousReceipt?.createdBy || progressEvent.actor,
+          updatedAt: timestamp,
+          updatedBy: progressEvent.actor,
+        }
+        if (receiptIndex < 0) return [receipt, ...updatedHistories]
+        return updatedHistories.map((record, index) => index === receiptIndex ? receipt : record)
+      })()
+      const assignmentSummaries = (matchedAssignmentIds.size
+        ? assignmentIds.filter((assignmentId) => matchedAssignmentIds.has(assignmentId))
+        : ['']).map((assignmentId) => {
+        const scopedIds = scopedTasks
+          .filter((task) => !assignmentId || String(task.assignmentId || '') === assignmentId)
+          .map((task) => String(task.id || ''))
+        const scopedCompleted = scopedIds.filter((taskId) => submitted.get(taskId) === true).length
+        return {
+          assignmentId,
+          completedTasks: scopedCompleted,
+          totalTasks: scopedIds.length,
+          completionRate: scopedIds.length ? Math.round((scopedCompleted / scopedIds.length) * 100) : 0,
+        }
+      })
+      return {
+        ...current,
+        tasks: current.tasks.map((task) => submitted.has(String(task.id || '')) ? {
+          ...task,
+          completedBy: { ...(task.completedBy || {}), [employeeId]: submitted.get(String(task.id || '')) },
+          completionHistory: [...(task.completionHistory || []), { done: submitted.get(String(task.id || '')), at: timestamp, employeeId, actor: actorSnapshot(current.session) }],
+          updatedAt: timestamp,
+        } : task),
+        taskAssignmentHistory,
+        notifications: assignmentSummaries.flatMap((summary) => (
+          ['admin', 'business_support', 'store_manager'].map((targetRole) => ({
+            id: uid('NTF'),
+            type: 'store-task-progress-submitted',
+            targetRole,
+            storeId,
+            employeeId,
+            attendanceId: openAttendance.id,
+            assignmentId: summary.assignmentId || null,
+            route: `/store/tasks${summary.assignmentId ? `?assignment=${encodeURIComponent(summary.assignmentId)}` : ''}`,
+            title: `${employee.name || employeeId} đã gửi kết quả công việc`,
+            message: `Hoàn thành ${summary.completedTasks}/${summary.totalTasks} công việc (${summary.completionRate}%).`,
+            createdAt: timestamp,
+            readAt: null,
+          }))
+        )).concat(current.notifications || []),
+        auditLogs: [{ id: uid('AUD'), entity: 'task-progress', entityId: `${openAttendance.id}:${employeeId}`, action: 'submit', before: null, after: normalizedStatuses, actor: actorSnapshot(current.session), createdAt: timestamp }, ...current.auditLogs],
+        stateVersion: current.stateVersion + 1,
+      }
+    })
     notify(`Đã lưu kết quả: hoàn thành ${completionRate}%.`)
     return { ok: true, completedTasks, totalTasks, completionRate, incompleteReason, submittedAt: timestamp }
   }
@@ -3645,6 +3820,29 @@ export function AppProvider({ children }) {
     )
   }
 
+  const createViolationBatch = async (payload = {}) => {
+    const role = normalizeAuthRole(state.session?.role)
+    const targetUnit = String(payload.targetUnit || 'store')
+    const requestedStoreId = String(payload.storeId || '')
+    if (targetUnit !== 'store') {
+      throw new Error('Chức năng lưu nhiều vi phạm chỉ áp dụng cho nhân viên cửa hàng.')
+    }
+    if (!['admin', 'business_support', 'store_manager'].includes(role)) {
+      throw new Error('Tài khoản không có quyền ghi nhận vi phạm nhân viên cửa hàng.')
+    }
+    if (role === 'store_manager' && (!requestedStoreId || requestedStoreId !== String(state.session?.storeId || ''))) {
+      throw new Error('Quản lý cửa hàng chỉ được ghi nhận vi phạm tại cửa hàng được phân quyền.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để cập nhật dữ liệu vi phạm an toàn.')
+    }
+    return runRemoteDomainCommand(
+      'violation.create_batch',
+      payload,
+      payload.idempotencyKey || `violation-batch:${crypto.randomUUID()}`,
+    )
+  }
+
   const voidViolation = async (payload = {}) => {
     const violation = state.violations.find((record) => String(record.id || '') === String(payload.id || payload.violationId || ''))
     requireCompensationOperator(String(violation?.targetUnit || ''))
@@ -3661,6 +3859,15 @@ export function AppProvider({ children }) {
       'revenue_bonus.calculate_day',
       payload,
       payload.idempotencyKey || `revenue-bonus:${crypto.randomUUID()}`,
+    )
+  }
+
+  const resolveRevenueBonusZeroHourPool = async (payload = {}) => {
+    requireCompensationOperator()
+    return runRemoteDomainCommand(
+      'revenue_bonus.resolve_zero_hour_pool',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-zero-hour:${crypto.randomUUID()}`,
     )
   }
 
@@ -4794,6 +5001,7 @@ export function AppProvider({ children }) {
         ...(task.employeeId ? [task.employeeId] : []),
       ].map(String))
       return !task.deletedAt
+        && taskMatchesAttendanceChecklist(task, openRecord)
         && String(task.storeId || '') === String(openRecord.storeId || '')
         && String(task.date || task.workDate || '') === String(openRecord.date || openRecord.workDate || '')
         && (!String(task.shiftId || task.shift || '') || String(task.shiftId || task.shift || '') === String(openRecord.shiftId || openRecord.shift || ''))
@@ -4920,7 +5128,9 @@ export function AppProvider({ children }) {
     : state.activeStoreId || state.session?.storeId
   const activeStore = state.stores.find((store) => store.id === selectedStoreId)
     || (state.session?.role === 'store_manager' || state.session?.role === 'employee' ? null : state.stores[0] || null)
-  const currentEmployee = state.session?.employeeId ? state.employees.find((employee) => employee.id === state.session.employeeId) || null : null
+  const currentEmployee = state.session?.employeeId
+    ? employeeProfileFor(state.employees, state.session)
+    : null
   const revenueBonuses = revenueBonusView(state.revenueBonusDaily, state.revenueBonusAllocations)
 
   const value = {
@@ -4991,8 +5201,10 @@ export function AppProvider({ children }) {
     deleteWorkCatalogItem,
     restoreWorkCatalogItem,
     createViolation,
+    createViolationBatch,
     voidViolation,
     calculateRevenueBonusDay,
+    resolveRevenueBonusZeroHourPool,
     approveRevenueBonusMilestone,
     rejectRevenueBonusMilestone,
     addSalaryAdjustment,

@@ -273,6 +273,16 @@ describe('AppShell notifications', () => {
     expect(screen.queryByRole('link', { name: 'Cài đặt lương' })).toBeNull()
   })
 
+  it('shows the approved task bonus and violations navigation in the store workspace', () => {
+    mocked.session = { role: 'store_manager', name: 'Quản lý cửa hàng', storeId: 'CH001' }
+    render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
+
+    const link = document.querySelector('a[href="/store/task-bonus-violations"]')
+    expect(link.getAttribute('href')).toBe('/store/task-bonus-violations')
+    expect(link.querySelector('span')?.textContent).toBe('Công việc tính thưởng và Vi phạm')
+    expect(link.querySelector('em')?.textContent).toBe('MỚI')
+  })
+
   it('opens the role selector below the logo and keeps the account avatar for a multi-role account', async () => {
     mocked.session = {
       role: 'store_manager', name: 'Nhân viên đa vai trò', employeeId: 'QLCH01', storeId: 'CH001',

@@ -677,6 +677,7 @@ export function StorePayrollV2() {
     storeId,
     store,
     employees = [],
+    deletedEmployees = [],
     attendance = [],
     salaryAdjustments = [],
     salaryAdvances = [],
@@ -703,9 +704,112 @@ export function StorePayrollV2() {
   const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
   const scopedAttendance = attendance.filter((record) => !record.deletedAt && record.storeId === storeId && recordInMonth(record, period))
   const currentPeriod = payrollPeriods.find((item) => item.storeId === storeId && item.period === period)
-  const rows = scopedEmployees.map((employee) => {
-    const snapshotRow = !currentPeriod?.needsReclose && (currentPeriod?.rows || [])
-      .find((row) => String(row.employeeId || '') === String(employee.id))
+  const employeeProfiles = [...employees, ...deletedEmployees]
+  const profileIdentifiers = (profile = {}) => [profile.id, profile.code, profile.employeeId, profile.employeeCode]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  const profileForSnapshotRow = (snapshotRow = {}) => {
+    const preferredIdentifiers = [
+      snapshotRow.settlementProfileId,
+      snapshotRow.managerProfileId,
+      snapshotRow.employeeId,
+    ].map((value) => String(value || '').trim()).filter(Boolean)
+    const fallbackId = preferredIdentifiers[0] || 'Nhân viên chưa xác định'
+    const snapshotFallback = () => ({
+      id: fallbackId,
+      name: snapshotRow.employeeName || fallbackId,
+      employmentType: snapshotRow.employmentType || snapshotRow.salarySnapshot?.employmentType || '—',
+      storeId,
+      status: snapshotRow.finalSettlement ? 'Đã nghỉ việc' : '',
+      unit: snapshotRow.managerProfileId ? 'store_manager' : 'store',
+    })
+    const withSnapshotFallbacks = (profile) => ({
+      ...profile,
+      name: profile.name || profile.displayName || snapshotRow.employeeName || profile.id,
+      employmentType: profile.employmentType || snapshotRow.employmentType || snapshotRow.salarySnapshot?.employmentType || '—',
+    })
+    for (const identifier of preferredIdentifiers) {
+      const matchingProfiles = employeeProfiles.filter((profile) => profileIdentifiers(profile).includes(identifier))
+      if (matchingProfiles.length === 1) return withSnapshotFallbacks(matchingProfiles[0])
+      if (matchingProfiles.length > 1) return snapshotFallback()
+    }
+    return snapshotFallback()
+  }
+  const hasAuthoritativeSnapshot = Boolean(
+    currentPeriod && !currentPeriod.needsReclose && Array.isArray(currentPeriod.rows),
+  )
+  const managerPayable = hasAuthoritativeSnapshot && Number(currentPeriod.managerPayable?.amountVnd || 0) > 0
+    ? currentPeriod.managerPayable
+    : null
+  const authoritativeSnapshotPayoutVnd = (snapshotRow = {}, fallbackVnd) => Number(
+    snapshotRow.netPayVnd
+    ?? snapshotRow.remaining
+    ?? snapshotRow.gross
+    ?? snapshotRow.amountVnd
+    ?? fallbackVnd,
+  )
+  const managerPayableAlreadyInRows = Boolean(managerPayable && currentPeriod.rows.some((snapshotRow = {}) => {
+    const managerProfileId = String(managerPayable.managerProfileId || '').trim()
+    const explicitRowProfileIds = [snapshotRow.managerProfileId, snapshotRow.settlementProfileId]
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+    const sameManagerIdentity = managerProfileId
+      ? explicitRowProfileIds.includes(managerProfileId)
+      : explicitRowProfileIds.length === 0
+        && String(snapshotRow.employeeId || '').trim() === String(managerPayable.employeeId || '').trim()
+    const authoritativePayoutVnd = authoritativeSnapshotPayoutVnd(snapshotRow)
+    return sameManagerIdentity && authoritativePayoutVnd === Number(managerPayable.amountVnd)
+  }))
+  const managerCompensation = currentPeriod?.managerRevenueBonus?.compensation || {}
+  const managerCompensationVnd = Math.max(0, Number(managerPayable?.compensationVnd || 0))
+  const managerCompensationBreakdownVnd = ['manual', 'work', 'allowance', 'revenue']
+    .reduce((sum, field) => sum + Math.max(0, Number(managerCompensation[field] || 0)), 0)
+  const managerCompensationBreakdownValid = managerCompensationBreakdownVnd === managerCompensationVnd
+  const authoritativeSnapshotRows = hasAuthoritativeSnapshot
+    ? [
+        ...currentPeriod.rows.map((snapshotRow, index) => ({
+          snapshotRow,
+          rowKey: `snapshot:${snapshotRow.settlementProfileId || snapshotRow.managerProfileId || snapshotRow.employeeId || 'unknown'}:${index}`,
+        })),
+        ...(managerPayable && !managerPayableAlreadyInRows ? [{
+          snapshotRow: {
+            employeeId: managerPayable.employeeId,
+            managerProfileId: managerPayable.managerProfileId,
+            employeeName: managerPayable.employeeName,
+            hours: 0,
+            baseSalary: 0,
+            manualBonusVnd: managerCompensationBreakdownValid
+              ? Math.max(0, Number(managerCompensation.manual || 0))
+              : managerCompensationVnd,
+            workBonusVnd: managerCompensationBreakdownValid
+              ? Math.max(0, Number(managerCompensation.work || 0))
+              : 0,
+            revenueBonusVnd: (managerCompensationBreakdownValid
+              ? Math.max(0, Number(managerCompensation.revenue || 0))
+              : 0)
+              + Math.max(0, Number(managerPayable.revenueBonusVnd || 0)),
+            allowanceVnd: managerCompensationBreakdownValid
+              ? Math.max(0, Number(managerCompensation.allowance || 0))
+              : 0,
+            violationVnd: 0,
+            advancesPaid: 0,
+            gross: Number(managerPayable.amountVnd || 0),
+            netPayVnd: Number(managerPayable.amountVnd || 0),
+            salarySnapshot: { hourlyRate: 0, tiktokAllowance: 0 },
+            managerPayable: true,
+          },
+          rowKey: `manager-payable:${managerPayable.managerProfileId || managerPayable.employeeId}`,
+        }] : []),
+      ]
+    : []
+  const payrollParticipants = hasAuthoritativeSnapshot
+    ? authoritativeSnapshotRows.map(({ snapshotRow, rowKey }) => ({
+        employee: profileForSnapshotRow(snapshotRow),
+        snapshotRow,
+        rowKey,
+      }))
+    : scopedEmployees.map((employee) => ({ employee, snapshotRow: null, rowKey: `employee:${employee.id}` }))
+  const rows = payrollParticipants.map(({ employee, snapshotRow, rowKey }) => {
     const records = scopedAttendance.filter((record) => record.employeeId === employee.id)
     const hours = snapshotRow ? Number(snapshotRow.hours || 0) : records.reduce((sum, record) => sum + Number(record.hours || 0), 0)
     const liveSalaryPolicy = resolveStoreEmployeeSalaryPolicy(employee, {
@@ -748,7 +852,12 @@ export function StorePayrollV2() {
     const workBonus = snapshotRow ? Number(snapshotRow.workBonusVnd || 0) : canonical.work
     const manualBonus = snapshotRow ? Number(snapshotRow.manualBonusVnd || 0) : canonical.manual + Math.max(0, legacyAdjustmentNet)
     const tiktokAllowance = snapshotRow
-      ? Number(snapshotRow.salarySnapshot?.tiktokAllowance || 0)
+      ? Number(snapshotRow.appliedTiktokAllowanceVnd
+        ?? snapshotRow.tiktokAllowanceVnd
+        ?? (snapshotRow.finalSettlement || snapshotRow.supportCompensation
+          ? 0
+          : snapshotRow.salarySnapshot?.tiktokAllowance)
+        ?? 0)
       : Number(employee.tiktokAllowance || 0)
     const totalAllowance = snapshotRow ? Number(snapshotRow.allowanceVnd || 0) : tiktokAllowance + canonical.allowance
     const otherAllowance = Math.max(0, totalAllowance - tiktokAllowance)
@@ -767,7 +876,9 @@ export function StorePayrollV2() {
       confirmedAdvances: advances,
     })
     return {
+      rowKey,
       employee,
+      snapshotRow,
       hours,
       earnedBase,
       hourlyRate,
@@ -779,7 +890,7 @@ export function StorePayrollV2() {
       violations,
       advances,
       gross: snapshotRow ? Number(snapshotRow.gross ?? snapshotRow.grossCompensationVnd ?? settlement.grossPay) : settlement.grossPay,
-      net: snapshotRow ? Number(snapshotRow.netPayVnd ?? snapshotRow.remaining ?? settlement.availableSalary) : settlement.availableSalary,
+      net: snapshotRow ? authoritativeSnapshotPayoutVnd(snapshotRow, settlement.availableSalary) : settlement.availableSalary,
     }
   })
   const totals = rows.reduce((value, row) => ({
@@ -839,7 +950,7 @@ export function StorePayrollV2() {
       </div>
       <Card title="Chi tiết lương thưởng">
         <TableWrap><thead><tr><th>Nhân viên</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng doanh thu</th><th>Thưởng công việc</th><th>Thưởng thủ công</th><th>Phụ cấp TikTok</th><th>Phụ cấp khác</th><th>Vi phạm</th><th>Đã ứng</th><th>Thực nhận</th></tr></thead><tbody>
-          {rows.map((row) => <tr key={row.employee.id}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
+          {rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small>{row.snapshotRow?.finalSettlement && <Badge tone="orange">Quyết toán nghỉ việc</Badge>}{row.snapshotRow?.managerPayable && <Badge tone="blue">Thưởng/phụ cấp quản lý</Badge>}</td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
           <tr className="total-row"><td colSpan="10">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr>
         </tbody></TableWrap>
       </Card>

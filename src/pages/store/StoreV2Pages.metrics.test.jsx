@@ -38,6 +38,7 @@ const baseApp = (role = 'admin') => ({
   activeStoreId: store.id,
   activeStore: store,
   employees: [employee],
+  deletedEmployees: [],
   attendance: [],
   orders: [],
   fixedExpenses: [],
@@ -274,6 +275,361 @@ describe('store order, attendance, and payroll summaries', () => {
 
     expect(screen.getByText('31,000 đ/giờ')).toBeTruthy()
     expect(screen.getAllByText('124,000 đ').length).toBeGreaterThan(0)
+  })
+
+  it('shows a deleted employee final settlement and its full closed-period total', () => {
+    const deletedEmployee = {
+      ...employee,
+      id: 'S01-DELETED',
+      name: 'Nhân viên đã nghỉ',
+      status: 'Đã nghỉ việc',
+      deletedAt: `${today()}T00:00:00+07:00`,
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [],
+      deletedEmployees: [deletedEmployee],
+      payrollPeriods: [{
+        id: 'PAY-FINAL-SETTLEMENT', storeId: store.id, period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: deletedEmployee.id,
+          employeeName: deletedEmployee.name,
+          finalSettlement: true,
+          hours: 4,
+          baseSalary: 80_000,
+          gross: 80_000,
+          remaining: 80_000,
+          netPayVnd: 80_000,
+          allowanceVnd: 0,
+          salarySnapshot: { hourlyRate: 20_000, tiktokAllowance: 25_000, payFormula: 'final-settlement' },
+        }],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    const settlementRow = within(table).getByText(deletedEmployee.name).closest('tr')
+    expect(within(settlementRow).getByText('Quyết toán nghỉ việc')).toBeTruthy()
+    expect(within(settlementRow).getByText('80,000 đ')).toBeTruthy()
+    expect(within(settlementRow).getAllByRole('cell')[6].textContent).toBe('0 đ')
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('80,000 đ')).toBeTruthy()
+  })
+
+  it('keeps a support allowance out of the configured TikTok snapshot bucket', () => {
+    mocked.app = {
+      ...baseApp(),
+      payrollPeriods: [{
+        id: 'PAY-SUPPORT-SNAPSHOT', storeId: store.id, period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: employee.id,
+          employeeName: employee.name,
+          hours: 2,
+          baseSalary: 40_000,
+          allowanceVnd: 15_000,
+          gross: 55_000,
+          remaining: 55_000,
+          netPayVnd: 55_000,
+          supportCompensation: { hours: 2, basePay: 40_000, allowance: 15_000, totalPay: 55_000 },
+          salarySnapshot: { hourlyRate: 20_000, tiktokAllowance: 25_000 },
+        }],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    const supportRow = within(table).getByText(employee.name).closest('tr')
+    const cells = within(supportRow).getAllByRole('cell')
+    expect(cells[6].textContent).toBe('0 đ')
+    expect(cells[7].textContent).toBe('15,000 đ')
+    expect(cells[10].textContent).toBe('55,000 đ')
+  })
+
+  it('keeps distinct snapshot rows that share one payroll payee', () => {
+    const formerManager = {
+      ...employee,
+      id: 'QL-S01-FORMER',
+      name: 'Quản lý cũ',
+      unit: 'store_manager',
+      linkedEmployeeId: employee.id,
+      status: 'Đã nghỉ việc',
+      deletedAt: `${today()}T00:00:00+07:00`,
+    }
+    mocked.app = {
+      ...baseApp(),
+      deletedEmployees: [formerManager],
+      payrollPeriods: [{
+        id: 'PAY-SHARED-PAYEE', storeId: store.id, period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [
+          {
+            employeeId: employee.id,
+            employeeName: employee.name,
+            hours: 3,
+            baseSalary: 60_000,
+            gross: 60_000,
+            remaining: 60_000,
+            netPayVnd: 60_000,
+            salarySnapshot: { hourlyRate: 20_000, tiktokAllowance: 0 },
+          },
+          {
+            employeeId: employee.id,
+            settlementProfileId: formerManager.id,
+            managerProfileId: formerManager.id,
+            employeeName: formerManager.name,
+            finalSettlement: true,
+            hours: 0,
+            baseSalary: 0,
+            allowanceVnd: 20_000,
+            gross: 20_000,
+            remaining: 20_000,
+            netPayVnd: 20_000,
+            salarySnapshot: { hourlyRate: 0, tiktokAllowance: 0, payFormula: 'final-settlement' },
+          },
+        ],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    expect(within(table).getByText(employee.name)).toBeTruthy()
+    expect(within(table).getByText(formerManager.name)).toBeTruthy()
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('80,000 đ')).toBeTruthy()
+  })
+
+  it('falls back to immutable snapshot identity when a profile identifier is ambiguous', () => {
+    const aliasProfileA = {
+      ...employee,
+      id: 'PROFILE-ALIAS-A',
+      code: 'SHARED-ALIAS',
+      name: 'Sai từ alias A',
+    }
+    const aliasProfileB = {
+      ...employee,
+      id: 'PROFILE-ALIAS-B',
+      employeeCode: 'SHARED-ALIAS',
+      name: 'Sai từ alias B',
+    }
+    const exactProfileA = {
+      ...employee,
+      id: 'DUPLICATE-PROFILE',
+      name: 'Sai từ exact đang hoạt động',
+    }
+    const exactProfileB = {
+      ...employee,
+      id: 'DUPLICATE-PROFILE',
+      name: 'Sai từ exact đã xóa',
+      status: 'Đã nghỉ việc',
+      deletedAt: `${today()}T00:00:00+07:00`,
+    }
+    const lowerPriorityManager = {
+      ...employee,
+      id: 'UNIQUE-MANAGER',
+      name: 'Không được dùng manager ưu tiên thấp hơn',
+      unit: 'store_manager',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [aliasProfileA, aliasProfileB, exactProfileA, lowerPriorityManager],
+      deletedEmployees: [exactProfileB],
+      payrollPeriods: [{
+        id: 'PAY-AMBIGUOUS-PROFILES', storeId: store.id, period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: 'SHARED-ALIAS',
+          employeeName: 'Tên snapshot alias bất biến',
+          hours: 1,
+          baseSalary: 20_000,
+          gross: 20_000,
+          remaining: 20_000,
+          netPayVnd: 20_000,
+          salarySnapshot: { hourlyRate: 20_000, tiktokAllowance: 0 },
+        }, {
+          employeeId: employee.id,
+          settlementProfileId: 'DUPLICATE-PROFILE',
+          managerProfileId: lowerPriorityManager.id,
+          employeeName: 'Tên snapshot exact bất biến',
+          finalSettlement: true,
+          hours: 0,
+          baseSalary: 0,
+          gross: 30_000,
+          remaining: 30_000,
+          netPayVnd: 30_000,
+          salarySnapshot: { hourlyRate: 0, tiktokAllowance: 0 },
+        }],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    expect(within(table).getByText('Tên snapshot alias bất biến')).toBeTruthy()
+    expect(within(table).getByText('Tên snapshot exact bất biến')).toBeTruthy()
+    expect(within(table).getByText(/SHARED-ALIAS/)).toBeTruthy()
+    expect(within(table).getByText(/DUPLICATE-PROFILE/)).toBeTruthy()
+    expect(within(table).queryByText(/Sai từ/)).toBeNull()
+    expect(within(table).queryByText(lowerPriorityManager.name)).toBeNull()
+  })
+
+  it.each([{
+    label: 'legacy employee identifier',
+    rowIdentity: {},
+    payableIdentity: {},
+  }, {
+    label: 'explicit manager profile',
+    rowIdentity: { managerProfileId: 'QL-S01-SNAPSHOT' },
+    payableIdentity: { managerProfileId: 'QL-S01-SNAPSHOT' },
+  }])('does not append a duplicate manager payable already captured by $label', ({ rowIdentity, payableIdentity }) => {
+    const manager = {
+      ...employee,
+      id: payableIdentity.managerProfileId || employee.id,
+      name: 'Quản lý đã có trong snapshot',
+      unit: 'store_manager',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [manager],
+      payrollPeriods: [{
+        id: 'PAY-MANAGER-ALREADY-IN-ROWS', storeId: store.id, period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: employee.id,
+          employeeName: manager.name,
+          ...rowIdentity,
+          hours: 8,
+          baseSalary: 15_000_000,
+          gross: 15_000_000,
+          remaining: 15_000_000,
+          netPayVnd: 15_000_000,
+          salarySnapshot: { hourlyRate: 0, tiktokAllowance: 0 },
+        }],
+        managerPayable: {
+          employeeId: employee.id,
+          employeeName: manager.name,
+          ...payableIdentity,
+          amountVnd: 15_000_000,
+        },
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    expect(within(table).queryByText('Thưởng/phụ cấp quản lý')).toBeNull()
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('15,000,000 đ')).toBeTruthy()
+  })
+
+  it.each(['gross', 'amountVnd'])('uses a legacy %s-only manager row as the authoritative payout', (payoutField) => {
+    mocked.app = {
+      ...baseApp(),
+      payrollPeriods: [{
+        id: `PAY-MANAGER-${payoutField.toUpperCase()}-ONLY`, storeId: store.id,
+        period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: employee.id,
+          employeeName: employee.name,
+          [payoutField]: 15_000_000,
+          salarySnapshot: { hourlyRate: 0, tiktokAllowance: 0 },
+        }],
+        managerPayable: {
+          employeeId: employee.id,
+          employeeName: employee.name,
+          amountVnd: 15_000_000,
+        },
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    expect(within(table).queryByText('Thưởng/phụ cấp quản lý')).toBeNull()
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('15,000,000 đ')).toBeTruthy()
+  })
+
+  it('keeps a legacy same-payee manager payable when its amount differs from the salary row', () => {
+    mocked.app = {
+      ...baseApp(),
+      payrollPeriods: [{
+        id: 'PAY-LEGACY-MANAGER-DISTINCT-AMOUNT', storeId: store.id,
+        period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: employee.id,
+          employeeName: employee.name,
+          hours: 3,
+          baseSalary: 60_000,
+          gross: 60_000,
+          remaining: 60_000,
+          netPayVnd: 60_000,
+          salarySnapshot: { hourlyRate: 20_000, tiktokAllowance: 0 },
+        }],
+        managerPayable: {
+          employeeId: employee.id,
+          employeeName: employee.name,
+          amountVnd: 50_000,
+        },
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    const managerRow = within(table).getByText('Thưởng/phụ cấp quản lý').closest('tr')
+    expect(within(managerRow).getByText('50,000 đ')).toBeTruthy()
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('110,000 đ')).toBeTruthy()
+  })
+
+  it('includes a same-payee manager payable in the authoritative closed total', () => {
+    const manager = {
+      id: 'QL-S01-CURRENT',
+      name: 'Quản lý hiện tại',
+      unit: 'store_manager',
+      storeId: store.id,
+      linkedEmployeeId: employee.id,
+      status: 'Đang làm việc',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [employee, manager],
+      payrollPeriods: [{
+        id: 'PAY-MANAGER-PAYABLE', storeId: store.id, period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{
+          employeeId: employee.id,
+          employeeName: employee.name,
+          hours: 3,
+          baseSalary: 60_000,
+          gross: 60_000,
+          remaining: 60_000,
+          netPayVnd: 60_000,
+          salarySnapshot: { hourlyRate: 20_000, tiktokAllowance: 0 },
+        }],
+        managerRevenueBonus: {
+          compensation: { manual: 0, work: 0, allowance: 30_000, revenue: 0, total: 30_000 },
+        },
+        managerPayable: {
+          employeeId: employee.id,
+          employeeName: manager.name,
+          managerProfileId: manager.id,
+          compensationVnd: 30_000,
+          revenueBonusVnd: 20_000,
+          amountVnd: 50_000,
+        },
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const table = screen.getByRole('columnheader', { name: 'Thực nhận' }).closest('table')
+    const managerRow = within(table).getByText(manager.name).closest('tr')
+    expect(within(managerRow).getByText('Thưởng/phụ cấp quản lý')).toBeTruthy()
+    expect(within(managerRow).getByText('20,000 đ')).toBeTruthy()
+    expect(within(managerRow).getByText('30,000 đ')).toBeTruthy()
+    expect(within(managerRow).getByText('50,000 đ')).toBeTruthy()
+    const totalRow = within(table).getByText('TỔNG CÒN PHẢI CHI').closest('tr')
+    expect(within(totalRow).getByText('110,000 đ')).toBeTruthy()
   })
 
   it('uses canonical approved compensation buckets without reviving voided records', () => {

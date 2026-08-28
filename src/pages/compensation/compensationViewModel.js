@@ -5,7 +5,8 @@ export const canonicalRole = (role) => normalize(role) === 'manager' ? 'business
 export const entityId = (entity) => String(entity?.id || entity?.code || entity?.employeeId || '').trim()
 
 export const entryEmployeeId = (entry) => String(
-  entry?.employeeId || entry?.targetEmployeeId || entry?.employee?.id || entry?.employee?.code || '',
+  entry?.payeeEmployeeId || entry?.payee_employee_id || entry?.employeeId || entry?.employee_id
+  || entry?.employeeCode || entry?.targetEmployeeId || entry?.employee?.id || entry?.employee?.code || '',
 ).trim()
 
 export const entryStoreId = (entry) => String(entry?.storeId || entry?.targetStoreId || '').trim()

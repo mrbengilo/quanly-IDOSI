@@ -486,7 +486,50 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   gap: 9px;
 }
 
-.task-checklist > div {
+.task-groups {
+  display: grid;
+  gap: 16px;
+  margin: 16px 0;
+}
+
+.task-group {
+  border: 1px solid #d6e5db;
+  border-radius: 14px;
+  background: #f9fcfa;
+  padding: 14px;
+}
+
+.task-group--reward {
+  border-color: #c9dff5;
+  background: #f7fbff;
+}
+
+.task-group__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.task-group__header h3,
+.task-group__header p {
+  margin: 0;
+}
+
+.task-group__header h3 {
+  color: #133d29;
+  font-size: 16px;
+}
+
+.task-group__header p {
+  margin-top: 3px;
+  color: #66756d;
+  font-size: 12px;
+}
+
+.task-checklist > div,
+.task-checklist__item {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -496,32 +539,46 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   border: 1px solid #d8e7dd;
   border-radius: 10px;
   background: #fff;
+  cursor: pointer;
 }
 
-.task-checklist > div.done {
+.task-checklist__item > input {
+  width: 21px;
+  height: 21px;
+  accent-color: #07883f;
+}
+
+.task-checklist > div.done,
+.task-checklist__item.done {
   border-color: #aed8ba;
   background: #eef9f1;
 }
 
 .task-checklist > div > div,
 .task-checklist > div strong,
-.task-checklist > div small {
+.task-checklist > div small,
+.task-checklist__item > span,
+.task-checklist__item strong,
+.task-checklist__item small {
   min-width: 0;
   display: block;
 }
 
-.task-checklist > div strong {
+.task-checklist > div strong,
+.task-checklist__item strong {
   color: #143326;
   overflow-wrap: anywhere;
 }
 
-.task-checklist > div small {
+.task-checklist > div small,
+.task-checklist__item small {
   margin-top: 4px;
   color: #66756d;
   line-height: 1.45;
 }
 
-.task-checklist > div.done strong {
+.task-checklist > div.done strong,
+.task-checklist__item.done strong {
   color: #387251;
   text-decoration: line-through;
 }
@@ -578,11 +635,13 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
     font-size: 21px;
   }
 
-  .task-checklist > div {
+  .task-checklist > div,
+  .task-checklist__item {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .task-checklist > div > .badge {
+  .task-checklist > div > .badge,
+  .task-checklist__item > .badge {
     grid-column: 2;
     justify-self: start;
   }
@@ -900,13 +959,15 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
     grid-row: 1;
   }
 
-  .task-checklist > div {
+  .task-checklist > div,
+  .task-checklist__item {
     align-items: start;
     gap: 8px;
     padding: 11px;
   }
 
-  .task-checklist > div > .badge {
+  .task-checklist > div > .badge,
+  .task-checklist__item > .badge {
     max-width: 100%;
     white-space: normal;
   }

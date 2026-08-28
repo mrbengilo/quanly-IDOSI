@@ -194,7 +194,7 @@ export const storeTaskHistory = ({ taskAssignmentHistory = [], tasks = [], store
   const employeeMap = new Map(employees.map((employee) => [employeeId(employee), employee]))
   const shiftMap = new Map(shiftDefinitions.map((shift) => [String(shift.id || ''), shift]))
   const explicit = (Array.isArray(taskAssignmentHistory) ? taskAssignmentHistory : [])
-    .filter((assignment) => sameId(assignment.storeId, storeId))
+    .filter((assignment) => assignment.receiptOnly !== true && sameId(assignment.storeId, storeId))
   const explicitIds = new Set(explicit.map((assignment) => String(assignment.id || assignment.assignmentId || '')).filter(Boolean))
   const legacy = assignmentsFromFlatTasks((Array.isArray(tasks) ? tasks : []).filter((task) => (
     sameId(task.storeId, storeId)

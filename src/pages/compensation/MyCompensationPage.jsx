@@ -4,7 +4,6 @@ import { useApp } from '../../state/AppContext'
 import { Badge, Card, InfoNote, MetricCard, PageHeader, Select, TableWrap } from '../../components/UI'
 import { money } from '../../utils'
 import {
-  entityId,
   entryAmount,
   entryDate,
   entryEmployeeId,
@@ -27,7 +26,24 @@ const rowValue = (row, ...keys) => {
   return null
 }
 
-const payrollRowsFor = (periods, employeeId, period) => periods
+const employeeIdentifiers = (employee, session) => new Set([
+  employee?.id,
+  employee?.code,
+  employee?.employeeId,
+  employee?.employee_id,
+  employee?.employeeCode,
+  employee?.linkedEmployeeId,
+  employee?.sourceEmployeeId,
+  employee?.rootEmployeeId,
+  employee?.originalEmployeeId,
+  session?.employeeId,
+  session?.employee_id,
+  session?.code,
+  session?.id,
+].map((value) => String(value || '').trim()).filter(Boolean))
+const belongsToEmployee = (entry, identifiers) => identifiers.has(entryEmployeeId(entry))
+
+const payrollRowsFor = (periods, identifiers, period) => periods
   .filter((item) => String(item?.period || item?.month || '') === period)
   .flatMap((item) => (Array.isArray(item?.rows) ? item.rows.map((row) => ({
     ...row,
@@ -37,40 +53,40 @@ const payrollRowsFor = (periods, employeeId, period) => periods
     periodStatus: item.status,
     lockedAt: item.lockedAt,
   })) : []))
-  .filter((row) => entryEmployeeId(row) === employeeId)
+  .filter((row) => belongsToEmployee(row, identifiers))
 
 const aggregateRowValue = (rows, ...keys) => {
   const values = rows.map((row) => rowValue(row, ...keys)).filter((value) => value != null)
   return values.length ? values.reduce((sum, value) => sum + value, 0) : null
 }
 
-const availablePeriods = ({ compensationEntries, violations, allocations, payrollPeriods, employeeId }) => [...new Set([
-  ...compensationEntries.filter((entry) => entryEmployeeId(entry) === employeeId).map((entry) => entryDate(entry).slice(0, 7)),
-  ...violations.filter((entry) => entryEmployeeId(entry) === employeeId).map((entry) => entryDate(entry).slice(0, 7)),
-  ...allocations.filter((entry) => entryEmployeeId(entry) === employeeId).map((entry) => entryDate(entry).slice(0, 7)),
-  ...payrollPeriods.filter((item) => (item.rows || []).some((row) => entryEmployeeId(row) === employeeId)).map((item) => String(item.period || item.month || '')),
+const availablePeriods = ({ compensationEntries, violations, allocations, payrollPeriods, identifiers }) => [...new Set([
+  ...compensationEntries.filter((entry) => belongsToEmployee(entry, identifiers)).map((entry) => entryDate(entry).slice(0, 7)),
+  ...violations.filter((entry) => belongsToEmployee(entry, identifiers)).map((entry) => entryDate(entry).slice(0, 7)),
+  ...allocations.filter((entry) => belongsToEmployee(entry, identifiers)).map((entry) => entryDate(entry).slice(0, 7)),
+  ...payrollPeriods.filter((item) => (item.rows || []).some((row) => belongsToEmployee(row, identifiers))).map((item) => String(item.period || item.month || '')),
 ].filter((period) => /^\d{4}-\d{2}$/u.test(period)))].sort().reverse()
 
 export function MyCompensationPage() {
   const app = useApp()
-  const employeeId = entityId(app.currentEmployee) || String(app.session?.employeeId || '')
+  const ownEmployeeIdentifiers = employeeIdentifiers(app.currentEmployee, app.session)
   const compensationEntries = app.compensationEntries || []
   const violations = app.violations || []
   const allocations = revenueAllocations(app.revenueBonuses || [])
   const payrollPeriods = app.payrollPeriods || []
-  const periods = availablePeriods({ compensationEntries, violations, allocations, payrollPeriods, employeeId })
+  const periods = availablePeriods({ compensationEntries, violations, allocations, payrollPeriods, identifiers: ownEmployeeIdentifiers })
   const currentPeriodParts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit' })
     .formatToParts(new Date())
   const currentPeriodMap = Object.fromEntries(currentPeriodParts.map((part) => [part.type, part.value]))
   const currentPeriod = `${currentPeriodMap.year}-${currentPeriodMap.month}`
   const [periodSelection, setPeriodSelection] = useState('')
   const period = periodSelection || periods[0] || currentPeriod
-  const ownEntries = compensationEntries.filter((entry) => entryEmployeeId(entry) === employeeId && samePeriod(entry, period))
+  const ownEntries = compensationEntries.filter((entry) => belongsToEmployee(entry, ownEmployeeIdentifiers) && samePeriod(entry, period))
   const activeApprovedEntries = ownEntries.filter((entry) => !isVoided(entry) && isApproved(entry))
-  const ownViolations = violations.filter((entry) => entryEmployeeId(entry) === employeeId && samePeriod(entry, period))
+  const ownViolations = violations.filter((entry) => belongsToEmployee(entry, ownEmployeeIdentifiers) && samePeriod(entry, period))
   const activeViolations = ownViolations.filter((entry) => !isVoided(entry))
-  const ownAllocations = allocations.filter((entry) => entryEmployeeId(entry) === employeeId && samePeriod(entry, period))
-  const payrollRows = payrollRowsFor(payrollPeriods, employeeId, period)
+  const ownAllocations = allocations.filter((entry) => belongsToEmployee(entry, ownEmployeeIdentifiers) && samePeriod(entry, period))
+  const payrollRows = payrollRowsFor(payrollPeriods, ownEmployeeIdentifiers, period)
   const recorded = (type) => activeApprovedEntries.filter((entry) => entryType(entry) === type).reduce((sum, entry) => sum + entryAmount(entry), 0)
   const manualVnd = recorded('MANUAL')
   const workVnd = recorded('WORK')

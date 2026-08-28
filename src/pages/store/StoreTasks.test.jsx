@@ -193,6 +193,30 @@ describe('StoreTasks assignment workflow', () => {
     expect(screen.getByText('Đang thực hiện')).toBeTruthy()
   })
 
+  it('does not render an internal progress receipt as an empty assignment', () => {
+    const receiptId = 'task_progress_receipt:ATT-01'
+    mocked.app = makeApp('admin', {
+      taskAssignmentHistory: [{
+        id: receiptId,
+        receiptOnly: true,
+        source: 'task-progress-receipt',
+        storeId: store.id,
+        date: futureDate,
+        shiftId: futureShift.id,
+        employeeId: employees[0].id,
+        employeeIds: [employees[0].id],
+        tasks: [],
+        progressHistory: [{ employeeId: employees[0].id, completedTasks: 2, totalTasks: 3, completionRate: 67 }],
+      }],
+    })
+
+    render(<StoreTasks />)
+
+    expect(screen.getByText('Chưa có lịch sử giao việc tại cửa hàng này.')).toBeTruthy()
+    expect(screen.queryByText('0/0 lượt hoàn thành')).toBeNull()
+    expect(screen.queryByText(receiptId)).toBeNull()
+  })
+
   it.each(['admin', 'store_manager', 'business_support'])('shows mutation controls for %s', (role) => {
     mocked.app = makeApp(role)
     const view = render(<StoreTasks />)

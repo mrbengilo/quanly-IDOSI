@@ -46,6 +46,7 @@ const storeOperations = [
   { label: 'Tổng quan', path: '/store/overview', icon: LayoutDashboard },
   { label: 'Đơn hàng', path: '/store/orders', icon: ShoppingCart },
   { label: 'Giao việc', path: '/store/tasks', icon: ClipboardCheck },
+  { label: 'Công việc tính thưởng và Vi phạm', path: '/store/task-bonus-violations', icon: ClipboardList, badge: 'MỚI' },
   { label: 'Lịch phân ca', path: '/store/schedule', icon: CalendarCheck },
   { label: 'Nhân viên cửa hàng', path: '/store/employees', icon: Users },
   { label: 'Cài đặt lương', path: '/store/salary-settings', icon: CircleDollarSign, roles: ['admin', 'business_support'] },
