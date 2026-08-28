@@ -263,6 +263,11 @@ const snapshotFromDefinition = (item, { effectiveDate }) => Object.freeze({
   shiftName: item.shiftName,
   name: item.name,
   amountVnd: item.amountVnd,
+  ...(item.rewardScope ? {
+    rewardScope: item.rewardScope,
+    milestoneProgramId: item.milestoneProgramId || null,
+    milestoneId: item.milestoneId || null,
+  } : {}),
   required: item.kind === WORK_CATALOG_KIND.FIXED_TASK,
   optional: item.kind !== WORK_CATALOG_KIND.FIXED_TASK,
   sortOrder: item.sortOrder,
@@ -400,3 +405,5 @@ export const workCatalogProgressKey = ({
 ].join(':')
 
 export const workCatalogClaimKey = (input) => `work-catalog-claim:v1:${workCatalogProgressKey(input)}`
+
+export const workCatalogViolationKey = (input) => `work-catalog-violation:v1:${workCatalogProgressKey(input)}`

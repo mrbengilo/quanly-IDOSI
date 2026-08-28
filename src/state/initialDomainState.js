@@ -1,7 +1,8 @@
 import { shifts } from '../data.js'
+import { DEFAULT_STAFF_WORK_CATALOG_ITEMS } from '../domain/compensationPolicies'
 import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'
 
-export const DOMAIN_SCHEMA_VERSION = 4
+export const DOMAIN_SCHEMA_VERSION = 5
 
 const pad = (value, length = 5) => String(value).padStart(length, '0')
 
@@ -72,7 +73,8 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   payrollPeriods: [],
   payrollPayments: [],
   storeEmployeeSalaryConfigs: [],
-  workCatalogItems: [],
+  workCatalogItems: DEFAULT_STAFF_WORK_CATALOG_ITEMS.map((item) => ({ ...item })),
+  staffWorkCatalogSeedVersion: 1,
   workCatalogProgress: [],
   storeShiftTaskTemplates: [],
   compensationEntries: [],
@@ -112,6 +114,18 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
 
 const mergeArray = (stored, defaults, key) => Array.isArray(stored?.[key]) ? stored[key] : defaults[key]
 
+const migratedStaffWorkCatalog = (stored, defaults) => {
+  const current = mergeArray(stored, defaults, 'workCatalogItems')
+  if (Number(stored?.staffWorkCatalogSeedVersion || 0) >= 1) return current
+  const existingCodes = new Set(current.map((item) => String(item?.code || '')).filter(Boolean))
+  return [
+    ...current,
+    ...DEFAULT_STAFF_WORK_CATALOG_ITEMS
+      .filter((item) => !existingCodes.has(item.code))
+      .map((item) => ({ ...item })),
+  ]
+}
+
 export const migrateDomainState = (stored, context) => {
   const defaults = createDomainState(context)
   if (!stored || typeof stored !== 'object') return defaults
@@ -125,6 +139,7 @@ export const migrateDomainState = (stored, context) => {
     ...defaults,
     ...stored,
     schemaVersion: DOMAIN_SCHEMA_VERSION,
+    staffWorkCatalogSeedVersion: 1,
     stateVersion: Math.max(1, Number(stored.stateVersion) || 1),
     orders: mergeArray(stored, defaults, 'orders'),
     orderInformationOptions: mergeArray(stored, defaults, 'orderInformationOptions'),
@@ -139,7 +154,7 @@ export const migrateDomainState = (stored, context) => {
     payrollPeriods: mergeArray(stored, defaults, 'payrollPeriods'),
     payrollPayments: mergeArray(stored, defaults, 'payrollPayments'),
     storeEmployeeSalaryConfigs: mergeArray(stored, defaults, 'storeEmployeeSalaryConfigs'),
-    workCatalogItems: mergeArray(stored, defaults, 'workCatalogItems'),
+    workCatalogItems: migratedStaffWorkCatalog(stored, defaults),
     workCatalogProgress: mergeArray(stored, defaults, 'workCatalogProgress'),
     storeShiftTaskTemplates: mergeArray(stored, defaults, 'storeShiftTaskTemplates'),
     compensationEntries: mergeArray(stored, defaults, 'compensationEntries'),

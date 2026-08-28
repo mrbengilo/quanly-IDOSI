@@ -191,14 +191,14 @@ describe('workbook reward and violation constants', () => {
     })
   })
 
-  it('keeps exact office and HTKD policy amounts and team references', () => {
+  it('keeps the exact office and HTKD reward and violation catalog from the approved source', () => {
     expect(amountMap(OFFICE_REWARDS)).toEqual({
       'office.reward.on_time': 3_000,
       'office.reward.take_out_trash': 3_000,
       'office.reward.drain_ac_water': 2_000,
+      'office.reward.clip_over_100k_views_team': 350_000,
+      'office.reward.clip_over_50k_views_team': 200_000,
     })
-    expect(reward(OFFICE_REWARDS, 'office.reward.video_views_team').milestoneProgramId)
-      .toBe(TEAM_MILESTONE_PROGRAM_IDS.OFFICE_VIDEO_VIEWS)
     expect(amountMap(OFFICE_VIOLATIONS)).toEqual({
       'office.violation.late': 3_000,
       'office.violation.forgot_attendance': 3_000,
@@ -214,7 +214,7 @@ describe('workbook reward and violation constants', () => {
       'htkd.violation.assigned_store_error_requires_admin': 5_000,
     })
     expect(reward(HTKD_VIOLATIONS, 'htkd.violation.assigned_store_error_requires_admin').label)
-      .toBe('Thao tác sai cửa hàng cần Admin xử lý')
+      .toBe('Cửa hàng phụ trách thao tác sai sót => kêu admin sửa')
   })
 
   it('has unique stable codes and positive integer reward/violation amounts', () => {

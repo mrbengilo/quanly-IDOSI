@@ -332,16 +332,13 @@ export const OFFICE_REWARDS = deepFreeze([
   { code: 'office.reward.on_time', label: 'Đi làm đúng giờ', amountVnd: 3_000 },
   { code: 'office.reward.take_out_trash', label: 'Đổ rác', amountVnd: 3_000 },
   { code: 'office.reward.drain_ac_water', label: 'Đổ nước máy lạnh', amountVnd: 2_000 },
-  {
-    code: 'office.reward.video_views_team',
-    label: 'Thưởng đội nhóm theo lượt xem video',
-    milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.OFFICE_VIDEO_VIEWS,
-  },
+  { code: 'office.reward.clip_over_100k_views_team', label: 'Clip trên 100k view (thưởng team)', amountVnd: 350_000, rewardScope: 'team', milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.OFFICE_VIDEO_VIEWS, milestoneId: 'office.video.over_100_000_views' },
+  { code: 'office.reward.clip_over_50k_views_team', label: 'Clip trên 50k view (thưởng team)', amountVnd: 200_000, rewardScope: 'team', milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.OFFICE_VIDEO_VIEWS, milestoneId: 'office.video.over_50_000_views' },
 ])
 
 export const OFFICE_VIOLATIONS = deepFreeze([
   { code: 'office.violation.late', label: 'Đi trễ', amountVnd: 3_000 },
-  { code: 'office.violation.forgot_attendance', label: 'Quên chấm công', amountVnd: 3_000 },
+  { code: 'office.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000 },
 ])
 
 export const HTKD_REWARDS = deepFreeze([
@@ -352,8 +349,8 @@ export const HTKD_REWARDS = deepFreeze([
 
 export const HTKD_VIOLATIONS = deepFreeze([
   { code: 'htkd.violation.late', label: 'Đi trễ', amountVnd: 3_000 },
-  { code: 'htkd.violation.forgot_attendance', label: 'Quên chấm công', amountVnd: 3_000 },
-  { code: 'htkd.violation.assigned_store_error_requires_admin', label: 'Thao tác sai cửa hàng cần Admin xử lý', amountVnd: 5_000 },
+  { code: 'htkd.violation.forgot_attendance', label: 'Quên điểm danh', amountVnd: 3_000 },
+  { code: 'htkd.violation.assigned_store_error_requires_admin', label: 'Cửa hàng phụ trách thao tác sai sót => kêu admin sửa', amountVnd: 5_000 },
 ])
 
 export const WORKBOOK_COMPENSATION_POLICY = deepFreeze({
@@ -361,3 +358,34 @@ export const WORKBOOK_COMPENSATION_POLICY = deepFreeze({
   office: { rewards: OFFICE_REWARDS, violations: OFFICE_VIOLATIONS },
   businessSupport: { rewards: HTKD_REWARDS, violations: HTKD_VIOLATIONS },
 })
+
+const staffCatalogItems = (targetGroup, kind, records) => records.map((record, index) => ({
+  id: `work-catalog:${targetGroup}:${kind.toLocaleLowerCase('en-US')}:${record.code}`,
+  code: record.code,
+  kind,
+  targetGroup,
+  storeId: null,
+  shiftId: null,
+  shiftName: null,
+  name: record.label,
+  amountVnd: record.amountVnd,
+  required: false,
+  active: true,
+  sortOrder: index,
+  effectiveFrom: null,
+  effectiveTo: null,
+  version: 1,
+  deletedAt: null,
+  ...(record.rewardScope ? {
+    rewardScope: record.rewardScope,
+    milestoneProgramId: record.milestoneProgramId || null,
+    milestoneId: record.milestoneId || null,
+  } : {}),
+}))
+
+export const DEFAULT_STAFF_WORK_CATALOG_ITEMS = deepFreeze([
+  ...staffCatalogItems('business_support', 'REWARD_TASK', HTKD_REWARDS),
+  ...staffCatalogItems('business_support', 'VIOLATION', HTKD_VIOLATIONS),
+  ...staffCatalogItems('office', 'REWARD_TASK', OFFICE_REWARDS),
+  ...staffCatalogItems('office', 'VIOLATION', OFFICE_VIOLATIONS),
+])
