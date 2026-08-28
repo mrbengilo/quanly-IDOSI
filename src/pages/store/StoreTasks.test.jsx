@@ -8,6 +8,14 @@ vi.mock('../../state/AppContext', () => ({
   useApp: () => mocked.app,
 }))
 
+vi.mock('../compensation/ViolationManagementPage', () => ({
+  ViolationManagementPage: ({ targetUnit, embedded }) => <div data-testid="store-violation-management" data-target-unit={targetUnit} data-embedded={String(embedded)} />,
+}))
+
+vi.mock('../compensation/UnitCompensationStatistics', () => ({
+  UnitCompensationStatistics: ({ targetUnit, storeId, employees: scopedEmployees }) => <div data-testid="store-compensation-statistics" data-target-unit={targetUnit} data-store-id={storeId} data-employee-count={scopedEmployees.length} />,
+}))
+
 const store = { id: 'CH001', name: 'SecondMall SM234', short: 'SM234' }
 const employees = [
   { id: 'SM234-001', code: 'SM234-001', name: 'Nguyễn Minh Anh', unit: 'store', storeId: store.id, status: 'Đang làm việc', employmentType: 'Full-Time' },
@@ -70,10 +78,10 @@ describe('StoreTasks assignment workflow', () => {
     fireEvent.change(screen.getByLabelText(/Ngày giao việc/i), { target: { value: futureDate } })
     expect(screen.getByLabelText(/Ca làm việc/i).value).toBe(futureShift.id)
 
-    fireEvent.click(screen.getByLabelText(`Chọn nhân viên ${employees[0].name}`))
-    fireEvent.click(screen.getByLabelText(`Chọn nhân viên ${employees[1].name}`))
-    fireEvent.click(screen.getByLabelText(`Chọn công việc ${fixedTask.name}`))
-    fireEvent.click(screen.getByLabelText(`Chọn công việc ${rewardTask.name}`))
+    fireEvent.click(screen.getByLabelText(`Chọn nhân viên ${employees[0].name}`, { exact: false }))
+    fireEvent.click(screen.getByLabelText(`Chọn nhân viên ${employees[1].name}`, { exact: false }))
+    fireEvent.click(screen.getByLabelText(`Chọn công việc ${fixedTask.name}`, { exact: false }))
+    fireEvent.click(screen.getByLabelText(`Chọn công việc ${rewardTask.name}`, { exact: false }))
     expect(screen.getByText(/Thưởng 150[.,]000/)).toBeTruthy()
     expect(screen.queryByPlaceholderText(/Nhập tên công việc/i)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
@@ -133,10 +141,10 @@ describe('StoreTasks assignment workflow', () => {
 
     fireEvent.change(screen.getByLabelText(/Ngày giao việc/i), { target: { value: futureDate } })
 
-    expect(screen.getByLabelText(`Chọn công việc ${fixedTask.name}`)).toBeTruthy()
-    expect(screen.getByLabelText(`Chọn công việc ${rewardTask.name}`)).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn công việc ${fixedTask.name}`, { exact: false })).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn công việc ${rewardTask.name}`, { exact: false })).toBeTruthy()
     irrelevantCatalogItems.forEach((item) => {
-      expect(screen.queryByLabelText(`Chọn công việc ${item.name}`)).toBeNull()
+      expect(screen.queryByLabelText(`Chọn công việc ${item.name}`, { exact: false })).toBeNull()
     })
   })
 
@@ -146,8 +154,8 @@ describe('StoreTasks assignment workflow', () => {
     render(<StoreTasks />)
 
     fireEvent.change(screen.getByLabelText(/Ngày giao việc/i), { target: { value: futureDate } })
-    fireEvent.click(screen.getByLabelText(`Chọn nhân viên ${employees[0].name}`))
-    fireEvent.click(screen.getByLabelText(`Chọn công việc ${fixedTask.name}`))
+    fireEvent.click(screen.getByLabelText(`Chọn nhân viên ${employees[0].name}`, { exact: false }))
+    fireEvent.click(screen.getByLabelText(`Chọn công việc ${fixedTask.name}`, { exact: false }))
     fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
     await waitFor(() => expect(replaceTasks).toHaveBeenCalledTimes(1))
 
@@ -156,7 +164,7 @@ describe('StoreTasks assignment workflow', () => {
     const firstKey = replaceTasks.mock.calls[0][0].idempotencyKey
     expect(replaceTasks.mock.calls[1][0].idempotencyKey).toBe(firstKey)
 
-    fireEvent.click(screen.getByLabelText(`Chọn công việc ${rewardTask.name}`))
+    fireEvent.click(screen.getByLabelText(`Chọn công việc ${rewardTask.name}`, { exact: false }))
     fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
     await waitFor(() => expect(replaceTasks).toHaveBeenCalledTimes(3))
     expect(replaceTasks.mock.calls[2][0].idempotencyKey).not.toBe(firstKey)
@@ -200,8 +208,16 @@ describe('StoreTasks assignment workflow', () => {
 
     expect(screen.getByRole('button', { name: /^GỬI$/i })).toBeTruthy()
     expect(screen.getByRole('group', { name: 'Danh mục công việc' })).toBeTruthy()
-    expect(screen.getByLabelText(`Chọn công việc ${fixedTask.name}`)).toBeTruthy()
-    expect(screen.getByLabelText(`Chọn nhân viên ${employees[0].name}`)).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn công việc ${fixedTask.name}`, { exact: false })).toBeTruthy()
+    expect(screen.getByLabelText(`Chọn nhân viên ${employees[0].name}`, { exact: false })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1, name: /Công việc tính thưởng & vi phạm/i })).toBeTruthy()
+    if (role === 'store_manager') {
+      expect(screen.queryByTestId('store-violation-management')).toBeNull()
+      expect(screen.queryByTestId('store-compensation-statistics')).toBeNull()
+    } else {
+      expect(screen.getByTestId('store-violation-management').dataset).toMatchObject({ targetUnit: 'store', embedded: 'true' })
+      expect(screen.getByTestId('store-compensation-statistics').dataset).toMatchObject({ targetUnit: 'store', storeId: store.id, employeeCount: '2' })
+    }
     view.unmount()
   })
 
@@ -224,7 +240,7 @@ describe('StoreTasks assignment workflow', () => {
 
     expect(screen.queryByRole('button', { name: /^GỬI$/i })).toBeNull()
     expect(screen.queryByRole('group', { name: 'Danh mục công việc' })).toBeNull()
-    expect(screen.queryByLabelText(`Chọn nhân viên ${employees[0].name}`)).toBeNull()
+    expect(screen.queryByLabelText(`Chọn nhân viên ${employees[0].name}`, { exact: false })).toBeNull()
     expect(screen.getByText(/Mở quầy/)).toBeTruthy()
     expect(screen.getByText(/Chỉ Admin, Quản lý cửa hàng và Nhân viên hỗ trợ KD/i)).toBeTruthy()
   })

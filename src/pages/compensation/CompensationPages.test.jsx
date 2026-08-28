@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ManagerCompensationPage } from './ManagerCompensationPage'
 import { MyCompensationPage } from './MyCompensationPage'
 import { RevenueBonusPage } from './RevenueBonusPage'
-import { ViolationManagementPage } from './ViolationManagementPage'
+import { MyViolationsPage, ViolationManagementPage } from './ViolationManagementPage'
+import { UnitCompensationStatistics } from './UnitCompensationStatistics'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
@@ -37,17 +38,29 @@ const baseApp = (role = 'admin') => ({
   violations: [],
   revenueBonuses: [],
   payrollPeriods: [],
+  attendance: [{
+    id: 'ATT-QL-01', employeeId: 'QL-01', storeId: 'CH001', unit: 'store', workDate: '2026-08-26',
+    shiftId: 'ca1', shiftName: 'Ca 1', shiftStart: '07:00', shiftEnd: '12:00',
+  }],
+  schedule: [],
+  supportWorkSchedules: [],
+  shiftDefinitions: [{ id: 'ca1', storeId: 'CH001', name: 'Ca 1', start: '07:00', end: '12:00', active: true }],
   workCatalogItems: [{
     id: 'violation-store-late', code: 'store.violation.late', kind: 'violation',
     targetGroup: 'store', storeId: 'CH001', shiftId: null, shiftName: null,
     name: 'Đi trễ', amountVnd: 2_000, sortOrder: 10, active: true,
+    version: 1, effectiveFrom: '2026-08-01', effectiveTo: null,
+  }, {
+    id: 'violation-store-uniform', code: 'store.violation.uniform', kind: 'violation',
+    targetGroup: 'store', storeId: 'CH001', shiftId: null, shiftName: null,
+    name: 'Sai đồng phục', amountVnd: 3_000, sortOrder: 20, active: true,
     version: 1, effectiveFrom: '2026-08-01', effectiveTo: null,
   }],
   notify: vi.fn(),
   createCompensationEntry: vi.fn().mockResolvedValue({ ok: true }),
   approveCompensationEntry: vi.fn().mockResolvedValue({ ok: true }),
   voidCompensationEntry: vi.fn().mockResolvedValue({ ok: true }),
-  createViolation: vi.fn().mockResolvedValue({ ok: true }),
+  createViolationBatch: vi.fn().mockResolvedValue({ ok: true, createdCount: 2, existingCount: 0 }),
   voidViolation: vi.fn().mockResolvedValue({ ok: true }),
   calculateRevenueBonusDay: vi.fn().mockResolvedValue({ ok: true }),
   approveRevenueBonusMilestone: vi.fn().mockResolvedValue({ ok: true }),
@@ -94,14 +107,71 @@ describe('compensation pages', () => {
     expect(screen.queryByRole('button', { name: 'GHI NHẬN VI PHẠM' })).toBeNull()
   })
 
-  it('creates a policy-backed violation as a positive receivable amount', async () => {
+  it('creates a policy-backed violation batch using only server-resolved catalog and shift identifiers', async () => {
     render(<ViolationManagementPage targetUnit="store" />)
     fireEvent.click(screen.getByRole('checkbox', { name: /Đi trễ/i }))
-    fireEvent.click(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Sai đồng phục/i }))
+    expect(screen.getByLabelText('Tổng số tiền bị trừ').value).toBe('−5,000 đ')
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU VI PHẠM' }))
 
-    await waitFor(() => expect(mocked.app.createViolation).toHaveBeenCalledWith(expect.objectContaining({
-      targetUnit: 'store', employeeId: 'QL-01', storeId: 'CH001', catalogItemId: 'violation-store-late', amountVnd: 2_000,
-    })))
+    await waitFor(() => expect(mocked.app.createViolationBatch).toHaveBeenCalledWith({
+      targetUnit: 'store',
+      employeeId: 'QL-01',
+      storeId: 'CH001',
+      occurredOn: '2026-08-26',
+      shiftId: 'ca1',
+      attendanceId: 'ATT-QL-01',
+      catalogItemIds: ['violation-store-late', 'violation-store-uniform'],
+      note: '',
+    }))
+  })
+
+  it('reports an idempotent violation batch as unchanged instead of claiming a new deduction', async () => {
+    mocked.app = {
+      ...baseApp(),
+      createViolationBatch: vi.fn().mockResolvedValue({ ok: true, createdCount: 0, existingCount: 1 }),
+    }
+    render(<ViolationManagementPage targetUnit="store" />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /Đi trễ/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU VI PHẠM' }))
+
+    await waitFor(() => expect(mocked.app.notify).toHaveBeenCalledWith(
+      'Không tạo bản ghi mới vì các vi phạm đã tồn tại trong lịch sử đối soát.',
+      'info',
+    ))
+  })
+
+  it('keeps historical violations in unit statistics after the employee leaves the active directory', () => {
+    mocked.app = {
+      ...baseApp(),
+      attendance: [],
+      violations: [{
+        id: 'V-FORMER', employeeId: 'NV-CU', employeeName: 'Nhân viên đã nghỉ',
+        targetUnit: 'store', storeId: 'CH001', occurredOn: '2026-08-20',
+        title: 'Đi trễ', amountVnd: 2_000, status: 'ACTIVE',
+      }],
+    }
+    render(<UnitCompensationStatistics targetUnit="store" storeId="CH001" employees={employees.filter((employee) => employee.storeId === 'CH001')} />)
+
+    expect(screen.getByText('Nhân viên đã nghỉ')).toBeTruthy()
+    expect(screen.getAllByText('−2,000 đ').length).toBeGreaterThan(0)
+  })
+
+  it('shows the signed-in employee violation date, shift and negative deduction clearly', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      violations: [{
+        id: 'V-OWN', employeeId: 'NV-01', targetUnit: 'store', storeId: 'CH001',
+        occurredOn: '2026-08-26', shiftId: 'ca2', shiftName: 'Ca 2', shiftStart: '12:00', shiftEnd: '17:00',
+        title: 'Đi trễ', amountVnd: 2_000, status: 'ACTIVE',
+      }],
+    }
+    render(<MyViolationsPage />)
+
+    expect(screen.getByText('Ca 2')).toBeTruthy()
+    expect(screen.getByText('12:00–17:00')).toBeTruthy()
+    expect(screen.getAllByText('−2,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getByText('Tổng số tiền bị trừ đang hiệu lực')).toBeTruthy()
   })
 
   it('keeps employee revenue bonus data private to the signed-in employee', () => {

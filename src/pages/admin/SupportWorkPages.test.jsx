@@ -49,9 +49,13 @@ describe('support work screens', () => {
       session: { role: 'admin', name: 'Admin' },
       employees: [supportProfile, officeProfile],
       workCatalogItems: [supportFixedTask, supportRewardTask, officeFixedTask],
+      attendance: [],
+      workCatalogProgress: [],
+      tasks: [],
       supportWorkAssignments: [],
       assignSupportWork: vi.fn().mockResolvedValue({ ok: true }),
       updateSupportWork: vi.fn().mockResolvedValue({ ok: true }),
+      setWorkReward: vi.fn().mockResolvedValue({ ok: true }),
       notify: vi.fn(),
     }
   })
@@ -171,6 +175,56 @@ describe('support work screens', () => {
       submit: true,
       incompleteReason: 'Chờ cửa hàng phản hồi',
     }))
+  })
+
+  it('ticks only reward tasks from an open attendance snapshot with the trusted command contract', async () => {
+    mocked.app.session = { role: 'business_support', employeeId: 'HTKD-001', code: 'HTKD-001', name: 'Nguyễn Hỗ Trợ' }
+    mocked.app.attendance = [{
+      id: 'ATT-OPEN', employeeId: 'HTKD-001', unit: 'business_support', workDate: '2026-08-28',
+      shiftId: 'morning', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00',
+      checklistSnapshot: {
+        tasks: [
+          supportRewardTask,
+          { ...supportFixedTask, catalogItemId: supportFixedTask.id },
+        ],
+      },
+    }]
+    render(<MemoryRouter><SupportAssignedWorkPage /></MemoryRouter>)
+
+    fireEvent.change(screen.getByLabelText('Ngày làm việc tính thưởng'), { target: { value: '2026-08-28' } })
+    const rewardCheckbox = screen.getByRole('checkbox', { name: /Đánh giá trưng bày cửa hàng \(\+75,000 đ\)/i })
+    expect(screen.getByText('Ca sáng')).toBeTruthy()
+    expect(screen.getByText('+75,000 đ')).toBeTruthy()
+    expect(screen.queryByRole('checkbox', { name: /Kiểm tra báo cáo/i })).toBeNull()
+    fireEvent.click(rewardCheckbox)
+
+    await waitFor(() => expect(mocked.app.setWorkReward).toHaveBeenCalledWith({
+      attendanceId: 'ATT-OPEN',
+      catalogItemId: supportRewardTask.id,
+      checked: true,
+    }))
+  })
+
+  it('keeps closed attendance rewards read-only in employee history and visible in Admin statistics', () => {
+    mocked.app.attendance = [{
+      id: 'ATT-CLOSED', employeeId: 'HTKD-001', employeeName: 'Nguyễn Hỗ Trợ', unit: 'business_support', workDate: '2026-08-28',
+      shiftId: 'afternoon', shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '17:30', checkOutAt: '2026-08-28T10:30:00Z',
+      checklistSnapshot: { tasks: [supportRewardTask] },
+    }]
+    mocked.app.workCatalogProgress = [{
+      attendanceId: 'ATT-CLOSED', catalogItemId: supportRewardTask.id, checked: true, status: 'CLAIMED', completedAt: '2026-08-28T10:00:00Z',
+    }]
+
+    const { rerender } = render(<MemoryRouter><SupportAssignedWorkPage /></MemoryRouter>)
+    fireEvent.change(screen.getByLabelText('Ngày làm việc tính thưởng'), { target: { value: '2026-08-28' } })
+    expect(screen.queryByRole('checkbox', { name: /Đánh giá trưng bày cửa hàng/i })).toBeNull()
+    expect(screen.getByText(/Ca đã kết thúc chỉ xuất hiện trong lịch sử/i)).toBeTruthy()
+
+    mocked.app.session = { role: 'admin', name: 'Admin' }
+    rerender(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
+    expect(screen.getByText('Lịch sử nhận thưởng của HTKD')).toBeTruthy()
+    expect(screen.getByText('Thống kê thưởng của HTKD')).toBeTruthy()
+    expect(screen.getAllByText('+75,000 đ').length).toBeGreaterThan(0)
   })
 
   it('shows complete assigned and replaced task snapshots in the Admin history', () => {

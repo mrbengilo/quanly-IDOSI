@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
+  Award,
   CalendarDays,
   Clock3,
   Edit3,
@@ -35,6 +36,8 @@ import { optimizeIdentityImage } from '../../domain/identityImage'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { shortDate, today } from '../../utils'
+import { UnitCompensationStatistics } from '../compensation/UnitCompensationStatistics'
+import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
 import { officeLocationMapUrl } from '../employee/officeAttendance'
 import {
   officeAttendanceStatsByEmployee,
@@ -401,14 +404,15 @@ export function OfficeManagement() {
     <div className="page">
       <PageHeader
         title="KHỐI VĂN PHÒNG"
-        subtitle="Thông tin nhân viên, lịch sử chấm công và đánh giá mức độ chuyên cần."
+        subtitle="Thông tin nhân viên, chấm công, công việc tính thưởng và vi phạm."
         icon={Users}
       />
       {!canManageOffice && <InfoNote>Chế độ chỉ xem. Tài khoản hiện tại không thể sửa hồ sơ nhân viên.</InfoNote>}
 
-      <div className="tabs">
-        <button className={tab === 'employees' ? 'active' : ''} onClick={() => setTab('employees')}><Users />Nhân viên</button>
-        <button className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công &amp; chuyên cần</button>
+      <div className="tabs" aria-label="Nội dung Khối văn phòng">
+        <button aria-pressed={tab === 'employees'} className={tab === 'employees' ? 'active' : ''} onClick={() => setTab('employees')}><Users />Nhân viên</button>
+        <button aria-pressed={tab === 'attendance'} className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}><History />Chấm công &amp; chuyên cần</button>
+        {canManageOffice && <button aria-pressed={tab === 'compensation'} className={tab === 'compensation' ? 'active' : ''} onClick={() => setTab('compensation')}><Award />Thưởng &amp; vi phạm</button>}
       </div>
 
       {tab === 'employees' && <>
@@ -484,6 +488,11 @@ export function OfficeManagement() {
             </tbody>
           </TableWrap>
         </Card>
+      </>}
+
+      {tab === 'compensation' && canManageOffice && <>
+        <ViolationManagementPage targetUnit="office" embedded />
+        <UnitCompensationStatistics targetUnit="office" employees={officeEmployees} />
       </>}
 
       {(editingEmployee ? canManageOffice : canCreateOffice) && <Modal
