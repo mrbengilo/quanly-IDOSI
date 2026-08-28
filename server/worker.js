@@ -14293,6 +14293,21 @@ const revenueBonusProgramForStore = (store) => {
       }
 }
 
+const revenueBonusAttendanceWeightUnits = (attendance) => {
+  const validSeconds = (value) => {
+    if (value == null || value === '') return null
+    const seconds = Number(value)
+    return Number.isSafeInteger(seconds) && seconds >= 0 ? seconds : null
+  }
+  const approvedSalesSeconds = validSeconds(attendance?.approvedSalesSeconds)
+  if (approvedSalesSeconds != null) return approvedSalesSeconds
+  const workedSeconds = validSeconds(attendance?.workedSeconds)
+  if (workedSeconds != null) return workedSeconds
+  if (attendance?.hours == null || attendance.hours === '') return 0
+  const secondsFromHours = Number(attendance.hours) * 3_600
+  return Number.isSafeInteger(secondsFromHours) && secondsFromHours >= 0 ? secondsFromHours : 0
+}
+
 const revenueBonusCalculationInputs = async (state, store, storeId, businessDate) => {
   const orders = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
     String(order.storeId || '') === storeId
@@ -14326,7 +14341,7 @@ const revenueBonusCalculationInputs = async (state, store, storeId, businessDate
     if (ownership.storeId !== storeId) continue
     const employeeId = ownership.employeeId
     if (!employeeId || !employeeById.has(employeeId)) continue
-    const weightUnits = Math.max(0, Math.trunc(Number(attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? 0)))
+    const weightUnits = revenueBonusAttendanceWeightUnits(attendance)
     relevantAttendance.push({
       id: String(attendance.id || ''), employeeId, weightUnits,
       checkIn: attendance.checkInAt || attendance.checkIn || null,

@@ -10897,7 +10897,7 @@ describe('IDOSI Worker security primitives', () => {
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
         }, {
           id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
-          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', hours: 4,
         }],
         schedule: [{
           id: 'SCH-HOT', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
@@ -10983,6 +10983,8 @@ describe('IDOSI Worker security primitives', () => {
       expect(allowedVoid.status, violationId).toBe(200)
       expect(await allowedVoid.json()).toMatchObject({ violation: { id: violationId, status: 'VOID' } })
     }
+    expect(readHydratedState(env.DB.database).attendance.find(({ id }) => id === 'ATT-HOT-EMPLOYEE'))
+      .toMatchObject({ hours: 4 })
     const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.calculate_day', expectedVersion: 3,
       payload: { storeId: 'S02', businessDate: '2026-08-20' },
@@ -10999,6 +11001,13 @@ describe('IDOSI Worker security primitives', () => {
       milestonePoolVnd === 0 && amountVnd === percentagePoolVnd
     ))).toBe(true)
     expect(calculatedBody.allocations.every(({ status }) => status === 'DRAFT')).toBe(true)
+    expect(readHydratedState(env.DB.database).revenueBonusAllocations
+      .filter(({ revenueBonusDailyId }) => revenueBonusDailyId === calculatedBody.revenueBonus.id)
+      .map(({ employeeId, weightUnits }) => ({ employeeId, weightUnits })))
+      .toEqual([
+        { employeeId: 'QL-S02', weightUnits: 14_400 },
+        { employeeId: 'E-S02', weightUnits: 14_400 },
+      ])
     expect(calculatedBody.teamParticipants.every(({ status, amountVnd }) => status === 'PENDING' && amountVnd === 0)).toBe(true)
 
     const draftDecision = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
