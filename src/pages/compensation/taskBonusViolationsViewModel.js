@@ -144,15 +144,30 @@ export const selectWorkedShiftOptions = ({
   ))
 }
 
-export const selectStoreEmployees = ({ employees = [], storeId = '' } = {}) => {
+export const selectStoreEmployees = ({
+  employees = [],
+  attendance = [],
+  schedule = [],
+  storeId = '',
+  date = '',
+} = {}) => {
   const requestedStoreId = text(storeId)
   if (!requestedStoreId) return []
+  const requestedDate = text(date).slice(0, 10)
+  const historicalEmployeeIds = new Set(requestedDate ? [
+    ...array(attendance),
+    ...array(schedule),
+  ].filter((record) => (
+    !record?.deletedAt
+    && storeIdOf(record) === requestedStoreId
+    && dateOf(record) === requestedDate
+  )).map(employeeIdOf).filter(Boolean) : [])
   return array(employees).filter((employee) => (
     !employee?.deletedAt
     && !['inactive', 'đã nghỉ việc'].includes(text(employee.status).toLocaleLowerCase('vi'))
     && !isStoreManagerProfile(employee)
     && employeeUnit(employee) === 'store'
-    && storeIdOf(employee) === requestedStoreId
+    && (storeIdOf(employee) === requestedStoreId || historicalEmployeeIds.has(entityId(employee)))
   )).sort((left, right) => (
     text(left.name).localeCompare(text(right.name), 'vi') || entityId(left).localeCompare(entityId(right))
   ))

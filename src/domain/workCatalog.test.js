@@ -301,6 +301,23 @@ describe('deterministic progress and reward claim identities', () => {
       .not.toBe(workCatalogProgressKey(input))
   })
 
+  it('keys a stable store shift independently from check-in rows', () => {
+    const stableShiftInput = {
+      employeeId: 'EMP-01',
+      workDate: '2026-08-26',
+      storeId: 'STORE-01',
+      shiftId: 'SHIFT-AM',
+      catalogItemId: 'catalog.store.reward.clean',
+    }
+    expect(workCatalogProgressKey(stableShiftInput)).toBe(
+      'work-catalog-progress:v2:EMP-01:2026-08-26:STORE-01:SHIFT-AM:catalog.store.reward.clean',
+    )
+    expect(workCatalogProgressKey({ ...stableShiftInput, storeId: 'STORE-02' }))
+      .not.toBe(workCatalogProgressKey(stableShiftInput))
+    expect(workCatalogProgressKey({ ...stableShiftInput, shiftId: 'SHIFT-PM' }))
+      .not.toBe(workCatalogProgressKey(stableShiftInput))
+  })
+
   it('rejects incomplete identity inputs instead of creating ambiguous keys', () => {
     expect(() => workCatalogProgressKey({ ...input, employeeId: '' })).toThrow(/employeeId/u)
     expect(() => workCatalogProgressKey({ ...input, workDate: 'not-a-date' })).toThrow(/workDate/u)

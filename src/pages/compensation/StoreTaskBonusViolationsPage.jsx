@@ -209,7 +209,7 @@ function RewardSubmissionsTab({ app, storeId, employees }) {
   )
 }
 
-function ViolationEntryTab({ app, storeId, store, employees }) {
+function ViolationEntryTab({ app, storeId, store }) {
   const [employeeSelection, setEmployeeSelection] = useState('')
   const [occurredOn, setOccurredOn] = useState(vietnamToday)
   const [shiftSelection, setShiftSelection] = useState('')
@@ -218,6 +218,13 @@ function ViolationEntryTab({ app, storeId, store, employees }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const requestRef = useRef(null)
+  const employees = useMemo(() => selectStoreEmployees({
+    employees: app.employees,
+    attendance: app.attendance,
+    schedule: app.schedule,
+    storeId,
+    date: occurredOn,
+  }), [app.employees, app.attendance, app.schedule, storeId, occurredOn])
   const employeeIds = new Set(employees.map(entityId))
   const selectedEmployeeId = employeeIds.has(employeeSelection) ? employeeSelection : entityId(employees[0])
   const shifts = useMemo(() => selectWorkedShiftOptions({
@@ -316,7 +323,7 @@ function ViolationEntryTab({ app, storeId, store, employees }) {
               </Select>
             </Field>
             <Field label="Ngày vi phạm" required>
-              <Input aria-label="Ngày vi phạm" type="date" value={occurredOn} disabled={busy} onChange={(event) => { setOccurredOn(event.target.value); resetDependentSelection() }} />
+              <Input aria-label="Ngày vi phạm" type="date" value={occurredOn} max={vietnamToday()} disabled={busy} onChange={(event) => { setOccurredOn(event.target.value); resetDependentSelection() }} />
             </Field>
             <Field label="Ca nhân viên đã làm" required hint="Ưu tiên ca đã chấm công; lịch phân ca được dùng khi nhân viên quên điểm danh.">
               <Select aria-label="Ca nhân viên đã làm" value={selectedShiftId} disabled={!shifts.length || busy} onChange={(event) => { setShiftSelection(event.target.value); setSelectedPolicyIds([]); requestRef.current = null }}>
@@ -446,7 +453,7 @@ export function StoreTaskBonusViolationsPage() {
       </div>
       {tab === 'rewards'
         ? <RewardSubmissionsTab key={storeId} app={app} storeId={storeId} employees={employees} />
-        : <ViolationEntryTab key={storeId} app={app} storeId={storeId} store={store} employees={employees} />}
+        : <ViolationEntryTab key={storeId} app={app} storeId={storeId} store={store} />}
     </div>
   )
 }

@@ -1916,16 +1916,16 @@ export const projectSharedState = (rawState, user) => {
         },
       }
     })
-    const employees = [...homeEmployees]
+    const operationalEmployees = [...homeEmployees]
     for (const employee of transferredEmployees) {
-      if (!employees.some((record) => String(record.id || record.code || '') === String(employee.id || employee.code || ''))) {
-        employees.push(employee)
+      if (!operationalEmployees.some((record) => String(record.id || record.code || '') === String(employee.id || employee.code || ''))) {
+        operationalEmployees.push(employee)
       }
     }
-    const visibleEmployeeIds = new Set(employees.flatMap((record) => (
-      [record.id, record.code, record.employeeId].map((value) => String(value || '')).filter(Boolean)
-    )))
-    const storeEmployeeIds = new Set(employees.filter((record) => employeeUnit(record) === 'store')
+    // Keep current operational scope separate from historical identity visibility.
+    // Historical profiles are intentionally redacted below and must never widen
+    // payroll, salary or active task access for the receiving store.
+    const storeEmployeeIds = new Set(operationalEmployees.filter((record) => employeeUnit(record) === 'store')
       .flatMap((record) => [record.id, record.code, record.employeeId]
         .map((value) => String(value || '')).filter(Boolean)))
     const historicalInboundEmployeeIds = filterArray(state, 'supportTransfers', (record) => (
@@ -1933,14 +1933,50 @@ export const projectSharedState = (rawState, user) => {
       && !record.deletedAt
       && String(record.status || '') !== 'Đã xóa'
     )).map((record) => String(record.employeeId || '')).filter(Boolean)
+    const historicalWorkedEmployeeIds = ['attendance', 'schedule'].flatMap((key) => (
+      filterArray(state, key, (record) => (
+        !record.deletedAt && String(record.storeId || '') === storeId
+      )).map(employeeReference).filter(Boolean)
+    ))
+    const canonicalStoreWorkerIds = new Set(filterArray(state, 'employees', (record) => (
+      employeeUnit(record) === 'store' && !record.deletedAt
+    )).flatMap((record) => [record.id, record.code, record.employeeId]
+      .map((value) => String(value || '')).filter(Boolean)))
     const historicalStoreEmployeeIds = new Set([
       ...storeEmployeeIds,
       ...historicalInboundEmployeeIds,
+      ...historicalWorkedEmployeeIds.filter((employeeId) => canonicalStoreWorkerIds.has(employeeId)),
       ...filterArray(state, 'deletedEmployees', (record) => (
         String(record.storeId || '') === storeId && employeeUnit(record) === 'store'
       )).flatMap((record) => [record.id, record.code, record.employeeId]
         .map((value) => String(value || '')).filter(Boolean)),
     ])
+    const selectableHistoricalEmployeeIds = new Set(
+      [...historicalStoreEmployeeIds].filter((employeeId) => canonicalStoreWorkerIds.has(employeeId)),
+    )
+    const historicalEmployees = filterArray(state, 'employees', (record) => (
+      employeeUnit(record) === 'store'
+      && !record.deletedAt
+      && [record.id, record.code, record.employeeId]
+        .map((value) => String(value || '')).some((value) => historicalStoreEmployeeIds.has(value))
+      && ![record.id, record.code, record.employeeId]
+        .map((value) => String(value || '')).some((value) => storeEmployeeIds.has(value))
+    )).map((record) => ({
+      id: String(record.id || record.code || record.employeeId || ''),
+      ...(record.code ? { code: record.code } : {}),
+      ...(record.employeeId ? { employeeId: record.employeeId } : {}),
+      name: record.name || record.displayName || String(record.id || record.code || record.employeeId || ''),
+      ...(record.displayName ? { displayName: record.displayName } : {}),
+      unit: 'store',
+      status: record.status || null,
+      storeId: record.storeId || null,
+      historicalStoreId: storeId,
+      historicalOnly: true,
+    }))
+    const employees = [...operationalEmployees, ...historicalEmployees]
+    const visibleEmployeeIds = new Set(employees.flatMap((record) => (
+      [record.id, record.code, record.employeeId].map((value) => String(value || '')).filter(Boolean)
+    )))
     const payrollVisibleEmployeeIds = new Set([
       ...storeEmployeeIds,
       ...historicalInboundEmployeeIds,
@@ -1985,7 +2021,9 @@ export const projectSharedState = (rawState, user) => {
       stores: filterArray(state, 'stores', (record) => String(record.id || '') === storeId),
       employees,
       attendance: historicalVisibleScoped('attendance'),
-      schedule: employeeScoped('schedule'),
+      schedule: filterArray(state, 'schedule', (record) => (
+        !record.deletedAt && belongsToAllowedStoreEmployees(record, selectableHistoricalEmployeeIds)
+      )),
       tasks: employeeScoped('tasks'),
       taskAssignmentHistory: historicalEmployeeScoped('taskAssignmentHistory'),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
@@ -12308,7 +12346,11 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       const identity = {
         employeeId,
         workDate: date,
-        shiftRef: String(openAttendance.id || ''),
+        // A reward belongs to one employee/store/date/shift occurrence, not to a
+        // check-in row. Re-checking into the same shift must not create a second
+        // payroll claim for the same catalog item.
+        storeId,
+        shiftId: shiftId || 'UNSPECIFIED',
         catalogItemId,
       }
       progressKey = workCatalogProgressKey(identity)
@@ -13873,6 +13915,12 @@ const compensationDate = (value, field) => {
   return normalized
 }
 
+const assertViolationDateNotFuture = (occurredOn, now) => {
+  if (occurredOn > localDateTimeParts(now).date) {
+    throw new ApiError(400, 'VIOLATION_DATE_FUTURE', 'Không thể ghi nhận vi phạm cho ngày trong tương lai.')
+  }
+}
+
 const expectedEntityVersion = (payload, previous) => {
   if (payload.expectedVersion === undefined || payload.expectedVersion === null || payload.expectedVersion === '') return
   const expected = Number(payload.expectedVersion)
@@ -14173,6 +14221,22 @@ const violationShiftSnapshotTimes = (record = {}) => ({
   end: parseShiftTime(record.shiftEnd || record.end || String(record.time || '').split(/[–—-]/u)[1]),
 })
 
+const employeeHasStoreShiftWorkEvidenceOnDate = (state, employeeId, storeId, date, shiftId) => [
+  ...(Array.isArray(state.schedule) ? state.schedule : []),
+  ...(Array.isArray(state.attendance) ? state.attendance : []),
+].some((record) => (
+  belongsToEmployee(record, employeeId)
+  && String(record.storeId || '') === String(storeId || '')
+  && dateFromRecord(record) === date
+  && violationShiftIds(record).includes(String(shiftId || ''))
+  && !record.deletedAt
+))
+
+const violationPayrollTargets = (storeId, payrollStoreId, period) => [...new Set([
+  String(storeId || '').trim(),
+  String(payrollStoreId || '').trim(),
+].filter(Boolean))].map((targetStoreId) => ({ storeId: targetStoreId, period }))
+
 const violationShiftSnapshot = ({ state, employeeId, storeId, occurredOn, requestedShiftId }) => {
   const shiftDefinitions = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).filter((record) => (
     (!record.storeId || String(record.storeId) === storeId)
@@ -14280,10 +14344,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
     if (employeeUnit(employee) !== 'store') {
       throw new ApiError(409, 'EMPLOYEE_UNIT_MISMATCH', 'Nhân viên không thuộc nhóm cửa hàng.')
     }
-    if (String(employee.storeId || '') !== storeId) {
-      throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng đã chọn.')
-    }
     const occurredOn = compensationDate(payload.occurredOn, 'Ngày phát sinh')
+    assertViolationDateNotFuture(occurredOn, commandContext.now)
+    const canonicalStoreMembership = employeeWorksAtStoreOnDate(state, employee, storeId, occurredOn)
     const shiftSnapshot = violationShiftSnapshot({
       state,
       employeeId,
@@ -14291,8 +14354,15 @@ const violationCommand = async (db, actor, body, commandContext) => {
       occurredOn,
       requestedShiftId: payload.shiftId || payload.shift,
     })
+    if (!canonicalStoreMembership && !employeeHasStoreShiftWorkEvidenceOnDate(
+      state, employeeId, storeId, occurredOn, shiftSnapshot.shiftId,
+    )) {
+      throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng và ca đã chọn trong ngày phát sinh.')
+    }
     const period = occurredOn.slice(0, 7)
-    assertPayrollNotPaidOrLocked(state, storeId, period)
+    const payrollStoreId = String(employee.storeId || storeId).trim()
+    const payrollTargets = violationPayrollTargets(storeId, payrollStoreId, period)
+    for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
     const note = String(payload.note || '').trim()
     if (note.length > 1_000) throw new ApiError(400, 'NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')
 
@@ -14391,7 +14461,8 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const employeeSnapshot = {
       id: employeeId,
       name: employee.name || employee.displayName || employeeId,
-      storeId: employee.storeId || storeId,
+      storeId: payrollStoreId,
+      workStoreId: storeId,
       unit: employeeUnit(employee),
     }
     const storeSnapshot = { id: storeId, name: store.name || storeId }
@@ -14406,6 +14477,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       storeId,
       storeName: storeSnapshot.name,
       storeSnapshot,
+      payrollStoreId,
       policyCode: item.policyCode,
       title: item.title,
       amountVnd: item.amountVnd,
@@ -14453,7 +14525,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const nextState = {
       ...state,
       violations: [...violations, ...records],
-      payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
+      payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -14463,7 +14535,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       before: null,
       after: violations,
       metadata: {
-        batchId, storeId, employeeId, occurredOn, period, shiftId: shiftSnapshot.shiftId,
+        batchId, storeId, payrollStoreId, payrollTargets, employeeId, occurredOn, period, shiftId: shiftSnapshot.shiftId,
         occurrenceKeys: violations.map((record) => record.occurrenceKey),
         violationIds: violations.map((record) => record.id),
         totalAmountVnd,
@@ -14488,9 +14560,11 @@ const violationCommand = async (db, actor, body, commandContext) => {
     if (targetUnit === 'store') {
       assertOperationalStoreAccess(actor, storeId)
       requireActivePhysicalStore(state, storeId)
-      if (String(employee.storeId || '') !== storeId) throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng đã chọn.')
     }
     const occurredOn = compensationDate(payload.occurredOn, 'Ngày phát sinh')
+    assertViolationDateNotFuture(occurredOn, commandContext.now)
+    const canonicalStoreMembership = targetUnit === 'store'
+      && employeeWorksAtStoreOnDate(state, employee, storeId, occurredOn)
     const shiftSnapshot = targetUnit === 'store'
       ? violationShiftSnapshot({
           state,
@@ -14500,8 +14574,15 @@ const violationCommand = async (db, actor, body, commandContext) => {
           requestedShiftId: payload.shiftId || payload.shift,
         })
       : null
+    if (targetUnit === 'store' && !canonicalStoreMembership && !employeeHasStoreShiftWorkEvidenceOnDate(
+      state, employeeId, storeId, occurredOn, shiftSnapshot.shiftId,
+    )) {
+      throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng và ca đã chọn trong ngày phát sinh.')
+    }
     const period = occurredOn.slice(0, 7)
-    assertPayrollNotPaidOrLocked(state, storeId, period)
+    const payrollStoreId = String(employee.storeId || storeId).trim()
+    const payrollTargets = violationPayrollTargets(storeId, payrollStoreId, period)
+    for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
     const catalogItemId = String(payload.catalogItemId || '').trim()
     let catalogItem = null
     let policyCode = String(payload.policyCode || '').trim()
@@ -14569,6 +14650,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       employeeId,
       employeeName: employee.name || employee.displayName || employeeId,
       storeId,
+      payrollStoreId,
       policyCode,
       title,
       amountVnd,
@@ -14601,7 +14683,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const nextState = {
       ...state,
       violations: [violation, ...records],
-      payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
+      payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -14611,7 +14693,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       before: null,
       after: violation,
       metadata: {
-        targetUnit, storeId, employeeId, period, policyCode, amountVnd,
+        targetUnit, storeId, payrollStoreId, payrollTargets, employeeId, period, policyCode, amountVnd,
         shiftId: shiftSnapshot?.shiftId || null, occurrenceKey: occurrence.occurrenceKey,
       },
       response: { command: body.type, violation },
@@ -14627,13 +14709,20 @@ const violationCommand = async (db, actor, body, commandContext) => {
     assertOperationalStoreAccess(actor, previous.storeId)
     requireActivePhysicalStore(state, previous.storeId)
   }
-  const period = asMonth(previous.period || monthFromRecord(previous))
-  assertPayrollNotPaidOrLocked(state, previous.storeId, period)
   if (previous.voidedAt || normalizeTextKey(previous.status) === 'void') {
     return recordNoopCommand(db, actor, {
       command: body.type, version: Number(current.version), violation: previous, existing: true,
     }, 200, commandContext)
   }
+  const period = asMonth(previous.period || monthFromRecord(previous))
+  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+    [record.id, record.code, record.employeeId].map(String).includes(String(previous.employeeId || ''))
+  ))
+  const payrollStoreId = String(
+    previous.payrollStoreId || employee?.storeId || previous.employeeSnapshot?.storeId || previous.storeId,
+  ).trim()
+  const payrollTargets = violationPayrollTargets(previous.storeId, payrollStoreId, period)
+  for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
   const reason = String(payload.reason || '').trim()
   if (!reason || reason.length > 500) throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do hủy từ 1 đến 500 ký tự.')
   const next = {
@@ -14649,7 +14738,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
   const nextState = {
     ...state,
     violations: records.map((record) => String(record.id || '') === violationId ? next : record),
-    payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId: previous.storeId, period }, commandContext.now, body.type),
+    payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -14658,7 +14747,14 @@ const violationCommand = async (db, actor, body, commandContext) => {
     entityId: violationId,
     before: previous,
     after: next,
-    metadata: { targetUnit: previous.targetUnit, storeId: previous.storeId, employeeId: previous.employeeId, period },
+    metadata: {
+      targetUnit: previous.targetUnit,
+      storeId: previous.storeId,
+      payrollStoreId,
+      payrollTargets,
+      employeeId: previous.employeeId,
+      period,
+    },
     response: { command: body.type, violation: next },
   }, commandContext)
 }
@@ -14697,6 +14793,11 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
   if (approve && participants.some((record) => belongsToEmployee(record, actorEmployeeId))) {
     throw new ApiError(403, 'SELF_APPROVAL_FORBIDDEN', 'Người tham gia không được tự duyệt thưởng nóng của mình.')
   }
+  const period = asMonth(
+    claim.period || daily.period || String(claim.businessDate || daily.businessDate || '').slice(0, 7),
+    'Kỳ thưởng doanh thu',
+  )
+  if (approve) assertPayrollNotPaidOrLocked(state, claim.storeId, period)
   const actorSnapshot = serverActorSnapshot(actor)
   const decidedClaim = {
     ...claim,
@@ -14753,7 +14854,7 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
   const reconciliation = {
     id: `prc_${crypto.randomUUID()}`,
     storeId: claim.storeId,
-    period: claim.period,
+    period,
     businessDate: claim.businessDate,
     type: approve ? 'TEAM_REWARD_APPROVAL' : 'TEAM_REWARD_REJECTION',
     sourceId: claimId,
@@ -14776,7 +14877,7 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
         : record),
     periodReconciliations: [reconciliation, ...(Array.isArray(state.periodReconciliations) ? state.periodReconciliations : [])],
     payrollPeriods: approve
-      ? invalidateClosedPayrollPeriods(state, { storeId: claim.storeId, period: claim.period }, commandContext.now, body.type)
+      ? invalidateClosedPayrollPeriods(state, { storeId: claim.storeId, period }, commandContext.now, body.type)
       : state.payrollPeriods,
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }

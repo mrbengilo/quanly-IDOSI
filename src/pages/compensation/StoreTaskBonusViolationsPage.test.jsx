@@ -173,6 +173,29 @@ describe('StoreTaskBonusViolationsPage', () => {
     expect(mocked.app.notify).toHaveBeenCalledWith('Đã ghi nhận 2 vi phạm cho Nguyễn An.', 'success')
   })
 
+  it('offers a transferred employee only on a day with explicit work evidence at the selected store', () => {
+    mocked.app = {
+      ...baseApp(),
+      employees: [
+        ...employees,
+        { id: 'NV-TRANSFER', name: 'Nhân viên đã điều chuyển', unit: 'store', storeId: 'CH002' },
+      ],
+      attendance: [{
+        id: 'ATT-TRANSFER-HISTORY', employeeId: 'NV-TRANSFER', storeId: 'CH001', date: '2026-08-28',
+        shiftId: 'MORNING', shiftName: 'Ca sáng lịch sử', shiftStart: '08:00', shiftEnd: '12:00',
+      }],
+    }
+    render(<StoreTaskBonusViolationsPage />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Ghi nhận vi phạm' }))
+
+    const employeePicker = screen.getByLabelText('Nhân viên vi phạm')
+    expect(within(employeePicker).getByRole('option', { name: /Nhân viên đã điều chuyển/u })).toBeTruthy()
+    const dateInput = screen.getByLabelText('Ngày vi phạm')
+    expect(dateInput.max).toBe('2026-08-28')
+    fireEvent.change(dateInput, { target: { value: '2026-08-27' } })
+    expect(within(employeePicker).queryByRole('option', { name: /Nhân viên đã điều chuyển/u })).toBeNull()
+  })
+
   it('locks a store manager to the assigned store and sends catalog ids when available', async () => {
     mocked.app = {
       ...baseApp('store_manager'),

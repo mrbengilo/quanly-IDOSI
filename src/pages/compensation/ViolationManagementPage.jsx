@@ -196,7 +196,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
             <Input aria-label="Số tiền phải thu" value={money(selectedPolicy?.amountVnd || 0)} readOnly />
           </Field>
           <Field label="Ngày phát sinh" required>
-            <Input aria-label="Ngày phát sinh" type="date" value={occurredOn} onChange={(event) => { setOccurredOn(event.target.value); setShiftSelection(''); setPolicyId('') }} />
+            <Input aria-label="Ngày phát sinh" type="date" value={occurredOn} max={vietnamToday()} onChange={(event) => { setOccurredOn(event.target.value); setShiftSelection(''); setPolicyId('') }} />
           </Field>
           <Field label="Ghi chú" className="compensation-form-span">
             <Input aria-label="Ghi chú" value={note} onChange={(event) => setNote(event.target.value)} placeholder="Thông tin đối soát bổ sung (nếu có)" />

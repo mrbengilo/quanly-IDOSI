@@ -66,6 +66,28 @@ describe('selectStoreEmployees', () => {
       attendance: [{ id: 'ATT-X', employeeId: 'NV-TRANSFER', storeId: 'CH001', date: '2026-08-28', shiftId: 'MORNING' }],
     }).map((employee) => employee.id)).toEqual(['NV-HOME'])
   })
+
+  it('includes an active transferred employee only when the selected store and day have explicit work evidence', () => {
+    const input = {
+      storeId: 'CH001',
+      date: '2026-08-28',
+      employees: [
+        { id: 'NV-HOME', name: 'Nhân viên nhà', unit: 'store', storeId: 'CH001' },
+        {
+          id: 'NV-TRANSFER', name: 'Nhân viên hỗ trợ', unit: 'store', storeId: 'CH002',
+          historicalStoreId: 'CH001', historicalOnly: true,
+        },
+        { id: 'NV-UNRELATED', name: 'Nhân viên ngoài phạm vi', unit: 'store', storeId: 'CH004' },
+      ],
+      attendance: [{
+        id: 'ATT-X', employeeId: 'NV-TRANSFER', storeId: 'CH001', date: '2026-08-28', shiftId: 'MORNING',
+      }],
+    }
+
+    expect(selectStoreEmployees(input).map((employee) => employee.id).sort()).toEqual(['NV-HOME', 'NV-TRANSFER'])
+    expect(selectStoreEmployees({ ...input, date: '2026-08-27' }).map((employee) => employee.id)).toEqual(['NV-HOME'])
+    expect(selectStoreEmployees({ ...input, storeId: 'CH003' })).toEqual([])
+  })
 })
 
 describe('selectRewardSubmissionRows', () => {

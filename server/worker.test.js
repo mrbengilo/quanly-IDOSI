@@ -8669,7 +8669,15 @@ describe('IDOSI Worker security primitives', () => {
         headers: destinationManagerAuthorization,
       }), env)
       expect(destinationAtExclusiveEnd.status).toBe(200)
-      expect((await destinationAtExclusiveEnd.json()).state.employees.some(({ id }) => id === 'E01')).toBe(false)
+      const historicalDestinationEmployee = (await destinationAtExclusiveEnd.json()).state.employees
+        .find(({ id }) => id === 'E01')
+      expect(historicalDestinationEmployee).toMatchObject({
+        id: 'E01', name: 'Nhân viên Một', unit: 'store', storeId: 'S01',
+        historicalStoreId: 'S02', historicalOnly: true,
+      })
+      expect(historicalDestinationEmployee).not.toHaveProperty('phone')
+      expect(historicalDestinationEmployee).not.toHaveProperty('cccd')
+      expect(historicalDestinationEmployee).not.toHaveProperty('address')
       vi.setSystemTime(new Date('2026-08-21T07:00:00.000Z'))
       const destinationCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_out', expectedVersion: 13,
@@ -10183,12 +10191,31 @@ describe('IDOSI Worker security primitives', () => {
       expect(afterCheckout.payrollPeriods.some(({ period }) => period === '2026-09')).toBe(false)
       expect(afterCheckout.supportTransfers.find(({ id }) => id === transfer.id)).toMatchObject({ status: 'Hoàn tất' })
 
+      replaceStateCollection(env.DB.database, 'schedule', [{
+        id: 'SCH-HISTORICAL-S02', employeeId: 'E01', storeId: 'S02', date: '2026-08-31',
+        shiftId: 'SHIFT-HISTORICAL-S02', shiftName: 'Ca lịch sử cửa hàng đích',
+      }])
+
       const historicalManagerStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
         headers: managerAuthorization,
       }), env)
       const historicalManagerState = (await historicalManagerStateResponse.json()).state
-      expect(historicalManagerState.employees.some(({ id }) => id === 'E01')).toBe(false)
+      expect(historicalManagerState.employees.find(({ id }) => id === 'E01')).toEqual({
+        id: 'E01',
+        name: 'Nhân viên hỗ trợ',
+        unit: 'store',
+        status: 'Đang làm việc',
+        storeId: 'S01',
+        historicalStoreId: 'S02',
+        historicalOnly: true,
+      })
+      expect(historicalManagerState.employees.find(({ id }) => id === 'E01')).not.toHaveProperty('hourlyRate')
+      expect(historicalManagerState.employees.find(({ id }) => id === 'E01')).not.toHaveProperty('employmentType')
+      expect(historicalManagerState.employees.some(({ id }) => id === 'HTKD-TRANSFER')).toBe(false)
       expect(historicalManagerState.attendance.find(({ id }) => id === attendanceId)).toMatchObject({ storeId: 'S02' })
+      expect(historicalManagerState.schedule).toEqual([
+        expect.objectContaining({ id: 'SCH-HISTORICAL-S02', employeeId: 'E01', storeId: 'S02' }),
+      ])
       expect(historicalManagerState.orders.find(({ id }) => id === orderBody.order.id)).toMatchObject({ storeId: 'S02' })
       expect(historicalManagerState.notifications.find(({ orderId }) => orderId === orderBody.order.id)).toMatchObject({
         type: 'order.created', storeId: 'S02', employeeId: 'E01',
@@ -10709,7 +10736,9 @@ describe('IDOSI Worker security primitives', () => {
   }, 30_000)
 
   it('snapshots the canonical store checklist and never lets a reason bypass incomplete active tasks', async () => {
-    vi.setSystemTime(new Date('2026-08-20T01:00:00.000Z'))
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-20T01:00:00.000Z'))
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-canonical-shift-checklist' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'checklist-admin-password',
@@ -10807,12 +10836,15 @@ describe('IDOSI Worker security primitives', () => {
       },
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-checkout-0001' }), env)
     expect(checkedOut.status).toBe(200)
-    expect(await checkedOut.json()).toMatchObject({
-      version: 4,
-      attendance: {
-        id: checkedInBody.attendance.id, incompleteTaskReason: null, incompleteTasksSnapshot: [],
-      },
-    })
+      expect(await checkedOut.json()).toMatchObject({
+        version: 4,
+        attendance: {
+          id: checkedInBody.attendance.id, incompleteTaskReason: null, incompleteTasksSnapshot: [],
+        },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   }, 30_000)
 
   it('recognizes payroll once at close while advances and payment mirrors only settle cash', async () => {
@@ -10929,10 +10961,21 @@ describe('IDOSI Worker security primitives', () => {
           version: 9, active: false, deletedAt: '2026-08-25T00:00:00.000Z',
         }, {
           id: 'SHIFT-S02', storeId: 'S02', name: 'Ca chiều S02', start: '12:00', end: '17:00', active: true,
+        }, {
+          id: 'SHIFT-LEGACY-NO-STORE', name: 'Ca legacy thiếu cửa hàng', start: '17:00', end: '21:00', active: true,
         }],
         schedule: [{
           id: 'SCH-S02', employeeId: 'E02', storeId: 'S02', date: '2026-08-20', shiftIds: ['SHIFT-S02'],
           shiftSnapshots: [{ id: 'SHIFT-S02', name: 'Ca chiều lịch sử', start: '12:00', end: '17:00', version: 4 }],
+        }, {
+          id: 'SCH-S02-TODAY', employeeId: 'E02', storeId: 'S02', date: '2026-08-21', shiftIds: ['SHIFT-S02'],
+          shiftSnapshots: [{ id: 'SHIFT-S02', name: 'Ca chiều ngày hiện tại', start: '12:00', end: '17:00', version: 4 }],
+        }, {
+          id: 'SCH-S02-FUTURE', employeeId: 'E02', storeId: 'S02', date: '2026-08-22', shiftIds: ['SHIFT-S02'],
+          shiftSnapshots: [{ id: 'SHIFT-S02', name: 'Ca chiều tương lai', start: '12:00', end: '17:00', version: 4 }],
+        }, {
+          id: 'SCH-LEGACY-NO-STORE', employeeId: 'E01', date: '2026-08-20', shiftIds: ['SHIFT-LEGACY-NO-STORE'],
+          shiftSnapshots: [{ id: 'SHIFT-LEGACY-NO-STORE', name: 'Ca legacy thiếu cửa hàng', start: '17:00', end: '21:00' }],
         }],
         attendance: [{
           id: 'att_historical_shift', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
@@ -10947,6 +10990,10 @@ describe('IDOSI Worker security primitives', () => {
           id: 'VIO-FLOOR', code: 'store.violation.dirty_floor', version: 5, kind: 'VIOLATION',
           targetGroup: 'store', storeId: 'S01', shiftId: historicalShiftId, name: 'Sàn nhà dơ',
           amountVnd: 8_000, active: true, sortOrder: 2, effectiveFrom: '2026-08-01', effectiveTo: null,
+        }, {
+          id: 'VIO-CUSTOMER', code: 'store.violation.ignore_customer', version: 1, kind: 'VIOLATION',
+          targetGroup: 'store', storeId: 'S01', shiftId: historicalShiftId, name: 'Không tương tác khách',
+          amountVnd: 2_000, active: true, sortOrder: 3, effectiveFrom: '2026-08-01', effectiveTo: null,
         }],
         payrollPeriods: [{
           id: 'PAY-S01-2026-08', storeId: 'S01', period: '2026-08', status: 'Đã chốt',
@@ -11052,6 +11099,43 @@ describe('IDOSI Worker security primitives', () => {
     expect(currentVersion()).toBe(beforeAtomicFailureVersion)
     expect(readHydratedState(env.DB.database).violations).toHaveLength(2)
 
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-20T17:05:00.000Z')) // 00:05 ngày 21/08 tại Việt Nam
+      const localToday = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'violation.create_batch', expectedVersion: currentVersion(), payload: {
+          storeId: 'S02', employeeId: 'E02', occurredOn: '2026-08-21', shiftId: 'SHIFT-S02',
+          policyCodes: ['store.violation.forgot_attendance'],
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'violation-local-today-batch-0001' }), env)
+      expect(localToday.status).toBe(201)
+      const versionBeforeFutureFailure = currentVersion()
+      const violationCountBeforeFutureFailure = readHydratedState(env.DB.database).violations.length
+      for (const [commandType, payload] of [
+        ['violation.create_batch', {
+          storeId: 'S02', employeeId: 'E02', occurredOn: '2026-08-22', shiftId: 'SHIFT-S02',
+          policyCodes: ['store.violation.forgot_attendance'],
+        }],
+        ['violation.create', {
+          targetUnit: 'store', storeId: 'S02', employeeId: 'E02', occurredOn: '2026-08-22',
+          shiftId: 'SHIFT-S02', policyCode: 'store.violation.forgot_attendance', amountVnd: 2_000,
+        }],
+      ]) {
+        const futureDated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+          type: commandType, expectedVersion: currentVersion(), payload,
+        }, {
+          ...adminAuthorization,
+          'idempotency-key': `violation-future-${commandType.replaceAll('.', '-')}-0001`,
+        }), env)
+        expect(futureDated.status).toBe(400)
+        expect(await futureDated.json()).toMatchObject({ error: { code: 'VIOLATION_DATE_FUTURE' } })
+      }
+      expect(currentVersion()).toBe(versionBeforeFutureFailure)
+      expect(readHydratedState(env.DB.database).violations).toHaveLength(violationCountBeforeFutureFailure)
+    } finally {
+      vi.useRealTimers()
+    }
+
     const crossStoreDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'violation.create_batch', expectedVersion: currentVersion(), payload: {
         storeId: 'S02', employeeId: 'E02', occurredOn: '2026-08-20', shiftId: 'SHIFT-S02',
@@ -11087,8 +11171,119 @@ describe('IDOSI Worker security primitives', () => {
       totalAmountVnd: 2_000,
       violations: [{ employeeId: 'E02', storeId: 'S02', policyCode: 'store.violation.ignore_customer' }],
     })
+
+    replaceStateCollection(env.DB.database, 'employees', readHydratedState(env.DB.database).employees.map((employee) => (
+      employee.id === 'E01' ? { ...employee, storeId: 'S02' } : employee
+    )))
+    const beforeLegacyShiftMismatchVersion = currentVersion()
+    const legacyShiftMismatch = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: currentVersion(), payload: {
+        storeId: 'S01', employeeId: 'E01', occurredOn: '2026-08-20', shiftId: 'SHIFT-LEGACY-NO-STORE',
+        policyCodes: ['store.violation.forgot_attendance'],
+      },
+    }, { ...managerAuthorization, 'idempotency-key': 'violation-batch-legacy-shift-store-mismatch-0001' }), env)
+    expect(legacyShiftMismatch.status).toBe(409)
+    expect(await legacyShiftMismatch.json()).toMatchObject({ error: { code: 'EMPLOYEE_STORE_MISMATCH' } })
+    expect(currentVersion()).toBe(beforeLegacyShiftMismatchVersion)
+    const payrollBeforeTransferViolation = readHydratedState(env.DB.database).payrollPeriods
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [
+      ...payrollBeforeTransferViolation,
+      { id: 'PAY-S02-2026-08', storeId: 'S02', period: '2026-08', status: 'Đã khóa', lockedAt: '2026-08-27T00:00:00.000Z' },
+    ])
+    const beforeLockedHomeVersion = currentVersion()
+    const lockedHome = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: currentVersion(), payload: {
+        storeId: 'S01', employeeId: 'E01', occurredOn: '2026-08-20', shiftId: historicalShiftId,
+        catalogItemIds: ['VIO-CUSTOMER'],
+      },
+    }, { ...managerAuthorization, 'idempotency-key': 'violation-batch-transferred-locked-home-0001' }), env)
+    expect(lockedHome.status).toBe(409)
+    expect(await lockedHome.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+    expect(currentVersion()).toBe(beforeLockedHomeVersion)
+
+    replaceStateCollection(env.DB.database, 'payrollPeriods', readHydratedState(env.DB.database).payrollPeriods.map((period) => (
+      period.storeId === 'S02'
+        ? { ...period, status: 'Đã chốt', lockedAt: null, confirmedAt: null }
+        : period
+    )))
+    const transferredEmployeeViolation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: currentVersion(), payload: {
+        storeId: 'S01', employeeId: 'E01', occurredOn: '2026-08-20', shiftId: historicalShiftId,
+        catalogItemIds: ['VIO-CUSTOMER'],
+      },
+    }, { ...managerAuthorization, 'idempotency-key': 'violation-batch-transferred-history-0001' }), env)
+    expect(transferredEmployeeViolation.status).toBe(201)
+    const transferredEmployeeViolationBody = await transferredEmployeeViolation.json()
+    expect(transferredEmployeeViolationBody).toMatchObject({
+      violations: [{
+        employeeId: 'E01', storeId: 'S01', payrollStoreId: 'S02',
+        employeeSnapshot: { storeId: 'S02', workStoreId: 'S01' },
+        attendanceId: 'att_historical_shift', catalogItemId: 'VIO-CUSTOMER',
+      }],
+    })
+    expect(readHydratedState(env.DB.database).payrollPeriods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ storeId: 'S01', needsReclose: true }),
+      expect.objectContaining({ storeId: 'S02', needsReclose: true }),
+    ]))
+
+    replaceStateCollection(env.DB.database, 'payrollPeriods', readHydratedState(env.DB.database).payrollPeriods.map((period) => (
+      period.storeId === 'S02'
+        ? { ...period, status: 'Đã khóa', lockedAt: '2026-08-27T00:00:00.000Z' }
+        : period
+    )))
+    const historicalViolation = transferredEmployeeViolationBody.violations[0]
+    const blockedVoid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.void', expectedVersion: currentVersion(), payload: {
+        id: historicalViolation.id, expectedVersion: historicalViolation.version, reason: 'Thử hủy kỳ đã khóa',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-transferred-void-locked-home-0001' }), env)
+    expect(blockedVoid.status).toBe(409)
+    expect(await blockedVoid.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+
+    replaceStateCollection(env.DB.database, 'payrollPeriods', readHydratedState(env.DB.database).payrollPeriods.map((period) => (
+      period.storeId === 'S02'
+        ? { ...period, status: 'Đã chốt', lockedAt: null, confirmedAt: null }
+        : period
+    )))
+    const voided = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.void', expectedVersion: currentVersion(), payload: {
+        id: historicalViolation.id, expectedVersion: historicalViolation.version, reason: 'Hủy sau đối soát',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-transferred-void-success-0001' }), env)
+    expect(voided.status).toBe(200)
+    const voidedBody = await voided.json()
+    expect(voidedBody.violation).toMatchObject({ id: historicalViolation.id, status: 'VOID', version: 2 })
+
+    replaceStateCollection(env.DB.database, 'payrollPeriods', readHydratedState(env.DB.database).payrollPeriods.map((period) => (
+      period.storeId === 'S02'
+        ? { ...period, status: 'Đã khóa', lockedAt: '2026-08-27T00:00:00.000Z' }
+        : period
+    )))
+    const semanticRetry = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.void', expectedVersion: currentVersion(), payload: {
+        id: historicalViolation.id, expectedVersion: voidedBody.violation.version, reason: 'Hủy sau đối soát',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-transferred-void-semantic-retry-0001' }), env)
+    expect(semanticRetry.status).toBe(200)
+    expect(await semanticRetry.json()).toMatchObject({ existing: true, violation: { id: historicalViolation.id, status: 'VOID' } })
+
+    const legacyViolation = {
+      id: 'VIO-LEGACY-NO-PAYROLL-STORE', targetUnit: 'store', employeeId: 'E01', storeId: 'S01',
+      occurredOn: '2026-08-20', period: '2026-08', title: 'Vi phạm legacy', amountVnd: 2_000,
+      status: 'ACTIVE', version: 1,
+    }
+    replaceStateCollection(env.DB.database, 'violations', [legacyViolation, ...readHydratedState(env.DB.database).violations])
+    const blockedLegacyVoid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.void', expectedVersion: currentVersion(), payload: {
+        id: legacyViolation.id, expectedVersion: legacyViolation.version, reason: 'Không được xuyên kỳ khóa',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-legacy-void-locked-current-store-0001' }), env)
+    expect(blockedLegacyVoid.status).toBe(409)
+    expect(await blockedLegacyVoid.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
     persisted = readHydratedState(env.DB.database)
-    expect(persisted.violations).toHaveLength(4)
+    expect(persisted.violations).toHaveLength(7)
+    expect(persisted.violations.find((violation) => violation.id === historicalViolation.id)).toMatchObject({ status: 'VOID' })
+    expect(persisted.violations.find((violation) => violation.id === legacyViolation.id)).toMatchObject({ status: 'ACTIVE' })
   }, 30_000)
 
   it('materializes one deterministic work reward claim, rejects conflicting duplicates and fences payroll transitions', async () => {
@@ -11149,8 +11344,8 @@ describe('IDOSI Worker security primitives', () => {
     const currentVersion = () => Number(env.DB.database.prepare(
       "SELECT version FROM app_state WHERE scope_key = 'global'",
     ).get().version)
-    const progressPayload = (completed) => ({
-      attendanceId: 'att_reward_01',
+    const progressPayload = (completed, attendanceId = 'att_reward_01') => ({
+      attendanceId,
       tasks: [
         { id: 'TASK-REWARD-ASSIGNED', completed },
         { id: 'TASK-REWARD-CHECKLIST', completed },
@@ -11219,7 +11414,7 @@ describe('IDOSI Worker security primitives', () => {
       }],
       rewardClaims: [{
         type: 'WORK', status: 'ACTIVE', sourceType: 'work-catalog-reward', amountVnd: 8_000,
-        workCatalogProgressId: expect.stringContaining('work-catalog-progress:v1:'),
+        workCatalogProgressId: expect.stringContaining('work-catalog-progress:v2:'),
       }],
     })
     let persisted = readHydratedState(env.DB.database)
@@ -11232,6 +11427,27 @@ describe('IDOSI Worker security primitives', () => {
       && assignment.progressHistory[0].completedRewardTaskSnapshots.length === 2
     ))).toBe(true)
 
+    const originalAttendance = persisted.attendance[0]
+    replaceStateCollection(env.DB.database, 'attendance', [{
+      ...originalAttendance,
+      checkOutAt: '2026-08-20T03:00:00.000Z',
+    }, {
+      ...originalAttendance,
+      id: 'att_reward_02',
+      checkInAt: '2026-08-20T03:05:00.000Z',
+      checkOutAt: null,
+    }])
+    const sameShiftResubmission = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: currentVersion(), payload: progressPayload(true, 'att_reward_02'),
+    }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-same-shift-second-attendance-0001' }), env)
+    expect(sameShiftResubmission.status).toBe(200)
+    persisted = readHydratedState(env.DB.database)
+    expect(persisted.workCatalogProgress).toHaveLength(1)
+    expect(persisted.compensationEntries).toEqual([
+      expect.objectContaining({ id: claimId, status: 'ACTIVE', amountVnd: 8_000 }),
+    ])
+    replaceStateCollection(env.DB.database, 'attendance', [originalAttendance])
+
     replaceStateCollection(env.DB.database, 'workCatalogProgress', [])
     replaceStateCollection(env.DB.database, 'compensationEntries', [])
     const reconciledVersion = currentVersion()
@@ -11240,7 +11456,7 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...employeeAuthorization, 'idempotency-key': 'work-reward-progress-reconcile-0001' }), env)
     expect(reconciled.status).toBe(200)
     expect(await reconciled.json()).toMatchObject({
-      rewardProgress: [{ id: expect.stringContaining('work-catalog-progress:v1:') }],
+      rewardProgress: [{ id: expect.stringContaining('work-catalog-progress:v2:') }],
       rewardClaims: [{ id: claimId, status: 'ACTIVE', amountVnd: 8_000 }],
     })
     expect(currentVersion()).toBe(reconciledVersion + 1)
@@ -11521,6 +11737,35 @@ describe('IDOSI Worker security primitives', () => {
       participants: employeeState.teamRewardParticipants,
     })).not.toContain('QL-S02')
 
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+      id: 'PAY-HOT-S02-2026-08', storeId: 'S02', period: '2026-08', status: 'Đã chi',
+      confirmedAt: '2026-08-27T00:00:00.000Z', lockedAt: null,
+    }])
+    const blockedApproval = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
+      payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-paid-approve-0001' }), env)
+    expect(blockedApproval.status).toBe(409)
+    expect(await blockedApproval.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
+    const stateAfterBlockedApproval = readHydratedState(env.DB.database)
+    expect(stateAfterBlockedApproval.teamRewardClaims).toEqual([
+      expect.objectContaining({ id: calculatedBody.teamClaim.id, status: 'PENDING', amountVnd: 250_000 }),
+    ])
+    expect(stateAfterBlockedApproval.revenueBonusDaily).toEqual([
+      expect.objectContaining({ pendingMilestonePoolVnd: 250_000, milestonePoolVnd: 0 }),
+    ])
+    expect(stateAfterBlockedApproval.teamRewardParticipants.every(({ status, amountVnd }) => (
+      status === 'PENDING' && amountVnd === 0
+    ))).toBe(true)
+    expect(stateAfterBlockedApproval.revenueBonusAllocations.every(({ milestonePoolVnd, amountVnd, percentagePoolVnd }) => (
+      milestonePoolVnd === 0 && amountVnd === percentagePoolVnd
+    ))).toBe(true)
+
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+      id: 'PAY-HOT-S02-2026-08', storeId: 'S02', period: '2026-08', status: 'Đã chốt',
+      confirmedAt: null, lockedAt: null, needsReclose: false,
+    }])
+
     const approved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
       payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
@@ -11535,6 +11780,12 @@ describe('IDOSI Worker security primitives', () => {
       approvedBody.revenueBonus.percentagePoolVnd + 250_000,
     )
     expect(approvedBody.allocations.reduce((sum, record) => sum + record.milestonePoolVnd, 0)).toBe(250_000)
+    expect(readHydratedState(env.DB.database).payrollPeriods).toEqual([
+      expect.objectContaining({
+        storeId: 'S02', period: '2026-08', needsReclose: true,
+        invalidationReason: 'revenue_bonus.approve_milestone',
+      }),
+    ])
     const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
       payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },

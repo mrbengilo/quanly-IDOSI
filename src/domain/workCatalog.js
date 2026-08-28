@@ -390,13 +390,21 @@ export const workCatalogProgressKey = ({
   employeeId,
   workDate,
   shiftRef,
+  storeId,
+  shiftId,
   catalogItemId,
-} = {}) => [
-  'work-catalog-progress:v1',
-  keySegment(employeeId, 'employeeId'),
-  calendarDate(workDate, 'workDate'),
-  keySegment(shiftRef, 'shiftRef'),
-  keySegment(catalogItemId, 'catalogItemId'),
-].join(':')
+} = {}) => {
+  const stableShiftOccurrence = storeId !== undefined || shiftId !== undefined
+  return [
+    stableShiftOccurrence ? 'work-catalog-progress:v2' : 'work-catalog-progress:v1',
+    keySegment(employeeId, 'employeeId'),
+    calendarDate(workDate, 'workDate'),
+    ...(stableShiftOccurrence ? [
+      keySegment(storeId, 'storeId'),
+      keySegment(shiftId || 'UNSPECIFIED', 'shiftId'),
+    ] : [keySegment(shiftRef, 'shiftRef')]),
+    keySegment(catalogItemId, 'catalogItemId'),
+  ].join(':')
+}
 
 export const workCatalogClaimKey = (input) => `work-catalog-claim:v1:${workCatalogProgressKey(input)}`
