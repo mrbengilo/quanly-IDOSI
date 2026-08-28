@@ -6048,6 +6048,150 @@ describe('IDOSI Worker security primitives', () => {
     expect(paidBody.payments.some(({ employeeId }) => employeeId === 'QL-A')).toBe(false)
   })
 
+  it('does not apply a newly promoted manager to payroll periods before the role effective month', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-28T10:00:00.000Z'))
+      const env = {
+        DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(),
+        BOOTSTRAP_TOKEN: 'bootstrap-manager-effective-period',
+      }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'manager-effective-period-password',
+        initialState: {
+          stores: [{ id: 'S01', name: 'Dosii Tô Ngọc Vân', short: 'TNV', status: 'Đang hoạt động' }],
+          employees: [], attendance: [], payrollPeriods: [], compensationEntries: [], expenseEntries: [],
+          orders: [{
+            id: 'ORDER-MANAGER-JULY', storeId: 'S01', amount: 1_020_000,
+            status: 'Hoàn tất', createdAt: '2026-07-20T03:00:00.000Z',
+          }, {
+            id: 'ORDER-MANAGER-AUGUST', storeId: 'S01', amount: 1_020_000,
+            status: 'Hoàn tất', createdAt: '2026-08-20T03:00:00.000Z',
+          }],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'manager-effective-period-password',
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+      const employeeCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.create', expectedVersion: 1, payload: {
+          unit: 'store', storeId: 'S01', name: 'Nhân viên được bổ nhiệm', phone: '0900000101',
+          cccd: '079000000101', address: 'TP. Hồ Chí Minh', startDate: '2026-07-01',
+          employmentType: 'Part-Time', hourlyRate: 25_000,
+          username: 'manager.effective.period', password: 'manager-effective-login-password',
+          identityImages: testIdentityImages(),
+        },
+      }, { ...authorization, 'idempotency-key': 'manager-effective-employee-create-0001' }), env)
+      expect(employeeCreated.status).toBe(201)
+      const employeeBody = await employeeCreated.json()
+
+      const julyClosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: employeeBody.version,
+        payload: { storeId: 'S01', period: '2026-07' },
+      }, { ...authorization, 'idempotency-key': 'manager-effective-july-close-0001' }), env)
+      expect(julyClosed.status).toBe(201)
+      const julyBody = await julyClosed.json()
+      expect(julyBody.period.managerRevenueBonus).toBeNull()
+
+      const promoted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.create', expectedVersion: julyBody.version,
+        payload: {
+          unit: 'store_manager', storeId: 'S01', linkedEmployeeId: employeeBody.employee.id,
+        },
+      }, { ...authorization, 'idempotency-key': 'manager-effective-promote-0001' }), env)
+      expect(promoted.status, JSON.stringify(await promoted.clone().json())).toBe(201)
+      const promotedBody = await promoted.json()
+      expect(promotedBody.employee).toMatchObject({
+        linkedEmployeeId: employeeBody.employee.id,
+        managerRoleStartedAt: '2026-08-28T10:00:00.000Z',
+      })
+      expect(readHydratedState(env.DB.database).payrollPeriods.find(({ period }) => period === '2026-07'))
+        .not.toMatchObject({ needsReclose: true })
+
+      const julyReclosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: promotedBody.version,
+        payload: { storeId: 'S01', period: '2026-07' },
+      }, { ...authorization, 'idempotency-key': 'manager-effective-july-reclose-0001' }), env)
+      expect(julyReclosed.status).toBe(200)
+      const julyReclosedBody = await julyReclosed.json()
+      expect(julyReclosedBody.period.managerRevenueBonus).toBeNull()
+
+      const augustClosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: julyReclosedBody.version,
+        payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...authorization, 'idempotency-key': 'manager-effective-august-close-0001' }), env)
+      expect(augustClosed.status).toBe(201)
+      expect(await augustClosed.json()).toMatchObject({
+        period: {
+          managerRevenueBonus: { managerProfileId: promotedBody.employee.id, bonusVnd: 20_000 },
+          managerPayable: { employeeId: employeeBody.employee.id, amountVnd: 20_000 },
+        },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('refreshes automatic manager bonus attribution when a linked proxy is replaced', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-linked-manager-fingerprint' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'linked-manager-fingerprint-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Dosii Linked Manager', status: 'Đang hoạt động' }],
+        employees: [{
+          id: 'E01', name: 'Nhân viên gốc', storeId: 'S01', unit: 'store',
+          status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 10_000,
+        }, {
+          id: 'QL-A', linkedEmployeeId: 'E01', name: 'Quản lý A', storeId: 'S01',
+          unit: 'store_manager', status: 'Đang làm việc',
+        }],
+        orders: [{
+          id: 'ORDER-LINKED-FINGERPRINT', storeId: 'S01', amount: 1_020_000,
+          status: 'Hoàn tất', createdAt: '2026-08-20T03:00:00.000Z',
+        }],
+        attendance: [], payrollPeriods: [], compensationEntries: [], expenseEntries: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'linked-manager-fingerprint-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const firstClose = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'linked-manager-fingerprint-close-a-0001' }), env)
+    expect(firstClose.status).toBe(201)
+    const firstBody = await firstClose.json()
+    expect(firstBody.period.managerRevenueBonus).toMatchObject({ managerId: 'E01', managerProfileId: 'QL-A' })
+
+    const firstState = readHydratedState(env.DB.database)
+    replaceStateCollection(env.DB.database, 'employees', [{
+      ...firstState.employees.find(({ id }) => id === 'E01'),
+    }, {
+      ...firstState.employees.find(({ id }) => id === 'QL-A'), status: 'Đã nghỉ việc',
+    }, {
+      id: 'QL-B', linkedEmployeeId: 'E01', name: 'Quản lý B', storeId: 'S01',
+      unit: 'store_manager', status: 'Đang làm việc',
+    }])
+
+    const reclosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.close', expectedVersion: firstBody.version,
+      payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'linked-manager-fingerprint-close-b-0001' }), env)
+    expect(reclosed.status).toBe(200)
+    const reclosedBody = await reclosed.json()
+    expect(reclosedBody.period).toMatchObject({
+      managerRevenueBonus: { managerId: 'E01', managerProfileId: 'QL-B' },
+      managerPayable: { employeeId: 'E01', managerProfileId: 'QL-B', amountVnd: 20_000 },
+    })
+    const automaticEntries = readHydratedState(env.DB.database).compensationEntries
+      .filter(({ sourceType }) => sourceType === 'manager-revenue-bonus')
+    expect(automaticEntries).toEqual([expect.objectContaining({
+      employeeId: 'E01', managerProfileId: 'QL-B', status: 'APPROVED', version: 2,
+    })])
+  })
+
   it('rejects manager revenue bonus calculation when legacy data has multiple active managers', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-manager-revenue-bonus-conflict' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
@@ -9173,6 +9317,108 @@ describe('IDOSI Worker security primitives', () => {
     expect(env.DB.database.prepare(
       "SELECT version FROM app_state WHERE scope_key = 'global'",
     ).get()).toEqual({ version: 1 })
+  })
+
+  it('preserves migrated employee aliases and disables the authUserId account when updated through a legacy alias', async () => {
+    const env = {
+      DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-migrated-employee-update',
+    }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'migrated-employee-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Dosii Tô Ngọc Vân', short: 'TNV' }],
+        employees: [], payrollPeriods: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'migrated-employee-admin-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1, payload: {
+        storeId: 'S01', name: 'Nhân viên migrated', phone: '0900000001', cccd: '079000000001',
+        address: 'TP. Hồ Chí Minh', startDate: '2026-08-01', employmentType: 'Part-Time', hourlyRate: 35_000,
+        username: 'employee.migrated', password: 'employee-migrated-password', identityImages: testIdentityImages(),
+      },
+    }, { ...authorization, 'idempotency-key': 'migrated-employee-create-0001' }), env)
+    expect(created.status).toBe(201)
+    const createdBody = await created.json()
+    const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'employee.migrated', password: 'employee-migrated-password',
+    }), env)
+    const employeeToken = (await employeeLogin.json()).token
+    const migratedIdentity = {
+      id: 'PROFILE-PRIMARY', code: createdBody.employee.id, employeeId: 'LEGACY-EMPLOYEE',
+      employeeCode: 'TNV-099', sourceEmployeeId: 'SOURCE-ALIAS', rootEmployeeId: 'ROOT-ALIAS',
+      originalEmployeeId: 'ORIGINAL-ALIAS',
+    }
+    replaceStateCollection(env.DB.database, 'employees', [{ ...createdBody.employee, ...migratedIdentity }])
+    env.DB.database.prepare('UPDATE users SET employee_id = ? WHERE id = ?')
+      .run('MIGRATED-ACCOUNT-ID', createdBody.user.id)
+
+    const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: createdBody.version,
+      payload: { employeeId: migratedIdentity.employeeId, status: 'Đã nghỉ việc' },
+    }, { ...authorization, 'idempotency-key': 'migrated-employee-update-0001' }), env)
+    expect(updated.status).toBe(200)
+    const updatedBody = await updated.json()
+    expect(updatedBody).toMatchObject({
+      employee: { ...migratedIdentity, status: 'Đã nghỉ việc' },
+      user: { id: createdBody.user.id, employeeId: 'MIGRATED-ACCOUNT-ID', status: 'inactive' },
+    })
+    expect((await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: { authorization: `Bearer ${employeeToken}` },
+    }), env)).status).toBe(401)
+    expect((await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'employee.migrated', password: 'employee-migrated-password',
+    }), env)).status).toBe(403)
+
+    const profileWithoutAuthUserId = { ...readHydratedState(env.DB.database).employees[0] }
+    delete profileWithoutAuthUserId.authUserId
+    replaceStateCollection(env.DB.database, 'employees', [profileWithoutAuthUserId])
+    env.DB.database.prepare('UPDATE users SET employee_id = ? WHERE id = ?')
+      .run(migratedIdentity.code, createdBody.user.id)
+    const deleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.delete', expectedVersion: updatedBody.version,
+      payload: { employeeCode: migratedIdentity.employeeCode },
+    }, { ...authorization, 'idempotency-key': 'migrated-employee-delete-0001' }), env)
+    expect(deleted.status).toBe(200)
+    expect(await deleted.json()).toMatchObject({
+      employee: migratedIdentity,
+      user: { id: createdBody.user.id, employeeId: migratedIdentity.code, status: 'inactive' },
+    })
+    const persisted = readHydratedState(env.DB.database)
+    expect(persisted.employees).toEqual([])
+    expect(persisted.deletedEmployees[0]).toMatchObject(migratedIdentity)
+  })
+
+  it('allocates after every active or retired direct employee alias', async () => {
+    const env = {
+      DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-retired-employee-alias',
+    }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'retired-alias-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Dosii Tô Ngọc Vân', short: 'TNV' }], employees: [],
+        deletedEmployees: [{
+          id: 'ARCHIVED-PROFILE', code: 'ARCHIVED-CODE', employeeId: 'DOSII-TNV-007', employeeCode: 'ARCHIVED-EMPLOYEE',
+          storeId: 'S01', unit: 'store', name: 'Nhân viên cũ', deletedAt: '2026-07-01T00:00:00.000Z',
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'retired-alias-admin-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.create', expectedVersion: 1, payload: {
+        storeId: 'S01', name: 'Nhân viên kế tiếp', phone: '0900000008', cccd: '079000000008',
+        address: 'TP. Hồ Chí Minh', startDate: '2026-08-01', employmentType: 'Part-Time', hourlyRate: 35_000,
+        username: 'employee.after.alias', password: 'employee-after-alias-password', identityImages: testIdentityImages(),
+      },
+    }, { ...authorization, 'idempotency-key': 'retired-employee-alias-create-0001' }), env)
+    expect(created.status).toBe(201)
+    expect(await created.json()).toMatchObject({ employee: { id: 'DOSII-TNV-008' } })
   })
 
   it('promotes an existing store employee to a dual store-manager role without manager salary', async () => {
@@ -13651,7 +13897,7 @@ describe('IDOSI Worker security primitives', () => {
     const homePayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'payroll.close', expectedVersion: currentVersion(), payload: { storeId: 'S01', period: '2026-08' },
     }, { ...adminAuthorization, 'idempotency-key': 'transferred-work-reward-home-payroll-0001' }), env)
-    expect(homePayroll.status).toBe(201)
+    expect(homePayroll.status, JSON.stringify(await homePayroll.clone().json())).toBe(201)
     const homePayrollBody = await homePayroll.json()
     expect(homePayrollBody).toMatchObject({
       period: {
@@ -14604,7 +14850,7 @@ describe('IDOSI Worker security primitives', () => {
       type: 'payroll.close', expectedVersion: approvedBody.version,
       payload: { storeId: 'S01', period: '2026-08' },
     }, { ...authorization, 'idempotency-key': 'revenue-deleted-profile-home-payroll-0001' }), env)
-    expect(homePayroll.status).toBe(201)
+    expect(homePayroll.status, JSON.stringify(await homePayroll.clone().json())).toBe(201)
     const homePayrollBody = await homePayroll.json()
     expect(homePayrollBody).toMatchObject({
       period: {

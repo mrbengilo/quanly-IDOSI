@@ -1702,6 +1702,25 @@ const employeeProfileLinkIdentifiers = (profile = {}) => [
   profile.originalEmployeeId,
 ].map((value) => String(value || '').trim()).filter(Boolean)
 
+const EMPLOYEE_DIRECT_IDENTITY_FIELDS = Object.freeze(['id', 'code', 'employeeId', 'employeeCode'])
+const EMPLOYEE_LINK_IDENTITY_FIELDS = Object.freeze([
+  'linkedEmployeeId', 'sourceEmployeeId', 'rootEmployeeId', 'originalEmployeeId',
+])
+
+const employeeProfileMatchesIdentifier = (profile, identifier) => {
+  const normalizedIdentifier = String(identifier || '').trim()
+  return Boolean(normalizedIdentifier) && employeeProfileIdentifiers(profile).includes(normalizedIdentifier)
+}
+
+const preservedEmployeeIdentityFields = (previous, defaults) => {
+  const preserved = { ...defaults }
+  if (!isPlainRecord(previous)) return preserved
+  for (const field of [...EMPLOYEE_DIRECT_IDENTITY_FIELDS, ...EMPLOYEE_LINK_IDENTITY_FIELDS]) {
+    if (Object.hasOwn(previous, field) && String(previous[field] || '').trim()) preserved[field] = previous[field]
+  }
+  return preserved
+}
+
 const employeeIdentityProfiles = (state) => [...new Set([
   ...(Array.isArray(state?.employees) ? state.employees : []),
   ...(Array.isArray(state?.deletedEmployees) ? state.deletedEmployees : []),
@@ -4881,8 +4900,10 @@ const nextEmployeeCode = (state, store, unit = null) => {
     ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
   ]
   const next = knownEmployees.reduce((maximum, employee) => {
-    const match = String(employee.id || employee.code || employee.employeeCode || '').toUpperCase().match(pattern)
-    return match ? Math.max(maximum, Number(match[1])) : maximum
+    return employeeProfileIdentifiers(employee).reduce((identifierMaximum, identifier) => {
+      const match = identifier.toUpperCase().match(pattern)
+      return match ? Math.max(identifierMaximum, Number(match[1])) : identifierMaximum
+    }, maximum)
   }, 0) + 1
   if (normalizedUnit === 'office') return `VP-${String(next).padStart(3, '0')}`
   if (normalizedUnit === 'business_support') return `HTKD-${String(next).padStart(3, '0')}`
@@ -5734,7 +5755,7 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
     })
   }
   const id = previous
-    ? String(previous.id || previous.code || previous.employeeCode || '')
+    ? employeeProfileIdentifier(previous)
     : nextEmployeeCode(state, store, unit)
   const name = payload.name === undefined && previous ? String(previous.name || '') : String(payload.name || '').trim().slice(0, 160)
   if (!name) throw new ApiError(400, 'EMPLOYEE_NAME_INVALID', 'Tên nhân viên không được để trống.')
@@ -5804,6 +5825,7 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
     isOfficeLike: true,
     ...workingTime,
     status: previous?.status || 'Đang làm việc',
+    ...preservedEmployeeIdentityFields(previous, { id, code: id, employeeCode: id }),
   })
   if (previous?.username) profile.username = previous.username
   return profile
@@ -5816,7 +5838,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
   }
   const officeLike = ['office', 'business_support', 'store_manager'].includes(normalizedUnit)
   const id = previous
-    ? String(previous.id || previous.code || previous.employeeCode || '')
+    ? employeeProfileIdentifier(previous)
     : String(['business_support', 'store_manager', 'office'].includes(normalizedUnit)
       ? nextEmployeeCode(state, store, normalizedUnit)
       : (payload.id || payload.code || payload.employeeCode || nextEmployeeCode(state, store, normalizedUnit))).trim().toUpperCase()
@@ -5967,6 +5989,7 @@ const normalizeEmployeeProfilePayload = (payload, previous, store, state, unit =
         : {}),
     } : {}),
     status: previous?.status || 'Đang làm việc',
+    ...preservedEmployeeIdentityFields(previous, { id, code: id, employeeCode: id }),
   })
   for (const key of [
     'password', 'passwordHash', 'legacyPassword', 'token', 'role',
@@ -6010,6 +6033,35 @@ const unpaidClosedPayrollTargetsForProfile = (state, storeId, effectiveDate = ''
     .map((record) => ({ storeId: String(storeId || ''), period: String(record.period || '') }))
 }
 
+const employeeAuthUserForProfile = async (db, profile, additionalIdentifiers = []) => {
+  const authUserId = String(profile?.authUserId || '').trim()
+  const employeeIdentifiers = [...new Set([
+    ...employeeProfileIdentifiers(profile),
+    ...(Array.isArray(additionalIdentifiers) ? additionalIdentifiers : []),
+  ].map((value) => String(value || '').trim()).filter(Boolean))]
+  const predicates = []
+  const bindings = []
+  if (authUserId) {
+    predicates.push('id = ?')
+    bindings.push(authUserId)
+  }
+  if (employeeIdentifiers.length) {
+    predicates.push(`employee_id IN (${employeeIdentifiers.map(() => '?').join(', ')})`)
+    bindings.push(...employeeIdentifiers)
+  }
+  if (!predicates.length) return null
+  const matches = await all(db, `SELECT * FROM users WHERE ${predicates.join(' OR ')}`, ...bindings)
+  const uniqueMatches = [...new Map(matches.map((user) => [String(user.id || ''), user])).values()]
+  if (uniqueMatches.length > 1) {
+    throw new ApiError(409, 'EMPLOYEE_AUTH_LINK_CONFLICT', 'Hồ sơ nhân viên đang liên kết nhiều tài khoản; cần xử lý dữ liệu trước khi tiếp tục.')
+  }
+  const match = uniqueMatches[0] || null
+  if (authUserId && (!match || String(match.id || '') !== authUserId)) {
+    throw new ApiError(409, 'EMPLOYEE_AUTH_LINK_INVALID', 'Liên kết tài khoản của hồ sơ nhân viên không còn hợp lệ.')
+  }
+  return match
+}
+
 const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   assertOperationsRole(actor, 'Tài khoản không có quyền quản lý hồ sơ nhân viên.')
   const operation = body.type.split('.').at(-1)
@@ -6024,14 +6076,16 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const employees = Array.isArray(state.employees) ? state.employees : []
   let employeeId = operation === 'create'
     ? String(profilePayload.id || profilePayload.code || profilePayload.employeeCode || '').trim().toUpperCase()
-    : String(payload.employeeId || profilePayload.id || profilePayload.code || '').trim()
+    : String(payload.employeeId || payload.employeeCode || profilePayload.id || profilePayload.code
+      || profilePayload.employeeId || profilePayload.employeeCode || '').trim()
   const previous = operation === 'create'
     ? null
-    : employees.find((employee) => String(employee.id || employee.code || '') === employeeId && !employee.deletedAt)
+    : employees.find((employee) => employeeProfileMatchesIdentifier(employee, employeeId) && !employee.deletedAt)
   if (operation !== 'create' && !previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
+  if (previous) employeeId = employeeProfileIdentifier(previous)
   if (operation === 'update') {
     const previousDirectIdentifiers = new Set(employeeProfileIdentifiers(previous))
-    for (const field of ['id', 'code', 'employeeId', 'employeeCode']) {
+    for (const field of EMPLOYEE_DIRECT_IDENTITY_FIELDS) {
       if (profilePayload[field] === undefined) continue
       const requestedIdentifier = String(profilePayload[field] || '').trim()
       const previousFieldIdentifier = String(previous[field] || '').trim()
@@ -6041,7 +6095,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         throw new ApiError(400, 'EMPLOYEE_IDENTITY_IMMUTABLE', 'Không thể thay đổi mã định danh của hồ sơ nhân viên.')
       }
     }
-    for (const field of ['linkedEmployeeId', 'sourceEmployeeId', 'rootEmployeeId', 'originalEmployeeId']) {
+    for (const field of EMPLOYEE_LINK_IDENTITY_FIELDS) {
       if (profilePayload[field] === undefined) continue
       if (String(profilePayload[field] || '').trim() !== String(previous[field] || '').trim()) {
         throw new ApiError(400, 'EMPLOYEE_IDENTITY_IMMUTABLE', 'Không thể thay đổi liên kết định danh của hồ sơ nhân viên.')
@@ -6060,7 +6114,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : ''
   const linkedStoreEmployee = linkedEmployeeId
     ? employees.find((employee) => (
-        String(employee.id || employee.code || '') === linkedEmployeeId
+        employeeProfileMatchesIdentifier(employee, linkedEmployeeId)
         && (unit === 'store_manager'
           ? ['store', 'business_support'].includes(employeeUnit(employee))
           : ['business_support', 'office'].includes(employeeUnit(employee)))
@@ -6174,12 +6228,20 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
 
   if (operation === 'delete') {
     const linkedRoleProfile = Boolean(previous.linkedEmployeeId && ['store_manager', 'store'].includes(unit))
+    const deletingActiveManager = resolveExactlyOneActiveStoreManager({
+      storeId: String(previous.storeId || ''),
+      managers: [previous],
+    }).ok
     const authEmployeeId = linkedRoleProfile ? String(previous.linkedEmployeeId) : employeeId
-    const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', authEmployeeId)
-    const nextAuthVersion = authTarget ? Number(authTarget.version || 1) + 1 : null
     const linkedSource = linkedRoleProfile
-      ? employees.find((employee) => String(employee.id || employee.code || '') === authEmployeeId && !employee.deletedAt)
+      ? employees.find((employee) => employeeProfileMatchesIdentifier(employee, authEmployeeId) && !employee.deletedAt)
       : null
+    const authTarget = await employeeAuthUserForProfile(
+      db,
+      previous,
+      linkedRoleProfile ? employeeProfileIdentifiers(linkedSource) : [],
+    )
+    const nextAuthVersion = authTarget ? Number(authTarget.version || 1) + 1 : null
     const restoredRole = employeeUnit(linkedSource) === 'business_support' ? 'business_support' : 'employee'
     const restoredStoreId = restoredRole === 'business_support'
       ? BUSINESS_SUPPORT_STORE_ID
@@ -6188,6 +6250,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     const deleted = {
       ...profileWithoutIdentityImages,
       ...(authTarget ? { authUserId: authTarget.id, authVersion: nextAuthVersion } : {}),
+      ...(deletingActiveManager ? { managerRoleEndedAt: commandContext.now } : {}),
       status: 'Đã nghỉ việc',
       deletedAt: commandContext.now,
       deletedBy: serverActorSnapshot(actor),
@@ -6195,12 +6258,16 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     const payrollTargets = unpaidClosedPayrollTargetsForProfile(
       state,
       String(previous.storeId || ''),
-      previous.startDate || previous.joinDate,
+      deletingActiveManager
+        ? (previous.managerRoleStartedAt || previous.createdAt || commandContext.now)
+        : (previous.startDate || previous.joinDate),
     )
     const nextState = {
       ...state,
-      employees: employees.filter((employee) => String(employee.id || employee.code || '') !== employeeId),
-      schedule: (Array.isArray(state.schedule) ? state.schedule : []).filter((entry) => !belongsToEmployee(entry, employeeId)),
+      employees: employees.filter((employee) => employee !== previous),
+      schedule: (Array.isArray(state.schedule) ? state.schedule : []).filter((entry) => (
+        !employeeProfileIdentifiers(previous).some((identifier) => belongsToEmployee(entry, identifier))
+      )),
       deletedEmployees: [deleted, ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : [])],
       payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
@@ -6219,7 +6286,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         linkedRoleProfile ? 'active' : 'inactive',
         linkedRoleProfile ? (authTarget.role === 'store_manager' ? restoredRole : authTarget.role) : authTarget.role,
         linkedRoleProfile ? (authTarget.role === 'store_manager' ? restoredStoreId : authTarget.store_id) : authTarget.store_id,
-        linkedRoleProfile ? authEmployeeId : authTarget.employee_id,
+        authTarget.employee_id,
         nextAuthVersion,
         commandContext.now,
         authTarget.id,
@@ -6256,7 +6323,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
             status: linkedRoleProfile ? 'active' : 'inactive',
             role: linkedRoleProfile && authTarget.role === 'store_manager' ? restoredRole : authTarget.role,
             storeId: linkedRoleProfile && authTarget.role === 'store_manager' ? restoredStoreId : authTarget.store_id,
-            employeeId: linkedRoleProfile ? authEmployeeId : authTarget.employee_id,
+            employeeId: authTarget.employee_id,
             version: nextAuthVersion,
           },
         } : {}),
@@ -6292,7 +6359,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (operation === 'update') {
     // Flat payloads historically use one of these fields only to locate the
     // profile. Never spread that routing key back into another identity slot.
-    for (const field of ['id', 'code', 'employeeId', 'employeeCode']) delete profileInput[field]
+    for (const field of EMPLOYEE_DIRECT_IDENTITY_FIELDS) delete profileInput[field]
   }
   if (creatingStoreEmployee) {
     for (const field of ['employeeId', 'id', 'code', 'employeeCode']) delete profileInput[field]
@@ -6338,13 +6405,21 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const previousWasActiveManager = previous
     ? resolveExactlyOneActiveStoreManager({ storeId, managers: [previous] }).ok
     : false
-  const introducesActiveManager = !previousWasActiveManager
-    && resolveExactlyOneActiveStoreManager({ storeId, managers: [profile] }).ok
+  const profileIsActiveManager = resolveExactlyOneActiveStoreManager({ storeId, managers: [profile] }).ok
+  const introducesActiveManager = !previousWasActiveManager && profileIsActiveManager
+  const removesActiveManager = previousWasActiveManager && !profileIsActiveManager
+  if (introducesActiveManager) {
+    profile.managerRoleStartedAt = previous?.managerRoleStartedAt || commandContext.now
+    delete profile.managerRoleEndedAt
+  } else if (removesActiveManager) {
+    profile.managerRoleStartedAt = previous?.managerRoleStartedAt || previous?.createdAt || commandContext.now
+    profile.managerRoleEndedAt = commandContext.now
+  }
   if (introducesActiveManager) {
     const managerResolution = resolveExactlyOneActiveStoreManager({
       storeId,
       managers: [
-        ...employees.filter((employee) => String(employee.id || employee.code || '') !== String(previous?.id || previous?.code || '')),
+        ...employees.filter((employee) => employee !== previous),
         ...(Array.isArray(state.managerAccounts) ? state.managerAccounts : []),
         profile,
       ],
@@ -6357,11 +6432,11 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     if (employeeId && employeeId !== profile.id) {
       throw new ApiError(400, 'EMPLOYEE_ID_INVALID', 'Mã nhân viên gửi lên không khớp mã được tạo.')
     }
-    if (employees.some((employee) => String(employee.id || employee.code || '') === profile.id)) {
+    if (employees.some((employee) => employeeProfileMatchesIdentifier(employee, profile.id))) {
       throw new ApiError(409, 'EMPLOYEE_EXISTS', 'Mã nhân viên đã tồn tại.')
     }
     if ((Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []).some((employee) => (
-      String(employee.id || employee.code || employee.employeeCode || '') === profile.id
+      employeeProfileMatchesIdentifier(employee, profile.id)
     ))) {
       throw new ApiError(409, 'EMPLOYEE_ID_RETIRED', 'Mã nhân viên đã được sử dụng và không thể cấp lại.')
     }
@@ -6383,7 +6458,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
 
   if (operation === 'create') {
     if (linkedStoreEmployee) {
-      const linkedTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', linkedEmployeeId)
+      const linkedTarget = await employeeAuthUserForProfile(db, linkedStoreEmployee)
       if (!linkedTarget || !['employee', 'business_support', 'store_manager'].includes(linkedTarget.role)) {
         throw new ApiError(409, 'LINKED_EMPLOYEE_ACCOUNT_REQUIRED', 'Hồ sơ được chọn phải có tài khoản đăng nhập đang hoạt động.')
       }
@@ -6401,7 +6476,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       saved.linkedEmployeeId = linkedEmployeeId
       stateGuard = {
         sql: 'SELECT 1 FROM users WHERE id = ? AND version = ? AND employee_id = ?',
-        bindings: [linkedTarget.id, currentAuthVersion, linkedEmployeeId],
+        bindings: [linkedTarget.id, currentAuthVersion, linkedTarget.employee_id],
       }
     } else {
     if (requestedAuthUserId && !['business_support', 'store_manager', 'office'].includes(unit)) {
@@ -6554,8 +6629,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   }
 
   if (operation === 'update' && !previous?.linkedEmployeeId) {
-    const authEmployeeId = saved.id
-    const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', authEmployeeId)
+    const authTarget = await employeeAuthUserForProfile(db, previous)
     if (authTarget) {
       if (authTarget.role !== expectedAuthRole) {
         throw new ApiError(409, 'EMPLOYEE_ROLE_MISMATCH', 'Vai trò tài khoản không khớp nhóm hồ sơ nhân viên.')
@@ -6709,13 +6783,15 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   }
   const nextEmployees = operation === 'create'
     ? [saved, ...employees]
-    : employees.map((employee) => String(employee.id || employee.code || '') === employeeId ? saved : employee)
+    : employees.map((employee) => employee === previous ? saved : employee)
   const payrollTargets = []
   if (operation === 'create') {
     payrollTargets.push(...unpaidClosedPayrollTargetsForProfile(
       state,
       storeId,
-      saved.startDate || saved.joinDate,
+      introducesActiveManager
+        ? (saved.managerRoleStartedAt || commandContext.now)
+        : (saved.startDate || saved.joinDate),
     ))
   }
   if (operation === 'update') {
@@ -6745,6 +6821,13 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     ))
     if (compensationChanged) {
       const currentPeriod = localDateTimeParts(commandContext.now).date.slice(0, 7)
+      const managerRoleBoundaryPeriod = (introducesActiveManager || removesActiveManager)
+        ? String(
+            introducesActiveManager
+              ? saved.managerRoleStartedAt
+              : (previous?.managerRoleStartedAt || previous?.createdAt || commandContext.now),
+          ).slice(0, 7)
+        : ''
       if (unit === 'store' && isSecondMallSm234Store(store)) {
         assertPayrollNotPaidOrLocked(state, storeId, currentPeriod)
       }
@@ -6752,7 +6835,8 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         if (String(period.storeId || '') !== storeId
           || period.status !== 'Đã chốt'
           || period.confirmedAt
-          || period.lockedAt) continue
+          || period.lockedAt
+          || (managerRoleBoundaryPeriod && String(period.period || '') < managerRoleBoundaryPeriod)) continue
         payrollTargets.push({ storeId, period: String(period.period || '') })
       }
     }
@@ -9640,14 +9724,71 @@ const connectedManagerIdentity = (state, manager, resolvedManagerId, storeId) =>
   }
 }
 
-const managerRevenueBonusFor = (state, storeId, period, profitBeforeManagerCompensationVnd) => {
-  const resolution = resolveExactlyOneActiveStoreManager({
-    storeId,
-    managers: [
-      ...(Array.isArray(state.employees) ? state.employees : []),
-      ...(Array.isArray(state.managerAccounts) ? state.managerAccounts : []),
-    ],
+const managerProfileEligibleForPayrollPeriod = (profile, storeId, period) => {
+  if (!isPlainRecord(profile) || !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(String(period || ''))) return false
+  const synthetic = {
+    ...profile,
+    active: true,
+    isActive: true,
+    enabled: true,
+    status: 'Đang làm việc',
+    deletedAt: null,
+  }
+  if (!resolveExactlyOneActiveStoreManager({ storeId, managers: [synthetic] }).ok) return false
+  const [year, month] = period.split('-').map(Number)
+  const periodStart = `${period}-01`
+  const periodEnd = `${period}-${String(new Date(Date.UTC(year, month, 0)).getUTCDate()).padStart(2, '0')}`
+  const explicitRoleStartedAt = String(
+    profile.managerRoleStartedAt
+    || profile.managerEffectiveAt
+    || profile.roleEffectiveAt
+    || profile.createdAt
+    || '',
+  ).slice(0, 10)
+  const roleStartedAt = explicitRoleStartedAt || (activeEmployeeIdentityProfile(profile)
+    ? String(profile.startDate || profile.joinDate || '').slice(0, 10)
+    : '')
+  const roleEndedAt = String(
+    profile.managerRoleEndedAt
+    || profile.managerEffectiveUntil
+    || profile.deletedAt
+    || (!activeEmployeeIdentityProfile(profile) ? profile.updatedAt : '')
+    || '',
+  ).slice(0, 10)
+  // An inactive legacy row without an effective end is not reliable history;
+  // keep the active representation authoritative instead of double-counting it.
+  if (!activeEmployeeIdentityProfile(profile) && (!explicitRoleStartedAt || !roleEndedAt)) return false
+  return (!roleStartedAt || roleStartedAt <= periodEnd)
+    && (!roleEndedAt || roleEndedAt >= periodStart)
+}
+
+const resolveStoreManagerForPayrollPeriod = (state, storeId, period) => {
+  const candidates = [
+    ...(Array.isArray(state.employees) ? state.employees : []),
+    ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
+    ...(Array.isArray(state.managerAccounts) ? state.managerAccounts : []),
+  ].filter((profile) => managerProfileEligibleForPayrollPeriod(profile, storeId, period))
+  const originalsBySynthetic = new Map()
+  const syntheticCandidates = candidates.map((profile) => {
+    const synthetic = {
+      ...profile,
+      active: true,
+      isActive: true,
+      enabled: true,
+      status: 'Đang làm việc',
+      deletedAt: null,
+    }
+    originalsBySynthetic.set(synthetic, profile)
+    return synthetic
   })
+  const resolution = resolveExactlyOneActiveStoreManager({ storeId, managers: syntheticCandidates })
+  return resolution.ok
+    ? { ...resolution, manager: originalsBySynthetic.get(resolution.manager) || resolution.manager }
+    : resolution
+}
+
+const managerRevenueBonusFor = (state, storeId, period, profitBeforeManagerCompensationVnd) => {
+  const resolution = resolveStoreManagerForPayrollPeriod(state, storeId, period)
   if (!resolution.ok) {
     if (resolution.code === 'STORE_MANAGER_MULTIPLE_ACTIVE') {
       throw new ApiError(409, resolution.code, 'Cửa hàng có nhiều Quản lý cửa hàng đang hoạt động; không thể tính thưởng doanh thu.', {
@@ -16850,6 +16991,7 @@ const upsertManagerRevenueBonusEntry = (state, managerRevenueBonus, actorSnapsho
   const calculationFingerprint = managerRevenueBonus ? JSON.stringify(canonicalize({
     formulaVersion: managerRevenueBonus.formulaVersion,
     managerId: managerRevenueBonus.managerId,
+    managerProfileId: managerRevenueBonus.managerProfileId,
     profitBeforeManagerBonusVnd: managerRevenueBonus.profitBeforeManagerBonusVnd,
     managerCompensationVnd: managerRevenueBonus.managerCompensationVnd,
     bonusVnd: managerRevenueBonus.bonusVnd,
