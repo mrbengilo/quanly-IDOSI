@@ -400,3 +400,5 @@ export const workCatalogProgressKey = ({
 ].join(':')
 
 export const workCatalogClaimKey = (input) => `work-catalog-claim:v1:${workCatalogProgressKey(input)}`
+
+export const workCatalogViolationKey = (input) => `work-catalog-violation:v1:${workCatalogProgressKey(input)}`

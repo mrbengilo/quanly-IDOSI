@@ -2,6 +2,7 @@ import {
   validateStoreChecklistCheckout,
 } from '../src/domain/storeShiftChecklist.js'
 import {
+  DEFAULT_STAFF_WORK_CATALOG_ITEMS,
   REVENUE_BONUS_PROGRAM_IDS,
   TEAM_MILESTONE_PROGRAM_IDS,
   WORKBOOK_COMPENSATION_POLICY,
@@ -34,6 +35,9 @@ import {
   normalizeWorkCatalogItem,
   snapshotActiveWorkCatalogItems,
   softDeleteWorkCatalogItem,
+  workCatalogClaimKey,
+  workCatalogProgressKey,
+  workCatalogViolationKey,
 } from '../src/domain/workCatalog.js'
 
 const API_PREFIX = '/api/'
@@ -625,6 +629,7 @@ const BUSINESS_SUPPORT_SELF_SERVICE_COMMANDS = new Set([
   'notification.clear',
   'notification.clear_all',
   'task.progress.save',
+  'work_reward.set',
   'user.change_password',
 ])
 const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
@@ -680,6 +685,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'compensation_entry.approve',
   'compensation_entry.void',
   'violation.create',
+  'violation.create_batch',
   'violation.void',
   'revenue_bonus.calculate_day',
   'revenue_bonus.approve_milestone',
@@ -1262,6 +1268,20 @@ const normalizeSharedStateForStorage = (value) => {
   }
   for (const key of COMPENSATION_STATE_COLLECTIONS) {
     if (!Array.isArray(state[key])) state[key] = []
+  }
+  if (Number(state.staffWorkCatalogSeedVersion || 0) < 1) {
+    const knownCodes = new Set(state.workCatalogItems
+      .map((item) => String(item?.code || '').trim().toLocaleLowerCase('en-US'))
+      .filter(Boolean))
+    const missingDefaults = []
+    for (const item of DEFAULT_STAFF_WORK_CATALOG_ITEMS) {
+      const code = String(item?.code || '').trim().toLocaleLowerCase('en-US')
+      if (!code || knownCodes.has(code)) continue
+      knownCodes.add(code)
+      missingDefaults.push({ ...item })
+    }
+    state.workCatalogItems = [...state.workCatalogItems, ...missingDefaults]
+    state.staffWorkCatalogSeedVersion = 1
   }
   if (Array.isArray(state.payrollPeriods)) {
     state.payrollPeriods = state.payrollPeriods.map(withoutRetiredKpiFields)
@@ -9445,7 +9465,43 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     }
   }
 
-  const date = optionalCalendarDate(payload.date ?? payload.workDate ?? dateFromRecord(previous), 'Ngày chấm công')
+  const submittedDateEntries = ['date', 'workDate', 'attendanceDate']
+    .filter((field) => payload[field] !== undefined)
+    .map((field) => [field, optionalCalendarDate(payload[field], 'Ngày chấm công')])
+  const distinctSubmittedDates = [...new Set(submittedDateEntries.map(([, value]) => value))]
+  if (distinctSubmittedDates.length > 1) {
+    throw new ApiError(400, 'ATTENDANCE_DATE_CONFLICT', 'Các trường ngày chấm công phải có cùng giá trị.')
+  }
+  const previousDate = optionalCalendarDate(dateFromRecord(previous), 'Ngày chấm công hiện tại')
+  const date = distinctSubmittedDates[0] || previousDate
+  const linkedCollections = []
+  const linkedProgress = (Array.isArray(state.workCatalogProgress) ? state.workCatalogProgress : [])
+    .some((record) => String(record.attendanceId || '') === attendanceId)
+  const linkedWorkReward = (Array.isArray(state.compensationEntries) ? state.compensationEntries : [])
+    .some((record) => (
+      String(record.attendanceId || '') === attendanceId
+      && (String(record.sourceType || '') === 'work-catalog-claim'
+        || (String(record.type || '').toUpperCase() === 'WORK' && Boolean(record.catalogItemId)))
+    ))
+  const linkedViolation = (Array.isArray(state.violations) ? state.violations : [])
+    .some((record) => String(record.attendanceId || '') === attendanceId)
+  if (linkedProgress) linkedCollections.push('workCatalogProgress')
+  if (linkedWorkReward) linkedCollections.push('compensationEntries')
+  if (linkedViolation) linkedCollections.push('violations')
+  const linkedDateMutation = linkedCollections.length && (
+    date !== previousDate
+    || submittedDateEntries.some(([field, value]) => (
+      value && value !== String(previous[field] || previousDate)
+    ))
+  )
+  if (linkedDateMutation) {
+    throw new ApiError(
+      409,
+      'ATTENDANCE_DATE_LINKED_COMPENSATION',
+      'Không thể đổi ngày chấm công đã liên kết thưởng hoặc vi phạm; các nội dung khác vẫn có thể chỉnh sửa.',
+      { attendanceId, linkedCollections },
+    )
+  }
   const checkIn = parseShiftTime(payload.checkIn ?? payload.checkInTime ?? previous.checkIn ?? previous.checkInTime)
   if (!checkIn) throw new ApiError(400, 'ATTENDANCE_TIME_INVALID', 'Giờ vào phải theo định dạng 24 giờ HH:mm.')
   const previousCheckOut = previous.checkOut ?? previous.checkOutTime
@@ -9523,9 +9579,11 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
         : (shiftEnd && checkOut.minuteOfDay < shiftEnd.minuteOfDay ? 'Về sớm' : 'Đã ra về'))
   const nextBase = {
     ...previous,
-    date,
-    workDate: date,
-    attendanceDate: date,
+    ...(linkedCollections.length ? {
+      ...(Object.hasOwn(previous, 'date') ? { date: previous.date } : {}),
+      ...(Object.hasOwn(previous, 'workDate') ? { workDate: previous.workDate } : {}),
+      ...(Object.hasOwn(previous, 'attendanceDate') ? { attendanceDate: previous.attendanceDate } : {}),
+    } : { date, workDate: date, attendanceDate: date }),
     checkIn: checkIn.label,
     checkInTime: checkIn.label,
     checkInAt,
@@ -13714,6 +13772,23 @@ const normalizeWorkCatalogPayload = (payload, previous, actorSnapshot, now) => {
   }
 }
 
+const assertWorkCatalogScopeAccess = (state, actor, item) => {
+  const targetGroup = String(item?.targetGroup || '').trim()
+  const storeId = String(item?.storeId || '').trim()
+  if (actor.role === 'business_support'
+    && (targetGroup !== WORK_CATALOG_TARGET.STORE || !storeId)) {
+    throw new ApiError(
+      403,
+      'WORK_CATALOG_SCOPE_FORBIDDEN',
+      'Nhân viên hỗ trợ KD chỉ được quản lý danh mục của một cửa hàng vật lý cụ thể.',
+    )
+  }
+  if (targetGroup === WORK_CATALOG_TARGET.STORE && storeId) {
+    assertOperationalStoreAccess(actor, storeId)
+    requireActivePhysicalStore(state, storeId)
+  }
+}
+
 const workCatalogCommand = async (db, actor, body, commandContext) => {
   assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý danh mục công việc và vi phạm.')
   const operation = String(body.type || '').split('.').at(-1)
@@ -13727,10 +13802,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
 
   if (operation === 'create') {
     const item = normalizeWorkCatalogPayload(payload, null, actorSnapshot, commandContext.now)
-    if (item.targetGroup === WORK_CATALOG_TARGET.STORE && item.storeId) {
-      assertOperationalStoreAccess(actor, item.storeId)
-      requireActivePhysicalStore(state, item.storeId)
-    }
+    assertWorkCatalogScopeAccess(state, actor, item)
     if (records.some((record) => String(record.id || '') === item.id
       || (String(record.targetGroup || '') === item.targetGroup
         && String(record.kind || '') === item.kind
@@ -13758,10 +13830,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
   const previous = records.find((record) => String(record.id || '') === itemId)
   if (!previous) throw new ApiError(404, 'WORK_CATALOG_NOT_FOUND', 'Không tìm thấy mục công việc hoặc vi phạm.')
   expectedEntityVersion(payload, previous)
-  if (String(previous.targetGroup || '') === WORK_CATALOG_TARGET.STORE && previous.storeId) {
-    assertOperationalStoreAccess(actor, previous.storeId)
-    requireActivePhysicalStore(state, previous.storeId)
-  }
+  assertWorkCatalogScopeAccess(state, actor, previous)
 
   let next
   if (operation === 'delete') {
@@ -13811,6 +13880,8 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
     }, previous, actorSnapshot, commandContext.now)
   }
 
+  assertWorkCatalogScopeAccess(state, actor, next)
+
   const nextState = {
     ...state,
     workCatalogItems: records.map((record) => String(record.id || '') === itemId ? next : record),
@@ -13834,14 +13905,562 @@ const canonicalViolationPolicy = (targetUnit, policyCode) => {
   return policySet?.violations?.find((record) => record.code === policyCode) || null
 }
 
+const rewardCatalogSnapshotForAttendance = (attendance, requestedCatalogItemId) => {
+  const catalogItemId = String(requestedCatalogItemId || '').trim()
+  if (!catalogItemId) throw new ApiError(400, 'WORK_REWARD_CATALOG_REQUIRED', 'Cần chọn công việc tính thưởng.')
+  const checklistTasks = Array.isArray(attendance?.checklistSnapshot?.tasks)
+    ? attendance.checklistSnapshot.tasks
+    : []
+  const task = checklistTasks.find((record) => String(
+    record?.catalogItemId || record?.checklistTaskId || record?.id || '',
+  ) === catalogItemId)
+  if (!task) {
+    throw new ApiError(400, 'WORK_REWARD_CATALOG_INVALID', 'Công việc không thuộc danh mục đã chốt cho ca làm việc này.')
+  }
+  const embedded = isPlainRecord(task.catalogSnapshot) ? task.catalogSnapshot : {}
+  const kind = String(task.kind || task.catalogKind || embedded.kind || '').trim().toUpperCase()
+  if (kind !== WORK_CATALOG_KIND.REWARD_TASK) {
+    throw new ApiError(400, 'WORK_REWARD_CATALOG_INVALID', 'Chỉ công việc tính thưởng mới được ghi nhận thưởng.')
+  }
+  const amountVnd = asVnd(task.amountVnd ?? embedded.amountVnd, 'Số tiền thưởng', { positive: true })
+  const name = String(task.name || task.title || task.description || embedded.name || '').trim()
+  if (!name) throw new ApiError(409, 'WORK_REWARD_SNAPSHOT_INVALID', 'Snapshot công việc tính thưởng thiếu tên công việc.')
+  const catalogVersion = Number(task.catalogVersion ?? task.version ?? embedded.catalogVersion ?? embedded.version ?? 1)
+  if (!Number.isSafeInteger(catalogVersion) || catalogVersion < 1) {
+    throw new ApiError(409, 'WORK_REWARD_SNAPSHOT_INVALID', 'Snapshot công việc tính thưởng có phiên bản không hợp lệ.')
+  }
+  return {
+    id: catalogItemId,
+    code: String(task.catalogCode || embedded.catalogCode || embedded.code || catalogItemId).trim(),
+    version: catalogVersion,
+    kind,
+    targetGroup: String(
+      task.targetGroup || embedded.targetGroup || attendance?.checklistSnapshot?.targetGroup || '',
+    ).trim(),
+    name,
+    amountVnd,
+    effectiveDate: String(task.effectiveDate || embedded.effectiveDate || dateFromRecord(attendance)).trim(),
+  }
+}
+
+const workRewardCommand = async (db, actor, body, commandContext) => {
+  if (body.type !== 'work_reward.set') {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh công việc tính thưởng không được hỗ trợ.')
+  }
+  if (!['employee', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được tự ghi nhận công việc tính thưởng của mình.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  if (typeof payload.checked !== 'boolean') {
+    throw new ApiError(400, 'WORK_REWARD_CHECKED_INVALID', 'Trạng thái công việc tính thưởng phải là true hoặc false.')
+  }
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const actorEmployeeId = String(actor.employee_id || actor.user_id || '').trim()
+  const employee = compensationEmployee(state, actorEmployeeId)
+  const employeeId = String(employee.id || employee.code || employee.employeeId)
+  const targetUnit = employeeUnit(employee)
+  if (!['office', 'business_support'].includes(targetUnit)
+    || (targetUnit === 'business_support') !== (actor.role === 'business_support')) {
+    throw new ApiError(403, 'WORK_REWARD_UNIT_FORBIDDEN', 'Tài khoản không thuộc Khối văn phòng hoặc Nhân viên hỗ trợ KD phù hợp.')
+  }
+  const attendanceId = String(payload.attendanceId || '').trim()
+  if (!attendanceId) throw new ApiError(400, 'ATTENDANCE_REQUIRED', 'Cần chọn ca chấm công để ghi nhận thưởng.')
+  const attendance = (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
+    !record.deletedAt
+    && String(record.id || '') === attendanceId
+    && belongsToEmployee(record, employeeId)
+  ))
+  if (!attendance) throw new ApiError(404, 'ATTENDANCE_NOT_FOUND', 'Không tìm thấy ca chấm công của nhân viên.')
+  if (attendance.checkOutAt || attendance.checkOut) {
+    throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Chỉ được thay đổi công việc tính thưởng khi ca chấm công còn mở.')
+  }
+  const workDate = compensationDate(dateFromRecord(attendance), 'Ngày làm việc')
+  const catalogSnapshot = rewardCatalogSnapshotForAttendance(attendance, payload.catalogItemId)
+  if (catalogSnapshot.targetGroup && catalogSnapshot.targetGroup !== targetUnit) {
+    throw new ApiError(409, 'WORK_REWARD_UNIT_MISMATCH', 'Công việc tính thưởng không thuộc nhóm nhân viên hiện tại.')
+  }
+  const storeId = targetUnit === 'office' ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID
+  const period = workDate.slice(0, 7)
+  assertPayrollNotPaidOrLocked(state, storeId, period)
+  let progressId
+  let entryId
+  try {
+    const identity = {
+      employeeId,
+      workDate,
+      shiftRef: attendanceId,
+      catalogItemId: catalogSnapshot.id,
+    }
+    progressId = workCatalogProgressKey(identity)
+    entryId = workCatalogClaimKey(identity)
+  } catch (error) {
+    throw new ApiError(409, 'WORK_REWARD_IDENTITY_INVALID', 'Không thể tạo định danh ổn định cho lần nhận thưởng.', {
+      reason: error instanceof Error ? error.message : String(error),
+    })
+  }
+  const progressRecords = Array.isArray(state.workCatalogProgress) ? state.workCatalogProgress : []
+  const compensationEntries = Array.isArray(state.compensationEntries) ? state.compensationEntries : []
+  const previous = progressRecords.find((record) => String(record.id || '') === progressId) || null
+  const previousEntry = compensationEntries.find((record) => String(record.id || '') === entryId) || null
+  if (previous) {
+    expectedEntityVersion({
+      expectedVersion: payload.expectedEntityVersion ?? payload.expectedVersion,
+    }, previous)
+  }
+  const entryActive = Boolean(previousEntry
+    && !previousEntry.deletedAt
+    && !previousEntry.voidedAt
+    && normalizeTextKey(previousEntry.status) === 'approved')
+  const alreadyChecked = previous?.checked === true && entryActive
+  const alreadyUnchecked = !previous?.checked
+    && (!previousEntry || previousEntry.voidedAt || normalizeTextKey(previousEntry.status) === 'void')
+  if ((payload.checked && alreadyChecked)
+    || (!payload.checked && !previous && !previousEntry)
+    || (!payload.checked && previous && alreadyUnchecked)) {
+    return recordNoopCommand(db, actor, {
+      command: body.type,
+      version: Number(current.version),
+      checked: payload.checked,
+      reward: previous,
+      entry: previousEntry,
+      existing: true,
+    }, 200, commandContext)
+  }
+  const actorSnapshot = serverActorSnapshot(actor)
+  const employeeName = employee.name || employee.displayName || employeeId
+  const shiftId = String(attendance.shiftId || attendance.shift || '').trim()
+  const nextProgressVersion = Number(previous?.version || 0) + 1
+  const reward = {
+    ...(previous || {}),
+    id: progressId,
+    occurrenceKey: progressId,
+    employeeId,
+    employeeName,
+    targetGroup: targetUnit,
+    storeId,
+    attendanceId,
+    workDate,
+    period,
+    shiftId,
+    shiftName: String(attendance.shiftName || shiftId).trim(),
+    shiftStart: attendance.shiftStart || null,
+    shiftEnd: attendance.shiftEnd || null,
+    shiftVersion: Number(attendance.shiftVersion || 1),
+    shiftSource: attendance.shiftSource || 'attendance-snapshot',
+    employmentTypeSnapshot: attendance.employmentTypeSnapshot || employee.employmentType || null,
+    catalogItemId: catalogSnapshot.id,
+    catalogCode: catalogSnapshot.code,
+    catalogVersion: catalogSnapshot.version,
+    catalogSnapshot,
+    amountVnd: catalogSnapshot.amountVnd,
+    checked: payload.checked,
+    status: payload.checked ? 'CLAIMED' : 'VOID',
+    compensationEntryId: entryId,
+    version: nextProgressVersion,
+    createdAt: previous?.createdAt || commandContext.now,
+    createdBy: previous?.createdBy || actorSnapshot,
+    updatedAt: commandContext.now,
+    updatedBy: actorSnapshot,
+    claimedAt: payload.checked ? commandContext.now : previous?.claimedAt || null,
+    claimedBy: payload.checked ? actorSnapshot : previous?.claimedBy || actorSnapshot,
+    voidedAt: payload.checked ? null : commandContext.now,
+    voidedBy: payload.checked ? null : actorSnapshot,
+    deletedAt: null,
+  }
+  const systemSnapshot = { id: 'SYSTEM', name: 'Hệ thống', role: 'system' }
+  const entry = {
+    ...(previousEntry || {}),
+    id: entryId,
+    type: 'WORK',
+    targetUnit,
+    employeeId,
+    employeeName,
+    storeId,
+    amountVnd: catalogSnapshot.amountVnd,
+    effectiveDate: workDate,
+    period,
+    note: catalogSnapshot.name,
+    status: payload.checked ? 'APPROVED' : 'VOID',
+    sourceType: 'work-catalog-claim',
+    sourceId: progressId,
+    attendanceId,
+    workDate,
+    shiftId,
+    shiftName: reward.shiftName,
+    employmentTypeSnapshot: reward.employmentTypeSnapshot,
+    catalogItemId: catalogSnapshot.id,
+    catalogCode: catalogSnapshot.code,
+    catalogVersion: catalogSnapshot.version,
+    catalogSnapshot,
+    version: Number(previousEntry?.version || 0) + 1,
+    createdAt: previousEntry?.createdAt || commandContext.now,
+    createdBy: previousEntry?.createdBy || actorSnapshot,
+    submittedBy: actorSnapshot,
+    approvedAt: payload.checked ? commandContext.now : previousEntry?.approvedAt || null,
+    approvedBy: payload.checked ? systemSnapshot : previousEntry?.approvedBy || systemSnapshot,
+    updatedAt: commandContext.now,
+    updatedBy: actorSnapshot,
+    voidedAt: payload.checked ? null : commandContext.now,
+    voidedBy: payload.checked ? null : actorSnapshot,
+    voidReason: payload.checked ? null : 'Nhân viên bỏ chọn công việc tính thưởng.',
+    deletedAt: null,
+  }
+  const nextState = {
+    ...state,
+    workCatalogProgress: previous
+      ? progressRecords.map((record) => String(record.id || '') === progressId ? reward : record)
+      : [reward, ...progressRecords],
+    compensationEntries: previousEntry
+      ? compensationEntries.map((record) => String(record.id || '') === entryId ? entry : record)
+      : [entry, ...compensationEntries],
+    payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'work-catalog-reward',
+    entityId: progressId,
+    before: previous,
+    after: reward,
+    metadata: {
+      storeId, employeeId, period, attendanceId, catalogItemId: catalogSnapshot.id,
+      amountVnd: catalogSnapshot.amountVnd, checked: payload.checked, compensationEntryId: entryId,
+    },
+    response: { command: body.type, checked: payload.checked, reward, entry },
+    status: previous || !payload.checked ? 200 : 201,
+  }, commandContext)
+}
+
+const resolveStoreViolationShiftSnapshot = (state, employee, employeeId, storeId, occurredOn, requestedShiftId) => {
+  const assignments = (Array.isArray(state.schedule) ? state.schedule : []).filter((record) => (
+    !record.deletedAt
+    && (!record.storeId || String(record.storeId) === storeId)
+    && String(record.date || record.workDate || '') === occurredOn
+    && belongsToEmployee(record, employeeId)
+  ))
+  const scheduledShifts = new Map()
+  for (const assignment of assignments) {
+    const snapshots = new Map((Array.isArray(assignment.shiftSnapshots) ? assignment.shiftSnapshots : [])
+      .filter(isPlainRecord)
+      .map((snapshot) => [String(snapshot.id || ''), snapshot]))
+    const shiftIds = [...new Set([
+      String(assignment.shiftId || ''),
+      ...(Array.isArray(assignment.shiftIds) ? assignment.shiftIds.map(String) : []),
+    ].filter(Boolean))]
+    for (const shiftId of shiftIds) {
+      if (!scheduledShifts.has(shiftId)) scheduledShifts.set(shiftId, snapshots.get(shiftId) || null)
+    }
+  }
+  let shiftId = requestedShiftId
+  if (shiftId && !scheduledShifts.has(shiftId)) {
+    throw new ApiError(400, 'VIOLATION_SHIFT_NOT_SCHEDULED', 'Ca làm việc không thuộc lịch phân ca của nhân viên trong ngày đã chọn.')
+  }
+  if (!shiftId && scheduledShifts.size > 1) {
+    throw new ApiError(400, 'VIOLATION_SHIFT_REQUIRED', 'Nhân viên có nhiều ca được phân; cần chọn ca bị vi phạm.')
+  }
+  if (!shiftId) shiftId = [...scheduledShifts.keys()][0] || ''
+  if (!shiftId) {
+    throw new ApiError(409, 'VIOLATION_SHIFT_NOT_SCHEDULED', 'Nhân viên chưa có lịch phân ca tại cửa hàng trong ngày đã chọn.')
+  }
+  const definition = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).find((record) => (
+    !record.deletedAt
+    && record.active !== false
+    && String(record.id || '') === shiftId
+    && (!record.storeId || String(record.storeId) === storeId)
+    && (!record.date || String(record.date) === occurredOn)
+  )) || null
+  const scheduledSnapshot = scheduledShifts.get(shiftId)
+  const snapshotTimes = scheduledSnapshot ? shiftTimes(scheduledSnapshot) : { start: null, end: null }
+  const definitionTimes = definition ? shiftTimes(definition) : { start: null, end: null }
+  const source = snapshotTimes.start && snapshotTimes.end ? scheduledSnapshot : definition
+  const times = source === scheduledSnapshot ? snapshotTimes : definitionTimes
+  if (!source || !times.start || !times.end) {
+    throw new ApiError(409, 'VIOLATION_SHIFT_INVALID', 'Lịch phân ca thiếu snapshot hoặc định nghĩa ca hợp lệ.')
+  }
+  return {
+    attendanceId: null,
+    shiftId,
+    shiftName: String(source.name || source.shiftName || shiftId).trim(),
+    shiftStart: times.start.label,
+    shiftEnd: times.end.label,
+    shiftVersion: Number(source.version || 1),
+    shiftSource: source === scheduledSnapshot ? 'store-schedule-snapshot' : 'store-shift-definition',
+    employmentTypeSnapshot: employee.employmentType || null,
+  }
+}
+
+const resolveViolationShiftSnapshot = (state, employee, employeeId, storeId, targetUnit, occurredOn, payload) => {
+  const requestedAttendanceId = String(payload.attendanceId || '').trim()
+  const requestedShiftId = String(payload.shiftId || '').trim()
+  const attendanceCandidates = (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => (
+    !record.deletedAt
+    && belongsToEmployee(record, employeeId)
+    && dateFromRecord(record) === occurredOn
+    && (!record.storeId || String(record.storeId) === storeId)
+  ))
+  let attendance
+  if (requestedAttendanceId) {
+    attendance = attendanceCandidates.find((record) => String(record.id || '') === requestedAttendanceId) || null
+    if (!attendance) {
+      throw new ApiError(400, 'VIOLATION_ATTENDANCE_INVALID', 'Ca chấm công không thuộc nhân viên hoặc ngày đã chọn.')
+    }
+  } else {
+    const matchingAttendance = requestedShiftId
+      ? attendanceCandidates.filter((record) => String(record.shiftId || record.shift || '') === requestedShiftId)
+      : attendanceCandidates
+    if (matchingAttendance.length > 1) {
+      throw new ApiError(400, 'VIOLATION_ATTENDANCE_REQUIRED', 'Có nhiều ca chấm công phù hợp; cần chọn đúng ca chấm công.')
+    }
+    attendance = matchingAttendance[0] || null
+  }
+  if (attendance) {
+    const shiftId = String(attendance.shiftId || attendance.shift || '').trim()
+    if (!shiftId || (requestedShiftId && requestedShiftId !== shiftId)) {
+      throw new ApiError(400, 'VIOLATION_SHIFT_MISMATCH', 'Ca làm việc không khớp với bản ghi chấm công.')
+    }
+    return {
+      attendanceId: String(attendance.id || '').trim(),
+      shiftId,
+      shiftName: String(attendance.shiftName || shiftId).trim(),
+      shiftStart: attendance.shiftStart || null,
+      shiftEnd: attendance.shiftEnd || null,
+      shiftVersion: Number(attendance.shiftVersion || 1),
+      shiftSource: attendance.shiftSource || 'attendance-snapshot',
+      employmentTypeSnapshot: attendance.employmentTypeSnapshot || employee.employmentType || null,
+    }
+  }
+  if (targetUnit === WORK_CATALOG_TARGET.STORE) {
+    return resolveStoreViolationShiftSnapshot(
+      state,
+      employee,
+      employeeId,
+      storeId,
+      occurredOn,
+      requestedShiftId,
+    )
+  }
+  const configuredShifts = configuredProfileWorkShifts(employee, occurredOn, state)
+  let configuredShift = null
+  if (requestedShiftId) {
+    configuredShift = configuredShifts.find((record) => String(record.id || '') === requestedShiftId) || null
+    if (!configuredShift) {
+      throw new ApiError(400, 'VIOLATION_SHIFT_INVALID', 'Ca làm việc không thuộc lịch hồ sơ của nhân viên trong ngày đã chọn.')
+    }
+  } else if (configuredShifts.length === 1) {
+    configuredShift = configuredShifts[0]
+  } else if (configuredShifts.length > 1) {
+    throw new ApiError(400, 'VIOLATION_SHIFT_REQUIRED', 'Nhân viên có nhiều ca làm việc; cần chọn ca bị vi phạm.')
+  }
+  if (!configuredShift) {
+    throw new ApiError(409, 'VIOLATION_SHIFT_NOT_CONFIGURED', 'Không tìm thấy ca chấm công hoặc lịch hồ sơ hợp lệ cho ngày đã chọn.')
+  }
+  return {
+    attendanceId: null,
+    shiftId: String(configuredShift.id || '').trim(),
+    shiftName: String(configuredShift.name || configuredShift.id || '').trim(),
+    shiftStart: configuredShift.start || null,
+    shiftEnd: configuredShift.end || null,
+    shiftVersion: Number(configuredShift.version || 1),
+    shiftSource: configuredShift.source || 'profile-work-shift',
+    employmentTypeSnapshot: employee.employmentType || null,
+  }
+}
+
+const violationOccurrenceKey = ({ employeeId, occurredOn, shiftId, catalogItemId }) => {
+  try {
+    return workCatalogViolationKey({ employeeId, workDate: occurredOn, shiftRef: shiftId, catalogItemId })
+  } catch (error) {
+    throw new ApiError(409, 'VIOLATION_IDENTITY_INVALID', 'Không thể tạo định danh ổn định cho vi phạm.', {
+      reason: error instanceof Error ? error.message : String(error),
+    })
+  }
+}
+
+const violationMatchesOccurrence = (record, occurrenceKey, identity) => (
+  String(record?.occurrenceKey || record?.id || '') === occurrenceKey
+  || (
+    String(record?.employeeId || '') === identity.employeeId
+    && String(record?.occurredOn || record?.workDate || record?.date || '') === identity.occurredOn
+    && String(record?.shiftId || record?.shift || '') === identity.shiftId
+    && String(record?.catalogItemId || '') === identity.catalogItemId
+  )
+)
+
 const violationCommand = async (db, actor, body, commandContext) => {
   assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý vi phạm.')
   const operation = body.type.split('.').at(-1)
-  if (!['create', 'void'].includes(operation)) throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh vi phạm không được hỗ trợ.')
+  if (!['create', 'create_batch', 'void'].includes(operation)) throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh vi phạm không được hỗ trợ.')
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
   const records = Array.isArray(state.violations) ? state.violations : []
   const actorSnapshot = serverActorSnapshot(actor)
+  if (operation === 'create_batch') {
+    const targetUnit = String(payload.targetUnit || 'store').trim()
+    if (!['store', 'office', 'business_support'].includes(targetUnit)) {
+      throw new ApiError(400, 'VIOLATION_UNIT_INVALID', 'Nhóm nhân viên vi phạm không hợp lệ.')
+    }
+    if (targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.')
+    const employee = compensationEmployee(state, payload.employeeId)
+    const employeeId = String(employee.id || employee.code || employee.employeeId)
+    if (employeeUnit(employee) !== targetUnit) {
+      throw new ApiError(409, 'EMPLOYEE_UNIT_MISMATCH', 'Nhân viên không thuộc nhóm đã chọn.')
+    }
+    const storeId = targetUnit === 'store'
+      ? String(payload.storeId || employee.storeId || '').trim()
+      : targetUnit === 'office' ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID
+    if (targetUnit === 'store') {
+      assertOperationalStoreAccess(actor, storeId)
+      requireActivePhysicalStore(state, storeId)
+      if (String(employee.storeId || '') !== storeId) {
+        throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng đã chọn.')
+      }
+    }
+    const occurredOn = compensationDate(payload.occurredOn, 'Ngày phát sinh')
+    const period = occurredOn.slice(0, 7)
+    assertPayrollNotPaidOrLocked(state, storeId, period)
+    const shiftSnapshot = resolveViolationShiftSnapshot(
+      state,
+      employee,
+      employeeId,
+      storeId,
+      targetUnit,
+      occurredOn,
+      payload,
+    )
+    if (!Array.isArray(payload.catalogItemIds)) {
+      throw new ApiError(400, 'VIOLATION_CATALOG_REQUIRED', 'Cần chọn ít nhất một nội dung vi phạm.')
+    }
+    const requestedCatalogItemIds = payload.catalogItemIds.map((value) => String(value || '').trim())
+    if (requestedCatalogItemIds.some((value) => !value)) {
+      throw new ApiError(400, 'VIOLATION_CATALOG_INVALID', 'Danh sách vi phạm chứa mã không hợp lệ.')
+    }
+    const catalogItemIds = [...new Set(requestedCatalogItemIds)]
+    if (catalogItemIds.length !== requestedCatalogItemIds.length) {
+      throw new ApiError(400, 'VIOLATION_CATALOG_DUPLICATE', 'Mỗi nội dung vi phạm chỉ được chọn một lần trong cùng yêu cầu.')
+    }
+    if (!catalogItemIds.length || catalogItemIds.length > 100) {
+      throw new ApiError(400, 'VIOLATION_CATALOG_INVALID', 'Cần chọn từ 1 đến 100 nội dung vi phạm.')
+    }
+    let availableCatalogItems
+    try {
+      availableCatalogItems = activeWorkCatalogItems(state.workCatalogItems, {
+        targetGroup: targetUnit,
+        storeId: targetUnit === WORK_CATALOG_TARGET.STORE ? storeId : null,
+        shiftId: shiftSnapshot.shiftId,
+        shiftName: shiftSnapshot.shiftName,
+        date: occurredOn,
+        kinds: WORK_CATALOG_KIND.VIOLATION,
+      })
+    } catch (error) {
+      throw new ApiError(409, 'WORK_CATALOG_DATA_INVALID', 'Danh mục vi phạm đang có dữ liệu không hợp lệ.', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
+    const catalogById = new Map(availableCatalogItems.map((item) => [item.id, item]))
+    const missingCatalogItemIds = catalogItemIds.filter((catalogItemId) => !catalogById.has(catalogItemId))
+    if (missingCatalogItemIds.length) {
+      throw new ApiError(400, 'VIOLATION_CATALOG_INVALID', 'Nội dung vi phạm không còn hoạt động hoặc không thuộc ca và nhóm đã chọn.', {
+        catalogItemIds: missingCatalogItemIds,
+      })
+    }
+    const note = String(payload.note || '').trim()
+    if (note.length > 1_000) throw new ApiError(400, 'NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')
+    const employeeName = employee.name || employee.displayName || employeeId
+    const selected = []
+    const created = []
+    for (const catalogItemId of catalogItemIds) {
+      const catalogItem = catalogById.get(catalogItemId)
+      const identity = { employeeId, occurredOn, shiftId: shiftSnapshot.shiftId, catalogItemId }
+      const occurrenceKey = violationOccurrenceKey(identity)
+      const existing = records.find((record) => violationMatchesOccurrence(record, occurrenceKey, identity)) || null
+      if (existing) {
+        selected.push(existing)
+        continue
+      }
+      const catalogSnapshot = {
+        id: catalogItem.id,
+        code: catalogItem.code,
+        name: catalogItem.name,
+        amountVnd: catalogItem.amountVnd,
+        targetGroup: catalogItem.targetGroup,
+        kind: catalogItem.kind,
+        version: catalogItem.version,
+      }
+      const violation = {
+        id: occurrenceKey,
+        occurrenceKey,
+        targetUnit,
+        employeeId,
+        employeeName,
+        storeId,
+        policyCode: catalogItem.code,
+        title: catalogItem.name,
+        amountVnd: catalogItem.amountVnd,
+        catalogItemId: catalogItem.id,
+        catalogCode: catalogItem.code,
+        catalogVersion: catalogItem.version,
+        catalogSnapshot,
+        occurredOn,
+        workDate: occurredOn,
+        date: occurredOn,
+        period,
+        attendanceId: shiftSnapshot.attendanceId,
+        shiftId: shiftSnapshot.shiftId,
+        shift: shiftSnapshot.shiftId,
+        shiftName: shiftSnapshot.shiftName,
+        shiftStart: shiftSnapshot.shiftStart,
+        shiftEnd: shiftSnapshot.shiftEnd,
+        shiftVersion: shiftSnapshot.shiftVersion,
+        shiftSource: shiftSnapshot.shiftSource,
+        employmentTypeSnapshot: shiftSnapshot.employmentTypeSnapshot,
+        note,
+        status: 'ACTIVE',
+        version: 1,
+        createdAt: commandContext.now,
+        createdBy: actorSnapshot,
+        updatedAt: commandContext.now,
+        deletedAt: null,
+        voidedAt: null,
+      }
+      created.push(violation)
+      selected.push(violation)
+    }
+    if (!created.length) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        violations: selected,
+        createdCount: 0,
+        existingCount: selected.length,
+        existing: true,
+      }, 200, commandContext)
+    }
+    const nextState = {
+      ...state,
+      violations: [...created, ...records],
+      payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'violation-batch',
+      entityId: `violation-batch:${employeeId}:${occurredOn}:${shiftSnapshot.shiftId}`,
+      before: selected.filter((record) => !created.includes(record)),
+      after: selected,
+      metadata: {
+        targetUnit, storeId, employeeId, period, shiftId: shiftSnapshot.shiftId,
+        attendanceId: shiftSnapshot.attendanceId, createdCount: created.length,
+        existingCount: selected.length - created.length,
+      },
+      response: {
+        command: body.type,
+        violations: selected,
+        createdCount: created.length,
+        existingCount: selected.length - created.length,
+      },
+      status: 201,
+    }, commandContext)
+  }
   if (operation === 'create') {
     const targetUnit = String(payload.targetUnit || 'store').trim()
     if (!['store', 'office', 'business_support'].includes(targetUnit)) {
@@ -15765,6 +16384,9 @@ const executeCommand = async (request, env, context) => {
     }
     if (String(body.type || '').startsWith('work_catalog.')) {
       return await workCatalogCommand(db, user, body, commandContext)
+    }
+    if (body.type === 'work_reward.set') {
+      return await workRewardCommand(db, user, body, commandContext)
     }
     if (String(body.type || '').startsWith('violation.')) {
       return await violationCommand(db, user, body, commandContext)

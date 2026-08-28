@@ -10995,4 +10995,525 @@ describe('IDOSI Worker security primitives', () => {
     expect(replay.headers.get('idempotency-replayed')).toBe('true')
     expect(await replay.json()).toEqual(approvedBody)
   }, 60_000)
+
+  it('records a self-service work reward from the open-attendance snapshot with deterministic toggle versions', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-self-work-reward' }
+    const attendanceId = 'ATT-OFFICE-REWARD-01'
+    const catalogItemId = 'CAT-OFFICE-REWARD-SNAPSHOT'
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'self-work-reward-admin-password',
+      initialState: {
+        employees: [{
+          id: 'OFFICE-REWARD-01', name: 'Nhân viên văn phòng', storeId: 'OFFICE', unit: 'office',
+          status: 'Đang làm việc', employmentType: 'Part-Time',
+        }],
+        attendance: [{
+          id: attendanceId, employeeId: 'OFFICE-REWARD-01', employeeName: 'Nhân viên văn phòng',
+          storeId: 'OFFICE', unit: 'office', workDate: '2026-08-28', date: '2026-08-28',
+          shiftId: 'office_am', shift: 'office_am', shiftName: 'Ca sáng',
+          shiftStart: '08:00', shiftEnd: '12:00', shiftVersion: 4, shiftSource: 'profile-work-shift',
+          employmentTypeSnapshot: 'Part-Time', checkIn: '08:00', checkInAt: '2026-08-28T01:00:00.000Z',
+          checkOut: null, checkOutAt: null,
+          checklistSnapshot: {
+            source: 'work-catalog', targetGroup: 'office', shiftId: 'office_am',
+            tasks: [{
+              catalogItemId, catalogCode: 'office.reward.snapshot', catalogVersion: 7,
+              kind: 'REWARD_TASK', name: 'Lau nhà theo snapshot', amountVnd: 2_000,
+              effectiveDate: '2026-08-28', required: false,
+            }],
+          },
+        }],
+        workCatalogItems: [{
+          id: 'DELETED-OFFICE-ON-TIME', code: 'office.reward.on_time', kind: 'REWARD_TASK',
+          targetGroup: 'office', storeId: null, shiftId: null, shiftName: null,
+          name: 'Không được hồi sinh', amountVnd: 99_000, active: false, sortOrder: 1,
+          effectiveFrom: null, effectiveTo: null, version: 9, deletedAt: '2026-08-01T00:00:00.000Z',
+        }],
+        payrollPeriods: [{
+          id: 'PAY-OFFICE-2026-08', storeId: 'OFFICE', period: '2026-08', status: 'Đã chốt',
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'self-work-reward-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const createdUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', payload: {
+        username: 'office.reward', password: 'office-reward-password', role: 'employee',
+        storeId: 'OFFICE', employeeId: 'OFFICE-REWARD-01', displayName: 'Nhân viên văn phòng',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'create-office-reward-user-0001' }), env)
+    expect(createdUser.status).toBe(201)
+    const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'office.reward', password: 'office-reward-password',
+    }), env)
+    const employeeAuthorization = { authorization: `Bearer ${(await employeeLogin.json()).token}` }
+
+    const adminDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 1,
+      payload: { attendanceId, catalogItemId, checked: true },
+    }, { ...adminAuthorization, 'idempotency-key': 'admin-self-work-reward-denied-0001' }), env)
+    expect(adminDenied.status).toBe(403)
+    expect(await adminDenied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
+
+    const seededState = readHydratedState(env.DB.database)
+    expect(seededState.staffWorkCatalogSeedVersion).toBe(1)
+    expect(seededState.workCatalogItems.filter(({ code }) => code === 'office.reward.on_time')).toEqual([
+      expect.objectContaining({ id: 'DELETED-OFFICE-ON-TIME', active: false, amountVnd: 99_000 }),
+    ])
+    expect(seededState.workCatalogItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'htkd.reward.on_time', targetGroup: 'business_support' }),
+      expect.objectContaining({ code: 'office.violation.late', targetGroup: 'office' }),
+    ]))
+
+    const claimed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 1,
+      payload: { attendanceId, catalogItemId, checked: true },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-claim-0001' }), env)
+    expect(claimed.status).toBe(201)
+    const claimedBody = await claimed.json()
+    expect(claimedBody).toMatchObject({
+      version: 2, checked: true,
+      reward: {
+        attendanceId, employeeId: 'OFFICE-REWARD-01', checked: true, status: 'CLAIMED', version: 1,
+        shiftId: 'office_am', shiftVersion: 4, employmentTypeSnapshot: 'Part-Time', amountVnd: 2_000,
+        catalogSnapshot: { id: catalogItemId, code: 'office.reward.snapshot', version: 7, amountVnd: 2_000 },
+      },
+      entry: {
+        type: 'WORK', targetUnit: 'office', storeId: 'OFFICE', status: 'APPROVED', version: 1,
+        sourceType: 'work-catalog-claim', attendanceId, amountVnd: 2_000,
+      },
+    })
+    expect(claimedBody.reward.id).toBe(
+      `work-catalog-progress:v1:OFFICE-REWARD-01:2026-08-28:${attendanceId}:${catalogItemId}`,
+    )
+    expect(claimedBody.entry.id).toBe(`work-catalog-claim:v1:${claimedBody.reward.id}`)
+    expect(readHydratedState(env.DB.database).payrollPeriods[0]).toMatchObject({
+      needsReclose: true, invalidationReason: 'work_reward.set',
+    })
+
+    const duplicate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 2,
+      payload: { attendanceId, catalogItemId, checked: true },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-claim-duplicate-0001' }), env)
+    expect(duplicate.status).toBe(200)
+    expect(await duplicate.json()).toMatchObject({ version: 2, existing: true, checked: true })
+
+    const voided = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 2,
+      payload: { attendanceId, catalogItemId, checked: false, expectedEntityVersion: 1 },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-void-0001' }), env)
+    expect(voided.status).toBe(200)
+    expect(await voided.json()).toMatchObject({
+      version: 3, reward: { checked: false, status: 'VOID', version: 2 },
+      entry: { status: 'VOID', version: 2, voidedAt: expect.any(String) },
+    })
+    const staleRetick = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 3,
+      payload: { attendanceId, catalogItemId, checked: true, expectedEntityVersion: 1 },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-retick-stale-0001' }), env)
+    expect(staleRetick.status).toBe(409)
+    expect(await staleRetick.json()).toMatchObject({ error: { code: 'ENTITY_VERSION_CONFLICT' } })
+    const reticked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 3,
+      payload: { attendanceId, catalogItemId, checked: true, expectedEntityVersion: 2 },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-retick-0001' }), env)
+    expect(reticked.status).toBe(200)
+    expect(await reticked.json()).toMatchObject({
+      version: 4, reward: { checked: true, status: 'CLAIMED', version: 3 },
+      entry: { status: 'APPROVED', version: 3, voidedAt: null },
+    })
+
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+      id: 'PAY-OFFICE-2026-08', storeId: 'OFFICE', period: '2026-08', status: 'Đã khóa',
+      lockedAt: '2026-08-31T17:00:00.000Z',
+    }])
+    const lockedDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 4,
+      payload: { attendanceId, catalogItemId, checked: false, expectedEntityVersion: 3 },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-locked-denied-0001' }), env)
+    expect(lockedDenied.status).toBe(409)
+    expect(await lockedDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+
+    const closedAttendance = readHydratedState(env.DB.database).attendance.map((record) => (
+      record.id === attendanceId ? { ...record, checkOut: '12:00', checkOutAt: '2026-08-28T05:00:00.000Z' } : record
+    ))
+    replaceStateCollection(env.DB.database, 'attendance', closedAttendance)
+    const closedDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 4,
+      payload: { attendanceId, catalogItemId, checked: false, expectedEntityVersion: 3 },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-closed-denied-0001' }), env)
+    expect(closedDenied.status).toBe(409)
+    expect(await closedDenied.json()).toMatchObject({ error: { code: 'OPEN_ATTENDANCE_REQUIRED' } })
+    const finalState = readHydratedState(env.DB.database)
+    expect(finalState.workCatalogProgress).toHaveLength(1)
+    expect(finalState.compensationEntries).toHaveLength(1)
+  }, 30_000)
+
+  it('creates violation batches atomically with shift snapshots, duplicate protection, and target-unit authorization', async () => {
+    const catalog = (id, code, targetGroup, name, amountVnd, storeId = null) => ({
+      id, code, kind: 'VIOLATION', targetGroup, storeId, shiftId: null, shiftName: null,
+      name, amountVnd, active: true, sortOrder: 1, effectiveFrom: null, effectiveTo: null, version: 1,
+    })
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-violation-batch' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'violation-batch-admin-password',
+      initialState: {
+        staffWorkCatalogSeedVersion: 1,
+        stores: [{ id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' }],
+        employees: [
+          {
+            id: 'OFFICE-VIO-01', name: 'Nhân viên VP', storeId: 'OFFICE', unit: 'office',
+            status: 'Đang làm việc', employmentType: 'Part-Time',
+            workShifts: [{ id: 'office_am', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+          },
+          {
+            id: 'HTKD-VIO-01', name: 'Nhân viên HTKD', storeId: 'BUSINESS_SUPPORT', unit: 'business_support',
+            status: 'Đang làm việc', employmentType: 'Thực Tập Sinh',
+            workShifts: [{ id: 'support_pm', name: 'Ca chiều', start: '13:00', end: '17:00' }],
+          },
+          {
+            id: 'STORE-VIO-01', name: 'Nhân viên cửa hàng', storeId: 'S01', unit: 'store',
+            status: 'Đang làm việc', employmentType: 'Part-Time',
+          },
+        ],
+        shiftDefinitions: [{
+          id: 'STORE-AM', storeId: 'S01', name: 'Ca sáng hiện hành', start: '08:00', end: '12:00',
+          active: true, version: 9,
+        }],
+        schedule: [{
+          id: 'SCH-STORE-VIO-01', storeId: 'S01', employeeId: 'STORE-VIO-01', date: '2026-08-28',
+          shiftId: 'STORE-AM', shiftIds: ['STORE-AM'],
+          shiftSnapshots: [{
+            id: 'STORE-AM', name: 'Ca sáng đã phân', start: '09:00', end: '13:00', version: 4,
+          }],
+        }],
+        attendance: [{
+          id: 'ATT-OFFICE-VIO-01', employeeId: 'OFFICE-VIO-01', storeId: 'OFFICE',
+          date: '2026-08-28', workDate: '2026-08-28', shiftId: 'office_am', shift: 'office_am',
+          shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00', shiftVersion: 3,
+          shiftSource: 'attendance-snapshot', employmentTypeSnapshot: 'Part-Time',
+        }],
+        workCatalogItems: [
+          catalog('VIO-OFFICE-LATE', 'office.violation.batch_late', 'office', 'Đi trễ theo batch', 3_000),
+          catalog('VIO-OFFICE-FORGOT', 'office.violation.batch_forgot', 'office', 'Quên điểm danh theo batch', 4_000),
+          catalog('VIO-OFFICE-THIRD', 'office.violation.batch_third', 'office', 'Vi phạm VP thứ ba', 5_000),
+          catalog('VIO-HTKD-LATE', 'htkd.violation.batch_late', 'business_support', 'HTKD đi trễ', 6_000),
+          catalog('VIO-STORE-LATE', 'store.violation.batch_late', 'store', 'Cửa hàng đi trễ', 7_000, 'S01'),
+        ],
+        payrollPeriods: [
+          { id: 'PAY-OFFICE', storeId: 'OFFICE', period: '2026-08', status: 'Đã chốt' },
+          { id: 'PAY-HTKD', storeId: 'BUSINESS_SUPPORT', period: '2026-08', status: 'Đã chốt' },
+          { id: 'PAY-STORE', storeId: 'S01', period: '2026-08', status: 'Đã chốt' },
+        ],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'violation-batch-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const supportCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', payload: {
+        username: 'htkd.violation', password: 'htkd-violation-password', role: 'business_support',
+        storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-VIO-01', displayName: 'Nhân viên HTKD',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'create-htkd-violation-user-0001' }), env)
+    expect(supportCreated.status).toBe(201)
+    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'htkd.violation', password: 'htkd-violation-password',
+    }), env)
+    const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+
+    const officeBatchPayload = {
+      targetUnit: 'office', employeeId: 'OFFICE-VIO-01', occurredOn: '2026-08-28',
+      attendanceId: 'ATT-OFFICE-VIO-01', shiftId: 'office_am',
+      catalogItemIds: ['VIO-OFFICE-LATE', 'VIO-OFFICE-FORGOT'], note: 'Ghi nhận trong ca sáng',
+    }
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 1, payload: officeBatchPayload,
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-office-batch-0001' }), env)
+    expect(created.status).toBe(201)
+    const createdBody = await created.json()
+    expect(createdBody).toMatchObject({
+      version: 2, createdCount: 2, existingCount: 0,
+      violations: [
+        {
+          employeeId: 'OFFICE-VIO-01', attendanceId: 'ATT-OFFICE-VIO-01', shiftId: 'office_am',
+          shiftVersion: 3, employmentTypeSnapshot: 'Part-Time', amountVnd: 3_000,
+        },
+        { employeeId: 'OFFICE-VIO-01', shiftId: 'office_am', amountVnd: 4_000 },
+      ],
+    })
+    expect(createdBody.violations[0].id).toBe(
+      'work-catalog-violation:v1:work-catalog-progress:v1:OFFICE-VIO-01:2026-08-28:office_am:VIO-OFFICE-LATE',
+    )
+    const duplicate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 2, payload: officeBatchPayload,
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-office-batch-duplicate-0001' }), env)
+    expect(duplicate.status).toBe(200)
+    expect(await duplicate.json()).toMatchObject({ version: 2, createdCount: 0, existingCount: 2, existing: true })
+
+    const duplicateInput = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 2,
+      payload: { ...officeBatchPayload, catalogItemIds: ['VIO-OFFICE-THIRD', 'VIO-OFFICE-THIRD'] },
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-office-duplicate-input-0001' }), env)
+    expect(duplicateInput.status).toBe(400)
+    expect(await duplicateInput.json()).toMatchObject({ error: { code: 'VIOLATION_CATALOG_DUPLICATE' } })
+    const atomicInvalid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 2,
+      payload: { ...officeBatchPayload, catalogItemIds: ['VIO-OFFICE-THIRD', 'VIO-NOT-FOUND'] },
+    }, { ...adminAuthorization, 'idempotency-key': 'violation-office-atomic-invalid-0001' }), env)
+    expect(atomicInvalid.status).toBe(400)
+    expect(readHydratedState(env.DB.database).violations).toHaveLength(2)
+
+    const supportCreatesOffice = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 2,
+      payload: { ...officeBatchPayload, catalogItemIds: ['VIO-OFFICE-THIRD'] },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-office-violation-batch-0001' }), env)
+    expect(supportCreatesOffice.status).toBe(201)
+    expect(await supportCreatesOffice.json()).toMatchObject({ version: 3, createdCount: 1 })
+
+    const supportDeniedForHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 3,
+      payload: {
+        targetUnit: 'business_support', employeeId: 'HTKD-VIO-01', occurredOn: '2026-08-28',
+        shiftId: 'support_pm', catalogItemIds: ['VIO-HTKD-LATE'],
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-htkd-violation-denied-0001' }), env)
+    expect(supportDeniedForHtkd.status).toBe(403)
+    expect(await supportDeniedForHtkd.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
+
+    const adminCreatesHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 3,
+      payload: {
+        targetUnit: 'business_support', employeeId: 'HTKD-VIO-01', occurredOn: '2026-08-28',
+        shiftId: 'support_pm', catalogItemIds: ['VIO-HTKD-LATE'],
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'admin-htkd-violation-batch-0001' }), env)
+    expect(adminCreatesHtkd.status).toBe(201)
+    expect(await adminCreatesHtkd.json()).toMatchObject({
+      version: 4, createdCount: 1,
+      violations: [{
+        employeeId: 'HTKD-VIO-01', attendanceId: null, shiftId: 'support_pm', shiftName: 'Ca chiều',
+        shiftStart: '13:00', shiftEnd: '17:00', shiftSource: 'profile-work-shift',
+        employmentTypeSnapshot: 'Thực Tập Sinh', amountVnd: 6_000,
+      }],
+    })
+
+    const legacyCreate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create', expectedVersion: 4,
+      payload: {
+        targetUnit: 'office', employeeId: 'OFFICE-VIO-01', occurredOn: '2026-08-28',
+        policyCode: 'office.violation.late', amountVnd: 3_000,
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'legacy-single-violation-create-0001' }), env)
+    expect(legacyCreate.status).toBe(201)
+    expect(await legacyCreate.json()).toMatchObject({
+      version: 5, violation: { policyCode: 'office.violation.late', amountVnd: 3_000, version: 1 },
+    })
+    const storeScheduled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 5,
+      payload: {
+        targetUnit: 'store', storeId: 'S01', employeeId: 'STORE-VIO-01', occurredOn: '2026-08-28',
+        shiftId: 'STORE-AM', catalogItemIds: ['VIO-STORE-LATE'],
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'admin-store-scheduled-violation-batch-0001' }), env)
+    expect(storeScheduled.status).toBe(201)
+    expect(await storeScheduled.json()).toMatchObject({
+      version: 6, createdCount: 1,
+      violations: [{
+        employeeId: 'STORE-VIO-01', attendanceId: null, storeId: 'S01', shiftId: 'STORE-AM',
+        shiftName: 'Ca sáng đã phân', shiftStart: '09:00', shiftEnd: '13:00', shiftVersion: 4,
+        shiftSource: 'store-schedule-snapshot', employmentTypeSnapshot: 'Part-Time', amountVnd: 7_000,
+      }],
+    })
+    const finalState = readHydratedState(env.DB.database)
+    expect(finalState.violations).toHaveLength(6)
+    expect(finalState.payrollPeriods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ storeId: 'OFFICE', needsReclose: true }),
+      expect.objectContaining({ storeId: 'BUSINESS_SUPPORT', needsReclose: true }),
+      expect.objectContaining({ storeId: 'S01', needsReclose: true }),
+    ]))
+  }, 30_000)
+
+  it('restricts business support catalog mutations to scoped physical-store items', async () => {
+    const catalogItem = (overrides) => ({
+      id: 'CAT-BASE', code: 'store.reward.base', kind: 'REWARD_TASK', targetGroup: 'store',
+      storeId: 'S01', shiftId: null, shiftName: null, name: 'Công việc', amountVnd: 2_000,
+      active: true, sortOrder: 1, effectiveFrom: null, effectiveTo: null, version: 1,
+      deletedAt: null, ...overrides,
+    })
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-work-catalog-scope' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'work-catalog-scope-admin-password',
+      initialState: {
+        staffWorkCatalogSeedVersion: 1,
+        stores: [{ id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' }],
+        employees: [{
+          id: 'HTKD-CATALOG-01', name: 'Nhân viên HTKD', storeId: 'BUSINESS_SUPPORT',
+          unit: 'business_support', status: 'Đang làm việc',
+        }],
+        workCatalogItems: [
+          catalogItem({ id: 'CAT-STORE', code: 'store.reward.physical' }),
+          catalogItem({
+            id: 'CAT-OFFICE', code: 'office.reward.internal', targetGroup: 'office', storeId: null,
+          }),
+          catalogItem({
+            id: 'CAT-HTKD', code: 'htkd.reward.internal', targetGroup: 'business_support', storeId: null,
+          }),
+          catalogItem({
+            id: 'CAT-OFFICE-DELETED', code: 'office.reward.deleted', targetGroup: 'office', storeId: null,
+            active: false, version: 2, deletedAt: '2026-08-20T00:00:00.000Z',
+          }),
+        ],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'work-catalog-scope-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const userCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', payload: {
+        username: 'htkd.catalog', password: 'htkd-catalog-password', role: 'business_support',
+        storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-CATALOG-01', displayName: 'Nhân viên HTKD',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'create-htkd-catalog-user-0001' }), env)
+    expect(userCreated.status).toBe(201)
+    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'htkd.catalog', password: 'htkd-catalog-password',
+    }), env)
+    const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+    const internalCreate = (targetGroup, suffix, storeId = null) => ({
+      type: 'work_catalog.create', expectedVersion: 1,
+      payload: {
+        id: `CAT-EXPLOIT-${suffix}`, code: `${targetGroup}.reward.exploit_${suffix.toLowerCase()}`,
+        kind: 'REWARD_TASK', targetGroup, storeId, name: 'Không được tạo', amountVnd: 2_000,
+        active: true, sortOrder: 10, effectiveFrom: null, effectiveTo: null,
+      },
+    })
+    const forbiddenCommands = [
+      ['create-office', internalCreate('office', 'OFFICE'), 'WORK_CATALOG_SCOPE_FORBIDDEN'],
+      ['create-htkd', internalCreate('business_support', 'HTKD'), 'WORK_CATALOG_SCOPE_FORBIDDEN'],
+      ['create-global-store', internalCreate('store', 'GLOBAL'), 'WORK_CATALOG_SCOPE_FORBIDDEN'],
+      ['create-internal-store', internalCreate('store', 'INTERNAL', 'OFFICE'), 'OFFICE_FORBIDDEN'],
+      ['update-office', {
+        type: 'work_catalog.update', expectedVersion: 1, payload: { itemId: 'CAT-OFFICE', name: 'Sửa trái phép' },
+      }, 'WORK_CATALOG_SCOPE_FORBIDDEN'],
+      ['delete-htkd', {
+        type: 'work_catalog.delete', expectedVersion: 1, payload: { itemId: 'CAT-HTKD', reason: 'Xóa trái phép' },
+      }, 'WORK_CATALOG_SCOPE_FORBIDDEN'],
+      ['restore-office', {
+        type: 'work_catalog.restore', expectedVersion: 1, payload: { itemId: 'CAT-OFFICE-DELETED' },
+      }, 'WORK_CATALOG_SCOPE_FORBIDDEN'],
+      ['move-store-global', {
+        type: 'work_catalog.update', expectedVersion: 1, payload: { itemId: 'CAT-STORE', storeId: '' },
+      }, 'WORK_CATALOG_SCOPE_FORBIDDEN'],
+      ['move-store-internal', {
+        type: 'work_catalog.update', expectedVersion: 1, payload: { itemId: 'CAT-STORE', storeId: 'OFFICE' },
+      }, 'OFFICE_FORBIDDEN'],
+    ]
+    for (const [name, command, errorCode] of forbiddenCommands) {
+      const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, {
+        ...supportAuthorization, 'idempotency-key': `catalog-scope-denied-${name}`,
+      }), env)
+      expect(denied.status, name).toBe(403)
+      expect(await denied.json(), name).toMatchObject({ error: { code: errorCode } })
+    }
+    expect(readHydratedState(env.DB.database).workCatalogItems).toHaveLength(4)
+    const allowed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_catalog.update', expectedVersion: 1,
+      payload: { itemId: 'CAT-STORE', name: 'Công việc cửa hàng đã sửa' },
+    }, { ...supportAuthorization, 'idempotency-key': 'catalog-physical-store-update-allowed-0001' }), env)
+    expect(allowed.status).toBe(200)
+    expect(await allowed.json()).toMatchObject({
+      version: 2,
+      item: { id: 'CAT-STORE', targetGroup: 'store', storeId: 'S01', name: 'Công việc cửa hàng đã sửa' },
+    })
+  }, 30_000)
+
+  it('prevents attendance date changes after reward or violation linkage while allowing other corrections', async () => {
+    const attendance = (id) => ({
+      id, employeeId: 'E-ATT-LINK', employeeName: 'Nhân viên liên kết', storeId: 'S01', unit: 'store',
+      date: '2026-08-28', workDate: '2026-08-28', attendanceDate: '2026-08-28',
+      shiftId: 'SHIFT-ATT-LINK', shift: 'SHIFT-ATT-LINK', shiftName: 'Ca hành chính',
+      shiftStart: '08:00', shiftEnd: '17:00', checkIn: '08:00', checkInTime: '08:00',
+      checkInAt: '2026-08-28T01:00:00.000Z', checkOut: '17:00', checkOutTime: '17:00',
+      checkOutAt: '2026-08-28T10:00:00.000Z', hours: 9, workedSeconds: 32_400,
+    })
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-attendance-link-date-lock' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'attendance-link-admin-password',
+      initialState: {
+        staffWorkCatalogSeedVersion: 1,
+        stores: [{ id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' }],
+        employees: [{
+          id: 'E-ATT-LINK', name: 'Nhân viên liên kết', storeId: 'S01', unit: 'store',
+          status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 30_000,
+        }],
+        shiftDefinitions: [{
+          id: 'SHIFT-ATT-LINK', storeId: 'S01', name: 'Ca hành chính', start: '08:00', end: '17:00', active: true,
+        }],
+        attendance: [attendance('ATT-PROGRESS'), attendance('ATT-ENTRY'), attendance('ATT-VIOLATION')],
+        workCatalogProgress: [{
+          id: 'PROGRESS-LINK', attendanceId: 'ATT-PROGRESS', employeeId: 'E-ATT-LINK',
+          workDate: '2026-08-28', period: '2026-08', status: 'CLAIMED', checked: true,
+        }],
+        compensationEntries: [{
+          id: 'ENTRY-LINK', attendanceId: 'ATT-ENTRY', employeeId: 'E-ATT-LINK', storeId: 'S01',
+          type: 'WORK', sourceType: 'work-catalog-claim', catalogItemId: 'CAT-REWARD-LINK',
+          effectiveDate: '2026-08-28', period: '2026-08', amountVnd: 2_000, status: 'APPROVED',
+        }],
+        violations: [{
+          id: 'VIOLATION-LINK', attendanceId: 'ATT-VIOLATION', employeeId: 'E-ATT-LINK', storeId: 'S01',
+          occurredOn: '2026-08-28', period: '2026-08', amountVnd: 3_000, status: 'ACTIVE',
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'attendance-link-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    for (const [attendanceId, dateField, linkedCollection] of [
+      ['ATT-PROGRESS', 'date', 'workCatalogProgress'],
+      ['ATT-ENTRY', 'workDate', 'compensationEntries'],
+      ['ATT-VIOLATION', 'attendanceDate', 'violations'],
+    ]) {
+      const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.update', expectedVersion: 1,
+        payload: { attendanceId, [dateField]: '2026-09-01', reason: 'Thử đổi sai kỳ' },
+      }, { ...adminAuthorization, 'idempotency-key': `attendance-linked-date-denied-${attendanceId}` }), env)
+      expect(denied.status, attendanceId).toBe(409)
+      expect(await denied.json(), attendanceId).toMatchObject({
+        error: {
+          code: 'ATTENDANCE_DATE_LINKED_COMPENSATION',
+          details: { attendanceId, linkedCollections: [linkedCollection] },
+        },
+      })
+    }
+    const corrected = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.update', expectedVersion: 1,
+      payload: { attendanceId: 'ATT-PROGRESS', checkIn: '08:15', reason: 'Sửa đúng giờ vào' },
+    }, { ...adminAuthorization, 'idempotency-key': 'attendance-linked-time-update-allowed-0001' }), env)
+    expect(corrected.status).toBe(200)
+    expect(await corrected.json()).toMatchObject({
+      version: 2,
+      attendance: { id: 'ATT-PROGRESS', date: '2026-08-28', workDate: '2026-08-28', checkIn: '08:15' },
+    })
+    const persisted = readHydratedState(env.DB.database)
+    expect(persisted.attendance.map(({ id, date, workDate, attendanceDate }) => ({
+      id, date, workDate, attendanceDate,
+    }))).toEqual(expect.arrayContaining([
+      { id: 'ATT-PROGRESS', date: '2026-08-28', workDate: '2026-08-28', attendanceDate: '2026-08-28' },
+      { id: 'ATT-ENTRY', date: '2026-08-28', workDate: '2026-08-28', attendanceDate: '2026-08-28' },
+      { id: 'ATT-VIOLATION', date: '2026-08-28', workDate: '2026-08-28', attendanceDate: '2026-08-28' },
+    ]))
+    expect(persisted.workCatalogProgress).toHaveLength(1)
+    expect(persisted.compensationEntries).toHaveLength(1)
+    expect(persisted.violations).toHaveLength(1)
+  }, 30_000)
 })

@@ -12,6 +12,7 @@ import {
   WORK_CATALOG_TARGET,
   workCatalogClaimKey,
   workCatalogProgressKey,
+  workCatalogViolationKey,
 } from './workCatalog'
 
 const definition = (overrides = {}) => ({
@@ -296,6 +297,9 @@ describe('deterministic progress and reward claim identities', () => {
     )
     expect(workCatalogClaimKey(input)).toBe(
       'work-catalog-claim:v1:work-catalog-progress:v1:EMP-01:2026-08-26:ATTENDANCE-01:catalog.store.reward.clean',
+    )
+    expect(workCatalogViolationKey(input)).toBe(
+      'work-catalog-violation:v1:work-catalog-progress:v1:EMP-01:2026-08-26:ATTENDANCE-01:catalog.store.reward.clean',
     )
     expect(workCatalogProgressKey({ ...input, catalogItemId: 'catalog.store.reward.other' }))
       .not.toBe(workCatalogProgressKey(input))

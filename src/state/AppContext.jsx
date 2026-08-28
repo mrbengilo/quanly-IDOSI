@@ -3600,6 +3600,26 @@ export function AppProvider({ children }) {
     }
   }
 
+  const setWorkReward = async (payload = {}) => {
+    const role = normalizeAuthRole(state.session?.role)
+    if (!['employee', 'business_support'].includes(role)) {
+      throw new Error('Chỉ nhân viên được tự ghi nhận công việc tính thưởng của mình.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để ghi nhận tiền thưởng an toàn.')
+    }
+    return runRemoteDomainCommand(
+      'work_reward.set',
+      {
+        attendanceId: payload.attendanceId,
+        catalogItemId: payload.catalogItemId,
+        checked: payload.checked === true,
+        ...(payload.expectedEntityVersion == null ? {} : { expectedEntityVersion: payload.expectedEntityVersion }),
+      },
+      payload.idempotencyKey || `work-reward:${crypto.randomUUID()}`,
+    )
+  }
+
   const createWorkCatalogItem = async (payload = {}) => {
     requireWorkCatalogOperator()
     return runRemoteDomainCommand(
@@ -3642,6 +3662,15 @@ export function AppProvider({ children }) {
       'violation.create',
       payload,
       payload.idempotencyKey || `violation:${crypto.randomUUID()}`,
+    )
+  }
+
+  const createViolationBatch = async (payload = {}) => {
+    requireCompensationOperator(String(payload.targetUnit || ''))
+    return runRemoteDomainCommand(
+      'violation.create_batch',
+      payload,
+      payload.idempotencyKey || `violation-batch:${crypto.randomUUID()}`,
     )
   }
 
@@ -4990,7 +5019,9 @@ export function AppProvider({ children }) {
     updateWorkCatalogItem,
     deleteWorkCatalogItem,
     restoreWorkCatalogItem,
+    setWorkReward,
     createViolation,
+    createViolationBatch,
     voidViolation,
     calculateRevenueBonusDay,
     approveRevenueBonusMilestone,
