@@ -43,6 +43,17 @@ describe('canonical revenue bonus programs', () => {
     })
   })
 
+  it('recognizes the canonical SM234 store shape even when its display name uses IDOSI', () => {
+    expect(revenueBonusProgramsForStore({
+      id: 'SM234',
+      short: 'SM234',
+      name: 'IDOSI 234',
+    })).toEqual({
+      programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,
+      milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE,
+    })
+  })
+
   it.each([
     [0, null, 0, 0],
     [1_499_999, null, 0, 0],

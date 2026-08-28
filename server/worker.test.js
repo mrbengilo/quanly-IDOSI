@@ -12031,7 +12031,10 @@ describe('IDOSI Worker security primitives', () => {
       username: 'admin', password: 'violation-shift-admin-password',
       initialState: {
         stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
-        employees: [{ id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store', status: 'Đang làm việc' }],
+        employees: [{
+          id: 'E01', code: 'CODE-E01', employeeId: 'LEGACY-E01', name: 'Nhân viên 01',
+          storeId: 'S01', unit: 'store', status: 'Đang làm việc',
+        }],
         shiftDefinitions: [{
           id: 'SHIFT-MORNING', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00', active: true,
         }],
@@ -12074,6 +12077,12 @@ describe('IDOSI Worker security primitives', () => {
       },
     })
 
+    replaceStateCollection(env.DB.database, 'violations', readHydratedState(env.DB.database).violations.map((violation) => ({
+      ...violation,
+      employeeId: 'CODE-E01',
+      occurrenceKey: String(violation.occurrenceKey || '').replace(':E01:', ':CODE-E01:'),
+    })))
+
     const duplicateSingle = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'violation.create', expectedVersion: 2, payload: {
         targetUnit: 'store', employeeId: 'E01', storeId: 'S01', catalogItemId: 'VIO-LATE',
@@ -12082,6 +12091,12 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...authorization, 'idempotency-key': 'violation-shift-duplicate-single-0001' }), env)
     expect(duplicateSingle.status).toBe(409)
     expect(await duplicateSingle.json()).toMatchObject({ error: { code: 'VIOLATION_DUPLICATE' } })
+
+    replaceStateCollection(env.DB.database, 'violations', readHydratedState(env.DB.database).violations.map((violation) => ({
+      ...violation,
+      employeeId: 'LEGACY-E01',
+      occurrenceKey: String(violation.occurrenceKey || '').replace(':CODE-E01:', ':LEGACY-E01:'),
+    })))
 
     const duplicateBatch = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'violation.create_batch', expectedVersion: 2, payload: {

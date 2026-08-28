@@ -137,6 +137,61 @@ describe('compensation pages', () => {
     expect(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }).disabled).toBe(true)
   })
 
+  it('includes a transferred employee when the selected store and day have historical work evidence', async () => {
+    mocked.app = {
+      ...baseApp(),
+      employees: [...employees, {
+        id: 'PROFILE-TRANSFER', code: 'CODE-TRANSFER', employeeId: 'NV-TRANSFER',
+        name: 'Nhân viên Điều Chuyển', unit: 'store', storeId: 'CH002',
+      }, {
+        id: 'NV-UNRELATED', name: 'Nhân viên Không Liên Quan', unit: 'store', storeId: 'CH002',
+      }],
+      attendance: [{
+        id: 'ATT-TRANSFER', employeeId: 'NV-TRANSFER', storeId: 'CH001', date: '2026-08-26',
+        shiftId: 'SHIFT-MORNING', shiftName: 'Ca sáng điều chuyển', shiftStart: '07:30', shiftEnd: '11:30',
+      }],
+      violations: [{
+        id: 'VIO-TRANSFER-ALIAS', targetUnit: 'store', employeeId: 'NV-TRANSFER',
+        employeeName: 'Nhân viên Điều Chuyển', storeId: 'CH001', occurredOn: '2026-08-26',
+        shiftId: 'SHIFT-MORNING', title: 'Vi phạm alias điều chuyển', amountVnd: 2_000,
+        status: 'ACTIVE',
+      }, {
+        id: 'VIO-UNRELATED', targetUnit: 'store', employeeId: 'NV-UNRELATED',
+        employeeName: 'Nhân viên Không Liên Quan', storeId: 'CH001', occurredOn: '2026-08-26',
+        shiftId: 'SHIFT-MORNING', title: 'Vi phạm ngoài phạm vi', amountVnd: 2_000,
+        status: 'ACTIVE',
+      }],
+    }
+    render(<ViolationManagementPage targetUnit="store" />)
+
+    const employeeSelect = screen.getByLabelText('Nhân viên')
+    expect(within(employeeSelect).getByRole('option', {
+      name: 'Nhân viên Điều Chuyển — PROFILE-TRANSFER',
+    })).toBeTruthy()
+    expect(within(employeeSelect).queryByRole('option', {
+      name: 'Nhân viên Không Liên Quan — NV-UNRELATED',
+    })).toBeNull()
+    expect(screen.getByText('Vi phạm alias điều chuyển')).toBeTruthy()
+    expect(screen.queryByText('Vi phạm ngoài phạm vi')).toBeNull()
+    fireEvent.change(employeeSelect, { target: { value: 'PROFILE-TRANSFER' } })
+    expect(within(screen.getByLabelText('Ca vi phạm')).getByRole('option', {
+      name: 'Ca sáng điều chuyển · 07:30 – 11:30 · Đã chấm công',
+    })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('checkbox', { name: /Đi trễ/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }))
+    await waitFor(() => expect(mocked.app.createViolation).toHaveBeenCalledWith(expect.objectContaining({
+      employeeId: 'PROFILE-TRANSFER', storeId: 'CH001', occurredOn: '2026-08-26',
+      shiftId: 'SHIFT-MORNING', shiftName: 'Ca sáng điều chuyển',
+    })))
+
+    fireEvent.change(screen.getByLabelText('Ngày phát sinh'), { target: { value: '2026-08-25' } })
+    expect(employeeSelect.value).toBe('QL-01')
+    expect(within(employeeSelect).queryByRole('option', {
+      name: 'Nhân viên Điều Chuyển — PROFILE-TRANSFER',
+    })).toBeNull()
+  })
+
   it('shows each private violation with its store, shift, date and total deduction', () => {
     mocked.app = {
       ...baseApp('employee'),

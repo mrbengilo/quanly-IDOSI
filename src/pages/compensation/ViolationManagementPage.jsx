@@ -14,7 +14,7 @@ import {
 } from '../../components/UI'
 import { money } from '../../utils'
 import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
-import { selectWorkedShiftOptions } from './taskBonusViolationsViewModel'
+import { selectStoreEmployees, selectWorkedShiftOptions } from './taskBonusViolationsViewModel'
 import {
   canonicalRole,
   employeesForTarget,
@@ -57,6 +57,12 @@ const violationShiftName = (entry = {}) => entry.shiftName || entry.shiftId || '
 const violationShiftTime = (entry = {}) => entry.shiftStart && entry.shiftEnd
   ? `${entry.shiftStart} – ${entry.shiftEnd}`
   : ''
+const employeeIdentifiers = (employee = {}) => [...new Set([
+  employee.id,
+  employee.code,
+  employee.employeeId,
+  employee.employee_id,
+].map((value) => String(value || '').trim()).filter(Boolean))]
 
 export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
   const app = useApp()
@@ -67,20 +73,39 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
     && (targetUnit !== 'business_support' || role === 'admin')
   const stores = useMemo(() => storesVisibleToRole(app.stores, app.session), [app.stores, app.session])
   const [storeSelection, setStoreSelection] = useState('')
+  const [occurredOn, setOccurredOn] = useState(vietnamToday)
   const selectedStoreId = targetUnit === 'store' ? storeSelection || entityId(stores[0]) : ''
-  const employees = useMemo(() => employeesForTarget({
-    employees: app.employees,
-    targetUnit,
-    storeId: selectedStoreId,
-  }), [app.employees, targetUnit, selectedStoreId])
+  const employees = useMemo(() => {
+    const currentEmployees = employeesForTarget({
+      employees: app.employees,
+      targetUnit,
+      storeId: selectedStoreId,
+    })
+    if (targetUnit !== 'store') return currentEmployees
+
+    const historicalEmployees = selectStoreEmployees({
+      employees: app.employees,
+      attendance: app.attendance,
+      schedule: app.schedule,
+      storeId: selectedStoreId,
+      date: occurredOn,
+    })
+    return [...new Map([...currentEmployees, ...historicalEmployees]
+      .map((employee) => [entityId(employee), employee])).values()]
+  }, [app.employees, app.attendance, app.schedule, targetUnit, selectedStoreId, occurredOn])
   const [employeeSelection, setEmployeeSelection] = useState('')
   const [shiftSelection, setShiftSelection] = useState('')
   const [policyId, setPolicyId] = useState('')
-  const [occurredOn, setOccurredOn] = useState(vietnamToday)
   const [note, setNote] = useState('')
   const [validation, setValidation] = useState('')
   const { busyKey, error, run } = useCompensationAction(app)
-  const selectedEmployeeId = employeeSelection || entityId(employees[0])
+  const visibleEmployeeIds = useMemo(() => new Set(employees.map(entityId)), [employees])
+  const visibleEmployeeIdentifiers = useMemo(() => new Set(
+    employees.flatMap(employeeIdentifiers),
+  ), [employees])
+  const selectedEmployeeId = visibleEmployeeIds.has(employeeSelection)
+    ? employeeSelection
+    : entityId(employees[0])
   const selectedEmployee = employees.find((employee) => entityId(employee) === selectedEmployeeId) || null
   const shifts = useMemo(() => targetUnit === 'store'
     ? selectWorkedShiftOptions({
@@ -106,11 +131,10 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit }) {
     kinds: WORK_CATALOG_KIND.VIOLATION,
   }), [app.workCatalogItems, targetUnit, selectedStoreId, selectedShift, occurredOn])
   const selectedPolicy = policies.find((policy) => policy.id === policyId)
-  const visibleEmployeeIds = useMemo(() => new Set(employees.map(entityId)), [employees])
   const rows = (app.violations || [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
     .filter((entry) => targetUnit !== 'store' || entryStoreId(entry) === selectedStoreId)
-    .filter((entry) => visibleEmployeeIds.has(entryEmployeeId(entry)))
+    .filter((entry) => visibleEmployeeIdentifiers.has(entryEmployeeId(entry)))
     .sort((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || '')))
 
   if (!permittedUnit || !canManage) {

@@ -177,13 +177,16 @@ export const TEAM_MILESTONE_PROGRAMS = deepFreeze({
 })
 
 export function revenueBonusProgramsForStore(store = {}) {
-  const identity = [store.name, store.short, store.code]
+  const identity = [store.id, store.name, store.short, store.code]
     .filter(Boolean)
     .join(' ')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/gu, '')
     .toLowerCase()
-  const isSm = identity.includes('secondmall') || /(^|\s)sm($|\s)/u.test(identity)
+  const compactIdentity = identity.replace(/\s+/gu, '')
+  const isSm = compactIdentity.includes('sm234')
+    || compactIdentity.includes('secondmall')
+    || /(^|\s)sm($|\s)/u.test(identity)
   return isSm
     ? {
         programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,

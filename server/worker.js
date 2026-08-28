@@ -14657,9 +14657,13 @@ const violationRecordIsActive = (record) => Boolean(record
   && !record.voidedAt
   && !['void', 'voided', 'cancelled', 'da huy'].includes(normalizeTextKey(record.status)))
 
-const violationRecordMatchesOccurrence = (record, occurrence) => {
+const violationRecordMatchesOccurrence = (record, occurrence, employeeIdentifiers = [occurrence?.employeeId]) => {
+  const occurrenceEmployeeIdentifiers = new Set([
+    occurrence?.employeeId,
+    ...(Array.isArray(employeeIdentifiers) ? employeeIdentifiers : [employeeIdentifiers]),
+  ].map((value) => String(value || '').trim()).filter(Boolean))
   if (!violationRecordIsActive(record)
-    || String(record.employeeId || '') !== occurrence.employeeId
+    || !occurrenceEmployeeIdentifiers.has(String(record.employeeId || record.employee_id || '').trim())
     || String(record.occurredOn || dateFromRecord(record)) !== occurrence.occurredOn
     || (occurrence.shiftId
       ? !violationShiftIds(record).includes(occurrence.shiftId)
@@ -14796,7 +14800,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       return { ...item, employeeId, occurredOn, shiftId: shiftSnapshot.shiftId, occurrenceKey }
     })
     const duplicate = resolved.find((occurrence) => records.some((record) => (
-      violationRecordMatchesOccurrence(record, occurrence)
+      violationRecordMatchesOccurrence(record, occurrence, employeeIdentifiers)
     )))
     if (duplicate) {
       throw new ApiError(409, 'VIOLATION_DUPLICATE', 'Vi phạm này đã được ghi nhận cho nhân viên trong cùng ngày và ca.', {
@@ -14984,7 +14988,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
       catalogRef: catalogItem?.id || `policy:${policyCode}`,
     }
     occurrence.occurrenceKey = violationOccurrenceKey(occurrence)
-    const duplicate = records.find((record) => violationRecordMatchesOccurrence(record, occurrence))
+    const duplicate = records.find((record) => (
+      violationRecordMatchesOccurrence(record, occurrence, employeeIdentifiers)
+    ))
     if (duplicate) {
       throw new ApiError(409, 'VIOLATION_DUPLICATE', 'Vi phạm này đã được ghi nhận cho nhân viên trong cùng ngày và ca.', {
         employeeId,

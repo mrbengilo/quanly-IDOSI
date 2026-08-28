@@ -1,4 +1,4 @@
-import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
+import { WORK_CATALOG_KIND, workCatalogProgressKey } from '../../domain/workCatalog'
 import { entityId, employeeUnit } from './compensationViewModel'
 
 const text = (value) => String(value ?? '').trim()
@@ -21,7 +21,9 @@ const employeeIdentifiers = (employee = {}) => unique([
   employee.code,
   employee.employeeId,
   employee.employee_id,
+  employee.employeeCode,
 ])
+const canonicalEmployeeId = (employee = {}) => entityId(employee) || text(employee?.employeeCode)
 const normalizedProfileLabel = (value) => text(value)
   .normalize('NFD')
   .replace(/[\u0300-\u036f]/gu, '')
@@ -262,14 +264,38 @@ const catalogFor = (record, maps) => maps.byId.get(catalogIdentity(record))
   || maps.byCode.get(catalogCode(record))
   || null
 
-const shiftForRewardRow = ({ attendance, schedule, shiftDefinitions, employeeId, storeId, date, shiftId, attendanceId }) => {
+const shiftForRewardRow = ({
+  attendance,
+  schedule,
+  shiftDefinitions,
+  employeeId,
+  sourceEmployeeId,
+  employee,
+  storeId,
+  date,
+  shiftId,
+  attendanceId,
+}) => {
+  const matchingEmployeeIds = new Set(unique([
+    employeeId,
+    sourceEmployeeId,
+    ...employeeIdentifiers(employee || {}),
+  ]))
   const exactAttendance = array(attendance).find((record) => (
     !record?.deletedAt
     && text(record.id) === text(attendanceId)
-    && employeeIdOf(record) === employeeId
+    && matchingEmployeeIds.has(employeeIdOf(record))
     && storeIdOf(record) === storeId
   ))
-  const options = selectWorkedShiftOptions({ attendance, schedule, shiftDefinitions, employeeId, storeId, date })
+  const options = selectWorkedShiftOptions({
+    attendance,
+    schedule,
+    shiftDefinitions,
+    employeeId,
+    employee,
+    storeId,
+    date,
+  })
   return (exactAttendance && recordShiftIds(exactAttendance).includes(shiftId)
     ? shiftFromRecord({ record: exactAttendance, shiftId, storeId, shiftDefinitions, source: 'attendance' })
     : options.find((option) => option.id === shiftId))
@@ -285,7 +311,7 @@ const makeRewardRow = ({
   context,
   assumeReward,
   maps,
-  employeesById,
+  employeesByIdentifier,
   attendance,
   schedule,
   shiftDefinitions,
@@ -296,7 +322,9 @@ const makeRewardRow = ({
   const hasRewardLedger = isRewardLedgerEntry(compensationEntry)
   const voided = hasRewardLedger && compensationIsVoided(compensationEntry)
   if (!isReward(record, catalogItem, assumeReward) || (!explicitlyCompleted(record) && !voided)) return null
-  const employeeId = employeeIdOf(record) || text(context.employeeId)
+  const sourceEmployeeId = employeeIdOf(record) || text(context.employeeId)
+  const employee = employeesByIdentifier.get(sourceEmployeeId)
+  const employeeId = canonicalEmployeeId(employee) || sourceEmployeeId
   const storeId = storeIdOf(record) || text(context.storeId)
   const date = dateOf(record) || text(context.date).slice(0, 10)
   const shiftId = shiftIdOf(record) || text(context.shiftId)
@@ -307,7 +335,13 @@ const makeRewardRow = ({
     record.attendanceId || record.checklistAttendanceId
     || context.attendanceId || context.checklistAttendanceId,
   )
-  const occurrenceRef = attendanceId || shiftId || 'no-shift'
+  const occurrenceKey = workCatalogProgressKey({
+    employeeId,
+    workDate: date,
+    storeId,
+    shiftId: shiftId || 'UNSPECIFIED',
+    catalogItemId: itemId,
+  })
   const submittedAt = text(
     record.submittedAt || record.completedAt || record.checkedAt || record.createdAt
     || context.submittedAt || context.at,
@@ -317,6 +351,8 @@ const makeRewardRow = ({
     schedule,
     shiftDefinitions,
     employeeId,
+    sourceEmployeeId,
+    employee,
     storeId,
     date,
     shiftId,
@@ -325,10 +361,9 @@ const makeRewardRow = ({
   const needsReconciliation = !voided && reconciliationRequired(record, context)
   const ledgerActive = hasRewardLedger && !voided && !needsReconciliation && compensationIsActive(compensationEntry)
   const ledgerPending = hasRewardLedger && !voided && !needsReconciliation && !ledgerActive
-  const employee = employeesById.get(employeeId)
   return {
-    id: `${source}:${text(context.assignmentId)}:${employeeId}:${date}:${occurrenceRef}:${itemId}`,
-    dedupeKey: `${employeeId}:${date}:${occurrenceRef}:${itemId}`,
+    id: `${source}:${text(context.assignmentId)}:${occurrenceKey}`,
+    dedupeKey: occurrenceKey,
     source,
     priority,
     assignmentId: text(record.assignmentId || context.assignmentId),
@@ -378,8 +413,9 @@ const progressSnapshots = (record = {}) => {
  * Canonical display order is workCatalogProgress -> immutable submission
  * snapshots. Mutable task.completedBy/task.done state is deliberately excluded:
  * it can be changed before an employee actually submits the checklist. Rows are
- * de-duplicated by the same employee/day/attendance/catalog identity used by
- * workCatalogProgress claims, with shift as the legacy fallback.
+ * de-duplicated by the v2 employee/store/day/shift/catalog identity used by
+ * workCatalogProgress claims. Attendance rows are evidence for the shift, not
+ * separate reward occurrences, so re-checking into one shift cannot add a row.
  */
 export const selectRewardSubmissionRows = ({
   workCatalogProgress = [],
@@ -407,7 +443,22 @@ export const selectRewardSubmissionRows = ({
     ])
     ids.forEach((id) => compensationByProgressId.set(id, entry))
   })
-  const employeesById = new Map(array(employees).map((employee) => [entityId(employee), employee]))
+  const employeesByIdentifier = new Map()
+  array(employees).forEach((employee) => {
+    const canonicalId = canonicalEmployeeId(employee)
+    employeeIdentifiers(employee).forEach((identifier) => {
+      if (!employeesByIdentifier.has(identifier)) {
+        employeesByIdentifier.set(identifier, employee)
+        return
+      }
+      const existing = employeesByIdentifier.get(identifier)
+      if (existing && canonicalEmployeeId(existing) !== canonicalId) {
+        // Fail closed on a malformed profile collision instead of attributing a
+        // historical alias to the wrong employee.
+        employeesByIdentifier.set(identifier, null)
+      }
+    })
+  })
   const candidates = []
   const push = (details) => {
     const progressIds = unique([
@@ -424,7 +475,7 @@ export const selectRewardSubmissionRows = ({
     const row = makeRewardRow({
       ...details,
       maps,
-      employeesById,
+      employeesByIdentifier,
       attendance,
       schedule,
       shiftDefinitions,

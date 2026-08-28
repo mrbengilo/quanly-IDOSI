@@ -51,6 +51,28 @@ const operationalDate = (record = {}) => String(
   record.businessDate || record.workDate || record.attendanceDate || record.date || record.createdAt || '',
 ).slice(0, 10)
 
+const identifiers = (...values) => new Set(values
+  .flat()
+  .map((value) => String(value ?? '').trim())
+  .filter(Boolean))
+
+const employeeIdentifiers = (employee = {}) => identifiers(
+  employee?.id,
+  employee?.code,
+  employee?.employeeId,
+  employee?.employeeCode,
+)
+
+const attendanceEmployeeIdentifiers = (record = {}) => identifiers(
+  record.employeeId,
+  record.employeeCode,
+  record.targetEmployeeId,
+  record.employee?.id,
+  record.employee?.code,
+  record.employee?.employeeId,
+  record.employee?.employeeCode,
+)
+
 const attendanceSeconds = (record = {}, now = Date.now()) => {
   const closed = Boolean(record.checkOutAt || record.checkOut)
   const explicit = Number(record.approvedSalesSeconds ?? record.approvedSalesSec ?? record.workedSeconds)
@@ -78,6 +100,10 @@ export function RevenueBonusPage() {
   const app = useApp()
   const role = canonicalRole(app.session?.role)
   const currentEmployeeId = entityId(app.currentEmployee) || String(app.session?.employeeId || '')
+  const currentEmployeeIdentifiers = identifiers(
+    [...employeeIdentifiers(app.currentEmployee)],
+    app.session?.employeeId,
+  )
   const currentStoreId = String(app.session?.storeId || app.currentEmployee?.storeId || '')
   const privileged = ['admin', 'business_support'].includes(role)
   const storeManager = role === 'store_manager'
@@ -128,7 +154,7 @@ export function RevenueBonusPage() {
     ? aggregateRevenue?.revenueVnd ?? 0
     : fallbackRevenueVnd) || 0
   const ownDailySeconds = (app.attendance || []).filter((record) => (
-    entryEmployeeId(record) === currentEmployeeId
+    [...attendanceEmployeeIdentifiers(record)].some((identifier) => currentEmployeeIdentifiers.has(identifier))
     && entryStoreId(record) === selectedStoreId
     && operationalDate(record) === businessDate
     && !record.deletedAt

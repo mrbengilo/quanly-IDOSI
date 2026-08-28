@@ -219,13 +219,23 @@ describe('selectRewardSubmissionRows', () => {
     })])
   })
 
-  it('keeps separate attendance occurrences for the same employee, day, shift and catalog item', () => {
-    const progress = ['ATT-01', 'ATT-02'].map((attendanceId, index) => ({
-      id: `PROGRESS-${index + 1}`,
-      employeeId: 'NV-01', storeId: 'CH001', attendanceId, workDate: '2026-08-28', shiftId: 'MORNING',
+  it('collapses re-check-ins within one shift but preserves genuine distinct shift rewards', () => {
+    const progress = [{
+      id: 'PROGRESS-MORNING-FIRST',
+      employeeId: 'NV-01', storeId: 'CH001', attendanceId: 'ATT-01', workDate: '2026-08-28', shiftId: 'MORNING',
       catalogItemId: 'REWARD-FLOOR', kind: 'REWARD_TASK', name: 'Lau nhà', amountVnd: 2_000,
-      completed: true, submittedAt: `2026-08-28T0${index + 2}:00:00.000Z`,
-    }))
+      completed: true, submittedAt: '2026-08-28T02:00:00.000Z',
+    }, {
+      id: 'PROGRESS-MORNING-RECHECK',
+      employeeId: 'NV-01', storeId: 'CH001', attendanceId: 'ATT-02', workDate: '2026-08-28', shiftId: 'MORNING',
+      catalogItemId: 'REWARD-FLOOR', kind: 'REWARD_TASK', name: 'Lau nhà sau khi vào lại', amountVnd: 2_000,
+      completed: true, submittedAt: '2026-08-28T03:00:00.000Z',
+    }, {
+      id: 'PROGRESS-AFTERNOON',
+      employeeId: 'NV-01', storeId: 'CH001', attendanceId: 'ATT-03', workDate: '2026-08-28', shiftId: 'AFTERNOON',
+      catalogItemId: 'REWARD-FLOOR', kind: 'REWARD_TASK', name: 'Lau nhà ca chiều', amountVnd: 2_000,
+      completed: true, submittedAt: '2026-08-28T04:00:00.000Z',
+    }]
     const rows = selectRewardSubmissionRows({
       ...common,
       workCatalogProgress: progress,
@@ -235,8 +245,83 @@ describe('selectRewardSubmissionRows', () => {
     })
 
     expect(rows).toHaveLength(2)
-    expect(rows.map((row) => row.attendanceId).sort()).toEqual(['ATT-01', 'ATT-02'])
+    expect(rows.find((row) => row.shiftId === 'MORNING')).toMatchObject({
+      attendanceId: 'ATT-02',
+      name: 'Lau nhà sau khi vào lại',
+      dedupeKey: 'work-catalog-progress:v2:NV-01:2026-08-28:CH001:MORNING:REWARD-FLOOR',
+    })
+    expect(rows.find((row) => row.shiftId === 'AFTERNOON')).toMatchObject({
+      attendanceId: 'ATT-03',
+      dedupeKey: 'work-catalog-progress:v2:NV-01:2026-08-28:CH001:AFTERNOON:REWARD-FLOOR',
+    })
     expect(new Set(rows.map((row) => row.dedupeKey)).size).toBe(2)
+  })
+
+  it('deduplicates a retained first-attendance snapshot against canonical progress from a re-check-in', () => {
+    const rows = selectRewardSubmissionRows({
+      ...common,
+      employees: [{
+        id: 'PROFILE-E01', code: 'CODE-E01', employeeId: 'E01', employeeCode: 'EMPLOYEE-E01',
+        name: 'Nguyễn An', unit: 'store', storeId: 'CH001',
+      }],
+      shiftDefinitions: [{
+        id: 'MORNING', storeId: 'CH001', name: 'Ca sáng đã đổi tên', start: '09:00', end: '13:00', active: true,
+      }],
+      attendance: [{
+        id: 'ATT-02', employeeId: 'E01', storeId: 'CH001', date: '2026-08-28', shiftId: 'MORNING',
+        shiftName: 'Ca sáng lịch sử', shiftStart: '07:30', shiftEnd: '11:30',
+      }],
+      workCatalogProgress: [{
+        id: 'work-catalog-progress:v2:PROFILE-E01:2026-08-28:CH001:MORNING:REWARD-FLOOR',
+        employeeId: 'PROFILE-E01', storeId: 'CH001', attendanceId: 'ATT-02', workDate: '2026-08-28', shiftId: 'MORNING',
+        catalogItemId: 'REWARD-FLOOR', kind: 'REWARD_TASK', name: 'Lau nhà theo bản chuẩn', amountVnd: 2_000,
+        completed: true, submittedAt: '2026-08-28T03:00:00.000Z',
+      }],
+      compensationEntries: [{
+        id: 'WORK-RECHECK', type: 'WORK', status: 'ACTIVE',
+        workCatalogProgressId: 'work-catalog-progress:v2:PROFILE-E01:2026-08-28:CH001:MORNING:REWARD-FLOOR',
+      }],
+      taskAssignmentHistory: [{
+        id: 'ASSIGN-MORNING', storeId: 'CH001', date: '2026-08-28', shiftId: 'MORNING',
+        progressHistory: [{
+          action: 'progress-submitted', employeeId: 'E01', attendanceId: 'ATT-01',
+          storeId: 'CH001', date: '2026-08-28', shiftId: 'MORNING', at: '2026-08-28T02:00:00.000Z',
+          rewardTaskSnapshots: [{
+            taskId: 'TASK-FLOOR', catalogItemId: 'REWARD-FLOOR', kind: 'REWARD_TASK',
+            name: 'Lau nhà từ bản lưu đầu', amountVnd: 2_000, completed: true,
+          }],
+        }],
+      }],
+    })
+
+    expect(rows).toEqual([expect.objectContaining({
+      source: 'work-catalog-progress', employeeId: 'PROFILE-E01', attendanceId: 'ATT-02', name: 'Lau nhà theo bản chuẩn',
+      shiftName: 'Ca sáng lịch sử', shiftStart: '07:30', shiftEnd: '11:30',
+      payable: true, status: 'Đã ghi nhận',
+      dedupeKey: 'work-catalog-progress:v2:PROFILE-E01:2026-08-28:CH001:MORNING:REWARD-FLOOR',
+    })])
+  })
+
+  it('fails closed without throwing when two employee profiles share one alias', () => {
+    const rows = selectRewardSubmissionRows({
+      ...common,
+      employees: [{
+        id: 'PROFILE-01', employeeId: 'SHARED-ALIAS', name: 'Nhân viên 1', storeId: 'CH001',
+      }, {
+        id: 'PROFILE-02', code: 'SHARED-ALIAS', name: 'Nhân viên 2', storeId: 'CH001',
+      }],
+      workCatalogProgress: [{
+        id: 'LEGACY-SHARED', employeeId: 'SHARED-ALIAS', storeId: 'CH001', workDate: '2026-08-28', shiftId: 'MORNING',
+        catalogItemId: 'REWARD-FLOOR', kind: 'REWARD_TASK', name: 'Lau nhà', amountVnd: 2_000,
+        completed: true, submittedAt: '2026-08-28T03:00:00.000Z',
+      }],
+    })
+
+    expect(rows).toEqual([expect.objectContaining({
+      employeeId: 'SHARED-ALIAS',
+      employeeName: 'SHARED-ALIAS',
+      dedupeKey: 'work-catalog-progress:v2:SHARED-ALIAS:2026-08-28:CH001:MORNING:REWARD-FLOOR',
+    })])
   })
 
   it('filters date, employee, shift and accent-insensitive search without mutating rows', () => {
