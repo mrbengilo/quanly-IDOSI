@@ -10897,7 +10897,7 @@ describe('IDOSI Worker security primitives', () => {
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
         }, {
           id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
-          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', hours: 4,
         }],
       },
     }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
@@ -10946,6 +10946,10 @@ describe('IDOSI Worker security primitives', () => {
     expect(calculatedBody.allocations.every(({ milestonePoolVnd, amountVnd, percentagePoolVnd }) => (
       milestonePoolVnd === 0 && amountVnd === percentagePoolVnd
     ))).toBe(true)
+    expect(calculatedBody.allocations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ employeeId: 'QL-S02', weightUnits: 14_400 }),
+      expect.objectContaining({ employeeId: 'E-S02', weightUnits: 14_400 }),
+    ]))
     expect(calculatedBody.teamParticipants.every(({ status, amountVnd }) => status === 'PENDING' && amountVnd === 0)).toBe(true)
 
     const managerStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: managerAuthorization }), env)

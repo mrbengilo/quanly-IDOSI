@@ -14187,7 +14187,9 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
       || dateFromRecord(attendance) !== businessDate
       || attendance.deletedAt
       || (!attendance.checkOutAt && !attendance.checkOut)) continue
-    const weightUnits = Math.max(0, Math.trunc(Number(attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? 0)))
+    const weightUnits = Math.max(0, Math.trunc(Number(
+      attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? (Number(attendance.hours || 0) * 3_600),
+    )))
     if (weightUnits > 0) participantWeights.set(employeeId, (participantWeights.get(employeeId) || 0) + weightUnits)
   }
   const participants = [...participantWeights].map(([id, weightUnits]) => ({ id, weightUnits }))
