@@ -83,4 +83,19 @@ describe('work reward statistics', () => {
     expect(rows.find((row) => row.attendanceId === 'ATT-UNCHECKED')?.completed).toBe(false)
     expect(rows.find((row) => row.attendanceId === 'ATT-VOID')?.completed).toBe(false)
   })
+
+  it('keeps team milestones visibly checked while excluding pending payouts from paid statistics', () => {
+    const rows = workRewardRows({
+      attendance: [{
+        id: 'ATT-TEAM', employeeId: 'VP-01', unit: 'office', workDate: '2026-08-28',
+        checklistSnapshot: { tasks: [{ ...rewardTask, rewardScope: 'team', milestoneProgramId: 'office.video.views', milestoneId: 'office.video.over_100_000_views' }] },
+      }],
+      workCatalogProgress: [{
+        attendanceId: 'ATT-TEAM', catalogItemId: rewardTask.id, checked: true, status: 'PENDING_TEAM_REVIEW',
+        compensationEntryId: null,
+      }],
+    })
+    expect(rows[0]).toMatchObject({ completed: true, paid: false, payoutStatus: 'pending' })
+    expect(rewardStatistics(rows).byDay).toEqual([])
+  })
 })

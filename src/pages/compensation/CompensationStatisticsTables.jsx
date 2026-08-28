@@ -56,7 +56,7 @@ export function CompensationStatisticsGrid({
 }
 
 export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false }) {
-  const completedRows = rows.filter((row) => row.completed)
+  const completedRows = rows.filter((row) => row.completed && row.payoutStatus !== 'void')
   return <TableWrap className="compensation-table reward-history-table">
     <thead><tr>{showEmployee && <th>Nhân viên</th>}<th>Ngày</th><th>Ca làm</th><th>Công việc</th><th>Tiền thưởng</th><th>Ghi nhận lúc</th><th>Trạng thái</th></tr></thead>
     <tbody>
@@ -67,7 +67,7 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
         <td>{row.title}</td>
         <td><strong className="compensation-credit">+{money(row.amountVnd)}</strong></td>
         <td>{displayTime(row.completedAt)}</td>
-        <td><Badge tone="green">Đã ghi nhận</Badge></td>
+        <td><Badge tone={row.payoutStatus === 'pending' ? 'orange' : 'green'}>{row.payoutStatus === 'pending' ? 'Chờ duyệt team' : 'Đã ghi nhận'}</Badge></td>
       </tr>)}
       {!completedRows.length && <tr><td colSpan={showEmployee ? 7 : 6} className="compensation-empty">Chưa có lịch sử nhận thưởng.</td></tr>}
     </tbody>

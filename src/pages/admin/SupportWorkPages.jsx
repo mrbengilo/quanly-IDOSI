@@ -120,6 +120,7 @@ export function AdminSupportWorkPage() {
   const supportRewardRows = workRewardRows({
     attendance: app.attendance,
     workCatalogProgress: app.workCatalogProgress,
+    compensationEntries: app.compensationEntries,
     tasks: app.tasks,
     employees: supportProfiles,
     targetUnit: 'business_support',
@@ -245,15 +246,17 @@ export function SupportAssignedWorkPage() {
   const rewardRows = useMemo(() => workRewardRows({
     attendance: app.attendance,
     workCatalogProgress: app.workCatalogProgress,
+    compensationEntries: app.compensationEntries,
     tasks: app.tasks,
     employees: app.employees,
     employeeId,
-  }), [app.attendance, app.workCatalogProgress, app.tasks, app.employees, employeeId])
+  }), [app.attendance, app.workCatalogProgress, app.compensationEntries, app.tasks, app.employees, employeeId])
   const dayRewardRows = rewardRows.filter((row) => row.workDate === rewardDate)
   const actionableDayRewardRows = dayRewardRows.filter((row) => row.attendanceOpen)
   const completedDayRows = dayRewardRows.filter((row) => row.completed)
+  const paidDayRows = dayRewardRows.filter((row) => row.paid)
   const rewardMonth = rewardDate.slice(0, 7)
-  const completedMonthRows = rewardRows.filter((row) => row.completed && row.month === rewardMonth)
+  const completedMonthRows = rewardRows.filter((row) => row.paid && row.month === rewardMonth)
   const rewardGroups = [...actionableDayRewardRows.reduce((groups, row) => {
     const current = groups.get(row.attendanceId) || {
       attendanceId: row.attendanceId,
@@ -308,7 +311,7 @@ export function SupportAssignedWorkPage() {
     <div className="metrics-grid metrics-grid--4">
       <MetricCard label="CÔNG VIỆC CA ĐANG MỞ" value={actionableDayRewardRows.length} icon={ListChecks} tone="blue" />
       <MetricCard label="ĐÃ TICK TRONG NGÀY" value={completedDayRows.length} icon={CheckCircle2} tone="green" />
-      <MetricCard label="THƯỞNG TRONG NGÀY" value={money(completedDayRows.reduce((sum, row) => sum + row.amountVnd, 0))} icon={Gift} tone="green" />
+      <MetricCard label="THƯỞNG ĐÃ DUYỆT TRONG NGÀY" value={money(paidDayRows.reduce((sum, row) => sum + row.amountVnd, 0))} icon={Gift} tone="green" />
       <MetricCard label="THƯỞNG TRONG THÁNG" value={money(completedMonthRows.reduce((sum, row) => sum + row.amountVnd, 0))} icon={CalendarDays} tone="orange" />
     </div>
     <Card title="Công việc tính thưởng theo ca">
@@ -329,6 +332,7 @@ export function SupportAssignedWorkPage() {
                 <input type="checkbox" aria-label={`${row.title} (+${money(row.amountVnd)}), ${group.shiftName || 'chưa gắn ca'}, ngày ${shortDate(group.workDate)}`} checked={row.completed} disabled={Boolean(rewardBusyKey)} onChange={(event) => toggleReward(row, event.target.checked)} />
                 <span><strong>{row.title}</strong>{row.description && <small>{row.description}</small>}</span>
                 <b className="reward-task-amount">+{money(row.amountVnd)}</b>
+                {row.payoutStatus === 'pending' && <Badge tone="orange">Chờ duyệt team</Badge>}
                 {busy && <small className="reward-task-saving" role="status" aria-live="polite">Đang lưu…</small>}
               </label>
             })}

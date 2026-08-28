@@ -27,6 +27,7 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
   const rewardRows = workRewardRows({
     attendance: app.attendance,
     workCatalogProgress: app.workCatalogProgress,
+    compensationEntries: app.compensationEntries,
     tasks: app.tasks,
     employees: scopedEmployees,
     targetUnit,

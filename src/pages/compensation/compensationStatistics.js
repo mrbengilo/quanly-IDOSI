@@ -95,6 +95,7 @@ const employeeNameMap = (employees = []) => new Map(employees.flatMap((employee)
 export const workRewardRows = ({
   attendance = [],
   workCatalogProgress = [],
+  compensationEntries = [],
   tasks = [],
   employees = [],
   employeeId = '',
@@ -111,6 +112,9 @@ export const workRewardRows = ({
   const progressByKey = new Map((Array.isArray(workCatalogProgress) ? workCatalogProgress : [])
     .map((record) => [progressKey(record), record])
     .filter(([key]) => !key.startsWith(':') && !key.endsWith(':')))
+  const compensationById = new Map((Array.isArray(compensationEntries) ? compensationEntries : [])
+    .map((entry) => [String(entry.id || '').trim(), entry])
+    .filter(([id]) => id))
   const tasksByKey = new Map((Array.isArray(tasks) ? tasks : [])
     .map((task) => [taskProgressKey(task), task])
     .filter(([key]) => !key.startsWith(':') && !key.endsWith(':')))
@@ -135,6 +139,13 @@ export const workRewardRows = ({
           ? Boolean(legacyTask.completedBy[recordEmployeeId])
           : false
         const completed = progress ? completionState(progress) : completionState(legacyTask) || completedBy
+        const compensationEntry = compensationById.get(String(progress?.compensationEntryId || '').trim())
+        const progressStatus = normalize(progress?.status || compensationEntry?.status)
+        const payoutStatus = ['pending_team_review', 'pending', 'submitted'].includes(progressStatus)
+          ? 'pending'
+          : ['void', 'voided', 'cancelled', 'canceled', 'đã hủy'].includes(progressStatus)
+            ? 'void'
+            : completed ? 'approved' : 'unclaimed'
         const workDate = attendanceDate(record)
         const shiftStart = String(record.shiftStart || '').trim()
         const shiftEnd = String(record.shiftEnd || '').trim()
@@ -158,6 +169,8 @@ export const workRewardRows = ({
           description: String(task.description || task.detail || '').trim(),
           amountVnd: Math.max(0, Number(task.amountVnd || 0) || 0),
           completed,
+          paid: completed && payoutStatus === 'approved',
+          payoutStatus,
           completedAt: completed ? completionTime(progress || legacyTask) : '',
         }
       })
@@ -167,7 +180,7 @@ export const workRewardRows = ({
 }
 
 export const rewardStatistics = (rows = []) => {
-  const completed = rows.filter((row) => row.completed)
+  const completed = rows.filter((row) => row.paid || (row.completed && row.payoutStatus !== 'pending' && row.payoutStatus !== 'void'))
   const summarize = (keyFor, labelFor) => [...completed.reduce((groups, row) => {
     const key = keyFor(row)
     const current = groups.get(key) || { key, label: labelFor(key, row), count: 0, amountVnd: 0 }
