@@ -1,7 +1,11 @@
-.compensation-page {
+.compensation-page,
+.compensation-unit-statistics {
   --compensation-border: #c8ded1;
   --compensation-muted: #64748b;
   --compensation-surface: #f7fbf8;
+}
+
+.compensation-page {
   display: grid;
   gap: 18px;
 }
@@ -54,6 +58,10 @@
 
 .compensation-debit {
   color: #dc2626;
+}
+
+.compensation-credit {
+  color: #057a3a;
 }
 
 .compensation-filter-card {
@@ -160,6 +168,190 @@
   vertical-align: middle;
 }
 
+.compensation-statistics-grid,
+.violation-statistics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.compensation-statistics-grid h3,
+.violation-statistics-grid h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.compensation-statistics-grid .compensation-table table,
+.violation-statistics-grid .compensation-table table {
+  min-width: 0;
+}
+
+.compensation-form-full {
+  grid-column: 1 / -1;
+}
+
+.compensation-unit-statistics {
+  display: grid;
+  gap: 18px;
+}
+
+.reward-work-toolbar {
+  align-items: end;
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.reward-work-toolbar .info-note {
+  margin: 0;
+}
+
+.reward-shift-list {
+  display: grid;
+  gap: 14px;
+}
+
+.reward-shift-card {
+  background: #f8fcf9;
+  border: 1px solid var(--compensation-border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.reward-shift-card__head {
+  align-items: center;
+  border-bottom: 1px solid var(--compensation-border);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.reward-shift-card__head span,
+.reward-shift-card__head small {
+  display: flex;
+}
+
+.reward-shift-card__head span {
+  flex-direction: column;
+  gap: 5px;
+}
+
+.reward-shift-card__head small {
+  align-items: center;
+  color: var(--compensation-muted);
+  gap: 6px;
+}
+
+.reward-task-checklist {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.reward-task-checklist > label {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dbe8df;
+  border-radius: 11px;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  min-height: 60px;
+  padding: 11px 13px;
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.reward-task-checklist > label:hover {
+  border-color: #69ae82;
+}
+
+.reward-task-checklist > label.is-complete {
+  background: #eef9f1;
+  border-color: #42a768;
+}
+
+.reward-task-checklist input,
+.compensation-catalog-checklist input {
+  accent-color: #07883f;
+  height: 20px;
+  width: 20px;
+}
+
+.reward-task-checklist input:focus-visible,
+.compensation-catalog-checklist input:focus-visible {
+  outline: 3px solid rgba(7, 136, 63, 0.24);
+  outline-offset: 3px;
+}
+
+.reward-task-checklist span,
+.reward-task-checklist span > * {
+  display: block;
+}
+
+.reward-task-checklist span small {
+  color: var(--compensation-muted);
+  margin-top: 4px;
+}
+
+.reward-task-amount {
+  color: #057a3a;
+  white-space: nowrap;
+}
+
+.reward-task-saving {
+  color: var(--compensation-muted);
+  grid-column: 2 / -1;
+}
+
+.support-work-section-title {
+  color: #183b2a;
+  font-size: 18px;
+  margin: 4px 0 -4px;
+}
+
+.compensation-catalog-checklist {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.compensation-catalog-checklist > label {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #cfe0d4;
+  border-radius: 10px;
+  cursor: pointer;
+  display: flex;
+  gap: 11px;
+  min-height: 58px;
+  padding: 11px 13px;
+}
+
+.compensation-catalog-checklist > label.selected {
+  background: #edf8f0;
+  border-color: #07883f;
+  box-shadow: 0 0 0 2px rgba(7, 136, 63, 0.09);
+}
+
+.compensation-catalog-checklist input {
+  flex: none;
+}
+
+.compensation-catalog-checklist span,
+.compensation-catalog-checklist strong,
+.compensation-catalog-checklist small {
+  display: block;
+}
+
+.compensation-catalog-checklist small {
+  color: #d14343;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
 @media (max-width: 1120px) {
   .compensation-form-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -194,6 +386,10 @@
     grid-column: auto;
   }
 
+  .compensation-form-full {
+    grid-column: auto;
+  }
+
   .compensation-actions .button {
     width: 100%;
   }
@@ -217,6 +413,40 @@
   .compensation-table table {
     min-width: 700px;
   }
+
+  .compensation-statistics-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .compensation-statistics-grid .compensation-table table {
+    min-width: 520px;
+  }
+
+  .reward-work-toolbar {
+    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .reward-shift-card__head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .reward-task-checklist > label {
+    align-items: start;
+  }
 }
-.compensation-catalog-checklist{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.compensation-catalog-checklist>label{display:flex;align-items:center;gap:11px;min-height:58px;padding:11px 13px;border:1px solid #cfe0d4;border-radius:10px;background:#fff;cursor:pointer}.compensation-catalog-checklist>label.selected{border-color:#07883f;background:#edf8f0;box-shadow:0 0 0 2px rgba(7,136,63,.09)}.compensation-catalog-checklist input{width:20px;height:20px;accent-color:#07883f;flex:none}.compensation-catalog-checklist span,.compensation-catalog-checklist strong,.compensation-catalog-checklist small{display:block}.compensation-catalog-checklist small{margin-top:4px;color:#d14343;font-weight:700}
-@media(max-width:640px){.compensation-catalog-checklist{grid-template-columns:1fr}}
+
+@media (max-width: 640px) {
+  .compensation-catalog-checklist {
+    grid-template-columns: 1fr;
+  }
+
+  .reward-task-checklist > label {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .reward-task-amount {
+    grid-column: 2;
+  }
+}

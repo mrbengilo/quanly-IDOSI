@@ -8,6 +8,14 @@ vi.mock('../../state/AppContext', () => ({
   useApp: () => mocked.app,
 }))
 
+vi.mock('../compensation/ViolationManagementPage', () => ({
+  ViolationManagementPage: ({ targetUnit, embedded }) => <div data-testid="office-violation-management" data-target-unit={targetUnit} data-embedded={String(embedded)} />,
+}))
+
+vi.mock('../compensation/UnitCompensationStatistics', () => ({
+  UnitCompensationStatistics: ({ targetUnit, employees }) => <div data-testid="office-compensation-statistics" data-target-unit={targetUnit} data-employee-count={employees.length} />,
+}))
+
 vi.mock('../../domain/identityImage', () => ({
   optimizeIdentityImage: vi.fn(async () => ({ dataUrl: 'data:image/png;base64,iVBORw0KGgo=', bytes: 8 })),
 }))
@@ -18,6 +26,23 @@ afterEach(() => {
 })
 
 describe('Office Management permissions', () => {
+  it.each(['admin', 'business_support', 'manager'])('shows the combined Office reward and violation workspace to %s', (role) => {
+    mocked.app = {
+      session: { role, employeeId: role === 'admin' ? 'ADMIN' : 'HTKD-001' },
+      employees: [{ id: 'VP-001', code: 'VP-001', name: 'Nhân viên VP', unit: 'office', storeId: 'OFFICE', isOffice: true, status: 'Đang làm việc' }],
+      deletedEmployees: [],
+      attendance: [],
+      policies: {},
+      notify: vi.fn(),
+    }
+
+    render(<OfficeManagement />)
+    fireEvent.click(screen.getByRole('button', { name: /Thưởng & vi phạm/i }))
+
+    expect(screen.getByTestId('office-violation-management').dataset).toMatchObject({ targetUnit: 'office', embedded: 'true' })
+    expect(screen.getByTestId('office-compensation-statistics').dataset).toMatchObject({ targetUnit: 'office', employeeCount: '1' })
+  })
+
   it.each(['business_support', 'manager'])('lets %s create and edit Office employees without delete or payroll controls', async (role) => {
     mocked.app = {
       session: { role, employeeId: 'HTKD-001' },

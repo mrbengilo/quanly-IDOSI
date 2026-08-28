@@ -67,9 +67,12 @@ export function useCompensationAction(app) {
     setBusyKey(key)
     setError('')
     try {
-      await action(payload)
-      app?.notify?.(success || 'Đã lưu thay đổi.', 'success')
-      return true
+      const result = await action(payload)
+      if (success !== false) {
+        const message = typeof success === 'function' ? success(result) : success
+        app?.notify?.(message || 'Đã lưu thay đổi.', 'success')
+      }
+      return result ?? true
     } catch (actionError) {
       setError(safeErrorMessage(actionError))
       return false

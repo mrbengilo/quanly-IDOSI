@@ -49,6 +49,8 @@ import { optimizeIdentityImage } from '../../domain/identityImage'
 import { cashSeries, shifts } from '../../data'
 import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
+import { UnitCompensationStatistics } from '../compensation/UnitCompensationStatistics'
+import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
 import { formatVietnamTransferDateTime, supportTransferBounds, supportTransferMatchesMoment } from '../../domain/supportTransferTime'
 import {
   downloadCsv,
@@ -805,6 +807,7 @@ export function StoreTasks() {
   const {
     activeStore,
     storeId,
+    employees: storeEmployees = [],
     allEmployees = [],
     supportTransfers = [],
     tasks = [],
@@ -816,6 +819,7 @@ export function StoreTasks() {
     session,
   } = useStoreScope()
   const canManageStore = canAssignStoreTasks(session?.role)
+  const canManageViolations = ['admin', 'business_support', 'manager'].includes(session?.role)
   const initialDate = today()
   const optionsForDate = (nextDate) => taskShiftOptionsForDate({
     shiftDefinitions,
@@ -907,7 +911,7 @@ export function StoreTasks() {
 
   return (
     <div className="page admin-task-page">
-      <PageHeader title="Giao việc" subtitle={canManageStore ? `Tạo danh sách công việc theo ca tại ${activeStore?.name || 'cửa hàng đang chọn'}.` : `Xem danh sách công việc theo ca tại ${activeStore?.name || 'cửa hàng đang chọn'}.`} icon={ClipboardCheck} />
+      <PageHeader title="Công việc tính thưởng & vi phạm" subtitle={canManageStore ? `Giao việc, ghi nhận và theo dõi thưởng, vi phạm tại ${activeStore?.name || 'cửa hàng đang chọn'}.` : `Theo dõi công việc, thưởng và vi phạm tại ${activeStore?.name || 'cửa hàng đang chọn'}.`} icon={ClipboardCheck} />
       {!canManageStore && <InfoNote>Chế độ chỉ xem. Chỉ Admin, Quản lý cửa hàng và Nhân viên hỗ trợ KD được giao việc.</InfoNote>}
       <Card className="task-toolbar-card">
         <div className="task-toolbar-grid">
@@ -928,7 +932,7 @@ export function StoreTasks() {
             const id = String(employee.id || employee.code || employee.employeeCode || '')
             const selected = selectedIdSet.has(id)
             return <label key={id} className={selected ? 'selected' : ''}>
-              <input type="checkbox" checked={selected} onChange={() => toggleEmployee(id)} aria-label={`Chọn nhân viên ${employee.name || id}`} />
+              <input type="checkbox" checked={selected} onChange={() => toggleEmployee(id)} aria-label={`Chọn nhân viên ${employee.name || id}, mã ${id}, ${employee.position || employee.role || 'Nhân viên cửa hàng'}, ${getEmployeeType(employee)}`} />
               <Avatar name={employee.name || id} src={employee.avatar} employeeId={employee.id || employee.code || id} color={employee.color} />
               <span><strong>{employee.name || id}</strong><small>{id} · {employee.position || employee.role || 'Nhân viên cửa hàng'}</small></span>
               <Badge tone={getEmployeeType(employee) === 'Full-Time' ? 'blue' : 'green'}>{getEmployeeType(employee)}</Badge>
@@ -951,7 +955,7 @@ export function StoreTasks() {
                 ? `Thưởng ${money(task.amountVnd)}`
                 : `Công việc cố định · ${money(task.amountVnd)}`
               return <label key={task.catalogItemId} className={checked ? 'selected' : ''}>
-                <input type="checkbox" checked={checked} onChange={() => toggleCatalogTask(task.catalogItemId)} aria-label={`Chọn công việc ${task.name}`} />
+                <input type="checkbox" checked={checked} onChange={() => toggleCatalogTask(task.catalogItemId)} aria-label={`Chọn công việc ${task.name}, ${amountLabel}`} />
                 <span><strong>{task.name}</strong><small>{amountLabel}</small></span>
               </label>
             })}
@@ -976,6 +980,8 @@ export function StoreTasks() {
           </tr>)}{!history.length && <tr><td colSpan="5">Chưa có lịch sử giao việc tại cửa hàng này.</td></tr>}</tbody>
         </TableWrap>
       </Card>
+      {canManageViolations && <ViolationManagementPage targetUnit="store" embedded />}
+      {canManageViolations && <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} />}
     </div>
   )
 }

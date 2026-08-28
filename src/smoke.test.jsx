@@ -223,7 +223,7 @@ describe('IDOSI page smoke tests', () => {
     expect(screen.getAllByRole('link').find((link) => link.getAttribute('href') === '/office')).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Điều chuyển nhân sự$/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Công việc được giao/i })).toBeTruthy()
+    expect(screen.getByRole('link', { name: /Công việc tính thưởng/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
     expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()

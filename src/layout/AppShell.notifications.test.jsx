@@ -225,6 +225,8 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.getByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i }).getAttribute('href')).toBe('/admin/work-registration-schedules')
+    expect(screen.getByRole('link', { name: /Công việc tính thưởng & Vi phạm HTKD/i }).getAttribute('href')).toBe('/admin/tasks')
+    expect(screen.queryByRole('link', { name: /^Vi phạm HTKD$/i })).toBeNull()
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
   })
 
@@ -240,7 +242,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /^Nhân viên hỗ trợ KD$/i }).getAttribute('href')).toBe('/admin/business-support')
     expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Điều chuyển nhân sự$/i })).toBeTruthy()
-    expect(screen.getByRole('link', { name: /Công việc được giao/i }).getAttribute('href')).toBe('/support/tasks')
+    expect(screen.getByRole('link', { name: /Công việc tính thưởng/i }).getAttribute('href')).toBe('/support/tasks')
     expect(screen.getByRole('link', { name: /Lịch sử chỉnh sửa đơn hàng/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Cài đặt$/i })).toBeNull()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
@@ -250,7 +252,7 @@ describe('AppShell notifications', () => {
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
     expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('span')?.textContent)).toEqual([
-      'Tổng quan', 'Công việc được giao', 'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
+      'Tổng quan', 'Công việc tính thưởng', 'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
       'Cài đặt thông tin đơn hàng', 'Danh mục công việc & vi phạm', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý', 'Thưởng doanh thu ngày',
@@ -261,16 +263,19 @@ describe('AppShell notifications', () => {
   it('shows Cài đặt lương in the store workspace only to Admin and Business Support', () => {
     const adminView = render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
     expect(screen.getByRole('link', { name: 'Cài đặt lương' }).getAttribute('href')).toBe('/store/salary-settings')
+    expect(screen.getByRole('link', { name: /Công việc tính thưởng & vi phạm/i }).getAttribute('href')).toBe('/store/tasks')
 
     adminView.unmount()
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001' }
     const supportView = render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
     expect(screen.getByRole('link', { name: 'Cài đặt lương' }).getAttribute('href')).toBe('/store/salary-settings')
+    expect(screen.getByRole('link', { name: /Công việc tính thưởng & vi phạm/i }).getAttribute('href')).toBe('/store/tasks')
 
     supportView.unmount()
     mocked.session = { role: 'store_manager', name: 'Quản lý cửa hàng', storeId: 'CH001' }
     render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
     expect(screen.queryByRole('link', { name: 'Cài đặt lương' })).toBeNull()
+    expect(screen.getByRole('link', { name: /Công việc tính thưởng & vi phạm/i }).getAttribute('href')).toBe('/store/tasks')
   })
 
   it('opens the role selector below the logo and keeps the account avatar for a multi-role account', async () => {

@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ClipboardCheck,
   Clock3,
+  Gift,
   ListChecks,
   Send,
 } from 'lucide-react'
@@ -26,7 +27,10 @@ import { money, shortDate, today } from '../../utils'
 import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { ROLE_KEYS, roleProfileCode, roleProfilesFromApp } from './roleManagementUtils'
 import { isFinalSupportWorkStatus, supportWorkEvaluation, supportWorkProgress, supportWorkStatus } from './supportWorkUtils'
+import { rewardStatistics, workRewardRows } from '../compensation/compensationStatistics'
+import { CompensationStatisticsGrid, RewardHistoryTable } from '../compensation/CompensationStatisticsTables'
 import '../task-assignment.css'
+import '../compensation/compensation-page.css'
 
 const ratingTone = (rating) => {
   if (rating === 'Hoàn thành tốt') return 'green'
@@ -113,6 +117,15 @@ export function AdminSupportWorkPage() {
   const sortedAssignments = useMemo(() => [...(Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])].toSorted((left, right) => (
     String(right.assignedAt || right.updatedAt || right.date).localeCompare(String(left.assignedAt || left.updatedAt || left.date))
   )), [app.supportWorkAssignments])
+  const supportRewardRows = workRewardRows({
+    attendance: app.attendance,
+    workCatalogProgress: app.workCatalogProgress,
+    compensationEntries: app.compensationEntries,
+    tasks: app.tasks,
+    employees: supportProfiles,
+    targetUnit: 'business_support',
+  })
+  const supportRewardStatistics = rewardStatistics(supportRewardRows)
   const toggleCatalogTask = (catalogItemId) => setForm((current) => ({
     ...current,
     selectedCatalogIds: current.selectedCatalogIds.includes(catalogItemId)
@@ -136,7 +149,7 @@ export function AdminSupportWorkPage() {
   }
 
   return <div className="page support-work-page">
-    <PageHeader title="GIAO VIỆC" subtitle="Giao công việc cho nhân viên hỗ trợ kinh doanh hoặc Khối văn phòng và theo dõi toàn bộ lịch sử." icon={ClipboardCheck} />
+    <PageHeader title="CÔNG VIỆC TÍNH THƯỞNG & VI PHẠM HTKD" subtitle="Quản lý công việc HTKD/Khối văn phòng, lịch sử nhận thưởng và vi phạm HTKD theo ngày, ca." icon={ClipboardCheck} />
     <Card title="Tạo danh sách công việc">
       <div className="support-work-form-head">
         <Field label="Chọn ngày" required><Input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} /></Field>
@@ -164,6 +177,12 @@ export function AdminSupportWorkPage() {
           return <tr key={assignment.id}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || allProfiles.find((profile) => roleProfileCode(profile) === assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{Number(task.amountVnd || 0) > 0 && <small>{task.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'Thưởng ' : ''}{money(task.amountVnd)}</small>}{task.description && <small>{task.description}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
         })}{!sortedAssignments.length && <tr><td colSpan="7">Chưa có lịch sử giao việc.</td></tr>}</tbody>
       </TableWrap>
+    </Card>
+    <Card title="Lịch sử nhận thưởng của HTKD">
+      <RewardHistoryTable rows={supportRewardRows} employees={supportProfiles} showEmployee />
+    </Card>
+    <Card title="Thống kê thưởng của HTKD">
+      <CompensationStatisticsGrid statistics={supportRewardStatistics} employees={supportProfiles} showEmployee mode="reward" />
     </Card>
   </div>
 }
@@ -210,15 +229,74 @@ function SupportAssignmentCard({ assignment, highlighted, onUpdate }) {
 export function SupportAssignedWorkPage() {
   const app = useApp()
   const [searchParams] = useSearchParams()
+  const [rewardDate, setRewardDate] = useState(today)
+  const [rewardBusyKey, setRewardBusyKey] = useState('')
   const requestedId = String(searchParams.get('assignment') || '')
-  const employeeId = String(app.session?.employeeId || app.session?.code || '')
+  const employeeId = String(
+    app.currentEmployee?.id
+    || app.currentEmployee?.code
+    || app.currentEmployee?.employeeId
+    || app.session?.employeeId
+    || app.session?.code
+    || '',
+  )
   const assignments = (Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])
     .filter((assignment) => employeeId && String(assignment.employeeId) === employeeId)
     .toSorted((left, right) => String(right.date || right.assignedAt).localeCompare(String(left.date || left.assignedAt)))
-  const totals = assignments.reduce((result, assignment) => {
-    const progress = supportWorkProgress(assignment)
-    return { total: result.total + progress.total, completed: result.completed + progress.completed }
-  }, { total: 0, completed: 0 })
+  const rewardRows = useMemo(() => workRewardRows({
+    attendance: app.attendance,
+    workCatalogProgress: app.workCatalogProgress,
+    compensationEntries: app.compensationEntries,
+    tasks: app.tasks,
+    employees: app.employees,
+    employeeId,
+  }), [app.attendance, app.workCatalogProgress, app.compensationEntries, app.tasks, app.employees, employeeId])
+  const dayRewardRows = rewardRows.filter((row) => row.workDate === rewardDate)
+  const actionableDayRewardRows = dayRewardRows.filter((row) => row.attendanceOpen)
+  const completedDayRows = dayRewardRows.filter((row) => row.completed)
+  const paidDayRows = dayRewardRows.filter((row) => row.paid)
+  const rewardMonth = rewardDate.slice(0, 7)
+  const completedMonthRows = rewardRows.filter((row) => row.paid && row.month === rewardMonth)
+  const rewardGroups = [...actionableDayRewardRows.reduce((groups, row) => {
+    const current = groups.get(row.attendanceId) || {
+      attendanceId: row.attendanceId,
+      workDate: row.workDate,
+      shiftName: row.shiftName,
+      shiftTime: row.shiftTime,
+      rows: [],
+    }
+    current.rows.push(row)
+    groups.set(row.attendanceId, current)
+    return groups
+  }, new Map()).values()]
+  const statistics = useMemo(() => rewardStatistics(rewardRows), [rewardRows])
+
+  const toggleReward = async (row, checked) => {
+    if (typeof app.setWorkReward !== 'function') {
+      app.notify?.('Chức năng ghi nhận công việc tính thưởng chưa sẵn sàng.', 'info')
+      return
+    }
+    const key = `${row.attendanceId}:${row.catalogItemId}`
+    const progress = (Array.isArray(app.workCatalogProgress) ? app.workCatalogProgress : []).find((item) => (
+      String(item.attendanceId || item.checklistAttendanceId || '') === String(row.attendanceId)
+      && String(item.catalogItemId || item.workCatalogItemId || item.taskId || '') === String(row.catalogItemId)
+    ))
+    const expectedEntityVersion = Number(progress?.version)
+    setRewardBusyKey(key)
+    try {
+      const result = await app.setWorkReward({
+        attendanceId: row.attendanceId,
+        catalogItemId: row.catalogItemId,
+        checked,
+        ...(Number.isSafeInteger(expectedEntityVersion) && expectedEntityVersion > 0 ? { expectedEntityVersion } : {}),
+      })
+      if (result?.ok === false) app.notify?.(result.message || 'Không thể cập nhật công việc tính thưởng.', 'info')
+    } catch (error) {
+      app.notify?.(error?.message || 'Không thể cập nhật công việc tính thưởng.', 'info')
+    } finally {
+      setRewardBusyKey('')
+    }
+  }
 
   const update = async (payload, validationMessage = '') => {
     if (validationMessage) return app.notify?.(validationMessage, 'info')
@@ -228,16 +306,47 @@ export function SupportAssignedWorkPage() {
     return result
   }
 
-  return <div className="page support-work-page">
-    <PageHeader title="CÔNG VIỆC ĐƯỢC GIAO" subtitle="Danh sách công việc Admin giao; cập nhật tiến độ và gửi lý do nếu chưa hoàn thành." icon={ListChecks} />
+  return <div className="page support-work-page compensation-page">
+    <PageHeader title="CÔNG VIỆC TÍNH THƯỞNG" subtitle="Tick công việc đã hoàn thành khi ca còn mở; mức thưởng được lấy từ danh mục đã chụp tại lúc bắt đầu ca." icon={ListChecks} />
     <div className="metrics-grid metrics-grid--4">
-      <MetricCard label="ĐỢT GIAO VIỆC" value={assignments.length} icon={ClipboardCheck} tone="blue" />
-      <MetricCard label="TỔNG CÔNG VIỆC" value={totals.total} icon={ListChecks} tone="orange" />
-      <MetricCard label="ĐÃ HOÀN THÀNH" value={totals.completed} icon={CheckCircle2} tone="green" />
-      <MetricCard label="CÒN LẠI" value={Math.max(0, totals.total - totals.completed)} icon={Clock3} tone="red" />
+      <MetricCard label="CÔNG VIỆC CA ĐANG MỞ" value={actionableDayRewardRows.length} icon={ListChecks} tone="blue" />
+      <MetricCard label="ĐÃ TICK TRONG NGÀY" value={completedDayRows.length} icon={CheckCircle2} tone="green" />
+      <MetricCard label="THƯỞNG ĐÃ DUYỆT TRONG NGÀY" value={money(paidDayRows.reduce((sum, row) => sum + row.amountVnd, 0))} icon={Gift} tone="green" />
+      <MetricCard label="THƯỞNG TRONG THÁNG" value={money(completedMonthRows.reduce((sum, row) => sum + row.amountVnd, 0))} icon={CalendarDays} tone="orange" />
     </div>
-    <div className="support-assignment-list">{assignments.map((assignment) => <SupportAssignmentCard key={`${assignment.id}:${assignment.updatedAt || ''}`} assignment={assignment} highlighted={requestedId === String(assignment.id)} onUpdate={update} />)}</div>
-    {!assignments.length && <InfoNote>Hiện chưa có công việc nào được giao.</InfoNote>}
+    <Card title="Công việc tính thưởng theo ca">
+      <div className="reward-work-toolbar">
+        <Field label="Ngày làm việc"><Input aria-label="Ngày làm việc tính thưởng" type="date" value={rewardDate} onChange={(event) => setRewardDate(event.target.value)} /></Field>
+        <InfoNote>Danh sách này được cố định theo ca lúc điểm danh. Tick công việc đã hoàn thành để hệ thống ghi nhận đúng ngày, ca và mức thưởng.</InfoNote>
+      </div>
+      <div className="reward-shift-list">
+        {rewardGroups.map((group) => <section className="reward-shift-card" key={group.attendanceId} aria-label={`${group.shiftName} ngày ${group.workDate}`} aria-busy={group.rows.some((row) => rewardBusyKey === `${row.attendanceId}:${row.catalogItemId}`)}>
+          <div className="reward-shift-card__head">
+            <span><strong>{group.shiftName || 'Chưa gắn ca'}</strong><small><CalendarDays size={15} aria-hidden="true" /> {shortDate(group.workDate)}{group.shiftTime ? ` · ${group.shiftTime}` : ''}</small></span>
+            <Badge tone="green">{group.rows.filter((row) => row.completed).length}/{group.rows.length} đã tick</Badge>
+          </div>
+          <div className="reward-task-checklist">
+            {group.rows.map((row) => {
+              const busy = rewardBusyKey === `${row.attendanceId}:${row.catalogItemId}`
+              return <label key={row.id} className={row.completed ? 'is-complete' : ''}>
+                <input type="checkbox" aria-label={`${row.title} (+${money(row.amountVnd)}), ${group.shiftName || 'chưa gắn ca'}, ngày ${shortDate(group.workDate)}`} checked={row.completed} disabled={Boolean(rewardBusyKey)} onChange={(event) => toggleReward(row, event.target.checked)} />
+                <span><strong>{row.title}</strong>{row.description && <small>{row.description}</small>}</span>
+                <b className="reward-task-amount">+{money(row.amountVnd)}</b>
+                {row.payoutStatus === 'pending' && <Badge tone="orange">Chờ duyệt team</Badge>}
+                {busy && <small className="reward-task-saving" role="status" aria-live="polite">Đang lưu…</small>}
+              </label>
+            })}
+          </div>
+        </section>)}
+      </div>
+      {!rewardGroups.length && <InfoNote tone="orange">Không có ca đang mở kèm công việc tính thưởng trong ngày đã chọn. Ca đã kết thúc chỉ xuất hiện trong lịch sử và thống kê.</InfoNote>}
+    </Card>
+    <Card title="Lịch sử nhận thưởng theo ngày, theo tháng"><RewardHistoryTable rows={rewardRows} employees={app.employees} /></Card>
+    <Card title="Thống kê nhận thưởng"><CompensationStatisticsGrid statistics={statistics} mode="reward" /></Card>
+    {assignments.length > 0 && <>
+      <h2 className="support-work-section-title">Công việc được giao trước đây</h2>
+      <div className="support-assignment-list">{assignments.map((assignment) => <SupportAssignmentCard key={`${assignment.id}:${assignment.updatedAt || ''}`} assignment={assignment} highlighted={requestedId === String(assignment.id)} onUpdate={update} />)}</div>
+    </>}
   </div>
 }
 

@@ -29,6 +29,11 @@ vi.mock('./pages/admin/AdminWorkRegistrationSchedulePage', () => ({
   AdminWorkRegistrationSchedulePage: () => <div>Lịch đăng ký HTKD và KVP route</div>,
 }))
 
+vi.mock('./pages/admin/SupportWorkPages', () => ({
+  AdminSupportWorkPage: () => <div>Công việc tính thưởng HTKD route</div>,
+  SupportAssignedWorkPage: () => <div>Công việc tính thưởng của tôi route</div>,
+}))
+
 vi.mock('./pages/admin/SystemFinanceV2', () => ({
   AdminCashflowV2: () => <div>Admin cashflow</div>,
   AdminOverviewV2: () => <div>Admin overview</div>,
@@ -45,7 +50,7 @@ vi.mock('./pages/compensation', () => ({
   MyCompensationPage: () => <div>Thu nhập của tôi</div>,
   MyViolationsPage: () => <div>Vi phạm của tôi</div>,
   RevenueBonusPage: () => <div>Thưởng doanh thu ngày</div>,
-  ViolationManagementPage: ({ targetUnit }) => <div>{`Quản lý vi phạm ${targetUnit}`}</div>,
+  ViolationManagementPage: ({ targetUnit, embedded }) => <div data-testid={`violation-${targetUnit}`} data-embedded={String(Boolean(embedded))}>{`Quản lý vi phạm ${targetUnit}`}</div>,
 }))
 
 function CurrentRoute() {
@@ -114,6 +119,14 @@ describe('App role routes', () => {
 
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
     expect(screen.queryByText('Quản lý vi phạm business_support')).toBeNull()
+  })
+
+  it('combines HTKD reward tasks and embedded violation management on the Admin task route', () => {
+    renderRoute('/admin/tasks', 'admin')
+
+    expect(screen.getByText('Công việc tính thưởng HTKD route')).toBeTruthy()
+    expect(screen.getByTestId('violation-business_support').dataset.embedded).toBe('true')
+    expect(screen.getByTestId('current-route').textContent).toBe('/admin/tasks')
   })
 
   it('allows a store manager to read the scoped daily-revenue bonus', () => {
