@@ -1,3 +1,6 @@
+import { clockMinuteOfDay, scheduleShiftIds } from '../../domain/recordCompatibility'
+import { displayScheduleRecordShifts } from '../../domain/scheduleResolution'
+
 export const STORE_SHIFT_COLOR_PALETTE = Object.freeze([
   '#ff3d71', '#7c3aed', '#00a6fb', '#00b894', '#ff8a00',
   '#e84393', '#3a86ff', '#8ac926', '#ff595e', '#00c2d1',
@@ -72,8 +75,7 @@ export const moveStoreScheduleDate = (anchorDate, view = 'day', direction = 1) =
 }
 
 const clockMinutes = (value) => {
-  const match = String(value || '').match(/^([01]\d|2[0-3]):([0-5]\d)$/u)
-  return match ? Number(match[1]) * 60 + Number(match[2]) : null
+  return clockMinuteOfDay(value)
 }
 
 export const scheduleShiftIsOvernight = (shift = {}) => {
@@ -112,12 +114,7 @@ export const stableScheduleShiftColor = (storeId, shiftId) => {
   return STORE_SHIFT_COLOR_PALETTE[(hash >>> 0) % STORE_SHIFT_COLOR_PALETTE.length]
 }
 
-export const scheduleShiftIds = (record = {}) => {
-  const values = Array.isArray(record.shiftIds) && record.shiftIds.length
-    ? record.shiftIds
-    : record.shiftId ? [record.shiftId] : []
-  return [...new Set(values.map(identity).filter(Boolean))]
-}
+export { scheduleShiftIds } from '../../domain/recordCompatibility'
 
 export const storeScheduleRecordMatches = (record = {}, storeId = '') => {
   const requestedStoreId = identity(storeId)
@@ -177,9 +174,12 @@ export const resolveStoreScheduleShift = ({ record = {}, shiftId, shiftDefinitio
   }
 }
 
-export const resolveStoreScheduleRecordShifts = ({ record = {}, shiftDefinitions = [], storeId = '' } = {}) => (
-  scheduleShiftIds(record).map((shiftId) => resolveStoreScheduleShift({ record, shiftId, shiftDefinitions, storeId })).filter(Boolean)
-)
+export const resolveStoreScheduleRecordShifts = ({ record = {}, shiftDefinitions = [], storeId = '' } = {}) => {
+  const canonical = displayScheduleRecordShifts({ record, shiftDefinitions, selectedStoreId: storeId })
+  return canonical.map((shift) => (
+    shift.unresolved ? shift : shift.id ? resolveStoreScheduleShift({ record, shiftId: shift.id, shiftDefinitions, storeId }) : shift
+  ))
+}
 
 export const activeStoreShiftDefinitions = (shiftDefinitions = [], { storeId = '', date = '' } = {}) => {
   const byId = new Map()

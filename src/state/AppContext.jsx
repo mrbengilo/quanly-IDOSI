@@ -35,6 +35,7 @@ import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
+import { canonicalViolationTargetUnit } from '../domain/violationTargetUnit'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
   normalizeOrderInformationOptions,
@@ -278,6 +279,29 @@ const isOfficeUnit = (value) => ['office', 'văn phòng', 'van phong', 'khối v
 const isBusinessSupportUnit = (value) => ['business_support', 'business support', 'support', 'hỗ trợ kinh doanh', 'ho tro kinh doanh', 'htkd'].includes(normalizeText(value))
 const isStoreManagerUnit = (value) => ['store_manager', 'store manager', 'quản lý cửa hàng', 'quan ly cua hang', 'qlch'].includes(normalizeText(value))
 const normalizeAuthRole = (role) => normalizeText(role) === 'manager' ? 'business_support' : normalizeText(role)
+
+export const assertCompensationCommandAuthorization = ({ command, role: rawRole, actorStoreId, storeId, targetUnit = '' }) => {
+  const role = normalizeAuthRole(rawRole)
+  const normalizedTargetUnit = command.startsWith('violation.')
+    ? canonicalViolationTargetUnit({ targetUnit })
+    : ''
+  const managerCommands = new Set([
+    'revenue_bonus.calculate_day', 'revenue_bonus.confirm_day', 'violation.create', 'violation.void',
+  ])
+  const allowed = ['admin', 'business_support'].includes(role)
+    || (role === 'store_manager' && managerCommands.has(command))
+  if (!allowed) throw new Error('Tài khoản không có quyền thực hiện thao tác lương thưởng này.')
+  if (normalizedTargetUnit === 'business_support' && role !== 'admin') {
+    throw new Error('Chỉ Admin được quản lý vi phạm của Nhân viên hỗ trợ KD.')
+  }
+  if (role === 'store_manager' && command.startsWith('violation.') && normalizedTargetUnit !== 'store') {
+    throw new Error('Quản lý cửa hàng chỉ được quản lý vi phạm nhân viên cửa hàng.')
+  }
+  if (role === 'store_manager' && (!storeId || String(storeId) !== String(actorStoreId || ''))) {
+    throw new Error('Quản lý cửa hàng chỉ được thao tác đúng cửa hàng được phân công.')
+  }
+  return true
+}
 export const remoteEffectiveUserChanged = (current = {}, latest = {}) => {
   if (!latest || typeof latest !== 'object' || !Object.keys(latest).length) return false
   const field = (record, camel, snake = camel) => String(record?.[camel] ?? record?.[snake] ?? '')
@@ -3548,6 +3572,15 @@ export function AppProvider({ children }) {
     }
   }
 
+  const requireCompensationCommand = (command, { storeId = '', targetUnit = '' } = {}) => {
+    assertCompensationCommandAuthorization({
+      command, role: state.session?.role, actorStoreId: state.session?.storeId, storeId, targetUnit,
+    })
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để cập nhật dữ liệu lương thưởng an toàn.')
+    }
+  }
+
   const setStoreEmployeeSalaryConfig = async (payload = {}) => {
     const role = normalizeAuthRole(state.session?.role)
     if (!['admin', 'business_support'].includes(role)) {
@@ -3637,7 +3670,10 @@ export function AppProvider({ children }) {
   }
 
   const createViolation = async (payload = {}) => {
-    requireCompensationOperator(String(payload.targetUnit || ''))
+    requireCompensationCommand('violation.create', {
+      targetUnit: String(payload.targetUnit || 'store'),
+      storeId: String(payload.storeId || state.activeStoreId || ''),
+    })
     return runRemoteDomainCommand(
       'violation.create',
       payload,
@@ -3647,7 +3683,10 @@ export function AppProvider({ children }) {
 
   const voidViolation = async (payload = {}) => {
     const violation = state.violations.find((record) => String(record.id || '') === String(payload.id || payload.violationId || ''))
-    requireCompensationOperator(String(violation?.targetUnit || ''))
+    requireCompensationCommand('violation.void', {
+      targetUnit: canonicalViolationTargetUnit(violation),
+      storeId: String(violation?.storeId || ''),
+    })
     return runRemoteDomainCommand(
       'violation.void',
       payload,
@@ -3656,7 +3695,7 @@ export function AppProvider({ children }) {
   }
 
   const calculateRevenueBonusDay = async (payload = {}) => {
-    requireCompensationOperator()
+    requireCompensationCommand('revenue_bonus.calculate_day', { storeId: String(payload.storeId || '') })
     return runRemoteDomainCommand(
       'revenue_bonus.calculate_day',
       payload,
@@ -3664,8 +3703,18 @@ export function AppProvider({ children }) {
     )
   }
 
+  const confirmRevenueBonusDay = async (payload = {}) => {
+    const daily = state.revenueBonusDaily.find((record) => String(record.id || '') === String(payload.revenueBonusDailyId || payload.id || ''))
+    requireCompensationCommand('revenue_bonus.confirm_day', { storeId: String(daily?.storeId || payload.storeId || '') })
+    return runRemoteDomainCommand(
+      'revenue_bonus.confirm_day',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-confirm:${crypto.randomUUID()}`,
+    )
+  }
+
   const approveRevenueBonusMilestone = async (payload = {}) => {
-    requireCompensationOperator()
+    requireCompensationCommand('revenue_bonus.approve_milestone')
     return runRemoteDomainCommand(
       'revenue_bonus.approve_milestone',
       payload,
@@ -3674,7 +3723,7 @@ export function AppProvider({ children }) {
   }
 
   const rejectRevenueBonusMilestone = async (payload = {}) => {
-    requireCompensationOperator()
+    requireCompensationCommand('revenue_bonus.reject_milestone')
     return runRemoteDomainCommand(
       'revenue_bonus.reject_milestone',
       payload,
@@ -4993,6 +5042,7 @@ export function AppProvider({ children }) {
     createViolation,
     voidViolation,
     calculateRevenueBonusDay,
+    confirmRevenueBonusDay,
     approveRevenueBonusMilestone,
     rejectRevenueBonusMilestone,
     addSalaryAdjustment,

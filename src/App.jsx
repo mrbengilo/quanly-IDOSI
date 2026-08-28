@@ -191,6 +191,7 @@ export default function App() {
         <Route path="/store/payroll" element={<StorePayrollV2 />} />
         <Route path="/store/salary-settings" element={<RoleGuard roles={['admin', 'business_support']}><StoreSalarySettings /></RoleGuard>} />
         <Route path="/store/revenue-bonus" element={<RevenueBonusPage />} />
+        <Route path="/store/violations" element={<ViolationManagementPage targetUnit="store" />} />
         <Route path="/store/my-compensation" element={<MyCompensationPage />} />
         <Route path="/store/my-violations" element={<MyViolationsPage />} />
         <Route path="/store/cashflow" element={<StoreCashflowV2 />} />

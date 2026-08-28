@@ -84,4 +84,27 @@ describe('store schedule read model', () => {
     expect(columns[0].name).toBe('Ca mới')
     expect(columns[1]).toMatchObject({ name: 'Ca cũ', time: '21:00 - 05:00 (+1 ngày)', snapshot: true })
   })
+
+  it('renders a missing historical definition as an explicit unresolved placeholder', () => {
+    const resolved = resolveStoreScheduleRecordShifts({
+      record: { id: 'HIST-MISSING', storeId: 'S1', shiftId: 'REMOVED', note: 'Giữ audit' },
+      storeId: 'S1', shiftDefinitions: [],
+    })
+    expect(resolved).toEqual([expect.objectContaining({
+      name: 'Ca không xác định', start: '', end: '', unresolved: true,
+      resolutionReason: 'Thiếu dữ liệu ca', note: 'Giữ audit',
+    })])
+  })
+
+  it('renders valid and unresolved shifts from the same historical record in input order', () => {
+    const resolved = resolveStoreScheduleRecordShifts({
+      record: { id: 'HIST-PARTIAL', storeId: 'S1', shiftIds: ['REMOVED', 'DAY'] },
+      storeId: 'S1',
+      shiftDefinitions: [{ id: 'DAY', storeId: 'S1', name: 'Ca ngày', start: '08:00', end: '17:00' }],
+    })
+    expect(resolved).toMatchObject([
+      { id: 'REMOVED', shiftId: 'REMOVED', unresolved: true, start: '', end: '' },
+      { id: 'DAY', name: 'Ca ngày', start: '08:00', end: '17:00' },
+    ])
+  })
 })

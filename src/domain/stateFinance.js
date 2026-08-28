@@ -1,10 +1,9 @@
 import { createFinanceTransaction, selectFinanceSummary } from './finance'
-
-const validInteger = (value) => Number.isSafeInteger(Number(value)) && Number(value) >= 0
+import { isNonNegativeSafeIntegerAmount } from './recordCompatibility'
 
 export function financeTransactionsFromState(state = {}) {
   const orderTransactions = (state.orders || [])
-    .filter((order) => !order.deletedAt && order.status !== 'Đã xóa' && validInteger(order.amount))
+    .filter((order) => !order.deletedAt && order.status !== 'Đã xóa' && isNonNegativeSafeIntegerAmount(order.amount))
     .map((order) => createFinanceTransaction({
       id: `order:${order.id}`,
       storeId: order.storeId,
@@ -22,7 +21,7 @@ export function financeTransactionsFromState(state = {}) {
     }))
 
   const expenseTransactions = (state.expenseEntries || [])
-    .filter((entry) => entry.recognized !== false && !entry.deletedAt && validInteger(entry.amount))
+    .filter((entry) => entry.recognized !== false && !entry.deletedAt && isNonNegativeSafeIntegerAmount(entry.amount))
     .map((entry) => createFinanceTransaction({
       id: `expense:${entry.id}`,
       storeId: entry.storeId,

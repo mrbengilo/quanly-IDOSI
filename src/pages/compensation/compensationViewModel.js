@@ -1,3 +1,6 @@
+import { canonicalViolationTargetUnit } from '../../domain/violationTargetUnit'
+import { canonicalEmployeeUnit } from '../../domain/employeeUnit'
+
 const normalize = (value) => String(value ?? '').trim().toLowerCase()
 
 export const canonicalRole = (role) => normalize(role) === 'manager' ? 'business_support' : normalize(role)
@@ -32,6 +35,8 @@ export const isApproved = (entry) => {
 export const isRejected = (entry) => Boolean(entry?.rejectedAt)
   || ['rejected', 'đã từ chối'].includes(normalize(entry?.status))
 
+export const isSuperseded = (entry) => normalize(entry?.status) === 'superseded'
+
 export const typeLabel = (type) => ({
   MANUAL: 'Thưởng thủ công',
   ALLOWANCE: 'Phụ cấp',
@@ -41,12 +46,25 @@ export const typeLabel = (type) => ({
 
 export const statusLabel = (entry) => {
   if (isVoided(entry)) return 'Đã hủy'
+  if (isSuperseded(entry)) return 'Đã thay thế'
+  const status = normalize(entry?.status)
+  if (status === 'draft') return 'Bản nháp'
+  if (status === 'confirmed') return 'Đã xác nhận'
+  if (status === 'pending') return 'Chờ duyệt'
+  if (status === 'approved') return 'Đã duyệt'
   if (isRejected(entry)) return 'Đã từ chối'
   if (isApproved(entry)) return 'Đã duyệt'
-  return normalize(entry?.status) === 'pending' ? 'Chờ duyệt' : String(entry?.status || 'Chờ duyệt')
+  return String(entry?.status || 'Chờ duyệt')
 }
 
-export const statusTone = (entry) => isVoided(entry) || isRejected(entry) ? 'red' : isApproved(entry) ? 'green' : 'orange'
+export const statusTone = (entry) => {
+  if (isVoided(entry) || isRejected(entry)) return 'red'
+  if (isSuperseded(entry)) return 'blue'
+  const status = normalize(entry?.status)
+  if (status === 'draft' || status === 'pending') return 'orange'
+  if (status === 'confirmed' || status === 'approved') return 'green'
+  return isApproved(entry) ? 'green' : 'orange'
+}
 
 const INTERNAL_STORE_IDS = new Set(['OFFICE', 'BUSINESS_SUPPORT', 'ADMIN', 'SYSTEM'])
 const INACTIVE_STORE_STATUSES = new Set([
@@ -68,12 +86,11 @@ export const storesVisibleToRole = (stores = [], session = {}) => {
   return list.filter((store) => entityId(store) === storeId)
 }
 
-export const employeeUnit = (employee = {}) => {
-  const unit = normalize(employee?.unit || employee?.unitType || employee?.department)
-  if (['business_support', 'business-support', 'support', 'htkd'].includes(unit)) return 'business_support'
-  if (['office', 'back_office', 'kvp', 'văn phòng', 'khối văn phòng'].includes(unit)) return 'office'
-  return 'store'
-}
+export const employeeUnit = canonicalEmployeeUnit
+
+export const isConfirmedRevenueBonus = (record = {}) => (
+  ['confirmed', 'approved', 'đã duyệt', 'đã xác nhận'].includes(normalize(record?.status))
+)
 
 export const activeEmployees = (employees = []) => employees.filter((employee) => (
   !employee?.deletedAt && !['đã nghỉ việc', 'inactive'].includes(normalize(employee?.status))
@@ -93,21 +110,15 @@ export const managerCandidates = ({ employees = [], managerAccounts = [], storeI
     .filter(Boolean))
   return activeEmployees(employees).filter((employee) => {
     if (storeId && String(employee?.storeId || '') !== String(storeId)) return false
-    const roles = Array.isArray(employee?.roles) ? employee.roles.map(normalize) : []
-    const position = normalize(employee?.position)
-    return employee?.isStoreManager === true
-      || roles.includes('store_manager')
-      || linkedManagerIds.has(entityId(employee))
-      || position.includes('quản lý cửa hàng')
+    const linkedManager = linkedManagerIds.has(entityId(employee))
+    return employeeUnit(linkedManager ? {
+      ...employee,
+      roles: [...(Array.isArray(employee?.roles) ? employee.roles : []), 'store_manager'],
+    } : employee) === 'store_manager'
   })
 }
 
-export const targetUnitOfViolation = (entry = {}) => {
-  const value = normalize(entry?.targetUnit || entry?.unit || entry?.employeeUnit)
-  if (['business_support', 'business-support', 'support', 'htkd'].includes(value)) return 'business_support'
-  if (['office', 'kvp', 'back_office'].includes(value)) return 'office'
-  return 'store'
-}
+export const targetUnitOfViolation = canonicalViolationTargetUnit
 
 export const revenueRecordDate = (record) => String(
   record?.businessDate || record?.date || record?.calculationDate || record?.createdAt || '',
@@ -175,7 +186,9 @@ export const payrollCompensationTotalsForEmployee = ({
     const bucket = type === 'WORK' ? 'work' : type === 'ALLOWANCE' ? 'allowance' : type === 'REVENUE' ? 'revenue' : 'manual'
     totals[bucket] += safePayrollAmount(entry)
   })
-  revenueBonusAllocations.filter(belongsToPeriod).forEach((entry) => {
+  revenueBonusAllocations.filter((entry) => (
+    belongsToPeriod(entry) && normalize(entry.status) === 'confirmed'
+  )).forEach((entry) => {
     totals.revenue += safePayrollAmount(entry)
   })
   violations.filter(belongsToPeriod).forEach((entry) => {

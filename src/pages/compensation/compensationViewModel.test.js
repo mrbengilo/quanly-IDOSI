@@ -33,13 +33,14 @@ describe('compensation view models', () => {
   it('resolves managers and employee units from linked production profiles', () => {
     const employees = [
       { id: 'NV-01', name: 'Nhân viên', unit: 'store', storeId: 'CH001' },
-      { id: 'QL-01', name: 'Quản lý', unit: 'store', storeId: 'CH001', isStoreManager: true },
+      { id: 'QL-01', name: 'Quản lý', unit: 'store_manager', storeId: 'CH001', isStoreManager: true },
+      { id: 'QL-LEGACY', name: 'Quản lý legacy', unit: 'store', storeId: 'CH001', position: 'QUẢN LÝ CỬA HÀNG' },
       { id: 'VP-01', name: 'Văn phòng', unit: 'office' },
       { id: 'HT-01', name: 'Hỗ trợ', unit: 'business_support' },
     ]
-    expect(managerCandidates({ employees, storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['QL-01'])
+    expect(managerCandidates({ employees, storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['QL-01', 'QL-LEGACY'])
     expect(employeesForTarget({ employees, targetUnit: 'office' }).map((employee) => employee.id)).toEqual(['VP-01'])
-    expect(employeesForTarget({ employees, targetUnit: 'store', storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['NV-01', 'QL-01'])
+    expect(employeesForTarget({ employees, targetUnit: 'store', storeId: 'CH001' }).map((employee) => employee.id)).toEqual(['NV-01'])
   })
 
   it('normalizes nested revenue allocations without leaking unrelated records', () => {
@@ -48,11 +49,23 @@ describe('compensation view models', () => {
     expect(targetUnitOfViolation({ unit: 'htkd' })).toBe('business_support')
   })
 
-  it('renders pending and rejected milestone decisions in Vietnamese with distinct tones', () => {
+  it('renders lifecycle statuses with explicit precedence over retained audit timestamps', () => {
+    expect(statusLabel({ status: 'DRAFT' })).toBe('Bản nháp')
+    expect(statusLabel({ status: 'draft' })).toBe('Bản nháp')
+    expect(statusTone({ status: 'DRAFT' })).toBe('orange')
     expect(statusLabel({ status: 'PENDING' })).toBe('Chờ duyệt')
     expect(statusTone({ status: 'PENDING' })).toBe('orange')
+    expect(statusLabel({ status: 'CONFIRMED' })).toBe('Đã xác nhận')
+    expect(statusLabel({ status: 'confirmed' })).toBe('Đã xác nhận')
+    expect(statusTone({ status: 'CONFIRMED' })).toBe('green')
+    expect(statusLabel({ status: 'APPROVED' })).toBe('Đã duyệt')
+    expect(statusTone({ status: 'APPROVED' })).toBe('green')
     expect(statusLabel({ status: 'REJECTED' })).toBe('Đã từ chối')
     expect(statusTone({ status: 'REJECTED' })).toBe('red')
+    expect(statusLabel({ status: 'SUPERSEDED', approvedAt: '2026-08-20T08:00:00Z', approvedBy: { id: 'ADMIN' } })).toBe('Đã thay thế')
+    expect(statusTone({ status: 'SUPERSEDED', approvedAt: '2026-08-20T08:00:00Z', approvedBy: { id: 'ADMIN' } })).toBe('blue')
+    expect(statusLabel({ status: 'CUSTOM' })).toBe('CUSTOM')
+    expect(statusTone({ status: 'CUSTOM' })).toBe('orange')
   })
 
   it('groups only active canonical payroll records without dropping revenue allocations', () => {
@@ -68,7 +81,8 @@ describe('compensation view models', () => {
         { employeeId: 'NV-02', effectiveDate: '2026-08-06', type: 'MANUAL', amountVnd: 999, status: 'APPROVED' },
       ],
       revenueBonusAllocations: [
-        { employeeId: 'NV-01', businessDate: '2026-08-07', amountVnd: 50, status: 'APPROVED' },
+        { employeeId: 'NV-01', businessDate: '2026-08-07', amountVnd: 50, status: 'CONFIRMED' },
+        { employeeId: 'NV-01', businessDate: '2026-08-07', amountVnd: 777, status: 'DRAFT' },
         { employeeId: 'NV-01', businessDate: '2026-08-08', amountVnd: 999, status: 'VOIDED', voidedAt: '2026-08-09T00:00:00Z' },
       ],
       violations: [

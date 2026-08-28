@@ -17,4 +17,44 @@ describe('employee schedule view', () => {
     expect(rows[0]).toMatchObject({ kind: 'schedule', storeName: 'Dosii NTL', shiftName: 'Ca sáng' })
     expect(rows[1]).toMatchObject({ kind: 'support', storeName: 'Dosii KVC', hourlyRate: 29_000, allowance: 50_000 })
   })
+
+  it('keeps unresolved historical shifts renderable beside valid rows', () => {
+    const rows = employeeScheduleRows({
+      employee: { id: 'E01', storeId: 'S01' },
+      schedule: [
+        { id: 'VALID', employeeId: 'E01', storeId: 'S01', date: '2026-08-20', shiftId: 'DAY' },
+        { id: 'ORPHAN', employeeId: 'E01', storeId: 'S01', date: '2026-08-21', shiftId: 'REMOVED', note: 'Audit' },
+      ],
+      shiftDefinitions: [{ id: 'DAY', storeId: 'S01', name: 'Ca ngày', start: '08:00', end: '17:00' }],
+      range: { from: '2026-08-20', to: '2026-08-21' },
+    })
+    expect(rows).toHaveLength(2)
+    expect(rows[0]).toMatchObject({ shiftName: 'Ca ngày', start: '08:00', end: '17:00', unresolved: false })
+    expect(rows[1]).toMatchObject({ shiftName: 'Ca không xác định', start: '', end: '', unresolved: true,
+      resolutionNote: 'Thiếu dữ liệu ca', note: 'Audit' })
+  })
+
+  it('renders legacy employeeCode rows with normalized single-digit clocks', () => {
+    const rows = employeeScheduleRows({
+      employee: { id: 'E01', employeeCode: 'LEGACY-01', storeId: 'S01' },
+      schedule: [{ id: 'LEGACY', employeeCode: 'LEGACY-01', storeId: 'S01', date: '2026-08-20', start: '8:30', end: '9:05' }],
+      range: { from: '2026-08-20', to: '2026-08-20' },
+    })
+    expect(rows).toMatchObject([{ start: '08:30', end: '09:05', unresolved: false }])
+  })
+
+  it('keeps partial multi-shift history in stable order without exposing fake times', () => {
+    const rows = employeeScheduleRows({
+      employee: { id: 'E01', storeId: 'S01' },
+      schedule: [{ id: 'PARTIAL', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+        shiftIds: ['DAY', 'REMOVED'] }],
+      shiftDefinitions: [{ id: 'DAY', storeId: 'S01', name: 'Ca ngày', start: '08:00', end: '17:00' }],
+      range: { from: '2026-08-20', to: '2026-08-20' },
+    })
+    expect(rows).toMatchObject([
+      { shiftName: 'Ca không xác định', start: '', end: '', unresolved: true,
+        resolutionNote: 'Thiếu dữ liệu ca' },
+      { shiftName: 'Ca ngày', start: '08:00', end: '17:00', unresolved: false },
+    ])
+  })
 })

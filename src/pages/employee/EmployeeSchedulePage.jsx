@@ -53,7 +53,7 @@ export function EmployeeSchedulePage() {
           <tbody>{rows.map((row) => <tr key={row.id}>
             <td><strong>{shortDate(row.date)}</strong></td>
             <td><span className="table-stack"><strong><Store size={14} /> {row.storeName}</strong>{row.kind === 'support' && <small>Hỗ trợ: {formatVietnamTransferDateTime(row.startAt)} – {formatVietnamTransferDateTime(row.endAt)}</small>}</span></td>
-            <td><span className="table-stack"><strong>{row.shiftName}</strong><small><Clock3 size={13} /> {row.start || '—'} – {row.end || '—'}</small></span></td>
+            <td><span className="table-stack"><strong>{row.shiftName}</strong><small><Clock3 size={13} /> {row.start || '—'} – {row.end || '—'}</small>{row.resolutionNote && <small>{row.resolutionNote}</small>}</span></td>
             <td><Badge tone={row.kind === 'support' ? 'orange' : 'green'}>{row.kind === 'support' ? 'Điều chuyển hỗ trợ' : 'Lịch cửa hàng chính'}</Badge></td>
             <td>{row.kind === 'support' ? `${money(row.hourlyRate)}/giờ` : '—'}</td>
             <td>{row.kind === 'support' ? money(row.allowance) : '—'}</td>

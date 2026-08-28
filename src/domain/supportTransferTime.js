@@ -122,9 +122,18 @@ export const supportTransferBounds = (record = {}) => {
   }
 }
 
-export const supportTransferIsUsable = (record = {}) => (
+export const supportTransferIsHistoricallyUsable = (record = {}) => (
   !record.deletedAt
-  && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+  && !record.revokedAt
+  && !record.cancelledAt
+  && record.active !== false
+  && !['đã xóa', 'đã hủy', 'từ chối', 'đã từ chối', 'không hợp lệ', 'rejected', 'invalid', 'inactive', 'cancelled', 'canceled', 'revoked', 'deleted']
+    .includes(String(record.status || '').trim().toLocaleLowerCase('vi'))
+)
+
+export const supportTransferIsUsable = (record = {}) => (
+  supportTransferIsHistoricallyUsable(record)
+  && !['hoàn tất', 'completed'].includes(String(record.status || '').trim().toLocaleLowerCase('vi'))
 )
 
 export const isSupportTransferActiveAt = (record, at = new Date()) => {
@@ -135,7 +144,7 @@ export const isSupportTransferActiveAt = (record, at = new Date()) => {
 }
 
 export const supportTransferOverlapsDate = (record, date) => {
-  if (!supportTransferIsUsable(record)) return false
+  if (!supportTransferIsHistoricallyUsable(record)) return false
   const normalizedDate = dateOnlyParts(date)?.date
   const bounds = supportTransferBounds(record)
   if (!normalizedDate || !bounds) return false
@@ -146,9 +155,13 @@ export const supportTransferOverlapsDate = (record, date) => {
     && bounds.endMs > dayStart
 }
 
+export const activeSupportTransferOverlapsDate = (record, date) => (
+  supportTransferIsUsable(record) && supportTransferOverlapsDate(record, date)
+)
+
 export const supportTransferMatchesMoment = (record, moment = new Date()) => {
   const source = String(moment || '').trim()
   return DATE_PATTERN.test(source)
-    ? supportTransferOverlapsDate(record, source)
+    ? activeSupportTransferOverlapsDate(record, source)
     : isSupportTransferActiveAt(record, moment)
 }

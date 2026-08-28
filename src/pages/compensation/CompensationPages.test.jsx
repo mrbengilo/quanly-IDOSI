@@ -16,8 +16,8 @@ const stores = [
 ]
 
 const employees = [
-  { id: 'QL-01', name: 'Quản lý Một', unit: 'store', storeId: 'CH001', isStoreManager: true },
-  { id: 'QL-02', name: 'Quản lý Hai', unit: 'store', storeId: 'CH002', isStoreManager: true },
+  { id: 'QL-01', name: 'Quản lý Một', unit: 'store', storeId: 'CH001', title: 'QUẢN LÝ CỬA HÀNG' },
+  { id: 'QL-02', name: 'Quản lý Hai', unit: 'store', storeId: 'CH002', roles: ['store-manager'] },
   { id: 'NV-01', name: 'Nhân viên Một', unit: 'store', storeId: 'CH001' },
   { id: 'NV-02', name: 'Nhân viên Hai', unit: 'store', storeId: 'CH001' },
   { id: 'HT-01', name: 'Hỗ trợ Một', unit: 'business_support' },
@@ -50,6 +50,7 @@ const baseApp = (role = 'admin') => ({
   createViolation: vi.fn().mockResolvedValue({ ok: true }),
   voidViolation: vi.fn().mockResolvedValue({ ok: true }),
   calculateRevenueBonusDay: vi.fn().mockResolvedValue({ ok: true }),
+  confirmRevenueBonusDay: vi.fn().mockResolvedValue({ ok: true }),
   approveRevenueBonusMilestone: vi.fn().mockResolvedValue({ ok: true }),
   rejectRevenueBonusMilestone: vi.fn().mockResolvedValue({ ok: true }),
 })
@@ -100,7 +101,7 @@ describe('compensation pages', () => {
     fireEvent.click(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }))
 
     await waitFor(() => expect(mocked.app.createViolation).toHaveBeenCalledWith(expect.objectContaining({
-      targetUnit: 'store', employeeId: 'QL-01', storeId: 'CH001', catalogItemId: 'violation-store-late', amountVnd: 2_000,
+      targetUnit: 'store', employeeId: 'NV-01', storeId: 'CH001', catalogItemId: 'violation-store-late', amountVnd: 2_000,
     })))
   })
 
@@ -108,10 +109,10 @@ describe('compensation pages', () => {
     mocked.app = {
       ...baseApp('employee'),
       revenueBonuses: [{
-        id: 'RB-01', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 134,
+        id: 'RB-01', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 134, status: 'CONFIRMED',
         allocations: [
-          { id: 'A-01', employeeId: 'NV-01', employeeName: 'Nhân viên Một', allocatedVnd: 35, status: 'Đã duyệt' },
-          { id: 'A-02', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 99, status: 'Đã duyệt' },
+          { id: 'A-01', employeeId: 'NV-01', employeeName: 'Nhân viên Một', allocatedVnd: 35, weightUnits: 900, status: 'CONFIRMED' },
+          { id: 'A-02', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 99, weightUnits: 2700, status: 'CONFIRMED' },
         ],
       }],
     }
@@ -121,17 +122,19 @@ describe('compensation pages', () => {
     expect(screen.getAllByText('35 đ').length).toBeGreaterThan(0)
     expect(screen.queryByText('99 đ')).toBeNull()
     expect(screen.queryByText('Nhân viên Hai')).toBeNull()
+    expect(screen.getByText('25.00%')).toBeTruthy()
+    expect(screen.queryByText('100%')).toBeNull()
     expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
   })
 
-  it('shows a store manager only the team total and their own allocation', () => {
+  it('gives a store manager team aggregates and only their own allocation detail', () => {
     mocked.app = {
       ...baseApp('store_manager'),
       revenueBonuses: [{
-        id: 'RB-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 170,
+        id: 'RB-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 170, status: 'CONFIRMED',
         allocations: [
-          { id: 'A-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'QL-01', employeeName: 'Quản lý Một', allocatedVnd: 70, status: 'Đã duyệt' },
-          { id: 'A-COWORKER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 100, status: 'Đã duyệt' },
+          { id: 'A-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'QL-01', employeeName: 'Quản lý Một', allocatedVnd: 70, status: 'CONFIRMED' },
+          { id: 'A-COWORKER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 100, status: 'CONFIRMED' },
         ],
       }],
     }
@@ -141,7 +144,90 @@ describe('compensation pages', () => {
     expect(screen.getAllByText('70 đ').length).toBeGreaterThan(0)
     expect(screen.queryByText('100 đ')).toBeNull()
     expect(screen.queryByText('Nhân viên Hai')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+    expect(screen.getByText('Chi tiết thưởng của tôi')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
+  })
+
+  it('requires an explicit confirmation for a draft daily revenue bonus', async () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [{
+        id: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', period: '2026-08',
+        revenueVnd: 1_000_000, percentagePoolVnd: 10_000, totalPoolVnd: 10_000,
+        allocatedVnd: 10_000, unallocatedVnd: 0, status: 'DRAFT', version: 1,
+      }],
+    }
+    render(<RevenueBonusPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'XÁC NHẬN THƯỞNG' }))
+    await waitFor(() => expect(mocked.app.confirmRevenueBonusDay).toHaveBeenCalledWith({
+      revenueBonusDailyId: 'RB-DRAFT', expectedVersion: 1,
+    }))
+  })
+
+  it('shows a draft replacement separately without double-counting the confirmed result', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [
+        { id: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 2_000, totalPoolVnd: 200, status: 'DRAFT', allocations: [{ id: 'A-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-01', amountVnd: 200, status: 'DRAFT' }] },
+        { id: 'RB-CONFIRMED', storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 1_000, totalPoolVnd: 100, status: 'CONFIRMED', allocations: [{ id: 'A-CONFIRMED', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-01', amountVnd: 100, status: 'CONFIRMED' }] },
+      ],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('DOANH THU ĐỦ ĐIỀU KIỆN').parentElement.textContent).toContain('2,000')
+    expect(screen.getByText('DOANH THU ĐỦ ĐIỀU KIỆN').parentElement.textContent).not.toContain('3,000')
+    expect(screen.getAllByText('200 đ').length).toBeGreaterThan(0)
+    expect(screen.getByText('RB-CONFIRMED')).toBeTruthy()
+    expect(screen.getByText('RB-DRAFT')).toBeTruthy()
+  })
+
+  it('keeps milestone decisions hidden from store managers', () => {
+    mocked.app = {
+      ...baseApp('store_manager'),
+      revenueBonuses: [{ id: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', status: 'DRAFT' }],
+      teamRewardClaims: [{ id: 'CLAIM-01', revenueBonusDailyId: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', status: 'PENDING' }],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN THƯỞNG' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Duyệt' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Từ chối' })).toBeNull()
+  })
+
+  it('groups live revenue by the Vietnam business date', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      orders: [
+        { id: 'ORDER-IN-DAY', storeId: 'CH001', amount: 125, createdAt: '2026-08-25T18:30:00.000Z' },
+        { id: 'ORDER-PREVIOUS', storeId: 'CH001', amount: 999, createdAt: '2026-08-25T16:30:00.000Z' },
+      ],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('125 đ')).toBeTruthy()
+    expect(screen.queryByText('999 đ')).toBeNull()
+  })
+
+  it('matches server date precedence and canonical amount validation in live revenue', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      orders: [
+        { id: 'EXPLICIT', storeId: 'CH001', date: '2026-08-26', createdAt: '2026-08-25T16:30:00.000Z', amount: 100 },
+        { id: 'CREATED-AT', storeId: 'CH001', createdAt: '2026-08-25T18:30:00.000Z', amount: 200 },
+        { id: 'PREVIOUS-DAY', storeId: 'CH001', createdAt: '2026-08-25T16:30:00.000Z', amount: 400 },
+        { id: 'NEGATIVE', storeId: 'CH001', date: '2026-08-26', amount: -1 },
+        { id: 'FRACTIONAL', storeId: 'CH001', date: '2026-08-26', amount: 1.5 },
+        { id: 'NAN', storeId: 'CH001', date: '2026-08-26', amount: Number.NaN },
+        { id: 'INFINITY', storeId: 'CH001', date: '2026-08-26', amount: Number.POSITIVE_INFINITY },
+        { id: 'UNSAFE', storeId: 'CH001', date: '2026-08-26', amount: Number.MAX_SAFE_INTEGER + 1 },
+        { id: 'ZERO', storeId: 'CH001', date: '2026-08-26', amount: 0 },
+      ],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('DOANH THU ĐỦ ĐIỀU KIỆN').parentElement.textContent).toContain('300 đ')
+    expect(screen.queryByText('700 đ')).toBeNull()
   })
 
   it('lets privileged roles approve a pending highest-milestone claim', async () => {
@@ -150,7 +236,7 @@ describe('compensation pages', () => {
       revenueBonuses: [{
         id: 'RB-PENDING', storeId: 'CH001', businessDate: '2026-08-26',
         percentagePoolVnd: 50, pendingMilestonePoolVnd: 100, totalPoolVnd: 50,
-        status: 'APPROVED',
+        status: 'Đã xác nhận',
       }],
       teamRewardClaims: [{
         id: 'CLAIM-01', revenueBonusDailyId: 'RB-PENDING', storeId: 'CH001',
@@ -167,6 +253,41 @@ describe('compensation pages', () => {
     await waitFor(() => expect(mocked.app.approveRevenueBonusMilestone).toHaveBeenCalledWith({
       claimId: 'CLAIM-01', expectedVersion: 3,
     }))
+  })
+
+  it('blocks pending milestone commands until the linked daily bonus is confirmed', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      revenueBonuses: [{ id: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', status: 'DRAFT', version: 1 }],
+      teamRewardClaims: [{ id: 'CLAIM-DRAFT', revenueBonusDailyId: 'RB-DRAFT', storeId: 'CH001', businessDate: '2026-08-26', status: 'PENDING', version: 2 }],
+    }
+    render(<RevenueBonusPage />)
+
+    const approve = screen.getByRole('button', { name: 'Duyệt' })
+    const reject = screen.getByRole('button', { name: 'Từ chối' })
+    expect(approve.disabled).toBe(true)
+    expect(reject.disabled).toBe(true)
+    expect(screen.getByText('Phải XÁC NHẬN THƯỞNG trước.')).toBeTruthy()
+    fireEvent.click(approve)
+    fireEvent.click(reject)
+    expect(mocked.app.approveRevenueBonusMilestone).not.toHaveBeenCalled()
+    expect(mocked.app.rejectRevenueBonusMilestone).not.toHaveBeenCalled()
+  })
+
+  it('excludes store managers from store employee violations and submits a valid store employee', async () => {
+    mocked.app = baseApp('store_manager')
+    render(<ViolationManagementPage targetUnit="store" />)
+
+    const employeeSelect = screen.getByLabelText('Nhân viên')
+    expect(within(employeeSelect).queryByRole('option', { name: /Quản lý Một/ })).toBeNull()
+    expect(within(employeeSelect).getByRole('option', { name: /Nhân viên Một/ })).toBeTruthy()
+    expect(employeeSelect.value).toBe('NV-01')
+    fireEvent.click(screen.getByRole('checkbox', { name: /Đi trễ/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'GHI NHẬN VI PHẠM' }))
+
+    await waitFor(() => expect(mocked.app.createViolation).toHaveBeenCalledWith(expect.objectContaining({
+      targetUnit: 'store', employeeId: 'NV-01', storeId: 'CH001',
+    })))
   })
 
   it('defaults privileged revenue bonus work to the active operational store', async () => {
@@ -195,6 +316,24 @@ describe('compensation pages', () => {
     expect(screen.getByText('Khoản của tôi')).toBeTruthy()
     expect(screen.queryByText('Khoản người khác')).toBeNull()
     expect(screen.queryByText('999 đ')).toBeNull()
+  })
+
+  it('excludes draft revenue allocations from personal approved income', () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      revenueBonuses: [{
+        id: 'RB-MIXED', storeId: 'CH001', businessDate: '2026-08-26',
+        allocations: [
+          { id: 'A-CONFIRMED', employeeId: 'NV-01', businessDate: '2026-08-26', amountVnd: 50, status: 'CONFIRMED' },
+          { id: 'A-DRAFT', employeeId: 'NV-01', businessDate: '2026-08-26', amountVnd: 900, status: 'DRAFT' },
+        ],
+      }],
+    }
+    render(<MyCompensationPage />)
+
+    expect(screen.getAllByText('50 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('950 đ')).toBeNull()
+    expect(screen.queryByText('900 đ')).toBeNull()
   })
 
   it('aggregates and breaks down the signed-in employee payroll across stores', () => {
