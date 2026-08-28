@@ -5787,6 +5787,7 @@ const normalizeOperationalEmployeeProfile = (payload, previous, store, state, un
   const position = operationalPosition(payload.position ?? payload.jobPosition ?? previous?.position, unit)
   const preservedMetadata = previous ? Object.fromEntries(Object.entries(previous).filter(([key]) => [
     'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'authUserId', 'authVersion', 'identityImages', 'workTimeSchedule',
+    'managerRoleStartedAt', 'managerRoleEndedAt', 'managerEffectiveAt', 'managerEffectiveUntil', 'roleEffectiveAt',
   ].includes(key))) : {}
   const profile = sanitizeStateValue({
     ...preservedMetadata,
@@ -6217,6 +6218,14 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (linkedStoreEmployee && employeeUnit(linkedStoreEmployee) === 'store' && String(linkedStoreEmployee.storeId || '') !== storeId) {
     throw new ApiError(400, 'LINKED_EMPLOYEE_STORE_MISMATCH', 'Nhân viên được chọn không thuộc cửa hàng cần phân quyền quản lý.')
   }
+  if (operation === 'create' && unit === 'store_manager' && linkedEmployeeId && employees.some((employee) => (
+    employeeUnit(employee) === 'store_manager'
+    && String(employee.storeId || '') === storeId
+    && employeeProfileLinkIdentifiers(employee).includes(linkedEmployeeId)
+    && resolveExactlyOneActiveStoreManager({ storeId, managers: [employee] }).ok
+  ))) {
+    throw new ApiError(409, 'LINKED_MANAGER_ROLE_EXISTS', 'Nhân viên đã có vai trò Quản lý cửa hàng đang hoạt động tại cửa hàng này.')
+  }
   if (operation === 'create' && unit === 'store' && linkedEmployeeId && employees.some((employee) => (
     employeeUnit(employee) === 'store'
     && String(employee.storeId || '') === storeId
@@ -6405,16 +6414,22 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   const previousWasActiveManager = previous
     ? resolveExactlyOneActiveStoreManager({ storeId, managers: [previous] }).ok
     : false
+  const previousWasManagerAssignment = previous
+    ? resolveExactlyOneActiveStoreManager({
+        storeId,
+        managers: [{
+          ...previous,
+          active: true,
+          isActive: true,
+          enabled: true,
+          status: 'Đang làm việc',
+          deletedAt: null,
+        }],
+      }).ok
+    : false
   const profileIsActiveManager = resolveExactlyOneActiveStoreManager({ storeId, managers: [profile] }).ok
   const introducesActiveManager = !previousWasActiveManager && profileIsActiveManager
   const removesActiveManager = previousWasActiveManager && !profileIsActiveManager
-  if (introducesActiveManager) {
-    profile.managerRoleStartedAt = previous?.managerRoleStartedAt || commandContext.now
-    delete profile.managerRoleEndedAt
-  } else if (removesActiveManager) {
-    profile.managerRoleStartedAt = previous?.managerRoleStartedAt || previous?.createdAt || commandContext.now
-    profile.managerRoleEndedAt = commandContext.now
-  }
   if (introducesActiveManager) {
     const managerResolution = resolveExactlyOneActiveStoreManager({
       storeId,
@@ -6427,6 +6442,20 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     if (managerResolution.code === 'STORE_MANAGER_MULTIPLE_ACTIVE') {
       throw new ApiError(409, 'STORE_MANAGER_EXISTS', 'Cửa hàng đã có một Quản lý cửa hàng đang hoạt động.')
     }
+  }
+  if (introducesActiveManager && previousWasManagerAssignment) {
+    throw new ApiError(
+      409,
+      'STORE_MANAGER_REACTIVATION_REQUIRES_NEW_ASSIGNMENT',
+      'Nhiệm kỳ quản lý cũ đã kết thúc; hãy tạo vai trò Quản lý cửa hàng mới để giữ nguyên lịch sử tính lương.',
+    )
+  }
+  if (introducesActiveManager) {
+    profile.managerRoleStartedAt = commandContext.now
+    delete profile.managerRoleEndedAt
+  } else if (removesActiveManager) {
+    profile.managerRoleStartedAt = previous?.managerRoleStartedAt || previous?.createdAt || commandContext.now
+    profile.managerRoleEndedAt = commandContext.now
   }
   if (operation === 'create') {
     if (employeeId && employeeId !== profile.id) {
@@ -9679,13 +9708,10 @@ const connectedManagerIdentity = (state, manager, resolvedManagerId, storeId) =>
       && String(profile.storeId || '') === String(storeId || '')
     ))
     .flatMap(employeeProfileIdentifiers))
-  const managerProfile = activeManagerProfiles
-    .sort((left, right) => {
-      const explicitUnitOrder = Number(employeeUnit(right) === 'store_manager')
-        - Number(employeeUnit(left) === 'store_manager')
-      if (explicitUnitOrder) return explicitUnitOrder
-      return employeeProfileIdentifier(left).localeCompare(employeeProfileIdentifier(right))
-    })[0] || manager
+  // Keep the period-selected assignment authoritative for attribution. An
+  // active replacement may share the same underlying payroll identity, but it
+  // must not rewrite managerProfileId on an earlier period.
+  const managerProfile = manager
   const payeeAliases = new Set(employeeProfileLinkIdentifiers(manager))
   const payeeOrder = (left, right) => {
     const exactAliasOrder = Number(payeeAliases.has(employeeProfileIdentifier(right)))
@@ -9724,6 +9750,53 @@ const connectedManagerIdentity = (state, manager, resolvedManagerId, storeId) =>
   }
 }
 
+const managerRoleEffectiveWindow = (profile = {}) => {
+  const explicitRoleStartedAt = String(
+    profile.managerRoleStartedAt
+    || profile.managerEffectiveAt
+    || profile.roleEffectiveAt
+    || profile.createdAt
+    || '',
+  ).trim()
+  const roleStartedAt = explicitRoleStartedAt || (activeEmployeeIdentityProfile(profile)
+    ? String(profile.startDate || profile.joinDate || '').trim()
+    : '')
+  const roleEndedAt = String(
+    profile.managerRoleEndedAt
+    || profile.managerEffectiveUntil
+    || profile.deletedAt
+    || (!activeEmployeeIdentityProfile(profile) ? profile.updatedAt : '')
+    || '',
+  ).trim()
+  return { explicitRoleStartedAt, roleStartedAt, roleEndedAt }
+}
+
+const managerRoleEpoch = (value, { endOfDate = false } = {}) => {
+  const source = String(value || '').trim()
+  if (!source) return null
+  if (/^\d{4}-\d{2}-\d{2}$/u.test(source)) {
+    const boundaryDate = endOfDate ? shiftCalendarDate(source, 1) : source
+    return boundaryDate ? transferDateTimeEpoch(`${boundaryDate}T00:00`) : null
+  }
+  const explicitEpoch = transferDateTimeEpoch(source)
+  if (explicitEpoch != null) return explicitEpoch
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/u.test(source)) {
+    const localEpoch = Date.parse(`${source}${VIETNAM_UTC_OFFSET}`)
+    return Number.isFinite(localEpoch) ? localEpoch : null
+  }
+  return null
+}
+
+const managerPayrollPeriodBounds = (period) => {
+  if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(String(period || ''))) return null
+  const [year, month] = period.split('-').map(Number)
+  const nextYear = month === 12 ? year + 1 : year
+  const nextMonth = month === 12 ? 1 : month + 1
+  const startMs = transferDateTimeEpoch(`${period}-01T00:00`)
+  const endMs = transferDateTimeEpoch(`${nextYear}-${String(nextMonth).padStart(2, '0')}-01T00:00`)
+  return Number.isFinite(startMs) && Number.isFinite(endMs) ? { startMs, endMs } : null
+}
+
 const managerProfileEligibleForPayrollPeriod = (profile, storeId, period) => {
   if (!isPlainRecord(profile) || !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(String(period || ''))) return false
   const synthetic = {
@@ -9735,31 +9808,17 @@ const managerProfileEligibleForPayrollPeriod = (profile, storeId, period) => {
     deletedAt: null,
   }
   if (!resolveExactlyOneActiveStoreManager({ storeId, managers: [synthetic] }).ok) return false
-  const [year, month] = period.split('-').map(Number)
-  const periodStart = `${period}-01`
-  const periodEnd = `${period}-${String(new Date(Date.UTC(year, month, 0)).getUTCDate()).padStart(2, '0')}`
-  const explicitRoleStartedAt = String(
-    profile.managerRoleStartedAt
-    || profile.managerEffectiveAt
-    || profile.roleEffectiveAt
-    || profile.createdAt
-    || '',
-  ).slice(0, 10)
-  const roleStartedAt = explicitRoleStartedAt || (activeEmployeeIdentityProfile(profile)
-    ? String(profile.startDate || profile.joinDate || '').slice(0, 10)
-    : '')
-  const roleEndedAt = String(
-    profile.managerRoleEndedAt
-    || profile.managerEffectiveUntil
-    || profile.deletedAt
-    || (!activeEmployeeIdentityProfile(profile) ? profile.updatedAt : '')
-    || '',
-  ).slice(0, 10)
+  const periodBounds = managerPayrollPeriodBounds(period)
+  if (!periodBounds) return false
+  const { explicitRoleStartedAt, roleStartedAt, roleEndedAt } = managerRoleEffectiveWindow(profile)
   // An inactive legacy row without an effective end is not reliable history;
   // keep the active representation authoritative instead of double-counting it.
   if (!activeEmployeeIdentityProfile(profile) && (!explicitRoleStartedAt || !roleEndedAt)) return false
-  return (!roleStartedAt || roleStartedAt <= periodEnd)
-    && (!roleEndedAt || roleEndedAt >= periodStart)
+  const roleStartedMs = managerRoleEpoch(roleStartedAt)
+  const roleEndedMs = managerRoleEpoch(roleEndedAt, { endOfDate: true })
+  if ((roleStartedAt && roleStartedMs == null) || (roleEndedAt && roleEndedMs == null)) return false
+  return (roleStartedMs == null || roleStartedMs < periodBounds.endMs)
+    && (roleEndedMs == null || roleEndedMs > periodBounds.startMs)
 }
 
 const resolveStoreManagerForPayrollPeriod = (state, storeId, period) => {
@@ -9768,8 +9827,29 @@ const resolveStoreManagerForPayrollPeriod = (state, storeId, period) => {
     ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
     ...(Array.isArray(state.managerAccounts) ? state.managerAccounts : []),
   ].filter((profile) => managerProfileEligibleForPayrollPeriod(profile, storeId, period))
+  const periodBounds = managerPayrollPeriodBounds(period)
+  // The monthly result follows the assignment that remains effective at the
+  // end of the period. If the store had no manager at month-end, use the last
+  // assignment that ended during the month. Truly concurrent assignments are
+  // still passed through so the canonical resolver fails closed.
+  const ongoingCandidates = candidates.filter((profile) => {
+    const roleEndedAt = managerRoleEffectiveWindow(profile).roleEndedAt
+    const roleEndedMs = managerRoleEpoch(roleEndedAt, { endOfDate: true })
+    return !roleEndedAt || (periodBounds && roleEndedMs >= periodBounds.endMs)
+  })
+  const latestEndedMs = ongoingCandidates.length ? null : candidates.reduce((latest, profile) => {
+    const roleEndedAt = managerRoleEffectiveWindow(profile).roleEndedAt
+    const roleEndedMs = managerRoleEpoch(roleEndedAt, { endOfDate: true })
+    return roleEndedMs != null && roleEndedMs > latest ? roleEndedMs : latest
+  }, Number.NEGATIVE_INFINITY)
+  const periodCandidates = ongoingCandidates.length
+    ? ongoingCandidates
+    : candidates.filter((profile) => managerRoleEpoch(
+        managerRoleEffectiveWindow(profile).roleEndedAt,
+        { endOfDate: true },
+      ) === latestEndedMs)
   const originalsBySynthetic = new Map()
-  const syntheticCandidates = candidates.map((profile) => {
+  const syntheticCandidates = periodCandidates.map((profile) => {
     const synthetic = {
       ...profile,
       active: true,
@@ -16768,7 +16848,10 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     && legacyMilestoneEquivalent
     && onlyOriginalPayrollStore,
   )
-  if (currentDaily?.fingerprint === fingerprint || safeLegacyNoop) {
+  const exactFingerprintNoop = currentDaily?.fingerprint === fingerprint
+    && allocationsEquivalent
+    && legacyMilestoneEquivalent
+  if (exactFingerprintNoop || safeLegacyNoop) {
     return recordNoopCommand(db, actor, {
       command: body.type,
       version: Number(current.version),
