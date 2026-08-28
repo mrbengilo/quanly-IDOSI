@@ -48,6 +48,38 @@ describe('canonical employee work-store eligibility', () => {
     expect(employeeHistoricallyWorkedAtStoreOnDate({ supportTransfers: [completed], employee, storeId: 'S02', date: '2026-08-22' })).toBe(false)
   })
 
+  it('matches canonical employee aliases without treating transfer record aliases as employee references', () => {
+    const legacyEmployee = { id: 'employee-uuid', employeeCode: 'LEGACY-E01', storeId: 'S01' }
+    const legacyTransfer = {
+      ...active,
+      id: 'LEGACY-E01',
+      code: 'employee-uuid',
+      employeeId: 'employee-uuid',
+      employeeCode: 'LEGACY-E01',
+    }
+    expect(effectiveEmployeeStoreOnDate({
+      supportTransfers: [legacyTransfer], employee: legacyEmployee, date: '2026-08-20',
+    })).toBe('S02')
+    expect(effectiveEmployeeStoreOnDate({
+      supportTransfers: [{ ...legacyTransfer, employeeId: 'OTHER' }], employee: legacyEmployee, date: '2026-08-20',
+    })).toBe('S01')
+    expect(effectiveEmployeeStoreOnDate({
+      supportTransfers: [{ ...active, id: 'LEGACY-E01', code: 'employee-uuid', employeeId: '', employeeCode: '' }],
+      employee: legacyEmployee,
+      date: '2026-08-20',
+    })).toBe('S01')
+    expect(effectiveEmployeeStoreOnDate({
+      supportTransfers: [{ ...active, employeeId: '', employeeCode: 'CODE-ONLY' }],
+      employee: { employeeCode: 'CODE-ONLY', storeId: 'S01' },
+      date: '2026-08-20',
+    })).toBe('S02')
+    expect(effectiveEmployeeStoreOnDate({
+      supportTransfers: [{ ...active, employeeId: '', employeeCode: '' }],
+      employee: { employeeCode: 'CODE-ONLY', storeId: 'S01' },
+      date: '2026-08-20',
+    })).toBe('S01')
+  })
+
   it.each(['Đã hủy', 'cancelled', 'rejected', 'Đã từ chối'])(
     'does not derive historical ownership from %s transfers',
     (status) => expect(employeeHistoricallyWorkedAtStoreOnDate({

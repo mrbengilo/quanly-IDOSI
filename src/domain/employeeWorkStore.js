@@ -1,12 +1,19 @@
 import { activeSupportTransferOverlapsDate, supportTransferOverlapsDate } from './supportTransferTime.js'
+import { employeeIdentifierAliases } from './recordCompatibility.js'
 
 const text = (value) => String(value || '').trim()
-const employeeId = (employee = {}) => text(employee.id || employee.code || employee.employeeId)
+
+const transferMatchesEmployee = (transfer = {}, employee = {}) => {
+  const aliases = new Set(employeeIdentifierAliases(employee))
+  if (!aliases.size) return false
+  const references = [transfer.employeeId, transfer.employeeCode].map(text).filter(Boolean)
+  return references.length > 0 && references.every((reference) => aliases.has(reference))
+}
 
 export const activeSupportDestinationStoreIdsOnDate = (supportTransfers = [], employee = {}, date = '') => (
   [...new Set((Array.isArray(supportTransfers) ? supportTransfers : [])
     .filter((transfer) => (
-      text(transfer?.employeeId) === employeeId(employee)
+      transferMatchesEmployee(transfer, employee)
       && text(transfer?.toStoreId)
       && activeSupportTransferOverlapsDate(transfer, date)
     ))
@@ -16,7 +23,7 @@ export const activeSupportDestinationStoreIdsOnDate = (supportTransfers = [], em
 export const historicalSupportDestinationStoreIdsOnDate = (supportTransfers = [], employee = {}, date = '') => (
   [...new Set((Array.isArray(supportTransfers) ? supportTransfers : [])
     .filter((transfer) => (
-      text(transfer?.employeeId) === employeeId(employee)
+      transferMatchesEmployee(transfer, employee)
       && text(transfer?.toStoreId)
       && supportTransferOverlapsDate(transfer, date)
     ))
@@ -25,14 +32,14 @@ export const historicalSupportDestinationStoreIdsOnDate = (supportTransfers = []
 
 export const employeeWorksAtStoreOnDate = ({ supportTransfers = [], employee = {}, storeId = '', date = '' } = {}) => {
   const selectedStoreId = text(storeId)
-  if (!selectedStoreId || !employeeId(employee)) return false
+  if (!selectedStoreId || !employeeIdentifierAliases(employee).length) return false
   return text(employee.storeId) === selectedStoreId
     || activeSupportDestinationStoreIdsOnDate(supportTransfers, employee, date).includes(selectedStoreId)
 }
 
 export const employeeHistoricallyWorkedAtStoreOnDate = ({ supportTransfers = [], employee = {}, storeId = '', date = '' } = {}) => {
   const selectedStoreId = text(storeId)
-  if (!selectedStoreId || !employeeId(employee)) return false
+  if (!selectedStoreId || !employeeIdentifierAliases(employee).length) return false
   return text(employee.storeId) === selectedStoreId
     || historicalSupportDestinationStoreIdsOnDate(supportTransfers, employee, date).includes(selectedStoreId)
 }

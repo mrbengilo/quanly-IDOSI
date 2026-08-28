@@ -13347,7 +13347,7 @@ const validateRevenueBonusAllocationConservation = (state, daily, { allocationSt
   return { totalPoolVnd, allocatedVnd, unallocatedVnd: canonicalUnallocatedVnd, allocations }
 }
 
-const assertPayrollRevenueBonusFinalized = (state, storeId, period, { requireMilestones = false } = {}) => {
+const assertPayrollRevenueBonusFinalized = async (state, storeId, period, { requireMilestones = false } = {}) => {
   const drafts = activeRevenueBonusDraftsForPeriod(state, storeId, period)
   if (drafts.length) {
     throw new ApiError(409, 'PAYROLL_REVENUE_BONUS_DRAFT', 'Kỳ lương còn thưởng doanh thu ở trạng thái bản nháp; cần xác nhận hoặc hủy bản nháp trước.', {
@@ -13359,7 +13359,20 @@ const assertPayrollRevenueBonusFinalized = (state, storeId, period, { requireMil
     && String(record.period || monthFromRecord(record)) === String(period || '')
     && normalizeTextKey(record.status) === 'confirmed'
     && activeRevenueBonusRecord(record)
-  ))) validateRevenueBonusAllocationConservation(state, daily, { allocationStatus: 'confirmed' })
+  ))) {
+    const store = (Array.isArray(state.stores) ? state.stores : [])
+      .find((record) => String(record.id || record.code || '') === String(daily.storeId || ''))
+    if (!store || !String(daily.fingerprint || '').trim()) {
+      throw new ApiError(409, 'REVENUE_BONUS_DAILY_STALE', 'Nguồn dữ liệu thưởng doanh thu đã thay đổi hoặc thiếu bằng chứng xác nhận. Vui lòng tính lại và xác nhận bản thay thế trước khi chốt lương.')
+    }
+    const currentInputs = await revenueBonusCalculationInputs(state, store, daily.storeId, daily.businessDate)
+    if (String(daily.fingerprint) !== currentInputs.fingerprint) {
+      throw new ApiError(409, 'REVENUE_BONUS_DAILY_STALE', 'Nguồn dữ liệu thưởng doanh thu đã thay đổi. Vui lòng tính lại và xác nhận bản thay thế trước khi chốt lương.', {
+        revenueBonusDailyId: String(daily.id || '') || null,
+      })
+    }
+    validateRevenueBonusAllocationConservation(state, daily, { allocationStatus: 'confirmed' })
+  }
   if (!requireMilestones) return
   const activeDailyIds = new Set((Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
     .filter((record) => String(record.storeId || '') === String(storeId || '')
@@ -15002,7 +15015,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   }
   assertPayrollHasNoOpenAttendance(state, storeId, period)
   if (operation === 'close' || operation === 'pay' || operation === 'lock') {
-    assertPayrollRevenueBonusFinalized(state, storeId, period, { requireMilestones: operation === 'pay' })
+    await assertPayrollRevenueBonusFinalized(state, storeId, period, { requireMilestones: operation === 'pay' })
   }
 
   if (operation === 'close') {
