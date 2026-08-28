@@ -332,8 +332,8 @@ export const OFFICE_REWARDS = deepFreeze([
   { code: 'office.reward.on_time', label: 'Đi làm đúng giờ', amountVnd: 3_000 },
   { code: 'office.reward.take_out_trash', label: 'Đổ rác', amountVnd: 3_000 },
   { code: 'office.reward.drain_ac_water', label: 'Đổ nước máy lạnh', amountVnd: 2_000 },
-  { code: 'office.reward.clip_over_100k_views_team', label: 'Clip trên 100k view (thưởng team)', amountVnd: 350_000 },
-  { code: 'office.reward.clip_over_50k_views_team', label: 'Clip trên 50k view (thưởng team)', amountVnd: 200_000 },
+  { code: 'office.reward.clip_over_100k_views_team', label: 'Clip trên 100k view (thưởng team)', amountVnd: 350_000, rewardScope: 'team', milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.OFFICE_VIDEO_VIEWS, milestoneId: 'office.video.over_100_000_views' },
+  { code: 'office.reward.clip_over_50k_views_team', label: 'Clip trên 50k view (thưởng team)', amountVnd: 200_000, rewardScope: 'team', milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.OFFICE_VIDEO_VIEWS, milestoneId: 'office.video.over_50_000_views' },
 ])
 
 export const OFFICE_VIOLATIONS = deepFreeze([
@@ -376,6 +376,11 @@ const staffCatalogItems = (targetGroup, kind, records) => records.map((record, i
   effectiveTo: null,
   version: 1,
   deletedAt: null,
+  ...(record.rewardScope ? {
+    rewardScope: record.rewardScope,
+    milestoneProgramId: record.milestoneProgramId || null,
+    milestoneId: record.milestoneId || null,
+  } : {}),
 }))
 
 export const DEFAULT_STAFF_WORK_CATALOG_ITEMS = deepFreeze([

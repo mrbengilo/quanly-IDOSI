@@ -19,6 +19,7 @@ import worker, {
   supportTransferTimeBounds,
   verifyPassword,
 } from './worker'
+import { TEAM_MILESTONE_PROGRAM_IDS } from '../src/domain/compensationPolicies'
 
 const TEST_IDENTITY_IMAGE = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
 const testIdentityImages = () => ({ front: TEST_IDENTITY_IMAGE, back: TEST_IDENTITY_IMAGE })
@@ -10899,6 +10900,14 @@ describe('IDOSI Worker security primitives', () => {
           id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
         }],
+        compensationEntries: [
+          { id: 'COMP-MANAGER-TEAM-01', storeId: 'S02', employeeId: 'QL-S02', type: 'WORK', amountVnd: 1_000, effectiveDate: '2026-08-20', status: 'APPROVED' },
+          { id: 'COMP-COWORKER-TEAM-01', storeId: 'S02', employeeId: 'E-S02', type: 'WORK', amountVnd: 9_000, effectiveDate: '2026-08-20', status: 'APPROVED' },
+        ],
+        violations: [
+          { id: 'VIO-MANAGER-TEAM-01', storeId: 'S02', employeeId: 'QL-S02', amountVnd: 500, occurredOn: '2026-08-20', status: 'ACTIVE' },
+          { id: 'VIO-COWORKER-TEAM-01', storeId: 'S02', employeeId: 'E-S02', amountVnd: 4_500, occurredOn: '2026-08-20', status: 'ACTIVE' },
+        ],
       },
     }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
     expect(bootstrap.status).toBe(201)
@@ -10954,6 +10963,11 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerState.revenueBonusDaily).toEqual([expect.not.objectContaining({ allocations: expect.anything() })])
     expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
     expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(managerState.compensationEntries.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(managerState.violations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(managerState.compensationTeamTotals).toEqual(expect.arrayContaining([
+      expect.objectContaining({ period: '2026-08', workVnd: 10_000, violationsVnd: 5_000 }),
+    ]))
     expect(JSON.stringify({
       daily: managerState.revenueBonusDaily,
       allocations: managerState.revenueBonusAllocations,
@@ -11020,6 +11034,11 @@ describe('IDOSI Worker security primitives', () => {
               catalogItemId, catalogCode: 'office.reward.snapshot', catalogVersion: 7,
               kind: 'REWARD_TASK', name: 'Lau nhà theo snapshot', amountVnd: 2_000,
               effectiveDate: '2026-08-28', required: false,
+            }, {
+              catalogItemId: 'CAT-OFFICE-TEAM-100K', catalogCode: 'office.reward.clip_over_100k_views_team', catalogVersion: 1,
+              kind: 'REWARD_TASK', name: 'Clip trên 100k view (thưởng team)', amountVnd: 350_000,
+              rewardScope: 'team', milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.OFFICE_VIDEO_VIEWS,
+              milestoneId: 'office.video.over_100_000_views', effectiveDate: '2026-08-28', required: false,
             }],
           },
         }],
@@ -11094,35 +11113,48 @@ describe('IDOSI Worker security primitives', () => {
       needsReclose: true, invalidationReason: 'work_reward.set',
     })
 
-    const duplicate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    const teamClaimed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'work_reward.set', expectedVersion: 2,
+      payload: { attendanceId, catalogItemId: 'CAT-OFFICE-TEAM-100K', checked: true },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-team-reward-claim-0001' }), env)
+    expect(teamClaimed.status).toBe(201)
+    expect(await teamClaimed.json()).toMatchObject({
+      version: 3, checked: true,
+      reward: { status: 'PENDING_TEAM_REVIEW', amountVnd: 350_000, compensationEntryId: null },
+      entry: null,
+      teamClaim: { status: 'PENDING', amountVnd: 350_000, sourceType: 'work-catalog-team-claim' },
+    })
+    expect(readHydratedState(env.DB.database).compensationEntries).toHaveLength(1)
+
+    const duplicate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set', expectedVersion: 3,
       payload: { attendanceId, catalogItemId, checked: true },
     }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-claim-duplicate-0001' }), env)
     expect(duplicate.status).toBe(200)
-    expect(await duplicate.json()).toMatchObject({ version: 2, existing: true, checked: true })
+    expect(await duplicate.json()).toMatchObject({ version: 3, existing: true, checked: true })
 
     const voided = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'work_reward.set', expectedVersion: 2,
+      type: 'work_reward.set', expectedVersion: 3,
       payload: { attendanceId, catalogItemId, checked: false, expectedEntityVersion: 1 },
     }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-void-0001' }), env)
     expect(voided.status).toBe(200)
     expect(await voided.json()).toMatchObject({
-      version: 3, reward: { checked: false, status: 'VOID', version: 2 },
+      version: 4, reward: { checked: false, status: 'VOID', version: 2 },
       entry: { status: 'VOID', version: 2, voidedAt: expect.any(String) },
     })
     const staleRetick = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'work_reward.set', expectedVersion: 3,
+      type: 'work_reward.set', expectedVersion: 4,
       payload: { attendanceId, catalogItemId, checked: true, expectedEntityVersion: 1 },
     }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-retick-stale-0001' }), env)
     expect(staleRetick.status).toBe(409)
     expect(await staleRetick.json()).toMatchObject({ error: { code: 'ENTITY_VERSION_CONFLICT' } })
     const reticked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'work_reward.set', expectedVersion: 3,
+      type: 'work_reward.set', expectedVersion: 4,
       payload: { attendanceId, catalogItemId, checked: true, expectedEntityVersion: 2 },
     }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-retick-0001' }), env)
     expect(reticked.status).toBe(200)
     expect(await reticked.json()).toMatchObject({
-      version: 4, reward: { checked: true, status: 'CLAIMED', version: 3 },
+      version: 5, reward: { checked: true, status: 'CLAIMED', version: 3 },
       entry: { status: 'APPROVED', version: 3, voidedAt: null },
     })
 
@@ -11131,7 +11163,7 @@ describe('IDOSI Worker security primitives', () => {
       lockedAt: '2026-08-31T17:00:00.000Z',
     }])
     const lockedDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'work_reward.set', expectedVersion: 4,
+      type: 'work_reward.set', expectedVersion: 5,
       payload: { attendanceId, catalogItemId, checked: false, expectedEntityVersion: 3 },
     }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-locked-denied-0001' }), env)
     expect(lockedDenied.status).toBe(409)
@@ -11142,13 +11174,13 @@ describe('IDOSI Worker security primitives', () => {
     ))
     replaceStateCollection(env.DB.database, 'attendance', closedAttendance)
     const closedDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'work_reward.set', expectedVersion: 4,
+      type: 'work_reward.set', expectedVersion: 5,
       payload: { attendanceId, catalogItemId, checked: false, expectedEntityVersion: 3 },
     }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-closed-denied-0001' }), env)
     expect(closedDenied.status).toBe(409)
     expect(await closedDenied.json()).toMatchObject({ error: { code: 'OPEN_ATTENDANCE_REQUIRED' } })
     const finalState = readHydratedState(env.DB.database)
-    expect(finalState.workCatalogProgress).toHaveLength(1)
+    expect(finalState.workCatalogProgress).toHaveLength(2)
     expect(finalState.compensationEntries).toHaveLength(1)
   }, 30_000)
 

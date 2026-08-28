@@ -1961,6 +1961,45 @@ export const projectSharedState = (rawState, user) => {
       key,
       (record) => belongsToAllowedStoreEmployees(record, historicalStoreEmployeeIds),
     )
+    const ownCompensationEntries = historicalVisibleScoped('compensationEntries')
+      .filter((record) => belongsToEmployee(record, ownEmployeeId))
+    const ownViolations = historicalVisibleScoped('violations')
+      .filter((record) => belongsToEmployee(record, ownEmployeeId))
+    const compensationTeamTotals = (() => {
+      const totals = new Map()
+      const ensure = (period) => {
+        if (!totals.has(period)) totals.set(period, {
+          period,
+          workVnd: 0,
+          manualVnd: 0,
+          allowanceVnd: 0,
+          revenueVnd: 0,
+          violationsVnd: 0,
+        })
+        return totals.get(period)
+      }
+      const add = (amount) => {
+        const normalized = Number(amount)
+        return Number.isSafeInteger(normalized) && normalized >= 0 ? normalized : 0
+      }
+      for (const record of historicalVisibleScoped('compensationEntries')) {
+        if (record.deletedAt || record.voidedAt || !['approved', 'active', 'confirmed'].includes(normalizeTextKey(record.status))) continue
+        const period = String(record.period || monthFromRecord(record) || '').trim()
+        if (!/^\d{4}-\d{2}$/u.test(period)) continue
+        const type = String(record.type || record.kind || '').trim().toUpperCase()
+        const field = type === 'WORK' ? 'workVnd' : type === 'ALLOWANCE' ? 'allowanceVnd' : type === 'REVENUE' ? 'revenueVnd' : 'manualVnd'
+        const bucket = ensure(period)
+        bucket[field] += add(record.amountVnd ?? record.amount)
+      }
+      for (const record of historicalVisibleScoped('violations')) {
+        if (record.deletedAt || record.voidedAt || !['active', 'approved', 'confirmed'].includes(normalizeTextKey(record.status))) continue
+        const period = String(record.period || monthFromRecord(record) || '').trim()
+        if (!/^\d{4}-\d{2}$/u.test(period)) continue
+        const bucket = ensure(period)
+        bucket.violationsVnd += add(Math.abs(Number(record.amountVnd ?? record.amount)))
+      }
+      return [...totals.values()].sort((left, right) => right.period.localeCompare(left.period))
+    })()
     const payrollPeriods = filterArray(state, 'payrollPeriods', (period) => (
       String(period.storeId || '') === storeId
     )).map((period) => projectPayrollPeriodForEmployees(period, payrollVisibleEmployeeIds))
@@ -1999,8 +2038,9 @@ export const projectSharedState = (rawState, user) => {
       )),
       workCatalogProgress: historicalEmployeeScoped('workCatalogProgress'),
       storeShiftTaskTemplates: state.storeShiftTaskTemplates,
-      compensationEntries: historicalVisibleScoped('compensationEntries'),
-      violations: historicalVisibleScoped('violations'),
+      compensationEntries: ownCompensationEntries,
+      violations: ownViolations,
+      compensationTeamTotals,
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => String(record.storeId || '') === storeId)
         .map(redactRevenueBonusDaily),
       revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations', (record) => (
@@ -8514,7 +8554,7 @@ const asMonth = (value, field = 'Kỳ') => {
 }
 
 const dateFromRecord = (record) => {
-  const businessDate = String(record?.workDate || record?.attendanceDate || record?.date || '').trim()
+  const businessDate = String(record?.workDate || record?.attendanceDate || record?.date || record?.effectiveDate || record?.occurredOn || '').trim()
   if (/^\d{4}-\d{2}-\d{2}$/u.test(businessDate)) return businessDate
   const source = String(record?.occurredAt || record?.createdAt || '').trim()
   if (/^\d{4}-\d{2}-\d{2}$/u.test(source)) return source
@@ -13939,6 +13979,9 @@ const rewardCatalogSnapshotForAttendance = (attendance, requestedCatalogItemId) 
     ).trim(),
     name,
     amountVnd,
+    rewardScope: String(task.rewardScope || embedded.rewardScope || '').trim() || null,
+    milestoneProgramId: String(task.milestoneProgramId || embedded.milestoneProgramId || '').trim() || null,
+    milestoneId: String(task.milestoneId || embedded.milestoneId || '').trim() || null,
     effectiveDate: String(task.effectiveDate || embedded.effectiveDate || dateFromRecord(attendance)).trim(),
   }
 }
@@ -14007,6 +14050,148 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
       expectedVersion: payload.expectedEntityVersion ?? payload.expectedVersion,
     }, previous)
   }
+  const actorSnapshot = serverActorSnapshot(actor)
+  const employeeName = employee.name || employee.displayName || employeeId
+  const shiftId = String(attendance.shiftId || attendance.shift || '').trim()
+  const nextProgressVersion = Number(previous?.version || 0) + 1
+  if (catalogSnapshot.rewardScope === 'team') {
+    const teamRewardClaims = Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []
+    const milestoneProgramId = catalogSnapshot.milestoneProgramId || 'team-work-reward'
+    const milestoneId = catalogSnapshot.milestoneId || catalogSnapshot.code
+    const teamClaimId = `work-catalog-team-claim:v1:${encodeURIComponent(storeId)}:${workDate}:${encodeURIComponent(milestoneProgramId)}:${encodeURIComponent(milestoneId)}`
+    const previousClaim = teamRewardClaims.find((record) => String(record.id || '') === teamClaimId) || null
+    const claimActive = previousClaim && !previousClaim.deletedAt && !previousClaim.voidedAt
+      && ['pending', 'approved'].includes(normalizeTextKey(previousClaim.status))
+    if ((payload.checked && previous?.checked === true && claimActive)
+      || (!payload.checked && (!previous || !claimActive))) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        checked: payload.checked,
+        reward: previous,
+        entry: null,
+        existing: true,
+      }, 200, commandContext)
+    }
+    const competingClaim = payload.checked
+      ? teamRewardClaims.find((record) => (
+        String(record.storeId || '') === storeId
+        && String(record.businessDate || record.workDate || '') === workDate
+        && String(record.milestoneProgramId || '') === milestoneProgramId
+        && !record.deletedAt
+        && !record.voidedAt
+        && ['pending', 'approved'].includes(normalizeTextKey(record.status))
+        && String(record.id || '') !== teamClaimId
+      )) || null
+      : null
+    if (payload.checked) {
+      if (competingClaim?.status && normalizeTextKey(competingClaim.status) === 'approved') {
+        throw new ApiError(409, 'TEAM_REWARD_ALREADY_APPROVED', 'Mốc thưởng team đã được duyệt và không thể ghi nhận thêm.')
+      }
+      if (competingClaim && Number(competingClaim.amountVnd || 0) >= catalogSnapshot.amountVnd) {
+        throw new ApiError(409, 'TEAM_REWARD_HIGHER_MILESTONE_EXISTS', 'Mốc thưởng team cao hơn hoặc tương đương đã được gửi trong ngày.')
+      }
+    }
+    const reward = {
+      ...(previous || {}),
+      id: progressId,
+      occurrenceKey: progressId,
+      employeeId,
+      employeeName,
+      targetGroup: targetUnit,
+      storeId,
+      attendanceId,
+      workDate,
+      period,
+      shiftId,
+      shiftName: String(attendance.shiftName || shiftId).trim(),
+      shiftStart: attendance.shiftStart || null,
+      shiftEnd: attendance.shiftEnd || null,
+      shiftVersion: Number(attendance.shiftVersion || 1),
+      shiftSource: attendance.shiftSource || 'attendance-snapshot',
+      employmentTypeSnapshot: attendance.employmentTypeSnapshot || employee.employmentType || null,
+      catalogItemId: catalogSnapshot.id,
+      catalogCode: catalogSnapshot.code,
+      catalogVersion: catalogSnapshot.version,
+      catalogSnapshot,
+      amountVnd: catalogSnapshot.amountVnd,
+      checked: payload.checked,
+      status: payload.checked ? 'PENDING_TEAM_REVIEW' : 'VOID',
+      compensationEntryId: null,
+      version: nextProgressVersion,
+      createdAt: previous?.createdAt || commandContext.now,
+      createdBy: previous?.createdBy || actorSnapshot,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+      claimedAt: payload.checked ? commandContext.now : previous?.claimedAt || null,
+      claimedBy: payload.checked ? actorSnapshot : previous?.claimedBy || actorSnapshot,
+      voidedAt: payload.checked ? null : commandContext.now,
+      voidedBy: payload.checked ? null : actorSnapshot,
+      deletedAt: null,
+    }
+    const teamClaim = {
+      ...(previousClaim || {}),
+      id: teamClaimId,
+      sourceType: 'work-catalog-team-claim',
+      rewardProgressId: progressId,
+      storeId,
+      businessDate: workDate,
+      workDate,
+      period,
+      programId: milestoneProgramId,
+      milestoneProgramId,
+      milestoneId,
+      amountVnd: catalogSnapshot.amountVnd,
+      employeeId,
+      employeeName,
+      attendanceId,
+      shiftId,
+      status: payload.checked ? 'PENDING' : 'VOID',
+      createdAt: previousClaim?.createdAt || commandContext.now,
+      createdBy: previousClaim?.createdBy || actorSnapshot,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+      voidedAt: payload.checked ? null : commandContext.now,
+      voidedBy: payload.checked ? null : actorSnapshot,
+    }
+    const nextState = {
+      ...state,
+      workCatalogProgress: [
+        ...progressRecords.map((record) => {
+          if (String(record.id || '') === progressId) return reward
+          if (competingClaim && String(record.id || '') === String(competingClaim.rewardProgressId || '') && Number(competingClaim.amountVnd || 0) < catalogSnapshot.amountVnd) {
+            return { ...record, checked: false, status: 'VOID', voidedAt: commandContext.now, voidReason: 'Đã thay bằng mốc thưởng team cao hơn.', updatedAt: commandContext.now, updatedBy: actorSnapshot }
+          }
+          return record
+        }),
+        ...(previous ? [] : [reward]),
+      ],
+      teamRewardClaims: [
+        ...teamRewardClaims.map((record) => {
+          if (String(record.id || '') === teamClaimId) return teamClaim
+          if (competingClaim && String(record.id || '') === String(competingClaim.id || '') && Number(competingClaim.amountVnd || 0) < catalogSnapshot.amountVnd) {
+            return { ...record, status: 'SUPERSEDED', supersededAt: commandContext.now, updatedAt: commandContext.now, updatedBy: actorSnapshot }
+          }
+          return record
+        }),
+        ...(previousClaim ? [] : [teamClaim]),
+      ],
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'work-catalog-team-reward',
+      entityId: teamClaimId,
+      before: previous,
+      after: reward,
+      metadata: {
+        storeId, employeeId, period, attendanceId, catalogItemId: catalogSnapshot.id,
+        amountVnd: catalogSnapshot.amountVnd, checked: payload.checked, teamClaimId,
+      },
+      response: { command: body.type, checked: payload.checked, reward, entry: null, teamClaim },
+      status: previous || !payload.checked ? 200 : 201,
+    }, commandContext)
+  }
   const entryActive = Boolean(previousEntry
     && !previousEntry.deletedAt
     && !previousEntry.voidedAt
@@ -14026,10 +14211,6 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
       existing: true,
     }, 200, commandContext)
   }
-  const actorSnapshot = serverActorSnapshot(actor)
-  const employeeName = employee.name || employee.displayName || employeeId
-  const shiftId = String(attendance.shiftId || attendance.shift || '').trim()
-  const nextProgressVersion = Number(previous?.version || 0) + 1
   const reward = {
     ...(previous || {}),
     id: progressId,
@@ -14482,6 +14663,15 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const occurredOn = compensationDate(payload.occurredOn, 'Ngày phát sinh')
     const period = occurredOn.slice(0, 7)
     assertPayrollNotPaidOrLocked(state, storeId, period)
+    const shiftSnapshot = resolveViolationShiftSnapshot(
+      state,
+      employee,
+      employeeId,
+      storeId,
+      targetUnit,
+      occurredOn,
+      payload,
+    )
     const catalogItemId = String(payload.catalogItemId || '').trim()
     let catalogItem = null
     let policyCode = String(payload.policyCode || '').trim()
@@ -14518,10 +14708,28 @@ const violationCommand = async (db, actor, body, commandContext) => {
       amountVnd = asVnd(payload.amountVnd ?? policy.amountVnd, 'Số tiền vi phạm', { positive: true })
       if (amountVnd !== policy.amountVnd) throw new ApiError(400, 'VIOLATION_AMOUNT_INVALID', 'Số tiền vi phạm phải đúng chính sách hiện hành.')
     }
+    const occurrenceCatalogItemId = catalogItem?.id || `legacy-policy:${policyCode}`
+    const occurrenceIdentity = {
+      employeeId,
+      occurredOn,
+      shiftId: shiftSnapshot.shiftId,
+      catalogItemId: occurrenceCatalogItemId,
+    }
+    const occurrenceKey = violationOccurrenceKey(occurrenceIdentity)
+    const existing = records.find((record) => violationMatchesOccurrence(record, occurrenceKey, occurrenceIdentity)) || null
+    if (existing) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        violation: existing,
+        existing: true,
+      }, 200, commandContext)
+    }
     const note = String(payload.note || '').trim()
     if (note.length > 1_000) throw new ApiError(400, 'NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')
     const violation = {
-      id: `vio_${crypto.randomUUID()}`,
+      id: occurrenceKey,
+      occurrenceKey,
       targetUnit,
       employeeId,
       employeeName: employee.name || employee.displayName || employeeId,
@@ -14544,6 +14752,17 @@ const violationCommand = async (db, actor, body, commandContext) => {
         },
       } : {}),
       occurredOn,
+      workDate: occurredOn,
+      date: occurredOn,
+      attendanceId: shiftSnapshot.attendanceId,
+      shiftId: shiftSnapshot.shiftId,
+      shift: shiftSnapshot.shiftId,
+      shiftName: shiftSnapshot.shiftName,
+      shiftStart: shiftSnapshot.shiftStart,
+      shiftEnd: shiftSnapshot.shiftEnd,
+      shiftVersion: shiftSnapshot.shiftVersion,
+      shiftSource: shiftSnapshot.shiftSource,
+      employmentTypeSnapshot: shiftSnapshot.employmentTypeSnapshot,
       period,
       note,
       status: 'ACTIVE',
