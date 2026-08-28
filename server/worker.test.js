@@ -10903,6 +10903,15 @@ describe('IDOSI Worker security primitives', () => {
           id: 'SCH-HOT', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
           start: '00:00', end: '00:30',
         }],
+        revenueBonusAllocations: [{
+          id: 'RBA-MANAGER-OTHER-STORE', revenueBonusDailyId: 'RBD-S01', storeId: 'S01', period: '2026-08',
+          employeeId: 'QL-S02', employeeName: 'Quản lý S02 tại S01', amountVnd: 987_654, status: 'CONFIRMED',
+        }],
+        teamRewardParticipants: [{
+          id: 'TRP-MANAGER-OTHER-STORE', teamRewardClaimId: 'TRC-S01', revenueBonusDailyId: 'RBD-S01',
+          storeId: 'S01', period: '2026-08', employeeId: 'QL-S02', employeeName: 'Quản lý S02 tại S01',
+          amountVnd: 123_456, weightUnits: 999, status: 'CONFIRMED',
+        }],
         violations: [
           { id: 'V-OFFICE', targetUnit: 'office', storeId: 'OFFICE', employeeId: 'VP-01', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
           { id: 'V-SUPPORT', targetUnit: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-BONUS', period: '2026-08', occurredOn: '2026-08-20', amountVnd: 10_000, status: 'ACTIVE', version: 1 },
@@ -11015,6 +11024,8 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerState.revenueBonusDaily).toEqual([expect.not.objectContaining({ allocations: expect.anything() })])
     expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
     expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(managerState.revenueBonusAllocations.map(({ storeId }) => storeId)).toEqual(['S02'])
+    expect(managerState.teamRewardParticipants.map(({ storeId }) => storeId)).toEqual(['S02'])
     expect(managerState.revenueBonusDaily[0]).toMatchObject({ participantCount: 2, teamTotalWeightUnits: 28_800 })
     expect(JSON.stringify({ allocations: managerState.revenueBonusAllocations, participants: managerState.teamRewardParticipants }))
       .not.toContain('E-S02')
@@ -11800,6 +11811,138 @@ describe('IDOSI Worker security primitives', () => {
     expect(close.status).toBe(409)
     expect(await close.json()).toMatchObject({ error: { code: 'PAYROLL_REVENUE_BONUS_DRAFT' } })
     expect(readHydratedState(env.DB.database)).toEqual(before)
+  })
+
+  it('rejects unallocated, short, and over-allocated confirmed pools before financial mutations', async () => {
+    for (const scenario of [
+      { name: 'declared shortfall', daily: { totalPoolVnd: 100_000, allocatedVnd: 0, unallocatedVnd: 100_000 }, allocations: [] },
+      { name: 'hidden shortfall', daily: { totalPoolVnd: 100_000, allocatedVnd: 100_000, unallocatedVnd: 0 }, allocations: [{ id: 'A1', amountVnd: 60_000 }] },
+      { name: 'over allocation', daily: { totalPoolVnd: 100_000, allocatedVnd: 110_000, unallocatedVnd: 0 }, allocations: [{ id: 'A1', amountVnd: 110_000 }] },
+    ]) {
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: `bootstrap-pool-${scenario.name}` }
+      await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'pool-conservation-password', initialState: {
+          stores: [{ id: 'S01', name: 'Store 01', status: 'Đang hoạt động' }],
+          employees: [{ id: 'E01', name: 'Employee', storeId: 'S01', unit: 'store', monthlySalary: 1_000_000 }],
+          revenueBonusDaily: [{ id: 'DAY', storeId: 'S01', period: '2026-08', businessDate: '2026-08-20', status: 'CONFIRMED', ...scenario.daily }],
+          revenueBonusAllocations: scenario.allocations.map((allocation) => ({
+            ...allocation, revenueBonusDailyId: 'DAY', storeId: 'S01', period: '2026-08', employeeId: 'E01', status: 'CONFIRMED',
+          })),
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'pool-conservation-password',
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+      const before = readHydratedState(env.DB.database)
+      const close = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...authorization, 'idempotency-key': `pool-${scenario.name.replaceAll(' ', '-')}` }), env)
+      expect(close.status, scenario.name).toBe(409)
+      expect(await close.json(), scenario.name).toMatchObject({ error: { code: 'REVENUE_BONUS_ALLOCATION_IMBALANCE' } })
+      expect(readHydratedState(env.DB.database), scenario.name).toEqual(before)
+    }
+  })
+
+  it('requires allocation conservation when confirming a daily pool', async () => {
+    for (const scenario of [
+      { name: 'positive-unallocated', amount: 16_000_001, expectedStatus: 409 },
+      { name: 'zero-pool', amount: 0, expectedStatus: 200 },
+    ]) {
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: `bootstrap-confirm-${scenario.name}` }
+      await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'confirm-conservation-password', initialState: {
+          stores: [{ id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }],
+          orders: [{ id: 'ORDER', storeId: 'S01', amount: scenario.amount, status: 'Hoàn tất', date: '2026-08-20' }],
+          schedule: [{ id: 'SHIFT', storeId: 'S01', date: '2026-08-20', start: '00:00', end: '00:30' }],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'confirm-conservation-password',
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+      const calculation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.calculate_day', expectedVersion: 1, payload: { storeId: 'S01', businessDate: '2026-08-20' },
+      }, { ...authorization, 'idempotency-key': `calculate-${scenario.name}` }), env)
+      expect(calculation.status).toBe(201)
+      const calculated = await calculation.json()
+      const before = readHydratedState(env.DB.database)
+      const confirmation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.confirm_day', expectedVersion: calculated.version,
+        payload: { revenueBonusDailyId: calculated.revenueBonus.id, expectedEntityVersion: 1 },
+      }, { ...authorization, 'idempotency-key': `confirm-${scenario.name}` }), env)
+      expect(confirmation.status, scenario.name).toBe(scenario.expectedStatus)
+      if (scenario.expectedStatus === 409) {
+        expect(await confirmation.json()).toMatchObject({ error: { code: 'REVENUE_BONUS_ALLOCATION_IMBALANCE' } })
+        expect(readHydratedState(env.DB.database)).toEqual(before)
+      } else {
+        expect(await confirmation.json()).toMatchObject({ revenueBonus: { status: 'CONFIRMED', totalPoolVnd: 0 } })
+      }
+    }
+  })
+
+  it('fails closed when projecting legacy manager bonus rows outside the authorized store', () => {
+    const own = { employeeId: 'M01', employeeName: 'Quản lý S01', amountVnd: 10_000 }
+    const state = {
+      stores: [{ id: 'S01', status: 'Đang hoạt động' }, { id: 'S02', status: 'Đang hoạt động' }],
+      employees: [{ id: 'M01', storeId: 'S01', unit: 'store_manager', status: 'Đang làm việc' }],
+      revenueBonusDaily: [
+        { id: 'D-S01', storeId: 'S01', period: '2026-08', status: 'CONFIRMED' },
+        { id: 'D-S02', storeId: 'S02', period: '2026-08', status: 'CONFIRMED' },
+      ],
+      teamRewardClaims: [{ id: 'C-S01', revenueBonusDailyId: 'D-S01', storeId: 'S01' }],
+      revenueBonusAllocations: [
+        { id: 'A-S01', ...own, storeId: 'S01', revenueBonusDailyId: 'D-S01' },
+        { id: 'A-LEGACY-S01', ...own, revenueBonusDailyId: 'D-S01' },
+        { id: 'A-S02', ...own, storeId: 'S02', revenueBonusDailyId: 'D-S02', employeeName: 'Tên ngoài cửa hàng', amountVnd: 999_999 },
+        { id: 'A-CONFLICT', ...own, storeId: 'S02', revenueBonusDailyId: 'D-S01' },
+        { id: 'A-AMBIGUOUS', ...own },
+        { id: 'A-COWORKER', employeeId: 'E01', storeId: 'S01', revenueBonusDailyId: 'D-S01', amountVnd: 50_000 },
+      ],
+      teamRewardParticipants: [
+        { id: 'P-S01', ...own, claimId: 'C-S01' },
+        { id: 'P-S02', ...own, storeId: 'S02', revenueBonusDailyId: 'D-S02', weightUnits: 999 },
+        { id: 'P-AMBIGUOUS', ...own },
+      ],
+    }
+    const manager = projectSharedState(state, { role: 'store_manager', store_id: 'S01', employee_id: 'M01', user_id: 'M01' })
+    expect(manager.revenueBonusAllocations.map(({ id }) => id)).toEqual(['A-S01', 'A-LEGACY-S01'])
+    expect(manager.teamRewardParticipants.map(({ id }) => id)).toEqual(['P-S01'])
+    expect(JSON.stringify(manager)).not.toContain('Tên ngoài cửa hàng')
+    expect(JSON.stringify(manager)).not.toContain('999999')
+    expect(projectSharedState(state, { role: 'admin' }).revenueBonusAllocations).toEqual(state.revenueBonusAllocations)
+    expect(projectSharedState(state, { role: 'business_support' }).teamRewardParticipants).toEqual(state.teamRewardParticipants)
+  })
+
+  it('routes each confirmed daily allocation to exactly one payroll consumer', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-allocation-consumers' }
+    await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'allocation-consumers-password', initialState: {
+        stores: [{ id: 'S01', name: 'Store 01', status: 'Đang hoạt động' }],
+        employees: [
+          { id: 'M01', name: 'Manager', storeId: 'S01', unit: 'store_manager', status: 'Đang làm việc' },
+          { id: 'E01', name: 'Employee', storeId: 'S01', unit: 'store', status: 'Đang làm việc', monthlySalary: 1_000_000 },
+        ],
+        revenueBonusDaily: [{ id: 'DAY', storeId: 'S01', period: '2026-08', businessDate: '2026-08-20', status: 'CONFIRMED', totalPoolVnd: 100_000, allocatedVnd: 100_000, unallocatedVnd: 0 }],
+        revenueBonusAllocations: [
+          { id: 'AM', revenueBonusDailyId: 'DAY', storeId: 'S01', period: '2026-08', employeeId: 'M01', recipientUnit: 'store_manager', amountVnd: 40_000, status: 'CONFIRMED' },
+          { id: 'AE', revenueBonusDailyId: 'DAY', storeId: 'S01', period: '2026-08', employeeId: 'E01', recipientUnit: 'store', amountVnd: 60_000, status: 'CONFIRMED' },
+        ],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'allocation-consumers-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+    const close = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'allocation-consumers-close' }), env)
+    expect(close.status).toBe(201)
+    const closed = await close.json()
+    expect(closed.period.rows).toEqual([expect.objectContaining({ employeeId: 'E01', revenueBonusVnd: 60_000 })])
+    expect(closed.period.managerRevenueBonus.compensation).toMatchObject({ revenue: 40_000 })
+    expect(closed.period.managerRevenueBonus.managerCompensationVnd).toBe(40_000)
+    expect(closed.period.rows[0].revenueBonusVnd + closed.period.managerRevenueBonus.compensation.revenue).toBe(100_000)
   })
 
   it('rejects milestone decisions after payroll is paid or locked before touching persisted state', async () => {

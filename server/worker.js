@@ -1340,8 +1340,32 @@ const redactRevenueBonusDaily = (record) => {
   return safe
 }
 
-const ownRevenueBonusRows = (records, employeeId) => filterArray({ rows: records }, 'rows', (record) => (
+const revenueBonusRowStoreId = (state, record) => {
+  const directStoreId = String(record?.storeId || '').trim()
+  const dailyId = String(record?.revenueBonusDailyId || '').trim()
+  const daily = dailyId
+    ? (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
+      .find((candidate) => String(candidate.id || '') === dailyId)
+    : null
+  const claimId = String(record?.teamRewardClaimId || record?.claimId || '').trim()
+  const claim = claimId
+    ? (Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : [])
+      .find((candidate) => String(candidate.id || '') === claimId)
+    : null
+  const claimDaily = claim?.revenueBonusDailyId
+    ? (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
+      .find((candidate) => String(candidate.id || '') === String(claim.revenueBonusDailyId || ''))
+    : null
+  const linkedStoreIds = [daily?.storeId, claim?.storeId, claimDaily?.storeId]
+    .map((value) => String(value || '').trim()).filter(Boolean)
+  if (directStoreId && linkedStoreIds.some((storeId) => storeId !== directStoreId)) return null
+  if (new Set(linkedStoreIds).size > 1) return null
+  return directStoreId || linkedStoreIds[0] || null
+}
+
+const ownRevenueBonusRows = (state, records, employeeId, storeId) => filterArray({ rows: records }, 'rows', (record) => (
   belongsToEmployee(record, employeeId)
+  && revenueBonusRowStoreId(state, record) === String(storeId || '')
 ))
 
 const normalizeSharedStateForStorage = (value) => {
@@ -2134,9 +2158,9 @@ export const projectSharedState = (rawState, user) => {
       violations: historicalVisibleScoped('violations'),
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => String(record.storeId || '') === storeId)
         .map(redactRevenueBonusDaily),
-      revenueBonusAllocations: ownRevenueBonusRows(state.revenueBonusAllocations, ownEmployeeId),
+      revenueBonusAllocations: ownRevenueBonusRows(state, state.revenueBonusAllocations, ownEmployeeId, storeId),
       teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => String(record.storeId || '') === storeId),
-      teamRewardParticipants: ownRevenueBonusRows(state.teamRewardParticipants, ownEmployeeId),
+      teamRewardParticipants: ownRevenueBonusRows(state, state.teamRewardParticipants, ownEmployeeId, storeId),
       periodReconciliations: filterArray(state, 'periodReconciliations', (record) => String(record.storeId || '') === storeId),
       jobRuns: filterArray(state, 'jobRuns', (record) => String(record.storeId || '') === storeId),
       shiftDefinitions: employeeScoped('shiftDefinitions'),
@@ -9158,8 +9182,9 @@ const compensationAmountTotalsFor = (state, employeeId, period) => {
 
 const MANAGER_REVENUE_BONUS_SOURCE_TYPE = 'manager-revenue-bonus'
 
-const managerCompensationTotalsFor = (state, employeeId, period, managerProfile = null) => {
+const managerCompensationTotalsFor = (state, employeeId, period, managerProfile = null, storeId = '') => {
   const totals = { manual: 0, work: 0, allowance: 0, revenue: 0, total: 0 }
+  const seenRevenueAllocationIds = new Set()
   const managerSharesEmployeePayroll = employeeUnit(managerProfile) === 'store'
   for (const record of Array.isArray(state.compensationEntries) ? state.compensationEntries : []) {
     if (!compensationRecordActiveForPayroll(record, employeeId, period)
@@ -9169,6 +9194,18 @@ const managerCompensationTotalsFor = (state, employeeId, period, managerProfile 
     const field = type === 'WORK' ? 'work' : type === 'ALLOWANCE' ? 'allowance' : type === 'REVENUE' ? 'revenue' : 'manual'
     const amount = asVnd(record.amountVnd ?? record.amount ?? 0, 'Thưởng/phụ cấp quản lý')
     totals[field] = safeMoneySum(totals[field], amount, 'Tổng thưởng/phụ cấp quản lý')
+    totals.total = safeMoneySum(totals.total, amount, 'Tổng thưởng/phụ cấp quản lý')
+  }
+  for (const record of Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []) {
+    if (!compensationRecordActiveForPayroll(record, employeeId, period)
+      || (storeId && String(record.storeId || '') !== String(storeId))) continue
+    const recipientUnit = employeeUnit({ unit: record.recipientUnit || record.employeeUnit || record.targetUnit })
+    if (recipientUnit !== 'store_manager' && employeeUnit(managerProfile) !== 'store_manager') continue
+    const sourceId = String(record.id || '').trim()
+    if (!sourceId || seenRevenueAllocationIds.has(sourceId)) continue
+    seenRevenueAllocationIds.add(sourceId)
+    const amount = asVnd(record.amountVnd ?? record.amount ?? 0, 'Thưởng doanh thu ngày của quản lý')
+    totals.revenue = safeMoneySum(totals.revenue, amount, 'Tổng thưởng doanh thu quản lý')
     totals.total = safeMoneySum(totals.total, amount, 'Tổng thưởng/phụ cấp quản lý')
   }
   return totals
@@ -9194,7 +9231,7 @@ const managerRevenueBonusFor = (state, storeId, period, profitBeforeManagerCompe
   const manager = resolution.manager
   const managerProfileId = String(manager.id || manager.code || '').trim()
   const managerId = managerProfileId || String(resolution.managerId || '').trim()
-  const compensation = managerCompensationTotalsFor(state, managerId, period, manager)
+  const compensation = managerCompensationTotalsFor(state, managerId, period, manager, storeId)
   const profitBeforeManagerBonusVnd = safeMoneySum(
     profitBeforeManagerCompensationVnd,
     -compensation.total,
@@ -13269,6 +13306,47 @@ const activeRevenueBonusDraftsForPeriod = (state, storeId, period) => (
   ))
 )
 
+const activeRevenueBonusRecord = (record) => Boolean(record)
+  && !record.deletedAt && !record.voidedAt && !record.supersededAt && !record.replacedAt && !record.replacedBy
+  && record.active !== false && normalizeTextKey(record.status) !== 'inactive'
+
+const validateRevenueBonusAllocationConservation = (state, daily, { allocationStatus, requireFullyAllocated = true } = {}) => {
+  const dailyId = String(daily?.id || '').trim()
+  const expectedStatus = normalizeTextKey(allocationStatus || daily?.status)
+  const totalPoolVnd = asVnd(daily?.totalPoolVnd ?? 0, 'Tổng quỹ thưởng doanh thu')
+  const allocations = (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []).filter((record) => (
+    String(record.revenueBonusDailyId || '') === dailyId
+    && activeRevenueBonusRecord(record)
+    && normalizeTextKey(record.status) === expectedStatus
+  ))
+  const allocationIds = allocations.map((record) => String(record.id || '').trim())
+  if (allocationIds.some((id) => !id) || new Set(allocationIds).size !== allocationIds.length) {
+    throw new ApiError(409, 'REVENUE_BONUS_ALLOCATION_IMBALANCE', 'Phân bổ thưởng doanh thu thiếu hoặc trùng mã nguồn; cần đối soát trước khi chốt.', {
+      revenueBonusDailyId: dailyId,
+    })
+  }
+  const allocatedVnd = allocations.reduce((sum, record) => safeMoneySum(
+    sum,
+    asVnd(record.amountVnd ?? record.amount ?? 0, 'Phân bổ thưởng doanh thu'),
+    'Tổng phân bổ thưởng doanh thu',
+  ), 0)
+  const canonicalUnallocatedVnd = totalPoolVnd - allocatedVnd
+  const storedUnallocatedVnd = asVnd(daily?.unallocatedVnd ?? canonicalUnallocatedVnd, 'Phần thưởng chưa phân bổ')
+  const storedAllocatedVnd = asVnd(daily?.allocatedVnd ?? allocatedVnd, 'Phần thưởng đã phân bổ')
+  if (canonicalUnallocatedVnd < 0
+    || canonicalUnallocatedVnd !== storedUnallocatedVnd
+    || storedAllocatedVnd !== allocatedVnd
+    || (requireFullyAllocated && canonicalUnallocatedVnd !== 0)) {
+    throw new ApiError(409, 'REVENUE_BONUS_ALLOCATION_IMBALANCE', 'Quỹ thưởng doanh thu chưa được phân bổ đầy đủ hoặc số liệu phân bổ không cân bằng.', {
+      revenueBonusDailyId: dailyId,
+      totalPoolVnd,
+      allocatedVnd,
+      unallocatedVnd: canonicalUnallocatedVnd,
+    })
+  }
+  return { totalPoolVnd, allocatedVnd, unallocatedVnd: canonicalUnallocatedVnd, allocations }
+}
+
 const assertPayrollRevenueBonusFinalized = (state, storeId, period, { requireMilestones = false } = {}) => {
   const drafts = activeRevenueBonusDraftsForPeriod(state, storeId, period)
   if (drafts.length) {
@@ -13276,6 +13354,12 @@ const assertPayrollRevenueBonusFinalized = (state, storeId, period, { requireMil
       revenueBonusDailyIds: drafts.map((record) => String(record.id || '')).filter(Boolean),
     })
   }
+  for (const daily of (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []).filter((record) => (
+    String(record.storeId || '') === String(storeId || '')
+    && String(record.period || monthFromRecord(record)) === String(period || '')
+    && normalizeTextKey(record.status) === 'confirmed'
+    && activeRevenueBonusRecord(record)
+  ))) validateRevenueBonusAllocationConservation(state, daily, { allocationStatus: 'confirmed' })
   if (!requireMilestones) return
   const activeDailyIds = new Set((Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])
     .filter((record) => String(record.storeId || '') === String(storeId || '')
@@ -14464,6 +14548,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     if (String(daily.fingerprint || '') !== currentInputs.fingerprint) {
       throw new ApiError(409, 'REVENUE_BONUS_DRAFT_STALE', 'Nguồn dữ liệu tính thưởng đã thay đổi. Vui lòng tính lại trước khi xác nhận.')
     }
+    validateRevenueBonusAllocationConservation(state, daily, { allocationStatus: 'draft' })
     const actorSnapshot = serverActorSnapshot(actor)
     const previousDaily = dailyRecords.find((record) => (
       String(record.id || '') !== calculationId
@@ -14628,6 +14713,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
       period,
       employeeId,
       employeeName: employee?.name || employee?.displayName || employeeId,
+      recipientUnit: employeeUnit(employee),
       weightUnits,
       percentagePoolVnd,
       milestonePoolVnd: 0,
@@ -14887,6 +14973,19 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   const periods = Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []
   const existing = payrollPeriodFor(state, storeId, period)
   const actorSnapshot = serverActorSnapshot(actor)
+  if (operation === 'pay' && (existing?.confirmedAt || existing?.status === 'Đã chi')) {
+    return recordNoopCommand(db, actor, {
+      command: body.type,
+      version: Number(current.version),
+      period: existing,
+      payments: (Array.isArray(state.payrollPayments) ? state.payrollPayments : [])
+        .filter((payment) => (
+          String(payment.periodId || '') === String(existing.id)
+          || (String(payment.storeId || '') === storeId && String(payment.period || '') === period)
+        )),
+      existing: true,
+    }, 200, commandContext)
+  }
   assertPayrollHasNoOpenAttendance(state, storeId, period)
   if (operation === 'close' || operation === 'pay' || operation === 'lock') {
     assertPayrollRevenueBonusFinalized(state, storeId, period, { requireMilestones: operation === 'pay' })
@@ -15028,19 +15127,6 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   }
   if (existing.needsReclose) {
     throw new ApiError(409, 'PAYROLL_NEEDS_RECLOSE', 'Số liệu trong kỳ đã thay đổi; cần chốt sổ lại trước khi chi.')
-  }
-  if (existing.confirmedAt || existing.status === 'Đã chi') {
-    return recordNoopCommand(db, actor, {
-      command: body.type,
-      version: Number(current.version),
-      period: existing,
-      payments: (Array.isArray(state.payrollPayments) ? state.payrollPayments : [])
-        .filter((payment) => (
-          String(payment.periodId || '') === String(existing.id)
-          || (String(payment.storeId || '') === storeId && String(payment.period || '') === period)
-        )),
-      existing: true,
-    }, 200, commandContext)
   }
   if (existing.status !== 'Đã chốt' || !Array.isArray(existing.rows)) {
     throw new ApiError(409, 'PAYROLL_NOT_CLOSED', 'Kỳ lương chưa có bản chốt hợp lệ.')
