@@ -175,18 +175,14 @@ export function RevenueBonusPage() {
     )
     if (privileged) {
       const reconciliationStoreIds = new Set((Array.isArray(app.revenueBonuses) ? app.revenueBonuses : [])
-        .filter((record) => !record.voidedAt && (
-          Number(record.unallocatedVnd || 0) > 0
-          || record.unallocatedResolutionCode === 'NO_ELIGIBLE_HOURS'
-          || (!record.supersededAt && Number(record.pendingMilestonePoolVnd || 0) > 0)
-        ))
+        // Projected daily rows are already role-scoped by the server. Keep any
+        // non-deleted history selectable after a store closes, including fully
+        // approved/rejected milestones and superseded audit rows.
+        .filter((record) => !record.deletedAt)
         .map(entryStoreId)
         .filter(Boolean))
       for (const claim of Array.isArray(app.teamRewardClaims) ? app.teamRewardClaims : []) {
-        if (!claim.deletedAt && !claim.voidedAt && !claim.supersededAt
-          && String(claim.status || '').toUpperCase() === 'PENDING'
-          && Number(claim.amountVnd || 0) > 0
-          && entryStoreId(claim)) reconciliationStoreIds.add(entryStoreId(claim))
+        if (!claim.deletedAt && entryStoreId(claim)) reconciliationStoreIds.add(entryStoreId(claim))
       }
       const historicalReconciliationStores = (Array.isArray(app.stores) ? app.stores : [])
         .filter((store) => reconciliationStoreIds.has(entityId(store)) && !store.deletedAt)
@@ -194,7 +190,7 @@ export function RevenueBonusPage() {
       return [...new Map([...roleScopedStores, ...historicalReconciliationStores]
         .map((store) => [entityId(store), store])).values()]
     }
-    if (!employeeView) return roleScopedStores
+    if (!privateAllocationView) return roleScopedStores
     const ownRevenueStoreIds = new Set([currentStoreId].filter(Boolean))
     for (const record of Array.isArray(app.revenueBonuses) ? app.revenueBonuses : []) {
       const hasOwnAllocation = revenueAllocations([record]).some((allocation) => (
@@ -202,14 +198,16 @@ export function RevenueBonusPage() {
       ))
       if (hasOwnAllocation && entryStoreId(record)) ownRevenueStoreIds.add(entryStoreId(record))
     }
-    return operationalStores(app.stores).filter((store) => ownRevenueStoreIds.has(entityId(store)))
+    return (Array.isArray(app.stores) ? app.stores : [])
+      .filter((store) => !store.deletedAt && ownRevenueStoreIds.has(entityId(store)))
+      .filter((store) => !['OFFICE', 'BUSINESS_SUPPORT', 'ADMIN', 'SYSTEM'].includes(entityId(store).toUpperCase()))
   }, [
     app.stores,
     app.session,
     app.revenueBonuses,
     app.teamRewardClaims,
     privileged,
-    employeeView,
+    privateAllocationView,
     currentStoreId,
     currentEmployeeIdentifiers,
   ])

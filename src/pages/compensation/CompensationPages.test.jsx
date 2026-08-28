@@ -513,6 +513,39 @@ describe('compensation pages', () => {
     expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
   })
 
+  it('keeps an inactive store manager store identity and SM program for finalized history', () => {
+    const inactiveStore = {
+      id: 'SM234', name: 'IDOSI SecondMall đã đóng', short: 'SM234',
+      status: 'Ngưng hoạt động', active: false,
+    }
+    mocked.app = {
+      ...baseApp('store_manager'),
+      session: { role: 'store_manager', employeeId: 'QL-SM234', storeId: inactiveStore.id },
+      currentEmployee: {
+        id: 'QL-SM234', name: 'Quản lý SecondMall', unit: 'store_manager', storeId: inactiveStore.id,
+      },
+      stores: [inactiveStore],
+      storeDailyRevenue: [{
+        storeId: inactiveStore.id, businessDate: '2026-08-26', revenueVnd: 3_000_000, orderCount: 1,
+      }],
+      revenueBonuses: [{
+        id: 'RB-SM234-FINALIZED', storeId: inactiveStore.id, businessDate: '2026-08-26',
+        revenueVnd: 3_000_000, totalPoolVnd: 120_000, allocatedVnd: 120_000,
+        unallocatedVnd: 0, status: 'APPROVED',
+        allocations: [{
+          id: 'RBA-SM234-MANAGER', employeeId: 'QL-SM234', storeId: inactiveStore.id,
+          businessDate: '2026-08-26', amountVnd: 120_000, status: 'APPROVED',
+        }],
+      }],
+    }
+
+    render(<RevenueBonusPage />)
+
+    expect(screen.getAllByText(inactiveStore.name).length).toBeGreaterThan(0)
+    expect(screen.getByText('4% đang áp dụng')).toBeTruthy()
+    expect(screen.getAllByText('120,000 đ').length).toBeGreaterThan(0)
+  })
+
   it('lets privileged roles approve a pending highest-milestone claim', async () => {
     mocked.app = {
       ...baseApp('business_support'),
@@ -643,6 +676,33 @@ describe('compensation pages', () => {
 
     expect(screen.getByLabelText('Cửa hàng').value).toBe('CH001')
     expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeTruthy()
+  })
+
+  it('keeps finalized inactive-store revenue history selectable after the last claim is decided', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      stores: [...stores, { id: 'CH003', name: 'Dosii đã quyết toán', status: 'Ngưng hoạt động', active: false }],
+      revenueBonuses: [{
+        id: 'RB-INACTIVE-FINALIZED', storeId: 'CH003', businessDate: '2026-08-18',
+        revenueVnd: 16_000_001, percentagePoolVnd: 640_000, milestonePoolVnd: 0,
+        pendingMilestonePoolVnd: 0, rejectedMilestonePoolVnd: 250_000,
+        totalPoolVnd: 640_000, allocatedVnd: 640_000, unallocatedVnd: 0,
+        milestoneStatus: 'REJECTED', status: 'APPROVED', version: 4,
+      }],
+      teamRewardClaims: [{
+        id: 'CLAIM-INACTIVE-FINALIZED', revenueBonusDailyId: 'RB-INACTIVE-FINALIZED',
+        storeId: 'CH003', businessDate: '2026-08-18', amountVnd: 250_000,
+        status: 'REJECTED', rejectedAt: '2026-08-19T03:00:00.000Z', version: 2,
+      }],
+    }
+    render(<RevenueBonusPage />)
+
+    const storeSelect = screen.getByLabelText('Cửa hàng')
+    expect(within(storeSelect).getByRole('option', { name: 'Dosii đã quyết toán' })).toBeTruthy()
+    fireEvent.change(storeSelect, { target: { value: 'CH003' } })
+    expect(storeSelect.value).toBe('CH003')
+    fireEvent.change(screen.getByLabelText('Ngày kinh doanh'), { target: { value: '2026-08-18' } })
+    expect(screen.getByText('18/08/2026')).toBeTruthy()
   })
 
   it('requires recalculation instead of offering zero-hour resolution when a shift is open or hours arrived later', () => {
