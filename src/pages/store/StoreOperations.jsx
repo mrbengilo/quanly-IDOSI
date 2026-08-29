@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   BarChart3,
   Box,
@@ -10,11 +11,10 @@ import {
   Eye,
   EyeOff,
   Filter,
-  Info,
   Package,
   Plus,
   Save,
-  Send,
+  ShieldAlert,
   Store,
   Trash2,
   UserCheck,
@@ -51,6 +51,7 @@ import { apiGetIdentityImage } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { UnitCompensationStatistics } from '../compensation/UnitCompensationStatistics'
 import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
+import { workRewardRows } from '../compensation/compensationStatistics'
 import { formatVietnamTransferDateTime, supportTransferBounds, supportTransferMatchesMoment } from '../../domain/supportTransferTime'
 import {
   downloadCsv,
@@ -65,18 +66,11 @@ import {
   effectiveStoreSalaryConfig,
 } from '../../domain/storeTieredPayroll'
 import {
-  snapshotActiveWorkCatalogItems,
+  activeWorkCatalogItems,
   WORK_CATALOG_KIND,
   WORK_CATALOG_TARGET,
 } from '../../domain/workCatalog'
-import { selectTaskShiftForDate, taskShiftOptionsForDate } from './taskScope'
-import {
-  buildStoreTaskAssignmentPayload,
-  canAssignStoreTasks,
-  formatTaskDate,
-  formatTaskDateTime24,
-  storeTaskHistory,
-} from './storeTaskAssignments'
+import { formatTaskDate, formatTaskDateTime24 } from './storeTaskAssignments'
 import {
   buildStoreEmployeePayload,
   formatStoreMoneyInput,
@@ -176,8 +170,6 @@ const useTransferClock = () => {
   }, [])
   return moment
 }
-
-const storeTaskStatusTone = (status) => status === 'Hoàn thành' ? 'green' : status === 'Đang thực hiện' ? 'blue' : 'orange'
 
 const readIdentityImage = async (file) => file ? (await optimizeIdentityImage(file)).dataUrl : ''
 
@@ -808,180 +800,128 @@ export function StoreTasks() {
     activeStore,
     storeId,
     employees: storeEmployees = [],
-    allEmployees = [],
-    supportTransfers = [],
+    attendance = [],
+    workCatalogProgress = [],
+    compensationEntries = [],
     tasks = [],
-    taskAssignmentHistory = [],
-    shiftDefinitions = [],
     workCatalogItems = [],
-    replaceTasks,
-    notify,
+    taskAssignmentHistory = [],
     session,
   } = useStoreScope()
-  const canManageStore = canAssignStoreTasks(session?.role)
+  const [searchParams] = useSearchParams()
+  const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
   const canManageViolations = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
-  const initialDate = today()
-  const optionsForDate = (nextDate) => taskShiftOptionsForDate({
-    shiftDefinitions,
-    fallbackShifts: shifts,
-    storeId,
-    date: nextDate,
-  })
-  const [date, setDate] = useState(initialDate)
-  const shiftOptions = optionsForDate(date)
-  const [shiftId, setShiftId] = useState(() => selectTaskShiftForDate({
+  const [activeTaskTab, setActiveTaskTab] = useState('reward')
+  const rewardRows = workRewardRows({
+    attendance,
+    workCatalogProgress,
+    compensationEntries,
     tasks,
+    employees: storeEmployees,
+    targetUnit: 'store',
     storeId,
-    date: initialDate,
-    shiftOptions: optionsForDate(initialDate),
-  }))
-  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState([])
-  const [selectedCatalogIds, setSelectedCatalogIds] = useState([])
-  const [busy, setBusy] = useState(false)
-  const assignmentRequestRef = useRef({ fingerprint: '', idempotencyKey: '' })
-  const employees = storeEmployeesForDate(allEmployees, supportTransfers, storeId, date)
-  const assignableEmployees = employees.filter((employee) => (
-    !employee.deletedAt && String(employee.status || '').toLocaleLowerCase('vi-VN') !== 'đã nghỉ việc'
-  ))
-  const assignableEmployeeIds = new Set(assignableEmployees.map((employee) => String(employee.id || employee.code || employee.employeeCode || '')))
-  const selectedIds = selectedEmployeeIds.filter((id) => assignableEmployeeIds.has(String(id)))
-  const selectedIdSet = new Set(selectedIds.map(String))
-  const history = storeTaskHistory({ taskAssignmentHistory, tasks, storeId, employees, shiftDefinitions })
-  const selectedShift = shiftOptions.find((shift) => String(shift.id) === String(shiftId))
-  const catalogTasks = date && shiftId ? snapshotActiveWorkCatalogItems({
-    items: workCatalogItems,
+  })
+  const rewardCount = rewardRows.filter((row) => row.completed && row.payoutStatus !== 'void').length
+  const violationCount = activeWorkCatalogItems(workCatalogItems, {
     targetGroup: WORK_CATALOG_TARGET.STORE,
     storeId,
-    shiftId,
-    shiftName: selectedShift?.name,
-    date,
-  }) : []
-  const selectedCatalogIdSet = new Set(selectedCatalogIds.map(String))
-  const selectedCatalogTasks = catalogTasks.filter((task) => selectedCatalogIdSet.has(String(task.catalogItemId)))
-
-  const changeShift = (nextShiftId) => {
-    if (!shiftOptions.some((shift) => String(shift.id) === String(nextShiftId))) return
-    setShiftId(nextShiftId)
-    setSelectedCatalogIds([])
-  }
-  const changeDate = (nextDate) => {
-    const nextShiftOptions = optionsForDate(nextDate)
-    const nextShiftId = selectTaskShiftForDate({ tasks, storeId, date: nextDate, shiftOptions: nextShiftOptions })
-    setDate(nextDate)
-    setShiftId(nextShiftId)
-    setSelectedCatalogIds([])
-  }
-  const toggleCatalogTask = (catalogItemId) => setSelectedCatalogIds((current) => current.some((id) => String(id) === String(catalogItemId))
-    ? current.filter((id) => String(id) !== String(catalogItemId))
-    : [...current, String(catalogItemId)])
-  const toggleEmployee = (id) => setSelectedEmployeeIds((current) => current.some((item) => String(item) === String(id))
-    ? current.filter((item) => String(item) !== String(id))
-    : [...current, String(id)])
-  const send = async () => {
-    if (!canManageStore) return
-    if (!date || !shiftId) return notify?.('Vui lòng chọn ngày và ca làm việc.', 'info')
-    if (!shiftOptions.some((shift) => String(shift.id) === String(shiftId))) {
-      return notify?.('Ca làm việc không hợp lệ cho ngày đã chọn. Vui lòng chọn lại ca.', 'info')
-    }
-    if (!selectedIds.length) return notify?.('Vui lòng chọn ít nhất một nhân viên nhận việc.', 'info')
-    if (!selectedCatalogTasks.length) return notify?.('Vui lòng tick ít nhất một công việc trong danh mục đang hoạt động.', 'info')
-    if (typeof replaceTasks !== 'function') return notify?.('Chức năng giao việc chưa sẵn sàng.', 'info')
-
-    const payload = buildStoreTaskAssignmentPayload({ storeId, date, shiftId, employeeIds: selectedIds, tasks: selectedCatalogTasks })
-    const requestFingerprint = JSON.stringify(payload)
-    if (assignmentRequestRef.current.fingerprint !== requestFingerprint) {
-      assignmentRequestRef.current = {
-        fingerprint: requestFingerprint,
-        idempotencyKey: `tasks:${crypto.randomUUID()}`,
-      }
-    }
-    setBusy(true)
-    try {
-      const result = await replaceTasks({ ...payload, idempotencyKey: assignmentRequestRef.current.idempotencyKey })
-      if (result?.ok === false) return notify?.(result.message || 'Chưa thể gửi danh sách công việc.', 'info')
-      assignmentRequestRef.current = { fingerprint: '', idempotencyKey: '' }
-      setSelectedCatalogIds([])
-      setSelectedEmployeeIds([])
-    } catch (error) {
-      notify?.(error.message || 'Chưa thể gửi danh sách công việc.', 'info')
-    } finally {
-      setBusy(false)
-    }
-  }
+    date: today(),
+    kinds: WORK_CATALOG_KIND.VIOLATION,
+  }).length
+  const requestedAssignment = requestedAssignmentId
+    ? taskAssignmentHistory.find((assignment) => (
+        String(assignment.assignmentId || assignment.id || '') === requestedAssignmentId
+        && (!assignment.storeId || String(assignment.storeId) === String(storeId))
+      )) || null
+    : null
+  const requestedProgress = requestedAssignment
+    ? [...(Array.isArray(requestedAssignment.progressHistory) ? requestedAssignment.progressHistory : [])]
+        .filter((event) => event?.action === 'progress-submitted')
+        .sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')))[0] || null
+    : null
+  const requestedEmployeeId = String(requestedProgress?.employeeId || '')
+  const requestedTasks = (Array.isArray(requestedAssignment?.tasks) ? requestedAssignment.tasks : [])
+    .filter((task) => task.required !== false)
+  const requestedCompleted = requestedTasks.filter((task) => (
+    task.completedBy?.[requestedEmployeeId] === true || (!requestedEmployeeId && (task.completed === true || task.done === true))
+  )).length
 
   return (
     <div className="page admin-task-page">
-      <PageHeader title="Công việc tính thưởng & vi phạm" subtitle={canManageStore ? `Giao việc, ghi nhận và theo dõi thưởng, vi phạm tại ${activeStore?.name || 'cửa hàng đang chọn'}.` : `Theo dõi công việc, thưởng và vi phạm tại ${activeStore?.name || 'cửa hàng đang chọn'}.`} icon={ClipboardCheck} />
-      {!canManageStore && <InfoNote>Chế độ chỉ xem. Chỉ Admin, Quản lý cửa hàng và Nhân viên hỗ trợ KD được giao việc.</InfoNote>}
-      <Card className="task-toolbar-card">
-        <div className="task-toolbar-grid">
-          <Field label="Ngày giao việc" required><Input icon={CalendarDays} type="date" value={date} onChange={(event) => changeDate(event.target.value)} /></Field>
-          <Field label="Ca làm việc" required>
-            <Select value={shiftId} onChange={(event) => changeShift(event.target.value)} disabled={!shiftOptions.length}>
-              {!shiftOptions.length && <option value="">Chưa có ca hợp lệ cho ngày này</option>}
-              {shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} ({shift.start || '--:--'}–{shift.end || '--:--'})</option>)}
-            </Select>
-          </Field>
-          <Field label="Cửa hàng"><Input icon={Store} value={activeStore?.name || storeId} readOnly /></Field>
-          {canManageStore && <Field label="Nhân viên đã chọn"><Input icon={Users} value={`${selectedIds.length} nhân viên`} readOnly /></Field>}
-        </div>
-      </Card>
-      {canManageStore && <Card title="Chọn nhân viên nhận việc">
-        <div className="employee-picker" role="group" aria-label="Chọn nhân viên nhận việc">
-          {assignableEmployees.map((employee) => {
-            const id = String(employee.id || employee.code || employee.employeeCode || '')
-            const selected = selectedIdSet.has(id)
-            return <label key={id} className={selected ? 'selected' : ''}>
-              <input type="checkbox" checked={selected} onChange={() => toggleEmployee(id)} aria-label={`Chọn nhân viên ${employee.name || id}, mã ${id}, ${employee.position || employee.role || 'Nhân viên cửa hàng'}, ${getEmployeeType(employee)}`} />
-              <Avatar name={employee.name || id} src={employee.avatar} employeeId={employee.id || employee.code || id} color={employee.color} />
-              <span><strong>{employee.name || id}</strong><small>{id} · {employee.position || employee.role || 'Nhân viên cửa hàng'}</small></span>
-              <Badge tone={getEmployeeType(employee) === 'Full-Time' ? 'blue' : 'green'}>{getEmployeeType(employee)}</Badge>
-            </label>
-          })}
-          {!assignableEmployees.length && <InfoNote>Cửa hàng chưa có nhân viên đang làm việc để giao việc.</InfoNote>}
-        </div>
-        {assignableEmployees.length > 0 && <div className="panel-actions">
-          <Button variant="outline" onClick={() => setSelectedEmployeeIds(assignableEmployees.map((employee) => String(employee.id || employee.code || employee.employeeCode || '')))}>Chọn tất cả</Button>
-          <Button variant="outline" onClick={() => setSelectedEmployeeIds([])} disabled={!selectedIds.length}>Bỏ chọn</Button>
-        </div>}
-      </Card>}
-      {canManageStore && <div className="split-layout split-layout--tasks">
-        <Card title="Danh sách công việc" className="task-editor task-assignment-editor">
-          <InfoNote>Tick trực tiếp công việc cần giao. Danh sách được lọc theo cửa hàng, ngày và ca đã chọn.</InfoNote>
-          <div className="employee-picker task-template-picker" role="group" aria-label="Danh mục công việc">
-            {catalogTasks.map((task) => {
-              const checked = selectedCatalogIdSet.has(String(task.catalogItemId))
-              const amountLabel = task.kind === WORK_CATALOG_KIND.REWARD_TASK
-                ? `Thưởng ${money(task.amountVnd)}`
-                : `Công việc cố định · ${money(task.amountVnd)}`
-              return <label key={task.catalogItemId} className={checked ? 'selected' : ''}>
-                <input type="checkbox" checked={checked} onChange={() => toggleCatalogTask(task.catalogItemId)} aria-label={`Chọn công việc ${task.name}, ${amountLabel}`} />
-                <span><strong>{task.name}</strong><small>{amountLabel}</small></span>
-              </label>
-            })}
-          </div>
-          {!catalogTasks.length && <InfoNote tone="orange">Chưa có công việc đang hoạt động cho cửa hàng, ngày và ca đã chọn.</InfoNote>}
-          <div className="support-work-actions"><Button icon={Send} loading={busy} disabled={busy} onClick={send}>GỬI</Button></div>
-        </Card>
-        <Card className="guide-card">
-          <h2><Info size={22} /> Giao việc theo cửa hàng</h2>
-          <ol><li>Chọn ngày, kể cả ngày trong tương lai.</li><li>Chọn ca và một hoặc nhiều nhân viên cửa hàng.</li><li>Tick công việc trong danh mục đang hoạt động rồi nhấn “Gửi”.</li></ol>
-          <InfoNote><strong>Không phụ thuộc chấm công</strong><br />Có thể giao trước khi nhân viên điểm danh hoặc bắt đầu ca.</InfoNote>
-        </Card>
-      </div>}
-      <Card title="Lịch sử giao việc">
-        <TableWrap><thead><tr><th>Người giao / Thời gian</th><th>Ngày / Ca</th><th>Nhân viên nhận</th><th>Nội dung công việc</th><th>Trạng thái / Hoàn thành</th></tr></thead>
-          <tbody>{history.map((assignment) => <tr key={assignment.id}>
-            <td><strong>{assignment.assignedBy}</strong><span className="table-sub">{formatTaskDateTime24(assignment.assignedAt)}</span></td>
-            <td><strong>{formatTaskDate(assignment.date)}</strong><span className="table-sub">{assignment.shiftName}{assignment.shiftTime ? ` · ${assignment.shiftTime}` : ''}</span></td>
-            <td><strong>{assignment.employeeNames.join(', ') || 'Toàn bộ nhân viên trong ca'}</strong><span className="table-sub">{assignment.employeeIds.join(', ') || 'Dữ liệu cũ chưa ghi người nhận'}</span></td>
-            <td><ol className="compact-task-list">{assignment.tasks.map((task, index) => <li key={task.id || `${assignment.id}-${index}`}><strong>{index + 1}. {task.title || 'Công việc chưa đặt tên'}</strong><small>{task.status} · {task.completed}/{task.required} nhân viên</small></li>)}</ol></td>
-            <td><Badge tone={storeTaskStatusTone(assignment.status)}>{assignment.status}</Badge><span className="table-sub">{assignment.completed}/{assignment.required || assignment.tasks.length} lượt hoàn thành</span></td>
-          </tr>)}{!history.length && <tr><td colSpan="5">Chưa có lịch sử giao việc tại cửa hàng này.</td></tr>}</tbody>
-        </TableWrap>
-      </Card>
-      {canManageViolations && <ViolationManagementPage targetUnit="store" embedded />}
-      {canManageViolations && <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} />}
+      <PageHeader title="Công việc tính thưởng & vi phạm" subtitle={`Theo dõi lịch sử thưởng và ghi nhận vi phạm tại ${activeStore?.name || 'cửa hàng đang chọn'}.`} icon={ClipboardCheck} />
+      <div className="store-task-tabs" role="tablist" aria-label="Thưởng công việc và vi phạm">
+        <button
+          type="button"
+          role="tab"
+          id="store-task-reward-tab"
+          aria-controls="store-task-reward-panel"
+          aria-selected={activeTaskTab === 'reward'}
+          className={activeTaskTab === 'reward' ? 'is-active is-reward' : ''}
+          onClick={() => setActiveTaskTab('reward')}
+        >
+          <ClipboardCheck size={18} aria-hidden="true" />
+          <span>Thưởng công việc</span>
+          <b>{rewardCount}</b>
+        </button>
+        {canManageViolations && <button
+          type="button"
+          role="tab"
+          id="store-task-violation-tab"
+          aria-controls="store-task-violation-panel"
+          aria-selected={activeTaskTab === 'violation'}
+          className={activeTaskTab === 'violation' ? 'is-active is-violation' : ''}
+          onClick={() => setActiveTaskTab('violation')}
+        >
+          <ShieldAlert size={18} aria-hidden="true" />
+          <span>Vi phạm</span>
+          <b className="violation-count">{violationCount}</b>
+        </button>}
+      </div>
+
+      <section
+        id="store-task-reward-panel"
+        className="store-task-tab-panel"
+        role="tabpanel"
+        aria-labelledby="store-task-reward-tab"
+        hidden={activeTaskTab !== 'reward'}
+      >
+        {requestedAssignmentId && <Card className="store-task-progress-card" title="Kết quả công việc bắt buộc nhân viên đã gửi">
+          {!requestedAssignment && <InfoNote tone="orange">Không tìm thấy lượt giao việc này trong phạm vi cửa hàng hiện tại.</InfoNote>}
+          {requestedAssignment && !requestedProgress && <InfoNote tone="orange">Lượt giao việc chưa có kết quả nhân viên gửi.</InfoNote>}
+          {requestedAssignment && requestedProgress && <>
+            <div className="store-task-progress-meta">
+              <div><span>Nhân viên</span><strong>{requestedProgress.employeeName || requestedEmployeeId || '—'}</strong></div>
+              <div><span>Ngày / Ca</span><strong>{formatTaskDate(requestedProgress.date || requestedAssignment.date)} · {requestedProgress.shiftId || requestedAssignment.shiftId || 'Không xác định'}</strong></div>
+              <div><span>Tiến độ bắt buộc</span><strong>{requestedProgress.completedTasks ?? requestedCompleted}/{requestedProgress.totalTasks ?? requestedTasks.length} ({requestedProgress.completionRate ?? 0}%)</strong></div>
+              <div><span>Gửi lúc</span><strong>{formatTaskDateTime24(requestedProgress.at)}</strong></div>
+            </div>
+            <div className="store-task-progress-list" aria-label="Kết quả công việc bắt buộc">
+              {requestedTasks.map((task) => {
+                const completed = task.completedBy?.[requestedEmployeeId] === true || (!requestedEmployeeId && (task.completed === true || task.done === true))
+                return <div key={task.id || task.title || task.name} className={completed ? 'is-completed' : 'is-incomplete'}>
+                  <span className="store-task-progress-check" aria-hidden="true">{completed ? '✓' : '!'}</span>
+                  <strong>{task.title || task.name || 'Công việc bắt buộc'}</strong>
+                  <Badge tone={completed ? 'green' : 'orange'}>{completed ? 'Đã hoàn thành' : 'Chưa hoàn thành'}</Badge>
+                </div>
+              })}
+              {!requestedTasks.length && <InfoNote>Lượt giao việc này không có công việc bắt buộc.</InfoNote>}
+            </div>
+            {requestedProgress.incompleteReason && <InfoNote tone="orange"><strong>Lý do chưa hoàn thành:</strong> {requestedProgress.incompleteReason}</InfoNote>}
+          </>}
+        </Card>}
+        <InfoNote>Danh sách thưởng do nhân viên tự tick và lưu trong mục <strong>“Công việc tính thưởng”</strong> sau khi điểm danh. Trang cửa hàng chỉ theo dõi lịch sử và thống kê.</InfoNote>
+        <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} sections="reward" />
+      </section>
+
+      {canManageViolations && <section
+        id="store-task-violation-panel"
+        className="store-task-tab-panel store-task-tab-panel--violation"
+        role="tabpanel"
+        aria-labelledby="store-task-violation-tab"
+        hidden={activeTaskTab !== 'violation'}
+      >
+        <ViolationManagementPage targetUnit="store" embedded />
+      </section>}
     </div>
   )
 }

@@ -19,7 +19,7 @@ const UNIT_LABELS = {
  * Shared read-only reporting block for Store Operations, Office Management and
  * Admin HTKD screens. Mutations remain in their dedicated workflow panels.
  */
-export function UnitCompensationStatistics({ targetUnit, storeId = '', employees }) {
+export function UnitCompensationStatistics({ targetUnit, storeId = '', employees, sections = 'all' }) {
   const app = useApp()
   const scopedEmployees = Array.isArray(employees)
     ? employees
@@ -38,15 +38,18 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
     .filter((entry) => !storeId || entryStoreId(entry) === String(storeId))
   const unitLabel = UNIT_LABELS[targetUnit] || 'đơn vị'
 
+  const showReward = sections === 'all' || sections === 'reward'
+  const showViolation = sections === 'all' || sections === 'violation'
+
   return <div className="compensation-unit-statistics">
-    <Card title={`Lịch sử nhận thưởng — ${unitLabel}`}>
+    {showReward && <Card title={`Lịch sử nhận thưởng — ${unitLabel}`}>
       <RewardHistoryTable rows={rewardRows} employees={scopedEmployees} showEmployee />
-    </Card>
-    <Card title={`Thống kê thưởng — ${unitLabel}`}>
+    </Card>}
+    {showReward && <Card title={`Thống kê thưởng — ${unitLabel}`}>
       <CompensationStatisticsGrid statistics={rewardStatistics(rewardRows)} employees={scopedEmployees} showEmployee mode="reward" />
-    </Card>
-    <Card title={`Thống kê vi phạm và đánh giá — ${unitLabel}`}>
+    </Card>}
+    {showViolation && <Card title={`Thống kê vi phạm và đánh giá — ${unitLabel}`}>
       <CompensationStatisticsGrid statistics={violationStatistics(violationRows)} employees={scopedEmployees} showEmployee mode="violation" />
-    </Card>
+    </Card>}
   </div>
 }

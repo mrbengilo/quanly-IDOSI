@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { ClipboardCheck, Clock3, ReceiptText, Save, Store } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
 import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, TableWrap } from '../../components/UI'
 import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { useApp } from '../../state/AppContext'
@@ -122,14 +123,24 @@ export function EmployeeShiftExpensePage() {
 
 export function EmployeeAssignedTasksPage() {
   const app = useApp()
+  const [searchParams] = useSearchParams()
+  const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
   const employee = currentEmployeeOf(app)
   const employeeId = employeeKey(employee)
   const attendance = useMemo(() => ownOpenAttendance(app.attendance, employeeId), [app.attendance, employeeId])
-  const displayedTasks = useMemo(() => {
+  const attendanceTasks = useMemo(() => {
     const tasks = Array.isArray(app.tasks) ? app.tasks : []
     if (attendance) return tasks.filter((task) => taskMatchesAttendance(task, attendance, employeeId))
+    if (requestedAssignmentId) return tasks.filter((task) => (
+      !task.deletedAt
+      && String(task.assignmentId || '') === requestedAssignmentId
+      && taskAssignedToEmployee(task, employeeId)
+    ))
     return tasks.filter((task) => !task.deletedAt && recordDate(task) === today() && taskAssignedToEmployee(task, employeeId))
-  }, [app.tasks, attendance, employeeId])
+  }, [app.tasks, attendance, employeeId, requestedAssignmentId])
+  const displayedTasks = useMemo(() => {
+    return attendanceTasks.filter((task) => !taskIsReward(task))
+  }, [attendanceTasks])
   const [statuses, setStatuses] = useState({})
   const [incompleteReason, setIncompleteReason] = useState('')
   const [saving, setSaving] = useState(false)
@@ -154,7 +165,10 @@ export function EmployeeAssignedTasksPage() {
 
   const submit = async () => {
     if (!ready || saving || typeof app.saveStoreTaskProgress !== 'function') return
-    const tasks = displayedTasks.map((task) => ({ id: task.id, completed: statusFor(task) }))
+    // The server persists one atomic snapshot for the complete shift checklist.
+    // Reward rows stay on their dedicated screen, but their existing state must
+    // remain in this payload so saving mandatory work never clears or omits them.
+    const tasks = attendanceTasks.map((task) => ({ id: task.id, completed: statusFor(task) }))
     const normalizedReason = noteRequired ? incompleteReason.trim() : ''
     const fingerprint = JSON.stringify({ attendanceId: attendance.id, tasks, incompleteReason: normalizedReason })
     if (!requestRef.current || requestRef.current.fingerprint !== fingerprint) {
@@ -170,23 +184,8 @@ export function EmployeeAssignedTasksPage() {
       })
       if (result?.ok) {
         // The progress command records the complete checklist in one atomic
-        // request. Reward claims use the dedicated command so each claim gets
-        // its canonical compensation/audit snapshot and idempotency key.
-        const rewardTasks = displayedTasks.filter(taskIsReward)
-        if (app.apiStatus === 'connected' && typeof app.setWorkReward === 'function') {
-          for (const task of rewardTasks) {
-            try {
-              await app.setWorkReward({
-                attendanceId: attendance.id,
-                catalogItemId: task.catalogItemId || task.catalogSnapshot?.catalogItemId,
-                checked: statusFor(task),
-                idempotencyKey: `work-reward:${attendance.id}:${task.catalogItemId || task.id}:${statusFor(task) ? 'on' : 'off'}`,
-              })
-            } catch (error) {
-              app.notify?.(error.message || 'Không thể đồng bộ một công việc tính thưởng.', 'info')
-            }
-          }
-        }
+        // request. Reward claims are intentionally handled in the separate
+        // “Công việc tính thưởng” screen against the attendance snapshot.
         requestRef.current = null
       }
     } finally {
@@ -200,7 +199,7 @@ export function EmployeeAssignedTasksPage() {
       {!attendance && <InfoNote tone="orange">Bạn có thể xem công việc hôm nay, nhưng chỉ được cập nhật sau khi điểm danh vào đúng ca.</InfoNote>}
       <Card title="Tiến độ công việc" action={<Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{displayedTasks.length} · {completionRate}%</Badge>}>
         <Progress value={completionRate} color={allCompleted ? '#07883f' : '#f28b16'} />
-        <InfoNote>Công việc cố định là bắt buộc. Công việc nhận thưởng là tùy chọn, không cần lý do nếu chưa thực hiện.</InfoNote>
+        <InfoNote>Đây là danh sách công việc bắt buộc theo ca. Công việc nhận thưởng được tick và lưu riêng tại “Công việc tính thưởng”.</InfoNote>
         <div className="task-checklist">
           {displayedTasks.map((task) => {
             const checked = statusFor(task)

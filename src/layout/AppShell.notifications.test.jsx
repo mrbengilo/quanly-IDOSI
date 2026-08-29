@@ -205,7 +205,7 @@ describe('AppShell notifications', () => {
 
     expect(screen.getByRole('button', { name: 'Mở công việc vừa được giao' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Mở công việc vừa được giao' }))
-    expect(screen.getByTestId('current-route').textContent).toBe('/employee/home?assignment=ASSIGN-NEW')
+    expect(screen.getByTestId('current-route').textContent).toBe('/employee/tasks?assignment=ASSIGN-NEW')
     await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('TASK-NEW'))
     fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
     expect(screen.queryByText('Công việc mới')).toBeNull()
@@ -309,7 +309,18 @@ describe('AppShell notifications', () => {
     render(<MemoryRouter initialEntries={['/employee/home']}><AppShell /></MemoryRouter>)
 
     expect(screen.getByRole('link', { name: 'Lịch làm việc của tôi' }).getAttribute('href')).toBe('/employee/schedule')
+    expect(screen.getByRole('link', { name: 'Công việc tính thưởng' }).getAttribute('href')).toBe('/employee/tasks')
+    expect(screen.queryByRole('link', { name: 'Công việc được giao' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Lịch phân ca' })).toBeNull()
+  })
+
+  it('keeps mandatory and reward task checklists as separate Store employee menus', () => {
+    mocked.session = { role: 'employee', name: 'Nhân viên cửa hàng', employeeId: 'ST01', storeId: 'CH001', unit: 'store' }
+    mocked.currentEmployee = { id: 'ST01', name: 'Nhân viên cửa hàng', unit: 'store', storeId: 'CH001' }
+    render(<MemoryRouter initialEntries={['/employee/home']}><AppShell /></MemoryRouter>)
+
+    expect(screen.getByRole('link', { name: 'Công việc được giao' }).getAttribute('href')).toBe('/employee/tasks')
+    expect(screen.getByRole('link', { name: 'Công việc tính thưởng' }).getAttribute('href')).toBe('/employee/reward-tasks')
   })
 
   it('shows a support-work notification only to its assigned support employee', async () => {
@@ -343,7 +354,7 @@ describe('AppShell notifications', () => {
     expect(mocked.readNotification).toHaveBeenCalledWith('N6')
   })
 
-  it('opens an assigned store task on the employee home assignment view', async () => {
+  it('opens an assigned store task in the dedicated task checklist', async () => {
     mocked.session = { role: 'employee', name: 'Nhân viên', employeeId: 'E01', code: 'E01', storeId: 'CH001', unit: 'store' }
     mocked.readNotification.mockResolvedValue({ ok: true })
     render(
@@ -359,7 +370,7 @@ describe('AppShell notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
     fireEvent.click(screen.getAllByText('Viec ca tuong lai').find((node) => node.closest('.notification-item')).closest('.notification-item'))
 
-    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/employee/home?assignment=TSA-1'))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/employee/tasks?assignment=TSA-1'))
     expect(mocked.readNotification).toHaveBeenCalledWith('N7')
   })
 

@@ -261,7 +261,8 @@ describe('store employee current-shift orders', () => {
 
     render(createElement(MemoryRouter, null, createElement(EmployeeDashboardV2)))
 
-    expect(screen.getByText('Tùy chọn · Thưởng 50,000 đ')).toBeTruthy()
+    expect(screen.queryByText('Tùy chọn · Thưởng 50,000 đ')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Công việc tính thưởng' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'KẾT CA' }))
     fireEvent.change(screen.getByLabelText(/^Tiền mặt/u), { target: { value: '0' } })
     fireEvent.change(screen.getByLabelText(/^Chuyển khoản/u), { target: { value: '0' } })
@@ -358,7 +359,7 @@ describe('store employee current-shift orders', () => {
     expect(createOrder.mock.calls[2][0].idempotencyKey).not.toBe(firstKey)
   })
 
-  it('opens a future assignment deep link without exposing another employee task', () => {
+  it('keeps task mutations out of the overview even for a legacy assignment deep link', () => {
     mocked.app = {
       currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01' },
       stores: [{ id: 'S01', name: 'IDOSI S01' }],
@@ -388,11 +389,12 @@ describe('store employee current-shift orders', () => {
 
     render(createElement(MemoryRouter, { initialEntries: ['/employee/home?assignment=TAS-FUTURE'] }, createElement(EmployeeDashboardV2)))
 
-    expect(screen.getByRole('heading', { name: 'CÔNG VIỆC TỪ THÔNG BÁO' })).toBeTruthy()
-    expect(screen.getByText('Kiểm tra tồn kho')).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: 'CÔNG VIỆC TỪ THÔNG BÁO' })).toBeNull()
+    expect(screen.queryByText('Kiểm tra tồn kho')).toBeNull()
     expect(screen.queryByText('Công việc bí mật')).toBeNull()
-    expect(screen.getByRole('button', { name: /Chờ điểm danh đúng ca để cập nhật Kiểm tra tồn kho/i }).disabled).toBe(true)
-    expect(screen.getByText(/Người giao: Quản lý A/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Công việc được giao' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Công việc tính thưởng' })).toBeTruthy()
+    expect(mocked.app.setTaskDone).not.toHaveBeenCalled()
   })
 
   it('shows the effective support store, home store and transfer compensation without requiring a schedule', () => {

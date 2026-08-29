@@ -224,6 +224,7 @@ export default function App() {
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
         <Route path="/employee/home" element={<EmployeeHomePage />} />
         <Route path="/employee/tasks" element={<EmployeeTasksRoute />} />
+        <Route path="/employee/reward-tasks" element={<StoreEmployeeRoute><SupportAssignedWorkPage /></StoreEmployeeRoute>} />
         <Route path="/employee/shift-expenses" element={<StoreEmployeeRoute><EmployeeShiftExpensePage /></StoreEmployeeRoute>} />
         <Route path="/employee/orders" element={<StoreEmployeeRoute><EmployeeOrdersPage /></StoreEmployeeRoute>} />
         <Route path="/employee/attendance" element={<EmployeeAttendanceRoute />} />

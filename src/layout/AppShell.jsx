@@ -131,6 +131,7 @@ const systemMenus = {
     { label: 'Đơn hàng', path: '/employee/orders', icon: ShoppingCart },
     { label: 'Chi phí trong ca', path: '/employee/shift-expenses', icon: ReceiptText },
     { label: 'Công việc được giao', path: '/employee/tasks', icon: ClipboardCheck },
+    { label: 'Công việc tính thưởng', path: '/employee/reward-tasks', icon: Award },
     { label: 'Dòng tiền', path: '/employee/cashflow', icon: Banknote },
     { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
     { label: 'Lịch phân ca', path: '/employee/schedule', icon: CalendarCheck },
@@ -363,7 +364,7 @@ export default function AppShell() {
         }).toString()}`
       : ''
     const destination = item?.type === 'store-task-assigned'
-      ? `/employee/home?assignment=${encodeURIComponent(assignmentId || '')}`
+      ? `/employee/tasks?assignment=${encodeURIComponent(assignmentId || '')}`
       : assignmentId && (item?.targetUnit === 'office' || item?.data?.targetUnit === 'office')
       ? `/employee/tasks?assignment=${encodeURIComponent(assignmentId)}`
       : assignmentId && (!explicitDestination || String(explicitDestination).startsWith('/support/tasks'))

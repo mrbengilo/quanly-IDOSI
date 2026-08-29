@@ -200,13 +200,14 @@ describe('business-support store workspace permissions', () => {
     expect(screen.queryByText(supportEmployee.name)).toBeNull()
   })
 
-  it('lets Business Support assign store work and manage schedules', () => {
+  it('lets Business Support review rewards, record violations, and manage schedules', () => {
     const taskView = renderPage(StoreTasks)
-    expect(screen.getAllByText(/Kiểm kê quầy/).length).toBeGreaterThan(0)
-    expect(screen.getByRole('button', { name: /^GỬI$/i })).toBeTruthy()
-    expect(screen.getByRole('group', { name: 'Danh mục công việc' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /Thêm công việc/i })).toBeNull()
-    expect(screen.getByLabelText(`Chọn nhân viên ${employee.name}`, { exact: false })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Thưởng công việc/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Vi phạm/i })).toBeTruthy()
+    expect(screen.getByText(/nhân viên tự tick và lưu/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^GỬI$/i })).toBeNull()
+    expect(screen.queryByRole('group', { name: 'Danh mục công việc' })).toBeNull()
+    expect(screen.queryByLabelText(`Chọn nhân viên ${employee.name}`, { exact: false })).toBeNull()
     taskView.unmount()
 
     renderPage(UnifiedSchedule)

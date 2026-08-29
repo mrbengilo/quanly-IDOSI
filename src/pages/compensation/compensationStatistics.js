@@ -171,6 +171,7 @@ export const workRewardRows = ({
           completed,
           paid: completed && payoutStatus === 'approved',
           payoutStatus,
+          progressVersion: Number(progress?.version || 0),
           completedAt: completed ? completionTime(progress || legacyTask) : '',
         }
       })

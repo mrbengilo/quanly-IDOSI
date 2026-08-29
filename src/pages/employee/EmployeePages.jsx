@@ -30,7 +30,6 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { shifts } from '../../data'
-import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { useApp } from '../../state/AppContext'
 import {
   calculateEmployeeBasePay,
@@ -55,10 +54,7 @@ const employeeType = getEmployeeType
 const employeePosition = (employee = {}) => employee.position || employee.role || employee.jobTitle || 'Nhân viên'
 const recordDate = (record = {}) => String(record.date || record.workDate || record.createdAt || '').slice(0, 10)
 const recordIsSupport = (record = {}) => Boolean(record.supportTransferId || record.supportCompensation?.transferId || record.compensation?.support?.transferId)
-const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapshot?.kind || task.kind || '')
-const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
 const taskIsRequired = (task = {}) => task.required !== false
-const taskAmount = (task = {}) => Math.max(0, Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd) || 0)
 
 const homeStoreForEmployee = (app, employee) => (Array.isArray(app.stores) ? app.stores : [])
   .find((store) => String(store.id || '') === String(employee?.storeId || app.session?.homeStoreId || app.session?.storeId || ''))
@@ -428,7 +424,6 @@ export function EmployeeHome() {
   const taskIsDone = (task) => task.completedBy?.[employeeId(employee)] ?? task.done
   const requiredTasks = tasks.filter(taskIsRequired)
   const incompleteRequiredTasks = requiredTasks.filter((task) => !taskIsDone(task))
-  const incompleteRewardTasks = tasks.filter((task) => !taskIsRequired(task) && !taskIsDone(task))
   const totalRevenue = parseMoneyInput(cash) + parseMoneyInput(transfer)
   const finishedShift = Boolean(checkedOutAt || app.finishedShift)
   const canFinish = checkedInAt && incompleteRequiredTasks.length === 0 && totalRevenue > 0 && !finishedShift
@@ -483,11 +478,7 @@ export function EmployeeHome() {
         <Card className="current-shift-card"><h2>CA LÀM VIỆC HÔM NAY</h2><div><Badge tone="green">{workShift.name.toUpperCase()}</Badge><strong>{workShift.time}</strong><small>({Number(employee.shiftHours) || 5} tiếng)</small></div><p><span>Giờ vào: <b>{formatTime(checkedInAt)}</b></span><span>Giờ kết ca: <b>{formatTime(checkedOutAt)}</b></span></p><div className={checkedInAt ? 'status-ok' : 'status-pending'}>{finishedShift ? 'Đã kết ca' : checkedInAt ? 'Đang làm việc' : 'Chưa điểm danh'}</div></Card>
       </div>
       {locationError && <InfoNote tone="orange">{locationError}</InfoNote>}
-      <Card className="employee-tasks" title="CÔNG VIỆC CẦN LÀM">
-        <TableWrap><thead><tr><th>STT</th><th>Công việc</th><th>Phụ chú</th><th>Loại / Số tiền</th><th>Trạng thái</th></tr></thead><tbody>{tasks.map((task, index) => { const reward = taskIsReward(task); const amount = taskAmount(task); return <tr key={task.id} className={taskIsDone(task) ? 'task-done' : ''}><td>{index + 1}</td><td><strong>{task.title || task.name || 'Công việc'}</strong></td><td>{task.detail || task.description || '—'}</td><td><div className="table-stack"><Badge tone={reward ? 'orange' : 'blue'}>{reward ? 'Nhận thưởng · Tùy chọn' : 'Cố định · Bắt buộc'}</Badge><small>{reward ? `Thưởng ${money(amount)}` : amount > 0 ? money(amount) : 'Không áp dụng tiền'}</small></div></td><td><input className="big-check" type="checkbox" checked={taskIsDone(task)} onChange={(event) => app.setTaskDone?.(task.id, event.target.checked, employeeId(employee))} aria-label={`${taskIsDone(task) ? 'Mở lại' : 'Hoàn thành'} ${task.title || task.name || 'công việc'}`} /></td></tr>})}{!tasks.length && <tr><td colSpan="5">Chưa có công việc được giao cho cửa hàng, ca và ngày hiện tại.</td></tr>}</tbody></TableWrap>
-        <InfoNote>Công việc cố định phải hoàn thành trước khi kết ca. Công việc nhận thưởng là tùy chọn, không chặn kết ca và không cần nhập lý do.</InfoNote>
-        {incompleteRewardTasks.length > 0 && incompleteRequiredTasks.length === 0 && <InfoNote tone="green">Bạn có thể kết ca dù còn {incompleteRewardTasks.length} công việc nhận thưởng tùy chọn.</InfoNote>}
-      </Card>
+      {incompleteRequiredTasks.length > 0 && <InfoNote tone="orange">Bạn còn {incompleteRequiredTasks.length} công việc bắt buộc. Vào mục <strong>“Công việc được giao”</strong>, tick kết quả rồi bấm <strong>“LƯU KẾT QUẢ”</strong> trước khi kết ca.</InfoNote>}
       <Card className="finish-shift" title="THÔNG TIN KẾT CA">
         <div className="finish-shift__grid">
           <div><Field label="Chi phí trong ca (nếu có)"><MoneyInput value={expense} onChange={(event) => setExpense(event.target.value)} placeholder="Nhập số tiền" /></Field><div className="expected-pay"><span>Số giờ làm dự kiến: <b>{expectedShiftHours} tiếng</b></span><span>{payBasis === 'monthly' && !monthlyHoursFormula ? 'Mức lương tháng' : 'Lương ca dự kiến'}: <b>{money(expectedShiftPay)}</b></span><small>{salaryPolicy ? `Đến ${salaryPolicy.thresholdHours} giờ: ${money(salaryPolicy.standardHourlyRateVnd)}/giờ · Vượt: ${money(salaryPolicy.excessHourlyRateVnd)}/giờ` : payBasis === 'hourly' ? `(${money(rate)}/giờ)` : monthlyHoursFormula ? `${expectedShiftHours} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || rate)}` : 'Full-time hưởng lương theo tháng'}</small></div></div>
