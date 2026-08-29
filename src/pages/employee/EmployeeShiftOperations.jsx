@@ -168,7 +168,27 @@ export function EmployeeAssignedTasksPage() {
         incompleteReason: normalizedReason,
         idempotencyKey: requestRef.current.idempotencyKey,
       })
-      if (result?.ok) requestRef.current = null
+      if (result?.ok) {
+        // The progress command records the complete checklist in one atomic
+        // request. Reward claims use the dedicated command so each claim gets
+        // its canonical compensation/audit snapshot and idempotency key.
+        const rewardTasks = displayedTasks.filter(taskIsReward)
+        if (app.apiStatus === 'connected' && typeof app.setWorkReward === 'function') {
+          for (const task of rewardTasks) {
+            try {
+              await app.setWorkReward({
+                attendanceId: attendance.id,
+                catalogItemId: task.catalogItemId || task.catalogSnapshot?.catalogItemId,
+                checked: statusFor(task),
+                idempotencyKey: `work-reward:${attendance.id}:${task.catalogItemId || task.id}:${statusFor(task) ? 'on' : 'off'}`,
+              })
+            } catch (error) {
+              app.notify?.(error.message || 'Không thể đồng bộ một công việc tính thưởng.', 'info')
+            }
+          }
+        }
+        requestRef.current = null
+      }
     } finally {
       setSaving(false)
     }

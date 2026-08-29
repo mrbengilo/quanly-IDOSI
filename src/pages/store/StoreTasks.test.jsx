@@ -212,8 +212,8 @@ describe('StoreTasks assignment workflow', () => {
     expect(screen.getByLabelText(`Chọn nhân viên ${employees[0].name}`, { exact: false })).toBeTruthy()
     expect(screen.getByRole('heading', { level: 1, name: /Công việc tính thưởng & vi phạm/i })).toBeTruthy()
     if (role === 'store_manager') {
-      expect(screen.queryByTestId('store-violation-management')).toBeNull()
-      expect(screen.queryByTestId('store-compensation-statistics')).toBeNull()
+      expect(screen.getByTestId('store-violation-management').dataset).toMatchObject({ targetUnit: 'store', embedded: 'true' })
+      expect(screen.getByTestId('store-compensation-statistics').dataset).toMatchObject({ targetUnit: 'store', storeId: store.id, employeeCount: '2' })
     } else {
       expect(screen.getByTestId('store-violation-management').dataset).toMatchObject({ targetUnit: 'store', embedded: 'true' })
       expect(screen.getByTestId('store-compensation-statistics').dataset).toMatchObject({ targetUnit: 'store', storeId: store.id, employeeCount: '2' })

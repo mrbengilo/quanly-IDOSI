@@ -19,7 +19,10 @@ import worker, {
   supportTransferTimeBounds,
   verifyPassword,
 } from './worker'
-import { TEAM_MILESTONE_PROGRAM_IDS } from '../src/domain/compensationPolicies'
+import {
+  STAFF_WORK_CATALOG_SEED_VERSION,
+  TEAM_MILESTONE_PROGRAM_IDS,
+} from '../src/domain/compensationPolicies'
 
 const TEST_IDENTITY_IMAGE = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
 const testIdentityImages = () => ({ front: TEST_IDENTITY_IMAGE, back: TEST_IDENTITY_IMAGE })
@@ -393,6 +396,7 @@ const setupSupportTransferRuntime = async ({
   const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
     username: 'admin', password: 'transfer-runtime-admin-password',
     initialState: {
+      staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
       stores: [
         { id: 'S01', short: 'HOME', name: 'IDOSI Home', status: 'Đang hoạt động' },
         { id: 'S02', short: 'DEST', name: 'IDOSI Destination', status: 'Đang hoạt động' },
@@ -1765,6 +1769,7 @@ describe('IDOSI Worker security primitives', () => {
       username: 'admin',
       password: 'large-state-password',
       initialState: {
+        staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
         schemaVersion: 2,
         stateVersion: 1,
         stores: [{ id: 'S01', short: 'S01', name: 'Cửa hàng 01' }],
@@ -1873,6 +1878,7 @@ describe('IDOSI Worker security primitives', () => {
   it('runs bootstrap, employee lifecycle, projected state, atomic order creation, and logout end to end', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-secret-for-test' }
     const initialState = {
+      staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
       schemaVersion: 2,
       stateVersion: 1,
       stores: [{ id: 'SM234', short: 'SM234', name: 'IDOSI 234' }],
@@ -3695,6 +3701,7 @@ describe('IDOSI Worker security primitives', () => {
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'employee-avatar-rbac-admin-password',
       initialState: {
+        staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
         stores: [
           { id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' },
           { id: 'S02', name: 'Dosii S02', status: 'Đang hoạt động' },
@@ -6655,6 +6662,7 @@ describe('IDOSI Worker security primitives', () => {
       const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
         username: 'admin', password: 'work-catalog-assignment-password',
         initialState: {
+          staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
           stores: [
             { id: 'S01', name: 'IDOSI Tô Ngọc Vân', status: 'Đang hoạt động' },
             { id: 'S02', name: 'IDOSI Tây Hòa', status: 'Đang hoạt động' },
@@ -8138,6 +8146,7 @@ describe('IDOSI Worker security primitives', () => {
       const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
         username: 'admin', password: 'exact-order-creator-admin-password',
         initialState: {
+          staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
           stores: [{ id: 'S01', short: 'TNV', name: 'IDOSI Tô Ngọc Vân', status: 'Đang hoạt động' }],
           employees: [{
             id: 'E01', name: 'Nhân viên Một', storeId: 'S01', unit: 'store', status: 'Đang làm việc',
@@ -8258,6 +8267,7 @@ describe('IDOSI Worker security primitives', () => {
       const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
         username: 'admin', password: 'employee-shift-admin-password',
         initialState: {
+          staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
           stores: [
             { id: 'S01', short: 'TNV', name: 'IDOSI Tô Ngọc Vân', status: 'Đang hoạt động' },
             { id: 'S02', short: 'TH', name: 'IDOSI Tây Hòa', status: 'Đang hoạt động' },
@@ -10681,6 +10691,7 @@ describe('IDOSI Worker security primitives', () => {
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'checklist-admin-password',
       initialState: {
+        staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
         stores: [{ id: 'S01', name: 'Store 01', status: 'Đang hoạt động' }],
         employees: [{ id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store', status: 'Đang làm việc' }],
         shiftDefinitions: [{ id: 'SHIFT-MORNING', storeId: 'S01', name: 'Ca sáng', start: '08:00', end: '12:00' }],
@@ -11078,7 +11089,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(await adminDenied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
 
     const seededState = readHydratedState(env.DB.database)
-    expect(seededState.staffWorkCatalogSeedVersion).toBe(1)
+    expect(seededState.staffWorkCatalogSeedVersion).toBe(STAFF_WORK_CATALOG_SEED_VERSION)
     expect(seededState.workCatalogItems.filter(({ code }) => code === 'office.reward.on_time')).toEqual([
       expect.objectContaining({ id: 'DELETED-OFFICE-ON-TIME', active: false, amountVnd: 99_000 }),
     ])
@@ -11382,7 +11393,7 @@ describe('IDOSI Worker security primitives', () => {
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'work-catalog-scope-admin-password',
       initialState: {
-        staffWorkCatalogSeedVersion: 1,
+        staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
         stores: [{ id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' }],
         employees: [{
           id: 'HTKD-CATALOG-01', name: 'Nhân viên HTKD', storeId: 'BUSINESS_SUPPORT',

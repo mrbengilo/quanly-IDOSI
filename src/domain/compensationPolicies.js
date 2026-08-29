@@ -1,3 +1,5 @@
+import { DEFAULT_STORE_CHECKLIST_TASK_SEEDS } from './storeShiftChecklist.js'
+
 const BASIS_POINTS_PER_PERCENT = 100
 const BASIS_POINTS_PER_WHOLE = 10_000
 
@@ -364,12 +366,12 @@ const staffCatalogItems = (targetGroup, kind, records) => records.map((record, i
   code: record.code,
   kind,
   targetGroup,
-  storeId: null,
-  shiftId: null,
-  shiftName: null,
+  storeId: record.storeId || null,
+  shiftId: record.shiftId || null,
+  shiftName: record.shiftName || null,
   name: record.label,
-  amountVnd: record.amountVnd,
-  required: false,
+  amountVnd: record.amountVnd || 0,
+  required: record.required === true,
   active: true,
   sortOrder: index,
   effectiveFrom: null,
@@ -389,3 +391,59 @@ export const DEFAULT_STAFF_WORK_CATALOG_ITEMS = deepFreeze([
   ...staffCatalogItems('office', 'REWARD_TASK', OFFICE_REWARDS),
   ...staffCatalogItems('office', 'VIOLATION', OFFICE_VIOLATIONS),
 ])
+
+const fixedTaskShiftIds = Object.freeze({ morning: 'ca1', afternoon: 'ca2', night: 'ca3' })
+const fixedTaskShiftNames = Object.freeze({ morning: 'Ca Sáng', afternoon: 'Ca Chiều', night: 'Ca Tối' })
+
+const storeFixedTaskRecords = DEFAULT_STORE_CHECKLIST_TASK_SEEDS.map((task) => ({
+  code: `store.fixed.${String(task.id).toLocaleLowerCase('en-US')}`,
+  label: task.description,
+  amountVnd: 0,
+  required: true,
+  shiftId: fixedTaskShiftIds[task.shiftKey] || null,
+  shiftName: fixedTaskShiftNames[task.shiftKey] || null,
+}))
+
+const tierLabel = (record, tier) => {
+  if (record.metric === 'weight_kg') return tier.comparison === 'LT' ? '< 500kg' : '> 500kg'
+  if (record.metric === 'bill_amount_vnd') return tier.minimumInclusive ? '1–1,5 triệu' : '> 1,5 triệu'
+  return tier.id
+}
+
+const storeRewardCatalogRecords = STORE_WORK_REWARDS.flatMap((record) => {
+  if (Array.isArray(record.tiers)) {
+    return record.tiers.map((tier) => ({
+      ...record,
+      code: `${record.code}.${tier.id}`,
+      label: `${record.label} (${tierLabel(record, tier)})`,
+      amountVnd: tier.amountVnd,
+      tiers: undefined,
+    }))
+  }
+  if (record.milestoneProgramId) {
+    const program = TEAM_MILESTONE_PROGRAMS[record.milestoneProgramId]
+    return (program?.milestones || []).map((milestone) => ({
+      ...record,
+      code: `${record.code}.${milestone.id}`,
+      label: `${record.label} (${milestone.comparison === 'GT' ? '> ' : '≥ '}${milestone.thresholdUnits.toLocaleString('vi-VN')})`,
+      amountVnd: milestone.amountVnd,
+      rewardScope: 'team',
+      milestoneId: milestone.id,
+    }))
+  }
+  return [record]
+})
+
+/** Complete catalog used by store employees after check-in. */
+export const DEFAULT_STORE_WORK_CATALOG_ITEMS = deepFreeze([
+  ...staffCatalogItems('store', 'FIXED_TASK', storeFixedTaskRecords),
+  ...staffCatalogItems('store', 'REWARD_TASK', storeRewardCatalogRecords),
+  ...staffCatalogItems('store', 'VIOLATION', STORE_VIOLATIONS),
+])
+
+export const DEFAULT_WORK_CATALOG_ITEMS = deepFreeze([
+  ...DEFAULT_STAFF_WORK_CATALOG_ITEMS,
+  ...DEFAULT_STORE_WORK_CATALOG_ITEMS,
+])
+
+export const STAFF_WORK_CATALOG_SEED_VERSION = 2

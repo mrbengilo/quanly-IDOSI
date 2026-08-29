@@ -155,8 +155,9 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
   const role = canonicalRole(app.session?.role)
   const targetUnit = requestedTargetUnit || routeTargetUnit()
   const permittedUnit = ['store', 'office', 'business_support'].includes(targetUnit)
-  const canManage = ['admin', 'business_support'].includes(role)
-    && (targetUnit !== 'business_support' || role === 'admin')
+  const canManage = (['admin', 'business_support'].includes(role)
+    && (targetUnit !== 'business_support' || role === 'admin'))
+    || (role === 'store_manager' && targetUnit === 'store')
   const stores = useMemo(() => storesVisibleToRole(app.stores, app.session), [app.stores, app.session])
   const [storeSelection, setStoreSelection] = useState('')
   const selectedStoreId = targetUnit === 'store' ? storeSelection || entityId(stores[0]) : ''
@@ -207,7 +208,9 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
   if (!permittedUnit || !canManage) {
     const subtitle = targetUnit === 'business_support'
       ? 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.'
-      : 'Chỉ Admin và Nhân viên hỗ trợ KD được quản lý vi phạm của đơn vị này.'
+      : role === 'store_manager'
+        ? 'Quản lý cửa hàng chỉ được ghi nhận vi phạm tại cửa hàng được phân công.'
+        : 'Chỉ Admin và Nhân viên hỗ trợ KD được quản lý vi phạm của đơn vị này.'
     return embedded ? <InfoNote tone="orange">{subtitle}</InfoNote> : <AccessDenied subtitle={subtitle} />
   }
 

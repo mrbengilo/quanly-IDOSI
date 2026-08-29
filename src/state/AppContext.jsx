@@ -3537,8 +3537,11 @@ export function AppProvider({ children }) {
 
   const requireCompensationOperator = (targetUnit = '') => {
     const role = normalizeAuthRole(state.session?.role)
-    if (!['admin', 'business_support'].includes(role)) {
-      throw new Error('Chỉ Admin hoặc Nhân viên hỗ trợ KD được thực hiện thao tác này.')
+    if (!['admin', 'business_support', 'store_manager'].includes(role)) {
+      throw new Error('Chỉ Admin, Nhân viên hỗ trợ KD hoặc Quản lý cửa hàng được thực hiện thao tác này.')
+    }
+    if (role === 'store_manager' && targetUnit !== 'store') {
+      throw new Error('Quản lý cửa hàng chỉ được ghi nhận vi phạm tại cửa hàng được phân công.')
     }
     if (targetUnit === 'business_support' && role !== 'admin') {
       throw new Error('Chỉ Admin được quản lý vi phạm của Nhân viên hỗ trợ KD.')

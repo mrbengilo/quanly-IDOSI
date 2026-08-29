@@ -1,5 +1,8 @@
 import { shifts } from '../data.js'
-import { DEFAULT_STAFF_WORK_CATALOG_ITEMS } from '../domain/compensationPolicies'
+import {
+  DEFAULT_WORK_CATALOG_ITEMS,
+  STAFF_WORK_CATALOG_SEED_VERSION,
+} from '../domain/compensationPolicies'
 import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'
 
 export const DOMAIN_SCHEMA_VERSION = 5
@@ -73,8 +76,8 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   payrollPeriods: [],
   payrollPayments: [],
   storeEmployeeSalaryConfigs: [],
-  workCatalogItems: DEFAULT_STAFF_WORK_CATALOG_ITEMS.map((item) => ({ ...item })),
-  staffWorkCatalogSeedVersion: 1,
+  workCatalogItems: DEFAULT_WORK_CATALOG_ITEMS.map((item) => ({ ...item })),
+  staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
   workCatalogProgress: [],
   storeShiftTaskTemplates: [],
   compensationEntries: [],
@@ -116,11 +119,11 @@ const mergeArray = (stored, defaults, key) => Array.isArray(stored?.[key]) ? sto
 
 const migratedStaffWorkCatalog = (stored, defaults) => {
   const current = mergeArray(stored, defaults, 'workCatalogItems')
-  if (Number(stored?.staffWorkCatalogSeedVersion || 0) >= 1) return current
+  if (Number(stored?.staffWorkCatalogSeedVersion || 0) >= STAFF_WORK_CATALOG_SEED_VERSION) return current
   const existingCodes = new Set(current.map((item) => String(item?.code || '')).filter(Boolean))
   return [
     ...current,
-    ...DEFAULT_STAFF_WORK_CATALOG_ITEMS
+    ...DEFAULT_WORK_CATALOG_ITEMS
       .filter((item) => !existingCodes.has(item.code))
       .map((item) => ({ ...item })),
   ]
@@ -139,7 +142,7 @@ export const migrateDomainState = (stored, context) => {
     ...defaults,
     ...stored,
     schemaVersion: DOMAIN_SCHEMA_VERSION,
-    staffWorkCatalogSeedVersion: 1,
+    staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
     stateVersion: Math.max(1, Number(stored.stateVersion) || 1),
     orders: mergeArray(stored, defaults, 'orders'),
     orderInformationOptions: mergeArray(stored, defaults, 'orderInformationOptions'),

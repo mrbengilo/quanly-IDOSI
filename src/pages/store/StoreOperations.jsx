@@ -819,7 +819,7 @@ export function StoreTasks() {
     session,
   } = useStoreScope()
   const canManageStore = canAssignStoreTasks(session?.role)
-  const canManageViolations = ['admin', 'business_support', 'manager'].includes(session?.role)
+  const canManageViolations = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const initialDate = today()
   const optionsForDate = (nextDate) => taskShiftOptionsForDate({
     shiftDefinitions,
