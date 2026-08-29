@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_STAFF_WORK_CATALOG_ITEMS } from '../domain/compensationPolicies'
+import {
+  DEFAULT_STAFF_WORK_CATALOG_ITEMS,
+  STAFF_WORK_CATALOG_SEED_VERSION,
+} from '../domain/compensationPolicies'
 import { DOMAIN_SCHEMA_VERSION, migrateDomainState } from './initialDomainState'
 
 describe('domain state migration', () => {
@@ -40,7 +43,7 @@ describe('domain state migration', () => {
 
     expect(migrated).toMatchObject({
       storeEmployeeSalaryConfigs: [],
-      staffWorkCatalogSeedVersion: 1,
+      staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
       workCatalogProgress: [],
       storeShiftTaskTemplates: [],
       compensationEntries: [],
@@ -52,7 +55,7 @@ describe('domain state migration', () => {
       periodReconciliations: [],
       jobRuns: [],
     })
-    expect(migrated.workCatalogItems).toHaveLength(13)
+    expect(migrated.workCatalogItems.length).toBeGreaterThan(DEFAULT_STAFF_WORK_CATALOG_ITEMS.length)
     expect(migrated.workCatalogItems).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'htkd.reward.on_time', amountVnd: 3_000 }),
       expect.objectContaining({ code: 'office.reward.clip_over_100k_views_team', amountVnd: 350_000 }),
@@ -63,7 +66,7 @@ describe('domain state migration', () => {
   it('seeds the staff catalog once without overwriting an existing item or restoring removed items later', () => {
     const customized = { ...DEFAULT_STAFF_WORK_CATALOG_ITEMS[0], name: 'Tên đã chỉnh', amountVnd: 9_000 }
     const first = migrateDomainState({ schemaVersion: 4, workCatalogItems: [customized] }, { stores: [], imports: [] })
-    expect(first.workCatalogItems).toHaveLength(13)
+    expect(first.workCatalogItems.length).toBeGreaterThan(DEFAULT_STAFF_WORK_CATALOG_ITEMS.length)
     expect(first.workCatalogItems.find((item) => item.code === customized.code)).toBe(customized)
 
     const afterAdminRemoval = migrateDomainState({

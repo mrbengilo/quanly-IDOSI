@@ -2,7 +2,8 @@ import {
   validateStoreChecklistCheckout,
 } from '../src/domain/storeShiftChecklist.js'
 import {
-  DEFAULT_STAFF_WORK_CATALOG_ITEMS,
+  DEFAULT_WORK_CATALOG_ITEMS,
+  STAFF_WORK_CATALOG_SEED_VERSION,
   REVENUE_BONUS_PROGRAM_IDS,
   TEAM_MILESTONE_PROGRAM_IDS,
   WORKBOOK_COMPENSATION_POLICY,
@@ -1269,19 +1270,19 @@ const normalizeSharedStateForStorage = (value) => {
   for (const key of COMPENSATION_STATE_COLLECTIONS) {
     if (!Array.isArray(state[key])) state[key] = []
   }
-  if (Number(state.staffWorkCatalogSeedVersion || 0) < 1) {
+  if (Number(state.staffWorkCatalogSeedVersion || 0) < STAFF_WORK_CATALOG_SEED_VERSION) {
     const knownCodes = new Set(state.workCatalogItems
       .map((item) => String(item?.code || '').trim().toLocaleLowerCase('en-US'))
       .filter(Boolean))
     const missingDefaults = []
-    for (const item of DEFAULT_STAFF_WORK_CATALOG_ITEMS) {
+    for (const item of DEFAULT_WORK_CATALOG_ITEMS) {
       const code = String(item?.code || '').trim().toLocaleLowerCase('en-US')
       if (!code || knownCodes.has(code)) continue
       knownCodes.add(code)
       missingDefaults.push({ ...item })
     }
     state.workCatalogItems = [...state.workCatalogItems, ...missingDefaults]
-    state.staffWorkCatalogSeedVersion = 1
+    state.staffWorkCatalogSeedVersion = STAFF_WORK_CATALOG_SEED_VERSION
   }
   if (Array.isArray(state.payrollPeriods)) {
     state.payrollPeriods = state.payrollPeriods.map(withoutRetiredKpiFields)
@@ -14011,9 +14012,11 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
   const employee = compensationEmployee(state, actorEmployeeId)
   const employeeId = String(employee.id || employee.code || employee.employeeId)
   const targetUnit = employeeUnit(employee)
-  if (!['office', 'business_support'].includes(targetUnit)
-    || (targetUnit === 'business_support') !== (actor.role === 'business_support')) {
-    throw new ApiError(403, 'WORK_REWARD_UNIT_FORBIDDEN', 'Tài khoản không thuộc Khối văn phòng hoặc Nhân viên hỗ trợ KD phù hợp.')
+  const actorCanClaimUnit = targetUnit === 'business_support'
+    ? actor.role === 'business_support'
+    : actor.role === 'employee'
+  if (!['store', 'office', 'business_support'].includes(targetUnit) || !actorCanClaimUnit) {
+    throw new ApiError(403, 'WORK_REWARD_UNIT_FORBIDDEN', 'Tài khoản không thuộc nhóm nhân viên phù hợp để ghi nhận công việc tính thưởng.')
   }
   const attendanceId = String(payload.attendanceId || '').trim()
   if (!attendanceId) throw new ApiError(400, 'ATTENDANCE_REQUIRED', 'Cần chọn ca chấm công để ghi nhận thưởng.')
@@ -14031,7 +14034,10 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
   if (catalogSnapshot.targetGroup && catalogSnapshot.targetGroup !== targetUnit) {
     throw new ApiError(409, 'WORK_REWARD_UNIT_MISMATCH', 'Công việc tính thưởng không thuộc nhóm nhân viên hiện tại.')
   }
-  const storeId = targetUnit === 'office' ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID
+  const storeId = targetUnit === 'store'
+    ? String(attendance.storeId || employee.storeId || '').trim()
+    : targetUnit === 'office' ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID
+  if (!storeId) throw new ApiError(409, 'WORK_REWARD_STORE_REQUIRED', 'Ca chấm công thiếu cửa hàng để ghi nhận thưởng.')
   const period = workDate.slice(0, 7)
   assertPayrollNotPaidOrLocked(state, storeId, period)
   let progressId
@@ -14510,9 +14516,11 @@ const violationMatchesOccurrence = (record, occurrenceKey, identity) => (
 )
 
 const violationCommand = async (db, actor, body, commandContext) => {
-  assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý vi phạm.')
   const operation = body.type.split('.').at(-1)
   if (!['create', 'create_batch', 'void'].includes(operation)) throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh vi phạm không được hỗ trợ.')
+  if (!PAYROLL_OPERATOR_ROLES.has(actor.role) && actor.role !== 'store_manager') {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền quản lý vi phạm.')
+  }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
   const records = Array.isArray(state.violations) ? state.violations : []
@@ -14521,6 +14529,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const targetUnit = String(payload.targetUnit || 'store').trim()
     if (!['store', 'office', 'business_support'].includes(targetUnit)) {
       throw new ApiError(400, 'VIOLATION_UNIT_INVALID', 'Nhóm nhân viên vi phạm không hợp lệ.')
+    }
+    if (actor.role === 'store_manager' && targetUnit !== 'store') {
+      throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được ghi nhận vi phạm nhân viên thuộc cửa hàng của mình.')
     }
     if (targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.')
     const employee = compensationEmployee(state, payload.employeeId)
@@ -14707,6 +14718,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const targetUnit = String(payload.targetUnit || 'store').trim()
     if (!['store', 'office', 'business_support'].includes(targetUnit)) {
       throw new ApiError(400, 'VIOLATION_UNIT_INVALID', 'Nhóm nhân viên vi phạm không hợp lệ.')
+    }
+    if (actor.role === 'store_manager' && targetUnit !== 'store') {
+      throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được ghi nhận vi phạm nhân viên thuộc cửa hàng của mình.')
     }
     if (targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.')
     const employee = compensationEmployee(state, payload.employeeId)

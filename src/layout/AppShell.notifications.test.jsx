@@ -227,6 +227,9 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i }).getAttribute('href')).toBe('/admin/work-registration-schedules')
     expect(screen.getByRole('link', { name: /Công việc tính thưởng & Vi phạm HTKD/i }).getAttribute('href')).toBe('/admin/tasks')
     expect(screen.queryByRole('link', { name: /^Vi phạm HTKD$/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Vi phạm nhân viên$/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Vi phạm Khối văn phòng$/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Thưởng doanh thu ngày$/i })).toBeNull()
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
   })
 
@@ -250,13 +253,16 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.queryByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Vi phạm nhân viên$/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Vi phạm Khối văn phòng$/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^Thưởng doanh thu ngày$/i })).toBeNull()
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
     expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('span')?.textContent)).toEqual([
       'Tổng quan', 'Công việc tính thưởng', 'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
-      'Cài đặt thông tin đơn hàng', 'Danh mục công việc & vi phạm', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý', 'Thưởng doanh thu ngày',
-      'Vi phạm nhân viên', 'Vi phạm Khối văn phòng', 'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
+      'Cài đặt thông tin đơn hàng', 'Danh mục công việc & vi phạm', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý',
+      'Lịch sử chỉnh sửa đơn hàng', 'Điều chuyển nhân sự', 'Cài đặt chính sách',
     ])
   })
 

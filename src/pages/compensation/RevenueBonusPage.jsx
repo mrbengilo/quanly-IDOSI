@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Calculator, CheckCircle2, CircleDollarSign, Clock3, Store, WalletCards, XCircle } from 'lucide-react'
 import { useApp } from '../../state/AppContext'
 import {
@@ -27,6 +27,11 @@ import {
   storesVisibleToRole,
 } from './compensationViewModel'
 import {
+  REVENUE_BONUS_PROGRAM_IDS,
+  REVENUE_BONUS_PROGRAMS,
+  selectRevenueBonusTier,
+} from '../../domain/compensationPolicies'
+import {
   AccessDenied,
   ActionError,
   displayDate,
@@ -43,6 +48,31 @@ const allocationAmount = (allocation) => Number(
 
 const recordRevenue = (record) => Number(record?.revenueVnd ?? record?.dailyRevenueVnd ?? record?.revenue ?? 0) || 0
 
+const liveWorkedHours = (record, nowMs) => {
+  const stored = Number(record?.workedSeconds ?? 0) > 0
+    ? Number(record.workedSeconds) / 3_600
+    : Number(record?.hours ?? 0)
+  if (record?.checkOutAt || record?.checkOut || !record?.checkInAt) return Math.max(0, stored)
+  const checkInMs = Date.parse(record.checkInAt)
+  if (!Number.isFinite(checkInMs) || nowMs <= checkInMs) return Math.max(0, stored)
+  return Math.max(stored, (nowMs - checkInMs) / 3_600_000)
+}
+
+const formatWorkedHours = (hours) => {
+  const normalized = Math.max(0, Number(hours) || 0)
+  const wholeHours = Math.floor(normalized)
+  const minutes = Math.round((normalized - wholeHours) * 60)
+  if (minutes === 60) return `${wholeHours + 1} giờ 00 phút`
+  return `${wholeHours} giờ ${String(minutes).padStart(2, '0')} phút`
+}
+
+const revenueTierLabel = (tier) => {
+  const minimum = tier.minimumInclusive ? '≥' : '>'
+  if (tier.maximumRevenueVnd == null) return `${minimum} ${tier.minimumRevenueVnd.toLocaleString('vi-VN')} đ`
+  const maximum = tier.maximumInclusive ? '≤' : '<'
+  return `${minimum} ${tier.minimumRevenueVnd.toLocaleString('vi-VN')} – ${maximum} ${tier.maximumRevenueVnd.toLocaleString('vi-VN')} đ`
+}
+
 export function RevenueBonusPage() {
   const app = useApp()
   const role = canonicalRole(app.session?.role)
@@ -58,6 +88,11 @@ export function RevenueBonusPage() {
     privileged ? app.session : { ...app.session, storeId: currentStoreId },
   ), [app.stores, app.session, privileged, currentStoreId])
   const [storeSelection, setStoreSelection] = useState('')
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
   const activeOperationalStoreId = privileged && stores.some((store) => entityId(store) === String(app.activeStoreId || ''))
     ? String(app.activeStoreId)
     : ''
@@ -77,6 +112,20 @@ export function RevenueBonusPage() {
   const revenueTotal = records.reduce((sum, record) => sum + recordRevenue(record), 0)
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
   const unallocatedTotal = records.reduce((sum, record) => sum + Number(record?.unallocatedVnd || 0), 0)
+  const selectedStore = stores.find((store) => entityId(store) === selectedStoreId) || null
+  const revenueProgram = String(selectedStore?.name || '').toLocaleLowerCase('vi-VN').includes('sm')
+    ? REVENUE_BONUS_PROGRAMS[REVENUE_BONUS_PROGRAM_IDS.SM_DAILY]
+    : REVENUE_BONUS_PROGRAMS[REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY]
+  const currentRevenueTier = selectRevenueBonusTier({ programId: revenueProgram.id, revenueVnd: Math.max(0, Math.trunc(revenueTotal)) })
+  const storeAttendance = (app.attendance || []).filter((attendance) => (
+    !attendance.deletedAt
+    && entryStoreId(attendance) === selectedStoreId
+    && revenueRecordDate(attendance) === businessDate
+  ))
+  const actualHours = storeAttendance
+    .filter((attendance) => entryEmployeeId(attendance) === currentEmployeeId)
+    .reduce((sum, attendance) => sum + liveWorkedHours(attendance, nowMs), 0)
+  const totalStoreHours = storeAttendance.reduce((sum, attendance) => sum + liveWorkedHours(attendance, nowMs), 0)
 
   if (!allowed || !selectedStoreId) return <AccessDenied subtitle="Tài khoản này không có phạm vi cửa hàng để xem thưởng doanh thu." />
 
@@ -120,12 +169,30 @@ export function RevenueBonusPage() {
       {privateAllocationView ? <div className="metric-grid compensation-metrics compensation-metrics--employee">
         <MetricCard compact label="TỔNG QUỸ CỦA TEAM" value={money(poolTotal)} helper={displayDate(businessDate)} icon={CircleDollarSign} tone="blue" />
         <MetricCard compact label="THƯỞNG DOANH THU CỦA TÔI" value={money(allocationTotal)} helper={displayDate(businessDate)} icon={WalletCards} tone="green" />
+        <MetricCard compact label="THỜI GIAN LÀM THỰC TẾ" value={formatWorkedHours(actualHours)} helper="Theo ca đã chấm công" icon={Clock3} tone="blue" />
+        <MetricCard compact label="TỔNG GIỜ NHÂN VIÊN ĐANG LÀM" value={formatWorkedHours(totalStoreHours)} helper={`${storeAttendance.length} ca trong ngày`} icon={Clock3} tone="orange" />
       </div> : <div className="metric-grid compensation-metrics">
         <MetricCard compact label="DOANH THU ĐỦ ĐIỀU KIỆN" value={money(revenueTotal)} icon={Store} tone="green" />
         <MetricCard compact label="TỔNG QUỸ THƯỞNG" value={money(poolTotal)} icon={CircleDollarSign} tone="blue" />
         <MetricCard compact label="ĐÃ PHÂN BỔ" value={money(allocationTotal)} icon={WalletCards} tone="green" />
         <MetricCard compact label="CHƯA PHÂN BỔ" value={money(unallocatedTotal)} helper={unallocatedTotal > 0 ? 'Cần xử lý trước khi chốt sổ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
       </div>}
+      <Card className="revenue-milestones-card" title={`Mốc thưởng doanh thu ${revenueProgram.id === REVENUE_BONUS_PROGRAM_IDS.SM_DAILY ? 'SM TNV' : 'Dosii'}`} action={<Badge tone={currentRevenueTier ? 'green' : 'blue'}>{currentRevenueTier ? `Đang ở mốc ${currentRevenueTier.rateBasisPoints / 100}%` : 'Chưa đạt mốc'}</Badge>}>
+        <div className="revenue-milestones-summary"><span>Doanh thu đã ghi nhận</span><strong>{money(revenueTotal)}</strong></div>
+        <div className="revenue-milestone-list">
+          {revenueProgram.tiers.map((tier) => {
+            const reached = tier.minimumInclusive
+              ? revenueTotal >= tier.minimumRevenueVnd
+              : revenueTotal > tier.minimumRevenueVnd
+            const active = currentRevenueTier?.id === tier.id
+            return <div key={tier.id} className={`revenue-milestone ${reached ? 'is-reached' : ''} ${active ? 'is-active' : ''}`}>
+              <span className="revenue-milestone-check" aria-hidden="true">{reached ? '✓' : '○'}</span>
+              <span><strong>{revenueTierLabel(tier)}</strong><small>{reached ? 'Đã đạt mốc' : 'Chưa đạt mốc'}</small></span>
+              <b>Thưởng {tier.rateBasisPoints / 100}% doanh thu</b>
+            </div>
+          })}
+        </div>
+      </Card>
       {unallocatedTotal > 0 && privileged && <InfoNote tone="orange">Có quỹ chưa phân bổ do thiếu giờ bán hàng được duyệt. Kỳ liên quan phải được xử lý trước khi đóng sổ.</InfoNote>}
       {privileged && <Card title="Duyệt thưởng mốc cao nhất" action={<Badge tone="orange">{milestoneClaims.filter((claim) => String(claim.status || '').toUpperCase() === 'PENDING').length} chờ duyệt</Badge>}>
         <TableWrap className="compensation-table">
