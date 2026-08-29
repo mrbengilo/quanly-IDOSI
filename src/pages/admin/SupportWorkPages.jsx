@@ -7,7 +7,7 @@ import {
   Clock3,
   Gift,
   ListChecks,
-  Send,
+  Save,
 } from 'lucide-react'
 import {
   Avatar,
@@ -165,7 +165,7 @@ export function AdminSupportWorkPage() {
       </div>
       {!catalogTasks.length && <InfoNote tone="orange">Chưa có công việc đang hoạt động cho nhóm và ngày đã chọn.</InfoNote>}
       <div className="support-work-actions">
-        <Button icon={Send} loading={busy} disabled={busy || !validTasks.length} onClick={send}>GỬI</Button>
+        <Button icon={Save} loading={busy} disabled={busy || !validTasks.length} onClick={send}>LƯU</Button>
       </div>
     </Card>
 
@@ -231,6 +231,8 @@ export function SupportAssignedWorkPage() {
   const [searchParams] = useSearchParams()
   const [rewardDate, setRewardDate] = useState(today)
   const [rewardBusyKey, setRewardBusyKey] = useState('')
+  const [rewardDraft, setRewardDraft] = useState({})
+  const [rewardAcknowledged, setRewardAcknowledged] = useState({})
   const requestedId = String(searchParams.get('assignment') || '')
   const employeeId = String(
     app.currentEmployee?.id
@@ -271,29 +273,69 @@ export function SupportAssignedWorkPage() {
   }, new Map()).values()]
   const statistics = useMemo(() => rewardStatistics(rewardRows), [rewardRows])
 
-  const toggleReward = async (row, checked) => {
+  const rewardKey = (row) => `${row.attendanceId}:${row.catalogItemId}`
+  const awaitingRewardSync = (row) => {
+    const acknowledged = rewardAcknowledged[rewardKey(row)]
+    return Boolean(acknowledged && Number(row.progressVersion || 0) < Number(acknowledged.version || 0))
+  }
+  const checkedInDraft = (row) => {
+    const key = rewardKey(row)
+    if (Object.hasOwn(rewardDraft, key)) return rewardDraft[key]
+    if (awaitingRewardSync(row)) return rewardAcknowledged[key].checked
+    return row.completed
+  }
+
+  const toggleReward = (row, checked) => {
+    setRewardDraft((current) => ({ ...current, [rewardKey(row)]: checked }))
+  }
+
+  const saveRewardGroup = async (group) => {
     if (typeof app.setWorkReward !== 'function') {
       app.notify?.('Chức năng ghi nhận công việc tính thưởng chưa sẵn sàng.', 'info')
       return
     }
-    const key = `${row.attendanceId}:${row.catalogItemId}`
-    const progress = (Array.isArray(app.workCatalogProgress) ? app.workCatalogProgress : []).find((item) => (
-      String(item.attendanceId || item.checklistAttendanceId || '') === String(row.attendanceId)
-      && String(item.catalogItemId || item.workCatalogItemId || item.taskId || '') === String(row.catalogItemId)
+    const changedRows = group.rows.filter((row) => (
+      !awaitingRewardSync(row)
+      && checkedInDraft(row) !== row.completed
     ))
-    const expectedEntityVersion = Number(progress?.version)
-    setRewardBusyKey(key)
+    if (!changedRows.length) return
+    setRewardBusyKey(group.attendanceId)
+    const savedKeys = []
+    const savedAcknowledgements = {}
     try {
-      const result = await app.setWorkReward({
-        attendanceId: row.attendanceId,
-        catalogItemId: row.catalogItemId,
-        checked,
-        ...(Number.isSafeInteger(expectedEntityVersion) && expectedEntityVersion > 0 ? { expectedEntityVersion } : {}),
-      })
-      if (result?.ok === false) app.notify?.(result.message || 'Không thể cập nhật công việc tính thưởng.', 'info')
+      for (const row of changedRows) {
+        const progress = (Array.isArray(app.workCatalogProgress) ? app.workCatalogProgress : []).find((item) => (
+          String(item.attendanceId || item.checklistAttendanceId || '') === String(row.attendanceId)
+          && String(item.catalogItemId || item.workCatalogItemId || item.taskId || '') === String(row.catalogItemId)
+        ))
+        const expectedEntityVersion = Number(progress?.version)
+        const checked = checkedInDraft(row)
+        const result = await app.setWorkReward({
+          attendanceId: row.attendanceId,
+          catalogItemId: row.catalogItemId,
+          checked,
+          idempotencyKey: `work-reward:${row.attendanceId}:${row.catalogItemId}:${Number.isSafeInteger(expectedEntityVersion) ? expectedEntityVersion : 0}:${checked ? 'on' : 'off'}`,
+          ...(Number.isSafeInteger(expectedEntityVersion) && expectedEntityVersion > 0 ? { expectedEntityVersion } : {}),
+        })
+        if (result?.ok === false) throw new Error(result.message || `Không thể lưu công việc “${row.title}”.`)
+        const key = rewardKey(row)
+        savedKeys.push(key)
+        savedAcknowledgements[key] = {
+          checked,
+          version: Number(result?.reward?.version || 0) || (Number.isSafeInteger(expectedEntityVersion) ? expectedEntityVersion : 0) + 1,
+        }
+      }
+      if (savedKeys.length) {
+        setRewardAcknowledged((current) => ({
+          ...current,
+          ...savedAcknowledgements,
+        }))
+      }
+      app.notify?.(`Đã lưu ${savedKeys.length} công việc tính thưởng.`, 'success')
     } catch (error) {
-      app.notify?.(error?.message || 'Không thể cập nhật công việc tính thưởng.', 'info')
+      app.notify?.(error?.message || 'Không thể lưu công việc tính thưởng.', 'info')
     } finally {
+      if (savedKeys.length) setRewardDraft((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !savedKeys.includes(key))))
       setRewardBusyKey('')
     }
   }
@@ -316,28 +358,35 @@ export function SupportAssignedWorkPage() {
     </div>
     <Card title="Công việc tính thưởng theo ca">
       <div className="reward-work-toolbar">
-        <Field label="Ngày làm việc"><Input aria-label="Ngày làm việc tính thưởng" type="date" value={rewardDate} onChange={(event) => setRewardDate(event.target.value)} /></Field>
-        <InfoNote>Danh sách này được cố định theo ca lúc điểm danh. Tick công việc đã hoàn thành để hệ thống ghi nhận đúng ngày, ca và mức thưởng.</InfoNote>
+        <Field label="Ngày làm việc"><Input aria-label="Ngày làm việc tính thưởng" type="date" value={rewardDate} onChange={(event) => { setRewardDate(event.target.value); setRewardDraft({}); setRewardAcknowledged({}) }} /></Field>
+        <InfoNote>Danh sách này hiện ngay khi điểm danh và được cố định theo ca. Tick công việc đã hoàn thành rồi bấm “LƯU” để ghi nhận đúng ngày, ca và mức thưởng.</InfoNote>
       </div>
       <div className="reward-shift-list">
-        {rewardGroups.map((group) => <section className="reward-shift-card" key={group.attendanceId} aria-label={`${group.shiftName} ngày ${group.workDate}`} aria-busy={group.rows.some((row) => rewardBusyKey === `${row.attendanceId}:${row.catalogItemId}`)}>
+        {rewardGroups.map((group) => {
+          const changedCount = group.rows.filter((row) => !awaitingRewardSync(row) && checkedInDraft(row) !== row.completed).length
+          const pendingCount = group.rows.filter(awaitingRewardSync).length
+          return <section className="reward-shift-card" key={group.attendanceId} aria-label={`${group.shiftName} ngày ${group.workDate}`} aria-busy={rewardBusyKey === group.attendanceId}>
           <div className="reward-shift-card__head">
             <span><strong>{group.shiftName || 'Chưa gắn ca'}</strong><small><CalendarDays size={15} aria-hidden="true" /> {shortDate(group.workDate)}{group.shiftTime ? ` · ${group.shiftTime}` : ''}</small></span>
-            <Badge tone="green">{group.rows.filter((row) => row.completed).length}/{group.rows.length} đã tick</Badge>
+            <Badge tone="green">{group.rows.filter(checkedInDraft).length}/{group.rows.length} đã tick</Badge>
           </div>
           <div className="reward-task-checklist">
             {group.rows.map((row) => {
-              const busy = rewardBusyKey === `${row.attendanceId}:${row.catalogItemId}`
-              return <label key={row.id} className={row.completed ? 'is-complete' : ''}>
-                <input type="checkbox" aria-label={`${row.title} (+${money(row.amountVnd)}), ${group.shiftName || 'chưa gắn ca'}, ngày ${shortDate(group.workDate)}`} checked={row.completed} disabled={Boolean(rewardBusyKey)} onChange={(event) => toggleReward(row, event.target.checked)} />
+              const checked = checkedInDraft(row)
+              return <label key={row.id} className={checked ? 'is-complete' : ''}>
+                <input type="checkbox" aria-label={`${row.title} (+${money(row.amountVnd)}), ${group.shiftName || 'chưa gắn ca'}, ngày ${shortDate(group.workDate)}`} checked={checked} disabled={Boolean(rewardBusyKey) || awaitingRewardSync(row)} onChange={(event) => toggleReward(row, event.target.checked)} />
                 <span><strong>{row.title}</strong>{row.description && <small>{row.description}</small>}</span>
                 <b className="reward-task-amount">+{money(row.amountVnd)}</b>
                 {row.payoutStatus === 'pending' && <Badge tone="orange">Chờ duyệt team</Badge>}
-                {busy && <small className="reward-task-saving" role="status" aria-live="polite">Đang lưu…</small>}
               </label>
             })}
           </div>
-        </section>)}
+          <div className="reward-shift-card__actions">
+            <span>{pendingCount ? `Đang đồng bộ ${pendingCount} thay đổi đã lưu` : changedCount ? `${changedCount} thay đổi chưa lưu` : 'Dữ liệu đã đồng bộ'}</span>
+            <Button icon={Save} loading={rewardBusyKey === group.attendanceId} disabled={!changedCount || Boolean(rewardBusyKey)} onClick={() => saveRewardGroup(group)}>LƯU</Button>
+          </div>
+        </section>
+        })}
       </div>
       {!rewardGroups.length && <InfoNote tone="orange">Không có ca đang mở kèm công việc tính thưởng trong ngày đã chọn. Ca đã kết thúc chỉ xuất hiện trong lịch sử và thống kê.</InfoNote>}
     </Card>

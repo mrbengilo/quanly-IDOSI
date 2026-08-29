@@ -3501,6 +3501,35 @@ const getStateMetadata = async (request, env, context, url) => {
   }))
 }
 
+const getRevenueBonusLive = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const user = await requireSession(request, db, context)
+  if (!['admin', 'business_support', 'store_manager', 'employee'].includes(user.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem thưởng doanh thu cửa hàng.')
+  }
+  const storeId = String(url.searchParams.get('storeId') || '').trim()
+  const actorStoreId = String(user.store_id || '').trim()
+  if (['store_manager', 'employee'].includes(user.role) && (!storeId || storeId !== actorStoreId)) {
+    throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Tài khoản chỉ được xem thưởng doanh thu đúng cửa hàng đang làm việc.')
+  }
+  assertOperationalStoreAccess(user, storeId)
+  const businessDate = compensationDate(url.searchParams.get('businessDate'), 'Ngày kinh doanh')
+  const row = user._globalStateRow || await loadState(db, 'global')
+  const state = normalizeSharedStateForStorage(row ? parseStoredJson(row.value_json, {}) : {})
+  const store = requireActivePhysicalStore(state, storeId)
+  const live = revenueBonusLiveSnapshot({ state, store, businessDate, now: context.now })
+  const viewerEmployeeId = String(user.employee_id || '').trim()
+  const canViewAllAllocations = ['admin', 'business_support'].includes(user.role)
+  return jsonResponse(apiPayload(context, {
+    snapshot: {
+      ...live,
+      allocations: canViewAllAllocations
+        ? live.allocations
+        : live.allocations.filter((allocation) => String(allocation.employeeId || '') === viewerEmployeeId),
+    },
+  }))
+}
+
 const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
   'attendance',
   'attendanceAudit',
@@ -12317,6 +12346,18 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   }
   const incompleteReason = incompleteTaskIds.length ? requestedIncompleteReason : ''
   const normalizedStatuses = [...submittedById].sort(([left], [right]) => left.localeCompare(right))
+  const mandatoryProgress = (taskIds = requiredTaskIds) => {
+    const mandatoryIds = taskIds instanceof Set ? taskIds : new Set(taskIds)
+    const totalTasks = mandatoryIds.size
+    const completedTasks = [...mandatoryIds]
+      .filter((taskId) => submittedById.get(taskId) === true)
+      .length
+    return {
+      totalTasks,
+      completedTasks,
+      completionRate: totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0,
+    }
+  }
   const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
   const histories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
   const existingSubmission = histories.flatMap((assignment) => (
@@ -12328,13 +12369,13 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     && String(event.fingerprint || '') === submissionFingerprint
   ))
   if (existingSubmission) {
-    const completedTasks = normalizedStatuses.filter(([, completed]) => completed).length
+    const { completedTasks, totalTasks, completionRate } = mandatoryProgress()
     const existingResult = {
       attendanceId: openAttendance.id,
       employeeId,
-      totalTasks: normalizedStatuses.length,
+      totalTasks,
       completedTasks,
-      completionRate: Math.round((completedTasks / normalizedStatuses.length) * 100),
+      completionRate,
       incompleteReason,
       submittedAt: existingSubmission.at,
     }
@@ -12380,16 +12421,13 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     const assignmentId = String(assignment.assignmentId || assignment.id || '')
     if (!assignmentIds.includes(assignmentId)) return assignment
     const assignmentTasks = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId)
-    const assignmentTaskIds = assignmentTasks.map((task) => String(task.id || ''))
     const assignmentRequiredTaskIds = assignmentTasks
       .filter(workTaskIsRequired)
       .map((task) => String(task.id || ''))
-    const completedTasks = assignmentTaskIds.filter((taskId) => submittedById.get(taskId) === true).length
     const completedRequiredTasks = assignmentRequiredTaskIds
       .filter((taskId) => submittedById.get(taskId) === true)
       .length
-    const totalTasks = assignmentTaskIds.length
-    const completionRate = totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0
+    const { totalTasks, completedTasks, completionRate } = mandatoryProgress(assignmentRequiredTaskIds)
     const requiredTasks = assignmentRequiredTaskIds.length
     const requiredComplete = completedRequiredTasks === requiredTasks
     const result = { assignmentId, totalTasks, completedTasks, completionRate, requiredTasks, completedRequiredTasks }
@@ -12432,17 +12470,16 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       updatedBy: serverActorSnapshot(actor),
     }
   })
-  const totalTasks = scopedTasks.length
-  const completedTasks = [...submittedById.values()].filter(Boolean).length
+  const allTaskCount = scopedTasks.length
+  const { totalTasks, completedTasks, completionRate } = mandatoryProgress()
   const requiredTasks = requiredTaskIds.size
   const completedRequiredTasks = [...submittedById]
     .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && completed)
     .length
-  const rewardTasks = totalTasks - requiredTasks
+  const rewardTasks = allTaskCount - requiredTasks
   const completedRewardTasks = [...submittedById]
     .filter(([taskId, completed]) => !requiredTaskIds.has(taskId) && completed)
     .length
-  const completionRate = Math.round((completedTasks / totalTasks) * 100)
   const notifications = (assignmentIds.length ? assignmentResults : [{ assignmentId: '', totalTasks, completedTasks, completionRate }])
     .map((result) => ({
       id: `ntf_${crypto.randomUUID()}`,
@@ -14952,6 +14989,108 @@ const revenueBonusProgramForStore = (store) => {
       }
 }
 
+const liveAttendanceSeconds = (record, nowMs, projectOpen = true) => {
+  const storedSource = record?.approvedSalesSeconds
+    ?? record?.workedSeconds
+    ?? (record?.hours == null ? 0 : Number(record.hours) * 3_600)
+  const parsedStoredSeconds = Number(storedSource)
+  const storedSeconds = Number.isFinite(parsedStoredSeconds) && parsedStoredSeconds >= 0 ? parsedStoredSeconds : 0
+  if (record?.checkOutAt || record?.checkOut) return Math.max(0, Math.trunc(storedSeconds))
+  if (!projectOpen) return Math.max(0, Math.trunc(storedSeconds))
+  const checkInMs = Date.parse(record?.checkInAt || '')
+  if (!Number.isFinite(checkInMs) || nowMs <= checkInMs) return Math.max(0, Math.trunc(storedSeconds))
+  const elapsedSeconds = Math.floor((nowMs - checkInMs) / 1_000)
+  return Math.max(Math.trunc(storedSeconds), Math.min(elapsedSeconds, 24 * 60 * 60))
+}
+
+export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new Date().toISOString() } = {}) => {
+  const storeId = String(store?.id || '')
+  const nowMs = Date.parse(now)
+  if (!storeId || !Number.isFinite(nowMs)) throw new TypeError('store and a valid now timestamp are required.')
+  const projectOpenAttendance = businessDate === localDateTimeParts(new Date(nowMs).toISOString()).date
+
+  const orders = (Array.isArray(state?.orders) ? state.orders : []).filter((order) => (
+    String(order.storeId || '') === storeId
+    && dateFromRecord(order) === businessDate
+    && !order.deletedAt
+    && String(order.status || '') !== 'Đã xóa'
+    && Number.isSafeInteger(Number(order.amount))
+    && Number(order.amount) >= 0
+  ))
+  const revenueVnd = orders.reduce(
+    (sum, order) => safeMoneySum(sum, Number(order.amount), 'Doanh thu ngày'),
+    0,
+  )
+  const { programId } = revenueBonusProgramForStore(store)
+  const percentage = calculateRevenueBonus({ programId, revenueVnd })
+  const employeeById = new Map((Array.isArray(state?.employees) ? state.employees : []).flatMap((employee) => (
+    [employee.id, employee.code, employee.employeeId]
+      .filter(Boolean)
+      .map((id) => [String(id), employee])
+  )))
+  const weightByEmployee = new Map()
+  let attendanceCount = 0
+  let openAttendanceCount = 0
+  const activeEmployeeIds = new Set()
+  for (const attendance of Array.isArray(state?.attendance) ? state.attendance : []) {
+    const employeeId = String(attendance.employeeId || '').trim()
+    if (!employeeId || !employeeById.has(employeeId)
+      || String(attendance.storeId || '') !== storeId
+      || dateFromRecord(attendance) !== businessDate
+      || attendance.deletedAt) continue
+    attendanceCount += 1
+    const open = !attendance.checkOutAt && !attendance.checkOut
+    if (open) {
+      openAttendanceCount += 1
+      activeEmployeeIds.add(employeeId)
+    }
+    const seconds = liveAttendanceSeconds(attendance, nowMs, projectOpenAttendance)
+    if (seconds > 0) weightByEmployee.set(employeeId, (weightByEmployee.get(employeeId) || 0) + seconds)
+  }
+  const participants = [...weightByEmployee].map(([id, weightUnits]) => ({ id, weightUnits }))
+  const allocation = participants.length
+    ? allocateByLargestRemainder({ poolVnd: percentage.bonusVnd, participants })
+    : {
+        poolVnd: percentage.bonusVnd,
+        totalWeightUnits: 0,
+        allocatedVnd: 0,
+        unallocatedVnd: percentage.bonusVnd,
+        allocations: [],
+      }
+  const allocations = allocation.allocations.map((record) => {
+    const employee = employeeById.get(record.id)
+    return {
+      employeeId: record.id,
+      employeeName: employee?.name || employee?.displayName || record.id,
+      workedSeconds: record.weightUnits,
+      amountVnd: record.amountVnd,
+      weightPercent: allocation.totalWeightUnits > 0
+        ? (record.weightUnits / allocation.totalWeightUnits) * 100
+        : 0,
+      status: 'LIVE',
+    }
+  })
+  return {
+    storeId,
+    businessDate,
+    projectedAt: new Date(nowMs).toISOString(),
+    revenueVnd,
+    orderCount: orders.length,
+    programId,
+    tierId: percentage.tierId,
+    rateBasisPoints: percentage.rateBasisPoints,
+    percentagePoolVnd: percentage.bonusVnd,
+    allocatedVnd: allocation.allocatedVnd,
+    unallocatedVnd: allocation.unallocatedVnd,
+    totalWorkedSeconds: allocation.totalWeightUnits,
+    attendanceCount,
+    openAttendanceCount,
+    activeEmployeeCount: activeEmployeeIds.size,
+    participantCount: participants.length,
+    allocations,
+  }
+}
+
 const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, current, state, payload) => {
   const approve = body.type === 'revenue_bonus.approve_milestone'
   const claimId = String(payload.claimId || payload.teamRewardClaimId || '').trim()
@@ -15128,7 +15267,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
       || dateFromRecord(attendance) !== businessDate
       || attendance.deletedAt
       || (!attendance.checkOutAt && !attendance.checkOut)) continue
-    const weightUnits = Math.max(0, Math.trunc(Number(attendance.approvedSalesSeconds ?? attendance.workedSeconds ?? 0)))
+    const weightUnits = liveAttendanceSeconds(attendance, Date.parse(commandContext.now), false)
     if (weightUnits > 0) participantWeights.set(employeeId, (participantWeights.get(employeeId) || 0) + weightUnits)
   }
   const participants = [...participantWeights].map(([id, weightUnits]) => ({ id, weightUnits }))
@@ -17216,6 +17355,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/state-metadata') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getStateMetadata(request, env, context, url)
+  }
+  if (path === '/api/revenue-bonus/live') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getRevenueBonusLive(request, env, context, url)
   }
   if (path === '/api/command') {
     if (request.method !== 'POST') return methodNotAllowed(['POST'])

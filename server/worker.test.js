@@ -14,6 +14,7 @@ import worker, {
   isSupportTransferActiveAt,
   projectSharedState,
   normalizeFixedExpenseItems,
+  revenueBonusLiveSnapshot,
   supportCompensationForAttendance,
   supportTransferPayFor,
   supportTransferTimeBounds,
@@ -26,6 +27,32 @@ import {
 
 const TEST_IDENTITY_IMAGE = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
 const testIdentityImages = () => ({ front: TEST_IDENTITY_IMAGE, back: TEST_IDENTITY_IMAGE })
+
+describe('live revenue bonus projection', () => {
+  it('does not fabricate elapsed hours for an unclosed historical attendance and falls back past null approved seconds', () => {
+    const snapshot = revenueBonusLiveSnapshot({
+      now: '2026-08-29T05:00:00.000Z',
+      businessDate: '2026-08-20',
+      store: { id: 'S01', name: 'Dosii S01' },
+      state: {
+        employees: [{ id: 'E01', name: 'Nhân viên cũ', storeId: 'S01' }],
+        orders: [{ id: 'ORDER-01', storeId: 'S01', amount: 2_000_000, status: 'Hoàn tất', createdAt: '2026-08-20T03:00:00.000Z' }],
+        attendance: [{
+          id: 'ATT-STALE', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: null,
+          approvedSalesSeconds: null, workedSeconds: 3_600,
+        }],
+      },
+    })
+
+    expect(snapshot).toMatchObject({
+      totalWorkedSeconds: 3_600,
+      attendanceCount: 1,
+      openAttendanceCount: 1,
+      allocations: [{ employeeId: 'E01', workedSeconds: 3_600 }],
+    })
+  })
+})
 
 const testCrc32 = (bytes) => {
   let crc = 0xffffffff
@@ -6987,7 +7014,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(progressSaved.status).toBe(200)
       expect(await progressSaved.json()).toMatchObject({
         version: 7,
-        totalTasks: 5, completedTasks: 3, completionRate: 60,
+        totalTasks: 3, completedTasks: 3, completionRate: 100,
         requiredTasks: 3, completedRequiredTasks: 3,
         rewardTasks: 2, completedRewardTasks: 0, incompleteReason: '',
         assignments: expect.arrayContaining([
@@ -10774,7 +10801,7 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-progress-0001' }), env)
     expect(progress.status).toBe(200)
     expect(await progress.json()).toMatchObject({
-      version: 3, totalTasks: 2, completedTasks: 1, completionRate: 50,
+      version: 3, totalTasks: 1, completedTasks: 1, completionRate: 100,
       requiredTasks: 1, completedRequiredTasks: 1, rewardTasks: 1, completedRewardTasks: 0,
     })
     const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -10906,7 +10933,7 @@ describe('IDOSI Worker security primitives', () => {
         }],
         attendance: [{
           id: 'ATT-HOT-MANAGER', storeId: 'S02', employeeId: 'QL-S02', date: '2026-08-20',
-          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', hours: 4,
         }, {
           id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
@@ -10944,6 +10971,31 @@ describe('IDOSI Worker security primitives', () => {
     const supportAuthorization = await loginAs('support.bonus', 'support-bonus-password')
     const managerAuthorization = await loginAs('manager.bonus', 'manager-bonus-password')
     const employeeAuthorization = await loginAs('employee.bonus', 'employee-bonus-password')
+
+    const liveUrl = 'https://idosi.example/api/revenue-bonus/live?storeId=S02&businessDate=2026-08-20'
+    const supportLive = await worker.fetch(new Request(liveUrl, { headers: supportAuthorization }), env)
+    expect(supportLive.status).toBe(200)
+    expect((await supportLive.json()).snapshot).toMatchObject({
+      storeId: 'S02', businessDate: '2026-08-20', revenueVnd: 16_000_001,
+      percentagePoolVnd: 640_000, totalWorkedSeconds: 28_800, attendanceCount: 2,
+      allocations: [
+        { employeeId: 'E-S02', workedSeconds: 14_400, amountVnd: 320_000 },
+        { employeeId: 'QL-S02', workedSeconds: 14_400, amountVnd: 320_000 },
+      ],
+    })
+    const managerLive = await worker.fetch(new Request(liveUrl, { headers: managerAuthorization }), env)
+    expect((await managerLive.json()).snapshot.allocations).toEqual([
+      expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 320_000 }),
+    ])
+    const employeeLive = await worker.fetch(new Request(liveUrl, { headers: employeeAuthorization }), env)
+    expect((await employeeLive.json()).snapshot.allocations).toEqual([
+      expect.objectContaining({ employeeId: 'E-S02', amountVnd: 320_000 }),
+    ])
+    const employeeWrongStore = await worker.fetch(new Request(
+      'https://idosi.example/api/revenue-bonus/live?storeId=S01&businessDate=2026-08-20',
+      { headers: employeeAuthorization },
+    ), env)
+    expect(employeeWrongStore.status).toBe(403)
 
     const managerDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.calculate_day', expectedVersion: 1,

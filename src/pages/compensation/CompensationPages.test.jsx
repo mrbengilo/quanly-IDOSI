@@ -6,9 +6,12 @@ import { RevenueBonusPage } from './RevenueBonusPage'
 import { MyViolationsPage, ViolationManagementPage } from './ViolationManagementPage'
 import { UnitCompensationStatistics } from './UnitCompensationStatistics'
 
-const mocked = vi.hoisted(() => ({ app: {} }))
+const mocked = vi.hoisted(() => ({ app: {}, liveRevenue: vi.fn() }))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
+vi.mock('../../services/idosiApi', () => ({
+  apiGetRevenueBonusLive: (payload) => mocked.liveRevenue(payload),
+}))
 
 const stores = [
   { id: 'CH001', name: 'Dosii NTL' },
@@ -71,6 +74,7 @@ describe('compensation pages', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-08-26T05:00:00.000Z'))
+    mocked.liveRevenue.mockReset()
     mocked.app = baseApp()
   })
   afterEach(() => {
@@ -124,6 +128,16 @@ describe('compensation pages', () => {
       catalogItemIds: ['violation-store-late', 'violation-store-uniform'],
       note: '',
     }))
+  })
+
+  it('keeps the violation checklist visible before an employee has a matching shift', () => {
+    mocked.app = { ...baseApp(), attendance: [], schedule: [], shiftDefinitions: [] }
+    render(<ViolationManagementPage targetUnit="store" />)
+
+    expect(screen.getByRole('checkbox', { name: /Đi trễ/i })).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /Sai đồng phục/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'LƯU VI PHẠM' }).disabled).toBe(true)
+    expect(screen.getByText(/Không tìm thấy ca đã chấm công hoặc ca đã phân/i)).toBeTruthy()
   })
 
   it('reports an idempotent violation batch as unchanged instead of claiming a new deduction', async () => {
@@ -212,6 +226,105 @@ describe('compensation pages', () => {
     expect(screen.queryByText('100 đ')).toBeNull()
     expect(screen.queryByText('Nhân viên Hai')).toBeNull()
     expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+  })
+
+  it('derives the Admin/HTKD revenue, reached tier and allocation hours from live orders and attendance', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      apiStatus: 'local',
+      orders: [{
+        id: 'ORDER-LIVE', storeId: 'CH001', amount: 1_800_000, status: 'Hoàn tất',
+        createdAt: '2026-08-26T09:00:00+07:00',
+      }],
+      attendance: [
+        { id: 'ATT-QL', employeeId: 'QL-01', storeId: 'CH001', workDate: '2026-08-26', workedSeconds: 7_200, checkOutAt: '2026-08-26T10:00:00+07:00' },
+        { id: 'ATT-NV', employeeId: 'NV-01', storeId: 'CH001', workDate: '2026-08-26', checkInAt: '2026-08-26T10:00:00+07:00' },
+      ],
+    }
+    render(<RevenueBonusPage />)
+
+    expect(screen.getAllByText('1,800,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('18,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getByText('Đang ở mốc 1%')).toBeTruthy()
+    expect(screen.getByText('Đã đạt mốc')).toBeTruthy()
+    expect(screen.getAllByText('2.00 giờ').length).toBe(2)
+    expect(screen.getAllByText('Tạm tính trực tiếp').length).toBe(2)
+  })
+
+  it('uses the SM revenue program for a production SecondMall store identity', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      apiStatus: 'local',
+      activeStoreId: 'CH002',
+      stores: [
+        stores[0],
+        { id: 'CH002', name: 'SecondMall 234', short: 'SM 234', code: 'SM234' },
+        stores[2],
+      ],
+      orders: [{
+        id: 'ORDER-SM-LIVE', storeId: 'CH002', amount: 7_000_000, status: 'Hoàn tất',
+        createdAt: '2026-08-26T09:00:00+07:00',
+      }],
+      attendance: [{
+        id: 'ATT-SM-LIVE', employeeId: 'QL-02', storeId: 'CH002', workDate: '2026-08-26',
+        workedSeconds: 3_600, checkOutAt: '2026-08-26T10:00:00+07:00',
+      }],
+    }
+
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('Mốc thưởng doanh thu SM TNV')).toBeTruthy()
+    expect(screen.getByText('Đang ở mốc 6%')).toBeTruthy()
+  })
+
+  it('renders the employee live store aggregate without exposing coworker allocation rows', async () => {
+    mocked.app = { ...baseApp('employee'), apiStatus: 'connected' }
+    mocked.liveRevenue.mockResolvedValue({
+      snapshot: {
+        storeId: 'CH001', businessDate: '2026-08-26', projectedAt: '2026-08-26T05:00:00.000Z',
+        revenueVnd: 1_800_000, percentagePoolVnd: 18_000, allocatedVnd: 18_000, unallocatedVnd: 0,
+        totalWorkedSeconds: 14_400, attendanceCount: 2, openAttendanceCount: 0,
+        allocations: [{ employeeId: 'NV-01', employeeName: 'Nhân viên Một', workedSeconds: 7_200, weightPercent: 50, amountVnd: 9_000, status: 'LIVE' }],
+      },
+    })
+    render(<RevenueBonusPage />)
+
+    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledWith({ storeId: 'CH001', businessDate: '2026-08-26' }))
+    expect((await screen.findAllByText('9,000 đ')).length).toBeGreaterThan(1)
+    expect(screen.getByText('2 giờ 00 phút')).toBeTruthy()
+    expect(screen.getByText('4 giờ 00 phút')).toBeTruthy()
+    expect(screen.queryByText('Nhân viên Hai')).toBeNull()
+  })
+
+  it('keeps an approved milestone in live team and employee reward totals', async () => {
+    mocked.app = {
+      ...baseApp('employee'),
+      apiStatus: 'connected',
+      revenueBonuses: [{
+        id: 'RB-APPROVED-MILESTONE', storeId: 'CH001', businessDate: '2026-08-26',
+        percentagePoolVnd: 10, milestonePoolVnd: 100, totalPoolVnd: 110,
+        milestoneStatus: 'APPROVED', status: 'APPROVED',
+        allocations: [{
+          id: 'A-APPROVED-MILESTONE', storeId: 'CH001', businessDate: '2026-08-26',
+          employeeId: 'NV-01', percentagePoolVnd: 10, milestonePoolVnd: 100,
+          amountVnd: 110, allocatedVnd: 110, status: 'APPROVED',
+        }],
+      }],
+    }
+    mocked.liveRevenue.mockResolvedValue({
+      snapshot: {
+        storeId: 'CH001', businessDate: '2026-08-26', projectedAt: '2026-08-26T05:00:00.000Z',
+        revenueVnd: 2_000, percentagePoolVnd: 20, allocatedVnd: 20, unallocatedVnd: 0,
+        totalWorkedSeconds: 3_600, attendanceCount: 1, openAttendanceCount: 0,
+        allocations: [{ employeeId: 'NV-01', workedSeconds: 3_600, weightPercent: 100, amountVnd: 20, status: 'LIVE' }],
+      },
+    })
+
+    render(<RevenueBonusPage />)
+
+    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledTimes(1))
+    expect((await screen.findAllByText('120 đ')).length).toBeGreaterThan(1)
+    expect(screen.queryByText('20 đ')).toBeNull()
   })
 
   it('lets privileged roles approve a pending highest-milestone claim', async () => {

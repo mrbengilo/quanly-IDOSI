@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EmployeeAssignedTasksPage, EmployeeShiftExpensePage } from './EmployeeShiftOperations'
 
@@ -19,8 +20,12 @@ const baseApp = () => ({
   tasks: [],
   taskAssignmentHistory: [],
   addShiftExpense: vi.fn().mockResolvedValue({ ok: true, expense: { id: 'EXP-01' } }),
-  saveStoreTaskProgress: vi.fn().mockResolvedValue({ ok: true, completionRate: 50 }),
+  saveStoreTaskProgress: vi.fn().mockResolvedValue({ ok: true, completionRate: 100 }),
 })
+
+const renderAssignedTasks = (initialEntries = ['/employee/tasks']) => render(
+  <MemoryRouter initialEntries={initialEntries}><EmployeeAssignedTasksPage /></MemoryRouter>,
+)
 
 describe('employee shift operations', () => {
   beforeEach(() => { mocked.app = baseApp() })
@@ -62,7 +67,7 @@ describe('employee shift operations', () => {
       id: 'TASK-02', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
       employeeIds: ['E01'], title: 'Báo cáo tồn kho', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
     }]
-    render(<EmployeeAssignedTasksPage />)
+    renderAssignedTasks()
 
     const checkboxes = screen.getAllByRole('checkbox')
     fireEvent.click(checkboxes[0])
@@ -80,7 +85,7 @@ describe('employee shift operations', () => {
     }))
   })
 
-  it('shows reward money and saves optional reward work without requiring a reason', async () => {
+  it('keeps reward work out of the mandatory task screen because it has its own menu', async () => {
     mocked.app.tasks = [{
       id: 'TASK-FIXED', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
       employeeIds: ['E01'], title: 'Mở cửa đúng quy trình', required: true, catalogKind: 'FIXED_TASK', completedBy: { E01: true },
@@ -90,17 +95,40 @@ describe('employee shift operations', () => {
       catalogKind: 'REWARD_TASK', amountVnd: 50_000, completedBy: {},
     }]
 
-    render(<EmployeeAssignedTasksPage />)
+    renderAssignedTasks()
 
-    expect(screen.getByText('Tùy chọn · Thưởng 50,000 đ')).toBeTruthy()
+    expect(screen.queryByText('Tùy chọn · Thưởng 50,000 đ')).toBeNull()
+    expect(screen.queryByText('Quay clip sản phẩm')).toBeNull()
+    expect(screen.getByText(/Công việc nhận thưởng được tick và lưu riêng/i)).toBeTruthy()
     expect(screen.queryByLabelText(/Lý do công việc bắt buộc/u)).toBeNull()
     expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }))
 
     await waitFor(() => expect(mocked.app.saveStoreTaskProgress).toHaveBeenCalledWith(expect.objectContaining({
       incompleteReason: '',
-      tasks: [{ id: 'TASK-FIXED', completed: true }, { id: 'TASK-REWARD', completed: false }],
+      tasks: [
+        { id: 'TASK-FIXED', completed: true },
+        { id: 'TASK-REWARD', completed: false },
+      ],
     })))
+  })
+
+  it('opens a future assignment from its notification deep link without allowing an early save', () => {
+    mocked.app.attendance = []
+    mocked.app.tasks = [{
+      id: 'TASK-FUTURE', assignmentId: 'ASSIGN-FUTURE', storeId: 'S01', date: '2026-09-02', shiftId: 'CA-2',
+      employeeIds: ['E01'], title: 'Chuẩn bị quầy cho ca tương lai', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+    }, {
+      id: 'TASK-OTHER', assignmentId: 'ASSIGN-OTHER', storeId: 'S01', date: '2026-09-02', shiftId: 'CA-2',
+      employeeIds: ['E01'], title: 'Không thuộc thông báo', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+    }]
+
+    renderAssignedTasks(['/employee/tasks?assignment=ASSIGN-FUTURE'])
+
+    expect(screen.getByText('Chuẩn bị quầy cho ca tương lai')).toBeTruthy()
+    expect(screen.queryByText('Không thuộc thông báo')).toBeNull()
+    expect(screen.getByRole('checkbox').disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
   })
 
   it('keeps both forms read-only until the employee has an open attendance', () => {
@@ -114,7 +142,7 @@ describe('employee shift operations', () => {
     const { unmount } = render(<EmployeeShiftExpensePage />)
     expect(screen.getByRole('button', { name: 'LƯU' }).disabled).toBe(true)
     unmount()
-    render(<EmployeeAssignedTasksPage />)
+    renderAssignedTasks()
     expect(screen.getByRole('checkbox').disabled).toBe(true)
     expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
   })

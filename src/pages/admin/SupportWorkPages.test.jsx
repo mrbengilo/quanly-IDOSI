@@ -42,13 +42,24 @@ const officeFixedTask = {
   sortOrder: 1,
   version: 2,
 }
+const officeRewardTask = {
+  id: 'work-catalog:office:reward_task:on-time',
+  code: 'office.reward.on-time',
+  kind: 'REWARD_TASK',
+  targetGroup: 'office',
+  name: 'Đi làm đúng giờ',
+  amountVnd: 3_000,
+  active: true,
+  sortOrder: 2,
+  version: 5,
+}
 
 describe('support work screens', () => {
   beforeEach(() => {
     mocked.app = {
       session: { role: 'admin', name: 'Admin' },
       employees: [supportProfile, officeProfile],
-      workCatalogItems: [supportFixedTask, supportRewardTask, officeFixedTask],
+      workCatalogItems: [supportFixedTask, supportRewardTask, officeFixedTask, officeRewardTask],
       attendance: [],
       workCatalogProgress: [],
       tasks: [],
@@ -56,6 +67,13 @@ describe('support work screens', () => {
       assignSupportWork: vi.fn().mockResolvedValue({ ok: true }),
       updateSupportWork: vi.fn().mockResolvedValue({ ok: true }),
       setWorkReward: vi.fn().mockResolvedValue({ ok: true }),
+      updateWorkCatalogItem: vi.fn().mockResolvedValue({ ok: true }),
+      createWorkCatalogItem: vi.fn().mockResolvedValue({ ok: true }),
+      deleteWorkCatalogItem: vi.fn().mockResolvedValue({ ok: true }),
+      restoreWorkCatalogItem: vi.fn().mockResolvedValue({ ok: true }),
+      stores: [],
+      shiftDefinitions: [],
+      apiStatus: 'connected',
       notify: vi.fn(),
     }
   })
@@ -71,7 +89,7 @@ describe('support work screens', () => {
     expect(screen.getByText('Thưởng 75,000 đ')).toBeTruthy()
     expect(screen.queryByLabelText(/Tên công việc/i)).toBeNull()
     expect(screen.queryByPlaceholderText(/Nhập tên công việc/i)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^LƯU$/i }))
 
     await waitFor(() => expect(mocked.app.assignSupportWork).toHaveBeenCalledTimes(1))
     expect(mocked.app.assignSupportWork.mock.calls[0][0]).toMatchObject({
@@ -112,7 +130,7 @@ describe('support work screens', () => {
     expect(screen.getByRole('checkbox', { name: /Đối chiếu hồ sơ văn phòng/i })).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Nhân viên nhận việc'), { target: { value: 'VP-001' } })
     fireEvent.click(screen.getByRole('checkbox', { name: /Đối chiếu hồ sơ văn phòng/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^GỬI$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^LƯU$/i }))
 
     await waitFor(() => expect(mocked.app.assignSupportWork).toHaveBeenCalledWith(expect.objectContaining({
       employeeId: 'VP-001', targetUnit: 'office',
@@ -197,12 +215,48 @@ describe('support work screens', () => {
     expect(screen.getByText('+75,000 đ')).toBeTruthy()
     expect(screen.queryByRole('checkbox', { name: /Kiểm tra báo cáo/i })).toBeNull()
     fireEvent.click(rewardCheckbox)
+    expect(mocked.app.setWorkReward).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
 
-    await waitFor(() => expect(mocked.app.setWorkReward).toHaveBeenCalledWith({
+    await waitFor(() => expect(mocked.app.setWorkReward).toHaveBeenCalledWith(expect.objectContaining({
       attendanceId: 'ATT-OPEN',
       catalogItemId: supportRewardTask.id,
       checked: true,
-    }))
+      idempotencyKey: expect.stringMatching(/^work-reward:ATT-OPEN:/u),
+    })))
+    expect(mocked.app.setWorkReward).toHaveBeenCalledTimes(1)
+    expect(rewardCheckbox.checked).toBe(true)
+    expect(rewardCheckbox.disabled).toBe(true)
+    expect(screen.getByText(/Đang đồng bộ 1 thay đổi đã lưu/i)).toBeTruthy()
+  })
+
+  it('keeps an Office employee reward tick stable while the confirmed server state reloads', async () => {
+    mocked.app.session = { role: 'employee', employeeId: 'VP-001', code: 'VP-001', name: 'Nguyễn Văn Phòng', unit: 'office' }
+    mocked.app.currentEmployee = officeProfile
+    mocked.app.attendance = [{
+      id: 'ATT-OFFICE-OPEN', employeeId: 'VP-001', unit: 'office', workDate: '2026-08-28',
+      shiftId: 'office-day', shiftName: 'Ca 1', shiftStart: '08:00', shiftEnd: '17:00',
+      checklistSnapshot: { tasks: [officeRewardTask] },
+    }]
+    const view = render(<MemoryRouter><SupportAssignedWorkPage /></MemoryRouter>)
+
+    fireEvent.change(screen.getByLabelText('Ngày làm việc tính thưởng'), { target: { value: '2026-08-28' } })
+    const rewardCheckbox = screen.getByRole('checkbox', { name: /Đi làm đúng giờ \(\+3,000 đ\)/i })
+    fireEvent.click(rewardCheckbox)
+    expect(rewardCheckbox.checked).toBe(true)
+    expect(mocked.app.setWorkReward).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(mocked.app.setWorkReward).toHaveBeenCalledTimes(1))
+    expect(rewardCheckbox.checked).toBe(true)
+    expect(rewardCheckbox.disabled).toBe(true)
+
+    mocked.app.workCatalogProgress = [{
+      attendanceId: 'ATT-OFFICE-OPEN', catalogItemId: officeRewardTask.id, checked: true, status: 'CLAIMED', version: 1,
+    }]
+    view.rerender(<MemoryRouter><SupportAssignedWorkPage /></MemoryRouter>)
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: /Đi làm đúng giờ \(\+3,000 đ\)/i }).disabled).toBe(false))
+    expect(screen.getByRole('checkbox', { name: /Đi làm đúng giờ \(\+3,000 đ\)/i }).checked).toBe(true)
   })
 
   it('keeps closed attendance rewards read-only in employee history and visible in Admin statistics', () => {

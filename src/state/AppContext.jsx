@@ -2250,22 +2250,29 @@ export function AppProvider({ children }) {
     const fingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
     const existing = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
       .find((event) => String(event.employeeId || '') === employeeId && String(event.fingerprint || '') === fingerprint)
-    const completedTasks = [...submitted.values()].filter(Boolean).length
-    const totalTasks = submitted.size
-    const completionRate = Math.round((completedTasks / totalTasks) * 100)
+    const mandatoryProgress = (items = scopedTasks) => {
+      const mandatoryIds = items
+        .filter((task) => task.required !== false)
+        .map((task) => String(task.id || ''))
+      const totalTasks = mandatoryIds.length
+      const completedTasks = mandatoryIds.filter((taskId) => submitted.get(taskId) === true).length
+      return {
+        completedTasks,
+        totalTasks,
+        completionRate: totalTasks ? Math.round((completedTasks / totalTasks) * 100) : 0,
+      }
+    }
+    const { completedTasks, totalTasks, completionRate } = mandatoryProgress()
     if (existing) return { ok: true, existing: true, completedTasks, totalTasks, completionRate, submittedAt: existing.at }
     const timestamp = new Date().toISOString()
     const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
     const assignmentSummaries = (assignmentIds.length ? assignmentIds : ['']).map((assignmentId) => {
-      const scopedIds = scopedTasks
+      const scopedAssignmentTasks = scopedTasks
         .filter((task) => !assignmentId || String(task.assignmentId || '') === assignmentId)
-        .map((task) => String(task.id || ''))
-      const scopedCompleted = scopedIds.filter((taskId) => submitted.get(taskId) === true).length
+      const progress = mandatoryProgress(scopedAssignmentTasks)
       return {
         assignmentId,
-        completedTasks: scopedCompleted,
-        totalTasks: scopedIds.length,
-        completionRate: scopedIds.length ? Math.round((scopedCompleted / scopedIds.length) * 100) : 0,
+        ...progress,
       }
     })
     setState((current) => ({
@@ -2279,17 +2286,19 @@ export function AppProvider({ children }) {
       taskAssignmentHistory: current.taskAssignmentHistory.map((assignment) => {
         const assignmentId = String(assignment.assignmentId || assignment.id || '')
         if (!assignmentIds.includes(assignmentId)) return assignment
-        const assignmentTaskIds = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId).map((task) => String(task.id || ''))
-        const assignmentCompleted = assignmentTaskIds.filter((id) => submitted.get(id) === true).length
-        const assignmentRate = assignmentTaskIds.length ? Math.round((assignmentCompleted / assignmentTaskIds.length) * 100) : 0
-        const event = { action: 'progress-submitted', employeeId, employeeName: employee.name || employeeId, attendanceId: openAttendance.id, storeId, date, shiftId, assignmentId, completedTasks: assignmentCompleted, totalTasks: assignmentTaskIds.length, completionRate: assignmentRate, incompleteReason: assignmentRate === 100 ? '' : incompleteReason, fingerprint, at: timestamp, actor: actorSnapshot(current.session) }
+        const assignmentProgress = mandatoryProgress(scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId))
+        const assignmentCompleted = assignmentProgress.completedTasks
+        const assignmentTotal = assignmentProgress.totalTasks
+        const assignmentRate = assignmentProgress.completionRate
+        const requiredComplete = assignmentTotal === 0 || assignmentCompleted === assignmentTotal
+        const event = { action: 'progress-submitted', employeeId, employeeName: employee.name || employeeId, attendanceId: openAttendance.id, storeId, date, shiftId, assignmentId, completedTasks: assignmentCompleted, totalTasks: assignmentTotal, completionRate: assignmentRate, incompleteReason: requiredComplete ? '' : incompleteReason, fingerprint, at: timestamp, actor: actorSnapshot(current.session) }
         return {
           ...assignment,
-          status: assignmentRate === 100 ? 'completed' : 'incomplete',
+          status: requiredComplete ? 'completed' : 'incomplete',
           completionRate: assignmentRate,
           completedTasks: assignmentCompleted,
-          totalTasks: assignmentTaskIds.length,
-          incompleteReason: assignmentRate === 100 ? '' : incompleteReason,
+          totalTasks: assignmentTotal,
+          incompleteReason: requiredComplete ? '' : incompleteReason,
           progressHistory: [...(assignment.progressHistory || []), event],
           updatedAt: timestamp,
         }
@@ -3611,7 +3620,7 @@ export function AppProvider({ children }) {
     if (!apiRef.current.enabled) {
       throw new Error('Cần kết nối máy chủ để ghi nhận tiền thưởng an toàn.')
     }
-    return runRemoteDomainCommand(
+    const result = await runRemoteDomainCommand(
       'work_reward.set',
       {
         attendanceId: payload.attendanceId,
@@ -3621,6 +3630,26 @@ export function AppProvider({ children }) {
       },
       payload.idempotencyKey || `work-reward:${crypto.randomUUID()}`,
     )
+    if (result?.reward) {
+      setState((current) => {
+        const progress = Array.isArray(current.workCatalogProgress) ? current.workCatalogProgress : []
+        const entries = Array.isArray(current.compensationEntries) ? current.compensationEntries : []
+        const rewardExists = progress.some((record) => String(record.id || '') === String(result.reward.id || ''))
+        const entryExists = result.entry && entries.some((record) => String(record.id || '') === String(result.entry.id || ''))
+        return {
+          ...current,
+          workCatalogProgress: rewardExists
+            ? progress.map((record) => String(record.id || '') === String(result.reward.id || '') ? result.reward : record)
+            : [result.reward, ...progress],
+          compensationEntries: !result.entry
+            ? entries
+            : entryExists
+              ? entries.map((record) => String(record.id || '') === String(result.entry.id || '') ? result.entry : record)
+              : [result.entry, ...entries],
+        }
+      })
+    }
+    return result
   }
 
   const createWorkCatalogItem = async (payload = {}) => {

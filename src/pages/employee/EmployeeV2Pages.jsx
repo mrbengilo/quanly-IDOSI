@@ -33,10 +33,9 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { resolveShiftCandidates } from '../../domain'
 import { activeOccupationLabels, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
-import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { useApp } from '../../state/AppContext'
 import { businessDate, calculateEmployeeBasePay, getHourlyRate, getMonthlySalary, getPayBasis, money, resolveStoreEmployeeSalaryPolicy, shortDate, shortDateTime24, today, usesMonthlyHoursFormula } from '../../utils'
-import { employeeTaskAssignmentById, employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
+import { employeeTasksForDate, taskCompletedByEmployee } from './taskScope'
 import {
   ACQUISITION_CHANNELS,
   checkoutReconciliation,
@@ -61,12 +60,6 @@ const employeeKey = (employee = {}) => String(employee?.id || employee?.code || 
 const timestamp = shortDateTime24
 const periodLabel = (value) => value ? value.split('-').reverse().join('/') : '—'
 const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: '' })
-const actorLabel = (value) => {
-  if (!value) return 'Chưa ghi nhận'
-  if (typeof value === 'string') return value
-  return value.displayName || value.name || value.fullName || value.username || value.code || value.id || 'Chưa ghi nhận'
-}
-
 const statusLabel = (value) => {
   const normalized = String(value || '').toLocaleLowerCase('vi-VN')
   if (normalized.includes('trễ')) return 'Đi trễ'
@@ -85,10 +78,7 @@ const statusTone = (value) => {
 
 const attendanceEarlyMinutes = (record = {}) => Math.max(0, Number(record.minutesEarly ?? record.earlyMinutes) || 0)
 const attendanceLateMinutes = (record = {}) => Math.max(0, Number(record.minutesLate ?? record.lateMinutes) || 0)
-const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapshot?.kind || task.kind || '')
-const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
 const taskIsRequired = (task = {}) => task.required !== false
-const taskAmount = (task = {}) => Math.max(0, Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd) || 0)
 
 const workedHours = (record = {}) => {
   const explicit = Number(record.hours)
@@ -142,26 +132,21 @@ const geolocate = () => new Promise((resolve, reject) => {
 export function EmployeeDashboardV2() {
   const app = useApp()
   const navigate = useNavigate()
-  const [searchParams] = useSearchParams()
   const {
     currentEmployee: employee,
     attendance = [],
     orders = [],
     schedule = [],
     tasks = [],
-    taskAssignmentHistory = [],
-    shiftDefinitions = [],
     stores = [],
     supportTransfers = [],
     session,
     policies,
     checkIn,
     checkOut,
-    setTaskDone,
     notify,
   } = app
   const [now, setNow] = useState(() => new Date())
-  const [pendingTaskId, setPendingTaskId] = useState(null)
   const [candidateModal, setCandidateModal] = useState(null)
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [locating, setLocating] = useState('')
@@ -199,13 +184,6 @@ export function EmployeeDashboardV2() {
   const ownAttendance = employeeAttendance(attendance, employeeId, workingStoreId)
   const operationalDate = activeRecord ? recordDate(activeRecord) : workDate
   const todayRecords = ownAttendance.filter((record) => recordDate(record) === workDate)
-  const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
-  const requestedAssignment = employeeTaskAssignmentById({
-    assignmentId: requestedAssignmentId,
-    taskAssignmentHistory,
-    tasks,
-    employee: dashboardEmployee,
-  })
   const ownOrders = employeeCreatedOrders(orders, employeeId, workingStoreId)
   const monthOrders = ownOrders.filter((order) => businessDate(order.createdAt).startsWith(workDate.slice(0, 7)))
   const todayTasks = employeeTasksForDate({ tasks, schedule, attendance, employee: dashboardEmployee, workDate: operationalDate })
@@ -228,10 +206,6 @@ export function EmployeeDashboardV2() {
   })
   const incompleteTasks = activeShiftTasks.filter((task) => taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId))
   const incompleteRewardTasks = activeShiftTasks.filter((task) => !taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId))
-  const displayedTasks = requestedAssignment?.tasks || todayTasks
-  const displayedTaskDate = requestedAssignment?.date || operationalDate
-  const displayedTaskShiftId = String(requestedAssignment?.shiftId || '')
-  const displayedTaskShift = shiftDefinitions.find((shift) => String(shift.id) === displayedTaskShiftId)
   const expectedRevenue = shiftRevenueBreakdown(activeShiftOrders)
   const reconciliation = checkoutReconciliation({
     orders: activeShiftOrders,
@@ -245,29 +219,6 @@ export function EmployeeDashboardV2() {
     const timer = window.setInterval(() => setNow(new Date()), 1_000)
     return () => window.clearInterval(timer)
   }, [])
-
-  const toggleTask = async (task) => {
-    const taskShiftId = String(task.shiftId || task.shift || '')
-    const taskDate = String(task.date || task.workDate || '')
-    if (!activeRecord || (taskDate && taskDate !== operationalDate) || (taskShiftId && taskShiftId !== activeShiftId)) {
-      notify?.('Bạn chỉ có thể cập nhật công việc sau khi điểm danh vào đúng ca.', 'info')
-      return
-    }
-    if (typeof setTaskDone !== 'function') {
-      notify?.('Chức năng cập nhật công việc chưa sẵn sàng.', 'info')
-      return
-    }
-    const done = taskCompletedByEmployee(task, employeeId)
-    setPendingTaskId(task.id)
-    try {
-      const result = await setTaskDone(task.id, !done, employeeId)
-      if (!result?.ok) notify?.(result?.message || 'Không thể cập nhật công việc.', 'info')
-    } catch (error) {
-      notify?.(error.message || 'Không thể cập nhật công việc.', 'info')
-    } finally {
-      setPendingTaskId(null)
-    }
-  }
 
   const captureAndCheckIn = async (shift) => {
     setLocating('in')
@@ -414,54 +365,10 @@ export function EmployeeDashboardV2() {
           </tbody>
         </TableWrap>
       </Card>
-      <Card
-        className="employee-tasks"
-        title={requestedAssignment ? 'CÔNG VIỆC TỪ THÔNG BÁO' : 'CÔNG VIỆC CẦN LÀM'}
-        action={requestedAssignment ? <><Badge tone="blue">{shortDate(displayedTaskDate)}</Badge> <Badge tone="green">{displayedTaskShift?.name || displayedTaskShiftId || 'Chưa chọn ca'}</Badge></> : null}
-      >
-        <InfoNote>Công việc cố định là bắt buộc để kết ca. Công việc nhận thưởng là tùy chọn và không cần nhập lý do nếu chưa thực hiện.</InfoNote>
-        {requestedAssignment && (
-          <InfoNote tone={displayedTaskDate === operationalDate ? 'green' : 'orange'}>
-            Lượt giao {requestedAssignment.id} • {shortDate(displayedTaskDate)} • {displayedTaskShift?.name || displayedTaskShiftId || 'Chưa chọn ca'}{displayedTaskShift ? ` (${displayedTaskShift.start || '--:--'}–${displayedTaskShift.end || '--:--'})` : ''} • Người giao: {actorLabel(requestedAssignment.createdBy || requestedAssignment.assignedBy)}{requestedAssignment.createdAt || requestedAssignment.assignedAt ? ` • ${timestamp(requestedAssignment.createdAt || requestedAssignment.assignedAt)}` : ''}.
-            {displayedTaskDate !== operationalDate ? ' Bạn có thể xem trước; chỉ được tick khi đã điểm danh vào đúng ngày, đúng ca.' : ''}
-          </InfoNote>
-        )}
-        {requestedAssignmentId && !requestedAssignment && <InfoNote tone="orange">Không tìm thấy lượt giao việc phù hợp với tài khoản và cửa hàng hiện tại.</InfoNote>}
-        <div className="task-checklist">
-          {displayedTasks.map((task) => {
-            const done = taskCompletedByEmployee(task, employeeId)
-            const pending = String(pendingTaskId) === String(task.id)
-            const reward = taskIsReward(task)
-            const amount = taskAmount(task)
-            const taskShiftId = String(task.shiftId || task.shift || '')
-            const taskDate = String(task.date || task.workDate || displayedTaskDate)
-            const canUpdate = Boolean(activeRecord) && taskDate === operationalDate && (!taskShiftId || taskShiftId === activeShiftId)
-            return (
-              <div key={task.id} className={done ? 'done' : ''}>
-                <button
-                  type="button"
-                  className="icon-button"
-                  onClick={() => toggleTask(task)}
-                  disabled={pending || !canUpdate}
-                  aria-label={!canUpdate ? `Chờ điểm danh đúng ca để cập nhật ${task.title || task.name || 'công việc'}` : done ? `Mở lại công việc ${task.title || task.name || ''}` : `Hoàn thành công việc ${task.title || task.name || ''}`}
-                  aria-pressed={done}
-                >
-                  <CheckCircle2 size={18} />
-                </button>
-                <div>
-                  <strong>{task.title || task.name || 'Công việc'}</strong>
-                  {(task.detail || task.description) && <small className="table-note">{task.detail || task.description}</small>}
-                  <small className="table-note">{reward ? `Tùy chọn · Thưởng ${money(amount)}` : `Bắt buộc${amount > 0 ? ` · ${money(amount)}` : ''}`}</small>
-                </div>
-                <Badge tone={done ? 'green' : 'orange'}>{pending ? 'Đang cập nhật...' : done ? 'Đã hoàn thành' : canUpdate ? 'Chưa hoàn thành' : 'Chờ vào đúng ca'}</Badge>
-              </div>
-            )
-          })}
-          {!displayedTasks.length && <InfoNote>Chưa có công việc được giao cho bạn trong phạm vi này.</InfoNote>}
-        </div>
-      </Card>
       <Card title="TRUY CẬP NHANH">
         <div className="quick-action-grid">
+          <Button icon={ClipboardCheck} onClick={() => navigate('/employee/tasks')}>Công việc được giao</Button>
+          <Button icon={CheckCircle2} variant="outline" onClick={() => navigate('/employee/reward-tasks')}>Công việc tính thưởng</Button>
           <Button icon={Plus} onClick={() => navigate('/employee/orders')}>Tạo đơn hàng</Button>
           <Button icon={Clock3} variant="outline" onClick={() => navigate('/employee/work-history')}>Lịch sử làm việc</Button>
           <Button icon={Wallet} variant="outline" onClick={() => navigate('/employee/payroll')}>Bảng lương</Button>

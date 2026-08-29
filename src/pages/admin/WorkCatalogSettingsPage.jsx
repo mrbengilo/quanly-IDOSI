@@ -115,10 +115,14 @@ export function WorkCatalogSettingsPage() {
     })
   }
 
-  const closeEditor = () => {
-    if (saving) return
+  const resetEditor = () => {
     setEditing(null)
     setForm(EMPTY_FORM)
+  }
+
+  const closeEditor = () => {
+    if (saving) return
+    resetEditor()
   }
 
   const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }))
@@ -152,7 +156,7 @@ export function WorkCatalogSettingsPage() {
       const result = editing?.id
         ? await app.updateWorkCatalogItem?.({ ...payload, id: editing.id, expectedVersion: editing.version })
         : await app.createWorkCatalogItem?.({ ...payload, code: makeCode(form.kind) })
-      if (result?.ok !== false) closeEditor()
+      if (result?.ok !== false) resetEditor()
     } catch (error) {
       app.notify?.(error.message || 'Không thể lưu danh mục.', 'info')
     } finally {

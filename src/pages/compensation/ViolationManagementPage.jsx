@@ -187,14 +187,14 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
     employee: selectedEmployee,
   }), [app.attendance, app.schedule, app.supportWorkSchedules, app.shiftDefinitions, selectedEmployeeId, selectedStoreId, selectedEmployee, targetUnit, occurredOn])
   const selectedShift = shiftOptions.find((shift) => shift.key === shiftSelection) || shiftOptions[0] || null
-  const policies = useMemo(() => selectedShift ? activeWorkCatalogItems(app.workCatalogItems || [], {
+  const policies = useMemo(() => activeWorkCatalogItems(app.workCatalogItems || [], {
     targetGroup: targetUnit,
     storeId: targetUnit === 'store' ? selectedStoreId : null,
-    shiftId: selectedShift.id,
-    shiftName: selectedShift.name,
+    shiftId: selectedShift?.id || null,
+    shiftName: selectedShift?.name || null,
     date: occurredOn,
     kinds: WORK_CATALOG_KIND.VIOLATION,
-  }) : [], [app.workCatalogItems, targetUnit, selectedStoreId, selectedShift, occurredOn])
+  }), [app.workCatalogItems, targetUnit, selectedStoreId, selectedShift, occurredOn])
   const selectedPolicyIdSet = new Set(selectedPolicyIds)
   const selectedPolicies = policies.filter((policy) => selectedPolicyIdSet.has(policy.id))
   const selectedTotalVnd = selectedPolicies.reduce((sum, policy) => sum + Math.abs(Number(policy.amountVnd || 0)), 0)
@@ -291,13 +291,13 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
               {stores.map((store) => <option key={entityId(store)} value={entityId(store)}>{store.name}</option>)}
             </Select>
           </Field>}
+          <Field label="Ngày phát sinh" required>
+            <Input aria-label="Ngày phát sinh" type="date" value={occurredOn} onChange={(event) => { setOccurredOn(event.target.value); resetDependentSelection() }} />
+          </Field>
           <Field label="Nhân viên" required>
             <Select aria-label="Nhân viên" value={selectedEmployeeId} onChange={(event) => { setEmployeeSelection(event.target.value); resetDependentSelection() }} disabled={!employees.length}>
               {employees.map((employee) => <option key={entityId(employee)} value={entityId(employee)}>{employee.name} — {entityId(employee)}</option>)}
             </Select>
-          </Field>
-          <Field label="Ngày phát sinh" required>
-            <Input aria-label="Ngày phát sinh" type="date" value={occurredOn} onChange={(event) => { setOccurredOn(event.target.value); resetDependentSelection() }} />
           </Field>
           <Field label="Ca nhân viên làm trong ngày" required>
             <Select aria-label="Ca nhân viên làm trong ngày" value={selectedShift?.key || ''} onChange={(event) => { setShiftSelection(event.target.value); setSelectedPolicyIds([]); setValidation('') }} disabled={!shiftOptions.length}>
@@ -311,7 +311,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
                 <input type="checkbox" checked={selectedPolicyIdSet.has(policy.id)} onChange={() => togglePolicy(policy.id)} />
                 <span><strong>{policy.name}</strong><small>−{money(policy.amountVnd)}</small></span>
               </label>)}
-              {selectedShift && !policies.length && <InfoNote tone="orange">Chưa có vi phạm đang hoạt động cho phạm vi, ngày và ca đã chọn. Hãy thêm tại “Danh mục công việc & vi phạm”.</InfoNote>}
+              {!policies.length && <InfoNote tone="orange">Chưa có vi phạm đang hoạt động cho phạm vi và ngày đã chọn. Hãy thêm tại “Danh mục công việc & vi phạm”.</InfoNote>}
             </div>
           </Field>
           <Field label="Tổng số tiền bị trừ">

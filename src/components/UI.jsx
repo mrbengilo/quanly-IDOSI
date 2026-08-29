@@ -119,9 +119,9 @@ export function NotificationButton({ count = 3, onClick }) {
   )
 }
 
-export function Button({ children, variant = 'primary', icon: Icon, loading, className = '', ...props }) {
+export function Button({ children, variant = 'primary', icon: Icon, loading, className = '', type = 'button', ...props }) {
   return (
-    <button className={`button button--${variant} ${className}`} {...props}>
+    <button type={type} className={`button button--${variant} ${className}`} {...props}>
       {loading ? <LoaderCircle className="spin" size={18} /> : Icon ? <Icon size={18} /> : null}
       <span>{children}</span>
     </button>
