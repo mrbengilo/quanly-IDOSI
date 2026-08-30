@@ -25,7 +25,7 @@ BACKUP_DIR="${IDOSI_BACKUP_DIR:-$COMPOSE_DIR/backups}"
 LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
 POINTER_FILE="$BACKUP_DIR/pending-$RELEASE_SHA.report"
 
-for command_name in flock sed head awk date mktemp mv chmod rm node curl; do
+for command_name in flock sed head awk date mktemp mv chmod rm curl; do
   command -v "$command_name" >/dev/null 2>&1 || die "Thiếu lệnh bắt buộc: $command_name"
 done
 [[ -d "$BACKUP_DIR" ]] || die 'Không tìm thấy thư mục backup IDOSI.'
@@ -54,9 +54,13 @@ if [[ "$STATUS" == 'SUCCESS' ]]; then
 fi
 [[ "$STATUS" == 'LOCAL_READY' ]] || die "Chỉ finalize report có STATUS=LOCAL_READY, hiện tại là $STATUS."
 
-[[ -f "$IDOSI_ROOT/server/vps/verify-release.mjs" ]] || die 'Thiếu server/vps/verify-release.mjs trên VPS.'
-node "$IDOSI_ROOT/server/vps/verify-release.mjs" "$PUBLIC_URL" "$RELEASE_SHA"
-curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "${PUBLIC_URL%/}/" >/dev/null
+PUBLIC_ORIGIN="${PUBLIC_URL%/}"
+curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$PUBLIC_ORIGIN/api/health" >/dev/null
+PUBLIC_RELEASE="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+  "$PUBLIC_ORIGIN/api/release")"
+[[ "$PUBLIC_RELEASE" == *"\"releaseSha\":\"$RELEASE_SHA\""* ]] \
+  || die 'Public release endpoint không xác nhận đúng release SHA.'
+curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$PUBLIC_ORIGIN/" >/dev/null
 
 VERIFIED_AT="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT_TEMP="$(mktemp "$BACKUP_DIR/.finalized-report.XXXXXX")"

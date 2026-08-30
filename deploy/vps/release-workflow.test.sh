@@ -63,18 +63,17 @@ wait_for_job "$FAILURE_STATUS" || fail 'durable failure job did not complete'
 FINALIZE_ROOT="$TEMP_ROOT/finalize-root"
 BACKUP_DIR="$FINALIZE_ROOT/deploy/vps/backups"
 FAKE_BIN="$TEMP_ROOT/fake-bin"
-mkdir -p "$FINALIZE_ROOT/server/vps" "$BACKUP_DIR" "$FAKE_BIN"
-: >"$FINALIZE_ROOT/server/vps/verify-release.mjs"
+mkdir -p "$BACKUP_DIR" "$FAKE_BIN"
 
-cat >"$FAKE_BIN/node" <<'NODE'
-#!/usr/bin/env bash
-[[ "${FAKE_NODE_FAIL:-0}" == '0' ]]
-NODE
 cat >"$FAKE_BIN/curl" <<'CURL'
 #!/usr/bin/env bash
-[[ "${FAKE_CURL_FAIL:-0}" == '0' ]]
+[[ "${FAKE_CURL_FAIL:-0}" == '0' ]] || exit 1
+last_argument="${!#}"
+if [[ "$last_argument" == */api/release ]]; then
+  printf '{"data":{"releaseSha":"%s"}}\n' "${FAKE_RELEASE_SHA:?}"
+fi
 CURL
-chmod +x "$FAKE_BIN/node" "$FAKE_BIN/curl"
+chmod +x "$FAKE_BIN/curl"
 
 REPORT_FILE="$BACKUP_DIR/deploy-test-${SHA:0:12}.env"
 POINTER_FILE="$BACKUP_DIR/pending-$SHA.report"
@@ -87,7 +86,7 @@ EXTERNAL_VERIFIED_AT_UTC=
 REPORT
 printf '%s\n' "$REPORT_FILE" >"$POINTER_FILE"
 
-PATH="$FAKE_BIN:$PATH" IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
+PATH="$FAKE_BIN:$PATH" FAKE_RELEASE_SHA="$SHA" IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
   IDOSI_DEPLOY_LOCK="$TEMP_ROOT/finalize.lock" \
   "$SCRIPT_DIR/finalize-release.sh" "$SHA" >/dev/null
 [[ "$(report_value STATUS "$REPORT_FILE")" == 'SUCCESS' ]] || fail 'finalizer did not mark SUCCESS'
@@ -103,7 +102,7 @@ PUBLIC_URL=https://idosi.example
 EXTERNAL_VERIFIED_AT_UTC=
 REPORT
 printf '%s\n' "$FAILED_REPORT" >"$POINTER_FILE"
-if PATH="$FAKE_BIN:$PATH" FAKE_NODE_FAIL=1 IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
+if PATH="$FAKE_BIN:$PATH" FAKE_RELEASE_SHA="$SHA" FAKE_CURL_FAIL=1 IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
   IDOSI_DEPLOY_LOCK="$TEMP_ROOT/finalize-fail.lock" \
   "$SCRIPT_DIR/finalize-release.sh" "$SHA" >/dev/null 2>&1; then
   fail 'finalizer unexpectedly passed failed external verification'
