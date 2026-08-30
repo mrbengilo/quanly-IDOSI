@@ -111,7 +111,9 @@ CANONICAL SOURCE: existing logic/data source to preserve/reuse
 AFFECTED FLOWS: primary + related/downstream flows
 INVARIANTS: behavior/data/permission rules that must not regress
 TEST MATRIX: targeted tests + related-flow regressions + final gate
-DELIVERY: branch -> patch -> PR -> CI -> merge
+TASK GRAPH: dependency-ordered implementation units
+COMMIT PLAN: small atomic commits mapped to the task graph
+DELIVERY: branch -> commits -> PR -> CI -> merge
 ```
 
 Do not ask for implementation details that can be discovered from the repository. Low-risk unspecified details follow existing conventions. Surface ambiguity only when a wrong interpretation could materially change money/KPI/payroll, authorization, destructive behavior, schema/data migration, or production deployment semantics.
@@ -190,15 +192,18 @@ CRITICAL means stronger evidence/testing of the affected dependency graph, not a
 5. Establish facts, unknowns and hypotheses; verify uncertain points.
 6. Find/reuse canonical logic/source of truth.
 7. Build Related-Flow Map before changing functional logic.
-8. Add/run targeted regression tests where useful.
-9. Implement smallest production-quality patch.
-10. Self-review as designer + architect + coder + tester + security/reliability reviewer where relevant.
-11. During iteration rerun only checks invalidated by edits.
-12. Run Related-Flow Regression Matrix.
-13. Run final local gate once after stabilization.
-14. Open PR promptly; GitHub `verify` is authoritative repository-wide gate.
-15. CI fail -> inspect evidence -> reproduce targeted -> fix root cause -> rerun invalidated checks only.
-16. Merge after required checks pass.
+8. Build a dependency-ordered Task Graph and Atomic Commit Plan.
+9. Add/run targeted regression tests where useful.
+10. Implement the smallest production-quality task unit.
+11. Run the unit's targeted checks and commit it atomically.
+12. Continue with the next dependent task unit without asking for approval when safe.
+13. Self-review as designer + architect + coder + tester + security/reliability reviewer where relevant.
+14. During iteration rerun only checks invalidated by edits.
+15. Run Related-Flow Regression Matrix.
+16. Run final local gate once after stabilization.
+17. Open PR promptly; GitHub `verify` is authoritative repository-wide gate.
+18. CI fail -> inspect evidence -> reproduce targeted -> fix root cause -> rerun invalidated checks only.
+19. Merge after required checks pass.
 
 Do not repeat analysis, model selection, intake report or full verification when code/input has not materially changed.
 
@@ -284,6 +289,8 @@ Never report PASS unless the check was actually run and observed to pass.
 
 - Never intentionally develop feature work directly on `main`.
 - Each task uses a fresh branch from latest `main`.
+- Related task units for one coherent objective stay on the same branch and are delivered as small atomic commits.
+- Independent objectives must not be hidden inside the same commit; split them into separate commits and, when scope requires, separate sequential PRs.
 - Avoid repeated merge-from-main cycles; sync only when necessary.
 - Required GitHub `verify` must PASS before merge.
 - Preserve audit/history; do not hard-delete where soft deletion/history exists.
@@ -301,6 +308,7 @@ Applicable items:
 - no fabricated API/root cause/schema/test/deploy claim;
 - correct routing used/recommended truthfully;
 - scope focused; canonical logic/source of truth preserved;
+- task graph created and each commit maps to one coherent tested unit;
 - Related-Flow Map complete for functional changes;
 - primary + all applicable related regressions pass;
 - authorization/store isolation preserved;
@@ -316,17 +324,18 @@ Report only:
 1. Confirmed cause/need and final solution
 2. What changed
 3. Main files/modules
-4. Related flows tested and actual results
-5. Final checks/CI actual results
-6. Remaining uncertainty/risk/rollback when relevant
+4. Task/commit breakdown with commit SHAs
+5. Related flows tested and actual results
+6. Final checks/CI actual results
+7. Remaining uncertainty/risk/rollback when relevant
 
 If something was not verified, say so explicitly. Never fill gaps with guesses.
 
 ## 18. Execution objective
 
-- FAST: `auto-compile -> intake -> Terra HIGH FAST -> expert targeted patch -> targeted check -> PR -> CI`
-- STANDARD: `auto-compile -> intake -> Terra/Sol HIGH FAST -> evidence -> related-flow map -> targeted tests -> production-grade patch -> regression matrix -> one final gate -> PR -> CI`
-- CRITICAL/finance/difficult: `auto-compile -> intake -> Sol HIGH ULTRA FAST if supported -> evidence-driven deep impact -> regression matrix -> minimal production-grade patch -> one full final gate -> PR -> CI -> safeguards`
+- FAST: `auto-compile -> intake -> Terra HIGH FAST -> task graph -> atomic patch/commit -> targeted check -> PR -> CI`
+- STANDARD: `auto-compile -> intake -> Terra/Sol HIGH FAST -> evidence -> related-flow map -> task graph -> atomic commits -> regression matrix -> one final gate -> PR -> CI`
+- CRITICAL/finance/difficult: `auto-compile -> intake -> Sol HIGH ULTRA FAST if supported -> evidence-driven deep impact -> regression matrix -> dependency-ordered atomic commits -> one full final gate -> PR -> CI -> safeguards`
 
 Overriding rule: **work like a highly experienced senior engineer across design, architecture, coding, testing and review; be fast and rigorous; when knowledge is uncertain, verify and reason logically from evidence — never fabricate.**
 
@@ -354,3 +363,110 @@ During design and implementation:
 - never treat hidden UI as authorization: preserve backend/data-boundary enforcement and do not expose restricted payloads.
 
 Verification for affected UI must include the relevant roles, allowed and denied states, mobile and desktop layouts, and a final visual usability review. Do not mark a UI task complete while the result is hard to scan, hard to learn, inconsistent, inaccessible, or unsafe for the user's permissions.
+
+## 20. Automatic Task Decomposition and Atomic Commit Protocol — mandatory
+
+Codex must automatically divide every implementation request into **dependency-ordered, related task units** before editing. The user does not need to ask for task splitting or commit planning.
+
+### 20.1 Task Graph rules
+
+Build a concise internal Task Graph containing only units required for the requested outcome. Each unit must include:
+
+```text
+TASK: specific coherent outcome
+DEPENDS ON: prerequisite task(s), or none
+SCOPE: expected modules/files
+ACCEPTANCE: observable completion condition
+TESTS: targeted checks for this unit
+COMMIT: planned Conventional Commit message
+```
+
+Group changes that share one reason to change. Separate changes that can be reviewed, reverted, or delivered independently.
+
+Do not split mechanically by file type. A component, its domain/API support, and its directly associated tests may belong in one commit when they form one indivisible behavior. Conversely, unrelated changes in the same file must not be hidden in one commit.
+
+### 20.2 Commit boundary rules
+
+One commit must represent **one coherent, reviewable and revertable change**.
+
+A commit must:
+
+- have one clear reason to exist;
+- include the tests needed to prove that unit where practical;
+- leave the branch in a buildable, internally consistent state;
+- avoid unrelated formatting, cleanup or refactors;
+- use a precise Conventional Commit message;
+- be small enough for a reviewer to understand without reconstructing multiple objectives.
+
+Prefer these dependency layers when applicable, but collapse layers that are inseparable and skip layers that are not needed:
+
+1. prerequisite behavior-preserving refactor;
+2. schema/migration/contract compatibility;
+3. domain/service logic plus targeted tests;
+4. API/persistence/integration plus targeted tests;
+5. UI/UX behavior plus component/integration tests;
+6. deployment/configuration/documentation.
+
+Do not create artificial commits that only move incomplete code between states. Do not commit broken scaffolding, commented-out implementations, temporary bypasses, disabled tests, debug logs or placeholder behavior.
+
+### 20.3 Size and split heuristics
+
+Use judgment first. As a default target, each implementation commit should usually stay within:
+
+- one coherent subtask;
+- roughly 8 source/test files or fewer;
+- roughly 400 changed lines or fewer, excluding generated files, lockfiles and unavoidable migrations.
+
+These are reviewability heuristics, not reasons to split an indivisible change incorrectly. When a coherent unit must exceed them, keep it atomic and explain why in the PR.
+
+Split into separate sequential PRs when any applies:
+
+- more than 3 independent business objectives;
+- expected scope exceeds about 20 source/test files;
+- changes require independently risky migrations or deployments;
+- one objective can safely ship while another remains unresolved;
+- the combined review would obscure finance, authorization, persistence or rollback risk.
+
+Related dependent tasks for one business objective normally stay in one branch/PR as multiple atomic commits.
+
+### 20.4 Execution behavior
+
+After creating the Task Graph:
+
+1. implement the first dependency-ready unit;
+2. run its targeted checks;
+3. self-review its diff;
+4. commit it with the planned message;
+5. continue automatically to the next dependency-ready unit;
+6. do not ask the user to approve each safe intermediate step;
+7. after all units stabilize, run the applicable related-flow and final gates;
+8. open/update the PR with the commit breakdown and actual verification evidence.
+
+When a later discovery changes the plan, update the Task Graph and commit boundaries instead of forcing new work into an unsuitable existing commit.
+
+Review fixes must stay scoped to the finding. Before final handoff, fold trivial fixup commits into the owning atomic commit when tooling and repository policy safely permit it; otherwise keep a clearly named fix commit and explain it.
+
+### 20.5 Commit message examples
+
+```text
+refactor(attendance): centralize shift duration resolution
+feat(violations): persist employee violation assignments
+feat(employee): show personal violation history
+test(payroll): cover support-transfer bonus exclusion
+fix(auth): enforce assigned-store violation access
+```
+
+Do not use vague messages such as `update`, `fix`, `changes`, `done`, `misc`, or `final`.
+
+### 20.6 Required PR evidence
+
+Every implementation PR must list:
+
+- Task Graph summary;
+- commits in execution order with SHA and purpose;
+- tests/checks run per commit or task unit;
+- final related-flow and repository-wide gate results;
+- any intentionally deferred independent objective;
+- migration, deployment and rollback notes when applicable.
+
+A task is not complete merely because all code exists in one large commit. Completion requires a reviewable task/commit structure, passing applicable verification, and truthful reporting of what was and was not observed.
