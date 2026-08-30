@@ -30,8 +30,10 @@ HEALTH_DELAY_SECONDS="${IDOSI_HEALTH_DELAY_SECONDS:-5}"
 LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SHORT_RELEASE="${RELEASE_SHA:0:12}"
+REPORT_FILE="$BACKUP_DIR/deploy-$TIMESTAMP-$SHORT_RELEASE.env"
+PENDING_REPORT_POINTER="$BACKUP_DIR/pending-$RELEASE_SHA.report"
 
-for command_name in git docker curl flock sha256sum awk date mktemp mv chmod tee; do
+for command_name in git docker curl flock sha256sum awk date mktemp mv chmod tee basename cat rm head mkdir sleep; do
   require_command "$command_name"
 done
 docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin không hoạt động.'
@@ -111,8 +113,9 @@ restore_backup() {
 
 write_report() {
   local status="$1"
-  local report_file="$BACKUP_DIR/deploy-$TIMESTAMP-$SHORT_RELEASE.env"
-  cat >"$report_file" <<REPORT
+  local report_temp pointer_temp current_pointer
+  report_temp="$(mktemp "$BACKUP_DIR/.deploy-report.XXXXXX")"
+  cat >"$report_temp" <<REPORT
 STATUS=$status
 RELEASE_SHA=$RELEASE_SHA
 PREVIOUS_GIT_SHA=$PREVIOUS_GIT_SHA
@@ -125,8 +128,23 @@ DATA_VOLUME=$DATA_VOLUME
 PUBLIC_TRAFFIC_RESUMED=$PUBLIC_TRAFFIC_RESUMED
 PUBLIC_URL=$PUBLIC_URL
 DEPLOYED_AT_UTC=$TIMESTAMP
+EXTERNAL_VERIFIED_AT_UTC=
 REPORT
-  log "Deployment report: $report_file"
+  chmod 600 "$report_temp"
+  mv "$report_temp" "$REPORT_FILE"
+
+  if [[ "$status" == 'LOCAL_READY' ]]; then
+    pointer_temp="$(mktemp "$BACKUP_DIR/.pending-report.XXXXXX")"
+    printf '%s\n' "$REPORT_FILE" >"$pointer_temp"
+    chmod 600 "$pointer_temp"
+    mv "$pointer_temp" "$PENDING_REPORT_POINTER"
+  elif [[ -f "$PENDING_REPORT_POINTER" ]]; then
+    current_pointer="$(head -n 1 "$PENDING_REPORT_POINTER" 2>/dev/null || true)"
+    if [[ "$current_pointer" == "$REPORT_FILE" ]]; then
+      rm -f "$PENDING_REPORT_POINTER"
+    fi
+  fi
+  log "Deployment report: $REPORT_FILE"
 }
 
 PREVIOUS_GIT_SHA=''
@@ -184,13 +202,13 @@ rollback_failed_deployment() {
     write_report 'ROLLBACK_FAILED'
     exit "$original_code"
   fi
-  if ! compose up -d --no-build caddy; then
-    log 'ERROR: Không thể mở lại Caddy sau rollback.'
+  if ! persist_release_config "$PREVIOUS_IMAGE_TAG" "$PREVIOUS_RELEASE_SHA"; then
+    log 'ERROR: Rollback runtime đã lên nhưng không thể lưu release config vào .env.'
     write_report 'ROLLBACK_FAILED'
     exit "$original_code"
   fi
-  if ! persist_release_config "$PREVIOUS_IMAGE_TAG" "$PREVIOUS_RELEASE_SHA"; then
-    log 'ERROR: Rollback runtime đã lên nhưng không thể lưu release config vào .env.'
+  if ! compose up -d --no-build caddy; then
+    log 'ERROR: Không thể mở lại Caddy sau rollback.'
     write_report 'ROLLBACK_FAILED'
     exit "$original_code"
   fi
@@ -306,7 +324,7 @@ done
 
 compose ps
 compose logs --since=10m --tail=300 app caddy >"$BACKUP_DIR/deploy-$TIMESTAMP-$SHORT_RELEASE.log" 2>&1 || true
+write_report 'LOCAL_READY'
 ROLLBACK_REQUIRED=0
 trap - ERR
-write_report 'SUCCESS'
-log "SUCCESS: IDOSI đang chạy release $RELEASE_SHA"
+log "LOCAL_READY: IDOSI đang chạy release $RELEASE_SHA; chờ external verification trước khi ghi SUCCESS."

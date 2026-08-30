@@ -48,7 +48,10 @@ TARGET_IMAGE_TAG="$(read_report_value PREVIOUS_IMAGE_TAG)"
 TARGET_RELEASE_SHA="$(read_report_value PREVIOUS_RELEASE_SHA)"
 TARGET_GIT_SHA="$(read_report_value PREVIOUS_GIT_SHA)"
 
-[[ "$TARGET_STATUS" == 'SUCCESS' ]] || die 'Chỉ rollback từ deployment report có STATUS=SUCCESS.'
+case "$TARGET_STATUS" in
+  SUCCESS|LOCAL_READY|FAILED_AFTER_TRAFFIC) ;;
+  *) die 'Chỉ rollback từ report đã mở traffic và có rollback point hợp lệ.' ;;
+esac
 [[ "$TARGET_BACKUP_FILE" == "$BACKUP_DIR/"* ]] || die 'Backup trong report phải nằm trong thư mục backup IDOSI.'
 [[ -s "$TARGET_BACKUP_FILE" ]] || die 'Backup cần phục hồi không tồn tại hoặc rỗng.'
 [[ "$TARGET_IMAGE_TAG" =~ ^[a-zA-Z0-9._:/-]+$ ]] || die 'Previous image tag trong report không hợp lệ.'
