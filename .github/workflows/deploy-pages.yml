@@ -58,11 +58,11 @@ jobs:
       - name: Validate VPS deployment scripts
         run: |
           bash -n deploy/vps/deploy-release.sh
-          bash -n deploy/vps/finalize-release.sh
-          bash -n deploy/vps/run-release-job.sh
           bash -n deploy/vps/rollback-release.sh
-          bash -n deploy/vps/release-workflow.test.sh
-          deploy/vps/release-workflow.test.sh
+          bash -n deploy/vps/run-release-job.sh
+          bash -n deploy/vps/finalize-release.sh
+          bash deploy/vps/release-workflow.test.sh
+          node scripts/verify-vps-auto-deploy.mjs
           node --check server/vps/release-info.mjs
           node --check server/vps/verify-release.mjs
 

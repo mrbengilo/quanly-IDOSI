@@ -7,6 +7,11 @@ on:
         description: Full 40-character merge commit SHA from main
         required: true
         type: string
+  workflow_run:
+    workflows:
+      - Verify IDOSI
+    types:
+      - completed
 
 permissions:
   actions: read
@@ -18,10 +23,18 @@ concurrency:
 
 jobs:
   release-gate:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
       release_sha: ${{ steps.release.outputs.release_sha }}
+      trigger_mode: ${{ steps.release.outputs.trigger_mode }}
+      verify_run_id: ${{ steps.release.outputs.verify_run_id }}
     steps:
       - name: Checkout main history
         uses: actions/checkout@v6
@@ -29,30 +42,66 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Validate release SHA
+      - name: Resolve and validate release SHA
         id: release
         env:
-          REQUESTED_RELEASE_SHA: ${{ inputs.release_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_RELEASE_SHA: ${{ inputs.release_sha }}
+          VERIFIED_RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          VERIFIED_EVENT: ${{ github.event.workflow_run.event }}
+          VERIFIED_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          VERIFIED_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          VERIFIED_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -Eeuo pipefail
-          [[ "$GITHUB_REF" == 'refs/heads/main' ]] || {
-            echo 'Run this production workflow from the main branch only.' >&2
-            exit 1
-          }
-          release_sha="${REQUESTED_RELEASE_SHA,,}"
+
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              [[ "$GITHUB_REF" == 'refs/heads/main' ]] || {
+                echo 'Run a manual production deployment from the main branch only.' >&2
+                exit 1
+              }
+              release_sha="${MANUAL_RELEASE_SHA,,}"
+              trigger_mode='manual'
+              verify_run_id='manual-gate-query'
+              ;;
+            workflow_run)
+              [[ "$VERIFIED_CONCLUSION" == 'success' ]] || {
+                echo 'The triggering Verify IDOSI run did not succeed.' >&2
+                exit 1
+              }
+              [[ "$VERIFIED_EVENT" == 'push' && "$VERIFIED_BRANCH" == 'main' ]] || {
+                echo 'Automatic production deployment only accepts a successful push/main Verify IDOSI run.' >&2
+                exit 1
+              }
+              release_sha="${VERIFIED_RELEASE_SHA,,}"
+              trigger_mode='automatic'
+              verify_run_id="$VERIFIED_RUN_ID"
+              ;;
+            *)
+              echo "Unsupported deployment event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+
           [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || {
             echo 'release_sha must be a complete 40-character commit SHA.' >&2
             exit 1
           }
+
           git fetch --prune origin main
           git cat-file -e "$release_sha^{commit}"
           git merge-base --is-ancestor "$release_sha" origin/main || {
             echo 'The requested release is not in origin/main history.' >&2
             exit 1
           }
-          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
 
-      - name: Require successful Verify IDOSI run for this SHA
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "trigger_mode=$trigger_mode" >> "$GITHUB_OUTPUT"
+          echo "verify_run_id=$verify_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful Verify IDOSI run for manual release
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
@@ -229,12 +278,16 @@ jobs:
         if: always()
         env:
           RELEASE_SHA: ${{ needs.release-gate.outputs.release_sha }}
+          TRIGGER_MODE: ${{ needs.release-gate.outputs.trigger_mode }}
+          VERIFY_RUN_ID: ${{ needs.release-gate.outputs.verify_run_id }}
           OPERATION_ID: ${{ steps.durable.outputs.operation_id }}
         run: |
           {
             echo '## IDOSI production deployment'
             echo
             echo "- Release SHA: \`$RELEASE_SHA\`"
+            echo "- Trigger: \`${TRIGGER_MODE:-unknown}\`"
+            echo "- Verify workflow run: \`${VERIFY_RUN_ID:-unknown}\`"
             echo "- Operation ID: \`${OPERATION_ID:-not-started}\`"
             echo "- Environment: \`production\`"
             echo "- Public URL: https://idosi.io.vn"
