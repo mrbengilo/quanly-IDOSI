@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import worker from '../worker.js'
 import { FileR2 } from './file-r2.mjs'
+import { createReleaseInfoResponse } from './release-info.mjs'
 import { createSqliteD1 } from './sqlite-d1.mjs'
 import { createStaticAssets } from './static-assets.mjs'
 
@@ -59,6 +60,8 @@ export const createVpsRuntime = ({
 
 export const createIdosiServer = (options = {}) => {
   const runtime = createVpsRuntime(options)
+  const releaseSha = options.releaseSha ?? process.env.IDOSI_RELEASE_SHA ?? ''
+  const releaseStartedAt = options.releaseStartedAt ?? new Date().toISOString()
   const server = createServer(async (nodeRequest, nodeResponse) => {
     try {
       const body = ['GET', 'HEAD'].includes(nodeRequest.method || 'GET') ? null : await readBody(nodeRequest)
@@ -74,7 +77,9 @@ export const createIdosiServer = (options = {}) => {
         headers,
         ...(body ? { body } : {}),
       })
-      const response = await worker.fetch(request, runtime.env)
+      const response = new URL(request.url).pathname === '/api/release'
+        ? createReleaseInfoResponse(request, { releaseSha, startedAt: releaseStartedAt })
+        : await worker.fetch(request, runtime.env)
       nodeResponse.statusCode = response.status
       response.headers.forEach((value, name) => nodeResponse.setHeader(name, value))
       if (!response.body || nodeRequest.method === 'HEAD') {
