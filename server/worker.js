@@ -11694,6 +11694,7 @@ const supportWorkTaskHistorySnapshot = (tasks) => (Array.isArray(tasks) ? tasks 
   completed: task.completed === true,
   completedAt: task.completedAt || null,
   completedBy: task.completedBy || null,
+  employeeNote: String(task.employeeNote || ''),
   required: workTaskIsRequired(task),
   ...catalogTaskHistoryMetadata(task),
 }))
@@ -11743,6 +11744,7 @@ const normalizeAssignedSupportTasks = (rawTasks, previousTasks, actor, timestamp
       completedAt: prior?.completedAt || null,
       completedBy: prior?.completedBy || null,
       completedByActor: prior?.completedByActor || null,
+      employeeNote: String(prior?.employeeNote || ''),
       assignedAt: prior?.assignedAt || timestamp,
       assignedBy: prior?.assignedBy || serverActorSnapshot(actor),
     }
@@ -11843,7 +11845,7 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
       employeeId,
       assignmentId,
       targetUnit,
-      route: targetUnit === 'office' ? '/employee/tasks' : '/support/tasks',
+      route: targetUnit === 'office' ? '/employee/assigned-work' : '/support/assigned-work',
       title: 'Công việc mới từ Admin',
       message: `Bạn có ${tasks.length} công việc được giao cho ngày ${date}.`,
       createdAt: commandContext.now,
@@ -11911,7 +11913,13 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     if (!id || typeof update?.completed !== 'boolean' || updateById.has(id)) {
       throw new ApiError(400, 'SUPPORT_WORK_PROGRESS_INVALID', 'Mỗi tiến độ phải có mã duy nhất và trạng thái completed dạng boolean.')
     }
-    updateById.set(id, update.completed)
+    const noteProvided = Object.prototype.hasOwnProperty.call(update, 'note')
+      || Object.prototype.hasOwnProperty.call(update, 'employeeNote')
+    const note = noteProvided ? String(update?.note ?? update?.employeeNote ?? '').trim() : ''
+    if (note.length > 1_000) {
+      throw new ApiError(400, 'SUPPORT_WORK_TASK_NOTE_INVALID', 'Ghi chú của từng công việc không được vượt quá 1.000 ký tự.')
+    }
+    updateById.set(id, { completed: update.completed, note, noteProvided })
   }
   const knownIds = new Set((Array.isArray(previous.tasks) ? previous.tasks : []).map((task) => String(task.id || '')))
   const unknownIds = [...updateById.keys()].filter((id) => !knownIds.has(id))
@@ -11921,15 +11929,21 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
   const changedTaskIds = []
   const tasks = (Array.isArray(previous.tasks) ? previous.tasks : []).map((task) => {
     const id = String(task.id || '')
-    if (!updateById.has(id) || Boolean(task.completed) === updateById.get(id)) return task
+    if (!updateById.has(id)) return task
+    const update = updateById.get(id)
+    const completionChanged = Boolean(task.completed) !== update.completed
+    const nextNote = update.noteProvided ? update.note : String(task.employeeNote || '')
+    const noteChanged = update.noteProvided && String(task.employeeNote || '') !== nextNote
+    if (!completionChanged && !noteChanged) return task
     changedTaskIds.push(id)
-    const completed = updateById.get(id)
+    const completed = update.completed
     return {
       ...task,
       completed,
-      completedAt: completed ? commandContext.now : null,
-      completedBy: completed ? String(actor.user_id || '') : null,
-      completedByActor: completed ? serverActorSnapshot(actor) : null,
+      employeeNote: nextNote,
+      completedAt: completionChanged ? (completed ? commandContext.now : null) : task.completedAt || null,
+      completedBy: completionChanged ? (completed ? String(actor.user_id || '') : null) : task.completedBy || null,
+      completedByActor: completionChanged ? (completed ? serverActorSnapshot(actor) : null) : task.completedByActor || null,
     }
   })
   const submit = payload.submit === true
@@ -11984,7 +11998,7 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     storeId: assignmentIsOffice ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID,
     audienceRoles: ['admin'],
     assignmentId,
-    route: '/admin/tasks',
+    route: `/admin/assignments?unit=${assignmentIsOffice ? 'office' : 'business_support'}&assignment=${encodeURIComponent(assignmentId)}`,
     title: assignmentIsOffice ? 'Nhân viên Khối văn phòng đã gửi kết quả công việc' : 'Hỗ trợ KD đã gửi kết quả công việc',
     message: `${previous.employeeName || employeeId} hoàn thành ${metrics.completedTasks}/${metrics.totalTasks} công việc ngày ${previous.date}.`,
     createdAt: commandContext.now,

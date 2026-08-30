@@ -7,7 +7,9 @@ import {
   Clock3,
   Gift,
   ListChecks,
+  Plus,
   Save,
+  Trash2,
 } from 'lucide-react'
 import {
   Avatar,
@@ -54,6 +56,13 @@ const formatDateTime24 = (value) => {
 }
 
 const assignmentActor = (actor) => actor?.name || actor?.displayName || actor?.username || actor || 'Hệ thống'
+const supportTaskIsRequired = (task = {}) => {
+  if (task.required === true) return true
+  if (task.required === false) return false
+  return String(task.kind || task.catalogKind || task.catalogSnapshot?.kind || '').trim().toUpperCase() !== WORK_CATALOG_KIND.REWARD_TASK
+}
+let supportDraftSequence = 0
+const newSupportDraftTask = () => ({ id: `manual-${Date.now()}-${++supportDraftSequence}`, name: '' })
 
 const historyActionLabel = (action) => ({
   assigned: 'Đã giao việc',
@@ -68,7 +77,7 @@ const historyActionLabel = (action) => ({
 
 function HistoryTaskSnapshot({ label, tasks = [] }) {
   if (!Array.isArray(tasks) || !tasks.length) return null
-  return <div className="assignment-history__snapshot"><b>{label}</b><ol>{tasks.map((task, index) => <li key={task.id || `${task.name || task.title}-${index}`}><strong>{task.name || task.title || `Công việc ${index + 1}`}</strong>{Number(task.amountVnd || 0) > 0 && <small>{money(task.amountVnd)}</small>}{(task.description || task.detail) && <small>{task.description || task.detail}</small>}</li>)}</ol></div>
+  return <div className="assignment-history__snapshot"><b>{label}</b><ol>{tasks.map((task, index) => <li key={task.id || `${task.name || task.title}-${index}`}><strong>{task.name || task.title || `Công việc ${index + 1}`}</strong>{Number(task.amountVnd || 0) > 0 && <small>{money(task.amountVnd)}</small>}{(task.description || task.detail) && <small>{task.description || task.detail}</small>}{task.employeeNote && <small>Ghi chú nhân viên: {task.employeeNote}</small>}</li>)}</ol></div>
 }
 
 function AssignmentHistoryEntry({ entry }) {
@@ -84,6 +93,104 @@ function AssignmentHistoryEntry({ entry }) {
     {Array.isArray(details.changedTaskIds) && details.changedTaskIds.length > 0 && <small className="assignment-history__details">Mã công việc thay đổi: {details.changedTaskIds.join(', ')}</small>}
     {details.incompleteReason && <small className="assignment-history__details">Lý do: {details.incompleteReason}</small>}
   </li>
+}
+
+function SupportAssignmentHistoryTable({ assignments = [], profiles = [], requestedId = '' }) {
+  return <Card title="Lịch sử giao việc và tiến độ hoàn thành">
+    <TableWrap><thead><tr><th>Ngày giao</th><th>Nhân viên</th><th>Danh sách công việc</th><th>Tiến độ</th><th>Trạng thái</th><th>Ghi chú kết quả</th><th>Lịch sử thời gian</th></tr></thead>
+      <tbody>{assignments.map((assignment) => {
+        const progress = supportWorkProgress(assignment)
+        const status = supportWorkStatus(assignment.status)
+        return <tr key={assignment.id} className={requestedId === String(assignment.id) ? 'assignment-row--highlight' : ''}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || profiles.find((profile) => roleProfileCode(profile) === assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{task.description && <small>{task.description}</small>}{task.employeeNote && <small>Ghi chú nhân viên: {task.employeeNote}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || assignment.tasks?.find((task) => task.employeeNote)?.employeeNote || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
+      })}{!assignments.length && <tr><td colSpan="7">Chưa có lịch sử giao việc.</td></tr>}</tbody>
+    </TableWrap>
+  </Card>
+}
+
+export function AdminSupportAssignmentPage() {
+  const [searchParams] = useSearchParams()
+  const targetUnit = searchParams.get('unit') === 'office' ? 'office' : 'business_support'
+  return <AdminSupportAssignmentPageContent key={targetUnit} />
+}
+
+function AdminSupportAssignmentPageContent() {
+  const app = useApp()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedId = String(searchParams.get('assignment') || '')
+  const requestedTargetUnit = searchParams.get('unit') === 'office' ? 'office' : 'business_support'
+  const supportProfiles = roleProfilesFromApp(app, ROLE_KEYS.businessSupport)
+  const officeProfiles = (Array.isArray(app.employees) ? app.employees : []).filter((profile) => (
+    !profile.deletedAt
+    && ['office', 'văn phòng', 'van phong'].includes(String(profile.unit || profile.unitType || profile.department || '').trim().toLocaleLowerCase('vi-VN'))
+    && !['Đã nghỉ việc', 'inactive'].includes(String(profile.status || ''))
+  ))
+  const targetUnit = requestedTargetUnit
+  const [date, setDate] = useState(today)
+  const [employeeId, setEmployeeId] = useState('')
+  const [tasks, setTasks] = useState(() => [newSupportDraftTask()])
+  const [busy, setBusy] = useState(false)
+  const profiles = targetUnit === 'office' ? officeProfiles : supportProfiles
+  const validTasks = tasks
+    .map((task) => ({ id: task.id, name: String(task.name || '').trim(), description: '', required: true }))
+    .filter((task) => task.name)
+  const assignments = [...(Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])]
+    .filter((assignment) => String(assignment.targetUnit || 'business_support') === targetUnit)
+    .toSorted((left, right) => String(right.assignedAt || right.updatedAt || right.date).localeCompare(String(left.assignedAt || left.updatedAt || left.date)))
+
+  const changeTargetUnit = (nextTargetUnit) => {
+    if (nextTargetUnit === targetUnit) return
+    setEmployeeId('')
+    setTasks([newSupportDraftTask()])
+    const nextSearchParams = new URLSearchParams(searchParams)
+    nextSearchParams.set('unit', nextTargetUnit)
+    nextSearchParams.delete('assignment')
+    setSearchParams(nextSearchParams, { replace: true })
+  }
+  const updateTask = (taskId, name) => setTasks((current) => current.map((task) => task.id === taskId ? { ...task, name } : task))
+  const removeTask = (taskId) => setTasks((current) => current.length > 1 ? current.filter((task) => task.id !== taskId) : current)
+  const addTask = () => setTasks((current) => current.length >= 100 ? current : [...current, newSupportDraftTask()])
+
+  const send = async () => {
+    if (!date) return app.notify?.('Vui lòng chọn ngày giao việc.', 'info')
+    if (!employeeId) return app.notify?.('Vui lòng chọn nhân viên nhận việc.', 'info')
+    if (!validTasks.length) return app.notify?.('Vui lòng nhập ít nhất một công việc.', 'info')
+    if (typeof app.assignSupportWork !== 'function') return app.notify?.('Chức năng giao việc chưa sẵn sàng.', 'info')
+    setBusy(true)
+    try {
+      const result = await app.assignSupportWork({ date, targetUnit, employeeId, tasks: validTasks })
+      if (result?.ok === false) return app.notify?.(result.message || 'Không thể giao việc.', 'info')
+      setEmployeeId('')
+      setTasks([newSupportDraftTask()])
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return <div className="page support-work-page support-assignment-admin-page">
+    <PageHeader title="GIAO VIỆC" subtitle="Giao danh sách công việc theo ngày cho từng nhân viên HTKD hoặc Khối văn phòng." icon={ClipboardCheck} />
+    <div className="store-task-tabs support-work-tabs" role="tablist" aria-label="Nhóm nhân viên nhận việc">
+      <button type="button" role="tab" aria-selected={targetUnit === 'business_support'} className={targetUnit === 'business_support' ? 'is-active is-reward' : ''} onClick={() => changeTargetUnit('business_support')}>HTKD</button>
+      <button type="button" role="tab" aria-selected={targetUnit === 'office'} className={targetUnit === 'office' ? 'is-active is-reward' : ''} onClick={() => changeTargetUnit('office')}>Khối văn phòng</button>
+    </div>
+    <Card title={`Giao việc cho ${targetUnit === 'office' ? 'Khối văn phòng' : 'HTKD'}`}>
+      <div className="support-work-form-head support-work-form-head--assignment">
+        <Field label="Ngày giao việc" required><Input aria-label="Ngày giao việc" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field>
+        <Field label="Nhân viên" required><Select aria-label="Nhân viên nhận việc" value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="">Chọn nhân viên</option>{profiles.map((profile) => <option key={roleProfileCode(profile)} value={roleProfileCode(profile)}>{profile.name} — {roleProfileCode(profile)}</option>)}</Select></Field>
+      </div>
+      <InfoNote>Nhập từng công việc, thêm dòng khi cần rồi bấm “LƯU”. Danh sách sẽ được gửi đúng tài khoản nhân viên đã chọn.</InfoNote>
+      <div className="support-task-editor task-assignment-editor" aria-label="Danh sách công việc giao">
+        <div className="support-task-editor__head"><span>STT</span><span>Nội dung công việc *</span><span /></div>
+        {tasks.map((task, index) => <div className="support-task-editor__row" key={task.id}>
+          <strong>{index + 1}</strong>
+          <Input aria-label={`Công việc ${index + 1}`} value={task.name} maxLength="200" onChange={(event) => updateTask(task.id, event.target.value)} placeholder="Nhập nội dung công việc" />
+          <button type="button" className="icon-action" disabled={tasks.length === 1 || busy} onClick={() => removeTask(task.id)} aria-label={`Xóa công việc ${index + 1}`}><Trash2 size={18} /></button>
+        </div>)}
+      </div>
+      <button type="button" className="add-row" disabled={tasks.length >= 100 || busy} onClick={addTask}><Plus size={18} /> Thêm công việc</button>
+      <div className="support-work-actions"><Button icon={Save} loading={busy} disabled={busy || !employeeId || !validTasks.length} onClick={send}>LƯU</Button></div>
+    </Card>
+    <SupportAssignmentHistoryTable assignments={assignments} profiles={[...supportProfiles, ...officeProfiles]} requestedId={requestedId} />
+  </div>
 }
 
 export function AdminSupportWorkPage() {
@@ -188,22 +295,27 @@ export function AdminSupportWorkPage() {
 }
 
 function SupportAssignmentCard({ assignment, highlighted, onUpdate }) {
-  const [tasks, setTasks] = useState(() => (assignment.tasks || []).map((task) => ({ ...task, completed: Boolean(task.completed) })))
+  const [tasks, setTasks] = useState(() => (assignment.tasks || []).map((task) => ({
+    ...task,
+    completed: Boolean(task.completed),
+    employeeNote: String(task.employeeNote || ''),
+  })))
   const [reason, setReason] = useState(assignment.incompleteReason || '')
   const [busy, setBusy] = useState('')
   const progress = supportWorkProgress({ tasks })
+  const requiredRemaining = tasks.filter((task) => supportTaskIsRequired(task) && !task.completed).length
   const status = supportWorkStatus(assignment.status)
   const finalized = isFinalSupportWorkStatus(assignment.status) && Boolean(assignment.submittedAt)
 
   const save = async (submit) => {
-    if (submit && progress.remaining > 0 && !reason.trim()) return onUpdate(null, 'Vui lòng nhập lý do khi chưa hoàn thành hết công việc.')
+    if (submit && requiredRemaining > 0 && !reason.trim()) return onUpdate(null, 'Vui lòng nhập lý do khi chưa hoàn thành hết công việc bắt buộc.')
     setBusy(submit ? 'submit' : 'save')
     try {
       await onUpdate({
         assignmentId: assignment.id,
-        tasks: tasks.map((task) => ({ id: task.id, completed: Boolean(task.completed) })),
+        tasks: tasks.map((task) => ({ id: task.id, completed: Boolean(task.completed), note: task.employeeNote.trim() })),
         submit,
-        incompleteReason: progress.remaining > 0 ? reason.trim() : '',
+        incompleteReason: requiredRemaining > 0 ? reason.trim() : '',
       })
     } finally {
       setBusy('')
@@ -213,26 +325,32 @@ function SupportAssignmentCard({ assignment, highlighted, onUpdate }) {
   return <Card className={`support-assignment-card ${highlighted ? 'support-assignment-card--highlight' : ''}`} title={`${shortDate(assignment.date)} · ${assignment.tasks?.length || 0} công việc`} action={<Badge tone={status.tone}>{status.label}</Badge>}>
     <div className="support-assignment-meta"><span><CalendarDays size={17} /> Giao lúc {formatDateTime24(assignment.assignedAt)}</span><span><Clock3 size={17} /> Cập nhật {formatDateTime24(assignment.updatedAt)}</span></div>
     <div className="support-task-checklist">
-      {tasks.map((task, index) => <label key={task.id} className={task.completed ? 'is-complete' : ''}>
-        <input type="checkbox" checked={task.completed} disabled={finalized || Boolean(busy)} onChange={(event) => setTasks((current) => current.map((item) => item.id === task.id ? { ...item, completed: event.target.checked } : item))} />
-        <span><strong>{index + 1}. {task.name}</strong>{Number(task.amountVnd || 0) > 0 && <small>{task.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'Thưởng ' : ''}{money(task.amountVnd)}</small>}</span>
-      </label>)}
+      {tasks.map((task, index) => <div key={task.id} className={`support-task-result ${task.completed ? 'is-complete' : ''}`}>
+        <label>
+          <input type="checkbox" checked={task.completed} disabled={finalized || Boolean(busy)} onChange={(event) => setTasks((current) => current.map((item) => item.id === task.id ? { ...item, completed: event.target.checked } : item))} />
+          <span><strong>{index + 1}. {task.name}</strong>{Number(task.amountVnd || 0) > 0 && <small>{task.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'Thưởng ' : ''}{money(task.amountVnd)}</small>}</span>
+        </label>
+        <textarea
+          aria-label={`Ghi chú công việc ${index + 1}`}
+          value={task.employeeNote}
+          disabled={finalized || Boolean(busy)}
+          maxLength="1000"
+          onChange={(event) => setTasks((current) => current.map((item) => item.id === task.id ? { ...item, employeeNote: event.target.value } : item))}
+          placeholder="Nhập ghi chú kết quả cho công việc này"
+        />
+      </div>)}
     </div>
     <div className="support-assignment-progress"><strong>{progress.completed}/{progress.total} công việc hoàn thành</strong><span>{progress.rate.toFixed(0)}%</span><div><i style={{ width: `${progress.rate}%` }} /></div></div>
-    {(progress.remaining > 0 || assignment.incompleteReason) && <Field label="Lý do chưa hoàn thành hết" required={!finalized && progress.remaining > 0}><textarea value={reason} disabled={finalized} maxLength={1000} onChange={(event) => setReason(event.target.value)} placeholder="Nhập lý do cụ thể trước khi gửi kết quả" /></Field>}
+    {(requiredRemaining > 0 || assignment.incompleteReason) && <Field label="Lý do chưa hoàn thành hết công việc bắt buộc" required={!finalized && requiredRemaining > 0}><textarea value={reason} disabled={finalized} maxLength={1000} onChange={(event) => setReason(event.target.value)} placeholder="Nhập lý do cụ thể trước khi gửi kết quả" /></Field>}
     {finalized
       ? <InfoNote>Hệ thống đã ghi nhận kết quả lúc <strong>{formatDateTime24(assignment.submittedAt)}</strong>.</InfoNote>
       : <div className="support-work-actions"><Button variant="outline" icon={Clock3} loading={busy === 'save'} disabled={Boolean(busy)} onClick={() => save(false)}>LƯU TIẾN ĐỘ</Button><Button icon={CheckCircle2} loading={busy === 'submit'} disabled={Boolean(busy)} onClick={() => save(true)}>GỬI KẾT QUẢ</Button></div>}
   </Card>
 }
 
-export function SupportAssignedWorkPage() {
+export function SupportWorkInboxPage() {
   const app = useApp()
   const [searchParams] = useSearchParams()
-  const [rewardDate, setRewardDate] = useState(today)
-  const [rewardBusyKey, setRewardBusyKey] = useState('')
-  const [rewardDraft, setRewardDraft] = useState({})
-  const [rewardAcknowledged, setRewardAcknowledged] = useState({})
   const requestedId = String(searchParams.get('assignment') || '')
   const employeeId = String(
     app.currentEmployee?.id
@@ -245,6 +363,45 @@ export function SupportAssignedWorkPage() {
   const assignments = (Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])
     .filter((assignment) => employeeId && String(assignment.employeeId) === employeeId)
     .toSorted((left, right) => String(right.date || right.assignedAt).localeCompare(String(left.date || left.assignedAt)))
+  const pendingAssignments = assignments.filter((assignment) => !assignment.submittedAt)
+  const completedTasks = assignments.reduce((sum, assignment) => sum + supportWorkProgress(assignment).completed, 0)
+  const totalTasks = assignments.reduce((sum, assignment) => sum + supportWorkProgress(assignment).total, 0)
+
+  const update = async (payload, validationMessage = '') => {
+    if (validationMessage) return app.notify?.(validationMessage, 'info')
+    if (typeof app.updateSupportWork !== 'function') return app.notify?.('Chức năng cập nhật công việc chưa sẵn sàng.', 'info')
+    const result = await app.updateSupportWork(payload)
+    if (result?.ok === false) app.notify?.(result.message || 'Không thể cập nhật công việc.', 'info')
+    return result
+  }
+
+  return <div className="page support-work-page support-work-inbox-page">
+    <PageHeader title="CÔNG VIỆC ĐƯỢC GIAO" subtitle="Tick công việc đã hoàn thành, nhập ghi chú cho từng việc và gửi kết quả tiến độ cho Admin." icon={ListChecks} />
+    <div className="metrics-grid metrics-grid--3">
+      <MetricCard label="LƯỢT VIỆC CHƯA GỬI" value={pendingAssignments.length} icon={Clock3} tone="orange" />
+      <MetricCard label="CÔNG VIỆC ĐÃ HOÀN THÀNH" value={completedTasks} icon={CheckCircle2} tone="green" />
+      <MetricCard label="TỔNG CÔNG VIỆC ĐƯỢC GIAO" value={totalTasks} icon={ListChecks} tone="blue" />
+    </div>
+    {assignments.length
+      ? <div className="support-assignment-list">{assignments.map((assignment) => <SupportAssignmentCard key={`${assignment.id}:${assignment.updatedAt || ''}`} assignment={assignment} highlighted={requestedId === String(assignment.id)} onUpdate={update} />)}</div>
+      : <Card><InfoNote>Admin chưa giao công việc cho tài khoản của bạn.</InfoNote></Card>}
+  </div>
+}
+
+export function SupportAssignedWorkPage() {
+  const app = useApp()
+  const [rewardDate, setRewardDate] = useState(today)
+  const [rewardBusyKey, setRewardBusyKey] = useState('')
+  const [rewardDraft, setRewardDraft] = useState({})
+  const [rewardAcknowledged, setRewardAcknowledged] = useState({})
+  const employeeId = String(
+    app.currentEmployee?.id
+    || app.currentEmployee?.code
+    || app.currentEmployee?.employeeId
+    || app.session?.employeeId
+    || app.session?.code
+    || '',
+  )
   const rewardRows = useMemo(() => workRewardRows({
     attendance: app.attendance,
     workCatalogProgress: app.workCatalogProgress,
@@ -340,14 +497,6 @@ export function SupportAssignedWorkPage() {
     }
   }
 
-  const update = async (payload, validationMessage = '') => {
-    if (validationMessage) return app.notify?.(validationMessage, 'info')
-    if (typeof app.updateSupportWork !== 'function') return app.notify?.('Chức năng cập nhật công việc chưa sẵn sàng.', 'info')
-    const result = await app.updateSupportWork(payload)
-    if (result?.ok === false) app.notify?.(result.message || 'Không thể cập nhật công việc.', 'info')
-    return result
-  }
-
   return <div className="page support-work-page compensation-page">
     <PageHeader title="CÔNG VIỆC TÍNH THƯỞNG" subtitle="Tick công việc đã hoàn thành khi ca còn mở; mức thưởng được lấy từ danh mục đã chụp tại lúc bắt đầu ca." icon={ListChecks} />
     <div className="metrics-grid metrics-grid--4">
@@ -392,10 +541,6 @@ export function SupportAssignedWorkPage() {
     </Card>
     <Card title="Lịch sử nhận thưởng theo ngày, theo tháng"><RewardHistoryTable rows={rewardRows} employees={app.employees} /></Card>
     <Card title="Thống kê nhận thưởng"><CompensationStatisticsGrid statistics={statistics} mode="reward" /></Card>
-    {assignments.length > 0 && <>
-      <h2 className="support-work-section-title">Công việc được giao trước đây</h2>
-      <div className="support-assignment-list">{assignments.map((assignment) => <SupportAssignmentCard key={`${assignment.id}:${assignment.updatedAt || ''}`} assignment={assignment} highlighted={requestedId === String(assignment.id)} onUpdate={update} />)}</div>
-    </>}
   </div>
 }
 

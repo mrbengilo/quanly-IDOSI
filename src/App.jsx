@@ -12,7 +12,7 @@ import { AttendanceResetPage } from './pages/admin/AttendanceResetPage'
 import { AdminWorkRegistrationSchedulePage } from './pages/admin/AdminWorkRegistrationSchedulePage'
 import { OrderInformationSettingsPage } from './pages/admin/OrderInformationSettingsPage'
 import { WorkCatalogSettingsPage } from './pages/admin/WorkCatalogSettingsPage'
-import { AdminSupportWorkPage, SupportAssignedWorkPage } from './pages/admin/SupportWorkPages'
+import { AdminSupportAssignmentPage, AdminSupportWorkPage, SupportAssignedWorkPage, SupportWorkInboxPage } from './pages/admin/SupportWorkPages'
 import { BusinessSupportSchedulePage, MyBusinessSupportSchedulePage } from './pages/admin/BusinessSupportSchedulePage'
 import {
   AdminCashflowV2,
@@ -209,6 +209,7 @@ export default function App() {
         <Route path="/support/overview" element={<OfficeEmployeeDashboard />} />
         <Route path="/support/attendance" element={<Navigate to="/support/overview" replace />} />
         <Route path="/support/tasks" element={<SupportAssignedWorkPage />} />
+        <Route path="/support/assigned-work" element={<SupportWorkInboxPage />} />
         <Route path="/support/my-schedule" element={<MyBusinessSupportSchedulePage />} />
         <Route path="/support/my-compensation" element={<MyCompensationPage />} />
         <Route path="/support/my-violations" element={<MyViolationsPage />} />
@@ -216,6 +217,7 @@ export default function App() {
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/admin/tasks" element={<AdminSupportRewardViolationPage />} />
+        <Route path="/admin/assignments" element={<AdminSupportAssignmentPage />} />
         <Route path="/admin/reset" element={<AttendanceResetPage />} />
         <Route path="/admin/work-registration-schedules" element={<AdminWorkRegistrationSchedulePage />} />
         <Route path="/admin/violations/business-support" element={<ViolationManagementPage targetUnit="business_support" />} />
@@ -224,6 +226,7 @@ export default function App() {
       <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
         <Route path="/employee/home" element={<EmployeeHomePage />} />
         <Route path="/employee/tasks" element={<EmployeeTasksRoute />} />
+        <Route path="/employee/assigned-work" element={<SupportWorkInboxPage />} />
         <Route path="/employee/reward-tasks" element={<StoreEmployeeRoute><SupportAssignedWorkPage /></StoreEmployeeRoute>} />
         <Route path="/employee/shift-expenses" element={<StoreEmployeeRoute><EmployeeShiftExpensePage /></StoreEmployeeRoute>} />
         <Route path="/employee/orders" element={<StoreEmployeeRoute><EmployeeOrdersPage /></StoreEmployeeRoute>} />

@@ -163,10 +163,12 @@ Các lệnh chính:
   canonical là `supportWorkAssignments[]`; mỗi lượt có metrics, trạng thái,
   `assignedAt`, `updatedAt`, `submittedAt` và `history[]` đầy đủ task/timestamp.
   Server đồng thời tạo notification `support-work-assigned` trỏ tới
-  `/support/tasks` hoặc `/employee/tasks` chỉ cho đúng nhân viên.
+  `/support/assigned-work` hoặc `/employee/assigned-work` chỉ cho đúng nhân viên.
 - `support_work.update`: chỉ nhân viên Hỗ trợ KD/Khối văn phòng của chính lượt được giao, payload
-  `{assignmentId,tasks:[{id,completed}],submit?,incompleteReason?}`. Khi
-  `submit:true` mà còn item chưa hoàn thành, `incompleteReason` là bắt buộc;
+  `{assignmentId,tasks:[{id,completed,note?}],submit?,incompleteReason?}`. Thuộc tính
+  `note` có thể rỗng để xóa ghi chú; nếu client cũ không gửi thuộc tính này thì server
+  giữ nguyên ghi chú đã lưu. Khi `submit:true` mà còn công việc bắt buộc
+  chưa hoàn thành, `incompleteReason` là bắt buộc;
   lượt đã submit bị khóa. Server lưu timestamp người tick, lịch sử đầy đủ và
   thông báo Admin khi gửi kết quả. `supportWorkAssignments` là collection được
   bảo vệ, không thể sửa qua `state.merge|replace`.

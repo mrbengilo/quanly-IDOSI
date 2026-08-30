@@ -22,9 +22,9 @@ const baseNotifications = [
   { id: 'N1', storeId: 'CH001', title: 'Don moi 1' },
   { id: 'N2', storeId: 'CH001', title: 'Don moi 2' },
   { id: 'N3', storeId: 'CH002', orderId: 'ORDER-CH002', title: 'Don moi cua hang 2' },
-  { id: 'N4', type: 'support-work-assigned', employeeId: 'HTKD001', assignmentId: 'SWA-1', route: '/support/tasks?assignment=SWA-1', title: 'Cong viec cua toi' },
-  { id: 'N5', type: 'support-work-assigned', employeeId: 'HTKD002', assignmentId: 'SWA-2', route: '/support/tasks?assignment=SWA-2', title: 'Cong viec nguoi khac' },
-  { id: 'N6', type: 'support-work-submitted', assignmentId: 'SWA-3', route: '/admin/support-employees', title: 'Ho tro KD da gui ket qua' },
+  { id: 'N4', type: 'support-work-assigned', employeeId: 'HTKD001', assignmentId: 'SWA-1', route: '/support/assigned-work', title: 'Cong viec cua toi' },
+  { id: 'N5', type: 'support-work-assigned', employeeId: 'HTKD002', assignmentId: 'SWA-2', route: '/support/assigned-work', title: 'Cong viec nguoi khac' },
+  { id: 'N6', type: 'support-work-submitted', assignmentId: 'SWA-3', route: '/admin/assignments?unit=business_support&assignment=SWA-3', title: 'Ho tro KD da gui ket qua' },
   { id: 'N7', type: 'store-task-assigned', storeId: 'CH001', employeeId: 'E01', assignmentId: 'TSA-1', route: '/employee/home', title: 'Viec ca tuong lai' },
 ]
 
@@ -225,6 +225,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.getByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i }).getAttribute('href')).toBe('/admin/work-registration-schedules')
+    expect(screen.getByRole('link', { name: /^Giao việc$/i }).getAttribute('href')).toBe('/admin/assignments')
     expect(screen.getByRole('link', { name: /Công việc tính thưởng & Vi phạm HTKD/i }).getAttribute('href')).toBe('/admin/tasks')
     expect(screen.queryByRole('link', { name: /^Vi phạm HTKD$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Vi phạm nhân viên$/i })).toBeNull()
@@ -246,6 +247,7 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /^Nhân viên quản lý cửa hàng$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Điều chuyển nhân sự$/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Công việc tính thưởng/i }).getAttribute('href')).toBe('/support/tasks')
+    expect(screen.getByRole('link', { name: /Công việc được giao/i }).getAttribute('href')).toBe('/support/assigned-work')
     expect(screen.getByRole('link', { name: /Lịch sử chỉnh sửa đơn hàng/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Cài đặt$/i })).toBeNull()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
@@ -258,7 +260,7 @@ describe('AppShell notifications', () => {
     expect(screen.queryByRole('link', { name: /^Thưởng doanh thu ngày$/i })).toBeNull()
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
     expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('span')?.textContent)).toEqual([
-      'Tổng quan', 'Công việc tính thưởng', 'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
+      'Tổng quan', 'Công việc tính thưởng', 'Công việc được giao', 'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
       'Danh sách nhân viên cửa hàng', 'Nhân viên quản lý cửa hàng', 'Dòng tiền', 'Báo cáo',
       'Cài đặt thông tin đơn hàng', 'Danh mục công việc & vi phạm', 'Khảo sát thông tin KH', 'Thưởng và phụ cấp quản lý',
@@ -310,7 +312,7 @@ describe('AppShell notifications', () => {
 
     expect(screen.getByRole('link', { name: 'Lịch làm việc của tôi' }).getAttribute('href')).toBe('/employee/schedule')
     expect(screen.getByRole('link', { name: 'Công việc tính thưởng' }).getAttribute('href')).toBe('/employee/tasks')
-    expect(screen.queryByRole('link', { name: 'Công việc được giao' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Công việc được giao' }).getAttribute('href')).toBe('/employee/assigned-work')
     expect(screen.queryByRole('link', { name: 'Lịch phân ca' })).toBeNull()
   })
 
@@ -326,16 +328,35 @@ describe('AppShell notifications', () => {
   it('shows a support-work notification only to its assigned support employee', async () => {
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001', code: 'HTKD001' }
     mocked.readNotification.mockResolvedValue({ ok: true })
-    render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
+    render(<MemoryRouter initialEntries={['/support/overview']}><Routes>
+      <Route element={<AppShell />}><Route path="*" element={<CurrentRoute />} /></Route>
+    </Routes></MemoryRouter>)
 
     fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
     expect(screen.getAllByText('Cong viec cua toi').length).toBeGreaterThan(0)
     expect(screen.queryByText('Cong viec nguoi khac')).toBeNull()
     fireEvent.click(screen.getAllByText('Cong viec cua toi').find((node) => node.closest('.notification-item')).closest('.notification-item'))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/assigned-work?assignment=SWA-1'))
     await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N4'))
   })
 
-  it('normalizes a submitted-work notification to the existing Admin support route', async () => {
+  it('keeps Admin-only submission notifications out of the employee inbox', () => {
+    mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001', code: 'HTKD001' }
+    mocked.notifications = [{
+      id: 'N-ADMIN-ONLY',
+      type: 'support-work-submitted',
+      targetRole: 'admin',
+      audienceRoles: ['admin'],
+      route: '/admin/assignments?unit=business_support&assignment=SWA-ADMIN',
+      title: 'Kết quả chỉ dành cho Admin',
+    }]
+    render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
+
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    expect(screen.queryByText('Kết quả chỉ dành cho Admin')).toBeNull()
+  })
+
+  it('opens a submitted-work notification in the Admin assignment history', async () => {
     mocked.readNotification.mockResolvedValue({ ok: true })
     render(
       <MemoryRouter initialEntries={['/admin/overview']}>
@@ -350,7 +371,7 @@ describe('AppShell notifications', () => {
     fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
     fireEvent.click(screen.getByText('Ho tro KD da gui ket qua'))
 
-    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/business-support'))
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/assignments?unit=business_support&assignment=SWA-3'))
     expect(mocked.readNotification).toHaveBeenCalledWith('N6')
   })
 

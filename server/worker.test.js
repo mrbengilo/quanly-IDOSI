@@ -6556,7 +6556,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(assignedBody).toMatchObject({
       version: 5,
       assignment: { employeeId: 'HTKD-001', totalTasks: 2, completionRate: 0, status: 'assigned' },
-      notification: { type: 'support-work-assigned', employeeId: 'HTKD-001', route: '/support/tasks' },
+      notification: { type: 'support-work-assigned', employeeId: 'HTKD-001', route: '/support/assigned-work' },
     })
     const assignmentId = assignedBody.assignment.id
 
@@ -6627,32 +6627,83 @@ describe('IDOSI Worker security primitives', () => {
     expect(missingReason.status).toBe(400)
     expect(await missingReason.json()).toMatchObject({ error: { code: 'SUPPORT_WORK_REASON_REQUIRED' } })
 
-    const submitted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    const noteTooLong = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'support_work.update', expectedVersion: 7,
       payload: {
         assignmentId,
-        tasks: [{ id: 'WORK-01', completed: true }, { id: 'WORK-02', completed: false }],
+        tasks: [{ id: 'WORK-01', completed: false, note: 'x'.repeat(1_001) }],
+        submit: false,
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-work-note-too-long-0001' }), env)
+    expect(noteTooLong.status).toBe(400)
+    expect(await noteTooLong.json()).toMatchObject({ error: { code: 'SUPPORT_WORK_TASK_NOTE_INVALID' } })
+
+    const notesSaved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.update', expectedVersion: 7,
+      payload: {
+        assignmentId,
+        tasks: [
+          { id: 'WORK-01', completed: false, note: 'Đã đối chiếu và khớp số liệu.' },
+          { id: 'WORK-02', completed: false, note: 'Đã liên hệ, cửa hàng đang kiểm tra.' },
+        ],
+        submit: false,
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-work-save-notes-0001' }), env)
+    expect(notesSaved.status).toBe(200)
+    expect(await notesSaved.json()).toMatchObject({
+      version: 8,
+      assignment: {
+        tasks: [
+          expect.objectContaining({ id: 'WORK-01', employeeNote: 'Đã đối chiếu và khớp số liệu.' }),
+          expect.objectContaining({ id: 'WORK-02', employeeNote: 'Đã liên hệ, cửa hàng đang kiểm tra.' }),
+        ],
+      },
+    })
+
+    const legacyCompletionOnly = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.update', expectedVersion: 8,
+      payload: { assignmentId, tasks: [{ id: 'WORK-01', completed: true }], submit: false },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-work-legacy-completion-only-0001' }), env)
+    expect(legacyCompletionOnly.status).toBe(200)
+    expect(await legacyCompletionOnly.json()).toMatchObject({
+      version: 9,
+      assignment: {
+        tasks: [
+          expect.objectContaining({ id: 'WORK-01', completed: true, employeeNote: 'Đã đối chiếu và khớp số liệu.' }),
+          expect.objectContaining({ id: 'WORK-02', employeeNote: 'Đã liên hệ, cửa hàng đang kiểm tra.' }),
+        ],
+      },
+    })
+
+    const submitted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_work.update', expectedVersion: 9,
+      payload: {
+        assignmentId,
+        tasks: [
+          { id: 'WORK-01', completed: true, note: 'Đã đối chiếu và khớp số liệu.' },
+          { id: 'WORK-02', completed: false, note: 'Đã liên hệ, cửa hàng đang kiểm tra.' },
+        ],
         submit: true,
         incompleteReason: 'Cửa hàng chưa phản hồi tồn kho.',
       },
     }, { ...supportAuthorization, 'idempotency-key': 'support-work-submit-0001' }), env)
     expect(submitted.status).toBe(200)
     expect(await submitted.json()).toMatchObject({
-      version: 8,
+      version: 10,
       assignment: {
         id: assignmentId, status: 'incomplete', completedTasks: 1, totalTasks: 2,
         completionRate: 50, incompleteReason: 'Cửa hàng chưa phản hồi tồn kho.',
         submittedAt: expect.any(String),
       },
-      notification: { type: 'support-work-submitted', route: '/admin/tasks' },
+      notification: { type: 'support-work-submitted', route: `/admin/assignments?unit=business_support&assignment=${assignmentId}` },
     })
 
     const orderDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'order.delete', expectedVersion: 8,
+      type: 'order.delete', expectedVersion: 10,
       payload: { orderId: 'ORDER-SUPPORT-01', reason: 'Đơn hàng nhập trùng' },
     }, { ...supportAuthorization, 'idempotency-key': 'support-order-delete-0001' }), env)
     expect(orderDeleted.status).toBe(200)
-    expect(await orderDeleted.json()).toMatchObject({ version: 9, order: { status: 'Đã xóa' } })
+    expect(await orderDeleted.json()).toMatchObject({ version: 11, order: { status: 'Đã xóa' } })
 
     const supportAudit = await worker.fetch(new Request('https://idosi.example/api/audit?limit=100', {
       headers: supportAuthorization,
@@ -6665,7 +6716,11 @@ describe('IDOSI Worker security primitives', () => {
     const completedAssignment = adminState.supportWorkAssignments.find((record) => record.id === assignmentId)
     expect(completedAssignment).toMatchObject({
       id: assignmentId, employeeId: 'HTKD-001', status: 'incomplete', completionRate: 50,
-      history: [
+      tasks: [
+        expect.objectContaining({ id: 'WORK-01', completed: true, employeeNote: 'Đã đối chiếu và khớp số liệu.' }),
+        expect.objectContaining({ id: 'WORK-02', completed: false, employeeNote: 'Đã liên hệ, cửa hàng đang kiểm tra.' }),
+      ],
+      history: expect.arrayContaining([
         expect.objectContaining({
           action: 'assigned', at: expect.any(String),
           details: {
@@ -6676,8 +6731,26 @@ describe('IDOSI Worker security primitives', () => {
             ]),
           },
         }),
-        expect.objectContaining({ action: 'submitted', at: expect.any(String) }),
-      ],
+        expect.objectContaining({
+          action: 'submitted', at: expect.any(String),
+          details: {
+            changedTaskIds: [],
+            totalTasks: 2,
+            completedTasks: 1,
+            completionRate: 50,
+            requiredTasks: 2,
+            completedRequiredTasks: 1,
+            incompleteRequiredTasks: 1,
+            rewardTasks: 0,
+            completedRewardTasks: 0,
+            incompleteReason: 'Cửa hàng chưa phản hồi tồn kho.',
+            tasks: [
+              expect.objectContaining({ id: 'WORK-01', employeeNote: 'Đã đối chiếu và khớp số liệu.' }),
+              expect.objectContaining({ id: 'WORK-02', employeeNote: 'Đã liên hệ, cửa hàng đang kiểm tra.' }),
+            ],
+          },
+        }),
+      ]),
     })
   })
 
@@ -7156,7 +7229,7 @@ describe('IDOSI Worker security primitives', () => {
       version: 3,
       assignment: { targetUnit: 'office', employeeId: 'VP-002', totalTasks: 1 },
       notification: {
-        type: 'support-work-assigned', targetUnit: 'office', storeId: 'OFFICE', route: '/employee/tasks',
+        type: 'support-work-assigned', targetUnit: 'office', storeId: 'OFFICE', route: '/employee/assigned-work',
       },
     })
     const officeState = (await (await worker.fetch(new Request('https://idosi.example/api/state', {
@@ -7170,15 +7243,21 @@ describe('IDOSI Worker security primitives', () => {
       type: 'support_work.update', expectedVersion: 3,
       payload: {
         assignmentId: officeWorkBody.assignment.id,
-        tasks: [{ id: 'OFFICE-WORK-01', completed: true }],
+        tasks: [{ id: 'OFFICE-WORK-01', completed: true, note: 'Đã đối chiếu đủ chứng từ.' }],
         submit: true,
       },
     }, { ...officeAuthorization, 'idempotency-key': 'office-work-submit-0001' }), env)
     expect(officeWorkSubmitted.status).toBe(200)
     expect(await officeWorkSubmitted.json()).toMatchObject({
       version: 4,
-      assignment: { targetUnit: 'office', employeeId: 'VP-002', status: 'completed' },
-      notification: { type: 'support-work-submitted', storeId: 'OFFICE', route: '/admin/tasks' },
+      assignment: {
+        targetUnit: 'office', employeeId: 'VP-002', status: 'completed',
+        tasks: [expect.objectContaining({ id: 'OFFICE-WORK-01', employeeNote: 'Đã đối chiếu đủ chứng từ.' })],
+      },
+      notification: {
+        type: 'support-work-submitted', storeId: 'OFFICE',
+        route: `/admin/assignments?unit=office&assignment=${officeWorkBody.assignment.id}`,
+      },
     })
   })
 

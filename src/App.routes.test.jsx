@@ -30,8 +30,10 @@ vi.mock('./pages/admin/AdminWorkRegistrationSchedulePage', () => ({
 }))
 
 vi.mock('./pages/admin/SupportWorkPages', () => ({
+  AdminSupportAssignmentPage: () => <div>Giao việc Admin route</div>,
   AdminSupportWorkPage: () => <div>Công việc tính thưởng HTKD route</div>,
   SupportAssignedWorkPage: () => <div>Công việc tính thưởng của tôi route</div>,
+  SupportWorkInboxPage: () => <div>Công việc được giao route</div>,
 }))
 
 vi.mock('./pages/admin/SystemFinanceV2', () => ({
@@ -93,6 +95,29 @@ describe('App role routes', () => {
 
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
     expect(screen.queryByText('Lịch đăng ký HTKD và KVP route')).toBeNull()
+  })
+
+  it('exposes the manual assignment screen to Admin', () => {
+    renderRoute('/admin/assignments', 'admin')
+
+    expect(screen.getByText('Giao việc Admin route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/admin/assignments')
+  })
+
+  it('exposes the dedicated assigned-work inbox to HTKD', () => {
+    renderRoute('/support/assigned-work', 'business_support')
+
+    expect(screen.getByText('Công việc được giao route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/support/assigned-work')
+  })
+
+  it('exposes the dedicated assigned-work inbox to Office employees', () => {
+    mocked.session = { role: 'employee', name: 'Nhân viên văn phòng', employeeId: 'VP-001' }
+    mocked.currentEmployee = { id: 'VP-001', unit: 'office' }
+    render(<MemoryRouter initialEntries={['/employee/assigned-work']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(screen.getByText('Công việc được giao route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/employee/assigned-work')
   })
 
   it('does not expose the removed working-time settings through a direct URL', async () => {
