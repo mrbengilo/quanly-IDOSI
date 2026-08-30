@@ -1,7 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AdminSupportWorkPage, SupportAssignedWorkPage } from './SupportWorkPages'
+import {
+  AdminSupportAssignmentPage,
+  AdminSupportWorkPage,
+  SupportAssignedWorkPage,
+  SupportWorkInboxPage,
+} from './SupportWorkPages'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
@@ -173,13 +178,76 @@ describe('support work screens', () => {
     expect(picker.textContent).not.toContain(officeFixedTask.name)
   })
 
-  it('requires a reason before submitting an incomplete assignment', async () => {
+  it('lets Admin enter multiple manual tasks and sends them once to the employee selected in each tab', async () => {
+    render(<MemoryRouter><AdminSupportAssignmentPage /></MemoryRouter>)
+
+    expect(screen.getByRole('tab', { name: 'HTKD' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.change(screen.getByLabelText('Nhân viên nhận việc'), { target: { value: 'HTKD-001' } })
+    fireEvent.change(screen.getByLabelText('Công việc 1'), { target: { value: 'Kiểm tra doanh thu' } })
+    fireEvent.click(screen.getByRole('button', { name: /Thêm công việc/i }))
+    fireEvent.change(screen.getByLabelText('Công việc 2'), { target: { value: 'Đối soát báo cáo cuối ngày' } })
+    fireEvent.click(screen.getByRole('button', { name: /^LƯU$/i }))
+
+    await waitFor(() => expect(mocked.app.assignSupportWork).toHaveBeenCalledTimes(1))
+    expect(mocked.app.assignSupportWork).toHaveBeenLastCalledWith(expect.objectContaining({
+      employeeId: 'HTKD-001',
+      targetUnit: 'business_support',
+      tasks: [
+        expect.objectContaining({ name: 'Kiểm tra doanh thu', required: true }),
+        expect.objectContaining({ name: 'Đối soát báo cáo cuối ngày', required: true }),
+      ],
+    }))
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Khối văn phòng' }))
+    expect(screen.getByRole('tab', { name: 'Khối văn phòng' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('option', { name: /Nguyễn Văn Phòng/i })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: /Nguyễn Hỗ Trợ/i })).toBeNull()
+  })
+
+  it('preserves the unsaved Admin draft when the active assignment tab is clicked again', () => {
+    render(<MemoryRouter initialEntries={['/admin/assignments?unit=business_support']}><AdminSupportAssignmentPage /></MemoryRouter>)
+
+    fireEvent.change(screen.getByLabelText('Nhân viên nhận việc'), { target: { value: 'HTKD-001' } })
+    fireEvent.change(screen.getByLabelText('Công việc 1'), { target: { value: 'Bản nháp cần giữ nguyên' } })
+    fireEvent.click(screen.getByRole('tab', { name: 'HTKD' }))
+
+    expect(screen.getByLabelText('Nhân viên nhận việc').value).toBe('HTKD-001')
+    expect(screen.getByLabelText('Công việc 1').value).toBe('Bản nháp cần giữ nguyên')
+    expect(screen.getByRole('button', { name: /^LƯU$/i }).disabled).toBe(false)
+  })
+
+  it('synchronizes the visible Admin tab when a notification changes query params on the mounted route', async () => {
+    function AssignmentRouteHarness() {
+      const navigate = useNavigate()
+      return <>
+        <button type="button" onClick={() => navigate('/admin/assignments?unit=office&assignment=SWA-OFFICE')}>Mở kết quả Khối văn phòng</button>
+        <AdminSupportAssignmentPage />
+      </>
+    }
+
+    render(<MemoryRouter initialEntries={['/admin/assignments?unit=business_support']}><AssignmentRouteHarness /></MemoryRouter>)
+    expect(screen.getByRole('tab', { name: 'HTKD' }).getAttribute('aria-selected')).toBe('true')
+    fireEvent.change(screen.getByLabelText('Nhân viên nhận việc'), { target: { value: 'HTKD-001' } })
+    fireEvent.change(screen.getByLabelText('Công việc 1'), { target: { value: 'Bản nháp HTKD không được mang sang' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mở kết quả Khối văn phòng' }))
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Khối văn phòng' }).getAttribute('aria-selected')).toBe('true'))
+    expect(screen.getByRole('option', { name: /Nguyễn Văn Phòng/i })).toBeTruthy()
+    expect(screen.getByLabelText('Nhân viên nhận việc').value).toBe('')
+    expect(screen.getByLabelText('Công việc 1').value).toBe('')
+    expect(screen.getByRole('button', { name: /^LƯU$/i }).disabled).toBe(true)
+  })
+
+  it('records every per-task note and requires a reason before submitting an incomplete assignment', async () => {
     mocked.app.session = { role: 'business_support', employeeId: 'HTKD-001', code: 'HTKD-001', name: 'Nguyễn Hỗ Trợ' }
     mocked.app.supportWorkAssignments = [{
       id: 'SWA-1', date: '2026-08-18', employeeId: 'HTKD-001', status: 'assigned', assignedAt: '2026-08-18T08:00:00+07:00', updatedAt: '2026-08-18T08:00:00+07:00',
       tasks: [{ id: 'T1', name: 'Việc một', description: 'Mô tả', completed: false }],
     }]
-    render(<MemoryRouter><SupportAssignedWorkPage /></MemoryRouter>)
+    render(<MemoryRouter><SupportWorkInboxPage /></MemoryRouter>)
+
+    fireEvent.change(screen.getByLabelText('Ghi chú công việc 1'), { target: { value: 'Đã kiểm tra, đang chờ phản hồi' } })
 
     fireEvent.click(screen.getByRole('button', { name: /GỬI KẾT QUẢ/i }))
     expect(mocked.app.notify).toHaveBeenCalledWith(expect.stringMatching(/nhập lý do/i), 'info')
@@ -189,10 +257,11 @@ describe('support work screens', () => {
     fireEvent.click(screen.getByRole('button', { name: /GỬI KẾT QUẢ/i }))
     await waitFor(() => expect(mocked.app.updateSupportWork).toHaveBeenCalledWith({
       assignmentId: 'SWA-1',
-      tasks: [{ id: 'T1', completed: false }],
+      tasks: [{ id: 'T1', completed: false, note: 'Đã kiểm tra, đang chờ phản hồi' }],
       submit: true,
       incompleteReason: 'Chờ cửa hàng phản hồi',
     }))
+    expect(mocked.app.updateSupportWork).toHaveBeenCalledTimes(1)
   })
 
   it('ticks only reward tasks from an open attendance snapshot with the trusted command contract', async () => {

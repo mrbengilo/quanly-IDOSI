@@ -2492,7 +2492,7 @@ export function AppProvider({ children }) {
       assignmentId: assignment.id,
       targetUnit,
       storeId: targetUnit === 'office' ? 'OFFICE' : 'BUSINESS_SUPPORT',
-      route: `${targetUnit === 'office' ? '/employee/tasks' : '/support/tasks'}?assignment=${encodeURIComponent(assignment.id)}`,
+      route: `${targetUnit === 'office' ? '/employee/assigned-work' : '/support/assigned-work'}?assignment=${encodeURIComponent(assignment.id)}`,
       title: `Công việc mới ngày ${date}`,
       message: `Admin đã giao ${tasks.length} công việc cho bạn.`,
       createdAt: timestamp,
@@ -2517,28 +2517,48 @@ export function AppProvider({ children }) {
     const assignment = (state.supportWorkAssignments || []).find((item) => String(item.id) === assignmentId)
     const employeeId = String(state.session?.employeeId || state.session?.code || '')
     if (!assignment || String(assignment.employeeId) !== employeeId) return { ok: false, message: 'Không tìm thấy công việc thuộc tài khoản này.' }
-    const completedById = new Map((Array.isArray(payload.tasks) ? payload.tasks : []).map((task) => [String(task.id), Boolean(task.completed)]))
+    if ((assignment.targetUnit === 'office') !== officeEmployee) return { ok: false, message: 'Nhóm tài khoản không khớp với lượt giao việc.' }
+    if (assignment.submittedAt) return { ok: false, message: 'Kết quả công việc đã được gửi và không thể thay đổi.' }
+    const progressById = new Map((Array.isArray(payload.tasks) ? payload.tasks : []).map((task) => {
+      const noteProvided = Object.prototype.hasOwnProperty.call(task || {}, 'note')
+        || Object.prototype.hasOwnProperty.call(task || {}, 'employeeNote')
+      return [String(task.id), {
+        completed: Boolean(task.completed),
+        note: noteProvided ? String(task.note ?? task.employeeNote ?? '').trim() : '',
+        noteProvided,
+      }]
+    }))
+    if ([...progressById.values()].some((task) => task.note.length > 1_000)) {
+      return { ok: false, message: 'Ghi chú của từng công việc không được vượt quá 1.000 ký tự.' }
+    }
     const timestamp = new Date().toISOString()
     const nextTasks = (assignment.tasks || []).map((task) => {
-      if (!completedById.has(String(task.id))) return task
-      const completed = completedById.get(String(task.id))
+      if (!progressById.has(String(task.id))) return task
+      const progress = progressById.get(String(task.id))
+      const completed = progress.completed
       return {
         ...task,
         completed,
+        employeeNote: progress.noteProvided ? progress.note : String(task.employeeNote || ''),
         completedAt: completed ? task.completedAt || timestamp : null,
         completedBy: completed ? state.session?.name || employeeId : null,
       }
     })
-    const incomplete = nextTasks.some((task) => !task.completed)
+    const incompleteRequired = nextTasks.some((task) => {
+      if (task.completed) return false
+      if (task.required === true) return true
+      if (task.required === false) return false
+      return String(task.kind || task.catalogKind || task.catalogSnapshot?.kind || '').trim().toUpperCase() !== 'REWARD_TASK'
+    })
     const reason = String(payload.incompleteReason || '').trim()
-    if (payload.submit && incomplete && !reason) return { ok: false, message: 'Vui lòng nhập lý do khi chưa hoàn thành hết công việc.' }
+    if (payload.submit && incompleteRequired && !reason) return { ok: false, message: 'Vui lòng nhập lý do khi chưa hoàn thành hết công việc bắt buộc.' }
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('support_work.update', {
           assignmentId,
-          tasks: nextTasks.map((task) => ({ id: task.id, completed: Boolean(task.completed) })),
+          tasks: nextTasks.map((task) => ({ id: task.id, completed: Boolean(task.completed), note: String(task.employeeNote || '') })),
           submit: Boolean(payload.submit),
-          incompleteReason: incomplete ? reason : '',
+          incompleteReason: incompleteRequired ? reason : '',
         })
         notify(payload.submit ? 'Đã gửi kết quả công việc.' : 'Đã lưu tiến độ công việc.')
         return { ok: true, assignment: result.assignment }
@@ -2551,19 +2571,39 @@ export function AppProvider({ children }) {
     const updated = {
       ...assignment,
       tasks: nextTasks,
-      status: payload.submit ? (incomplete ? 'incomplete' : 'completed') : nextTasks.some((task) => task.completed) ? 'in_progress' : 'assigned',
-      incompleteReason: incomplete ? reason : '',
+      status: payload.submit ? (incompleteRequired ? 'incomplete' : 'completed') : nextTasks.some((task) => task.completed) ? 'in_progress' : 'assigned',
+      incompleteReason: incompleteRequired ? reason : '',
       updatedAt: timestamp,
       submittedAt: payload.submit ? timestamp : assignment.submittedAt || null,
-      history: [...(assignment.history || []), { action: payload.submit ? 'Gửi kết quả' : 'Lưu tiến độ', at: timestamp, actor }],
+      history: [...(assignment.history || []), {
+        action: payload.submit ? 'Gửi kết quả' : 'Lưu tiến độ',
+        at: timestamp,
+        actor,
+        details: { tasks: nextTasks.map((task) => ({ id: task.id, name: task.name, completed: task.completed, employeeNote: task.employeeNote })) },
+      }],
     }
+    const notification = payload.submit ? {
+      id: uid('NTF'),
+      type: 'support-work-submitted',
+      targetRole: 'admin',
+      audienceRoles: ['admin'],
+      assignmentId: assignment.id,
+      targetUnit: assignment.targetUnit,
+      storeId: assignment.targetUnit === 'office' ? 'OFFICE' : 'BUSINESS_SUPPORT',
+      route: `/admin/assignments?unit=${assignment.targetUnit === 'office' ? 'office' : 'business_support'}&assignment=${encodeURIComponent(assignment.id)}`,
+      title: assignment.targetUnit === 'office' ? 'Nhân viên Khối văn phòng đã gửi kết quả công việc' : 'Hỗ trợ KD đã gửi kết quả công việc',
+      message: `${assignment.employeeName || employeeId} hoàn thành ${nextTasks.filter((task) => task.completed).length}/${nextTasks.length} công việc ngày ${assignment.date}.`,
+      createdAt: timestamp,
+      readAt: null,
+    } : null
     setState((current) => ({
       ...current,
       supportWorkAssignments: (current.supportWorkAssignments || []).map((item) => item.id === assignment.id ? updated : item),
+      notifications: notification ? [notification, ...(current.notifications || [])] : current.notifications,
       stateVersion: current.stateVersion + 1,
     }))
     notify(payload.submit ? 'Đã gửi kết quả công việc.' : 'Đã lưu tiến độ công việc.')
-    return { ok: true, assignment: updated }
+    return { ok: true, assignment: updated, ...(notification ? { notification } : {}) }
   }
 
   const saveBusinessSupportSchedule = async (payload = {}) => {

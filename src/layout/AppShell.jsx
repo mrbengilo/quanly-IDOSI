@@ -15,6 +15,7 @@ import {
   ClipboardList,
   Clock3,
   LayoutDashboard,
+  ListChecks,
   LogOut,
   Menu,
   PackagePlus,
@@ -68,10 +69,12 @@ const customerSurveyOperation = { label: 'Khảo sát thông tin KH', path: '/ad
 const orderInformationSettingsOperation = { label: 'Cài đặt thông tin đơn hàng', path: '/admin/order-information-settings', icon: Settings }
 const workCatalogSettingsOperation = { label: 'Danh mục công việc & vi phạm', path: '/admin/work-catalog', icon: ClipboardList }
 const workRegistrationScheduleOperation = { label: 'Lịch đăng ký làm việc của HTKD và KVP', path: '/admin/work-registration-schedules', icon: CalendarCheck }
+const adminAssignmentOperation = { label: 'Giao việc', path: '/admin/assignments', icon: ClipboardCheck }
 
 const officeEmployeeMenu = [
   { label: 'Trang chủ', path: '/employee/home', icon: LayoutDashboard },
   { label: 'Công việc tính thưởng', path: '/employee/tasks', icon: ClipboardCheck },
+  { label: 'Công việc được giao', path: '/employee/assigned-work', icon: ListChecks },
   { label: 'Chấm công', path: '/employee/attendance', icon: Clock3 },
   { label: 'Lịch làm việc của tôi', path: '/employee/schedule', icon: CalendarCheck },
   { label: 'Bảng lương', path: '/employee/payroll', icon: WalletCards },
@@ -83,6 +86,7 @@ const officeEmployeeMenu = [
 const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
   { label: 'Công việc tính thưởng', path: '/support/tasks', icon: ClipboardCheck },
+  { label: 'Công việc được giao', path: '/support/assigned-work', icon: ListChecks },
   { label: 'Lịch làm việc của tôi', path: '/support/my-schedule', icon: CalendarCheck },
   { label: 'Thu nhập của tôi', path: '/support/my-compensation', icon: WalletCards },
   { label: 'Vi phạm của tôi', path: '/support/my-violations', icon: ShieldAlert },
@@ -110,6 +114,7 @@ const systemMenus = {
     businessSupportDirectoryOperation,
     businessSupportScheduleOperation,
     workRegistrationScheduleOperation,
+    adminAssignmentOperation,
     { label: 'Công việc tính thưởng & Vi phạm HTKD', path: '/admin/tasks', icon: ClipboardCheck },
     { label: 'Nhân viên quản lý cửa hàng', path: '/admin/store-managers', icon: Store },
     officeOperation,
@@ -229,10 +234,12 @@ export default function AppShell() {
   const unreadNotifications = useMemo(() => notificationItems.filter((item) => {
     const targetEmployeeId = String(item?.targetEmployeeId || item?.target?.employeeId || item?.data?.employeeId || (['support-work-assigned', 'store-task-assigned'].includes(item?.type) ? item?.employeeId : '') || '')
     const targetRole = String(item?.targetRole || item?.target?.role || '')
+    const audienceRoles = Array.isArray(item?.audienceRoles) ? item.audienceRoles.map((role) => String(role)) : []
     const belongsToAccount = targetEmployeeId
       ? (!isAdmin && targetEmployeeId === sessionEmployeeId)
       : true
     return (!targetRole || targetRole === canonicalRole)
+    && (!audienceRoles.length || audienceRoles.includes(canonicalRole))
     && belongsToAccount
     && (!scopedNotificationStoreId || !item?.storeId || String(item.storeId) === String(scopedNotificationStoreId))
     && !item?.read
@@ -365,10 +372,10 @@ export default function AppShell() {
       : ''
     const destination = item?.type === 'store-task-assigned'
       ? `/employee/tasks?assignment=${encodeURIComponent(assignmentId || '')}`
-      : assignmentId && (item?.targetUnit === 'office' || item?.data?.targetUnit === 'office')
-      ? `/employee/tasks?assignment=${encodeURIComponent(assignmentId)}`
-      : assignmentId && (!explicitDestination || String(explicitDestination).startsWith('/support/tasks'))
-      ? `/support/tasks?assignment=${encodeURIComponent(assignmentId)}`
+      : item?.type === 'support-work-assigned' && assignmentId && (item?.targetUnit === 'office' || item?.data?.targetUnit === 'office')
+      ? `/employee/assigned-work?assignment=${encodeURIComponent(assignmentId)}`
+      : item?.type === 'support-work-assigned' && assignmentId
+      ? `/support/assigned-work?assignment=${encodeURIComponent(assignmentId)}`
       : orderDestination || explicitDestination || ordersPath
     setNotificationOpen(false)
     navigate(destination)
