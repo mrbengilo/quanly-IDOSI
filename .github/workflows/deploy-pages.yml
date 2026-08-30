@@ -14,16 +14,21 @@ concurrency:
   group: verify-idosi-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  COMPOSE_PROJECT_NAME: idosi-ci-${{ github.run_id }}-${{ github.run_attempt }}
+  IDOSI_IMAGE: idosi-app:${{ github.sha }}
+  IDOSI_RELEASE_SHA: ${{ github.sha }}
+
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Setup Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: 22.13.0
           cache: npm
@@ -49,3 +54,35 @@ jobs:
 
       - name: Verify Sites build
         run: npm run sites:verify
+
+      - name: Validate VPS deployment scripts
+        run: |
+          bash -n deploy/vps/deploy-release.sh
+          bash -n deploy/vps/rollback-release.sh
+          node --check server/vps/release-info.mjs
+          node --check server/vps/verify-release.mjs
+
+      - name: Validate VPS Compose configuration
+        run: |
+          cp deploy/vps/.env.example deploy/vps/.env
+          docker compose -f deploy/vps/compose.yml config --quiet
+
+      - name: Build VPS release image
+        run: docker compose -f deploy/vps/compose.yml build app
+
+      - name: Verify VPS runtime and exact release identity
+        run: |
+          docker compose -f deploy/vps/compose.yml up -d --no-build app
+          for attempt in {1..18}; do
+            if docker compose -f deploy/vps/compose.yml exec -T app \
+              node server/vps/verify-release.mjs http://127.0.0.1:3000 "$IDOSI_RELEASE_SHA"; then
+              exit 0
+            fi
+            sleep 5
+          done
+          docker compose -f deploy/vps/compose.yml logs --tail=300 app
+          exit 1
+
+      - name: Clean VPS verification stack
+        if: always()
+        run: docker compose -f deploy/vps/compose.yml down -v --remove-orphans

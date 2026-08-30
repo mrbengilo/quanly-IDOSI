@@ -1,0 +1,155 @@
+name: Deploy IDOSI VPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full 40-character merge commit SHA from main
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: idosi-production
+  cancel-in-progress: false
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release_sha: ${{ steps.release.outputs.release_sha }}
+    steps:
+      - name: Checkout main history
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Validate release SHA
+        id: release
+        env:
+          REQUESTED_RELEASE_SHA: ${{ inputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$GITHUB_REF" == 'refs/heads/main' ]] || {
+            echo 'Run this production workflow from the main branch only.' >&2
+            exit 1
+          }
+          release_sha="${REQUESTED_RELEASE_SHA,,}"
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'release_sha must be a complete 40-character commit SHA.' >&2
+            exit 1
+          }
+          git fetch --prune origin main
+          git cat-file -e "$release_sha^{commit}"
+          git merge-base --is-ancestor "$release_sha" origin/main || {
+            echo 'The requested release is not in origin/main history.' >&2
+            exit 1
+          }
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Require successful Verify IDOSI run for this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
+        run: |
+          set -Eeuo pipefail
+          runs="$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/deploy-pages.yml/runs" \
+            -f head_sha="$RELEASE_SHA" \
+            -f status=completed \
+            -f per_page=100)"
+          jq -e '.workflow_runs | any(.conclusion == "success" and .event == "push" and .head_branch == "main")' <<<"$runs" >/dev/null || {
+            echo "Verify IDOSI has not passed for $RELEASE_SHA." >&2
+            exit 1
+          }
+
+  deploy:
+    needs: release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - name: Checkout exact verified release
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.release-gate.outputs.release_sha }}
+          fetch-depth: 1
+
+      - name: Setup Node.js for external verification
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST production secret}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER production secret}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY production secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS production secret}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]] || {
+            echo 'IDOSI_VPS_PORT must be numeric.' >&2
+            exit 1
+          }
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Deploy exact release with backup and rollback guard
+        env:
+          RELEASE_SHA: ${{ needs.release-gate.outputs.release_sha }}
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" \
+            -p "$VPS_PORT" \
+            -o BatchMode=yes \
+            -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "bash -s -- '$RELEASE_SHA'" < deploy/vps/deploy-release.sh
+
+      - name: Verify public production release
+        env:
+          RELEASE_SHA: ${{ needs.release-gate.outputs.release_sha }}
+        run: |
+          node server/vps/verify-release.mjs https://idosi.io.vn "$RELEASE_SHA"
+          curl --fail --silent --show-error --connect-timeout 5 --max-time 15 https://idosi.io.vn/ >/dev/null
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
+
+      - name: Write deployment summary
+        if: always()
+        env:
+          RELEASE_SHA: ${{ needs.release-gate.outputs.release_sha }}
+        run: |
+          {
+            echo '## IDOSI production deployment'
+            echo
+            echo "- Release SHA: \`$RELEASE_SHA\`"
+            echo "- Environment: \`production\`"
+            echo "- Public URL: https://idosi.io.vn"
+            echo "- Workflow result: \`${{ job.status }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
