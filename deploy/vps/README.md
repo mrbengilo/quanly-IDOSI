@@ -1,23 +1,23 @@
 # Triển khai IDOSI trên VPS
 
 IDOSI production chạy frontend + API bằng Node.js 24, SQLite và thư mục ảnh trong
-Docker volume; Caddy cấp HTTPS cho `idosi.io.vn`. Các lần cập nhật sau khi cài đặt
-ban đầu phải đi qua workflow **Deploy IDOSI VPS**, triển khai đúng commit SHA đã
-được workflow **Verify IDOSI** xác nhận.
+Docker volume; Caddy cấp HTTPS cho `idosi.io.vn`. Sau khi cài đặt một lần, mọi
+release đã merge vào `main` được triển khai tự động khi **Verify IDOSI** PASS cho
+đúng merge SHA.
 
 ## Kiến trúc production
 
 - Repository trên VPS: `/opt/idosi`
 - Compose: `/opt/idosi/deploy/vps/compose.yml`
 - App: Node.js + SQLite, dữ liệu tại `/app/data`
-- Persistent volume: volume đang mount vào `/app/data` (thường là `vps_idosi_data`)
+- Persistent volume: volume đang mount vào `/app/data`, thường là `vps_idosi_data`
 - Reverse proxy/TLS: Caddy
 - Health: `https://idosi.io.vn/api/health`
 - Release identity: `https://idosi.io.vn/api/release`
-- Backup và deployment report: `/opt/idosi/deploy/vps/backups/`
+- Backup, job status, log và report: `/opt/idosi/deploy/vps/backups/`
 
-`/api/release` phải trả đúng SHA đang chạy. Merge GitHub hoặc container trạng thái
-`Up` không đủ để kết luận production đã chạy release mới.
+`/api/release` phải trả đúng SHA đang chạy. PR merge, CI xanh hoặc container `Up`
+không đủ để kết luận production đã nhận release.
 
 ## 1. Cài đặt VPS lần đầu
 
@@ -26,26 +26,33 @@ sudo apt update
 sudo apt install -y ca-certificates curl git openssh-server
 curl -fsSL https://get.docker.com | sudo sh
 sudo systemctl enable --now docker ssh
-sudo usermod -aG docker "$USER"
 sudo ufw allow OpenSSH
 sudo ufw allow 80/tcp
 sudo ufw allow 443/tcp
 sudo ufw enable
 ```
 
-Đăng xuất/đăng nhập lại sau khi thêm user vào group `docker`. DNS phải trỏ
-`idosi.io.vn` đến VPS và `www` CNAME về tên miền gốc.
+Tạo deploy user riêng, cho quyền Docker và quyền sở hữu repository:
 
 ```bash
+sudo adduser --disabled-password --gecos '' idosi-deploy
+sudo usermod -aG docker idosi-deploy
 sudo mkdir -p /opt/idosi
-sudo chown "$USER":"$USER" /opt/idosi
-git clone https://github.com/mrbengilo/quanly-IDOSI.git /opt/idosi
+sudo chown -R idosi-deploy:idosi-deploy /opt/idosi
+```
+
+Clone repo và tạo `.env` bằng deploy user:
+
+```bash
+sudo -H -u idosi-deploy git clone https://github.com/mrbengilo/quanly-IDOSI.git /opt/idosi
 cd /opt/idosi/deploy/vps
-cp .env.example .env
+sudo -H -u idosi-deploy cp .env.example .env
 openssl rand -hex 32
 ```
 
-Đưa chuỗi vừa tạo vào `BOOTSTRAP_TOKEN` trong `.env`; không commit `.env`.
+Đưa chuỗi ngẫu nhiên vào `BOOTSTRAP_TOKEN` trong `.env`, giữ file mode `600` và
+không commit `.env`.
+
 Khởi động lần đầu bằng SHA hiện tại:
 
 ```bash
@@ -55,7 +62,6 @@ cd deploy/vps
 sed -i "s|^IDOSI_IMAGE=.*|IDOSI_IMAGE=idosi-app:$RELEASE_SHA|" .env
 sed -i "s|^IDOSI_RELEASE_SHA=.*|IDOSI_RELEASE_SHA=$RELEASE_SHA|" .env
 docker compose up -d --build
-
 docker compose ps
 curl -fsS https://idosi.io.vn/api/health
 curl -fsS https://idosi.io.vn/api/release
@@ -81,99 +87,100 @@ unset ADMIN_PASSWORD BOOTSTRAP_TOKEN
 
 Bootstrap chỉ hoạt động khi bảng tài khoản đang trống.
 
-## 3. Cấu hình GitHub branch protection và Environment `production`
+## 3. Cấu hình GitHub một lần
 
-Trong **Settings → Branches/Rulesets**, bảo vệ `main` và yêu cầu Pull Request +
-check **Verify IDOSI** PASS trước merge. Không cho push trực tiếp bỏ qua CI.
+### Bảo vệ `main`
 
-Sau đó mở **Settings → Environments → New environment** và tạo `production`.
+Trong **Settings → Rulesets**, yêu cầu:
 
-Cấu hình bắt buộc:
+- thay đổi qua Pull Request;
+- required check `verify` PASS;
+- không force-push hoặc xóa `main`.
 
-1. Thêm required reviewer để deployment phải được duyệt.
-2. Chỉ cho phép branch `main` triển khai.
-3. Không cho người chạy workflow tự duyệt nếu có người duyệt độc lập.
-4. Thêm environment secrets:
+### Environment `production`
+
+Trong **Settings → Environments**, tạo `production` và:
+
+- chỉ cho branch `main` triển khai;
+- để **Required reviewers** tắt và **Wait timer** tắt nếu muốn tự động hoàn toàn;
+- thêm các environment secrets:
 
 | Secret | Nội dung |
 |---|---|
-| `IDOSI_VPS_HOST` | IP hoặc hostname SSH của VPS |
+| `IDOSI_VPS_HOST` | IP/hostname SSH của VPS |
 | `IDOSI_VPS_PORT` | Cổng SSH, thường là `22` |
-| `IDOSI_VPS_USER` | User có quyền đọc `/opt/idosi` và chạy Docker |
-| `IDOSI_VPS_SSH_PRIVATE_KEY` | Private key Ed25519 dành riêng cho deployment |
-| `IDOSI_VPS_KNOWN_HOSTS` | Dòng known_hosts đã xác minh fingerprint của VPS |
+| `IDOSI_VPS_USER` | `idosi-deploy` hoặc deploy user riêng |
+| `IDOSI_VPS_SSH_PRIVATE_KEY` | Private key Ed25519 dành riêng cho Actions |
+| `IDOSI_VPS_KNOWN_HOSTS` | Dòng ED25519 known_hosts đã đối chiếu fingerprint |
 
-Tạo deployment key trên máy tin cậy:
+Private key không đặt passphrase vì workflow dùng key không tương tác; giới hạn key
+chỉ cho deploy user, bảo vệ secret trong Environment và xoay key khi nghi ngờ lộ.
+Không dùng `StrictHostKeyChecking=no`.
 
-```bash
-ssh-keygen -t ed25519 -C 'idosi-github-actions' -f idosi_deploy_key
-ssh-copy-id -i idosi_deploy_key.pub -p 22 <IDOSI_VPS_USER>@<IDOSI_VPS_HOST>
-ssh-keyscan -p 22 -H <IDOSI_VPS_HOST>
-```
-
-Phải xác minh fingerprint SSH của VPS trước khi lưu output `ssh-keyscan` vào
-`IDOSI_VPS_KNOWN_HOSTS`. Không dùng `StrictHostKeyChecking=no`.
-
-## 4. Quy trình cập nhật production
-
-Luồng chuẩn:
+## 4. Luồng cập nhật production tự động
 
 ```text
-PR review
+Codex chia task + commit nhỏ
+→ Pull Request
 → Verify IDOSI PASS
 → merge main
-→ Verify IDOSI PASS cho merge SHA
-→ chạy Deploy IDOSI VPS với full merge SHA
-→ production environment approval
-→ pre-deploy checks
-→ build image theo SHA
-→ dừng traffic ngắn
-→ backup volume SQLite + checksum
-→ chạy app mới/migration
-→ internal health + release SHA
-→ khởi động Caddy
-→ HTTPS local verification
+→ Verify IDOSI PASS cho exact merge SHA
+→ Deploy IDOSI VPS tự chạy bằng workflow_run
+→ durable remote deployment
+→ backup + checksum
+→ app/migration + internal exact-SHA verification
+→ Caddy/local HTTPS
 → external production verification
-→ deployment report
+→ finalize report SUCCESS
+→ smoke test và báo cáo
 ```
 
-Thao tác triển khai:
+Automatic trigger chỉ chấp nhận workflow nguồn khi đồng thời:
 
-1. Mở tab **Actions**.
-2. Chọn **Deploy IDOSI VPS**.
-3. Chọn **Run workflow**.
-4. Dán full 40-character merge commit SHA từ `main`.
-5. Duyệt job `production` khi GitHub yêu cầu.
+- workflow là `Verify IDOSI`;
+- conclusion là `success`;
+- event nguồn là `push`;
+- branch nguồn là `main`;
+- `workflow_run.head_sha` là full SHA thuộc lịch sử `origin/main`.
 
-Workflow sẽ từ chối khi SHA không thuộc `origin/main` hoặc chưa có một run
-**Verify IDOSI** thành công cho đúng SHA đó.
+Không deploy từ PR verify, manual verify, feature branch hoặc branch head đang di
+chuyển. `concurrency: idosi-production` và `cancel-in-progress: false` bảo vệ một
+backup/migration đang chạy khỏi deployment khác.
 
-## 5. Những gì script deployment thực hiện
+## 5. Manual re-deploy/fallback
 
-`deploy-release.sh`:
+`workflow_dispatch` vẫn tồn tại cho re-deploy hoặc recovery có kiểm soát:
 
-- khóa deployment bằng `flock`, không cho hai release chạy đồng thời;
-- dừng nếu working tree VPS có thay đổi thủ công;
-- checkout detached đúng `RELEASE_SHA` đã xác minh;
-- build image `idosi-app:<full-sha>` trong khi release cũ vẫn phục vụ;
-- giữ tag image cũ làm rollback point;
-- dừng Caddy và app trong cửa sổ bảo trì ngắn;
-- backup volume `/app/data`, kiểm tra archive và tạo SHA-256 checksum;
-- khởi động app mới; migration chạy transactionally khi SQLite được mở;
-- chỉ khởi động Caddy sau khi `/api/health` và `/api/release` nội bộ PASS;
-- kiểm tra HTTPS qua Caddy và ghi deployment report/log;
-- tự phục hồi backup + previous image nếu lội xảy ra trước khi public traffic mở lại;
-- fail closed và giữ public traffic dừng nếu backup không thể restore hoặc previous
-  release không healthy; không chạy code cũ trên dữ liệu có thể đã migration;
-- sau khi Caddy đã mở public traffic, không tự restore snapshot khi check sau đó lỗi,
-  nhằm tránh ghi đè dữ liệu mới; workflow sẽ fail và yêu cầu xử lý incident có kiểm soát;
-- ghi `IDOSI_IMAGE` và `IDOSI_RELEASE_SHA` vào `.env` bằng thay thế nguyên tử sau
-  khi release/rollback thành công, để các lệnh Compose sau đó vẫn dùng đúng image.
+1. Mở **Actions → Deploy IDOSI VPS → Run workflow** từ `main`.
+2. Nhập full 40-character SHA.
+3. Workflow xác minh SHA thuộc `main` và đã có một `Verify IDOSI` push/main PASS.
+
+Không dùng manual dispatch để bỏ qua CI hoặc triển khai feature branch.
+
+## 6. Những gì deployment thực hiện
+
+- upload đúng script từ exact release checkout;
+- chạy critical section bằng detached `setsid`/`nohup`, nên runner mất kết nối
+  không kill tiến trình VPS;
+- ghi operation status/log dưới `backups/jobs/`;
+- khóa bằng `flock`, từ chối VPS dirty và deployment song song;
+- build image `idosi-app:<full-sha>` khi release cũ còn phục vụ;
+- giữ previous image/tag làm rollback point;
+- dừng Caddy và app trước khi backup SQLite/file volume;
+- kiểm tra archive và tạo SHA-256 checksum;
+- khởi động app mới, migration chạy transactionally khi SQLite được mở;
+- chỉ mở Caddy khi internal health và `/api/release` đúng SHA;
+- ghi report `LOCAL_READY` sau local HTTPS check;
+- chỉ đổi report nguyên tử sang `SUCCESS` sau external health, exact SHA và root
+  page đều PASS;
+- tự rollback trước khi traffic mở nếu rollout thất bại;
+- fail closed nếu restore/recovery không chứng minh được dữ liệu an toàn;
+- không tự restore snapshot sau khi traffic đã mở để tránh ghi đè write mới.
 
 Không sửa source trực tiếp trên VPS. Không dùng `git pull && docker compose up`
-không kèm SHA, backup và production verification.
+như quy trình release thông thường.
 
-## 6. Kiểm tra sau deploy
+## 7. Xác minh sau deploy
 
 ```bash
 cd /opt/idosi/deploy/vps
@@ -183,29 +190,22 @@ curl -fsS https://idosi.io.vn/api/health
 curl -fsS https://idosi.io.vn/api/release
 ```
 
-`data.releaseSha` của `/api/release` phải bằng merge SHA đã triển khai. Sau đó
-smoke test đăng nhập, quyền truy cập, màn hình/chức năng vừa thay đổi và các luồng
-critical liên quan; không tạo dữ liệu lương/thưởng giả trong production.
+`data.releaseSha` phải bằng merge SHA vừa triển khai. Smoke test theo phạm vi thay
+đổi; không tạo dữ liệu lương, thưởng, vi phạm hoặc tài chính giả không có kế hoạch
+void/dọn hợp lệ.
 
-## 7. Backup và deployment report
+## 8. Backup, report và rollback
 
-Mỗi deployment tạo:
+Mỗi deployment tạo backup, checksum, log, operation status và report tại:
 
 ```text
-deploy/vps/backups/idosi-data-<time>-before-<sha>.tar.gz
-deploy/vps/backups/deploy-<time>-<sha>.env
-deploy/vps/backups/deploy-<time>-<sha>.log
+/opt/idosi/deploy/vps/backups/
 ```
 
-Report chứa release SHA, previous SHA, previous image tag, backup path và checksum.
 Sao chép định kỳ các backup quan trọng sang nơi lưu trữ khác. Không tự động xóa
-backup mới nhất hoặc rollback image đang còn cần thiết.
+backup mới nhất, report cần audit hoặc previous image còn dùng để rollback.
 
-## 8. Rollback có kiểm soát
-
-Rollback sau khi release đã phục vụ traffic có thể làm mất các thay đổi dữ liệu
-phát sinh sau backup. Chỉ thực hiện khi đã đánh giá tác động và chọn đúng report.
-Script tạo thêm emergency backup của dữ liệu hiện tại trước khi restore:
+Rollback có kiểm soát:
 
 ```bash
 cd /opt/idosi
@@ -213,34 +213,21 @@ bash deploy/vps/rollback-release.sh \
   /opt/idosi/deploy/vps/backups/deploy-YYYYMMDDTHHMMSSZ-abcdef123456.env
 ```
 
-Rollback thực hiện:
-
-```text
-dừng Caddy/app
-→ emergency backup release hiện tại
-→ kiểm tra checksum backup mục tiêu
-→ restore volume
-→ chạy previous image
-→ health/release verification
-→ khởi động Caddy
-→ checkout previous Git SHA
-```
-
-Nếu external verification của GitHub thất bại nhưng VPS local verification đã
-PASS, không restore dữ liệu theo phản xạ. Kiểm tra DNS/firewall/Caddy/log trước,
-rồi quyết định giữ release hoặc chạy rollback có kiểm soát.
+Script tạo emergency backup của dữ liệu hiện tại, kiểm tra checksum backup mục
+tiêu, restore volume, chạy previous image, xác minh exact release, lưu `.env` và
+chỉ mở Caddy khi mọi bước PASS. Recovery lỗi phải giữ app/Caddy dừng và ghi
+incident report.
 
 ## 9. Điều kiện được báo `DEPLOYED`
 
-Chỉ báo deployment thành công khi đồng thời có:
+Chỉ báo thành công khi có bằng chứng:
 
-- đúng SHA đã được Verify IDOSI xác nhận;
-- backup và checksum thành công;
-- migration/app startup thành công;
-- container healthy;
-- internal health PASS;
-- Caddy HTTPS PASS;
-- external `/api/health` PASS;
-- external `/api/release` khớp full SHA;
-- smoke test chức năng liên quan PASS;
-- rollback report tồn tại.
+- exact main SHA đã Verify IDOSI PASS;
+- automatic/manual release gate PASS;
+- backup + checksum PASS;
+- app/migration/internal health PASS;
+- local Caddy HTTPS PASS;
+- external `/api/health`, `/api/release` và root page PASS;
+- report đã `STATUS=SUCCESS`;
+- smoke test liên quan PASS;
+- rollback point tồn tại.
