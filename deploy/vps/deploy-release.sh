@@ -31,7 +31,7 @@ LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SHORT_RELEASE="${RELEASE_SHA:0:12}"
 
-for command_name in git docker curl flock sha256sum awk date mktemp mv chmod; do
+for command_name in git docker curl flock sha256sum awk date mktemp mv chmod tee; do
   require_command "$command_name"
 done
 docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin không hoạt động.'
@@ -143,34 +143,64 @@ ROLLBACK_REQUIRED=0
 
 rollback_failed_deployment() {
   local original_code="$1"
+  local incident_log="$BACKUP_DIR/deploy-$TIMESTAMP-$SHORT_RELEASE.log"
   trap - ERR
   set +e
   if [[ "$PUBLIC_TRAFFIC_RESUMED" == '1' ]]; then
     log 'ERROR: Lỗi xảy ra sau khi public traffic đã mở lại; không tự restore snapshot để tránh mất dữ liệu mới.'
+    compose ps >&2 || true
+    compose logs --since=10m --tail=300 app caddy 2>&1 | tee "$incident_log" >&2 || true
     write_report 'FAILED_AFTER_TRAFFIC'
     exit "$original_code"
   fi
+
   log 'Deployment lỗi trước khi public traffic mở lại; bắt đầu rollback release và dữ liệu.'
-  compose stop -t 30 caddy app >/dev/null 2>&1
-  if [[ "$DATA_MAY_HAVE_CHANGED" == '1' && "$BACKUP_READY" == '1' ]]; then
-    restore_backup "$BACKUP_FILE" || log 'WARNING: Không thể tự động phục hồi backup.'
-  fi
-  if [[ -n "$PREVIOUS_IMAGE_TAG" ]]; then
-    export IDOSI_IMAGE="$PREVIOUS_IMAGE_TAG"
-    export IDOSI_RELEASE_SHA="$PREVIOUS_RELEASE_SHA"
-    compose up -d --no-build app
-    if wait_for_app_health "$PREVIOUS_RELEASE_SHA" 1; then
-      compose up -d --no-build caddy
-      persist_release_config "$PREVIOUS_IMAGE_TAG" "$PREVIOUS_RELEASE_SHA"
-      log 'Rollback đã khởi động lại release trước.'
-    else
-      log 'ERROR: Release trước không vượt qua health check sau rollback.'
+  compose stop -t 30 caddy app >/dev/null 2>&1 || true
+  if [[ "$DATA_MAY_HAVE_CHANGED" == '1' ]]; then
+    if [[ "$BACKUP_READY" != '1' ]] || ! restore_backup "$BACKUP_FILE"; then
+      log 'ERROR: Không thể phục hồi backup; giữ public traffic dừng để tránh chạy code cũ trên dữ liệu không tương thích.'
+      compose logs --since=10m --tail=300 app caddy >"$incident_log" 2>&1 || true
+      write_report 'ROLLBACK_FAILED'
+      exit "$original_code"
     fi
   fi
-  if [[ -n "$PREVIOUS_GIT_SHA" ]]; then
-    git -C "$IDOSI_ROOT" checkout --detach "$PREVIOUS_GIT_SHA" >/dev/null 2>&1
+
+  if [[ -z "$PREVIOUS_IMAGE_TAG" ]]; then
+    log 'ERROR: Không có previous image để rollback.'
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
   fi
+
+  export IDOSI_IMAGE="$PREVIOUS_IMAGE_TAG"
+  export IDOSI_RELEASE_SHA="$PREVIOUS_RELEASE_SHA"
+  if ! compose up -d --no-build app; then
+    log 'ERROR: Không thể khởi động previous app image.'
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
+  fi
+  if ! wait_for_app_health "$PREVIOUS_RELEASE_SHA" 1; then
+    log 'ERROR: Release trước không vượt qua health check sau rollback.'
+    compose logs --since=10m --tail=300 app >"$incident_log" 2>&1 || true
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
+  fi
+  if ! compose up -d --no-build caddy; then
+    log 'ERROR: Không thể mở lại Caddy sau rollback.'
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
+  fi
+  if ! persist_release_config "$PREVIOUS_IMAGE_TAG" "$PREVIOUS_RELEASE_SHA"; then
+    log 'ERROR: Rollback runtime đã lên nhưng không thể lưu release config vào .env.'
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
+  fi
+  if [[ -n "$PREVIOUS_GIT_SHA" ]]; then
+    git -C "$IDOSI_ROOT" checkout --detach "$PREVIOUS_GIT_SHA" >/dev/null 2>&1 \
+      || log 'WARNING: Runtime đã rollback nhưng không thể checkout previous Git SHA.'
+  fi
+  compose logs --since=10m --tail=300 app caddy >"$incident_log" 2>&1 || true
   write_report 'ROLLED_BACK'
+  log 'Rollback đã khởi động lại release trước.'
   exit "$original_code"
 }
 

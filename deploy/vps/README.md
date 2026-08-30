@@ -162,9 +162,11 @@ Workflow sẽ từ chối khi SHA không thuộc `origin/main` hoặc chưa có 
 - khởi động app mới; migration chạy transactionally khi SQLite được mở;
 - chỉ khởi động Caddy sau khi `/api/health` và `/api/release` nội bộ PASS;
 - kiểm tra HTTPS qua Caddy và ghi deployment report/log;
-- tự phục hồi backup + previous image nếu lỗi xảy ra trước khi public traffic mở lại;
+- tự phục hồi backup + previous image nếu lội xảy ra trước khi public traffic mở lại;
+- fail closed và giữ public traffic dừng nếu backup không thể restore hoặc previous
+  release không healthy; không chạy code cũ trên dữ liệu có thể đã migration;
 - sau khi Caddy đã mở public traffic, không tự restore snapshot khi check sau đó lỗi,
-  nhằm tránh ghi đè dữ liệu mới; workflow sẽ fail và yêu cầu xử lý incident có kiểm soát;
+  nhằm tránh ghi đè dữ liệu mội; workflow sẽ fail và yêu cầu xử lý incident có kiểm soát;
 - ghi `IDOSI_IMAGE` và `IDOSI_RELEASE_SHA` vào `.env` bằng thay thế nguyên tử sau
   khi release/rollback thành công, để các lệnh Compose sau đó vẫn dùng đúng image.
 
