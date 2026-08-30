@@ -166,7 +166,7 @@ Workflow sẽ từ chối khi SHA không thuộc `origin/main` hoặc chưa có 
 - fail closed và giữ public traffic dừng nếu backup không thể restore hoặc previous
   release không healthy; không chạy code cũ trên dữ liệu có thể đã migration;
 - sau khi Caddy đã mở public traffic, không tự restore snapshot khi check sau đó lỗi,
-  nhằm tránh ghi đè dữ liệu mội; workflow sẽ fail và yêu cầu xử lý incident có kiểm soát;
+  nhằm tránh ghi đè dữ liệu mới; workflow sẽ fail và yêu cầu xử lý incident có kiểm soát;
 - ghi `IDOSI_IMAGE` và `IDOSI_RELEASE_SHA` vào `.env` bằng thay thế nguyên tử sau
   khi release/rollback thành công, để các lệnh Compose sau đó vẫn dùng đúng image.
 
