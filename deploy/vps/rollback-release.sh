@@ -28,8 +28,10 @@ HEALTH_DELAY_SECONDS="${IDOSI_HEALTH_DELAY_SECONDS:-5}"
 [[ "$HEALTH_RETRIES" =~ ^[1-9][0-9]*$ ]] || die 'IDOSI_HEALTH_RETRIES phải là số nguyên dương.'
 [[ "$HEALTH_DELAY_SECONDS" =~ ^[1-9][0-9]*$ ]] || die 'IDOSI_HEALTH_DELAY_SECONDS phải là số nguyên dương.'
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+RECOVERY_INCIDENT_FILE="$BACKUP_DIR/rollback-recovery-$TIMESTAMP.env"
+RECOVERY_LOG_FILE="$BACKUP_DIR/rollback-recovery-$TIMESTAMP.log"
 
-for command_name in git docker flock sha256sum sed head date awk basename mktemp mv chmod; do
+for command_name in git docker flock sha256sum sed head date awk basename mktemp mv chmod cat; do
   command -v "$command_name" >/dev/null 2>&1 || die "Thiếu lệnh bắt buộc: $command_name"
 done
 docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin không hoạt động.'
@@ -46,7 +48,10 @@ TARGET_IMAGE_TAG="$(read_report_value PREVIOUS_IMAGE_TAG)"
 TARGET_RELEASE_SHA="$(read_report_value PREVIOUS_RELEASE_SHA)"
 TARGET_GIT_SHA="$(read_report_value PREVIOUS_GIT_SHA)"
 
-[[ "$TARGET_STATUS" == 'SUCCESS' ]] || die 'Chỉ rollback từ deployment report có STATUS=SUCCESS.'
+case "$TARGET_STATUS" in
+  SUCCESS|LOCAL_READY|FAILED_AFTER_TRAFFIC) ;;
+  *) die 'Chỉ rollback từ report đã mở traffic và có rollback point hợp lệ.' ;;
+esac
 [[ "$TARGET_BACKUP_FILE" == "$BACKUP_DIR/"* ]] || die 'Backup trong report phải nằm trong thư mục backup IDOSI.'
 [[ -s "$TARGET_BACKUP_FILE" ]] || die 'Backup cần phục hồi không tồn tại hoặc rỗng.'
 [[ "$TARGET_IMAGE_TAG" =~ ^[a-zA-Z0-9._:/-]+$ ]] || die 'Previous image tag trong report không hợp lệ.'
@@ -132,6 +137,27 @@ restore_volume() {
     "find /data -mindepth 1 -maxdepth 1 -exec rm -rf -- {} \\; && tar -xzf '/backup/$input_name' -C /data"
 }
 
+write_recovery_incident() {
+  local reason="$1"
+  compose logs --since=10m --tail=300 app caddy >"$RECOVERY_LOG_FILE" 2>&1 || true
+  cat >"$RECOVERY_INCIDENT_FILE" <<INCIDENT
+STATUS=RECOVERY_FAILED_CLOSED
+REASON=$reason
+CURRENT_RELEASE_SHA=$CURRENT_RELEASE_SHA
+CURRENT_GIT_SHA=$CURRENT_GIT_SHA
+CURRENT_IMAGE_TAG=$CURRENT_IMAGE_TAG
+TARGET_RELEASE_SHA=$TARGET_RELEASE_SHA
+TARGET_GIT_SHA=$TARGET_GIT_SHA
+EMERGENCY_BACKUP_FILE=$EMERGENCY_BACKUP_FILE
+TARGET_DATA_MAY_HAVE_CHANGED=$TARGET_DATA_MAY_HAVE_CHANGED
+PUBLIC_TRAFFIC_RESUMED=0
+RECORDED_AT_UTC=$TIMESTAMP
+LOG_FILE=$RECOVERY_LOG_FILE
+INCIDENT
+  chmod 600 "$RECOVERY_INCIDENT_FILE" "$RECOVERY_LOG_FILE" 2>/dev/null || true
+  log "Incident report: $RECOVERY_INCIDENT_FILE"
+}
+
 APP_CONTAINER_ID="$(compose ps -q app)"
 CADDY_CONTAINER_ID="$(compose ps -q caddy)"
 [[ -n "$APP_CONTAINER_ID" && -n "$CADDY_CONTAINER_ID" ]] || die 'Không tìm thấy stack IDOSI đang chạy.'
@@ -149,24 +175,69 @@ docker image tag "$CURRENT_IMAGE_ID" "$CURRENT_IMAGE_TAG"
 
 EMERGENCY_BACKUP_FILE="$BACKUP_DIR/idosi-data-$TIMESTAMP-before-manual-rollback.tar.gz"
 ROLLBACK_STARTED=0
+TARGET_DATA_MAY_HAVE_CHANGED=0
 
 recover_current_release() {
   local original_code="$1"
+  local reason=''
   trap - ERR
   set +e
-  log 'Rollback thất bại; phục hồi release đang chạy trước thao tác rollback.'
-  compose stop -t 30 caddy app >/dev/null 2>&1
-  if [[ -s "$EMERGENCY_BACKUP_FILE" ]]; then
-    restore_volume "$EMERGENCY_BACKUP_FILE" || log 'WARNING: Không thể phục hồi emergency backup.'
+  log 'Rollback thất bại; thử phục hồi release đang chạy trước thao tác rollback.'
+  compose stop -t 30 caddy app >/dev/null 2>&1 || true
+
+  if [[ "$TARGET_DATA_MAY_HAVE_CHANGED" == '1' ]]; then
+    if [[ ! -s "$EMERGENCY_BACKUP_FILE" ]]; then
+      reason='Emergency backup không tồn tại hoặc rỗng sau khi dữ liệu mục tiêu có thể đã thay đổi.'
+      log "ERROR: $reason"
+      write_recovery_incident "$reason"
+      exit "$original_code"
+    fi
+    if ! restore_volume "$EMERGENCY_BACKUP_FILE"; then
+      reason='Không thể phục hồi emergency backup; giữ Caddy/app dừng để tránh mở dữ liệu rỗng hoặc phục hồi dở.'
+      log "ERROR: $reason"
+      write_recovery_incident "$reason"
+      exit "$original_code"
+    fi
   fi
+
   export IDOSI_IMAGE="$CURRENT_IMAGE_TAG"
   export IDOSI_RELEASE_SHA="$CURRENT_RELEASE_SHA"
-  compose up -d --no-build app
-  if wait_for_health "$CURRENT_RELEASE_SHA"; then
-    compose up -d --no-build caddy
-    persist_release_config "$CURRENT_IMAGE_TAG" "$CURRENT_RELEASE_SHA"
+  if ! compose up -d --no-build app; then
+    reason='Không thể khởi động lại current app image trong recovery.'
+    log "ERROR: $reason"
+    compose stop -t 30 caddy app >/dev/null 2>&1 || true
+    write_recovery_incident "$reason"
+    exit "$original_code"
   fi
-  git -C "$IDOSI_ROOT" checkout --detach "$CURRENT_GIT_SHA" >/dev/null 2>&1
+  if ! wait_for_health "$CURRENT_RELEASE_SHA"; then
+    reason='Current release không healthy sau recovery.'
+    log "ERROR: $reason"
+    compose stop -t 30 caddy app >/dev/null 2>&1 || true
+    write_recovery_incident "$reason"
+    exit "$original_code"
+  fi
+  if ! persist_release_config "$CURRENT_IMAGE_TAG" "$CURRENT_RELEASE_SHA"; then
+    reason='Không thể lưu current release config sau recovery.'
+    log "ERROR: $reason"
+    compose stop -t 30 caddy app >/dev/null 2>&1 || true
+    write_recovery_incident "$reason"
+    exit "$original_code"
+  fi
+  if ! git -C "$IDOSI_ROOT" checkout --detach "$CURRENT_GIT_SHA" >/dev/null 2>&1; then
+    reason='Không thể checkout current Git SHA sau recovery.'
+    log "ERROR: $reason"
+    compose stop -t 30 caddy app >/dev/null 2>&1 || true
+    write_recovery_incident "$reason"
+    exit "$original_code"
+  fi
+  if ! compose up -d --no-build caddy; then
+    reason='Không thể mở lại Caddy sau recovery.'
+    log "ERROR: $reason"
+    compose stop -t 30 caddy app >/dev/null 2>&1 || true
+    write_recovery_incident "$reason"
+    exit "$original_code"
+  fi
+  log 'Current release đã được phục hồi; thao tác rollback vẫn được báo thất bại.'
   exit "$original_code"
 }
 
@@ -186,6 +257,7 @@ archive_volume "$EMERGENCY_BACKUP_FILE"
 [[ -s "$EMERGENCY_BACKUP_FILE" ]] || die 'Không tạo được emergency backup trước rollback.'
 
 log "Phục hồi dữ liệu từ $TARGET_BACKUP_FILE"
+TARGET_DATA_MAY_HAVE_CHANGED=1
 restore_volume "$TARGET_BACKUP_FILE"
 export IDOSI_IMAGE="$TARGET_IMAGE_TAG"
 export IDOSI_RELEASE_SHA="$TARGET_RELEASE_SHA"
@@ -194,11 +266,12 @@ if ! wait_for_health "$TARGET_RELEASE_SHA"; then
   compose logs --since=10m --tail=300 app >&2 || true
   die 'Release rollback không vượt qua health check.'
 fi
-compose up -d --no-build caddy
 persist_release_config "$TARGET_IMAGE_TAG" "$TARGET_RELEASE_SHA"
 git -C "$IDOSI_ROOT" checkout --detach "$TARGET_GIT_SHA"
+compose up -d --no-build caddy
 
 ROLLBACK_STARTED=0
+TARGET_DATA_MAY_HAVE_CHANGED=0
 trap - ERR
 log "SUCCESS: Đã rollback về $TARGET_RELEASE_SHA"
 log "Emergency backup của release mới: $EMERGENCY_BACKUP_FILE"
