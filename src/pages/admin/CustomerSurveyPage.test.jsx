@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CustomerSurveyPage } from './CustomerSurveyPage'
 import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../../domain/orderInformationSettings'
 
@@ -16,7 +16,15 @@ vi.mock('../../state/AppContext', () => ({
 }))
 
 describe('CustomerSurveyPage', () => {
-  afterEach(cleanup)
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-29T08:00:00+07:00'))
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
 
   it('shows system metrics and filters detailed statistics by store', () => {
     render(<CustomerSurveyPage />)

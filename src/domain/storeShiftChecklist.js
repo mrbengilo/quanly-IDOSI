@@ -79,6 +79,7 @@ const templateDefinitions = Object.freeze([
   Object.freeze({
     id: 'STORE-CHECKLIST-MORNING',
     key: 'morning',
+    catalogShiftId: 'ca1',
     name: 'Ca Sáng',
     start: '08:00',
     end: '12:00',
@@ -87,6 +88,7 @@ const templateDefinitions = Object.freeze([
   Object.freeze({
     id: 'STORE-CHECKLIST-AFTERNOON',
     key: 'afternoon',
+    catalogShiftId: 'ca2',
     name: 'Ca Chiều',
     start: '12:00',
     end: '17:00',
@@ -95,6 +97,7 @@ const templateDefinitions = Object.freeze([
   Object.freeze({
     id: 'STORE-CHECKLIST-NIGHT',
     key: 'night',
+    catalogShiftId: 'ca3',
     name: 'Ca Tối',
     start: '17:00',
     end: '21:00',
@@ -172,6 +175,17 @@ const shiftNames = (shift) => {
     .filter(Boolean)
 }
 
+const templateKeyFromAttendanceTime = (shift) => {
+  if (!shift || typeof shift !== 'object') return null
+  const clock = normalizedClock(shift.checkInTime || shift.checkIn || shift.attendanceTime)
+  if (!clock) return null
+  const [hour, minute] = clock.split(':').map(Number)
+  const attendanceMinutes = (hour * 60) + minute
+  if (attendanceMinutes < 12 * 60) return 'morning'
+  if (attendanceMinutes < 17 * 60) return 'afternoon'
+  return 'night'
+}
+
 const recordVersion = (record) => {
   const version = Number(record?.version)
   return Number.isSafeInteger(version) && version > 0 ? version : 1
@@ -196,6 +210,10 @@ const activeTemplates = (templates) => latestRecords(
 
 export const resolveStoreChecklistTemplate = (shift, templates = STORE_CHECKLIST_TEMPLATES) => {
   const available = activeTemplates(templates)
+  const attendanceKey = templateKeyFromAttendanceTime(shift)
+  if (attendanceKey) {
+    return available.find((template) => template.key === attendanceKey) || null
+  }
   const interval = shiftInterval(shift)
   if (interval) {
     const intervalMatch = available.find((template) => (
@@ -206,13 +224,26 @@ export const resolveStoreChecklistTemplate = (shift, templates = STORE_CHECKLIST
   }
 
   const names = new Set(shiftNames(shift))
-  if (!names.size) return null
-  return available.find((template) => {
+  const exactNameMatch = available.find((template) => {
     const aliases = [template.id, template.key, template.name, ...(template.aliases || [])]
       .map(normalizedText)
       .filter(Boolean)
     return aliases.some((alias) => names.has(alias))
-  }) || null
+  })
+  if (exactNameMatch) return exactNameMatch
+
+  return null
+}
+
+export const resolveStoreChecklistCatalogShift = (shift, templates = STORE_CHECKLIST_TEMPLATES) => {
+  const template = resolveStoreChecklistTemplate(shift, templates)
+  if (!template) return null
+  return Object.freeze({
+    templateId: template.id,
+    templateKey: template.key,
+    shiftId: template.catalogShiftId || null,
+    shiftName: template.name,
+  })
 }
 
 const belongsToTemplate = (task, template) => {

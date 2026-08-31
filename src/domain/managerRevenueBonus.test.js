@@ -70,6 +70,11 @@ describe('single active store manager resolution', () => {
       manager: activeManager,
     })
     expect(result.matches).toHaveLength(1)
+
+    expect(resolveExactlyOneActiveStoreManager({
+      storeId: 'ch001',
+      managers: [activeManager],
+    })).toMatchObject({ ok: true, managerId: 'NV-001' })
   })
 
   it('returns a clear error when a store has no active manager', () => {
@@ -119,6 +124,55 @@ describe('single active store manager resolution', () => {
       conflict = error
     }
     expect(conflict).toMatchObject({ code: 'STORE_MANAGER_MULTIPLE_ACTIVE' })
+  })
+
+  it('does not collapse case-colliding manager identities into one bonus owner', () => {
+    const caseCollidingManager = {
+      ...activeManager,
+      id: 'QLCH-CASE-COLLISION',
+      linkedEmployeeId: 'nv-001',
+    }
+    const result = resolveExactlyOneActiveStoreManager({
+      storeId: 'CH001',
+      managers: [activeManager, caseCollidingManager],
+    })
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'STORE_MANAGER_MULTIPLE_ACTIVE',
+      manager: null,
+      managerId: null,
+    })
+    expect(result.matches).toEqual([activeManager, caseCollidingManager])
+  })
+
+  it('uses an exact store scope and fails closed instead of grafting store-case collisions', () => {
+    const lowerCaseStoreProfile = {
+      ...activeManager,
+      id: 'AUTH-LOWER-STORE',
+      storeId: 'ch001',
+    }
+
+    expect(resolveExactlyOneActiveStoreManager({
+      storeId: 'CH001',
+      managers: [activeManager, lowerCaseStoreProfile],
+    })).toMatchObject({
+      ok: true,
+      manager: activeManager,
+      managerId: 'NV-001',
+    })
+
+    const ambiguous = resolveExactlyOneActiveStoreManager({
+      storeId: 'Ch001',
+      managers: [activeManager, lowerCaseStoreProfile],
+    })
+    expect(ambiguous).toMatchObject({
+      ok: false,
+      code: 'STORE_MANAGER_MULTIPLE_ACTIVE',
+      manager: null,
+      managerId: null,
+    })
+    expect(ambiguous.matches).toEqual([activeManager, lowerCaseStoreProfile])
   })
 })
 

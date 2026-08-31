@@ -4,7 +4,101 @@ import {
   effectiveStoreSalaryConfig,
   isHourlyStoreEmploymentType,
   normalizeStoreEmploymentType,
+  STORE_SALARY_CONFIG_IDENTIFIER_COLLISION,
 } from './domain/storeTieredPayroll'
+
+const normalizeOperationalIdentifier = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
+
+export const sameOperationalIdentifier = (left, right) => (
+  Boolean(normalizeOperationalIdentifier(left))
+  && normalizeOperationalIdentifier(left) === normalizeOperationalIdentifier(right)
+)
+
+const defaultOperationalIdentifierOf = (record = {}) => (
+  record.id || record.code || record.employeeId || record.storeId || ''
+)
+
+const defaultOperationalIdentifierValuesOf = (record = {}) => [defaultOperationalIdentifierOf(record)]
+
+export const operationalIdentifierRecordMatch = (
+  records = [],
+  reference = '',
+  identifierValuesOf = defaultOperationalIdentifierValuesOf,
+) => {
+  const requested = String(reference ?? '').trim()
+  if (!requested) return { record: null, ambiguous: false, matches: [] }
+  const source = Array.isArray(records) ? records : []
+  const matches = source.filter((record) => {
+    const values = identifierValuesOf(record)
+    return (Array.isArray(values) ? values : [values]).some((value) => (
+      sameOperationalIdentifier(value, requested)
+    ))
+  })
+  const exactMatches = matches.filter((record) => {
+    const values = identifierValuesOf(record)
+    return (Array.isArray(values) ? values : [values]).some((value) => (
+      String(value ?? '').trim() === requested
+    ))
+  })
+  if (exactMatches.length === 1) return { record: exactMatches[0], ambiguous: false, matches }
+  if (exactMatches.length > 1 || matches.length > 1) return { record: null, ambiguous: true, matches }
+  return { record: matches[0] || null, ambiguous: false, matches }
+}
+
+export const operationalIdentifierEntry = (record = {}, reference = '') => {
+  const requested = String(reference ?? '').trim()
+  const entries = Object.entries(record && typeof record === 'object' && !Array.isArray(record) ? record : {})
+  if (!requested) return { found: false, ambiguous: false, key: '', value: undefined }
+  const exact = entries.filter(([key]) => key === requested)
+  if (exact.length === 1) {
+    return { found: true, ambiguous: false, key: exact[0][0], value: exact[0][1] }
+  }
+  const matches = entries.filter(([key]) => sameOperationalIdentifier(key, requested))
+  if (matches.length > 1) return { found: false, ambiguous: true, key: '', value: undefined }
+  if (matches.length === 1) {
+    return { found: true, ambiguous: false, key: matches[0][0], value: matches[0][1] }
+  }
+  return { found: false, ambiguous: false, key: '', value: undefined }
+}
+
+/**
+ * Resolves a case-insensitive operational reference without allowing a legacy
+ * alias to cross-link two distinct records whose identifiers differ only by
+ * casing. Exact spelling always wins; folded matching is allowed only while
+ * the referenced collection has a single candidate.
+ */
+export const operationalIdentifierReferenceMatchesRecord = (
+  records = [],
+  record = null,
+  reference = '',
+  identifierOf = defaultOperationalIdentifierOf,
+) => {
+  if (!record) return false
+  const requested = String(reference ?? '').trim()
+  const recordIdentifier = String(identifierOf(record) ?? '').trim()
+  if (!requested || !recordIdentifier) return false
+  if (requested === recordIdentifier) return true
+  if (!sameOperationalIdentifier(requested, recordIdentifier)) return false
+  const foldedMatches = (Array.isArray(records) ? records : []).filter((candidate) => (
+    sameOperationalIdentifier(identifierOf(candidate), requested)
+  ))
+  return foldedMatches.length === 1 && foldedMatches[0] === record
+}
+
+export const operationalIdentifierReferenceKey = (
+  records = [],
+  reference = '',
+  identifierOf = defaultOperationalIdentifierOf,
+) => {
+  const requested = String(reference ?? '').trim()
+  if (!requested) return ''
+  const foldedMatches = (Array.isArray(records) ? records : []).filter((candidate) => (
+    sameOperationalIdentifier(identifierOf(candidate), requested)
+  ))
+  return foldedMatches.length > 1
+    ? `exact:${requested}`
+    : `folded:${normalizeOperationalIdentifier(requested)}`
+}
 
 export const money = (value) => `${new Intl.NumberFormat('en-US').format(Number(value) || 0)} đ`
 
@@ -86,7 +180,8 @@ export const resolveStoreEmployeeSalaryPolicy = (employee = {}, {
         period,
         store,
       })
-    } catch {
+    } catch (error) {
+      if (error?.code === STORE_SALARY_CONFIG_IDENTIFIER_COLLISION) throw error
       policy = null
     }
   }

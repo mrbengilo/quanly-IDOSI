@@ -26,8 +26,9 @@ lưu hash, salt, số vòng lặp.
 
 ## Hợp đồng frontend
 
-`POST /api/login` nhận `username`, `password`; lưu `token` trả về ở bộ nhớ phiên
-và gửi `Authorization: Bearer <token>`. Không lưu token vào shared state.
+`POST /api/login` nhận `username`, `password`; cả tên đăng nhập và mật khẩu đều
+phân biệt chữ hoa/thường. Lưu `token` trả về ở bộ nhớ phiên và gửi
+`Authorization: Bearer <token>`. Không lưu token vào shared state.
 Phiên mặc định có hiệu lực 12 giờ để bao phủ một ngày chấm công;
 có thể ghi đè bằng biến `SESSION_TTL_SECONDS`.
 
@@ -253,6 +254,15 @@ Các lệnh chính:
 - `attendance.check_in`: payload `shiftId?`, `location { latitude, longitude,
   accuracy?, label? }`. Server dùng giờ Việt Nam, policy đi sớm/đi trễ và snapshot
   ca; không nhận giờ từ client.
+  Với nhân viên cửa hàng, giờ điểm danh thực tế chọn đúng một danh mục công việc
+  bắt buộc (`<12:00` ca sáng, `12:00–16:59` ca chiều, `>=17:00` ca tối); snapshot
+  đồng thời giữ toàn bộ công việc tính thưởng đang áp dụng cho ca. Snapshot đã chốt
+  là bất biến: sửa danh mục sau đó không thêm việc ngược vào ca đang mở. Dữ liệu cũ
+  thiếu toàn bộ checklist chuẩn (kể cả khi có việc tùy chỉnh/thưởng) được phục hồi
+  một lần bằng commit tăng phiên bản có audit trước khi trả projection. Nếu các dòng
+  công việc/lịch sử bị thiếu, server dựng lại từ snapshot bất biến ngay cả khi danh
+  mục hiện tại đã bị tắt hoặc xóa; giờ vào không hợp lệ thì chưa chốt snapshot để lần
+  chỉnh chấm công có audit sau đó tạo đúng danh sách đầy đủ.
   Nhân viên `OFFICE` không có ca được phân sẽ dùng ca
   `OFFICE_DEFAULT` do server suy ra từ hồ sơ; record snapshot ngày công
   chuẩn của tháng, `minutesEarly`, `minutesLate` và chỉ cho một lượt/ngày.
@@ -307,6 +317,13 @@ Các lệnh chính:
   `ata_legacy_<audit_log.id>`, loại trùng với state audit và chỉ sau khi khôi phục
   mới nhập row đó vào history. Audit D1 attendance không được mở qua
   `GET /api/audit` cho Hỗ trợ KD.
+- `operational_identifier.resolve_history_alias`: chỉ Admin, payload
+  `{kind:'employee'|'store',aliasIdentifier,canonicalIdentifier,reason}`. Dùng
+  khi một mã lịch sử chỉ khác chữ hoa/thường với đúng một hồ sơ đang hoạt động.
+  Server giữ nguyên bản ghi lịch sử, chuẩn hóa trường mã và gắn
+  `identifierAliasResolution` gồm mã cũ, mã chuẩn, lý do, người và thời điểm xử
+  lý; toàn bộ before/after tiếp tục được ghi audit. Lệnh không tự gộp nhiều hồ
+  sơ mơ hồ.
 - `task.done` (alias `task.set_done`): employee, payload `taskId`, `done`.
   Server lấy nhân viên/cửa hàng từ session, chỉ cho đúng assignee trong đúng
   ngày/ca đang mở và append lịch sử hoàn thành.
@@ -330,6 +347,11 @@ Các lệnh chính:
   `advanceId` và cùng lúc ghi cash-out + expense.
 - `salary_adjustment.create`: admin/business_support/store_manager theo phạm vi cửa hàng, payload `employeeId`, `period`, `type`
   (`Thưởng khác`, `Phụ cấp khác` hoặc `Khấu trừ`), `amount`, `note?`.
+- `store_salary_config.resolve_collision`: chỉ Admin, payload
+  `{storeId,employeeId,effectiveFrom,keepConfigId,reason}`. Giữ đúng cấu hình
+  được chọn, chuẩn hóa mã cửa hàng/nhân viên và xóa mềm các cấu hình cùng kỳ chỉ
+  khác chữ hoa/thường. Kỳ đã chi hoặc khóa chặn sửa; các kỳ chốt an toàn bị đánh
+  dấu cần chốt lại. Bản ghi bị loại vẫn còn để audit.
 - `payroll.close|pay`: Admin hoặc business_support; `payroll.lock`: chỉ Admin.
   HTKD áp dụng cho mọi cửa hàng vật lý đang hoạt động, còn quản lý chỉ có quyền
   rà soát cửa hàng của mình. Payload gồm `storeId`, `period`. Server tự chốt
@@ -354,6 +376,11 @@ Các lệnh chính:
   còn kỳ hiện tại đã chi/khóa chặn cập nhật.
   Profile `unit: store_manager` bị loại khỏi lịch phân ca và bảng lương của
   nhân viên cửa hàng.
+- `payroll.resolve_period_collision`: chỉ Admin, payload
+  `{storeId,period,keepPayrollId,reason}`. Giữ đúng kỳ lương được chọn và đánh
+  dấu các bí danh an toàn là `superseded` thay vì xóa. Server từ chối tự sửa nếu
+  kỳ bị loại đã khóa/chi hoặc có bút toán, thanh toán liên kết; trường hợp đó cần
+  đối soát thủ công để không làm sai số tiền hay lịch sử.
 - `policy.set`: admin/business_support, payload `key`, `value`, dùng version riêng của policy.
   Khi lưu nhiều ô cùng lúc, dùng `policies.set` với payload
   `updates: [{ key, value, expectedVersion }]` để toàn bộ thay đổi cùng commit

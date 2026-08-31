@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   buildLocalPayrollFinanceSnapshot,
   calculateLocalStoreEmployeeBasePay,
+  hasLocalPayrollReferenceCollision,
+  localAvailableSalaryForEmployee,
   localHomePayrollAttendance,
 } from './AppContext'
 
@@ -79,7 +81,7 @@ describe('localHomePayrollAttendance', () => {
   it('keeps home attendance and excludes support hours from tiered home payroll', () => {
     const employee = { id: 'ST-01', storeId: 'HOME-01' }
     const attendance = [{
-      id: 'ATT-HOME', employeeId: 'ST-01', storeId: 'HOME-01', date: '2026-08-10', hours: 8,
+      id: 'ATT-HOME', employeeId: 'st-01', storeId: 'home-01', date: '2026-08-10', hours: 8,
     }, {
       id: 'ATT-SUPPORT', employeeId: 'ST-01', storeId: 'SUPPORT-01', date: '2026-08-11', hours: 5,
       supportTransferId: 'TRANSFER-01', supportCompensation: { transferId: 'TRANSFER-01', totalPay: 195_000 },
@@ -92,5 +94,90 @@ describe('localHomePayrollAttendance', () => {
 
     expect(localHomePayrollAttendance({ attendance, employee, period: '2026-08' }).map((record) => record.id))
       .toEqual(['ATT-HOME'])
+  })
+
+  it('keeps exact employee and store records isolated when ids differ only by case', () => {
+    const upperEmployee = { id: 'EMP-01', storeId: 'STORE-01' }
+    const lowerEmployee = { id: 'emp-01', storeId: 'store-01' }
+    const stores = [{ id: 'STORE-01' }, { id: 'store-01' }]
+    const attendance = [
+      { id: 'UPPER', employeeId: 'EMP-01', storeId: 'STORE-01', date: '2026-08-10', hours: 8 },
+      { id: 'LOWER', employeeId: 'emp-01', storeId: 'store-01', date: '2026-08-10', hours: 99 },
+      { id: 'AMBIGUOUS', employeeId: 'Emp-01', storeId: 'Store-01', date: '2026-08-10', hours: 99 },
+    ]
+
+    expect(localHomePayrollAttendance({
+      attendance,
+      employee: upperEmployee,
+      employees: [upperEmployee, lowerEmployee],
+      stores,
+      period: '2026-08',
+    }).map((record) => record.id)).toEqual(['UPPER'])
+  })
+})
+
+describe('localAvailableSalaryForEmployee', () => {
+  it('matches employee, store, attendance, adjustments and advances without identifier casing sensitivity', () => {
+    const state = {
+      employees: [{
+        id: 'ST-01', storeId: 'STORE-01', unit: 'store', employmentType: 'Thử Việc', hourlyRate: 25_000,
+      }],
+      stores: [{ id: 'STORE-01', name: 'SM TNV', status: 'Đang hoạt động' }],
+      attendance: [{
+        id: 'ATT-01', employeeId: 'st-01', storeId: 'store-01', date: '2026-08-10', hours: 8,
+      }],
+      salaryAdjustments: [{
+        id: 'BONUS-01', employeeId: 'st-01', date: '2026-08-10', bonusSource: 'manual', amount: 10_000,
+      }],
+      salaryAdvances: [{
+        id: 'ADVANCE-01', employeeId: 'st-01', period: '2026-08', status: 'Đã chi', amount: 50_000,
+      }],
+      storeEmployeeSalaryConfigs: [],
+    }
+
+    expect(localAvailableSalaryForEmployee(state, 'ST-01', '2026-08')).toBe(160_000)
+  })
+
+  it('does not merge payroll amounts across exact case-distinct employees and stores', () => {
+    const state = {
+      employees: [
+        { id: 'E01', storeId: 'S01', unit: 'store', employmentType: 'Thử Việc', hourlyRate: 25_000 },
+        { id: 'e01', storeId: 's01', unit: 'store', employmentType: 'Thử Việc', hourlyRate: 99_000 },
+      ],
+      stores: [{ id: 'S01', name: 'SM TNV' }, { id: 's01', name: 'Store duplicate' }],
+      attendance: [
+        { id: 'ATT-UPPER', employeeId: 'E01', storeId: 'S01', date: '2026-08-10', hours: 8 },
+        { id: 'ATT-LOWER', employeeId: 'e01', storeId: 's01', date: '2026-08-10', hours: 99 },
+      ],
+      salaryAdjustments: [
+        { id: 'BONUS-UPPER', employeeId: 'E01', storeId: 'S01', date: '2026-08-10', bonusSource: 'manual', amount: 10_000 },
+        { id: 'BONUS-LOWER', employeeId: 'e01', storeId: 's01', date: '2026-08-10', bonusSource: 'manual', amount: 9_000_000 },
+      ],
+      salaryAdvances: [
+        { id: 'ADV-UPPER', employeeId: 'E01', storeId: 'S01', period: '2026-08', status: 'Đã chi', amount: 50_000 },
+        { id: 'ADV-LOWER', employeeId: 'e01', storeId: 's01', period: '2026-08', status: 'Đã chi', amount: 8_000_000 },
+      ],
+      storeEmployeeSalaryConfigs: [],
+    }
+
+    expect(localAvailableSalaryForEmployee(state, 'E01', '2026-08')).toBe(160_000)
+  })
+
+  it('detects ambiguous payroll references before closing a store period', () => {
+    const upperEmployee = { id: 'EMP-01', storeId: 'STORE-01', unit: 'store' }
+    const state = {
+      employees: [upperEmployee, { id: 'emp-01', storeId: 'store-01', unit: 'store' }],
+      stores: [{ id: 'STORE-01' }, { id: 'store-01' }],
+      attendance: [{ id: 'ATT-AMBIGUOUS', employeeId: 'Emp-01', storeId: 'Store-01', date: '2026-08-10', hours: 8 }],
+      salaryAdjustments: [],
+      salaryAdvances: [],
+    }
+
+    expect(hasLocalPayrollReferenceCollision({
+      state,
+      employees: [upperEmployee],
+      store: state.stores[0],
+      period: '2026-08',
+    })).toBe(true)
   })
 })

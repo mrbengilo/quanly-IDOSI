@@ -99,7 +99,16 @@ export default function Login() {
 
           <label className="login-field">
             <span>Tên đăng nhập</span>
-            <Input icon={UserRound} value={username} onChange={(event) => setUsername(event.target.value)} placeholder="Nhập tên đăng nhập" autoComplete="username" />
+            <Input
+              icon={UserRound}
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="Nhập tên đăng nhập"
+              autoComplete="username"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
           </label>
           <label className="login-field">
             <span>Mật khẩu</span>

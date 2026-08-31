@@ -17,6 +17,7 @@ import {
   STORE_FULL_TIME_THRESHOLD_HOURS,
   STORE_PAYROLL_MODEL,
   STORE_PAYROLL_POLICY,
+  STORE_SALARY_CONFIG_IDENTIFIER_COLLISION,
   calculateStoreEmployeeBasePay,
   classifyStorePayrollPolicy,
   defaultStoreTieredRates,
@@ -625,6 +626,12 @@ const validAvatarImageStructure = async (mimeType, bytes) => {
 }
 const BUSINESS_SUPPORT_STORE_ID = 'BUSINESS_SUPPORT'
 const OFFICE_STORE_ID = 'OFFICE'
+const RESERVED_PHYSICAL_STORE_IDS = new Set([
+  OFFICE_STORE_ID,
+  BUSINESS_SUPPORT_STORE_ID,
+  'ADMIN',
+  'SYSTEM',
+])
 const OPERATIONS_ROLES = new Set(['admin', 'business_support', 'store_manager'])
 const PAYROLL_OPERATOR_ROLES = new Set(['admin', 'business_support'])
 const BUSINESS_SUPPORT_SELF_SERVICE_COMMANDS = new Set([
@@ -883,7 +890,290 @@ const sha256 = async (value) => {
 }
 
 const normalizeUsername = (value) => String(value || '').trim().toLocaleLowerCase('vi-VN')
+// Operational identifiers are canonical references, not credentials. Historical
+// imports may preserve different letter casing, so compare them case-insensitively.
+// Login names and passwords deliberately do not use this helper.
+const normalizeIdentifierKey = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
+const sameIdentifier = (left, right) => (
+  Boolean(normalizeIdentifierKey(left))
+  && normalizeIdentifierKey(left) === normalizeIdentifierKey(right)
+)
+
+const isReservedPhysicalStoreIdentifier = (value) => [...RESERVED_PHYSICAL_STORE_IDS]
+  .some((identifier) => sameIdentifier(identifier, value))
+
+const assertNoReservedPhysicalStoreIdentifiers = (state) => {
+  const reservedStore = (Array.isArray(state?.stores) ? state.stores : [])
+    .find((store) => isReservedPhysicalStoreIdentifier(store?.id))
+  if (!reservedStore) return
+  throw new ApiError(
+    400,
+    'STORE_ID_RESERVED',
+    'Mã đơn vị nội bộ không được dùng làm mã cửa hàng vật lý.',
+    { storeId: String(reservedStore.id || '').trim() },
+  )
+}
+
+const uniqueIdentifierRecordMatch = ({
+  records,
+  identifier,
+  identifierOf = (record) => record?.id,
+  predicate = () => true,
+  collisionCode,
+  collisionMessage,
+}) => {
+  const requestedIdentifier = String(identifier ?? '').trim()
+  if (!requestedIdentifier) return null
+  const matches = (Array.isArray(records) ? records : [])
+    .map((record, index) => ({ record, index, identifier: String(identifierOf(record) ?? '').trim() }))
+    .filter((match) => predicate(match.record) && sameIdentifier(match.identifier, requestedIdentifier))
+  if (matches.length <= 1) return matches[0] || null
+  const exactMatches = matches.filter((match) => match.identifier === requestedIdentifier)
+  if (exactMatches.length === 1) return exactMatches[0]
+  throw new ApiError(409, collisionCode, collisionMessage, {
+    identifier: normalizeIdentifierKey(requestedIdentifier),
+    conflictingIdentifiers: matches.map((match) => match.identifier),
+  })
+}
+
+const strictUniqueIdentifierRecordMatch = ({
+  records,
+  identifier,
+  identifierOf = (record) => record?.id,
+  predicate = () => true,
+  collisionCode,
+  collisionMessage,
+}) => {
+  const requestedIdentifier = String(identifier ?? '').trim()
+  if (!requestedIdentifier) return null
+  const matches = (Array.isArray(records) ? records : [])
+    .map((record, index) => ({ record, index, identifier: String(identifierOf(record) ?? '').trim() }))
+    .filter((match) => predicate(match.record) && sameIdentifier(match.identifier, requestedIdentifier))
+  if (matches.length <= 1) return matches[0] || null
+  throw new ApiError(409, collisionCode, collisionMessage, {
+    identifier: normalizeIdentifierKey(requestedIdentifier),
+    conflictingIdentifiers: matches.map((match) => match.identifier),
+  })
+}
+
+// Mutations must distinguish an unrelated reference from a case-folded
+// reference that could point at more than one persisted parent. Read-only
+// projections may simply omit an ambiguous link, but money, payroll and
+// attendance mutations must fail closed before changing state.
+const mutationIdentifierReferenceMatchesRecord = ({
+  records,
+  record,
+  reference,
+  identifierOf = (candidate) => candidate?.id,
+  collisionCode = 'OPERATIONAL_IDENTIFIER_REFERENCE_COLLISION',
+  collisionMessage = 'Tham chiếu mã nghiệp vụ đang mơ hồ; cần xử lý dữ liệu trùng trước khi tiếp tục.',
+}) => {
+  const requestedIdentifier = String(reference ?? '').trim()
+  if (!requestedIdentifier || !record) return false
+  const match = uniqueIdentifierRecordMatch({
+    records,
+    identifier: requestedIdentifier,
+    identifierOf,
+    collisionCode,
+    collisionMessage,
+  })
+  return match?.record === record
+}
+
+const collisionAwareIdentifierReferenceKey = ({
+  records,
+  reference,
+  identifierOf = (candidate) => candidate?.id,
+}) => {
+  const requestedIdentifier = String(reference ?? '').trim()
+  if (!requestedIdentifier) return ''
+  const foldedMatches = (Array.isArray(records) ? records : [])
+    .filter((candidate) => sameIdentifier(identifierOf(candidate), requestedIdentifier))
+  return foldedMatches.length > 1
+    ? `exact:${requestedIdentifier}`
+    : `folded:${normalizeIdentifierKey(requestedIdentifier)}`
+}
+
+const withCanonicalIdentifierEntry = (record, identifier, value) => {
+  const canonicalIdentifier = String(identifier ?? '').trim()
+  const entries = Object.entries(isPlainRecord(record) ? record : {})
+    .filter(([candidateId]) => !sameIdentifier(candidateId, canonicalIdentifier))
+  if (canonicalIdentifier) entries.push([canonicalIdentifier, value])
+  return Object.fromEntries(entries)
+}
 const isPlainRecord = (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+const employeeIdentifierValues = (record) => [
+  record?.id,
+  record?.code,
+  record?.employeeId,
+  record?.employeeCode,
+].map((value) => String(value || '').trim()).filter(Boolean)
+
+const uniqueEmployeeIdentifierRecordMatch = ({
+  records,
+  identifier,
+  predicate = () => true,
+  collisionCode = 'EMPLOYEE_IDENTIFIER_COLLISION',
+  collisionMessage = 'Mã nhân viên đang trùng với nhiều hồ sơ; không thể xác định nhân viên an toàn.',
+}) => {
+  const requestedIdentifier = String(identifier ?? '').trim()
+  if (!requestedIdentifier) return null
+  const matches = (Array.isArray(records) ? records : [])
+    .map((record, index) => ({ record, index, identifiers: employeeIdentifierValues(record) }))
+    .filter((match) => predicate(match.record)
+      && match.identifiers.some((candidate) => sameIdentifier(candidate, requestedIdentifier)))
+  if (matches.length <= 1) return matches[0] || null
+  const exactMatches = matches.filter((match) => match.identifiers.includes(requestedIdentifier))
+  if (exactMatches.length === 1) return exactMatches[0]
+  throw new ApiError(409, collisionCode, collisionMessage, {
+    identifier: normalizeIdentifierKey(requestedIdentifier),
+    conflictingIdentifiers: matches.map((match) => match.identifiers[0] || ''),
+  })
+}
+
+const assertNoCaseCollidingHistoricalIdentifiers = ({
+  activeRecords,
+  deletedRecords,
+  identifierValues,
+  code,
+  message,
+  allowExactDuplicateActive = false,
+}) => {
+  const entriesByIdentifier = new Map()
+  const collections = [
+    ['active', Array.isArray(activeRecords) ? activeRecords : []],
+    ['deleted', Array.isArray(deletedRecords) ? deletedRecords : []],
+  ]
+  for (const [collection, records] of collections) {
+    records.forEach((record, index) => {
+      const owner = `${collection}:${index}`
+      const values = identifierValues(record)
+      const displayIdentifier = values[0] || ''
+      for (const rawValue of values) {
+        const rawIdentifier = String(rawValue || '').trim()
+        const identifier = normalizeIdentifierKey(rawIdentifier)
+        if (!identifier) continue
+        const previousEntries = entriesByIdentifier.get(identifier) || []
+        const conflicts = previousEntries.some((previous) => {
+          if (previous.owner === owner) return false
+          // The same canonical spelling may legitimately appear in immutable
+          // deletion history. Live duplicates remain ambiguous unless the
+          // caller has established that an exact spelling is one legacy scope;
+          // differently-cased aliases always fail closed.
+          if (previous.rawIdentifier === rawIdentifier
+            && (allowExactDuplicateActive
+              || previous.collection === 'deleted'
+              || collection === 'deleted')) return false
+          return true
+        })
+        if (conflicts) {
+          const previous = previousEntries.find((entry) => entry.owner !== owner)
+          throw new ApiError(409, code, message, {
+            identifier,
+            firstIdentifier: previous?.displayIdentifier || previous?.rawIdentifier || identifier,
+            conflictingIdentifier: displayIdentifier || rawIdentifier || identifier,
+          })
+        }
+        previousEntries.push({
+          owner,
+          collection,
+          rawIdentifier,
+          displayIdentifier: displayIdentifier || rawIdentifier,
+        })
+        entriesByIdentifier.set(identifier, previousEntries)
+      }
+    })
+  }
+}
+
+const assertNoCaseCollidingEmployeeIdentifiers = (state) => {
+  assertNoCaseCollidingHistoricalIdentifiers({
+    activeRecords: state?.employees,
+    deletedRecords: state?.deletedEmployees,
+    identifierValues: employeeIdentifierValues,
+    code: 'EMPLOYEE_IDENTIFIER_COLLISION',
+    message: 'Dữ liệu có nhiều hồ sơ nhân viên dùng cùng một mã nhưng khác chữ hoa/thường.',
+  })
+}
+
+const assertNoCaseCollidingStoreIdentifiers = (state) => {
+  assertNoCaseCollidingHistoricalIdentifiers({
+    activeRecords: state?.stores,
+    deletedRecords: state?.deletedStores,
+    identifierValues: (record) => [String(record?.id || '').trim()].filter(Boolean),
+    code: 'STORE_IDENTIFIER_COLLISION',
+    message: 'Dữ liệu có nhiều cửa hàng dùng cùng một mã nhưng khác chữ hoa/thường.',
+    // Migration 0004 intentionally preserves repeated legacy rows with the
+    // exact same store id. They represent one authorization scope; only a
+    // differently-cased spelling can create a second folded scope and leak.
+    allowExactDuplicateActive: true,
+  })
+}
+
+const assertNoCaseCollidingSupportTransferIdentifiers = (state) => {
+  assertNoCaseCollidingHistoricalIdentifiers({
+    activeRecords: state?.supportTransfers,
+    deletedRecords: [],
+    identifierValues: (record) => [String(record?.id || '').trim()].filter(Boolean),
+    code: 'SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+    message: 'Dữ liệu có nhiều phiếu điều chuyển dùng cùng một mã nhưng khác chữ hoa/thường.',
+  })
+}
+
+const assertNoCaseCollidingAttendanceIdentifiers = (state) => {
+  assertNoCaseCollidingHistoricalIdentifiers({
+    activeRecords: state?.attendance,
+    deletedRecords: [],
+    identifierValues: (record) => [String(record?.id || '').trim()].filter(Boolean),
+    code: 'ATTENDANCE_IDENTIFIER_COLLISION',
+    message: 'Dữ liệu có nhiều bản chấm công dùng cùng một mã nhưng khác chữ hoa/thường.',
+  })
+}
+
+const assertNoCaseCollidingOperationalIdentifiers = (state) => {
+  assertNoCaseCollidingEmployeeIdentifiers(state)
+  assertNoCaseCollidingStoreIdentifiers(state)
+  assertNoCaseCollidingSupportTransferIdentifiers(state)
+}
+
+const assertNoCaseCollidingActiveWorkCatalogIdentifiers = (state) => {
+  const activeRecords = (Array.isArray(state?.workCatalogItems) ? state.workCatalogItems : [])
+    .filter((record) => !record?.deletedAt && record?.active !== false)
+  const ownerByIdentifier = new Map()
+  activeRecords.forEach((record, index) => {
+    const rawIdentifier = String(record?.id || '').trim()
+    const identifier = normalizeIdentifierKey(rawIdentifier)
+    if (!identifier) return
+    const previous = ownerByIdentifier.get(identifier)
+    if (previous) {
+      throw new ApiError(
+        409,
+        'WORK_CATALOG_IDENTIFIER_COLLISION',
+        'Danh mục có nhiều công việc dùng cùng một mã nhưng khác chữ hoa/thường.',
+        {
+          identifier,
+          firstIdentifier: previous.rawIdentifier,
+          conflictingIdentifier: rawIdentifier || identifier,
+        },
+      )
+    }
+    ownerByIdentifier.set(identifier, { owner: index, rawIdentifier })
+  })
+}
+
+const activeWorkCatalogIdentifierMatches = (state, itemId) => {
+  const identifier = normalizeIdentifierKey(itemId)
+  if (!identifier) return []
+  return (Array.isArray(state?.workCatalogItems) ? state.workCatalogItems : [])
+    .map((record, index) => ({ record, index }))
+    .filter(({ record }) => (
+      !record?.deletedAt
+      && record?.active !== false
+      && normalizeIdentifierKey(record?.id) === identifier
+    ))
+}
+
 const isEmbeddedImageDataUrl = (value) => typeof value === 'string'
   && /^data:image(?:\/|-)[a-z0-9.+-]+;base64,/iu.test(value)
 
@@ -1028,8 +1318,8 @@ const supportTransferMatchesTime = (record, at) => /^\d{4}-\d{2}-\d{2}$/u.test(S
 
 const supportTransferMatchesEmployeeStore = (record, employeeId, storeId) => (
   isPlainRecord(record)
-  && String(record.employeeId || '') === String(employeeId || '')
-  && String(record.toStoreId || '') === String(storeId || '')
+  && sameIdentifier(record.employeeId, employeeId)
+  && sameIdentifier(record.toStoreId, storeId)
 )
 
 const supportTransferOverlapsCalendarRange = (record, fromDate, toDate) => {
@@ -1048,7 +1338,7 @@ const linkedSupportTransferForAttendance = (state, attendance, employeeId, store
   const transferId = String(attendance?.supportTransferId || '').trim()
   if (!transferId) return null
   return (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
-    String(record.id || '') === transferId
+    sameIdentifier(record.id, transferId)
     && supportTransferMatchesEmployeeStore(record, employeeId, storeId)
   )) || null
 }
@@ -1348,6 +1638,9 @@ const employeeReferences = (record) => {
 }
 
 const redactEmployeeReferences = (value, allowedEmployeeIds, parentKey = '', depth = 0) => {
+  const allowedKeys = depth === 0
+    ? new Set([...allowedEmployeeIds].map(normalizeIdentifierKey).filter(Boolean))
+    : allowedEmployeeIds
   if (depth > 16 || value == null) return value
   if (Array.isArray(value)) {
     return value.flatMap((item) => {
@@ -1355,9 +1648,9 @@ const redactEmployeeReferences = (value, allowedEmployeeIds, parentKey = '', dep
         const reference = isPlainRecord(item)
           ? String(item.employeeId || item.employee_id || item.assigneeId || item.userId || item.id || item.code || '')
           : String(item || '')
-        if (reference && !allowedEmployeeIds.has(reference)) return []
+        if (reference && !allowedKeys.has(normalizeIdentifierKey(reference))) return []
       }
-      const redacted = redactEmployeeReferences(item, allowedEmployeeIds, parentKey, depth + 1)
+      const redacted = redactEmployeeReferences(item, allowedKeys, parentKey, depth + 1)
       return redacted === undefined ? [] : [redacted]
     })
   }
@@ -1369,20 +1662,20 @@ const redactEmployeeReferences = (value, allowedEmployeeIds, parentKey = '', dep
     ? String(value.employeeCode || value.id || value.code || '').trim()
     : ''
   if (depth > 0
-    && ((directReference && !allowedEmployeeIds.has(directReference))
-      || (contextualReference && !allowedEmployeeIds.has(contextualReference)))) return undefined
+    && ((directReference && !allowedKeys.has(normalizeIdentifierKey(directReference)))
+      || (contextualReference && !allowedKeys.has(normalizeIdentifierKey(contextualReference))))) return undefined
   const projected = {}
   for (const [key, nested] of Object.entries(value)) {
     if (['employeeId', 'employee_id', 'assigneeId', 'userId'].includes(key)) {
-      if (allowedEmployeeIds.has(String(nested || ''))) projected[key] = nested
+      if (allowedKeys.has(normalizeIdentifierKey(nested))) projected[key] = nested
       continue
     }
     if (key === 'completedBy' && isPlainRecord(nested)) {
       projected[key] = Object.fromEntries(Object.entries(nested)
-        .filter(([employeeId]) => allowedEmployeeIds.has(String(employeeId))))
+        .filter(([employeeId]) => allowedKeys.has(normalizeIdentifierKey(employeeId))))
       continue
     }
-    const redacted = redactEmployeeReferences(nested, allowedEmployeeIds, key, depth + 1)
+    const redacted = redactEmployeeReferences(nested, allowedKeys, key, depth + 1)
     if (redacted !== undefined) projected[key] = redacted
   }
   return projected
@@ -1390,7 +1683,7 @@ const redactEmployeeReferences = (value, allowedEmployeeIds, parentKey = '', dep
 
 const belongsToEmployee = (record, employeeId) => {
   if (!isPlainRecord(record)) return false
-  return employeeReferences(record).includes(String(employeeId))
+  return employeeReferences(record).some((reference) => sameIdentifier(reference, employeeId))
 }
 
 const orderCreatorEmployeeId = (record) => {
@@ -1414,7 +1707,7 @@ const orderCreatorEmployeeId = (record) => {
 
 const orderCreatedByEmployee = (record, employeeId) => (
   Boolean(String(employeeId || '').trim())
-  && orderCreatorEmployeeId(record) === String(employeeId).trim()
+  && sameIdentifier(orderCreatorEmployeeId(record), employeeId)
 )
 
 const taskAssigneeIds = (task) => {
@@ -1433,9 +1726,19 @@ const taskAssigneeIds = (task) => {
 }
 
 const taskAppliesToEmployee = (task, employeeId, storeId) => {
-  if (!isPlainRecord(task) || task.deletedAt || String(task.storeId || '') !== String(storeId || '')) return false
+  if (!isPlainRecord(task) || task.deletedAt || !sameIdentifier(task.storeId, storeId)) return false
   const assignees = taskAssigneeIds(task)
-  return !assignees.length || assignees.includes(String(employeeId || ''))
+  return !assignees.length || assignees.some((assigneeId) => sameIdentifier(assigneeId, employeeId))
+}
+
+const completedByEmployeeValue = (completedBy, employeeId) => {
+  if (!isPlainRecord(completedBy)) return undefined
+  const entries = Object.entries(completedBy)
+  const requestedIdentifier = String(employeeId || '').trim()
+  const exact = entries.filter(([candidateId]) => candidateId === requestedIdentifier)
+  if (exact.length === 1) return exact[0][1]
+  const matches = entries.filter(([candidateId]) => sameIdentifier(candidateId, requestedIdentifier))
+  return matches.length === 1 ? matches[0][1] : undefined
 }
 
 const filterArray = (state, key, predicate) => (Array.isArray(state[key]) ? state[key].filter(predicate) : [])
@@ -1446,7 +1749,7 @@ const employeeUnit = (record) => {
   const explicit = String(record?.unit || record?.unitType || record?.department || '').trim().toLowerCase()
   if (['business_support', 'business-support', 'support'].includes(explicit)) return 'business_support'
   if (['store_manager', 'store-manager', 'manager'].includes(explicit)) return 'store_manager'
-  if (explicit === 'office' || String(record?.storeId || '') === OFFICE_STORE_ID || record?.isOffice === true) return 'office'
+  if (explicit === 'office' || sameIdentifier(record?.storeId, OFFICE_STORE_ID) || record?.isOffice === true) return 'office'
   return 'store'
 }
 
@@ -1463,8 +1766,9 @@ const payrollProjectionEmployeeId = (record) => String(
 ).trim()
 
 const projectPayrollPeriodForEmployees = (period, visibleEmployeeIds) => {
+  const visibleEmployeeKeys = new Set([...visibleEmployeeIds].map(normalizeIdentifierKey).filter(Boolean))
   const rows = Array.isArray(period?.rows)
-    ? period.rows.filter((row) => visibleEmployeeIds.has(payrollProjectionEmployeeId(row)))
+    ? period.rows.filter((row) => visibleEmployeeKeys.has(normalizeIdentifierKey(payrollProjectionEmployeeId(row))))
     : null
   return { ...withoutRetiredKpiFields(period), ...(rows ? { rows: rows.map(withoutRetiredKpiRow) } : {}) }
 }
@@ -1501,7 +1805,7 @@ const referencedOrderForNotification = (state, record) => {
     const matches = orders.filter((order) => String(order.code || '').trim() === reference)
     if (matches.length === 1) return matches[0]
     for (const storeId of references([embeddedStoreId, storeIdFromCode(reference), genericStoreId])) {
-      const scoped = matches.filter((order) => String(order.storeId || '') === storeId)
+      const scoped = matches.filter((order) => sameIdentifier(order.storeId, storeId))
       if (scoped.length === 1) return scoped[0]
     }
     return null
@@ -1553,21 +1857,21 @@ const canAccessNotification = (state, actor, record) => {
   const recordStoreId = String(record.storeId || '')
   if (actor.role === 'store_manager') {
     const storeId = String(actor.store_id || '')
-    if (!storeId || recordStoreId !== storeId) return false
+    if (!storeId || !sameIdentifier(recordStoreId, storeId)) return false
     const referencedEmployeeIds = employeeReferences(record)
     if (!referencedEmployeeIds.length) return true
     const eventTime = String(record.createdAt || record.occurredAt || '')
     const eventEpoch = Date.parse(eventTime)
     return referencedEmployeeIds.every((reference) => (
       (Array.isArray(state.employees) ? state.employees : []).some((employee) => (
-        [employee.id, employee.code, employee.employeeId].map(String).includes(reference)
-        && String(employee.storeId || '') === storeId
+        employeeIdentifierValues(employee).some((identifier) => sameIdentifier(identifier, reference))
+        && sameIdentifier(employee.storeId, storeId)
         && (employeeUnit(employee) === 'store'
-          || [employee.id, employee.code, employee.employeeId].map(String).includes(String(actor.employee_id || '')))
+          || employeeIdentifierValues(employee).some((identifier) => sameIdentifier(identifier, actor.employee_id)))
       ))
       || (Number.isFinite(eventEpoch) && (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).some((transfer) => {
-        if (String(transfer.employeeId || '') !== reference
-          || String(transfer.toStoreId || '') !== storeId
+        if (!sameIdentifier(transfer.employeeId, reference)
+          || !sameIdentifier(transfer.toStoreId, storeId)
           || transfer.deletedAt
           || ['Đã xóa', 'Đã hủy'].includes(String(transfer.status || ''))) return false
         const bounds = supportTransferTimeBounds(transfer)
@@ -1579,14 +1883,14 @@ const canAccessNotification = (state, actor, record) => {
   if (String(record.type || '') === 'store-task-progress-submitted') return false
   const employeeId = String(actor.employee_id || actor.user_id || '')
   const storeId = String(actor.store_id || '')
-  if (!employeeId || !storeId || (recordStoreId && recordStoreId !== storeId)) return false
+  if (!employeeId || !storeId || (recordStoreId && !sameIdentifier(recordStoreId, storeId))) return false
   if (String(record.type || '').startsWith('order.')) {
     const order = referencedOrderForNotification(state, record)
     if (!order || !orderCreatedByEmployee(order, employeeId)) return false
   }
   return hasExplicitNotificationAudience(record)
     ? belongsToEmployee(record, employeeId)
-    : recordStoreId === storeId
+    : sameIdentifier(recordStoreId, storeId)
 }
 
 const notificationActorId = (actor) => String(actor?.user_id || actor?.id || '')
@@ -1636,12 +1940,26 @@ const normalizeAccountAvatarMetadata = (value, userId = '') => {
 const ownEmployeeProfile = (state, user) => {
   const userId = String(user?.user_id || user?.id || '')
   const employeeId = String(user?.employee_id || user?.employeeId || '')
-  return (Array.isArray(state?.employees) ? state.employees : []).find((profile) => {
-    if (!isPlainRecord(profile)) return false
-    if (userId && String(profile.authUserId || '') === userId) return true
-    if (!employeeId) return false
-    return [profile.id, profile.code, profile.employeeId].some((value) => String(value || '') === employeeId)
-  }) || null
+  const employees = Array.isArray(state?.employees) ? state.employees : []
+  if (employeeId) {
+    const employeeMatch = uniqueEmployeeIdentifierRecordMatch({
+      records: employees,
+      identifier: employeeId,
+      predicate: isPlainRecord,
+      collisionCode: 'EMPLOYEE_AVATAR_PROFILE_COLLISION',
+      collisionMessage: 'Định danh hồ sơ ảnh đại diện đang trùng; không thể chọn hồ sơ an toàn.',
+    })
+    if (employeeMatch) return employeeMatch.record
+  }
+  if (!userId) return null
+  return uniqueIdentifierRecordMatch({
+    records: employees,
+    identifier: userId,
+    identifierOf: (profile) => profile?.authUserId,
+    predicate: isPlainRecord,
+    collisionCode: 'EMPLOYEE_AVATAR_OWNER_COLLISION',
+    collisionMessage: 'Tài khoản đang liên kết nhiều hồ sơ ảnh đại diện; cần xử lý dữ liệu trùng.',
+  })?.record || null
 }
 
 const employeeProfileIdentifier = (profile = {}) => String(
@@ -1652,16 +1970,25 @@ const actorRoleEmployeeProfile = (state, user) => {
   const employees = Array.isArray(state?.employees) ? state.employees : []
   const employeeId = String(user?.employee_id || user?.employeeId || '').trim()
   if (employeeId) {
-    const exact = employees.find((profile) => (
-      isPlainRecord(profile)
-      && [profile.id, profile.code, profile.employeeId, profile.employeeCode]
-        .some((value) => String(value || '').trim() === employeeId)
-    ))
-    if (exact) return exact
+    const match = uniqueEmployeeIdentifierRecordMatch({
+      records: employees,
+      identifier: employeeId,
+      predicate: isPlainRecord,
+      collisionCode: 'EMPLOYEE_ROLE_PROFILE_COLLISION',
+      collisionMessage: 'Định danh hồ sơ cho vai trò hiện tại đang trùng; không thể chọn theo thứ tự dữ liệu.',
+    })
+    if (match) return match.record
   }
   const userId = String(user?.user_id || user?.id || '').trim()
   return userId
-    ? employees.find((profile) => isPlainRecord(profile) && String(profile.authUserId || '').trim() === userId) || null
+    ? uniqueIdentifierRecordMatch({
+        records: employees,
+        identifier: userId,
+        identifierOf: (profile) => profile?.authUserId,
+        predicate: isPlainRecord,
+        collisionCode: 'EMPLOYEE_ROLE_OWNER_COLLISION',
+        collisionMessage: 'Tài khoản đang liên kết nhiều hồ sơ vai trò; cần xử lý dữ liệu trùng.',
+      })?.record || null
     : null
 }
 
@@ -1671,8 +1998,9 @@ const canonicalActorEmployeeProfile = (state, user) => {
   const visited = new Set()
   while (current) {
     const currentId = employeeProfileIdentifier(current)
-    if (!currentId || visited.has(currentId)) break
-    visited.add(currentId)
+    const currentKey = normalizeIdentifierKey(currentId)
+    if (!currentKey || visited.has(currentKey)) break
+    visited.add(currentKey)
     const linkedId = String(
       current.linkedEmployeeId
       || current.sourceEmployeeId
@@ -1681,11 +2009,13 @@ const canonicalActorEmployeeProfile = (state, user) => {
       || '',
     ).trim()
     if (!linkedId) break
-    const linked = employees.find((profile) => (
-      isPlainRecord(profile)
-      && [profile.id, profile.code, profile.employeeId, profile.employeeCode]
-        .some((value) => String(value || '').trim() === linkedId)
-    ))
+    const linked = uniqueEmployeeIdentifierRecordMatch({
+      records: employees,
+      identifier: linkedId,
+      predicate: isPlainRecord,
+      collisionCode: 'LINKED_EMPLOYEE_PROFILE_COLLISION',
+      collisionMessage: 'Hồ sơ nhân viên liên kết đang trùng; không thể chọn theo thứ tự dữ liệu.',
+    })?.record || null
     if (!linked) break
     current = linked
   }
@@ -1818,6 +2148,10 @@ const withEmployeeAccountAvatar = (state, employee = {}) => {
 
 export const projectSharedState = (rawState, user) => {
   const normalizedState = normalizeSharedStateForStorage(rawState)
+  // Folded employee IDs are safe at an authorization boundary only when they
+  // resolve to exactly one profile. Admin keeps access to repair legacy data;
+  // every operational projection fails closed instead of leaking peer records.
+  if (user.role !== 'admin') assertNoCaseCollidingOperationalIdentifiers(normalizedState)
   let state = {
     ...normalizedState,
     orderInformationOptions: orderInformationOptionsFromState(normalizedState),
@@ -1883,30 +2217,36 @@ export const projectSharedState = (rawState, user) => {
   }
 
   if (user.role === 'store_manager') {
-    const storeId = String(user.store_id || '')
-    if (!storeId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].includes(storeId)) return common
+    const requestedStoreId = String(user.store_id || '')
+    const storeId = String(
+      (Array.isArray(state.stores) ? state.stores : []).find((record) => sameIdentifier(record.id, requestedStoreId))?.id
+      || requestedStoreId,
+    )
+    if (!storeId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].some((identifier) => sameIdentifier(identifier, storeId))) return common
     const ownEmployeeId = String(user.employee_id || '')
     const ownAttendance = filterArray(state, 'attendance', (record) => belongsToEmployee(record, ownEmployeeId))
     const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
     const ownLatestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
     const homeEmployees = filterArray(state, 'employees', (record) => (
-      String(record.storeId || '') === storeId
+      sameIdentifier(record.storeId, storeId)
       && (employeeUnit(record) === 'store'
-        || [record.id, record.code, record.employeeId].map(String).includes(ownEmployeeId))
+        || employeeIdentifierValues(record).some((identifier) => sameIdentifier(identifier, ownEmployeeId)))
     ))
     const projectionTimestamp = new Date().toISOString()
     const inboundTransfers = filterArray(state, 'supportTransfers', (record) => (
-      String(record.toStoreId || '') === storeId
+      sameIdentifier(record.toStoreId, storeId)
       && isSupportTransferActiveAt(record, projectionTimestamp)
     ))
-    const inboundTransferByEmployee = new Map(inboundTransfers.map((record) => [String(record.employeeId || ''), record]))
+    const inboundTransferByEmployee = new Map(inboundTransfers.map((record) => [normalizeIdentifierKey(record.employeeId), record]))
     const transferredEmployees = filterArray(state, 'employees', (record) => (
       employeeUnit(record) === 'store'
       && !record.deletedAt
-      && inboundTransferByEmployee.has(String(record.id || record.code || ''))
+      && employeeIdentifierValues(record).some((identifier) => inboundTransferByEmployee.has(normalizeIdentifierKey(identifier)))
     )).map((record) => {
-      const transfer = inboundTransferByEmployee.get(String(record.id || record.code || ''))
+      const transfer = employeeIdentifierValues(record)
+        .map((identifier) => inboundTransferByEmployee.get(normalizeIdentifierKey(identifier)))
+        .find(Boolean)
       return {
         ...record,
         homeStoreId: record.storeId,
@@ -1927,28 +2267,28 @@ export const projectSharedState = (rawState, user) => {
     })
     const employees = [...homeEmployees]
     for (const employee of transferredEmployees) {
-      if (!employees.some((record) => String(record.id || record.code || '') === String(employee.id || employee.code || ''))) {
+      if (!employees.some((record) => (
+        employeeIdentifierValues(record).some((left) => employeeIdentifierValues(employee).some((right) => sameIdentifier(left, right)))
+      ))) {
         employees.push(employee)
       }
     }
     const visibleEmployeeIds = new Set(employees.flatMap((record) => (
-      [record.id, record.code, record.employeeId].map((value) => String(value || '')).filter(Boolean)
+      employeeIdentifierValues(record).map(normalizeIdentifierKey).filter(Boolean)
     )))
     const storeEmployeeIds = new Set(employees.filter((record) => employeeUnit(record) === 'store')
-      .flatMap((record) => [record.id, record.code, record.employeeId]
-        .map((value) => String(value || '')).filter(Boolean)))
+      .flatMap((record) => employeeIdentifierValues(record).map(normalizeIdentifierKey).filter(Boolean)))
     const historicalInboundEmployeeIds = filterArray(state, 'supportTransfers', (record) => (
-      String(record.toStoreId || '') === storeId
+      sameIdentifier(record.toStoreId, storeId)
       && !record.deletedAt
       && String(record.status || '') !== 'Đã xóa'
-    )).map((record) => String(record.employeeId || '')).filter(Boolean)
+    )).map((record) => normalizeIdentifierKey(record.employeeId)).filter(Boolean)
     const historicalStoreEmployeeIds = new Set([
       ...storeEmployeeIds,
       ...historicalInboundEmployeeIds,
       ...filterArray(state, 'deletedEmployees', (record) => (
-        String(record.storeId || '') === storeId && employeeUnit(record) === 'store'
-      )).flatMap((record) => [record.id, record.code, record.employeeId]
-        .map((value) => String(value || '')).filter(Boolean)),
+        sameIdentifier(record.storeId, storeId) && employeeUnit(record) === 'store'
+      )).flatMap((record) => employeeIdentifierValues(record).map(normalizeIdentifierKey).filter(Boolean)),
     ])
     const payrollVisibleEmployeeIds = new Set([
       ...storeEmployeeIds,
@@ -1957,10 +2297,10 @@ export const projectSharedState = (rawState, user) => {
     const historicalVisibleEmployeeIds = new Set([...visibleEmployeeIds, ...historicalStoreEmployeeIds])
     const belongsToAllowedStoreEmployees = (record, allowedEmployeeIds) => {
       const recordStoreId = String(record?.storeId || '')
-      if (recordStoreId && recordStoreId !== storeId) return false
+      if (recordStoreId && !sameIdentifier(recordStoreId, storeId)) return false
       const references = employeeReferences(record)
-      if (references.length) return references.every((reference) => allowedEmployeeIds.has(reference))
-      return recordStoreId === storeId
+      if (references.length) return references.every((reference) => allowedEmployeeIds.has(normalizeIdentifierKey(reference)))
+      return sameIdentifier(recordStoreId, storeId)
     }
     const employeeScoped = (key) => filterArray(
       state,
@@ -2017,12 +2357,12 @@ export const projectSharedState = (rawState, user) => {
       return [...totals.values()].sort((left, right) => right.period.localeCompare(left.period))
     })()
     const payrollPeriods = filterArray(state, 'payrollPeriods', (period) => (
-      String(period.storeId || '') === storeId
+      !period.supersededAt && sameIdentifier(period.storeId, storeId)
     )).map((period) => projectPayrollPeriodForEmployees(period, payrollVisibleEmployeeIds))
     const deletedEmployees = filterArray(state, 'deletedEmployees', (record) => (
-      String(record.storeId || '') === storeId
+      sameIdentifier(record.storeId, storeId)
       && (employeeUnit(record) === 'store'
-        || [record.id, record.code, record.employeeId].map(String).includes(ownEmployeeId))
+        || employeeIdentifierValues(record).some((identifier) => sameIdentifier(identifier, ownEmployeeId)))
     ))
     return {
       ...common,
@@ -2030,7 +2370,7 @@ export const projectSharedState = (rawState, user) => {
       activeAttendanceId: ownOpenAttendance?.id || null,
       checkedInAt: ownOpenAttendance?.checkInAt || ownOpenAttendance?.checkIn || null,
       finishedShift: Boolean(!ownOpenAttendance && ownLatestAttendance?.checkOutAt),
-      stores: filterArray(state, 'stores', (record) => String(record.id || '') === storeId),
+      stores: filterArray(state, 'stores', (record) => sameIdentifier(record.id, storeId)),
       employees,
       attendance: historicalVisibleScoped('attendance'),
       schedule: employeeScoped('schedule'),
@@ -2044,12 +2384,12 @@ export const projectSharedState = (rawState, user) => {
       payrollPayments: employeeScoped('payrollPayments'),
       storeEmployeeSalaryConfigs: filterArray(state, 'storeEmployeeSalaryConfigs', (record) => (
         !record.deletedAt
-        && String(record.storeId || '') === storeId
-        && storeEmployeeIds.has(String(record.employeeId || record.employee_id || ''))
+        && sameIdentifier(record.storeId, storeId)
+        && storeEmployeeIds.has(normalizeIdentifierKey(record.employeeId || record.employee_id))
       )).map((record) => redactEmployeeReferences(record, storeEmployeeIds)),
       workCatalogItems: filterArray(state, 'workCatalogItems', (record) => (
         String(record.targetGroup || '') === WORK_CATALOG_TARGET.STORE
-        && (!record.storeId || String(record.storeId) === storeId)
+        && (!record.storeId || sameIdentifier(record.storeId, storeId))
         && !record.deletedAt
       )),
       workCatalogProgress: historicalEmployeeScoped('workCatalogProgress'),
@@ -2057,17 +2397,17 @@ export const projectSharedState = (rawState, user) => {
       compensationEntries: ownCompensationEntries,
       violations: ownViolations,
       compensationTeamTotals,
-      revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => String(record.storeId || '') === storeId)
+      revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => sameIdentifier(record.storeId, storeId))
         .map(redactRevenueBonusDaily),
       revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations', (record) => (
-        String(record.storeId || '') === storeId && belongsToEmployee(record, ownEmployeeId)
+        sameIdentifier(record.storeId, storeId) && belongsToEmployee(record, ownEmployeeId)
       )),
-      teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => String(record.storeId || '') === storeId),
+      teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => sameIdentifier(record.storeId, storeId)),
       teamRewardParticipants: filterArray(state, 'teamRewardParticipants', (record) => (
-        String(record.storeId || '') === storeId && belongsToEmployee(record, ownEmployeeId)
+        sameIdentifier(record.storeId, storeId) && belongsToEmployee(record, ownEmployeeId)
       )),
-      periodReconciliations: filterArray(state, 'periodReconciliations', (record) => String(record.storeId || '') === storeId),
-      jobRuns: filterArray(state, 'jobRuns', (record) => String(record.storeId || '') === storeId),
+      periodReconciliations: filterArray(state, 'periodReconciliations', (record) => sameIdentifier(record.storeId, storeId)),
+      jobRuns: filterArray(state, 'jobRuns', (record) => sameIdentifier(record.storeId, storeId)),
       shiftDefinitions: employeeScoped('shiftDefinitions'),
       orders: historicalEmployeeScoped('orders'),
       expenseEntries: historicalEmployeeScoped('expenseEntries'),
@@ -2077,19 +2417,29 @@ export const projectSharedState = (rawState, user) => {
       imports: historicalEmployeeScoped('imports'),
       deletedEmployees,
       supportTransfers: filterArray(state, 'supportTransfers', (record) => (
-        String(record.fromStoreId || '') === storeId || String(record.toStoreId || '') === storeId
+        sameIdentifier(record.fromStoreId, storeId) || sameIdentifier(record.toStoreId, storeId)
       )),
       settings: ownAccountSettings(state, user),
       session: null,
     }
   }
 
-  const storeId = String(user.store_id || '')
-  const employeeId = String(user.employee_id || user.user_id || '')
-  if (user.role === 'employee' && employeeId) {
+  const requestedStoreId = String(user.store_id || '')
+  const requestedEmployeeId = String(user.employee_id || user.user_id || '')
+  if (user.role === 'employee' && requestedEmployeeId) {
     const ownEmployee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-      [record.id, record.code, record.employeeId].map(String).includes(employeeId)
+      employeeIdentifierValues(record).some((identifier) => sameIdentifier(identifier, requestedEmployeeId))
     ))
+    const employeeId = String(
+      ownEmployee?.id || ownEmployee?.code || ownEmployee?.employeeId || requestedEmployeeId,
+    )
+    const storeId = String(
+      (Array.isArray(state.stores) ? state.stores : []).find((record) => (
+        sameIdentifier(record.id, requestedStoreId || ownEmployee?.storeId)
+      ))?.id
+      || ownEmployee?.storeId
+      || requestedStoreId,
+    )
     const ownUnit = ownEmployee ? employeeUnit(ownEmployee) : 'store'
     const ownCatalogTarget = ownUnit === 'office'
       ? WORK_CATALOG_TARGET.OFFICE
@@ -2104,8 +2454,8 @@ export const projectSharedState = (rawState, user) => {
       storeId,
       String(user.home_store_id || ''),
       String(openAttendance?.storeId || ''),
-    ].filter(Boolean))
-    const stores = filterArray(state, 'stores', (record) => visibleStoreIds.has(String(record.id || '')))
+    ].map(normalizeIdentifierKey).filter(Boolean))
+    const stores = filterArray(state, 'stores', (record) => visibleStoreIds.has(normalizeIdentifierKey(record.id)))
       .map((record) => Object.fromEntries(Object.entries(record).filter(([key]) => (
         !['revenue', 'expense', 'profit', 'cash', 'balance', 'costs'].includes(key)
       ))))
@@ -2114,6 +2464,7 @@ export const projectSharedState = (rawState, user) => {
       [...taskStoreIds].some((taskStoreId) => taskAppliesToEmployee(record, employeeId, taskStoreId))
     )).map((record) => redactEmployeeReferences(record, new Set([employeeId])))
     const payrollPeriods = (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []).flatMap((period) => {
+      if (period.supersededAt) return []
       const rows = Array.isArray(period.rows)
         ? period.rows.filter((row) => belongsToEmployee(row, employeeId))
         : []
@@ -2128,7 +2479,9 @@ export const projectSharedState = (rawState, user) => {
       ...common,
       activeStoreId: storeId || null,
       stores,
-      employees: filterArray(state, 'employees', (record) => String(record.id || record.employeeId || record.code || '') === employeeId),
+      employees: filterArray(state, 'employees', (record) => (
+        employeeIdentifierValues(record).some((identifier) => sameIdentifier(identifier, employeeId))
+      )),
       attendance: ownAttendance,
       schedule: own('schedule'),
       tasks,
@@ -2148,14 +2501,14 @@ export const projectSharedState = (rawState, user) => {
       payrollPayments: own('payrollPayments'),
       storeEmployeeSalaryConfigs: filterArray(state, 'storeEmployeeSalaryConfigs', (record) => (
         !record.deletedAt
-        && String(record.employeeId || record.employee_id || '') === employeeId
-        && (!record.storeId || visibleStoreIds.has(String(record.storeId)))
+        && sameIdentifier(record.employeeId || record.employee_id, employeeId)
+        && (!record.storeId || visibleStoreIds.has(normalizeIdentifierKey(record.storeId)))
       )).map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
       workCatalogItems: filterArray(state, 'workCatalogItems', (record) => (
         String(record.targetGroup || '') === ownCatalogTarget
         && (ownCatalogTarget !== WORK_CATALOG_TARGET.STORE
           || !record.storeId
-          || visibleStoreIds.has(String(record.storeId)))
+          || visibleStoreIds.has(normalizeIdentifierKey(record.storeId)))
         && !record.deletedAt
       )),
       workCatalogProgress: own('workCatalogProgress'),
@@ -2163,14 +2516,14 @@ export const projectSharedState = (rawState, user) => {
       compensationEntries: own('compensationEntries'),
       violations: own('violations'),
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => (
-        visibleStoreIds.has(String(record.storeId || ''))
+        visibleStoreIds.has(normalizeIdentifierKey(record.storeId))
       )).map(redactRevenueBonusDaily),
       revenueBonusAllocations: own('revenueBonusAllocations'),
       teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => (
-        visibleStoreIds.has(String(record.storeId || ''))
+        visibleStoreIds.has(normalizeIdentifierKey(record.storeId))
       )),
       teamRewardParticipants: own('teamRewardParticipants'),
-      shiftDefinitions: filterArray(state, 'shiftDefinitions', (record) => !record.storeId || String(record.storeId) === storeId),
+      shiftDefinitions: filterArray(state, 'shiftDefinitions', (record) => !record.storeId || sameIdentifier(record.storeId, storeId)),
       settings: ownAccountSettings(state, user),
       activeAttendanceId: openAttendance?.id || null,
       checkedInAt: openAttendance?.checkInAt || openAttendance?.checkIn || null,
@@ -2248,6 +2601,29 @@ const all = async (db, sql, ...bindings) => {
 }
 const changes = (result) => Number(result?.meta?.changes ?? result?.changes ?? 0)
 
+const uniqueUserByEmployeeIdentifier = async (db, employeeId) => {
+  const identifier = String(employeeId || '').trim()
+  if (!identifier) return null
+  const matches = await all(db, `
+    SELECT * FROM users
+    WHERE LOWER(employee_id) = LOWER(?)
+    ORDER BY created_at, id
+  `, identifier)
+  if (matches.length > 1) {
+    throw new ApiError(
+      409,
+      'AUTH_EMPLOYEE_IDENTIFIER_COLLISION',
+      'Có nhiều tài khoản dùng cùng mã nhân viên nhưng khác chữ hoa/thường; cần xử lý dữ liệu tài khoản trước khi tiếp tục.',
+      {
+        identifier: normalizeIdentifierKey(identifier),
+        conflictingUserIds: matches.map((record) => String(record.id || '')),
+        conflictingIdentifiers: matches.map((record) => String(record.employee_id || '')),
+      },
+    )
+  }
+  return matches[0] || null
+}
+
 const sessionTtlSeconds = (env) => {
   const configured = Number(env?.SESSION_TTL_SECONDS || DEFAULT_SESSION_TTL_SECONDS)
   if (!Number.isInteger(configured)) return DEFAULT_SESSION_TTL_SECONDS
@@ -2256,16 +2632,47 @@ const sessionTtlSeconds = (env) => {
 
 const addSeconds = (isoTimestamp, seconds) => new Date(Date.parse(isoTimestamp) + seconds * 1000).toISOString()
 
-const roleOptionKey = (option = {}) => [option.role, option.storeId || '', option.employeeId || ''].join(':')
+const roleOptionKey = (option = {}) => [
+  option.role,
+  String(option.storeId || '').trim(),
+  String(option.employeeId || '').trim(),
+].join(':')
+
+const matchingSessionRoleOption = (options, { role, storeId = '', employeeId = '' } = {}) => {
+  const requestedRole = String(role || '').trim()
+  const requestedStoreId = String(storeId || '').trim()
+  const requestedEmployeeId = String(employeeId || '').trim()
+  const candidates = (Array.isArray(options) ? options : []).filter((option) => (
+    option.role === requestedRole
+    && (!requestedStoreId || sameIdentifier(option.storeId, requestedStoreId))
+    && (!requestedEmployeeId || sameIdentifier(option.employeeId, requestedEmployeeId))
+  ))
+  if (candidates.length <= 1) return candidates[0] || null
+  const exactCandidates = candidates.filter((option) => (
+    (!requestedStoreId || String(option.storeId || '').trim() === requestedStoreId)
+    && (!requestedEmployeeId || String(option.employeeId || '').trim() === requestedEmployeeId)
+  ))
+  return exactCandidates.length === 1 ? exactCandidates[0] : null
+}
 
 const availableRoleOptionsForUser = async (db, user, preloadedState = null) => {
   if (user.role === 'admin') {
     return [{ role: 'admin', storeId: null, employeeId: user.employee_id || null, label: 'Admin' }]
   }
+  const uniqueAuthUser = await uniqueUserByEmployeeIdentifier(db, user.employee_id)
+  if (uniqueAuthUser && String(uniqueAuthUser.id || '') !== String(user.user_id || user.id || '')) {
+    throw new ApiError(
+      409,
+      'AUTH_EMPLOYEE_IDENTIFIER_COLLISION',
+      'Mã nhân viên của tài khoản không còn liên kết duy nhất; cần xử lý dữ liệu tài khoản trước khi tiếp tục.',
+    )
+  }
   const state = preloadedState == null
     ? normalizeSharedStateForStorage(parseStoredJson((await loadState(db, 'global'))?.value_json, {}))
     : normalizeSharedStateForStorage(preloadedState)
+  assertNoCaseCollidingOperationalIdentifiers(state)
   const employees = Array.isArray(state.employees) ? state.employees : []
+  const stores = Array.isArray(state.stores) ? state.stores : []
   const activeProfiles = employees.filter((profile) => (
     !profile.deletedAt && !['da nghi viec', 'inactive'].includes(normalizeTextKey(profile.status))
   ))
@@ -2273,16 +2680,49 @@ const availableRoleOptionsForUser = async (db, user, preloadedState = null) => {
   const baseEmployeeId = String(user.employee_id || '')
   const linkedToUser = (profile) => (
     String(profile.authUserId || '') === userId
-    || (baseEmployeeId && String(profile.linkedEmployeeId || '') === baseEmployeeId)
+    || (baseEmployeeId && sameIdentifier(profile.linkedEmployeeId, baseEmployeeId))
   )
   const options = []
   const add = (option) => {
-    if (!option?.role || options.some((current) => roleOptionKey(current) === roleOptionKey(option))) return
-    options.push(option)
+    if (!option?.role) return
+    const rawEmployeeId = String(option.employeeId || '').trim()
+    const employee = rawEmployeeId
+      ? uniqueEmployeeIdentifierRecordMatch({
+          records: activeProfiles,
+          identifier: rawEmployeeId,
+          collisionCode: 'SESSION_EMPLOYEE_IDENTIFIER_COLLISION',
+          collisionMessage: 'Mã nhân viên của vai trò phiên đăng nhập đang trùng.',
+        })?.record || null
+      : null
+    const rawStoreId = String(option.storeId || '').trim()
+    const virtualStoreId = sameIdentifier(rawStoreId, OFFICE_STORE_ID)
+      ? OFFICE_STORE_ID
+      : sameIdentifier(rawStoreId, BUSINESS_SUPPORT_STORE_ID)
+        ? BUSINESS_SUPPORT_STORE_ID
+        : ''
+    const store = rawStoreId && !virtualStoreId
+      ? uniqueIdentifierRecordMatch({
+          records: stores,
+          identifier: rawStoreId,
+          predicate: (record) => !record?.deletedAt,
+          collisionCode: 'SESSION_STORE_IDENTIFIER_COLLISION',
+          collisionMessage: 'Mã cửa hàng của vai trò phiên đăng nhập đang trùng.',
+        })?.record || null
+      : null
+    const canonical = {
+      ...option,
+      storeId: virtualStoreId || String(store?.id || rawStoreId || '').trim() || null,
+      employeeId: employeeProfileIdentifier(employee) || rawEmployeeId || null,
+    }
+    if (options.some((current) => roleOptionKey(current) === roleOptionKey(canonical))) return
+    options.push(canonical)
   }
-  const rootProfile = activeProfiles.find((profile) => (
-    [profile.id, profile.code, profile.employeeId].map(String).includes(baseEmployeeId)
-  ))
+  const rootProfile = uniqueEmployeeIdentifierRecordMatch({
+    records: activeProfiles,
+    identifier: baseEmployeeId,
+    collisionCode: 'SESSION_EMPLOYEE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã nhân viên gốc của phiên đăng nhập đang trùng.',
+  })?.record || null
   const linkedManagerProfiles = activeProfiles.filter((profile) => employeeUnit(profile) === 'store_manager' && linkedToUser(profile))
   const linkedStoreProfiles = activeProfiles.filter((profile) => employeeUnit(profile) === 'store' && linkedToUser(profile))
 
@@ -2290,7 +2730,12 @@ const availableRoleOptionsForUser = async (db, user, preloadedState = null) => {
   // the original profile role so the same login can still enter Employee/HTKD.
   if (user.role === 'store_manager' && linkedManagerProfiles.length) {
     const sourceId = String(linkedManagerProfiles[0].linkedEmployeeId || '')
-    const source = activeProfiles.find((profile) => [profile.id, profile.code, profile.employeeId].map(String).includes(sourceId))
+    const source = uniqueEmployeeIdentifierRecordMatch({
+      records: activeProfiles,
+      identifier: sourceId,
+      collisionCode: 'SESSION_LINKED_EMPLOYEE_COLLISION',
+      collisionMessage: 'Hồ sơ nhân viên liên kết của vai trò đang trùng.',
+    })?.record || null
     if (employeeUnit(source) === 'business_support') {
       add({ role: 'business_support', storeId: BUSINESS_SUPPORT_STORE_ID, employeeId: sourceId, label: 'Hỗ trợ KD' })
     } else if (source) {
@@ -2327,11 +2772,11 @@ const availableRoleOptionsForUser = async (db, user, preloadedState = null) => {
 
 const resolveSessionRole = async (db, session, preloadedState = null) => {
   const options = await availableRoleOptionsForUser(db, session, preloadedState)
-  const selected = options.find((option) => (
-    option.role === session.active_role
-    && (!session.active_store_id || String(option.storeId || '') === String(session.active_store_id || ''))
-    && (!session.active_employee_id || String(option.employeeId || '') === String(session.active_employee_id || ''))
-  ))
+  const selected = matchingSessionRoleOption(options, {
+    role: session.active_role,
+    storeId: session.active_store_id,
+    employeeId: session.active_employee_id,
+  })
   const base = options.find((option) => option.role === session.role) || options[0]
   const effective = selected || base
   return {
@@ -2424,7 +2869,7 @@ const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state
   ? state.supportTransfers
   : [])
   .filter((record) => (
-    String(record.employeeId || '') === String(employeeId || '')
+    sameIdentifier(record.employeeId, employeeId)
     && supportTransferMatchesTime(record, at)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
@@ -2433,14 +2878,14 @@ const supportTransferToStoreOnDate = (state, employeeId, storeId, at) => (Array.
   ? state.supportTransfers
   : [])
   .filter((record) => (
-    String(record.employeeId || '') === String(employeeId || '')
-    && String(record.toStoreId || '') === String(storeId || '')
+    sameIdentifier(record.employeeId, employeeId)
+    && sameIdentifier(record.toStoreId, storeId)
     && supportTransferMatchesTime(record, at)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
 const employeeWorksAtStoreOnDate = (state, employee, storeId, date) => (
-  String(employee?.storeId || '') === String(storeId || '')
+  sameIdentifier(employee?.storeId, storeId)
   || Boolean(supportTransferToStoreOnDate(
     state,
     String(employee?.id || employee?.code || ''),
@@ -2501,6 +2946,10 @@ const validateExpectedVersion = (value) => {
   }
   return version
 }
+
+const commandExpectedVersion = (body) => validateExpectedVersion(
+  body?._expectedGlobalStateVersion ?? body?.expectedVersion,
+)
 
 const validateIdempotencyKey = (request, body) => {
   const value = String(request.headers.get('idempotency-key') || body.idempotencyKey || '').trim()
@@ -3237,6 +3686,8 @@ const bootstrapDatabase = async (request, env, context) => {
     ...sanitizedInitialState,
     orderInformationOptions: materializeDefaultOrderInformationOptions(sanitizedInitialState),
   }
+  assertNoReservedPhysicalStoreIdentifiers(normalizedInitialState)
+  assertNoCaseCollidingOperationalIdentifiers(normalizedInitialState)
   configuredOrderPaymentMethods(normalizedInitialState)
 
   const password = await hashPassword(body.password)
@@ -3388,9 +3839,10 @@ const bootstrapDatabase = async (request, env, context) => {
 const login = async (request, env, context) => {
   const db = getDatabase(env)
   const body = await readJson(request)
-  const username = normalizeUsername(body.username)
+  const submittedUsername = String(body.username || '').trim()
+  const username = normalizeUsername(submittedUsername)
   const passwordValue = String(body.password || '')
-  if (!/^[a-z0-9._-]{3,80}$/u.test(username) || passwordValue.length < 1 || passwordValue.length > 256) {
+  if (!/^[A-Za-z0-9._-]{3,80}$/u.test(submittedUsername) || passwordValue.length < 1 || passwordValue.length > 256) {
     throw new ApiError(400, 'CREDENTIALS_INVALID', 'Tên đăng nhập hoặc mật khẩu không hợp lệ.')
   }
   const user = await first(db, `
@@ -3409,7 +3861,12 @@ const login = async (request, env, context) => {
     algorithm: PBKDF2_ALGORITHM,
   }
   const matches = await verifyPassword(passwordValue, passwordRecord)
-  if (!user || !matches) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Tên đăng nhập hoặc mật khẩu chưa đúng.')
+  // Keep the normalized column for collision-safe lookup/backward-compatible
+  // storage, but authentication itself follows the exact username spelling.
+  // Password verification is already byte/case sensitive through PBKDF2.
+  if (!user || user.username !== submittedUsername || !matches) {
+    throw new ApiError(401, 'INVALID_CREDENTIALS', 'Tên đăng nhập hoặc mật khẩu chưa đúng.')
+  }
   if (!VALID_ACCOUNT_STATUSES.has(user.status) || user.status !== 'active') {
     throw new ApiError(403, 'ACCOUNT_DISABLED', 'Tài khoản hiện không ở trạng thái hoạt động.')
   }
@@ -3466,6 +3923,7 @@ const login = async (request, env, context) => {
   }, context.now, globalState)
   let bootstrapRow = globalStateRow || await loadState(db, 'global')
   bootstrapRow = await migrateLegacyAccountAvatars(db, env, effectiveUser, context, bootstrapRow)
+  bootstrapRow = await persistOpenStoreAttendanceChecklistRepairs(db, effectiveUser, context, bootstrapRow)
   const policies = await listPolicies(db)
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
   const publicEffectiveUser = publicUser(effectiveUser)
@@ -3500,15 +3958,14 @@ const selectSessionRole = async (request, env, context) => {
   const requestedRole = String(body.role || '').trim()
   const requestedStoreId = String(body.storeId || '').trim()
   const requestedEmployeeId = String(body.employeeId || '').trim()
-  const matches = (Array.isArray(actor.available_roles) ? actor.available_roles : []).filter((option) => (
-    option.role === requestedRole
-    && (!requestedStoreId || String(option.storeId || '') === requestedStoreId)
-    && (!requestedEmployeeId || String(option.employeeId || '') === requestedEmployeeId)
-  ))
-  if (matches.length !== 1) {
+  const selected = matchingSessionRoleOption(actor.available_roles, {
+    role: requestedRole,
+    storeId: requestedStoreId,
+    employeeId: requestedEmployeeId,
+  })
+  if (!selected) {
     throw new ApiError(400, 'ROLE_SELECTION_INVALID', 'Vai trò được chọn không còn hợp lệ. Vui lòng đăng nhập lại.')
   }
-  const selected = matches[0]
   const result = await run(db, `
     UPDATE sessions
     SET active_role = ?, active_store_id = ?, active_employee_id = ?, role_selected_at = ?, last_seen_at = ?
@@ -3537,7 +3994,10 @@ const getBootstrap = async (request, env, context, url) => {
   let stateRow = scope === 'global' && user._globalStateRow
     ? user._globalStateRow
     : await loadState(db, scope)
-  if (scope === 'global') stateRow = await migrateLegacyAccountAvatars(db, env, user, context, stateRow)
+  if (scope === 'global') {
+    stateRow = await migrateLegacyAccountAvatars(db, env, user, context, stateRow)
+    stateRow = await persistOpenStoreAttendanceChecklistRepairs(db, user, context, stateRow)
+  }
   const policies = await listPolicies(db)
   const rawState = stateRow ? parseStoredJson(stateRow.value_json, {}) : {}
   return jsonResponse(apiPayload(context, {
@@ -3559,7 +4019,10 @@ const getState = async (request, env, context, url) => {
   let row = scope === 'global' && user._globalStateRow
     ? user._globalStateRow
     : await loadState(db, scope)
-  if (scope === 'global') row = await migrateLegacyAccountAvatars(db, env, user, context, row)
+  if (scope === 'global') {
+    row = await migrateLegacyAccountAvatars(db, env, user, context, row)
+    row = await persistOpenStoreAttendanceChecklistRepairs(db, user, context, row)
+  }
   const policies = await listPolicies(db)
   const rawState = row ? parseStoredJson(row.value_json, {}) : {}
   return jsonResponse(apiPayload(context, {
@@ -3610,7 +4073,7 @@ const getRevenueBonusLive = async (request, env, context, url) => {
   }
   const storeId = String(url.searchParams.get('storeId') || '').trim()
   const actorStoreId = String(user.store_id || '').trim()
-  if (['store_manager', 'employee'].includes(user.role) && (!storeId || storeId !== actorStoreId)) {
+  if (['store_manager', 'employee'].includes(user.role) && (!storeId || !sameIdentifier(storeId, actorStoreId))) {
     throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Tài khoản chỉ được xem thưởng doanh thu đúng cửa hàng đang làm việc.')
   }
   assertOperationalStoreAccess(user, storeId)
@@ -3626,7 +4089,7 @@ const getRevenueBonusLive = async (request, env, context, url) => {
       ...live,
       allocations: canViewAllAllocations
         ? live.allocations
-        : live.allocations.filter((allocation) => String(allocation.employeeId || '') === viewerEmployeeId),
+        : live.allocations.filter((allocation) => sameIdentifier(allocation.employeeId, viewerEmployeeId)),
     },
   }))
 }
@@ -3675,8 +4138,361 @@ const protectedCollectionComparable = (key, value) => {
   ))))
 }
 
-const assertProtectedCollectionsUnchanged = (currentState, nextState) => {
+const referencedSupportTransferIds = (state) => {
+  const identifiers = new Set()
+  const add = (value) => {
+    const identifier = String(value || '').trim()
+    if (identifier) identifiers.add(identifier)
+  }
+  for (const record of Array.isArray(state?.attendance) ? state.attendance : []) {
+    add(record?.supportTransferId)
+    add(record?.supportCompensation?.transferId)
+  }
+  for (const record of Array.isArray(state?.expenseEntries) ? state.expenseEntries : []) {
+    add(record?.supportTransferId)
+  }
+  for (const period of Array.isArray(state?.payrollPeriods) ? state.payrollPeriods : []) {
+    for (const row of Array.isArray(period?.rows) ? period.rows : []) {
+      for (const identifier of Array.isArray(row?.supportTransferIds) ? row.supportTransferIds : []) add(identifier)
+      for (const identifier of Array.isArray(row?.supportCompensation?.transferIds)
+        ? row.supportCompensation.transferIds
+        : []) add(identifier)
+      for (const detail of Array.isArray(row?.supportDetails) ? row.supportDetails : []) add(detail?.transferId)
+    }
+  }
+  return identifiers
+}
+
+const assertSupportTransferCollisionRepair = (currentState, nextTransfers) => {
+  const current = Array.isArray(currentState?.supportTransfers) ? currentState.supportTransfers : []
+  const next = Array.isArray(nextTransfers) ? nextTransfers : []
+  const identifierCounts = new Map()
+  current.forEach((record) => {
+    const key = normalizeIdentifierKey(record?.id)
+    if (key) identifierCounts.set(key, (identifierCounts.get(key) || 0) + 1)
+  })
+  const collidingIdentifiers = new Set(
+    [...identifierCounts].filter(([, count]) => count > 1).map(([identifier]) => identifier),
+  )
+  const remainingBySnapshot = new Map()
+  current.forEach((record) => {
+    const snapshot = JSON.stringify(canonicalize(record))
+    const rows = remainingBySnapshot.get(snapshot) || []
+    rows.push(record)
+    remainingBySnapshot.set(snapshot, rows)
+  })
+  next.forEach((record) => {
+    const snapshot = JSON.stringify(canonicalize(record))
+    const rows = remainingBySnapshot.get(snapshot)
+    if (!rows?.length) {
+      throw new ApiError(
+        400,
+        'DOMAIN_COMMAND_REQUIRED',
+        'Khi sửa va chạm mã điều chuyển, chỉ được loại bỏ bản ghi trùng; không được thêm hoặc sửa nội dung phiếu.',
+      )
+    }
+    rows.pop()
+  })
+  const removed = [...remainingBySnapshot.values()].flat()
+  if (!removed.length || removed.some((record) => !collidingIdentifiers.has(normalizeIdentifierKey(record?.id)))) {
+    throw new ApiError(
+      400,
+      'DOMAIN_COMMAND_REQUIRED',
+      'Chỉ được loại bỏ đúng phiếu điều chuyển có mã đang va chạm hoa/thường.',
+    )
+  }
+  const nextIdentifierByKey = new Map(next.map((record) => [
+    normalizeIdentifierKey(record?.id),
+    String(record?.id || '').trim(),
+  ]).filter(([key, identifier]) => key && identifier))
+  const referencedIdentifiers = referencedSupportTransferIds(currentState)
+  const unresolvedReference = [...referencedIdentifiers].find((reference) => {
+    const key = normalizeIdentifierKey(reference)
+    if (!collidingIdentifiers.has(key)) return false
+    return String(reference || '').trim() !== nextIdentifierByKey.get(key)
+  })
+  if (unresolvedReference) {
+    throw new ApiError(
+      400,
+      'DOMAIN_COMMAND_REQUIRED',
+      'Không được sửa va chạm phiếu điều chuyển khi dữ liệu chấm công hoặc tài chính chưa tham chiếu chính xác phiếu được giữ lại.',
+      {
+        identifier: normalizeIdentifierKey(unresolvedReference),
+        referencedIdentifier: unresolvedReference,
+        survivingIdentifier: nextIdentifierByKey.get(normalizeIdentifierKey(unresolvedReference)) || null,
+      },
+    )
+  }
+  const survivingCollisionKeys = new Set(next.map((record) => normalizeIdentifierKey(record?.id)).filter(Boolean))
+  if ([...new Set(removed.map((record) => normalizeIdentifierKey(record?.id)).filter(Boolean))]
+    .some((identifier) => !survivingCollisionKeys.has(identifier))) {
+    throw new ApiError(
+      400,
+      'DOMAIN_COMMAND_REQUIRED',
+      'Mỗi nhóm mã điều chuyển va chạm phải giữ lại một phiếu nguyên vẹn.',
+    )
+  }
+}
+
+const operationalReferenceValues = (state, kind) => {
+  const references = new Set()
+  const add = (value) => {
+    const identifier = String(value || '').trim()
+    if (identifier) references.add(identifier)
+  }
+  const excludedRoots = kind === 'employee'
+    ? new Set()
+    : new Set(['stores', 'deletedStores'])
+  const directKeys = kind === 'employee'
+    ? new Set([
+        'employeeId', 'employee_id', 'employeeCode', 'employee_code', 'assigneeId', 'userId',
+        'createdByEmployeeId', 'creatorEmployeeId', 'linkedEmployeeId', 'managerEmployeeId',
+      ])
+    : new Set([
+        'storeId', 'store_id', 'fromStoreId', 'toStoreId', 'homeStoreId', 'activeStoreId',
+        'sourceStoreId', 'targetStoreId', 'assignedStoreId', 'assigned_store_id',
+        'supportStoreId', 'support_store_id',
+      ])
+  const arrayKeys = kind === 'employee'
+    ? new Set(['employeeIds', 'assigneeIds', 'assignedEmployeeIds', 'assignees', 'participants'])
+    : new Set(['storeIds'])
+  const employeeMasterKeys = new Set(['id', 'code', 'employeeId', 'employeeCode'])
+  const employeeReferenceFromMediaKey = (value) => {
+    const key = String(value || '').trim()
+    const identityImageMatch = key.match(/^identity-images\/([^/]+)\/(?:front|back)\//u)
+    if (identityImageMatch) return identityImageMatch[1]
+    const legacyAvatarMatch = key.match(/^account-avatars\/legacy-profile-([^/]+)\//u)
+    return legacyAvatarMatch?.[1] || ''
+  }
+  const visit = (value, parentKey = '', depth = 0, skipEmployeeMasterKeys = false) => {
+    if (value == null || depth > 20) return
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (arrayKeys.has(parentKey)) {
+          if (isPlainRecord(item)) add(kind === 'employee'
+            ? item.employeeId || item.employee_id || item.assigneeId || item.userId || item.id || item.code
+            : item.storeId || item.store_id || item.id || item.code)
+          else add(item)
+        }
+        visit(
+          item,
+          parentKey,
+          depth + 1,
+          kind === 'employee' && ['employees', 'deletedEmployees'].includes(parentKey),
+        )
+      }
+      return
+    }
+    if (!isPlainRecord(value)) return
+    for (const [key, nested] of Object.entries(value)) {
+      if (directKeys.has(key) && !(skipEmployeeMasterKeys && employeeMasterKeys.has(key))) add(nested)
+      if (kind === 'employee' && key === 'key') add(employeeReferenceFromMediaKey(nested))
+      if (kind === 'employee' && key === 'completedBy' && isPlainRecord(nested)) {
+        Object.keys(nested).forEach(add)
+      }
+      visit(nested, key, depth + 1)
+    }
+  }
+  for (const [key, value] of Object.entries(isPlainRecord(state) ? state : {})) {
+    if (excludedRoots.has(key)) continue
+    if (directKeys.has(key)) add(value)
+    if (arrayKeys.has(key) && Array.isArray(value)) value.forEach(add)
+    visit(value, key)
+  }
+  return references
+}
+
+const removedMasterRecords = (currentRecords, nextRecords, label) => {
+  const remainingBySnapshot = new Map()
+  const current = Array.isArray(currentRecords) ? currentRecords : []
+  const next = Array.isArray(nextRecords) ? nextRecords : []
+  current.forEach((record) => {
+    const snapshot = JSON.stringify(canonicalize(record))
+    const rows = remainingBySnapshot.get(snapshot) || []
+    rows.push(record)
+    remainingBySnapshot.set(snapshot, rows)
+  })
+  next.forEach((record) => {
+    const snapshot = JSON.stringify(canonicalize(record))
+    const rows = remainingBySnapshot.get(snapshot)
+    if (!rows?.length) {
+      throw new ApiError(
+        400,
+        'DOMAIN_COMMAND_REQUIRED',
+        `Khi sửa va chạm mã ${label}, chỉ được loại bỏ hồ sơ trùng; không được thêm hoặc sửa hồ sơ.`,
+      )
+    }
+    rows.pop()
+  })
+  return [...remainingBySnapshot.values()].flat()
+}
+
+const assertMasterIdentifierCollisionRepair = ({
+  currentState,
+  nextState,
+  collection,
+  historyCollection,
+  identifierValues,
+  kind,
+  label,
+}) => {
+  const currentRecords = Array.isArray(currentState?.[collection]) ? currentState[collection] : []
+  const nextRecords = Array.isArray(nextState?.[collection]) ? nextState[collection] : []
+  const currentHistory = Array.isArray(currentState?.[historyCollection]) ? currentState[historyCollection] : []
+  const nextHistory = Array.isArray(nextState?.[historyCollection]) ? nextState[historyCollection] : []
+  if (JSON.stringify(canonicalize(currentHistory)) !== JSON.stringify(canonicalize(nextHistory))) {
+    throw new ApiError(400, 'DOMAIN_COMMAND_REQUIRED', `Lịch sử ${label} không được thay đổi khi sửa va chạm mã.`)
+  }
+  if (JSON.stringify(canonicalize(currentRecords)) === JSON.stringify(canonicalize(nextRecords))) return null
+
+  const ownersByIdentifier = new Map()
+  currentRecords.forEach((record, index) => {
+    const recordKeys = new Set(identifierValues(record).map(normalizeIdentifierKey).filter(Boolean))
+    recordKeys.forEach((key) => {
+      const owners = ownersByIdentifier.get(key) || new Set()
+      owners.add(index)
+      ownersByIdentifier.set(key, owners)
+    })
+  })
+  const collisionKeys = new Set([...ownersByIdentifier]
+    .filter(([, owners]) => owners.size > 1)
+    .map(([key]) => key))
+  const removed = removedMasterRecords(currentRecords, nextRecords, label)
+  if (!removed.length || removed.some((record) => (
+    !identifierValues(record).some((identifier) => collisionKeys.has(normalizeIdentifierKey(identifier)))
+  ))) {
+    throw new ApiError(400, 'DOMAIN_COMMAND_REQUIRED', `Chỉ được loại bỏ đúng hồ sơ ${label} có mã đang va chạm hoa/thường.`)
+  }
+
+  const survivingRawByKey = new Map()
+  nextRecords.forEach((record) => identifierValues(record).forEach((identifier) => {
+    const raw = String(identifier || '').trim()
+    const key = normalizeIdentifierKey(raw)
+    if (!key || !raw) return
+    const values = survivingRawByKey.get(key) || new Set()
+    values.add(raw)
+    survivingRawByKey.set(key, values)
+  }))
+  const removedKeys = new Set(removed.flatMap((record) => identifierValues(record))
+    .map(normalizeIdentifierKey).filter(Boolean))
+  for (const collisionKey of collisionKeys) {
+    if (removedKeys.has(collisionKey) && !survivingRawByKey.has(collisionKey)) {
+      throw new ApiError(400, 'DOMAIN_COMMAND_REQUIRED', `Mỗi nhóm mã ${label} va chạm phải giữ lại một hồ sơ nguyên vẹn.`)
+    }
+  }
+
+  const unresolvedReference = [...operationalReferenceValues(nextState, kind)].find((reference) => {
+    const key = normalizeIdentifierKey(reference)
+    if (!removedKeys.has(key)) return false
+    return !survivingRawByKey.get(key)?.has(String(reference || '').trim())
+  })
+  if (unresolvedReference) {
+    throw new ApiError(
+      400,
+      'DOMAIN_COMMAND_REQUIRED',
+      `Không được loại bỏ hồ sơ ${label} khi dữ liệu nghiệp vụ chưa tham chiếu chính xác hồ sơ được giữ lại.`,
+      {
+        identifier: normalizeIdentifierKey(unresolvedReference),
+        referencedIdentifier: unresolvedReference,
+        survivingIdentifiers: [...(survivingRawByKey.get(normalizeIdentifierKey(unresolvedReference)) || [])],
+      },
+    )
+  }
+  return { removedKeys, survivingRawByKey }
+}
+
+const assertOperationalMasterCollisionRepair = (currentState, nextState) => {
+  const employeeRepair = assertMasterIdentifierCollisionRepair({
+    currentState,
+    nextState,
+    collection: 'employees',
+    historyCollection: 'deletedEmployees',
+    identifierValues: employeeIdentifierValues,
+    kind: 'employee',
+    label: 'nhân viên',
+  })
+  const storeRepair = assertMasterIdentifierCollisionRepair({
+    currentState,
+    nextState,
+    collection: 'stores',
+    historyCollection: 'deletedStores',
+    identifierValues: (record) => [String(record?.id || '').trim()].filter(Boolean),
+    kind: 'store',
+    label: 'cửa hàng',
+  })
+  return { employeeRepair, storeRepair }
+}
+
+const assertAuthEmployeeLinksSurviveCollisionRepair = async (db, repair) => {
+  if (!repair?.removedKeys?.size) return
+  const users = await all(db, `
+    SELECT id, employee_id
+    FROM users
+    WHERE employee_id IS NOT NULL
+    ORDER BY created_at, id
+  `)
+  const unresolved = users.find((user) => {
+    const reference = String(user.employee_id || '').trim()
+    const key = normalizeIdentifierKey(reference)
+    return repair.removedKeys.has(key) && !repair.survivingRawByKey.get(key)?.has(reference)
+  })
+  if (unresolved) {
+    throw new ApiError(
+      400,
+      'DOMAIN_COMMAND_REQUIRED',
+      'Không được loại bỏ hồ sơ nhân viên khi tài khoản đăng nhập chưa liên kết chính xác hồ sơ được giữ lại.',
+      {
+        userId: String(unresolved.id || ''),
+        referencedIdentifier: String(unresolved.employee_id || ''),
+        survivingIdentifiers: [
+          ...(repair.survivingRawByKey.get(normalizeIdentifierKey(unresolved.employee_id)) || []),
+        ],
+      },
+    )
+  }
+}
+
+const assertAuthStoreLinksSurviveCollisionRepair = async (db, repair) => {
+  if (!repair?.removedKeys?.size) return
+  const users = await all(db, `
+    SELECT id, store_id
+    FROM users
+    WHERE store_id IS NOT NULL
+    ORDER BY created_at, id
+  `)
+  const unresolved = users.find((user) => {
+    const reference = String(user.store_id || '').trim()
+    const key = normalizeIdentifierKey(reference)
+    return repair.removedKeys.has(key) && !repair.survivingRawByKey.get(key)?.has(reference)
+  })
+  if (unresolved) {
+    throw new ApiError(
+      400,
+      'DOMAIN_COMMAND_REQUIRED',
+      'Không được loại bỏ hồ sơ cửa hàng khi tài khoản đăng nhập chưa liên kết chính xác cửa hàng được giữ lại.',
+      {
+        userId: String(unresolved.id || ''),
+        referencedIdentifier: String(unresolved.store_id || ''),
+        survivingIdentifiers: [
+          ...(repair.survivingRawByKey.get(normalizeIdentifierKey(unresolved.store_id)) || []),
+        ],
+      },
+    )
+  }
+}
+
+const assertProtectedCollectionsUnchanged = (currentState, nextState, {
+  allowSupportTransferCollisionRepair = false,
+} = {}) => {
   for (const key of DOMAIN_PROTECTED_STATE_COLLECTIONS) {
+    if (key === 'supportTransfers' && allowSupportTransferCollisionRepair) {
+      const currentValue = protectedCollectionComparable(key, currentState?.[key])
+      const nextValue = protectedCollectionComparable(key, nextState?.[key])
+      if (JSON.stringify(canonicalize(currentValue)) !== JSON.stringify(canonicalize(nextValue))) {
+        assertSupportTransferCollisionRepair(currentState, nextValue)
+      }
+      continue
+    }
     const currentValue = protectedCollectionComparable(key, currentState?.[key])
     const nextValue = protectedCollectionComparable(key, nextState?.[key])
     if (JSON.stringify(canonicalize(currentValue)) !== JSON.stringify(canonicalize(nextValue))) {
@@ -3685,9 +4501,12 @@ const assertProtectedCollectionsUnchanged = (currentState, nextState) => {
   }
 }
 
-const preserveProtectedCollections = (currentState, nextState) => {
+const preserveProtectedCollections = (currentState, nextState, {
+  allowSupportTransferCollisionRepair = false,
+} = {}) => {
   const protectedState = { ...nextState }
   for (const key of DOMAIN_PROTECTED_STATE_COLLECTIONS) {
+    if (key === 'supportTransfers' && allowSupportTransferCollisionRepair) continue
     if (Object.hasOwn(currentState || {}, key)) protectedState[key] = currentState[key]
     else delete protectedState[key]
   }
@@ -3724,8 +4543,10 @@ const preserveNotificationReadReceipts = (currentState, nextState) => {
 const stateCommand = async (db, user, body, commandContext) => {
   const scope = String(body.scope || defaultScope(user))
   assertScope(user, scope, true)
-  const expectedVersion = validateExpectedVersion(body.expectedVersion)
-  const current = await loadState(db, scope)
+  const expectedVersion = commandExpectedVersion(body)
+  const current = scope === 'global' && body._preloadedGlobalStateRow
+    ? body._preloadedGlobalStateRow
+    : await loadState(db, scope)
   const currentVersion = Number(current?.version || 0)
   if (currentVersion !== expectedVersion) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
@@ -3753,9 +4574,19 @@ const stateCommand = async (db, user, body, commandContext) => {
     nextState = { ...currentState, ...payload.patch }
   }
   if (!isPlainRecord(nextState)) throw new ApiError(400, 'INVALID_STATE', 'Trạng thái phải là một đối tượng JSON.')
+  const operationalCollisionRepair = scope === 'global' && body._operationalCollisionRepair === true
   if (scope === 'global') {
-    assertProtectedCollectionsUnchanged(currentState, nextState)
-    nextState = preserveProtectedCollections(currentState, nextState)
+    if (operationalCollisionRepair) {
+      const repair = assertOperationalMasterCollisionRepair(currentState, nextState)
+      await assertAuthEmployeeLinksSurviveCollisionRepair(db, repair.employeeRepair)
+      await assertAuthStoreLinksSurviveCollisionRepair(db, repair.storeRepair)
+    }
+    assertProtectedCollectionsUnchanged(currentState, nextState, {
+      allowSupportTransferCollisionRepair: operationalCollisionRepair,
+    })
+    nextState = preserveProtectedCollections(currentState, nextState, {
+      allowSupportTransferCollisionRepair: operationalCollisionRepair,
+    })
   }
   nextState = normalizeSharedStateForStorage(nextState)
   if (scope === 'global') {
@@ -3765,6 +4596,8 @@ const stateCommand = async (db, user, body, commandContext) => {
     if (Object.hasOwn(normalizedCurrentState, 'settings')) nextState.settings = normalizedCurrentState.settings
     else delete nextState.settings
     nextState.notifications = preserveNotificationReadReceipts(currentState, nextState)
+    assertNoReservedPhysicalStoreIdentifiers(nextState)
+    assertNoCaseCollidingOperationalIdentifiers(nextState)
   }
   const nextVersion = currentVersion + 1
   const responseBody = apiPayload(commandContext, {
@@ -3992,7 +4825,7 @@ const commitGlobalStateCounterDomainCommand = async (
   const currentVersion = Number(current.version)
   const nextVersion = currentVersion + 1
   const counterVersion = Number(counter.row?.version || 0)
-  const nextCounterVersion = counterVersion + 1
+  const nextCounterVersion = Number(counter.nextVersion || (counterVersion + 1))
   const status = options.status || 200
   const responseBody = apiPayload(commandContext, {
     ...options.response,
@@ -4018,13 +4851,20 @@ const commitGlobalStateCounterDomainCommand = async (
       `).bind(counter.value, nextCounterVersion, commandContext.now, commandContext.requestId, counter.name, counterVersion)
     : db.prepare(`
         INSERT OR IGNORE INTO counters (counter_name, counter_value, version, updated_at, last_request_id)
-        VALUES (?, ?, 1, ?, ?)
-      `).bind(counter.name, counter.value, commandContext.now, commandContext.requestId)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(counter.name, counter.value, nextCounterVersion, commandContext.now, commandContext.requestId)
+  const counterAliases = (Array.isArray(counter.aliasRows) ? counter.aliasRows : [])
+    .filter((row) => String(row.counter_name || '') !== String(counter.name || ''))
+  const counterAliasMutations = counterAliases.map((row) => db.prepare(`
+    DELETE FROM counters
+    WHERE counter_name = ? AND version = ?
+  `).bind(row.counter_name, Number(row.version || 0)))
   let results
   try {
     results = await db.batch([
       stateCommit.mutation,
       counterMutation,
+      ...counterAliasMutations,
       ...stateCommit.externalStatements,
       db.prepare(`
         INSERT INTO audit_log (
@@ -4036,6 +4876,9 @@ const commitGlobalStateCounterDomainCommand = async (
           SELECT 1 FROM app_state WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
         ) AND EXISTS (
           SELECT 1 FROM counters WHERE counter_name = ? AND version = ? AND last_request_id = ?
+        ) AND NOT EXISTS (
+          SELECT 1 FROM counters
+          WHERE LOWER(counter_name) = LOWER(?) AND counter_name <> ?
         )
       `).bind(
         commandContext.requestId,
@@ -4053,6 +4896,8 @@ const commitGlobalStateCounterDomainCommand = async (
         counter.name,
         nextCounterVersion,
         commandContext.requestId,
+        counter.name,
+        counter.name,
       ),
       ...receiptStatements(db, {
         actorId: actor.user_id,
@@ -4066,6 +4911,9 @@ const commitGlobalStateCounterDomainCommand = async (
           WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
             AND EXISTS (
               SELECT 1 FROM counters WHERE counter_name = ? AND version = ? AND last_request_id = ?
+            ) AND NOT EXISTS (
+              SELECT 1 FROM counters
+              WHERE LOWER(counter_name) = LOWER(?) AND counter_name <> ?
             )
         `,
         successBindings: [
@@ -4074,6 +4922,8 @@ const commitGlobalStateCounterDomainCommand = async (
           counter.name,
           nextCounterVersion,
           commandContext.requestId,
+          counter.name,
+          counter.name,
         ],
         enforceSuccess: true,
       }),
@@ -4084,7 +4934,8 @@ const commitGlobalStateCounterDomainCommand = async (
       currentVersion: Number(latest?.version || 0),
     })
   }
-  if (changes(results?.[0]) !== 1 || changes(results?.[1]) !== 1) {
+  const aliasesChanged = counterAliases.every((_, index) => changes(results?.[2 + index]) === 1)
+  if (changes(results?.[0]) !== 1 || changes(results?.[1]) !== 1 || !aliasesChanged) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu hoặc bộ đếm đã thay đổi trên máy chủ.')
   }
   return jsonResponse(responseBody, status)
@@ -4108,25 +4959,107 @@ const assertPayrollOperator = (actor, message = 'Chỉ Admin hoặc Nhân viên 
   if (!PAYROLL_OPERATOR_ROLES.has(actor.role)) throw new ApiError(403, 'ROLE_FORBIDDEN', message)
 }
 
+const operationalIdentifierHistoryRepairCommand = async (db, actor, body, commandContext) => {
+  assertAdmin(actor, 'Chỉ Admin được xử lý bí danh mã trong lịch sử.')
+  if (body.type !== 'operational_identifier.resolve_history_alias') {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh xử lý bí danh lịch sử không được hỗ trợ.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const kind = String(payload.kind || '').trim()
+  if (!['employee', 'store'].includes(kind)) {
+    throw new ApiError(400, 'IDENTIFIER_KIND_INVALID', 'Loại mã cần xử lý phải là employee hoặc store.')
+  }
+  const aliasIdentifier = String(payload.aliasIdentifier || payload.historyIdentifier || '').trim()
+  const canonicalIdentifier = String(payload.canonicalIdentifier || '').trim()
+  const reason = String(payload.reason || '').trim()
+  if (!aliasIdentifier || !canonicalIdentifier || aliasIdentifier === canonicalIdentifier
+    || !sameIdentifier(aliasIdentifier, canonicalIdentifier)) {
+    throw new ApiError(400, 'IDENTIFIER_ALIAS_INVALID', 'Bí danh và mã chuẩn phải khác cách viết hoa/thường nhưng cùng một mã.')
+  }
+  if (!reason || reason.length > 500) {
+    throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do xử lý bí danh từ 1 đến 500 ký tự.')
+  }
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const collection = kind === 'employee' ? 'employees' : 'stores'
+  const historyCollection = kind === 'employee' ? 'deletedEmployees' : 'deletedStores'
+  const identifierValues = kind === 'employee'
+    ? employeeIdentifierValues
+    : (record) => [String(record?.id || '').trim()].filter(Boolean)
+  const activeRecords = Array.isArray(state[collection]) ? state[collection] : []
+  const canonicalMatches = activeRecords.filter((record) => (
+    !record.deletedAt
+    && identifierValues(record).some((identifier) => identifier === canonicalIdentifier)
+  ))
+  if (canonicalMatches.length !== 1) {
+    throw new ApiError(409, 'CANONICAL_IDENTIFIER_AMBIGUOUS', 'Không xác định được duy nhất hồ sơ đang hoạt động mang mã chuẩn.')
+  }
+  const historyRecords = Array.isArray(state[historyCollection]) ? state[historyCollection] : []
+  const aliasMatches = historyRecords
+    .map((record, index) => ({ record, index }))
+    .filter(({ record }) => identifierValues(record).some((identifier) => identifier === aliasIdentifier))
+  if (aliasMatches.length !== 1) {
+    throw new ApiError(409, 'HISTORY_IDENTIFIER_AMBIGUOUS', 'Không xác định được duy nhất hồ sơ lịch sử mang bí danh cần xử lý.')
+  }
+  const previous = aliasMatches[0].record
+  const identifierFields = kind === 'employee'
+    ? ['id', 'code', 'employeeId', 'employeeCode']
+    : ['id']
+  const originalIdentifiers = Object.fromEntries(identifierFields
+    .filter((field) => Object.hasOwn(previous, field))
+    .map((field) => [field, previous[field]]))
+  const repaired = {
+    ...previous,
+    ...Object.fromEntries(identifierFields
+      .filter((field) => sameIdentifier(previous[field], aliasIdentifier))
+      .map((field) => [field, canonicalIdentifier])),
+    identifierAliasResolution: {
+      aliasIdentifier,
+      canonicalIdentifier,
+      originalIdentifiers,
+      reason,
+      resolvedAt: commandContext.now,
+      resolvedBy: serverActorSnapshot(actor),
+    },
+  }
+  const nextHistory = historyRecords.map((record, index) => (
+    index === aliasMatches[0].index ? repaired : record
+  ))
+  const nextState = {
+    ...state,
+    [historyCollection]: nextHistory,
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: `${kind}-history-identifier`,
+    entityId: canonicalIdentifier,
+    before: previous,
+    after: repaired,
+    metadata: { kind, aliasIdentifier, canonicalIdentifier, reason },
+    response: { command: body.type, kind, record: repaired },
+  }, commandContext)
+}
+
 const businessSupportCommandAllowed = (body) => {
   const type = String(body?.type || '')
   return BUSINESS_SUPPORT_SELF_SERVICE_COMMANDS.has(type) || BUSINESS_SUPPORT_DOMAIN_COMMANDS.has(type)
 }
 
 const assertOperationalStoreAccess = (actor, storeId) => {
-  const normalizedStoreId = String(storeId || '')
+  const normalizedStoreId = normalizeIdentifierKey(storeId)
   if (actor.role === 'business_support'
-    && (!normalizedStoreId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID, 'ADMIN', 'SYSTEM'].includes(normalizedStoreId))) {
+    && (!normalizedStoreId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID, 'ADMIN', 'SYSTEM']
+      .map(normalizeIdentifierKey).includes(normalizedStoreId))) {
     throw new ApiError(403, 'OFFICE_FORBIDDEN', 'Nhân viên hỗ trợ kinh doanh không có quyền thao tác Khối văn phòng hoặc đơn vị nội bộ.')
   }
   if (actor.role === 'store_manager'
-    && (!normalizedStoreId || normalizedStoreId !== String(actor.store_id || ''))) {
+    && (!normalizedStoreId || !sameIdentifier(normalizedStoreId, actor.store_id))) {
     throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được thao tác đúng cửa hàng được phân công.')
   }
 }
 
 const loadGlobalCommandState = async (db, body) => {
-  const expectedVersion = validateExpectedVersion(body.expectedVersion)
+  const expectedVersion = commandExpectedVersion(body)
   const current = body._preloadedGlobalStateRow || await loadState(db, 'global')
   const currentVersion = Number(current?.version || 0)
   if (!current || currentVersion !== expectedVersion) {
@@ -4138,13 +5071,42 @@ const loadGlobalCommandState = async (db, body) => {
   }
 }
 
-const nextStoreCode = (state) => {
+const defaultStoreCodeFromName = (name) => {
+  const normalizedName = normalizeTextKey(name)
+  if (normalizedName === 'sm tnv') return 'SM-TNV'
+  if (!normalizedName.startsWith('dosii ')) return ''
+  const branchName = normalizedName.slice('dosii '.length).trim()
+  const words = branchName.match(/[a-z0-9]+/gu) || []
+  if (!words.length) return ''
+  const branchCode = words.length === 1
+    ? words[0]
+    : words.map((word) => word[0]).join('')
+  return branchCode ? `DOSII-${branchCode.toUpperCase().slice(0, 74)}` : ''
+}
+
+const nextStoreCode = (state, name = '') => {
+  const brandedCode = defaultStoreCodeFromName(name)
   const knownStores = [
     ...(Array.isArray(state.stores) ? state.stores : []),
     ...(Array.isArray(state.deletedStores) ? state.deletedStores : []),
   ]
+  const knownIdentifiers = new Set(knownStores
+    .map((store) => normalizeIdentifierKey(store?.id))
+    .filter(Boolean))
+  if (brandedCode) {
+    if (!knownIdentifiers.has(normalizeIdentifierKey(brandedCode))) return brandedCode
+    let suffix = 2
+    const candidateFor = (value) => {
+      const suffixText = `-${String(value).padStart(2, '0')}`
+      return `${brandedCode.slice(0, 80 - suffixText.length)}${suffixText}`
+    }
+    while (knownIdentifiers.has(normalizeIdentifierKey(candidateFor(suffix)))) {
+      suffix += 1
+    }
+    return candidateFor(suffix)
+  }
   const next = knownStores.reduce((maximum, store) => {
-    const match = String(store?.id || '').match(/^CH(\d+)$/u)
+    const match = String(store?.id || '').match(/^CH(\d+)$/iu)
     return match ? Math.max(maximum, Number(match[1])) : maximum
   }, 0) + 1
   return `CH${String(next).padStart(3, '0')}`
@@ -4163,21 +5125,40 @@ const storeCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
   const stores = Array.isArray(state.stores) ? state.stores : []
+  const requestedName = String(payload.name || '').trim().slice(0, 160)
   const storeId = operation === 'create'
-    ? String(payload.id || nextStoreCode(state)).trim().toUpperCase()
+    ? String(payload.id || nextStoreCode(state, requestedName)).trim().toUpperCase()
     : String(payload.storeId || payload.id || '').trim()
   if (operation !== 'create') assertOperationalStoreAccess(actor, storeId)
-  if (!/^[A-Za-z0-9_-]{1,80}$/u.test(storeId) || storeId === 'OFFICE') {
+  if (!/^[A-Za-z0-9_-]{1,80}$/u.test(storeId)) {
     throw new ApiError(400, 'STORE_ID_INVALID', 'Mã cửa hàng không hợp lệ.')
   }
-  const existing = stores.find((store) => String(store.id || '') === storeId)
+  if (isReservedPhysicalStoreIdentifier(storeId)) {
+    throw new ApiError(400, 'STORE_ID_RESERVED', 'Mã đơn vị nội bộ không được dùng làm mã cửa hàng vật lý.')
+  }
+  const matchingStores = stores
+    .map((store, index) => ({ store, index }))
+    .filter(({ store }) => sameIdentifier(store.id, storeId))
+  if (operation !== 'create' && matchingStores.length > 1) {
+    throw new ApiError(
+      409,
+      'STORE_IDENTIFIER_COLLISION',
+      'Mã cửa hàng đang trùng với nhiều bản ghi; cần xử lý dữ liệu trùng trước khi cập nhật.',
+      {
+        identifier: normalizeIdentifierKey(storeId),
+        conflictingIdentifiers: matchingStores.map(({ store }) => String(store.id || '')),
+      },
+    )
+  }
+  const existingMatch = matchingStores[0] || null
+  const existing = existingMatch?.store || null
 
   if (operation === 'create') {
     if (existing && !existing.deletedAt) throw new ApiError(409, 'STORE_EXISTS', 'Mã cửa hàng đã tồn tại.')
-    if ((Array.isArray(state.deletedStores) ? state.deletedStores : []).some((store) => String(store.id || '') === storeId)) {
+    if ((Array.isArray(state.deletedStores) ? state.deletedStores : []).some((store) => sameIdentifier(store.id, storeId))) {
       throw new ApiError(409, 'STORE_ID_RETIRED', 'Mã cửa hàng đã được sử dụng và không thể cấp lại.')
     }
-    const name = String(payload.name || '').trim().slice(0, 160)
+    const name = requestedName
     if (!name) throw new ApiError(400, 'STORE_NAME_INVALID', 'Tên cửa hàng không được để trống.')
     if (stores.some((store) => !store.deletedAt && normalizeTextKey(store.name) === normalizeTextKey(name))) {
       throw new ApiError(409, 'STORE_EXISTS', 'Tên cửa hàng đã tồn tại.')
@@ -4222,7 +5203,7 @@ const storeCommand = async (db, actor, body, commandContext) => {
     }
     const nextState = {
       ...state,
-      stores: [store, ...stores.filter((item) => String(item.id || '') !== storeId)],
+      stores: [store, ...stores.filter((item) => !sameIdentifier(item.id, storeId))],
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -4237,13 +5218,14 @@ const storeCommand = async (db, actor, body, commandContext) => {
   }
 
   if (!existing || existing.deletedAt) throw new ApiError(404, 'STORE_NOT_FOUND', 'Không tìm thấy cửa hàng.')
+  const canonicalStoreId = String(existing.id || storeId)
   if (operation === 'delete') {
     const hasOrders = (Array.isArray(state.orders) ? state.orders : []).some((order) => (
-      String(order.storeId || '') === storeId && !order.deletedAt && order.status !== 'Đã xóa'
+      sameIdentifier(order.storeId, storeId) && !order.deletedAt && order.status !== 'Đã xóa'
       && order.source !== 'legacy-opening-balance'
     ))
     const hasEmployees = (Array.isArray(state.employees) ? state.employees : []).some((employee) => (
-      String(employee.storeId || '') === storeId && !employee.deletedAt
+      sameIdentifier(employee.storeId, storeId) && !employee.deletedAt
       && !['Đã nghỉ việc', 'inactive'].includes(String(employee.status || ''))
     ))
     if (hasOrders || hasEmployees) {
@@ -4252,14 +5234,14 @@ const storeCommand = async (db, actor, body, commandContext) => {
     const deleted = { ...existing, deletedAt: commandContext.now, deletedBy: serverActorSnapshot(actor) }
     const nextState = {
       ...state,
-      stores: stores.filter((store) => String(store.id || '') !== storeId),
+      stores: stores.filter((_, index) => index !== existingMatch.index),
       deletedStores: [deleted, ...(Array.isArray(state.deletedStores) ? state.deletedStores : [])],
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
       action: body.type,
       entityType: 'store',
-      entityId: storeId,
+      entityId: canonicalStoreId,
       before: existing,
       after: null,
       response: { command: body.type, store: deleted },
@@ -4329,7 +5311,7 @@ const storeCommand = async (db, actor, body, commandContext) => {
   const updated = { ...candidate, updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor) }
   const nextState = {
     ...state,
-    stores: stores.map((store) => String(store.id || '') === storeId ? updated : store),
+    stores: stores.map((store, index) => index === existingMatch.index ? updated : store),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -4364,8 +5346,10 @@ const activeCatalogTaskSnapshots = (state, rawTasks, {
   shiftId = null,
   shiftName = null,
 }) => {
+  assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
   const requestedIds = new Set((Array.isArray(rawTasks) ? rawTasks : [])
     .map(requestedWorkCatalogItemId)
+    .map(normalizeIdentifierKey)
     .filter(Boolean))
   if (!requestedIds.size) return new Map()
   let snapshots
@@ -4384,14 +5368,14 @@ const activeCatalogTaskSnapshots = (state, rawTasks, {
     })
   }
   return new Map(snapshots
-    .filter((snapshot) => requestedIds.has(snapshot.catalogItemId))
-    .map((snapshot) => [snapshot.catalogItemId, snapshot]))
+    .filter((snapshot) => requestedIds.has(normalizeIdentifierKey(snapshot.catalogItemId)))
+    .map((snapshot) => [normalizeIdentifierKey(snapshot.catalogItemId), snapshot]))
 }
 
 const assignedCatalogTaskMetadata = (rawTask, activeSnapshots, scope) => {
   const catalogItemId = requestedWorkCatalogItemId(rawTask)
   if (!catalogItemId) return null
-  const snapshot = activeSnapshots.get(catalogItemId)
+  const snapshot = activeSnapshots.get(normalizeIdentifierKey(catalogItemId))
   if (!snapshot) {
     throw new ApiError(400, 'WORK_CATALOG_TASK_INVALID', 'Công việc danh mục không còn hoạt động hoặc không đúng phạm vi được giao.', {
       catalogItemId,
@@ -4441,16 +5425,47 @@ const catalogTaskHistoryMetadata = (task) => task?.catalogItemId ? {
   ...(isPlainRecord(task.catalogSnapshot) ? { catalogSnapshot: { ...task.catalogSnapshot } } : {}),
 } : {}
 
+const throwShiftIdentifierCollision = (matches, shiftId) => {
+  throw new ApiError(
+    409,
+    'SHIFT_IDENTIFIER_COLLISION',
+    'Mã ca làm việc đang trùng với nhiều bản ghi; không thể xác định ca an toàn.',
+    {
+      identifier: normalizeIdentifierKey(shiftId),
+      conflictingIdentifiers: matches.map((shift) => String(shift?.id || '')),
+    },
+  )
+}
+
+const uniqueShiftDefinitionMatch = (definitions, shiftId) => {
+  const matches = (Array.isArray(definitions) ? definitions : [])
+    .filter((definition) => sameIdentifier(definition?.id, shiftId))
+  if (matches.length > 1) throwShiftIdentifierCollision(matches, shiftId)
+  return matches[0] || null
+}
+
+const assertUniqueShiftDefinitionIdentifiers = (definitions) => {
+  const definitionsByIdentifier = new Map()
+  for (const definition of Array.isArray(definitions) ? definitions : []) {
+    const identifier = normalizeIdentifierKey(definition?.id)
+    if (!identifier) continue
+    const matches = definitionsByIdentifier.get(identifier) || []
+    matches.push(definition)
+    if (matches.length > 1) throwShiftIdentifierCollision(matches, definition?.id)
+    definitionsByIdentifier.set(identifier, matches)
+  }
+}
+
 const taskAssignmentCommand = async (db, actor, body, commandContext) => {
   assertOperationsRole(actor, 'Tài khoản không có quyền giao việc cửa hàng.')
   if (!['tasks.assign', 'tasks.replace_scope'].includes(body.type)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh giao việc cửa hàng không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const storeId = String(payload.storeId || '').trim()
-  assertOperationalStoreAccess(actor, storeId)
+  const requestedStoreId = String(payload.storeId || '').trim()
+  assertOperationalStoreAccess(actor, requestedStoreId)
   const date = String(payload.date || '').trim()
-  const shiftId = String(payload.shiftId || '').trim()
+  let shiftId = String(payload.shiftId || '').trim()
   if (!/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u.test(date)) {
     throw new ApiError(400, 'TASK_DATE_INVALID', 'Ngày giao việc phải có định dạng YYYY-MM-DD.')
   }
@@ -4462,25 +5477,32 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'TASKS_INVALID', 'Danh sách giao việc phải có từ 1 đến 100 công việc.')
   }
   const { current, state } = await loadGlobalCommandState(db, body)
-  const store = requireStore(state, storeId)
+  const store = requireStore(state, requestedStoreId)
+  const storeId = String(store.id || requestedStoreId)
   let shift = null
   if (shiftId) {
-    shift = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).find((definition) => (
-      String(definition.id || '') === shiftId
-      && !definition.deletedAt
-      && definition.active !== false
-    ))
-    if (!shift || String(shift.storeId || '') !== storeId) {
+    const scopedShiftDefinitions = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [])
+      .filter((definition) => (
+        sameIdentifier(definition.storeId, storeId)
+        && !definition.deletedAt
+        && definition.active !== false
+      ))
+    shift = uniqueShiftDefinitionMatch(scopedShiftDefinitions, shiftId)
+    if (!shift) {
       throw new ApiError(400, 'SHIFT_INVALID', 'Ca làm việc không tồn tại hoặc không thuộc cửa hàng.')
     }
+    shiftId = String(shift.id || shiftId)
     if (shift.date && String(shift.date) !== date) {
       throw new ApiError(400, 'SHIFT_DATE_MISMATCH', `Ca ${shift.name || shift.id} chỉ áp dụng ngày ${shift.date}.`)
     }
   }
-  const employeeIds = Array.isArray(payload.employeeIds)
-    ? [...new Set(payload.employeeIds.map((value) => String(value || '').trim()).filter(Boolean))]
+  const requestedEmployeeIds = Array.isArray(payload.employeeIds)
+    ? [...new Map(payload.employeeIds
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .map((value) => [normalizeIdentifierKey(value), value])).values()]
     : []
-  if (body.type === 'tasks.assign' && !employeeIds.length) {
+  if (body.type === 'tasks.assign' && !requestedEmployeeIds.length) {
     throw new ApiError(400, 'TASK_ASSIGNEES_REQUIRED', 'Cần chọn ít nhất một nhân viên nhận việc.')
   }
   const activeStoreEmployees = new Map((Array.isArray(state.employees) ? state.employees : [])
@@ -4490,13 +5512,17 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
       && !employee.deletedAt
       && !['da nghi viec', 'tam ngung', 'inactive', 'locked'].includes(normalizeTextKey(employee.status))
     ))
-    .map((employee) => [String(employee.id || employee.code || ''), employee]))
-  const invalidEmployeeIds = employeeIds.filter((employeeId) => !activeStoreEmployees.has(employeeId))
+    .map((employee) => [normalizeIdentifierKey(employee.id || employee.code), employee]))
+  const invalidEmployeeIds = requestedEmployeeIds.filter((employeeId) => !activeStoreEmployees.has(normalizeIdentifierKey(employeeId)))
   if (invalidEmployeeIds.length) {
     throw new ApiError(400, 'EMPLOYEE_STORE_MISMATCH', 'Danh sách nhận việc có nhân viên không thuộc cửa hàng hoặc không còn hoạt động.', {
       employeeIds: invalidEmployeeIds,
     })
   }
+  const employeeIds = requestedEmployeeIds.map((employeeId) => {
+    const employee = activeStoreEmployees.get(normalizeIdentifierKey(employeeId))
+    return String(employee?.id || employee?.code || employeeId)
+  })
   const catalogScope = {
     targetGroup: WORK_CATALOG_TARGET.STORE,
     storeId,
@@ -4508,14 +5534,15 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
   const assignmentId = `tsa_${crypto.randomUUID()}`
   const existingTasks = Array.isArray(state.tasks) ? state.tasks : []
   const previousTasks = existingTasks.filter((task) => (
-    String(task.storeId || '') === storeId
-    && String(task.shiftId || task.shift || '') === shiftId
+    sameIdentifier(task.storeId, storeId)
+    && normalizeIdentifierKey(task.shiftId || task.shift) === normalizeIdentifierKey(shiftId)
     && String(task.date || task.workDate || '') === date
+    && !String(task.checklistAttendanceId || '').trim()
   ))
   const replaceableTaskIds = new Set(body.type === 'tasks.replace_scope'
-    ? previousTasks.map((task) => String(task.id || '')).filter(Boolean)
+    ? previousTasks.map((task) => normalizeIdentifierKey(task.id)).filter(Boolean)
     : [])
-  const existingTaskIds = new Set(existingTasks.map((task) => String(task.id || '')).filter(Boolean))
+  const existingTaskIds = new Set(existingTasks.map((task) => normalizeIdentifierKey(task.id)).filter(Boolean))
   const seenTaskIds = new Set()
   const seenCatalogItemIds = new Set()
   const tasks = payload.tasks.map((rawTask, index) => {
@@ -4533,13 +5560,14 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
     const detail = String(rawTask.detail || '').trim().slice(0, 2_000)
     if (!title) throw new ApiError(400, 'TASK_TITLE_REQUIRED', `Công việc thứ ${index + 1} chưa có nội dung.`)
     const taskId = String(rawTask.id || `task_${crypto.randomUUID()}`).trim().slice(0, 160)
-    if (!/^[A-Za-z0-9_-]{1,160}$/u.test(taskId) || seenTaskIds.has(taskId)) {
+    const taskKey = normalizeIdentifierKey(taskId)
+    if (!/^[A-Za-z0-9_-]{1,160}$/u.test(taskId) || seenTaskIds.has(taskKey)) {
       throw new ApiError(400, 'TASK_ID_INVALID', 'Mã công việc phải hợp lệ và không được trùng trong cùng lượt giao.')
     }
-    if (existingTaskIds.has(taskId) && !replaceableTaskIds.has(taskId)) {
+    if (existingTaskIds.has(taskKey) && !replaceableTaskIds.has(taskKey)) {
       throw new ApiError(409, 'TASK_ID_EXISTS', 'Mã công việc đã tồn tại trong lịch sử giao việc đang hoạt động.')
     }
-    seenTaskIds.add(taskId)
+    seenTaskIds.add(taskKey)
     return {
       id: taskId,
       assignmentId,
@@ -4561,7 +5589,7 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
   })
   const replaced = body.type === 'tasks.replace_scope'
   const notifications = employeeIds.map((employeeId) => {
-    const employee = activeStoreEmployees.get(employeeId)
+    const employee = activeStoreEmployees.get(normalizeIdentifierKey(employeeId))
     return {
       id: `ntf_${crypto.randomUUID()}`,
       type: 'store-task-assigned',
@@ -4619,9 +5647,10 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
       ? [
           ...tasks,
           ...existingTasks.filter((task) => !(
-        String(task.storeId || '') === storeId
-        && String(task.shiftId || task.shift || '') === shiftId
+        sameIdentifier(task.storeId, storeId)
+        && normalizeIdentifierKey(task.shiftId || task.shift) === normalizeIdentifierKey(shiftId)
         && String(task.date || task.workDate || '') === date
+        && !String(task.checklistAttendanceId || '').trim()
       )),
         ]
       : [...tasks, ...existingTasks],
@@ -4747,7 +5776,7 @@ const normalizeEmployeeUnitRequest = (payload, previous = null) => {
   const raw = String(payload.unit || payload.unitType || payload.department || payload.role || '').trim().toLowerCase()
   if (['business_support', 'business-support', 'support'].includes(raw)) return 'business_support'
   if (['store_manager', 'store-manager', 'manager'].includes(raw)) return 'store_manager'
-  if (raw === 'office' || String(payload.storeId || '') === OFFICE_STORE_ID) return 'office'
+  if (raw === 'office' || sameIdentifier(payload.storeId, OFFICE_STORE_ID)) return 'office'
   return 'store'
 }
 
@@ -4952,7 +5981,7 @@ const configuredProfileWorkShifts = (employee, workDate, state = {}) => {
   const daily = (Array.isArray(state.supportWorkSchedules) ? state.supportWorkSchedules : [])
     .find((record) => (
       !record.deletedAt
-      && String(record.employeeId || '') === String(employee?.id || employee?.code || '')
+      && belongsToEmployee(record, employee?.id || employee?.code || employee?.employeeId)
       && String(record.date || '') === String(workDate || '')
     ))
   if (daily) {
@@ -5180,11 +6209,14 @@ const prepareAccountAvatarUpdate = async (env, input, previous, userId, timestam
 
 const hasLegacyAccountAvatarData = (state) => {
   const accountSettings = isPlainRecord(state?.accountSettings) ? state.accountSettings : {}
+  const profileHasLegacyAvatar = (employee) => (
+    isEmbeddedImageDataUrl(employee?.avatar) || isEmbeddedImageDataUrl(employee?.avatarImage)
+  )
   return isEmbeddedImageDataUrl(state?.settings?.avatar)
     || Object.values(accountSettings).some((settings) => isEmbeddedImageDataUrl(settings?.avatar))
-    || (Array.isArray(state?.employees) ? state.employees : []).some((employee) => isEmbeddedImageDataUrl(employee?.avatar))
+    || (Array.isArray(state?.employees) ? state.employees : []).some(profileHasLegacyAvatar)
     || (Array.isArray(state?.deletedEmployees) ? state.deletedEmployees : [])
-      .some((employee) => isEmbeddedImageDataUrl(employee?.avatar))
+      .some(profileHasLegacyAvatar)
 }
 
 const prepareLegacyAccountAvatarMigration = async (
@@ -5208,9 +6240,37 @@ const prepareLegacyAccountAvatarMigration = async (
 
   const bucket = env?.IDENTITY_IMAGES
   const users = await all(db, 'SELECT id, employee_id, role FROM users ORDER BY created_at, id')
-  const userIdByEmployeeId = new Map(users
-    .filter((user) => user.employee_id)
-    .map((user) => [String(user.employee_id), String(user.id)]))
+  const uniqueAvatarOwnerUser = (identifier, identifierOf, collisionCode, collisionMessage) => (
+    uniqueIdentifierRecordMatch({
+      records: users,
+      identifier,
+      identifierOf,
+      collisionCode,
+      collisionMessage,
+    })?.record || null
+  )
+  const avatarOwnerUserForProfile = (employee) => {
+    const authUserId = String(employee?.authUserId || '').trim()
+    if (authUserId) {
+      const linkedUser = uniqueAvatarOwnerUser(
+        authUserId,
+        (user) => user?.id,
+        'LEGACY_AVATAR_AUTH_OWNER_COLLISION',
+        'Mã tài khoản sở hữu ảnh đại diện cũ đang trùng hoa/thường.',
+      )
+      if (linkedUser) return linkedUser
+    }
+    for (const identifier of employeeIdentifierValues(employee)) {
+      const linkedUser = uniqueAvatarOwnerUser(
+        identifier,
+        (user) => user?.employee_id,
+        'LEGACY_AVATAR_EMPLOYEE_OWNER_COLLISION',
+        'Mã nhân viên sở hữu ảnh đại diện cũ đang trùng hoa/thường.',
+      )
+      if (linkedUser) return linkedUser
+    }
+    return null
+  }
   const preferredUser = users.find((user) => String(user.id) === String(preferredUserId || ''))
   const defaultAdminId = String(
     (preferredUser?.role === 'admin' ? preferredUser.id : '')
@@ -5266,16 +6326,22 @@ const prepareLegacyAccountAvatarMigration = async (
 
     for (const [collection, profiles] of [['employees', employees], ['deletedEmployees', deletedEmployees]]) {
       for (const employee of profiles) {
-        if (!isEmbeddedImageDataUrl(employee.avatar)) continue
-        const source = employee.avatar
+        const sourceField = isEmbeddedImageDataUrl(employee.avatar)
+          ? 'avatar'
+          : isEmbeddedImageDataUrl(employee.avatarImage)
+            ? 'avatarImage'
+            : ''
+        if (!sourceField) continue
+        const source = employee[sourceField]
         const employeeId = String(employee.id || employee.code || employee.employeeId || '')
-        const ownerId = String(employee.authUserId || userIdByEmployeeId.get(employeeId) || '')
+        const ownerId = String(avatarOwnerUserForProfile(employee)?.id || '')
         const metadata = await migrateOrQuarantine(
           source,
           ownerId || `legacy-profile-${employeeId || crypto.randomUUID()}`,
-          `${collection}.${employeeId || 'unknown'}.avatar`,
+          `${collection}.${employeeId || 'unknown'}.${sourceField}`,
         )
         delete employee.avatar
+        delete employee.avatarImage
         if (metadata) employee.avatarImage = metadata
         if (metadata && ownerId && !normalizeAccountAvatarMetadata(accountSettings[ownerId]?.avatar, ownerId)) {
           accountSettings[ownerId] = {
@@ -5849,7 +6915,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : String(payload.employeeId || profilePayload.id || profilePayload.code || '').trim()
   const previous = operation === 'create'
     ? null
-    : employees.find((employee) => String(employee.id || employee.code || '') === employeeId && !employee.deletedAt)
+    : employees.find((employee) => sameIdentifier(employee.id || employee.code, employeeId) && !employee.deletedAt)
   if (operation !== 'create' && !previous) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy hồ sơ nhân viên.')
   const unit = normalizeEmployeeUnitRequest(profilePayload, previous)
   const linkedEmployeeId = operation === 'create' && ['store_manager', 'store'].includes(unit)
@@ -5857,7 +6923,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : ''
   const linkedStoreEmployee = linkedEmployeeId
     ? employees.find((employee) => (
-        String(employee.id || employee.code || '') === linkedEmployeeId
+        sameIdentifier(employee.id || employee.code, linkedEmployeeId)
         && (unit === 'store_manager'
           ? ['store', 'business_support'].includes(employeeUnit(employee))
           : ['business_support', 'office'].includes(employeeUnit(employee)))
@@ -5934,7 +7000,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     throw new ApiError(403, 'EMPLOYEE_REACTIVATE_FORBIDDEN', 'Chỉ Admin được khôi phục nhân viên đã nghỉ việc.')
   }
   if (previous && profilePayload.storeId !== undefined
-    && String(profilePayload.storeId || '').trim() !== String(previous.storeId || '')) {
+    && !sameIdentifier(profilePayload.storeId, previous.storeId)) {
     throw new ApiError(400, 'EMPLOYEE_STORE_IMMUTABLE', 'Không thể đổi đơn vị của nhân viên qua cập nhật hồ sơ.')
   }
   const storeId = unit === 'business_support'
@@ -5942,7 +7008,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     : (operation === 'create'
       ? String(profilePayload.storeId || linkedStoreEmployee?.storeId || '').trim()
       : String(previous.storeId || '').trim())
-  if (operation === 'create' && unit === 'office' && storeId !== OFFICE_STORE_ID) {
+  if (operation === 'create' && unit === 'office' && !sameIdentifier(storeId, OFFICE_STORE_ID)) {
     throw new ApiError(400, 'OFFICE_STORE_REQUIRED', 'Nhân viên Khối văn phòng bắt buộc thuộc đơn vị OFFICE.')
   }
   if (unit === 'store') assertOperationalStoreAccess(actor, storeId)
@@ -5950,20 +7016,20 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   let store
   if (unit === 'business_support') {
     store = { id: BUSINESS_SUPPORT_STORE_ID, name: 'Nhân viên hỗ trợ kinh doanh', short: 'HTKD' }
-  } else if (unit === 'office' && storeId === OFFICE_STORE_ID && ['admin', 'business_support'].includes(actor.role)) {
+  } else if (unit === 'office' && sameIdentifier(storeId, OFFICE_STORE_ID) && ['admin', 'business_support'].includes(actor.role)) {
     store = { id: OFFICE_STORE_ID, name: 'Khối Văn Phòng', short: 'VP' }
   } else store = requireStore(state, storeId)
-  if (unit === 'store_manager' && [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].includes(storeId)) {
+  if (unit === 'store_manager' && [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].some((id) => sameIdentifier(id, storeId))) {
     throw new ApiError(400, 'STORE_INVALID', 'Quản lý cửa hàng phải được gán cho một cửa hàng đang tồn tại.')
   }
   if (unit === 'store_manager') requireActivePhysicalStore(state, storeId)
-  if (linkedStoreEmployee && employeeUnit(linkedStoreEmployee) === 'store' && String(linkedStoreEmployee.storeId || '') !== storeId) {
+  if (linkedStoreEmployee && employeeUnit(linkedStoreEmployee) === 'store' && !sameIdentifier(linkedStoreEmployee.storeId, storeId)) {
     throw new ApiError(400, 'LINKED_EMPLOYEE_STORE_MISMATCH', 'Nhân viên được chọn không thuộc cửa hàng cần phân quyền quản lý.')
   }
   if (operation === 'create' && unit === 'store' && linkedEmployeeId && employees.some((employee) => (
     employeeUnit(employee) === 'store'
-    && String(employee.storeId || '') === storeId
-    && String(employee.linkedEmployeeId || '') === linkedEmployeeId
+    && sameIdentifier(employee.storeId, storeId)
+    && sameIdentifier(employee.linkedEmployeeId, linkedEmployeeId)
     && !employee.deletedAt
   ))) {
     throw new ApiError(409, 'LINKED_EMPLOYEE_ROLE_EXISTS', 'Nhân viên đã có vai trò Nhân viên tại cửa hàng này.')
@@ -5972,10 +7038,10 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (operation === 'delete') {
     const linkedRoleProfile = Boolean(previous.linkedEmployeeId && ['store_manager', 'store'].includes(unit))
     const authEmployeeId = linkedRoleProfile ? String(previous.linkedEmployeeId) : employeeId
-    const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', authEmployeeId)
+    const authTarget = await uniqueUserByEmployeeIdentifier(db, authEmployeeId)
     const nextAuthVersion = authTarget ? Number(authTarget.version || 1) + 1 : null
     const linkedSource = linkedRoleProfile
-      ? employees.find((employee) => String(employee.id || employee.code || '') === authEmployeeId && !employee.deletedAt)
+      ? employees.find((employee) => sameIdentifier(employee.id || employee.code, authEmployeeId) && !employee.deletedAt)
       : null
     const restoredRole = employeeUnit(linkedSource) === 'business_support' ? 'business_support' : 'employee'
     const restoredStoreId = restoredRole === 'business_support'
@@ -5991,7 +7057,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     }
     const nextState = {
       ...state,
-      employees: employees.filter((employee) => String(employee.id || employee.code || '') !== employeeId),
+      employees: employees.filter((employee) => !sameIdentifier(employee.id || employee.code, employeeId)),
       schedule: (Array.isArray(state.schedule) ? state.schedule : []).filter((entry) => !belongsToEmployee(entry, employeeId)),
       deletedEmployees: [deleted, ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : [])],
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
@@ -6129,7 +7195,10 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     const managerResolution = resolveExactlyOneActiveStoreManager({
       storeId,
       managers: [
-        ...employees.filter((employee) => String(employee.id || employee.code || '') !== String(previous?.id || previous?.code || '')),
+        ...employees.filter((employee) => !sameIdentifier(
+          employee.id || employee.code,
+          previous?.id || previous?.code,
+        )),
         ...(Array.isArray(state.managerAccounts) ? state.managerAccounts : []),
         profile,
       ],
@@ -6139,14 +7208,14 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     }
   }
   if (operation === 'create') {
-    if (employeeId && employeeId !== profile.id) {
+    if (employeeId && !sameIdentifier(employeeId, profile.id)) {
       throw new ApiError(400, 'EMPLOYEE_ID_INVALID', 'Mã nhân viên gửi lên không khớp mã được tạo.')
     }
-    if (employees.some((employee) => String(employee.id || employee.code || '') === profile.id)) {
+    if (employees.some((employee) => employeeIdentifierValues(employee).some((id) => sameIdentifier(id, profile.id)))) {
       throw new ApiError(409, 'EMPLOYEE_EXISTS', 'Mã nhân viên đã tồn tại.')
     }
     if ((Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []).some((employee) => (
-      String(employee.id || employee.code || employee.employeeCode || '') === profile.id
+      employeeIdentifierValues(employee).some((id) => sameIdentifier(id, profile.id))
     ))) {
       throw new ApiError(409, 'EMPLOYEE_ID_RETIRED', 'Mã nhân viên đã được sử dụng và không thể cấp lại.')
     }
@@ -6168,7 +7237,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
 
   if (operation === 'create') {
     if (linkedStoreEmployee) {
-      const linkedTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', linkedEmployeeId)
+      const linkedTarget = await uniqueUserByEmployeeIdentifier(db, linkedEmployeeId)
       if (!linkedTarget || !['employee', 'business_support', 'store_manager'].includes(linkedTarget.role)) {
         throw new ApiError(409, 'LINKED_EMPLOYEE_ACCOUNT_REQUIRED', 'Hồ sơ được chọn phải có tài khoản đăng nhập đang hoạt động.')
       }
@@ -6185,7 +7254,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       saved.authVersion = currentAuthVersion
       saved.linkedEmployeeId = linkedEmployeeId
       stateGuard = {
-        sql: 'SELECT 1 FROM users WHERE id = ? AND version = ? AND employee_id = ?',
+        sql: 'SELECT 1 FROM users WHERE id = ? AND version = ? AND LOWER(employee_id) = LOWER(?)',
         bindings: [linkedTarget.id, currentAuthVersion, linkedEmployeeId],
       }
     } else {
@@ -6262,7 +7331,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         UPDATE sessions
         SET revoked_at = ?, last_seen_at = ?
         WHERE user_id = ? AND revoked_at IS NULL
-          AND EXISTS (SELECT 1 FROM users WHERE id = ? AND version = ? AND employee_id = ?)
+          AND EXISTS (SELECT 1 FROM users WHERE id = ? AND version = ? AND LOWER(employee_id) = LOWER(?))
       `).bind(
         commandContext.now,
         commandContext.now,
@@ -6285,7 +7354,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         }
         const normalizedUsername = normalizeUsername(requestedUsername)
         const duplicate = await first(db, `
-          SELECT id FROM users WHERE username_normalized = ? OR employee_id = ? LIMIT 1
+          SELECT id FROM users WHERE username_normalized = ? OR LOWER(employee_id) = LOWER(?) LIMIT 1
         `, normalizedUsername, saved.id)
         if (duplicate) throw new ApiError(409, 'USER_EXISTS', 'Tên đăng nhập hoặc mã nhân viên đã có tài khoản.')
         const password = await hashPassword(requestedPassword)
@@ -6340,7 +7409,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
 
   if (operation === 'update' && !previous?.linkedEmployeeId) {
     const authEmployeeId = saved.id
-    const authTarget = await first(db, 'SELECT * FROM users WHERE employee_id = ? LIMIT 1', authEmployeeId)
+    const authTarget = await uniqueUserByEmployeeIdentifier(db, authEmployeeId)
     if (authTarget) {
       if (authTarget.role !== expectedAuthRole) {
         throw new ApiError(409, 'EMPLOYEE_ROLE_MISMATCH', 'Vai trò tài khoản không khớp nhóm hồ sơ nhân viên.')
@@ -6435,7 +7504,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         }
         const normalizedUsername = normalizeUsername(requestedUsername)
         const duplicate = await first(db, `
-          SELECT id FROM users WHERE username_normalized = ? OR employee_id = ? LIMIT 1
+          SELECT id FROM users WHERE username_normalized = ? OR LOWER(employee_id) = LOWER(?) LIMIT 1
         `, normalizedUsername, saved.id)
         if (duplicate) throw new ApiError(409, 'USER_EXISTS', 'Tên đăng nhập hoặc mã nhân viên đã có tài khoản.')
         const password = await hashPassword(requestedPassword)
@@ -6456,7 +7525,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         saved.authUserId = userId
         saved.authVersion = 1
         stateGuard = {
-          sql: 'SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username_normalized = ? OR employee_id = ?)',
+          sql: 'SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM users WHERE username_normalized = ? OR LOWER(employee_id) = LOWER(?))',
           bindings: [normalizedUsername, saved.id],
         }
         additionalStatements.push(db.prepare(`
@@ -6494,7 +7563,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   }
   const nextEmployees = operation === 'create'
     ? [saved, ...employees]
-    : employees.map((employee) => String(employee.id || employee.code || '') === employeeId ? saved : employee)
+    : employees.map((employee) => sameIdentifier(employee.id || employee.code, employeeId) ? saved : employee)
   const payrollTargets = []
   if (operation === 'update') {
     const targetPeriod = String(profilePayload.standardWorkDaysPeriod || '')
@@ -6525,7 +7594,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         assertPayrollNotPaidOrLocked(state, storeId, currentPeriod)
       }
       for (const period of Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []) {
-        if (String(period.storeId || '') !== storeId
+        if (!sameIdentifier(period.storeId, storeId)
           || period.status !== 'Đã chốt'
           || period.confirmedAt
           || period.lockedAt) continue
@@ -6546,7 +7615,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     stores: (Array.isArray(state.stores) ? state.stores : []).map((item) => ({
       ...item,
       employees: nextEmployees.filter((employee) => (
-        String(employee.storeId || '') === String(item.id || '')
+        sameIdentifier(employee.storeId, item.id)
         && employeeUnit(employee) === 'store'
         && !employee.deletedAt
         && !['Đã nghỉ việc', 'inactive'].includes(String(employee.status || ''))
@@ -6590,21 +7659,43 @@ const shiftDefinitionCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
   const definitions = Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []
-  const shiftId = operation === 'create'
+  let shiftId = operation === 'create'
     ? String(payload.id || `shift_${crypto.randomUUID()}`).trim()
     : String(payload.shiftId || payload.id || '').trim()
   if (!/^[A-Za-z0-9_-]{1,160}$/u.test(shiftId)) throw new ApiError(400, 'SHIFT_INVALID', 'Mã ca làm việc không hợp lệ.')
-  const previous = definitions.find((shift) => String(shift.id || '') === shiftId && !shift.deletedAt)
+  const matchingDefinitions = definitions
+    .map((shift, index) => ({ shift, index }))
+    .filter(({ shift }) => sameIdentifier(shift.id, shiftId) && !shift.deletedAt)
+  if (matchingDefinitions.length > 1) {
+    throw new ApiError(
+      409,
+      'SHIFT_IDENTIFIER_COLLISION',
+      'Mã ca làm việc đang trùng với nhiều bản ghi; không thể cập nhật an toàn.',
+      {
+        identifier: normalizeIdentifierKey(shiftId),
+        conflictingIdentifiers: matchingDefinitions.map(({ shift }) => String(shift.id || '')),
+      },
+    )
+  }
+  const previousMatch = matchingDefinitions[0] || null
+  const previous = previousMatch?.shift || null
+  if (operation === 'create' && previous) throw new ApiError(409, 'SHIFT_EXISTS', 'Mã ca làm việc đã tồn tại.')
   if (operation !== 'create' && !previous) throw new ApiError(404, 'SHIFT_NOT_FOUND', 'Không tìm thấy ca làm việc.')
-  const storeId = String(payload.storeId ?? previous?.storeId ?? '').trim()
-  assertOperationalStoreAccess(actor, storeId)
-  requireStore(state, storeId)
+  if (previous) shiftId = String(previous.id || shiftId)
+  const requestedStoreId = String(payload.storeId ?? previous?.storeId ?? '').trim()
+  if (previous && payload.storeId !== undefined && !sameIdentifier(requestedStoreId, previous.storeId)) {
+    throw new ApiError(400, 'SHIFT_STORE_IMMUTABLE', 'Không thể chuyển ca làm việc sang cửa hàng khác.')
+  }
+  const scopedStoreId = String(previous?.storeId || requestedStoreId).trim()
+  assertOperationalStoreAccess(actor, scopedStoreId)
+  const store = requireStore(state, scopedStoreId)
+  const storeId = String(store.id || scopedStoreId).trim()
 
   if (operation === 'delete') {
     const deleted = { ...previous, deletedAt: commandContext.now, deletedBy: serverActorSnapshot(actor), active: false }
     const nextState = {
       ...state,
-      shiftDefinitions: definitions.map((shift) => String(shift.id || '') === shiftId ? deleted : shift),
+      shiftDefinitions: definitions.map((shift, index) => index === previousMatch.index ? deleted : shift),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -6628,7 +7719,7 @@ const shiftDefinitionCommand = async (db, actor, body, commandContext) => {
   if (!start || !end || end.minuteOfDay <= start.minuteOfDay) {
     throw new ApiError(400, 'SHIFT_TIME_INVALID', 'Giờ bắt đầu/kết thúc phải theo định dạng 24 giờ và giờ kết thúc phải sau giờ bắt đầu.')
   }
-  const sameStoreCount = definitions.filter((shift) => String(shift.storeId || '') === storeId && !shift.deletedAt).length
+  const sameStoreCount = definitions.filter((shift) => sameIdentifier(shift.storeId, storeId) && !shift.deletedAt).length
   const shift = {
     ...(previous || {}),
     id: shiftId,
@@ -6651,7 +7742,7 @@ const shiftDefinitionCommand = async (db, actor, body, commandContext) => {
     ...state,
     shiftDefinitions: operation === 'create'
       ? [shift, ...definitions]
-      : definitions.map((item) => String(item.id || '') === shiftId ? shift : item),
+        : definitions.map((item, index) => index === previousMatch.index ? shift : item),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -6671,28 +7762,35 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh lịch phân ca không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const storeId = String(payload.storeId || '').trim()
+  const requestedStoreId = String(payload.storeId || '').trim()
   const date = String(payload.date || '').trim()
-  assertOperationalStoreAccess(actor, storeId)
+  assertOperationalStoreAccess(actor, requestedStoreId)
   if (!/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u.test(date)) {
     throw new ApiError(400, 'SCHEDULE_DATE_INVALID', 'Ngày phân ca phải có định dạng YYYY-MM-DD.')
   }
   const { current, state } = await loadGlobalCommandState(db, body)
-  requireStore(state, storeId)
-  const storeEmployees = new Set((Array.isArray(state.employees) ? state.employees : [])
+  const store = requireStore(state, requestedStoreId)
+  const storeId = String(store.id || requestedStoreId).trim()
+  const storeEmployees = new Map((Array.isArray(state.employees) ? state.employees : [])
     .filter((employee) => (
       employeeWorksAtStoreOnDate(state, employee, storeId, date)
       && employeeUnit(employee) === 'store'
       && !employee.deletedAt
     ))
-    .map((employee) => String(employee.id || employee.code || '')))
+    .map((employee) => [normalizeIdentifierKey(employee.id || employee.code), String(employee.id || employee.code || '')]))
   const shiftDefinitions = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [])
-    .filter((shift) => String(shift.storeId || '') === storeId && !shift.deletedAt && shift.active !== false)
-  const shifts = new Map(shiftDefinitions.map((shift) => [String(shift.id || ''), shift]))
+    .filter((shift) => sameIdentifier(shift.storeId, storeId) && !shift.deletedAt && shift.active !== false)
+  assertUniqueShiftDefinitionIdentifiers(shiftDefinitions)
+  const shifts = new Map(shiftDefinitions.map((shift) => [normalizeIdentifierKey(shift.id), shift]))
   const schedule = Array.isArray(state.schedule) ? state.schedule : []
   let rawAssignments
   if (body.type === 'schedule.assign') {
-    const employeeIds = Array.isArray(payload.employeeIds) ? [...new Set(payload.employeeIds.map(String))] : []
+    const employeeIds = Array.isArray(payload.employeeIds)
+      ? [...new Map(payload.employeeIds
+          .map((employeeId) => String(employeeId || '').trim())
+          .filter(Boolean)
+          .map((employeeId) => [normalizeIdentifierKey(employeeId), employeeId])).values()]
+      : []
     const shiftIds = Array.isArray(payload.shiftIds) ? [...new Set(payload.shiftIds.map(String))] : []
     if (!employeeIds.length || !shiftIds.length) {
       throw new ApiError(400, 'SCHEDULE_ASSIGNMENT_INVALID', 'Cần chọn ít nhất một ca và một nhân viên.')
@@ -6702,37 +7800,64 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     if (!Array.isArray(payload.assignments) || payload.assignments.length > 500) {
       throw new ApiError(400, 'SCHEDULE_ASSIGNMENT_INVALID', 'Danh sách phân ca không hợp lệ.')
     }
-    rawAssignments = payload.assignments
+    rawAssignments = [...payload.assignments.reduce((byEmployee, assignment) => {
+      const employeeId = String(assignment?.employeeId || '').trim()
+      const key = normalizeIdentifierKey(employeeId)
+      if (!key || !isPlainRecord(assignment)) {
+        byEmployee.set(`invalid:${byEmployee.size}`, assignment)
+        return byEmployee
+      }
+      const previousAssignment = byEmployee.get(key)
+      if (!previousAssignment) {
+        byEmployee.set(key, assignment)
+        return byEmployee
+      }
+      byEmployee.set(key, {
+        ...previousAssignment,
+        ...assignment,
+        employeeId: previousAssignment.employeeId || assignment.employeeId,
+        shiftIds: [
+          ...(Array.isArray(previousAssignment.shiftIds) ? previousAssignment.shiftIds : [previousAssignment.shiftId]),
+          ...(Array.isArray(assignment.shiftIds) ? assignment.shiftIds : [assignment.shiftId]),
+        ].filter(Boolean),
+      })
+      return byEmployee
+    }, new Map()).values()]
   }
   const assignments = rawAssignments.map((assignment, index) => {
     if (!isPlainRecord(assignment)) throw new ApiError(400, 'SCHEDULE_ASSIGNMENT_INVALID', `Phân ca thứ ${index + 1} không hợp lệ.`)
-    const employeeId = String(assignment.employeeId || '').trim()
-    const shiftIds = Array.isArray(assignment.shiftIds)
-      ? [...new Set(assignment.shiftIds.map(String))]
-      : [String(assignment.shiftId || '')].filter(Boolean)
-    if (!storeEmployees.has(employeeId)) {
-      throw new ApiError(400, 'EMPLOYEE_STORE_MISMATCH', `Nhân viên ${employeeId || index + 1} không thuộc cửa hàng.`)
+    const requestedEmployeeId = String(assignment.employeeId || '').trim()
+    const requestedShiftIds = [...new Map((Array.isArray(assignment.shiftIds)
+      ? assignment.shiftIds
+      : [assignment.shiftId])
+      .map((shiftId) => String(shiftId || '').trim())
+      .filter(Boolean)
+      .map((shiftId) => [normalizeIdentifierKey(shiftId), shiftId])).values()]
+    const employeeId = storeEmployees.get(normalizeIdentifierKey(requestedEmployeeId))
+    if (!employeeId) {
+      throw new ApiError(400, 'EMPLOYEE_STORE_MISMATCH', `Nhân viên ${requestedEmployeeId || index + 1} không thuộc cửa hàng.`)
     }
-    if (!shiftIds.length || shiftIds.some((shiftId) => !shifts.has(shiftId))) {
+    if (!requestedShiftIds.length || requestedShiftIds.some((shiftId) => !shifts.has(normalizeIdentifierKey(shiftId)))) {
       throw new ApiError(400, 'SHIFT_INVALID', `Ca làm việc của nhân viên ${employeeId} không hợp lệ.`)
     }
-    const mismatchedShift = shiftIds.map((shiftId) => shifts.get(shiftId))
+    const shiftIds = requestedShiftIds.map((shiftId) => String(shifts.get(normalizeIdentifierKey(shiftId)).id || shiftId))
+    const mismatchedShift = shiftIds.map((shiftId) => shifts.get(normalizeIdentifierKey(shiftId)))
       .find((shift) => shift.date && String(shift.date) !== date)
     if (mismatchedShift) {
       throw new ApiError(400, 'SHIFT_DATE_MISMATCH', `Ca ${mismatchedShift.name || mismatchedShift.id} chỉ áp dụng ngày ${mismatchedShift.date}.`)
     }
     const previousAssignment = schedule.find((entry) => (
-      String(entry.storeId || '') === storeId
+      sameIdentifier(entry.storeId, storeId)
       && String(entry.date || entry.workDate || '') === date
-      && employeeReference(entry) === employeeId
+      && sameIdentifier(employeeReference(entry), employeeId)
     ))
     const previousSnapshots = new Map((Array.isArray(previousAssignment?.shiftSnapshots) ? previousAssignment.shiftSnapshots : [])
       .filter(isPlainRecord)
-      .map((snapshot) => [String(snapshot.id || ''), snapshot]))
+      .map((snapshot) => [normalizeIdentifierKey(snapshot.id), snapshot]))
     const shiftSnapshots = shiftIds.map((shiftId) => {
-      const previousSnapshot = previousSnapshots.get(shiftId)
+      const previousSnapshot = previousSnapshots.get(normalizeIdentifierKey(shiftId))
       if (previousSnapshot) return previousSnapshot
-      const shift = shifts.get(shiftId)
+      const shift = shifts.get(normalizeIdentifierKey(shiftId))
       return {
         id: shift.id,
         name: shift.name,
@@ -6761,17 +7886,17 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     }
   })
   const outsideDay = schedule.filter((entry) => !(
-    String(entry.storeId || '') === storeId && String(entry.date || entry.workDate || '') === date
+    sameIdentifier(entry.storeId, storeId) && String(entry.date || entry.workDate || '') === date
   ))
   let nextDay = assignments
   if (body.type === 'schedule.assign') {
-    const selected = new Set(assignments.map((entry) => entry.employeeId))
+    const selected = new Set(assignments.map((entry) => normalizeIdentifierKey(entry.employeeId)))
     nextDay = [
       ...assignments,
       ...schedule.filter((entry) => (
-        String(entry.storeId || '') === storeId
+        sameIdentifier(entry.storeId, storeId)
         && String(entry.date || entry.workDate || '') === date
-        && !selected.has(employeeReference(entry))
+        && !selected.has(normalizeIdentifierKey(employeeReference(entry)))
       )),
     ]
   }
@@ -6784,7 +7909,7 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     action: body.type,
     entityType: 'schedule-day',
     entityId: `${storeId}:${date}`,
-    before: schedule.filter((entry) => String(entry.storeId || '') === storeId && String(entry.date || entry.workDate || '') === date),
+    before: schedule.filter((entry) => sameIdentifier(entry.storeId, storeId) && String(entry.date || entry.workDate || '') === date),
     after: nextDay,
     metadata: { storeId, date, assignmentCount: nextDay.length },
     response: { command: body.type, storeId, date, assignments: nextDay },
@@ -7078,7 +8203,14 @@ const notificationCommand = async (db, actor, body, commandContext) => {
   if (operation === 'mark_read') {
     const notificationId = String(payload.notificationId || payload.id || '').trim()
     if (!notificationId) throw new ApiError(400, 'NOTIFICATION_ID_REQUIRED', 'Cần chọn thông báo.')
-    const previous = notifications.find((record) => String(record.id || record.notificationId || '') === notificationId)
+    const previousMatch = uniqueIdentifierRecordMatch({
+      records: notifications,
+      identifier: notificationId,
+      identifierOf: (record) => record.id || record.notificationId,
+      collisionCode: 'NOTIFICATION_IDENTIFIER_COLLISION',
+      collisionMessage: 'Mã thông báo đang trùng với nhiều bản ghi; không thể cập nhật an toàn.',
+    })
+    const previous = previousMatch?.record || null
     if (!previous || !canAccessNotification(state, actor, previous)) {
       throw new ApiError(404, 'NOTIFICATION_NOT_FOUND', 'Không tìm thấy thông báo trong phạm vi được phép.')
     }
@@ -7098,7 +8230,7 @@ const notificationCommand = async (db, actor, body, commandContext) => {
     const nextState = {
       ...state,
       notifications: notifications.map((record) => (
-        String(record.id || record.notificationId || '') === notificationId ? next : record
+        record === previous ? next : record
       )),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
@@ -7117,21 +8249,24 @@ const notificationCommand = async (db, actor, body, commandContext) => {
   let storeId = requestedStoreId
   if (actor.role === 'employee') {
     storeId = String(actor.store_id || '')
-    if (requestedStoreId && requestedStoreId !== storeId) {
+    if (requestedStoreId && !sameIdentifier(requestedStoreId, storeId)) {
       throw new ApiError(403, 'STORE_FORBIDDEN', 'Nhân viên chỉ được xử lý thông báo của cửa hàng mình.')
     }
   }
   if (actor.role === 'store_manager') {
     storeId = String(actor.store_id || '')
-    if (requestedStoreId && requestedStoreId !== storeId) {
+    if (requestedStoreId && !sameIdentifier(requestedStoreId, storeId)) {
       throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được xử lý thông báo của cửa hàng mình.')
     }
   }
-  if (storeId && ![OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].includes(storeId)) requireStore(state, storeId)
+  if (storeId && ![OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].some((unitId) => sameIdentifier(unitId, storeId))) {
+    const store = requireStore(state, storeId)
+    storeId = String(store.id || storeId)
+  }
   const targets = notifications.filter((record) => (
     notificationUnread(record, actor)
     && canAccessNotification(state, actor, record)
-    && (!storeId || String(record.storeId || '') === storeId)
+    && (!storeId || sameIdentifier(record.storeId, storeId))
   ))
   if (!targets.length) {
     return recordNoopCommand(db, actor, {
@@ -7213,12 +8348,18 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   if (!/^[A-Za-z0-9_-]{3,100}$/u.test(transferId)) {
     throw new ApiError(400, 'SUPPORT_TRANSFER_ID_INVALID', 'Mã điều chuyển không hợp lệ.')
   }
-  if (operation === 'create' && transfers.some((record) => String(record.id || '') === transferId)) {
+  if (operation === 'create' && transfers.some((record) => sameIdentifier(record.id, transferId))) {
     throw new ApiError(409, 'SUPPORT_TRANSFER_EXISTS', 'Mã điều chuyển đã tồn tại.')
   }
-  const previous = operation === 'create'
+  const previousMatch = operation === 'create'
     ? null
-    : transfers.find((record) => String(record.id || '') === transferId)
+    : uniqueIdentifierRecordMatch({
+        records: transfers,
+        identifier: transferId,
+        collisionCode: 'SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+        collisionMessage: 'Mã điều chuyển đang trùng với nhiều bản ghi; không thể cập nhật an toàn.',
+      })
+  const previous = previousMatch?.record || null
   if (operation !== 'create' && !previous) {
     throw new ApiError(404, 'SUPPORT_TRANSFER_NOT_FOUND', 'Không tìm thấy điều chuyển hỗ trợ.')
   }
@@ -7233,8 +8374,9 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     }
     throw new ApiError(409, 'SUPPORT_TRANSFER_DELETED', 'Điều chuyển hỗ trợ đã bị xóa.')
   }
+  const canonicalTransferId = String(previous?.id || transferId).trim()
   if (previous && (Array.isArray(state.attendance) ? state.attendance : []).some((record) => (
-    !record.deletedAt && String(record.supportTransferId || '') === transferId
+    !record.deletedAt && sameIdentifier(record.supportTransferId, previous.id)
   ))) {
     throw new ApiError(
       409,
@@ -7242,29 +8384,32 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
       'Điều chuyển đã phát sinh chấm công; không thể sửa, hủy hoặc xóa.',
     )
   }
-  const employeeId = String(payload.employeeId ?? previous?.employeeId ?? '').trim()
-  const employee = [
-    ...(Array.isArray(state.employees) ? state.employees : []),
-    ...(operation === 'create' ? [] : (Array.isArray(state.deletedEmployees) ? state.deletedEmployees : [])),
-  ].find((record) => (
-    String(record.id || record.code || '') === employeeId
-    && employeeUnit(record) === 'store'
-  ))
+  const requestedEmployeeId = String(payload.employeeId ?? previous?.employeeId ?? '').trim()
+  const employee = uniqueEmployeeIdentifierRecordMatch({
+    records: [
+      ...(Array.isArray(state.employees) ? state.employees : []),
+      ...(operation === 'create' ? [] : (Array.isArray(state.deletedEmployees) ? state.deletedEmployees : [])),
+    ],
+    identifier: requestedEmployeeId,
+    predicate: (record) => employeeUnit(record) === 'store',
+  })?.record || null
   if (!employee
     || (operation === 'create' && (employee.deletedAt || ['Đã nghỉ việc', 'inactive'].includes(String(employee.status || ''))))) {
     throw new ApiError(400, 'EMPLOYEE_INVALID', 'Nhân viên hỗ trợ không hợp lệ.')
   }
-  const fromStoreId = String(previous?.fromStoreId || employee.storeId || '').trim()
+  const employeeId = String(employee.id || employee.code || requestedEmployeeId).trim()
+  const sourceStore = requireStore(state, previous?.fromStoreId || employee.storeId)
+  const fromStoreId = String(sourceStore.id || previous?.fromStoreId || employee.storeId).trim()
   const requestedFromStoreId = String(payload.fromStoreId ?? fromStoreId).trim()
-  if (requestedFromStoreId !== fromStoreId) {
+  if (!sameIdentifier(requestedFromStoreId, fromStoreId)) {
     throw new ApiError(400, 'TRANSFER_SOURCE_MISMATCH', 'Cửa hàng điều chuyển phải đúng với cửa hàng hiện tại của nhân viên.')
   }
-  const toStoreId = String(payload.toStoreId ?? previous?.toStoreId ?? '').trim()
+  const requestedToStoreId = String(payload.toStoreId ?? previous?.toStoreId ?? '').trim()
   assertOperationalStoreAccess(actor, fromStoreId)
-  assertOperationalStoreAccess(actor, toStoreId)
-  requireStore(state, fromStoreId)
-  requireStore(state, toStoreId)
-  if (fromStoreId === toStoreId) {
+  assertOperationalStoreAccess(actor, requestedToStoreId)
+  const destinationStore = requireStore(state, requestedToStoreId)
+  const toStoreId = String(destinationStore.id || requestedToStoreId).trim()
+  if (sameIdentifier(fromStoreId, toStoreId)) {
     throw new ApiError(400, 'SUPPORT_STORE_INVALID', 'Cửa hàng hỗ trợ phải khác cửa hàng hiện tại của nhân viên.')
   }
   const requestedLegacyStartDate = payload.fromDate ?? payload.startDate ?? payload.date
@@ -7326,14 +8471,14 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     }
     const nextState = {
       ...state,
-      supportTransfers: transfers.map((record) => String(record.id || '') === transferId ? deleted : record),
+      supportTransfers: transfers.map((record, index) => index === previousMatch.index ? deleted : record),
       payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
       action: body.type,
       entityType: 'support-transfer',
-      entityId: transferId,
+      entityId: canonicalTransferId,
       before: previous,
       after: deleted,
       metadata: { reason, payrollTargets },
@@ -7355,8 +8500,8 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'SUPPORT_TRANSFER_STATUS_INVALID', 'Trạng thái điều chuyển không hợp lệ.')
   }
   const overlap = transfers.find((record) => (
-    String(record.id || '') !== transferId
-    && String(record.employeeId || '') === employeeId
+    !sameIdentifier(record.id, canonicalTransferId)
+    && sameIdentifier(record.employeeId, employeeId)
     && supportTransferUsable(record)
     && (() => {
       const existingBounds = supportTransferTimeBounds(record)
@@ -7370,7 +8515,7 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   }
   const transfer = {
     ...(previous || {}),
-    id: transferId,
+    id: canonicalTransferId,
     employeeId,
     employeeName: employee.name || employeeId,
     fromStoreId,
@@ -7391,14 +8536,14 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     ...state,
     supportTransfers: operation === 'create'
       ? [transfer, ...transfers]
-      : transfers.map((record) => String(record.id || '') === transferId ? transfer : record),
+      : transfers.map((record, index) => index === previousMatch.index ? transfer : record),
     payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
     action: body.type,
     entityType: 'support-transfer',
-    entityId: transferId,
+    entityId: canonicalTransferId,
     before: previous,
     after: transfer,
     metadata: { payrollTargets },
@@ -8718,20 +9863,20 @@ const asOccurredAt = (value, fallback) => {
 const requireStore = (state, storeId) => {
   const normalized = String(storeId || '').trim()
   const store = (Array.isArray(state.stores) ? state.stores : [])
-    .find((record) => String(record.id || '') === normalized && !record.deletedAt)
+    .find((record) => sameIdentifier(record.id, normalized) && !record.deletedAt)
   if (!store) throw new ApiError(400, 'STORE_INVALID', 'Cửa hàng không hợp lệ.')
   return store
 }
 
 const requirePayrollUnit = (state, storeId) => {
   const normalized = String(storeId || '').trim()
-  if (normalized === OFFICE_STORE_ID && (Array.isArray(state.employees) ? state.employees : []).some((employee) => (
+  if (sameIdentifier(normalized, OFFICE_STORE_ID) && (Array.isArray(state.employees) ? state.employees : []).some((employee) => (
     !employee.deletedAt
     && employeeUnit(employee) === 'office'
   ))) {
     return { id: OFFICE_STORE_ID, name: 'Khối Văn Phòng', unit: 'office' }
   }
-  if (normalized === BUSINESS_SUPPORT_STORE_ID && (Array.isArray(state.employees) ? state.employees : []).some((employee) => (
+  if (sameIdentifier(normalized, BUSINESS_SUPPORT_STORE_ID) && (Array.isArray(state.employees) ? state.employees : []).some((employee) => (
     !employee.deletedAt && employeeUnit(employee) === 'business_support'
   ))) {
     return { id: BUSINESS_SUPPORT_STORE_ID, name: 'Nhân viên hỗ trợ kinh doanh', unit: 'business_support' }
@@ -8739,8 +9884,28 @@ const requirePayrollUnit = (state, storeId) => {
   return requireStore(state, normalized)
 }
 
-const payrollPeriodFor = (state, storeId, period) => (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : [])
-  .find((record) => String(record.storeId || '') === String(storeId) && String(record.period || '') === period)
+const payrollPeriodFor = (state, storeId, period) => {
+  const matches = (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : [])
+    .filter((record) => (
+      !record.supersededAt
+      && sameIdentifier(record.storeId, storeId)
+      && String(record.period || '') === period
+    ))
+  if (matches.length > 1) {
+    throw new ApiError(
+      409,
+      'PAYROLL_PERIOD_IDENTIFIER_COLLISION',
+      'Kỳ lương đang có nhiều bản ghi trùng cửa hàng và tháng; cần xử lý dữ liệu trùng trước khi tiếp tục.',
+      {
+        storeId: normalizeIdentifierKey(storeId),
+        period,
+        conflictingPeriodIds: matches.map((record) => String(record?.id || '')),
+        conflictingStoreIds: matches.map((record) => String(record?.storeId || '')),
+      },
+    )
+  }
+  return matches[0]
+}
 
 const assertAccountingPeriodOpen = (state, storeId, period) => {
   const payroll = payrollPeriodFor(state, storeId, period)
@@ -8752,9 +9917,10 @@ const assertAccountingPeriodOpen = (state, storeId, period) => {
 const invalidateClosedPayrollPeriods = (state, targets, timestamp, reason) => {
   const targetKeys = new Set((Array.isArray(targets) ? targets : [targets])
     .filter(Boolean)
-    .map((target) => `${String(target.storeId || '')}:${String(target.period || '')}`))
+    .map((target) => `${normalizeIdentifierKey(target.storeId)}:${String(target.period || '')}`))
   return (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []).map((payroll) => {
-    const key = `${String(payroll.storeId || '')}:${String(payroll.period || '')}`
+    if (payroll.supersededAt) return payroll
+    const key = `${normalizeIdentifierKey(payroll.storeId)}:${String(payroll.period || '')}`
     if (!targetKeys.has(key)
       || payroll.status !== 'Đã chốt'
       || payroll.confirmedAt
@@ -8790,16 +9956,26 @@ const recordNoopCommand = async (db, actor, response, status, commandContext) =>
   return jsonResponse(responseBody, status)
 }
 
-const orderBelongsToAttendance = (order, attendance) => {
+const orderBelongsToAttendance = (order, attendance, attendanceRecords) => {
   const attendanceEmployeeId = String(attendance.employeeId || '')
   if (!attendanceEmployeeId || !orderCreatedByEmployee(order, attendanceEmployeeId)) return false
-  if (String(order.attendanceId || '') === String(attendance.id || '')) return true
-  if (order.attendanceId || !attendance.storeId) return false
+  if (order.attendanceId) {
+    return mutationIdentifierReferenceMatchesRecord({
+      records: attendanceRecords,
+      record: attendance,
+      reference: order.attendanceId,
+      collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+      collisionMessage: 'Mã chấm công tham chiếu trong đơn hàng đang mơ hồ; cần xử lý dữ liệu trùng trước khi tính doanh thu ca.',
+    })
+  }
+  if (!attendance.storeId) return false
   const createdAt = Date.parse(order.createdAt)
   const checkInAt = Date.parse(attendance.checkInAt)
   const checkOutAt = Date.parse(attendance.checkOutAt || attendance.updatedAt)
-  return String(order.storeId || '') === String(attendance.storeId)
-    && String(order.shiftId || '') === String(attendance.shiftId || attendance.shift || '')
+  const orderShiftId = String(order.shiftId || '').trim()
+  const attendanceShiftId = String(attendance.shiftId || attendance.shift || '').trim()
+  return sameIdentifier(order.storeId, attendance.storeId)
+    && ((!orderShiftId && !attendanceShiftId) || sameIdentifier(orderShiftId, attendanceShiftId))
     && Number.isFinite(createdAt)
     && Number.isFinite(checkInAt)
     && Number.isFinite(checkOutAt)
@@ -8807,11 +9983,11 @@ const orderBelongsToAttendance = (order, attendance) => {
     && createdAt <= checkOutAt
 }
 
-const orderSalesTotals = (orders, attendance) => {
+const orderSalesTotals = (orders, attendance, attendanceRecords) => {
   const scoped = orders.filter((order) => (
     !order.deletedAt
     && order.status !== 'Đã xóa'
-    && orderBelongsToAttendance(order, attendance)
+    && orderBelongsToAttendance(order, attendance, attendanceRecords)
   ))
   const revenue = scoped.reduce((sum, order) => safeMoneySum(sum, Number(order.amount || 0), 'Doanh thu ca'), 0)
   const cash = scoped.filter((order) => order.paymentMethod === 'Tiền mặt')
@@ -8821,10 +9997,10 @@ const orderSalesTotals = (orders, attendance) => {
 
 const refreshAttendanceSales = (state, orders, changedOrder, timestamp) => {
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
-  const target = attendance.find((record) => orderBelongsToAttendance(changedOrder, record))
+  const target = attendance.find((record) => orderBelongsToAttendance(changedOrder, record, attendance))
   if (!target) return attendance
-  const totals = orderSalesTotals(orders, target)
-  return attendance.map((record) => String(record.id || '') === String(target.id)
+  const totals = orderSalesTotals(orders, target, attendance)
+  return attendance.map((record) => record === target
     ? { ...record, ...totals, updatedAt: timestamp }
     : record)
 }
@@ -8845,7 +10021,7 @@ const workedHoursFor = (state, employeeId, storeId, period) => (Array.isArray(st
   .filter((record) => (
     !record.deletedAt
     && belongsToEmployee(record, employeeId)
-    && String(record.storeId || '') === String(storeId || '')
+    && sameIdentifier(record.storeId, storeId)
     && monthFromRecord(record) === period
   ))
   .reduce((sum, record) => {
@@ -8867,8 +10043,8 @@ const linkedAttendanceForSupportTransfer = (state, transfer) => {
   return (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => {
     if (record.deletedAt
       || !belongsToEmployee(record, employeeId)
-      || String(record.storeId || '') !== storeId) return false
-    if (record.supportTransferId) return String(record.supportTransferId) === String(transfer.id || '')
+      || !sameIdentifier(record.storeId, storeId)) return false
+    if (record.supportTransferId) return sameIdentifier(record.supportTransferId, transfer.id)
     const checkInMs = Date.parse(String(record.checkInAt || ''))
     if (Number.isFinite(checkInMs)) return transferBounds.startMs <= checkInMs && checkInMs < transferBounds.endMs
     const legacyDate = dateFromRecord(record)
@@ -8890,13 +10066,13 @@ const supportAllowanceAttendanceId = (state, transfer) => {
 }
 
 const storeNameForId = (state, storeId) => (Array.isArray(state.stores) ? state.stores : [])
-  .find((record) => String(record.id || '') === String(storeId || '') && !record.deletedAt)?.name || null
+  .find((record) => sameIdentifier(record.id, storeId) && !record.deletedAt)?.name || null
 
 export const supportCompensationForAttendance = (state, record) => {
   const transferId = String(record?.supportTransferId || record?.supportCompensation?.transferId || '')
   if (!transferId) return null
   const transfer = (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((candidate) => (
-    String(candidate.id || '') === transferId
+    sameIdentifier(candidate.id, transferId)
     && !candidate.deletedAt
     && !['Đã xóa', 'Đã hủy'].includes(String(candidate.status || ''))
   ))
@@ -8910,7 +10086,12 @@ export const supportCompensationForAttendance = (state, record) => {
   if (!Number.isSafeInteger(basePay) || basePay < 0 || basePay > MAX_MONEY_VND) return null
   const allowanceValue = Number(transfer.allowance ?? 0)
   const configuredAllowance = Number.isSafeInteger(allowanceValue) && allowanceValue >= 0 ? allowanceValue : 0
-  const allowanceApplied = Boolean(hours > 0 && String(record.id || '') === supportAllowanceAttendanceId(state, transfer))
+  // The selected row is an exact persisted attendance identity. A legacy
+  // case-colliding alias must never receive the same one-time allowance.
+  const allowanceApplied = Boolean(
+    hours > 0
+    && String(record.id || '') === String(supportAllowanceAttendanceId(state, transfer) || ''),
+  )
   const allowance = allowanceApplied ? configuredAllowance : 0
   const totalPay = safeMoneySum(basePay, allowance, 'Lương thực nhận ca hỗ trợ')
   return {
@@ -8957,8 +10138,8 @@ export const supportTransferPayFor = (state, employeeId, storeId, period) => {
   const monthStartMs = transferDateTimeEpoch(`${monthStart}T00:00`)
   const monthEndMs = transferDateTimeEpoch(`${nextMonthDate}T00:00`)
   const candidates = (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).filter((record) => (
-    String(record.employeeId || '') === String(employeeId || '')
-    && String(record.toStoreId || '') === String(storeId || '')
+    sameIdentifier(record.employeeId, employeeId)
+    && sameIdentifier(record.toStoreId, storeId)
     && !record.deletedAt
     && !['Đã xóa', 'Đã hủy'].includes(String(record.status || ''))
     && (() => {
@@ -8975,7 +10156,9 @@ export const supportTransferPayFor = (state, employeeId, storeId, period) => {
     const transferBounds = supportTransferTimeBounds(transfer)
     const transferAttendance = linkedAttendanceForSupportTransfer(state, transfer)
     const allowanceAttendanceId = supportAllowanceAttendanceId(state, transfer)
-    const firstAttendance = transferAttendance.find((record) => String(record.id || '') === allowanceAttendanceId)
+    const firstAttendance = transferAttendance.find((record) => (
+      String(record.id || '') === String(allowanceAttendanceId || '')
+    ))
     // A transfer allowance belongs to exactly one payroll period. Prefer the
     // first linked attendance/check-in period; if no attendance exists yet,
     // attribute it to the configured transfer-start month.
@@ -9016,21 +10199,29 @@ export const supportTransferPayFor = (state, employeeId, storeId, period) => {
 }
 
 const recognizedSupportCompensationFor = (state, storeId, employeeId, supportDetails) => {
+  const attendanceRecords = (Array.isArray(state.attendance) ? state.attendance : [])
+    .filter((record) => !record.deletedAt)
+  const attendanceSourceKey = (reference) => collisionAwareIdentifierReferenceKey({
+    records: attendanceRecords,
+    reference,
+  })
   const attendanceIds = new Set((Array.isArray(supportDetails) ? supportDetails : [])
-    .flatMap((detail) => Array.isArray(detail.attendanceIds) ? detail.attendanceIds.map(String) : []))
+    .flatMap((detail) => Array.isArray(detail.attendanceIds)
+      ? detail.attendanceIds.map(attendanceSourceKey).filter(Boolean)
+      : []))
   const seenSources = new Set()
   return (Array.isArray(state.expenseEntries) ? state.expenseEntries : [])
     .filter((entry) => (
-      String(entry.storeId || '') === String(storeId || '')
-      && String(entry.employeeId || '') === String(employeeId || '')
+      sameIdentifier(entry.storeId, storeId)
+      && sameIdentifier(entry.employeeId, employeeId)
       && String(entry.sourceType || '') === 'support-attendance-compensation'
-      && attendanceIds.has(String(entry.sourceId || entry.attendanceId || ''))
+      && attendanceIds.has(attendanceSourceKey(entry.sourceId || entry.attendanceId))
       && entry.recognized !== false
       && !entry.deletedAt
       && !entry.voidedAt
     ))
     .reduce((sum, entry) => {
-      const sourceId = String(entry.sourceId || entry.attendanceId || entry.id || '')
+      const sourceId = attendanceSourceKey(entry.sourceId || entry.attendanceId || entry.id)
       if (seenSources.has(sourceId)) return sum
       seenSources.add(sourceId)
       return safeMoneySum(sum, Number(entry.amount || 0), 'Chi phí lương hỗ trợ đã ghi nhận')
@@ -9059,7 +10250,7 @@ const snapshottedRequiredWorkingDaysFor = (state, employee, employeeId, storeId,
     .filter((record) => (
       !record.deletedAt
       && belongsToEmployee(record, employeeId)
-      && String(record.storeId || '') === String(storeId || '')
+      && sameIdentifier(record.storeId, storeId)
       && monthFromRecord(record) === period
     ))
     .sort((left, right) => dateFromRecord(left).localeCompare(dateFromRecord(right)))
@@ -9077,7 +10268,7 @@ const workedDaysFor = (state, employeeId, storeId, period) => {
   for (const record of Array.isArray(state.attendance) ? state.attendance : []) {
     if (record.deletedAt
       || !belongsToEmployee(record, employeeId)
-      || String(record.storeId || '') !== String(storeId || '')
+      || !sameIdentifier(record.storeId, storeId)
       || monthFromRecord(record) !== period) continue
     const completed = Boolean(record.checkOutAt || record.checkOut || record.checkOutTime)
     if (!completed) continue
@@ -9094,20 +10285,23 @@ const workedDaysFor = (state, employeeId, storeId, period) => {
 
 const recognizedExpensesFor = (state, storeId, period, { excludeSourceTypes = [] } = {}) => {
   const sources = new Set()
-  const excludedSources = new Set(excludeSourceTypes.map((value) => String(value || '').trim()))
+  const excludedSources = new Set(excludeSourceTypes.map(normalizeIdentifierKey))
   let amount = 0
   for (const entry of Array.isArray(state.expenseEntries) ? state.expenseEntries : []) {
-    if (String(entry.storeId || '') !== String(storeId)
+    if (!sameIdentifier(entry.storeId, storeId)
       || monthFromRecord(entry) !== period
       || entry.recognized === false
       || entry.deletedAt
       || entry.voidedAt
-      || excludedSources.has(String(entry.sourceType || '').trim())) continue
+      || excludedSources.has(normalizeIdentifierKey(entry.sourceType))) continue
     const value = Number(entry.amount)
     if (!Number.isSafeInteger(value) || value < 0) continue
+    // Source identities are immutable financial identities. Preserve exact
+    // spelling so two legacy records that differ only by case cannot collapse
+    // into one recognized cost.
     const source = entry.sourceType && entry.sourceId
-      ? `${entry.sourceType}:${entry.sourceId}`
-      : `id:${entry.id}`
+      ? `${normalizeIdentifierKey(entry.sourceType)}:exact:${String(entry.sourceId).trim()}`
+      : `id:exact:${String(entry.id || '').trim()}`
     if (sources.has(source)) continue
     sources.add(source)
     amount = safeMoneySum(amount, value, 'Tổng chi phí trong kỳ')
@@ -9117,7 +10311,7 @@ const recognizedExpensesFor = (state, storeId, period, { excludeSourceTypes = []
 
 const revenueFor = (state, storeId, period) => (Array.isArray(state.orders) ? state.orders : [])
   .filter((order) => (
-    String(order.storeId || '') === String(storeId)
+    sameIdentifier(order.storeId, storeId)
     && monthFromRecord(order) === period
     && !order.deletedAt
     && order.status !== 'Đã xóa'
@@ -9273,10 +10467,11 @@ const violationAmountFor = (state, employeeId, period) => (Array.isArray(state.v
     'Tổng vi phạm',
   ), 0)
 
-const calculatePayrollSnapshot = async (db, state, storeId, period) => {
-  const payrollUnit = requirePayrollUnit(state, storeId)
+const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => {
+  const payrollUnit = requirePayrollUnit(state, requestedStoreId)
+  const storeId = String(payrollUnit.id || requestedStoreId).trim()
   const employees = (Array.isArray(state.employees) ? state.employees : []).filter((employee) => (
-    String(employee.storeId || '') === String(storeId)
+    sameIdentifier(employee.storeId, storeId)
     && employeeUnit(employee) === String(payrollUnit.unit || 'store')
     && !employee.deletedAt
     && normalizeTextKey(employee.status) !== 'da nghi viec'
@@ -9285,10 +10480,11 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
   const participants = employees.map((employee) => {
     const employeeId = String(employee.id || employee.code || '').trim()
     if (!employeeId) throw new ApiError(409, 'PAYROLL_EMPLOYEE_INVALID', 'Hồ sơ nhân viên thiếu mã định danh.')
-    if (participantIds.has(employeeId)) {
+    const participantKey = normalizeIdentifierKey(employeeId)
+    if (participantIds.has(participantKey)) {
       throw new ApiError(409, 'PAYROLL_EMPLOYEE_DUPLICATE', 'Danh sách nhân viên có mã bị trùng.')
     }
-    participantIds.add(employeeId)
+    participantIds.add(participantKey)
     return {
       employee,
       hours: workedHoursFor(state, employeeId, storeId, period),
@@ -9298,10 +10494,11 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
   })
   for (const employee of Array.isArray(state.employees) ? state.employees : []) {
     const employeeId = String(employee.id || employee.code || '').trim()
-    if (!employeeId || participantIds.has(employeeId) || employeeUnit(employee) !== 'store' || employee.deletedAt) continue
+    const participantKey = normalizeIdentifierKey(employeeId)
+    if (!employeeId || participantIds.has(participantKey) || employeeUnit(employee) !== 'store' || employee.deletedAt) continue
     const supportPay = supportTransferPayFor(state, employeeId, storeId, period)
     if (!supportPay) continue
-    participantIds.add(employeeId)
+    participantIds.add(participantKey)
     participants.push({ employee, hours: supportPay.hours, workedDays: 0, supportPay })
   }
   const revenue = revenueFor(state, storeId, period)
@@ -9312,16 +10509,27 @@ const calculatePayrollSnapshot = async (db, state, storeId, period) => {
     const physicalStorePolicy = String(payrollUnit.unit || 'store') === 'store'
       ? classifyStorePayrollPolicy(payrollUnit)
       : STORE_PAYROLL_POLICY.UNSUPPORTED
-    const configuredSalary = !supportPay
+    let configuredSalary = null
+    if (!supportPay
       && physicalStorePolicy !== STORE_PAYROLL_POLICY.UNSUPPORTED
-      && storeEmploymentType === STORE_EMPLOYMENT_TYPE.FULL_TIME
-      ? effectiveStoreSalaryConfig(state.storeEmployeeSalaryConfigs, {
+      && storeEmploymentType === STORE_EMPLOYMENT_TYPE.FULL_TIME) {
+      try {
+        configuredSalary = effectiveStoreSalaryConfig(state.storeEmployeeSalaryConfigs, {
           employeeId,
           storeId,
           period,
           store: payrollUnit,
         })
-      : null
+      } catch (error) {
+        if (error?.code !== STORE_SALARY_CONFIG_IDENTIFIER_COLLISION) throw error
+        throw new ApiError(
+          409,
+          STORE_SALARY_CONFIG_IDENTIFIER_COLLISION,
+          'Nhân viên đang có nhiều cấu hình lương cùng kỳ với mã chỉ khác chữ hoa/thường; cần xử lý dữ liệu trước khi tính lương.',
+          error.details,
+        )
+      }
+    }
     if (!supportPay
       && physicalStorePolicy !== STORE_PAYROLL_POLICY.UNSUPPORTED
       && storeEmploymentType === STORE_EMPLOYMENT_TYPE.FULL_TIME
@@ -9602,22 +10810,49 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   if (!reason || reason.length > 500) {
     throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do chỉnh sửa từ 1 đến 500 ký tự.')
   }
-  const attendanceId = String(payload.attendanceId || payload.id || '').trim()
-  if (!attendanceId) throw new ApiError(400, 'ATTENDANCE_ID_REQUIRED', 'Cần chọn bản ghi chấm công.')
+  const requestedAttendanceId = String(payload.attendanceId || payload.id || '').trim()
+  if (!requestedAttendanceId) throw new ApiError(400, 'ATTENDANCE_ID_REQUIRED', 'Cần chọn bản ghi chấm công.')
   const { current, state } = await loadGlobalCommandState(db, body)
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
-  const previous = attendance.find((record) => String(record.id || '') === attendanceId && !record.deletedAt)
+  const previousMatch = uniqueIdentifierRecordMatch({
+    records: attendance,
+    identifier: requestedAttendanceId,
+    predicate: (record) => !record.deletedAt,
+    collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể chỉnh sửa an toàn.',
+  })
+  const previous = previousMatch?.record || null
   if (!previous) throw new ApiError(404, 'ATTENDANCE_NOT_FOUND', 'Không tìm thấy bản ghi chấm công.')
+  const attendanceId = String(previous.id || requestedAttendanceId).trim()
+  const attendanceReferenceMatches = (reference) => mutationIdentifierReferenceMatchesRecord({
+    records: attendance,
+    record: previous,
+    reference,
+    collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+    collisionMessage: 'Một liên kết đang tham chiếu mơ hồ tới nhiều bản chấm công; không thể chỉnh sửa an toàn.',
+  })
   const storeId = String(previous.storeId || '').trim()
   const employeeId = employeeReference(previous)
   if (!storeId || !employeeId) {
     throw new ApiError(409, 'ATTENDANCE_SCOPE_INVALID', 'Bản ghi chấm công thiếu liên kết nhân viên hoặc cửa hàng.')
   }
-  const linkedEmployee = [
+  const employeeRecords = [
     ...(Array.isArray(state.employees) ? state.employees : []),
     ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
-  ].find((employee) => [employee.id, employee.code, employee.employeeId].map(String).includes(employeeId))
+  ]
+  const linkedEmployee = uniqueEmployeeIdentifierRecordMatch({
+    records: employeeRecords,
+    identifier: employeeId,
+  })?.record || null
   const linkedTransfer = linkedSupportTransferForAttendance(state, previous, employeeId, storeId)
+  const transferRecords = Array.isArray(state.supportTransfers) ? state.supportTransfers : []
+  const transferReferenceMatches = (reference) => Boolean(linkedTransfer) && mutationIdentifierReferenceMatchesRecord({
+    records: transferRecords,
+    record: linkedTransfer,
+    reference,
+    collisionCode: 'SUPPORT_TRANSFER_REFERENCE_COLLISION',
+    collisionMessage: 'Một liên kết đang tham chiếu mơ hồ tới nhiều phiếu điều chuyển; không thể tính lại an toàn.',
+  })
   const linkedTransferBounds = linkedTransfer ? supportTransferTimeBounds(linkedTransfer) : null
   if (previous.supportTransferId && (!linkedTransfer || !linkedTransferBounds)) {
     throw new ApiError(
@@ -9628,7 +10863,7 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   }
   if (actor.role === 'business_support') {
     assertOperationalStoreAccess(actor, storeId)
-    const homeStoreAttendance = String(linkedEmployee?.storeId || '') === storeId
+    const homeStoreAttendance = sameIdentifier(linkedEmployee?.storeId, storeId)
     if (!linkedEmployee
       || employeeUnit(linkedEmployee) !== 'store'
       || (!homeStoreAttendance && !linkedTransfer)) {
@@ -9647,15 +10882,15 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   const date = distinctSubmittedDates[0] || previousDate
   const linkedCollections = []
   const linkedProgress = (Array.isArray(state.workCatalogProgress) ? state.workCatalogProgress : [])
-    .some((record) => String(record.attendanceId || '') === attendanceId)
+    .some((record) => attendanceReferenceMatches(record.attendanceId))
   const linkedWorkReward = (Array.isArray(state.compensationEntries) ? state.compensationEntries : [])
     .some((record) => (
-      String(record.attendanceId || '') === attendanceId
+      attendanceReferenceMatches(record.attendanceId)
       && (String(record.sourceType || '') === 'work-catalog-claim'
         || (String(record.type || '').toUpperCase() === 'WORK' && Boolean(record.catalogItemId)))
     ))
   const linkedViolation = (Array.isArray(state.violations) ? state.violations : [])
-    .some((record) => String(record.attendanceId || '') === attendanceId)
+    .some((record) => attendanceReferenceMatches(record.attendanceId))
   if (linkedProgress) linkedCollections.push('workCatalogProgress')
   if (linkedWorkReward) linkedCollections.push('compensationEntries')
   if (linkedViolation) linkedCollections.push('violations')
@@ -9727,8 +10962,10 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   if (!Number.isSafeInteger(workedSeconds) || workedSeconds < 0 || workedSeconds >= 24 * 60 * 60) {
     throw new ApiError(400, 'ATTENDANCE_DURATION_INVALID', 'Thời lượng chấm công phải lớn hơn 0 và nhỏ hơn 24 giờ.')
   }
-  const linkedShift = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [])
-    .find((shift) => String(shift.id || '') === String(previous.shiftId || previous.shift || ''))
+  const linkedShift = uniqueShiftDefinitionMatch(
+    Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [],
+    previous.shiftId || previous.shift,
+  )
   const shiftStart = parseShiftTime(previous.shiftStart) || shiftTimes(linkedShift).start
   const shiftEnd = parseShiftTime(previous.shiftEnd) || shiftTimes(linkedShift).end
   if (!shiftStart) throw new ApiError(409, 'ATTENDANCE_SHIFT_INVALID', 'Bản ghi chấm công thiếu giờ bắt đầu ca.')
@@ -9782,26 +11019,53 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     updatedAt: commandContext.now,
     updatedBy: serverActorSnapshot(actor),
   }
-  const attendanceCandidate = attendance.map((record) => String(record.id || '') === attendanceId ? nextBase : record)
+  const attendanceCandidate = attendance.map((record, index) => index === previousMatch.index ? nextBase : record)
   const compensationState = linkedTransfer ? { ...state, attendance: attendanceCandidate } : state
   const nextAttendance = linkedTransfer
     ? attendanceCandidate.map((record) => (
-        String(record.supportTransferId || '') === String(linkedTransfer.id || '')
+        transferReferenceMatches(record.supportTransferId)
           ? withSupportCompensation(compensationState, record)
           : record
       ))
     : attendanceCandidate
-  const next = nextAttendance.find((record) => String(record.id || '') === attendanceId) || nextBase
+  const next = nextAttendance[previousMatch.index] || nextBase
   let nextExpenseEntries = Array.isArray(state.expenseEntries) ? [...state.expenseEntries] : []
   if (linkedTransfer) {
     for (const supportAttendance of nextAttendance.filter((record) => (
-      String(record.supportTransferId || '') === String(linkedTransfer.id || '')
+      transferReferenceMatches(record.supportTransferId)
     ))) {
       const compensation = supportAttendance.supportCompensation
       const supportAmount = Number(compensation?.totalPay || 0)
-      const expenseIndex = nextExpenseEntries.findIndex((entry) => (
-        sourceMatch(entry, 'support-attendance-compensation', supportAttendance.id)
+      const supportAttendanceRecord = uniqueIdentifierRecordMatch({
+        records: attendance,
+        identifier: supportAttendance.id,
+        collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+        collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể cập nhật chi phí hỗ trợ an toàn.',
+      })?.record || null
+      if (!supportAttendanceRecord) {
+        throw new ApiError(409, 'ATTENDANCE_REFERENCE_NOT_FOUND', 'Không thể xác định bản chấm công gốc để cập nhật chi phí hỗ trợ.')
+      }
+      const matchingExpenseIndexes = nextExpenseEntries.flatMap((entry, index) => (
+        String(entry?.sourceType || '') === 'support-attendance-compensation'
+        && mutationIdentifierReferenceMatchesRecord({
+          records: attendance,
+          record: supportAttendanceRecord,
+          reference: entry?.sourceId,
+          collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+          collisionMessage: 'Chi phí hỗ trợ đang tham chiếu mơ hồ tới nhiều bản chấm công; không thể cập nhật an toàn.',
+        })
+          ? [index]
+          : []
       ))
+      if (matchingExpenseIndexes.length > 1) {
+        throw new ApiError(
+          409,
+          'SUPPORT_COMPENSATION_EXPENSE_COLLISION',
+          'Bản chấm công đang có nhiều chi phí hỗ trợ cùng nguồn; cần đối soát dữ liệu trước khi cập nhật.',
+          { attendanceId: supportAttendanceRecord.id },
+        )
+      }
+      const expenseIndex = matchingExpenseIndexes[0] ?? -1
       if (supportAmount > 0) {
         assertAccountingPeriodOpen(state, storeId, monthFromRecord(supportAttendance))
         const expense = {
@@ -9922,10 +11186,10 @@ const operationalAuditFingerprint = (record, dataType) => {
 }
 
 const recordWithinOperationalResetScope = (record, scope) => {
-  if (!isPlainRecord(record) || String(record.storeId || '') !== scope.storeId) return false
+  if (!isPlainRecord(record) || !sameIdentifier(record.storeId, scope.storeId)) return false
   const date = dateFromRecord(record)
   if (!date || date < scope.fromDate || date > scope.toDate) return false
-  return !scope.employeeId || recordEmployeeId(record) === scope.employeeId
+  return !scope.employeeId || sameIdentifier(recordEmployeeId(record), scope.employeeId)
 }
 
 const latestRestorableAuditByEntity = (history, options) => {
@@ -9964,7 +11228,7 @@ const legacyAttendanceAuditsForScope = async (db, stateAudits, scope) => {
       before_json, after_json, metadata_json, server_timestamp
     FROM audit_log
     WHERE action = 'attendance.update' AND entity_type = 'attendance'
-      AND json_extract(after_json, '$.storeId') = ?
+      AND LOWER(json_extract(after_json, '$.storeId')) = LOWER(?)
       AND COALESCE(
         json_extract(after_json, '$.workDate'),
         json_extract(after_json, '$.attendanceDate'),
@@ -9972,11 +11236,11 @@ const legacyAttendanceAuditsForScope = async (db, stateAudits, scope) => {
         substr(json_extract(after_json, '$.createdAt'), 1, 10),
         ''
       ) BETWEEN ? AND ?
-      AND (? = '' OR COALESCE(
+      AND (? = '' OR LOWER(COALESCE(
         json_extract(after_json, '$.employeeId'),
         json_extract(after_json, '$.employeeCode'),
         ''
-      ) = ?)
+      )) = LOWER(?))
     ORDER BY id DESC
     LIMIT ?
   `, scope.storeId, scope.fromDate, scope.toDate, scope.employeeId, scope.employeeId, MAX_LEGACY_ATTENDANCE_AUDITS)
@@ -10000,10 +11264,10 @@ const legacyAttendanceAuditsForScope = async (db, stateAudits, scope) => {
       || before.truncated === true || after.truncated === true) continue
     const attendanceId = String(row.entity_id || before.id || '').trim()
     if (!attendanceId
-      || String(before.id || '') !== attendanceId
-      || String(after.id || '') !== attendanceId
-      || String(before.storeId || '') !== String(after.storeId || '')
-      || employeeReference(before) !== employeeReference(after)
+      || !sameIdentifier(before.id, attendanceId)
+      || !sameIdentifier(after.id, attendanceId)
+      || !sameIdentifier(before.storeId, after.storeId)
+      || !sameIdentifier(employeeReference(before), employeeReference(after))
       || !recordWithinOperationalResetScope(after, scope)) continue
     const audit = {
       id: `ata_legacy_${auditLogId}`,
@@ -10052,21 +11316,25 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do khôi phục từ 1 đến 500 ký tự.')
   }
   const { current, state } = await loadGlobalCommandState(db, body)
-  const storeId = String(payload.storeId || '').trim()
-  assertOperationalStoreAccess(actor, storeId)
-  requireStore(state, storeId)
+  const requestedStoreId = String(payload.storeId || '').trim()
+  assertOperationalStoreAccess(actor, requestedStoreId)
+  const store = requireStore(state, requestedStoreId)
+  const storeId = String(store.id || requestedStoreId).trim()
   const fromDate = optionalCalendarDate(payload.fromDate ?? payload.startDate ?? payload.date, 'Từ ngày')
   const toDate = optionalCalendarDate(payload.toDate ?? payload.endDate ?? payload.date, 'Đến ngày')
   if (!fromDate || !toDate) {
     throw new ApiError(400, 'OPERATIONAL_RESET_DATE_REQUIRED', 'Cần chọn khoảng ngày khôi phục.')
   }
   monthsInDateRange(fromDate, toDate)
-  const employeeId = String(payload.employeeId || '').trim()
-  if (employeeId) {
+  const requestedEmployeeId = String(payload.employeeId || '').trim()
+  let employeeId = requestedEmployeeId
+  if (requestedEmployeeId) {
     const employee = [
       ...(Array.isArray(state.employees) ? state.employees : []),
       ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
-    ].find((record) => [record.id, record.code, record.employeeId].map(String).includes(employeeId))
+    ].find((record) => [record.id, record.code, record.employeeId]
+      .some((candidateId) => sameIdentifier(candidateId, requestedEmployeeId)))
+    employeeId = String(employee?.id || employee?.code || employee?.employeeId || requestedEmployeeId).trim()
     const historicalDestinationTransfer = (Array.isArray(state.supportTransfers) ? state.supportTransfers : [])
       .some((record) => (
         supportTransferMatchesEmployeeStore(record, employeeId, storeId)
@@ -10074,7 +11342,7 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       ))
     if (!employee
       || employeeUnit(employee) !== 'store'
-      || (String(employee.storeId || '') !== storeId && !historicalDestinationTransfer)) {
+      || (!sameIdentifier(employee.storeId, storeId) && !historicalDestinationTransfer)) {
       throw new ApiError(400, 'OPERATIONAL_RESET_EMPLOYEE_INVALID', 'Nhân viên không thuộc cửa hàng đã chọn.')
     }
   }
@@ -10130,21 +11398,20 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
     ]).map((target) => [`${target.storeId}:${target.period}`, target])).values()]
     for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
     const nextOrders = orders.map((record) => restorationById.get(String(record.id || ''))?.restored || record)
-    const affectedAttendanceIds = new Set()
+    const attendanceRows = Array.isArray(state.attendance) ? state.attendance : []
+    const affectedAttendanceRows = new Set()
     for (const [orderId, { restored }] of restorationById) {
       const currentOrder = orders.find((record) => String(record.id || '') === orderId)
-      for (const order of [currentOrder, restored]) {
-        if (order?.attendanceId) affectedAttendanceIds.add(String(order.attendanceId))
-      }
-      for (const attendance of Array.isArray(state.attendance) ? state.attendance : []) {
-        if (orderBelongsToAttendance(currentOrder, attendance) || orderBelongsToAttendance(restored, attendance)) {
-          affectedAttendanceIds.add(String(attendance.id || ''))
+      for (const attendance of attendanceRows) {
+        if (orderBelongsToAttendance(currentOrder, attendance, attendanceRows)
+          || orderBelongsToAttendance(restored, attendance, attendanceRows)) {
+          affectedAttendanceRows.add(attendance)
         }
       }
     }
-    const nextAttendance = (Array.isArray(state.attendance) ? state.attendance : []).map((attendance) => (
-      affectedAttendanceIds.has(String(attendance.id || ''))
-        ? { ...attendance, ...orderSalesTotals(nextOrders, attendance), updatedAt: commandContext.now }
+    const nextAttendance = attendanceRows.map((attendance) => (
+      affectedAttendanceRows.has(attendance)
+        ? { ...attendance, ...orderSalesTotals(nextOrders, attendance, attendanceRows), updatedAt: commandContext.now }
         : attendance
     ))
     const restoredAudit = orderAudit.map((audit) => (
@@ -10295,7 +11562,10 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
-const checklistSnapshotForAttendance = ({
+const STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION = 1
+const CANONICAL_STORE_FIXED_CODE_PREFIX = 'store.fixed.store-checklist-'
+
+function checklistSnapshotForAttendance({
   state,
   shift,
   attendanceId,
@@ -10304,8 +11574,11 @@ const checklistSnapshotForAttendance = ({
   targetGroup,
   date,
   shiftId,
+  checkInTime = null,
   now,
-}) => {
+}) {
+  assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+  const times = shiftTimes(shift)
   let definitions
   try {
     definitions = snapshotActiveWorkCatalogItems({
@@ -10314,6 +11587,9 @@ const checklistSnapshotForAttendance = ({
       storeId: targetGroup === WORK_CATALOG_TARGET.STORE ? storeId : null,
       shiftId,
       shiftName: shift?.name || shift?.shiftName || null,
+      shiftStart: times.start?.label || shift?.start || shift?.shiftStart || null,
+      shiftEnd: times.end?.label || shift?.end || shift?.shiftEnd || null,
+      shiftCheckInTime: checkInTime,
       date,
     })
   } catch (error) {
@@ -10321,7 +11597,6 @@ const checklistSnapshotForAttendance = ({
       reason: error instanceof Error ? error.message : String(error),
     })
   }
-  if (!definitions.length) return null
   const assignmentId = `catalog_checklist_${attendanceId}`
   const tasks = definitions.map((definition, index) => ({
     id: `${attendanceId}_${definition.catalogItemId}`,
@@ -10372,6 +11647,9 @@ const checklistSnapshotForAttendance = ({
       shiftId,
       shiftName: shift?.name || shift?.shiftName || null,
       capturedAt: now,
+      ...(targetGroup === WORK_CATALOG_TARGET.STORE ? {
+        storeChecklistRepairVersion: STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION,
+      } : {}),
       tasks: tasks.map((task) => ({
         id: task.id,
         catalogItemId: task.catalogItemId,
@@ -10392,12 +11670,721 @@ const checklistSnapshotForAttendance = ({
   }
 }
 
+export function reconcileOpenStoreAttendanceChecklists(state) {
+  if (!Array.isArray(state.attendance) || !Array.isArray(state.workCatalogItems)) {
+    return state
+  }
+  try {
+    assertNoCaseCollidingOperationalIdentifiers(state)
+    assertNoCaseCollidingAttendanceIdentifiers(state)
+  } catch (error) {
+    if ([
+      'EMPLOYEE_IDENTIFIER_COLLISION',
+      'STORE_IDENTIFIER_COLLISION',
+      'SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+      'ATTENDANCE_IDENTIFIER_COLLISION',
+    ].includes(error?.code)) {
+      // This repair runs on state reads as well as mutations. Legacy aliases
+      // must never be resolved by array order because doing so can attach a
+      // store checklist to the wrong employee or store. Preserve the state for
+      // an administrator to repair explicitly instead of persisting guesses.
+      return state
+    }
+    throw error
+  }
+  const employees = Array.isArray(state.employees) ? state.employees : []
+  let tasks = Array.isArray(state.tasks) ? state.tasks : []
+  let histories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
+  const taskRowsByAttendanceId = new Map()
+  const retiredTaskRowsByAttendanceId = new Map()
+  for (const task of tasks) {
+    const attendanceKey = normalizeIdentifierKey(task?.checklistAttendanceId)
+    if (!attendanceKey) continue
+    const targetMap = task?.deletedAt ? retiredTaskRowsByAttendanceId : taskRowsByAttendanceId
+    const rows = targetMap.get(attendanceKey) || []
+    rows.push(task)
+    targetMap.set(attendanceKey, rows)
+  }
+  const historyByAssignmentId = new Map()
+  const collidingHistoryAssignmentKeys = new Set()
+  for (const history of histories) {
+    const assignmentKey = normalizeIdentifierKey(history?.assignmentId || history?.id)
+    if (!assignmentKey) continue
+    if (historyByAssignmentId.has(assignmentKey)) {
+      collidingHistoryAssignmentKeys.add(assignmentKey)
+      continue
+    }
+    historyByAssignmentId.set(assignmentKey, history)
+  }
+  const updatedHistoryByAssignmentId = new Map()
+  const newHistories = []
+  let changed = false
+  const attendance = state.attendance.map((record) => {
+    if (!isPlainRecord(record) || record.deletedAt || record.checkOutAt || record.checkOut) return record
+    const employeeId = String(record.employeeId || record.employee_id || '').trim()
+    const employee = employees.find((candidate) => (
+      employeeIdentifierValues(candidate).some((value) => sameIdentifier(value, employeeId))
+    ))
+    if (!employeeId || !employee || employeeUnit(employee) !== 'store') return record
+    const existingSnapshot = isPlainRecord(record.checklistSnapshot) ? record.checklistSnapshot : null
+    if (existingSnapshot
+      && normalizeIdentifierKey(existingSnapshot.source) !== 'work-catalog'
+      && normalizeIdentifierKey(existingSnapshot.templateId) !== 'work-catalog') return record
+    const attendanceId = String(record.id || '').trim()
+    // Progress mutations are scoped by the store and business date persisted on
+    // the attendance row. Never invent either value from the current employee or
+    // timestamp: doing so creates checklist tasks that the same attendance cannot
+    // subsequently read or update.
+    const storeId = String(record.storeId || '').trim()
+    const explicitBusinessDate = String(record.date || record.workDate || '').trim()
+    const date = /^\d{4}-\d{2}-\d{2}(?:$|T)/u.test(explicitBusinessDate)
+      ? explicitBusinessDate.slice(0, 10)
+      : ''
+    const shiftId = String(record.shiftId || record.shift || '').trim()
+    if (!attendanceId || !storeId || !date || !shiftId) return record
+    const storedCheckInTime = parseShiftTime(record.checkInTime || record.checkIn)?.label || null
+    const checkInAtEpoch = Date.parse(String(record.checkInAt || ''))
+    const checkInTime = storedCheckInTime || (Number.isFinite(checkInAtEpoch)
+      ? localDateTimeParts(record.checkInAt).time
+      : null)
+    const capturedAt = existingSnapshot?.capturedAt || record.checkInAt || record.createdAt || `${date}T00:00:00.000Z`
+    const assignmentId = String(existingSnapshot?.assignmentId || `catalog_checklist_${attendanceId}`)
+    const capturedSnapshotTasks = Array.isArray(existingSnapshot?.tasks)
+      ? existingSnapshot.tasks.filter(isPlainRecord)
+      : []
+    const snapshotAlreadySealed = Number(
+      existingSnapshot?.storeChecklistRepairVersion || 0,
+    ) >= STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION
+    // A legacy shift id/name is schedule metadata, not proof of an actual
+    // check-in. Only a stored check-in time (or valid timestamp) may choose the
+    // canonical mandatory-work bucket before the repair is sealed.
+    if (!checkInTime && !snapshotAlreadySealed) return record
+    const snapshotTaskKind = (task) => String(
+      task?.kind || task?.catalogKind || task?.catalogSnapshot?.kind || '',
+    ).trim().toUpperCase()
+    const capturedHasCanonicalFixedTask = capturedSnapshotTasks.some((task) => (
+      snapshotTaskKind(task) === WORK_CATALOG_KIND.FIXED_TASK
+      && String(
+        task.catalogCode || task.catalogSnapshot?.catalogCode || task.catalogSnapshot?.code || '',
+      ).toLocaleLowerCase('en-US').startsWith(CANONICAL_STORE_FIXED_CODE_PREFIX)
+    ))
+    const capturedNeedsCanonicalRepair = Boolean(
+      existingSnapshot
+      && !snapshotAlreadySealed
+      && capturedSnapshotTasks.length
+      && !capturedHasCanonicalFixedTask
+    )
+    const taskIdentity = (task) => {
+      const catalogItemId = String(
+        task?.catalogItemId || task?.checklistTaskId || task?.catalogSnapshot?.catalogItemId || '',
+      ).trim()
+      if (catalogItemId) return `catalog:${normalizeIdentifierKey(catalogItemId)}`
+      const id = String(task?.id || '').trim()
+      return id ? `id:${normalizeIdentifierKey(id)}` : ''
+    }
+    const capturedTaskIdentifierCollision = (records) => {
+      const seenByType = { catalogItemId: new Map(), taskId: new Map() }
+      for (const task of records) {
+        const identifiers = {
+          catalogItemId: String(
+            task?.catalogItemId || task?.checklistTaskId || task?.catalogSnapshot?.catalogItemId || '',
+          ).trim(),
+          taskId: String(task?.id || '').trim(),
+        }
+        for (const [type, identifier] of Object.entries(identifiers)) {
+          const key = normalizeIdentifierKey(identifier)
+          if (!key) continue
+          const previous = seenByType[type].get(key)
+          if (previous) {
+            return { type, normalizedIdentifier: key, conflictingIdentifiers: [previous, identifier] }
+          }
+          seenByType[type].set(key, identifier)
+        }
+      }
+      return null
+    }
+    const uniqueTasks = (records) => {
+      const seen = new Set()
+      return records.filter((task) => {
+        const identity = taskIdentity(task)
+        if (!identity || seen.has(identity)) return false
+        seen.add(identity)
+        return true
+      })
+    }
+    const taskRowFromCapturedSnapshot = (snapshotTask, index) => {
+      const catalogItemId = String(snapshotTask.catalogItemId || snapshotTask.checklistTaskId || '').trim()
+      const id = String(snapshotTask.id || (catalogItemId ? `${attendanceId}_${catalogItemId}` : '')).trim()
+      if (!id) return null
+      const catalogKind = snapshotTaskKind(snapshotTask)
+      const catalogVersion = Math.max(1, Number(snapshotTask.catalogVersion || snapshotTask.version || 1) || 1)
+      const title = String(snapshotTask.name || snapshotTask.title || snapshotTask.description || 'Công việc')
+      const required = snapshotTask.required === true
+      const amountVnd = Math.max(0, Number(snapshotTask.amountVnd || 0) || 0)
+      const catalogSnapshot = isPlainRecord(snapshotTask.catalogSnapshot)
+        ? { ...snapshotTask.catalogSnapshot }
+        : {
+            catalogItemId,
+            catalogCode: snapshotTask.catalogCode || null,
+            catalogVersion,
+            kind: catalogKind,
+            targetGroup: WORK_CATALOG_TARGET.STORE,
+            storeId,
+            shiftId,
+            name: title,
+            amountVnd,
+            required,
+            effectiveDate: date,
+          }
+      return {
+        id,
+        catalogItemId: catalogItemId || null,
+        catalogCode: snapshotTask.catalogCode || catalogSnapshot.catalogCode || null,
+        catalogVersion,
+        catalogKind,
+        catalogSnapshot,
+        checklistTaskId: catalogItemId || id,
+        checklistAttendanceId: attendanceId,
+        checklistTemplateId: 'WORK-CATALOG',
+        templateId: 'WORK-CATALOG',
+        templateVersion: Math.max(1, Number(snapshotTask.version || catalogVersion) || 1),
+        assignmentId,
+        storeId,
+        employeeId,
+        employeeIds: [employeeId],
+        date,
+        workDate: date,
+        shiftId,
+        shift: shiftId,
+        title,
+        description: String(snapshotTask.description || title),
+        detail: '',
+        amountVnd,
+        position: Number.isFinite(Number(snapshotTask.position)) ? Number(snapshotTask.position) : index,
+        required,
+        rewardEligible: catalogKind === WORK_CATALOG_KIND.REWARD_TASK,
+        active: snapshotTask.active !== false,
+        completedBy: {},
+        createdAt: capturedAt,
+        updatedAt: capturedAt,
+        deletedAt: null,
+      }
+    }
+
+    const capturedCollision = capturedTaskIdentifierCollision(capturedSnapshotTasks)
+    if (capturedCollision) {
+      const checklistRepairError = {
+        code: 'CHECKLIST_SNAPSHOT_IDENTIFIER_COLLISION',
+        message: 'Checklist đã chụp có mã công việc bị trùng; cần xử lý dữ liệu trước khi hệ thống có thể phục hồi checklist.',
+        detectedAt: String(record.checklistRepairError?.detectedAt || capturedAt),
+        details: capturedCollision,
+      }
+      if (JSON.stringify(record.checklistRepairError) === JSON.stringify(checklistRepairError)) return record
+      changed = true
+      return { ...record, checklistRepairError }
+    }
+
+    const capturedTaskRows = capturedSnapshotTasks
+      .map(taskRowFromCapturedSnapshot)
+      .filter(Boolean)
+    let targetSnapshotTasks
+    let targetTaskRows
+    let snapshotBase
+    if (existingSnapshot && (
+      snapshotAlreadySealed
+      || (capturedSnapshotTasks.length && !capturedNeedsCanonicalRepair)
+    )) {
+      // Once at least one canonical fixed row was captured, the pre-patch snapshot
+      // is authoritative: its active catalog may legitimately have contained fewer
+      // rows. Never compare that snapshot with today's catalog.
+      targetSnapshotTasks = uniqueTasks(capturedSnapshotTasks)
+      targetTaskRows = uniqueTasks(capturedTaskRows)
+      snapshotBase = existingSnapshot
+    } else {
+      let checklist
+      try {
+        checklist = checklistSnapshotForAttendance({
+          state,
+          shift: {
+            id: shiftId,
+            name: record.shiftName || shiftId,
+            start: record.shiftStart,
+            end: record.shiftEnd,
+          },
+          attendanceId,
+          employeeId,
+          storeId,
+          targetGroup: WORK_CATALOG_TARGET.STORE,
+          date,
+          shiftId,
+          checkInTime,
+          now: capturedAt,
+        })
+      } catch (error) {
+        const checklistRepairError = {
+          code: String(error?.code || 'WORK_CATALOG_DATA_INVALID'),
+          message: String(error?.message || 'Không thể phục hồi checklist bắt buộc cho ca đang mở.'),
+          detectedAt: String(record.checklistRepairError?.detectedAt || capturedAt),
+        }
+        if (JSON.stringify(record.checklistRepairError) === JSON.stringify(checklistRepairError)) return record
+        changed = true
+        return { ...record, checklistRepairError }
+      }
+      if (!checklist) return record
+      const canonicalFixedTaskRows = checklist.tasks.filter((task) => (
+        task.catalogKind === WORK_CATALOG_KIND.FIXED_TASK
+        && normalizeIdentifierKey(task.catalogCode).startsWith(CANONICAL_STORE_FIXED_CODE_PREFIX)
+      ))
+      const canonicalFixedIds = new Set(canonicalFixedTaskRows.map((task) => (
+        normalizeIdentifierKey(task.catalogItemId)
+      )))
+      const canonicalFixedCodes = new Set(canonicalFixedTaskRows.map((task) => (
+        normalizeIdentifierKey(task.catalogCode)
+      )))
+      if (capturedNeedsCanonicalRepair) {
+        // The former dynamic-shift bug omitted every canonical fixed row. The legacy
+        // snapshot can still contain rewards and/or exact custom-shift work; preserve
+        // all of those captured rows and add only the missing canonical checklist.
+        const canonicalFixedSnapshotTasks = checklist.snapshot.tasks.filter((task) => (
+          canonicalFixedIds.has(normalizeIdentifierKey(task.catalogItemId))
+          || canonicalFixedCodes.has(normalizeIdentifierKey(task.catalogCode))
+        ))
+        if (!canonicalFixedTaskRows.length) return record
+        targetSnapshotTasks = uniqueTasks([...canonicalFixedSnapshotTasks, ...capturedSnapshotTasks])
+        targetTaskRows = uniqueTasks([...canonicalFixedTaskRows, ...capturedTaskRows])
+        snapshotBase = existingSnapshot
+      } else {
+        // A legacy open attendance without any captured list has no immutable source
+        // to recover from. Do not seal a reward-only snapshot when its check-in cannot
+        // resolve a canonical bucket; a later audited attendance correction must be
+        // allowed to create the complete fixed + reward snapshot.
+        if (!canonicalFixedTaskRows.length) return record
+        targetSnapshotTasks = uniqueTasks(checklist.snapshot.tasks)
+        targetTaskRows = uniqueTasks(checklist.tasks)
+        snapshotBase = checklist.snapshot
+      }
+    }
+
+    if (!snapshotAlreadySealed) {
+      // The snapshot being sealed is the immutable source for every later
+      // repair. Persist the exact positional/catalog metadata used to build the
+      // task rows now, then derive those rows back from that snapshot. Without
+      // this normalization the first repair used richer live-catalog metadata
+      // while the second repair used the compact snapshot and changed state
+      // again.
+      targetSnapshotTasks = uniqueTasks(targetSnapshotTasks).map((snapshotTask, index) => {
+        const taskRow = taskRowFromCapturedSnapshot(snapshotTask, index)
+        return {
+          ...snapshotTask,
+          position: taskRow?.position ?? index,
+          ...(taskRow?.catalogSnapshot ? { catalogSnapshot: { ...taskRow.catalogSnapshot } } : {}),
+        }
+      })
+      targetTaskRows = uniqueTasks(targetSnapshotTasks
+        .map(taskRowFromCapturedSnapshot)
+        .filter(Boolean))
+    }
+
+    const attendanceKey = normalizeIdentifierKey(attendanceId)
+    const assignmentKey = normalizeIdentifierKey(assignmentId)
+    if (collidingHistoryAssignmentKeys.has(assignmentKey)) {
+      // Immutable assignment history must never be selected by folded array
+      // order. Preserve every colliding row until an audited repair resolves
+      // the identifier collision.
+      return record
+    }
+    const existingChecklistTasks = taskRowsByAttendanceId.get(attendanceKey) || []
+    const retiredChecklistTasks = retiredTaskRowsByAttendanceId.get(attendanceKey) || []
+    const existingHistory = updatedHistoryByAssignmentId.get(assignmentKey)
+      || historyByAssignmentId.get(assignmentKey)
+      || null
+    const existingHistoryTasks = Array.isArray(existingHistory?.tasks)
+      ? existingHistory.tasks
+      : []
+    const taskIdKey = (task) => normalizeIdentifierKey(task?.id)
+    if (new Set(existingChecklistTasks.map(taskIdKey)).size !== existingChecklistTasks.length) {
+      // Do not select progress from one of two case-colliding task identifiers.
+      // Preserve both rows so the checkout mutation can fail closed and require
+      // an explicit administrator repair instead of grafting progress by order.
+      return record
+    }
+    const restoreTaskProgress = (task, survivingTask) => {
+      if (!survivingTask) return task
+      const restored = { ...task }
+      for (const field of [
+        'completedBy',
+        'completionHistory',
+        'done',
+        'checked',
+        'completed',
+        'note',
+        'notesByEmployee',
+        'updatedAt',
+        'updatedBy',
+      ]) {
+        if (Object.hasOwn(survivingTask, field)) restored[field] = survivingTask[field]
+      }
+      return restored
+    }
+    const targetTaskIds = new Set(targetTaskRows.map(taskIdKey).filter(Boolean))
+    const targetTaskIdentities = new Set(targetTaskRows.map(taskIdentity).filter(Boolean))
+    const belongsToTargetChecklist = (task) => (
+      targetTaskIds.has(taskIdKey(task)) || targetTaskIdentities.has(taskIdentity(task))
+    )
+    const taskCompletedForEmployee = (task) => (
+      completedByEmployeeValue(task?.completedBy, employeeId) === true
+      || task?.done === true
+      || task?.checked === true
+      || task?.completed === true
+    )
+    const progressSourceFor = (target, collections) => {
+      const targetId = taskIdKey(target)
+      const targetIdentity = taskIdentity(target)
+      const candidates = collections.flatMap((collection) => (
+        Array.isArray(collection) ? collection : []
+      )).filter((candidate) => (
+        taskIdKey(candidate) === targetId || taskIdentity(candidate) === targetIdentity
+      ))
+      const identifiersByFoldedKey = new Map()
+      for (const candidate of candidates) {
+        const rawIdentifier = String(candidate?.id || '').trim()
+        const foldedIdentifier = taskIdKey(candidate)
+        if (!rawIdentifier || !foldedIdentifier) continue
+        const spellings = identifiersByFoldedKey.get(foldedIdentifier) || new Set()
+        spellings.add(rawIdentifier)
+        identifiersByFoldedKey.set(foldedIdentifier, spellings)
+      }
+      const ambiguous = [...identifiersByFoldedKey.values()].some((spellings) => spellings.size > 1)
+      return {
+        source: ambiguous ? null : (candidates.find(taskCompletedForEmployee) || candidates[0] || null),
+        ambiguous,
+      }
+    }
+    const canonicalProgressSources = targetTaskRows.map((task) => progressSourceFor(
+      task,
+      [existingChecklistTasks, existingHistoryTasks, retiredChecklistTasks],
+    ))
+    const historyProgressSources = targetTaskRows.map((task) => progressSourceFor(
+      task,
+      [existingHistoryTasks, existingChecklistTasks, retiredChecklistTasks],
+    ))
+    if ([...canonicalProgressSources, ...historyProgressSources].some(({ ambiguous }) => ambiguous)) {
+      // A case-colliding task in any historical source makes the source of
+      // completion unknowable. Preserve the sealed record until an audited
+      // collision repair resolves it instead of selecting by array order.
+      return record
+    }
+    const canonicalTaskRows = targetTaskRows.map((task, index) => restoreTaskProgress(
+      task,
+      canonicalProgressSources[index].source,
+    ))
+    const canonicalHistoryRows = targetTaskRows.map((task, index) => restoreTaskProgress(
+      task,
+      historyProgressSources[index].source,
+    ))
+    const catalogSnapshotMetadataMatches = (actual, expected) => {
+      const actualSnapshot = isPlainRecord(actual?.catalogSnapshot) ? actual.catalogSnapshot : null
+      const expectedSnapshot = isPlainRecord(expected?.catalogSnapshot) ? expected.catalogSnapshot : null
+      if (!expectedSnapshot) return !actualSnapshot
+      return Boolean(actualSnapshot)
+        && String(actualSnapshot.catalogItemId || '') === String(expectedSnapshot.catalogItemId || '')
+        && String(actualSnapshot.catalogCode || '') === String(expectedSnapshot.catalogCode || '')
+        && Number(actualSnapshot.catalogVersion || 0) === Number(expectedSnapshot.catalogVersion || 0)
+        && String(actualSnapshot.kind || '') === String(expectedSnapshot.kind || '')
+        && String(actualSnapshot.name || '') === String(expectedSnapshot.name || '')
+        && Number(actualSnapshot.amountVnd || 0) === Number(expectedSnapshot.amountVnd || 0)
+        && Boolean(actualSnapshot.required) === Boolean(expectedSnapshot.required)
+    }
+    const taskMetadataMatches = (actual, expected) => (
+      String(actual?.id || '') === String(expected?.id || '')
+      && mutationIdentifierReferenceMatchesRecord({
+        records: state.attendance,
+        record,
+        reference: actual?.checklistAttendanceId,
+        collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+        collisionMessage: 'Mã chấm công tham chiếu trong checklist đang mơ hồ; cần xử lý dữ liệu trùng trước khi sửa checklist.',
+      })
+      && String(actual?.assignmentId || '') === assignmentId
+      && String(actual?.storeId || '') === storeId
+      && String(actual?.employeeId || '') === employeeId
+      && Array.isArray(actual?.employeeIds)
+      && actual.employeeIds.length === 1
+      && String(actual.employeeIds[0] || '') === employeeId
+      && String(actual?.date || '') === date
+      && String(actual?.workDate || '') === date
+      && String(actual?.shiftId || '') === shiftId
+      && String(actual?.shift || '') === shiftId
+      && String(actual?.catalogItemId || '') === String(expected?.catalogItemId || '')
+      && String(actual?.catalogCode || '') === String(expected?.catalogCode || '')
+      && Number(actual?.catalogVersion || 0) === Number(expected?.catalogVersion || 0)
+      && String(actual?.catalogKind || '') === String(expected?.catalogKind || '')
+      && String(actual?.checklistTaskId || '') === String(expected?.checklistTaskId || '')
+      && String(actual?.checklistTemplateId || '') === String(expected?.checklistTemplateId || '')
+      && String(actual?.templateId || '') === String(expected?.templateId || '')
+      && Number(actual?.templateVersion || 0) === Number(expected?.templateVersion || 0)
+      && String(actual?.title || '') === String(expected?.title || '')
+      && String(actual?.description || '') === String(expected?.description || '')
+      && Number(actual?.amountVnd || 0) === Number(expected?.amountVnd || 0)
+      && Number(actual?.position || 0) === Number(expected?.position || 0)
+      && Boolean(actual?.required) === Boolean(expected?.required)
+      && Boolean(actual?.rewardEligible) === Boolean(expected?.rewardEligible)
+      && Boolean(actual?.active) === Boolean(expected?.active)
+      && catalogSnapshotMetadataMatches(actual, expected)
+    )
+    const targetRowsAreCanonical = (currentRows, expectedRows) => {
+      const relevantRows = currentRows.filter(belongsToTargetChecklist)
+      return relevantRows.length === expectedRows.length
+        && expectedRows.every((expected) => relevantRows.some((actual) => taskMetadataMatches(actual, expected)))
+    }
+    const taskRowsNeedRepair = !targetRowsAreCanonical(existingChecklistTasks, canonicalTaskRows)
+    // An empty sealed checklist has no progress to audit. Do not manufacture an
+    // empty assignment history during a read-time repair: that would advance the
+    // global state version merely because a caller opened the app.
+    const historyRowsNeedRepair = targetTaskRows.length > 0 && (
+      !existingHistory || !targetRowsAreCanonical(existingHistoryTasks, canonicalHistoryRows)
+    )
+    const repairErrorNeedsClearing = Boolean(record.checklistRepairError)
+    if (snapshotAlreadySealed
+      && !taskRowsNeedRepair
+      && !historyRowsNeedRepair
+      && !repairErrorNeedsClearing) return record
+
+    let recordChanged = false
+    if (taskRowsNeedRepair) {
+      tasks = [
+        ...canonicalTaskRows,
+        ...tasks.filter((task) => (
+          !sameIdentifier(task?.checklistAttendanceId, attendanceId)
+          || !belongsToTargetChecklist(task)
+        )),
+      ]
+      taskRowsByAttendanceId.set(attendanceKey, [
+        ...canonicalTaskRows,
+        ...existingChecklistTasks.filter((task) => !belongsToTargetChecklist(task)),
+      ])
+      retiredTaskRowsByAttendanceId.set(
+        attendanceKey,
+        retiredChecklistTasks.filter((task) => !belongsToTargetChecklist(task)),
+      )
+      recordChanged = true
+    }
+
+    if (existingHistory) {
+      if (historyRowsNeedRepair) {
+        const repairedHistoryTasks = [
+          ...canonicalHistoryRows.map((task) => ({ ...task })),
+          ...existingHistoryTasks.filter((task) => !belongsToTargetChecklist(task)),
+        ]
+        let repairedHistory = { ...existingHistory, tasks: repairedHistoryTasks }
+        const targetRequiredTasks = targetTaskRows.filter(workTaskIsRequired)
+        const existingRelevantRequiredTasks = existingHistoryTasks.filter((task) => (
+          belongsToTargetChecklist(task) && workTaskIsRequired(task)
+        ))
+        const requiredShapeChanged = existingRelevantRequiredTasks.length !== targetRequiredTasks.length
+          || targetRequiredTasks.some((task) => (
+            existingRelevantRequiredTasks.filter((candidate) => (
+              taskIdKey(candidate) === taskIdKey(task) || taskIdentity(candidate) === taskIdentity(task)
+            )).length !== 1
+          ))
+        if (requiredShapeChanged) {
+          const requiredHistoryTasks = repairedHistoryTasks.filter(workTaskIsRequired)
+          const completedRequiredTasks = requiredHistoryTasks.filter((task) => (
+            completedByEmployeeValue(task.completedBy, employeeId) === true
+            || task.done === true
+            || task.completed === true
+          )).length
+          const totalTasks = requiredHistoryTasks.length
+          const completionRate = totalTasks
+            ? Math.round((completedRequiredTasks / totalTasks) * 100)
+            : 0
+          const complete = totalTasks > 0 && completedRequiredTasks === totalTasks
+          repairedHistory = {
+            ...repairedHistory,
+            status: complete ? 'completed' : 'assigned',
+            totalTasks,
+            completedTasks: completedRequiredTasks,
+            completionRate,
+            incompleteReason: '',
+            submittedAt: null,
+            completionByEmployee: withCanonicalIdentifierEntry(
+              existingHistory.completionByEmployee,
+              employeeId,
+              {
+                completedTasks: completedRequiredTasks,
+                totalTasks,
+                completionRate,
+                requiredTasks: totalTasks,
+                completedRequiredTasks,
+                incompleteReason: '',
+                submittedAt: null,
+                attendanceId,
+              },
+            ),
+          }
+        }
+        updatedHistoryByAssignmentId.set(assignmentKey, repairedHistory)
+        recordChanged = true
+      }
+    } else if (targetTaskRows.length > 0) {
+      const newHistory = {
+        id: assignmentId,
+        assignmentId,
+        source: 'store-shift-checklist',
+        checklistAttendanceId: attendanceId,
+        checklistTemplateId: 'WORK-CATALOG',
+        storeId,
+        date,
+        shiftId,
+        employeeIds: [employeeId],
+        tasks: canonicalHistoryRows.map((task) => ({ ...task })),
+        status: 'assigned',
+        createdAt: capturedAt,
+        createdBy: { id: 'SYSTEM', name: 'Hệ thống', role: 'system' },
+        progressHistory: [],
+      }
+      newHistories.unshift(newHistory)
+      historyByAssignmentId.set(assignmentKey, newHistory)
+      recordChanged = true
+    }
+    const snapshotNeedsSealing = !snapshotAlreadySealed
+    if (!recordChanged && !snapshotNeedsSealing && !repairErrorNeedsClearing) return record
+    changed = true
+    const recordWithoutRepairError = { ...record }
+    delete recordWithoutRepairError.checklistRepairError
+    if (!snapshotNeedsSealing) return recordWithoutRepairError
+    return {
+      ...recordWithoutRepairError,
+      checklistSnapshot: {
+        ...snapshotBase,
+        source: 'work-catalog',
+        templateId: 'WORK-CATALOG',
+        assignmentId,
+        storeChecklistRepairVersion: STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION,
+        tasks: targetSnapshotTasks,
+      },
+    }
+  })
+
+  if (updatedHistoryByAssignmentId.size) {
+    histories = histories.map((history) => (
+      updatedHistoryByAssignmentId.get(normalizeIdentifierKey(history?.assignmentId || history?.id)) || history
+    ))
+  }
+  if (newHistories.length) histories = [...newHistories, ...histories]
+  return changed ? { ...state, attendance, tasks, taskAssignmentHistory: histories } : state
+}
+
+async function persistOpenStoreAttendanceChecklistRepairs(db, actor, context, currentRow = null, attempt = 0) {
+  const current = currentRow || await loadState(db, 'global')
+  if (!current) return current
+  const normalizedState = normalizeSharedStateForStorage(parseStoredJson(current.value_json, {}))
+  const reconciledState = reconcileOpenStoreAttendanceChecklists(normalizedState)
+  if (reconciledState === normalizedState) return current
+  const repairedState = {
+    ...reconciledState,
+    stateVersion: Math.max(1, Number(normalizedState.stateVersion) || 1) + 1,
+  }
+
+  const currentVersion = Number(current.version || 0)
+  const nextVersion = currentVersion + 1
+  const requestId = `${context.requestId}:store-checklist-repair:${attempt}`
+  const actorId = String(actor?.user_id || actor?.id || 'system')
+  const actorRole = String(actor?.role || 'system')
+  const changedRecordIds = (before, after, idFromRecord) => {
+    const beforeById = new Map((Array.isArray(before) ? before : []).map((record) => [idFromRecord(record), record]))
+    return (Array.isArray(after) ? after : [])
+      .filter((record) => {
+        const id = idFromRecord(record)
+        return id && JSON.stringify(canonicalize(beforeById.get(id))) !== JSON.stringify(canonicalize(record))
+      })
+      .map(idFromRecord)
+  }
+  const repairedAttendanceIds = [...new Set([
+    ...changedRecordIds(normalizedState.attendance, repairedState.attendance, (record) => String(record?.id || '')),
+    ...changedRecordIds(normalizedState.tasks, repairedState.tasks, (record) => String(record?.id || ''))
+      .map((taskId) => String(repairedState.tasks.find((record) => String(record?.id || '') === taskId)?.checklistAttendanceId || '')),
+    ...changedRecordIds(
+      normalizedState.taskAssignmentHistory,
+      repairedState.taskAssignmentHistory,
+      (record) => String(record?.assignmentId || record?.id || ''),
+    ).map((assignmentId) => String(repairedState.taskAssignmentHistory.find((record) => (
+      String(record?.assignmentId || record?.id || '') === assignmentId
+    ))?.checklistAttendanceId || '')),
+  ].filter(Boolean))].sort()
+  const stateCommit = prepareStateCommit(db, {
+    current,
+    nextState: repairedState,
+    scope: 'global',
+    currentVersion,
+    nextVersion,
+    now: context.now,
+    actorId,
+    requestId,
+  })
+  let results
+  try {
+    results = await db.batch([
+      stateCommit.mutation,
+      ...stateCommit.externalStatements,
+      db.prepare(`
+        INSERT INTO audit_log (
+          request_id, actor_id, actor_role, action, entity_type, entity_id,
+          before_json, after_json, metadata_json, server_timestamp
+        )
+        SELECT ?, ?, ?, 'attendance.checklist.repair_legacy', 'attendance-checklist', 'open-store-attendance',
+               NULL, NULL, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM app_state
+          WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+        )
+      `).bind(
+        requestId,
+        actorId,
+        actorRole,
+        boundedAuditJson({
+          fromVersion: currentVersion,
+          toVersion: nextVersion,
+          repairedAttendanceIds,
+        }),
+        context.now,
+        nextVersion,
+        requestId,
+      ),
+    ])
+  } catch {
+    if (attempt < 1) {
+      return persistOpenStoreAttendanceChecklistRepairs(db, actor, context, null, attempt + 1)
+    }
+    const latest = await loadState(db, 'global')
+    throw new ApiError(409, 'CHECKLIST_REPAIR_CONFLICT', 'Danh sách công việc ca vừa thay đổi; vui lòng tải lại dữ liệu.', {
+      currentVersion: Number(latest?.version || 0),
+    })
+  }
+  if (changes(results?.[0]) !== 1) {
+    if (attempt < 1) {
+      return persistOpenStoreAttendanceChecklistRepairs(db, actor, context, null, attempt + 1)
+    }
+    const latest = await loadState(db, 'global')
+    throw new ApiError(409, 'CHECKLIST_REPAIR_CONFLICT', 'Danh sách công việc ca vừa thay đổi; vui lòng tải lại dữ liệu.', {
+      currentVersion: Number(latest?.version || 0),
+    })
+  }
+  const repairedRow = await loadState(db, 'global')
+  if (repairedRow) {
+    Object.defineProperty(repairedRow, '_storeChecklistRepair', {
+      value: Object.freeze({ previousVersion: currentVersion, nextVersion }),
+      enumerable: false,
+    })
+  }
+  return repairedRow
+}
+
 const attendanceCommand = async (db, actor, body, commandContext) => {
   if (!['employee', 'business_support', 'store_manager'].includes(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Lệnh chấm công trực tiếp chỉ dành cho tài khoản nhân sự.')
   }
-  const expectedVersion = validateExpectedVersion(body.expectedVersion)
-  const current = await loadState(db, 'global')
+  const expectedVersion = commandExpectedVersion(body)
+  const current = body._preloadedGlobalStateRow || await loadState(db, 'global')
   const currentVersion = Number(current?.version || 0)
   if (!current || currentVersion !== expectedVersion) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
@@ -10407,17 +12394,17 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   const employeeId = String(actor.employee_id || actor.user_id || '')
   const storeId = String(actor.store_id || '')
   const employee = (Array.isArray(state.employees) ? state.employees : [])
-    .find((record) => String(record.id || record.code || '') === employeeId && !record.deletedAt)
+    .find((record) => sameIdentifier(record.id || record.code, employeeId) && !record.deletedAt)
   const activeTransfer = actor.active_transfer_id
     ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
-        String(record.id || '') === String(actor.active_transfer_id)
-        && String(record.employeeId || '') === employeeId
-        && String(record.toStoreId || '') === storeId
+        sameIdentifier(record.id, actor.active_transfer_id)
+        && sameIdentifier(record.employeeId, employeeId)
+        && sameIdentifier(record.toStoreId, storeId)
         && !record.deletedAt
         && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
       ))
     : null
-  if (!employee || (String(employee.storeId || '') !== storeId && !activeTransfer)) {
+  if (!employee || (!sameIdentifier(employee.storeId, storeId) && !activeTransfer)) {
     throw new ApiError(409, 'EMPLOYEE_PROFILE_MISSING', 'Tài khoản chưa được liên kết với hồ sơ nhân viên hợp lệ.')
   }
   const officeEmployee = officeLikeEmployee(employee)
@@ -10448,14 +12435,15 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     const assignedShiftIds = new Set(dayAssignments.flatMap((record) => [
       String(record.shiftId || ''),
       ...(Array.isArray(record.shiftIds) ? record.shiftIds.map(String) : []),
-    ]).filter(Boolean))
+    ]).map(normalizeIdentifierKey).filter(Boolean))
     const activeShifts = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).filter((record) => (
       record.active !== false
-      && (!record.storeId || String(record.storeId) === storeId)
+      && (!record.storeId || sameIdentifier(record.storeId, storeId))
       && (!record.date || String(record.date) === localNow.date)
       && shiftTimes(record).start
       && shiftTimes(record).end
     ))
+    assertUniqueShiftDefinitionIdentifiers(activeShifts)
     const profileShifts = officeEmployee ? configuredProfileWorkShifts(employee, localNow.date, state) : []
     const canonicalProfileScheduleEmployee = ['office', 'business_support'].includes(employeeUnit(employee))
     let shiftId = String(payload.shiftId || payload.workShiftId || '').trim()
@@ -10464,21 +12452,21 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     // profile shift with a new generated id, so reconcile a stale submitted id
     // only when the canonical schedule is unambiguous. Never use client times.
     let shift = !canonicalProfileScheduleEmployee && shiftId
-      ? activeShifts.find((record) => String(record.id || '') === shiftId)
+      ? uniqueShiftDefinitionMatch(activeShifts, shiftId)
       : null
     let activeTransferBounds = null
     if (shiftId && !/^[A-Za-z0-9_-]{1,80}$/u.test(shiftId)) {
       throw new ApiError(400, 'SHIFT_INVALID', 'Cần chọn ca làm việc hợp lệ.')
     }
     if (!shift && officeEmployee && shiftId) {
-      shift = profileShifts.find((record) => String(record.id || '') === shiftId) || null
+      shift = uniqueShiftDefinitionMatch(profileShifts, shiftId)
       if (!shift && canonicalProfileScheduleEmployee && profileShifts.length === 1) {
         shift = profileShifts[0]
         shiftId = String(shift.id || '')
       }
     }
     if (shift && !['profile-work-shift', 'office-profile', 'support-daily-schedule'].includes(shift.source)
-      && dayAssignments.length && !assignedShiftIds.has(shiftId)) {
+      && dayAssignments.length && !assignedShiftIds.has(normalizeIdentifierKey(shiftId))) {
       throw new ApiError(403, 'SHIFT_NOT_ASSIGNED', 'Ca này không nằm trong lịch làm việc hôm nay của bạn.')
     }
     // A support transfer is itself the attendance window. Even if a stale or
@@ -10507,7 +12495,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       }
     }
     if (!shift && officeEmployee && !canonicalProfileScheduleEmployee && !shiftId) {
-      shift = activeShifts.find((record) => assignedShiftIds.has(String(record.id || ''))) || null
+      shift = activeShifts.find((record) => assignedShiftIds.has(normalizeIdentifierKey(record.id))) || null
       shiftId = String(shift?.id || '')
     }
     if (!shift && officeEmployee && !shiftId) {
@@ -10564,6 +12552,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
           targetGroup: checklistTargetGroup,
           date: localNow.date,
           shiftId,
+          checkInTime: localNow.time,
           now: commandContext.now,
         })
       : null
@@ -10635,7 +12624,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       ...(checklist ? { checklistSnapshot: checklist.snapshot } : {}),
       deletedAt: null,
     }
-    const checklistAssignment = checklist ? {
+    const checklistAssignment = checklist?.tasks?.length ? {
       id: checklist.assignmentId,
       assignmentId: checklist.assignmentId,
       source: 'store-shift-checklist',
@@ -10677,21 +12666,33 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   }
   const requestedId = String(payload.attendanceId || '')
   const openRecord = requestedId
-    ? ownOpenRecords.find((record) => String(record.id || '') === requestedId)
+    ? uniqueIdentifierRecordMatch({
+        records: ownOpenRecords,
+        identifier: requestedId,
+        collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+        collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể kết ca an toàn.',
+      })?.record
     : ownOpenRecords[0]
   if (!openRecord) throw new ApiError(409, 'ATTENDANCE_NOT_OPEN', 'Không tìm thấy ca làm việc đang mở.')
   if (ownOpenRecords.length > 1 && !requestedId) {
     throw new ApiError(409, 'ATTENDANCE_AMBIGUOUS', 'Có nhiều ca đang mở; cần chỉ rõ mã chấm công.')
   }
+  const attendanceReferenceMatches = (reference) => mutationIdentifierReferenceMatchesRecord({
+    records: attendance,
+    record: openRecord,
+    reference,
+    collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+    collisionMessage: 'Mã chấm công tham chiếu trong dữ liệu ca đang mơ hồ; cần xử lý dữ liệu trùng trước khi kết ca.',
+  })
   // An exact transfer end immediately restores the account's home-store scope.
   // The employee must still be able to settle the already-open destination shift,
   // without regaining any permission to create new destination activity.
   const attendanceStoreId = String(openRecord.storeId || storeId)
   const attendanceTransfer = openRecord.supportTransferId
     ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
-        String(record.id || '') === String(openRecord.supportTransferId)
-        && String(record.employeeId || '') === employeeId
-        && String(record.toStoreId || '') === attendanceStoreId
+        sameIdentifier(record.id, openRecord.supportTransferId)
+        && sameIdentifier(record.employeeId, employeeId)
+        && sameIdentifier(record.toStoreId, attendanceStoreId)
         && !record.deletedAt
         && !['Đã xóa', 'Đã hủy'].includes(String(record.status || ''))
       )) || null
@@ -10725,11 +12726,15 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     !order.deletedAt
     && String(order.status || '') === 'Hoàn tất'
     && orderCreatedByEmployee(order, employeeId)
-    && String(order.storeId || '') === attendanceStoreId
+    && sameIdentifier(order.storeId, attendanceStoreId)
     && (
-      String(order.attendanceId || '') === String(openRecord.id)
+      (String(order.attendanceId || '').trim() && attendanceReferenceMatches(order.attendanceId))
       || (!order.attendanceId
-        && String(order.shiftId || '') === String(openRecord.shiftId || openRecord.shift || '')
+        && (
+          (!String(order.shiftId || order.shift || '').trim()
+            && !String(openRecord.shiftId || openRecord.shift || '').trim())
+          || sameIdentifier(order.shiftId || order.shift, openRecord.shiftId || openRecord.shift)
+        )
         && Date.parse(order.createdAt) >= checkInTime
         && Date.parse(order.createdAt) <= checkOutTime)
     )
@@ -10743,6 +12748,55 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     .reduce((sum, order) => safeMoneySum(sum, Number(order.amount || 0), 'Tiền mặt đơn hàng trong ca'), 0)
   const transfer = revenue - cash
   const storeEmployee = employeeUnit(employee) === 'store'
+  const attendanceDate = String(openRecord.date || openRecord.workDate || localNow.date)
+  const attendanceShiftId = String(openRecord.shiftId || openRecord.shift || '')
+  const checklistSnapshot = isPlainRecord(openRecord.checklistSnapshot)
+    ? openRecord.checklistSnapshot
+    : null
+  const configuredChecklistMissing = storeEmployee && !checklistSnapshot
+    ? (() => {
+        try {
+          const configuredChecklist = checklistSnapshotForAttendance({
+            state,
+            shift: {
+              id: attendanceShiftId,
+              name: openRecord.shiftName || attendanceShiftId,
+              start: openRecord.shiftStart,
+              end: openRecord.shiftEnd,
+            },
+            attendanceId: String(openRecord.id || ''),
+            employeeId,
+            storeId: attendanceStoreId,
+            targetGroup: WORK_CATALOG_TARGET.STORE,
+            date: attendanceDate,
+            shiftId: attendanceShiftId,
+            checkInTime: openRecord.checkInTime || openRecord.checkIn,
+            now: openRecord.checkInAt || openRecord.createdAt || commandContext.now,
+          })
+          return Boolean(configuredChecklist?.tasks?.length)
+        } catch {
+          return true
+        }
+      })()
+    : false
+  const workCatalogChecklistPending = configuredChecklistMissing
+    || (checklistSnapshot
+      && (checklistSnapshot.source === 'work-catalog' || checklistSnapshot.templateId === 'WORK-CATALOG')
+      && Number(checklistSnapshot.storeChecklistRepairVersion || 0) < STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION)
+  if (storeEmployee && (openRecord.checklistRepairError || workCatalogChecklistPending)) {
+    throw new ApiError(
+      409,
+      'CHECKLIST_REPAIR_PENDING',
+      'Checklist bắt buộc của ca đang chờ hệ thống phục hồi; chưa thể kết ca.',
+      {
+        attendanceId: openRecord.id,
+        repairError: openRecord.checklistRepairError || {
+          code: 'CHECKLIST_SNAPSHOT_MISSING',
+          message: 'Ca đang mở chưa có checklist bắt buộc đã được phục hồi và chốt.',
+        },
+      },
+    )
+  }
   let declaredCash = cash
   let declaredTransfer = transfer
   if (storeEmployee) {
@@ -10763,24 +12817,33 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       })
     }
   }
-  const attendanceDate = String(openRecord.date || openRecord.workDate || localNow.date)
-  const attendanceShiftId = String(openRecord.shiftId || openRecord.shift || '')
   const checklistTasks = Array.isArray(openRecord.checklistSnapshot?.tasks)
     ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => (
-        String(task.checklistAttendanceId || '') === String(openRecord.id || '')
+        attendanceReferenceMatches(task.checklistAttendanceId)
         && !task.deletedAt
       ))
     : []
   if (Array.isArray(openRecord.checklistSnapshot?.tasks)) {
+    const checklistTaskById = new Map(checklistTasks.map((task) => [normalizeIdentifierKey(task.id), task]))
+    if (checklistTaskById.size !== checklistTasks.length) {
+      throw new ApiError(
+        409,
+        'TASK_IDENTIFIER_COLLISION',
+        'Ca đang làm có nhiều công việc trùng mã; không thể kết ca an toàn.',
+        {
+          attendanceId: openRecord.id,
+          conflictingIdentifiers: checklistTasks.map((task) => String(task.id || '')),
+        },
+      )
+    }
     const catalogChecklist = openRecord.checklistSnapshot.source === 'work-catalog'
       || openRecord.checklistSnapshot.templateId === 'WORK-CATALOG'
     const checklistValidation = catalogChecklist
       ? (() => {
-          const taskById = new Map(checklistTasks.map((task) => [String(task.id || ''), task]))
           const requiredTasks = openRecord.checklistSnapshot.tasks.filter(workTaskIsRequired)
           const missingTasks = requiredTasks.filter((snapshotTask) => {
-            const task = taskById.get(String(snapshotTask.id || ''))
-            return !task || !(isPlainRecord(task.completedBy) && task.completedBy[employeeId] === true)
+            const task = checklistTaskById.get(normalizeIdentifierKey(snapshotTask.id))
+            return !task || completedByEmployeeValue(task.completedBy, employeeId) !== true
           })
           return {
             allowed: missingTasks.length === 0,
@@ -10798,7 +12861,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
           taskRecords: checklistTasks,
           completionRecords: checklistTasks.map((task) => ({
             taskId: task.id,
-            checked: isPlainRecord(task.completedBy) && task.completedBy[employeeId] === true,
+            checked: completedByEmployeeValue(task.completedBy, employeeId) === true,
           })),
         })
     if (!checklistValidation.allowed) {
@@ -10815,14 +12878,14 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   }
   const incompleteTasks = storeEmployee
       ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
-        if (String(task.checklistAttendanceId || '') === String(openRecord.id || '')) return false
+        if (attendanceReferenceMatches(task.checklistAttendanceId)) return false
         if (!workTaskIsRequired(task)) return false
         if (!taskAppliesToEmployee(task, employeeId, attendanceStoreId)) return false
         if (String(task.date || task.workDate || '') !== attendanceDate) return false
         const taskShiftId = String(task.shiftId || task.shift || '')
-        if (taskShiftId && taskShiftId !== attendanceShiftId) return false
+        if (taskShiftId && !sameIdentifier(taskShiftId, attendanceShiftId)) return false
         const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
-        return completedBy[employeeId] !== true && task.done !== true
+        return completedByEmployeeValue(completedBy, employeeId) !== true && task.done !== true
       })
     : []
   const incompleteTaskReason = String(payload.incompleteTaskReason || '').trim()
@@ -10843,7 +12906,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   const recordedShiftExpense = officeEmployee ? 0 : expenseEntries
     .filter((entry) => (
       entry.recognized !== false
-      && String(entry.attendanceId || '') === String(openRecord.id || '')
+      && attendanceReferenceMatches(entry.attendanceId)
       && String(entry.sourceType || '') === 'shift-expense-item'
     ))
     .reduce((sum, entry) => safeMoneySum(sum, Number(entry.amount || 0), 'Tổng chi phí trong ca'), 0)
@@ -10893,7 +12956,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   const compensationState = attendanceTransfer ? {
     ...state,
     attendance: attendance.map((record) => (
-      String(record.id || '') === String(openRecord.id) ? updatedRecordBase : record
+      record === openRecord ? updatedRecordBase : record
     )),
   } : state
   const updatedRecord = attendanceTransfer
@@ -11446,23 +13509,23 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ORDER_READ_ONLY', 'Tài khoản quản lý vận hành chỉ được xem danh sách đơn hàng.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const expectedVersion = validateExpectedVersion(body.expectedVersion)
-  const current = await loadState(db, 'global')
+  const expectedVersion = commandExpectedVersion(body)
+  const current = body._preloadedGlobalStateRow || await loadState(db, 'global')
   const currentVersion = Number(current?.version || 0)
   if (!current || currentVersion !== expectedVersion) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
   }
   const state = normalizeSharedStateForStorage(parseStoredJson(current.value_json, {}))
-  const requestedStoreId = String(payload.storeId || '')
-  const storeId = actor.role === 'admin' ? requestedStoreId : String(actor.store_id || '')
-  if (!storeId || (actor.role === 'employee' && requestedStoreId && requestedStoreId !== storeId)) {
+  const requestedStoreId = String(payload.storeId || '').trim()
+  const scopedStoreId = actor.role === 'admin' ? requestedStoreId : String(actor.store_id || '').trim()
+  if (!scopedStoreId || (actor.role === 'employee' && requestedStoreId && !sameIdentifier(requestedStoreId, scopedStoreId))) {
     throw new ApiError(403, 'STORE_FORBIDDEN', 'Bạn không có quyền tạo đơn cho cửa hàng này.')
   }
-  const store = (Array.isArray(state.stores) ? state.stores : [])
-    .find((record) => String(record.id || '') === storeId && !record.deletedAt)
+  const store = requireStore(state, scopedStoreId)
+  const storeId = String(store.id || scopedStoreId).trim()
   const storeCode = String(store?.short || store?.code || store?.id || '')
     .toUpperCase().replace(/[^A-Z0-9]/gu, '').slice(0, 20)
-  if (!store || !storeCode) throw new ApiError(400, 'STORE_INVALID', 'Cửa hàng không hợp lệ hoặc thiếu mã cửa hàng.')
+  if (!storeCode) throw new ApiError(400, 'STORE_INVALID', 'Cửa hàng không hợp lệ hoặc thiếu mã cửa hàng.')
 
   const amount = Number(payload.amount)
   if (!Number.isSafeInteger(amount) || amount <= 0 || amount > MAX_MONEY_VND) {
@@ -11491,12 +13554,11 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
     ? String(actor.employee_id || actor.user_id)
     : (String(payload.employeeId || '') || null)
   const employee = employeeId
-    ? (Array.isArray(state.employees) ? state.employees : [])
-      .find((record) => (
-        String(record.id || record.code || '') === employeeId
-        && employeeUnit(record) === 'store'
-        && !record.deletedAt
-      ))
+    ? uniqueEmployeeIdentifierRecordMatch({
+        records: state.employees,
+        identifier: employeeId,
+        predicate: (record) => employeeUnit(record) === 'store' && !record.deletedAt,
+      })?.record || null
     : null
   const employeeStatus = normalizeTextKey(employee?.status)
   const employeeInactive = ['da nghi viec', 'tam ngung', 'inactive', 'locked'].includes(employeeStatus)
@@ -11505,42 +13567,57 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   }
   const activeTransfer = actor.active_transfer_id
     ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
-        String(record.id || '') === String(actor.active_transfer_id)
-        && String(record.employeeId || '') === employeeId
-        && String(record.toStoreId || '') === storeId
+        sameIdentifier(record.id, actor.active_transfer_id)
+        && sameIdentifier(record.employeeId, employeeId)
+        && sameIdentifier(record.toStoreId, storeId)
         && !record.deletedAt
         && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
       ))
     : null
-  if (employee && String(employee.storeId || '') !== storeId && !activeTransfer) {
+  if (employee && !sameIdentifier(employee.storeId, storeId) && !activeTransfer) {
     throw new ApiError(403, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng tạo đơn.')
   }
 
-  const openAttendance = employeeId
-    ? (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
+  const openAttendanceMatches = employeeId
+    ? (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => (
         belongsToEmployee(record, employeeId)
-        && String(record.storeId || '') === storeId
+        && sameIdentifier(record.storeId, storeId)
         && !record.deletedAt
         && !record.checkOut
         && !record.checkOutAt
       ))
-    : null
+    : []
+  if (openAttendanceMatches.length > 1) {
+    throw new ApiError(409, 'ATTENDANCE_AMBIGUOUS', 'Nhân viên có nhiều ca đang mở tại cửa hàng; cần xử lý dữ liệu chấm công trước khi tạo đơn.')
+  }
+  const openAttendance = openAttendanceMatches[0] || null
   if (actor.role === 'employee' && !openAttendance) {
     throw new ApiError(409, 'ATTENDANCE_NOT_OPEN', 'Nhân viên chỉ được tạo đơn trong ca đang mở.')
   }
   const requestedShiftId = String(payload.shiftId || '') || null
   const shiftId = openAttendance?.shift || openAttendance?.shiftId || (actor.role === 'admin' ? requestedShiftId : null)
-  const shiftDefinition = shiftId
-    ? (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [])
-      .find((record) => String(record.id || '') === String(shiftId))
-    : null
+  const scopedShiftDefinitions = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [])
+    .filter((record) => (
+      sameIdentifier(record.storeId, storeId)
+      && !record.deletedAt
+      && record.active !== false
+    ))
+  const shiftDefinition = shiftId ? uniqueShiftDefinitionMatch(scopedShiftDefinitions, shiftId) : null
+  if (shiftId && !shiftDefinition && !openAttendance) {
+    throw new ApiError(400, 'SHIFT_INVALID', 'Ca làm việc không tồn tại hoặc không thuộc cửa hàng tạo đơn.')
+  }
   const times = shiftTimes(shiftDefinition)
 
   const counterName = `store:${storeId}:orders`
-  const counter = await first(db, `
-    SELECT counter_name, counter_value, version FROM counters WHERE counter_name = ? LIMIT 1
+  const counterRows = await all(db, `
+    SELECT counter_name, counter_value, version
+    FROM counters
+    WHERE LOWER(counter_name) = LOWER(?)
   `, counterName)
-  const counterValue = Number(counter?.counter_value || 0)
+  const counter = counterRows.find((row) => String(row.counter_name) === counterName) || null
+  const counterValue = counterRows.reduce((maximum, row) => (
+    Math.max(maximum, Number(row.counter_value || 0))
+  ), 0)
   if (!Number.isSafeInteger(counterValue) || counterValue >= 99_999) {
     throw new ApiError(409, 'ORDER_COUNTER_EXHAUSTED', 'Dãy mã đơn hàng của cửa hàng đã hết.')
   }
@@ -11603,6 +13680,8 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   return commitGlobalStateCounterDomainCommand(db, actor, current, nextState, {
     name: counterName,
     row: counter,
+    aliasRows: counterRows.filter((row) => String(row.counter_name) !== counterName),
+    nextVersion: Math.max(0, ...counterRows.map((row) => Number(row.version || 0))) + 1,
     value: nextCounterValue,
   }, {
     action: body.type,
@@ -11804,26 +13883,36 @@ const normalizeAssignedSupportTasks = (rawTasks, previousTasks, actor, timestamp
   if (!Array.isArray(rawTasks) || rawTasks.length < 1 || rawTasks.length > 100) {
     throw new ApiError(400, 'SUPPORT_WORK_TASKS_INVALID', 'Danh sách công việc phải có từ 1 đến 100 mục.')
   }
-  const priorById = new Map((Array.isArray(previousTasks) ? previousTasks : [])
-    .map((task) => [String(task.id || ''), task]))
+  const priorById = new Map()
+  for (const task of Array.isArray(previousTasks) ? previousTasks : []) {
+    const idKey = normalizeIdentifierKey(task?.id)
+    if (idKey && priorById.has(idKey)) {
+      throw new ApiError(409, 'SUPPORT_WORK_TASK_IDENTIFIER_COLLISION', 'Lượt giao việc có nhiều công việc dùng cùng một mã nhưng khác chữ hoa/thường.')
+    }
+    if (idKey) priorById.set(idKey, task)
+  }
   const ids = new Set()
   const catalogItemIds = new Set()
   return rawTasks.map((rawTask, index) => {
     if (!isPlainRecord(rawTask)) {
       throw new ApiError(400, 'SUPPORT_WORK_TASK_INVALID', `Công việc thứ ${index + 1} không hợp lệ.`)
     }
-    const id = String(rawTask.id || `swt_${crypto.randomUUID()}`).trim()
-    if (!/^[A-Za-z0-9_-]{1,160}$/u.test(id) || ids.has(id)) {
+    const requestedId = String(rawTask.id || `swt_${crypto.randomUUID()}`).trim()
+    const idKey = normalizeIdentifierKey(requestedId)
+    if (!/^[A-Za-z0-9_-]{1,160}$/u.test(requestedId) || ids.has(idKey)) {
       throw new ApiError(400, 'SUPPORT_WORK_TASK_ID_INVALID', 'Mã công việc phải hợp lệ và không được trùng.')
     }
-    ids.add(id)
+    ids.add(idKey)
+    const prior = priorById.get(idKey)
+    const id = String(prior?.id || requestedId)
     const catalogMetadata = assignedCatalogTaskMetadata(rawTask, activeCatalogSnapshots, catalogScope)
-    if (catalogMetadata && catalogItemIds.has(catalogMetadata.catalogItemId)) {
+    const catalogItemKey = normalizeIdentifierKey(catalogMetadata?.catalogItemId)
+    if (catalogMetadata && catalogItemIds.has(catalogItemKey)) {
       throw new ApiError(400, 'WORK_CATALOG_TASK_DUPLICATE', 'Không được giao trùng một công việc danh mục trong cùng lượt.', {
         catalogItemId: catalogMetadata.catalogItemId,
       })
     }
-    if (catalogMetadata) catalogItemIds.add(catalogMetadata.catalogItemId)
+    if (catalogMetadata) catalogItemIds.add(catalogItemKey)
     const name = String(catalogMetadata?.catalogSnapshot?.name || rawTask.name || rawTask.title || '').trim()
     const description = String(rawTask.description ?? rawTask.detail ?? '').trim()
     const maximumNameLength = catalogMetadata ? 300 : 200
@@ -11833,7 +13922,6 @@ const normalizeAssignedSupportTasks = (rawTasks, previousTasks, actor, timestamp
     if (description.length > 2_000) {
       throw new ApiError(400, 'SUPPORT_WORK_TASK_DESCRIPTION_INVALID', 'Mô tả công việc không được vượt quá 2.000 ký tự.')
     }
-    const prior = priorById.get(id)
     return {
       id,
       name,
@@ -11862,27 +13950,35 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     const date = optionalCalendarDate(payload.date, 'Ngày giao việc')
     if (!date) throw new ApiError(400, 'SUPPORT_WORK_DATE_REQUIRED', 'Ngày giao việc là bắt buộc.')
     const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
-    const employeeId = String(payload.employeeId || '').trim()
+    const requestedEmployeeId = String(payload.employeeId || '').trim()
     const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
       !record.deletedAt
-      && [record.id, record.code, record.employeeId].map(String).includes(employeeId)
+      && employeeIdentifierValues(record).some((identifier) => sameIdentifier(identifier, requestedEmployeeId))
       && employeeUnit(record) === targetUnit
       && !['da nghi viec', 'inactive'].includes(normalizeTextKey(record.status))
     ))
     if (!employee) {
       throw new ApiError(404, 'SUPPORT_EMPLOYEE_NOT_FOUND', 'Không tìm thấy nhân viên nhận việc đang hoạt động.')
     }
+    const employeeId = String(employee.id || employee.code || employee.employeeId || requestedEmployeeId).trim()
     const requestedAssignmentId = String(payload.assignmentId || '').trim()
     if (requestedAssignmentId && !/^[A-Za-z0-9_-]{1,160}$/u.test(requestedAssignmentId)) {
       throw new ApiError(400, 'SUPPORT_WORK_ID_INVALID', 'Mã lượt giao việc không hợp lệ.')
     }
-    const previous = requestedAssignmentId
-      ? assignments.find((record) => String(record.id || '') === requestedAssignmentId && !record.deletedAt)
+    const previousMatch = requestedAssignmentId
+      ? uniqueIdentifierRecordMatch({
+          records: assignments,
+          identifier: requestedAssignmentId,
+          predicate: (record) => !record.deletedAt,
+          collisionCode: 'SUPPORT_WORK_IDENTIFIER_COLLISION',
+          collisionMessage: 'Mã lượt giao việc đang trùng với nhiều bản ghi; không thể cập nhật an toàn.',
+        })
       : null
+    const previous = previousMatch?.record || null
     if (requestedAssignmentId && !previous) {
       throw new ApiError(404, 'SUPPORT_WORK_NOT_FOUND', 'Không tìm thấy lượt giao việc cần cập nhật.')
     }
-    if (previous && (String(previous.employeeId || '') !== employeeId || String(previous.date || '') !== date || String(previous.targetUnit || 'business_support') !== targetUnit)) {
+    if (previous && (!sameIdentifier(previous.employeeId, employeeId) || String(previous.date || '') !== date || String(previous.targetUnit || 'business_support') !== targetUnit)) {
       throw new ApiError(400, 'SUPPORT_WORK_SCOPE_IMMUTABLE', 'Không thể đổi nhân viên hoặc ngày của lượt giao việc đã tạo.')
     }
     if (previous?.submittedAt) {
@@ -11956,7 +14052,7 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     const nextState = {
       ...state,
       supportWorkAssignments: previous
-        ? assignments.map((record) => String(record.id || '') === assignmentId ? assignment : record)
+        ? assignments.map((record) => record === previous ? assignment : record)
         : [assignment, ...assignments],
       notifications: [notification, ...(Array.isArray(state.notifications) ? state.notifications : [])],
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
@@ -11985,16 +14081,24 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
   }
   const actorEmployeeId = String(actor.employee_id || actor.user_id || '')
   const actorEmployee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-    [record.id, record.code, record.employeeId].map(String).includes(actorEmployeeId)
+    employeeIdentifierValues(record).some((identifier) => sameIdentifier(identifier, actorEmployeeId))
   ))
   const actorIsOfficeEmployee = actor.role === 'employee' && employeeUnit(actorEmployee) === 'office'
   if (actor.role !== 'business_support' && !actorIsOfficeEmployee) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên nhận việc được cập nhật tiến độ công việc của mình.')
   }
-  const assignmentId = String(payload.assignmentId || payload.id || '').trim()
-  const previous = assignments.find((record) => String(record.id || '') === assignmentId && !record.deletedAt)
+  const requestedAssignmentId = String(payload.assignmentId || payload.id || '').trim()
+  const previousMatch = uniqueIdentifierRecordMatch({
+    records: assignments,
+    identifier: requestedAssignmentId,
+    predicate: (record) => !record.deletedAt,
+    collisionCode: 'SUPPORT_WORK_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã lượt giao việc đang trùng với nhiều bản ghi; không thể cập nhật an toàn.',
+  })
+  const previous = previousMatch?.record || null
   if (!previous) throw new ApiError(404, 'SUPPORT_WORK_NOT_FOUND', 'Không tìm thấy công việc được giao.')
-  const employeeId = actorEmployeeId
+  const assignmentId = String(previous.id || requestedAssignmentId).trim()
+  const employeeId = String(actorEmployee?.id || actorEmployee?.code || actorEmployee?.employeeId || actorEmployeeId).trim()
   if (!belongsToEmployee(previous, employeeId)) {
     throw new ApiError(403, 'SUPPORT_WORK_FORBIDDEN', 'Bạn chỉ được cập nhật công việc được giao cho chính mình.')
   }
@@ -12011,7 +14115,8 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
   const updateById = new Map()
   for (const update of updates) {
     const id = String(update?.id || '').trim()
-    if (!id || typeof update?.completed !== 'boolean' || updateById.has(id)) {
+    const idKey = normalizeIdentifierKey(id)
+    if (!idKey || typeof update?.completed !== 'boolean' || updateById.has(idKey)) {
       throw new ApiError(400, 'SUPPORT_WORK_PROGRESS_INVALID', 'Mỗi tiến độ phải có mã duy nhất và trạng thái completed dạng boolean.')
     }
     const noteProvided = Object.prototype.hasOwnProperty.call(update, 'note')
@@ -12020,9 +14125,16 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
     if (note.length > 1_000) {
       throw new ApiError(400, 'SUPPORT_WORK_TASK_NOTE_INVALID', 'Ghi chú của từng công việc không được vượt quá 1.000 ký tự.')
     }
-    updateById.set(id, { completed: update.completed, note, noteProvided })
+    updateById.set(idKey, { completed: update.completed, note, noteProvided })
   }
-  const knownIds = new Set((Array.isArray(previous.tasks) ? previous.tasks : []).map((task) => String(task.id || '')))
+  const knownIds = new Set()
+  for (const task of Array.isArray(previous.tasks) ? previous.tasks : []) {
+    const idKey = normalizeIdentifierKey(task?.id)
+    if (idKey && knownIds.has(idKey)) {
+      throw new ApiError(409, 'SUPPORT_WORK_TASK_IDENTIFIER_COLLISION', 'Lượt giao việc có nhiều công việc dùng cùng một mã nhưng khác chữ hoa/thường.')
+    }
+    if (idKey) knownIds.add(idKey)
+  }
   const unknownIds = [...updateById.keys()].filter((id) => !knownIds.has(id))
   if (unknownIds.length) {
     throw new ApiError(400, 'SUPPORT_WORK_TASK_NOT_FOUND', 'Tiến độ chứa công việc không thuộc lượt giao việc này.', { taskIds: unknownIds })
@@ -12030,8 +14142,9 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
   const changedTaskIds = []
   const tasks = (Array.isArray(previous.tasks) ? previous.tasks : []).map((task) => {
     const id = String(task.id || '')
-    if (!updateById.has(id)) return task
-    const update = updateById.get(id)
+    const idKey = normalizeIdentifierKey(id)
+    if (!updateById.has(idKey)) return task
+    const update = updateById.get(idKey)
     const completionChanged = Boolean(task.completed) !== update.completed
     const nextNote = update.noteProvided ? update.note : String(task.employeeNote || '')
     const noteChanged = update.noteProvided && String(task.employeeNote || '') !== nextNote
@@ -12108,7 +14221,7 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
   } : null
   const nextState = {
     ...state,
-    supportWorkAssignments: assignments.map((record) => String(record.id || '') === assignmentId ? assignment : record),
+    supportWorkAssignments: assignments.map((record) => record === previous ? assignment : record),
     notifications: notification
       ? [notification, ...(Array.isArray(state.notifications) ? state.notifications : [])]
       : state.notifications,
@@ -12133,21 +14246,31 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
   const { current, state } = await loadGlobalCommandState(db, body)
   const schedules = Array.isArray(state.supportWorkSchedules) ? state.supportWorkSchedules : []
   const actorEmployeeId = String(actor.employee_id || '').trim()
-  const actorEmployee = actorEmployeeId
-    ? (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-      String(record.id || record.code || '') === actorEmployeeId && !record.deletedAt
-    ))
-    : null
+  const actorEmployee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: actorEmployeeId,
+    predicate: (record) => !record.deletedAt,
+  })?.record || null
+  const canonicalActorEmployeeId = String(
+    actorEmployee?.id || actorEmployee?.code || actorEmployee?.employeeId || actorEmployeeId,
+  ).trim()
   const selfManagingOfficeSchedule = actor.role === 'employee' && employeeUnit(actorEmployee) === 'office'
   if (!['admin', 'business_support'].includes(actor.role) && !selfManagingOfficeSchedule) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc nhân viên văn phòng tự quản lý lịch của mình được thực hiện thao tác này.')
   }
   if (body.type === 'support_schedule.delete') {
     const scheduleId = String(payload.scheduleId || payload.id || '').trim()
-    const previous = schedules.find((record) => String(record.id || '') === scheduleId && !record.deletedAt)
+    const previousMatch = uniqueIdentifierRecordMatch({
+      records: schedules,
+      identifier: scheduleId,
+      predicate: (record) => !record.deletedAt,
+      collisionCode: 'SUPPORT_SCHEDULE_IDENTIFIER_COLLISION',
+      collisionMessage: 'Mã lịch làm việc đang trùng với nhiều bản ghi; không thể xóa an toàn.',
+    })
+    const previous = previousMatch?.record || null
     if (!previous) throw new ApiError(404, 'SUPPORT_SCHEDULE_NOT_FOUND', 'Không tìm thấy lịch làm việc.')
     if (selfManagingOfficeSchedule && (
-      String(previous.employeeId || '') !== actorEmployeeId
+      !sameIdentifier(previous.employeeId, canonicalActorEmployeeId)
       || previous.targetUnit !== 'office'
     )) {
       throw new ApiError(403, 'SUPPORT_SCHEDULE_SELF_ONLY', 'Nhân viên văn phòng chỉ được xóa lịch làm việc của chính mình.')
@@ -12157,7 +14280,7 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     const history = {
       ...previous,
       id: `swsh_${crypto.randomUUID()}`,
-      scheduleId,
+      scheduleId: String(previous.id || scheduleId),
       action: 'Xóa lịch',
       reason,
       recordedAt: commandContext.now,
@@ -12165,14 +14288,14 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     }
     const nextState = {
       ...state,
-      supportWorkSchedules: schedules.filter((record) => String(record.id || '') !== scheduleId),
+      supportWorkSchedules: schedules.filter((record, index) => index !== previousMatch.index),
       supportWorkScheduleHistory: [history, ...(Array.isArray(state.supportWorkScheduleHistory) ? state.supportWorkScheduleHistory : [])],
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
       action: body.type,
       entityType: 'support-work-schedule',
-      entityId: scheduleId,
+      entityId: String(previous.id || scheduleId),
       before: previous,
       after: null,
       metadata: { employeeId: previous.employeeId, targetUnit: previous.targetUnit, date: previous.date, reason },
@@ -12180,19 +14303,20 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     }, commandContext)
   }
   const requestedEmployeeId = String(payload.employeeId || '').trim()
-  if (selfManagingOfficeSchedule && requestedEmployeeId && requestedEmployeeId !== actorEmployeeId) {
+  if (selfManagingOfficeSchedule && requestedEmployeeId && !sameIdentifier(requestedEmployeeId, canonicalActorEmployeeId)) {
     throw new ApiError(403, 'SUPPORT_SCHEDULE_SELF_ONLY', 'Nhân viên văn phòng chỉ được tạo hoặc sửa lịch làm việc của chính mình.')
   }
-  const employeeId = selfManagingOfficeSchedule ? actorEmployeeId : requestedEmployeeId
+  const submittedEmployeeId = selfManagingOfficeSchedule ? canonicalActorEmployeeId : requestedEmployeeId
   const targetUnit = selfManagingOfficeSchedule ? 'office' : payload.targetUnit === 'office' ? 'office' : 'business_support'
   const date = optionalCalendarDate(payload.date, 'Ngày làm việc')
-  if (!employeeId || !date) throw new ApiError(400, 'SUPPORT_SCHEDULE_REQUIRED', 'Cần chọn ngày và nhân viên.')
-  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-    String(record.id || record.code || '') === employeeId
-    && employeeUnit(record) === targetUnit
-    && !record.deletedAt
-  ))
+  if (!submittedEmployeeId || !date) throw new ApiError(400, 'SUPPORT_SCHEDULE_REQUIRED', 'Cần chọn ngày và nhân viên.')
+  const employee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: submittedEmployeeId,
+    predicate: (record) => employeeUnit(record) === targetUnit && !record.deletedAt,
+  })?.record || null
   if (!employee) throw new ApiError(404, 'SUPPORT_EMPLOYEE_NOT_FOUND', `Không tìm thấy ${targetUnit === 'office' ? 'nhân viên Khối văn phòng' : 'Nhân viên hỗ trợ KD'} đang hoạt động.`)
+  const employeeId = String(employee.id || employee.code || employee.employeeId || submittedEmployeeId).trim()
   const start = parseShiftTime(payload.start)
   const end = parseShiftTime(payload.end)
   if (!start || !end || end.minuteOfDay <= start.minuteOfDay) {
@@ -12203,24 +14327,40 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
   const shiftName = String(payload.shiftName || '').trim().slice(0, 80)
   if (partTime && !shiftName) throw new ApiError(400, 'SUPPORT_SCHEDULE_SHIFT_NAME_REQUIRED', 'Nhân viên Part-Time/Thực Tập Sinh cần tên ca làm việc.')
   const requestedScheduleId = String(payload.scheduleId || '').trim()
-  const previous = requestedScheduleId
-    ? schedules.find((record) => String(record.id || '') === requestedScheduleId && !record.deletedAt)
-    : schedules.find((record) => String(record.employeeId || '') === employeeId && String(record.date || '') === date && !record.deletedAt)
+  const previousMatch = requestedScheduleId
+    ? uniqueIdentifierRecordMatch({
+        records: schedules,
+        identifier: requestedScheduleId,
+        predicate: (record) => !record.deletedAt,
+        collisionCode: 'SUPPORT_SCHEDULE_IDENTIFIER_COLLISION',
+        collisionMessage: 'Mã lịch làm việc đang trùng với nhiều bản ghi; không thể sửa an toàn.',
+      })
+    : null
+  const scopedPreviousSchedules = requestedScheduleId ? [] : schedules.filter((record) => (
+    sameIdentifier(record.employeeId, employeeId)
+    && String(record.date || '') === date
+    && !record.deletedAt
+  ))
+  if (!requestedScheduleId && scopedPreviousSchedules.length > 1) {
+    throw new ApiError(409, 'SUPPORT_SCHEDULE_SCOPE_COLLISION', 'Nhân viên có nhiều lịch làm việc trong cùng ngày; cần xử lý dữ liệu trùng trước khi tiếp tục.')
+  }
+  const previous = previousMatch?.record || scopedPreviousSchedules[0] || null
   if (requestedScheduleId && !previous) throw new ApiError(404, 'SUPPORT_SCHEDULE_NOT_FOUND', 'Không tìm thấy lịch làm việc cần sửa.')
   if (selfManagingOfficeSchedule && previous && (
-    String(previous.employeeId || '') !== actorEmployeeId
+    !sameIdentifier(previous.employeeId, canonicalActorEmployeeId)
     || previous.targetUnit !== 'office'
   )) {
     throw new ApiError(403, 'SUPPORT_SCHEDULE_SELF_ONLY', 'Nhân viên văn phòng chỉ được sửa lịch làm việc của chính mình.')
   }
   const targetCollision = schedules.find((record) => (
-    String(record.id || '') !== String(previous?.id || '')
-    && String(record.employeeId || '') === employeeId
+    !sameIdentifier(record.id, previous?.id)
+    && sameIdentifier(record.employeeId, employeeId)
     && String(record.date || '') === date
     && !record.deletedAt
   ))
   if (targetCollision) throw new ApiError(409, 'SUPPORT_SCHEDULE_EXISTS', 'Nhân viên đã có lịch làm việc trong ngày này.')
   const id = previous?.id || `sws_${crypto.randomUUID()}`
+  const previousIndex = previous ? schedules.indexOf(previous) : -1
   const version = Number(previous?.version || 0) + 1
   const schedule = {
     id,
@@ -12264,7 +14404,7 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
   const nextState = {
     ...state,
     supportWorkSchedules: previous
-      ? schedules.map((record) => String(record.id || '') === String(previous.id || '') ? schedule : record)
+      ? schedules.map((record, index) => index === previousIndex ? schedule : record)
       : [schedule, ...schedules],
     supportWorkScheduleHistory: [history, ...(Array.isArray(state.supportWorkScheduleHistory) ? state.supportWorkScheduleHistory : [])],
     notifications: [notification, ...(Array.isArray(state.notifications) ? state.notifications : [])],
@@ -12292,7 +14432,22 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
   const { current, state } = await loadGlobalCommandState(db, body)
   const taskId = String(payload.taskId || payload.id || '').trim()
   const tasks = Array.isArray(state.tasks) ? state.tasks : []
-  const previous = tasks.find((task) => String(task.id || '') === taskId && !task.deletedAt)
+  const matchingTasks = tasks
+    .map((task, index) => ({ task, index }))
+    .filter(({ task }) => sameIdentifier(task.id, taskId) && !task.deletedAt)
+  if (matchingTasks.length > 1) {
+    throw new ApiError(
+      409,
+      'TASK_IDENTIFIER_COLLISION',
+      'Mã công việc đang trùng với nhiều bản ghi; không thể cập nhật an toàn.',
+      {
+        identifier: normalizeIdentifierKey(taskId),
+        conflictingIdentifiers: matchingTasks.map(({ task }) => String(task.id || '')),
+      },
+    )
+  }
+  const previousMatch = matchingTasks[0] || null
+  const previous = previousMatch?.task || null
   if (!previous) throw new ApiError(404, 'TASK_NOT_FOUND', 'Không tìm thấy công việc.')
   const employeeId = String(actor.employee_id || actor.user_id || '')
   const storeId = String(actor.store_id || '')
@@ -12312,12 +14467,16 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
       && !record.checkOutAt
       && !record.checkOut
     ))
-    if (!openAttendance || String(openAttendance.shiftId || openAttendance.shift || '') !== taskShiftId) {
+    if (!openAttendance || !sameIdentifier(openAttendance.shiftId || openAttendance.shift, taskShiftId)) {
       throw new ApiError(409, 'TASK_SHIFT_INVALID', 'Công việc không thuộc ca đang mở của bạn.')
     }
   }
   const completedBy = isPlainRecord(previous.completedBy) ? previous.completedBy : {}
-  if (Boolean(completedBy[employeeId]) === payload.done && Object.hasOwn(completedBy, employeeId)) {
+  if (completedByEmployeeValue(completedBy, employeeId) === true && payload.done === false) {
+    throw new ApiError(409, 'TASK_COMPLETION_IMMUTABLE', 'Công việc đã lưu hoàn thành không thể bỏ chọn hoặc gửi lại.')
+  }
+  if (Boolean(completedByEmployeeValue(completedBy, employeeId)) === payload.done
+    && Object.keys(completedBy).some((candidateId) => sameIdentifier(candidateId, employeeId))) {
     return recordNoopCommand(db, actor, {
       command: body.type,
       version: Number(current.version),
@@ -12327,7 +14486,7 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
   }
   const next = {
     ...previous,
-    completedBy: { ...completedBy, [employeeId]: payload.done },
+    completedBy: withCanonicalIdentifierEntry(completedBy, employeeId, payload.done),
     completionHistory: [
       ...(Array.isArray(previous.completionHistory) ? previous.completionHistory : []),
       {
@@ -12341,27 +14500,53 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
     updatedBy: serverActorSnapshot(actor),
   }
   const completionEvent = {
-    taskId,
+    taskId: previous.id,
     employeeId,
     done: payload.done,
     at: commandContext.now,
     actor: serverActorSnapshot(actor),
   }
-  const taskAssignmentHistory = (Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : [])
+  const assignmentHistories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
+  const matchingAssignmentHistories = previous.assignmentId
+    ? assignmentHistories.filter((assignment) => (
+        sameIdentifier(assignment.assignmentId || assignment.id, previous.assignmentId)
+      ))
+    : []
+  if (matchingAssignmentHistories.length > 1) {
+    throw new ApiError(
+      409,
+      'TASK_ASSIGNMENT_IDENTIFIER_COLLISION',
+      'Lịch sử giao việc có mã lượt giao bị trùng; cần xử lý dữ liệu trước khi cập nhật tiến độ.',
+      {
+        normalizedIdentifier: normalizeIdentifierKey(previous.assignmentId),
+        conflictingIdentifiers: matchingAssignmentHistories.map((assignment) => (
+          String(assignment.assignmentId || assignment.id || '')
+        )),
+      },
+    )
+  }
+  const matchingAssignmentHistory = matchingAssignmentHistories[0] || null
+  const matchingHistoryTask = matchingAssignmentHistory
+    ? uniqueIdentifierRecordMatch({
+        records: matchingAssignmentHistory.tasks,
+        identifier: previous.id,
+        identifierOf: (task) => task?.id,
+        collisionCode: 'TASK_HISTORY_IDENTIFIER_COLLISION',
+        collisionMessage: 'Lịch sử giao việc có mã công việc bị trùng; không thể cập nhật tiến độ an toàn.',
+      })?.record || null
+    : null
+  const taskAssignmentHistory = assignmentHistories
     .map((assignment) => {
-      if (!previous.assignmentId || String(assignment.assignmentId || assignment.id || '') !== String(previous.assignmentId)) {
+       if (!previous.assignmentId || assignment !== matchingAssignmentHistory) {
         return assignment
       }
       return {
         ...assignment,
         tasks: (Array.isArray(assignment.tasks) ? assignment.tasks : []).map((task) => (
-          String(task.id || '') === taskId
+          task === matchingHistoryTask
             ? {
                 ...task,
-                completedBy: {
-                  ...(isPlainRecord(task.completedBy) ? task.completedBy : {}),
-                  [employeeId]: payload.done,
-                },
+                completedBy: withCanonicalIdentifierEntry(task.completedBy, employeeId, payload.done),
               }
             : task
         )),
@@ -12375,17 +14560,17 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
     })
   const nextState = {
     ...state,
-    tasks: tasks.map((task) => String(task.id || '') === taskId ? next : task),
+    tasks: tasks.map((task, index) => index === previousMatch.index ? next : task),
     taskAssignmentHistory,
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
     action: body.type,
     entityType: 'task-completion',
-    entityId: `${taskId}:${employeeId}`,
-    before: { taskId, employeeId, done: Boolean(completedBy[employeeId]) },
-    after: { taskId, employeeId, done: payload.done },
-    metadata: { taskId, employeeId, storeId, assignmentId: previous.assignmentId || null },
+    entityId: `${previous.id}:${employeeId}`,
+    before: { taskId: previous.id, employeeId, done: Boolean(completedByEmployeeValue(completedBy, employeeId)) },
+    after: { taskId: previous.id, employeeId, done: payload.done },
+    metadata: { taskId: previous.id, employeeId, storeId, assignmentId: previous.assignmentId || null },
     response: {
       command: body.type,
       task: { ...next, completedBy: { [employeeId]: payload.done } },
@@ -12400,60 +14585,93 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
   const employeeId = String(actor.employee_id || actor.user_id || '').trim()
-  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-    [record.id, record.code, record.employeeId].map(String).includes(employeeId)
-  ))
+  const employee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: employeeId,
+    predicate: (record) => !record.deletedAt,
+  })?.record || null
   const targetUnit = employee ? employeeUnit(employee) : ''
   if (!employee || !['store', 'office', 'business_support'].includes(targetUnit)) {
     throw new ApiError(403, 'EMPLOYEE_PROFILE_REQUIRED', 'Tài khoản chưa được liên kết với hồ sơ nhân viên hợp lệ.')
   }
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
   const attendanceId = String(payload.attendanceId || '').trim()
-  const openAttendance = attendance.find((record) => (
+  const ownOpenAttendance = attendance.filter((record) => (
     belongsToEmployee(record, employeeId)
-    && (!attendanceId || String(record.id || '') === attendanceId)
     && !record.deletedAt
     && !record.checkOutAt
     && !record.checkOut
   ))
+  const openAttendance = attendanceId
+    ? uniqueIdentifierRecordMatch({
+        records: ownOpenAttendance,
+        identifier: attendanceId,
+        collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+        collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể lưu kết quả công việc an toàn.',
+      })?.record
+    : (ownOpenAttendance.length === 1 ? ownOpenAttendance[0] : null)
+  if (!attendanceId && ownOpenAttendance.length > 1) {
+    throw new ApiError(409, 'ATTENDANCE_AMBIGUOUS', 'Có nhiều ca đang mở; cần chỉ rõ mã chấm công.')
+  }
   if (!openAttendance) {
     throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để lưu kết quả công việc.')
   }
+  const attendanceReferenceMatches = (reference) => mutationIdentifierReferenceMatchesRecord({
+    records: attendance,
+    record: openAttendance,
+    reference,
+    collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+    collisionMessage: 'Mã chấm công tham chiếu trong công việc đang mơ hồ; cần xử lý dữ liệu trùng trước khi lưu tiến độ.',
+  })
   const storeId = String(openAttendance.storeId || '')
   const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
   const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
   const scopedTasks = (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
     if (!taskAppliesToEmployee(task, employeeId, storeId)) return false
     if (String(task.date || task.workDate || '').slice(0, 10) !== date) return false
+    const checklistAttendanceId = String(task.checklistAttendanceId || '').trim()
+    if (checklistAttendanceId && !attendanceReferenceMatches(checklistAttendanceId)) return false
     const taskShiftId = String(task.shiftId || task.shift || '')
-    return !taskShiftId || taskShiftId === shiftId
+    return !taskShiftId || sameIdentifier(taskShiftId, shiftId)
   })
   if (!scopedTasks.length) {
     throw new ApiError(404, 'TASKS_NOT_FOUND', 'Ca đang làm chưa có công việc được giao.')
   }
-  if (!Array.isArray(payload.tasks) || payload.tasks.length < 1 || payload.tasks.length > 100) {
+  if (!Array.isArray(payload.tasks) || payload.tasks.length < 1) {
     throw new ApiError(400, 'TASK_PROGRESS_INVALID', 'Cần gửi trạng thái của toàn bộ công việc trong ca.')
   }
-  const scopedById = new Map(scopedTasks.map((task) => [String(task.id || ''), task]))
+  const scopedById = new Map(scopedTasks.map((task) => [normalizeIdentifierKey(task.id), task]))
+  if (scopedById.size !== scopedTasks.length) {
+    throw new ApiError(409, 'TASK_IDENTIFIER_COLLISION', 'Ca đang làm có nhiều công việc trùng mã; không thể cập nhật an toàn.')
+  }
+  const scopedTaskRecords = new Set(scopedTasks)
   const submittedById = new Map()
   for (const item of payload.tasks) {
     const taskId = String(item?.id || item?.taskId || '').trim()
-    if (!taskId || !scopedById.has(taskId) || submittedById.has(taskId) || typeof item?.completed !== 'boolean') {
+    const taskKey = normalizeIdentifierKey(taskId)
+    if (!taskKey || !scopedById.has(taskKey) || submittedById.has(taskKey) || typeof item?.completed !== 'boolean') {
       throw new ApiError(400, 'TASK_PROGRESS_INVALID', 'Danh sách kết quả có công việc không hợp lệ hoặc không thuộc ca đang làm.')
     }
-    submittedById.set(taskId, item.completed)
+    submittedById.set(taskKey, item.completed)
   }
   if (submittedById.size !== scopedById.size || [...scopedById.keys()].some((taskId) => !submittedById.has(taskId))) {
     throw new ApiError(400, 'TASK_PROGRESS_INCOMPLETE', 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.')
+  }
+  const revertedTask = scopedTasks.find((task) => (
+    completedByEmployeeValue(task.completedBy, employeeId) === true
+    && submittedById.get(normalizeIdentifierKey(task.id)) !== true
+  ))
+  if (revertedTask) {
+    throw new ApiError(409, 'TASK_COMPLETION_IMMUTABLE', 'Công việc đã lưu hoàn thành không thể bỏ chọn hoặc gửi lại.')
   }
   const requestedIncompleteReason = String(payload.incompleteReason || payload.note || '').trim()
   if (requestedIncompleteReason.length > 1_000) {
     throw new ApiError(400, 'INCOMPLETE_TASK_REASON_INVALID', 'Ghi chú chưa hoàn thành không được vượt quá 1.000 ký tự.')
   }
-  const requiredTaskIds = new Set(scopedTasks.filter(workTaskIsRequired).map((task) => String(task.id || '')))
+  const requiredTaskIds = new Set(scopedTasks.filter(workTaskIsRequired).map((task) => normalizeIdentifierKey(task.id)))
   const incompleteTaskIds = [...submittedById]
     .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && !completed)
-    .map(([taskId]) => taskId)
+    .map(([taskId]) => String(scopedById.get(taskId)?.id || taskId))
   if (incompleteTaskIds.length && !requestedIncompleteReason) {
     throw new ApiError(400, 'INCOMPLETE_TASK_REASON_REQUIRED', 'Cần nhập ghi chú khi chưa hoàn thành tất cả công việc.', {
       taskIds: incompleteTaskIds,
@@ -12475,12 +14693,50 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   }
   const submissionFingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
   const histories = Array.isArray(state.taskAssignmentHistory) ? state.taskAssignmentHistory : []
+  const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
+  const assignmentIdKeys = new Set(assignmentIds.map(normalizeIdentifierKey))
+  if (assignmentIdKeys.size !== assignmentIds.length) {
+    throw new ApiError(
+      409,
+      'TASK_ASSIGNMENT_IDENTIFIER_COLLISION',
+      'Ca đang làm có nhiều lượt giao việc trùng mã; không thể cập nhật tiến độ an toàn.',
+      { conflictingIdentifiers: assignmentIds },
+    )
+  }
+  const historyCountsByAssignmentKey = new Map()
+  for (const assignment of histories) {
+    const assignmentId = String(assignment.assignmentId || assignment.id || '').trim()
+    const assignmentKey = normalizeIdentifierKey(assignmentId)
+    if (!assignmentIdKeys.has(assignmentKey)) continue
+    const matches = historyCountsByAssignmentKey.get(assignmentKey) || []
+    matches.push(assignmentId)
+    historyCountsByAssignmentKey.set(assignmentKey, matches)
+  }
+  const collidingAssignmentHistory = [...historyCountsByAssignmentKey]
+    .find(([, identifiers]) => identifiers.length > 1)
+  if (collidingAssignmentHistory) {
+    throw new ApiError(
+      409,
+      'TASK_ASSIGNMENT_IDENTIFIER_COLLISION',
+      'Lịch sử giao việc có mã lượt giao bị trùng; cần xử lý dữ liệu trước khi cập nhật tiến độ.',
+      {
+        normalizedIdentifier: collidingAssignmentHistory[0],
+        conflictingIdentifiers: collidingAssignmentHistory[1],
+      },
+    )
+  }
   const existingSubmission = histories.flatMap((assignment) => (
     Array.isArray(assignment.progressHistory) ? assignment.progressHistory : []
   )).find((event) => (
     event?.action === 'progress-submitted'
-    && String(event.employeeId || '') === employeeId
-    && String(event.attendanceId || '') === String(openAttendance.id || '')
+    && sameIdentifier(event.employeeId, employeeId)
+    && mutationIdentifierReferenceMatchesRecord({
+      records: state.attendance,
+      record: openAttendance,
+      reference: event.attendanceId,
+      collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+      collisionMessage: 'Lịch sử tiến độ đang tham chiếu mơ hồ tới nhiều bản chấm công; không thể ghi nhận an toàn.',
+    })
     && String(event.fingerprint || '') === submissionFingerprint
   ))
   if (existingSubmission) {
@@ -12503,21 +14759,22 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   }
 
   const nextTasks = (Array.isArray(state.tasks) ? state.tasks : []).map((task) => {
-    const taskId = String(task.id || '')
+    if (!scopedTaskRecords.has(task)) return task
+    const taskId = normalizeIdentifierKey(task.id)
     if (!submittedById.has(taskId)) return task
     const completed = submittedById.get(taskId)
     const completedBy = isPlainRecord(task.completedBy) ? task.completedBy : {}
-    if (Boolean(completedBy[employeeId]) === completed && Object.hasOwn(completedBy, employeeId)) return task
+    if (Boolean(completedByEmployeeValue(completedBy, employeeId)) === completed
+      && Object.keys(completedBy).some((candidateId) => sameIdentifier(candidateId, employeeId))) return task
     const event = { done: completed, at: commandContext.now, employeeId, actor: serverActorSnapshot(actor) }
     return {
       ...task,
-      completedBy: { ...completedBy, [employeeId]: completed },
+      completedBy: withCanonicalIdentifierEntry(completedBy, employeeId, completed),
       completionHistory: [...(Array.isArray(task.completionHistory) ? task.completionHistory : []), event],
       updatedAt: commandContext.now,
       updatedBy: serverActorSnapshot(actor),
     }
   })
-  const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
   const assignmentResults = []
   const progressEventBase = {
     action: 'progress-submitted',
@@ -12532,13 +14789,34 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     at: commandContext.now,
     actor: serverActorSnapshot(actor),
   }
+  const historyTaskUpdates = new Map()
+  for (const assignment of histories) {
+    const assignmentId = String(assignment.assignmentId || assignment.id || '')
+    if (!assignmentIdKeys.has(normalizeIdentifierKey(assignmentId))) continue
+    const assignmentTasks = scopedTasks.filter((task) => sameIdentifier(task.assignmentId, assignmentId))
+    const taskUpdates = new Map()
+    for (const scopedTask of assignmentTasks) {
+      const historyTask = uniqueIdentifierRecordMatch({
+        records: assignment.tasks,
+        identifier: scopedTask.id,
+        identifierOf: (task) => task?.id,
+        collisionCode: 'TASK_HISTORY_IDENTIFIER_COLLISION',
+        collisionMessage: 'Lịch sử giao việc có mã công việc bị trùng; không thể cập nhật tiến độ an toàn.',
+      })?.record || null
+      if (historyTask) {
+        taskUpdates.set(historyTask, submittedById.get(normalizeIdentifierKey(scopedTask.id)))
+      }
+    }
+    historyTaskUpdates.set(assignment, taskUpdates)
+  }
   const nextHistories = histories.map((assignment) => {
     const assignmentId = String(assignment.assignmentId || assignment.id || '')
-    if (!assignmentIds.includes(assignmentId)) return assignment
-    const assignmentTasks = scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId)
+    const taskUpdates = historyTaskUpdates.get(assignment)
+    if (!taskUpdates) return assignment
+    const assignmentTasks = scopedTasks.filter((task) => sameIdentifier(task.assignmentId, assignmentId))
     const assignmentRequiredTaskIds = assignmentTasks
       .filter(workTaskIsRequired)
-      .map((task) => String(task.id || ''))
+      .map((task) => normalizeIdentifierKey(task.id))
     const completedRequiredTasks = assignmentRequiredTaskIds
       .filter((taskId) => submittedById.get(taskId) === true)
       .length
@@ -12551,14 +14829,10 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     return {
       ...assignment,
       tasks: (Array.isArray(assignment.tasks) ? assignment.tasks : []).map((task) => {
-        const taskId = String(task.id || '')
-        if (!submittedById.has(taskId)) return task
+        if (!taskUpdates.has(task)) return task
         return {
           ...task,
-          completedBy: {
-            ...(isPlainRecord(task.completedBy) ? task.completedBy : {}),
-            [employeeId]: submittedById.get(taskId),
-          },
+          completedBy: withCanonicalIdentifierEntry(task.completedBy, employeeId, taskUpdates.get(task)),
         }
       }),
       status: requiredComplete ? 'completed' : 'incomplete',
@@ -12566,9 +14840,10 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       completedTasks,
       totalTasks,
       incompleteReason: requiredComplete ? '' : incompleteReason,
-      completionByEmployee: {
-        ...(isPlainRecord(assignment.completionByEmployee) ? assignment.completionByEmployee : {}),
-        [employeeId]: {
+      completionByEmployee: withCanonicalIdentifierEntry(
+        assignment.completionByEmployee,
+        employeeId,
+        {
           completedTasks,
           totalTasks,
           completionRate,
@@ -12578,7 +14853,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
           submittedAt: commandContext.now,
           attendanceId: openAttendance.id,
         },
-      },
+      ),
       progressHistory: [...(Array.isArray(assignment.progressHistory) ? assignment.progressHistory : []), progressEvent],
       submittedAt: commandContext.now,
       updatedAt: commandContext.now,
@@ -12635,8 +14910,8 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     action: body.type,
     entityType: 'task-progress',
     entityId: `${openAttendance.id}:${employeeId}`,
-    before: scopedTasks.map((task) => ({ id: task.id, completed: Boolean(task.completedBy?.[employeeId]) })),
-    after: normalizedStatuses.map(([id, completed]) => ({ id, completed })),
+    before: scopedTasks.map((task) => ({ id: task.id, completed: Boolean(completedByEmployeeValue(task.completedBy, employeeId)) })),
+    after: normalizedStatuses.map(([id, completed]) => ({ id: String(scopedById.get(id)?.id || id), completed })),
     metadata: { storeId, date, shiftId, attendanceId: openAttendance.id, completionRate, incompleteTaskIds },
     response: { command: body.type, ...result, notifications },
   }, commandContext)
@@ -12648,28 +14923,46 @@ const shiftExpenseCommand = async (db, actor, body, commandContext) => {
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
-  const employeeId = String(actor.employee_id || actor.user_id || '').trim()
+  const actorEmployeeId = String(actor.employee_id || actor.user_id || '').trim()
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-    [record.id, record.code, record.employeeId].map(String).includes(employeeId)
+    [record.id, record.code, record.employeeId].some((candidateId) => sameIdentifier(candidateId, actorEmployeeId))
   ))
   if (!employee || employeeUnit(employee) !== 'store') {
     throw new ApiError(403, 'STORE_EMPLOYEE_REQUIRED', 'Chức năng này chỉ dành cho nhân viên cửa hàng.')
   }
+  const employeeId = String(employee.id || employee.code || employee.employeeId || actorEmployeeId).trim()
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
   const attendanceId = String(payload.attendanceId || '').trim()
-  const openAttendance = attendance.find((record) => (
+  const ownOpenAttendance = attendance.filter((record) => (
     belongsToEmployee(record, employeeId)
-    && (!attendanceId || String(record.id || '') === attendanceId)
     && !record.deletedAt
     && !record.checkOutAt
     && !record.checkOut
   ))
+  const openAttendance = attendanceId
+    ? uniqueIdentifierRecordMatch({
+        records: ownOpenAttendance,
+        identifier: attendanceId,
+        collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+        collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể ghi nhận chi phí an toàn.',
+      })?.record
+    : (ownOpenAttendance.length === 1 ? ownOpenAttendance[0] : null)
+  if (!attendanceId && ownOpenAttendance.length > 1) {
+    throw new ApiError(409, 'ATTENDANCE_AMBIGUOUS', 'Có nhiều ca đang mở; cần chỉ rõ mã chấm công.')
+  }
   if (!openAttendance) {
     throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Bạn cần điểm danh và đang trong ca để nhập chi phí.')
   }
-  const storeId = String(openAttendance.storeId || '').trim()
-  requireStore(state, storeId)
-  if (String(actor.store_id || '') && String(actor.store_id || '') !== storeId) {
+  const attendanceReferenceMatches = (reference) => mutationIdentifierReferenceMatchesRecord({
+    records: attendance,
+    record: openAttendance,
+    reference,
+    collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+    collisionMessage: 'Mã chấm công tham chiếu trong chi phí ca đang mơ hồ; cần xử lý dữ liệu trùng trước khi ghi nhận.',
+  })
+  const store = requireStore(state, openAttendance.storeId)
+  const storeId = String(store.id || openAttendance.storeId || '').trim()
+  if (String(actor.store_id || '') && !sameIdentifier(actor.store_id, storeId)) {
     throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Ca đang mở không thuộc cửa hàng hiện tại của tài khoản.')
   }
   const name = String(payload.name || payload.expenseName || '').trim()
@@ -12688,7 +14981,7 @@ const shiftExpenseCommand = async (db, actor, body, commandContext) => {
   const expense = {
     id: expenseId,
     storeId,
-    storeName: (Array.isArray(state.stores) ? state.stores : []).find((store) => String(store.id || '') === storeId)?.name || '',
+    storeName: store.name || '',
     employeeId,
     employeeName: employee.name || employeeId,
     attendanceId: openAttendance.id,
@@ -12727,7 +15020,7 @@ const shiftExpenseCommand = async (db, actor, body, commandContext) => {
   const previousShiftExpense = (Array.isArray(state.expenseEntries) ? state.expenseEntries : [])
     .filter((entry) => (
       entry.recognized !== false
-      && String(entry.attendanceId || '') === String(openAttendance.id || '')
+      && attendanceReferenceMatches(entry.attendanceId)
       && ['shift-expense-item', 'shift-expense'].includes(String(entry.sourceType || ''))
     ))
     .reduce((sum, entry) => safeMoneySum(sum, Number(entry.amount || 0), 'Tổng chi phí trong ca'), 0)
@@ -12740,7 +15033,7 @@ const shiftExpenseCommand = async (db, actor, body, commandContext) => {
   }
   const nextState = {
     ...state,
-    attendance: attendance.map((record) => String(record.id || '') === String(openAttendance.id || '') ? updatedAttendance : record),
+    attendance: attendance.map((record) => record === openAttendance ? updatedAttendance : record),
     expenseEntries: [expense, ...(Array.isArray(state.expenseEntries) ? state.expenseEntries : [])],
     cashTransactions: [transaction, ...(Array.isArray(state.cashTransactions) ? state.cashTransactions : [])],
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
@@ -12847,9 +15140,10 @@ const expenseCommand = async (db, actor, body, commandContext) => {
   const fixedExpenses = Array.isArray(state.fixedExpenses) ? state.fixedExpenses : []
 
   if (operation === 'create') {
-    const storeId = String(payload.storeId || '').trim()
-    assertOperationalStoreAccess(actor, storeId)
-    requireStore(state, storeId)
+    const requestedStoreId = String(payload.storeId || '').trim()
+    assertOperationalStoreAccess(actor, requestedStoreId)
+    const store = requireStore(state, requestedStoreId)
+    const storeId = String(store.id || requestedStoreId).trim()
     const note = String(payload.note ?? payload.description ?? '').trim()
     if (note.length > 1_000) throw new ApiError(400, 'NOTE_TOO_LONG', 'Ghi chú không được vượt quá 1.000 ký tự.')
     const fixedVoucher = fixed
@@ -13134,9 +15428,10 @@ const importVoucherCommand = async (db, actor, body, commandContext) => {
   const actorSnapshot = serverActorSnapshot(actor)
 
   if (operation === 'create') {
-    const storeId = String(payload.storeId || '').trim()
-    assertOperationalStoreAccess(actor, storeId)
-    requireStore(state, storeId)
+    const requestedStoreId = String(payload.storeId || '').trim()
+    assertOperationalStoreAccess(actor, requestedStoreId)
+    const store = requireStore(state, requestedStoreId)
+    const storeId = String(store.id || requestedStoreId).trim()
     const normalizedItems = normalizeImportItems(payload.items)
     const { items, goodsAmount } = normalizedItems
     const shippingAmount = asVnd(payload.shippingAmount ?? normalizedItems.shippingAmount, 'Phí vận chuyển')
@@ -13373,13 +15668,17 @@ const salaryAdjustmentCommand = async (db, actor, body, commandContext) => {
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
-  const employeeId = String(payload.employeeId || '').trim()
-  const employee = (Array.isArray(state.employees) ? state.employees : [])
-    .find((record) => String(record.id || record.code || '') === employeeId && !record.deletedAt)
+  const requestedEmployeeId = String(payload.employeeId || '').trim()
+  const employee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: requestedEmployeeId,
+    predicate: (record) => !record.deletedAt,
+  })?.record || null
   const status = normalizeTextKey(employee?.status)
   if (!employee || ['da nghi viec', 'tam ngung', 'inactive', 'locked'].includes(status)) {
     throw new ApiError(400, 'EMPLOYEE_INVALID', 'Nhân viên không hợp lệ.')
   }
+  const employeeId = String(employee.id || employee.code || employee.employeeId || requestedEmployeeId).trim()
   const storeId = String(employee.storeId || '').trim()
   if (employeeUnit(employee) === 'store_manager') {
     throw new ApiError(400, 'EMPLOYEE_INVALID', 'Quản lý cửa hàng không tham gia bảng lương nhân viên cửa hàng.')
@@ -13444,12 +15743,16 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
   const actorSnapshot = serverActorSnapshot(actor)
 
   if (operation === 'create') {
-    const employeeId = String(payload.employeeId || '').trim()
-    const employee = (Array.isArray(state.employees) ? state.employees : [])
-      .find((record) => String(record.id || record.code || '') === employeeId && !record.deletedAt)
+    const requestedEmployeeId = String(payload.employeeId || '').trim()
+    const employee = uniqueEmployeeIdentifierRecordMatch({
+      records: state.employees,
+      identifier: requestedEmployeeId,
+      predicate: (record) => !record.deletedAt,
+    })?.record || null
     if (!employee || normalizeTextKey(employee.status) === 'da nghi viec') {
       throw new ApiError(400, 'EMPLOYEE_INVALID', 'Nhân viên không hợp lệ.')
     }
+    const employeeId = String(employee.id || employee.code || employee.employeeId || requestedEmployeeId).trim()
     if (employeeUnit(employee) === 'store_manager') {
       throw new ApiError(400, 'EMPLOYEE_INVALID', 'Quản lý cửa hàng không tham gia bảng lương nhân viên cửa hàng.')
     }
@@ -13459,7 +15762,7 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
     requirePayrollUnit(state, storeId)
     assertPayrollNotPaidOrLocked(state, storeId, period)
     const snapshot = await calculatePayrollSnapshot(db, state, storeId, period)
-    const payrollRow = snapshot.rows.find((row) => row.employeeId === employeeId)
+    const payrollRow = snapshot.rows.find((row) => sameIdentifier(row.employeeId, employeeId))
     const available = Number(payrollRow?.remaining || 0)
     const amount = asVnd(payload.amount, 'Số tiền ứng', { positive: true })
     if (amount >= available) {
@@ -13503,9 +15806,24 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
     }, commandContext)
   }
 
-  const advanceId = String(payload.advanceId || payload.id || '').trim()
-  const previous = advances.find((advance) => String(advance.id || '') === advanceId && !advance.deletedAt)
+  const requestedAdvanceId = String(payload.advanceId || payload.id || '').trim()
+  const previousMatch = uniqueIdentifierRecordMatch({
+    records: advances,
+    identifier: requestedAdvanceId,
+    predicate: (advance) => !advance.deletedAt,
+    collisionCode: 'SALARY_ADVANCE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã khoản ứng lương đang trùng với nhiều bản ghi; không thể xử lý an toàn.',
+  })
+  const previous = previousMatch?.record || null
   if (!previous) throw new ApiError(404, 'SALARY_ADVANCE_NOT_FOUND', 'Không tìm thấy khoản ứng lương.')
+  const advanceId = String(previous.id || requestedAdvanceId).trim()
+  const advanceReferenceMatches = (reference) => mutationIdentifierReferenceMatchesRecord({
+    records: advances,
+    record: previous,
+    reference,
+    collisionCode: 'SALARY_ADVANCE_REFERENCE_COLLISION',
+    collisionMessage: 'Bút toán đang tham chiếu mơ hồ tới nhiều khoản ứng lương; không thể xác nhận an toàn.',
+  })
   assertOperationalStoreAccess(actor, previous.storeId)
   if (previous.status !== 'Mới tạo') {
     throw new ApiError(409, 'SALARY_ADVANCE_IMMUTABLE', 'Chỉ khoản ứng mới tạo mới được thay đổi hoặc xác nhận.')
@@ -13513,7 +15831,7 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
   const period = asMonth(previous.period)
   assertPayrollNotPaidOrLocked(state, previous.storeId, period)
   const snapshot = await calculatePayrollSnapshot(db, state, previous.storeId, period)
-  const payrollRow = snapshot.rows.find((row) => row.employeeId === String(previous.employeeId))
+  const payrollRow = snapshot.rows.find((row) => sameIdentifier(row.employeeId, previous.employeeId))
   const available = Number(payrollRow?.remaining || 0)
 
   if (operation === 'update') {
@@ -13547,7 +15865,7 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
     }
     const nextState = {
       ...state,
-      salaryAdvances: advances.map((advance) => String(advance.id || '') === advanceId ? next : advance),
+      salaryAdvances: advances.map((advance, index) => index === previousMatch.index ? next : advance),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -13567,8 +15885,11 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
   }
   const expenseEntries = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
   const cashTransactions = Array.isArray(state.cashTransactions) ? state.cashTransactions : []
-  if (expenseEntries.some((entry) => sourceMatch(entry, 'salary-advance', advanceId))
-    || cashTransactions.some((entry) => sourceMatch(entry, 'salary-advance', advanceId))) {
+  if (expenseEntries.some((entry) => (
+    String(entry?.sourceType || '') === 'salary-advance' && advanceReferenceMatches(entry?.sourceId)
+  )) || cashTransactions.some((entry) => (
+    String(entry?.sourceType || '') === 'salary-advance' && advanceReferenceMatches(entry?.sourceId)
+  ))) {
     throw new ApiError(409, 'SALARY_ADVANCE_FINANCE_EXISTS', 'Khoản ứng đã có bút toán tài chính.')
   }
   const confirmed = {
@@ -13614,7 +15935,7 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
   }
   const nextState = {
     ...state,
-    salaryAdvances: advances.map((advance) => String(advance.id || '') === advanceId ? confirmed : advance),
+    salaryAdvances: advances.map((advance, index) => index === previousMatch.index ? confirmed : advance),
     payrollPeriods: invalidateClosedPayrollPeriods(
       state,
       { storeId: previous.storeId, period },
@@ -13638,7 +15959,8 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
 
 const requireActivePhysicalStore = (state, storeId) => {
   const normalizedStoreId = String(storeId || '').trim()
-  if (!normalizedStoreId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID, 'ADMIN', 'SYSTEM'].includes(normalizedStoreId)) {
+  if (!normalizedStoreId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID, 'ADMIN', 'SYSTEM']
+    .some((identifier) => sameIdentifier(identifier, normalizedStoreId))) {
     throw new ApiError(400, 'STORE_INVALID', 'Cần chọn cửa hàng vật lý đang hoạt động.')
   }
   const store = requireStore(state, normalizedStoreId)
@@ -13654,8 +15976,8 @@ const storeSalaryConfigPeriods = (state, storeId, employeeId, effectiveFrom) => 
   const configs = (Array.isArray(state.storeEmployeeSalaryConfigs) ? state.storeEmployeeSalaryConfigs : [])
     .filter((config) => (
       !config.deletedAt
-      && String(config.storeId || '') === storeId
-      && String(config.employeeId || '') === employeeId
+      && sameIdentifier(config.storeId, storeId)
+      && sameIdentifier(config.employeeId, employeeId)
     ))
   const nextEffectiveFrom = configs
     .map((config) => String(config.effectiveFrom || ''))
@@ -13663,11 +15985,115 @@ const storeSalaryConfigPeriods = (state, storeId, employeeId, effectiveFrom) => 
     .sort()[0] || null
   return (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : [])
     .filter((payroll) => (
-      String(payroll.storeId || '') === storeId
+      !payroll.supersededAt
+      &&
+      sameIdentifier(payroll.storeId, storeId)
       && /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(String(payroll.period || ''))
       && String(payroll.period) >= effectiveFrom
       && (!nextEffectiveFrom || String(payroll.period) < nextEffectiveFrom)
     ))
+}
+
+const storeSalaryConfigCollisionRepairCommand = async (db, actor, body, commandContext) => {
+  assertAdmin(actor, 'Chỉ Admin được xử lý cấu hình lương trùng mã.')
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const requestedStoreId = String(payload.storeId || '').trim()
+  const store = requireActivePhysicalStore(state, requestedStoreId)
+  const storeId = String(store.id || requestedStoreId).trim()
+  const requestedEmployeeId = String(payload.employeeId || '').trim()
+  const employeeMatch = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: requestedEmployeeId,
+    predicate: (record) => (
+      !record.deletedAt
+      && sameIdentifier(record.storeId, storeId)
+      && employeeUnit(record) === 'store'
+    ),
+  })
+  if (!employeeMatch?.record) {
+    throw new ApiError(404, 'STORE_EMPLOYEE_NOT_FOUND', 'Không tìm thấy nhân viên cửa hàng đang hoạt động.')
+  }
+  const employeeId = String(
+    employeeMatch.record.id || employeeMatch.record.code || employeeMatch.record.employeeId || requestedEmployeeId,
+  ).trim()
+  const effectiveFrom = asMonth(payload.effectiveFrom, 'Tháng áp dụng')
+  const reason = String(payload.reason || '').trim()
+  if (!reason || reason.length > 500) {
+    throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do xử lý dữ liệu trùng từ 1 đến 500 ký tự.')
+  }
+  const configs = Array.isArray(state.storeEmployeeSalaryConfigs) ? state.storeEmployeeSalaryConfigs : []
+  const matchingConfigs = configs.filter((config) => (
+    !config.deletedAt
+    && sameIdentifier(config.storeId, storeId)
+    && sameIdentifier(config.employeeId, employeeId)
+    && String(config.effectiveFrom || '') === effectiveFrom
+  ))
+  if (matchingConfigs.length < 2) {
+    throw new ApiError(409, 'STORE_SALARY_CONFIG_COLLISION_NOT_FOUND', 'Không còn nhiều cấu hình lương trùng trong phạm vi đã chọn.')
+  }
+  const keepConfigId = String(payload.keepConfigId || '').trim()
+  const keepMatch = uniqueIdentifierRecordMatch({
+    records: matchingConfigs,
+    identifier: keepConfigId,
+    collisionCode: 'KEEP_CONFIG_AMBIGUOUS',
+    collisionMessage: 'Mã cấu hình cần giữ đang trùng; không thể chọn bản ghi an toàn.',
+  })
+  const keep = keepMatch?.record || null
+  if (!keep) {
+    throw new ApiError(400, 'KEEP_CONFIG_INVALID', 'Cần chọn chính xác một cấu hình trong nhóm trùng để giữ lại.')
+  }
+  const canonicalKeepConfigId = String(keep.id || '').trim()
+  const impactedPayrolls = storeSalaryConfigPeriods(state, storeId, employeeId, effectiveFrom)
+  for (const payroll of impactedPayrolls) {
+    assertPayrollNotPaidOrLocked(state, storeId, String(payroll.period || ''))
+  }
+  const actorSnapshot = serverActorSnapshot(actor)
+  const repairedConfigs = matchingConfigs.map((config) => (
+    config === keep
+      ? {
+          ...config,
+          storeId,
+          employeeId,
+          updatedAt: commandContext.now,
+          updatedBy: actorSnapshot,
+          version: Number(config.version || 1) + 1,
+        }
+      : {
+          ...config,
+          active: false,
+          status: 'RETIRED_COLLISION',
+          deletedAt: commandContext.now,
+          deletedBy: actorSnapshot,
+          collisionResolvedIntoId: canonicalKeepConfigId,
+          collisionResolutionReason: reason,
+          updatedAt: commandContext.now,
+          updatedBy: actorSnapshot,
+          version: Number(config.version || 1) + 1,
+        }
+  ))
+  const repairedByOriginal = new Map(matchingConfigs.map((config, index) => [config, repairedConfigs[index]]))
+  const repairedKeep = repairedByOriginal.get(keep)
+  const payrollTargets = impactedPayrolls.map((payroll) => ({ storeId, period: String(payroll.period || '') }))
+  const nextState = {
+    ...state,
+    storeEmployeeSalaryConfigs: configs.map((config) => repairedByOriginal.get(config) || config),
+    payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'store-employee-salary-config-collision',
+    entityId: canonicalKeepConfigId,
+    before: matchingConfigs,
+    after: repairedConfigs,
+    metadata: { storeId, employeeId, effectiveFrom, keepConfigId: canonicalKeepConfigId, reason, payrollTargets },
+    response: {
+      command: body.type,
+      salaryConfig: repairedKeep,
+      retiredConfigIds: matchingConfigs.filter((config) => config !== keep).map((config) => config.id),
+    },
+  }, commandContext)
 }
 
 const storeSalaryConfigCommand = async (db, actor, body, commandContext) => {
@@ -13677,23 +16103,25 @@ const storeSalaryConfigCommand = async (db, actor, body, commandContext) => {
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body)
-  const storeId = String(payload.storeId || '').trim()
-  assertOperationalStoreAccess(actor, storeId)
-  const store = requireActivePhysicalStore(state, storeId)
+  const requestedStoreId = String(payload.storeId || '').trim()
+  assertOperationalStoreAccess(actor, requestedStoreId)
+  const store = requireActivePhysicalStore(state, requestedStoreId)
+  const storeId = String(store.id || requestedStoreId).trim()
   if (classifyStorePayrollPolicy(store) === STORE_PAYROLL_POLICY.UNSUPPORTED) {
     throw new ApiError(409, 'STORE_SALARY_POLICY_UNSUPPORTED', 'Cửa hàng chưa thuộc nhóm chính sách lương được hỗ trợ.')
   }
-  const employeeId = String(payload.employeeId || '').trim()
+  const requestedEmployeeId = String(payload.employeeId || '').trim()
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
     !record.deletedAt
-    && String(record.id || record.code || record.employeeId || '') === employeeId
-    && String(record.storeId || '') === storeId
+    && sameIdentifier(record.id || record.code || record.employeeId, requestedEmployeeId)
+    && sameIdentifier(record.storeId, storeId)
     && employeeUnit(record) === 'store'
     && !['da nghi viec', 'tam ngung', 'inactive', 'locked'].includes(normalizeTextKey(record.status))
   ))
   if (!employee) {
     throw new ApiError(404, 'STORE_EMPLOYEE_NOT_FOUND', 'Không tìm thấy nhân viên cửa hàng đang hoạt động.')
   }
+  const employeeId = String(employee.id || employee.code || employee.employeeId || requestedEmployeeId).trim()
   if (normalizeStoreEmploymentType(employee.employmentType) !== STORE_EMPLOYMENT_TYPE.FULL_TIME) {
     throw new ApiError(409, 'FULL_TIME_EMPLOYEE_REQUIRED', 'Cấu hình lương này chỉ áp dụng cho nhân viên Full-Time.')
   }
@@ -13713,12 +16141,26 @@ const storeSalaryConfigCommand = async (db, actor, body, commandContext) => {
   )
   const effectiveFrom = asMonth(payload.effectiveFrom, 'Tháng áp dụng')
   const configs = Array.isArray(state.storeEmployeeSalaryConfigs) ? state.storeEmployeeSalaryConfigs : []
-  const existing = configs.find((config) => (
+  const matchingConfigs = configs.filter((config) => (
     !config.deletedAt
-    && String(config.storeId || '') === storeId
-    && String(config.employeeId || '') === employeeId
+    && sameIdentifier(config.storeId, storeId)
+    && sameIdentifier(config.employeeId, employeeId)
     && String(config.effectiveFrom || '') === effectiveFrom
   ))
+  if (matchingConfigs.length > 1) {
+    throw new ApiError(
+      409,
+      'STORE_SALARY_CONFIG_IDENTIFIER_COLLISION',
+      'Nhân viên đang có nhiều cấu hình lương cùng kỳ với mã chỉ khác chữ hoa/thường; cần xử lý dữ liệu trước khi tính hoặc sửa lương.',
+      {
+        storeId,
+        employeeId,
+        effectiveFrom,
+        conflictingConfigIds: matchingConfigs.map((config) => String(config.id || '')),
+      },
+    )
+  }
+  const existing = matchingConfigs[0] || null
   if (existing) expectedEntityVersion(payload, existing)
   const impactedPayrolls = storeSalaryConfigPeriods(state, storeId, employeeId, effectiveFrom)
   for (const payroll of impactedPayrolls) {
@@ -13776,12 +16218,13 @@ const storeSalaryConfigCommand = async (db, actor, body, commandContext) => {
 }
 
 const compensationEmployee = (state, employeeId) => {
-  const normalized = String(employeeId || '').trim()
-  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-    !record.deletedAt
-    && [record.id, record.code, record.employeeId].map(String).includes(normalized)
-    && normalizeTextKey(record.status) !== 'da nghi viec'
-  ))
+  const employee = uniqueEmployeeIdentifierRecordMatch({
+    records: state.employees,
+    identifier: employeeId,
+    predicate: (record) => (
+      !record.deletedAt && normalizeTextKey(record.status) !== 'da nghi viec'
+    ),
+  })?.record
   if (!employee) throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Không tìm thấy nhân viên đang hoạt động.')
   return employee
 }
@@ -13821,10 +16264,11 @@ const compensationEntryCommand = async (db, actor, body, commandContext) => {
     }
     const employee = compensationEmployee(state, payload.employeeId)
     const employeeId = String(employee.id || employee.code || employee.employeeId)
-    const storeId = String(payload.storeId || employee.storeId || '').trim()
-    assertOperationalStoreAccess(actor, storeId)
-    requireActivePhysicalStore(state, storeId)
-    if (String(employee.storeId || '') !== storeId) {
+    const requestedStoreId = String(payload.storeId || employee.storeId || '').trim()
+    assertOperationalStoreAccess(actor, requestedStoreId)
+    const store = requireActivePhysicalStore(state, requestedStoreId)
+    const storeId = String(store.id || requestedStoreId).trim()
+    if (!sameIdentifier(employee.storeId, storeId)) {
       throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng đã chọn.')
     }
     const targetUnit = String(payload.targetUnit || 'store_manager').trim()
@@ -14003,12 +16447,13 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
   const actorSnapshot = serverActorSnapshot(actor)
 
   if (operation === 'create') {
+    assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
     const item = normalizeWorkCatalogPayload(payload, null, actorSnapshot, commandContext.now)
     assertWorkCatalogScopeAccess(state, actor, item)
-    if (records.some((record) => String(record.id || '') === item.id
+    if (records.some((record) => sameIdentifier(record.id, item.id)
       || (String(record.targetGroup || '') === item.targetGroup
         && String(record.kind || '') === item.kind
-        && String(record.code || '').toLowerCase() === item.code))) {
+        && sameIdentifier(record.code, item.code)))) {
       throw new ApiError(409, 'WORK_CATALOG_DUPLICATE', 'Mã danh mục đã tồn tại; hãy sửa hoặc khôi phục mục hiện có.')
     }
     const nextState = {
@@ -14029,7 +16474,46 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
   }
 
   const itemId = String(payload.id || payload.itemId || '').trim()
-  const previous = records.find((record) => String(record.id || '') === itemId)
+  const activeIdentifierMatches = activeWorkCatalogIdentifierMatches(state, itemId)
+  const repairingIdentifierCollision = activeIdentifierMatches.length > 1
+  let previousMatch
+  if (repairingIdentifierCollision) {
+    if (operation !== 'delete') assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+    assertAdmin(actor, 'Chỉ Admin được xử lý mã danh mục bị trùng chữ hoa/thường.')
+    const exactMatches = activeIdentifierMatches.filter(({ record }) => String(record.id || '') === itemId)
+    if (exactMatches.length !== 1) {
+      throw new ApiError(
+        409,
+        'WORK_CATALOG_REPAIR_TARGET_AMBIGUOUS',
+        'Cần gửi đúng mã có phân biệt chữ hoa/thường để ngừng sử dụng bản ghi bị trùng.',
+        {
+          identifier: normalizeIdentifierKey(itemId),
+          conflictingIdentifiers: activeIdentifierMatches.map(({ record }) => String(record.id || '')),
+        },
+      )
+    }
+    previousMatch = exactMatches[0]
+  } else {
+    assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
+    const identifierMatches = records
+      .map((record, index) => ({ record, index }))
+      .filter(({ record }) => sameIdentifier(record.id, itemId))
+    const exactMatches = identifierMatches.filter(({ record }) => String(record.id || '') === itemId)
+    if (exactMatches.length === 1) previousMatch = exactMatches[0]
+    else if (identifierMatches.length === 1) previousMatch = identifierMatches[0]
+    else if (identifierMatches.length > 1) {
+      throw new ApiError(
+        409,
+        'WORK_CATALOG_REPAIR_TARGET_AMBIGUOUS',
+        'Cần gửi đúng mã có phân biệt chữ hoa/thường để chọn bản ghi danh mục.',
+        {
+          identifier: normalizeIdentifierKey(itemId),
+          conflictingIdentifiers: identifierMatches.map(({ record }) => String(record.id || '')),
+        },
+      )
+    } else previousMatch = null
+  }
+  const previous = previousMatch?.record || null
   if (!previous) throw new ApiError(404, 'WORK_CATALOG_NOT_FOUND', 'Không tìm thấy mục công việc hoặc vi phạm.')
   expectedEntityVersion(payload, previous)
   assertWorkCatalogScopeAccess(state, actor, previous)
@@ -14065,6 +16549,18 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
       deletedBy: null,
       deleteReason: null,
     }, previous, actorSnapshot, commandContext.now)
+    if (records.some((record, index) => (
+      index !== previousMatch.index
+      && !record.deletedAt
+      && record.active !== false
+      && sameIdentifier(record.id, previous.id)
+    ))) {
+      throw new ApiError(
+        409,
+        'WORK_CATALOG_DUPLICATE',
+        'Không thể khôi phục vì đang có một mục khác sử dụng cùng mã danh mục.',
+      )
+    }
   } else {
     if (previous.deletedAt) {
       throw new ApiError(409, 'WORK_CATALOG_DELETED', 'Mục danh mục đã ngừng sử dụng; hãy khôi phục trước khi sửa.')
@@ -14086,16 +16582,21 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
 
   const nextState = {
     ...state,
-    workCatalogItems: records.map((record) => String(record.id || '') === itemId ? next : record),
+    workCatalogItems: records.map((record, index) => index === previousMatch.index ? next : record),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
     action: body.type,
     entityType: 'work-catalog-item',
-    entityId: itemId,
+    entityId: previous.id,
     before: previous,
     after: next,
-    metadata: { targetGroup: next.targetGroup, kind: next.kind, storeId: next.storeId || null },
+    metadata: {
+      targetGroup: next.targetGroup,
+      kind: next.kind,
+      storeId: next.storeId || null,
+      identifierCollisionRepair: repairingIdentifierCollision,
+    },
     response: { command: body.type, item: next },
   }, commandContext)
 }
@@ -14108,17 +16609,25 @@ const canonicalViolationPolicy = (targetUnit, policyCode) => {
 }
 
 const rewardCatalogSnapshotForAttendance = (attendance, requestedCatalogItemId) => {
-  const catalogItemId = String(requestedCatalogItemId || '').trim()
-  if (!catalogItemId) throw new ApiError(400, 'WORK_REWARD_CATALOG_REQUIRED', 'Cần chọn công việc tính thưởng.')
+  const requestedIdentifier = String(requestedCatalogItemId || '').trim()
+  if (!requestedIdentifier) throw new ApiError(400, 'WORK_REWARD_CATALOG_REQUIRED', 'Cần chọn công việc tính thưởng.')
   const checklistTasks = Array.isArray(attendance?.checklistSnapshot?.tasks)
     ? attendance.checklistSnapshot.tasks
     : []
-  const task = checklistTasks.find((record) => String(
-    record?.catalogItemId || record?.checklistTaskId || record?.id || '',
-  ) === catalogItemId)
+  const taskMatch = uniqueIdentifierRecordMatch({
+    records: checklistTasks,
+    identifier: requestedIdentifier,
+    identifierOf: (record) => record?.catalogItemId || record?.checklistTaskId || record?.id,
+    collisionCode: 'WORK_REWARD_CATALOG_COLLISION',
+    collisionMessage: 'Snapshot ca làm có nhiều công việc dùng cùng một mã; không thể ghi nhận thưởng an toàn.',
+  })
+  const task = taskMatch?.record || null
   if (!task) {
     throw new ApiError(400, 'WORK_REWARD_CATALOG_INVALID', 'Công việc không thuộc danh mục đã chốt cho ca làm việc này.')
   }
+  const catalogItemId = String(
+    task.catalogItemId || task.checklistTaskId || task.id || requestedIdentifier,
+  ).trim()
   const embedded = isPlainRecord(task.catalogSnapshot) ? task.catalogSnapshot : {}
   const kind = String(task.kind || task.catalogKind || embedded.kind || '').trim().toUpperCase()
   if (kind !== WORK_CATALOG_KIND.REWARD_TASK) {
@@ -14156,8 +16665,8 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được tự ghi nhận công việc tính thưởng của mình.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  if (typeof payload.checked !== 'boolean') {
-    throw new ApiError(400, 'WORK_REWARD_CHECKED_INVALID', 'Trạng thái công việc tính thưởng phải là true hoặc false.')
+  if (payload.checked !== true) {
+    throw new ApiError(400, 'WORK_REWARD_CHECKED_INVALID', 'Công việc tính thưởng chỉ được tick và lưu một lần; không thể bỏ chọn sau khi đã ghi nhận.')
   }
   const { current, state } = await loadGlobalCommandState(db, body)
   const actorEmployeeId = String(actor.employee_id || actor.user_id || '').trim()
@@ -14170,14 +16679,19 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
   if (!['store', 'office', 'business_support'].includes(targetUnit) || !actorCanClaimUnit) {
     throw new ApiError(403, 'WORK_REWARD_UNIT_FORBIDDEN', 'Tài khoản không thuộc nhóm nhân viên phù hợp để ghi nhận công việc tính thưởng.')
   }
-  const attendanceId = String(payload.attendanceId || '').trim()
-  if (!attendanceId) throw new ApiError(400, 'ATTENDANCE_REQUIRED', 'Cần chọn ca chấm công để ghi nhận thưởng.')
-  const attendance = (Array.isArray(state.attendance) ? state.attendance : []).find((record) => (
-    !record.deletedAt
-    && String(record.id || '') === attendanceId
-    && belongsToEmployee(record, employeeId)
-  ))
+  const requestedAttendanceId = String(payload.attendanceId || '').trim()
+  if (!requestedAttendanceId) throw new ApiError(400, 'ATTENDANCE_REQUIRED', 'Cần chọn ca chấm công để ghi nhận thưởng.')
+  const attendanceMatch = uniqueIdentifierRecordMatch({
+    records: state.attendance,
+    identifier: requestedAttendanceId,
+    identifierOf: (record) => record?.id,
+    predicate: (record) => !record?.deletedAt && belongsToEmployee(record, employeeId),
+    collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể ghi nhận thưởng an toàn.',
+  })
+  const attendance = attendanceMatch?.record || null
   if (!attendance) throw new ApiError(404, 'ATTENDANCE_NOT_FOUND', 'Không tìm thấy ca chấm công của nhân viên.')
+  const attendanceId = String(attendance.id || requestedAttendanceId).trim()
   if (attendance.checkOutAt || attendance.checkOut) {
     throw new ApiError(409, 'OPEN_ATTENDANCE_REQUIRED', 'Chỉ được thay đổi công việc tính thưởng khi ca chấm công còn mở.')
   }
@@ -14210,8 +16724,20 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
   }
   const progressRecords = Array.isArray(state.workCatalogProgress) ? state.workCatalogProgress : []
   const compensationEntries = Array.isArray(state.compensationEntries) ? state.compensationEntries : []
-  const previous = progressRecords.find((record) => String(record.id || '') === progressId) || null
-  const previousEntry = compensationEntries.find((record) => String(record.id || '') === entryId) || null
+  const previousMatch = strictUniqueIdentifierRecordMatch({
+    records: progressRecords,
+    identifier: progressId,
+    collisionCode: 'WORK_REWARD_OCCURRENCE_COLLISION',
+    collisionMessage: 'Lần ghi nhận thưởng có nhiều bản ghi trùng định danh; cần xử lý dữ liệu trước khi ghi nhận tiếp.',
+  })
+  const previousEntryMatch = strictUniqueIdentifierRecordMatch({
+    records: compensationEntries,
+    identifier: entryId,
+    collisionCode: 'WORK_REWARD_ENTRY_COLLISION',
+    collisionMessage: 'Khoản thưởng có nhiều bản ghi trùng định danh; cần xử lý dữ liệu trước khi ghi nhận tiếp.',
+  })
+  const previous = previousMatch?.record || null
+  const previousEntry = previousEntryMatch?.record || null
   if (previous) {
     expectedEntityVersion({
       expectedVersion: payload.expectedEntityVersion ?? payload.expectedVersion,
@@ -14226,11 +16752,16 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
     const milestoneProgramId = catalogSnapshot.milestoneProgramId || 'team-work-reward'
     const milestoneId = catalogSnapshot.milestoneId || catalogSnapshot.code
     const teamClaimId = `work-catalog-team-claim:v1:${encodeURIComponent(storeId)}:${workDate}:${encodeURIComponent(milestoneProgramId)}:${encodeURIComponent(milestoneId)}`
-    const previousClaim = teamRewardClaims.find((record) => String(record.id || '') === teamClaimId) || null
+    const previousClaimMatch = strictUniqueIdentifierRecordMatch({
+      records: teamRewardClaims,
+      identifier: teamClaimId,
+      collisionCode: 'TEAM_REWARD_OCCURRENCE_COLLISION',
+      collisionMessage: 'Mốc thưởng team có nhiều bản ghi trùng định danh; cần xử lý dữ liệu trước khi ghi nhận tiếp.',
+    })
+    const previousClaim = previousClaimMatch?.record || null
     const claimActive = previousClaim && !previousClaim.deletedAt && !previousClaim.voidedAt
       && ['pending', 'approved'].includes(normalizeTextKey(previousClaim.status))
-    if ((payload.checked && previous?.checked === true && claimActive)
-      || (!payload.checked && (!previous || !claimActive))) {
+    if (previous?.checked === true && claimActive) {
       return recordNoopCommand(db, actor, {
         command: body.type,
         version: Number(current.version),
@@ -14240,17 +16771,24 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
         existing: true,
       }, 200, commandContext)
     }
-    const competingClaim = payload.checked
-      ? teamRewardClaims.find((record) => (
-        String(record.storeId || '') === storeId
+    if (previous) {
+      throw new ApiError(409, 'WORK_REWARD_ALREADY_RECORDED', 'Công việc tính thưởng này đã được ghi nhận trước đó và không thể tick lại.')
+    }
+    const competingClaims = payload.checked
+      ? teamRewardClaims.filter((record) => (
+        sameIdentifier(record.storeId, storeId)
         && String(record.businessDate || record.workDate || '') === workDate
-        && String(record.milestoneProgramId || '') === milestoneProgramId
+        && sameIdentifier(record.milestoneProgramId, milestoneProgramId)
         && !record.deletedAt
         && !record.voidedAt
         && ['pending', 'approved'].includes(normalizeTextKey(record.status))
-        && String(record.id || '') !== teamClaimId
-      )) || null
-      : null
+        && record !== previousClaim
+      ))
+      : []
+    if (competingClaims.length > 1) {
+      throw new ApiError(409, 'TEAM_REWARD_ACTIVE_CLAIM_COLLISION', 'Có nhiều mốc thưởng team đang hiệu lực trong cùng ngày; cần đối soát trước khi ghi nhận tiếp.')
+    }
+    const competingClaim = competingClaims[0] || null
     if (payload.checked) {
       if (competingClaim?.status && normalizeTextKey(competingClaim.status) === 'approved') {
         throw new ApiError(409, 'TEAM_REWARD_ALREADY_APPROVED', 'Mốc thưởng team đã được duyệt và không thể ghi nhận thêm.')
@@ -14258,6 +16796,17 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
       if (competingClaim && Number(competingClaim.amountVnd || 0) >= catalogSnapshot.amountVnd) {
         throw new ApiError(409, 'TEAM_REWARD_HIGHER_MILESTONE_EXISTS', 'Mốc thưởng team cao hơn hoặc tương đương đã được gửi trong ngày.')
       }
+    }
+    const competingProgressMatch = competingClaim && Number(competingClaim.amountVnd || 0) < catalogSnapshot.amountVnd
+      ? uniqueIdentifierRecordMatch({
+          records: progressRecords,
+          identifier: competingClaim.rewardProgressId,
+          collisionCode: 'TEAM_REWARD_PROGRESS_REFERENCE_COLLISION',
+          collisionMessage: 'Mã tiến độ tham chiếu của mốc thưởng team đang mơ hồ; cần xử lý dữ liệu trùng trước khi thay mốc.',
+        })
+      : null
+    if (competingClaim && Number(competingClaim.amountVnd || 0) < catalogSnapshot.amountVnd && !competingProgressMatch) {
+      throw new ApiError(409, 'TEAM_REWARD_PROGRESS_REFERENCE_MISSING', 'Mốc thưởng team cũ không còn bản ghi tiến độ tương ứng; cần đối soát trước khi thay mốc.')
     }
     const reward = {
       ...(previous || {}),
@@ -14324,9 +16873,9 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
     const nextState = {
       ...state,
       workCatalogProgress: [
-        ...progressRecords.map((record) => {
-          if (String(record.id || '') === progressId) return reward
-          if (competingClaim && String(record.id || '') === String(competingClaim.rewardProgressId || '') && Number(competingClaim.amountVnd || 0) < catalogSnapshot.amountVnd) {
+        ...progressRecords.map((record, index) => {
+          if (index === previousMatch?.index) return reward
+          if (competingProgressMatch && record === competingProgressMatch.record) {
             return { ...record, checked: false, status: 'VOID', voidedAt: commandContext.now, voidReason: 'Đã thay bằng mốc thưởng team cao hơn.', updatedAt: commandContext.now, updatedBy: actorSnapshot }
           }
           return record
@@ -14334,9 +16883,9 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
         ...(previous ? [] : [reward]),
       ],
       teamRewardClaims: [
-        ...teamRewardClaims.map((record) => {
-          if (String(record.id || '') === teamClaimId) return teamClaim
-          if (competingClaim && String(record.id || '') === String(competingClaim.id || '') && Number(competingClaim.amountVnd || 0) < catalogSnapshot.amountVnd) {
+        ...teamRewardClaims.map((record, index) => {
+          if (index === previousClaimMatch?.index) return teamClaim
+          if (competingClaim && record === competingClaim && Number(competingClaim.amountVnd || 0) < catalogSnapshot.amountVnd) {
             return { ...record, status: 'SUPERSEDED', supersededAt: commandContext.now, updatedAt: commandContext.now, updatedBy: actorSnapshot }
           }
           return record
@@ -14364,11 +16913,7 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
     && !previousEntry.voidedAt
     && normalizeTextKey(previousEntry.status) === 'approved')
   const alreadyChecked = previous?.checked === true && entryActive
-  const alreadyUnchecked = !previous?.checked
-    && (!previousEntry || previousEntry.voidedAt || normalizeTextKey(previousEntry.status) === 'void')
-  if ((payload.checked && alreadyChecked)
-    || (!payload.checked && !previous && !previousEntry)
-    || (!payload.checked && previous && alreadyUnchecked)) {
+  if (alreadyChecked) {
     return recordNoopCommand(db, actor, {
       command: body.type,
       version: Number(current.version),
@@ -14377,6 +16922,9 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
       entry: previousEntry,
       existing: true,
     }, 200, commandContext)
+  }
+  if (previous || previousEntry) {
+    throw new ApiError(409, 'WORK_REWARD_ALREADY_RECORDED', 'Công việc tính thưởng này đã được ghi nhận trước đó và không thể tick lại.')
   }
   const reward = {
     ...(previous || {}),
@@ -14456,10 +17004,10 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
   const nextState = {
     ...state,
     workCatalogProgress: previous
-      ? progressRecords.map((record) => String(record.id || '') === progressId ? reward : record)
+      ? progressRecords.map((record, index) => index === previousMatch.index ? reward : record)
       : [reward, ...progressRecords],
     compensationEntries: previousEntry
-      ? compensationEntries.map((record) => String(record.id || '') === entryId ? entry : record)
+      ? compensationEntries.map((record, index) => index === previousEntryMatch.index ? entry : record)
       : [entry, ...compensationEntries],
     payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
@@ -14482,42 +17030,59 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
 const resolveStoreViolationShiftSnapshot = (state, employee, employeeId, storeId, occurredOn, requestedShiftId) => {
   const assignments = (Array.isArray(state.schedule) ? state.schedule : []).filter((record) => (
     !record.deletedAt
-    && (!record.storeId || String(record.storeId) === storeId)
+    && (!record.storeId || sameIdentifier(record.storeId, storeId))
     && String(record.date || record.workDate || '') === occurredOn
     && belongsToEmployee(record, employeeId)
   ))
   const scheduledShifts = new Map()
   for (const assignment of assignments) {
-    const snapshots = new Map((Array.isArray(assignment.shiftSnapshots) ? assignment.shiftSnapshots : [])
-      .filter(isPlainRecord)
-      .map((snapshot) => [String(snapshot.id || ''), snapshot]))
+    const snapshots = new Map()
+    for (const snapshot of Array.isArray(assignment.shiftSnapshots) ? assignment.shiftSnapshots : []) {
+      if (!isPlainRecord(snapshot)) continue
+      const snapshotId = String(snapshot.id || '').trim()
+      const snapshotKey = normalizeIdentifierKey(snapshotId)
+      if (!snapshotKey) continue
+      const existingSnapshot = snapshots.get(snapshotKey)
+      if (existingSnapshot && String(existingSnapshot.id || '') !== snapshotId) {
+        throwShiftIdentifierCollision([existingSnapshot, snapshot], snapshotId)
+      }
+      if (!existingSnapshot) snapshots.set(snapshotKey, snapshot)
+    }
     const shiftIds = [...new Set([
       String(assignment.shiftId || ''),
       ...(Array.isArray(assignment.shiftIds) ? assignment.shiftIds.map(String) : []),
     ].filter(Boolean))]
     for (const shiftId of shiftIds) {
-      if (!scheduledShifts.has(shiftId)) scheduledShifts.set(shiftId, snapshots.get(shiftId) || null)
+      const shiftKey = normalizeIdentifierKey(shiftId)
+      if (!shiftKey) continue
+      const existingShift = scheduledShifts.get(shiftKey)
+      if (existingShift && existingShift.id !== shiftId) {
+        throwShiftIdentifierCollision([{ id: existingShift.id }, { id: shiftId }], shiftId)
+      }
+      if (!existingShift) scheduledShifts.set(shiftKey, { id: shiftId, snapshot: snapshots.get(shiftKey) || null })
     }
   }
-  let shiftId = requestedShiftId
-  if (shiftId && !scheduledShifts.has(shiftId)) {
+  let shiftKey = normalizeIdentifierKey(requestedShiftId)
+  if (shiftKey && !scheduledShifts.has(shiftKey)) {
     throw new ApiError(400, 'VIOLATION_SHIFT_NOT_SCHEDULED', 'Ca làm việc không thuộc lịch phân ca của nhân viên trong ngày đã chọn.')
   }
-  if (!shiftId && scheduledShifts.size > 1) {
+  if (!shiftKey && scheduledShifts.size > 1) {
     throw new ApiError(400, 'VIOLATION_SHIFT_REQUIRED', 'Nhân viên có nhiều ca được phân; cần chọn ca bị vi phạm.')
   }
-  if (!shiftId) shiftId = [...scheduledShifts.keys()][0] || ''
+  if (!shiftKey) shiftKey = [...scheduledShifts.keys()][0] || ''
+  const scheduledShift = scheduledShifts.get(shiftKey) || null
+  const shiftId = String(scheduledShift?.id || '').trim()
   if (!shiftId) {
     throw new ApiError(409, 'VIOLATION_SHIFT_NOT_SCHEDULED', 'Nhân viên chưa có lịch phân ca tại cửa hàng trong ngày đã chọn.')
   }
-  const definition = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).find((record) => (
+  const scopedDefinitions = (Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []).filter((record) => (
     !record.deletedAt
     && record.active !== false
-    && String(record.id || '') === shiftId
-    && (!record.storeId || String(record.storeId) === storeId)
+    && (!record.storeId || sameIdentifier(record.storeId, storeId))
     && (!record.date || String(record.date) === occurredOn)
-  )) || null
-  const scheduledSnapshot = scheduledShifts.get(shiftId)
+  ))
+  const definition = uniqueShiftDefinitionMatch(scopedDefinitions, shiftId)
+  const scheduledSnapshot = scheduledShift?.snapshot || null
   const snapshotTimes = scheduledSnapshot ? shiftTimes(scheduledSnapshot) : { start: null, end: null }
   const definitionTimes = definition ? shiftTimes(definition) : { start: null, end: null }
   const source = snapshotTimes.start && snapshotTimes.end ? scheduledSnapshot : definition
@@ -14544,17 +17109,22 @@ const resolveViolationShiftSnapshot = (state, employee, employeeId, storeId, tar
     !record.deletedAt
     && belongsToEmployee(record, employeeId)
     && dateFromRecord(record) === occurredOn
-    && (!record.storeId || String(record.storeId) === storeId)
+    && (!record.storeId || sameIdentifier(record.storeId, storeId))
   ))
   let attendance
   if (requestedAttendanceId) {
-    attendance = attendanceCandidates.find((record) => String(record.id || '') === requestedAttendanceId) || null
+    attendance = uniqueIdentifierRecordMatch({
+      records: attendanceCandidates,
+      identifier: requestedAttendanceId,
+      collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+      collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể ghi nhận vi phạm an toàn.',
+    })?.record || null
     if (!attendance) {
       throw new ApiError(400, 'VIOLATION_ATTENDANCE_INVALID', 'Ca chấm công không thuộc nhân viên hoặc ngày đã chọn.')
     }
   } else {
     const matchingAttendance = requestedShiftId
-      ? attendanceCandidates.filter((record) => String(record.shiftId || record.shift || '') === requestedShiftId)
+      ? attendanceCandidates.filter((record) => sameIdentifier(record.shiftId || record.shift, requestedShiftId))
       : attendanceCandidates
     if (matchingAttendance.length > 1) {
       throw new ApiError(400, 'VIOLATION_ATTENDANCE_REQUIRED', 'Có nhiều ca chấm công phù hợp; cần chọn đúng ca chấm công.')
@@ -14563,7 +17133,7 @@ const resolveViolationShiftSnapshot = (state, employee, employeeId, storeId, tar
   }
   if (attendance) {
     const shiftId = String(attendance.shiftId || attendance.shift || '').trim()
-    if (!shiftId || (requestedShiftId && requestedShiftId !== shiftId)) {
+    if (!shiftId || (requestedShiftId && !sameIdentifier(requestedShiftId, shiftId))) {
       throw new ApiError(400, 'VIOLATION_SHIFT_MISMATCH', 'Ca làm việc không khớp với bản ghi chấm công.')
     }
     const hasCompleteSnapshot = Boolean(attendance.shiftStart && attendance.shiftEnd
@@ -14584,8 +17154,10 @@ const resolveViolationShiftSnapshot = (state, employee, employeeId, storeId, tar
     if (targetUnit === WORK_CATALOG_TARGET.STORE) {
       fallback = resolveStoreViolationShiftSnapshot(state, employee, employeeId, storeId, occurredOn, shiftId)
     } else {
-      const configuredShift = configuredProfileWorkShifts(employee, occurredOn, state)
-        .find((record) => String(record.id || '') === shiftId) || null
+      const configuredShift = uniqueShiftDefinitionMatch(
+        configuredProfileWorkShifts(employee, occurredOn, state),
+        shiftId,
+      )
       const start = configuredShift?.start || configuredShift?.shiftStart || null
       const end = configuredShift?.end || configuredShift?.shiftEnd || null
       if (configuredShift && start && end) {
@@ -14623,7 +17195,7 @@ const resolveViolationShiftSnapshot = (state, employee, employeeId, storeId, tar
   const configuredShifts = configuredProfileWorkShifts(employee, occurredOn, state)
   let configuredShift = null
   if (requestedShiftId) {
-    configuredShift = configuredShifts.find((record) => String(record.id || '') === requestedShiftId) || null
+    configuredShift = uniqueShiftDefinitionMatch(configuredShifts, requestedShiftId)
     if (!configuredShift) {
       throw new ApiError(400, 'VIOLATION_SHIFT_INVALID', 'Ca làm việc không thuộc lịch hồ sơ của nhân viên trong ngày đã chọn.')
     }
@@ -15122,10 +17694,11 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
   const storeId = String(store?.id || '')
   const nowMs = Date.parse(now)
   if (!storeId || !Number.isFinite(nowMs)) throw new TypeError('store and a valid now timestamp are required.')
+  assertNoCaseCollidingOperationalIdentifiers(state)
   const projectOpenAttendance = businessDate === localDateTimeParts(new Date(nowMs).toISOString()).date
 
   const orders = (Array.isArray(state?.orders) ? state.orders : []).filter((order) => (
-    String(order.storeId || '') === storeId
+    sameIdentifier(order.storeId, storeId)
     && dateFromRecord(order) === businessDate
     && !order.deletedAt
     && String(order.status || '') !== 'Đã xóa'
@@ -15139,20 +17712,21 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
   const { programId } = revenueBonusProgramForStore(store)
   const percentage = calculateRevenueBonus({ programId, revenueVnd })
   const employeeById = new Map((Array.isArray(state?.employees) ? state.employees : []).flatMap((employee) => (
-    [employee.id, employee.code, employee.employeeId]
-      .filter(Boolean)
-      .map((id) => [String(id), employee])
+    employeeIdentifierValues(employee)
+      .map((id) => [normalizeIdentifierKey(id), employee])
   )))
   const weightByEmployee = new Map()
   let attendanceCount = 0
   let openAttendanceCount = 0
   const activeEmployeeIds = new Set()
   for (const attendance of Array.isArray(state?.attendance) ? state.attendance : []) {
-    const employeeId = String(attendance.employeeId || '').trim()
-    if (!employeeId || !employeeById.has(employeeId)
-      || String(attendance.storeId || '') !== storeId
+    const requestedEmployeeId = String(attendance.employeeId || '').trim()
+    const employee = employeeById.get(normalizeIdentifierKey(requestedEmployeeId))
+    if (!requestedEmployeeId || !employee
+      || !sameIdentifier(attendance.storeId, storeId)
       || dateFromRecord(attendance) !== businessDate
       || attendance.deletedAt) continue
+    const employeeId = String(employee.id || employee.code || employee.employeeId || requestedEmployeeId).trim()
     attendanceCount += 1
     const open = !attendance.checkOutAt && !attendance.checkOut
     if (open) {
@@ -15173,7 +17747,7 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
         allocations: [],
       }
   const allocations = allocation.allocations.map((record) => {
-    const employee = employeeById.get(record.id)
+    const employee = employeeById.get(normalizeIdentifierKey(record.id))
     return {
       employeeId: record.id,
       employeeName: employee?.name || employee?.displayName || record.id,
@@ -15208,10 +17782,24 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
 
 const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, current, state, payload) => {
   const approve = body.type === 'revenue_bonus.approve_milestone'
-  const claimId = String(payload.claimId || payload.teamRewardClaimId || '').trim()
+  const requestedClaimId = String(payload.claimId || payload.teamRewardClaimId || '').trim()
   const claims = Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []
-  const claim = claims.find((record) => String(record.id || '') === claimId)
+  const claimMatch = uniqueIdentifierRecordMatch({
+    records: claims,
+    identifier: requestedClaimId,
+    collisionCode: 'TEAM_REWARD_CLAIM_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã đề nghị thưởng đang trùng với nhiều bản ghi; không thể xử lý an toàn.',
+  })
+  const claim = claimMatch?.record || null
   if (!claim) throw new ApiError(404, 'TEAM_REWARD_CLAIM_NOT_FOUND', 'Không tìm thấy đề nghị thưởng nóng.')
+  const claimId = String(claim.id || requestedClaimId).trim()
+  const claimReferenceMatches = (reference) => mutationIdentifierReferenceMatchesRecord({
+    records: claims,
+    record: claim,
+    reference,
+    collisionCode: 'TEAM_REWARD_CLAIM_REFERENCE_COLLISION',
+    collisionMessage: 'Người tham gia đang tham chiếu mơ hồ tới nhiều đề nghị thưởng; không thể duyệt an toàn.',
+  })
   assertOperationalStoreAccess(actor, claim.storeId)
   requireActivePhysicalStore(state, claim.storeId)
   expectedEntityVersion(payload, claim)
@@ -15226,16 +17814,29 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
     throw new ApiError(409, 'TEAM_REWARD_CLAIM_FINALIZED', 'Đề nghị thưởng nóng đã được xử lý.')
   }
   const dailyRecords = Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []
-  const daily = dailyRecords.find((record) => String(record.id || '') === String(claim.revenueBonusDailyId || ''))
+  const dailyMatch = uniqueIdentifierRecordMatch({
+    records: dailyRecords,
+    identifier: claim.revenueBonusDailyId,
+    collisionCode: 'REVENUE_BONUS_DAILY_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã kết quả thưởng ngày đang trùng với nhiều bản ghi; không thể xử lý an toàn.',
+  })
+  const daily = dailyMatch?.record || null
   if (!daily || daily.supersededAt || daily.voidedAt) {
     throw new ApiError(409, 'REVENUE_BONUS_SUPERSEDED', 'Kết quả tính thưởng ngày đã thay đổi; không thể duyệt đề nghị cũ.')
   }
-  if (String(daily.milestoneId || '') !== String(claim.milestoneId || '')
+  const dailyReferenceMatches = (reference) => mutationIdentifierReferenceMatchesRecord({
+    records: dailyRecords,
+    record: daily,
+    reference,
+    collisionCode: 'REVENUE_BONUS_DAILY_REFERENCE_COLLISION',
+    collisionMessage: 'Bản ghi thưởng đang tham chiếu mơ hồ tới nhiều kết quả thưởng ngày; không thể quyết toán an toàn.',
+  })
+  if (!sameIdentifier(daily.milestoneId, claim.milestoneId)
     || Number(daily.pendingMilestonePoolVnd || 0) !== Number(claim.amountVnd || 0)) {
     throw new ApiError(409, 'TEAM_REWARD_NOT_HIGHEST', 'Chỉ được duyệt mốc thưởng cao nhất đang hiệu lực.')
   }
   const participants = (Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : [])
-    .filter((record) => String(record.claimId || '') === claimId)
+    .filter((record) => claimReferenceMatches(record.claimId))
   const actorEmployeeId = String(actor.employee_id || actor.user_id || '')
   if (approve && participants.some((record) => belongsToEmployee(record, actorEmployeeId))) {
     throw new ApiError(403, 'SELF_APPROVAL_FORBIDDEN', 'Người tham gia không được tự duyệt thưởng nóng của mình.')
@@ -15263,10 +17864,28 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
     updatedAt: commandContext.now,
     version: Number(record.version || 1) + 1,
   }))
-  const participantByEmployee = new Map(decidedParticipants.map((record) => [String(record.employeeId || ''), record]))
+  const participantByEmployee = new Map()
+  for (const participant of decidedParticipants) {
+    const employeeKey = normalizeIdentifierKey(participant.employeeId)
+    if (!employeeKey) continue
+    if (participantByEmployee.has(employeeKey)) {
+      throw new ApiError(409, 'TEAM_REWARD_PARTICIPANT_COLLISION', 'Đề nghị thưởng có nhiều người tham gia trùng mã nhân viên; không thể phân bổ an toàn.')
+    }
+    participantByEmployee.set(employeeKey, participant)
+  }
+  const allocationEmployeeKeys = new Set()
+  for (const record of Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []) {
+    if (!dailyReferenceMatches(record.revenueBonusDailyId)) continue
+    const employeeKey = normalizeIdentifierKey(record.employeeId)
+    if (!employeeKey) continue
+    if (allocationEmployeeKeys.has(employeeKey)) {
+      throw new ApiError(409, 'REVENUE_BONUS_ALLOCATION_COLLISION', 'Kết quả thưởng ngày có nhiều phân bổ trùng mã nhân viên; không thể quyết toán an toàn.')
+    }
+    allocationEmployeeKeys.add(employeeKey)
+  }
   const allocations = (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []).map((record) => {
-    if (String(record.revenueBonusDailyId || '') !== String(daily.id || '')) return record
-    const participant = participantByEmployee.get(String(record.employeeId || ''))
+    if (!dailyReferenceMatches(record.revenueBonusDailyId)) return record
+    const participant = participantByEmployee.get(normalizeIdentifierKey(record.employeeId))
     if (!participant) return record
     const milestonePoolVnd = approve ? Number(participant.amountVnd || 0) : 0
     return {
@@ -15277,7 +17896,7 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
       version: Number(record.version || 1) + 1,
     }
   })
-  const dailyAllocations = allocations.filter((record) => String(record.revenueBonusDailyId || '') === String(daily.id || ''))
+  const dailyAllocations = allocations.filter((record) => dailyReferenceMatches(record.revenueBonusDailyId))
   const allocatedVnd = dailyAllocations.reduce((sum, record) => safeMoneySum(sum, Number(record.amountVnd || 0), 'Thưởng đã phân bổ'), 0)
   const milestonePoolVnd = approve ? Number(claim.amountVnd || 0) : 0
   const totalPoolVnd = safeMoneySum(Number(daily.percentagePoolVnd || 0), milestonePoolVnd, 'Tổng quỹ thưởng doanh thu')
@@ -15307,16 +17926,14 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
     createdAt: commandContext.now,
     createdBy: actorSnapshot,
   }
-  const participantIds = new Set(participants.map((record) => String(record.id || '')))
+  const decidedParticipantByRecord = new Map(participants.map((record, index) => [record, decidedParticipants[index]]))
   const nextState = {
     ...state,
-    revenueBonusDaily: dailyRecords.map((record) => String(record.id || '') === String(daily.id || '') ? decidedDaily : record),
+    revenueBonusDaily: dailyRecords.map((record, index) => index === dailyMatch.index ? decidedDaily : record),
     revenueBonusAllocations: allocations,
-    teamRewardClaims: claims.map((record) => String(record.id || '') === claimId ? decidedClaim : record),
+    teamRewardClaims: claims.map((record, index) => index === claimMatch.index ? decidedClaim : record),
     teamRewardParticipants: (Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : [])
-      .map((record) => participantIds.has(String(record.id || ''))
-        ? decidedParticipants.find((participant) => String(participant.id || '') === String(record.id || ''))
-        : record),
+      .map((record) => decidedParticipantByRecord.get(record) || record),
     periodReconciliations: [reconciliation, ...(Array.isArray(state.periodReconciliations) ? state.periodReconciliations : [])],
     payrollPeriods: approve
       ? invalidateClosedPayrollPeriods(state, { storeId: claim.storeId, period: claim.period }, commandContext.now, body.type)
@@ -15351,14 +17968,15 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   if (body.type !== 'revenue_bonus.calculate_day') {
     return revenueBonusMilestoneDecision(db, actor, body, commandContext, current, state, payload)
   }
-  const storeId = String(payload.storeId || '').trim()
-  assertOperationalStoreAccess(actor, storeId)
-  const store = requireActivePhysicalStore(state, storeId)
+  const requestedStoreId = String(payload.storeId || '').trim()
+  assertOperationalStoreAccess(actor, requestedStoreId)
+  const store = requireActivePhysicalStore(state, requestedStoreId)
+  const storeId = String(store.id || requestedStoreId).trim()
   const businessDate = compensationDate(payload.businessDate, 'Ngày tính thưởng')
   const period = businessDate.slice(0, 7)
   assertPayrollNotPaidOrLocked(state, storeId, period)
   const orders = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
-    String(order.storeId || '') === storeId
+    sameIdentifier(order.storeId, storeId)
     && dateFromRecord(order) === businessDate
     && !order.deletedAt
     && String(order.status || '') !== 'Đã xóa'
@@ -15372,18 +17990,22 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   const employeeById = new Map((Array.isArray(state.employees) ? state.employees : []).flatMap((employee) => (
     [employee.id, employee.code, employee.employeeId]
       .filter(Boolean)
-      .map((id) => [String(id), employee])
+      .map((id) => [normalizeIdentifierKey(id), employee])
   )))
   const participantWeights = new Map()
   for (const attendance of Array.isArray(state.attendance) ? state.attendance : []) {
     const employeeId = String(attendance.employeeId || '').trim()
-    if (!employeeId || !employeeById.has(employeeId)
-      || String(attendance.storeId || '') !== storeId
+    const employee = employeeById.get(normalizeIdentifierKey(employeeId))
+    if (!employeeId || !employee
+      || !sameIdentifier(attendance.storeId, storeId)
       || dateFromRecord(attendance) !== businessDate
       || attendance.deletedAt
       || (!attendance.checkOutAt && !attendance.checkOut)) continue
     const weightUnits = liveAttendanceSeconds(attendance, Date.parse(commandContext.now), false)
-    if (weightUnits > 0) participantWeights.set(employeeId, (participantWeights.get(employeeId) || 0) + weightUnits)
+    if (weightUnits > 0) {
+      const canonicalEmployeeId = String(employee.id || employee.code || employee.employeeId || employeeId)
+      participantWeights.set(canonicalEmployeeId, (participantWeights.get(canonicalEmployeeId) || 0) + weightUnits)
+    }
   }
   const participants = [...participantWeights].map(([id, weightUnits]) => ({ id, weightUnits }))
   const allocate = (poolVnd) => participants.length
@@ -15402,26 +18024,43 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     milestone,
     participants,
   })
-  const currentDaily = (Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []).find((record) => (
-    String(record.storeId || '') === storeId
+  const dailyRecords = Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []
+  const currentDailyCandidates = dailyRecords.filter((record) => (
+    sameIdentifier(record.storeId, storeId)
     && String(record.businessDate || '') === businessDate
     && !record.supersededAt
     && !record.voidedAt
   ))
+  if (currentDailyCandidates.length > 1) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_DAILY_SCOPE_COLLISION',
+      'Cửa hàng có nhiều kết quả thưởng ngày đang hiệu lực; cần xử lý dữ liệu trùng trước khi tính lại.',
+      { storeId, businessDate, conflictingIdentifiers: currentDailyCandidates.map((record) => String(record.id || '')) },
+    )
+  }
+  const currentDaily = currentDailyCandidates[0] || null
+  const currentDailyReferenceMatches = (reference) => Boolean(currentDaily) && mutationIdentifierReferenceMatchesRecord({
+    records: dailyRecords,
+    record: currentDaily,
+    reference,
+    collisionCode: 'REVENUE_BONUS_DAILY_REFERENCE_COLLISION',
+    collisionMessage: 'Bản ghi thưởng đang tham chiếu mơ hồ tới nhiều kết quả thưởng ngày; không thể tính lại an toàn.',
+  })
   if (currentDaily?.fingerprint === fingerprint) {
     return recordNoopCommand(db, actor, {
       command: body.type,
       version: Number(current.version),
       revenueBonus: currentDaily,
       allocations: (Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : [])
-        .filter((record) => String(record.revenueBonusDailyId || '') === String(currentDaily.id || '')),
+        .filter((record) => currentDailyReferenceMatches(record.revenueBonusDailyId)),
       existing: true,
     }, 200, commandContext)
   }
   const calculationId = `rbd_${crypto.randomUUID()}`
   const actorSnapshot = serverActorSnapshot(actor)
   const allocations = participants.map(({ id: employeeId, weightUnits }) => {
-    const employee = employeeById.get(employeeId)
+    const employee = employeeById.get(normalizeIdentifierKey(employeeId))
     const percentagePoolVnd = percentageByEmployee.get(employeeId) || 0
     return {
       id: `rba_${crypto.randomUUID()}`,
@@ -15508,7 +18147,10 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     createdAt: commandContext.now,
     version: 1,
   })) : []
-  const supersede = (record) => currentDaily && String(record.revenueBonusDailyId || record.id || '') === String(currentDaily.id || '')
+  const supersedeDaily = (record) => currentDaily && record === currentDaily
+    ? { ...record, status: 'SUPERSEDED', supersededAt: commandContext.now, supersededBy: calculationId }
+    : record
+  const supersedeDailyChild = (record) => currentDailyReferenceMatches(record.revenueBonusDailyId)
     ? { ...record, status: 'SUPERSEDED', supersededAt: commandContext.now, supersededBy: calculationId }
     : record
   const reconciliation = {
@@ -15542,18 +18184,18 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   }
   const nextState = {
     ...state,
-    revenueBonusDaily: [daily, ...(Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []).map(supersede)],
+    revenueBonusDaily: [daily, ...dailyRecords.map(supersedeDaily)],
     revenueBonusAllocations: [
       ...allocations,
-      ...(Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []).map(supersede),
+      ...(Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []).map(supersedeDailyChild),
     ],
     teamRewardClaims: [
       ...(teamClaim ? [teamClaim] : []),
-      ...(Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []).map(supersede),
+      ...(Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []).map(supersedeDailyChild),
     ],
     teamRewardParticipants: [
       ...teamParticipants,
-      ...(Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : []).map(supersede),
+      ...(Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : []).map(supersedeDailyChild),
     ],
     periodReconciliations: [reconciliation, ...(Array.isArray(state.periodReconciliations) ? state.periodReconciliations : [])],
     jobRuns: [jobRun, ...(Array.isArray(state.jobRuns) ? state.jobRuns : [])],
@@ -15575,7 +18217,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
 const assertPayrollHasNoOpenAttendance = (state, storeId, period) => {
   const openAttendance = (Array.isArray(state.attendance) ? state.attendance : []).filter((record) => (
     !record.deletedAt
-    && String(record.storeId || '') === String(storeId || '')
+    && sameIdentifier(record.storeId, storeId)
     && monthFromRecord(record) === period
     && !record.checkOut
     && !record.checkOutAt
@@ -15594,7 +18236,7 @@ const upsertManagerRevenueBonusEntry = (state, managerRevenueBonus, actorSnapsho
   const entries = Array.isArray(state.compensationEntries) ? state.compensationEntries : []
   const scopedAutomaticEntry = (entry) => (
     String(entry.sourceType || '') === MANAGER_REVENUE_BONUS_SOURCE_TYPE
-    && String(entry.storeId || '') === storeId
+    && sameIdentifier(entry.storeId, storeId)
     && String(entry.period || monthFromRecord(entry)) === period
   )
   const sourceId = String(managerRevenueBonus?.idempotencyKey || '')
@@ -15667,6 +18309,136 @@ const upsertManagerRevenueBonusEntry = (state, managerRevenueBonus, actorSnapsho
   return { entries: nextEntries, entry: nextEntry }
 }
 
+const payrollPeriodCollisionRepairCommand = async (db, actor, body, commandContext) => {
+  assertAdmin(actor, 'Chỉ Admin được xử lý kỳ lương trùng mã.')
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const requestedStoreId = String(payload.storeId || '').trim()
+  const payrollUnit = requirePayrollUnit(state, requestedStoreId)
+  const storeId = String(payrollUnit.id || requestedStoreId).trim()
+  const period = asMonth(payload.period)
+  const reason = String(payload.reason || '').trim()
+  if (!reason || reason.length > 500) {
+    throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do xử lý dữ liệu trùng từ 1 đến 500 ký tự.')
+  }
+  const periods = Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []
+  const candidates = periods.filter((record) => (
+    !record.supersededAt
+    && sameIdentifier(record.storeId, storeId)
+    && String(record.period || '') === period
+  ))
+  if (candidates.length < 2) {
+    throw new ApiError(409, 'PAYROLL_PERIOD_COLLISION_NOT_FOUND', 'Không còn nhiều kỳ lương trùng trong phạm vi đã chọn.')
+  }
+  const keepPayrollId = String(payload.keepPayrollId || '').trim()
+  const keepMatch = uniqueIdentifierRecordMatch({
+    records: candidates,
+    identifier: keepPayrollId,
+    collisionCode: 'KEEP_PAYROLL_AMBIGUOUS',
+    collisionMessage: 'Mã kỳ lương cần giữ đang trùng; không thể chọn bản ghi an toàn.',
+  })
+  const keep = keepMatch?.record || null
+  if (!keep) {
+    throw new ApiError(400, 'KEEP_PAYROLL_INVALID', 'Cần chọn chính xác một kỳ lương trong nhóm trùng để giữ lại.')
+  }
+  const canonicalKeepPayrollId = String(keep.id || '').trim()
+  const discarded = candidates.filter((record) => record !== keep)
+  const referencedDiscarded = discarded.find((record) => {
+    const hasPayment = (Array.isArray(state.payrollPayments) ? state.payrollPayments : [])
+      .some((payment) => payrollPaymentReferencesPeriod(payment, record, periods, {
+        collisionCode: 'PAYROLL_COLLISION_REPAIR_UNSAFE',
+        collisionMessage: 'Tham chiếu chi lương đang mơ hồ giữa nhiều kỳ; không thể gộp an toàn.',
+      }))
+    const hasAccrual = (Array.isArray(state.expenseEntries) ? state.expenseEntries : [])
+      .some((entry) => payrollAccrualReferencesPeriod(entry, record, periods, {
+        collisionCode: 'PAYROLL_COLLISION_REPAIR_UNSAFE',
+        collisionMessage: 'Tham chiếu bút toán lương đang mơ hồ giữa nhiều kỳ; không thể gộp an toàn.',
+      }))
+    return hasPayment || hasAccrual || record.confirmedAt || record.lockedAt
+      || ['Đã chi', 'Đã khóa'].includes(String(record.status || ''))
+  })
+  if (referencedDiscarded) {
+    throw new ApiError(
+      409,
+      'PAYROLL_COLLISION_REPAIR_UNSAFE',
+      'Kỳ lương không giữ lại đã có chi trả, khóa hoặc bút toán; không thể tự động gộp an toàn.',
+      { conflictingPeriodId: String(referencedDiscarded.id || '') },
+    )
+  }
+  const actorSnapshot = serverActorSnapshot(actor)
+  const repaired = candidates.map((record) => (
+    record === keep
+      ? { ...record, storeId, updatedAt: commandContext.now }
+      : {
+          ...record,
+          supersededAt: commandContext.now,
+          supersededByPayrollId: canonicalKeepPayrollId,
+          supersededBy: actorSnapshot,
+          supersededStatus: record.status || null,
+          status: 'Đã thay thế',
+          collisionResolutionReason: reason,
+          updatedAt: commandContext.now,
+        }
+  ))
+  const repairedByOriginal = new Map(candidates.map((record, index) => [record, repaired[index]]))
+  const repairedKeep = repairedByOriginal.get(keep)
+  const nextState = {
+    ...state,
+    payrollPeriods: periods.map((record) => repairedByOriginal.get(record) || record),
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'payroll-period-collision',
+    entityId: canonicalKeepPayrollId,
+    before: candidates,
+    after: repaired,
+    metadata: { storeId, period, keepPayrollId: canonicalKeepPayrollId, reason },
+    response: {
+      command: body.type,
+      period: repairedKeep,
+      supersededPeriodIds: discarded.map((record) => record.id),
+    },
+  }, commandContext)
+}
+
+const payrollPeriodReferenceCandidates = (records, referenceRecord) => (
+  (Array.isArray(records) ? records : []).filter((candidate) => {
+    const referenceStoreId = String(referenceRecord?.storeId || '').trim()
+    const referencePeriod = String(referenceRecord?.period || '').trim()
+    return (!referenceStoreId || sameIdentifier(candidate?.storeId, referenceStoreId))
+      && (!referencePeriod || String(candidate?.period || '') === referencePeriod)
+  })
+)
+
+const payrollPaymentReferencesPeriod = (payment, payrollPeriod, payrollPeriods = [payrollPeriod], options = {}) => {
+  const paymentPeriodId = String(payment?.periodId || '').trim()
+  if (paymentPeriodId) {
+    return mutationIdentifierReferenceMatchesRecord({
+      records: payrollPeriodReferenceCandidates(payrollPeriods, payment),
+      record: payrollPeriod,
+      reference: paymentPeriodId,
+      collisionCode: options.collisionCode || 'PAYROLL_PERIOD_REFERENCE_COLLISION',
+      collisionMessage: options.collisionMessage
+        || 'Bản ghi chi lương tham chiếu mơ hồ tới nhiều kỳ lương; cần xử lý dữ liệu trùng trước.',
+    })
+  }
+  return sameIdentifier(payment?.storeId, payrollPeriod?.storeId)
+    && String(payment?.period || '') === String(payrollPeriod?.period || '')
+}
+
+const payrollAccrualReferencesPeriod = (entry, payrollPeriod, payrollPeriods = [payrollPeriod], options = {}) => (
+  String(entry?.sourceType || '') === 'payroll-accrual'
+  && mutationIdentifierReferenceMatchesRecord({
+    records: payrollPeriodReferenceCandidates(payrollPeriods, entry),
+    record: payrollPeriod,
+    reference: entry?.sourceId,
+    collisionCode: options.collisionCode || 'PAYROLL_PERIOD_REFERENCE_COLLISION',
+    collisionMessage: options.collisionMessage
+      || 'Bút toán lương tham chiếu mơ hồ tới nhiều kỳ lương; cần xử lý dữ liệu trùng trước.',
+  })
+)
+
 const payrollCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const operation = body.type.split('.').at(-1)
@@ -15679,10 +18451,11 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được chốt hoặc chi kỳ lương.')
   }
   const { current, state } = await loadGlobalCommandState(db, body)
-  const storeId = String(payload.storeId || '').trim()
-  assertOperationalStoreAccess(actor, storeId)
+  const requestedStoreId = String(payload.storeId || '').trim()
+  assertOperationalStoreAccess(actor, requestedStoreId)
   const period = asMonth(payload.period)
-  requirePayrollUnit(state, storeId)
+  const payrollUnit = requirePayrollUnit(state, requestedStoreId)
+  const storeId = String(payrollUnit.id || requestedStoreId).trim()
   const periods = Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []
   const existing = payrollPeriodFor(state, storeId, period)
   const actorSnapshot = serverActorSnapshot(actor)
@@ -15750,15 +18523,28 @@ const payrollCommand = async (db, actor, body, commandContext) => {
       createdAt: commandContext.now,
       createdBy: actor.user_id,
     }
+    const linkedPayrollAccruals = existing
+      ? expenseEntries.filter((entry) => payrollAccrualReferencesPeriod(entry, existing, periods))
+      : []
+    if (linkedPayrollAccruals.length > 1) {
+      throw new ApiError(
+        409,
+        'PAYROLL_ACCRUAL_COLLISION',
+        'Kỳ lương có nhiều bút toán ghi nhận chi phí; cần đối soát trước khi chốt lại.',
+        { payrollPeriodId: String(existing.id || '') },
+      )
+    }
+    const previousPayrollAccrual = linkedPayrollAccruals[0] || null
     const nextState = {
       ...state,
-      payrollPeriods: [next, ...periods.filter((record) => !(
-        String(record.storeId || '') === storeId && String(record.period || '') === period
+      payrollPeriods: [next, ...periods.filter((record) => (
+        record.supersededAt
+        || !(sameIdentifier(record.storeId, storeId) && String(record.period || '') === period)
       ))],
       compensationEntries: managerBonusState.entries,
-      expenseEntries: [payrollAccrual, ...expenseEntries.filter((entry) => (
-        !sourceMatch(entry, 'payroll-accrual', next.id)
-      ))],
+      expenseEntries: previousPayrollAccrual
+        ? expenseEntries.map((entry) => entry === previousPayrollAccrual ? payrollAccrual : entry)
+        : [payrollAccrual, ...expenseEntries],
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -15805,7 +18591,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     }
     const nextState = {
       ...state,
-      payrollPeriods: periods.map((record) => String(record.id || '') === String(existing.id) ? locked : record),
+      payrollPeriods: periods.map((record) => record === existing ? locked : record),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
     return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -15831,10 +18617,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
       version: Number(current.version),
       period: existing,
       payments: (Array.isArray(state.payrollPayments) ? state.payrollPayments : [])
-        .filter((payment) => (
-          String(payment.periodId || '') === String(existing.id)
-          || (String(payment.storeId || '') === storeId && String(payment.period || '') === period)
-        )),
+        .filter((payment) => payrollPaymentReferencesPeriod(payment, existing, periods)),
       existing: true,
     }, 200, commandContext)
   }
@@ -15853,14 +18636,14 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     if (amount === 0) continue
     const employeeId = String(row.employeeId || '').trim()
     if (!employeeId) throw new ApiError(409, 'PAYROLL_ROW_INVALID', 'Dòng lương thiếu mã nhân viên.')
-    if (paidEmployeeIds.has(employeeId)) {
+    const employeeIdentifierKey = normalizeIdentifierKey(employeeId)
+    if (paidEmployeeIds.has(employeeIdentifierKey)) {
       throw new ApiError(409, 'PAYROLL_ROW_DUPLICATE', 'Bản chốt lương có nhân viên bị trùng.')
     }
-    paidEmployeeIds.add(employeeId)
+    paidEmployeeIds.add(employeeIdentifierKey)
     if (existingPayments.some((payment) => (
-      (String(payment.periodId || '') === String(existing.id)
-        || (String(payment.storeId || '') === storeId && String(payment.period || '') === period))
-      && String(payment.employeeId || '') === employeeId
+      payrollPaymentReferencesPeriod(payment, existing, periods)
+      && sameIdentifier(payment.employeeId, employeeId)
     ))) {
       throw new ApiError(409, 'PAYROLL_PAYMENT_EXISTS', 'Kỳ lương đã có bản ghi chi trả không nhất quán.')
     }
@@ -15897,8 +18680,13 @@ const payrollCommand = async (db, actor, body, commandContext) => {
       createdAt: commandContext.now,
       actor: actorSnapshot,
     }
-    if (expenses.some((entry) => sourceMatch(entry, 'payroll-payment', payment.id))
-      || transactions.some((entry) => sourceMatch(entry, 'payroll-payment', payment.id))) {
+    if (expenses.some((entry) => (
+      String(entry?.sourceType || '') === 'payroll-payment'
+      && sameIdentifier(entry?.sourceId, payment.id)
+    )) || transactions.some((entry) => (
+      String(entry?.sourceType || '') === 'payroll-payment'
+      && sameIdentifier(entry?.sourceId, payment.id)
+    ))) {
       throw new ApiError(409, 'PAYROLL_FINANCE_EXISTS', 'Bút toán chi lương đã tồn tại không nhất quán.')
     }
     payments.push(payment)
@@ -15947,7 +18735,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   }
   const nextState = {
     ...state,
-    payrollPeriods: periods.map((record) => String(record.id || '') === String(existing.id) ? paid : record),
+    payrollPeriods: periods.map((record) => record === existing ? paid : record),
     payrollPayments: [...payments, ...existingPayments],
     expenseEntries: [...paymentExpenses, ...expenses],
     cashTransactions: [...paymentTransactions, ...transactions],
@@ -16411,29 +19199,42 @@ const userCommand = async (db, actor, body, commandContext) => {
     }
     const username = String(payload.username || '').trim()
     const normalizedUsername = normalizeUsername(username)
-    const storeId = role === 'business_support'
+    const requestedStoreId = role === 'business_support'
       ? BUSINESS_SUPPORT_STORE_ID
       : String(payload.storeId || '').trim()
-    const employeeId = String(payload.employeeId || '').trim()
+    const requestedEmployeeId = String(payload.employeeId || '').trim()
     const displayName = String(payload.displayName || '').trim().slice(0, 160)
     if (!/^[A-Za-z0-9._-]{3,80}$/u.test(username)) {
       throw new ApiError(400, 'INVALID_USERNAME', 'Tên đăng nhập không hợp lệ.')
     }
-    if (!/^[A-Za-z0-9_-]{1,80}$/u.test(storeId) || !/^[A-Za-z0-9_-]{1,80}$/u.test(employeeId)) {
+    if (!/^[A-Za-z0-9_-]{1,80}$/u.test(requestedStoreId) || !/^[A-Za-z0-9_-]{1,80}$/u.test(requestedEmployeeId)) {
       throw new ApiError(400, 'EMPLOYEE_SCOPE_INVALID', 'Tài khoản cần mã đơn vị và mã nhân viên hợp lệ.')
     }
-    if (role === 'employee') assertOperationalStoreAccess(actor, storeId)
-    const globalState = await loadState(db, 'global')
+    if (role === 'employee') assertOperationalStoreAccess(actor, requestedStoreId)
+    const globalState = body._preloadedGlobalStateRow || await loadState(db, 'global')
     const state = normalizeSharedStateForStorage(parseStoredJson(globalState?.value_json, {}))
-    const employeeProfile = (Array.isArray(state.employees) ? state.employees : [])
-      .find((record) => String(record.id || record.code || '') === employeeId && !record.deletedAt)
+    assertNoCaseCollidingOperationalIdentifiers(state)
+    const employeeProfile = uniqueEmployeeIdentifierRecordMatch({
+      records: state.employees,
+      identifier: requestedEmployeeId,
+      predicate: (record) => !record.deletedAt,
+    })?.record || null
     const retiredEmployee = (Array.isArray(state.deletedEmployees) ? state.deletedEmployees : [])
-      .some((record) => String(record.id || record.code || record.employeeCode || '') === employeeId)
-    const validStore = (Array.isArray(state.stores) ? state.stores : []).some((store) => (
-      String(store.id || '') === storeId && !store.deletedAt
-    ))
-    const validVirtualUnit = [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID].includes(storeId)
-    if (!validStore && !validVirtualUnit) {
+      .some((record) => employeeIdentifierValues(record)
+        .some((identifier) => sameIdentifier(identifier, requestedEmployeeId)))
+    const storeMatch = uniqueIdentifierRecordMatch({
+      records: state.stores,
+      identifier: requestedStoreId,
+      predicate: (store) => !store.deletedAt,
+      collisionCode: 'STORE_IDENTIFIER_COLLISION',
+      collisionMessage: 'Mã cửa hàng đang trùng với nhiều bản ghi; không thể tạo tài khoản an toàn.',
+    })
+    const virtualStoreId = sameIdentifier(requestedStoreId, OFFICE_STORE_ID)
+      ? OFFICE_STORE_ID
+      : sameIdentifier(requestedStoreId, BUSINESS_SUPPORT_STORE_ID)
+        ? BUSINESS_SUPPORT_STORE_ID
+        : ''
+    if (!storeMatch && !virtualStoreId) {
       throw new ApiError(400, 'STORE_INVALID', 'Đơn vị gán cho nhân viên không tồn tại.')
     }
     if (retiredEmployee) {
@@ -16442,15 +19243,19 @@ const userCommand = async (db, actor, body, commandContext) => {
     if (!employeeProfile) {
       throw new ApiError(404, 'EMPLOYEE_NOT_FOUND', 'Cần có hồ sơ nhân viên đang hoạt động trước khi tạo tài khoản.')
     }
+    const employeeId = String(
+      employeeProfile.id || employeeProfile.code || employeeProfile.employeeId || requestedEmployeeId,
+    ).trim()
+    const storeId = String(storeMatch?.record?.id || virtualStoreId || requestedStoreId).trim()
     const profileStatus = normalizeTextKey(employeeProfile?.status)
     if (profileStatus && !['active', 'dang lam viec', 'dang hoat dong', 'hoat dong'].includes(profileStatus)) {
       throw new ApiError(409, 'EMPLOYEE_INACTIVE', 'Không thể tạo tài khoản hoạt động cho nhân viên đã ngưng hoặc nghỉ việc.')
     }
-    if (String(employeeProfile.storeId || '') !== storeId || roleForEmployeeUnit(employeeUnit(employeeProfile)) !== role) {
+    if (!sameIdentifier(employeeProfile.storeId, storeId) || roleForEmployeeUnit(employeeUnit(employeeProfile)) !== role) {
       throw new ApiError(400, 'EMPLOYEE_ROLE_MISMATCH', 'Hồ sơ nhân viên không thuộc đúng đơn vị hoặc vai trò đã chọn.')
     }
     const existing = await first(db, `
-      SELECT id FROM users WHERE username_normalized = ? OR (? <> '' AND employee_id = ?) LIMIT 1
+      SELECT id FROM users WHERE username_normalized = ? OR (? <> '' AND LOWER(employee_id) = LOWER(?)) LIMIT 1
     `, normalizedUsername, employeeId, employeeId)
     if (existing) throw new ApiError(409, 'USER_EXISTS', 'Tên đăng nhập hoặc mã nhân viên đã tồn tại.')
     const password = await hashPassword(payload.password)
@@ -16518,7 +19323,7 @@ const userCommand = async (db, actor, body, commandContext) => {
       ])
     } catch (error) {
       const raced = await first(db, `
-        SELECT id FROM users WHERE username_normalized = ? OR (? <> '' AND employee_id = ?) LIMIT 1
+        SELECT id FROM users WHERE username_normalized = ? OR (? <> '' AND LOWER(employee_id) = LOWER(?)) LIMIT 1
       `, normalizedUsername, employeeId, employeeId)
       if (raced) throw new ApiError(409, 'USER_EXISTS', 'Tên đăng nhập hoặc mã nhân viên đã tồn tại.')
       throw error
@@ -16550,7 +19355,9 @@ const userCommand = async (db, actor, body, commandContext) => {
   const nextVersion = currentVersion + 1
 
   if (body.type === 'user.update') {
-    if (payload.employeeId !== undefined && String(payload.employeeId) !== String(target.employee_id || '')) {
+    if (payload.employeeId !== undefined
+      && String(payload.employeeId || '').trim() !== String(target.employee_id || '').trim()
+      && !sameIdentifier(payload.employeeId, target.employee_id)) {
       throw new ApiError(400, 'EMPLOYEE_ID_IMMUTABLE', 'Mã nhân viên của tài khoản không thể thay đổi.')
     }
     const username = payload.username === undefined ? target.username : String(payload.username || '').trim()
@@ -16559,7 +19366,9 @@ const userCommand = async (db, actor, body, commandContext) => {
       ? target.display_name
       : String(payload.displayName || '').trim().slice(0, 160)
     const storeId = String(target.store_id || '')
-    if (payload.storeId !== undefined && String(payload.storeId || '').trim() !== storeId) {
+    if (payload.storeId !== undefined
+      && String(payload.storeId || '').trim() !== storeId
+      && !sameIdentifier(payload.storeId, storeId)) {
       throw new ApiError(400, 'EMPLOYEE_STORE_IMMUTABLE', 'Không thể đổi đơn vị tài khoản tách khỏi hồ sơ nhân viên.')
     }
     if (!/^[A-Za-z0-9._-]{3,80}$/u.test(username)) {
@@ -16571,12 +19380,16 @@ const userCommand = async (db, actor, body, commandContext) => {
     }
     if (target.role === 'employee') {
       assertOperationalStoreAccess(actor, storeId)
-      const globalState = await loadState(db, 'global')
+      const globalState = body._preloadedGlobalStateRow || await loadState(db, 'global')
       const state = normalizeSharedStateForStorage(parseStoredJson(globalState?.value_json, {}))
-      const validStore = (Array.isArray(state.stores) ? state.stores : []).some((store) => (
-        String(store.id || '') === storeId && !store.deletedAt
-      ))
-      const validOffice = storeId === OFFICE_STORE_ID
+      const validStore = uniqueIdentifierRecordMatch({
+        records: state.stores,
+        identifier: storeId,
+        predicate: (store) => !store.deletedAt,
+        collisionCode: 'STORE_IDENTIFIER_COLLISION',
+        collisionMessage: 'Mã cửa hàng đang trùng với nhiều bản ghi; không thể cập nhật tài khoản an toàn.',
+      })
+      const validOffice = sameIdentifier(storeId, OFFICE_STORE_ID)
       if (!validStore && !validOffice) {
         throw new ApiError(400, 'STORE_INVALID', 'Đơn vị gán cho nhân viên không tồn tại.')
       }
@@ -16585,7 +19398,7 @@ const userCommand = async (db, actor, body, commandContext) => {
       SELECT id FROM users WHERE username_normalized = ? AND id <> ? LIMIT 1
     `, normalizedUsername, userId)
     if (duplicate) throw new ApiError(409, 'USER_EXISTS', 'Tên đăng nhập đã được sử dụng.')
-    const scopeChanged = String(target.store_id || '') !== storeId
+    const scopeChanged = !sameIdentifier(target.store_id, storeId)
     const after = {
       ...publicUser(target),
       username,
@@ -16854,6 +19667,32 @@ const executeCommand = async (request, env, context) => {
   if (user.role === 'business_support' && !businessSupportCommandAllowed(body)) {
     throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD không có quyền thực hiện thao tác này.')
   }
+  const collisionStateRow = user._globalStateRow || await loadState(db, 'global')
+  const collisionState = normalizeSharedStateForStorage(parseStoredJson(collisionStateRow?.value_json, {}))
+  try {
+    assertNoCaseCollidingOperationalIdentifiers(collisionState)
+  } catch (error) {
+    const repairableCollision = [
+      'EMPLOYEE_IDENTIFIER_COLLISION',
+      'STORE_IDENTIFIER_COLLISION',
+      'SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+    ].includes(error?.code)
+    const globalScope = String(body.scope || defaultScope(user)) === 'global'
+    const adminStateRepair = user.role === 'admin'
+      && globalScope
+      && ['state.replace', 'state.merge'].includes(body.type)
+    const adminReset = user.role === 'admin'
+      && ['system.reset_all', 'system.reset_demo'].includes(body.type)
+    const adminHistoryAliasRepair = user.role === 'admin'
+      && body.type === 'operational_identifier.resolve_history_alias'
+    if (!repairableCollision || (!adminStateRepair && !adminReset && !adminHistoryAliasRepair)) throw error
+    if (adminStateRepair) {
+      Object.defineProperty(body, '_operationalCollisionRepair', {
+        value: true,
+        enumerable: false,
+      })
+    }
+  }
   const idempotencyKey = validateIdempotencyKey(request, body)
   const hash = await requestHash({ ...body, idempotencyKey: undefined })
   const existingReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
@@ -16866,11 +19705,34 @@ const executeCommand = async (request, env, context) => {
     hash,
     userAgent: String(request.headers.get('user-agent') || '').slice(0, 512),
   }
-  if (user._globalStateRow) {
+  const persistedGlobalStateRow = await persistOpenStoreAttendanceChecklistRepairs(
+    db,
+    user,
+    commandContext,
+    collisionStateRow,
+  )
+  if (persistedGlobalStateRow) {
     Object.defineProperty(body, '_preloadedGlobalStateRow', {
-      value: user._globalStateRow,
+      value: persistedGlobalStateRow,
       enumerable: false,
     })
+    const repair = persistedGlobalStateRow._storeChecklistRepair
+    const commandScope = body.type === 'state.replace' || body.type === 'state.merge'
+      ? String(body.scope || defaultScope(user))
+      : 'global'
+    // Rebase only across the deterministic repair committed by this request.
+    // If another writer changed the state first, previousVersion will not match
+    // the client's version and the normal optimistic-concurrency conflict remains.
+    if (commandScope === 'global'
+      && !['state.replace', 'state.merge'].includes(body.type)
+      && repair
+      && Number(body.expectedVersion) === Number(repair.previousVersion)
+      && Number(persistedGlobalStateRow.version) === Number(repair.nextVersion)) {
+      Object.defineProperty(body, '_expectedGlobalStateVersion', {
+        value: Number(repair.nextVersion),
+        enumerable: false,
+      })
+    }
   }
   try {
     if (body.type === 'state.replace' || body.type === 'state.merge') {
@@ -16902,6 +19764,9 @@ const executeCommand = async (request, env, context) => {
     }
     if (String(body.type || '').startsWith('operational_reset.')) {
       return await operationalResetCommand(db, user, body, commandContext)
+    }
+    if (body.type === 'operational_identifier.resolve_history_alias') {
+      return await operationalIdentifierHistoryRepairCommand(db, user, body, commandContext)
     }
     if (body.type === 'system.reset_all') {
       return await systemResetAllCommand(db, user, body, commandContext, env)
@@ -16953,7 +19818,10 @@ const executeCommand = async (request, env, context) => {
     if (String(body.type || '').startsWith('salary_adjustment.')) {
       return await salaryAdjustmentCommand(db, user, body, commandContext)
     }
-    if (body.type === 'store_salary_config.set') {
+    if (String(body.type || '').startsWith('store_salary_config.')) {
+      if (body.type === 'store_salary_config.resolve_collision') {
+        return await storeSalaryConfigCollisionRepairCommand(db, user, body, commandContext)
+      }
       return await storeSalaryConfigCommand(db, user, body, commandContext)
     }
     if (String(body.type || '').startsWith('compensation_entry.')) {
@@ -16972,6 +19840,9 @@ const executeCommand = async (request, env, context) => {
       return await revenueBonusCommand(db, user, body, commandContext)
     }
     if (String(body.type || '').startsWith('payroll.')) {
+      if (body.type === 'payroll.resolve_period_collision') {
+        return await payrollPeriodCollisionRepairCommand(db, user, body, commandContext)
+      }
       return await payrollCommand(db, user, body, commandContext)
     }
     if (body.type === 'counter.next') return await counterCommand(db, user, body, commandContext)
@@ -17024,7 +19895,7 @@ const visibleUserRowsForActor = async (db, actor) => ['admin', 'business_support
   : await all(db, `
         SELECT id, username, display_name, role, status, version, store_id, employee_id, last_login_at
         FROM users
-        WHERE role = 'employee' AND store_id = ?
+        WHERE role = 'employee' AND LOWER(store_id) = LOWER(?)
         ORDER BY display_name, username
       `, String(actor.store_id || ''))
 
@@ -17081,26 +19952,38 @@ const activeEmployeeAvatarProfile = (profile) => {
   ].includes(normalizeTextKey(profile.status))
 }
 
-const activePhysicalStoreForAvatarProfile = (state, profile) => {
-  const storeId = String(profile?.storeId || '').trim()
-  if (!storeId || [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID, 'ADMIN', 'SYSTEM'].includes(storeId)) return null
-  const store = (Array.isArray(state?.stores) ? state.stores : []).find((record) => (
-    String(record?.id || '') === storeId && !record?.deletedAt
-  ))
+const activePhysicalStoreByIdentifier = (state, storeId) => {
+  const requestedStoreId = String(storeId || '').trim()
+  if (!requestedStoreId || isReservedPhysicalStoreIdentifier(requestedStoreId)) return null
+  const store = uniqueIdentifierRecordMatch({
+    records: state?.stores,
+    identifier: requestedStoreId,
+    predicate: (record) => !record?.deletedAt,
+    collisionCode: 'EMPLOYEE_AVATAR_STORE_COLLISION',
+    collisionMessage: 'Mã cửa hàng của hồ sơ ảnh đại diện đang trùng.',
+  })?.record || null
   if (!store || store.active === false || store.isOperational === false) return null
   return ['da dong', 'ngung hoat dong', 'tam ngung', 'inactive', 'closed'].includes(normalizeTextKey(store.status))
     ? null
     : store
 }
 
-const canonicalEmployeeAvatarProfile = (state, profile) => {
-  const employees = Array.isArray(state?.employees) ? state.employees : []
+const activePhysicalStoreForAvatarProfile = (state, profile) => (
+  activePhysicalStoreByIdentifier(state, profile?.storeId)
+)
+
+const canonicalLinkedEmployeeProfile = (records, profile, {
+  collisionCode = 'LINKED_EMPLOYEE_PROFILE_COLLISION',
+  collisionMessage = 'Hồ sơ nhân viên liên kết đang trùng.',
+} = {}) => {
+  const employees = Array.isArray(records) ? records : []
   let current = profile
   const visited = new Set()
   while (isPlainRecord(current)) {
     const currentId = employeeProfileIdentifier(current)
-    if (!currentId || visited.has(currentId)) break
-    visited.add(currentId)
+    const currentKey = normalizeIdentifierKey(currentId)
+    if (!currentKey || visited.has(currentKey)) break
+    visited.add(currentKey)
     const linkedId = String(
       current.linkedEmployeeId
       || current.sourceEmployeeId
@@ -17109,16 +19992,27 @@ const canonicalEmployeeAvatarProfile = (state, profile) => {
       || '',
     ).trim()
     if (!linkedId) break
-    const linked = employees.find((candidate) => (
-      isPlainRecord(candidate)
-      && [candidate.id, candidate.code, candidate.employeeId, candidate.employeeCode]
-        .some((value) => String(value || '').trim() === linkedId)
-    ))
+    const linked = uniqueEmployeeIdentifierRecordMatch({
+      records: employees,
+      identifier: linkedId,
+      predicate: isPlainRecord,
+      collisionCode,
+      collisionMessage,
+    })?.record || null
     if (!linked) break
     current = linked
   }
   return current || profile
 }
+
+const canonicalEmployeeAvatarProfile = (state, profile) => canonicalLinkedEmployeeProfile(
+  state?.employees,
+  profile,
+  {
+    collisionCode: 'EMPLOYEE_AVATAR_LINK_COLLISION',
+    collisionMessage: 'Hồ sơ liên kết của ảnh đại diện đang trùng.',
+  },
+)
 
 const employeeAvatarProfileIds = (profile) => new Set([
   profile?.id, profile?.code, profile?.employeeId, profile?.employeeCode,
@@ -17131,6 +20025,9 @@ const employeeAvatarIsActorIdentity = (state, actor, profile) => {
   const targetCanonical = canonicalEmployeeAvatarProfile(state, profile)
   const targetProfiles = [profile, targetCanonical].filter(Boolean)
   if (actorUserId && targetProfiles.some((candidate) => String(candidate.authUserId || '').trim() === actorUserId)) {
+    return true
+  }
+  if ([actorRoleProfile, actorCanonical].filter(Boolean).some((candidate) => targetProfiles.includes(candidate))) {
     return true
   }
   const actorIds = new Set([
@@ -17156,9 +20053,10 @@ const employeeAvatarAuthorized = (state, actor, profile) => {
     return !['office', 'business_support'].includes(unit) && Boolean(physicalStore)
   }
   if (actor.role === 'store_manager') {
+    const actorStore = activePhysicalStoreByIdentifier(state, actor.store_id)
     return !['office', 'business_support'].includes(unit)
       && Boolean(physicalStore)
-      && String(profile.storeId || '') === String(actor.store_id || '')
+      && physicalStore === actorStore
   }
   return actor.role === 'employee' && employeeAvatarIsActorIdentity(state, actor, profile)
 }
@@ -17201,10 +20099,21 @@ const getEmployeeAccountAvatar = async (request, env, context, employeeId) => {
   let current = actor._globalStateRow || await loadState(db, 'global')
   current = await migrateLegacyAccountAvatars(db, env, actor, context, current)
   const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
-  const profile = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
-    [record.id, record.code, record.employeeId, record.employeeCode]
-      .some((value) => String(value || '') === normalizedEmployeeId)
-  ))
+  let profile
+  try {
+    profile = uniqueEmployeeIdentifierRecordMatch({
+      records: state.employees,
+      identifier: normalizedEmployeeId,
+      predicate: isPlainRecord,
+      collisionCode: 'EMPLOYEE_AVATAR_PROFILE_COLLISION',
+      collisionMessage: 'Định danh hồ sơ ảnh đại diện đang trùng.',
+    })?.record || null
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'EMPLOYEE_AVATAR_PROFILE_COLLISION') {
+      throw employeeAvatarNotFound()
+    }
+    throw error
+  }
   if (!profile || !employeeAvatarAuthorized(state, actor, profile)) throw employeeAvatarNotFound()
   const metadata = employeeAvatarMetadata(state, actor, profile)
   if (!metadata) throw employeeAvatarNotFound()
@@ -17239,20 +20148,50 @@ const getIdentityImage = async (request, env, context, employeeId, side) => {
   }
   const current = await loadState(db, 'global')
   const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
-  const profile = [
+  const profiles = [
     ...(Array.isArray(state.employees) ? state.employees : []),
     ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
-  ].find((record) => String(record.id || record.code || record.employeeCode || '') === normalizedEmployeeId)
+  ]
+  let profile
+  try {
+    profile = uniqueEmployeeIdentifierRecordMatch({
+      records: profiles,
+      identifier: normalizedEmployeeId,
+      predicate: isPlainRecord,
+      collisionCode: 'IDENTITY_IMAGE_PROFILE_COLLISION',
+      collisionMessage: 'Định danh hồ sơ ảnh CCCD đang trùng.',
+    })?.record || null
+  } catch (error) {
+    if (error instanceof ApiError && error.code === 'IDENTITY_IMAGE_PROFILE_COLLISION') {
+      throw new ApiError(403, 'IDENTITY_IMAGE_FORBIDDEN', 'Bạn không có quyền xem ảnh CCCD này.')
+    }
+    throw error
+  }
+  const canonicalProfile = profile
+    ? canonicalLinkedEmployeeProfile(profiles, profile, {
+        collisionCode: 'IDENTITY_IMAGE_LINK_COLLISION',
+        collisionMessage: 'Hồ sơ liên kết của ảnh CCCD đang trùng.',
+      })
+    : null
+  const imageProfiles = [profile, canonicalProfile].filter((candidate, index, records) => (
+    candidate && records.indexOf(candidate) === index
+  ))
+  const actorStore = actor.role === 'store_manager'
+    ? activePhysicalStoreByIdentifier(state, actor.store_id)
+    : null
+  const profileStore = profile ? activePhysicalStoreForAvatarProfile(state, profile) : null
   const authorized = actor.role === 'admin'
     || actor.role === 'business_support'
-    || (actor.role === 'store_manager' && String(actor.store_id || '') === String(profile?.storeId || ''))
-    || (actor.role === 'employee' && String(actor.employee_id || '') === normalizedEmployeeId)
+    || (actor.role === 'store_manager' && Boolean(actorStore) && profileStore === actorStore)
+    || (actor.role === 'employee' && profile && employeeAvatarIsActorIdentity(state, actor, profile))
   if (!profile || !['business_support', 'store_manager', 'office', 'store'].includes(employeeUnit(profile)) || !authorized) {
     throw new ApiError(403, 'IDENTITY_IMAGE_FORBIDDEN', 'Bạn không có quyền xem ảnh CCCD này.')
   }
-  const metadata = isPlainRecord(profile.identityImages?.[side]) ? profile.identityImages[side] : null
+  const imageProfile = imageProfiles.find((candidate) => isPlainRecord(candidate.identityImages?.[side])) || null
+  const metadata = isPlainRecord(imageProfile?.identityImages?.[side]) ? imageProfile.identityImages[side] : null
   const key = String(metadata?.key || '')
-  if (!key.startsWith(`identity-images/${normalizedEmployeeId}/${side}/`)) {
+  const imageProfileId = employeeProfileIdentifier(imageProfile)
+  if (!imageProfileId || !key.startsWith(`identity-images/${imageProfileId}/${side}/`)) {
     throw new ApiError(404, 'IDENTITY_IMAGE_NOT_FOUND', 'Không tìm thấy ảnh CCCD.')
   }
   const bucket = env?.IDENTITY_IMAGES

@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
   adminAccountsSeed,
   attendanceSeed,
@@ -25,6 +25,9 @@ import {
   getDepartureTag,
   normalizeLocation,
   normalizePhone,
+  operationalIdentifierEntry,
+  operationalIdentifierRecordMatch,
+  operationalIdentifierReferenceMatchesRecord,
   resolveStoreEmployeeSalaryPolicy,
   timeToMinutes,
   today,
@@ -34,6 +37,7 @@ import { createDomainState, defaultPolicies, migrateDomainState } from './initia
 import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
+import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../domain/storeTieredPayroll'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
@@ -163,13 +167,74 @@ export const isRestorableOperationalAuditAction = (action, dataType) => (
 )
 
 const clone = (value) => JSON.parse(JSON.stringify(value))
+const normalizedIdentifier = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
+const sameIdentifier = (left, right) => (
+  Boolean(normalizedIdentifier(left))
+  && normalizedIdentifier(left) === normalizedIdentifier(right)
+)
+const employeeIdentifierValues = (employee = {}) => [
+  employee.id,
+  employee.code,
+  employee.employeeId,
+  employee.employeeCode,
+].map((value) => String(value || '').trim()).filter(Boolean)
+const resolveEmployeeIdentifier = (employees, reference) => operationalIdentifierRecordMatch(
+  employees,
+  reference,
+  employeeIdentifierValues,
+)
+const resolveRecordIdentifier = (records, reference, identifierValuesOf = (record) => [record?.id]) => (
+  operationalIdentifierRecordMatch(records, reference, identifierValuesOf)
+)
+const matchedRecordOrNull = (match) => (match?.ambiguous ? null : match?.record || null)
+const hasOperationalIdentifierCollision = (records, identifierValuesOf = (record) => [record?.id]) => {
+  const ownersByIdentifier = new Map()
+  ;(Array.isArray(records) ? records : []).forEach((record, index) => {
+    const values = identifierValuesOf(record)
+    ;(Array.isArray(values) ? values : [values]).forEach((value) => {
+      const key = normalizedIdentifier(value)
+      if (!key) return
+      const owners = ownersByIdentifier.get(key) || new Set()
+      owners.add(index)
+      ownersByIdentifier.set(key, owners)
+    })
+  })
+  return [...ownersByIdentifier.values()].some((owners) => owners.size > 1)
+}
+const resolveOpenAttendanceIdentifier = (attendance, { employeeId, attendanceId = '' } = {}) => {
+  const openRecords = (Array.isArray(attendance) ? attendance : []).filter((record) => (
+    !record.deletedAt
+    && !record.checkOutAt
+    && !record.checkOut
+    && (!employeeId || sameIdentifier(record.employeeId, employeeId))
+  ))
+  return operationalIdentifierRecordMatch(
+    openRecords,
+    attendanceId || employeeId,
+    (record) => attendanceId ? [record.id] : [record.employeeId],
+  )
+}
+const withCanonicalIdentifierEntry = (record, identifier, value) => {
+  const canonicalIdentifier = String(identifier ?? '').trim()
+  const entries = Object.entries(record && typeof record === 'object' && !Array.isArray(record) ? record : {})
+  const existing = operationalIdentifierEntry(record, canonicalIdentifier)
+  if (existing.ambiguous) return Object.fromEntries(entries)
+  const entriesWithoutResolvedKey = entries
+    .filter(([candidateId]) => candidateId !== existing.key)
+  if (canonicalIdentifier) entriesWithoutResolvedKey.push([canonicalIdentifier, value])
+  return Object.fromEntries(entriesWithoutResolvedKey)
+}
 
 const revenueBonusView = (dailyRecords = [], allocationRecords = []) => {
   const allocations = Array.isArray(allocationRecords) ? allocationRecords : []
-  return (Array.isArray(dailyRecords) ? dailyRecords : []).map((record) => {
-    const recordId = String(record?.id || '')
+  const daily = Array.isArray(dailyRecords) ? dailyRecords : []
+  return daily.map((record) => {
     const linked = allocations.filter((allocation) => (
-      String(allocation?.revenueBonusDailyId || allocation?.calculationId || '') === recordId
+      operationalIdentifierReferenceMatchesRecord(
+        daily,
+        record,
+        allocation?.revenueBonusDailyId || allocation?.calculationId,
+      )
     ))
     return {
       ...record,
@@ -187,6 +252,80 @@ const REMOTE_ARRAY_KEYS = [
   'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
   'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
 ]
+
+const canonicalIdentifierMap = (records = [], identifierValues, canonicalValue) => {
+  const result = new Map()
+  const rows = Array.isArray(records) ? records : []
+  rows.forEach((record) => {
+    const canonical = String(canonicalValue(record) ?? '').trim()
+    if (!canonical) return
+    identifierValues(record).forEach((identifier) => {
+      const key = normalizedIdentifier(identifier)
+      if (!key) return
+      if (!result.has(key)) result.set(key, canonical)
+      else if (result.get(key) !== canonical) result.set(key, null)
+    })
+  })
+  return result
+}
+
+const OPERATIONAL_REFERENCE_KEYS = {
+  employee: new Set([
+    'employeeid', 'employeeids', 'employeecode', 'staffid', 'staffids',
+    'assigneeid', 'assigneeids', 'assignedemployeeid', 'assignedemployeeids',
+    'createdbyemployeeid', 'manageremployeeid', 'participantemployeeid', 'participantemployeeids',
+  ]),
+  store: new Set([
+    'storeid', 'storeids', 'homestoreid', 'fromstoreid', 'tostoreid', 'sourcestoreid',
+    'destinationstoreid', 'targetstoreid', 'supportstoreid', 'assignedstoreid', 'effectivestoreid',
+  ]),
+  shift: new Set(['shiftid', 'shiftids', 'shift']),
+  attendance: new Set(['attendanceid', 'attendanceids', 'checklistattendanceid']),
+  task: new Set(['taskid', 'taskids']),
+  workCatalog: new Set(['catalogitemid', 'catalogitemids', 'workcatalogitemid', 'workcatalogitemids']),
+  supportTransfer: new Set(['supporttransferid', 'supporttransferids', 'activetransferid']),
+}
+
+const operationalReferenceKind = (key) => {
+  const normalizedKey = String(key || '').replace(/[_-]/gu, '').toLocaleLowerCase('en-US')
+  return Object.entries(OPERATIONAL_REFERENCE_KEYS)
+    .find(([, keys]) => keys.has(normalizedKey))?.[0] || null
+}
+
+export const canonicalizeRemoteOperationalIdentifiers = (remoteState = {}) => {
+  const source = remoteState && typeof remoteState === 'object' && !Array.isArray(remoteState) ? remoteState : {}
+  const rows = (value) => (Array.isArray(value) ? value : [])
+  const maps = {
+    employee: canonicalIdentifierMap(
+      [...rows(source.employees), ...rows(source.deletedEmployees)],
+      (record) => [record?.id, record?.code, record?.employeeId, record?.employeeCode],
+      (record) => record?.id || record?.code || record?.employeeId || record?.employeeCode,
+    ),
+    store: canonicalIdentifierMap(
+      [...rows(source.stores), ...rows(source.deletedStores)],
+      (record) => [record?.id, record?.storeId, record?.code],
+      (record) => record?.id || record?.storeId || record?.code,
+    ),
+    shift: canonicalIdentifierMap(source.shiftDefinitions, (record) => [record?.id, record?.shiftId], (record) => record?.id || record?.shiftId),
+    attendance: canonicalIdentifierMap(source.attendance, (record) => [record?.id, record?.attendanceId], (record) => record?.id || record?.attendanceId),
+    task: canonicalIdentifierMap(source.tasks, (record) => [record?.id, record?.taskId], (record) => record?.id || record?.taskId),
+    workCatalog: canonicalIdentifierMap(source.workCatalogItems, (record) => [record?.id], (record) => record?.id),
+    supportTransfer: canonicalIdentifierMap(source.supportTransfers, (record) => [record?.id], (record) => record?.id),
+  }
+  const canonicalize = (value, referenceKind = null) => {
+    if (Array.isArray(value)) return value.map((item) => canonicalize(item, referenceKind))
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, child]) => (
+        [key, canonicalize(child, operationalReferenceKind(key))]
+      )))
+    }
+    if (!referenceKind) return value
+    const key = normalizedIdentifier(value)
+    return key && maps[referenceKind]?.get(key) ? maps[referenceKind].get(key) : value
+  }
+  return canonicalize(source)
+}
+
 const SERVER_EXCLUDED_FIELDS = new Set([
   'password', 'passwordHash', 'password_hash', 'passwordSalt', 'password_salt', 'passwordIterations',
   'legacyPassword', 'token', 'tokenHash', 'adminAccounts', 'managerAccounts', 'managerPayroll',
@@ -243,10 +382,31 @@ export const mergeLegacyCredentialMigration = (current, migratedAccounts, remote
 )
 
 export const mergeEmployeeAuthUsers = (employees = [], users = []) => {
-  const authByEmployee = new Map(users.map((user) => [String(user.employeeId || ''), user]))
+  const employeeRows = Array.isArray(employees) ? employees : []
+  const userRows = Array.isArray(users) ? users : []
+  const identifiersFor = (employee) => [
+    employee?.id,
+    employee?.code,
+    employee?.employeeId,
+    employee?.employeeCode,
+  ].map((value) => String(value || '').trim()).filter(Boolean)
+  const authUserFor = (employee) => {
+    const identifiers = identifiersFor(employee)
+    const exactMatches = userRows.filter((user) => identifiers.includes(String(user?.employeeId || '').trim()))
+    if (exactMatches.length === 1) return exactMatches[0]
+    if (exactMatches.length > 1) return null
+    const foldedMatches = userRows.filter((user) => identifiers.some((identifier) => (
+      sameIdentifier(identifier, user?.employeeId)
+    )))
+    if (foldedMatches.length !== 1) return null
+    const foldedOwners = employeeRows.filter((candidate) => identifiersFor(candidate).some((candidateIdentifier) => (
+      identifiers.some((identifier) => sameIdentifier(candidateIdentifier, identifier))
+    )))
+    return foldedOwners.length === 1 ? foldedMatches[0] : null
+  }
   const statuses = { active: 'Đang làm việc', locked: 'Tạm ngưng', inactive: 'Đã nghỉ việc' }
-  return employees.map((employee) => {
-    const user = authByEmployee.get(String(employee.id || employee.code || ''))
+  return employeeRows.map((employee) => {
+    const user = authUserFor(employee)
     return user ? {
       ...employee,
       username: user.username || employee.username,
@@ -282,9 +442,9 @@ export const remoteEffectiveUserChanged = (current = {}, latest = {}) => {
   if (!latest || typeof latest !== 'object' || !Object.keys(latest).length) return false
   const field = (record, camel, snake = camel) => String(record?.[camel] ?? record?.[snake] ?? '')
   return normalizeAuthRole(current?.role) !== normalizeAuthRole(latest?.role)
-    || field(current, 'storeId', 'store_id') !== field(latest, 'storeId', 'store_id')
-    || field(current, 'homeStoreId', 'home_store_id') !== field(latest, 'homeStoreId', 'home_store_id')
-    || field(current, 'activeTransferId', 'active_transfer_id') !== field(latest, 'activeTransferId', 'active_transfer_id')
+    || normalizedIdentifier(field(current, 'storeId', 'store_id')) !== normalizedIdentifier(field(latest, 'storeId', 'store_id'))
+    || normalizedIdentifier(field(current, 'homeStoreId', 'home_store_id')) !== normalizedIdentifier(field(latest, 'homeStoreId', 'home_store_id'))
+    || normalizedIdentifier(field(current, 'activeTransferId', 'active_transfer_id')) !== normalizedIdentifier(field(latest, 'activeTransferId', 'active_transfer_id'))
 }
 export const canManageSupportTransfers = (role) => ['admin', 'business_support'].includes(normalizeAuthRole(role))
 export const canDeleteSupportTransfers = (role) => normalizeAuthRole(role) === 'admin'
@@ -534,7 +694,11 @@ const normalizeManager = (payload = {}) => ({
 
 const countStoreEmployees = (stores, employees) => stores.map((store) => ({
   ...store,
-  employees: employees.filter((employee) => employee.unit === 'store' && employee.storeId === store.id && employee.status !== 'Đã nghỉ việc').length,
+  employees: employees.filter((employee) => (
+    employee.unit === 'store'
+    && sameIdentifier(employee.storeId, store.id)
+    && employee.status !== 'Đã nghỉ việc'
+  )).length,
 }))
 
 const normalizeTask = (task = {}, fallbackStoreId = null) => ({
@@ -553,6 +717,69 @@ const normalizeTask = (task = {}, fallbackStoreId = null) => ({
   ].map(String).filter(Boolean))],
   done: Boolean(task.done),
 })
+
+export const storeTasksForAttendance = ({
+  tasks = [],
+  attendance,
+  attendanceRecords = [],
+  employeeId,
+  employees = [],
+  stores = [],
+  shiftDefinitions = [],
+  taskAssignmentHistory = [],
+}) => {
+  if (!attendance) return []
+  const storeId = String(attendance.storeId || '')
+  const date = String(attendance.date || attendance.workDate || '').slice(0, 10)
+  const shiftId = String(attendance.shiftId || attendance.shift || '')
+  const storeRecords = stores.length ? stores : [{ id: storeId }]
+  const storeMatch = resolveRecordIdentifier(storeRecords, storeId)
+  const scopedStore = matchedRecordOrNull(storeMatch)
+  if (!scopedStore) return []
+  const employeeRecords = employees.length ? employees : [{ id: employeeId }]
+  const employeeMatch = resolveEmployeeIdentifier(employeeRecords, employeeId)
+  const scopedEmployee = matchedRecordOrNull(employeeMatch)
+  if (!scopedEmployee) return []
+  const storeShifts = shiftDefinitions.filter((record) => (
+    operationalIdentifierReferenceMatchesRecord(storeRecords, scopedStore, record.storeId)
+  ))
+  const shiftRecords = storeShifts.length ? storeShifts : [{ id: shiftId }]
+  const shiftMatch = resolveRecordIdentifier(shiftRecords, shiftId)
+  const scopedShift = matchedRecordOrNull(shiftMatch)
+  if (shiftId && !scopedShift) return []
+  const activeAttendance = (Array.isArray(attendanceRecords) ? attendanceRecords : [])
+    .filter((record) => !record.deletedAt)
+  return (Array.isArray(tasks) ? tasks : []).filter((task) => {
+    if (task.deletedAt || !operationalIdentifierReferenceMatchesRecord(storeRecords, scopedStore, task.storeId)) return false
+    if (String(task.date || task.workDate || '').slice(0, 10) !== date) return false
+    const checklistAttendanceId = String(task.checklistAttendanceId || '').trim()
+    if (checklistAttendanceId && !operationalIdentifierReferenceMatchesRecord(
+      activeAttendance.length ? activeAttendance : [attendance],
+      attendance,
+      checklistAttendanceId,
+    )) return false
+    const taskShiftId = String(task.shiftId || task.shift || '')
+    if (taskShiftId && !operationalIdentifierReferenceMatchesRecord(shiftRecords, scopedShift, taskShiftId)) return false
+    const assignmentId = String(task.assignmentId || task.taskAssignmentId || '').trim()
+    if (assignmentId && taskAssignmentHistory.length) {
+      const assignmentMatch = resolveRecordIdentifier(
+        taskAssignmentHistory,
+        assignmentId,
+        (record) => [record?.id, record?.assignmentId],
+      )
+      if (!matchedRecordOrNull(assignmentMatch)) return false
+    }
+    const assignees = [
+      task.employeeId,
+      ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
+      ...(Array.isArray(task.assigneeIds) ? task.assigneeIds : []),
+      ...(Array.isArray(task.assignedEmployeeIds) ? task.assignedEmployeeIds : []),
+    ].filter(Boolean)
+    return !assignees.length || assignees.some((assigneeId) => (
+      matchedRecordOrNull(resolveEmployeeIdentifier(employeeRecords, assigneeId)) === scopedEmployee
+    ))
+  })
+}
 
 export const createInitialState = () => {
   const employees = employeesSeed.map((employee) => normalizeEmployee(clone(employee)))
@@ -645,14 +872,16 @@ export const createLocalSystemResetState = (current = {}) => {
 }
 
 export const resolveRemoteActiveStoreId = ({ stores = [], session, remoteActiveStoreId, preferredActiveStoreId }) => {
-  const storeExists = (id) => Boolean(id) && stores.some((store) => String(store.id) === String(id))
+  const canonicalStoreId = (id) => matchedRecordOrNull(resolveRecordIdentifier(stores, id))?.id || null
   if (session?.role === 'store_manager' || (session?.role === 'employee' && session?.unit !== 'office')) {
-    return session.storeId || null
+    return canonicalStoreId(session.storeId)
   }
-  if (['admin', 'business_support'].includes(normalizeAuthRole(session?.role)) && storeExists(preferredActiveStoreId)) {
-    return preferredActiveStoreId
+  const preferredStoreId = canonicalStoreId(preferredActiveStoreId)
+  if (['admin', 'business_support'].includes(normalizeAuthRole(session?.role)) && preferredStoreId) {
+    return preferredStoreId
   }
-  if (storeExists(remoteActiveStoreId)) return remoteActiveStoreId
+  const activeStoreId = canonicalStoreId(remoteActiveStoreId)
+  if (activeStoreId) return activeStoreId
   return stores[0]?.id || null
 }
 
@@ -675,13 +904,49 @@ const hydrateRemoteAccountSettings = (settings = {}) => {
 const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferredActiveStoreId = null) => {
   const emptyCollections = Object.fromEntries(REMOTE_ARRAY_KEYS.map((key) => [key, []]))
   const mappedPolicies = apiPolicyMap(policyRecords)
+  // Keep the server snapshot byte-for-byte authoritative. Operational lookups
+  // below are case-insensitive, but rewriting the hydrated collections would
+  // later make Admin state.replace mutate protected finance/audit history.
   const safeRemote = {
     ...emptyCollections,
     ...(remoteState && typeof remoteState === 'object' ? remoteState : {}),
   }
   const remoteRole = normalizeAuthRole(remoteUser?.role)
-  const employeeId = remoteUser?.employeeId || remoteUser?.employee_id
-  const remoteEmployee = safeRemote.employees.find((employee) => String(employee.id || employee.code) === String(employeeId))
+  const requestedEmployeeId = remoteUser?.employeeId || remoteUser?.employee_id
+  const remoteEmployeeMatch = resolveEmployeeIdentifier(safeRemote.employees, requestedEmployeeId)
+  if (remoteEmployeeMatch.ambiguous) {
+    throw Object.assign(new Error('Không thể xác định hồ sơ nhân viên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.'), {
+      code: 'EMPLOYEE_IDENTIFIER_COLLISION',
+    })
+  }
+  const remoteEmployee = remoteEmployeeMatch.ambiguous ? null : remoteEmployeeMatch.record
+  // Client-side preflights use the canonical profile identifier. Historical
+  // rows retain their original spelling and are resolved case-insensitively by
+  // their readers, so authentication aliases cannot block valid mutations.
+  const employeeId = remoteEmployee?.id || remoteEmployee?.code || remoteEmployee?.employeeId || requestedEmployeeId
+  const requestedStoreId = remoteUser?.storeId || remoteUser?.store_id || remoteEmployee?.storeId
+  const requestedStoreMatch = resolveRecordIdentifier(safeRemote.stores, requestedStoreId)
+  if (requestedStoreMatch.ambiguous) {
+    throw Object.assign(new Error('Không thể xác định cửa hàng của phiên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.'), {
+      code: 'STORE_IDENTIFIER_COLLISION',
+    })
+  }
+  const canonicalStoreId = requestedStoreMatch.record?.id
+  const requestedActiveTransferId = remoteUser?.activeTransferId || remoteUser?.active_transfer_id
+  const activeTransferMatch = resolveRecordIdentifier(safeRemote.supportTransfers, requestedActiveTransferId)
+  if (activeTransferMatch.ambiguous) {
+    throw Object.assign(new Error('Không thể xác định phiếu điều chuyển đang hiệu lực vì có mã trùng nhau khi không phân biệt chữ hoa/thường.'), {
+      code: 'SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+    })
+  }
+  const canonicalActiveTransferId = activeTransferMatch.record?.id
+  const requestedHomeStoreId = remoteUser?.homeStoreId || remoteUser?.home_store_id || remoteEmployee?.storeId
+  const homeStoreMatch = resolveRecordIdentifier(safeRemote.stores, requestedHomeStoreId)
+  if (homeStoreMatch.ambiguous) {
+    throw Object.assign(new Error('Không thể xác định cửa hàng chính của nhân viên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.'), {
+      code: 'STORE_IDENTIFIER_COLLISION',
+    })
+  }
   const isAdminAccount = remoteRole === 'admin'
   const session = isAdminAccount
     ? { id: remoteUser.id, code: 'ADMIN', name: remoteUser.displayName || remoteUser.username, username: remoteUser.username, role: 'admin', accountType: 'admin', authVersion: remoteUser.version, availableRoles: remoteUser.availableRoles || [], needsRoleSelection: Boolean(remoteUser.needsRoleSelection) }
@@ -693,9 +958,9 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
         role: ['business_support', 'store_manager'].includes(remoteRole) ? remoteRole : 'employee',
         accountType: ['business_support', 'store_manager'].includes(remoteRole) ? remoteRole : 'employee',
         employeeId: employeeId || remoteEmployee?.id || remoteEmployee?.code || (remoteRole === 'business_support' ? null : remoteUser?.id),
-        storeId: remoteUser?.storeId || remoteUser?.store_id || remoteEmployee?.storeId || (remoteRole === 'business_support' ? 'BUSINESS_SUPPORT' : undefined),
-        homeStoreId: remoteUser?.homeStoreId || remoteUser?.home_store_id || remoteEmployee?.storeId || undefined,
-        activeTransferId: remoteUser?.activeTransferId || remoteUser?.active_transfer_id || undefined,
+        storeId: canonicalStoreId || requestedStoreId || (remoteRole === 'business_support' ? 'BUSINESS_SUPPORT' : undefined),
+        homeStoreId: homeStoreMatch.record?.id || requestedHomeStoreId || undefined,
+        activeTransferId: canonicalActiveTransferId || requestedActiveTransferId || undefined,
         unit: remoteEmployee?.unit || (remoteRole === 'business_support' ? 'business_support' : remoteRole === 'store_manager' ? 'store_manager' : 'store'),
         unitType: remoteEmployee?.unit || (remoteRole === 'business_support' ? 'business_support' : remoteRole === 'store_manager' ? 'store_manager' : 'store'),
         authUserId: remoteUser?.id,
@@ -705,6 +970,7 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
       }
   const employees = safeRemote.employees.map((employee) => normalizeEmployee(employee, safeRemote.activeStoreId || session.storeId || ''))
   const stores = countStoreEmployees(safeRemote.stores, employees)
+  const remoteActiveStoreMatch = resolveRecordIdentifier(stores, safeRemote.activeStoreId)
   const normalized = {
     ...safeRemote,
     adminAccounts: [],
@@ -714,9 +980,9 @@ const hydrateRemoteState = (remoteState, remoteUser, policyRecords = [], preferr
     session: null,
     settings: hydrateRemoteAccountSettings(safeRemote.settings),
     tasks: safeRemote.tasks.map((task) => normalizeTask(task, safeRemote.activeStoreId || session.storeId || stores[0]?.id)),
-    activeStoreId: stores.some((store) => store.id === safeRemote.activeStoreId)
-      ? safeRemote.activeStoreId
-      : stores[0]?.id || null,
+    activeStoreId: remoteActiveStoreMatch.ambiguous
+      ? null
+      : remoteActiveStoreMatch.record?.id || stores[0]?.id || null,
     policies: {
       ...defaultPolicies,
       ...mappedPolicies,
@@ -972,24 +1238,44 @@ const actorSnapshot = (session) => ({
 
 const visibleOrders = (orders = []) => orders.filter((order) => !order.deletedAt && order.status !== 'Đã xóa')
 
-export const localHomePayrollAttendance = ({ attendance = [], employee = {}, period = monthKey() } = {}) => (
-  attendance.filter((record) => (
+export const localHomePayrollAttendance = ({
+  attendance = [],
+  employee = {},
+  employees = [],
+  stores = [],
+  period = monthKey(),
+} = {}) => {
+  const employeeCatalog = employees.length ? employees : [employee]
+  const targetEmployee = employeeCatalog.includes(employee)
+    ? employee
+    : matchedRecordOrNull(resolveEmployeeIdentifier(employeeCatalog, employee.id || employee.code || employee.employeeId))
+  const storeCatalog = stores.length ? stores : [{ id: employee.storeId }]
+  const targetStore = matchedRecordOrNull(resolveRecordIdentifier(storeCatalog, employee.storeId))
+  if (!targetEmployee || !targetStore) return []
+  return attendance.filter((record) => (
     !record.deletedAt
-    && String(record.employeeId || '') === String(employee.id || '')
-    && String(record.storeId || '') === String(employee.storeId || '')
+    && matchedRecordOrNull(resolveEmployeeIdentifier(employeeCatalog, record.employeeId)) === targetEmployee
+    && matchedRecordOrNull(resolveRecordIdentifier(storeCatalog, record.storeId)) === targetStore
     && !record.supportTransferId
     && !record.supportCompensation?.transferId
     && !record.compensation?.support?.transferId
     && isInMonth(record, period)
   ))
-)
+}
 
 const employeeGrossFor = (state, employeeId, period = monthKey()) => {
-  const employee = state.employees.find((item) => item.id === employeeId)
+  const employee = matchedRecordOrNull(resolveEmployeeIdentifier(state.employees || [], employeeId))
   if (!employee) return 0
-  const attendance = localHomePayrollAttendance({ attendance: state.attendance, employee, period })
+  const employeeStore = matchedRecordOrNull(resolveRecordIdentifier(state.stores || [], employee.storeId))
+  if (!employeeStore) return 0
+  const attendance = localHomePayrollAttendance({
+    attendance: state.attendance,
+    employee,
+    employees: state.employees,
+    stores: state.stores,
+    period,
+  })
   const hours = attendance.reduce((sum, item) => sum + Math.max(0, Number(item.hours) || 0), 0)
-  const employeeStore = state.stores.find((store) => String(store.id) === String(employee.storeId))
   const { baseSalary: base } = calculateLocalStoreEmployeeBasePay({
     state,
     employee,
@@ -998,7 +1284,12 @@ const employeeGrossFor = (state, employeeId, period = monthKey()) => {
     hours,
   })
   const adjustments = state.salaryAdjustments
-    .filter((item) => item.employeeId === employeeId && isInMonth(item, period) && item.status !== 'Đã hủy')
+    .filter((item) => (
+      matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, item.employeeId)) === employee
+      && (!item.storeId || matchedRecordOrNull(resolveRecordIdentifier(state.stores, item.storeId)) === employeeStore)
+      && isInMonth(item, period)
+      && item.status !== 'Đã hủy'
+    ))
   const adjustmentAmount = (matches) => adjustments
     .filter((item) => matches(normalizeText(item.bonusSource || item.type)))
     .reduce((sum, item) => sum + nonNegativeInteger(item.amount), 0)
@@ -1019,9 +1310,62 @@ const employeeGrossFor = (state, employeeId, period = monthKey()) => {
   }).availableSalary
 }
 
-const advancePaidFor = (state, employeeId, period = monthKey()) => state.salaryAdvances
-  .filter((item) => item.employeeId === employeeId && item.period === period && item.status === 'Đã chi')
-  .reduce((sum, item) => sum + nonNegativeInteger(item.amount), 0)
+const advancePaidFor = (state, employeeId, period = monthKey()) => {
+  const employee = matchedRecordOrNull(resolveEmployeeIdentifier(state.employees || [], employeeId))
+  const employeeStore = employee
+    ? matchedRecordOrNull(resolveRecordIdentifier(state.stores || [], employee.storeId))
+    : null
+  if (!employee || !employeeStore) return 0
+  return state.salaryAdvances
+    .filter((item) => (
+      matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, item.employeeId)) === employee
+      && (!item.storeId || matchedRecordOrNull(resolveRecordIdentifier(state.stores, item.storeId)) === employeeStore)
+      && item.period === period
+      && item.status === 'Đã chi'
+    ))
+    .reduce((sum, item) => sum + nonNegativeInteger(item.amount), 0)
+}
+
+const resolutionTouches = (resolution, targets) => (
+  targets.has(resolution?.record) || (resolution?.ambiguous && resolution.matches.some((record) => targets.has(record)))
+)
+
+export const hasLocalPayrollReferenceCollision = ({ state = {}, employees = [], store = null, period = monthKey() } = {}) => {
+  if (!store || !employees.length) return false
+  const employeeTargets = new Set(employees)
+  const storeTargets = new Set([store])
+  const collides = (record, { storeOptional = false } = {}) => {
+    const employeeMatch = resolveEmployeeIdentifier(state.employees || [], record.employeeId)
+    const storeReference = String(record.storeId || '').trim()
+    const storeMatch = storeReference ? resolveRecordIdentifier(state.stores || [], storeReference) : null
+    const touchesEmployee = resolutionTouches(employeeMatch, employeeTargets)
+    const touchesStore = storeReference
+      ? resolutionTouches(storeMatch, storeTargets)
+      : storeOptional && touchesEmployee
+    return touchesEmployee && touchesStore && (employeeMatch.ambiguous || storeMatch?.ambiguous)
+  }
+  const attendanceCollision = (state.attendance || []).some((record) => (
+    !record.deletedAt
+    && !record.supportTransferId
+    && !record.supportCompensation?.transferId
+    && !record.compensation?.support?.transferId
+    && isInMonth(record, period)
+    && collides(record)
+  ))
+  if (attendanceCollision) return true
+  const adjustmentCollision = (state.salaryAdjustments || []).some((record) => (
+    record.status !== 'Đã hủy' && isInMonth(record, period) && collides(record, { storeOptional: true })
+  ))
+  if (adjustmentCollision) return true
+  return (state.salaryAdvances || []).some((record) => (
+    record.period === period && record.status === 'Đã chi' && collides(record, { storeOptional: true })
+  ))
+}
+
+export const localAvailableSalaryForEmployee = (state, employeeId, period = monthKey()) => Math.max(
+  0,
+  employeeGrossFor(state, employeeId, period) - advancePaidFor(state, employeeId, period),
+)
 
 export const buildLocalPayrollFinanceSnapshot = ({ state, storeId, period, netPayrollExpense = 0 }) => {
   const settlementSources = new Set(['payroll-accrual', 'payroll-payment', 'salary-advance'])
@@ -1134,6 +1478,8 @@ export function AppProvider({ children }) {
   const avatarObjectUrlRef = useRef({ signature: '', url: '' })
   const avatarLoadRequestRef = useRef(0)
   const activeStoreIdRef = useRef(state.activeStoreId)
+  const policiesRef = useRef(state.policies)
+  policiesRef.current = state.policies
 
   useEffect(() => {
     localAttendanceCheckInClaimsRef.current = new Set(
@@ -1143,11 +1489,11 @@ export function AppProvider({ children }) {
     )
   }, [state.attendance])
 
-  const activateRemotePayload = (payload, loginUser, preferredActiveStoreId = null) => {
+  const activateRemotePayload = useCallback((payload, loginUser, preferredActiveStoreId = null) => {
     const remoteUser = payload.user || loginUser
     const rememberedActiveStoreId = preferredActiveStoreId || readRememberedActiveStore(remoteUser)
     const hydrated = hydrateRemoteState(payload.state, remoteUser, payload.policies, rememberedActiveStoreId)
-    if (!Array.isArray(payload.policies)) hydrated.policies = state.policies
+    if (!Array.isArray(payload.policies)) hydrated.policies = policiesRef.current
     const hydratedAvatarSignature = accountAvatarMetadataSignature(hydrated.settings?.avatarMetadata)
     if (hydratedAvatarSignature && avatarObjectUrlRef.current.signature === hydratedAvatarSignature) {
       hydrated.settings = {
@@ -1177,7 +1523,7 @@ export function AppProvider({ children }) {
     activeStoreIdRef.current = hydrated.activeStoreId
     setState(hydrated)
     return hydrated.session
-  }
+  }, [])
 
   const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`) => {
     const remote = apiRef.current
@@ -1309,7 +1655,7 @@ export function AppProvider({ children }) {
       if (active) setSessionRestoreReady(true)
     })
     return () => { active = false }
-  }, [])
+  }, [activateRemotePayload])
 
   useEffect(() => {
     const remote = apiRef.current
@@ -1381,7 +1727,7 @@ export function AppProvider({ children }) {
       if (boundaryTimer != null) window.clearTimeout(boundaryTimer)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [credentialsReady, state.activeStoreId, state.session, state.supportTransfers])
+  }, [activateRemotePayload, credentialsReady, state.activeStoreId, state.session, state.supportTransfers])
 
   useEffect(() => {
     if (credentialsReady) return undefined
@@ -1519,13 +1865,13 @@ export function AppProvider({ children }) {
       setApiStatus('local')
     }
 
-    const normalizedUsername = normalizeText(username)
+    const submittedUsername = String(username || '').trim()
     const sources = [
       ...state.adminAccounts.map((account) => ({ account, source: 'admin' })),
       ...state.managerAccounts.map((account) => ({ account, source: 'manager' })),
       ...state.employees.map((account) => ({ account, source: 'employee' })),
     ]
-    const matched = sources.find(({ account }) => normalizeText(account.username) === normalizedUsername)
+    const matched = sources.find(({ account }) => String(account.username || '').trim() === submittedUsername)
     if (!matched) return { ok: false, message: 'Tên đăng nhập hoặc mật khẩu chưa đúng.' }
     const passwordMatches = matched.account.passwordHash
       ? await verifyPassword(password, matched.account.passwordHash)
@@ -2058,10 +2404,18 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    updateCollection('tasks', (items) => items.map((item) => item.id === id ? {
+    const taskMatch = resolveRecordIdentifier(state.tasks, id)
+    const task = matchedRecordOrNull(taskMatch)
+    if (!task) {
+      return { ok: false, code: taskMatch.ambiguous ? 'TASK_IDENTIFIER_COLLISION' : 'TASK_NOT_FOUND', message: taskMatch.ambiguous ? 'Không thể xác định công việc vì có mã trùng nhau khi không phân biệt chữ hoa/thường.' : 'Không tìm thấy công việc.' }
+    }
+    if (employeeId && operationalIdentifierEntry(task.completedBy, employeeId).ambiguous) {
+      return { ok: false, code: 'TASK_COMPLETION_IDENTIFIER_COLLISION', message: 'Không thể cập nhật vì trạng thái hoàn thành có mã nhân viên trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    updateCollection('tasks', (items) => items.map((item) => item === task ? {
       ...item,
       ...(employeeId
-        ? { completedBy: { ...(item.completedBy || {}), [employeeId]: Boolean(done) } }
+        ? { completedBy: withCanonicalIdentifierEntry(item.completedBy, employeeId, Boolean(done)) }
         : { done: Boolean(done) }),
     } : item))
     notify(done ? 'Đã hoàn thành công việc.' : 'Đã mở lại công việc.', 'success')
@@ -2070,22 +2424,27 @@ export function AppProvider({ children }) {
 
   const addShiftExpense = async (payload = {}) => {
     const employeeId = String(state.session?.employeeId || state.session?.code || '')
-    const employee = state.employees.find((item) => accountKey(item) === employeeId)
+    const employeeMatch = resolveEmployeeIdentifier(state.employees, employeeId)
+    if (employeeMatch.ambiguous || employeeMatch.matches.length > 1) {
+      return { ok: false, code: 'EMPLOYEE_IDENTIFIER_COLLISION', message: 'Không thể xác định nhân viên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const employee = employeeMatch.record
     const role = normalizeAuthRole(state.session?.role)
     const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
     if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
       return { ok: false, message: 'Chức năng này chỉ dành cho nhân viên cửa hàng.' }
     }
     const attendanceId = String(payload.attendanceId || '')
-    const openAttendance = state.attendance.find((record) => (
-      String(record.employeeId || '') === employeeId
-      && (!attendanceId || String(record.id || '') === attendanceId)
-      && !record.deletedAt
-      && !record.checkOutAt
-      && !record.checkOut
-    ))
+    const attendanceMatch = resolveOpenAttendanceIdentifier(state.attendance, {
+      employeeId: accountKey(employee),
+      attendanceId,
+    })
+    if (attendanceMatch.ambiguous) {
+      return { ok: false, code: 'ATTENDANCE_IDENTIFIER_COLLISION', message: 'Không thể xác định ca đang mở vì có mã chấm công trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const openAttendance = attendanceMatch.record
     if (!openAttendance) return { ok: false, message: 'Bạn cần điểm danh và đang trong ca để nhập chi phí.' }
-    if (String(state.session?.storeId || '') && String(openAttendance.storeId || '') !== String(state.session.storeId)) {
+    if (String(state.session?.storeId || '') && !sameIdentifier(openAttendance.storeId, state.session.storeId)) {
       return { ok: false, message: 'Ca đang mở không thuộc cửa hàng hiện tại của tài khoản.' }
     }
     const name = String(payload.name || payload.expenseName || '').trim()
@@ -2163,7 +2522,9 @@ export function AppProvider({ children }) {
     setState((current) => {
       if (current.expenseEntries.some((entry) => String(entry.idempotencyKey || '') === idempotencyKey)) return current
       const previousTotal = current.expenseEntries
-        .filter((entry) => entry.recognized !== false && String(entry.attendanceId || '') === String(openAttendance.id || '') && String(entry.sourceType || '') === 'shift-expense-item')
+        .filter((entry) => entry.recognized !== false
+          && operationalIdentifierReferenceMatchesRecord(current.attendance, openAttendance, entry.attendanceId)
+          && String(entry.sourceType || '') === 'shift-expense-item')
         .reduce((total, entry) => total + nonNegativeInteger(entry.amount), 0)
       const totalShiftExpense = previousTotal + amount
       return {
@@ -2183,49 +2544,61 @@ export function AppProvider({ children }) {
 
   const saveStoreTaskProgress = async (payload = {}) => {
     const employeeId = String(state.session?.employeeId || state.session?.code || '')
-    const employee = state.employees.find((item) => accountKey(item) === employeeId)
+    const employeeMatch = resolveEmployeeIdentifier(state.employees, employeeId)
+    if (employeeMatch.ambiguous) {
+      return { ok: false, code: 'EMPLOYEE_IDENTIFIER_COLLISION', message: 'Không thể xác định nhân viên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const employee = employeeMatch.record
     const role = normalizeAuthRole(state.session?.role)
     const employeeUnit = String(employee?.unit || employee?.unitType || employee?.department || '').trim()
     if (role !== 'employee' || !employee || isOfficeUnit(employeeUnit) || isBusinessSupportUnit(employeeUnit) || isStoreManagerUnit(employeeUnit)) {
       return { ok: false, message: 'Chức năng này chỉ dành cho nhân viên cửa hàng.' }
     }
     const attendanceId = String(payload.attendanceId || '')
-    const openAttendance = state.attendance.find((record) => (
-      String(record.employeeId || '') === employeeId
-      && (!attendanceId || String(record.id || '') === attendanceId)
-      && !record.deletedAt
-      && !record.checkOutAt
-      && !record.checkOut
-    ))
+    const attendanceMatch = resolveOpenAttendanceIdentifier(state.attendance, {
+      employeeId: accountKey(employee),
+      attendanceId,
+    })
+    if (attendanceMatch.ambiguous) {
+      return { ok: false, code: 'ATTENDANCE_IDENTIFIER_COLLISION', message: 'Không thể xác định ca đang mở vì có mã chấm công trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const openAttendance = attendanceMatch.record
     if (!openAttendance) return { ok: false, message: 'Bạn cần điểm danh và đang trong ca để lưu kết quả công việc.' }
-    const storeId = String(openAttendance.storeId || '')
+    const storeId = String(openAttendance.storeId || employee.storeId || '')
     const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
     const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
-    const scopedTasks = state.tasks.filter((task) => {
-      if (task.deletedAt || String(task.storeId || '') !== storeId || String(task.date || task.workDate || '').slice(0, 10) !== date) return false
-      const assignees = [
-        task.employeeId,
-        ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
-        ...(Array.isArray(task.assigneeIds) ? task.assigneeIds : []),
-        ...(Array.isArray(task.assignedEmployeeIds) ? task.assignedEmployeeIds : []),
-      ].filter(Boolean).map(String)
-      const taskShiftId = String(task.shiftId || task.shift || '')
-      return (!assignees.length || assignees.includes(employeeId)) && (!taskShiftId || taskShiftId === shiftId)
+    const scopedTasks = storeTasksForAttendance({
+      tasks: state.tasks,
+      attendance: openAttendance,
+      attendanceRecords: state.attendance,
+      employeeId,
+      employees: state.employees,
+      stores: state.stores,
+      shiftDefinitions: state.shiftDefinitions,
+      taskAssignmentHistory: state.taskAssignmentHistory,
     })
     if (!scopedTasks.length) return { ok: false, message: 'Ca đang làm chưa có công việc được giao.' }
+    if (scopedTasks.some((task) => operationalIdentifierEntry(task.completedBy, employeeId).ambiguous)) {
+      return { ok: false, code: 'TASK_COMPLETION_IDENTIFIER_COLLISION', message: 'Không thể lưu kết quả vì trạng thái hoàn thành có mã nhân viên trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
     const statuses = Array.isArray(payload.tasks) ? payload.tasks : []
     const submitted = new Map()
-    const taskIds = new Set(scopedTasks.map((task) => String(task.id || '')))
+    const taskIdByKey = new Map(scopedTasks.map((task) => [normalizedIdentifier(task.id), String(task.id || '')]))
+    if (taskIdByKey.size !== scopedTasks.length) {
+      return { ok: false, code: 'TASK_IDENTIFIER_COLLISION', message: 'Không thể lưu kết quả vì danh sách công việc có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const taskIds = new Set(taskIdByKey.keys())
     for (const item of statuses) {
       const taskId = String(item?.id || item?.taskId || '')
-      if (!taskIds.has(taskId) || submitted.has(taskId) || typeof item?.completed !== 'boolean') {
+      const taskKey = normalizedIdentifier(taskId)
+      if (!taskIds.has(taskKey) || submitted.has(taskKey) || typeof item?.completed !== 'boolean') {
         return { ok: false, message: 'Danh sách kết quả có công việc không hợp lệ hoặc không thuộc ca đang làm.' }
       }
-      submitted.set(taskId, item.completed)
+      submitted.set(taskKey, item.completed)
     }
     if (submitted.size !== taskIds.size) return { ok: false, message: 'Cần gửi trạng thái của đầy đủ công việc được giao trong ca.' }
     const incompleteReason = String(payload.incompleteReason || payload.note || '').trim()
-    const requiredTaskIds = new Set(scopedTasks.filter((task) => task.required !== false).map((task) => String(task.id || '')))
+    const requiredTaskIds = new Set(scopedTasks.filter((task) => task.required !== false).map((task) => normalizedIdentifier(task.id)))
     const incompleteTaskIds = [...submitted]
       .filter(([taskId, completed]) => requiredTaskIds.has(taskId) && !completed)
       .map(([taskId]) => taskId)
@@ -2236,7 +2609,7 @@ export function AppProvider({ children }) {
       try {
         const result = await runRemoteDomainCommand('task.progress.save', {
           attendanceId: openAttendance.id,
-          tasks: [...submitted].map(([id, completed]) => ({ id, completed })),
+          tasks: [...submitted].map(([id, completed]) => ({ id: taskIdByKey.get(id) || id, completed })),
           incompleteReason,
         }, idempotencyKey)
         notify(`Đã lưu kết quả: hoàn thành ${result.completionRate || 0}%.`)
@@ -2249,11 +2622,11 @@ export function AppProvider({ children }) {
     const normalizedStatuses = [...submitted].sort(([left], [right]) => left.localeCompare(right))
     const fingerprint = JSON.stringify({ attendanceId: openAttendance.id, tasks: normalizedStatuses, incompleteReason })
     const existing = state.taskAssignmentHistory.flatMap((assignment) => assignment.progressHistory || [])
-      .find((event) => String(event.employeeId || '') === employeeId && String(event.fingerprint || '') === fingerprint)
+      .find((event) => sameIdentifier(event.employeeId, employeeId) && String(event.fingerprint || '') === fingerprint)
     const mandatoryProgress = (items = scopedTasks) => {
       const mandatoryIds = items
         .filter((task) => task.required !== false)
-        .map((task) => String(task.id || ''))
+        .map((task) => normalizedIdentifier(task.id))
       const totalTasks = mandatoryIds.length
       const completedTasks = mandatoryIds.filter((taskId) => submitted.get(taskId) === true).length
       return {
@@ -2266,9 +2639,17 @@ export function AppProvider({ children }) {
     if (existing) return { ok: true, existing: true, completedTasks, totalTasks, completionRate, submittedAt: existing.at }
     const timestamp = new Date().toISOString()
     const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
+    const assignmentKeys = new Set(assignmentIds.map(normalizedIdentifier))
+    if (assignmentKeys.size !== assignmentIds.length) {
+      return { ok: false, code: 'TASK_ASSIGNMENT_IDENTIFIER_COLLISION', message: 'Không thể lưu kết quả vì lượt giao việc có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const submittedByExactTaskId = new Map(scopedTasks.map((task) => [
+      String(task.id || ''),
+      submitted.get(normalizedIdentifier(task.id)),
+    ]))
     const assignmentSummaries = (assignmentIds.length ? assignmentIds : ['']).map((assignmentId) => {
       const scopedAssignmentTasks = scopedTasks
-        .filter((task) => !assignmentId || String(task.assignmentId || '') === assignmentId)
+        .filter((task) => !assignmentId || sameIdentifier(task.assignmentId, assignmentId))
       const progress = mandatoryProgress(scopedAssignmentTasks)
       return {
         assignmentId,
@@ -2277,15 +2658,20 @@ export function AppProvider({ children }) {
     })
     setState((current) => ({
       ...current,
-      tasks: current.tasks.map((task) => submitted.has(String(task.id || '')) ? {
+      tasks: current.tasks.map((task) => submittedByExactTaskId.has(String(task.id || '')) ? {
         ...task,
-        completedBy: { ...(task.completedBy || {}), [employeeId]: submitted.get(String(task.id || '')) },
-        completionHistory: [...(task.completionHistory || []), { done: submitted.get(String(task.id || '')), at: timestamp, employeeId, actor: actorSnapshot(current.session) }],
+        completedBy: withCanonicalIdentifierEntry(task.completedBy, employeeId, submittedByExactTaskId.get(String(task.id || ''))),
+        completionHistory: [...(task.completionHistory || []), { done: submittedByExactTaskId.get(String(task.id || '')), at: timestamp, employeeId, actor: actorSnapshot(current.session) }],
         updatedAt: timestamp,
       } : task),
       taskAssignmentHistory: current.taskAssignmentHistory.map((assignment) => {
         const assignmentId = String(assignment.assignmentId || assignment.id || '')
-        if (!assignmentIds.includes(assignmentId)) return assignment
+        if (!assignmentIds.some((reference) => operationalIdentifierReferenceMatchesRecord(
+          current.taskAssignmentHistory,
+          assignment,
+          reference,
+          (record) => record.assignmentId || record.id,
+        ))) return assignment
         const assignmentProgress = mandatoryProgress(scopedTasks.filter((task) => String(task.assignmentId || '') === assignmentId))
         const assignmentCompleted = assignmentProgress.completedTasks
         const assignmentTotal = assignmentProgress.totalTasks
@@ -2435,9 +2821,13 @@ export function AppProvider({ children }) {
     const date = String(payload.date || '').trim()
     const targetUnit = payload.targetUnit === 'office' ? 'office' : 'business_support'
     const employeeId = String(payload.employeeId || '').trim()
-    const employee = state.employees.find((item) => accountKey(item) === employeeId && (targetUnit === 'office'
-      ? isOfficeUnit(item.unit || item.unitType || item.department)
-      : isBusinessSupportUnit(item.unit)))
+    const employeeMatch = resolveEmployeeIdentifier(state.employees, employeeId)
+    const employeeCandidate = matchedRecordOrNull(employeeMatch)
+    const employee = employeeCandidate && (targetUnit === 'office'
+      ? isOfficeUnit(employeeCandidate.unit || employeeCandidate.unitType || employeeCandidate.department)
+      : isBusinessSupportUnit(employeeCandidate.unit))
+      ? employeeCandidate
+      : null
     const tasks = (Array.isArray(payload.tasks) ? payload.tasks : [])
       .map((task) => ({
         ...task,
@@ -2510,13 +2900,28 @@ export function AppProvider({ children }) {
 
   const updateSupportWork = async (payload = {}) => {
     const actorRole = normalizeAuthRole(state.session?.role)
-    const currentProfile = state.employees.find((item) => accountKey(item) === String(state.session?.employeeId || state.session?.code || ''))
+    const sessionEmployeeId = String(state.session?.employeeId || state.session?.code || '')
+    const currentProfileMatch = resolveEmployeeIdentifier(state.employees, sessionEmployeeId)
+    const currentProfile = currentProfileMatch.ambiguous ? null : currentProfileMatch.record
     const officeEmployee = actorRole === 'employee' && isOfficeUnit(currentProfile?.unit || currentProfile?.unitType || currentProfile?.department)
     if (actorRole !== 'business_support' && !officeEmployee) return { ok: false, message: 'Chỉ nhân viên nhận việc được cập nhật công việc được giao.' }
     const assignmentId = String(payload.assignmentId || '').trim()
-    const assignment = (state.supportWorkAssignments || []).find((item) => String(item.id) === assignmentId)
-    const employeeId = String(state.session?.employeeId || state.session?.code || '')
-    if (!assignment || String(assignment.employeeId) !== employeeId) return { ok: false, message: 'Không tìm thấy công việc thuộc tài khoản này.' }
+    const assignmentMatch = operationalIdentifierRecordMatch(
+      state.supportWorkAssignments,
+      assignmentId,
+      (item) => [item.id],
+    )
+    const assignment = assignmentMatch.ambiguous ? null : assignmentMatch.record
+    const assignmentProfileMatch = assignment
+      ? resolveEmployeeIdentifier(state.employees, assignment.employeeId)
+      : { record: null, ambiguous: false }
+    const employeeId = accountKey(currentProfile) || sessionEmployeeId
+    if (!assignment
+      || !currentProfile
+      || assignmentProfileMatch.ambiguous
+      || assignmentProfileMatch.record !== currentProfile) {
+      return { ok: false, message: 'Không tìm thấy công việc thuộc tài khoản này.' }
+    }
     if ((assignment.targetUnit === 'office') !== officeEmployee) return { ok: false, message: 'Nhóm tài khoản không khớp với lượt giao việc.' }
     if (assignment.submittedAt) return { ok: false, message: 'Kết quả công việc đã được gửi và không thể thay đổi.' }
     const progressById = new Map((Array.isArray(payload.tasks) ? payload.tasks : []).map((task) => {
@@ -2609,14 +3014,14 @@ export function AppProvider({ children }) {
   const saveBusinessSupportSchedule = async (payload = {}) => {
     const actorRole = normalizeAuthRole(state.session?.role)
     const actorEmployeeId = String(state.session?.employeeId || '').trim()
-    const actorEmployee = state.employees.find((record) => String(record.id || record.code || '') === actorEmployeeId)
+    const actorEmployee = matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, actorEmployeeId))
     const selfManagingOfficeSchedule = actorRole === 'employee'
       && String(actorEmployee?.unit || actorEmployee?.unitType || '').toLowerCase() === 'office'
     if (!['admin', 'business_support'].includes(actorRole) && !selfManagingOfficeSchedule) {
       return { ok: false, message: 'Tài khoản không có quyền phân lịch làm việc.' }
     }
     const requestedEmployeeId = String(payload.employeeId || '').trim()
-    if (selfManagingOfficeSchedule && requestedEmployeeId && requestedEmployeeId !== actorEmployeeId) {
+    if (selfManagingOfficeSchedule && requestedEmployeeId && !sameIdentifier(requestedEmployeeId, actorEmployeeId)) {
       return { ok: false, message: 'Nhân viên văn phòng chỉ được tạo hoặc sửa lịch làm việc của chính mình.' }
     }
     const employeeId = selfManagingOfficeSchedule ? actorEmployeeId : requestedEmployeeId
@@ -2624,7 +3029,10 @@ export function AppProvider({ children }) {
     const date = String(payload.date || '').trim()
     const start = String(payload.start || '').slice(0, 5)
     const end = String(payload.end || '').slice(0, 5)
-    const employee = state.employees.find((record) => String(record.id || record.code || '') === employeeId && String(record.unit || record.unitType || '').toLowerCase() === targetUnit)
+    const employeeCandidate = matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, employeeId))
+    const employee = employeeCandidate && String(employeeCandidate.unit || employeeCandidate.unitType || '').toLowerCase() === targetUnit
+      ? employeeCandidate
+      : null
     if (!employee || !/^\d{4}-\d{2}-\d{2}$/u.test(date) || timeToMinutes(start) == null || timeToMinutes(end) == null || timeToMinutes(end) <= timeToMinutes(start)) {
       return { ok: false, message: 'Ngày, nhân viên hoặc thời gian làm việc chưa hợp lệ.' }
     }
@@ -2652,11 +3060,19 @@ export function AppProvider({ children }) {
       }
     }
     const timestamp = new Date().toISOString()
-    const previous = payload.scheduleId
-      ? (state.supportWorkSchedules || []).find((record) => String(record.id || '') === String(payload.scheduleId))
-      : (state.supportWorkSchedules || []).find((record) => record.employeeId === employeeId && record.date === date)
+    const previousMatch = payload.scheduleId
+      ? resolveRecordIdentifier(state.supportWorkSchedules || [], payload.scheduleId)
+      : operationalIdentifierRecordMatch(
+          (state.supportWorkSchedules || []).filter((record) => record.date === date),
+          employeeId,
+          (record) => [record.employeeId],
+        )
+    if (previousMatch.ambiguous) {
+      return { ok: false, code: 'SUPPORT_SCHEDULE_IDENTIFIER_COLLISION', message: 'Không thể xác định lịch làm việc vì có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const previous = previousMatch.record || null
     if (selfManagingOfficeSchedule && previous && (
-      String(previous.employeeId || '') !== actorEmployeeId
+      !sameIdentifier(previous.employeeId, actorEmployeeId)
       || previous.targetUnit !== 'office'
     )) return { ok: false, message: 'Nhân viên văn phòng chỉ được sửa lịch làm việc của chính mình.' }
     const schedule = {
@@ -2675,7 +3091,7 @@ export function AppProvider({ children }) {
     setState((current) => ({
       ...current,
       supportWorkSchedules: previous
-        ? (current.supportWorkSchedules || []).map((record) => record.id === previous.id ? schedule : record)
+        ? (current.supportWorkSchedules || []).map((record) => record === previous ? schedule : record)
         : [schedule, ...(current.supportWorkSchedules || [])],
       supportWorkScheduleHistory: [history, ...(current.supportWorkScheduleHistory || [])],
     }))
@@ -2686,15 +3102,16 @@ export function AppProvider({ children }) {
   const deleteBusinessSupportSchedule = async (scheduleId, reason = '') => {
     const actorRole = normalizeAuthRole(state.session?.role)
     const actorEmployeeId = String(state.session?.employeeId || '').trim()
-    const actorEmployee = state.employees.find((record) => String(record.id || record.code || '') === actorEmployeeId)
+    const actorEmployee = matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, actorEmployeeId))
     const selfManagingOfficeSchedule = actorRole === 'employee'
       && String(actorEmployee?.unit || actorEmployee?.unitType || '').toLowerCase() === 'office'
     if (!['admin', 'business_support'].includes(actorRole) && !selfManagingOfficeSchedule) return { ok: false, message: 'Tài khoản không có quyền xóa lịch làm việc.' }
-    const previous = (state.supportWorkSchedules || []).find((record) => String(record.id || '') === String(scheduleId || ''))
+    const previousMatch = resolveRecordIdentifier(state.supportWorkSchedules || [], scheduleId)
+    const previous = matchedRecordOrNull(previousMatch)
     const normalizedReason = String(reason || '').trim()
     if (!previous) return { ok: false, message: 'Không tìm thấy lịch làm việc.' }
     if (selfManagingOfficeSchedule && (
-      String(previous.employeeId || '') !== actorEmployeeId
+      !sameIdentifier(previous.employeeId, actorEmployeeId)
       || previous.targetUnit !== 'office'
     )) return { ok: false, message: 'Nhân viên văn phòng chỉ được xóa lịch làm việc của chính mình.' }
     if (!normalizedReason) return { ok: false, message: 'Cần nhập lý do xóa lịch làm việc.' }
@@ -2712,7 +3129,7 @@ export function AppProvider({ children }) {
     const history = { ...previous, id: uid('SWSH'), scheduleId: previous.id, action: 'Xóa lịch', reason: normalizedReason, recordedAt: timestamp, recordedBy: actorSnapshot(state.session) }
     setState((current) => ({
       ...current,
-      supportWorkSchedules: (current.supportWorkSchedules || []).filter((record) => String(record.id || '') !== String(scheduleId)),
+      supportWorkSchedules: (current.supportWorkSchedules || []).filter((record) => record !== previous),
       supportWorkScheduleHistory: [history, ...(current.supportWorkScheduleHistory || [])],
     }))
     notify('Đã xóa lịch làm việc.')
@@ -3674,17 +4091,20 @@ export function AppProvider({ children }) {
       setState((current) => {
         const progress = Array.isArray(current.workCatalogProgress) ? current.workCatalogProgress : []
         const entries = Array.isArray(current.compensationEntries) ? current.compensationEntries : []
-        const rewardExists = progress.some((record) => String(record.id || '') === String(result.reward.id || ''))
-        const entryExists = result.entry && entries.some((record) => String(record.id || '') === String(result.entry.id || ''))
+        const rewardMatch = resolveRecordIdentifier(progress, result.reward.id)
+        const entryMatch = result.entry ? resolveRecordIdentifier(entries, result.entry.id) : null
+        if (rewardMatch.ambiguous || entryMatch?.ambiguous) return current
+        const rewardExists = !rewardMatch.ambiguous && Boolean(rewardMatch.record)
+        const entryExists = result.entry && !entryMatch.ambiguous && Boolean(entryMatch.record)
         return {
           ...current,
           workCatalogProgress: rewardExists
-            ? progress.map((record) => String(record.id || '') === String(result.reward.id || '') ? result.reward : record)
+            ? progress.map((record) => record === rewardMatch.record ? result.reward : record)
             : [result.reward, ...progress],
           compensationEntries: !result.entry
             ? entries
             : entryExists
-              ? entries.map((record) => String(record.id || '') === String(result.entry.id || '') ? result.entry : record)
+              ? entries.map((record) => record === entryMatch.record ? result.entry : record)
               : [result.entry, ...entries],
         }
       })
@@ -3747,7 +4167,7 @@ export function AppProvider({ children }) {
   }
 
   const voidViolation = async (payload = {}) => {
-    const violation = state.violations.find((record) => String(record.id || '') === String(payload.id || payload.violationId || ''))
+    const violation = matchedRecordOrNull(resolveRecordIdentifier(state.violations, payload.id || payload.violationId))
     requireCompensationOperator(String(violation?.targetUnit || ''))
     return runRemoteDomainCommand(
       'violation.void',
@@ -3785,11 +4205,23 @@ export function AppProvider({ children }) {
 
   const addSalaryAdjustment = async (payload = {}) => {
     if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền tạo khoản lương thưởng.' }
-    const employee = state.employees.find((item) => item.id === payload.employeeId)
+    const employeeMatch = resolveEmployeeIdentifier(state.employees, payload.employeeId)
+    if (employeeMatch.ambiguous || employeeMatch.matches.length > 1) {
+      return { ok: false, code: 'EMPLOYEE_IDENTIFIER_COLLISION', message: 'Không thể xác định nhân viên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const employee = employeeMatch.record
     const amount = nonNegativeInteger(payload.amount)
     const period = payload.period || monthKey()
     if (!employee || amount <= 0) return { ok: false, message: 'Nhân viên hoặc số tiền chưa hợp lệ.' }
-    const payroll = state.payrollPeriods.find((item) => item.storeId === employee.storeId && item.period === period)
+    const payrollMatches = state.payrollPeriods.filter((item) => (
+      !item.supersededAt
+      && item.period === period
+      && sameIdentifier(item.storeId, employee.storeId)
+    ))
+    if (payrollMatches.length > 1) {
+      return { ok: false, code: 'PAYROLL_PERIOD_IDENTIFIER_COLLISION', message: 'Không thể tạo khoản lương thưởng vì kỳ lương có mã cửa hàng trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    const payroll = payrollMatches[0] || null
     if (payroll?.lockedAt || payroll?.confirmedAt || ['Đã khóa', 'Đã chi'].includes(payroll?.status)) {
       return { ok: false, message: 'Kỳ lương đã chi hoặc đã khóa; không thể thêm khoản điều chỉnh.' }
     }
@@ -3814,22 +4246,45 @@ export function AppProvider({ children }) {
     setState((current) => ({
       ...current,
       salaryAdjustments: [record, ...current.salaryAdjustments],
-      payrollPeriods: current.payrollPeriods.map((item) => item.storeId === employee.storeId && item.period === period && item.status === 'Đã chốt' && !item.confirmedAt && !item.lockedAt ? { ...item, needsReclose: true, invalidatedAt: timestamp, invalidationReason: 'salary_adjustment.create' } : item),
+      payrollPeriods: current.payrollPeriods.map((item) => item === payroll && item.status === 'Đã chốt' && !item.confirmedAt && !item.lockedAt ? { ...item, needsReclose: true, invalidatedAt: timestamp, invalidationReason: 'salary_adjustment.create' } : item),
       stateVersion: current.stateVersion + 1,
     }))
     notify(`Đã tạo khoản ${record.type.toLowerCase()}.`)
     return { ok: true, adjustment: record }
   }
 
-  const getAvailableSalary = (employeeId, period = monthKey()) => Math.max(0, employeeGrossFor(state, employeeId, period) - advancePaidFor(state, employeeId, period))
+  const getAvailableSalary = (employeeId, period = monthKey()) => localAvailableSalaryForEmployee(state, employeeId, period)
+
+  const availableSalaryResult = (employeeId, period) => {
+    try {
+      return { ok: true, available: getAvailableSalary(employeeId, period) }
+    } catch (error) {
+      const message = error?.code === STORE_SALARY_CONFIG_IDENTIFIER_COLLISION
+        ? 'Không thể tính lương khả dụng vì nhân viên có nhiều cấu hình lương trùng kỳ với mã chỉ khác chữ hoa/thường. Cần xử lý dữ liệu trùng trước khi thao tác ứng lương.'
+        : error?.message || 'Không thể tính lương khả dụng của nhân viên.'
+      return { ok: false, code: error?.code, message }
+    }
+  }
 
   const createSalaryAdvance = async (payload = {}) => {
     if (!isStoreWorkspaceRole(state.session?.role)) return { ok: false, message: 'Tài khoản không có quyền tạo ứng lương.' }
-    const employee = state.employees.find((item) => item.id === payload.employeeId)
+    const employeeMatch = resolveEmployeeIdentifier(state.employees, payload.employeeId)
+    if (employeeMatch.ambiguous || employeeMatch.matches.length > 1) {
+      const message = 'Không thể xác định nhân viên vì có mã trùng nhau khi không phân biệt chữ hoa/thường.'
+      notify(message, 'info')
+      return { ok: false, code: 'EMPLOYEE_IDENTIFIER_COLLISION', message }
+    }
+    const employee = employeeMatch.record
     const period = payload.period || monthKey()
     const amount = nonNegativeInteger(payload.amount)
-    const available = getAvailableSalary(payload.employeeId, period)
-    if (!employee || amount <= 0 || amount >= available) return { ok: false, message: `Số tiền ứng phải lớn hơn 0 và nhỏ hơn lương khả dụng ${available.toLocaleString('vi-VN')}đ.` }
+    if (!employee) return { ok: false, message: 'Nhân viên chưa hợp lệ.' }
+    const salaryResult = availableSalaryResult(employee.id, period)
+    if (!salaryResult.ok) {
+      notify(salaryResult.message, 'info')
+      return salaryResult
+    }
+    const available = salaryResult.available
+    if (amount <= 0 || amount >= available) return { ok: false, message: `Số tiền ứng phải lớn hơn 0 và nhỏ hơn lương khả dụng ${available.toLocaleString('vi-VN')}đ.` }
     const idempotencyKey = String(payload.idempotencyKey || '').trim()
     if (apiRef.current.enabled) {
       try {
@@ -3855,15 +4310,21 @@ export function AppProvider({ children }) {
   }
 
   const updateSalaryAdvance = async (id, payload = {}) => {
-    const previous = state.salaryAdvances.find((item) => item.id === id)
+    const previousMatch = operationalIdentifierRecordMatch(state.salaryAdvances, id, (item) => [item.id])
+    const previous = previousMatch.ambiguous ? null : previousMatch.record
     if (!previous || previous.status !== 'Mới tạo') return { ok: false, message: 'Chỉ khoản ứng mới tạo mới được chỉnh sửa.' }
-    const availableWithoutCurrent = getAvailableSalary(previous.employeeId, previous.period)
+    const salaryResult = availableSalaryResult(previous.employeeId, previous.period)
+    if (!salaryResult.ok) {
+      notify(salaryResult.message, 'info')
+      return salaryResult
+    }
+    const availableWithoutCurrent = salaryResult.available
     const amount = nonNegativeInteger(payload.amount ?? previous.amount)
     if (amount <= 0 || amount >= availableWithoutCurrent) return { ok: false, message: 'Số tiền ứng phải nhỏ hơn lương khả dụng.' }
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('salary_advance.update', {
-          advanceId: id,
+          advanceId: previous.id,
           amount,
           note: payload.note == null ? previous.note : String(payload.note).trim(),
         })
@@ -3875,19 +4336,25 @@ export function AppProvider({ children }) {
       }
     }
     const next = { ...previous, amount, remainingAfter: availableWithoutCurrent - amount, note: payload.note == null ? previous.note : String(payload.note).trim(), updatedAt: new Date().toISOString() }
-    updateCollection('salaryAdvances', (items) => items.map((item) => item.id === id ? next : item))
+    updateCollection('salaryAdvances', (items) => items.map((item) => item.id === previous.id ? next : item))
     notify('Đã cập nhật khoản ứng lương.')
     return { ok: true, advance: next }
   }
 
   const confirmSalaryAdvance = async (id) => {
-    const previous = state.salaryAdvances.find((item) => item.id === id)
+    const previousMatch = operationalIdentifierRecordMatch(state.salaryAdvances, id, (item) => [item.id])
+    const previous = previousMatch.ambiguous ? null : previousMatch.record
     if (!previous || previous.status !== 'Mới tạo') return { ok: false, message: 'Khoản ứng không còn ở trạng thái có thể xác nhận.' }
-    const available = getAvailableSalary(previous.employeeId, previous.period)
+    const salaryResult = availableSalaryResult(previous.employeeId, previous.period)
+    if (!salaryResult.ok) {
+      notify(salaryResult.message, 'info')
+      return salaryResult
+    }
+    const available = salaryResult.available
     if (previous.amount >= available) return { ok: false, message: 'Lương khả dụng đã thay đổi; vui lòng điều chỉnh số tiền ứng.' }
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('salary_advance.confirm', { advanceId: id })
+        const result = await runRemoteDomainCommand('salary_advance.confirm', { advanceId: previous.id })
         notify('Đã xác nhận chi ứng lương.')
         return { ok: true, advance: result.advance }
       } catch (error) {
@@ -3900,18 +4367,28 @@ export function AppProvider({ children }) {
     const confirmed = { ...previous, status: 'Đã chi', confirmedAt: timestamp, confirmedBy: actor, remainingAfter: available - previous.amount }
     const transaction = { id: uid('TXN'), storeId: previous.storeId, type: 'Ứng lương', direction: 'out', amount: previous.amount, sourceType: 'salary-advance', sourceId: previous.id, occurredAt: timestamp, createdAt: timestamp, actor }
     const expense = { id: uid('EXP'), storeId: previous.storeId, type: 'Ứng lương', category: 'payroll', amount: previous.amount, description: `Ứng lương ${previous.employeeName}`, sourceType: 'salary-advance', sourceId: previous.id, recognized: false, occurredAt: timestamp, createdAt: timestamp, createdBy: actor.id }
-    const audit = { id: uid('AUD'), entity: 'salary-advance', entityId: id, action: 'confirm', before: previous, after: confirmed, actor, createdAt: timestamp }
-    setState((current) => ({ ...current, salaryAdvances: current.salaryAdvances.map((item) => item.id === id ? confirmed : item), cashTransactions: [transaction, ...current.cashTransactions], expenseEntries: [expense, ...current.expenseEntries], auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
+    const audit = { id: uid('AUD'), entity: 'salary-advance', entityId: previous.id, action: 'confirm', before: previous, after: confirmed, actor, createdAt: timestamp }
+    setState((current) => ({ ...current, salaryAdvances: current.salaryAdvances.map((item) => item.id === previous.id ? confirmed : item), cashTransactions: [transaction, ...current.cashTransactions], expenseEntries: [expense, ...current.expenseEntries], auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
     notify('Đã xác nhận chi ứng lương.')
     return { ok: true, advance: confirmed }
   }
 
   const closePayrollPeriod = async (storeId = state.activeStoreId, period = monthKey()) => {
-    const existing = state.payrollPeriods.find((item) => item.storeId === storeId && item.period === period)
+    const storeMatch = resolveRecordIdentifier(state.stores, storeId)
+    const scopedStore = matchedRecordOrNull(storeMatch)
+    if (!scopedStore) return { ok: false, code: storeMatch.ambiguous ? 'STORE_IDENTIFIER_COLLISION' : 'STORE_NOT_FOUND', message: 'Không thể xác định cửa hàng của kỳ lương.' }
+    const canonicalStoreId = scopedStore.id
+    const payrollPeriodMatch = operationalIdentifierRecordMatch(
+      state.payrollPeriods.filter((item) => item.period === period && !item.supersededAt),
+      canonicalStoreId,
+      (item) => [item.storeId],
+    )
+    if (payrollPeriodMatch.ambiguous) return { ok: false, code: 'PAYROLL_PERIOD_IDENTIFIER_COLLISION', message: 'Kỳ lương có nhiều bản ghi trùng cửa hàng; cần xử lý trước khi chốt.' }
+    const existing = payrollPeriodMatch.record || null
     if (existing?.status === 'Đã khóa') return { ok: false, message: 'Kỳ lương đã khóa.' }
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('payroll.close', { storeId, period })
+        const result = await runRemoteDomainCommand('payroll.close', { storeId: canonicalStoreId, period })
         notify(`Đã chốt sổ kỳ ${period}.`)
         return { ok: true, period: result.period }
       } catch (error) {
@@ -3919,16 +4396,32 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const employees = state.employees.filter((item) => String(item.unit || 'store') === 'store' && item.storeId === storeId && item.status !== 'Đã nghỉ việc')
+    const employees = state.employees.filter((item) => (
+      String(item.unit || 'store') === 'store'
+      && operationalIdentifierReferenceMatchesRecord(state.stores, scopedStore, item.storeId)
+      && item.status !== 'Đã nghỉ việc'
+    ))
+    if (hasOperationalIdentifierCollision(employees, employeeIdentifierValues)) {
+      return { ok: false, code: 'EMPLOYEE_IDENTIFIER_COLLISION', message: 'Danh sách nhân viên của kỳ lương có mã trùng nhau khi không phân biệt chữ hoa/thường.' }
+    }
+    if (hasLocalPayrollReferenceCollision({ state, employees, store: scopedStore, period })) {
+      return { ok: false, code: 'PAYROLL_REFERENCE_IDENTIFIER_COLLISION', message: 'Dữ liệu chấm công, điều chỉnh hoặc ứng lương có mã tham chiếu mơ hồ; cần xử lý trước khi chốt.' }
+    }
     const employeeHours = employees.map((employee) => ({
       id: employee.id,
       role: 'employee',
-      hours: localHomePayrollAttendance({ attendance: state.attendance, employee, period })
+      hours: localHomePayrollAttendance({
+        attendance: state.attendance,
+        employee,
+        employees: state.employees,
+        stores: state.stores,
+        period,
+      })
         .reduce((sum, record) => sum + Math.max(0, Number(record.hours) || 0), 0),
     }))
     const rows = employees.map((employee) => {
       const hours = employeeHours.find((item) => item.id === employee.id)?.hours || 0
-      const employeeStore = state.stores.find((store) => String(store.id) === String(employee.storeId))
+      const employeeStore = matchedRecordOrNull(resolveRecordIdentifier(state.stores, employee.storeId))
       const { baseSalary, salaryConfig } = calculateLocalStoreEmployeeBasePay({
         state,
         employee,
@@ -3965,12 +4458,12 @@ export function AppProvider({ children }) {
     })
     const timestamp = new Date().toISOString()
     const netPayrollExpense = rows.reduce((sum, row) => sum + nonNegativeInteger(row.gross), 0)
-    const summary = buildLocalPayrollFinanceSnapshot({ state, storeId, period, netPayrollExpense })
-    const periodRecord = { id: existing?.id || uid('PAY'), storeId, period, rows, financeSnapshot: summary, policySnapshot: clone(state.policies), status: 'Đã chốt', closedAt: timestamp, closedBy: actorSnapshot(state.session), confirmedAt: existing?.confirmedAt || null, lockedAt: null }
-    const payrollAccrual = { id: `EXP-PAYROLL-${periodRecord.id}`, storeId, type: 'Chi phí lương trong kỳ', category: 'payroll', amount: netPayrollExpense, description: `Chi phí lương kỳ ${period}`, sourceType: 'payroll-accrual', sourceId: periodRecord.id, recognized: true, period, occurredAt: timestamp, createdAt: timestamp, createdBy: state.session?.id || state.session?.code || 'SYSTEM' }
+    const summary = buildLocalPayrollFinanceSnapshot({ state, storeId: canonicalStoreId, period, netPayrollExpense })
+    const periodRecord = { id: existing?.id || uid('PAY'), storeId: canonicalStoreId, period, rows, financeSnapshot: summary, policySnapshot: clone(state.policies), status: 'Đã chốt', closedAt: timestamp, closedBy: actorSnapshot(state.session), confirmedAt: existing?.confirmedAt || null, lockedAt: null }
+    const payrollAccrual = { id: `EXP-PAYROLL-${periodRecord.id}`, storeId: canonicalStoreId, type: 'Chi phí lương trong kỳ', category: 'payroll', amount: netPayrollExpense, description: `Chi phí lương kỳ ${period}`, sourceType: 'payroll-accrual', sourceId: periodRecord.id, recognized: true, period, occurredAt: timestamp, createdAt: timestamp, createdBy: state.session?.id || state.session?.code || 'SYSTEM' }
     setState((current) => ({
       ...current,
-      payrollPeriods: [periodRecord, ...current.payrollPeriods.filter((item) => !(item.storeId === storeId && item.period === period))],
+      payrollPeriods: [periodRecord, ...current.payrollPeriods.filter((item) => item !== existing)],
       expenseEntries: [payrollAccrual, ...current.expenseEntries.filter((entry) => !(entry.sourceType === 'payroll-accrual' && String(entry.sourceId) === String(periodRecord.id)))],
       stateVersion: current.stateVersion + 1,
     }))
@@ -3979,12 +4472,22 @@ export function AppProvider({ children }) {
   }
 
   const confirmPayrollPayment = async (storeId = state.activeStoreId, period = monthKey()) => {
-    const snapshot = state.payrollPeriods.find((item) => item.storeId === storeId && item.period === period)
+    const storeMatch = resolveRecordIdentifier(state.stores, storeId)
+    const scopedStore = matchedRecordOrNull(storeMatch)
+    if (!scopedStore) return { ok: false, code: storeMatch.ambiguous ? 'STORE_IDENTIFIER_COLLISION' : 'STORE_NOT_FOUND', message: 'Không thể xác định cửa hàng của kỳ lương.' }
+    const canonicalStoreId = scopedStore.id
+    const snapshotMatch = operationalIdentifierRecordMatch(
+      state.payrollPeriods.filter((item) => item.period === period && !item.supersededAt),
+      canonicalStoreId,
+      (item) => [item.storeId],
+    )
+    if (snapshotMatch.ambiguous) return { ok: false, code: 'PAYROLL_PERIOD_IDENTIFIER_COLLISION', message: 'Kỳ lương có nhiều bản ghi trùng cửa hàng; cần xử lý trước khi chi.' }
+    const snapshot = snapshotMatch.record || null
     if (snapshot?.confirmedAt) return { ok: false, message: 'Kỳ lương đã được xác nhận chi.' }
     if (apiRef.current.enabled) {
       if (!snapshot) return { ok: false, message: 'Cần chốt sổ trước khi xác nhận chi lương.' }
       try {
-        const result = await runRemoteDomainCommand('payroll.pay', { storeId, period })
+        const result = await runRemoteDomainCommand('payroll.pay', { storeId: canonicalStoreId, period })
         notify(`Đã xác nhận chi lương kỳ ${period}.`)
         return { ok: true, period: result.period, payments: result.payments || [] }
       } catch (error) {
@@ -3992,27 +4495,37 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const source = snapshot || (await closePayrollPeriod(storeId, period)).period
+    const source = snapshot || (await closePayrollPeriod(canonicalStoreId, period)).period
     if (!source) return { ok: false, message: 'Không thể tạo số liệu kỳ lương.' }
     const timestamp = new Date().toISOString()
     const actor = actorSnapshot(state.session)
-    const employeePayments = source.rows.filter((row) => row.remaining > 0).map((row) => ({ id: uid('PAYTX'), storeId, period, employeeId: row.employeeId, employeeName: row.employeeName, amount: row.remaining, type: 'Lương nhân viên', createdAt: timestamp, actor }))
+    const employeePayments = source.rows.filter((row) => row.remaining > 0).map((row) => ({ id: uid('PAYTX'), storeId: canonicalStoreId, period, employeeId: row.employeeId, employeeName: row.employeeName, amount: row.remaining, type: 'Lương nhân viên', createdAt: timestamp, actor }))
     const payments = employeePayments
     const expenses = payments.map((payment) => ({ id: uid('EXP'), storeId, type: payment.type, category: 'payroll', amount: payment.amount, description: `${payment.type} kỳ ${period}`, sourceType: 'payroll-payment', sourceId: payment.id, recognized: false, occurredAt: timestamp, createdAt: timestamp, createdBy: actor.id }))
     const transactions = payments.map((payment) => ({ id: uid('TXN'), storeId, type: payment.type, direction: 'out', amount: payment.amount, sourceType: 'payroll-payment', sourceId: payment.id, occurredAt: timestamp, createdAt: timestamp, actor }))
     const confirmed = { ...source, confirmedAt: timestamp, confirmedBy: actor, status: 'Đã chi' }
-    setState((current) => ({ ...current, payrollPeriods: [confirmed, ...current.payrollPeriods.filter((item) => !(item.storeId === storeId && item.period === period))], payrollPayments: [...payments, ...current.payrollPayments], expenseEntries: [...expenses, ...current.expenseEntries], cashTransactions: [...transactions, ...current.cashTransactions], stateVersion: current.stateVersion + 1 }))
+    setState((current) => ({ ...current, payrollPeriods: [confirmed, ...current.payrollPeriods.filter((item) => item !== snapshot)], payrollPayments: [...payments, ...current.payrollPayments], expenseEntries: [...expenses, ...current.expenseEntries], cashTransactions: [...transactions, ...current.cashTransactions], stateVersion: current.stateVersion + 1 }))
     notify(`Đã xác nhận chi lương kỳ ${period}.`)
     return { ok: true, payments }
   }
 
   const lockPayrollPeriod = async (storeId = state.activeStoreId, period = monthKey()) => {
-    const previous = state.payrollPeriods.find((item) => item.storeId === storeId && item.period === period)
+    const storeMatch = resolveRecordIdentifier(state.stores, storeId)
+    const scopedStore = matchedRecordOrNull(storeMatch)
+    if (!scopedStore) return { ok: false, code: storeMatch.ambiguous ? 'STORE_IDENTIFIER_COLLISION' : 'STORE_NOT_FOUND', message: 'Không thể xác định cửa hàng của kỳ lương.' }
+    const canonicalStoreId = scopedStore.id
+    const previousMatch = operationalIdentifierRecordMatch(
+      state.payrollPeriods.filter((item) => item.period === period && !item.supersededAt),
+      canonicalStoreId,
+      (item) => [item.storeId],
+    )
+    if (previousMatch.ambiguous) return { ok: false, code: 'PAYROLL_PERIOD_IDENTIFIER_COLLISION', message: 'Kỳ lương có nhiều bản ghi trùng cửa hàng; cần xử lý trước khi khóa.' }
+    const previous = previousMatch.record || null
     if (!previous) return { ok: false, message: 'Cần chốt sổ trước khi khóa kỳ.' }
     if (previous.status === 'Đã khóa') return { ok: true, existing: true }
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('payroll.lock', { storeId, period })
+        const result = await runRemoteDomainCommand('payroll.lock', { storeId: canonicalStoreId, period })
         notify(`Đã khóa kỳ lương ${period}.`)
         return { ok: true, period: result.period }
       } catch (error) {
@@ -4024,7 +4537,7 @@ export function AppProvider({ children }) {
     const actor = actorSnapshot(state.session)
     const locked = { ...previous, status: 'Đã khóa', lockedAt: timestamp, lockedBy: actor }
     const audit = { id: uid('AUD'), entity: 'payroll-period', entityId: previous.id, action: 'lock', before: previous, after: locked, actor, createdAt: timestamp }
-    setState((current) => ({ ...current, payrollPeriods: current.payrollPeriods.map((item) => item.id === previous.id ? locked : item), auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
+    setState((current) => ({ ...current, payrollPeriods: current.payrollPeriods.map((item) => item === previous ? locked : item), auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
     notify(`Đã khóa kỳ lương ${period}.`)
     return { ok: true, period: locked }
   }
@@ -4302,10 +4815,13 @@ export function AppProvider({ children }) {
 
   const saveSupportTransfer = async (payload = {}) => {
     if (!canManageSupportTransfers(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Nhân viên Hỗ trợ KD được điều chuyển nhân sự.' }
-    const employee = state.employees.find((item) => String(item.id || item.code) === String(payload.employeeId))
-    const fromStore = state.stores.find((store) => String(store.id) === String(payload.fromStoreId))
-    const toStore = state.stores.find((store) => String(store.id) === String(payload.toStoreId))
-    if (!employee || !fromStore || !toStore || String(employee.storeId) !== String(fromStore.id) || String(fromStore.id) === String(toStore.id)) {
+    const employee = matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, payload.employeeId))
+    const fromStore = matchedRecordOrNull(resolveRecordIdentifier(state.stores, payload.fromStoreId))
+    const toStore = matchedRecordOrNull(resolveRecordIdentifier(state.stores, payload.toStoreId))
+    const employeeHomeStore = employee
+      ? matchedRecordOrNull(resolveRecordIdentifier(state.stores, employee.storeId))
+      : null
+    if (!employee || !fromStore || !toStore || employeeHomeStore !== fromStore || fromStore === toStore) {
       return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
     }
     const exactDateTimes = isVietnamDateTimeLocal(payload.startAt) && isVietnamDateTimeLocal(payload.endAt)
@@ -4365,13 +4881,21 @@ export function AppProvider({ children }) {
 
   const updateSupportTransfer = async (transferId, payload = {}) => {
     if (!canManageSupportTransfers(state.session?.role)) return { ok: false, message: 'Chỉ Admin hoặc Nhân viên Hỗ trợ KD được sửa điều chuyển nhân sự.' }
-    const previous = state.supportTransfers.find((item) => String(item.id || '') === String(transferId || '') && !item.deletedAt)
+    const previousMatch = operationalIdentifierRecordMatch(
+      state.supportTransfers.filter((item) => !item.deletedAt),
+      transferId,
+      (item) => [item.id],
+    )
+    const previous = previousMatch.ambiguous ? null : previousMatch.record
     if (!previous) return { ok: false, message: 'Không tìm thấy phiếu điều chuyển.' }
     const employeeId = String(payload.employeeId ?? previous.employeeId ?? '')
     const fromStoreId = String(payload.fromStoreId ?? previous.fromStoreId ?? '')
     const toStoreId = String(payload.toStoreId ?? previous.toStoreId ?? '')
-    const employee = state.employees.find((item) => String(item.id || item.code) === employeeId)
-    if (!employee || String(employee.storeId || '') !== fromStoreId || !state.stores.some((store) => String(store.id) === toStoreId) || fromStoreId === toStoreId) {
+    const employeeMatch = resolveEmployeeIdentifier(state.employees, employeeId)
+    const employee = employeeMatch.ambiguous ? null : employeeMatch.record
+    const destinationStore = operationalIdentifierRecordMatch(state.stores, toStoreId, (store) => [store.id])
+    if (!employee || !sameIdentifier(employee.storeId, fromStoreId)
+      || destinationStore.ambiguous || !destinationStore.record || sameIdentifier(fromStoreId, toStoreId)) {
       return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
     }
     const startAt = payload.startAt ?? previous.startAt
@@ -4426,7 +4950,12 @@ export function AppProvider({ children }) {
 
   const deleteSupportTransfer = async (transferId, reasonValue = '') => {
     if (!canDeleteSupportTransfers(state.session?.role)) return { ok: false, message: 'Chỉ Admin được xóa lịch sử điều chuyển nhân sự.' }
-    const previous = state.supportTransfers.find((item) => String(item.id || '') === String(transferId || '') && !item.deletedAt)
+    const previousMatch = operationalIdentifierRecordMatch(
+      state.supportTransfers.filter((item) => !item.deletedAt),
+      transferId,
+      (item) => [item.id],
+    )
+    const previous = previousMatch.ambiguous ? null : previousMatch.record
     const reason = String(reasonValue || '').trim()
     if (!previous) return { ok: false, message: 'Không tìm thấy phiếu điều chuyển.' }
     if (!reason || reason.length > 500) return { ok: false, message: 'Lý do xóa phải có từ 1 đến 500 ký tự.' }
@@ -4465,18 +4994,24 @@ export function AppProvider({ children }) {
       return { ok: false, message: 'Chỉ Admin được khôi phục dữ liệu vận hành.' }
     }
     const dataType = String(payload.dataType || '')
-    const storeId = String(payload.storeId || '')
+    const requestedStoreId = String(payload.storeId || '')
     const fromDate = String(payload.fromDate || '').slice(0, 10)
     const toDate = String(payload.toDate || '').slice(0, 10)
-    const employeeId = String(payload.employeeId || '')
+    const requestedEmployeeId = String(payload.employeeId || '')
     const reason = String(payload.reason || '').trim()
-    if (!['orders', 'attendance'].includes(dataType) || !state.stores.some((store) => String(store.id) === storeId)) {
+    const storeMatch = resolveRecordIdentifier(state.stores, requestedStoreId)
+    const scopedStore = matchedRecordOrNull(storeMatch)
+    const employeeMatch = requestedEmployeeId ? resolveEmployeeIdentifier(state.employees, requestedEmployeeId) : null
+    const scopedEmployee = requestedEmployeeId ? matchedRecordOrNull(employeeMatch) : null
+    if (!['orders', 'attendance'].includes(dataType) || !scopedStore || (requestedEmployeeId && !scopedEmployee)) {
       return { ok: false, message: 'Loại dữ liệu hoặc cửa hàng chưa hợp lệ.' }
     }
     if (!/^\d{4}-\d{2}-\d{2}$/u.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/u.test(toDate) || fromDate > toDate) {
       return { ok: false, message: 'Khoảng ngày khôi phục chưa hợp lệ.' }
     }
     if (!reason || reason.length > 500) return { ok: false, message: 'Lý do khôi phục phải có từ 1 đến 500 ký tự.' }
+    const storeId = scopedStore.id
+    const employeeId = scopedEmployee?.id || scopedEmployee?.code || ''
     const commandPayload = { dataType, storeId, fromDate, toDate, ...(employeeId ? { employeeId } : {}), reason }
     if (apiRef.current.enabled) {
       try {
@@ -4490,6 +5025,8 @@ export function AppProvider({ children }) {
       }
     }
 
+    const collection = dataType === 'orders' ? 'orders' : 'attendance'
+    const collectionRecords = Array.isArray(state[collection]) ? state[collection] : []
     const sourceAudits = dataType === 'orders'
       ? state.orderAudit
       : (state.attendanceAudit?.length ? state.attendanceAudit : state.auditLogs)
@@ -4500,17 +5037,20 @@ export function AppProvider({ children }) {
       const scopedRecord = audit.after || before
       const entity = String(audit.entity || (dataType === 'orders' ? 'order' : 'attendance'))
       const entityId = String(audit.entityId || audit.orderId || audit.attendanceId || before?.id || '')
+      const entityMatch = resolveRecordIdentifier(collectionRecords, entityId)
+      const entityRecord = matchedRecordOrNull(entityMatch)
       const recordDate = String(scopedRecord?.date || scopedRecord?.workDate || scopedRecord?.createdAt || audit.createdAt || '').slice(0, 10)
       const recordStoreId = String(audit.storeId || scopedRecord?.storeId || '')
       const recordEmployeeId = String(scopedRecord?.employeeId || audit.employeeId || '')
-      if (!before || audit.restoredAt || !isRestorableOperationalAuditAction(audit.action, dataType) || !entityId || !entityNames.has(entity) || recordStoreId !== storeId || recordDate < fromDate || recordDate > toDate || (employeeId && recordEmployeeId !== employeeId)) return
-      const previousAudit = latestByEntity.get(entityId)
-      if (!previousAudit || String(audit.createdAt || '') > String(previousAudit.createdAt || '')) latestByEntity.set(entityId, audit)
+      const employeeReferenceMatches = !scopedEmployee || matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, recordEmployeeId)) === scopedEmployee
+      if (!before || !entityRecord || audit.restoredAt || !isRestorableOperationalAuditAction(audit.action, dataType) || !entityId || !entityNames.has(entity) || !operationalIdentifierReferenceMatchesRecord(state.stores, scopedStore, recordStoreId) || recordDate < fromDate || recordDate > toDate || !employeeReferenceMatches) return
+      const canonicalEntityId = String(entityRecord.id || '')
+      const previousAudit = latestByEntity.get(canonicalEntityId)
+      if (!previousAudit || String(audit.createdAt || '') > String(previousAudit.createdAt || '')) latestByEntity.set(canonicalEntityId, audit)
     })
     if (!latestByEntity.size) return { ok: false, message: 'Không có bản chỉnh sửa hoặc xóa nào phù hợp để khôi phục.' }
-    const collection = dataType === 'orders' ? 'orders' : 'attendance'
     const restorableEntries = [...latestByEntity.entries()].filter(([entityId]) => (
-      (state[collection] || []).some((record) => String(record.id) === String(entityId))
+      Boolean(matchedRecordOrNull(resolveRecordIdentifier(collectionRecords, entityId)))
     ))
     if (!restorableEntries.length) return { ok: false, message: 'Bản ghi gốc không còn tồn tại để khôi phục an toàn.' }
     const restoredAt = new Date().toISOString()
@@ -4519,7 +5059,7 @@ export function AppProvider({ children }) {
     setState((current) => {
       const currentRecords = Array.isArray(current[collection]) ? current[collection] : []
       const restoredById = new Map(restorableEntries.flatMap(([entityId, audit]) => {
-        const currentRecord = currentRecords.find((record) => String(record.id) === String(entityId))
+        const currentRecord = matchedRecordOrNull(resolveRecordIdentifier(currentRecords, entityId))
         if (!currentRecord) return []
         const restored = {
           ...restoreOperationalRecordFields(currentRecord, audit.before, dataType),
@@ -4567,7 +5107,8 @@ export function AppProvider({ children }) {
       notify('Tài khoản không có quyền chỉnh sửa chấm công.', 'info')
       return { ok: false, message: 'Tài khoản không có quyền chỉnh sửa chấm công.' }
     }
-    const previous = state.attendance.find((record) => record.id === id)
+    const previousMatch = operationalIdentifierRecordMatch(state.attendance, id, (record) => [record.id])
+    const previous = previousMatch.ambiguous ? null : previousMatch.record
     if (!previous) return { ok: false, message: 'Không tìm thấy bản ghi chấm công.' }
     const reason = String(payload.reason || '').trim()
     if (!reason || reason.length > 500) return { ok: false, message: 'Lý do chỉnh sửa phải có từ 1 đến 500 ký tự.' }
@@ -4579,14 +5120,14 @@ export function AppProvider({ children }) {
     if (checkOut && (!/^\d{2}:\d{2}$/.test(checkOut) || timeToMinutes(checkOut) == null)) return { ok: false, message: 'Giờ kết không hợp lệ.' }
     if ((previous.checkOut || previous.checkOutAt) && !checkOut) return { ok: false, message: 'Giờ kết không được để trống với ca đã kết thúc.' }
 
-    const commandPayload = { attendanceId: id, date, checkIn, checkOut, reason }
+    const commandPayload = { attendanceId: previous.id, date, checkIn, checkOut, reason }
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('attendance.update', commandPayload)
         if (!result.attendance) return { ok: false, message: 'Máy chủ không trả về bản ghi chấm công.' }
         setState((current) => ({
           ...current,
-          attendance: current.attendance.map((record) => record.id === id ? result.attendance : record),
+          attendance: current.attendance.map((record) => record.id === previous.id ? result.attendance : record),
         }))
         notify('Đã cập nhật chấm công và tính lại số giờ.')
         return { ok: true, attendance: result.attendance }
@@ -4629,8 +5170,8 @@ export function AppProvider({ children }) {
     const audit = {
       id: uid('ATA'),
       entity: 'attendance',
-      entityId: id,
-      attendanceId: id,
+      entityId: previous.id,
+      attendanceId: previous.id,
       storeId: previous.storeId,
       employeeId: previous.employeeId,
       action: 'Sửa',
@@ -4643,7 +5184,7 @@ export function AppProvider({ children }) {
     }
     setState((current) => ({
       ...current,
-      attendance: current.attendance.map((record) => record.id === id ? next : record),
+      attendance: current.attendance.map((record) => record.id === previous.id ? next : record),
       attendanceAudit: [audit, ...(current.attendanceAudit || [])],
       auditLogs: [audit, ...current.auditLogs],
       stateVersion: current.stateVersion + 1,
@@ -4654,19 +5195,21 @@ export function AppProvider({ children }) {
 
   const deleteAttendance = (id) => {
     if (state.session?.role !== 'admin') return false
-    const previous = state.attendance.find((record) => record.id === id)
+    const previousMatch = operationalIdentifierRecordMatch(state.attendance, id, (record) => [record.id])
+    const previous = previousMatch.ambiguous ? null : previousMatch.record
     if (!previous) return false
     const timestamp = new Date().toISOString()
     const actor = actorSnapshot(state.session)
     const next = { ...previous, deletedAt: timestamp, deletedBy: actor }
-    const audit = { id: uid('AUD'), entity: 'attendance', entityId: id, action: 'delete', before: previous, after: next, actor, createdAt: timestamp }
-    setState((current) => ({ ...current, attendance: current.attendance.map((record) => record.id === id ? next : record), auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
+    const audit = { id: uid('AUD'), entity: 'attendance', entityId: previous.id, action: 'delete', before: previous, after: next, actor, createdAt: timestamp }
+    setState((current) => ({ ...current, attendance: current.attendance.map((record) => record.id === previous.id ? next : record), auditLogs: [audit, ...current.auditLogs], stateVersion: current.stateVersion + 1 }))
     return true
   }
 
   const checkIn = async (payload = {}) => {
     const employeeId = payload.employeeId || state.session?.employeeId || state.session?.code
-    const employee = state.employees.find((item) => item.id === employeeId || item.code === employeeId)
+    const employeeMatch = resolveEmployeeIdentifier(state.employees, employeeId)
+    const employee = employeeMatch.ambiguous ? null : employeeMatch.record
     if (!employee) {
       notify('Không tìm thấy hồ sơ nhân viên để điểm danh.', 'info')
       return { ok: false }
@@ -4692,7 +5235,7 @@ export function AppProvider({ children }) {
     const employeeUnitValue = employee.unit || employee.unitType || employee.department || employee.storeId
     const canonicalOfficeAttendance = isOfficeUnit(employeeUnitValue) || isBusinessSupportUnit(employeeUnitValue)
     const localAttendanceKey = canonicalOfficeAttendance ? attendanceClaimKey(employee.id, workDate) : ''
-    const existing = state.attendance.find((record) => record.employeeId === employee.id && !record.deletedAt && !record.checkOut && !record.checkOutAt)
+    const existing = state.attendance.find((record) => sameIdentifier(record.employeeId, employee.id) && !record.deletedAt && !record.checkOut && !record.checkOutAt)
     if (existing) {
       setState((current) => ({ ...current, activeAttendanceId: existing.id, checkedInAt: existing.checkIn || existing.checkInTime, finishedShift: false }))
       notify('Bạn đã điểm danh ca làm việc này.', 'info')
@@ -4801,11 +5344,16 @@ export function AppProvider({ children }) {
 
   const closeAttendance = async (payload = {}, finishMessage = false) => {
     const employeeId = payload.employeeId || state.session?.employeeId || state.session?.code
-    const openRecord = state.attendance.find((record) =>
-      (state.activeAttendanceId ? record.id === state.activeAttendanceId : record.employeeId === employeeId)
-      && !record.checkOut
-      && !record.checkOutAt,
-    )
+    const attendanceMatch = resolveOpenAttendanceIdentifier(state.attendance, {
+      employeeId: state.activeAttendanceId ? '' : employeeId,
+      attendanceId: state.activeAttendanceId || '',
+    })
+    if (attendanceMatch.ambiguous) {
+      const message = 'Không thể xác định lượt điểm danh đang mở vì có mã trùng nhau khi không phân biệt chữ hoa/thường.'
+      notify(message, 'info')
+      return { ok: false, code: 'ATTENDANCE_IDENTIFIER_COLLISION', message }
+    }
+    const openRecord = attendanceMatch.record
     if (!openRecord) {
       notify('Không tìm thấy lượt điểm danh đang mở.', 'info')
       return { ok: false }
@@ -4871,15 +5419,21 @@ export function AppProvider({ children }) {
     const departureTag = getDepartureTag(checkOutTime, openRecord.shiftEnd, payload.toleranceMinutes ?? state.policies.lateToleranceMinutes)
     const checkOutAt = canonicalOfficeAttendance ? vietnamAttendanceDateTime(at) : localDateTime(at)
     const hours = calculateWorkedHours(openRecord.checkInAt || openRecord.checkIn, checkOutAt)
+    const attendanceReferenceMatches = (reference) => operationalIdentifierReferenceMatchesRecord(
+      state.attendance,
+      openRecord,
+      reference,
+    )
     const relatedOrders = state.orders.filter((order) => (
       !order.deletedAt
       && order.status !== 'Đã xóa'
-      && String(order.employeeId || '') === String(employeeId || '')
-      && String(order.storeId || '') === String(openRecord.storeId || '')
+      && sameIdentifier(order.employeeId, employeeId)
+      && sameIdentifier(order.storeId, openRecord.storeId)
       && (
-        String(order.attendanceId || '') === String(openRecord.id || '')
+        attendanceReferenceMatches(order.attendanceId)
         || (!order.attendanceId
-          && String(order.shiftId || '') === String(openRecord.shiftId || openRecord.shift || '')
+          && ((!String(order.shiftId || '').trim() && !String(openRecord.shiftId || openRecord.shift || '').trim())
+            || sameIdentifier(order.shiftId, openRecord.shiftId || openRecord.shift))
           && Date.parse(order.createdAt) >= Date.parse(openRecord.checkInAt)
           && Date.parse(order.createdAt) <= at.getTime())
       )
@@ -4888,21 +5442,22 @@ export function AppProvider({ children }) {
     const expectedTransferRevenue = relatedOrders.filter((order) => order.paymentMethod === 'Chuyển khoản').reduce((sum, order) => sum + Number(order.amount || 0), 0)
     const cashRevenue = nonNegativeInteger(payload.cashRevenue ?? payload.cash)
     const transferRevenue = nonNegativeInteger(payload.transferRevenue ?? payload.transfer)
-    const scopedTasks = state.tasks.filter((task) => {
-      const assignees = new Set([
-        ...(Array.isArray(task.employeeIds) ? task.employeeIds : []),
-        ...(Array.isArray(task.assigneeIds) ? task.assigneeIds : []),
-        ...(task.employeeId ? [task.employeeId] : []),
-      ].map(String))
-      return !task.deletedAt
-        && String(task.storeId || '') === String(openRecord.storeId || '')
-        && String(task.date || task.workDate || '') === String(openRecord.date || openRecord.workDate || '')
-        && (!String(task.shiftId || task.shift || '') || String(task.shiftId || task.shift || '') === String(openRecord.shiftId || openRecord.shift || ''))
-        && (!assignees.size || assignees.has(String(employeeId || '')))
+    const scopedTasks = storeTasksForAttendance({
+      tasks: state.tasks,
+      attendance: openRecord,
+      attendanceRecords: state.attendance,
+      employeeId,
+      employees: state.employees,
+      stores: state.stores,
+      shiftDefinitions: state.shiftDefinitions,
+      taskAssignmentHistory: state.taskAssignmentHistory,
     })
-    const incompleteTasks = scopedTasks.filter((task) => (
-      task.required !== false && !(task.completedBy?.[employeeId] ?? task.done)
-    ))
+    const incompleteTasks = scopedTasks.filter((task) => {
+      if (task.required === false) return false
+      const completion = operationalIdentifierEntry(task.completedBy, employeeId)
+      if (completion.ambiguous) return true
+      return !(completion.found ? completion.value : task.done)
+    })
     if (storeEmployeeAttendance && (cashRevenue !== expectedCashRevenue || transferRevenue !== expectedTransferRevenue)) {
       const message = `Doanh thu kết ca chưa khớp: tiền mặt ${expectedCashRevenue.toLocaleString('en-US')} đ, chuyển khoản ${expectedTransferRevenue.toLocaleString('en-US')} đ.`
       notify(message, 'info')
@@ -4914,7 +5469,9 @@ export function AppProvider({ children }) {
       return { ok: false, message, incompleteTaskIds: incompleteTasks.map((task) => task.id) }
     }
     const recordedShiftExpense = state.expenseEntries
-      .filter((entry) => entry.recognized !== false && String(entry.attendanceId || '') === String(openRecord.id || '') && String(entry.sourceType || '') === 'shift-expense-item')
+      .filter((entry) => entry.recognized !== false
+        && attendanceReferenceMatches(entry.attendanceId)
+        && String(entry.sourceType || '') === 'shift-expense-item')
       .reduce((total, entry) => total + nonNegativeInteger(entry.amount), 0)
     const checkoutShiftExpense = nonNegativeInteger(payload.expense)
     const updated = {
@@ -4938,19 +5495,30 @@ export function AppProvider({ children }) {
       tiktok: Boolean(payload.tiktok ?? openRecord.tiktok),
       note: payload.note ?? openRecord.note,
     }
-    setState((current) => ({
-      ...current,
-      attendance: current.attendance.map((record) => record.id === openRecord.id ? updated : record),
-      expenseEntries: checkoutShiftExpense > 0 && !current.expenseEntries.some((entry) => entry.sourceType === 'shift-expense' && entry.sourceId === openRecord.id)
-        ? [{ id: uid('EXP'), storeId: openRecord.storeId, type: 'Chi phí trong ca', category: 'shift', amount: checkoutShiftExpense, description: `Chi phí ${openRecord.shiftName || openRecord.shift}`, sourceType: 'shift-expense', sourceId: openRecord.id, attendanceId: openRecord.id, recognized: true, occurredAt: checkOutAt, createdAt: checkOutAt, createdBy: employeeId, employeeId, shiftId: openRecord.shift }, ...current.expenseEntries]
-        : current.expenseEntries,
-      cashTransactions: checkoutShiftExpense > 0 && !current.cashTransactions.some((entry) => entry.sourceType === 'shift-expense' && entry.sourceId === openRecord.id)
-        ? [{ id: uid('TXN'), storeId: openRecord.storeId, type: 'Chi phí trong ca', direction: 'out', amount: checkoutShiftExpense, sourceType: 'shift-expense', sourceId: openRecord.id, attendanceId: openRecord.id, occurredAt: checkOutAt, createdAt: checkOutAt, actor: actorSnapshot(current.session) }, ...current.cashTransactions]
-        : current.cashTransactions,
-      activeAttendanceId: null,
-      checkedInAt: openRecord.checkIn || openRecord.checkInTime,
-      finishedShift: true,
-    }))
+    setState((current) => {
+      const currentAttendanceReferenceMatches = (reference) => operationalIdentifierReferenceMatchesRecord(
+        current.attendance,
+        openRecord,
+        reference,
+      )
+      return {
+        ...current,
+        attendance: current.attendance.map((record) => String(record.id || '') === String(openRecord.id || '') ? updated : record),
+        expenseEntries: checkoutShiftExpense > 0 && !current.expenseEntries.some((entry) => (
+          entry.sourceType === 'shift-expense' && currentAttendanceReferenceMatches(entry.sourceId)
+        ))
+          ? [{ id: uid('EXP'), storeId: openRecord.storeId, type: 'Chi phí trong ca', category: 'shift', amount: checkoutShiftExpense, description: `Chi phí ${openRecord.shiftName || openRecord.shift}`, sourceType: 'shift-expense', sourceId: openRecord.id, attendanceId: openRecord.id, recognized: true, occurredAt: checkOutAt, createdAt: checkOutAt, createdBy: employeeId, employeeId, shiftId: openRecord.shift }, ...current.expenseEntries]
+          : current.expenseEntries,
+        cashTransactions: checkoutShiftExpense > 0 && !current.cashTransactions.some((entry) => (
+          entry.sourceType === 'shift-expense' && currentAttendanceReferenceMatches(entry.sourceId)
+        ))
+          ? [{ id: uid('TXN'), storeId: openRecord.storeId, type: 'Chi phí trong ca', direction: 'out', amount: checkoutShiftExpense, sourceType: 'shift-expense', sourceId: openRecord.id, attendanceId: openRecord.id, occurredAt: checkOutAt, createdAt: checkOutAt, actor: actorSnapshot(current.session) }, ...current.cashTransactions]
+          : current.cashTransactions,
+        activeAttendanceId: null,
+        checkedInAt: openRecord.checkIn || openRecord.checkInTime,
+        finishedShift: true,
+      }
+    })
     notify(finishMessage ? 'Đã kết ca và lưu thông tin chấm công.' : `Đã ghi nhận ra về lúc ${checkOutTime}.`)
     return { ok: true, record: updated }
   }
@@ -5019,9 +5587,14 @@ export function AppProvider({ children }) {
   const selectedStoreId = state.session?.role === 'store_manager' || state.session?.role === 'employee'
     ? state.session.storeId
     : state.activeStoreId || state.session?.storeId
-  const activeStore = state.stores.find((store) => store.id === selectedStoreId)
-    || (state.session?.role === 'store_manager' || state.session?.role === 'employee' ? null : state.stores[0] || null)
-  const currentEmployee = state.session?.employeeId ? state.employees.find((employee) => employee.id === state.session.employeeId) || null : null
+  const selectedStoreMatch = resolveRecordIdentifier(state.stores, selectedStoreId)
+  const activeStore = selectedStoreMatch.ambiguous
+    ? null
+    : selectedStoreMatch.record
+      || (state.session?.role === 'store_manager' || state.session?.role === 'employee' ? null : state.stores[0] || null)
+  const currentEmployee = state.session?.employeeId
+    ? matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, state.session.employeeId))
+    : null
   const revenueBonuses = revenueBonusView(state.revenueBonusDaily, state.revenueBonusAllocations)
 
   const value = {

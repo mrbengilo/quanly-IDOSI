@@ -1,7 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { createRef, forwardRef, useImperativeHandle } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AppProvider, createInitialState, useApp } from './AppContext'
+import { AppProvider, canonicalizeRemoteOperationalIdentifiers, createInitialState, useApp } from './AppContext'
 
 const api = vi.hoisted(() => ({
   apiBootstrapState: vi.fn(),
@@ -152,6 +152,91 @@ describe('AppContext order information options', () => {
     vi.clearAllMocks()
     localStorage.clear()
     sessionStorage.clear()
+  })
+
+  it('canonicalizes non-credential operational references without changing usernames', () => {
+    const canonical = canonicalizeRemoteOperationalIdentifiers({
+      stores: [{ id: 'SM-TNV' }],
+      employees: [{ id: 'ST-003', code: 'NV-003', storeId: 'SM-TNV' }],
+      shiftDefinitions: [{ id: 'CA-SANG', storeId: 'SM-TNV' }],
+      attendance: [{ id: 'ATT-001', employeeId: 'st-003', storeId: 'sm-tnv', shiftId: 'ca-sang' }],
+      tasks: [{ id: 'TASK-001', employeeIds: ['st-003'], storeId: 'sm-tnv', shift: 'ca-sang', checklistAttendanceId: 'att-001' }],
+      orders: [{ id: 'ORDER-001', employeeId: 'nv-003', storeId: 'sm-tnv', attendanceId: 'att-001' }],
+      payrollPeriods: [{ id: 'PAY-001', rows: [{ employeeId: 'st-003', storeId: 'sm-tnv' }] }],
+      supportTransfers: [{ id: 'TRANSFER-001', employeeId: 'st-003', fromStoreId: 'sm-tnv', toStoreId: 'sm-tnv' }],
+      account: { username: 'CaseSensitive.User', activeTransferId: 'transfer-001' },
+    })
+
+    expect(canonical.attendance[0]).toMatchObject({ employeeId: 'ST-003', storeId: 'SM-TNV', shiftId: 'CA-SANG' })
+    expect(canonical.tasks[0]).toMatchObject({
+      employeeIds: ['ST-003'], storeId: 'SM-TNV', shift: 'CA-SANG', checklistAttendanceId: 'ATT-001',
+    })
+    expect(canonical.orders[0]).toMatchObject({ employeeId: 'ST-003', storeId: 'SM-TNV', attendanceId: 'ATT-001' })
+    expect(canonical.payrollPeriods[0].rows[0]).toMatchObject({ employeeId: 'ST-003', storeId: 'SM-TNV' })
+    expect(canonical.supportTransfers[0]).toMatchObject({ employeeId: 'ST-003', fromStoreId: 'SM-TNV', toStoreId: 'SM-TNV' })
+    expect(canonical.account).toMatchObject({ username: 'CaseSensitive.User', activeTransferId: 'TRANSFER-001' })
+  })
+
+  it('does not rewrite protected or audited remote identifiers during an Admin state sync', async () => {
+    const employeeId = String(remoteState.employees[0].id)
+    const storeId = String(remoteState.stores[0].id)
+    const attendance = {
+      id: 'ATT-REMOTE-RAW',
+      employeeId: employeeId.toLocaleLowerCase('en-US'),
+      storeId: storeId.toLocaleLowerCase('en-US'),
+      date: '2026-08-30',
+      checkInAt: '2026-08-30T01:00:00.000Z',
+    }
+    const audit = {
+      id: 'AUD-REMOTE-RAW',
+      entity: 'attendance',
+      entityId: 'att-remote-raw',
+      after: {
+        attendanceId: 'att-remote-raw',
+        employeeId: employeeId.toLocaleLowerCase('en-US'),
+        storeId: storeId.toLocaleLowerCase('en-US'),
+      },
+    }
+    remoteState = { ...remoteState, attendance: [attendance], auditLogs: [audit] }
+
+    await renderRemote('admin')
+    expect(appRef.current.attendance).toEqual([attendance])
+    expect(appRef.current.auditLogs).toEqual([audit])
+
+    vi.useFakeTimers()
+    try {
+      act(() => {
+        appRef.current.addOfficeAdjustment({
+          employeeId,
+          employeeName: 'Nhân viên kiểm thử',
+          amount: 1_000,
+          type: 'Thưởng',
+          content: 'Kích hoạt đồng bộ state không được sửa lịch sử',
+        })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500)
+      })
+
+      const stateReplace = api.apiCommand.mock.calls.find(([type]) => type === 'state.replace')
+      expect(stateReplace?.[1]?.state?.attendance).toEqual([attendance])
+      expect(stateReplace?.[1]?.state?.auditLogs).toEqual([audit])
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps only local fallback credentials case-sensitive', async () => {
+    const unavailable = Object.assign(new Error('API unavailable'), { code: 'API_UNAVAILABLE' })
+    api.localFallback = true
+    api.apiLogin.mockRejectedValue(unavailable)
+    render(<AppProvider><Probe ref={appRef} /></AppProvider>)
+
+    await act(async () => {
+      expect(await appRef.current.login('Admin', 'idosi123')).toMatchObject({ ok: false })
+      expect(await appRef.current.login('admin', 'IDOSI123')).toMatchObject({ ok: false })
+      expect(await appRef.current.login('admin', 'idosi123')).toMatchObject({ ok: true })
+    })
   })
 
   it('hydrates the remote collection, exposes CRUD actions, and uses the worker command contract', async () => {
