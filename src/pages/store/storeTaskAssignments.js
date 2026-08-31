@@ -1,8 +1,21 @@
-const sameId = (left, right) => String(left ?? '') === String(right ?? '')
+import { operationalIdentifierEntry, operationalIdentifierRecordMatch } from '../../utils'
 
+const normalizedId = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
 const uniqueIds = (values = []) => [...new Set(values
   .map((value) => String(value?.id || value?.code || value || '').trim())
   .filter(Boolean))]
+
+const hasIdentifierCollision = (values = []) => {
+  const variants = new Map()
+  for (const value of uniqueIds(values)) {
+    const key = normalizedId(value)
+    if (!key) continue
+    const spellings = variants.get(key) || new Set()
+    spellings.add(value)
+    variants.set(key, spellings)
+  }
+  return [...variants.values()].some((spellings) => spellings.size > 1)
+}
 
 const employeeId = (employee = {}) => String(employee.id || employee.code || employee.employeeCode || '')
 
@@ -24,12 +37,18 @@ const shiftIdOf = (record = {}) => String(record.shiftId || record.shift || '')
 const assignedAtOf = (record = {}) => String(record.assignedAt || record.createdAt || record.sentAt || '')
 const assignedByOf = (record = {}) => record.assignedBy || record.createdBy || record.actor || record.assignedByName
 
+const latestCompletionValue = (completedBy, id) => {
+  const completion = operationalIdentifierEntry(completedBy, id)
+  return completion.found ? completion.value : undefined
+}
+
 const taskCompletion = (task, employeeIds) => {
-  const required = Math.max(1, employeeIds.length)
+  const required = Math.max(1, new Set(employeeIds.map(normalizedId).filter(Boolean)).size)
+  if (hasIdentifierCollision(employeeIds)) return { completed: 0, required, identifierCollision: true }
   if (task.done === true || task.completed === true) return { completed: required, required }
   const completedBy = task.completedBy && typeof task.completedBy === 'object' ? task.completedBy : {}
   const completed = employeeIds.length
-    ? employeeIds.filter((id) => Boolean(completedBy[id])).length
+    ? employeeIds.filter((id) => Boolean(latestCompletionValue(completedBy, id))).length
     : Object.values(completedBy).some(Boolean) ? 1 : 0
   return { completed, required }
 }
@@ -37,7 +56,9 @@ const taskCompletion = (task, employeeIds) => {
 const normalizeTask = (task = {}, assignmentEmployeeIds = []) => {
   const employeeIds = uniqueIds([...assignmentEmployeeIds, ...taskEmployeeIds(task)])
   const completion = taskCompletion(task, employeeIds)
-  const status = completion.completed >= completion.required
+  const status = completion.identifierCollision
+    ? 'Chưa hoàn thành'
+    : completion.completed >= completion.required
     ? 'Hoàn thành'
     : completion.completed > 0 ? 'Đang thực hiện' : 'Chưa hoàn thành'
   return {
@@ -56,6 +77,7 @@ const normalizeTask = (task = {}, assignmentEmployeeIds = []) => {
     employeeIds,
     completed: completion.completed,
     required: completion.required,
+    identifierCollision: completion.identifierCollision === true,
     status,
     completedAt: task.completedAt || task.finishedAt || '',
   }
@@ -98,7 +120,7 @@ const assignmentsFromFlatTasks = (tasks = []) => {
   return [...grouped.values()]
 }
 
-const normalizeAssignment = (assignment, employeeMap, shiftMap) => {
+const normalizeAssignment = (assignment, employees, shiftDefinitions) => {
   const tasks = Array.isArray(assignment.tasks) ? assignment.tasks : []
   const employeeIds = uniqueIds([
     ...(Array.isArray(assignment.employeeIds) ? assignment.employeeIds : []),
@@ -111,12 +133,19 @@ const normalizeAssignment = (assignment, employeeMap, shiftMap) => {
   const completion = normalizedTasks.reduce((total, task) => ({
     completed: total.completed + task.completed,
     required: total.required + task.required,
-  }), { completed: 0, required: 0 })
-  const status = completion.required > 0 && completion.completed >= completion.required
+    identifierCollision: total.identifierCollision || task.identifierCollision,
+  }), { completed: 0, required: 0, identifierCollision: hasIdentifierCollision(employeeIds) })
+  const status = completion.identifierCollision
+    ? 'Chưa hoàn thành'
+    : completion.required > 0 && completion.completed >= completion.required
     ? 'Hoàn thành'
     : completion.completed > 0 ? 'Đang thực hiện' : String(assignment.status || 'Chưa hoàn thành')
   const shiftId = shiftIdOf(assignment)
-  const shift = shiftMap.get(shiftId)
+  const shift = operationalIdentifierRecordMatch(
+    shiftDefinitions,
+    shiftId,
+    (candidate) => [candidate.id],
+  ).record
 
   return {
     id: String(assignment.id || assignment.assignmentId || `${assignment.storeId}:${workDateOf(assignment)}:${shiftId}:${assignedAtOf(assignment)}`),
@@ -126,12 +155,16 @@ const normalizeAssignment = (assignment, employeeMap, shiftMap) => {
     shiftName: assignment.shiftName || shift?.name || shiftId || 'Chưa chọn ca',
     shiftTime: shift ? `${shift.start || '--:--'}–${shift.end || '--:--'}` : '',
     employeeIds,
-    employeeNames: employeeIds.map((id) => employeeMap.get(id)?.name || employeeMap.get(id)?.fullName || id),
+    employeeNames: employeeIds.map((id) => {
+      const employee = operationalIdentifierRecordMatch(employees, id, (candidate) => [employeeId(candidate)]).record
+      return employee?.name || employee?.fullName || id
+    }),
     assignedAt: assignedAtOf(assignment),
     assignedBy: personLabel(assignedByOf(assignment)),
     tasks: normalizedTasks,
     completed: completion.completed,
     required: completion.required,
+    identifierCollision: completion.identifierCollision,
     status,
   }
 }
@@ -191,18 +224,31 @@ export const buildStoreTaskAssignmentPayload = ({ storeId, date, shiftId, employ
 }
 
 export const storeTaskHistory = ({ taskAssignmentHistory = [], tasks = [], storeId, employees = [], shiftDefinitions = [] } = {}) => {
-  const employeeMap = new Map(employees.map((employee) => [employeeId(employee), employee]))
-  const shiftMap = new Map(shiftDefinitions.map((shift) => [String(shift.id || ''), shift]))
-  const explicit = (Array.isArray(taskAssignmentHistory) ? taskAssignmentHistory : [])
-    .filter((assignment) => sameId(assignment.storeId, storeId))
-  const explicitIds = new Set(explicit.map((assignment) => String(assignment.id || assignment.assignmentId || '')).filter(Boolean))
-  const legacy = assignmentsFromFlatTasks((Array.isArray(tasks) ? tasks : []).filter((task) => (
-    sameId(task.storeId, storeId)
-    && !explicitIds.has(String(task.assignmentId || task.taskAssignmentId || task.batchId || ''))
-  )))
+  const allAssignments = Array.isArray(taskAssignmentHistory) ? taskAssignmentHistory : []
+  const allTasks = Array.isArray(tasks) ? tasks : []
+  const storeReferences = uniqueIds([
+    ...allAssignments.map((assignment) => assignment.storeId),
+    ...allTasks.map((task) => task.storeId),
+  ]).map((id) => ({ id }))
+  const targetStore = operationalIdentifierRecordMatch(storeReferences, storeId, (candidate) => [candidate.id]).record
+  if (!targetStore) return []
+  const belongsToTargetStore = (record) => (
+    operationalIdentifierRecordMatch(storeReferences, record?.storeId, (candidate) => [candidate.id]).record === targetStore
+  )
+  const explicit = allAssignments.filter(belongsToTargetStore)
+  const legacy = assignmentsFromFlatTasks(allTasks.filter((task) => {
+    if (!belongsToTargetStore(task)) return false
+    const assignmentReference = String(task.assignmentId || task.taskAssignmentId || task.batchId || '').trim()
+    if (!assignmentReference) return true
+    return !operationalIdentifierRecordMatch(
+      explicit,
+      assignmentReference,
+      (assignment) => [assignment.id, assignment.assignmentId],
+    ).record
+  }))
 
   return [...explicit, ...legacy]
-    .map((assignment) => normalizeAssignment(assignment, employeeMap, shiftMap))
+    .map((assignment) => normalizeAssignment(assignment, employees, shiftDefinitions))
     .sort((left, right) => String(right.assignedAt || right.date).localeCompare(String(left.assignedAt || left.date)))
 }
 

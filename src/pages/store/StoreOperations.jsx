@@ -58,12 +58,15 @@ import {
   getEmployeeType,
   getHourlyRate,
   money,
+  operationalIdentifierEntry,
+  operationalIdentifierRecordMatch,
   shortDate,
   today,
 } from '../../utils'
 import {
   defaultStoreFullTimeSalaryPolicy,
   effectiveStoreSalaryConfig,
+  STORE_SALARY_CONFIG_IDENTIFIER_COLLISION,
 } from '../../domain/storeTieredPayroll'
 import {
   activeWorkCatalogItems,
@@ -81,7 +84,23 @@ import {
 } from './storeEmployeeForm'
 import '../task-assignment.css'
 
-const shiftById = (id) => shifts.find((shift) => shift.id === id)
+const identifierMatch = (records, reference, identifiersOf = (record) => [record?.id]) => {
+  const match = operationalIdentifierRecordMatch(records, reference, identifiersOf)
+  return match.ambiguous ? null : match.record
+}
+const employeeIdentifiers = (employee = {}) => [employee.id, employee.code, employee.employeeId]
+const employeeFor = (employees, reference) => identifierMatch(employees, reference, employeeIdentifiers)
+const storeFor = (stores, reference) => identifierMatch(stores, reference, (store) => [store.id])
+const shiftById = (id) => identifierMatch(shifts, id, (shift) => [shift.id])
+const shiftHours = (shift) => {
+  const [startHour, startMinute] = String(shift?.start || '').split(':').map(Number)
+  const [endHour, endMinute] = String(shift?.end || '').split(':').map(Number)
+  if (![startHour, startMinute, endHour, endMinute].every(Number.isFinite)) return 0
+  const start = startHour * 60 + startMinute
+  let end = endHour * 60 + endMinute
+  if (end < start) end += 24 * 60
+  return Math.max(0, end - start) / 60
+}
 
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
 const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time', 'Thử Việc']
@@ -116,43 +135,52 @@ const normalizeEmploymentType = normalizeStoreEmploymentType
 const employmentTypeLabel = normalizeStoreEmploymentType
 const formatMoneyInput = formatStoreMoneyInput
 
-const activeSupportTransferForStore = (transfers = [], employeeId, storeId, moment = new Date()) => transfers
+const activeSupportTransferForStore = (transfers = [], employees = [], stores = [], employee, store, moment = new Date()) => transfers
   .filter((record) => (
-    String(record.employeeId || '') === String(employeeId || '')
-    && String(record.toStoreId || '') === String(storeId || '')
+    employeeFor(employees, record.employeeId) === employee
+    && storeFor(stores, record.toStoreId) === store
     && supportTransferMatchesMoment(record, moment)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
-const activeSupportTransferFromStore = (transfers = [], employeeId, storeId, moment = new Date()) => transfers
+const activeSupportTransferFromStore = (transfers = [], employees = [], stores = [], employee, store, moment = new Date()) => transfers
   .filter((record) => (
-    String(record.employeeId || '') === String(employeeId || '')
-    && String(record.fromStoreId || '') === String(storeId || '')
-    && String(record.toStoreId || '') !== String(storeId || '')
+    employeeFor(employees, record.employeeId) === employee
+    && storeFor(stores, record.fromStoreId) === store
+    && Boolean(storeFor(stores, record.toStoreId))
+    && storeFor(stores, record.toStoreId) !== store
     && supportTransferMatchesMoment(record, moment)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
-const storeEmployeesForDate = (employees = [], transfers = [], storeId, moment = new Date(), { includeSupportingAway = false } = {}) => employees
+// Pure resolver is exported for store-isolation regression coverage.
+// eslint-disable-next-line react-refresh/only-export-components
+export const storeEmployeesForDate = (employees = [], transfers = [], stores = [], storeId, moment = new Date(), { includeSupportingAway = false } = {}) => {
+  const store = storeFor(stores, storeId)
+  if (!store) return []
+  return employees
   .filter((employee) => String(employee.unit || 'store') === 'store' && !employee.deletedAt)
   .flatMap((employee) => {
-    if (String(employee.storeId || '') === String(storeId || '')) {
-      const supportingAway = activeSupportTransferFromStore(transfers, employee.id || employee.code, storeId, moment)
+    if (storeFor(stores, employee.storeId) === store) {
+      const supportingAway = activeSupportTransferFromStore(transfers, employees, stores, employee, store, moment)
       return supportingAway && !includeSupportingAway ? [] : [employee]
     }
     const supportAssignment = activeSupportTransferForStore(
       transfers,
-      employee.id || employee.code,
-      storeId,
+      employees,
+      stores,
+      employee,
+      store,
       moment,
     )
     return supportAssignment ? [{
       ...employee,
       homeStoreId: employee.storeId,
-      supportStoreId: storeId,
+      supportStoreId: store.id,
       supportAssignment,
     }] : []
   })
+}
 
 const transferTimeLabel = (record = {}) => {
   const bounds = supportTransferBounds(record)
@@ -177,25 +205,26 @@ const useStoreScope = () => {
   const app = useApp()
   const transferClock = useTransferClock()
   const stores = Array.isArray(app.stores) ? app.stores : []
-  const storeId = ['employee', 'store_manager'].includes(app.session?.role)
+  const requestedStoreId = ['employee', 'store_manager'].includes(app.session?.role)
     ? app.session.storeId
     : app.activeStoreId || app.session?.storeId || stores[0]?.id || ''
+  const activeStore = storeFor(stores, requestedStoreId)
+  const storeId = String(activeStore?.id || '')
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
-  const employees = storeEmployeesForDate(allEmployees, supportTransfers, storeId, transferClock)
-  const employeeIds = new Set(employees.map((employee) => String(employee.id)))
-  const attendance = (Array.isArray(app.attendance) ? app.attendance : []).filter((record) =>
-    record.storeId ? String(record.storeId) === String(storeId) : employeeIds.has(String(record.employeeId)),
-  )
-  const imports = (Array.isArray(app.imports) ? app.imports : []).filter((record) =>
-    String(record.storeId || stores[0]?.id || '') === String(storeId),
-  )
-  const schedule = (Array.isArray(app.schedule) ? app.schedule : []).filter((record) => employeeIds.has(String(record.employeeId)))
+  const employees = storeEmployeesForDate(allEmployees, supportTransfers, stores, storeId, transferClock)
+  const attendance = activeStore ? (Array.isArray(app.attendance) ? app.attendance : []).filter((record) => (
+    record.storeId ? storeFor(stores, record.storeId) === activeStore : Boolean(employeeFor(employees, record.employeeId))
+  )) : []
+  const imports = activeStore ? (Array.isArray(app.imports) ? app.imports : []).filter((record) => (
+    storeFor(stores, record.storeId || storeId) === activeStore
+  )) : []
+  const schedule = (Array.isArray(app.schedule) ? app.schedule : []).filter((record) => Boolean(employeeFor(employees, record.employeeId)))
   return {
     ...app,
     stores,
     storeId,
-    activeStore: stores.find((store) => String(store.id) === String(storeId)) || stores[0],
+    activeStore,
     employees,
     allEmployees,
     supportTransfers,
@@ -266,7 +295,10 @@ const fullTimeSalaryPolicyFor = ({ configs, employee, store, period }) => {
       policy: configured || defaultStoreFullTimeSalaryPolicy(store),
       configured: Boolean(configured),
     }
-  } catch {
+  } catch (error) {
+    if (error?.code === STORE_SALARY_CONFIG_IDENTIFIER_COLLISION) {
+      return { policy: null, configured: false, collision: true }
+    }
     return null
   }
 }
@@ -335,11 +367,11 @@ export function StoreShifts() {
   const visibleSchedule = schedule.filter((item) => {
     const itemDate = item.date ? new Date(`${item.date}T00:00:00`) : null
     const inPeriod = !itemDate || (mode === 'day' ? item.date === date : itemDate >= startOfWeek && itemDate <= endOfWeek)
-    return inPeriod && (shiftFilter === 'all' || item.shiftIds?.includes(shiftFilter))
+    return inPeriod && (shiftFilter === 'all' || item.shiftIds?.some((id) => shiftById(id) === shiftById(shiftFilter)))
   })
   const positions = [...new Set(employees.map(employeePosition))]
   const totalAssignments = visibleSchedule.reduce((sum, item) => sum + (item.shiftIds?.length || 0), 0)
-  const countForShift = (id) => visibleSchedule.filter((item) => item.shiftIds?.includes(id)).length
+  const countForShift = (id) => visibleSchedule.filter((item) => item.shiftIds?.some((candidate) => shiftById(candidate) === shiftById(id))).length
   const save = () => {
     if (!selected.length) return notify('Vui lòng chọn ít nhất một nhân viên.', 'info')
     saveSchedule(selected, shiftId, { date, note })
@@ -352,7 +384,7 @@ export function StoreShifts() {
       <PageHeader title="Ca làm việc" subtitle="Quản lý và phân ca làm việc cho nhân viên" actions={<><Input icon={CalendarDays} type="date" value={date} onChange={(event) => setDate(event.target.value)} /><Button icon={Plus} onClick={() => setOpen(true)}>Tạo lịch ca</Button><ExportButton onClick={() => downloadCsv('ca-lam-viec.csv', visibleSchedule)} /></>} />
       <div className="shift-summary-grid">
         {shifts.map((shift) => <Card key={shift.id} className={`shift-summary shift-summary--${shift.id}`}><div style={{ borderColor: shift.color }}><span style={{ color: shift.color }}>{shift.name}</span><strong>{shift.time}</strong><small><Users size={18} /> {countForShift(shift.id)} nhân viên</small></div></Card>)}
-        <Card className="day-overview"><h3>Tổng quan {mode === 'day' ? `ngày ${date.split('-').reverse().join('/')}` : 'tuần đã chọn'}</h3><div><span><Clock3 />Tổng ca <b>{shifts.filter((shift) => countForShift(shift.id) > 0).length}</b></span><span><Users />Tổng nhân viên <b>{new Set(visibleSchedule.map((item) => item.employeeId)).size}</b></span><span><CalendarDays />Tổng lượt ca <b>{totalAssignments}</b></span></div></Card>
+        <Card className="day-overview"><h3>Tổng quan {mode === 'day' ? `ngày ${date.split('-').reverse().join('/')}` : 'tuần đã chọn'}</h3><div><span><Clock3 />Tổng ca <b>{shifts.filter((shift) => countForShift(shift.id) > 0).length}</b></span><span><Users />Tổng nhân viên <b>{new Set(visibleSchedule.map((item) => employeeFor(employees, item.employeeId)?.id).filter(Boolean)).size}</b></span><span><CalendarDays />Tổng lượt ca <b>{totalAssignments}</b></span></div></Card>
       </div>
       <Card className="schedule-card">
         <div className="tabs"><button className={mode === 'day' ? 'active' : ''} onClick={() => setMode('day')}>Lịch theo ngày</button><button className={mode === 'week' ? 'active' : ''} onClick={() => setMode('week')}>Lịch theo tuần</button></div>
@@ -376,8 +408,8 @@ function ScheduleTable({ employees, schedule }) {
     <TableWrap className="schedule-table">
       <thead><tr><th>Nhân viên</th>{shifts.map((shift) => <th key={shift.id} style={{ color: shift.color }}>{shift.name} <small>({shift.time})</small></th>)}</tr></thead>
       <tbody>{employees.map((employee) => {
-        const item = schedule.find((row) => row.employeeId === employee.id)
-        return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.shortRole}</small></span></div></td>{shifts.map((shift) => <td key={shift.id}>{item?.shiftIds?.includes(shift.id) ? <span className={`shift-chip shift-chip--${shift.id}`}><Clock3 />{shift.name} • {shift.time}</span> : '–'}</td>)}</tr>
+        const item = schedule.find((row) => employeeFor(employees, row.employeeId) === employee)
+        return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.shortRole}</small></span></div></td>{shifts.map((shift) => <td key={shift.id}>{item?.shiftIds?.some((id) => shiftById(id) === shift) ? <span className={`shift-chip shift-chip--${shift.id}`}><Clock3 />{shift.name} • {shift.time}</span> : '–'}</td>)}</tr>
       })}</tbody>
     </TableWrap>
   )
@@ -394,8 +426,9 @@ export function StoreSchedule() {
   const toggle = (id) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   const visibleEmployees = employees.filter((employee) => `${employee.id} ${employee.name} ${employee.shortRole}`.toLowerCase().includes(employeeQuery.toLowerCase()))
   const visibleSchedule = schedule.filter((item) => !item.date || item.date === date)
-  const countForShift = (id) => visibleSchedule.filter((item) => item.shiftIds?.includes(id)).length
-  const totalAssignments = visibleSchedule.reduce((sum, item) => sum + (item.shiftIds?.length || 0), 0)
+  const countForShift = (id) => visibleSchedule.filter((item) => item.shiftIds?.some((candidate) => shiftById(candidate) === shiftById(id))).length
+  const totalScheduledHours = visibleSchedule.reduce((total, item) => total + (item.shiftIds || [])
+    .reduce((hours, id) => hours + shiftHours(shiftById(id)), 0), 0)
   const save = () => {
     if (!selected.length) return
     saveSchedule(selected, shiftId, { date, note })
@@ -405,7 +438,7 @@ export function StoreSchedule() {
   return (
     <div className="page">
       <PageHeader title="Lịch phân ca" subtitle="Tạo và quản lý lịch phân công ca làm việc cho nhân viên" actions={<><Input icon={CalendarDays} type="date" value={date} onChange={(event) => setDate(event.target.value)} /><Button icon={Plus} onClick={() => setOpen(true)}>Tạo ca</Button></>} />
-      <div className="schedule-summary">{shifts.map((shift) => <Card key={shift.id} className={`schedule-summary__item schedule-summary__item--${shift.id}`}><Clock3 style={{ color: shift.color }} /><div><span>{shift.name}</span><strong>{shift.time}</strong><small>{countForShift(shift.id)} nhân viên</small></div></Card>)}<Card className="schedule-day-stats"><h3>Tổng quan ngày {date.split('-').reverse().join('/')}</h3><div><span>Tổng ca<b>{shifts.filter((shift) => countForShift(shift.id) > 0).length}</b></span><span>Nhân viên<b>{new Set(visibleSchedule.map((item) => item.employeeId)).size}</b></span><span>Ca trống<b>{shifts.filter((shift) => countForShift(shift.id) === 0).length}</b></span><span>Tổng giờ<b>{totalAssignments * 5}</b></span></div></Card></div>
+      <div className="schedule-summary">{shifts.map((shift) => <Card key={shift.id} className={`schedule-summary__item schedule-summary__item--${shift.id}`}><Clock3 style={{ color: shift.color }} /><div><span>{shift.name}</span><strong>{shift.time}</strong><small>{countForShift(shift.id)} nhân viên</small></div></Card>)}<Card className="schedule-day-stats"><h3>Tổng quan ngày {date.split('-').reverse().join('/')}</h3><div><span>Tổng ca<b>{shifts.filter((shift) => countForShift(shift.id) > 0).length}</b></span><span>Nhân viên<b>{new Set(visibleSchedule.map((item) => employeeFor(employees, item.employeeId)?.id).filter(Boolean)).size}</b></span><span>Ca trống<b>{shifts.filter((shift) => countForShift(shift.id) === 0).length}</b></span><span>Tổng giờ<b>{totalScheduledHours.toFixed(2)}</b></span></div></Card></div>
       <div className={`schedule-builder ${open ? 'schedule-builder--open' : ''}`}>
         <Card title="Danh sách lịch phân ca" className="schedule-builder__table"><ScheduleTable employees={employees} schedule={visibleSchedule} /><TableFooter shown={employees.length} total={employees.length} /></Card>
         {open && <Card className="schedule-panel">
@@ -432,16 +465,16 @@ export function StoreEmployees() {
   const salaryConfigs = Array.isArray(app.storeEmployeeSalaryConfigs) ? app.storeEmployeeSalaryConfigs : []
   const salaryPeriod = today().slice(0, 7)
   const { addEmployee, updateEmployee, deleteEmployee, notify, session, activeStoreId } = app
-  const scopedStoreId = session?.role === 'employee'
+  const requestedStoreId = session?.role === 'employee'
     ? session.storeId
     : activeStoreId || session?.storeId || stores[0]?.id || ''
-  const scopedStore = stores.find((store) => String(store.id) === String(scopedStoreId)) || stores[0]
+  const scopedStore = storeFor(stores, requestedStoreId)
+  const scopedStoreId = String(scopedStore?.id || '')
   const linkableProfiles = employees.filter((employee) => {
-    const profileId = String(employee.id || employee.code || '')
     const alreadyLinkedHere = employees.some((profile) => (
       String(profile.unit || profile.unitType || '').toLowerCase() === 'store'
-      && String(profile.storeId || '') === String(scopedStoreId)
-      && String(profile.linkedEmployeeId || '') === profileId
+      && storeFor(stores, profile.storeId) === scopedStore
+      && employeeFor(employees, profile.linkedEmployeeId) === employee
       && !profile.deletedAt
     ))
     return ['business_support', 'office'].includes(String(employee.unit || employee.unitType || '').toLowerCase())
@@ -481,12 +514,12 @@ export function StoreEmployees() {
   }, [viewingImage?.url])
 
   const scopedEmployees = scopedStoreId
-    ? storeEmployeesForDate(employees, supportTransfers, scopedStoreId, transferClock, { includeSupportingAway: true })
-    : employees.filter((employee) => String(employee.unit || 'store') === 'store')
+    ? storeEmployeesForDate(employees, supportTransfers, stores, scopedStoreId, transferClock, { includeSupportingAway: true })
+    : []
   const canEditEmployee = (employee) => (
     canManageStore
     && (session?.role !== 'store_manager' || !employee.supportAssignment)
-    && !activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId, transferClock)
+    && !activeSupportTransferFromStore(supportTransfers, employees, stores, employee, scopedStore, transferClock)
   )
 
   const normalizedQuery = normalizeText(query)
@@ -553,7 +586,7 @@ export function StoreEmployees() {
 
   const updateLinkedProfile = (event) => {
     const linkedEmployeeId = event.target.value
-    const source = linkableProfiles.find((employee) => String(employee.id || employee.code) === linkedEmployeeId)
+    const source = employeeFor(linkableProfiles, linkedEmployeeId)
     setForm((current) => ({
       ...current,
       linkedEmployeeId,
@@ -689,14 +722,14 @@ export function StoreEmployees() {
                 store: scopedStore,
                 period: salaryPeriod,
               })
-              const outboundTransfer = activeSupportTransferFromStore(supportTransfers, employee.id || employee.code, scopedStoreId, transferClock)
+              const outboundTransfer = activeSupportTransferFromStore(supportTransfers, employees, stores, employee, scopedStore, transferClock)
               const supportStore = outboundTransfer
-                ? stores.find((store) => String(store.id) === String(outboundTransfer.toStoreId))
+                ? storeFor(stores, outboundTransfer.toStoreId)
                 : null
               return <tr key={employee.id} className={outboundTransfer ? 'employee-row--supporting-away' : ''}>
                 <td><strong>{employee.id}</strong></td>
                 <td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.age ? `${employee.age} tuổi` : 'Chưa cập nhật tuổi'}</small></span></div></td>
-                <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{stores.find((store) => String(store.id) === String(employee.supportAssignment.fromStoreId || employee.homeStoreId))?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{transferTimeLabel(employee.supportAssignment)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : outboundTransfer ? <div className="table-stack"><Badge tone="orange">Đang hỗ trợ {supportStore?.name || outboundTransfer.toStoreId}</Badge><small>{transferTimeLabel(outboundTransfer)}</small><small>{money(outboundTransfer.hourlySupportRate || 0)}/giờ · Phụ cấp {money(outboundTransfer.allowance || 0)}</small><small>Hồ sơ tạm khóa thao tác tại cửa hàng chính</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
+                <td>{employee.supportAssignment ? <div className="table-stack"><Badge tone="orange">Nhân viên hỗ trợ</Badge><small>{storeFor(stores, employee.supportAssignment.fromStoreId || employee.homeStoreId)?.name || employee.supportAssignment.fromStoreId || employee.homeStoreId} → {scopedStore?.name || scopedStoreId}</small><small>{transferTimeLabel(employee.supportAssignment)}</small><small>{money(employee.supportAssignment.hourlySupportRate || 0)}/giờ · Phụ cấp {money(employee.supportAssignment.allowance || 0)}</small><small>Trạng thái: {employee.supportAssignment.status || 'Đã lưu'}</small></div> : outboundTransfer ? <div className="table-stack"><Badge tone="orange">Đang hỗ trợ {supportStore?.name || outboundTransfer.toStoreId}</Badge><small>{transferTimeLabel(outboundTransfer)}</small><small>{money(outboundTransfer.hourlySupportRate || 0)}/giờ · Phụ cấp {money(outboundTransfer.allowance || 0)}</small><small>Hồ sơ tạm khóa thao tác tại cửa hàng chính</small></div> : <><Badge tone="blue">Cửa hàng chính</Badge><small className="table-sub">{scopedStore?.name || scopedStoreId}</small></>}</td>
                 <td><Badge tone={type === 'Thử Việc' ? 'orange' : hourlyEmployee ? 'green' : 'blue'}>{employmentTypeLabel(type)}</Badge></td>
                 <td>{employeePosition(employee)}</td>
                 <td>
@@ -712,6 +745,8 @@ export function StoreEmployees() {
                   ? getHourlyRate(employee) > 0
                     ? <><strong>{money(getHourlyRate(employee))}</strong><small className="table-sub">/ giờ · {employmentTypeLabel(type)}</small></>
                     : <span className="orange-text">Chưa thiết lập</span>
+                  : fullTimeSalary?.collision
+                    ? <span className="red-text">Trùng mã cấu hình lương — cần xử lý</span>
                   : fullTimeSalary
                     ? <><strong>{money(fullTimeSalary.policy.standardHourlyRateVnd)}/giờ</strong><small className="table-sub">Tới {fullTimeSalary.policy.thresholdHours} giờ; phần vượt {money(fullTimeSalary.policy.excessHourlyRateVnd)}/giờ</small><small className={`table-sub ${fullTimeSalary.configured ? 'green-text' : 'orange-text'}`}>{fullTimeSalary.configured ? 'Đã cài đặt theo nhân viên' : 'Đang dùng mức mặc định an toàn'}</small></>
                     : <span className="orange-text">Cửa hàng chưa có chính sách lương</span>}</td>
@@ -798,6 +833,7 @@ export function StoreEmployees() {
 export function StoreTasks() {
   const {
     activeStore,
+    stores,
     storeId,
     employees: storeEmployees = [],
     attendance = [],
@@ -828,11 +864,15 @@ export function StoreTasks() {
     date: today(),
     kinds: WORK_CATALOG_KIND.VIOLATION,
   }).length
+  const scopedAssignmentHistory = taskAssignmentHistory.filter((assignment) => (
+    !assignment.storeId || storeFor(stores, assignment.storeId) === activeStore
+  ))
   const requestedAssignment = requestedAssignmentId
-    ? taskAssignmentHistory.find((assignment) => (
-        String(assignment.assignmentId || assignment.id || '') === requestedAssignmentId
-        && (!assignment.storeId || String(assignment.storeId) === String(storeId))
-      )) || null
+    ? identifierMatch(
+      scopedAssignmentHistory,
+      requestedAssignmentId,
+      (assignment) => [assignment.assignmentId, assignment.id],
+    )
     : null
   const requestedProgress = requestedAssignment
     ? [...(Array.isArray(requestedAssignment.progressHistory) ? requestedAssignment.progressHistory : [])]
@@ -842,9 +882,12 @@ export function StoreTasks() {
   const requestedEmployeeId = String(requestedProgress?.employeeId || '')
   const requestedTasks = (Array.isArray(requestedAssignment?.tasks) ? requestedAssignment.tasks : [])
     .filter((task) => task.required !== false)
-  const requestedCompleted = requestedTasks.filter((task) => (
-    task.completedBy?.[requestedEmployeeId] === true || (!requestedEmployeeId && (task.completed === true || task.done === true))
-  )).length
+  const taskCompletedForRequestedEmployee = (task) => {
+    if (!requestedEmployeeId) return task.completed === true || task.done === true
+    const completion = operationalIdentifierEntry(task.completedBy, requestedEmployeeId)
+    return completion.found && !completion.ambiguous && completion.value === true
+  }
+  const requestedCompleted = requestedTasks.filter(taskCompletedForRequestedEmployee).length
 
   return (
     <div className="page admin-task-page">
@@ -897,7 +940,7 @@ export function StoreTasks() {
             </div>
             <div className="store-task-progress-list" aria-label="Kết quả công việc bắt buộc">
               {requestedTasks.map((task) => {
-                const completed = task.completedBy?.[requestedEmployeeId] === true || (!requestedEmployeeId && (task.completed === true || task.done === true))
+                const completed = taskCompletedForRequestedEmployee(task)
                 return <div key={task.id || task.title || task.name} className={completed ? 'is-completed' : 'is-incomplete'}>
                   <span className="store-task-progress-check" aria-hidden="true">{completed ? '✓' : '!'}</span>
                   <strong>{task.title || task.name || 'Công việc bắt buộc'}</strong>

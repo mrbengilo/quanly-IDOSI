@@ -234,6 +234,117 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(within(metrics).queryByText('280,000 đ')).toBeNull()
   })
 
+  it('resolves unique store, employee, transfer, and expense-source aliases without double accrual', () => {
+    const supportEmployee = {
+      ...employee,
+      id: 'S02-ALIAS',
+      name: 'Nhân viên alias duy nhất',
+      storeId: 'S02',
+      hourlyRate: 35_000,
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [supportEmployee],
+      supportTransfers: [{
+        id: 'TR-ALIAS',
+        employeeId: supportEmployee.id,
+        fromStoreId: 'S02',
+        toStoreId: store.id,
+        hourlySupportRate: 45_000,
+        allowance: 50_000,
+      }],
+      attendance: [{
+        id: 'A-ALIAS',
+        storeId: store.id.toLowerCase(),
+        employeeId: supportEmployee.id.toLowerCase(),
+        employeeName: supportEmployee.name,
+        date: today(),
+        shift: 'SUPPORT-ALIAS',
+        hours: 2,
+        status: 'Đi đúng giờ',
+        supportTransferId: 'tr-alias',
+      }],
+      expenseEntries: [{
+        id: 'EXP-ALIAS-UPPER',
+        storeId: store.id,
+        sourceType: 'support-attendance-compensation',
+        sourceId: 'A-ALIAS',
+        amount: 140_000,
+        occurredAt: `${today()}T12:00:00+07:00`,
+        recognized: true,
+      }, {
+        id: 'EXP-ALIAS-LOWER',
+        storeId: store.id.toLowerCase(),
+        sourceType: 'support-attendance-compensation',
+        sourceId: 'a-alias',
+        amount: 140_000,
+        occurredAt: `${today()}T12:01:00+07:00`,
+        recognized: true,
+      }],
+    }
+
+    renderPage(StoreAttendanceV2)
+
+    const attendanceTable = screen.getByRole('columnheader', { name: 'Nhân viên / Cửa hàng' }).closest('table')
+    const supportRow = within(attendanceTable).getByText(supportEmployee.name).closest('tr')
+    expect(within(supportRow).getByText('140,000 đ')).toBeTruthy()
+    expect(within(supportRow).getByText(/Dosii TNV.*Dosii KVC/i)).toBeTruthy()
+    const metrics = screen.getByLabelText('Tổng quan chấm công cửa hàng')
+    expect(within(metrics).getByText('140,000 đ')).toBeTruthy()
+    expect(within(metrics).queryByText('280,000 đ')).toBeNull()
+  })
+
+  it('fails closed instead of joining ambiguous attendance employees or support transfers', () => {
+    const selectedStoreEmployee = {
+      ...employee,
+      id: 'EMP-Alpha',
+      name: 'Tên hồ sơ cửa hàng',
+    }
+    const collidingEmployee = {
+      ...employee,
+      id: 'emp-alpha',
+      name: 'Tên hồ sơ cửa hàng khác',
+      storeId: 'S02',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [selectedStoreEmployee, collidingEmployee],
+      supportTransfers: [{
+        id: 'TR-Alpha',
+        employeeId: selectedStoreEmployee.id,
+        fromStoreId: store.id,
+        toStoreId: 'S02',
+        hourlySupportRate: 45_000,
+      }, {
+        id: 'tr-alpha',
+        employeeId: collidingEmployee.id,
+        fromStoreId: 'S02',
+        toStoreId: store.id,
+        hourlySupportRate: 990_000,
+      }],
+      attendance: [{
+        id: 'ATT-AMBIGUOUS',
+        storeId: store.id,
+        employeeId: 'Emp-Alpha',
+        employeeName: 'Tên snapshot an toàn',
+        date: today(),
+        shift: 'SUPPORT-AMBIGUOUS',
+        hours: 2,
+        status: 'Đi đúng giờ',
+        supportTransferId: 'Tr-Alpha',
+      }],
+    }
+
+    renderPage(StoreAttendanceV2)
+
+    const attendanceTable = screen.getByRole('columnheader', { name: 'Nhân viên / Cửa hàng' }).closest('table')
+    const row = within(attendanceTable).getByText('Tên snapshot an toàn').closest('tr')
+    expect(within(row).queryByText(selectedStoreEmployee.name)).toBeNull()
+    expect(within(row).queryByText(collidingEmployee.name)).toBeNull()
+    expect(within(row).getAllByText('0 đ').length).toBeGreaterThanOrEqual(2)
+    expect(within(row).queryByText('1,980,000 đ')).toBeNull()
+  })
+
   it('shows the configured hourly rate while keeping earned pay in store payroll totals', () => {
     mocked.app = {
       ...baseApp(),
@@ -279,20 +390,20 @@ describe('store order, attendance, and payroll summaries', () => {
   it('uses canonical approved compensation buckets without reviving voided records', () => {
     mocked.app = {
       ...baseApp(),
-      attendance: [{ id: 'A-01', storeId: store.id, employeeId: employee.id, date: today(), hours: 4, status: 'Đi đúng giờ' }],
-      salaryAdjustments: [{ id: 'LEGACY-01', storeId: store.id, employeeId: employee.id, period: today().slice(0, 7), type: 'Thưởng khác', amount: 10_000, status: 'Đã duyệt' }],
+      attendance: [{ id: 'A-01', storeId: store.id.toLowerCase(), employeeId: employee.id.toLowerCase(), date: today(), hours: 4, status: 'Đi đúng giờ' }],
+      salaryAdjustments: [{ id: 'LEGACY-01', storeId: store.id.toLowerCase(), employeeId: employee.id.toLowerCase(), period: today().slice(0, 7), type: 'Thưởng khác', amount: 10_000, status: 'Đã duyệt' }],
       compensationEntries: [
-        { id: 'MANUAL-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'MANUAL', amountVnd: 30_000, status: 'APPROVED' },
+        { id: 'MANUAL-01', employeeId: employee.id.toLowerCase(), storeId: store.id.toLowerCase(), effectiveDate: today(), type: 'MANUAL', amountVnd: 30_000, status: 'APPROVED' },
         { id: 'WORK-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'WORK', amountVnd: 15_000, status: 'APPROVED' },
         { id: 'ALLOWANCE-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'ALLOWANCE', amountVnd: 7_000, status: 'APPROVED' },
         { id: 'VOIDED-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), type: 'MANUAL', amountVnd: 999_000, status: 'APPROVED', voidedAt: `${today()}T12:00:00+07:00` },
       ],
       revenueBonusAllocations: [
-        { id: 'REVENUE-01', employeeId: employee.id, storeId: store.id, businessDate: today(), amountVnd: 20_000, status: 'APPROVED' },
+        { id: 'REVENUE-01', employeeId: employee.id.toLowerCase(), storeId: store.id.toLowerCase(), businessDate: today(), amountVnd: 20_000, status: 'APPROVED' },
         { id: 'REVENUE-VOID', employeeId: employee.id, storeId: store.id, businessDate: today(), amountVnd: 999_000, status: 'APPROVED', voidedAt: `${today()}T12:00:00+07:00` },
       ],
       violations: [
-        { id: 'VIOLATION-01', employeeId: employee.id, storeId: store.id, effectiveDate: today(), amountVnd: 12_000, status: 'ACTIVE' },
+        { id: 'VIOLATION-01', employeeId: employee.id.toLowerCase(), storeId: store.id.toLowerCase(), effectiveDate: today(), amountVnd: 12_000, status: 'ACTIVE' },
         { id: 'VIOLATION-VOID', employeeId: employee.id, storeId: store.id, effectiveDate: today(), amountVnd: 999_000, status: 'ACTIVE', voidedAt: `${today()}T12:00:00+07:00` },
       ],
     }
@@ -308,6 +419,274 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(cells[7].textContent).toBe('7,000 đ')
     expect(cells[8].textContent).toBe('12,000 đ')
     expect(cells[10].textContent).toBe('150,000 đ')
+  })
+
+  it('blocks payroll actions and exposes a repair message when salary config ids collide by case', () => {
+    const fullTimeEmployee = {
+      ...employee,
+      employmentType: 'Full-Time',
+      payBasis: 'tiered-hourly',
+      hourlyRate: null,
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [fullTimeEmployee],
+      closePayrollPeriod: vi.fn(),
+      storeEmployeeSalaryConfigs: [{
+        id: 'CFG-A', employeeId: employee.id, storeId: store.id, effectiveFrom: today().slice(0, 7),
+        thresholdHours: 208, standardHourlyRateVnd: 30_000, excessHourlyRateVnd: 27_000,
+      }, {
+        id: 'CFG-B', employeeId: employee.id.toLowerCase(), storeId: store.id.toLowerCase(), effectiveFrom: today().slice(0, 7),
+        thresholdHours: 208, standardHourlyRateVnd: 99_000, excessHourlyRateVnd: 98_000,
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText(/Không thể tính lương kỳ này/u)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'CHỐT SỔ' }).disabled).toBe(true)
+    expect(screen.getAllByRole('button', { name: 'TẠO ỨNG LƯƠNG' }).every((button) => button.disabled)).toBe(true)
+    expect(screen.queryByText('29,000 đ/giờ')).toBeNull()
+  })
+
+  it('locks every store payroll total when active period ids collide by store casing', () => {
+    mocked.app = {
+      ...baseApp(),
+      closePayrollPeriod: vi.fn(),
+      payrollPeriods: [{
+        id: 'PAY-UPPER', storeId: store.id, period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{ employeeId: employee.id, hours: 4, baseSalary: 80_000, gross: 80_000, remaining: 80_000 }],
+      }, {
+        id: 'PAY-LOWER', storeId: store.id.toLowerCase(), period: today().slice(0, 7), status: 'Đã chốt',
+        rows: [{ employeeId: employee.id, hours: 4, baseSalary: 9_000_000, gross: 9_000_000, remaining: 9_000_000 }],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText(/Không thể tính lương kỳ này/u)).toBeTruthy()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4)
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+    expect(screen.getByRole('button', { name: 'CHỐT SỔ' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN CHI LƯƠNG' }).disabled).toBe(true)
+  })
+
+  it('locks payroll when the selected store reference is ambiguous in the global store catalog', () => {
+    const upperStore = { id: 'Store-Alpha', name: 'Cửa hàng chữ hoa' }
+    const lowerStore = { id: 'store-alpha', name: 'Cửa hàng chữ thường' }
+    mocked.app = {
+      ...baseApp(),
+      stores: [upperStore, lowerStore],
+      activeStore: null,
+      activeStoreId: 'STORE-ALPHA',
+      employees: [{ ...employee, storeId: upperStore.id }],
+      closePayrollPeriod: vi.fn(),
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText(/Không thể tính lương kỳ này/u)).toBeTruthy()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4)
+    expect(screen.queryByText(employee.name)).toBeNull()
+    expect(screen.getByRole('button', { name: 'CHỐT SỔ' }).disabled).toBe(true)
+  })
+
+  it('locks the payroll preview when employee profiles collide by identifier casing', () => {
+    mocked.app = {
+      ...baseApp(),
+      closePayrollPeriod: vi.fn(),
+      employees: [employee, {
+        ...employee,
+        id: employee.id.toLowerCase(),
+        name: 'Hồ sơ trùng chữ thường',
+        hourlyRate: 99_000,
+      }],
+      attendance: [{
+        id: 'ATT-EMPLOYEE-COLLISION', storeId: store.id,
+        employeeId: employee.id.toLowerCase(), date: today(), hours: 8, status: 'Đi đúng giờ',
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText(/hồ sơ nhân viên.*mã trùng/iu)).toBeTruthy()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4)
+    expect(screen.queryByText('792,000 đ')).toBeNull()
+    expect(screen.getByRole('button', { name: 'CHỐT SỔ' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN CHI LƯƠNG' }).disabled).toBe(true)
+  })
+
+  it('locks the payroll preview when one snapshot contains case-colliding employee rows', () => {
+    mocked.app = {
+      ...baseApp(),
+      closePayrollPeriod: vi.fn(),
+      payrollPeriods: [{
+        id: 'PAY-ROW-COLLISION', storeId: store.id, period: today().slice(0, 7), status: 'Đã khóa',
+        rows: [{
+          employeeId: employee.id, hours: 4, baseSalary: 80_000, gross: 80_000, remaining: 80_000,
+        }, {
+          employeeId: employee.id.toLowerCase(), hours: 4, baseSalary: 9_000_000,
+          gross: 9_000_000, remaining: 9_000_000,
+        }],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText(/Không thể tính lương kỳ này/u)).toBeTruthy()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4)
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+    expect(screen.getByRole('button', { name: 'CHỐT SỔ' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN CHI LƯƠNG' }).disabled).toBe(true)
+  })
+
+  it('renders an immutable payroll snapshot without resolving colliding live salary configs', () => {
+    const fullTimeEmployee = {
+      ...employee,
+      employmentType: 'Full-Time',
+      payBasis: 'tiered-hourly',
+      hourlyRate: null,
+    }
+    const period = today().slice(0, 7)
+    mocked.app = {
+      ...baseApp(),
+      employees: [fullTimeEmployee],
+      getAvailableSalary: vi.fn(() => {
+        const error = new Error('salary collision')
+        error.code = 'STORE_SALARY_CONFIG_IDENTIFIER_COLLISION'
+        throw error
+      }),
+      payrollPeriods: [{
+        id: 'PAY-SNAPSHOT', storeId: store.id.toLowerCase(), period, status: 'Đã khóa',
+        rows: [{
+          employeeId: employee.id.toLowerCase(), hours: 10, baseSalary: 300_000,
+          revenueBonusVnd: 0, workBonusVnd: 0, manualBonusVnd: 0, allowanceVnd: 0,
+          violationVnd: 0, advancesPaid: 0, remaining: 300_000,
+          salarySnapshot: {
+            hourlyRate: 30_000,
+            salaryConfigSnapshot: { thresholdHours: 208, standardHourlyRateVnd: 30_000, excessHourlyRateVnd: 27_000 },
+          },
+        }],
+      }],
+      storeEmployeeSalaryConfigs: [{
+        id: 'CFG-A', employeeId: employee.id, storeId: store.id, effectiveFrom: period,
+        thresholdHours: 208, standardHourlyRateVnd: 30_000, excessHourlyRateVnd: 27_000,
+      }, {
+        id: 'CFG-B', employeeId: employee.id.toLowerCase(), storeId: store.id.toLowerCase(), effectiveFrom: period,
+        thresholdHours: 208, standardHourlyRateVnd: 99_000, excessHourlyRateVnd: 98_000,
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.queryByText(/Không thể tính lương kỳ này/u)).toBeNull()
+    const table = screen.getByRole('columnheader', { name: 'Lương cứng' }).closest('table')
+    const row = within(table).getByText(employee.name).closest('tr')
+    expect(within(row).getAllByRole('cell')[10].textContent).toBe('300,000 đ')
+    fireEvent.click(screen.getAllByRole('button', { name: 'TẠO ỨNG LƯƠNG' })[0])
+    expect(screen.getByText(/Không thể tính lương khả dụng vì có cấu hình lương trùng kỳ/u)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'TẠO' }).disabled).toBe(true)
+  })
+
+  it('preserves employeeCode aliases and inbound support employees from an immutable payroll snapshot', () => {
+    const homeEmployee = {
+      ...employee,
+      id: 'HOME-LIVE-ID',
+      code: 'HOME-CODE',
+      employeeCode: 'HOME-CODE',
+      name: 'Tên hồ sơ hiện tại',
+    }
+    const supportEmployee = {
+      ...employee,
+      id: 'SUPPORT-LIVE-ID',
+      code: 'SUPPORT-CODE',
+      employeeCode: 'SUPPORT-CODE',
+      name: 'Tên hỗ trợ hiện tại',
+      storeId: 'S02',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [homeEmployee, supportEmployee],
+      payrollPeriods: [{
+        id: 'PAY-EMPLOYEE-CODE',
+        storeId: store.id.toLowerCase(),
+        period: today().slice(0, 7),
+        status: 'Đã khóa',
+        rows: [{
+          employeeCode: 'home-code',
+          employeeName: 'Tên snapshot cửa hàng',
+          hours: 4,
+          baseSalary: 80_000,
+          gross: 80_000,
+          remaining: 80_000,
+          salarySnapshot: { employmentType: 'Part-Time', hourlyRate: 20_000 },
+        }, {
+          employeeCode: 'support-code',
+          employeeName: 'Tên snapshot hỗ trợ',
+          hours: 2,
+          baseSalary: 90_000,
+          allowanceVnd: 50_000,
+          gross: 140_000,
+          remaining: 140_000,
+          supportActualPay: 140_000,
+          supportCompensation: { hours: 2, basePay: 90_000, allowance: 50_000, totalPay: 140_000 },
+          salarySnapshot: { employmentType: 'Part-Time', hourlyRate: 45_000 },
+        }],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.queryByText(/Không thể tính lương kỳ này/u)).toBeNull()
+    const table = screen.getByRole('columnheader', { name: 'Lương cứng' }).closest('table')
+    const homeRow = within(table).getByText('Tên snapshot cửa hàng').closest('tr')
+    const supportRow = within(table).getByText('Tên snapshot hỗ trợ').closest('tr')
+    expect(within(homeRow).getByText(/home-code/i)).toBeTruthy()
+    expect(within(supportRow).getByText(/support-code/i)).toBeTruthy()
+    expect(within(supportRow).getByText('45,000 đ/giờ')).toBeTruthy()
+    expect(within(supportRow).getByText('140,000 đ')).toBeTruthy()
+    expect(screen.getAllByText('220,000 đ').length).toBeGreaterThan(0)
+  })
+
+  it('locks immutable payroll totals when a snapshot employee alias is globally ambiguous', () => {
+    const selectedStoreEmployee = {
+      ...employee,
+      id: 'EMP-Alpha',
+      name: 'Nhân viên cửa hàng đang chọn',
+    }
+    const otherStoreEmployee = {
+      ...employee,
+      id: 'emp-alpha',
+      name: 'Nhân viên cửa hàng khác trùng alias',
+      storeId: 'S02',
+      hourlyRate: 99_000,
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [selectedStoreEmployee, otherStoreEmployee],
+      closePayrollPeriod: vi.fn(),
+      payrollPeriods: [{
+        id: 'PAY-GLOBAL-AMBIGUOUS',
+        storeId: store.id,
+        period: today().slice(0, 7),
+        status: 'Đã khóa',
+        rows: [{
+          employeeCode: 'Emp-Alpha',
+          employeeName: 'Dòng snapshot mơ hồ',
+          hours: 4,
+          baseSalary: 9_000_000,
+          gross: 9_000_000,
+          remaining: 9_000_000,
+        }],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText(/Không thể tính lương kỳ này/u)).toBeTruthy()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4)
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+    expect(screen.getByRole('button', { name: 'CHỐT SỔ' }).disabled).toBe(true)
   })
 
   it('shows the configured hourly rate in employee income details and both punctuality minute totals', () => {
@@ -337,5 +716,81 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.getByRole('columnheader', { name: 'Tổng phút trễ' })).toBeTruthy()
     expect(screen.getByText('12')).toBeTruthy()
     expect(screen.getByText('8')).toBeTruthy()
+  })
+
+  it('uses the exact-case payroll period when another store id differs only by casing', () => {
+    const period = today().slice(0, 7)
+    mocked.app = {
+      currentEmployee: employee,
+      session: { role: 'employee', employeeId: employee.id, storeId: store.id },
+      employees: [employee],
+      stores: [store, { id: 'S02', name: 'Dosii hỗ trợ' }],
+      attendance: [{
+        id: 'ATT-SUPPORT-PAYROLL-COLLISION', employeeId: employee.id, storeId: 'S02', date: today(), hours: 3,
+        shiftStart: '08:00', shiftEnd: '12:00', supportTransferId: 'TR-PAYROLL-COLLISION',
+        supportCompensation: {
+          transferId: 'TR-PAYROLL-COLLISION', homeStoreId: store.id, supportStoreId: 'S02',
+          supportStoreName: 'Dosii hỗ trợ', hourlyRate: 29_000, hours: 3,
+          basePay: 87_000, allowance: 50_000, totalPay: 137_000,
+        },
+      }],
+      supportTransfers: [{
+        id: 'TR-PAYROLL-COLLISION', employeeId: employee.id, fromStoreId: store.id, toStoreId: 'S02',
+      }],
+      salaryAdjustments: [],
+      salaryAdvances: [],
+      compensationEntries: [],
+      revenueBonusAllocations: [],
+      violations: [],
+      storeEmployeeSalaryConfigs: [],
+      payrollPeriods: [{
+        id: 'PAY-UPPER', storeId: store.id, period, status: 'Đã chốt',
+        rows: [{ employeeId: employee.id, baseSalary: 80_000, gross: 80_000, remaining: 80_000 }],
+      }, {
+        id: 'PAY-LOWER', storeId: store.id.toLowerCase(), period, status: 'Đã chốt',
+        rows: [{ employeeId: employee.id, baseSalary: 9_000_000, gross: 9_000_000, remaining: 9_000_000 }],
+      }],
+    }
+
+    renderPage(EmployeePayrollDetails, '/employee/payroll')
+
+    expect(screen.queryByText(/Hệ thống đã khóa toàn bộ số tiền/u)).toBeNull()
+    expect(screen.getAllByText('80,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('137,000 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+  })
+
+  it('fails closed when the employee store reference has no exact case among colliding stores', () => {
+    const period = today().slice(0, 7)
+    const upperStore = { ...store, id: 'STORE-01' }
+    const ambiguousEmployee = { ...employee, storeId: 'Store-01' }
+    mocked.app = {
+      currentEmployee: ambiguousEmployee,
+      session: { role: 'employee', employeeId: employee.id, storeId: ambiguousEmployee.storeId },
+      employees: [ambiguousEmployee],
+      stores: [upperStore, { ...store, id: 'store-01', name: 'Dosii trùng mã' }],
+      attendance: [],
+      supportTransfers: [],
+      salaryAdjustments: [],
+      salaryAdvances: [],
+      compensationEntries: [],
+      revenueBonusAllocations: [],
+      violations: [],
+      storeEmployeeSalaryConfigs: [],
+      payrollPeriods: [{
+        id: 'PAY-UPPER', storeId: upperStore.id, period, status: 'Đã chốt',
+        rows: [{ employeeId: employee.id, baseSalary: 80_000, gross: 80_000, remaining: 80_000 }],
+      }, {
+        id: 'PAY-LOWER', storeId: 'store-01', period, status: 'Đã chốt',
+        rows: [{ employeeId: employee.id, baseSalary: 9_000_000, gross: 9_000_000, remaining: 9_000_000 }],
+      }],
+    }
+
+    renderPage(EmployeePayrollDetails, '/employee/payroll')
+
+    expect(screen.getByText(/Hệ thống đã khóa toàn bộ số tiền/u)).toBeTruthy()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4)
+    expect(screen.queryByText('80,000 đ')).toBeNull()
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
   })
 })
