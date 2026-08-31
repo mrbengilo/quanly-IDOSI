@@ -1,10 +1,106 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiAddressSuggestions, apiGetAccountAvatar, apiGetEmployeeAvatar, apiGetIdentityImage, apiGetStateMetadata, apiLogin, apiPolicyEntries, apiPolicyMap, clearApiSession } from './idosiApi'
+import {
+  apiAddressSuggestions,
+  apiBootstrapState,
+  apiGetAccountAvatar,
+  apiGetEmployeeAvatar,
+  apiGetIdentityImage,
+  apiGetStateMetadata,
+  apiListUsers,
+  apiLogin,
+  apiPolicyEntries,
+  apiPolicyMap,
+  clearApiSession,
+} from './idosiApi'
 
 afterEach(() => {
   clearApiSession()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+describe('IDOSI login resilience', () => {
+  it('allows a cold login request 30 seconds before timing out without retrying the POST', async () => {
+    vi.useFakeTimers()
+    let signal
+    const fetchMock = vi.fn((_path, options) => {
+      signal = options.signal
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          const error = new Error('aborted')
+          error.name = 'AbortError'
+          reject(error)
+        }, { once: true })
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const login = apiLogin('admin', 'secret')
+    const rejected = expect(login).rejects.toMatchObject({
+      code: 'TIMEOUT',
+      message: expect.stringContaining('30 giây'),
+    })
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(signal.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await rejected
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0][1].method).toBe('POST')
+  })
+
+  it.each([
+    ['bootstrap', () => apiBootstrapState()],
+    ['users', () => apiListUsers()],
+  ])('retries one transient %s GET and then returns the hydrated payload', async (_name, read) => {
+    vi.useFakeTimers()
+    const payload = { ok: true, state: { stores: [] }, version: 1 }
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError('connection reset'))
+      .mockResolvedValueOnce({ ok: true, json: async () => payload })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = read()
+    await vi.advanceTimersByTimeAsync(250)
+
+    await expect(pending).resolves.toBe(payload)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.every(([, options]) => options.method === 'GET')).toBe(true)
+  })
+
+  it('stops a state read after one transport retry', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('connection reset'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = apiBootstrapState()
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'NETWORK_ERROR' })
+    await vi.advanceTimersByTimeAsync(250)
+
+    await rejected
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry an authenticated state read after an HTTP error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ ok: false, error: { code: 'SESSION_INVALID', message: 'Phiên không hợp lệ.' } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiBootstrapState()).rejects.toMatchObject({ code: 'SESSION_INVALID', status: 401 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('directs static-only responses back to the canonical production login URL', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => null }))
+
+    await expect(apiLogin('admin', 'secret')).rejects.toMatchObject({
+      code: 'API_UNAVAILABLE',
+      message: expect.stringContaining('https://idosi.io.vn/#/login'),
+    })
+  })
 })
 
 describe('IDOSI policy API mapping', () => {

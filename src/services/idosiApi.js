@@ -1,5 +1,10 @@
 const TOKEN_KEY = 'idosi-api-session-v1'
 const DEFAULT_TIMEOUT_MS = 12_000
+const LOGIN_TIMEOUT_MS = 30_000
+const STATE_READ_TIMEOUT_MS = 30_000
+const STATE_READ_RETRIES = 1
+const RETRY_DELAY_MS = 250
+const PRODUCTION_LOGIN_URL = 'https://idosi.io.vn/#/login'
 
 export class IdosiApiError extends Error {
   constructor(message, { status = 0, code = 'NETWORK_ERROR', details = null } = {}) {
@@ -36,7 +41,14 @@ export const clearApiSession = () => {
   writeToken('')
 }
 
-const request = async (path, { method = 'GET', body, token = memoryToken || readToken(), headers = {}, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
+const requestOnce = async (path, {
+  method = 'GET',
+  body,
+  token = memoryToken || readToken(),
+  headers = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMessage = 'Máy chủ phản hồi quá chậm. Vui lòng thử lại.',
+} = {}) => {
   const controller = new AbortController()
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -65,17 +77,42 @@ const request = async (path, { method = 'GET', body, token = memoryToken || read
     return payload
   } catch (error) {
     if (error instanceof IdosiApiError) throw error
-    if (error?.name === 'AbortError') throw new IdosiApiError('Máy chủ phản hồi quá chậm. Vui lòng thử lại.', { code: 'TIMEOUT' })
+    if (error?.name === 'AbortError') throw new IdosiApiError(timeoutMessage, { code: 'TIMEOUT' })
     throw new IdosiApiError('Không thể kết nối máy chủ IDOSI.', { code: 'NETWORK_ERROR', details: error?.message })
   } finally {
     window.clearTimeout(timeout)
   }
 }
 
+const retryableReadError = (error) => ['NETWORK_ERROR', 'TIMEOUT'].includes(error?.code)
+
+const request = async (path, options = {}) => {
+  const { retries = 0, retryDelayMs = RETRY_DELAY_MS, ...requestOptions } = options
+  const method = String(requestOptions.method || 'GET').toUpperCase()
+  const allowedRetries = ['GET', 'HEAD'].includes(method) ? Math.max(0, Number(retries) || 0) : 0
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await requestOnce(path, requestOptions)
+    } catch (error) {
+      if (attempt >= allowedRetries || !retryableReadError(error)) throw error
+      await new Promise((resolveRetry) => window.setTimeout(resolveRetry, retryDelayMs))
+    }
+  }
+}
+
 export const apiLogin = async (username, password) => {
-  const payload = await request('/api/login', { method: 'POST', body: { username, password }, token: '' })
+  const payload = await request('/api/login', {
+    method: 'POST',
+    body: { username, password },
+    token: '',
+    timeoutMs: LOGIN_TIMEOUT_MS,
+    timeoutMessage: 'Máy chủ chưa phản hồi sau 30 giây. Vui lòng tải lại trang rồi thử đăng nhập lại.',
+  })
   if (!payload?.token || !payload?.user) {
-    throw new IdosiApiError('API IDOSI chưa hoạt động trong môi trường này.', { code: 'API_UNAVAILABLE' })
+    throw new IdosiApiError(
+      `Phản hồi đăng nhập không hợp lệ. Vui lòng mở đúng địa chỉ ${PRODUCTION_LOGIN_URL} và tải lại trang.`,
+      { code: 'API_UNAVAILABLE' },
+    )
   }
   memoryToken = payload.token
   writeToken(payload.token)
@@ -87,8 +124,21 @@ export const apiSelectSessionRole = (selection) => request('/api/session/role', 
   body: selection,
 })
 
-export const apiBootstrapState = (scope = 'global') => request(`/api/bootstrap?scope=${encodeURIComponent(scope)}`)
-export const apiGetState = (scope = 'global') => request(`/api/state?scope=${encodeURIComponent(scope)}`)
+const stateReadRequest = (path, options = {}) => request(path, {
+  timeoutMs: STATE_READ_TIMEOUT_MS,
+  timeoutMessage: 'Máy chủ tải dữ liệu quá chậm. Vui lòng thử lại.',
+  retries: STATE_READ_RETRIES,
+  ...options,
+})
+
+export const apiBootstrapState = (scope = 'global', options = {}) => stateReadRequest(
+  `/api/bootstrap?scope=${encodeURIComponent(scope)}`,
+  options,
+)
+export const apiGetState = (scope = 'global', options = {}) => stateReadRequest(
+  `/api/state?scope=${encodeURIComponent(scope)}`,
+  options,
+)
 export const apiGetStateMetadata = (scope = 'global') => request(`/api/state-metadata?scope=${encodeURIComponent(scope)}`)
 export const apiGetRevenueBonusLive = ({ storeId, businessDate }) => {
   const query = new URLSearchParams({
@@ -108,7 +158,7 @@ export const apiCommand = (type, payload, {
   body: { type, scope, expectedVersion, payload },
 })
 
-export const apiListUsers = () => request('/api/users')
+export const apiListUsers = (options = {}) => stateReadRequest('/api/users', options)
 
 export const apiAddressSuggestions = (params = {}) => {
   const query = new URLSearchParams()

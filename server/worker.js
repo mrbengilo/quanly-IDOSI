@@ -2180,11 +2180,14 @@ export const projectSharedState = (rawState, user) => {
 const requestHash = (value) => sha256(JSON.stringify(canonicalize(value)))
 
 const jsonResponse = (body, status = 200, extraHeaders = {}) => {
+  const candidateRequestId = typeof body?.requestId === 'string' ? body.requestId : ''
+  const requestId = /^[a-z0-9._:-]{1,160}$/iu.test(candidateRequestId) ? candidateRequestId : ''
   const headers = new Headers({
     'Cache-Control': 'no-store',
     'Content-Type': 'application/json; charset=utf-8',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
+    ...(requestId ? { 'X-Request-Id': requestId } : {}),
     ...extraHeaders,
   })
   return new Response(JSON.stringify(body), { status, headers })

@@ -194,7 +194,20 @@ curl -fsS https://idosi.io.vn/api/release
 đổi; không tạo dữ liệu lương, thưởng, vi phạm hoặc tài chính giả không có kế hoạch
 void/dọn hợp lệ.
 
-## 8. Backup, report và rollback
+## 8. Quan sát hiệu năng API
+
+Mỗi API request của app ghi một dòng JSON `idosi.api.request` để chẩn đoán mà
+không ghi query string, header, body, IP, token hoặc thông tin đăng nhập. Dùng
+`requestId` trả trong header `X-Request-Id` để đối chiếu; các trường
+`timingMs.handler`, `database.statements`, `database.totalMs`, `responseBytes` và
+`slow` tách thời gian xử lý ứng dụng khỏi số lượng/độ trễ SQLite. Docker giữ tối
+đa 5 tệp log, mỗi tệp 10 MB cho từng service.
+
+```bash
+docker compose logs --since=10m app | grep 'idosi.api.request'
+```
+
+## 9. Backup, report và rollback
 
 Mỗi deployment tạo backup, checksum, log, operation status và report tại:
 
@@ -218,7 +231,7 @@ tiêu, restore volume, chạy previous image, xác minh exact release, lưu `.en
 chỉ mở Caddy khi mọi bước PASS. Recovery lỗi phải giữ app/Caddy dừng và ghi
 incident report.
 
-## 9. Điều kiện được báo `DEPLOYED`
+## 10. Điều kiện được báo `DEPLOYED`
 
 Chỉ báo thành công khi có bằng chứng:
 
