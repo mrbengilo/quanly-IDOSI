@@ -251,23 +251,36 @@ jobs:
           exit 1
 
       - name: Verify public production release
+        id: external_verification
         env:
           RELEASE_SHA: ${{ needs.release-gate.outputs.release_sha }}
         run: |
+          set -Eeuo pipefail
           node server/vps/verify-public-release.mjs https://idosi.io.vn "$RELEASE_SHA"
+          echo 'verified_origin=https://idosi.io.vn' >> "$GITHUB_OUTPUT"
+          echo "verified_at=$(date -u +%Y%m%dT%H%M%SZ)" >> "$GITHUB_OUTPUT"
+          echo "verified_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Finalize deployment report after external verification
         env:
           RELEASE_SHA: ${{ needs.release-gate.outputs.release_sha }}
+          EXTERNAL_VERIFIED_AT_UTC: ${{ steps.external_verification.outputs.verified_at }}
+          EXTERNAL_VERIFIED_ORIGIN: ${{ steps.external_verification.outputs.verified_origin }}
+          EXTERNAL_VERIFIED_SHA: ${{ steps.external_verification.outputs.verified_sha }}
+          EXTERNAL_VERIFY_RUN_ID: ${{ github.run_id }}
+          EXTERNAL_VERIFY_RUN_ATTEMPT: ${{ github.run_attempt }}
           VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
           VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
         run: |
           set -Eeuo pipefail
+          : "${EXTERNAL_VERIFIED_AT_UTC:?Missing external verification attestation}"
+          : "${EXTERNAL_VERIFIED_ORIGIN:?Missing externally verified origin}"
+          : "${EXTERNAL_VERIFIED_SHA:?Missing externally verified release SHA}"
           ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
             -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" \
-            "bash '$REMOTE_FINALIZER_SCRIPT' '$RELEASE_SHA' && rm -f '$REMOTE_DEPLOY_SCRIPT' '$REMOTE_RUNNER_SCRIPT' '$REMOTE_FINALIZER_SCRIPT'"
+            "bash '$REMOTE_FINALIZER_SCRIPT' '$RELEASE_SHA' '$EXTERNAL_VERIFIED_AT_UTC' '$EXTERNAL_VERIFIED_ORIGIN' '$EXTERNAL_VERIFY_RUN_ID' '$EXTERNAL_VERIFY_RUN_ATTEMPT' '$EXTERNAL_VERIFIED_SHA' && rm -f '$REMOTE_DEPLOY_SCRIPT' '$REMOTE_RUNNER_SCRIPT' '$REMOTE_FINALIZER_SCRIPT'"
 
       - name: Cleanup SSH material
         if: always()

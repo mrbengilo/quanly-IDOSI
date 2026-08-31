@@ -145,7 +145,8 @@ Codex chia task + commit nhỏ
 → app/migration + internal exact-SHA verification
 → Caddy/local HTTPS
 → external production verification
-→ finalize report SUCCESS
+→ chuyển attestation exact SHA/origin/thời gian external verification qua SSH
+→ finalizer xác thực attestation rồi ghi report SUCCESS
 → smoke test và báo cáo
 ```
 
@@ -189,8 +190,12 @@ Không dùng manual dispatch để bỏ qua CI hoặc triển khai feature branc
 - chỉ mở Caddy khi internal health, `/api/release`, marker và mount static volume
   đều đúng SHA;
 - ghi report `LOCAL_READY` sau local HTTPS check;
-- chỉ đổi report nguyên tử sang `SUCCESS` sau external health, exact SHA và root
-  page đều PASS;
+- GitHub runner kiểm tra external health, exact SHA, root page và static assets, rồi
+  truyền attestation gồm exact SHA, origin, thời gian và GitHub run metadata cho finalizer
+  qua kết nối SSH đã xác thực;
+- finalizer từ chối attestation thiếu, sai SHA/origin, cũ, nằm trước deployment hoặc
+  ở tương lai và chỉ sau đó đổi report nguyên tử sang `SUCCESS`; finalizer không
+  lặp lại external fetch từ VPS/app container nên không phụ thuộc NAT hairpin;
 - tự rollback trước khi traffic mở nếu rollout thất bại;
 - fail closed nếu restore/recovery không chứng minh được dữ liệu an toàn;
 - không tự restore snapshot sau khi traffic đã mở để tránh ghi đè write mới.
