@@ -51,6 +51,8 @@ const MAX_RECEIPT_INLINE_BYTES = 1_500_000
 const MAX_RECEIPT_CHUNK_BYTES = 1_500_000
 const STATE_ENTITY_ORDER_STEP = 1_000_000
 const STATE_ENTITY_PAGE_SIZE = 10_000
+// Retained serialized snapshot budget; request-local materialization may temporarily use more heap.
+const MAX_GLOBAL_STATE_SNAPSHOT_CACHE_BYTES = 24 * 1024 * 1024
 const MAX_AVATAR_BYTES = 300 * 1024
 const MAX_IDENTITY_IMAGE_BYTES = 300 * 1024
 const ACCOUNT_AVATAR_KEY_PREFIX = 'account-avatars/'
@@ -70,6 +72,7 @@ const MAX_PBKDF2_GENERATION_ITERATIONS = 100_000
 const MAX_PBKDF2_VERIFICATION_ITERATIONS = 1_000_000
 const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'employee'])
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
+const globalStateSnapshotCaches = new WeakMap()
 
 const ACCOUNT_AVATAR_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 const MAX_AVATAR_DIMENSION = 4096
@@ -2663,21 +2666,19 @@ const loadStateEntityRows = async (db, scope) => {
   return rows
 }
 
-const loadStateSnapshot = async (db, scope) => {
-  const row = await first(db, `
-    SELECT scope_key, value_json, version, updated_at, updated_by, last_request_id
-    FROM app_state
-    WHERE scope_key = ?
-    LIMIT 1
-  `, scope)
-  if (!row) return null
-  const manifests = await all(db, `
-    SELECT collection_key, created_at, updated_at
-    FROM state_collections
-    WHERE scope_key = ?
-    ORDER BY collection_key
-  `, scope)
-  if (!manifests.length) return row
+const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
+  if (!row) {
+    if (manifests.length || entities.length) {
+      throw new ApiError(500, 'STATE_ENTITY_ORPHANED', 'Bản ghi trạng thái không có trạng thái cha.')
+    }
+    return null
+  }
+  if (!manifests.length) {
+    if (entities.length) {
+      throw new ApiError(500, 'STATE_ENTITY_ORPHANED', 'Bản ghi trạng thái không có danh mục cha.')
+    }
+    return row
+  }
   const hydrated = parseStoredJson(row.value_json, null)
   if (!isPlainRecord(hydrated)) throw new ApiError(500, 'STATE_CORRUPT', 'Trạng thái lưu trữ không hợp lệ.')
   const metadata = new Map(manifests.map((manifest) => [String(manifest.collection_key), {
@@ -2686,7 +2687,7 @@ const loadStateSnapshot = async (db, scope) => {
     rows: [],
   }]))
   for (const key of metadata.keys()) hydrated[key] = []
-  for (const entity of await loadStateEntityRows(db, scope)) {
+  for (const entity of entities) {
     const collectionKey = String(entity.collection_key)
     const collection = metadata.get(collectionKey)
     if (!collection) throw new ApiError(500, 'STATE_ENTITY_ORPHANED', 'Bản ghi trạng thái không có danh mục cha.')
@@ -2704,7 +2705,7 @@ const loadStateSnapshot = async (db, scope) => {
       entityKey: String(entity.entity_key),
       entityOrder: Number(entity.entity_order),
       valueJson: serialized,
-      value,
+      identity: stateEntityIdentity(value, serialized),
       createdAt: entity.created_at,
       updatedAt: entity.updated_at,
     })
@@ -2714,7 +2715,90 @@ const loadStateSnapshot = async (db, scope) => {
   return row
 }
 
+const loadStateSnapshot = async (db, scope) => {
+  const row = await first(db, `
+    SELECT scope_key, value_json, version, updated_at, updated_by, last_request_id
+    FROM app_state
+    WHERE scope_key = ?
+    LIMIT 1
+  `, scope)
+  if (!row) return null
+  const manifests = await all(db, `
+    SELECT collection_key, created_at, updated_at
+    FROM state_collections
+    WHERE scope_key = ?
+    ORDER BY collection_key
+  `, scope)
+  if (!manifests.length) return row
+  return hydrateStateSnapshot(row, manifests, await loadStateEntityRows(db, scope))
+}
+
+const cloneStateSnapshotRow = (row) => {
+  if (!row) return null
+  const clone = { ...row }
+  if (row._externalCollections instanceof Map) {
+    const metadata = new Map([...row._externalCollections].map(([key, collection]) => [key, {
+      ...collection,
+      rows: collection.rows.map((entity) => ({ ...entity })),
+    }]))
+    Object.defineProperty(clone, '_externalCollections', { value: metadata, enumerable: false })
+  }
+  return clone
+}
+
+const stateSnapshotCacheBytes = (row) => {
+  let bytes = jsonByteLength(row?.value_json || '') + 512
+  if (!(row?._externalCollections instanceof Map)) return bytes
+  for (const [collectionKey, collection] of row._externalCollections) {
+    bytes += jsonByteLength(collectionKey)
+      + jsonByteLength(collection.createdAt || '')
+      + jsonByteLength(collection.updatedAt || '')
+      + 256
+    for (const entity of collection.rows) {
+      bytes += jsonByteLength(entity.entityKey)
+        + jsonByteLength(entity.valueJson)
+        + jsonByteLength(entity.identity)
+        + jsonByteLength(entity.createdAt || '')
+        + jsonByteLength(entity.updatedAt || '')
+        + 256
+      if (bytes > MAX_GLOBAL_STATE_SNAPSHOT_CACHE_BYTES) return bytes
+    }
+  }
+  return bytes
+}
+
+const loadOptimizedStateSnapshot = async (db, scope) => {
+  const cached = scope === 'global' ? globalStateSnapshotCaches.get(db) : null
+  const snapshot = await db.readStateSnapshot(scope, cached ? {
+    version: cached.version,
+    lastRequestId: cached.lastRequestId,
+  } : null)
+  if (snapshot?.unchanged === true) {
+    if (!cached) throw new ApiError(500, 'STATE_SNAPSHOT_INVALID', 'SQLite báo cache hit khi chưa có snapshot phù hợp.')
+    return cloneStateSnapshotRow(cached.row)
+  }
+  if (scope === 'global') globalStateSnapshotCaches.delete(db)
+  if (snapshot?.unchanged !== false
+    || !Array.isArray(snapshot.manifests)
+    || !Array.isArray(snapshot.entities)) {
+    throw new ApiError(500, 'STATE_SNAPSHOT_INVALID', 'SQLite không trả về snapshot trạng thái hợp lệ.')
+  }
+  const row = hydrateStateSnapshot(snapshot.row, snapshot.manifests, snapshot.entities)
+  if (scope !== 'global') return row
+  if (!row) return null
+  const estimatedBytes = stateSnapshotCacheBytes(row)
+  if (estimatedBytes > MAX_GLOBAL_STATE_SNAPSHOT_CACHE_BYTES) return row
+  globalStateSnapshotCaches.set(db, {
+    version: Number(row.version),
+    lastRequestId: String(row.last_request_id || ''),
+    estimatedBytes,
+    row,
+  })
+  return cloneStateSnapshotRow(row)
+}
+
 const loadState = async (db, scope) => {
+  if (typeof db?.readStateSnapshot === 'function') return loadOptimizedStateSnapshot(db, scope)
   for (let attempt = 0; attempt < 3; attempt += 1) {
     let row
     try {
@@ -2847,7 +2931,7 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
     const existingRows = existingCollections.get(collectionKey)?.rows || []
     const queues = new Map()
     for (const row of existingRows) {
-      const identity = stateEntityIdentity(row.value, row.valueJson)
+      const identity = row.identity ?? stateEntityIdentity(row.value, row.valueJson)
       if (!queues.has(identity)) queues.set(identity, [])
       queues.get(identity).push(row)
     }

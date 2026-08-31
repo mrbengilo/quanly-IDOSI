@@ -7,6 +7,69 @@ import { DatabaseSync } from 'node:sqlite'
 const MIGRATION_TABLE = '_vps_migrations'
 const requestMetrics = new AsyncLocalStorage()
 
+const STATE_SNAPSHOT_HEAD_SQL = `
+  SELECT version, last_request_id
+  FROM app_state
+  WHERE scope_key = ?
+  LIMIT 1
+`
+
+const STATE_SNAPSHOT_SQL = `
+  SELECT
+    0 AS row_kind,
+    scope_key,
+    NULL AS collection_key,
+    NULL AS entity_key,
+    NULL AS entity_order,
+    value_json,
+    NULL AS value_bytes,
+    NULL AS created_at,
+    updated_at,
+    updated_by,
+    last_request_id,
+    version
+  FROM app_state
+  WHERE scope_key = ?
+
+  UNION ALL
+
+  SELECT
+    1,
+    scope_key,
+    collection_key,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    created_at,
+    updated_at,
+    NULL,
+    NULL,
+    NULL
+  FROM state_collections
+  WHERE scope_key = ?
+
+  UNION ALL
+
+  SELECT
+    2,
+    scope_key,
+    collection_key,
+    entity_key,
+    entity_order,
+    value_json,
+    value_bytes,
+    created_at,
+    updated_at,
+    NULL,
+    NULL,
+    NULL
+  FROM state_entities
+  WHERE scope_key = ?
+
+  ORDER BY row_kind, collection_key, entity_order, entity_key
+`
+
 const measuredStatement = (kind, operation) => {
   const metrics = requestMetrics.getStore()
   if (!metrics) return operation()
@@ -114,6 +177,59 @@ export class SqliteD1 {
 
   prepare(sql) {
     return new SqliteD1Statement(this.database, sql)
+  }
+
+  readStateSnapshot(scope, known = null) {
+    const knownVersion = Number(known?.version)
+    const knownLastRequestId = String(known?.lastRequestId || '')
+    if (known && Number.isSafeInteger(knownVersion) && knownVersion >= 1) {
+      const head = measuredStatement('reads', () => (
+        this.database.prepare(STATE_SNAPSHOT_HEAD_SQL).get(scope) || null
+      ))
+      if (!head) {
+        return { unchanged: false, row: null, manifests: [], entities: [] }
+      }
+      if (Number(head.version) === knownVersion
+        && String(head.last_request_id || '') === knownLastRequestId) {
+        return { unchanged: true }
+      }
+    }
+
+    const records = measuredStatement('reads', () => (
+      this.database.prepare(STATE_SNAPSHOT_SQL).all(scope, scope, scope)
+    ))
+    let row = null
+    const manifests = []
+    const entities = []
+    for (const record of records) {
+      if (Number(record.row_kind) === 0) {
+        row = {
+          scope_key: record.scope_key,
+          value_json: record.value_json,
+          version: record.version,
+          updated_at: record.updated_at,
+          updated_by: record.updated_by,
+          last_request_id: record.last_request_id,
+        }
+      } else if (Number(record.row_kind) === 1) {
+        manifests.push({
+          collection_key: record.collection_key,
+          created_at: record.created_at,
+          updated_at: record.updated_at,
+        })
+      } else if (Number(record.row_kind) === 2) {
+        entities.push({
+          collection_key: record.collection_key,
+          entity_key: record.entity_key,
+          entity_order: record.entity_order,
+          value_json: record.value_json,
+          value_bytes: record.value_bytes,
+          created_at: record.created_at,
+          updated_at: record.updated_at,
+        })
+      }
+    }
+    return { unchanged: false, row, manifests, entities }
   }
 
   async batch(statements) {
