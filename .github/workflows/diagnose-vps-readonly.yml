@@ -17,8 +17,6 @@ jobs:
     if: github.repository == 'mrbengilo/quanly-IDOSI'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment:
-      name: production
     steps:
       - name: Checkout diagnostic script
         uses: actions/checkout@v6
