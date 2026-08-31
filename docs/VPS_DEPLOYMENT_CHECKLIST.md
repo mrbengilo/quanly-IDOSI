@@ -85,6 +85,8 @@ status/log và lock.
 - [ ] External `/api/health` PASS.
 - [ ] External `/api/release` đúng exact merge SHA.
 - [ ] Trang chính tải thành công.
+- [ ] External verifier chỉ retry trong cửa sổ hữu hạn để chờ Caddy/CDN hội tụ;
+  hết số lần thử vẫn phải fail closed.
 - [ ] Workflow truyền attestation exact SHA/origin/thời gian/run metadata chỉ sau khi
   external verification PASS.
 - [ ] Remote finalizer xác thực attestation đúng SHA/origin và còn hạn; không lặp lại

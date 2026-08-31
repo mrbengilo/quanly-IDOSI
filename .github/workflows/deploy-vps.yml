@@ -254,9 +254,25 @@ jobs:
         id: external_verification
         env:
           RELEASE_SHA: ${{ needs.release-gate.outputs.release_sha }}
+          PUBLIC_VERIFY_ATTEMPTS: '30'
+          PUBLIC_VERIFY_DELAY_SECONDS: '5'
         run: |
           set -Eeuo pipefail
-          node server/vps/verify-public-release.mjs https://idosi.io.vn "$RELEASE_SHA"
+          verified=0
+          for (( attempt=1; attempt<=PUBLIC_VERIFY_ATTEMPTS; attempt+=1 )); do
+            if node server/vps/verify-public-release.mjs https://idosi.io.vn "$RELEASE_SHA"; then
+              verified=1
+              break
+            fi
+            if (( attempt < PUBLIC_VERIFY_ATTEMPTS )); then
+              echo "Public release chưa hội tụ ở lần $attempt/$PUBLIC_VERIFY_ATTEMPTS; thử lại sau ${PUBLIC_VERIFY_DELAY_SECONDS}s."
+              sleep "$PUBLIC_VERIFY_DELAY_SECONDS"
+            fi
+          done
+          (( verified == 1 )) || {
+            echo "Public release không đạt exact SHA sau $PUBLIC_VERIFY_ATTEMPTS lần kiểm tra." >&2
+            exit 1
+          }
           echo 'verified_origin=https://idosi.io.vn' >> "$GITHUB_OUTPUT"
           echo "verified_at=$(date -u +%Y%m%dT%H%M%SZ)" >> "$GITHUB_OUTPUT"
           echo "verified_sha=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
