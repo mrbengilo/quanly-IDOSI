@@ -176,7 +176,7 @@ for round in 1 2 3; do
 done
 
 section 'caddy_tls_and_logs'
-compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null
 if cert_summary="$(timeout 10 openssl s_client -connect 127.0.0.1:443 -servername idosi.io.vn </dev/null 2>/dev/null \
   | openssl x509 -noout -dates -issuer -subject 2>/dev/null)"; then
   printf '%s\n' "$cert_summary"
