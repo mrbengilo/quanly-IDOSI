@@ -161,6 +161,16 @@ grep -Fq "actual_image_id" "$SCRIPT_DIR/deploy-release.sh" \
 grep -Fq 'validate_caddy_static_mount "$container_id" "$image" "$release_sha" "$allow_legacy" || return 1' \
   "$SCRIPT_DIR/deploy-release.sh" \
   || fail 'deploy script can mask a failed Caddy topology validation'
+grep -Fq 'compose create --force-recreate caddy || return 1' \
+  "$SCRIPT_DIR/deploy-release.sh" \
+  || fail 'deploy script does not recreate Caddy with Compose-compatible flags'
+grep -Fq 'compose create --force-recreate caddy || return 1' \
+  "$SCRIPT_DIR/rollback-release.sh" \
+  || fail 'rollback script does not recreate Caddy with Compose-compatible flags'
+if grep -Fq 'compose create --force-recreate --no-deps caddy' \
+  "$SCRIPT_DIR/deploy-release.sh" "$SCRIPT_DIR/rollback-release.sh"; then
+  fail 'Caddy recreation uses --no-deps, which docker compose create does not support'
+fi
 grep -Fq 'verify_static_volume "$image" "$release_sha" || return 1' \
   "$SCRIPT_DIR/rollback-release.sh" \
   || fail 'rollback script can mask a failed static volume validation'
