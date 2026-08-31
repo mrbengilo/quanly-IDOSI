@@ -1,4 +1,6 @@
-const normalize = (value) => String(value ?? '').trim().toLocaleLowerCase('vi-VN')
+import { normalizeOfficeValue as normalize } from '../../domain/officeProfile'
+
+export { isOfficeProfile } from '../../domain/officeProfile'
 
 export const officeEmployeeKey = (employee = {}) => String(employee.id || employee.code || employee.employeeCode || '')
 
@@ -31,25 +33,6 @@ export const officeLocationMapUrl = (location) => {
       ? location.trim()
       : String(location.label || location.address || location.name || '').trim()
   return query ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}` : ''
-}
-
-export const isOfficeProfile = (session = {}, employee = {}) => {
-  session = session || {}
-  employee = employee || {}
-  const values = [
-    session.unit,
-    session.department,
-    session.storeId,
-    employee.unit,
-    employee.department,
-    employee.unitType,
-    employee.storeId,
-  ].map(normalize)
-  return Boolean(session.isOffice || employee.isOffice || values.some((value) => (
-    value === 'office'
-    || value === 'văn phòng'
-    || value === 'khối văn phòng'
-  )))
 }
 
 export const officeRecordDate = (record = {}) => String(

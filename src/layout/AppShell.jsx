@@ -31,8 +31,8 @@ import {
 } from 'lucide-react'
 import { useApp } from '../state/AppContext'
 import { Avatar, Brand, Toast } from '../components/UI'
+import { isOfficeProfile } from '../domain/officeProfile'
 import { resolveOrderNotificationTarget, resolveOrderRouteScope } from '../domain/orderStoreScope'
-import { isOfficeProfile } from '../pages/employee/officeAttendance'
 import { playTaskNotificationSound, unlockNotificationSound } from '../domain/notificationSound'
 
 const systemOperations = [

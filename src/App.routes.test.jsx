@@ -1,7 +1,7 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import App from './App'
+import App, { RouteErrorBoundary } from './App'
 
 const mocked = vi.hoisted(() => ({
   session: { role: 'admin', name: 'Admin' },
@@ -67,12 +67,27 @@ const renderRoute = (path, role) => {
 }
 
 describe('App role routes', () => {
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+  })
 
-  it.each(['admin', 'business_support'])('allows %s to open order information settings', (role) => {
+  it('offers a reload when a lazy route cannot be loaded after a deployment', () => {
+    const reload = vi.fn()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const BrokenRoute = () => { throw new Error('Failed to fetch dynamically imported module') }
+
+    render(<RouteErrorBoundary onReload={reload}><BrokenRoute /></RouteErrorBoundary>)
+
+    expect(screen.getByRole('alert')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Tải lại trang' }))
+    expect(reload).toHaveBeenCalledOnce()
+  })
+
+  it.each(['admin', 'business_support'])('allows %s to open order information settings', async (role) => {
     renderRoute('/admin/order-information-settings', role)
 
-    expect(screen.getByText('Cài đặt thông tin đơn hàng route')).toBeTruthy()
+    expect(await screen.findByText('Cài đặt thông tin đơn hàng route')).toBeTruthy()
     expect(screen.getByTestId('current-route').textContent).toBe('/admin/order-information-settings')
   })
 
@@ -83,10 +98,10 @@ describe('App role routes', () => {
     expect(screen.queryByText('Cài đặt thông tin đơn hàng route')).toBeNull()
   })
 
-  it('allows Admin to open the aggregate work-registration schedule', () => {
+  it('allows Admin to open the aggregate work-registration schedule', async () => {
     renderRoute('/admin/work-registration-schedules', 'admin')
 
-    expect(screen.getByText('Lịch đăng ký HTKD và KVP route')).toBeTruthy()
+    expect(await screen.findByText('Lịch đăng ký HTKD và KVP route')).toBeTruthy()
     expect(screen.getByTestId('current-route').textContent).toBe('/admin/work-registration-schedules')
   })
 
@@ -97,26 +112,26 @@ describe('App role routes', () => {
     expect(screen.queryByText('Lịch đăng ký HTKD và KVP route')).toBeNull()
   })
 
-  it('exposes the manual assignment screen to Admin', () => {
+  it('exposes the manual assignment screen to Admin', async () => {
     renderRoute('/admin/assignments', 'admin')
 
-    expect(screen.getByText('Giao việc Admin route')).toBeTruthy()
+    expect(await screen.findByText('Giao việc Admin route')).toBeTruthy()
     expect(screen.getByTestId('current-route').textContent).toBe('/admin/assignments')
   })
 
-  it('exposes the dedicated assigned-work inbox to HTKD', () => {
+  it('exposes the dedicated assigned-work inbox to HTKD', async () => {
     renderRoute('/support/assigned-work', 'business_support')
 
-    expect(screen.getByText('Công việc được giao route')).toBeTruthy()
+    expect(await screen.findByText('Công việc được giao route')).toBeTruthy()
     expect(screen.getByTestId('current-route').textContent).toBe('/support/assigned-work')
   })
 
-  it('exposes the dedicated assigned-work inbox to Office employees', () => {
+  it('exposes the dedicated assigned-work inbox to Office employees', async () => {
     mocked.session = { role: 'employee', name: 'Nhân viên văn phòng', employeeId: 'VP-001' }
     mocked.currentEmployee = { id: 'VP-001', unit: 'office' }
     render(<MemoryRouter initialEntries={['/employee/assigned-work']}><CurrentRoute /><App /></MemoryRouter>)
 
-    expect(screen.getByText('Công việc được giao route')).toBeTruthy()
+    expect(await screen.findByText('Công việc được giao route')).toBeTruthy()
     expect(screen.getByTestId('current-route').textContent).toBe('/employee/assigned-work')
   })
 
@@ -126,10 +141,10 @@ describe('App role routes', () => {
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/overview'))
   })
 
-  it.each(['admin', 'business_support'])('allows %s to manage compensation across operational stores', (role) => {
+  it.each(['admin', 'business_support'])('allows %s to manage compensation across operational stores', async (role) => {
     renderRoute('/admin/compensation/managers', role)
 
-    expect(screen.getByText('Quản lý thưởng phụ cấp')).toBeTruthy()
+    expect(await screen.findByText('Quản lý thưởng phụ cấp')).toBeTruthy()
   })
 
   it('keeps manager-compensation mutations unavailable to store managers', async () => {
@@ -146,24 +161,24 @@ describe('App role routes', () => {
     expect(screen.queryByText('Quản lý vi phạm business_support')).toBeNull()
   })
 
-  it('combines HTKD reward tasks and embedded violation management on the Admin task route', () => {
+  it('combines HTKD reward tasks and embedded violation management on the Admin task route', async () => {
     renderRoute('/admin/tasks', 'admin')
 
-    expect(screen.getByText('Công việc tính thưởng HTKD route')).toBeTruthy()
+    expect(await screen.findByText('Công việc tính thưởng HTKD route')).toBeTruthy()
     expect(screen.getByTestId('violation-business_support').dataset.embedded).toBe('true')
     expect(screen.getByTestId('current-route').textContent).toBe('/admin/tasks')
   })
 
-  it('allows a store manager to read the scoped daily-revenue bonus', () => {
+  it('allows a store manager to read the scoped daily-revenue bonus', async () => {
     renderRoute('/store/revenue-bonus', 'store_manager')
 
-    expect(screen.getByText('Thưởng doanh thu ngày')).toBeTruthy()
+    expect(await screen.findByText('Thưởng doanh thu ngày')).toBeTruthy()
   })
 
-  it('allows an employee to read only their compensation statement', () => {
+  it('allows an employee to read only their compensation statement', async () => {
     renderRoute('/employee/compensation', 'employee')
 
-    expect(screen.getByText('Thu nhập của tôi')).toBeTruthy()
+    expect(await screen.findByText('Thu nhập của tôi')).toBeTruthy()
   })
 
   it('keeps the store revenue bonus route unavailable to office employees', async () => {

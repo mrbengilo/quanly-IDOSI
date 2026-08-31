@@ -105,8 +105,9 @@ const renderAppWithRouteProbe = () => render(
   </MemoryRouter>,
 )
 
-const loginAs = (username, password = 'idosi123') => {
-  fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: username } })
+const loginAs = async (username, password = 'idosi123') => {
+  const usernameInput = await screen.findByPlaceholderText('Nhập tên đăng nhập')
+  fireEvent.change(usernameInput, { target: { value: username } })
   fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: password } })
   fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
 }
@@ -190,9 +191,7 @@ describe('IDOSI page smoke tests', () => {
         </AppProvider>
       </MemoryRouter>,
     )
-    fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'admin' } })
-    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
-    fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
+    await loginAs('admin')
     expect(await screen.findByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
     expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
@@ -211,9 +210,7 @@ describe('IDOSI page smoke tests', () => {
         </AppProvider>
       </MemoryRouter>,
     )
-    fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'manager' } })
-    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
-    fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
+    await loginAs('manager')
     expect(await screen.findByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
     expect(screen.getByRole('link', { name: /^Tổng quan$/i }).getAttribute('href')).toBe('/support/overview')
     expect(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeTruthy()
@@ -232,8 +229,8 @@ describe('IDOSI page smoke tests', () => {
     fireEvent.click(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i }))
     expect(await screen.findByRole('heading', { level: 1, name: /Danh sách cửa hàng/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Mở cửa hàng SecondMall SM234$/i }))
-    fireEvent.click(screen.getByRole('link', { name: /^Đơn hàng$/i }))
-    expect(screen.getByRole('heading', { name: 'ĐƠN HÀNG' })).toBeTruthy()
+    fireEvent.click(await screen.findByRole('link', { name: /^Đơn hàng$/i }))
+    expect(await screen.findByRole('heading', { name: 'ĐƠN HÀNG' })).toBeTruthy()
     expect(screen.queryByText(/Chế độ chỉ xem/i)).toBeNull()
     expect(screen.getAllByRole('button', { name: /^Sửa$/i }).length).toBeGreaterThan(0)
     expect(screen.getAllByRole('button', { name: /^Xóa$/i }).length).toBeGreaterThan(0)
@@ -242,12 +239,12 @@ describe('IDOSI page smoke tests', () => {
   it('guards direct system routes while allowing business support to self-attend', async () => {
     seedBusinessSupportAccount()
     renderAppWithRouteProbe()
-    loginAs('manager')
+    await loginAs('manager')
     expect(await screen.findByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
 
     fireEvent.click(screen.getByText('Mở trực tiếp chính sách'))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/admin/policies'))
-    expect(screen.getByRole('heading', { name: 'CÀI ĐẶT CHÍNH SÁCH' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'CÀI ĐẶT CHÍNH SÁCH' })).toBeTruthy()
 
     fireEvent.click(screen.getByText('Mở trực tiếp reset dữ liệu'))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
@@ -255,7 +252,7 @@ describe('IDOSI page smoke tests', () => {
 
     fireEvent.click(screen.getByText('Mở trực tiếp chấm công hỗ trợ'))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
-    expect(screen.getByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
   })
 
   it('keeps a store manager on the assigned store and rejects direct system routes', async () => {
@@ -281,9 +278,9 @@ describe('IDOSI page smoke tests', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(storedState))
 
     renderAppWithRouteProbe()
-    loginAs('store.manager')
+    await loginAs('store.manager')
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
-    expect(screen.getByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^RA VỀ$/i }).disabled).toBe(true)
     expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
@@ -291,22 +288,24 @@ describe('IDOSI page smoke tests', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Mở trang tài khoản' }))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/account/settings'))
-    expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
+    expect(await screen.findByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('link', { name: /^Tổng quan$/i }))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
-    expect(screen.getByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i }))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/employees'))
+    expect(await screen.findByRole('heading', { name: 'Quản lý nhân viên' })).toBeTruthy()
     expect(screen.queryByText('QL-TNV-001')).toBeNull()
 
     fireEvent.click(screen.getByText('Mở trực tiếp trang hệ thống'))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeNull()
 
     fireEvent.click(screen.getByText('Mở trực tiếp đơn hàng cửa hàng'))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/orders'))
-    expect(screen.getByRole('heading', { name: 'ĐƠN HÀNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'ĐƠN HÀNG' })).toBeTruthy()
   })
 
   it('lets admin enter one store workspace and return to the system overview', async () => {
@@ -317,20 +316,18 @@ describe('IDOSI page smoke tests', () => {
         </AppProvider>
       </MemoryRouter>,
     )
-    fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'admin' } })
-    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
-    fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
+    await loginAs('admin')
     expect(await screen.findByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeTruthy()
-    const storeButtons = screen.getAllByRole('button', { name: /Mở cửa hàng/i })
+    const storeButtons = await screen.findAllByRole('button', { name: /Mở cửa hàng/i })
     expect(storeButtons).toHaveLength(9)
     fireEvent.click(storeButtons[0])
-    expect(screen.getByRole('heading', { name: 'SecondMall SM234' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'SecondMall SM234' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Quay về trang quản lý chính/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /Quay về trang quản lý chính/i }))
-    expect(screen.getByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN HỆ THỐNG' })).toBeTruthy()
     fireEvent.click(screen.getByRole('link', { name: /^Danh sách cửa hàng$/i }))
-    expect(screen.getByRole('heading', { level: 1, name: 'Danh sách cửa hàng' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { level: 1, name: 'Danh sách cửa hàng' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Thêm cửa hàng' })).toBeTruthy()
     expect(screen.getAllByRole('button', { name: /Xóa Idosi/i }).length).toBeGreaterThan(0)
   })
@@ -344,9 +341,7 @@ describe('IDOSI page smoke tests', () => {
         </AppProvider>
       </MemoryRouter>,
     )
-    fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'employee' } })
-    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
-    fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
+    await loginAs('employee')
     expect(await screen.findByRole('heading', { name: /XIN CHÀO, NGUYỄN MINH ANH/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Lịch sử làm việc/i })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeNull()
@@ -362,16 +357,14 @@ describe('IDOSI page smoke tests', () => {
         </AppProvider>
       </MemoryRouter>,
     )
-    fireEvent.change(screen.getByPlaceholderText('Nhập tên đăng nhập'), { target: { value: 'office' } })
-    fireEvent.change(screen.getByPlaceholderText('Nhập mật khẩu'), { target: { value: 'idosi123' } })
-    fireEvent.click(screen.getByRole('button', { name: /^Đăng nhập$/i }))
+    await loginAs('office')
     expect(await screen.findByRole('heading', { name: 'NHÂN VIÊN VĂN PHÒNG' })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Đơn hàng$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Dòng tiền$/i })).toBeNull()
     fireEvent.click(screen.getByRole('link', { name: /^Chấm công$/i }))
-    expect(screen.getByRole('heading', { name: 'NHÂN VIÊN VĂN PHÒNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'NHÂN VIÊN VĂN PHÒNG' })).toBeTruthy()
     fireEvent.click(screen.getByRole('link', { name: /^Bảng lương$/i }))
-    expect(screen.getByRole('heading', { name: 'BẢNG LƯƠNG VĂN PHÒNG CỦA TÔI' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'BẢNG LƯƠNG VĂN PHÒNG CỦA TÔI' })).toBeTruthy()
   })
 })
 
