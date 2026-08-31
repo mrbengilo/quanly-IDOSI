@@ -85,6 +85,8 @@ status/log và lock.
 - [ ] External `/api/health` PASS.
 - [ ] External `/api/release` đúng exact merge SHA.
 - [ ] Trang chính tải thành công.
+- [ ] Probe asset dùng cache key theo exact SHA để không đọc header của release cũ
+  từ CDN cho URL nội dung bất biến dùng lại giữa hai release.
 - [ ] External verifier chỉ retry trong cửa sổ hữu hạn để chờ Caddy/CDN hội tụ;
   hết số lần thử vẫn phải fail closed.
 - [ ] Workflow truyền attestation exact SHA/origin/thời gian/run metadata chỉ sau khi

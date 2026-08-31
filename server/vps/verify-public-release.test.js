@@ -81,8 +81,8 @@ describe('public VPS release verification', () => {
       releaseSha: RELEASE_SHA,
       startedAt: '2026-08-31T00:00:00.000Z',
       assets: {
-        entry: { url: `${ORIGIN}/assets/index-A1.js`, bytes: 20 },
-        favicon: { url: `${ORIGIN}/favicon.png`, bytes: 3 },
+        entry: { url: `${ORIGIN}/assets/index-A1.js?_idosi_release=${RELEASE_SHA}`, bytes: 20 },
+        favicon: { url: `${ORIGIN}/favicon.png?_idosi_release=${RELEASE_SHA}`, bytes: 3 },
       },
     })
 
@@ -95,6 +95,9 @@ describe('public VPS release verification', () => {
       '/favicon.png',
     ].sort())
     expect(requests.every(({ init }) => init.method === 'GET' && init.redirect === 'error')).toBe(true)
+    expect(requests
+      .filter(({ url }) => ['/assets/index-A1.js', '/favicon.png'].includes(url.pathname))
+      .every(({ url }) => url.searchParams.get('_idosi_release') === RELEASE_SHA)).toBe(true)
   })
 
   it('retries one transport failure and then completes verification', async () => {
