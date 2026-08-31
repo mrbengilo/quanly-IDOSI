@@ -171,7 +171,7 @@ start_caddy_for_release() {
   local release_sha="$2"
   local allow_legacy="${3:-0}"
   local container_id running
-  compose create --force-recreate --no-deps caddy || return 1
+  compose create --force-recreate caddy || return 1
   container_id="$(compose ps -q --all caddy)" || return 1
   [[ -n "$container_id" ]] || {
     die 'Không tạo được Caddy container để xác minh topology.'
