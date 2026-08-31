@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { request as nodeHttpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -49,6 +50,13 @@ describe('IDOSI VPS runtime', () => {
     expect(dockerfile).toContain('COPY --from=build /app/src/domain ./src/domain')
   })
 
+  it('bounds app and proxy log files on the VPS', async () => {
+    const compose = await readFile(resolve('deploy', 'vps', 'compose.yml'), 'utf8')
+    expect(compose).toContain('max-size: "10m"')
+    expect(compose).toContain('max-file: "5"')
+    expect(compose.match(/logging: \*default-logging/gu)).toHaveLength(2)
+  })
+
   it('keeps Node upstream sockets alive longer than the Caddy proxy pool', async () => {
     const directory = await temporaryDirectory()
     const { server, runtime } = createIdosiServer({
@@ -64,6 +72,128 @@ describe('IDOSI VPS runtime', () => {
       expect(caddyfile).toMatch(/reverse_proxy app:3000\s*\{[\s\S]*?transport http\s*\{[\s\S]*?keepalive 30s/u)
     } finally {
       runtime.database.close()
+    }
+  })
+
+  it('emits sanitized API timing and SQLite metrics correlated by request id', async () => {
+    const directory = await temporaryDirectory()
+    const entries = []
+    const { server } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      releaseSha: 'a'.repeat(40),
+      requestLogger: (entry) => entries.push(entry),
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    try {
+      const [healthResponse, loginResponse, privateImageResponse] = await Promise.all([
+        fetch(`${baseUrl}/api/health?private_token=must-not-be-logged`),
+        fetch(`${baseUrl}/api/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ username: 'private-observability-user', password: 'must-not-be-logged' }),
+        }),
+        fetch(`${baseUrl}/api/identity-images/private-employee-id/front?token=must-not-be-logged`),
+      ])
+      const [health, login, privateImage] = await Promise.all([
+        healthResponse.json(),
+        loginResponse.json(),
+        privateImageResponse.json(),
+      ])
+      expect(healthResponse.headers.get('x-request-id')).toBe(health.requestId)
+      expect(healthResponse.headers.get('server-timing')).toMatch(/^app;dur=\d+(?:\.\d+)?$/u)
+      expect(loginResponse.status).toBe(401)
+      expect(loginResponse.headers.get('x-request-id')).toBe(login.requestId)
+      expect(privateImageResponse.status).toBe(401)
+      expect(privateImageResponse.headers.get('x-request-id')).toBe(privateImage.requestId)
+
+      expect(entries).toHaveLength(3)
+      const healthEntry = entries.find(({ path }) => path === '/api/health')
+      const loginEntry = entries.find(({ path }) => path === '/api/login')
+      const privateImageEntry = entries.find(({ path }) => path === '/api/identity-images/:employeeId/front')
+      expect(healthEntry).toMatchObject({
+        event: 'idosi.api.request',
+        requestId: health.requestId,
+        releaseSha: 'a'.repeat(40),
+        method: 'GET',
+        path: '/api/health',
+        status: 200,
+        aborted: false,
+        database: { statements: 0, reads: 0, writes: 0, batches: 0 },
+      })
+      expect(loginEntry).toMatchObject({
+        event: 'idosi.api.request',
+        requestId: login.requestId,
+        method: 'POST',
+        path: '/api/login',
+        status: 401,
+        database: { statements: 1, reads: 1, writes: 0, batches: 0 },
+      })
+      expect(privateImageEntry).toMatchObject({
+        requestId: privateImage.requestId,
+        method: 'GET',
+        path: '/api/identity-images/:employeeId/front',
+        status: 401,
+      })
+      expect(entries.every(({ durationMs, timingMs, database }) => (
+        durationMs >= 0
+        && timingMs.bodyRead >= 0
+        && timingMs.handler >= 0
+        && timingMs.serialize >= 0
+        && database.totalMs >= 0
+        && database.maxMs >= 0
+      ))).toBe(true)
+      expect(JSON.stringify(entries)).not.toMatch(
+        /private_token|private-observability-user|private-employee-id|must-not-be-logged/u,
+      )
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  })
+
+  it('records a client-aborted API request exactly once without logging its body', async () => {
+    const directory = await temporaryDirectory()
+    let resolveLog
+    const logged = new Promise((resolveEntry) => { resolveLog = resolveEntry })
+    const entries = []
+    const { server } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      requestLogger: (entry) => {
+        entries.push(entry)
+        resolveLog(entry)
+      },
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const address = server.address()
+    try {
+      const aborted = new Promise((resolveAbort) => {
+        const request = nodeHttpRequest({
+          hostname: '127.0.0.1',
+          port: address.port,
+          path: '/api/login',
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'content-length': '1000' },
+        })
+        request.on('error', () => {})
+        request.on('close', resolveAbort)
+        request.write('{"password":"private-aborted-body')
+        setTimeout(() => request.destroy(), 10)
+      })
+      const [entry] = await Promise.all([logged, aborted])
+
+      expect(entry).toMatchObject({
+        event: 'idosi.api.request',
+        method: 'POST',
+        path: '/api/login',
+        aborted: true,
+      })
+      expect(entries).toHaveLength(1)
+      expect(JSON.stringify(entry)).not.toContain('private-aborted-body')
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
     }
   })
 

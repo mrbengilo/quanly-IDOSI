@@ -1,8 +1,28 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { DatabaseSync } from 'node:sqlite'
 
 const MIGRATION_TABLE = '_vps_migrations'
+const requestMetrics = new AsyncLocalStorage()
+
+const measuredStatement = (kind, operation) => {
+  const metrics = requestMetrics.getStore()
+  if (!metrics) return operation()
+  const startedAt = performance.now()
+  try {
+    return operation()
+  } finally {
+    const durationMs = performance.now() - startedAt
+    metrics.statements += 1
+    metrics[kind] += 1
+    metrics.totalMs += durationMs
+    metrics.maxMs = Math.max(metrics.maxMs, durationMs)
+  }
+}
+
+export const runWithSqliteMetrics = (metrics, operation) => requestMetrics.run(metrics, operation)
 
 class SqliteD1Statement {
   constructor(database, sql, bindings = []) {
@@ -16,21 +36,23 @@ class SqliteD1Statement {
   }
 
   _firstSync() {
-    return this.database.prepare(this.sql).get(...this.bindings) || null
+    return measuredStatement('reads', () => this.database.prepare(this.sql).get(...this.bindings) || null)
   }
 
   _allSync() {
-    return { results: this.database.prepare(this.sql).all(...this.bindings) }
+    return measuredStatement('reads', () => ({ results: this.database.prepare(this.sql).all(...this.bindings) }))
   }
 
   _runSync() {
-    const result = this.database.prepare(this.sql).run(...this.bindings)
-    return {
-      meta: {
-        changes: Number(result.changes),
-        last_row_id: Number(result.lastInsertRowid || 0),
-      },
-    }
+    return measuredStatement('writes', () => {
+      const result = this.database.prepare(this.sql).run(...this.bindings)
+      return {
+        meta: {
+          changes: Number(result.changes),
+          last_row_id: Number(result.lastInsertRowid || 0),
+        },
+      }
+    })
   }
 
   async first() {
@@ -95,6 +117,8 @@ export class SqliteD1 {
   }
 
   async batch(statements) {
+    const metrics = requestMetrics.getStore()
+    if (metrics) metrics.batches += 1
     this.database.exec('BEGIN IMMEDIATE')
     try {
       const results = statements.map((statement) => statement._runSync())

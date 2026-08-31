@@ -1,15 +1,32 @@
+import { randomUUID } from 'node:crypto'
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import worker from '../worker.js'
 import { FileR2 } from './file-r2.mjs'
 import { createReleaseInfoResponse } from './release-info.mjs'
-import { createSqliteD1 } from './sqlite-d1.mjs'
+import { createSqliteD1, runWithSqliteMetrics } from './sqlite-d1.mjs'
 import { createStaticAssets } from './static-assets.mjs'
 
 const MAX_REQUEST_BYTES = 20 * 1024 * 1024
 const KEEP_ALIVE_TIMEOUT_MS = 65_000
 const HEADERS_TIMEOUT_MS = 70_000
+const SLOW_REQUEST_MS = 5_000
+
+const roundedMs = (value) => Math.round(Number(value || 0) * 10) / 10
+
+const observablePath = (url = '/') => {
+  const pathname = new URL(url, 'http://localhost').pathname
+  if (/^\/api\/account-avatars\/[^/]+$/u.test(pathname)) return '/api/account-avatars/:employeeId'
+  const identityImage = pathname.match(/^\/api\/identity-images\/[^/]+\/(front|back)$/u)
+  if (identityImage) return `/api/identity-images/:employeeId/${identityImage[1]}`
+  return pathname
+}
+
+const defaultRequestLogger = process.env.NODE_ENV === 'test'
+  ? null
+  : (entry) => console.info(JSON.stringify(entry))
 
 const readBody = (request) => new Promise((resolveBody, rejectBody) => {
   const chunks = []
@@ -62,9 +79,54 @@ export const createIdosiServer = (options = {}) => {
   const runtime = createVpsRuntime(options)
   const releaseSha = options.releaseSha ?? process.env.IDOSI_RELEASE_SHA ?? ''
   const releaseStartedAt = options.releaseStartedAt ?? new Date().toISOString()
+  const requestLogger = options.requestLogger === undefined ? defaultRequestLogger : options.requestLogger
   const server = createServer(async (nodeRequest, nodeResponse) => {
+    const startedAt = performance.now()
+    const method = String(nodeRequest.method || 'GET').toUpperCase()
+    const path = observablePath(nodeRequest.url)
+    let requestId = randomUUID()
+    let responseBytes = 0
+    const timing = { bodyReadMs: 0, handlerMs: 0, serializeMs: 0 }
+    const databaseMetrics = { statements: 0, reads: 0, writes: 0, batches: 0, totalMs: 0, maxMs: 0 }
+    let requestLogged = false
+    const writeRequestLog = (aborted) => {
+      if (requestLogged || !path.startsWith('/api/') || typeof requestLogger !== 'function') return
+      requestLogged = true
+      const durationMs = roundedMs(performance.now() - startedAt)
+      try {
+        requestLogger({
+          event: 'idosi.api.request',
+          timestamp: new Date().toISOString(),
+          requestId,
+          releaseSha: String(releaseSha || ''),
+          method,
+          path,
+          status: nodeResponse.statusCode,
+          responseBytes,
+          durationMs,
+          aborted,
+          slow: durationMs >= SLOW_REQUEST_MS,
+          timingMs: {
+            bodyRead: roundedMs(timing.bodyReadMs),
+            handler: roundedMs(timing.handlerMs),
+            serialize: roundedMs(timing.serializeMs),
+          },
+          database: {
+            ...databaseMetrics,
+            totalMs: roundedMs(databaseMetrics.totalMs),
+            maxMs: roundedMs(databaseMetrics.maxMs),
+          },
+        })
+      } catch (error) {
+        console.error('Unable to write IDOSI VPS request timing log', { requestId, error: String(error) })
+      }
+    }
+    nodeResponse.once('finish', () => writeRequestLog(false))
+    nodeResponse.once('close', () => writeRequestLog(!nodeResponse.writableFinished))
     try {
-      const body = ['GET', 'HEAD'].includes(nodeRequest.method || 'GET') ? null : await readBody(nodeRequest)
+      const bodyStartedAt = performance.now()
+      const body = ['GET', 'HEAD'].includes(method) ? null : await readBody(nodeRequest)
+      timing.bodyReadMs = performance.now() - bodyStartedAt
       const headers = new Headers()
       for (const [name, value] of Object.entries(nodeRequest.headers)) {
         if (Array.isArray(value)) value.forEach((entry) => headers.append(name, entry))
@@ -73,30 +135,48 @@ export const createIdosiServer = (options = {}) => {
       const forwardedIp = String(nodeRequest.headers['x-real-ip'] || nodeRequest.socket.remoteAddress || '').trim()
       if (forwardedIp && !headers.has('cf-connecting-ip')) headers.set('cf-connecting-ip', forwardedIp)
       const request = new Request(publicUrl(nodeRequest), {
-        method: nodeRequest.method,
+        method,
         headers,
         ...(body ? { body } : {}),
       })
+      const handlerStartedAt = performance.now()
       const response = new URL(request.url).pathname === '/api/release'
         ? createReleaseInfoResponse(request, { releaseSha, startedAt: releaseStartedAt })
-        : await worker.fetch(request, runtime.env)
+        : await runWithSqliteMetrics(databaseMetrics, () => worker.fetch(request, runtime.env))
+      timing.handlerMs = performance.now() - handlerStartedAt
+      requestId = response.headers.get('x-request-id') || requestId
+      let responseBody = null
+      if (response.body && method !== 'HEAD') {
+        const serializeStartedAt = performance.now()
+        responseBody = Buffer.from(await response.arrayBuffer())
+        timing.serializeMs = performance.now() - serializeStartedAt
+        responseBytes = responseBody.byteLength
+      }
       nodeResponse.statusCode = response.status
       response.headers.forEach((value, name) => nodeResponse.setHeader(name, value))
-      if (!response.body || nodeRequest.method === 'HEAD') {
+      nodeResponse.setHeader('x-request-id', requestId)
+      const applicationMs = timing.bodyReadMs + timing.handlerMs + timing.serializeMs
+      nodeResponse.setHeader('server-timing', `app;dur=${roundedMs(applicationMs)}`)
+      if (!responseBody) {
         nodeResponse.end()
         return
       }
-      nodeResponse.end(Buffer.from(await response.arrayBuffer()))
+      nodeResponse.end(responseBody)
     } catch (error) {
       const status = Number(error?.statusCode) || 500
+      nodeResponse.setHeader('x-request-id', requestId)
+      nodeResponse.setHeader('server-timing', `app;dur=${roundedMs(performance.now() - startedAt)}`)
       nodeResponse.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
-      nodeResponse.end(JSON.stringify({
+      const errorBody = JSON.stringify({
         ok: false,
         error: {
           code: status === 413 ? 'REQUEST_TOO_LARGE' : 'VPS_RUNTIME_ERROR',
           message: status === 413 ? 'Dữ liệu gửi lên vượt quá giới hạn cho phép.' : 'Máy chủ không thể xử lý yêu cầu.',
         },
-      }))
+        requestId,
+      })
+      responseBytes = Buffer.byteLength(errorBody)
+      nodeResponse.end(errorBody)
       if (status >= 500) console.error('Unhandled VPS runtime error', error)
     }
   })
