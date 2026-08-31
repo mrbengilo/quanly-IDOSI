@@ -1,9 +1,13 @@
 name: IDOSI VPS Read-only Diagnostics
 
 on:
+  workflow_dispatch:
   push:
     branches:
-      - ops/vps-readonly-diagnostics
+      - main
+    paths:
+      - .github/workflows/diagnose-vps-readonly.yml
+      - deploy/vps/diagnose-readonly.sh
 
 permissions:
   contents: read
@@ -14,9 +18,14 @@ concurrency:
 
 jobs:
   diagnose:
-    if: github.repository == 'mrbengilo/quanly-IDOSI'
+    if: >-
+      github.repository == 'mrbengilo/quanly-IDOSI' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment:
+      name: production
+      url: https://idosi.io.vn
     steps:
       - name: Checkout diagnostic script
         uses: actions/checkout@v6
