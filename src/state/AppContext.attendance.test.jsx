@@ -317,9 +317,9 @@ describe('local attendance canonical working time', () => {
       result = await appRef.current.checkIn({
         employeeId: employee.id,
         date: '2026-08-24',
-        // 07:30 UTC is never earlier than this client-provided shift on either
-        // UTC CI or the Asia/Ho_Chi_Minh developer runtime.
-        at: '2026-08-24T07:30:00.000Z',
+        // Keep the wall-clock time stable in every test-runner timezone; this
+        // case verifies payload precedence, not the early check-in policy.
+        at: new Date(2026, 7, 24, 7, 30).toISOString(),
         shiftId: 'manager_client_shift',
         shiftName: 'Ca quản lý gửi lên',
         shiftStart: '07:30',
