@@ -44,11 +44,19 @@ import {
   getMonthlySalary,
   getPayBasis,
   money,
+  operationalIdentifierRecordMatch,
   salaryBasisLabel,
   usesMonthlyHoursFormula,
 } from '../../utils'
 
-const findShift = (id) => shifts.find((shift) => shift.id === id)
+const identifierMatch = (records, reference, identifiersOf = (record) => [record?.id]) => {
+  const match = operationalIdentifierRecordMatch(records, reference, identifiersOf)
+  return match.ambiguous ? null : match.record
+}
+const employeeIdentifiers = (employee = {}) => [employee.id, employee.code, employee.employeeId]
+const employeeFor = (employees, reference) => identifierMatch(employees, reference, employeeIdentifiers)
+const payRowFor = (reference) => identifierMatch(payRows, reference, (row) => [row.employeeId])
+const findShift = (id) => identifierMatch(shifts, id, (shift) => [shift.id])
 
 const attendancePay = (employee, hours) => getPayBasis(employee) === 'hourly' || usesMonthlyHoursFormula(employee)
   ? calculateEmployeeBasePay(employee, { hours })
@@ -79,23 +87,37 @@ const currentRange = (dates) => {
   return `${displayDate(validDates[0])} - ${displayDate(validDates.at(-1))}`
 }
 
-const useStoreScope = () => {
-  const app = useApp()
+// Pure scope resolver is exported for collision regression coverage.
+// eslint-disable-next-line react-refresh/only-export-components
+export const buildStoreFinanceScope = (app = {}) => {
   const stores = Array.isArray(app.stores) ? app.stores : []
-  const storeId = ['employee', 'store_manager'].includes(app.session?.role)
+  const requestedStoreId = ['employee', 'store_manager'].includes(app.session?.role)
     ? app.session.storeId
     : app.activeStoreId || app.session?.storeId || stores[0]?.id || ''
-  const employees = (Array.isArray(app.employees) ? app.employees : []).filter((employee) =>
-    String(employee.unit || 'store') === 'store' && String(employee.storeId || stores[0]?.id || '') === String(storeId),
-  )
-  const employeeIds = new Set(employees.map((employee) => String(employee.id)))
-  const attendance = (Array.isArray(app.attendance) ? app.attendance : []).filter((record) =>
-    record.storeId ? String(record.storeId) === String(storeId) : employeeIds.has(String(record.employeeId)),
-  )
-  const imports = (Array.isArray(app.imports) ? app.imports : []).filter((record) => String(record.storeId || storeId) === String(storeId))
-  const activeStore = stores.find((store) => String(store.id) === String(storeId)) || stores[0]
+  const activeStore = identifierMatch(stores, requestedStoreId, (store) => [store.id])
+  const storeId = String(activeStore?.id || '')
+  const employees = activeStore
+    ? (Array.isArray(app.employees) ? app.employees : []).filter((employee) => (
+      String(employee.unit || 'store') === 'store'
+      && identifierMatch(stores, employee.storeId || storeId, (store) => [store.id]) === activeStore
+    ))
+    : []
+  const attendance = activeStore
+    ? (Array.isArray(app.attendance) ? app.attendance : []).filter((record) => (
+      record.storeId
+        ? identifierMatch(stores, record.storeId, (store) => [store.id]) === activeStore
+        : Boolean(employeeFor(employees, record.employeeId))
+    ))
+    : []
+  const imports = activeStore
+    ? (Array.isArray(app.imports) ? app.imports : []).filter((record) => (
+      identifierMatch(stores, record.storeId || storeId, (store) => [store.id]) === activeStore
+    ))
+    : []
   return { ...app, stores, storeId, activeStore, employees, attendance, imports }
 }
+
+const useStoreScope = () => buildStoreFinanceScope(useApp())
 
 export function StoreAttendance() {
   const { attendance, employees } = useStoreScope()
@@ -108,10 +130,10 @@ export function StoreAttendance() {
   const normalizedSelectedDate = availableDates.includes(isoDate(selectedDate)) ? isoDate(selectedDate) : availableDates[0] || ''
 
   const filtered = attendance.filter((item) => {
-    const employee = employees.find((person) => person.id === item.employeeId)
+    const employee = employeeFor(employees, item.employeeId)
     const matchesDate = !normalizedSelectedDate || item.date === normalizedSelectedDate
     const matchesQuery = employee?.name.toLowerCase().includes(query.toLowerCase())
-    const matchesShift = shift === 'all' || item.shift === shift
+    const matchesShift = shift === 'all' || findShift(item.shift) === findShift(shift)
     const matchesStatus = status === 'all' || item.status === status
     return matchesDate && matchesQuery && matchesShift && matchesStatus
   })
@@ -129,12 +151,12 @@ export function StoreAttendance() {
   }
   const totalHours = filtered.reduce((sum, item) => sum + (Number(item.hours) || 0), 0)
   const totalHourlyPay = filtered.reduce((sum, item) => {
-    const employee = employees.find((person) => person.id === item.employeeId)
+    const employee = employeeFor(employees, item.employeeId)
     return sum + (attendancePay(employee, Number(item.hours) || 0) || 0)
   }, 0)
   return (
     <div className="page">
-      <PageHeader title="Chấm công" subtitle="Theo dõi giờ làm việc của nhân viên" actions={<><DateRange value={displayDate(normalizedSelectedDate)} onChange={setSelectedDate} /><Button variant="outline" onClick={() => moveDate(1)} disabled={!availableDates.length || dateIndex >= availableDates.length - 1}>‹</Button><Button variant="outline" onClick={() => moveDate(-1)} disabled={!availableDates.length || dateIndex <= 0}>›</Button><Button variant="outline" icon={Filter} onClick={resetFilters}>Đặt lại</Button><ExportButton onClick={() => downloadCsv('cham-cong.csv', filtered.map((item) => ({ ...item, employee: employees.find((person) => person.id === item.employeeId)?.name || item.employeeId })))} /></>} />
+      <PageHeader title="Chấm công" subtitle="Theo dõi giờ làm việc của nhân viên" actions={<><DateRange value={displayDate(normalizedSelectedDate)} onChange={setSelectedDate} /><Button variant="outline" onClick={() => moveDate(1)} disabled={!availableDates.length || dateIndex >= availableDates.length - 1}>‹</Button><Button variant="outline" onClick={() => moveDate(-1)} disabled={!availableDates.length || dateIndex <= 0}>›</Button><Button variant="outline" icon={Filter} onClick={resetFilters}>Đặt lại</Button><ExportButton onClick={() => downloadCsv('cham-cong.csv', filtered.map((item) => ({ ...item, employee: employeeFor(employees, item.employeeId)?.name || item.employeeId })))} /></>} />
       <div className="metric-grid metric-grid--four">
         <MetricCard label="Tổng số nhân viên" value={new Set(filtered.map((item) => item.employeeId)).size} suffix="người" icon={Clock3} tone="green" compact />
         <MetricCard label="Tổng giờ làm" value={totalHours.toFixed(2)} suffix="giờ" helper={`TB: ${(totalHours / Math.max(1, filtered.length)).toFixed(2)} giờ/người`} icon={Clock3} tone="green" compact />
@@ -144,7 +166,7 @@ export function StoreAttendance() {
       <Card>
         <div className="card__subheader"><div className="tabs"><button className={view === 'summary' ? 'active' : ''} onClick={() => setView('summary')}>Tổng hợp theo ngày</button><button className={view === 'shift' ? 'active' : ''} onClick={() => setView('shift')}>Chi tiết theo ca</button></div><div><SearchInput value={query} onChange={setQuery} placeholder="Tìm kiếm nhân viên..." /><Select value={shift} onChange={(event) => setShift(event.target.value)}><option value="all">Tất cả ca</option>{shifts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</Select><Select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Tất cả trạng thái</option><option value="Đúng giờ">Đúng giờ</option><option value="Đi sớm">Đi sớm</option><option value="Trễ">Trễ</option></Select></div></div>
         <TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Ca làm việc</th><th>Giờ vào</th><th>Giờ kết ca</th><th>Số giờ làm</th><th>Lương cứng</th><th>Lương nhận</th><th>Trạng thái</th><th>Ghi chú</th></tr></thead><tbody>{filtered.map((item, index) => {
-          const employee = employees.find((person) => person.id === item.employeeId)
+          const employee = employeeFor(employees, item.employeeId)
           const workShift = findShift(item.shift)
           const hours = Number(item.hours) || 0
           const pay = attendancePay(employee, hours)
@@ -154,7 +176,7 @@ export function StoreAttendance() {
       </Card>
       <div className="bottom-info-grid">
         <Card title="Giải thích"><ul className="plain-list"><li>Số giờ làm = Giờ kết ca - Giờ vào</li><li>Full-time được thiết lập và tổng hợp theo lương tháng</li><li>Part-time = Số giờ làm × mức lương theo giờ</li></ul></Card>
-        <Card title="Tổng hợp theo ca"><div className="shift-totals">{shifts.map((item) => { const shiftRows = filtered.filter((row) => row.shift === item.id); const hours = shiftRows.reduce((total, row) => total + (Number(row.hours) || 0), 0); const pay = shiftRows.reduce((total, row) => { const employee = employees.find((person) => person.id === row.employeeId); return total + (attendancePay(employee, Number(row.hours) || 0) || 0) }, 0); return <div key={item.id}><strong style={{ color: item.color }}>{item.name}</strong><b>{hours.toFixed(2)} giờ</b><small>{money(pay)} Part-time</small></div> })}</div></Card>
+        <Card title="Tổng hợp theo ca"><div className="shift-totals">{shifts.map((item) => { const shiftRows = filtered.filter((row) => findShift(row.shift) === item); const hours = shiftRows.reduce((total, row) => total + (Number(row.hours) || 0), 0); const pay = shiftRows.reduce((total, row) => { const employee = employeeFor(employees, row.employeeId); return total + (attendancePay(employee, Number(row.hours) || 0) || 0) }, 0); return <div key={item.id}><strong style={{ color: item.color }}>{item.name}</strong><b>{hours.toFixed(2)} giờ</b><small>{money(pay)} Part-time</small></div> })}</div></Card>
         <Card title="Tỷ lệ chấm công"><div className="donut-with-legend"><DonutChart height={185} data={[{ name: 'Đúng giờ', value: filtered.filter((item) => item.status === 'Đúng giờ').length }, { name: 'Trễ', value: filtered.filter((item) => item.status === 'Trễ').length }]} center={filtered.length} subcenter="Tổng số" /><div className="legend-list"><p><i className="dot green" />Đúng giờ <strong>{filtered.filter((item) => item.status === 'Đúng giờ').length}</strong></p><p><i className="dot orange" />Trễ <strong>{filtered.filter((item) => item.status === 'Trễ').length}</strong></p></div></div></Card>
       </div>
     </div>
@@ -179,8 +201,8 @@ export function StorePayroll() {
     return next
   })
   const rows = employees.map((employee) => {
-    const seeded = payRows.find((row) => row.employeeId === employee.id)
-    const employeeAttendance = attendance.filter((record) => record.employeeId === employee.id)
+    const seeded = payRowFor(employee.id)
+    const employeeAttendance = attendance.filter((record) => employeeFor(employees, record.employeeId) === employee)
     const attendanceHours = employeeAttendance.reduce((total, record) => total + (Number(record.hours) || 0), 0)
     const hours = attendanceHours || Number(seeded?.hours) || 0
     return {
@@ -196,8 +218,8 @@ export function StorePayroll() {
   const totals = rows.reduce((acc, row) => ({ hours: acc.hours + row.hours, base: acc.base + row.base, tiktokAllowance: acc.tiktokAllowance + row.tiktokAllowance, tiktokBonus: acc.tiktokBonus + row.tiktokBonus, other: acc.other + row.other, bonus: acc.bonus + row.bonus }), { hours: 0, base: 0, tiktokAllowance: 0, tiktokBonus: 0, other: 0, bonus: 0 })
   const totalPay = totals.base + totals.tiktokAllowance + totals.tiktokBonus + totals.other + totals.bonus
   const hoursData = cashSeries.map((item, index) => ({ day: item.day.slice(0, 2), hours: 16 + (item.revenue % 15) + (index % 3) }))
-  const detailRow = rows.find((row) => row.employeeId === detailEmployeeId)
-  const detailEmployee = employees.find((employee) => employee.id === detailEmployeeId)
+  const detailRow = identifierMatch(rows, detailEmployeeId, (row) => [row.employeeId])
+  const detailEmployee = employeeFor(employees, detailEmployeeId)
   const detailTotal = detailRow ? detailRow.base + detailRow.tiktokAllowance + detailRow.tiktokBonus + detailRow.other + detailRow.bonus : 0
   return (
     <div className="page">
@@ -212,7 +234,7 @@ export function StorePayroll() {
         <MetricCard label="Tổng nhân viên" value={rows.length} suffix="nhân viên" helper="Đang làm việc" icon={UserRound} tone="green" compact />
       </div>
       <Card title="Chi tiết lương thưởng nhân viên">
-        <TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Cơ chế lương</th><th>Tổng giờ làm</th><th>Lương cứng</th><th>Phụ cấp TikTok</th><th>Thưởng TikTok</th><th>Thưởng / Phụ cấp khác</th><th>Thưởng</th><th>Tổng nhận</th><th>Chi tiết</th></tr></thead><tbody>{rows.map((row, index) => { const employee = employees.find((item) => item.id === row.employeeId); const total = row.base + row.tiktokAllowance + row.tiktokBonus + row.other + row.bonus; const basis = getPayBasis(employee); const rate = basis === 'hourly' ? getHourlyRate(employee) : getMonthlySalary(employee); return <tr key={row.employeeId}><td>{index + 1}</td><td><div className="person-cell"><Avatar name={employee?.name} src={employee?.avatar} employeeId={employee?.id || employee?.code || row.employeeId} color={employee?.color} /><span><strong>{employee?.name}</strong><small>{employee?.role}</small></span></div></td><td><Badge tone={basis === 'hourly' ? 'green' : 'blue'}>{salaryBasisLabel(employee)}</Badge><small className="table-sub">{money(rate)}{basis === 'hourly' ? '/giờ' : '/tháng'}</small></td><td><strong>{row.hours.toFixed(2)}</strong><small className="table-sub">giờ ghi nhận</small></td><td>{money(row.base)}</td><td className="green-text">{money(row.tiktokAllowance)}</td><td className="green-text">{money(row.tiktokBonus)}</td><td className="orange-text">{money(row.other)}</td><td className="green-text">{money(row.bonus)}</td><td><strong>{money(total)}</strong></td><td><Button variant="outline" onClick={() => setDetailEmployeeId(row.employeeId)}>Xem chi tiết</Button></td></tr> })}<tr className="total-row"><td colSpan="3">TỔNG CỘNG</td><td>{totals.hours.toFixed(2)} giờ</td><td>{money(totals.base)}</td><td>{money(totals.tiktokAllowance)}</td><td>{money(totals.tiktokBonus)}</td><td>{money(totals.other)}</td><td>{money(totals.bonus)}</td><td>{money(totalPay)}</td><td /></tr></tbody></TableWrap>
+        <TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Cơ chế lương</th><th>Tổng giờ làm</th><th>Lương cứng</th><th>Phụ cấp TikTok</th><th>Thưởng TikTok</th><th>Thưởng / Phụ cấp khác</th><th>Thưởng</th><th>Tổng nhận</th><th>Chi tiết</th></tr></thead><tbody>{rows.map((row, index) => { const employee = employeeFor(employees, row.employeeId); const total = row.base + row.tiktokAllowance + row.tiktokBonus + row.other + row.bonus; const basis = getPayBasis(employee); const rate = basis === 'hourly' ? getHourlyRate(employee) : getMonthlySalary(employee); return <tr key={row.employeeId}><td>{index + 1}</td><td><div className="person-cell"><Avatar name={employee?.name} src={employee?.avatar} employeeId={employee?.id || employee?.code || row.employeeId} color={employee?.color} /><span><strong>{employee?.name}</strong><small>{employee?.role}</small></span></div></td><td><Badge tone={basis === 'hourly' ? 'green' : 'blue'}>{salaryBasisLabel(employee)}</Badge><small className="table-sub">{money(rate)}{basis === 'hourly' ? '/giờ' : '/tháng'}</small></td><td><strong>{row.hours.toFixed(2)}</strong><small className="table-sub">giờ ghi nhận</small></td><td>{money(row.base)}</td><td className="green-text">{money(row.tiktokAllowance)}</td><td className="green-text">{money(row.tiktokBonus)}</td><td className="orange-text">{money(row.other)}</td><td className="green-text">{money(row.bonus)}</td><td><strong>{money(total)}</strong></td><td><Button variant="outline" onClick={() => setDetailEmployeeId(row.employeeId)}>Xem chi tiết</Button></td></tr> })}<tr className="total-row"><td colSpan="3">TỔNG CỘNG</td><td>{totals.hours.toFixed(2)} giờ</td><td>{money(totals.base)}</td><td>{money(totals.tiktokAllowance)}</td><td>{money(totals.tiktokBonus)}</td><td>{money(totals.other)}</td><td>{money(totals.bonus)}</td><td>{money(totalPay)}</td><td /></tr></tbody></TableWrap>
       </Card>
       <div className="chart-grid chart-grid--three">
         <Card title="Cơ cấu chi trả"><DonutChart data={[{ name: 'Lương cứng', value: totals.base }, { name: 'Thưởng TikTok', value: totals.tiktokBonus }, { name: 'Phụ cấp khác', value: totals.other }, { name: 'Phụ cấp TikTok', value: totals.tiktokAllowance }, { name: 'Thưởng khác', value: totals.bonus }]} center={money(totalPay)} subcenter="Tổng chi trả" /></Card>
@@ -234,8 +256,8 @@ export function StoreCashflow() {
   const [focus, setFocus] = useState('revenue')
 
   const employeePayroll = employees.reduce((sum, employee) => {
-    const employeeAttendance = attendance.filter((record) => record.employeeId === employee.id)
-    const seeded = payRows.find((row) => row.employeeId === employee.id)
+    const employeeAttendance = attendance.filter((record) => employeeFor(employees, record.employeeId) === employee)
+    const seeded = payRowFor(employee.id)
     const hours = employeeAttendance.reduce((total, record) => total + (Number(record.hours) || 0), 0) || Number(seeded?.hours) || 0
     return sum + calculateEmployeeBasePay(employee, { hours }) + (Number(seeded?.tiktokAllowance) || 0) + (Number(seeded?.tiktokBonus) || 0) + (Number(seeded?.other) || 0) + (Number(seeded?.bonus) || 0)
   }, 0)
@@ -312,8 +334,8 @@ export function StoreReports() {
   const [range, setRange] = useState(currentRange(attendance.map((item) => item.date)))
   const filteredAttendance = attendance.filter((item) => dateInRange(item.date, range))
   const employeeRows = employees.map((employee) => {
-    const records = filteredAttendance.filter((item) => item.employeeId === employee.id)
-    const seeded = payRows.find((item) => item.employeeId === employee.id)
+    const records = filteredAttendance.filter((item) => employeeFor(employees, item.employeeId) === employee)
+    const seeded = payRowFor(employee.id)
     const hours = records.reduce((sum, item) => sum + (Number(item.hours) || 0), 0)
     const base = calculateEmployeeBasePay(employee, { hours: hours || Number(seeded?.hours) || 0 })
     const bonus = (Number(seeded?.tiktokBonus) || 0) + (Number(seeded?.bonus) || 0)
@@ -331,7 +353,7 @@ export function StoreReports() {
   const seedRevenue = Math.max(1, cashSeries.reduce((sum, item) => sum + item.revenue, 0))
   const revenueData = cashSeries.map((item) => ({ ...item, revenue: item.revenue * storeRevenue / seedRevenue / 1000000 }))
   const shiftRows = shifts.map((shift) => {
-    const rows = filteredAttendance.filter((item) => item.shift === shift.id)
+    const rows = filteredAttendance.filter((item) => findShift(item.shift) === shift)
     return { id: shift.id, name: shift.name, time: shift.time, color: shift.color, employees: new Set(rows.map((item) => item.employeeId)).size, hours: rows.reduce((sum, item) => sum + (Number(item.hours) || 0), 0) }
   })
   const changePeriod = (nextPeriod) => {
@@ -346,7 +368,7 @@ export function StoreReports() {
     if (nextPeriod === 'year') setRange(`01/01/${year} - 31/12/${year}`)
   }
   const exportRows = activeTab === 'attendance' || activeTab === 'details'
-    ? filteredAttendance.map((item) => ({ ...item, employee: employees.find((employee) => employee.id === item.employeeId)?.name || item.employeeId }))
+    ? filteredAttendance.map((item) => ({ ...item, employee: employeeFor(employees, item.employeeId)?.name || item.employeeId }))
     : activeTab === 'shifts'
       ? shiftRows
       : activeTab === 'employees'
@@ -370,15 +392,15 @@ export function StoreReports() {
           <Card title="Cơ cấu lương nhận"><div className="donut-with-legend"><DonutChart data={[{ name: 'Lương cứng', value: totals.base }, { name: 'Thưởng', value: totals.bonus }, { name: 'Phụ cấp', value: totals.allowance }]} center={money(totals.total)} subcenter="Tổng lương nhận" /><div className="legend-list"><p><i className="dot green" />Lương cứng <strong>{totals.total ? (totals.base / totals.total * 100).toFixed(1) : 0}%</strong></p><p><i className="dot teal" />Thưởng <strong>{totals.total ? (totals.bonus / totals.total * 100).toFixed(1) : 0}%</strong></p><p><i className="dot orange" />Phụ cấp <strong>{totals.total ? (totals.allowance / totals.total * 100).toFixed(1) : 0}%</strong></p></div></div></Card>
         </div>
         <div className="chart-grid chart-grid--wide">
-          <Card title="Thống kê theo nhân viên"><TableWrap><thead><tr><th>Nhân viên</th><th>Tổng giờ làm</th><th>Lương cứng</th><th>Thưởng</th><th>Phụ cấp</th><th>Lương nhận</th></tr></thead><tbody>{employeeRows.map((row) => { const employee = employees.find((item) => item.id === row.employeeId); return <tr key={row.employeeId}><td><div className="person-cell"><Avatar name={employee?.name} src={employee?.avatar} employeeId={employee?.id || employee?.code || row.employeeId} color={employee?.color} /><span><strong>{employee?.name}</strong><small>{employee?.shortRole}</small></span></div></td><td>{row.hours.toFixed(2)}</td><td>{money(row.base)}</td><td className="green-text">{money(row.bonus)}</td><td className="orange-text">{money(row.allowance)}</td><td className="green-text"><strong>{money(row.total)}</strong></td></tr> })}<tr className="total-row"><td>TỔNG CỘNG</td><td>{totals.hours.toFixed(2)}</td><td>{money(totals.base)}</td><td>{money(totals.bonus)}</td><td>{money(totals.allowance)}</td><td>{money(totals.total)}</td></tr></tbody></TableWrap></Card>
+          <Card title="Thống kê theo nhân viên"><TableWrap><thead><tr><th>Nhân viên</th><th>Tổng giờ làm</th><th>Lương cứng</th><th>Thưởng</th><th>Phụ cấp</th><th>Lương nhận</th></tr></thead><tbody>{employeeRows.map((row) => { const employee = employeeFor(employees, row.employeeId); return <tr key={row.employeeId}><td><div className="person-cell"><Avatar name={employee?.name} src={employee?.avatar} employeeId={employee?.id || employee?.code || row.employeeId} color={employee?.color} /><span><strong>{employee?.name}</strong><small>{employee?.shortRole}</small></span></div></td><td>{row.hours.toFixed(2)}</td><td>{money(row.base)}</td><td className="green-text">{money(row.bonus)}</td><td className="orange-text">{money(row.allowance)}</td><td className="green-text"><strong>{money(row.total)}</strong></td></tr> })}<tr className="total-row"><td>TỔNG CỘNG</td><td>{totals.hours.toFixed(2)}</td><td>{money(totals.base)}</td><td>{money(totals.bonus)}</td><td>{money(totals.allowance)}</td><td>{money(totals.total)}</td></tr></tbody></TableWrap></Card>
           <div className="stacked-cards"><Card title="Thống kê ca làm việc"><div className="progress-list">{shiftRows.map((shift) => <div key={shift.id}><span>{shift.name} <small>({shift.time})</small></span><b>{shift.hours.toFixed(2)} giờ</b><Progress value={totals.hours ? shift.hours / totals.hours * 100 : 0} color={shift.color} /></div>)}</div></Card><Card title="Tình trạng chấm công"><div className="summary-list"><p><span>Đúng giờ</span><strong>{filteredAttendance.filter((item) => item.status === 'Đúng giờ').length}</strong></p><p><span>Đi sớm</span><strong>{filteredAttendance.filter((item) => item.status === 'Đi sớm').length}</strong></p><p><span>Trễ</span><strong>{filteredAttendance.filter((item) => item.status === 'Trễ').length}</strong></p></div></Card></div>
         </div>
       </>}
-      {activeTab === 'attendance' && <Card title="Báo cáo chấm công"><TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca</th><th>Giờ vào</th><th>Giờ ra</th><th>Số giờ</th><th>Trạng thái</th></tr></thead><tbody>{filteredAttendance.map((item) => { const employee = employees.find((row) => row.id === item.employeeId); return <tr key={item.id}><td>{displayDate(item.date)}</td><td>{employee?.name || item.employeeId}</td><td>{findShift(item.shift)?.name || item.shift}</td><td>{item.checkIn}</td><td>{item.checkOut || '—'}</td><td>{Number(item.hours || 0).toFixed(2)}</td><td><Badge tone={item.status === 'Trễ' ? 'orange' : 'green'}>{item.status}</Badge></td></tr> })}{!filteredAttendance.length && <tr><td colSpan="7" style={{ textAlign: 'center' }}>Không có dữ liệu chấm công trong kỳ.</td></tr>}</tbody></TableWrap></Card>}
-      {activeTab === 'payroll' && <Card title="Báo cáo lương thưởng"><TableWrap><thead><tr><th>Nhân viên</th><th>Cơ chế</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng</th><th>Phụ cấp</th><th>Tổng nhận</th></tr></thead><tbody>{employeeRows.map((row) => { const employee = employees.find((item) => item.id === row.employeeId); return <tr key={row.employeeId}><td>{row.employeeName}</td><td><Badge tone={getPayBasis(employee) === 'hourly' ? 'green' : 'blue'}>{salaryBasisLabel(employee)}</Badge></td><td>{row.hours.toFixed(2)}</td><td>{money(row.base)}</td><td>{money(row.bonus)}</td><td>{money(row.allowance)}</td><td><strong>{money(row.total)}</strong></td></tr> })}<tr className="total-row"><td colSpan="2">TỔNG CỘNG</td><td>{totals.hours.toFixed(2)}</td><td>{money(totals.base)}</td><td>{money(totals.bonus)}</td><td>{money(totals.allowance)}</td><td>{money(totals.total)}</td></tr></tbody></TableWrap></Card>}
+      {activeTab === 'attendance' && <Card title="Báo cáo chấm công"><TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca</th><th>Giờ vào</th><th>Giờ ra</th><th>Số giờ</th><th>Trạng thái</th></tr></thead><tbody>{filteredAttendance.map((item) => { const employee = employeeFor(employees, item.employeeId); return <tr key={item.id}><td>{displayDate(item.date)}</td><td>{employee?.name || item.employeeId}</td><td>{findShift(item.shift)?.name || item.shift}</td><td>{item.checkIn}</td><td>{item.checkOut || '—'}</td><td>{Number(item.hours || 0).toFixed(2)}</td><td><Badge tone={item.status === 'Trễ' ? 'orange' : 'green'}>{item.status}</Badge></td></tr> })}{!filteredAttendance.length && <tr><td colSpan="7" style={{ textAlign: 'center' }}>Không có dữ liệu chấm công trong kỳ.</td></tr>}</tbody></TableWrap></Card>}
+      {activeTab === 'payroll' && <Card title="Báo cáo lương thưởng"><TableWrap><thead><tr><th>Nhân viên</th><th>Cơ chế</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng</th><th>Phụ cấp</th><th>Tổng nhận</th></tr></thead><tbody>{employeeRows.map((row) => { const employee = employeeFor(employees, row.employeeId); return <tr key={row.employeeId}><td>{row.employeeName}</td><td><Badge tone={getPayBasis(employee) === 'hourly' ? 'green' : 'blue'}>{salaryBasisLabel(employee)}</Badge></td><td>{row.hours.toFixed(2)}</td><td>{money(row.base)}</td><td>{money(row.bonus)}</td><td>{money(row.allowance)}</td><td><strong>{money(row.total)}</strong></td></tr> })}<tr className="total-row"><td colSpan="2">TỔNG CỘNG</td><td>{totals.hours.toFixed(2)}</td><td>{money(totals.base)}</td><td>{money(totals.bonus)}</td><td>{money(totals.allowance)}</td><td>{money(totals.total)}</td></tr></tbody></TableWrap></Card>}
       {activeTab === 'shifts' && <Card title="Báo cáo ca làm việc"><TableWrap><thead><tr><th>Ca làm việc</th><th>Khung giờ</th><th>Nhân viên</th><th>Tổng giờ</th><th>Tỷ trọng</th></tr></thead><tbody>{shiftRows.map((shift) => <tr key={shift.id}><td><strong style={{ color: shift.color }}>{shift.name}</strong></td><td>{shift.time}</td><td>{shift.employees}</td><td>{shift.hours.toFixed(2)} giờ</td><td><Progress value={totals.hours ? shift.hours / totals.hours * 100 : 0} color={shift.color} /></td></tr>)}</tbody></TableWrap></Card>}
       {activeTab === 'employees' && <Card title="Báo cáo nhân viên"><TableWrap><thead><tr><th>Mã nhân viên</th><th>Nhân viên</th><th>Vị trí</th><th>Loại nhân viên</th><th>Cơ chế lương</th><th>Trạng thái</th></tr></thead><tbody>{employees.map((employee) => <tr key={employee.id}><td>{employee.code || employee.id}</td><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><strong>{employee.name}</strong></div></td><td>{employee.position || employee.role}</td><td><Badge tone={getPayBasis(employee) === 'hourly' ? 'green' : 'blue'}>{employee.employmentType || employee.type}</Badge></td><td>{salaryBasisLabel(employee)}</td><td><Badge>{employee.status || 'Đang làm việc'}</Badge></td></tr>)}</tbody></TableWrap></Card>}
-      {activeTab === 'details' && <Card title="Dữ liệu chi tiết"><TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Giờ vào</th><th>Giờ ra</th><th>Số giờ</th><th>Trạng thái</th><th>Ghi chú</th></tr></thead><tbody>{filteredAttendance.map((item) => <tr key={item.id}><td>{displayDate(item.date)}</td><td>{employees.find((employee) => employee.id === item.employeeId)?.name || item.employeeId}</td><td>{item.checkIn}</td><td>{item.checkOut || '—'}</td><td>{Number(item.hours || 0).toFixed(2)}</td><td>{item.status}</td><td>{item.note || '—'}</td></tr>)}</tbody></TableWrap></Card>}
+      {activeTab === 'details' && <Card title="Dữ liệu chi tiết"><TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Giờ vào</th><th>Giờ ra</th><th>Số giờ</th><th>Trạng thái</th><th>Ghi chú</th></tr></thead><tbody>{filteredAttendance.map((item) => <tr key={item.id}><td>{displayDate(item.date)}</td><td>{employeeFor(employees, item.employeeId)?.name || item.employeeId}</td><td>{item.checkIn}</td><td>{item.checkOut || '—'}</td><td>{Number(item.hours || 0).toFixed(2)}</td><td>{item.status}</td><td>{item.note || '—'}</td></tr>)}</tbody></TableWrap></Card>}
     </div>
   )
 }
@@ -397,7 +419,7 @@ export function StoreSettings() {
   const { notify, stores = [], activeStoreId, session, updateStore } = useApp()
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const selectedStoreId = ['employee', 'store_manager'].includes(session?.role) ? session.storeId : activeStoreId || session?.storeId
-  const activeStore = stores.find((item) => item.id === selectedStoreId) || stores[0]
+  const activeStore = identifierMatch(stores, selectedStoreId, (item) => [item.id])
   const [tab, setTab] = useState('info')
   const [form, setForm] = useState(() => storeSettingsForm(activeStore))
   const [saving, setSaving] = useState(false)
