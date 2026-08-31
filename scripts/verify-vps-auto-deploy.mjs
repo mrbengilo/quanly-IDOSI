@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 
 const workflowPath = '.github/workflows/deploy-vps.yml'
-const workflow = readFileSync(workflowPath, 'utf8')
+const workflow = readFileSync(workflowPath, 'utf8').replace(/\r\n/g, '\n')
 
 const requiredFragments = [
   'workflow_dispatch:',
@@ -16,6 +16,11 @@ const requiredFragments = [
   'cancel-in-progress: false',
   'StrictHostKeyChecking=yes',
   'verify-public-release.mjs',
+  'id: external_verification',
+  'steps.external_verification.outputs.verified_at',
+  'steps.external_verification.outputs.verified_origin',
+  'steps.external_verification.outputs.verified_sha',
+  'EXTERNAL_VERIFY_RUN_ID: ${{ github.run_id }}',
 ]
 
 const missing = requiredFragments.filter((fragment) => !workflow.includes(fragment))
@@ -36,6 +41,17 @@ if (/^  (push|pull_request):/m.test(triggerBlock)) {
 
 if (!/^  workflow_run:/m.test(triggerBlock) || !/^  workflow_dispatch:/m.test(triggerBlock)) {
   throw new Error('Deploy workflow must keep both automatic workflow_run and manual fallback triggers.')
+}
+
+const publicVerification = workflow.indexOf('node server/vps/verify-public-release.mjs')
+const attestationOutput = workflow.indexOf('echo "verified_at=$(date -u +%Y%m%dT%H%M%SZ)"')
+const verifiedShaOutput = workflow.indexOf('echo "verified_sha=$RELEASE_SHA"')
+const finalizer = workflow.indexOf("bash '$REMOTE_FINALIZER_SCRIPT'")
+if (publicVerification < 0
+  || attestationOutput <= publicVerification
+  || verifiedShaOutput <= attestationOutput
+  || finalizer <= verifiedShaOutput) {
+  throw new Error('External verification must pass before attestation output and remote finalization.')
 }
 
 console.log('Verified automatic exact-SHA VPS deployment trigger and safety guards.')

@@ -75,19 +75,40 @@ wait_for_job "$FAILURE_STATUS" || fail 'durable failure job did not complete'
 
 FINALIZE_ROOT="$TEMP_ROOT/finalize-root"
 BACKUP_DIR="$FINALIZE_ROOT/deploy/vps/backups"
-FAKE_BIN="$TEMP_ROOT/fake-bin"
-mkdir -p "$BACKUP_DIR" "$FAKE_BIN"
+mkdir -p "$BACKUP_DIR"
+VERIFIED_AT="$(date -u +%Y%m%dT%H%M%SZ)"
+VERIFIED_ORIGIN='https://idosi.example'
+VERIFY_RUN_ID='123456789'
+VERIFY_RUN_ATTEMPT='1'
 
-cat >"$FAKE_BIN/docker" <<'DOCKER'
-#!/usr/bin/env bash
-if [[ "$*" == 'compose version' ]]; then
-  exit 0
-fi
-[[ "$*" == compose\ -f\ compose.yml\ exec\ -T\ app\ node\ server/vps/verify-public-release.mjs\ * ]] || exit 2
-[[ "${FAKE_DOCKER_FAIL:-0}" == '0' ]] || exit 1
-[[ "${!#}" == "${FAKE_RELEASE_SHA:?}" ]] || exit 3
-DOCKER
-chmod +x "$FAKE_BIN/docker"
+assert_finalization_rejected() {
+  local case_name="$1"
+  local deployed_at="$2"
+  local verified_at="$3"
+  local verified_origin="$4"
+  local verified_sha="$5"
+  local report_file="$BACKUP_DIR/deploy-$case_name-${SHA:0:12}.env"
+
+  cat >"$report_file" <<REPORT
+STATUS=LOCAL_READY
+RELEASE_SHA=$SHA
+PUBLIC_TRAFFIC_RESUMED=1
+PUBLIC_URL=$VERIFIED_ORIGIN
+DEPLOYED_AT_UTC=$deployed_at
+EXTERNAL_VERIFIED_AT_UTC=
+REPORT
+  printf '%s\n' "$report_file" >"$POINTER_FILE"
+  if IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
+    IDOSI_DEPLOY_LOCK="$TEMP_ROOT/finalize-$case_name.lock" \
+    "$SCRIPT_DIR/finalize-release.sh" \
+      "$SHA" "$verified_at" "$verified_origin" "$VERIFY_RUN_ID" "$VERIFY_RUN_ATTEMPT" \
+      "$verified_sha" >/dev/null 2>&1; then
+    fail "finalizer unexpectedly passed rejected attestation case: $case_name"
+  fi
+  [[ "$(report_value STATUS "$report_file")" == 'LOCAL_READY' ]] \
+    || fail "$case_name changed report status"
+  [[ -f "$POINTER_FILE" ]] || fail "$case_name removed pending pointer"
+}
 
 REPORT_FILE="$BACKUP_DIR/deploy-test-${SHA:0:12}.env"
 POINTER_FILE="$BACKUP_DIR/pending-$SHA.report"
@@ -96,33 +117,65 @@ STATUS=LOCAL_READY
 RELEASE_SHA=$SHA
 PUBLIC_TRAFFIC_RESUMED=1
 PUBLIC_URL=https://idosi.example
+DEPLOYED_AT_UTC=$VERIFIED_AT
 EXTERNAL_VERIFIED_AT_UTC=
 REPORT
 printf '%s\n' "$REPORT_FILE" >"$POINTER_FILE"
 
-PATH="$FAKE_BIN:$PATH" FAKE_RELEASE_SHA="$SHA" IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
+IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
   IDOSI_DEPLOY_LOCK="$TEMP_ROOT/finalize.lock" \
-  "$SCRIPT_DIR/finalize-release.sh" "$SHA" >/dev/null
+  "$SCRIPT_DIR/finalize-release.sh" \
+    "$SHA" "$VERIFIED_AT" "$VERIFIED_ORIGIN" "$VERIFY_RUN_ID" "$VERIFY_RUN_ATTEMPT" "$SHA" >/dev/null
 [[ "$(report_value STATUS "$REPORT_FILE")" == 'SUCCESS' ]] || fail 'finalizer did not mark SUCCESS'
-[[ -n "$(report_value EXTERNAL_VERIFIED_AT_UTC "$REPORT_FILE")" ]] || fail 'finalizer timestamp missing'
+[[ "$(report_value EXTERNAL_VERIFIED_AT_UTC "$REPORT_FILE")" == "$VERIFIED_AT" ]] \
+  || fail 'finalizer did not persist the external verification attestation'
+[[ "$(report_value EXTERNAL_VERIFIED_ORIGIN "$REPORT_FILE")" == "$VERIFIED_ORIGIN" ]] \
+  || fail 'finalizer did not persist the externally verified origin'
+[[ "$(report_value EXTERNAL_VERIFIED_SHA "$REPORT_FILE")" == "$SHA" ]] \
+  || fail 'finalizer did not persist the externally verified release SHA'
+[[ "$(report_value EXTERNAL_VERIFY_RUN_ID "$REPORT_FILE")" == "$VERIFY_RUN_ID" ]] \
+  || fail 'finalizer did not persist the external verification run ID'
+[[ "$(report_value EXTERNAL_VERIFY_RUN_ATTEMPT "$REPORT_FILE")" == "$VERIFY_RUN_ATTEMPT" ]] \
+  || fail 'finalizer did not persist the external verification run attempt'
 [[ ! -e "$POINTER_FILE" ]] || fail 'finalizer pointer was not removed'
 
-FAILED_REPORT="$BACKUP_DIR/deploy-failed-${SHA:0:12}.env"
-cat >"$FAILED_REPORT" <<REPORT
+MISSING_ATTESTATION_REPORT="$BACKUP_DIR/deploy-missing-attestation-${SHA:0:12}.env"
+cat >"$MISSING_ATTESTATION_REPORT" <<REPORT
 STATUS=LOCAL_READY
 RELEASE_SHA=$SHA
 PUBLIC_TRAFFIC_RESUMED=1
 PUBLIC_URL=https://idosi.example
+DEPLOYED_AT_UTC=$VERIFIED_AT
 EXTERNAL_VERIFIED_AT_UTC=
 REPORT
-printf '%s\n' "$FAILED_REPORT" >"$POINTER_FILE"
-if PATH="$FAKE_BIN:$PATH" FAKE_RELEASE_SHA="$SHA" FAKE_DOCKER_FAIL=1 IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
-  IDOSI_DEPLOY_LOCK="$TEMP_ROOT/finalize-fail.lock" \
+printf '%s\n' "$MISSING_ATTESTATION_REPORT" >"$POINTER_FILE"
+if IDOSI_ROOT="$FINALIZE_ROOT" IDOSI_BACKUP_DIR="$BACKUP_DIR" \
+  IDOSI_DEPLOY_LOCK="$TEMP_ROOT/finalize-missing-attestation.lock" \
   "$SCRIPT_DIR/finalize-release.sh" "$SHA" >/dev/null 2>&1; then
-  fail 'finalizer unexpectedly passed failed external verification'
+  fail 'finalizer unexpectedly passed without external verification attestation'
 fi
-[[ "$(report_value STATUS "$FAILED_REPORT")" == 'LOCAL_READY' ]] || fail 'failed finalization changed report status'
-[[ -f "$POINTER_FILE" ]] || fail 'failed finalization removed pending pointer'
+[[ "$(report_value STATUS "$MISSING_ATTESTATION_REPORT")" == 'LOCAL_READY' ]] \
+  || fail 'missing attestation changed report status'
+[[ -f "$POINTER_FILE" ]] || fail 'missing attestation removed pending pointer'
+
+assert_finalization_rejected \
+  'origin-mismatch' "$VERIFIED_AT" "$VERIFIED_AT" 'https://wrong.example' "$SHA"
+assert_finalization_rejected \
+  'sha-mismatch' "$VERIFIED_AT" "$VERIFIED_AT" "$VERIFIED_ORIGIN" \
+  '1123456789abcdef0123456789abcdef01234567'
+
+STALE_DEPLOYED_AT="$(date -u -d '32 minutes ago' +%Y%m%dT%H%M%SZ)"
+STALE_VERIFIED_AT="$(date -u -d '31 minutes ago' +%Y%m%dT%H%M%SZ)"
+assert_finalization_rejected \
+  'stale' "$STALE_DEPLOYED_AT" "$STALE_VERIFIED_AT" "$VERIFIED_ORIGIN" "$SHA"
+
+FUTURE_VERIFIED_AT="$(date -u -d '+3 minutes' +%Y%m%dT%H%M%SZ)"
+assert_finalization_rejected \
+  'future' "$VERIFIED_AT" "$FUTURE_VERIFIED_AT" "$VERIFIED_ORIGIN" "$SHA"
+
+BEFORE_DEPLOYED_AT="$(date -u -d '1 minute ago' +%Y%m%dT%H%M%SZ)"
+assert_finalization_rejected \
+  'before-deployment' "$VERIFIED_AT" "$BEFORE_DEPLOYED_AT" "$VERIFIED_ORIGIN" "$SHA"
 
 DEPLOY_CUTOVER_BLOCK="$TEMP_ROOT/deploy-cutover-block.sh"
 sed -n "/log 'Dừng Caddy và app trong cửa sổ bảo trì ngắn để backup SQLite nhất quán.'/,\$p" \
@@ -152,6 +205,12 @@ assert_before "$TARGET_ROLLBACK_BLOCK" \
   'compose up -d --no-build app'
 grep -Fq 'verify-public-release.mjs' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
   || fail 'production workflow does not verify public static assets'
+grep -Fq 'steps.external_verification.outputs.verified_at' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
+  || fail 'production workflow does not pass an external verification attestation to the finalizer'
+grep -Fq 'steps.external_verification.outputs.verified_origin' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
+  || fail 'production workflow does not pass the externally verified origin to the finalizer'
+grep -Fq 'steps.external_verification.outputs.verified_sha' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
+  || fail 'production workflow does not bind the external verification attestation to the release SHA'
 grep -Fq 'Destination "/srv/idosi"' "$SCRIPT_DIR/deploy-release.sh" \
   || fail 'deploy script does not verify the Caddy static volume mount'
 grep -Fq "org.opencontainers.image.revision" "$SCRIPT_DIR/rollback-release.sh" \

@@ -29,7 +29,8 @@ PR + review findings resolved
 → internal health + exact SHA
 → Caddy start/local HTTPS check
 → external health + exact SHA
-→ finalize report SUCCESS
+→ exact-SHA external-verification attestation
+→ validate attestation + finalize report SUCCESS
 → smoke test + observation
 ```
 

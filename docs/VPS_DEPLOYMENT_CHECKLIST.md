@@ -85,7 +85,10 @@ status/log và lock.
 - [ ] External `/api/health` PASS.
 - [ ] External `/api/release` đúng exact merge SHA.
 - [ ] Trang chính tải thành công.
-- [ ] Remote finalizer kiểm tra lại public endpoint.
+- [ ] Workflow truyền attestation exact SHA/origin/thời gian/run metadata chỉ sau khi
+  external verification PASS.
+- [ ] Remote finalizer xác thực attestation đúng SHA/origin và còn hạn; không lặp lại
+  external fetch từ VPS/app container (không phụ thuộc NAT hairpin).
 - [ ] Report đổi nguyên tử thành `STATUS=SUCCESS`.
 - [ ] Pending report pointer được xóa.
 
