@@ -5,6 +5,7 @@ import {
   deactivateStoreChecklistTask,
   DEFAULT_STORE_CHECKLIST_TASK_SEEDS,
   resolveStoreChecklistTemplate,
+  resolveStoreChecklistCatalogShift,
   STORE_CHECKLIST_CHECKOUT_CODE,
   STORE_CHECKLIST_POLICY_VERSION,
   STORE_CHECKLIST_TEMPLATES,
@@ -120,6 +121,49 @@ describe('store checklist template resolution', () => {
     ['Ca sáng (08:00-12:00)', 'morning'],
   ])('resolves exact workbook intervals from %j', (shift, key) => {
     expect(resolveStoreChecklistTemplate(shift)?.key).toBe(key)
+  })
+
+  it.each([
+    [{ id: 'shift-production-morning', name: 'Ca 9h sáng', start: '09:30', end: '13:00', checkInTime: '09:54' }, 'morning', 'ca1'],
+    [{ id: 'shift-production-afternoon', name: 'Ca 2-3', start: '14:30', end: '21:00', checkInTime: '14:30' }, 'afternoon', 'ca2'],
+    [{ id: 'shift-production-night', name: 'Ca tối (B)', start: '18:00', end: '21:00', checkInTime: '18:00' }, 'night', 'ca3'],
+    [{ id: 'shift-production-office-hours', name: 'Hành chính', start: '08:00', end: '20:00', checkInTime: '08:00' }, 'morning', 'ca1'],
+  ])('maps a real dynamic shift %j to its canonical checklist', (shift, templateKey, catalogShiftId) => {
+    expect(resolveStoreChecklistTemplate(shift)?.key).toBe(templateKey)
+    expect(resolveStoreChecklistCatalogShift(shift)).toMatchObject({
+      templateKey,
+      shiftId: catalogShiftId,
+    })
+  })
+
+  it.each([
+    ['11:59', 'morning', 'ca1'],
+    ['12:00', 'afternoon', 'ca2'],
+    ['16:59', 'afternoon', 'ca2'],
+    ['17:00', 'night', 'ca3'],
+  ])('uses the actual attendance time %s as the canonical checklist boundary', (checkInTime, templateKey, catalogShiftId) => {
+    const shift = {
+      id: 'shift-dynamic-production',
+      name: 'Ca linh hoạt',
+      start: '08:00',
+      end: '21:00',
+      checkInTime,
+    }
+    expect(resolveStoreChecklistTemplate(shift)?.key).toBe(templateKey)
+    expect(resolveStoreChecklistCatalogShift(shift)).toMatchObject({
+      templateKey,
+      shiftId: catalogShiftId,
+    })
+  })
+
+  it('lets the actual check-in time override a misleading dynamic shift name', () => {
+    expect(resolveStoreChecklistTemplate({
+      id: 'shift-generated',
+      name: 'Ca sáng được đổi tên sai',
+      start: '08:00',
+      end: '21:00',
+      checkInTime: '18:05',
+    })?.key).toBe('night')
   })
 
   it.each([

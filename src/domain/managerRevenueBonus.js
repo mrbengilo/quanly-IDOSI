@@ -26,6 +26,7 @@ const INACTIVE_STATUS_KEYS = new Set([
 
 const normalizeText = (value) => String(value ?? '').trim().toLowerCase()
 const normalizeId = (value) => String(value ?? '').trim()
+const normalizeIdKey = (value) => normalizeId(value).toLocaleLowerCase('en-US')
 
 const requiredId = (value, field) => {
   const normalized = normalizeId(value)
@@ -49,8 +50,13 @@ const managerIdentity = (manager) => normalizeId(
   || manager?.code,
 )
 
+const managerStoreIdentity = (manager) => normalizeId(
+  manager?.storeId
+  || manager?.assignedStoreId,
+)
+
 const managerBelongsToStore = (manager, storeId) => (
-  normalizeId(manager?.storeId || manager?.assignedStoreId) === storeId
+  normalizeIdKey(managerStoreIdentity(manager)) === normalizeIdKey(storeId)
 )
 
 const isActiveRecord = (manager) => {
@@ -100,22 +106,49 @@ export function calculateManagerMonthlyRevenueBonus({ profitBeforeManagerBonusVn
 
 /**
  * Resolves the single active manager profile for a physical store. Duplicate
- * account/profile representations linked to the same employee are deduplicated,
- * while two different active manager identities are reported as a data conflict.
+ * account/profile representations linked to the same exact employee identifier
+ * are deduplicated, while ambiguous store scopes or different active manager
+ * identities are reported as a data conflict.
  */
 export function resolveExactlyOneActiveStoreManager({ storeId, managers = [] } = {}) {
   const normalizedStoreId = requiredId(storeId, 'storeId')
   if (!Array.isArray(managers)) throw new TypeError('managers must be an array.')
 
-  const uniqueManagers = new Map()
+  const storeMatches = []
   for (const manager of managers) {
     if (!isActiveRecord(manager)
       || !isStoreManagerRecord(manager)
       || !managerBelongsToStore(manager, normalizedStoreId)) continue
     const identity = managerIdentity(manager)
     if (!identity) continue
-    const identityKey = identity.toLowerCase()
-    if (!uniqueManagers.has(identityKey)) uniqueManagers.set(identityKey, manager)
+    storeMatches.push(manager)
+  }
+
+  const exactStoreMatches = storeMatches.filter((manager) => (
+    managerStoreIdentity(manager) === normalizedStoreId
+  ))
+  let scopedManagers = exactStoreMatches
+  if (scopedManagers.length === 0 && storeMatches.length > 0) {
+    const matchingStoreIds = new Set(storeMatches.map(managerStoreIdentity))
+    if (matchingStoreIds.size > 1) {
+      return {
+        ok: false,
+        code: 'STORE_MANAGER_MULTIPLE_ACTIVE',
+        storeId: normalizedStoreId,
+        manager: null,
+        managerId: null,
+        matches: storeMatches,
+      }
+    }
+    scopedManagers = storeMatches
+  }
+
+  const uniqueManagers = new Map()
+  for (const manager of scopedManagers) {
+    const identity = managerIdentity(manager)
+    // Only exact identities may represent the same employee/profile pair. Two
+    // identifiers differing by case remain distinct owners and must fail closed.
+    if (!uniqueManagers.has(identity)) uniqueManagers.set(identity, manager)
   }
 
   const matches = [...uniqueManagers.values()]

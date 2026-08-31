@@ -95,6 +95,10 @@ describe('Business Support staff and policy permissions', () => {
       { role: 'employee', storeId: 'S01', homeStoreId: 'S01' },
       { role: 'employee', storeId: 'S01', homeStoreId: 'S01' },
     )).toBe(false)
+    expect(remoteEffectiveUserChanged(
+      { role: 'employee', storeId: 'STORE-A', homeStoreId: 'STORE-A', activeTransferId: 'TR-01' },
+      { role: 'employee', storeId: 'store-a', homeStoreId: 'store-a', activeTransferId: 'tr-01' },
+    )).toBe(false)
     expect(nextSupportTransferBoundaryDelay([{
       status: 'Đã duyệt',
       startAt: '2026-08-20T14:00',
@@ -116,7 +120,7 @@ describe('Business Support staff and policy permissions', () => {
       stores,
       session: { role: 'admin' },
       remoteActiveStoreId: 'STORE-A',
-      preferredActiveStoreId: 'STORE-B',
+      preferredActiveStoreId: 'store-b',
     })).toBe('STORE-B')
     expect(resolveRemoteActiveStoreId({
       stores,
@@ -126,10 +130,10 @@ describe('Business Support staff and policy permissions', () => {
     })).toBe('STORE-A')
     expect(resolveRemoteActiveStoreId({
       stores,
-      session: { role: 'store_manager', storeId: 'ASSIGNED-STORE' },
+      session: { role: 'store_manager', storeId: 'store-a' },
       remoteActiveStoreId: 'STORE-A',
       preferredActiveStoreId: 'STORE-B',
-    })).toBe('ASSIGNED-STORE')
+    })).toBe('STORE-A')
   })
 
   it('keeps an explicit local reset empty after reload while retaining only the current Admin account', () => {

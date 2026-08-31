@@ -1,3 +1,5 @@
+import { resolveStoreChecklistCatalogShift } from './storeShiftChecklist.js'
+
 export const WORK_CATALOG_KIND = Object.freeze({
   FIXED_TASK: 'FIXED_TASK',
   REWARD_TASK: 'REWARD_TASK',
@@ -194,12 +196,33 @@ const normalizedComparisonText = (value) => text(value)
   .trim()
   .toLocaleLowerCase('vi-VN')
 
-const itemMatchesShift = (item, { shiftId, shiftName }) => {
-  if (!item.shiftId && !item.shiftName) return true
-  if (item.shiftId) return Boolean(shiftId) && item.shiftId === text(shiftId)
-  if (item.shiftName && shiftName) {
-    return normalizedComparisonText(item.shiftName) === normalizedComparisonText(shiftName)
+const normalizedStableId = (value) => text(value).toLocaleLowerCase('en-US')
+
+const exactFirstScopeValues = (values, requestedValues, normalize) => {
+  const candidates = [...new Set(values.map(text).filter(Boolean))]
+  const requestedByKey = new Map()
+  for (const value of requestedValues) {
+    const requested = text(value)
+    const key = normalize(requested)
+    if (requested && key && !requestedByKey.has(key)) requestedByKey.set(key, requested)
   }
+
+  const selected = new Set()
+  for (const [key, requested] of requestedByKey) {
+    const foldedMatches = candidates.filter((candidate) => normalize(candidate) === key)
+    if (foldedMatches.includes(requested)) {
+      selected.add(requested)
+    } else if (foldedMatches.length === 1) {
+      selected.add(foldedMatches[0])
+    }
+  }
+  return selected
+}
+
+const itemMatchesShift = (item, { shiftIds, shiftNames }) => {
+  if (!item.shiftId && !item.shiftName) return true
+  if (item.shiftId) return shiftIds.has(text(item.shiftId))
+  if (item.shiftName) return shiftNames.has(text(item.shiftName))
   return false
 }
 
@@ -215,6 +238,9 @@ export const activeWorkCatalogItems = (items, {
   storeId = null,
   shiftId = null,
   shiftName = null,
+  shiftStart = null,
+  shiftEnd = null,
+  shiftCheckInTime = null,
   date = new Date(),
   kinds = null,
 } = {}) => {
@@ -224,16 +250,77 @@ export const activeWorkCatalogItems = (items, {
     ? null
     : new Set((Array.isArray(kinds) ? kinds : [kinds]).map(normalizeKind))
   const requestedStoreId = text(storeId) || null
-  return latestCatalogItems(items)
+  const timeDerivedStoreShift = normalizedTarget === WORK_CATALOG_TARGET.STORE && text(shiftCheckInTime)
+    ? resolveStoreChecklistCatalogShift({ checkInTime: shiftCheckInTime })
+    : null
+  const canonicalStoreShift = normalizedTarget === WORK_CATALOG_TARGET.STORE
+    ? resolveStoreChecklistCatalogShift({
+        id: shiftId,
+        name: shiftName,
+        start: shiftStart,
+        end: shiftEnd,
+        checkInTime: shiftCheckInTime,
+      })
+    : null
+  const requestedShiftId = text(shiftId)
+  const requestedShiftName = normalizedComparisonText(shiftName)
+  // Resolve the stored id and display name independently. Legacy rows may contain
+  // a canonical id paired with a stale/mismatched label, and attendance time must
+  // still select exactly one canonical bucket. Unknown ids/names remain available
+  // for genuine custom shifts.
+  const requestedIdCanonicalShift = requestedShiftId
+    ? resolveStoreChecklistCatalogShift({ id: requestedShiftId })
+    : null
+  const requestedNameCanonicalShift = requestedShiftName
+    ? resolveStoreChecklistCatalogShift({ name: shiftName })
+    : null
+  const selectedCanonicalShift = timeDerivedStoreShift || canonicalStoreShift
+  const requestedIdMatchesCanonical = !selectedCanonicalShift
+    || !requestedIdCanonicalShift
+    || requestedIdCanonicalShift.shiftId === selectedCanonicalShift.shiftId
+  const requestedNameMatchesCanonical = !selectedCanonicalShift
+    || !requestedNameCanonicalShift
+    || requestedNameCanonicalShift.shiftId === selectedCanonicalShift.shiftId
+  // Keep the exact requested spelling first. Derived canonical aliases are added
+  // only as a separate scope, never as permission to merge case-colliding ids.
+  const shiftIdReferences = [
+    ...(requestedIdMatchesCanonical ? [requestedShiftId] : []),
+    selectedCanonicalShift?.shiftId,
+  ]
+  const shiftNameReferences = [
+    ...(requestedNameMatchesCanonical ? [shiftName] : []),
+    selectedCanonicalShift?.shiftName,
+  ]
+  const candidates = latestCatalogItems(items)
     .filter((item) => item.active && !item.deletedAt)
     .filter((item) => item.targetGroup === normalizedTarget)
+
+  const storeIds = exactFirstScopeValues(
+    candidates.map((item) => item.storeId),
+    [requestedStoreId],
+    normalizedStableId,
+  )
+  const storeScoped = candidates.filter((item) => (
+    item.targetGroup !== WORK_CATALOG_TARGET.STORE
+    || !item.storeId
+    || storeIds.has(text(item.storeId))
+  ))
+  const shiftIds = exactFirstScopeValues(
+    storeScoped.map((item) => item.shiftId),
+    shiftIdReferences,
+    normalizedStableId,
+  )
+  const shiftNames = exactFirstScopeValues(
+    storeScoped.filter((item) => !item.shiftId).map((item) => item.shiftName),
+    shiftNameReferences,
+    normalizedComparisonText,
+  )
+
+  return storeScoped
     .filter((item) => !requestedKinds || requestedKinds.has(item.kind))
-    .filter((item) => item.targetGroup !== WORK_CATALOG_TARGET.STORE
-      || !item.storeId
-      || item.storeId === requestedStoreId)
     .filter((item) => !item.effectiveFrom || item.effectiveFrom <= normalizedDate)
     .filter((item) => !item.effectiveTo || item.effectiveTo >= normalizedDate)
-    .filter((item) => itemMatchesShift(item, { shiftId, shiftName }))
+    .filter((item) => itemMatchesShift(item, { shiftIds, shiftNames }))
     .toSorted(compareCatalogItems)
 }
 
@@ -282,6 +369,9 @@ export const snapshotActiveWorkCatalogItems = ({
   storeId = null,
   shiftId = null,
   shiftName = null,
+  shiftStart = null,
+  shiftEnd = null,
+  shiftCheckInTime = null,
   date = new Date(),
 } = {}) => {
   const effectiveDate = calendarDate(date, 'date')
@@ -290,6 +380,9 @@ export const snapshotActiveWorkCatalogItems = ({
     storeId,
     shiftId,
     shiftName,
+    shiftStart,
+    shiftEnd,
+    shiftCheckInTime,
     date: effectiveDate,
     kinds: [WORK_CATALOG_KIND.FIXED_TASK, WORK_CATALOG_KIND.REWARD_TASK],
   }).map((item) => snapshotFromDefinition(item, { effectiveDate })))

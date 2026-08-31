@@ -185,6 +185,272 @@ describe('active work catalog selection', () => {
     })).toHaveLength(0)
   })
 
+  it('matches non-credential store and shift ids without letter-case sensitivity', () => {
+    expect(activeWorkCatalogItems([definition({
+      storeId: 'store-01',
+      shiftId: 'shift-am',
+    })], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'SHIFT-AM',
+      date: '2026-08-26',
+    })).toHaveLength(1)
+  })
+
+  it('selects an exact store scope without merging case-colliding stores', () => {
+    const upperStore = definition({
+      id: 'fixed-upper-store',
+      code: 'store.fixed.upper-store',
+      storeId: 'STORE-01',
+      shiftId: null,
+      shiftName: null,
+      name: 'Cửa hàng viết hoa',
+    })
+    const lowerStore = definition({
+      id: 'fixed-lower-store',
+      code: 'store.fixed.lower-store',
+      storeId: 'store-01',
+      shiftId: null,
+      shiftName: null,
+      name: 'Cửa hàng viết thường',
+    })
+
+    expect(activeWorkCatalogItems([upperStore, lowerStore], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      date: '2026-08-26',
+    }).map(({ id }) => id)).toEqual(['fixed-upper-store'])
+    expect(activeWorkCatalogItems([upperStore, lowerStore], {
+      targetGroup: 'store',
+      storeId: 'Store-01',
+      date: '2026-08-26',
+    })).toEqual([])
+  })
+
+  it('selects an exact shift scope and omits ambiguous case-folded shift tasks', () => {
+    const upperShift = definition({
+      id: 'fixed-upper-shift',
+      code: 'store.fixed.upper-shift',
+      shiftId: 'SHIFT-X',
+      name: 'Ca viết hoa',
+    })
+    const lowerShift = definition({
+      id: 'fixed-lower-shift',
+      code: 'store.fixed.lower-shift',
+      shiftId: 'shift-x',
+      name: 'Ca viết thường',
+    })
+    const allShifts = definition({
+      id: 'fixed-all-shifts',
+      code: 'store.fixed.all-shifts',
+      shiftId: null,
+      shiftName: null,
+      name: 'Mọi ca',
+    })
+
+    expect(activeWorkCatalogItems([upperShift, lowerShift, allShifts], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'SHIFT-X',
+      date: '2026-08-26',
+    }).map(({ id }) => id)).toEqual(['fixed-upper-shift', 'fixed-all-shifts'])
+    expect(activeWorkCatalogItems([upperShift, lowerShift, allShifts], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'Shift-X',
+      date: '2026-08-26',
+    }).map(({ id }) => id)).toEqual(['fixed-all-shifts'])
+  })
+
+  it('matches a canonical store checklist id to the real dynamic shift without weakening exact custom ids', () => {
+    const canonicalMorning = definition({
+      id: 'fixed-canonical-morning',
+      code: 'store.fixed.canonical-morning',
+      shiftId: 'ca1',
+      shiftName: 'Ca Sáng',
+    })
+    expect(activeWorkCatalogItems([canonicalMorning], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'shift_16f64daa-488c-41f8-9261-ae5fc65a69dd',
+      shiftName: 'Ca 9h sáng',
+      shiftStart: '09:30',
+      shiftEnd: '13:00',
+      shiftCheckInTime: '09:54',
+      date: '2026-08-26',
+    })).toHaveLength(1)
+
+    expect(activeWorkCatalogItems([storeFixed], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'SHIFT-PM',
+      shiftName: 'Ca chiều',
+      shiftStart: '12:00',
+      shiftEnd: '17:00',
+      shiftCheckInTime: '14:30',
+      date: '2026-08-26',
+    })).toHaveLength(0)
+  })
+
+  it('selects the required shift checklist by check-in time while retaining unscoped rewards', () => {
+    const morningFixed = definition({
+      id: 'fixed-canonical-morning',
+      code: 'store.fixed.canonical-morning',
+      shiftId: 'ca1',
+      shiftName: 'Ca Sáng',
+    })
+    const afternoonFixed = definition({
+      id: 'fixed-canonical-afternoon',
+      code: 'store.fixed.canonical-afternoon',
+      shiftId: 'ca2',
+      shiftName: 'Ca Chiều',
+    })
+    const unscopedReward = definition({
+      id: 'reward-all-store-shifts',
+      code: 'store.reward.all-shifts',
+      kind: WORK_CATALOG_KIND.REWARD_TASK,
+      shiftId: null,
+      shiftName: null,
+      amountVnd: 10_000,
+    })
+    const selected = activeWorkCatalogItems([morningFixed, afternoonFixed, unscopedReward], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'shift-production-flexible',
+      shiftName: 'Ca linh hoạt',
+      shiftStart: '08:00',
+      shiftEnd: '21:00',
+      shiftCheckInTime: '14:05',
+      date: '2026-08-26',
+    })
+    expect(selected.map(({ id }) => id)).toEqual([
+      'fixed-canonical-afternoon',
+      'reward-all-store-shifts',
+    ])
+  })
+
+  it('replaces a conflicting canonical shift with the attendance-time bucket but keeps a custom exact shift', () => {
+    const fixedAfternoon = definition({
+      id: 'fixed-canonical-afternoon',
+      code: 'store.fixed.canonical-afternoon',
+      shiftId: 'ca2',
+      shiftName: 'Ca Chiều',
+    })
+    const fixedNight = definition({
+      id: 'fixed-canonical-night',
+      code: 'store.fixed.canonical-night',
+      shiftId: 'ca3',
+      shiftName: 'Ca Tối',
+    })
+    const rewardAfternoon = definition({
+      id: 'reward-canonical-afternoon',
+      code: 'store.reward.canonical-afternoon',
+      kind: WORK_CATALOG_KIND.REWARD_TASK,
+      shiftId: 'ca2',
+      shiftName: 'Ca Chiều',
+      amountVnd: 10_000,
+    })
+    const rewardNight = definition({
+      id: 'reward-canonical-night',
+      code: 'store.reward.canonical-night',
+      kind: WORK_CATALOG_KIND.REWARD_TASK,
+      shiftId: 'ca3',
+      shiftName: 'Ca Tối',
+      amountVnd: 20_000,
+    })
+    const conflictingCanonical = activeWorkCatalogItems([
+      fixedAfternoon,
+      fixedNight,
+      rewardAfternoon,
+      rewardNight,
+    ], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'ca3',
+      shiftName: 'Ca Tối',
+      shiftStart: '17:00',
+      shiftEnd: '23:00',
+      shiftCheckInTime: '16:53',
+      date: '2026-08-26',
+    })
+    expect(conflictingCanonical.map(({ id }) => id)).toEqual([
+      'fixed-canonical-afternoon',
+      'reward-canonical-afternoon',
+    ])
+
+    for (const conflictingStoredShift of [
+      { shiftId: 'CA3', shiftName: 'Ca Chiều' },
+      { shiftId: 'ca03', shiftName: 'Ca Tối' },
+    ]) {
+      expect(activeWorkCatalogItems([
+        fixedAfternoon,
+        fixedNight,
+        rewardAfternoon,
+        rewardNight,
+      ], {
+        targetGroup: 'store',
+        storeId: 'STORE-01',
+        ...conflictingStoredShift,
+        shiftCheckInTime: '16:53',
+        date: '2026-08-26',
+      }).map(({ id }) => id)).toEqual([
+        'fixed-canonical-afternoon',
+        'reward-canonical-afternoon',
+      ])
+    }
+
+    expect(activeWorkCatalogItems([
+      fixedAfternoon,
+      fixedNight,
+      rewardAfternoon,
+      rewardNight,
+    ], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'CA3',
+      shiftName: 'Ca Tối',
+      shiftStart: '12:00',
+      shiftEnd: '17:00',
+      date: '2026-08-26',
+    }).map(({ id }) => id)).toEqual([
+      'fixed-canonical-afternoon',
+      'reward-canonical-afternoon',
+    ])
+
+    const uppercaseNight = definition({
+      id: 'fixed-uppercase-night',
+      code: 'store.fixed.uppercase-night',
+      shiftId: 'CA3',
+      shiftName: 'Ca Tối',
+    })
+    expect(activeWorkCatalogItems([uppercaseNight], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'CA3',
+      shiftName: 'Ca Tối',
+      shiftCheckInTime: '18:00',
+      date: '2026-08-26',
+    }).map(({ id }) => id)).toEqual(['fixed-uppercase-night'])
+
+    const customShiftTask = definition({
+      id: 'fixed-custom-flex',
+      code: 'store.fixed.custom-flex',
+      shiftId: 'shift-flex',
+      shiftName: 'Ca linh hoạt',
+    })
+    expect(activeWorkCatalogItems([fixedAfternoon, customShiftTask], {
+      targetGroup: 'store',
+      storeId: 'STORE-01',
+      shiftId: 'shift-flex',
+      shiftName: 'Ca linh hoạt',
+      shiftCheckInTime: '16:53',
+      date: '2026-08-26',
+    }).map(({ id }) => id)).toEqual([
+      'fixed-canonical-afternoon',
+      'fixed-custom-flex',
+    ])
+  })
+
   it('snapshots only fixed and reward work with immutable required semantics', () => {
     const snapshot = snapshotActiveWorkCatalogItems({
       items: [reward, globalFixed, storeFixed, violation],

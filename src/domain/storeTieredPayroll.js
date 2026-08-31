@@ -7,6 +7,40 @@ const normalizeText = (value) => String(value ?? '')
   .replace(/[^A-Z0-9]+/gu, ' ')
   .trim()
 
+const identifier = (value) => String(value ?? '').trim()
+const identifierKey = (value) => identifier(value).toLocaleLowerCase('en-US')
+
+export const STORE_SALARY_CONFIG_IDENTIFIER_COLLISION = 'STORE_SALARY_CONFIG_IDENTIFIER_COLLISION'
+
+export class StoreSalaryConfigIdentifierCollisionError extends RangeError {
+  constructor(details = {}) {
+    super(STORE_SALARY_CONFIG_IDENTIFIER_COLLISION)
+    this.name = 'StoreSalaryConfigIdentifierCollisionError'
+    this.code = STORE_SALARY_CONFIG_IDENTIFIER_COLLISION
+    this.details = details
+  }
+}
+
+const salaryConfigOwnerKey = (config) => JSON.stringify([
+  identifier(config?.employeeId),
+  identifier(config?.storeId),
+])
+
+const throwStoreSalaryConfigIdentifierCollision = (configs, {
+  employeeId,
+  storeId,
+  period,
+}) => {
+  throw new StoreSalaryConfigIdentifierCollisionError({
+    employeeId,
+    storeId,
+    period,
+    conflictingConfigIds: configs.map((config) => identifier(config?.id)).filter(Boolean),
+    conflictingEmployeeIds: [...new Set(configs.map((config) => identifier(config?.employeeId)).filter(Boolean))],
+    conflictingStoreIds: [...new Set(configs.map((config) => identifier(config?.storeId)).filter(Boolean))],
+  })
+}
+
 export const STORE_PAYROLL_POLICY = Object.freeze({
   DOSII: 'DOSII',
   SM_TNV: 'SM_TNV',
@@ -162,15 +196,59 @@ export function effectiveStoreSalaryConfig(configs, {
   const targetPeriod = periodKey(period)
   if (!targetPeriod) throw new TypeError('period must use YYYY-MM format.')
 
-  const selected = (Array.isArray(configs) ? configs : [])
+  const ownerMatches = (Array.isArray(configs) ? configs : [])
     .filter((config) => config && !config.deletedAt && config.active !== false && config.isActive !== false)
-    .filter((config) => String(config.employeeId || '') === normalizedEmployeeId)
-    .filter((config) => String(config.storeId || '') === normalizedStoreId)
+    .filter((config) => identifierKey(config.employeeId) === identifierKey(normalizedEmployeeId))
+    .filter((config) => identifierKey(config.storeId) === identifierKey(normalizedStoreId))
+
+  const foldedApplicable = ownerMatches
     .filter((config) => {
       const from = periodKey(config.effectiveFrom)
       const to = periodKey(config.effectiveTo)
       return (!from || from <= targetPeriod) && (!to || to >= targetPeriod)
     })
+
+  const configCountByEffectivePeriod = new Map()
+  for (const config of foldedApplicable) {
+    const key = periodKey(config.effectiveFrom)
+    configCountByEffectivePeriod.set(key, (configCountByEffectivePeriod.get(key) || 0) + 1)
+  }
+  if ([...configCountByEffectivePeriod.values()].some((count) => count > 1)) {
+    throwStoreSalaryConfigIdentifierCollision(foldedApplicable, {
+      employeeId: normalizedEmployeeId,
+      storeId: normalizedStoreId,
+      period: targetPeriod,
+    })
+  }
+
+  // Salary configurations are versioned records for one exact employee/store
+  // owner. Case-insensitive fallback is safe only while the folded scope has one
+  // raw owner; otherwise records from a different owner could become effective in
+  // a later period and silently replace the requested employee's configuration.
+  const exactOwnerMatches = ownerMatches.filter((config) => (
+    identifier(config.employeeId) === normalizedEmployeeId
+    && identifier(config.storeId) === normalizedStoreId
+  ))
+  let ownerScopedMatches = exactOwnerMatches
+  if (ownerScopedMatches.length === 0 && ownerMatches.length > 0) {
+    const ownerKeys = new Set(ownerMatches.map(salaryConfigOwnerKey))
+    if (ownerKeys.size > 1) {
+      throwStoreSalaryConfigIdentifierCollision(ownerMatches, {
+        employeeId: normalizedEmployeeId,
+        storeId: normalizedStoreId,
+        period: targetPeriod,
+      })
+    }
+    ownerScopedMatches = ownerMatches
+  }
+
+  const applicable = ownerScopedMatches.filter((config) => {
+    const from = periodKey(config.effectiveFrom)
+    const to = periodKey(config.effectiveTo)
+    return (!from || from <= targetPeriod) && (!to || to >= targetPeriod)
+  })
+
+  const selected = applicable
     .sort((left, right) => {
       const effectiveOrder = periodKey(right.effectiveFrom).localeCompare(periodKey(left.effectiveFrom))
       if (effectiveOrder) return effectiveOrder
@@ -181,7 +259,11 @@ export function effectiveStoreSalaryConfig(configs, {
 
   if (!selected) return null
   return store
-    ? normalizeStoreSalaryConfig(selected, {
+    ? normalizeStoreSalaryConfig({
+      ...selected,
+      employeeId: normalizedEmployeeId,
+      storeId: normalizedStoreId,
+    }, {
       store,
       employeeId: normalizedEmployeeId,
       storeId: normalizedStoreId,
@@ -203,7 +285,7 @@ export function normalizeStoreSalaryConfig(input = {}, {
 
   const normalizedEmployeeId = requiredId(input.employeeId || employeeId, 'employeeId')
   const normalizedStoreId = requiredId(input.storeId || storeId || store?.id, 'storeId')
-  if (store?.id && String(store.id) !== normalizedStoreId) throw new RangeError('STORE_ID_MISMATCH')
+  if (store?.id && identifierKey(store.id) !== identifierKey(normalizedStoreId)) throw new RangeError('STORE_ID_MISMATCH')
 
   const employmentType = normalizeStoreEmploymentType(input.employmentType || STORE_EMPLOYMENT_TYPE.FULL_TIME)
   if (employmentType !== STORE_EMPLOYMENT_TYPE.FULL_TIME) {

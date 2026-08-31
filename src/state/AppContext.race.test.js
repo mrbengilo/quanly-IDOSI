@@ -40,7 +40,7 @@ describe('legacy credential migration race guard', () => {
   it('repairs a migrated support profile with its linked login username', () => {
     const [profile] = mergeEmployeeAuthUsers(
       [{ id: 'HTKD001', name: 'Hỗ trợ cũ', unit: 'business_support' }],
-      [{ id: 'user-support', employeeId: 'HTKD001', username: 'manager', status: 'active', version: 3 }],
+      [{ id: 'user-support', employeeId: 'htkd001', username: 'manager', status: 'active', version: 3 }],
     )
 
     expect(profile).toMatchObject({
@@ -50,6 +50,28 @@ describe('legacy credential migration race guard', () => {
       authVersion: 3,
       status: 'Đang làm việc',
     })
+  })
+
+  it('keeps exact auth links and never folds one ambiguous account onto two profiles', () => {
+    const profiles = [
+      { id: 'E01', name: 'Hồ sơ chữ hoa' },
+      { id: 'e01', name: 'Hồ sơ chữ thường' },
+    ]
+    const exact = mergeEmployeeAuthUsers(profiles, [
+      { id: 'USER-UPPER', employeeId: 'E01', username: 'upper', status: 'active' },
+      { id: 'USER-LOWER', employeeId: 'e01', username: 'lower', status: 'active' },
+    ])
+
+    expect(exact.map(({ id, authUserId }) => ({ id, authUserId }))).toEqual([
+      { id: 'E01', authUserId: 'USER-UPPER' },
+      { id: 'e01', authUserId: 'USER-LOWER' },
+    ])
+
+    const ambiguous = mergeEmployeeAuthUsers(profiles, [
+      { id: 'USER-LOWER', employeeId: 'e01', username: 'lower', status: 'active' },
+    ])
+    expect(ambiguous[0].authUserId).toBeUndefined()
+    expect(ambiguous[1].authUserId).toBe('USER-LOWER')
   })
 
   it('purges every legacy local non-Admin credential while preserving employee profiles', () => {

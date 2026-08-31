@@ -93,6 +93,74 @@ describe('store tiered payroll', () => {
     }, { store: dosiiStore })).toThrow('STORE_PAYROLL_POLICY_MISMATCH')
   })
 
+  it('matches operational employee and store ids without letter-case sensitivity', () => {
+    const store = { id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' }
+    const config = effectiveStoreSalaryConfig([{
+      id: 'CFG-CASE', employeeId: 'e01', storeId: 's01', effectiveFrom: '2026-08',
+      employmentType: 'Full-Time', standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 25_000,
+      thresholdHours: 208,
+    }], { employeeId: 'E01', storeId: 'S01', period: '2026-08', store })
+
+    expect(config).toMatchObject({ employeeId: 'E01', storeId: 'S01', standardHourlyRateVnd: 29_000 })
+  })
+
+  it('fails closed when folded employee/store ids resolve to conflicting configs for one effective period', () => {
+    const configs = [{
+      id: 'CFG-CASE-A', employeeId: 'E01', storeId: 'S01', effectiveFrom: '2026-08',
+      standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 25_000, thresholdHours: 208,
+    }, {
+      id: 'CFG-CASE-B', employeeId: 'e01', storeId: 's01', effectiveFrom: '2026-08',
+      standardHourlyRateVnd: 99_000, excessHourlyRateVnd: 98_000, thresholdHours: 208,
+    }]
+
+    expect(() => effectiveStoreSalaryConfig(configs, {
+      employeeId: 'E01', storeId: 'S01', period: '2026-08',
+      store: { id: 'S01', name: 'Dosii S01', status: 'Đang hoạt động' },
+    })).toThrow('STORE_SALARY_CONFIG_IDENTIFIER_COLLISION')
+  })
+
+  it('selects an exact salary-config owner before a newer case-colliding owner', () => {
+    const configs = [{
+      id: 'CFG-EXACT-OWNER', employeeId: 'EMP-01', storeId: 'STORE-01', effectiveFrom: '2026-08',
+      standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 25_000, thresholdHours: 208,
+    }, {
+      id: 'CFG-CASE-OWNER', employeeId: 'emp-01', storeId: 'store-01', effectiveFrom: '2026-09',
+      standardHourlyRateVnd: 99_000, excessHourlyRateVnd: 98_000, thresholdHours: 208,
+    }]
+
+    expect(effectiveStoreSalaryConfig(configs, {
+      employeeId: 'EMP-01', storeId: 'STORE-01', period: '2026-09',
+    })).toMatchObject({ id: 'CFG-EXACT-OWNER', standardHourlyRateVnd: 29_000 })
+    expect(effectiveStoreSalaryConfig(configs, {
+      employeeId: 'emp-01', storeId: 'store-01', period: '2026-09',
+    })).toMatchObject({ id: 'CFG-CASE-OWNER', standardHourlyRateVnd: 99_000 })
+  })
+
+  it('fails closed for a non-exact owner scope with case collisions across effective dates', () => {
+    const configs = [{
+      id: 'CFG-UPPER-OWNER', employeeId: 'EMP-01', storeId: 'STORE-01', effectiveFrom: '2026-08',
+    }, {
+      id: 'CFG-LOWER-OWNER', employeeId: 'emp-01', storeId: 'store-01', effectiveFrom: '2026-09',
+    }]
+
+    let collision
+    try {
+      effectiveStoreSalaryConfig(configs, {
+        employeeId: 'Emp-01', storeId: 'Store-01', period: '2026-09',
+      })
+    } catch (error) {
+      collision = error
+    }
+    expect(collision).toMatchObject({
+      code: 'STORE_SALARY_CONFIG_IDENTIFIER_COLLISION',
+      details: {
+        employeeId: 'Emp-01',
+        storeId: 'Store-01',
+        conflictingConfigIds: ['CFG-UPPER-OWNER', 'CFG-LOWER-OWNER'],
+      },
+    })
+  })
+
   it('selects the latest effective per-employee configuration for a payroll period', () => {
     const configs = [
       { employeeId: 'NV-01', storeId: dosiiStore.id, effectiveFrom: '2026-08', version: 1, standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 25_000 },
