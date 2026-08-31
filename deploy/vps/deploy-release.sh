@@ -425,7 +425,7 @@ git -C "$IDOSI_ROOT" merge-base --is-ancestor "$RELEASE_SHA" origin/main \
 
 PREVIOUS_GIT_SHA="$(git -C "$IDOSI_ROOT" rev-parse HEAD)"
 APP_CONTAINER_ID="$(compose ps -q app)"
-CADDY_CONTAINER_ID="$(compose ps -q caddy)"
+CADDY_CONTAINER_ID="$(compose ps -q --all caddy)"
 [[ -n "$APP_CONTAINER_ID" ]] || die 'Không tìm thấy app container hiện tại; dùng quy trình cài đặt lần đầu.'
 [[ -n "$CADDY_CONTAINER_ID" ]] || die 'Không tìm thấy caddy container hiện tại; dùng quy trình cài đặt lần đầu.'
 

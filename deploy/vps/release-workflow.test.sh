@@ -167,6 +167,9 @@ grep -Fq 'compose create --force-recreate caddy || return 1' \
 grep -Fq 'compose create --force-recreate caddy || return 1' \
   "$SCRIPT_DIR/rollback-release.sh" \
   || fail 'rollback script does not recreate Caddy with Compose-compatible flags'
+grep -Fq 'CADDY_CONTAINER_ID="$(compose ps -q --all caddy)"' \
+  "$SCRIPT_DIR/deploy-release.sh" \
+  || fail 'deploy script cannot recover when the existing Caddy container is stopped'
 if grep -Fq 'compose create --force-recreate --no-deps caddy' \
   "$SCRIPT_DIR/deploy-release.sh" "$SCRIPT_DIR/rollback-release.sh"; then
   fail 'Caddy recreation uses --no-deps, which docker compose create does not support'
