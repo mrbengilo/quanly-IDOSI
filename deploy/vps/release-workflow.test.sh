@@ -205,6 +205,10 @@ assert_before "$TARGET_ROLLBACK_BLOCK" \
   'compose up -d --no-build app'
 grep -Fq 'verify-public-release.mjs' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
   || fail 'production workflow does not verify public static assets'
+grep -Fq 'attempt<=PUBLIC_VERIFY_ATTEMPTS' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
+  || fail 'production workflow does not retry public verification during bounded cutover convergence'
+grep -Fq 'sleep "$PUBLIC_VERIFY_DELAY_SECONDS"' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
+  || fail 'production workflow public verification retry has no bounded delay'
 grep -Fq 'steps.external_verification.outputs.verified_at' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
   || fail 'production workflow does not pass an external verification attestation to the finalizer'
 grep -Fq 'steps.external_verification.outputs.verified_origin' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
