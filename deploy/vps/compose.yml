@@ -10,6 +10,8 @@ services:
     build:
       context: ../..
       dockerfile: deploy/vps/Dockerfile
+      args:
+        IDOSI_RELEASE_SHA: "${IDOSI_RELEASE_SHA:-unknown}"
     restart: unless-stopped
     env_file:
       - .env
@@ -40,8 +42,11 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"
+    environment:
+      IDOSI_RELEASE_SHA: "${IDOSI_RELEASE_SHA:-unknown}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - idosi_static:/srv/idosi:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
@@ -53,5 +58,8 @@ networks:
 
 volumes:
   idosi_data:
+  idosi_static:
+    name: "idosi_static_${IDOSI_RELEASE_SHA:-unknown}"
+    external: true
   caddy_data:
   caddy_config:

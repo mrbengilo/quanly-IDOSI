@@ -25,9 +25,10 @@ BACKUP_DIR="${IDOSI_BACKUP_DIR:-$COMPOSE_DIR/backups}"
 LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
 POINTER_FILE="$BACKUP_DIR/pending-$RELEASE_SHA.report"
 
-for command_name in flock sed head awk date mktemp mv chmod rm curl; do
+for command_name in flock sed head awk date mktemp mv chmod rm docker; do
   command -v "$command_name" >/dev/null 2>&1 || die "Thiếu lệnh bắt buộc: $command_name"
 done
+docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin không hoạt động.'
 [[ -d "$BACKUP_DIR" ]] || die 'Không tìm thấy thư mục backup IDOSI.'
 [[ -f "$POINTER_FILE" ]] || die 'Không tìm thấy pending deployment report cho release này.'
 
@@ -55,12 +56,8 @@ fi
 [[ "$STATUS" == 'LOCAL_READY' ]] || die "Chỉ finalize report có STATUS=LOCAL_READY, hiện tại là $STATUS."
 
 PUBLIC_ORIGIN="${PUBLIC_URL%/}"
-curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$PUBLIC_ORIGIN/api/health" >/dev/null
-PUBLIC_RELEASE="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
-  "$PUBLIC_ORIGIN/api/release")"
-[[ "$PUBLIC_RELEASE" == *"\"releaseSha\":\"$RELEASE_SHA\""* ]] \
-  || die 'Public release endpoint không xác nhận đúng release SHA.'
-curl --fail --silent --show-error --connect-timeout 5 --max-time 15 "$PUBLIC_ORIGIN/" >/dev/null
+(cd "$COMPOSE_DIR" && docker compose -f compose.yml exec -T app \
+  node server/vps/verify-public-release.mjs "$PUBLIC_ORIGIN" "$RELEASE_SHA")
 
 VERIFIED_AT="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT_TEMP="$(mktemp "$BACKUP_DIR/.finalized-report.XXXXXX")"

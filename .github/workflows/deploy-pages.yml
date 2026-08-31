@@ -65,6 +65,16 @@ jobs:
           node scripts/verify-vps-auto-deploy.mjs
           node --check server/vps/release-info.mjs
           node --check server/vps/verify-release.mjs
+          node --check server/vps/static-release.mjs
+          node --check server/vps/verify-public-release.mjs
+
+      - name: Validate Caddy configuration
+        run: |
+          docker run --rm \
+            -e IDOSI_RELEASE_SHA \
+            --mount "type=bind,source=$PWD/deploy/vps/Caddyfile,target=/etc/caddy/Caddyfile,readonly" \
+            --entrypoint caddy caddy:2.10-alpine \
+            validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
       - name: Validate VPS Compose configuration
         run: |
@@ -72,7 +82,28 @@ jobs:
           docker compose -f deploy/vps/compose.yml config --quiet
 
       - name: Build VPS release image
-        run: docker compose -f deploy/vps/compose.yml build app
+        run: |
+          docker compose -f deploy/vps/compose.yml build app
+          image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IDOSI_IMAGE")"
+          [[ "$image_revision" == "$IDOSI_RELEASE_SHA" ]]
+          static_topology="$(docker image inspect --format '{{ index .Config.Labels "io.idosi.static-topology" }}' "$IDOSI_IMAGE")"
+          [[ "$static_topology" == 'sha-volume-v1' ]]
+
+      - name: Verify immutable static release volume
+        run: |
+          static_volume="idosi_static_$IDOSI_RELEASE_SHA"
+          docker volume create \
+            --label 'io.idosi.managed=true' \
+            --label "io.idosi.release-sha=$IDOSI_RELEASE_SHA" \
+            "$static_volume" >/dev/null
+          docker run --rm --network none --read-only --user 0:0 \
+            --mount "type=volume,source=$static_volume,target=/static" \
+            --entrypoint node "$IDOSI_IMAGE" server/vps/static-release.mjs prepare \
+            --source /app/dist/client --target /static --sha "$IDOSI_RELEASE_SHA"
+          docker run --rm --network none --read-only \
+            --mount "type=volume,source=$static_volume,target=/static,readonly" \
+            --entrypoint node "$IDOSI_IMAGE" server/vps/static-release.mjs verify \
+            --target /static --sha "$IDOSI_RELEASE_SHA"
 
       - name: Verify VPS runtime and exact release identity
         run: |
@@ -89,4 +120,6 @@ jobs:
 
       - name: Clean VPS verification stack
         if: always()
-        run: docker compose -f deploy/vps/compose.yml down -v --remove-orphans
+        run: |
+          docker compose -f deploy/vps/compose.yml down -v --remove-orphans
+          docker volume rm "idosi_static_$IDOSI_RELEASE_SHA" >/dev/null 2>&1 || true

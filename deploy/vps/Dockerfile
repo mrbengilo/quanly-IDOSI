@@ -8,6 +8,10 @@ RUN npm run build
 
 FROM node:24-bookworm-slim AS runtime
 
+ARG IDOSI_RELEASE_SHA=unknown
+LABEL org.opencontainers.image.revision="$IDOSI_RELEASE_SHA" \
+    io.idosi.static-topology="sha-volume-v1"
+
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \

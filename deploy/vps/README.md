@@ -1,7 +1,8 @@
 # Triển khai IDOSI trên VPS
 
-IDOSI production chạy frontend + API bằng Node.js 24, SQLite và thư mục ảnh trong
-Docker volume; Caddy cấp HTTPS cho `idosi.io.vn`. Sau khi cài đặt một lần, mọi
+IDOSI production chạy API bằng Node.js 24, SQLite và thư mục ảnh trong Docker
+volume; Caddy cấp HTTPS và phục vụ frontend trực tiếp từ static volume bất biến
+theo release SHA. Sau khi cài đặt một lần, mọi
 release đã merge vào `main` được triển khai tự động khi **Verify IDOSI** PASS cho
 đúng merge SHA.
 
@@ -9,7 +10,8 @@ release đã merge vào `main` được triển khai tự động khi **Verify I
 
 - Repository trên VPS: `/opt/idosi`
 - Compose: `/opt/idosi/deploy/vps/compose.yml`
-- App: Node.js + SQLite, dữ liệu tại `/app/data`
+- App: Node.js API + SQLite, dữ liệu tại `/app/data`
+- Frontend: Caddy đọc volume `idosi_static_<full-sha>` ở chế độ read-only
 - Persistent volume: volume đang mount vào `/app/data`, thường là `vps_idosi_data`
 - Reverse proxy/TLS: Caddy
 - Health: `https://idosi.io.vn/api/health`
@@ -61,10 +63,22 @@ RELEASE_SHA="$(git rev-parse HEAD)"
 cd deploy/vps
 sed -i "s|^IDOSI_IMAGE=.*|IDOSI_IMAGE=idosi-app:$RELEASE_SHA|" .env
 sed -i "s|^IDOSI_RELEASE_SHA=.*|IDOSI_RELEASE_SHA=$RELEASE_SHA|" .env
-docker compose up -d --build
+docker compose build app
+STATIC_VOLUME="idosi_static_$RELEASE_SHA"
+docker volume create \
+  --label 'io.idosi.managed=true' \
+  --label "io.idosi.release-sha=$RELEASE_SHA" \
+  "$STATIC_VOLUME"
+docker run --rm --network none --read-only --user 0:0 \
+  --mount "type=volume,source=$STATIC_VOLUME,target=/static" \
+  --entrypoint node "idosi-app:$RELEASE_SHA" server/vps/static-release.mjs prepare \
+  --source /app/dist/client --target /static --sha "$RELEASE_SHA"
+docker compose up -d --no-build
 docker compose ps
 curl -fsS https://idosi.io.vn/api/health
 curl -fsS https://idosi.io.vn/api/release
+docker compose exec -T app node server/vps/verify-public-release.mjs \
+  https://idosi.io.vn "$RELEASE_SHA"
 ```
 
 ## 2. Tạo tài khoản Admin ban đầu
@@ -165,11 +179,15 @@ Không dùng manual dispatch để bỏ qua CI hoặc triển khai feature branc
 - ghi operation status/log dưới `backups/jobs/`;
 - khóa bằng `flock`, từ chối VPS dirty và deployment song song;
 - build image `idosi-app:<full-sha>` khi release cũ còn phục vụ;
+- xác nhận OCI image revision và tạo/verify static volume cùng exact SHA trước
+  cửa sổ bảo trì;
 - giữ previous image/tag làm rollback point;
 - dừng Caddy và app trước khi backup SQLite/file volume;
 - kiểm tra archive và tạo SHA-256 checksum;
 - khởi động app mới, migration chạy transactionally khi SQLite được mở;
-- chỉ mở Caddy khi internal health và `/api/release` đúng SHA;
+- xác nhận app container thực sự chạy đúng image ID, OCI revision và release SHA;
+- chỉ mở Caddy khi internal health, `/api/release`, marker và mount static volume
+  đều đúng SHA;
 - ghi report `LOCAL_READY` sau local HTTPS check;
 - chỉ đổi report nguyên tử sang `SUCCESS` sau external health, exact SHA và root
   page đều PASS;
@@ -188,11 +206,14 @@ docker compose ps
 docker compose logs --since=10m --tail=300 app caddy
 curl -fsS https://idosi.io.vn/api/health
 curl -fsS https://idosi.io.vn/api/release
+docker compose exec -T app node server/vps/verify-public-release.mjs \
+  https://idosi.io.vn "$(sed -n 's/^IDOSI_RELEASE_SHA=//p' .env)"
 ```
 
-`data.releaseSha` phải bằng merge SHA vừa triển khai. Smoke test theo phạm vi thay
-đổi; không tạo dữ liệu lương, thưởng, vi phạm hoặc tài chính giả không có kế hoạch
-void/dọn hợp lệ.
+`data.releaseSha`, header `X-IDOSI-Static-Release`, JavaScript entry và favicon
+phải cùng release SHA và tải thành công. Smoke test theo phạm vi thay đổi; không
+tạo dữ liệu lương, thưởng, vi phạm hoặc tài chính giả không có kế hoạch void/dọn
+hợp lệ.
 
 ## 8. Quan sát hiệu năng API
 
@@ -217,6 +238,9 @@ Mỗi deployment tạo backup, checksum, log, operation status và report tại:
 
 Sao chép định kỳ các backup quan trọng sang nơi lưu trữ khác. Không tự động xóa
 backup mới nhất, report cần audit hoặc previous image còn dùng để rollback.
+Giữ cả static volume của current release và rollback release; đây là artifact
+không chứa dữ liệu người dùng và có thể tái tạo từ exact image, nhưng không được
+xóa khi còn là rollback point.
 
 Rollback có kiểm soát:
 
@@ -229,7 +253,9 @@ bash deploy/vps/rollback-release.sh \
 Script tạo emergency backup của dữ liệu hiện tại, kiểm tra checksum backup mục
 tiêu, restore volume, chạy previous image, xác minh exact release, lưu `.env` và
 chỉ mở Caddy khi mọi bước PASS. Recovery lỗi phải giữ app/Caddy dừng và ghi
-incident report.
+incident report. Rollback chấp nhận stack đang chạy hoặc đã dừng nhưng container
+và volume còn tồn tại; trước mọi backup/restore, script phải chứng minh app và
+Caddy đã dừng, nếu không sẽ fail-closed và không ghi đè SQLite.
 
 ## 10. Điều kiện được báo `DEPLOYED`
 
