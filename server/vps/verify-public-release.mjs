@@ -118,6 +118,13 @@ const safeAssetUrl = (reference, documentUrl, label) => {
   return assetUrl
 }
 
+const releaseProbeUrl = (assetUrl, expectedReleaseSha) => {
+  const probeUrl = new URL(assetUrl)
+  probeUrl.searchParams.set('_idosi_release', expectedReleaseSha)
+  probeUrl.hash = ''
+  return probeUrl
+}
+
 const requestNonEmptyAsset = async ({
   url,
   fetchImpl,
@@ -189,8 +196,14 @@ export const verifyPublicRelease = async ({
     'href',
     'favicon',
   )
-  const entryUrl = safeAssetUrl(entryReference, documentUrl, 'JavaScript entry')
-  const faviconUrl = safeAssetUrl(faviconReference, documentUrl, 'Favicon')
+  const entryUrl = releaseProbeUrl(
+    safeAssetUrl(entryReference, documentUrl, 'JavaScript entry'),
+    expected,
+  )
+  const faviconUrl = releaseProbeUrl(
+    safeAssetUrl(faviconReference, documentUrl, 'Favicon'),
+    expected,
+  )
 
   const [entryBytes, faviconBytes] = await Promise.all([
     requestNonEmptyAsset({
