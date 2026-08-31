@@ -32,6 +32,60 @@ describe('employee task scope', () => {
     expect(taskCompletedByEmployee(task, 'NV002')).toBe(true)
   })
 
+  it('matches operational ids without letter-case sensitivity', () => {
+    const visible = employeeTasksForDate({
+      employee,
+      workDate,
+      schedule: [{ employeeId: 'nv001', storeId: 'ch001', date: workDate, shiftIds: ['MORNING'] }],
+      attendance: [],
+      tasks: [{ id: 'CASE-TASK', storeId: 'ch001', date: workDate, shiftId: 'morning', employeeIds: ['nv001'] }],
+    })
+
+    expect(visible.map((task) => task.id)).toEqual(['CASE-TASK'])
+    expect(taskAssignedToEmployee(visible[0], 'NV001')).toBe(true)
+    expect(taskCompletedByEmployee({ completedBy: { nv001: true } }, 'NV001')).toBe(true)
+    expect(taskCompletedByEmployee({ completedBy: { NV001: true, nv001: false } }, 'NV001')).toBe(true)
+    expect(taskCompletedByEmployee({ completedBy: { NV001: true, nv001: false } }, 'Nv001')).toBe(false)
+  })
+
+  it('keeps colliding employee, store, and shift identifiers isolated while exact spelling still works', () => {
+    const visible = employeeTasksForDate({
+      employee,
+      employees: [employee, { id: 'nv001', storeId: 'ch001' }],
+      stores: [{ id: 'CH001' }, { id: 'ch001' }],
+      shiftDefinitions: [{ id: 'MORNING' }, { id: 'morning' }],
+      workDate,
+      schedule: [{ employeeId: 'NV001', storeId: 'CH001', date: workDate, shiftIds: ['MORNING'] }],
+      attendance: [],
+      tasks: [
+        { id: 'exact', storeId: 'CH001', date: workDate, shiftId: 'MORNING', employeeIds: ['NV001'] },
+        { id: 'other-employee', storeId: 'CH001', date: workDate, shiftId: 'MORNING', employeeIds: ['nv001'] },
+        { id: 'other-store', storeId: 'ch001', date: workDate, shiftId: 'MORNING', employeeIds: ['NV001'] },
+        { id: 'other-shift', storeId: 'CH001', date: workDate, shiftId: 'morning' },
+      ],
+    })
+
+    expect(visible.map((task) => task.id)).toEqual(['exact'])
+    expect(taskCompletedByEmployee(
+      { completedBy: { nv001: true } },
+      'NV001',
+      [employee, { id: 'nv001' }],
+    )).toBe(false)
+    expect(taskCompletedByEmployee(
+      { completedBy: { NV001: true, nv001: false } },
+      'NV001',
+      [employee, { id: 'nv001' }],
+    )).toBe(true)
+  })
+
+  it('fails closed for an ambiguous mixed-case employee alias', () => {
+    expect(taskAssignedToEmployee(
+      { employeeIds: ['Nv001'] },
+      'Nv001',
+      [{ id: 'NV001' }, { id: 'nv001' }],
+    )).toBe(false)
+  })
+
   it('shows an explicitly assigned future-shift task without requiring an active attendance', () => {
     const visible = employeeTasksForDate({
       employee,

@@ -296,7 +296,59 @@ describe('support work screens', () => {
     expect(mocked.app.setWorkReward).toHaveBeenCalledTimes(1)
     expect(rewardCheckbox.checked).toBe(true)
     expect(rewardCheckbox.disabled).toBe(true)
-    expect(screen.getByText(/Đang đồng bộ 1 thay đổi đã lưu/i)).toBeTruthy()
+    expect(screen.queryByRole('checkbox', { name: /Đánh giá trưng bày cửa hàng \(\+75,000 đ\)/i })).toBeNull()
+    expect(screen.getByText(/Ca đã kết thúc chỉ xuất hiện trong lịch sử/i)).toBeTruthy()
+  })
+
+  it('shows the complete store reward checklist immediately for every open checked-in shift', async () => {
+    const employee = { id: 'E01', code: 'E01', unit: 'store', storeId: 'S01', name: 'Nhân viên cửa hàng' }
+    const rewards = [{
+      id: 'ATT-STORE-OPEN_REWARD-ON-TIME',
+      catalogItemId: 'work-catalog:store:reward_task:on-time',
+      catalogCode: 'store.reward.on-time',
+      kind: 'REWARD_TASK',
+      name: 'Đi làm đúng giờ',
+      amountVnd: 2_000,
+      required: false,
+    }, {
+      id: 'ATT-STORE-OPEN_REWARD-CUSTOMER',
+      catalogItemId: 'work-catalog:store:reward_task:customer-care',
+      catalogCode: 'store.reward.customer-care',
+      kind: 'REWARD_TASK',
+      name: 'Chào đón và tư vấn khách',
+      amountVnd: 1_000,
+      required: false,
+    }]
+    mocked.app.session = { role: 'employee', employeeId: 'E01', code: 'E01', storeId: 'S01' }
+    mocked.app.currentEmployee = employee
+    mocked.app.employees = [employee]
+    mocked.app.attendance = [{
+      id: 'ATT-STORE-OPEN', employeeId: 'E01', unit: 'store', storeId: 'S01', workDate: '2026-08-30',
+      shiftId: 'shift-production-flexible', shiftName: 'Ca linh hoạt', shiftStart: '08:00', shiftEnd: '21:00',
+      checkIn: '14:05', checklistSnapshot: { tasks: [
+        ...rewards,
+        {
+          id: 'ATT-STORE-OPEN_FIXED', catalogItemId: 'work-catalog:store:fixed_task:afternoon',
+          kind: 'FIXED_TASK', name: 'Công việc bắt buộc ca chiều', required: true, amountVnd: 0,
+        },
+      ] },
+    }]
+
+    render(<MemoryRouter><SupportAssignedWorkPage /></MemoryRouter>)
+    fireEvent.change(screen.getByLabelText('Ngày làm việc tính thưởng'), { target: { value: '2026-08-30' } })
+
+    expect(screen.getByRole('checkbox', { name: /Đi làm đúng giờ \(\+2,000 đ\)/i })).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /Chào đón và tư vấn khách \(\+1,000 đ\)/i })).toBeTruthy()
+    expect(screen.queryByText('Công việc bắt buộc ca chiều')).toBeNull()
+    fireEvent.click(screen.getByRole('checkbox', { name: /Đi làm đúng giờ \(\+2,000 đ\)/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+
+    await waitFor(() => expect(mocked.app.setWorkReward).toHaveBeenCalledWith(expect.objectContaining({
+      attendanceId: 'ATT-STORE-OPEN',
+      catalogItemId: 'work-catalog:store:reward_task:on-time',
+      checked: true,
+    })))
+    expect(mocked.app.setWorkReward).toHaveBeenCalledTimes(1)
   })
 
   it('keeps an Office employee reward tick stable while the confirmed server state reloads', async () => {
@@ -324,8 +376,8 @@ describe('support work screens', () => {
       attendanceId: 'ATT-OFFICE-OPEN', catalogItemId: officeRewardTask.id, checked: true, status: 'CLAIMED', version: 1,
     }]
     view.rerender(<MemoryRouter><SupportAssignedWorkPage /></MemoryRouter>)
-    await waitFor(() => expect(screen.getByRole('checkbox', { name: /Đi làm đúng giờ \(\+3,000 đ\)/i }).disabled).toBe(false))
-    expect(screen.getByRole('checkbox', { name: /Đi làm đúng giờ \(\+3,000 đ\)/i }).checked).toBe(true)
+    await waitFor(() => expect(screen.queryByRole('checkbox', { name: /Đi làm đúng giờ \(\+3,000 đ\)/i })).toBeNull())
+    expect(screen.getByText(/Ca đã kết thúc chỉ xuất hiện trong lịch sử/i)).toBeTruthy()
   })
 
   it('keeps closed attendance rewards read-only in employee history and visible in Admin statistics', () => {

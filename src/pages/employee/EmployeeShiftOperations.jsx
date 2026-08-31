@@ -4,43 +4,116 @@ import { useSearchParams } from 'react-router-dom'
 import { Badge, Button, Card, Field, InfoNote, Input, MoneyInput, PageHeader, Progress, TableWrap } from '../../components/UI'
 import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { useApp } from '../../state/AppContext'
-import { money, shortDateTime24, today } from '../../utils'
-import { taskAssignedToEmployee, taskCompletedByEmployee } from './taskScope'
+import {
+  money,
+  operationalIdentifierRecordMatch,
+  shortDateTime24,
+  today,
+} from '../../utils'
+import {
+  employeeTaskAssignmentById,
+  taskAssignedToEmployee,
+  taskCompletedByEmployee,
+} from './taskScope'
 
-const employeeKey = (record = {}) => String(record.id || record.code || record.employeeId || '')
-const recordDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
-const shiftIdOf = (record = {}) => String(record.shiftId || record.shift || '')
+const employeeKey = (record) => String(record?.id || record?.code || record?.employeeId || '')
+const employeeAliases = (record) => [record?.id, record?.code, record?.employeeId, record?.employeeCode]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const storeAliases = (record) => [record?.id, record?.code]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const shiftAliases = (record) => [record?.id, record?.code]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const attendanceAliases = (record) => [record?.id, record?.code, record?.attendanceId]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const recordDate = (record) => String(record?.date || record?.workDate || record?.checkInAt || record?.createdAt || '').slice(0, 10)
+const shiftIdOf = (record) => String(record?.shiftId || record?.shift || '')
 const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapshot?.kind || task.kind || '')
 const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
 const taskIsRequired = (task = {}) => task.required !== false
 const taskAmount = (task = {}) => Math.max(0, Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd) || 0)
 
-const currentEmployeeOf = (app) => {
-  if (app.currentEmployee) return app.currentEmployee
-  const keys = [app.session?.employeeId, app.session?.code, app.session?.id].filter(Boolean).map(String)
-  return (app.employees || []).find((employee) => keys.includes(employeeKey(employee))) || app.session || {}
+const resolveTarget = (records, reference, identifierOf, fallback = null) => {
+  const source = Array.isArray(records) ? records : []
+  if (!source.length) return fallback
+  const resolution = operationalIdentifierRecordMatch(source, reference, identifierOf)
+  return resolution.ambiguous ? null : resolution.record
 }
 
-const ownOpenAttendance = (attendance, employeeId) => (Array.isArray(attendance) ? attendance : []).find((record) => (
-  !record.deletedAt
-  && String(record.employeeId || '') === employeeId
-  && !record.checkOutAt
-  && !record.checkOut
-)) || null
+const referenceMatchesTarget = (records, target, reference, identifierOf) => {
+  if (!target || !String(reference || '').trim()) return false
+  const source = Array.isArray(records) && records.length ? records : [target]
+  const resolution = operationalIdentifierRecordMatch(source, reference, identifierOf)
+  return !resolution.ambiguous && resolution.record === target
+}
 
-const taskMatchesAttendance = (task, attendance, employeeId) => (
-  !task.deletedAt
-  && String(task.storeId || '') === String(attendance.storeId || '')
-  && recordDate(task) === recordDate(attendance)
-  && taskAssignedToEmployee(task, employeeId)
-  && (!shiftIdOf(task) || shiftIdOf(task) === shiftIdOf(attendance))
-)
+const currentEmployeeOf = (app) => {
+  const employees = Array.isArray(app.employees) ? app.employees : []
+  const keys = [
+    employeeKey(app.currentEmployee),
+    app.session?.employeeId,
+    app.session?.code,
+    app.session?.id,
+  ].filter(Boolean)
+  for (const key of keys) {
+    const resolution = operationalIdentifierRecordMatch(employees, key, employeeAliases)
+    if (resolution.ambiguous) return {}
+    if (resolution.record) return resolution.record
+  }
+  const usernameMatches = employees.filter((employee) => (
+    app.session?.username && employee.username === app.session.username
+  ))
+  if (usernameMatches.length === 1) return usernameMatches[0]
+  if (usernameMatches.length > 1) return {}
+  return employees.length ? {} : (app.currentEmployee || app.session || {})
+}
+
+const ownOpenAttendance = (attendance, employee, employees) => {
+  const target = resolveTarget(employees, employeeKey(employee), employeeAliases, employee)
+  if (!target) return null
+  return (Array.isArray(attendance) ? attendance : []).find((record) => (
+    !record.deletedAt
+    && [record.employeeId, record.employeeCode].some((reference) => (
+      referenceMatchesTarget(employees, target, reference, employeeAliases)
+    ))
+    && !record.checkOutAt
+    && !record.checkOut
+  )) || null
+}
+
+const taskMatchesAttendance = (task, attendance, employeeId, {
+  attendanceRecords = [],
+  employees = [],
+  stores = [],
+  shiftDefinitions = [],
+} = {}) => {
+  const store = resolveTarget(stores, attendance.storeId, storeAliases, { id: String(attendance.storeId || '') })
+  const shift = resolveTarget(shiftDefinitions, shiftIdOf(attendance), shiftAliases, { id: shiftIdOf(attendance) })
+  if (!store || (shiftIdOf(attendance) && !shift)) return false
+  return !task.deletedAt
+    && referenceMatchesTarget(stores, store, task.storeId, storeAliases)
+    && recordDate(task) === recordDate(attendance)
+    && taskAssignedToEmployee(task, employeeId, employees)
+    && (!task.checklistAttendanceId || referenceMatchesTarget(
+      attendanceRecords,
+      attendance,
+      task.checklistAttendanceId,
+      attendanceAliases,
+    ))
+    && (!shiftIdOf(task) || referenceMatchesTarget(shiftDefinitions, shift, shiftIdOf(task), shiftAliases))
+}
 
 export function EmployeeShiftExpensePage() {
   const app = useApp()
   const employee = currentEmployeeOf(app)
   const employeeId = employeeKey(employee)
-  const attendance = useMemo(() => ownOpenAttendance(app.attendance, employeeId), [app.attendance, employeeId])
+  const attendance = useMemo(
+    () => ownOpenAttendance(app.attendance, employee, app.employees),
+    [app.attendance, app.employees, employee],
+  )
   const [form, setForm] = useState({ name: '', amount: '', note: '' })
   const [saving, setSaving] = useState(false)
   const requestRef = useRef(null)
@@ -48,10 +121,10 @@ export function EmployeeShiftExpensePage() {
     .filter((entry) => (
       entry.recognized !== false
       && String(entry.sourceType || '') === 'shift-expense-item'
-      && String(entry.employeeId || '') === employeeId
+       && referenceMatchesTarget(app.employees, employee, entry.employeeId, employeeAliases)
     ))
-    .sort((left, right) => String(right.occurredAt || right.createdAt || '').localeCompare(String(left.occurredAt || left.createdAt || ''))), [app.expenseEntries, employeeId])
-  const activeStore = (app.stores || []).find((store) => String(store.id || '') === String(attendance?.storeId || app.session?.storeId || ''))
+    .sort((left, right) => String(right.occurredAt || right.createdAt || '').localeCompare(String(left.occurredAt || left.createdAt || ''))), [app.employees, app.expenseEntries, employee])
+  const activeStore = resolveTarget(app.stores, attendance?.storeId || app.session?.storeId, storeAliases)
   const amount = Number(form.amount || 0)
   const ready = Boolean(attendance && form.name.trim() && amount > 0 && form.note.length <= 1_000)
 
@@ -107,7 +180,7 @@ export function EmployeeShiftExpensePage() {
           <tbody>
             {history.map((entry) => <tr key={entry.id}>
               <td><strong>{shortDateTime24(entry.occurredAt || entry.createdAt)}</strong></td>
-              <td><span className="table-stack"><strong><Store size={14} /> {entry.storeName || (app.stores || []).find((store) => String(store.id) === String(entry.storeId))?.name || entry.storeId}</strong><small><Clock3 size={13} /> {entry.shiftName || entry.shiftId || '—'}</small></span></td>
+              <td><span className="table-stack"><strong><Store size={14} /> {entry.storeName || resolveTarget(app.stores, entry.storeId, storeAliases)?.name || entry.storeId}</strong><small><Clock3 size={13} /> {entry.shiftName || entry.shiftId || '—'}</small></span></td>
               <td>{entry.name || entry.type || '—'}</td>
               <td><strong>{money(entry.amount)}</strong></td>
               <td>{entry.note || entry.description || '—'}</td>
@@ -127,20 +200,41 @@ export function EmployeeAssignedTasksPage() {
   const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
   const employee = currentEmployeeOf(app)
   const employeeId = employeeKey(employee)
-  const attendance = useMemo(() => ownOpenAttendance(app.attendance, employeeId), [app.attendance, employeeId])
+  const attendance = useMemo(
+    () => ownOpenAttendance(app.attendance, employee, app.employees),
+    [app.attendance, app.employees, employee],
+  )
   const attendanceTasks = useMemo(() => {
     const tasks = Array.isArray(app.tasks) ? app.tasks : []
-    if (attendance) return tasks.filter((task) => taskMatchesAttendance(task, attendance, employeeId))
-    if (requestedAssignmentId) return tasks.filter((task) => (
-      !task.deletedAt
-      && String(task.assignmentId || '') === requestedAssignmentId
-      && taskAssignedToEmployee(task, employeeId)
+    if (attendance) return tasks.filter((task) => taskMatchesAttendance(
+      task,
+      attendance,
+      employeeId,
+      {
+        attendanceRecords: (Array.isArray(app.attendance) ? app.attendance : []).filter((record) => !record.deletedAt),
+        employees: app.employees,
+        stores: app.stores,
+        shiftDefinitions: app.shiftDefinitions,
+      },
     ))
-    return tasks.filter((task) => !task.deletedAt && recordDate(task) === today() && taskAssignedToEmployee(task, employeeId))
-  }, [app.tasks, attendance, employeeId, requestedAssignmentId])
-  const displayedTasks = useMemo(() => {
-    return attendanceTasks.filter((task) => !taskIsReward(task))
-  }, [attendanceTasks])
+    if (requestedAssignmentId) return employeeTaskAssignmentById({
+      assignmentId: requestedAssignmentId,
+      taskAssignmentHistory: app.taskAssignmentHistory,
+      tasks,
+      employee,
+      employees: app.employees,
+      stores: app.stores,
+    })?.tasks || []
+    return tasks.filter((task) => (
+      !task.deletedAt
+      && recordDate(task) === today()
+      && taskAssignedToEmployee(task, employeeId, app.employees)
+    ))
+  }, [app.attendance, app.employees, app.shiftDefinitions, app.stores, app.taskAssignmentHistory, app.tasks, attendance, employee, employeeId, requestedAssignmentId])
+  const mandatoryTasks = useMemo(() => attendanceTasks.filter((task) => !taskIsReward(task)), [attendanceTasks])
+  const displayedTasks = useMemo(() => mandatoryTasks.filter((task) => (
+    !taskCompletedByEmployee(task, employeeId, app.employees)
+  )), [app.employees, mandatoryTasks, employeeId])
   const [statuses, setStatuses] = useState({})
   const [incompleteReason, setIncompleteReason] = useState('')
   const [saving, setSaving] = useState(false)
@@ -148,20 +242,22 @@ export function EmployeeAssignedTasksPage() {
 
   const statusFor = (task) => Object.hasOwn(statuses, String(task.id))
     ? statuses[String(task.id)]
-    : taskCompletedByEmployee(task, employeeId)
-  const completedTasks = displayedTasks.filter(statusFor).length
-  const completionRate = displayedTasks.length ? Math.round((completedTasks / displayedTasks.length) * 100) : 0
-  const allCompleted = displayedTasks.length > 0 && completedTasks === displayedTasks.length
-  const requiredTasks = displayedTasks.filter(taskIsRequired)
+    : taskCompletedByEmployee(task, employeeId, app.employees)
+  const completedTasks = mandatoryTasks.filter(statusFor).length
+  const completionRate = mandatoryTasks.length ? Math.round((completedTasks / mandatoryTasks.length) * 100) : 0
+  const allCompleted = mandatoryTasks.length > 0 && completedTasks === mandatoryTasks.length
+  const requiredTasks = mandatoryTasks.filter(taskIsRequired)
   const incompleteRequiredTasks = requiredTasks.filter((task) => !statusFor(task))
   const noteRequired = incompleteRequiredTasks.length > 0
   const ready = Boolean(attendance && displayedTasks.length && (!noteRequired || incompleteReason.trim()))
   const history = useMemo(() => (app.taskAssignmentHistory || []).flatMap((assignment) => (
-    (assignment.progressHistory || []).filter((event) => String(event.employeeId || '') === employeeId).map((event) => ({
+    (assignment.progressHistory || []).filter((event) => (
+      referenceMatchesTarget(app.employees, employee, event.employeeId, employeeAliases)
+    )).map((event) => ({
       ...event,
       assignmentId: event.assignmentId || assignment.assignmentId || assignment.id,
     }))
-  )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || ''))), [app.taskAssignmentHistory, employeeId])
+  )).sort((left, right) => String(right.at || '').localeCompare(String(left.at || ''))), [app.employees, app.taskAssignmentHistory, employee])
 
   const submit = async () => {
     if (!ready || saving || typeof app.saveStoreTaskProgress !== 'function') return
@@ -197,7 +293,7 @@ export function EmployeeAssignedTasksPage() {
     <div className="page employee-assigned-tasks-page">
       <PageHeader title="CÔNG VIỆC ĐƯỢC GIAO" subtitle="Cập nhật kết quả trong ca và gửi tỷ lệ hoàn thành cho quản lý." icon={ClipboardCheck} />
       {!attendance && <InfoNote tone="orange">Bạn có thể xem công việc hôm nay, nhưng chỉ được cập nhật sau khi điểm danh vào đúng ca.</InfoNote>}
-      <Card title="Tiến độ công việc" action={<Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{displayedTasks.length} · {completionRate}%</Badge>}>
+      <Card title="Tiến độ công việc" action={<Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{mandatoryTasks.length} · {completionRate}%</Badge>}>
         <Progress value={completionRate} color={allCompleted ? '#07883f' : '#f28b16'} />
         <InfoNote>Đây là danh sách công việc bắt buộc theo ca. Công việc nhận thưởng được tick và lưu riêng tại “Công việc tính thưởng”.</InfoNote>
         <div className="task-checklist">
@@ -220,7 +316,7 @@ export function EmployeeAssignedTasksPage() {
               <Badge tone={checked ? 'green' : 'orange'}>{checked ? 'Đã hoàn thành' : 'Chưa hoàn thành'}</Badge>
             </label>
           })}
-          {!displayedTasks.length && <InfoNote>Chưa có công việc được giao trong phạm vi hôm nay.</InfoNote>}
+          {!displayedTasks.length && <InfoNote>{allCompleted ? 'Đã hoàn thành và lưu tất cả công việc trong ca.' : 'Chưa có công việc được giao trong phạm vi hôm nay.'}</InfoNote>}
         </div>
         {noteRequired && <Field label="Lý do công việc bắt buộc chưa hoàn thành" required hint="Không cần nhập cho công việc nhận thưởng tùy chọn." error={!incompleteReason.trim() ? 'Bắt buộc nhập lý do nếu còn công việc cố định chưa hoàn thành.' : ''}>
           <textarea value={incompleteReason} maxLength="1000" onChange={(event) => setIncompleteReason(event.target.value)} placeholder="Nêu rõ lý do của công việc cố định chưa hoàn thành" />

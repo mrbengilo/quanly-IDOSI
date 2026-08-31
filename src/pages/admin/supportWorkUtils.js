@@ -1,4 +1,8 @@
 import { roleProfileCode } from './roleManagementUtils'
+import {
+  operationalIdentifierRecordMatch,
+  operationalIdentifierReferenceMatchesRecord,
+} from '../../utils'
 
 const FINAL_STATUSES = new Set(['completed', 'incomplete'])
 
@@ -24,7 +28,17 @@ export const supportWorkProgress = (assignment = {}) => {
 
 export const supportWorkEvaluation = (profile = {}, assignments = []) => {
   const employeeId = roleProfileCode(profile)
-  const rows = assignments.filter((assignment) => String(assignment.employeeId) === String(employeeId))
+  const employeeReferences = [...new Set((Array.isArray(assignments) ? assignments : [])
+    .map((assignment) => String(assignment.employeeId || '').trim())
+    .filter(Boolean))].map((id) => ({ id }))
+  const employeeMatch = operationalIdentifierRecordMatch(employeeReferences, employeeId, (record) => [record.id])
+  const rows = employeeMatch.ambiguous || !employeeMatch.record
+    ? []
+    : assignments.filter((assignment) => operationalIdentifierReferenceMatchesRecord(
+      employeeReferences,
+      employeeMatch.record,
+      assignment.employeeId,
+    ))
   const finalizedRows = rows.filter((assignment) => isFinalSupportWorkStatus(assignment.status))
   const total = rows.reduce((sum, assignment) => sum + supportWorkProgress(assignment).total, 0)
   const finalizedProgress = finalizedRows.reduce((result, assignment) => {

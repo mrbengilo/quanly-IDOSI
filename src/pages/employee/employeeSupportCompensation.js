@@ -1,4 +1,9 @@
 import { formatVietnamTransferDateTime, supportTransferBounds } from '../../domain/supportTransferTime'
+import {
+  operationalIdentifierRecordMatch,
+  operationalIdentifierReferenceKey,
+  sameOperationalIdentifier,
+} from '../../utils'
 
 const nonNegativeNumber = (value) => {
   const parsed = Number(value)
@@ -26,7 +31,16 @@ const firstMoney = (...values) => {
   return null
 }
 
-const recordEmployeeId = (record = {}) => String(record.employeeId || record.employeeCode || '')
+const employeeIdentifier = (record) => String(record?.id || record?.code || record?.employeeId || '')
+const employeeAliases = (record) => [record?.id, record?.code, record?.employeeId, record?.employeeCode]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const recordEmployeeAliases = (record) => [record?.employeeId, record?.employeeCode]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const storeAliases = (record) => [record?.id, record?.code]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
 const recordTimeKey = (record = {}) => String(
   record.checkInAt || record.workDate || record.attendanceDate || record.date || record.createdAt || record.id || '',
 )
@@ -40,14 +54,64 @@ const workedHours = (record = {}) => firstNumber(
   Number(record.workedSeconds || 0) / 3_600,
 ) || 0
 
-const linkedTransfer = (record, transfersById) => {
+const resolveTarget = (records, reference, identifierOf, fallback = null) => {
+  const source = Array.isArray(records) ? records : []
+  if (!source.length) return fallback
+  const resolution = operationalIdentifierRecordMatch(source, reference, identifierOf)
+  return resolution.ambiguous ? null : resolution.record
+}
+
+const referenceMatchesTarget = (records, target, reference, identifierOf) => {
+  if (!target || !String(reference || '').trim()) return false
+  const source = Array.isArray(records) && records.length ? records : [target]
+  const resolution = operationalIdentifierRecordMatch(source, reference, identifierOf)
+  return !resolution.ambiguous && resolution.record === target
+}
+
+const recordReferencesTarget = (records, target, record, identifierOf, referenceValuesOf) => (
+  referenceValuesOf(record).some((reference) => (
+    referenceMatchesTarget(records, target, reference, identifierOf)
+  ))
+)
+
+const employeeRowMatch = (rows, employees, employee) => {
+  const matches = (Array.isArray(rows) ? rows : []).filter((row) => (
+    recordReferencesTarget(employees, employee, row, employeeAliases, recordEmployeeAliases)
+  ))
+  return recordMatchForAliases(matches, employeeAliases(employee), recordEmployeeAliases)
+}
+
+const recordMatchForAliases = (records, references, identifierValuesOf) => {
+  const source = Array.isArray(records) ? records : []
+  const aliases = (Array.isArray(references) ? references : [references])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  const exactMatches = source.filter((record) => identifierValuesOf(record).some((value) => (
+    aliases.includes(String(value || '').trim())
+  )))
+  if (exactMatches.length !== 0) return {
+    record: exactMatches.length === 1 ? exactMatches[0] : null,
+    ambiguous: exactMatches.length > 1,
+  }
+  const foldedMatches = source.filter((record) => identifierValuesOf(record).some((value) => (
+    aliases.some((alias) => sameOperationalIdentifier(alias, value))
+  )))
+  return {
+    record: foldedMatches.length === 1 ? foldedMatches[0] : null,
+    ambiguous: foldedMatches.length > 1,
+  }
+}
+
+const linkedTransfer = (record, supportTransfers) => {
   const transferId = String(
     record.supportCompensation?.transferId
     || record.compensation?.support?.transferId
     || record.supportTransferId
     || '',
   ).trim()
-  return transferId ? transfersById.get(transferId) || null : null
+  return transferId
+    ? operationalIdentifierRecordMatch(supportTransfers, transferId, (transfer) => [transfer.id])
+    : { record: null, ambiguous: false, matches: [] }
 }
 
 const isAllowanceAttributed = (record = {}) => {
@@ -69,20 +133,34 @@ const transferTimeLabel = (transfer = {}) => {
   return `${formatVietnamTransferDateTime(bounds.startAt)} – ${formatVietnamTransferDateTime(bounds.endAt)}`
 }
 
-const storeNameFor = (storeId, storesById, fallback) => (
-  storesById.get(String(storeId || ''))?.name || fallback || storeId || '—'
-)
+const storeNameFor = (storeId, stores, fallback) => {
+  const resolution = operationalIdentifierRecordMatch(stores, storeId, storeAliases)
+  return resolution.record?.name || fallback || storeId || '—'
+}
 
 export const supportAttendanceCompensationRows = ({
   attendance = [],
   employeeId,
+  employee = null,
+  employees = [],
   supportTransfers = [],
   stores = [],
 } = {}) => {
-  const transfersById = new Map(supportTransfers.map((transfer) => [String(transfer.id || ''), transfer]))
-  const storesById = new Map(stores.map((store) => [String(store.id || ''), store]))
+  const targetEmployee = resolveTarget(
+    employees,
+    employeeIdentifier(employee || {}) || employeeId,
+    employeeAliases,
+    employee || (employeeId ? { id: String(employeeId) } : null),
+  )
+  if (employeeId && !targetEmployee) return []
   const ownAttendance = attendance.filter((record) => (
-    !record.deletedAt && (!employeeId || recordEmployeeId(record) === String(employeeId))
+    !record.deletedAt && (!employeeId || recordReferencesTarget(
+      employees,
+      targetEmployee,
+      record,
+      employeeAliases,
+      recordEmployeeAliases,
+    ))
   ))
   const firstLinkedAttendanceId = new Map()
 
@@ -90,18 +168,25 @@ export const supportAttendanceCompensationRows = ({
     record.checkOutAt || record.checkOut || workedHours(record) > 0
   ))
   for (const record of [...completedAttendance].sort((left, right) => recordTimeKey(left).localeCompare(recordTimeKey(right)))) {
-    const transfer = linkedTransfer(record, transfersById)
+    const transferResolution = linkedTransfer(record, supportTransfers)
+    const transfer = transferResolution.record
     const transferId = String(
       transfer?.id || record.supportCompensation?.transferId
       || record.compensation?.support?.transferId || record.supportTransferId || '',
     ).trim()
-    if (transferId && !firstLinkedAttendanceId.has(transferId)) {
-      firstLinkedAttendanceId.set(transferId, String(record.id || recordTimeKey(record)))
+    const transferKey = transferResolution.ambiguous ? '' : operationalIdentifierReferenceKey(
+      supportTransfers,
+      transferId,
+      (candidate) => candidate.id,
+    )
+    if (transferKey && !firstLinkedAttendanceId.has(transferKey)) {
+      firstLinkedAttendanceId.set(transferKey, String(record.id || recordTimeKey(record)))
     }
   }
 
   return ownAttendance.map((record) => {
-    const transfer = linkedTransfer(record, transfersById)
+    const transferResolution = linkedTransfer(record, supportTransfers)
+    const transfer = transferResolution.record
     const transferId = String(
       transfer?.id || record.supportCompensation?.transferId
       || record.compensation?.support?.transferId || record.supportTransferId || '',
@@ -146,7 +231,13 @@ export const supportAttendanceCompensationRows = ({
     if (allowance == null) {
       const currentId = String(record.id || recordTimeKey(record))
       const ownsFallbackAllowance = attribution === true || (
-        attribution == null && firstLinkedAttendanceId.get(transferId) === currentId
+        !transferResolution.ambiguous
+        && attribution == null
+        && firstLinkedAttendanceId.get(operationalIdentifierReferenceKey(
+          supportTransfers,
+          transferId,
+          (candidate) => candidate.id,
+        )) === currentId
       )
       allowance = ownsFallbackAllowance
         ? (firstMoney(transfer?.allowance, transfer?.supportAllowance) || 0)
@@ -164,11 +255,12 @@ export const supportAttendanceCompensationRows = ({
       record,
       transfer,
       transferId,
+      identifierCollision: transferResolution.ambiguous,
       isSupport: true,
       destinationStoreId,
       destinationStoreName: storeNameFor(
         destinationStoreId,
-        storesById,
+        stores,
         support.supportStoreName || support.storeName || support.destinationStoreName || transfer?.toStoreName,
       ),
       timeLabel: transferTimeLabel(transfer || {
@@ -196,7 +288,6 @@ export const supportCompensationTotals = (rows = []) => rows.reduce((totals, row
 }, { hours: 0, hourlyPay: 0, allowance: 0, actualPay: 0 })
 
 const uniqueStrings = (values = []) => [...new Set(values.flat().map((value) => String(value || '').trim()).filter(Boolean))]
-
 const isSupportSnapshotRow = (row = {}) => Boolean(
   row.supportCompensation
   || row.supportActualPay != null
@@ -221,21 +312,44 @@ const supportCoverageFrom = (snapshot = {}) => {
   }
 }
 
+const coveredByOperationalReference = ({ references, rows, item, valueOf }) => {
+  const value = String(valueOf(item) || '').trim()
+  if (!value) return false
+  if (references.has(value)) return true
+  const foldedReferences = [...references].filter((reference) => sameOperationalIdentifier(reference, value))
+  const foldedLiveValues = uniqueStrings(rows.map(valueOf))
+    .filter((candidate) => sameOperationalIdentifier(candidate, value))
+  return foldedReferences.length === 1 && foldedLiveValues.length === 1
+}
+
 export const supportRowsUncoveredByPayrollSnapshot = (attendanceRows = [], snapshot = null) => {
   if (!snapshot?.supportSnapshot && !snapshot?.supportDetails?.length) return attendanceRows
   const coverage = supportCoverageFrom(snapshot)
+  const sourceRows = Array.isArray(attendanceRows) ? attendanceRows : []
   return attendanceRows.filter((item) => {
-    const attendanceId = String(item.record?.id || '').trim()
-    const transferId = String(item.transferId || item.record?.supportTransferId || '').trim()
-    const storeId = String(item.destinationStoreId || item.record?.storeId || '').trim()
-    if (attendanceId && coverage.attendanceIds.has(attendanceId)) return false
-    if (transferId && coverage.transferIds.has(transferId)) return false
-    return !(storeId && coverage.legacyStoreIds.has(storeId))
+    const coveredByTransfer = coveredByOperationalReference({
+      references: coverage.transferIds,
+      rows: sourceRows,
+      item,
+      valueOf: (candidate) => candidate.transferId || candidate.record?.supportTransferId,
+    })
+    const coveredByAttendance = coveredByOperationalReference({
+      references: coverage.attendanceIds,
+      rows: sourceRows,
+      item,
+      valueOf: (candidate) => candidate.record?.id || candidate.attendanceId,
+    })
+    const coveredByLegacyStore = coveredByOperationalReference({
+      references: coverage.legacyStoreIds,
+      rows: sourceRows,
+      item,
+      valueOf: (candidate) => candidate.destinationStoreId || candidate.record?.storeId,
+    })
+    return !(coveredByTransfer || coveredByAttendance || coveredByLegacyStore)
   })
 }
 
 export const supportPayrollDetailRows = ({ snapshotDetails = [], snapshot = null, attendanceRows = [], stores = [] } = {}) => {
-  const storesById = new Map(stores.map((store) => [String(store.id || ''), store]))
   const details = snapshotDetails.length ? snapshotDetails : (snapshot?.supportDetails || [])
   const uncoveredAttendance = supportRowsUncoveredByPayrollSnapshot(attendanceRows, {
     ...snapshot,
@@ -259,7 +373,7 @@ export const supportPayrollDetailRows = ({ snapshotDetails = [], snapshot = null
       date: String(startAt || '').slice(0, 10),
       destinationStoreName: storeNameFor(
         detail.supportStoreId,
-        storesById,
+        stores,
         detail.supportStoreName || detail.destinationStoreName,
       ),
       timeLabel: transferTimeLabel({ startAt, endAt }),
@@ -275,27 +389,99 @@ export const supportPayrollDetailRows = ({ snapshotDetails = [], snapshot = null
   return [...closedDetails, ...liveDetails]
 }
 
-export const employeePayrollSnapshotSummary = ({ payrollPeriods = [], employeeId, period } = {}) => {
-  const periods = payrollPeriods.filter((item) => (
-    String(item.period || '') === String(period || '')
-    && item.rows?.some((row) => recordEmployeeId(row) === String(employeeId || ''))
-  ))
-  const rows = periods.flatMap((item) => item.rows
-    .filter((row) => recordEmployeeId(row) === String(employeeId || ''))
-    .map((row) => {
-      // Old locked rows remain readable, but the retired KPI amount is deliberately
-      // excluded instead of being silently reclassified as another bonus source.
-      const legacyKpiBonus = firstMoney(row.kpiBonus) || 0
-      const normalized = {
-        ...row,
-        gross: Math.max(0, (firstMoney(row.gross) || 0) - legacyKpiBonus),
-        remaining: Math.max(0, (firstMoney(row.remaining) || 0) - legacyKpiBonus),
-        payrollStoreId: item.storeId,
-        payrollStatus: item.status,
-      }
-      delete normalized.kpiBonus
-      return normalized
-    }))
+export const employeePayrollSnapshotSummary = ({
+  payrollPeriods = [],
+  employeeId,
+  employee = null,
+  employees = [],
+  stores = [],
+  period,
+} = {}) => {
+  const targetEmployee = resolveTarget(
+    employees,
+    employeeIdentifier(employee || {}) || employeeId,
+    employeeAliases,
+    employee || (employeeId ? { id: String(employeeId) } : null),
+  )
+  if (!targetEmployee) return { identifierCollision: true, periods: [], rows: [] }
+  if (stores.length && String(targetEmployee.storeId || '').trim()) {
+    const homeStoreMatch = operationalIdentifierRecordMatch(
+      stores,
+      targetEmployee.storeId,
+      storeAliases,
+    )
+    if (!homeStoreMatch.record) return { identifierCollision: true, periods: [], rows: [] }
+  }
+
+  const candidates = payrollPeriods.filter((item) => (
+    !item.supersededAt && String(item.period || '') === String(period || '')
+  )).map((item) => {
+    const rowMatch = employeeRowMatch(item.rows, employees, targetEmployee)
+    const record = rowMatch.record
+    return {
+      item,
+      rowMatch: {
+        record,
+        ambiguous: rowMatch.ambiguous,
+      },
+    }
+  }).filter(({ rowMatch }) => rowMatch.record || rowMatch.ambiguous)
+
+  if (candidates.some(({ rowMatch }) => rowMatch.ambiguous)) {
+    return { identifierCollision: true, periods: candidates.map(({ item }) => item), rows: [] }
+  }
+
+  const candidatesByStore = new Map()
+  for (const candidate of candidates) {
+    const { item } = candidate
+    const store = resolveTarget(
+      stores,
+      item.storeId,
+      storeAliases,
+      stores.length ? null : String(item.storeId || '').trim().toLocaleLowerCase('en-US'),
+    )
+    if (!store) {
+      return { identifierCollision: true, periods: candidates.map(({ item: periodItem }) => periodItem), rows: [] }
+    }
+    candidatesByStore.set(store, [...(candidatesByStore.get(store) || []), candidate])
+  }
+
+  const selectedCandidates = []
+  for (const [store, storeCandidates] of candidatesByStore) {
+    if (storeCandidates.length === 1) {
+      selectedCandidates.push(storeCandidates[0])
+      continue
+    }
+    if (!stores.length) {
+      return { identifierCollision: true, periods: candidates.map(({ item }) => item), rows: [] }
+    }
+    const periodMatch = recordMatchForAliases(
+      storeCandidates,
+      storeAliases(store),
+      ({ item }) => [item.storeId],
+    )
+    if (periodMatch.ambiguous || !periodMatch.record) {
+      return { identifierCollision: true, periods: candidates.map(({ item }) => item), rows: [] }
+    }
+    selectedCandidates.push(periodMatch.record)
+  }
+
+  const periods = selectedCandidates.map(({ item }) => item)
+  const rows = selectedCandidates.map(({ item, rowMatch }) => {
+    const row = rowMatch.record
+    // Old locked rows remain readable, but the retired KPI amount is deliberately
+    // excluded instead of being silently reclassified as another bonus source.
+    const legacyKpiBonus = firstMoney(row.kpiBonus) || 0
+    const normalized = {
+      ...row,
+      gross: Math.max(0, (firstMoney(row.gross) || 0) - legacyKpiBonus),
+      remaining: Math.max(0, (firstMoney(row.remaining) || 0) - legacyKpiBonus),
+      payrollStoreId: item.storeId,
+      payrollStatus: item.status,
+    }
+    delete normalized.kpiBonus
+    return normalized
+  })
   if (!rows.length) return null
 
   const homeRows = rows.filter((row) => !isSupportSnapshotRow(row))

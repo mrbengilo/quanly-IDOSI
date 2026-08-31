@@ -126,6 +126,46 @@ describe('employee support compensation helpers', () => {
     })
   })
 
+  it('uses exact transfer spelling and fails closed for an ambiguous folded transfer reference', () => {
+    const supportTransfers = [
+      { ...transfer, id: 'TR-X', hourlySupportRate: 10_000, allowance: 5_000 },
+      { ...transfer, id: 'tr-x', hourlySupportRate: 99_000, allowance: 90_000 },
+    ]
+    const rows = supportAttendanceCompensationRows({
+      employeeId: 'E01',
+      supportTransfers,
+      attendance: [{
+        id: 'ATT-EXACT', employeeId: 'E01', supportTransferId: 'TR-X', hours: 2,
+      }, {
+        id: 'ATT-AMBIGUOUS', employeeId: 'E01', supportTransferId: 'Tr-X', hours: 2,
+      }],
+    })
+
+    expect(rows.find(({ record }) => record.id === 'ATT-EXACT')).toMatchObject({
+      identifierCollision: false, hourlyRate: 10_000, hourlyPay: 20_000, allowance: 5_000, actualPay: 25_000,
+    })
+    expect(rows.find(({ record }) => record.id === 'ATT-AMBIGUOUS')).toMatchObject({
+      identifierCollision: true, hourlyRate: 0, hourlyPay: 0, allowance: 0, actualPay: 0,
+    })
+  })
+
+  it('does not mix support attendance from an employee id case collision', () => {
+    const employee = { id: 'E01' }
+    const rows = supportAttendanceCompensationRows({
+      employeeId: 'E01',
+      employee,
+      employees: [employee, { id: 'e01' }],
+      supportTransfers: [transfer],
+      attendance: [{
+        id: 'ATT-UPPER', employeeId: 'E01', supportTransferId: 'TR-01', hours: 2,
+      }, {
+        id: 'ATT-LOWER', employeeId: 'e01', supportTransferId: 'TR-01', hours: 9,
+      }],
+    })
+
+    expect(rows.map(({ record }) => record.id)).toEqual(['ATT-UPPER'])
+  })
+
   it('sums all home and support snapshots for the employee and preserves locked totals', () => {
     const summary = employeePayrollSnapshotSummary({
       employeeId: 'E01',
@@ -209,5 +249,159 @@ describe('employee support compensation helpers', () => {
       }],
     })
     expect(supportRowsUncoveredByPayrollSnapshot(liveRows, destinationOnly).map((row) => row.transferId)).toEqual(['TR-02'])
+  })
+
+  it('does not cover an exact lowercase attendance collision with an uppercase payroll snapshot', () => {
+    const liveRows = [{
+      attendanceId: 'ATT-X', transferId: 'TR-UPPER', actualPay: 100_000,
+    }, {
+      attendanceId: 'att-x', transferId: 'TR-LOWER', actualPay: 200_000,
+    }]
+    const snapshotSummary = {
+      supportDetails: [{ transferId: 'TR-UPPER', attendanceIds: ['ATT-X'] }],
+    }
+
+    expect(supportRowsUncoveredByPayrollSnapshot(liveRows, snapshotSummary)).toEqual([
+      expect.objectContaining({ attendanceId: 'att-x', transferId: 'TR-LOWER' }),
+    ])
+  })
+
+  it('deduplicates a unique live attendance when the locked snapshot uses different casing', () => {
+    const liveRows = [{
+      attendanceId: 'att-unique', actualPay: 100_000,
+      record: { id: 'att-unique', employeeId: 'E01', storeId: 'S02' },
+    }]
+    const snapshotSummary = {
+      supportDetails: [{ attendanceIds: ['ATT-UNIQUE'] }],
+    }
+
+    expect(supportRowsUncoveredByPayrollSnapshot(liveRows, snapshotSummary)).toEqual([])
+  })
+
+  it('does not let transfer or store snapshot coverage cross an exact case collision', () => {
+    const liveRows = [{
+      attendanceId: 'ATT-UPPER', transferId: 'TR-X', destinationStoreId: 'S-X', actualPay: 100_000,
+    }, {
+      attendanceId: 'ATT-LOWER', transferId: 'tr-x', destinationStoreId: 's-x', actualPay: 200_000,
+    }]
+
+    expect(supportRowsUncoveredByPayrollSnapshot(liveRows, {
+      supportSnapshot: true,
+      coveredSupportTransferIds: ['TR-X'],
+    })).toEqual([expect.objectContaining({ attendanceId: 'ATT-LOWER' })])
+    expect(supportRowsUncoveredByPayrollSnapshot(liveRows, {
+      supportSnapshot: true,
+      legacyCoveredSupportStoreIds: ['S-X'],
+    })).toEqual([expect.objectContaining({ attendanceId: 'ATT-LOWER' })])
+  })
+
+  it('accepts attendance or legacy-store coverage even when a live transfer id is present', () => {
+    const attendanceCovered = [{
+      transferId: 'TR-LIVE-NOT-IN-SNAPSHOT', destinationStoreId: 'S02',
+      record: { id: 'ATT-COVERED', storeId: 'S02', supportTransferId: 'TR-LIVE-NOT-IN-SNAPSHOT' },
+    }]
+    expect(supportRowsUncoveredByPayrollSnapshot(attendanceCovered, {
+      supportSnapshot: true,
+      coveredSupportAttendanceIds: ['ATT-COVERED'],
+    })).toEqual([])
+
+    const storeCovered = [{
+      transferId: 'TR-LEGACY-LIVE', destinationStoreId: 's02',
+      record: { id: 'ATT-LEGACY-STORE', storeId: 's02', supportTransferId: 'TR-LEGACY-LIVE' },
+    }]
+    expect(supportRowsUncoveredByPayrollSnapshot(storeCovered, {
+      supportSnapshot: true,
+      legacyCoveredSupportStoreIds: ['S02'],
+    })).toEqual([])
+  })
+
+  it('uses the exact payroll store id before a case-insensitive alias', () => {
+    const summary = employeePayrollSnapshotSummary({
+      employeeId: 'E01',
+      stores: [{ id: 'S01' }],
+      period: '2026-08',
+      payrollPeriods: [{
+        id: 'PAY-UPPER', storeId: 'S01', period: '2026-08', status: 'Đã khóa',
+        rows: [{ employeeId: 'E01', baseSalary: 1_000_000, gross: 1_000_000 }],
+      }, {
+        id: 'PAY-LOWER', storeId: 's01', period: '2026-08', status: 'Đã khóa',
+        rows: [{ employeeId: 'E01', baseSalary: 9_000_000, gross: 9_000_000 }],
+      }],
+    })
+
+    expect(summary.identifierCollision).not.toBe(true)
+    expect(summary.periods.map(({ id }) => id)).toEqual(['PAY-UPPER'])
+    expect(summary).toMatchObject({ gross: 1_000_000 })
+  })
+
+  it('fails closed when the employee home-store alias is ambiguous without an exact match', () => {
+    const summary = employeePayrollSnapshotSummary({
+      employeeId: 'E01',
+      employee: { id: 'E01', storeId: 'Store-01' },
+      employees: [{ id: 'E01', storeId: 'Store-01' }],
+      stores: [{ id: 'STORE-01' }, { id: 'store-01' }],
+      period: '2026-08',
+      payrollPeriods: [{
+        id: 'PAY-UPPER', storeId: 'STORE-01', period: '2026-08', status: 'Đã khóa',
+        rows: [{ employeeId: 'E01', gross: 1_000_000 }],
+      }, {
+        id: 'PAY-LOWER', storeId: 'store-01', period: '2026-08', status: 'Đã khóa',
+        rows: [{ employeeId: 'E01', gross: 9_000_000 }],
+      }],
+    })
+
+    expect(summary).toMatchObject({ identifierCollision: true, periods: [], rows: [] })
+  })
+
+  it('uses the exact employee payroll row before a case-insensitive alias', () => {
+    const summary = employeePayrollSnapshotSummary({
+      employeeId: 'E01',
+      period: '2026-08',
+      payrollPeriods: [{
+        id: 'PAY-COLLISION', storeId: 'S01', period: '2026-08', status: 'Đã khóa',
+        rows: [
+          { employeeId: 'E01', baseSalary: 1_000_000, gross: 1_000_000 },
+          { employeeId: 'e01', baseSalary: 9_000_000, gross: 9_000_000 },
+        ],
+      }],
+    })
+
+    expect(summary.identifierCollision).not.toBe(true)
+    expect(summary.periods.map(({ id }) => id)).toEqual(['PAY-COLLISION'])
+    expect(summary).toMatchObject({ gross: 1_000_000 })
+  })
+
+  it('fails closed when an employee payroll alias is ambiguous without an exact match', () => {
+    const summary = employeePayrollSnapshotSummary({
+      employeeId: 'Ee01',
+      period: '2026-08',
+      payrollPeriods: [{
+        id: 'PAY-AMBIGUOUS-EMPLOYEE', storeId: 'S01', period: '2026-08', status: 'Đã khóa',
+        rows: [
+          { employeeId: 'EE01', gross: 1_000_000 },
+          { employeeId: 'ee01', gross: 9_000_000 },
+        ],
+      }],
+    })
+
+    expect(summary).toMatchObject({ identifierCollision: true, rows: [] })
+  })
+
+  it('ignores superseded payroll aliases after an audited collision repair', () => {
+    const summary = employeePayrollSnapshotSummary({
+      employeeId: 'E01',
+      period: '2026-08',
+      payrollPeriods: [{
+        id: 'PAY-CANONICAL', storeId: 'S01', period: '2026-08', status: 'Đã khóa',
+        rows: [{ employeeId: 'E01', baseSalary: 1_000_000, gross: 1_000_000, remaining: 1_000_000 }],
+      }, {
+        id: 'PAY-ALIAS', storeId: 's01', period: '2026-08', status: 'Đã khóa',
+        supersededAt: '2026-08-31T10:00:00.000Z',
+        rows: [{ employeeId: 'E01', baseSalary: 9_000_000, gross: 9_000_000 }],
+      }],
+    })
+
+    expect(summary.identifierCollision).not.toBe(true)
+    expect(summary).toMatchObject({ homeBaseSalary: 1_000_000, gross: 1_000_000, remaining: 1_000_000 })
   })
 })

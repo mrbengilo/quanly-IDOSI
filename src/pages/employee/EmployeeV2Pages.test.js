@@ -62,6 +62,26 @@ describe('store employee current-shift orders', () => {
     expect(ordersForOpenAttendance([{ id: 'O1' }], 'NV-01', null)).toEqual([])
   })
 
+  it('keeps legacy same-day orders compatible when neither record has a shift id', () => {
+    const openRecord = { id: 'ATT-LEGACY', date: '2026-08-18' }
+    const rows = ordersForOpenAttendance([{
+      id: 'O-LEGACY', employeeId: 'nv-01', createdAt: '2026-08-18T09:30:00+07:00',
+    }], 'NV-01', openRecord)
+
+    expect(rows.map((row) => row.id)).toEqual(['O-LEGACY'])
+  })
+
+  it('does not attach an order to the wrong attendance when ids differ only by case', () => {
+    const upper = { id: 'ATT-X', date: '2026-08-18', shiftId: 'CA-01' }
+    const lower = { id: 'att-x', date: '2026-08-18', shiftId: 'CA-01' }
+    const orders = [{
+      id: 'O-LOWER', employeeId: 'NV-01', attendanceId: 'att-x', createdAt: '2026-08-18T09:30:00+07:00',
+    }]
+
+    expect(ordersForOpenAttendance(orders, 'NV-01', upper, [upper, lower])).toEqual([])
+    expect(ordersForOpenAttendance(orders, 'NV-01', lower, [upper, lower]).map((row) => row.id)).toEqual(['O-LOWER'])
+  })
+
   it('uses the exact order creator and keeps legacy employee orders compatible', () => {
     const rows = employeeCreatedOrders([
       { id: 'OWN', employeeId: 'NV-01', createdByEmployeeId: 'NV-01', storeId: 'S01' },
@@ -74,6 +94,43 @@ describe('store employee current-shift orders', () => {
     expect(rows.map(({ id }) => id)).toEqual(['OWN', 'LEGACY'])
     expect(orderCreatedByEmployee({ employeeId: 'NV-02', updatedBy: { employeeId: 'NV-01' } }, 'NV-01')).toBe(false)
     expect(effectiveEmployeeStoreId({ storeId: 'S02' }, { storeId: 'S01' })).toBe('S02')
+  })
+
+  it('keeps case-colliding employee and store order records isolated with exact precedence', () => {
+    const employees = [{ id: 'NV-01' }, { id: 'nv-01' }]
+    const stores = [{ id: 'S01' }, { id: 's01' }]
+    const rows = employeeCreatedOrders([
+      { id: 'EXACT', createdByEmployeeId: 'NV-01', storeId: 'S01' },
+      { id: 'OTHER-EMPLOYEE', createdByEmployeeId: 'nv-01', storeId: 'S01' },
+      { id: 'OTHER-STORE', createdByEmployeeId: 'NV-01', storeId: 's01' },
+    ], 'NV-01', 'S01', { employees, stores })
+
+    expect(rows.map(({ id }) => id)).toEqual(['EXACT'])
+    expect(orderCreatedByEmployee(
+      { createdByEmployeeId: 'Nv-01' },
+      'Nv-01',
+      employees,
+    )).toBe(false)
+  })
+
+  it('keeps an order on the exact shift when shift identifiers collide by case', () => {
+    const openRecord = {
+      id: 'ATT-UPPER-SHIFT', employeeId: 'NV-01', storeId: 'S01',
+      date: '2026-08-18', shiftId: 'MORNING',
+    }
+    const rows = ordersForOpenAttendance([{
+      id: 'EXACT-SHIFT', employeeId: 'NV-01', storeId: 'S01', shiftId: 'MORNING',
+      createdAt: '2026-08-18T09:00:00+07:00',
+    }, {
+      id: 'OTHER-SHIFT', employeeId: 'NV-01', storeId: 'S01', shiftId: 'morning',
+      createdAt: '2026-08-18T09:05:00+07:00',
+    }], 'NV-01', openRecord, [openRecord], {
+      employees: [{ id: 'NV-01' }],
+      stores: [{ id: 'S01' }],
+      shiftDefinitions: [{ id: 'MORNING' }, { id: 'morning' }],
+    })
+
+    expect(rows.map(({ id }) => id)).toEqual(['EXACT-SHIFT'])
   })
 
   it('does not reveal a coworker order through an employee order deep link', () => {
@@ -110,6 +167,33 @@ describe('store employee current-shift orders', () => {
     expect(screen.queryByText('Khách bí mật')).toBeNull()
     expect(screen.getAllByText('120,000 đ')).toHaveLength(2)
     expect(screen.queryByText('980,000 đ')).toBeNull()
+  })
+
+  it('uses the exact signed-in employee id and does not mix a case-colliding order owner', () => {
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên chữ hoa', storeId: 'S01' },
+      employees: [
+        { id: 'E01', name: 'Nhân viên chữ hoa', storeId: 'S01' },
+        { id: 'e01', name: 'Nhân viên chữ thường', storeId: 'S01' },
+      ],
+      stores: [{ id: 'S01', name: 'IDOSI S01' }],
+      orders: [{
+        id: 'ORDER-UPPER', code: 'ORDER-UPPER', storeId: 'S01', employeeId: 'E01', createdByEmployeeId: 'E01',
+        customerName: 'Khách đúng nhân viên', amount: 120_000, createdAt: '2026-08-20T08:30:00+07:00',
+      }, {
+        id: 'ORDER-LOWER', code: 'ORDER-LOWER', storeId: 'S01', employeeId: 'e01', createdByEmployeeId: 'e01',
+        customerName: 'Khách nhân viên khác', amount: 900_000, createdAt: '2026-08-20T08:35:00+07:00',
+      }],
+      attendance: [],
+      createOrder: vi.fn(),
+      notify: vi.fn(),
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeeOrdersPage)))
+
+    expect(screen.getByText('Khách đúng nhân viên')).toBeTruthy()
+    expect(screen.queryByText('Khách nhân viên khác')).toBeNull()
   })
 
   it('uses the active support store for order history, attendance and new orders', async () => {
@@ -529,11 +613,19 @@ describe('store employee current-shift orders', () => {
   it('combines locked home and support payroll snapshots and keeps support detail attribution', () => {
     mocked.app = {
       currentEmployee: {
-        id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time',
+        id: 'EMP-DB-01', code: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time',
         baseSalary: 4_000_000, requiredMonthlyHours: 176,
       },
+      employees: [{ id: 'EMP-DB-01', code: 'E01', name: 'Nhân viên 01', storeId: 'S01' }],
       stores: [{ id: 'S01', name: 'Dosii TNV' }, { id: 'S02', name: 'Dosii KVC' }],
       attendance: [], supportTransfers: [], salaryAdjustments: [], salaryAdvances: [],
+      storeEmployeeSalaryConfigs: [{
+        id: 'CFG-UPPER', employeeId: 'E01', storeId: 'S01', effectiveFrom: '2026-08',
+        thresholdHours: 208, standardHourlyRateVnd: 30_000, excessHourlyRateVnd: 27_000,
+      }, {
+        id: 'CFG-LOWER', employeeId: 'e01', storeId: 's01', effectiveFrom: '2026-08',
+        thresholdHours: 208, standardHourlyRateVnd: 99_000, excessHourlyRateVnd: 98_000,
+      }],
       payrollPeriods: [{
         id: 'PAY-HOME', storeId: 'S01', period: '2026-08', status: 'Đã khóa',
         lockedAt: '2026-09-01T08:00:00+07:00',
@@ -564,6 +656,31 @@ describe('store employee current-shift orders', () => {
     expect(screen.getByText('Dosii KVC')).toBeTruthy()
     expect(screen.getByText('20/08/2026 14:00 – 20/08/2026 21:00')).toBeTruthy()
     expect(screen.getByText('1 ca đã chốt')).toBeTruthy()
+  })
+
+  it('fails closed with a visible warning when live salary config ids collide by case', () => {
+    mocked.app = {
+      currentEmployee: {
+        id: 'E01', name: 'Nhân viên 01', storeId: 'S01', unit: 'store',
+        employmentType: 'Full-Time', payBasis: 'tiered-hourly',
+      },
+      stores: [{ id: 'S01', name: 'Dosii TNV' }],
+      attendance: [{ id: 'ATT-01', employeeId: 'e01', storeId: 's01', date: '2026-08-20', hours: 8 }],
+      supportTransfers: [], salaryAdjustments: [], salaryAdvances: [], payrollPeriods: [],
+      storeEmployeeSalaryConfigs: [{
+        id: 'CFG-UPPER', employeeId: 'E01', storeId: 'S01', effectiveFrom: '2026-08',
+        thresholdHours: 208, standardHourlyRateVnd: 30_000, excessHourlyRateVnd: 27_000,
+      }, {
+        id: 'CFG-LOWER', employeeId: 'e01', storeId: 's01', effectiveFrom: '2026-08',
+        thresholdHours: 208, standardHourlyRateVnd: 99_000, excessHourlyRateVnd: 98_000,
+      }],
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeePayrollDetails)))
+
+    expect(screen.getByText(/Mã cấu hình lương đang trùng hoa\/thường/u)).toBeTruthy()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4)
+    expect(screen.queryByText('0 đ')).toBeNull()
   })
 
   it('adds live support compensation when only the home payroll snapshot is closed', () => {

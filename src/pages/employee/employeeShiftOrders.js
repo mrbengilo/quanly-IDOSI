@@ -1,10 +1,36 @@
-import { businessDate } from '../../utils'
+import {
+  businessDate,
+  operationalIdentifierRecordMatch,
+} from '../../utils'
 import {
   occupationValueAllowed,
   ORDER_PAYMENT_METHODS,
 } from '../../domain/orderInformationSettings'
 
-const attendanceDate = (record = {}) => String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 10)
+const attendanceDate = (record) => String(record?.date || record?.workDate || record?.checkInAt || record?.createdAt || '').slice(0, 10)
+const employeeAliases = (employee) => [employee?.id, employee?.code, employee?.employeeId, employee?.employeeCode]
+  .map((value) => String(value || '').trim()).filter(Boolean)
+const storeAliases = (store = {}) => [store.id, store.code]
+  .map((value) => String(value || '').trim()).filter(Boolean)
+const shiftAliases = (shift = {}) => [shift.id, shift.code]
+  .map((value) => String(value || '').trim()).filter(Boolean)
+const attendanceIdentifier = (record) => String(record?.id || record?.code || record?.attendanceId || '')
+const attendanceAliases = (record) => [record?.id, record?.code, record?.attendanceId]
+  .map((value) => String(value || '').trim()).filter(Boolean)
+
+const resolveTarget = (records, reference, identifierOf, fallback) => {
+  const source = Array.isArray(records) ? records : []
+  if (!source.length) return fallback
+  const resolution = operationalIdentifierRecordMatch(source, reference, identifierOf)
+  return resolution.ambiguous ? null : resolution.record
+}
+
+const referenceMatchesTarget = (records, target, reference, identifierOf) => {
+  if (!target || !String(reference || '').trim()) return false
+  const source = Array.isArray(records) && records.length ? records : [target]
+  const resolution = operationalIdentifierRecordMatch(source, reference, identifierOf)
+  return !resolution.ambiguous && resolution.record === target
+}
 
 export const effectiveEmployeeStoreId = (session = {}, employee = {}) => String(
   session?.storeId || employee?.storeId || '',
@@ -25,29 +51,80 @@ export const orderCreatorEmployeeId = (order = {}) => {
   return String(order.employeeId || order.employee_id || '').trim()
 }
 
-export const orderCreatedByEmployee = (order = {}, employeeId = '') => (
-  Boolean(String(employeeId || '').trim())
-  && orderCreatorEmployeeId(order) === String(employeeId).trim()
-)
+export const orderCreatedByEmployee = (order = {}, employeeId = '', employees = []) => {
+  const requested = String(employeeId || '').trim()
+  const employee = resolveTarget(employees, requested, employeeAliases, requested ? { id: requested } : null)
+  return referenceMatchesTarget(employees, employee, orderCreatorEmployeeId(order), employeeAliases)
+}
 
-export const employeeCreatedOrders = (orders = [], employeeId = '', storeId = '') => orders
-  .filter((order) => (
+export const employeeCreatedOrders = (
+  orders = [],
+  employeeId = '',
+  storeId = '',
+  { employees = [], stores = [] } = {},
+) => {
+  const store = resolveTarget(stores, storeId, storeAliases, storeId ? { id: String(storeId) } : null)
+  if (storeId && !store) return []
+  return orders.filter((order) => (
     !order.deletedAt
     && order.source !== 'legacy-opening-balance'
-    && orderCreatedByEmployee(order, employeeId)
-    && (!storeId || String(order.storeId || '') === String(storeId))
+    && orderCreatedByEmployee(order, employeeId, employees)
+    && (!storeId || referenceMatchesTarget(stores, store, order.storeId, storeAliases))
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
+}
 
-export const ordersForOpenAttendance = (orders = [], employeeId = '', openRecord = null) => {
+export const ordersForOpenAttendance = (
+  orders = [],
+  employeeId = '',
+  openRecord = null,
+  attendanceRecords = [],
+  { employees = [], stores = [], shiftDefinitions = [] } = {},
+) => {
   if (!openRecord) return []
+  const activeAttendance = (Array.isArray(attendanceRecords) ? attendanceRecords : [])
+    .filter((record) => !record.deletedAt)
+  const canonicalOpenRecord = resolveTarget(
+    activeAttendance,
+    attendanceIdentifier(openRecord),
+    attendanceAliases,
+    openRecord,
+  )
+  if (!canonicalOpenRecord) return []
+  const store = resolveTarget(
+    stores,
+    canonicalOpenRecord.storeId,
+    storeAliases,
+    canonicalOpenRecord.storeId ? { id: String(canonicalOpenRecord.storeId) } : null,
+  )
+  const attendanceShift = String(canonicalOpenRecord.shiftId || canonicalOpenRecord.shift || '')
+  const shift = resolveTarget(
+    shiftDefinitions,
+    attendanceShift,
+    shiftAliases,
+    attendanceShift ? { id: attendanceShift } : null,
+  )
+  if ((canonicalOpenRecord.storeId && !store) || (attendanceShift && !shift)) return []
   return orders
     .filter((order) => {
-      if (order.deletedAt || !orderCreatedByEmployee(order, employeeId) || order.source === 'legacy-opening-balance') return false
-      if (order.attendanceId) return String(order.attendanceId) === String(openRecord.id)
+      if (
+        order.deletedAt
+        || !orderCreatedByEmployee(order, employeeId, employees)
+        || order.source === 'legacy-opening-balance'
+        || (canonicalOpenRecord.storeId && order.storeId && !referenceMatchesTarget(stores, store, order.storeId, storeAliases))
+      ) return false
+      if (order.attendanceId) {
+        return referenceMatchesTarget(
+          activeAttendance.length ? activeAttendance : [canonicalOpenRecord],
+          canonicalOpenRecord,
+          order.attendanceId,
+          attendanceAliases,
+        )
+      }
       const orderShift = String(order.shiftId || order.shift || '')
-      const attendanceShift = String(openRecord.shiftId || openRecord.shift || '')
-      return orderShift === attendanceShift && businessDate(order.createdAt) === attendanceDate(openRecord)
+      const sameLegacyShift = (!orderShift && !attendanceShift)
+        || referenceMatchesTarget(shiftDefinitions, shift, orderShift, shiftAliases)
+      return sameLegacyShift && businessDate(order.createdAt) === attendanceDate(canonicalOpenRecord)
     })
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
 }
