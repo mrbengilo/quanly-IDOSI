@@ -1,5 +1,6 @@
 // @vitest-environment node
 
+import { Buffer } from 'node:buffer'
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { request as nodeHttpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
@@ -323,6 +324,246 @@ describe('IDOSI VPS runtime', () => {
       expect(await fetch(`${baseUrl}/employee/home`).then((response) => response.text()))
         .toContain('IDOSI VPS')
       expect(await readFile(resolve(staticDirectory, 'index.html'), 'utf8')).toContain('IDOSI VPS')
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  })
+
+  it('reuses one raw global snapshot cache across roles and refreshes it after a state commit', async () => {
+    const directory = await temporaryDirectory()
+    const { server, runtime } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      bootstrapToken: 'bootstrap-snapshot-cache',
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    try {
+      const bootstrap = await postJson(baseUrl, '/api/bootstrap', {
+        username: 'admin.snapshot.cache',
+        password: 'admin-snapshot-cache-password',
+        displayName: 'Admin Snapshot Cache',
+        initialState: {
+          phase2Marker: 'before',
+          employees: [{
+            id: 'HTKD-CACHE-01',
+            code: 'HTKD-CACHE-01',
+            name: 'Hỗ trợ cache',
+            role: 'business_support',
+            unit: 'business_support',
+            storeId: 'BUSINESS_SUPPORT',
+            status: 'Đang làm việc',
+          }],
+          settings: { bio: 'raw-cache-secret-must-not-leak' },
+          stores: [],
+          notifications: [],
+        },
+      }, { 'x-idosi-bootstrap-token': 'bootstrap-snapshot-cache' })
+      expect(bootstrap.response.status).toBe(201)
+
+      const observedSnapshots = []
+      const readStateSnapshot = runtime.database.readStateSnapshot.bind(runtime.database)
+      runtime.database.readStateSnapshot = (...arguments_) => {
+        const snapshot = readStateSnapshot(...arguments_)
+        observedSnapshots.push(snapshot.unchanged)
+        return snapshot
+      }
+
+      const adminLogin = await postJson(baseUrl, '/api/login', {
+        username: 'admin.snapshot.cache',
+        password: 'admin-snapshot-cache-password',
+      })
+      expect(adminLogin.response.status).toBe(200)
+      expect(adminLogin.body.bootstrap.state.settings.bio).toBe('raw-cache-secret-must-not-leak')
+      expect(observedSnapshots).toEqual([false])
+      observedSnapshots.length = 0
+      const adminHeaders = { authorization: `Bearer ${adminLogin.body.token}` }
+
+      const supportCreated = await postJson(baseUrl, '/api/command', {
+        type: 'user.create',
+        payload: {
+          username: 'support.snapshot.cache',
+          password: 'support-snapshot-cache-password',
+          displayName: 'Hỗ trợ Snapshot Cache',
+          role: 'business_support',
+          storeId: 'BUSINESS_SUPPORT',
+          employeeId: 'HTKD-CACHE-01',
+        },
+      }, { ...adminHeaders, 'idempotency-key': 'snapshot-cache-support-user' })
+      expect(supportCreated.response.status).toBe(201)
+      expect(observedSnapshots).toEqual([true])
+      observedSnapshots.length = 0
+
+      const warmState = await fetch(`${baseUrl}/api/state`, { headers: adminHeaders }).then((response) => response.json())
+      expect(warmState).toMatchObject({ version: 1, state: { phase2Marker: 'before' } })
+      expect(observedSnapshots).toEqual([true])
+      observedSnapshots.length = 0
+      const employeeRowsBefore = (await runtime.database.prepare(`
+        SELECT entity_key, entity_order, created_at, updated_at
+        FROM state_entities
+        WHERE scope_key = 'global' AND collection_key = 'employees'
+        ORDER BY entity_order, entity_key
+      `).all()).results
+
+      const merged = await postJson(baseUrl, '/api/command', {
+        type: 'state.merge',
+        expectedVersion: 1,
+        payload: { patch: { phase2Marker: 'after' } },
+      }, { ...adminHeaders, 'idempotency-key': 'snapshot-cache-state-merge' })
+      expect(merged.response.status).toBe(200)
+      expect(merged.body).toMatchObject({ version: 2, state: { phase2Marker: 'after' } })
+      expect(observedSnapshots).toEqual([true])
+      observedSnapshots.length = 0
+      expect((await runtime.database.prepare(`
+        SELECT entity_key, entity_order, created_at, updated_at
+        FROM state_entities
+        WHERE scope_key = 'global' AND collection_key = 'employees'
+        ORDER BY entity_order, entity_key
+      `).all()).results).toEqual(employeeRowsBefore)
+
+      const refreshedState = await fetch(`${baseUrl}/api/state`, { headers: adminHeaders })
+        .then((response) => response.json())
+      expect(refreshedState).toMatchObject({ version: 2, state: { phase2Marker: 'after' } })
+      expect(observedSnapshots).toEqual([false])
+      observedSnapshots.length = 0
+
+      const supportLogin = await postJson(baseUrl, '/api/login', {
+        username: 'support.snapshot.cache',
+        password: 'support-snapshot-cache-password',
+      })
+      expect(supportLogin.response.status).toBe(200)
+      expect(supportLogin.body.bootstrap.state).not.toHaveProperty('accountSettings')
+      expect(supportLogin.body.bootstrap.state.settings.bio).not.toBe('raw-cache-secret-must-not-leak')
+      expect(JSON.stringify(supportLogin.body.bootstrap.state)).not.toContain('raw-cache-secret-must-not-leak')
+      expect(observedSnapshots).toEqual([true])
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  })
+
+  it('does not retain a global snapshot that exceeds the cache memory cap', async () => {
+    const directory = await temporaryDirectory()
+    const { server, runtime } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      bootstrapToken: 'bootstrap-oversized-snapshot',
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    try {
+      const bootstrap = await postJson(baseUrl, '/api/bootstrap', {
+        username: 'admin.oversized.snapshot',
+        password: 'admin-oversized-snapshot-password',
+        displayName: 'Admin Oversized Snapshot',
+        initialState: { oversizedCacheRows: [] },
+      }, { 'x-idosi-bootstrap-token': 'bootstrap-oversized-snapshot' })
+      expect(bootstrap.response.status).toBe(201)
+
+      const timestamp = '2026-08-31T08:00:00.000Z'
+      const values = Array.from({ length: 9 }, (_, index) => JSON.stringify({
+        id: `large-${index}`,
+        payload: 'x'.repeat(1_430_000),
+      }))
+      await runtime.database.batch([
+        runtime.database.prepare(`
+          UPDATE app_state
+          SET version = 2, updated_at = ?, last_request_id = ?
+          WHERE scope_key = 'global' AND version = 1
+        `).bind(timestamp, 'oversized-snapshot-version-2'),
+        ...values.map((valueJson, index) => runtime.database.prepare(`
+          INSERT INTO state_entities (
+            scope_key, collection_key, entity_key, entity_order,
+            value_json, value_bytes, created_at, updated_at
+          ) VALUES ('global', 'oversizedCacheRows', ?, ?, ?, ?, ?, ?)
+        `).bind(
+          `large-${index}`,
+          (index + 1) * 1_000_000,
+          valueJson,
+          Buffer.byteLength(valueJson),
+          timestamp,
+          timestamp,
+        )),
+      ])
+
+      const observedSnapshots = []
+      const readStateSnapshot = runtime.database.readStateSnapshot.bind(runtime.database)
+      runtime.database.readStateSnapshot = (...arguments_) => {
+        const snapshot = readStateSnapshot(...arguments_)
+        observedSnapshots.push(snapshot.unchanged)
+        return snapshot
+      }
+
+      const login = await postJson(baseUrl, '/api/login', {
+        username: 'admin.oversized.snapshot',
+        password: 'admin-oversized-snapshot-password',
+      })
+      expect(login.response.status).toBe(200)
+      expect(login.body.bootstrap).toMatchObject({ version: 2 })
+
+      const stateResponse = await fetch(`${baseUrl}/api/state`, {
+        headers: { authorization: `Bearer ${login.body.token}` },
+      })
+      const state = await stateResponse.json()
+      expect(stateResponse.status).toBe(200)
+      expect(state.state.oversizedCacheRows).toHaveLength(9)
+      expect(observedSnapshots).toEqual([false, false])
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  }, 30_000)
+
+  it('evicts the previous raw snapshot when an optimized refresh is malformed', async () => {
+    const directory = await temporaryDirectory()
+    const { server, runtime } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      bootstrapToken: 'bootstrap-malformed-snapshot',
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    try {
+      const bootstrap = await postJson(baseUrl, '/api/bootstrap', {
+        username: 'admin.malformed.snapshot',
+        password: 'admin-malformed-snapshot-password',
+        displayName: 'Admin Malformed Snapshot',
+        initialState: { phase2Marker: 'coherent' },
+      }, { 'x-idosi-bootstrap-token': 'bootstrap-malformed-snapshot' })
+      expect(bootstrap.response.status).toBe(201)
+
+      const knownSnapshots = []
+      const readStateSnapshot = runtime.database.readStateSnapshot.bind(runtime.database)
+      let injectMalformedSnapshot = false
+      runtime.database.readStateSnapshot = (scope, known) => {
+        knownSnapshots.push(known)
+        if (injectMalformedSnapshot) {
+          injectMalformedSnapshot = false
+          return { unchanged: false, row: null }
+        }
+        return readStateSnapshot(scope, known)
+      }
+
+      const login = await postJson(baseUrl, '/api/login', {
+        username: 'admin.malformed.snapshot',
+        password: 'admin-malformed-snapshot-password',
+      })
+      expect(login.response.status).toBe(200)
+      const headers = { authorization: `Bearer ${login.body.token}` }
+
+      injectMalformedSnapshot = true
+      const failedRefresh = await fetch(`${baseUrl}/api/state`, { headers })
+      expect(failedRefresh.status).toBe(500)
+      expect(await failedRefresh.json()).toMatchObject({ error: { code: 'STATE_SNAPSHOT_INVALID' } })
+
+      const recovered = await fetch(`${baseUrl}/api/state`, { headers })
+      expect(recovered.status).toBe(200)
+      expect(await recovered.json()).toMatchObject({ state: { phase2Marker: 'coherent' } })
+      expect(knownSnapshots).toHaveLength(3)
+      expect(knownSnapshots[0]).toBeNull()
+      expect(knownSnapshots[1]).toMatchObject({ version: 1 })
+      expect(knownSnapshots[2]).toBeNull()
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose))
     }

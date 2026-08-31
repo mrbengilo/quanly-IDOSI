@@ -224,6 +224,14 @@ không ghi query string, header, body, IP, token hoặc thông tin đăng nhập
 `slow` tách thời gian xử lý ứng dụng khỏi số lượng/độ trễ SQLite. Docker giữ tối
 đa 5 tệp log, mỗi tệp 10 MB cho từng service.
 
+Riêng runtime SQLite trên VPS đọc state shell, collection manifest và entity bằng
+một snapshot query đồng bộ. Global raw snapshot có tối đa một cache entry cho mỗi
+database, khóa bằng cả `version` và `last_request_id`, với ngân sách serialized giữ
+lại 24 MiB (không phải hard cap của V8 heap);
+mọi cache hit vẫn đọc head nhỏ và vẫn chạy auth/projection theo từng actor. Không
+cache user, session, projection hoặc HTTP response. Cloudflare D1 tiếp tục dùng
+paging cũ và không chạy bulk query này.
+
 ```bash
 docker compose logs --since=10m app | grep 'idosi.api.request'
 ```
