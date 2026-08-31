@@ -254,8 +254,7 @@ jobs:
         env:
           RELEASE_SHA: ${{ needs.release-gate.outputs.release_sha }}
         run: |
-          node server/vps/verify-release.mjs https://idosi.io.vn "$RELEASE_SHA"
-          curl --fail --silent --show-error --connect-timeout 5 --max-time 15 https://idosi.io.vn/ >/dev/null
+          node server/vps/verify-public-release.mjs https://idosi.io.vn "$RELEASE_SHA"
 
       - name: Finalize deployment report after external verification
         env:

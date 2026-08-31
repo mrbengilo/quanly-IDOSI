@@ -15,6 +15,7 @@ const requiredFragments = [
   'name: production',
   'cancel-in-progress: false',
   'StrictHostKeyChecking=yes',
+  'verify-public-release.mjs',
 ]
 
 const missing = requiredFragments.filter((fragment) => !workflow.includes(fragment))

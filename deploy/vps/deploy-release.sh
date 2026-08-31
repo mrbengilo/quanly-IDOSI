@@ -33,7 +33,7 @@ SHORT_RELEASE="${RELEASE_SHA:0:12}"
 REPORT_FILE="$BACKUP_DIR/deploy-$TIMESTAMP-$SHORT_RELEASE.env"
 PENDING_REPORT_POINTER="$BACKUP_DIR/pending-$RELEASE_SHA.report"
 
-for command_name in git docker curl flock sha256sum awk date mktemp mv chmod tee basename cat rm head mkdir sleep; do
+for command_name in git docker curl flock sha256sum awk date mktemp mv chmod tee basename cat rm head tail mkdir sleep; do
   require_command "$command_name"
 done
 docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin không hoạt động.'
@@ -49,12 +49,160 @@ compose() {
   (cd "$COMPOSE_DIR" && docker compose -f compose.yml "$@")
 }
 
+static_volume_name() {
+  printf 'idosi_static_%s\n' "$1"
+}
+
+image_has_static_release() {
+  [[ "$(docker image inspect --format '{{ index .Config.Labels "io.idosi.static-topology" }}' "$1" 2>/dev/null)" \
+    == 'sha-volume-v1' ]]
+}
+
+verify_static_volume() {
+  local image="$1"
+  local release_sha="$2"
+  local allow_legacy="${3:-0}"
+  local volume label image_revision
+  if ! image_has_static_release "$image"; then
+    [[ "$allow_legacy" == '1' ]] && return 0
+    die "Image $image không có static release verifier."
+    return 1
+  fi
+  image_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")"
+  [[ "$image_revision" == "$release_sha" ]] || {
+    die "Image $image có OCI revision không khớp $release_sha."
+    return 1
+  }
+  volume="$(static_volume_name "$release_sha")"
+  docker volume inspect "$volume" >/dev/null 2>&1 || {
+    die "Không tìm thấy static volume $volume."
+    return 1
+  }
+  label="$(docker volume inspect --format '{{ index .Labels "io.idosi.release-sha" }}' "$volume")"
+  [[ "$label" == "$release_sha" ]] || {
+    die "Static volume $volume có release label không khớp."
+    return 1
+  }
+  docker run --rm --network none --read-only \
+    --mount "type=volume,source=$volume,target=/static,readonly" \
+    --entrypoint node "$image" server/vps/static-release.mjs verify \
+    --target /static --sha "$release_sha"
+}
+
+prepare_static_volume() {
+  local image="$1"
+  local release_sha="$2"
+  local volume label
+  volume="$(static_volume_name "$release_sha")"
+  if docker volume inspect "$volume" >/dev/null 2>&1; then
+    label="$(docker volume inspect --format '{{ index .Labels "io.idosi.release-sha" }}' "$volume")"
+    [[ "$label" == "$release_sha" ]] || die "Static volume $volume đã tồn tại với release label khác."
+  else
+    docker volume create \
+      --label 'io.idosi.managed=true' \
+      --label "io.idosi.release-sha=$release_sha" \
+      "$volume" >/dev/null
+  fi
+  docker run --rm --network none --read-only --user 0:0 \
+    --mount "type=volume,source=$volume,target=/static" \
+    --entrypoint node "$image" server/vps/static-release.mjs prepare \
+    --source /app/dist/client --target /static --sha "$release_sha"
+  verify_static_volume "$image" "$release_sha"
+}
+
+verify_app_runtime_image() {
+  local image="$1"
+  local release_sha="$2"
+  local allow_legacy="${3:-0}"
+  local container_id expected_image_id actual_image_id configured_release
+  container_id="$(compose ps -q app)" || return 1
+  [[ -n "$container_id" ]] || {
+    die 'Không tìm thấy app container đang chạy để xác minh image.'
+    return 1
+  }
+  expected_image_id="$(docker image inspect --format '{{.Id}}' "$image")" || return 1
+  actual_image_id="$(docker inspect --format '{{.Image}}' "$container_id")" || return 1
+  [[ -n "$expected_image_id" && "$actual_image_id" == "$expected_image_id" ]] || {
+    die "App container không chạy đúng image $image."
+    return 1
+  }
+  if ! image_has_static_release "$image"; then
+    [[ "$allow_legacy" == '1' ]] && return 0
+    die "Image $image không có exact-release metadata bắt buộc."
+    return 1
+  fi
+  verify_static_volume "$image" "$release_sha" || return 1
+  configured_release="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" \
+    | awk -F= '$1 == "IDOSI_RELEASE_SHA" { print $2 }' | tail -n 1)" || return 1
+  [[ "$configured_release" == "$release_sha" ]] || {
+    die 'App container release environment không khớp exact release SHA.'
+    return 1
+  }
+}
+
+validate_caddy_static_mount() {
+  local container_id="$1"
+  local image="$2"
+  local release_sha="$3"
+  local allow_legacy="${4:-0}"
+  local expected_volume actual_volume configured_release
+  if ! image_has_static_release "$image"; then
+    [[ "$allow_legacy" == '1' ]] && return 0
+    die "Image $image không hỗ trợ static release topology."
+    return 1
+  fi
+  expected_volume="$(static_volume_name "$release_sha")"
+  actual_volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/srv/idosi"}}{{.Name}}{{end}}{{end}}' "$container_id")"
+  [[ "$actual_volume" == "$expected_volume" ]] || {
+    die "Caddy đang mount ${actual_volume:-không có static volume}, mong đợi $expected_volume."
+    return 1
+  }
+  configured_release="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$container_id" \
+    | awk -F= '$1 == "IDOSI_RELEASE_SHA" { print $2 }' | tail -n 1)"
+  [[ "$configured_release" == "$release_sha" ]] || {
+    die 'Caddy release environment không khớp exact release SHA.'
+    return 1
+  }
+  verify_static_volume "$image" "$release_sha"
+}
+
+start_caddy_for_release() {
+  local image="$1"
+  local release_sha="$2"
+  local allow_legacy="${3:-0}"
+  local container_id running
+  compose create --force-recreate --no-deps caddy || return 1
+  container_id="$(compose ps -q --all caddy)" || return 1
+  [[ -n "$container_id" ]] || {
+    die 'Không tạo được Caddy container để xác minh topology.'
+    return 1
+  }
+  validate_caddy_static_mount "$container_id" "$image" "$release_sha" "$allow_legacy" || return 1
+  compose start caddy || return 1
+  sleep 1 || return 1
+  running="$(docker inspect --format '{{.State.Running}}' "$container_id")" || return 1
+  [[ "$running" == 'true' ]] || {
+    die 'Caddy container không duy trì trạng thái running sau khi start.'
+    return 1
+  }
+}
+
+assert_stack_stopped() {
+  local service container_id running
+  for service in app caddy; do
+    container_id="$(compose ps -q --all "$service" 2>/dev/null)" || return 1
+    [[ -n "$container_id" ]] || return 1
+    running="$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null)" || return 1
+    [[ "$running" == 'false' ]] || return 1
+  done
+}
+
 persist_release_config() {
   local image="$1"
   local release_sha="$2"
   local temp_file
-  temp_file="$(mktemp "$COMPOSE_DIR/.env.deploy.XXXXXX")"
-  awk -v image="$image" -v release_sha="$release_sha" '
+  temp_file="$(mktemp "$COMPOSE_DIR/.env.deploy.XXXXXX")" || return 1
+  if ! awk -v image="$image" -v release_sha="$release_sha" '
     BEGIN { seen_image = 0; seen_release = 0 }
     /^IDOSI_IMAGE=/ {
       if (!seen_image) print "IDOSI_IMAGE=" image
@@ -71,9 +219,18 @@ persist_release_config() {
       if (!seen_image) print "IDOSI_IMAGE=" image
       if (!seen_release) print "IDOSI_RELEASE_SHA=" release_sha
     }
-  ' "$COMPOSE_DIR/.env" >"$temp_file"
-  chmod 600 "$temp_file"
-  mv "$temp_file" "$COMPOSE_DIR/.env"
+  ' "$COMPOSE_DIR/.env" >"$temp_file"; then
+    rm -f "$temp_file"
+    return 1
+  fi
+  chmod 600 "$temp_file" || {
+    rm -f "$temp_file"
+    return 1
+  }
+  mv "$temp_file" "$COMPOSE_DIR/.env" || {
+    rm -f "$temp_file"
+    return 1
+  }
 }
 
 wait_for_app_health() {
@@ -121,9 +278,12 @@ RELEASE_SHA=$RELEASE_SHA
 PREVIOUS_GIT_SHA=$PREVIOUS_GIT_SHA
 PREVIOUS_RELEASE_SHA=$PREVIOUS_RELEASE_SHA
 PREVIOUS_IMAGE_TAG=$PREVIOUS_IMAGE_TAG
+PREVIOUS_STATIC_VOLUME=$PREVIOUS_STATIC_VOLUME
+PREVIOUS_STATIC_MODE=$PREVIOUS_STATIC_MODE
 BACKUP_FILE=$BACKUP_FILE
 BACKUP_SHA256=$BACKUP_SHA256
 NEW_IMAGE=${IDOSI_IMAGE:-}
+STATIC_VOLUME=$STATIC_VOLUME
 DATA_VOLUME=$DATA_VOLUME
 PUBLIC_TRAFFIC_RESUMED=$PUBLIC_TRAFFIC_RESUMED
 PUBLIC_URL=$PUBLIC_URL
@@ -150,12 +310,15 @@ REPORT
 PREVIOUS_GIT_SHA=''
 PREVIOUS_RELEASE_SHA=''
 PREVIOUS_IMAGE_TAG=''
+PREVIOUS_STATIC_VOLUME=''
+PREVIOUS_STATIC_MODE='legacy-node'
 BACKUP_FILE=''
 BACKUP_SHA256=''
 BACKUP_READY=0
 DATA_MAY_HAVE_CHANGED=0
 PUBLIC_TRAFFIC_RESUMED=0
 DATA_VOLUME=''
+STATIC_VOLUME="$(static_volume_name "$RELEASE_SHA")"
 BACKUP_HELPER_IMAGE=''
 ROLLBACK_REQUIRED=0
 
@@ -174,6 +337,11 @@ rollback_failed_deployment() {
 
   log 'Deployment lỗi trước khi public traffic mở lại; bắt đầu rollback release và dữ liệu.'
   compose stop -t 30 caddy app >/dev/null 2>&1 || true
+  if ! assert_stack_stopped; then
+    log 'ERROR: Không chứng minh được app/Caddy đã dừng; tuyệt đối không restore SQLite đang có thể còn được ghi.'
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
+  fi
   if [[ "$DATA_MAY_HAVE_CHANGED" == '1' ]]; then
     if [[ "$BACKUP_READY" != '1' ]] || ! restore_backup "$BACKUP_FILE"; then
       log 'ERROR: Không thể phục hồi backup; giữ public traffic dừng để tránh chạy code cũ trên dữ liệu không tương thích.'
@@ -191,8 +359,24 @@ rollback_failed_deployment() {
 
   export IDOSI_IMAGE="$PREVIOUS_IMAGE_TAG"
   export IDOSI_RELEASE_SHA="$PREVIOUS_RELEASE_SHA"
+  if [[ -z "$PREVIOUS_GIT_SHA" ]] \
+    || ! git -C "$IDOSI_ROOT" checkout --detach "$PREVIOUS_GIT_SHA" >/dev/null 2>&1; then
+    log 'ERROR: Không thể checkout previous Git SHA trước khi khởi động rollback topology.'
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
+  fi
+  if ! verify_static_volume "$PREVIOUS_IMAGE_TAG" "$PREVIOUS_RELEASE_SHA" 1; then
+    log 'ERROR: Static release trước không hợp lệ sau rollback.'
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
+  fi
   if ! compose up -d --no-build app; then
     log 'ERROR: Không thể khởi động previous app image.'
+    write_report 'ROLLBACK_FAILED'
+    exit "$original_code"
+  fi
+  if ! verify_app_runtime_image "$PREVIOUS_IMAGE_TAG" "$PREVIOUS_RELEASE_SHA" 1; then
+    log 'ERROR: Previous app container không chạy đúng image rollback.'
     write_report 'ROLLBACK_FAILED'
     exit "$original_code"
   fi
@@ -207,14 +391,10 @@ rollback_failed_deployment() {
     write_report 'ROLLBACK_FAILED'
     exit "$original_code"
   fi
-  if ! compose up -d --no-build caddy; then
+  if ! start_caddy_for_release "$PREVIOUS_IMAGE_TAG" "$PREVIOUS_RELEASE_SHA" 1; then
     log 'ERROR: Không thể mở lại Caddy sau rollback.'
     write_report 'ROLLBACK_FAILED'
     exit "$original_code"
-  fi
-  if [[ -n "$PREVIOUS_GIT_SHA" ]]; then
-    git -C "$IDOSI_ROOT" checkout --detach "$PREVIOUS_GIT_SHA" >/dev/null 2>&1 \
-      || log 'WARNING: Runtime đã rollback nhưng không thể checkout previous Git SHA.'
   fi
   compose logs --since=10m --tail=300 app caddy >"$incident_log" 2>&1 || true
   write_report 'ROLLED_BACK'
@@ -253,10 +433,17 @@ PREVIOUS_RELEASE_SHA="$(compose exec -T app node -e "fetch('http://127.0.0.1:300
 if [[ ! "$PREVIOUS_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   PREVIOUS_RELEASE_SHA="$PREVIOUS_GIT_SHA"
 fi
+[[ "$PREVIOUS_RELEASE_SHA" == "$PREVIOUS_GIT_SHA" ]] \
+  || die 'Git HEAD hiện tại không khớp release SHA đang chạy; dừng trước cutover.'
 
 PREVIOUS_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$APP_CONTAINER_ID")"
 PREVIOUS_IMAGE_TAG="idosi-app:rollback-$TIMESTAMP-${PREVIOUS_RELEASE_SHA:0:12}"
 docker image tag "$PREVIOUS_IMAGE_ID" "$PREVIOUS_IMAGE_TAG"
+PREVIOUS_STATIC_VOLUME="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/srv/idosi"}}{{.Name}}{{end}}{{end}}' "$CADDY_CONTAINER_ID")"
+if image_has_static_release "$PREVIOUS_IMAGE_TAG"; then
+  PREVIOUS_STATIC_MODE='caddy-volume'
+  validate_caddy_static_mount "$CADDY_CONTAINER_ID" "$PREVIOUS_IMAGE_TAG" "$PREVIOUS_RELEASE_SHA"
+fi
 
 DATA_VOLUME="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/app/data"}}{{.Name}}{{end}}{{end}}' "$APP_CONTAINER_ID")"
 [[ -n "$DATA_VOLUME" ]] || die 'Không xác định được volume dữ liệu /app/data.'
@@ -270,10 +457,18 @@ export IDOSI_RELEASE_SHA="$RELEASE_SHA"
 compose config --quiet
 compose build --pull app
 docker image inspect "$IDOSI_IMAGE" >/dev/null
+IMAGE_RELEASE_SHA="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IDOSI_IMAGE")"
+[[ "$IMAGE_RELEASE_SHA" == "$RELEASE_SHA" ]] || die 'OCI image revision không khớp exact release SHA.'
+IMAGE_STATIC_TOPOLOGY="$(docker image inspect --format '{{ index .Config.Labels "io.idosi.static-topology" }}' "$IDOSI_IMAGE")"
+[[ "$IMAGE_STATIC_TOPOLOGY" == 'sha-volume-v1' ]] || die 'OCI image thiếu static topology label bắt buộc.'
+
+log 'Chuẩn bị static volume bất biến từ chính release image trước cửa sổ bảo trì.'
+prepare_static_volume "$IDOSI_IMAGE" "$RELEASE_SHA"
 
 log 'Dừng Caddy và app trong cửa sổ bảo trì ngắn để backup SQLite nhất quán.'
-compose stop -t 30 caddy app
 ROLLBACK_REQUIRED=1
+compose stop -t 30 caddy app
+assert_stack_stopped || die 'Không chứng minh được app/Caddy đã dừng trước backup nhất quán.'
 
 BACKUP_NAME="idosi-data-$TIMESTAMP-before-$SHORT_RELEASE.tar.gz"
 BACKUP_FILE="$BACKUP_DIR/$BACKUP_NAME"
@@ -291,6 +486,7 @@ log "Backup thành công: $BACKUP_FILE ($BACKUP_SHA256)"
 log 'Khởi động app mới; migration tự chạy trong transaction khi app mở SQLite.'
 DATA_MAY_HAVE_CHANGED=1
 compose up -d --no-build app
+verify_app_runtime_image "$IDOSI_IMAGE" "$RELEASE_SHA"
 if ! wait_for_app_health "$RELEASE_SHA"; then
   compose logs --since=10m --tail=300 app >&2 || true
   die 'App mới không vượt qua health/release check nội bộ.'
@@ -298,7 +494,7 @@ fi
 
 persist_release_config "$IDOSI_IMAGE" "$RELEASE_SHA"
 log 'Khởi động Caddy sau khi app mới đã healthy.'
-compose up -d --no-build caddy
+start_caddy_for_release "$IDOSI_IMAGE" "$RELEASE_SHA"
 PUBLIC_TRAFFIC_RESUMED=1
 
 PUBLIC_ORIGIN="${PUBLIC_URL%/}"
@@ -306,6 +502,7 @@ PUBLIC_HOST="${PUBLIC_ORIGIN#*://}"
 PUBLIC_HOST="${PUBLIC_HOST%%/*}"
 PUBLIC_HOST="${PUBLIC_HOST%%:*}"
 PUBLIC_RELEASE=''
+PUBLIC_STATIC_RELEASE=''
 for ((attempt = 1; attempt <= HEALTH_RETRIES; attempt += 1)); do
   if curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
     --resolve "$PUBLIC_HOST:443:127.0.0.1" \
@@ -314,13 +511,21 @@ for ((attempt = 1; attempt <= HEALTH_RETRIES; attempt += 1)); do
       --resolve "$PUBLIC_HOST:443:127.0.0.1" \
       "$PUBLIC_ORIGIN/api/release" 2>/dev/null || true)"
     if [[ "$PUBLIC_RELEASE" == *"\"releaseSha\":\"$RELEASE_SHA\""* ]]; then
-      break
+      PUBLIC_ROOT_HEADERS="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+        --resolve "$PUBLIC_HOST:443:127.0.0.1" \
+        --dump-header - --output /dev/null "$PUBLIC_ORIGIN/" 2>/dev/null || true)"
+      PUBLIC_STATIC_RELEASE="$(printf '%s\n' "$PUBLIC_ROOT_HEADERS" | awk '
+        tolower($1) == "x-idosi-static-release:" { gsub("\\r", "", $2); print $2 }
+      ' | tail -n 1)"
+      [[ "$PUBLIC_STATIC_RELEASE" == "$RELEASE_SHA" ]] && break
     fi
   fi
   sleep "$HEALTH_DELAY_SECONDS"
 done
 [[ "$PUBLIC_RELEASE" == *"\"releaseSha\":\"$RELEASE_SHA\""* ]] \
   || die 'Caddy HTTPS local verification không xác nhận đúng release SHA.'
+[[ "$PUBLIC_STATIC_RELEASE" == "$RELEASE_SHA" ]] \
+  || die 'Caddy HTTPS local verification không xác nhận đúng static release SHA.'
 
 compose ps
 compose logs --since=10m --tail=300 app caddy >"$BACKUP_DIR/deploy-$TIMESTAMP-$SHORT_RELEASE.log" 2>&1 || true

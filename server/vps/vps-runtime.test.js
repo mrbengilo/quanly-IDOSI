@@ -57,6 +57,25 @@ describe('IDOSI VPS runtime', () => {
     expect(compose.match(/logging: \*default-logging/gu)).toHaveLength(2)
   })
 
+  it('pins Caddy static files and the runtime image to the exact release SHA', async () => {
+    const [compose, caddyfile, dockerfile] = await Promise.all([
+      readFile(resolve('deploy', 'vps', 'compose.yml'), 'utf8'),
+      readFile(resolve('deploy', 'vps', 'Caddyfile'), 'utf8'),
+      readFile(resolve('deploy', 'vps', 'Dockerfile'), 'utf8'),
+    ])
+
+    expect(compose).toContain('IDOSI_RELEASE_SHA: "${IDOSI_RELEASE_SHA:-unknown}"')
+    expect(compose).toContain('idosi_static:/srv/idosi:ro')
+    expect(compose).toMatch(/idosi_static:\s*\n\s+name: "idosi_static_\$\{IDOSI_RELEASE_SHA:-unknown\}"\s*\n\s+external: true/u)
+    expect(dockerfile).toContain('LABEL org.opencontainers.image.revision="$IDOSI_RELEASE_SHA"')
+    expect(dockerfile).toContain('io.idosi.static-topology="sha-volume-v1"')
+    expect(caddyfile).toMatch(/handle \/api\/\* \{\s*reverse_proxy app:3000/u)
+    expect(caddyfile).toContain('root * /srv/idosi')
+    expect(caddyfile).toContain('X-IDOSI-Static-Release "{$IDOSI_RELEASE_SHA}"')
+    expect(caddyfile).toContain('Cache-Control "public, max-age=31536000, immutable"')
+    expect(caddyfile).toContain('handle /.idosi-release-sha')
+  })
+
   it('keeps Node upstream sockets alive longer than the Caddy proxy pool', async () => {
     const directory = await temporaryDirectory()
     const { server, runtime } = createIdosiServer({
