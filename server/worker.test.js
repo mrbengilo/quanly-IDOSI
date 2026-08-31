@@ -27,6 +27,20 @@ import {
 
 const TEST_IDENTITY_IMAGE = `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
 const testIdentityImages = () => ({ front: TEST_IDENTITY_IMAGE, back: TEST_IDENTITY_IMAGE })
+const LEGACY_PBKDF2_FIXTURE = Object.freeze({
+  password: 'legacy-210k-password',
+  hash: 'Y8gsSFpsmI0hREkopIxbRbjvZuaeHuLIGTZPD62GQ8k',
+  salt: 'aWRvc2ktbGVnYWN5LTIxMGstc2FsdA',
+  iterations: 210_000,
+  algorithm: 'PBKDF2-SHA256',
+})
+const MAX_PBKDF2_FIXTURE = Object.freeze({
+  password: 'legacy-1m-password',
+  hash: 'QpKdpyaoBblHhf6crhvx1vVYV0Is4m9twVmOsBx-pl0',
+  salt: 'aWRvc2ktbGVnYWN5LTFtLXNhbHQ',
+  iterations: 1_000_000,
+  algorithm: 'PBKDF2-SHA256',
+})
 
 describe('live revenue bonus projection', () => {
   it('does not fabricate elapsed hours for an unclosed historical attendance and falls back past null approved seconds', () => {
@@ -506,6 +520,80 @@ describe('IDOSI Worker security primitives', () => {
     expect(record.salt).toBeTruthy()
     await expect(verifyPassword('idosi-test-password', record)).resolves.toBe(true)
     await expect(verifyPassword('wrong-password', record)).resolves.toBe(false)
+  })
+
+  it('verifies schema-valid legacy PBKDF2 hashes without increasing the generation cost', async () => {
+    const current = await hashPassword('idosi-current-password')
+
+    expect(current.iterations).toBe(100_000)
+    await expect(hashPassword('idosi-current-password', { iterations: 210_000 })).rejects.toMatchObject({
+      code: 'INVALID_PASSWORD_POLICY',
+    })
+    await expect(verifyPassword(LEGACY_PBKDF2_FIXTURE.password, LEGACY_PBKDF2_FIXTURE)).resolves.toBe(true)
+    await expect(verifyPassword(MAX_PBKDF2_FIXTURE.password, MAX_PBKDF2_FIXTURE)).resolves.toBe(true)
+    await expect(verifyPassword(LEGACY_PBKDF2_FIXTURE.password, {
+      ...LEGACY_PBKDF2_FIXTURE,
+      iterations: 1_000_001,
+    })).resolves.toBe(false)
+    for (const invalidRecord of [
+      { ...LEGACY_PBKDF2_FIXTURE, iterations: 99_999 },
+      { ...LEGACY_PBKDF2_FIXTURE, iterations: 210_000.5 },
+      { ...LEGACY_PBKDF2_FIXTURE, algorithm: 'PBKDF2-SHA1' },
+      { ...LEGACY_PBKDF2_FIXTURE, hash: '***' },
+      { ...LEGACY_PBKDF2_FIXTURE, salt: null },
+    ]) {
+      await expect(verifyPassword(LEGACY_PBKDF2_FIXTURE.password, invalidRecord)).resolves.toBe(false)
+    }
+  })
+
+  it('logs in with a legacy PBKDF2 account without downgrading its stored hash', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-legacy-pbkdf2' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.legacy', password: 'temporary-bootstrap-password', initialState: {},
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+
+    env.DB.database.prepare(`
+      UPDATE users
+      SET password_hash = ?, password_salt = ?, password_iterations = ?, password_algorithm = ?
+      WHERE username_normalized = 'admin.legacy'
+    `).run(
+      LEGACY_PBKDF2_FIXTURE.hash,
+      LEGACY_PBKDF2_FIXTURE.salt,
+      LEGACY_PBKDF2_FIXTURE.iterations,
+      LEGACY_PBKDF2_FIXTURE.algorithm,
+    )
+
+    const rejected = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.legacy', password: 'wrong-legacy-password',
+    }), env)
+    expect(rejected.status).toBe(401)
+    expect(await rejected.json()).toMatchObject({ error: { code: 'INVALID_CREDENTIALS' } })
+    expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM sessions').get()).toEqual({ count: 0 })
+
+    const accepted = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.legacy', password: LEGACY_PBKDF2_FIXTURE.password,
+    }), env)
+    expect(accepted.status).toBe(200)
+    const acceptedBody = await accepted.json()
+    expect(acceptedBody).toMatchObject({
+      token: expect.any(String),
+      user: { username: 'admin.legacy', role: 'admin' },
+    })
+    expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM sessions').get()).toEqual({ count: 1 })
+    expect(env.DB.database.prepare(`
+      SELECT password_hash, password_salt, password_iterations
+      FROM users WHERE username_normalized = 'admin.legacy'
+    `).get()).toEqual({
+      password_hash: LEGACY_PBKDF2_FIXTURE.hash,
+      password_salt: LEGACY_PBKDF2_FIXTURE.salt,
+      password_iterations: LEGACY_PBKDF2_FIXTURE.iterations,
+    })
+
+    const authenticatedState = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: { authorization: `Bearer ${acceptedBody.token}` },
+    }), env)
+    expect(authenticatedState.status).toBe(200)
   })
 
   it('assigns ISO timestamps to the Vietnamese business month', () => {

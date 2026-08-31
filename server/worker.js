@@ -62,9 +62,12 @@ const MAX_ACCOUNT_AVATAR_MUTATION_MARKERS_PER_USER = 8
 const MAX_JSON_DEPTH = 64
 const MAX_MONEY_VND = 100_000_000_000
 const DEFAULT_SESSION_TTL_SECONDS = 12 * 60 * 60
+const PBKDF2_ALGORITHM = 'PBKDF2-SHA256'
 const DEFAULT_PBKDF2_ITERATIONS = 100_000
 const MIN_PBKDF2_ITERATIONS = 100_000
-const MAX_PBKDF2_ITERATIONS = 100_000
+// Generate at the current VPS-safe cost while accepting historical values allowed by the database schema.
+const MAX_PBKDF2_GENERATION_ITERATIONS = 100_000
+const MAX_PBKDF2_VERIFICATION_ITERATIONS = 1_000_000
 const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'employee'])
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
 
@@ -836,7 +839,11 @@ export const hashPassword = async (password, options = {}) => {
     throw new ApiError(400, 'INVALID_PASSWORD', 'Mật khẩu phải có từ 8 đến 256 ký tự.')
   }
   const iterations = Number(options.iterations || DEFAULT_PBKDF2_ITERATIONS)
-  if (!Number.isInteger(iterations) || iterations < MIN_PBKDF2_ITERATIONS || iterations > MAX_PBKDF2_ITERATIONS) {
+  if (
+    !Number.isInteger(iterations)
+    || iterations < MIN_PBKDF2_ITERATIONS
+    || iterations > MAX_PBKDF2_GENERATION_ITERATIONS
+  ) {
     throw new ApiError(500, 'INVALID_PASSWORD_POLICY', 'Cấu hình băm mật khẩu không hợp lệ.')
   }
   const salt = options.salt ? fromBase64Url(options.salt) : randomBytes(16)
@@ -845,14 +852,19 @@ export const hashPassword = async (password, options = {}) => {
     hash: toBase64Url(digest),
     salt: toBase64Url(salt),
     iterations,
-    algorithm: 'PBKDF2-SHA256',
+    algorithm: PBKDF2_ALGORITHM,
   }
 }
 
 export const verifyPassword = async (password, record) => {
   try {
+    if (record?.algorithm !== PBKDF2_ALGORITHM) return false
     const iterations = Number(record?.iterations)
-    if (!Number.isInteger(iterations) || iterations < MIN_PBKDF2_ITERATIONS || iterations > MAX_PBKDF2_ITERATIONS) return false
+    if (
+      !Number.isInteger(iterations)
+      || iterations < MIN_PBKDF2_ITERATIONS
+      || iterations > MAX_PBKDF2_VERIFICATION_ITERATIONS
+    ) return false
     const salt = fromBase64Url(record.salt)
     const expected = fromBase64Url(record.hash)
     const actual = await derivePasswordBytes(String(password || ''), salt, iterations)
@@ -3302,10 +3314,12 @@ const login = async (request, env, context) => {
     hash: user.password_hash,
     salt: user.password_salt,
     iterations: user.password_iterations,
+    algorithm: user.password_algorithm,
   } : {
     hash: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
     salt: 'AAAAAAAAAAAAAAAAAAAAAA',
     iterations: DEFAULT_PBKDF2_ITERATIONS,
+    algorithm: PBKDF2_ALGORITHM,
   }
   const matches = await verifyPassword(passwordValue, passwordRecord)
   if (!user || !matches) throw new ApiError(401, 'INVALID_CREDENTIALS', 'Tên đăng nhập hoặc mật khẩu chưa đúng.')
@@ -16204,6 +16218,7 @@ const changeOwnPasswordCommand = async (db, actor, body, commandContext) => {
     hash: target.password_hash,
     salt: target.password_salt,
     iterations: target.password_iterations,
+    algorithm: target.password_algorithm,
   }
   if (!await verifyPassword(currentPassword, currentRecord)) {
     throw new ApiError(401, 'CURRENT_PASSWORD_INVALID', 'Mật khẩu hiện tại chưa đúng.')
