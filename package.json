@@ -8,12 +8,15 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "vite build && node scripts/prepare-sites.mjs",
+    "build": "vite build && node scripts/prepare-sites.mjs && node scripts/verify-bundle-budget.mjs",
+    "bundle:verify": "node scripts/verify-bundle-budget.mjs",
+    "bundle:verify:test": "node --test scripts/verify-bundle-budget.node-test.mjs",
     "sites:verify": "node scripts/verify-sites-build.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "vps:start": "node server/vps/server.mjs",
     "vps:bootstrap": "node server/vps/bootstrap.mjs",
     "lint": "eslint .",
+    "pretest": "npm run bundle:verify:test",
     "test": "vitest run --maxWorkers=1"
   },
   "dependencies": {

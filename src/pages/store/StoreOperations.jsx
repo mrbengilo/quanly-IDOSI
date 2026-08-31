@@ -31,7 +31,6 @@ import {
   Drawer,
   ExportButton,
   Field,
-  FinancialChart,
   InfoNote,
   Input,
   MoneyInput,
@@ -43,6 +42,7 @@ import {
   TableFooter,
   TableWrap,
 } from '../../components/UI'
+import { FinancialChart } from '../../components/Charts'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { optimizeIdentityImage } from '../../domain/identityImage'

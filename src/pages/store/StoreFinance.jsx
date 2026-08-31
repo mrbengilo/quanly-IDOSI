@@ -22,10 +22,8 @@ import {
   Button,
   Card,
   DateRange,
-  DonutChart,
   ExportButton,
   Field,
-  FinancialChart,
   InfoNote,
   Input,
   MetricCard,
@@ -36,6 +34,7 @@ import {
   Select,
   TableWrap,
 } from '../../components/UI'
+import { DonutChart, FinancialChart } from '../../components/Charts'
 import { cashSeries, payRows, shifts } from '../../data'
 import { useApp } from '../../state/AppContext'
 import {

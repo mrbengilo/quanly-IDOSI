@@ -32,10 +32,8 @@ import {
   Button,
   Card,
   DateRange,
-  DonutChart,
   ExportButton,
   Field,
-  FinancialChart,
   InfoNote,
   Input,
   MetricCard,
@@ -47,6 +45,7 @@ import {
   TableFooter,
   TableWrap,
 } from '../../components/UI'
+import { DonutChart, FinancialChart } from '../../components/Charts'
 import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
 import { mergeAccountPersonnelProfile, optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
