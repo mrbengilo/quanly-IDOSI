@@ -1,0 +1,63 @@
+name: IDOSI VPS Read-only Diagnostics
+
+on:
+  push:
+    branches:
+      - ops/vps-readonly-diagnostics
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-production
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.repository == 'mrbengilo/quanly-IDOSI'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+    steps:
+      - name: Checkout diagnostic script
+        uses: actions/checkout@v6
+
+      - name: Validate read-only diagnostic script
+        run: bash -n deploy/vps/diagnose-readonly.sh
+
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST production secret}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER production secret}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY production secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS production secret}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Run read-only VPS diagnostics
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' < deploy/vps/diagnose-readonly.sh
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
