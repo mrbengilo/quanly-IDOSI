@@ -24,5 +24,9 @@ describe('visible IDOSI branding', () => {
 
     expect(container.querySelector('.login-hero .brand__mark')?.getAttribute('src')).toBe('/favicon.png')
     expect(screen.getByAltText('Biểu trưng IDOSI').getAttribute('src')).toBe('/favicon.png')
+    const usernameInput = screen.getByPlaceholderText('Nhập tên đăng nhập')
+    expect(usernameInput.getAttribute('autocapitalize')).toBe('none')
+    expect(usernameInput.getAttribute('autocorrect')).toBe('off')
+    expect(usernameInput.getAttribute('spellcheck')).toBe('false')
   })
 })

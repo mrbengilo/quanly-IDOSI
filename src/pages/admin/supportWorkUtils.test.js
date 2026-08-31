@@ -48,4 +48,18 @@ describe('support work helpers', () => {
       rating: 'Chưa nộp',
     })
   })
+
+  it('uses an exact employee id before aliases and rejects an ambiguous mixed-case alias', () => {
+    const assignments = [
+      { employeeId: 'EM01', status: 'completed', tasks: [{ completed: true }] },
+      { employeeId: 'em01', status: 'incomplete', tasks: [{ completed: false }] },
+    ]
+
+    expect(supportWorkEvaluation({ id: 'EM01' }, assignments)).toMatchObject({
+      total: 1,
+      completed: 1,
+      completedAssignments: 1,
+    })
+    expect(supportWorkEvaluation({ id: 'Em01' }, assignments)).toMatchObject({ rows: [], total: 0 })
+  })
 })

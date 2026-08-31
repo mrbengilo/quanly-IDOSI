@@ -1,8 +1,19 @@
 import { normalizeOfficeValue as normalize } from '../../domain/officeProfile'
+import { sameOperationalIdentifier } from '../../utils'
 
 export { isOfficeProfile } from '../../domain/officeProfile'
 
-export const officeEmployeeKey = (employee = {}) => String(employee.id || employee.code || employee.employeeCode || '')
+export const officeEmployeeKey = (employee) => String(employee?.id || employee?.code || employee?.employeeCode || '')
+
+const exactFirstIdentifierRows = (records = [], reference = '', identifierOf = (record) => record?.id) => {
+  const requested = String(reference || '').trim()
+  if (!requested) return []
+  const matches = records.filter((record) => sameOperationalIdentifier(identifierOf(record), requested))
+  const exact = matches.filter((record) => String(identifierOf(record) || '').trim() === requested)
+  if (exact.length) return exact
+  const variants = new Set(matches.map((record) => String(identifierOf(record) || '').trim()).filter(Boolean))
+  return variants.size === 1 ? matches : []
+}
 
 export const officePayrollStoreId = (session = {}, employee = {}) => (
   normalize(session?.role) === 'business_support' || normalize(employee?.unit) === 'business_support'
@@ -75,8 +86,11 @@ const arrivalDifference = (record = {}) => {
 export const officeAttendanceRows = (records = [], employee = {}) => {
   const employeeId = officeEmployeeKey(employee)
   if (!employeeId) return []
-  return records
-    .filter((record) => !record.deletedAt && String(record.employeeId || record.employeeCode || record.staffId || '') === employeeId)
+  return exactFirstIdentifierRows(
+    records.filter((record) => !record.deletedAt),
+    employeeId,
+    (record) => record.employeeId || record.employeeCode || record.staffId,
+  )
     .toSorted((left, right) => String(right.checkInAt || officeRecordDate(right)).localeCompare(String(left.checkInAt || officeRecordDate(left))))
 }
 
@@ -138,7 +152,7 @@ const adjustmentEmployee = (item = {}) => String(item.employeeId || item.employe
 const adjustmentPeriod = (item = {}) => String(item.period || item.date || item.createdAt || '').slice(0, 7)
 const adjustmentNote = (item = {}) => String(item.note || item.content || '').trim()
 const adjustmentSignature = (item) => [
-  adjustmentEmployee(item),
+  normalize(adjustmentEmployee(item)),
   adjustmentPeriod(item),
   adjustmentType(item.type || item.kind || item.adjustmentType),
   Number(item.amount || 0),
@@ -146,15 +160,18 @@ const adjustmentSignature = (item) => [
 ].join('|')
 
 export const officeSalaryAdjustments = ({ salaryAdjustments = [], legacyAdjustments = [], employeeId = '', period = '' } = {}) => {
-  const matches = (item) => {
+  const inPeriod = (item) => {
     const status = normalize(item.status)
     return !item.deletedAt
       && !status.includes('hủy')
       && !['cancelled', 'canceled', 'voided'].includes(status)
-      && adjustmentEmployee(item) === String(employeeId)
       && adjustmentPeriod(item) === String(period)
   }
-  const primary = salaryAdjustments.filter(matches).map((item) => ({
+  const scoped = exactFirstIdentifierRows([
+    ...salaryAdjustments.filter(inPeriod).map((item) => ({ item, source: 'primary' })),
+    ...legacyAdjustments.filter(inPeriod).map((item) => ({ item, source: 'legacy' })),
+  ], employeeId, (candidate) => adjustmentEmployee(candidate.item))
+  const primary = scoped.filter((candidate) => candidate.source === 'primary').map(({ item }) => ({
     ...item,
     type: adjustmentType(item.type),
     note: adjustmentNote(item),
@@ -163,7 +180,7 @@ export const officeSalaryAdjustments = ({ salaryAdjustments = [], legacyAdjustme
   }))
   const primaryIds = new Set(primary.map((item) => String(item.id || '')).filter(Boolean))
   const primarySignatures = new Set(primary.map(adjustmentSignature))
-  const legacy = legacyAdjustments.filter(matches).flatMap((item) => {
+  const legacy = scoped.filter((candidate) => candidate.source === 'legacy').flatMap(({ item }) => {
     if ((item.id && primaryIds.has(String(item.id))) || primarySignatures.has(adjustmentSignature(item))) return []
     return [{
       ...item,

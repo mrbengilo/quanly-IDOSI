@@ -54,6 +54,15 @@ describe('office employee attendance helpers', () => {
     })
   })
 
+  it('prefers exact employee spelling instead of combining case-colliding attendance', () => {
+    const rows = officeAttendanceRows([
+      { id: 'exact', employeeId: 'VP001', date: '2026-08-01', checkIn: '08:00' },
+      { id: 'collision', employeeId: 'vp001', date: '2026-08-02', checkIn: '08:00' },
+    ], { id: 'VP001' })
+
+    expect(rows.map(({ id }) => id)).toEqual(['exact'])
+  })
+
   it('uses per-employee work hours and monthly workday targets', () => {
     const records = [
       { employeeId: 'VP001', date: '2026-07-01', checkIn: '08:00', checkOut: '17:00', workdayCredit: 1, standardWorkDaysSnapshot: 24, monthlySalarySnapshot: 12_000_000 },
@@ -140,12 +149,26 @@ describe('office employee attendance helpers', () => {
         { id: 'cancelled', employeeId: 'VP001', period: '2026-08', type: 'Phụ cấp khác', amount: 900_000, note: 'Không tính', status: 'cancelled' },
       ],
       legacyAdjustments: [
-        { id: 'old-copy', employeeId: 'VP001', date: '2026-08-10', type: 'Thưởng', amount: 500_000, content: 'Hoàn thành tốt' },
+        { id: 'old-copy', employeeId: 'vp001', date: '2026-08-10', type: 'Thưởng', amount: 500_000, content: 'Hoàn thành tốt' },
         { id: 'old-2', employeeId: 'VP001', date: '2026-08-11', type: 'Phụ cấp', amount: 200_000, content: 'Gửi xe' },
       ],
     })
     expect(items).toHaveLength(2)
     expect(officeAdjustmentTotals(items)).toEqual({ bonus: 500_000, allowance: 200_000, deduction: 0, net: 700_000 })
+  })
+
+  it('prefers exact employee spelling instead of combining case-colliding salary adjustments', () => {
+    const items = officeSalaryAdjustments({
+      employeeId: 'VP001',
+      period: '2026-08',
+      salaryAdjustments: [
+        { id: 'exact', employeeId: 'VP001', period: '2026-08', type: 'Thưởng khác', amount: 100_000 },
+        { id: 'collision', employeeId: 'vp001', period: '2026-08', type: 'Thưởng khác', amount: 900_000 },
+      ],
+    })
+
+    expect(items.map(({ id }) => id)).toEqual(['exact'])
+    expect(officeAdjustmentTotals(items).net).toBe(100_000)
   })
 
   it('treats a closed payroll row as authoritative', () => {

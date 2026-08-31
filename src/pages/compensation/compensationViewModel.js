@@ -1,3 +1,11 @@
+import {
+  operationalIdentifierRecordMatch,
+  operationalIdentifierReferenceMatchesRecord,
+  sameOperationalIdentifier,
+} from '../../utils'
+
+export { sameOperationalIdentifier }
+
 const normalize = (value) => String(value ?? '').trim().toLowerCase()
 
 export const canonicalRole = (role) => normalize(role) === 'manager' ? 'business_support' : normalize(role)
@@ -65,7 +73,8 @@ export const storesVisibleToRole = (stores = [], session = {}) => {
   const role = canonicalRole(session?.role)
   if (['admin', 'business_support'].includes(role)) return list
   const storeId = String(session?.storeId || '').trim()
-  return list.filter((store) => entityId(store) === storeId)
+  const targetStore = operationalIdentifierRecordMatch(list, storeId, (store) => [entityId(store)]).record
+  return targetStore ? [targetStore] : []
 }
 
 export const employeeUnit = (employee = {}) => {
@@ -79,25 +88,57 @@ export const activeEmployees = (employees = []) => employees.filter((employee) =
   !employee?.deletedAt && !['đã nghỉ việc', 'inactive'].includes(normalize(employee?.status))
 ))
 
-export const employeesForTarget = ({ employees = [], targetUnit = 'store', storeId = '' } = {}) => (
-  activeEmployees(employees).filter((employee) => {
-    if (employeeUnit(employee) !== targetUnit) return false
-    return targetUnit !== 'store' || String(employee?.storeId || '') === String(storeId || '')
-  })
-)
+export const employeesForTarget = ({ employees = [], targetUnit = 'store', storeId = '' } = {}) => {
+  const active = activeEmployees(employees)
+  if (targetUnit !== 'store') return active.filter((employee) => employeeUnit(employee) === targetUnit)
+  const storeReferences = [...new Set(active
+    .filter((candidate) => employeeUnit(candidate) === 'store')
+    .map((candidate) => String(candidate.storeId || '').trim())
+    .filter(Boolean))]
+    .map((id) => ({ id }))
+  const targetStore = operationalIdentifierRecordMatch(storeReferences, storeId, (store) => [store.id]).record
+  if (!targetStore) return []
+  return active.filter((employee) => (
+    employeeUnit(employee) === 'store'
+    && operationalIdentifierRecordMatch(
+      storeReferences,
+      employee.storeId,
+      (store) => [store.id],
+    ).record === targetStore
+  ))
+}
 
 export const managerCandidates = ({ employees = [], managerAccounts = [], storeId = '' } = {}) => {
-  const linkedManagerIds = new Set(managerAccounts
-    .filter((account) => !account?.deletedAt && (!storeId || String(account?.storeId || '') === String(storeId)))
+  const active = activeEmployees(employees)
+  const storeReferences = [...new Set([
+    ...active.map((employee) => employee.storeId),
+    ...managerAccounts.map((account) => account.storeId),
+  ].map((value) => String(value || '').trim()).filter(Boolean))].map((id) => ({ id }))
+  const targetStore = storeId
+    ? operationalIdentifierRecordMatch(storeReferences, storeId, (store) => [store.id]).record
+    : null
+  if (storeId && !targetStore) return []
+  const belongsToTargetStore = (record) => !targetStore || operationalIdentifierRecordMatch(
+    storeReferences,
+    record?.storeId,
+    (store) => [store.id],
+  ).record === targetStore
+  const linkedManagerIds = managerAccounts
+    .filter((account) => !account?.deletedAt && belongsToTargetStore(account))
     .map((account) => String(account?.employeeId || '').trim())
-    .filter(Boolean))
-  return activeEmployees(employees).filter((employee) => {
-    if (storeId && String(employee?.storeId || '') !== String(storeId)) return false
+    .filter(Boolean)
+  return active.filter((employee) => {
+    if (!belongsToTargetStore(employee)) return false
     const roles = Array.isArray(employee?.roles) ? employee.roles.map(normalize) : []
     const position = normalize(employee?.position)
     return employee?.isStoreManager === true
       || roles.includes('store_manager')
-      || linkedManagerIds.has(entityId(employee))
+      || linkedManagerIds.some((employeeId) => operationalIdentifierReferenceMatchesRecord(
+        active,
+        employee,
+        employeeId,
+        entityId,
+      ))
       || position.includes('quản lý cửa hàng')
   })
 }
@@ -143,6 +184,7 @@ const payrollActiveStatuses = new Set([
 const activePayrollRecord = (entry) => (
   !isVoided(entry)
   && !isRejected(entry)
+  && !entry?.supersededAt
   && (Boolean(entry?.approvedAt) || payrollActiveStatuses.has(normalize(entry?.status)))
 )
 
@@ -161,11 +203,15 @@ export const payrollCompensationTotalsForEmployee = ({
   revenueBonusAllocations = [],
   violations = [],
   employeeId = '',
+  employeeIdentifiers = [employeeId],
   period = '',
 } = {}) => {
   const totals = { manual: 0, work: 0, allowance: 0, revenue: 0, violations: 0 }
+  const employeeReferences = (Array.isArray(employeeIdentifiers) ? employeeIdentifiers : [employeeIdentifiers])
+    .map((reference) => String(reference || '').trim())
+    .filter(Boolean)
   const belongsToPeriod = (entry) => (
-    entryEmployeeId(entry) === String(employeeId || '')
+    employeeReferences.some((reference) => sameOperationalIdentifier(entryEmployeeId(entry), reference))
     && samePeriod(entry, period)
     && activePayrollRecord(entry)
   )

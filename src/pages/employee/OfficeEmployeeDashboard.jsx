@@ -27,7 +27,12 @@ import {
   reconcileAttendanceShiftId,
   resolveAttendanceWorkingTime,
 } from '../../domain/attendanceWorkingTime'
-import { money, shortDate } from '../../utils'
+import {
+  money,
+  operationalIdentifierRecordMatch,
+  sameOperationalIdentifier,
+  shortDate,
+} from '../../utils'
 import { normalizeWorkingTimeForm } from '../office/workingTime'
 import {
   officeArrivalMinutes,
@@ -82,13 +87,69 @@ const workedHours = (record = {}) => {
     : 0
 }
 
+const employeeIdentifier = (employee) => String(
+  employee?.id || employee?.code || employee?.employeeCode || employee?.employeeId || '',
+)
+const employeeAliases = (employee) => [employee?.id, employee?.code, employee?.employeeId, employee?.employeeCode]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const employeeRecordAliases = (record) => [record?.employeeId, record?.employeeCode, record?.staffId, record?.userId]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+
 const currentOfficeEmployee = (app) => {
-  if (app.currentEmployee) return app.currentEmployee
   const session = app.session || {}
-  return (app.employees || []).find((employee) => (
-    String(employee.id || employee.code) === String(session.employeeId || session.code || '')
-    || (session.username && employee.username === session.username)
-  )) || session
+  const employees = Array.isArray(app.employees) ? app.employees : []
+  const references = [employeeIdentifier(app.currentEmployee), session.employeeId, session.code, session.id]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+  for (const reference of references) {
+    const resolution = operationalIdentifierRecordMatch(employees, reference, employeeAliases)
+    if (resolution.record) return resolution.record
+    if (resolution.ambiguous) return {}
+  }
+  if (session.username) {
+    const usernameMatches = employees.filter((employee) => employee.username === session.username)
+    if (usernameMatches.length === 1) return usernameMatches[0]
+    if (usernameMatches.length > 1) return {}
+  }
+  return employees.length ? {} : (app.currentEmployee || session)
+}
+
+const employeeReferenceMatches = (employees, employee, reference) => {
+  if (!employee || !String(reference || '').trim()) return false
+  const source = Array.isArray(employees) && employees.length ? employees : [employee]
+  const resolution = operationalIdentifierRecordMatch(source, reference, employeeAliases)
+  return !resolution.ambiguous && resolution.record === employee
+}
+
+const recordReferencesEmployee = (employees, employee, record) => (
+  employeeRecordAliases(record).some((reference) => employeeReferenceMatches(employees, employee, reference))
+)
+
+const recordMatchForAliases = (records, references, identifierValuesOf) => {
+  const aliases = references.map((value) => String(value || '').trim()).filter(Boolean)
+  const exactMatches = records.filter((record) => identifierValuesOf(record).some((value) => (
+    aliases.includes(String(value || '').trim())
+  )))
+  if (exactMatches.length) return {
+    record: exactMatches.length === 1 ? exactMatches[0] : null,
+    ambiguous: exactMatches.length > 1,
+  }
+  const foldedMatches = records.filter((record) => identifierValuesOf(record).some((value) => (
+    aliases.some((alias) => sameOperationalIdentifier(alias, value))
+  )))
+  return {
+    record: foldedMatches.length === 1 ? foldedMatches[0] : null,
+    ambiguous: foldedMatches.length > 1,
+  }
+}
+
+const payrollRowForEmployee = (rows, employees, employee) => {
+  const matches = (Array.isArray(rows) ? rows : []).filter((row) => (
+    recordReferencesEmployee(employees, employee, row)
+  ))
+  return recordMatchForAliases(matches, employeeAliases(employee), employeeRecordAliases)
 }
 
 const requestLocation = () => new Promise((resolve, reject) => {
@@ -148,14 +209,23 @@ function OfficePayrollCard({ app, employee, period, rows, showHeader = false, on
   const isBusinessSupport = app.session?.role === 'business_support' || employee.unit === 'business_support'
   const payrollStoreId = officePayrollStoreId(app.session, employee)
   const currentMonth = vietnamDateKey().slice(0, 7)
-  const closedPeriod = (Array.isArray(app.payrollPeriods) ? app.payrollPeriods : []).find((item) => (
-    String(item.storeId || '') === payrollStoreId
+  const activePeriodCandidates = (Array.isArray(app.payrollPeriods) ? app.payrollPeriods : []).filter((item) => (
+    !item.supersededAt
     && String(item.period || '') === period
-    && !item.needsReclose
   ))
-  const closedPayrollRow = (Array.isArray(closedPeriod?.rows) ? closedPeriod.rows : []).find((row) => (
-    String(row.employeeId || row.employeeCode || '') === officeEmployeeKey(employee)
-  ))
+  const activePeriodMatch = operationalIdentifierRecordMatch(
+    activePeriodCandidates,
+    payrollStoreId,
+    (item) => item.storeId,
+  )
+  const payrollPeriodUnavailable = activePeriodMatch.ambiguous
+  const closedPeriod = activePeriodMatch.record && !activePeriodMatch.record.needsReclose
+    ? activePeriodMatch.record
+    : null
+  const closedPayrollRowMatch = payrollRowForEmployee(closedPeriod?.rows, app.employees, employee)
+  const payrollRowUnavailable = closedPayrollRowMatch.ambiguous
+  const payrollDataUnavailable = payrollPeriodUnavailable || payrollRowUnavailable
+  const closedPayrollRow = payrollRowUnavailable ? null : closedPayrollRowMatch.record
   const summary = officePayrollSummary({
     records: rows,
     employee,
@@ -163,9 +233,15 @@ function OfficePayrollCard({ app, employee, period, rows, showHeader = false, on
     historical: period < currentMonth,
     payrollRow: closedPayrollRow,
   })
+  const scopedSalaryAdjustments = (Array.isArray(app.salaryAdjustments) ? app.salaryAdjustments : []).filter((item) => (
+    recordReferencesEmployee(app.employees, employee, item)
+  )).map((item) => ({ ...item, employeeId: officeEmployeeKey(employee) }))
+  const scopedLegacyAdjustments = (Array.isArray(app.officeAdjustments) ? app.officeAdjustments : []).filter((item) => (
+    recordReferencesEmployee(app.employees, employee, item)
+  )).map((item) => ({ ...item, employeeId: officeEmployeeKey(employee) }))
   const extras = officeSalaryAdjustments({
-    salaryAdjustments: app.salaryAdjustments || [],
-    legacyAdjustments: app.officeAdjustments || [],
+    salaryAdjustments: scopedSalaryAdjustments,
+    legacyAdjustments: scopedLegacyAdjustments,
     employeeId: officeEmployeeKey(employee),
     period,
   })
@@ -184,11 +260,13 @@ function OfficePayrollCard({ app, employee, period, rows, showHeader = false, on
         />
       )}
       <Card title="Bảng lương theo ngày công">
+        {payrollPeriodUnavailable && <InfoNote tone="red">Kỳ lương có nhiều bản ghi trùng mã cửa hàng. Số tiền đã được khóa cho đến khi Admin xử lý dữ liệu trùng.</InfoNote>}
+        {payrollRowUnavailable && <InfoNote tone="red">Kỳ lương có nhiều dòng trùng mã nhân viên. Số tiền đã được khóa cho đến khi Admin xử lý dữ liệu trùng.</InfoNote>}
         <div className="metric-grid metric-grid--four">
           <MetricCard label="NGÀY LÀM THỰC TẾ" value={summary.actualDays} suffix="ngày" helper={`Quy định ${summary.requiredDays} ngày`} icon={CalendarDays} tone="blue" compact />
-          <MetricCard label="LƯƠNG THÁNG" value={money(summary.monthlySalary)} helper={summary.requiredDaysSource === 'closed-payroll' ? 'Theo kỳ lương đã chốt' : summary.requiredDaysSource === 'snapshot' ? 'Theo snapshot kỳ lương' : summary.requiredDaysSource === 'monthly-target' ? `Mục tiêu riêng tháng ${period.split('-').reverse().join('/')}` : 'Mức lương hiện tại'} icon={Banknote} tone="blue" compact />
-          <MetricCard label="LƯƠNG THEO CÔNG" value={money(summary.basePay)} helper={`${summary.payableDays}/${summary.requiredDays} ngày công`} icon={Clock3} tone="green" compact />
-          <MetricCard label={summary.authoritative ? 'TỔNG ĐÃ CHỐT' : 'TỔNG TẠM TÍNH'} value={money(total)} helper={summary.authoritative ? `Kỳ lương ${closedPeriod.status || 'đã chốt'}` : `Điều chỉnh ròng ${money(adjustmentTotals.net)}`} icon={Wallet} tone="green" compact />
+          <MetricCard label="LƯƠNG THÁNG" value={payrollDataUnavailable ? '—' : money(summary.monthlySalary)} helper={payrollDataUnavailable ? 'Chờ Admin xử lý dữ liệu trùng' : summary.requiredDaysSource === 'closed-payroll' ? 'Theo kỳ lương đã chốt' : summary.requiredDaysSource === 'snapshot' ? 'Theo snapshot kỳ lương' : summary.requiredDaysSource === 'monthly-target' ? `Mục tiêu riêng tháng ${period.split('-').reverse().join('/')}` : 'Mức lương hiện tại'} icon={Banknote} tone="blue" compact />
+          <MetricCard label="LƯƠNG THEO CÔNG" value={payrollDataUnavailable ? '—' : money(summary.basePay)} helper={`${summary.payableDays}/${summary.requiredDays} ngày công`} icon={Clock3} tone="green" compact />
+          <MetricCard label={summary.authoritative ? 'TỔNG ĐÃ CHỐT' : 'TỔNG TẠM TÍNH'} value={payrollDataUnavailable ? '—' : money(total)} helper={payrollDataUnavailable ? 'Không hiển thị số tạm tính có thể sai' : summary.authoritative ? `Kỳ lương ${closedPeriod.status || 'đã chốt'}` : `Điều chỉnh ròng ${money(adjustmentTotals.net)}`} icon={Wallet} tone="green" compact />
         </div>
         <div className="office-payroll-progress" aria-label={`Tiến độ ngày công ${progress.toFixed(0)}%`}>
           <div><span>Tiến độ ngày công</span><strong>{summary.actualDays}/{summary.requiredDays} ngày</strong></div>
@@ -197,7 +275,7 @@ function OfficePayrollCard({ app, employee, period, rows, showHeader = false, on
         </div>
         <TableWrap>
           <thead><tr><th>Kỳ lương</th><th>Ngày thực tế / quy định</th><th>Lương theo công</th><th>Thưởng</th><th>Phụ cấp</th><th>Khấu trừ</th><th>{summary.authoritative ? 'Tổng đã chốt' : 'Tổng tạm tính'}</th></tr></thead>
-          <tbody><tr><td><strong>{period.split('-').reverse().join('/')}</strong></td><td>{summary.actualDays} / {summary.requiredDays} ngày</td><td>{money(summary.basePay)}</td><td>{money(adjustmentTotals.bonus)}</td><td>{money(adjustmentTotals.allowance)}</td><td>{money(adjustmentTotals.deduction)}</td><td className="green-text"><strong>{money(total)}</strong></td></tr></tbody>
+          <tbody><tr><td><strong>{period.split('-').reverse().join('/')}</strong></td><td>{summary.actualDays} / {summary.requiredDays} ngày</td><td>{payrollDataUnavailable ? '—' : money(summary.basePay)}</td><td>{payrollDataUnavailable ? '—' : money(adjustmentTotals.bonus)}</td><td>{payrollDataUnavailable ? '—' : money(adjustmentTotals.allowance)}</td><td>{payrollDataUnavailable ? '—' : money(adjustmentTotals.deduction)}</td><td className="green-text"><strong>{payrollDataUnavailable ? '—' : money(total)}</strong></td></tr></tbody>
         </TableWrap>
       </Card>
     </section>
@@ -216,9 +294,14 @@ export function OfficeEmployeeDashboard() {
   const [busy, setBusy] = useState('')
   const [locationError, setLocationError] = useState('')
   const dateKey = vietnamDateKey(now)
+  const employeeSchedules = useMemo(() => (
+    (Array.isArray(app.supportWorkSchedules) ? app.supportWorkSchedules : [])
+      .filter((record) => recordReferencesEmployee(app.employees, employee, record))
+      .map((record) => ({ ...record, employeeId }))
+  ), [app.employees, app.supportWorkSchedules, employee, employeeId])
   const effectiveEmployee = useMemo(
-    () => resolveAttendanceWorkingTime(employee, dateKey, app.supportWorkSchedules || []),
-    [app.supportWorkSchedules, dateKey, employee],
+    () => resolveAttendanceWorkingTime(employee, dateKey, employeeSchedules),
+    [dateKey, employee, employeeSchedules],
   )
   const attendanceWorkShifts = useMemo(
     () => normalizeWorkingTimeForm(effectiveEmployee, effectiveEmployee.employmentType || employee.employmentType).workShifts,
@@ -232,7 +315,12 @@ export function OfficeEmployeeDashboard() {
     return () => window.clearInterval(timer)
   }, [])
 
-  const allRows = useMemo(() => officeAttendanceRows(app.attendance || [], employee), [app.attendance, employee])
+  const allRows = useMemo(() => officeAttendanceRows(
+    (Array.isArray(app.attendance) ? app.attendance : []).filter((record) => (
+      recordReferencesEmployee(app.employees, employee, record)
+    )).map((record) => ({ ...record, employeeId })),
+    employee,
+  ), [app.attendance, app.employees, employee, employeeId])
   const openRecord = allRows.find((record) => !record.checkOut && !record.checkOutAt)
   const todayRecord = allRows.find((record) => officeRecordDate(record) === dateKey)
   const selectedMonth = (filterMode === 'month' ? filterValue : filterValue.slice(0, 7)) || dateKey.slice(0, 7)
@@ -385,7 +473,12 @@ export function OfficeEmployeePayrollPage() {
   const app = useApp()
   const employee = currentOfficeEmployee(app)
   const [period, setPeriod] = useState(() => vietnamDateKey().slice(0, 7))
-  const allRows = useMemo(() => officeAttendanceRows(app.attendance || [], employee), [app.attendance, employee])
+  const allRows = useMemo(() => officeAttendanceRows(
+    (Array.isArray(app.attendance) ? app.attendance : []).filter((record) => (
+      recordReferencesEmployee(app.employees, employee, record)
+    )).map((record) => ({ ...record, employeeId: officeEmployeeKey(employee) })),
+    employee,
+  ), [app.attendance, app.employees, employee])
   const rows = allRows.filter((record) => officeRecordDate(record).startsWith(period))
   const stats = officeAttendanceStats(rows, app.policies?.attendanceEvaluation)
 

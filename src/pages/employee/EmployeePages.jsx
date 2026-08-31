@@ -31,6 +31,7 @@ import {
 } from '../../components/UI'
 import { shifts } from '../../data'
 import { useApp } from '../../state/AppContext'
+import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../../domain/storeTieredPayroll'
 import {
   calculateEmployeeBasePay,
   downloadCsv,
@@ -39,6 +40,8 @@ import {
   getMonthlySalary,
   getPayBasis,
   money,
+  operationalIdentifierEntry,
+  operationalIdentifierRecordMatch,
   parseMoneyInput,
   resolveStoreEmployeeSalaryPolicy,
   shortDate,
@@ -48,16 +51,44 @@ import { supportAttendanceCompensationRows, supportCompensationTotals } from './
 
 const FALLBACK_SHIFT = { id: 'ca1', name: 'Ca 1', time: '07:00 - 12:00', start: '07:00', end: '12:00' }
 const getShift = (id) => shifts.find((shift) => shift.id === id) || FALLBACK_SHIFT
-const recordEmployeeId = (record = {}) => record.employeeId || record.employeeCode || record.staffId || record.userId || ''
-const employeeId = (employee = {}) => employee.id || employee.code || employee.employeeCode || employee.employeeId || ''
+const employeeId = (employee) => employee?.id || employee?.code || employee?.employeeCode || employee?.employeeId || ''
+const employeeAliases = (employee) => [employee?.id, employee?.code, employee?.employeeId, employee?.employeeCode]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const recordEmployeeAliases = (record) => [record?.employeeId, record?.employeeCode, record?.staffId, record?.userId]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
 const employeeType = getEmployeeType
-const employeePosition = (employee = {}) => employee.position || employee.role || employee.jobTitle || 'Nhân viên'
-const recordDate = (record = {}) => String(record.date || record.workDate || record.createdAt || '').slice(0, 10)
-const recordIsSupport = (record = {}) => Boolean(record.supportTransferId || record.supportCompensation?.transferId || record.compensation?.support?.transferId)
+const employeePosition = (employee) => employee?.position || employee?.role || employee?.jobTitle || 'Nhân viên'
+const recordDate = (record) => String(record?.date || record?.workDate || record?.createdAt || '').slice(0, 10)
+const recordIsSupport = (record) => Boolean(record?.supportTransferId || record?.supportCompensation?.transferId || record?.compensation?.support?.transferId)
 const taskIsRequired = (task = {}) => task.required !== false
+const storeAliases = (store = {}) => [store.id, store.code]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
+const shiftAliases = (shift = {}) => [shift.id, shift.code]
+  .map((value) => String(value || '').trim())
+  .filter(Boolean)
 
-const homeStoreForEmployee = (app, employee) => (Array.isArray(app.stores) ? app.stores : [])
-  .find((store) => String(store.id || '') === String(employee?.storeId || app.session?.homeStoreId || app.session?.storeId || ''))
+const resolveTarget = (records, reference, identifierOf, fallback = null) => {
+  const source = Array.isArray(records) ? records : []
+  if (!source.length) return fallback
+  const resolution = operationalIdentifierRecordMatch(source, reference, identifierOf)
+  return resolution.ambiguous ? null : resolution.record
+}
+
+const referenceMatchesTarget = (records, target, reference, identifierOf) => {
+  if (!target || !String(reference || '').trim()) return false
+  const source = Array.isArray(records) && records.length ? records : [target]
+  const resolution = operationalIdentifierRecordMatch(source, reference, identifierOf)
+  return !resolution.ambiguous && resolution.record === target
+}
+
+const homeStoreForEmployee = (app, employee) => resolveTarget(
+  app.stores,
+  employee?.storeId || app.session?.homeStoreId || app.session?.storeId,
+  storeAliases,
+)
 
 const salaryPolicyForPeriod = (app, employee, store, period) => resolveStoreEmployeeSalaryPolicy(employee, {
   store,
@@ -78,10 +109,29 @@ const homePayrollForRows = (app, employee, rows, fallbackPeriod = '') => {
   })
   if (!groups.size && fallbackPeriod && fallbackPeriod !== 'all') groups.set(fallbackPeriod, [])
 
-  const policiesByPeriod = new Map([...groups.keys()].map((period) => [
-    period,
-    salaryPolicyForPeriod(app, employee, store, period),
-  ]))
+  let salaryPolicyError = null
+  const policiesByPeriod = new Map([...groups.keys()].map((period) => {
+    try {
+      return [period, salaryPolicyForPeriod(app, employee, store, period)]
+    } catch (error) {
+      if (error?.code !== STORE_SALARY_CONFIG_IDENTIFIER_COLLISION) throw error
+      salaryPolicyError ||= error
+      return [period, null]
+    }
+  }))
+  if (salaryPolicyError) {
+    return {
+      base: 0,
+      basis,
+      homeRows,
+      payByRecord: new Map(),
+      policy: null,
+      policiesByPeriod,
+      salaryPolicyError,
+      store,
+      totalHours,
+    }
+  }
   const tiered = [...policiesByPeriod.values()].some(Boolean)
   const payByRecord = new Map()
 
@@ -98,6 +148,7 @@ const homePayrollForRows = (app, employee, rows, fallbackPeriod = '') => {
       payByRecord,
       policy: null,
       policiesByPeriod,
+      salaryPolicyError: null,
       store,
       totalHours,
     }
@@ -128,6 +179,7 @@ const homePayrollForRows = (app, employee, rows, fallbackPeriod = '') => {
     payByRecord,
     policy: policiesByPeriod.get(fallbackPeriod) || [...policiesByPeriod.values()].find(Boolean) || null,
     policiesByPeriod,
+    salaryPolicyError: null,
     store,
     totalHours,
   }
@@ -192,17 +244,27 @@ const workedHours = (record) => {
 const findCurrentEmployee = (app) => {
   const session = app.session || {}
   const employees = Array.isArray(app.employees) ? app.employees : []
-  const keys = [session.employeeId, session.code, session.id].filter(Boolean).map(String)
-  const found = employees.find((employee) => keys.includes(String(employeeId(employee))) || (
-    session.username && employee.username === session.username
-  ))
-  return found ? { ...session, ...found } : session
+  const keys = [employeeId(app.currentEmployee), session.employeeId, session.code, session.id].filter(Boolean)
+  for (const key of keys) {
+    const resolution = operationalIdentifierRecordMatch(employees, key, employeeAliases)
+    if (resolution.ambiguous) return session
+    if (resolution.record) return { ...session, ...resolution.record }
+  }
+  const usernameMatches = employees.filter((employee) => session.username && employee.username === session.username)
+  return usernameMatches.length === 1 ? { ...session, ...usernameMatches[0] } : session
 }
 
-const attendanceForEmployee = (attendance, employee) => {
+const attendanceForEmployee = (attendance, employee, employees = []) => {
   const key = String(employeeId(employee))
   if (!key) return []
-  return attendance.filter((record) => !record.deletedAt && String(recordEmployeeId(record)) === key)
+  const targetEmployee = resolveTarget(employees, key, employeeAliases, employee)
+  if (!targetEmployee) return []
+  return attendance.filter((record) => (
+    !record.deletedAt
+    && recordEmployeeAliases(record).some((reference) => (
+      referenceMatchesTarget(employees, targetEmployee, reference, employeeAliases)
+    ))
+  ))
 }
 
 const isOffice = (employee, session) => employee?.unit === 'office' || session?.unit === 'office' || employee?.department === 'office'
@@ -247,6 +309,8 @@ const attendanceTone = (status) => {
 
 const officeExtras = (app, employee) => {
   const key = String(employeeId(employee))
+  const targetEmployee = resolveTarget(app.employees, key, employeeAliases, employee)
+  if (!targetEmployee) return []
   const sources = [
     ['Thưởng', app.officeBonuses],
     ['Phụ cấp', app.officeAllowances],
@@ -257,7 +321,9 @@ const officeExtras = (app, employee) => {
   return sources.flatMap(([fallbackType, records]) => (Array.isArray(records) ? records : []).map((record) => ({
     ...record,
     compensationType: record.type || record.kind || record.category || fallbackType,
-  }))).filter((record) => String(recordEmployeeId(record)) === key)
+  }))).filter((record) => recordEmployeeAliases(record).some((reference) => (
+    referenceMatchesTarget(app.employees, targetEmployee, reference, employeeAliases)
+  )))
 }
 
 function OfficeAttendanceHistory({ employee, rows }) {
@@ -320,7 +386,7 @@ export function EmployeeHome() {
   const app = useApp()
   const employee = findCurrentEmployee(app)
   const attendance = Array.isArray(app.attendance) ? app.attendance : []
-  const rows = attendanceForEmployee(attendance, employee).sort((a, b) => recordDate(b).localeCompare(recordDate(a)))
+  const rows = attendanceForEmployee(attendance, employee, app.employees).sort((a, b) => recordDate(b).localeCompare(recordDate(a)))
   const officeEmployee = isOffice(employee, app.session)
   const todayRecord = rows.find((row) => recordDate(row) === localDateIso())
   const checkedInAt = todayRecord?.checkIn || todayRecord?.checkInTime || app.checkedInAt
@@ -416,12 +482,26 @@ export function EmployeeHome() {
   }
 
   const currentShiftId = todayRecord?.shift || employee.shift || 'ca1'
+  const employeeStore = resolveTarget(app.stores, employee.storeId, storeAliases)
+  const employeeRecord = resolveTarget(app.employees, employeeId(employee), employeeAliases, employee)
+  const currentShift = resolveTarget(shifts, currentShiftId, shiftAliases, { id: currentShiftId })
   const tasks = (Array.isArray(app.tasks) ? app.tasks : []).filter((task) =>
-    String(task.storeId || employee.storeId) === String(employee.storeId)
-    && String(task.shiftId || task.shift || currentShiftId) === String(currentShiftId)
+    referenceMatchesTarget(app.stores, employeeStore, task.storeId || employee.storeId, storeAliases)
+    && referenceMatchesTarget(shifts, currentShift, task.shiftId || task.shift || currentShiftId, shiftAliases)
     && String(task.date || task.workDate || localDateIso()) === localDateIso(),
   )
-  const taskIsDone = (task) => task.completedBy?.[employeeId(employee)] ?? task.done
+  const taskIsDone = (task) => {
+    if (!employeeRecord) return false
+    const entries = Object.entries(task.completedBy || {}).filter(([reference]) => (
+      referenceMatchesTarget(app.employees, employeeRecord, reference, employeeAliases)
+    ))
+    for (const alias of employeeAliases(employeeRecord)) {
+      const completion = operationalIdentifierEntry(Object.fromEntries(entries), alias)
+      if (completion.ambiguous) return false
+      if (completion.found) return Boolean(completion.value)
+    }
+    return Boolean(task.done)
+  }
   const requiredTasks = tasks.filter(taskIsRequired)
   const incompleteRequiredTasks = requiredTasks.filter((task) => !taskIsDone(task))
   const totalRevenue = parseMoneyInput(cash) + parseMoneyInput(transfer)
@@ -430,7 +510,7 @@ export function EmployeeHome() {
   const currentTime = new Date().toLocaleTimeString('vi-VN', { hour12: false })
   const workShift = getShift(currentShiftId)
   const stores = Array.isArray(app.stores) ? app.stores : []
-  const store = stores.find((item) => String(item.id) === String(employee.storeId || app.session?.storeId))
+  const store = resolveTarget(stores, employee.storeId || app.session?.storeId, storeAliases)
   const type = employeeType(employee)
   const payrollPeriod = localDateIso().slice(0, 7)
   const currentMonthPayroll = homePayrollForRows(app, employee, rows.filter((row) => recordDate(row).startsWith(payrollPeriod)), payrollPeriod)
@@ -438,6 +518,8 @@ export function EmployeeHome() {
   const historySupportByAttendance = new Map(supportAttendanceCompensationRows({
     attendance: rows,
     employeeId: employeeId(employee),
+    employee,
+    employees: app.employees,
     supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
     stores,
   }).map((item) => [item.record, item]))
@@ -458,6 +540,7 @@ export function EmployeeHome() {
       : monthlyHoursFormula
         ? calculateEmployeeBasePay(employee, { hours: expectedShiftHours })
         : rate
+  const expectedShiftPayUnavailable = Boolean(currentMonthPayroll.salaryPolicyError)
 
   const handleFinish = () => {
     if (!canFinish) return app.notify?.('Hoàn thành công việc cố định và nhập doanh thu trước khi kết ca.', 'info')
@@ -472,6 +555,7 @@ export function EmployeeHome() {
   return (
     <div className="page employee-home">
       <div className="employee-hero-title"><span>‹</span><h1>{store?.name || 'IDOSI'}</h1><span>›</span><p>HỆ THỐNG LÀM VIỆC NHÂN VIÊN</p></div>
+      {(currentMonthPayroll.salaryPolicyError || historyPayroll.salaryPolicyError) && <InfoNote tone="red">Mã cấu hình lương đang trùng hoa/thường. Số lương tạm tính đã được khóa để tránh hiển thị sai; vui lòng báo Admin xử lý dữ liệu.</InfoNote>}
       <div className="employee-top-grid">
         <Card className="checkin-card"><h2>ĐIỂM DANH</h2><p>{shortDate(new Date())}</p><strong>{formatTime(checkedInAt || currentTime)}</strong><Button icon={Fingerprint} loading={locatingAction === 'in'} onClick={handleCheckIn} disabled={Boolean(checkedInAt) || Boolean(locatingAction)}>{checkedInAt ? 'ĐÃ ĐIỂM DANH' : 'ĐIỂM DANH'}</Button><small>{checkedInAt ? `Đã vào ca lúc ${formatTime(checkedInAt)}` : 'Thời gian và vị trí sẽ được ghi nhận'}</small></Card>
         <Card className="employee-info-card"><h2>THÔNG TIN NHÂN VIÊN</h2><dl><div><dt>Mã nhân viên</dt><dd>{employeeId(employee) || '—'}</dd></div><div><dt>Họ và tên</dt><dd>{employee.name || '—'}</dd></div><div><dt>Vị trí</dt><dd>{employeePosition(employee)}</dd></div><div><dt>Loại nhân viên</dt><dd><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></dd></div><div><dt>Số điện thoại</dt><dd>{employee.phone || '—'}</dd></div></dl></Card>
@@ -481,13 +565,13 @@ export function EmployeeHome() {
       {incompleteRequiredTasks.length > 0 && <InfoNote tone="orange">Bạn còn {incompleteRequiredTasks.length} công việc bắt buộc. Vào mục <strong>“Công việc được giao”</strong>, tick kết quả rồi bấm <strong>“LƯU KẾT QUẢ”</strong> trước khi kết ca.</InfoNote>}
       <Card className="finish-shift" title="THÔNG TIN KẾT CA">
         <div className="finish-shift__grid">
-          <div><Field label="Chi phí trong ca (nếu có)"><MoneyInput value={expense} onChange={(event) => setExpense(event.target.value)} placeholder="Nhập số tiền" /></Field><div className="expected-pay"><span>Số giờ làm dự kiến: <b>{expectedShiftHours} tiếng</b></span><span>{payBasis === 'monthly' && !monthlyHoursFormula ? 'Mức lương tháng' : 'Lương ca dự kiến'}: <b>{money(expectedShiftPay)}</b></span><small>{salaryPolicy ? `Đến ${salaryPolicy.thresholdHours} giờ: ${money(salaryPolicy.standardHourlyRateVnd)}/giờ · Vượt: ${money(salaryPolicy.excessHourlyRateVnd)}/giờ` : payBasis === 'hourly' ? `(${money(rate)}/giờ)` : monthlyHoursFormula ? `${expectedShiftHours} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || rate)}` : 'Full-time hưởng lương theo tháng'}</small></div></div>
+          <div><Field label="Chi phí trong ca (nếu có)"><MoneyInput value={expense} onChange={(event) => setExpense(event.target.value)} placeholder="Nhập số tiền" /></Field><div className="expected-pay"><span>Số giờ làm dự kiến: <b>{expectedShiftHours} tiếng</b></span><span>{payBasis === 'monthly' && !monthlyHoursFormula ? 'Mức lương tháng' : 'Lương ca dự kiến'}: <b>{expectedShiftPayUnavailable ? '—' : money(expectedShiftPay)}</b></span><small>{expectedShiftPayUnavailable ? 'Chờ Admin xử lý dữ liệu cấu hình lương trùng.' : salaryPolicy ? `Đến ${salaryPolicy.thresholdHours} giờ: ${money(salaryPolicy.standardHourlyRateVnd)}/giờ · Vượt: ${money(salaryPolicy.excessHourlyRateVnd)}/giờ` : payBasis === 'hourly' ? `(${money(rate)}/giờ)` : monthlyHoursFormula ? `${expectedShiftHours} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || rate)}` : 'Full-time hưởng lương theo tháng'}</small></div></div>
           <div><h3>Doanh thu ca <b>(bắt buộc)</b></h3><div className="revenue-entry"><Field label="Tiền mặt"><MoneyInput value={cash} onChange={(event) => setCash(event.target.value)} placeholder="Nhập số tiền" /></Field><Field label="Chuyển khoản"><MoneyInput value={transfer} onChange={(event) => setTransfer(event.target.value)} placeholder="Nhập số tiền" /></Field><div><span>Tổng tiền</span><strong>{money(totalRevenue)}</strong></div></div><Button className="finish-button" icon={LockKeyhole} loading={locatingAction === 'out'} disabled={!canFinish || Boolean(locatingAction)} onClick={handleFinish}>{finishedShift ? 'ĐÃ KẾT CA' : 'KẾT CA'}</Button>{!canFinish && !finishedShift && <small className="finish-warning">Vui lòng hoàn thành công việc cố định và nhập doanh thu để kết ca</small>}</div>
           <div className="tiktok-box"><h3>♪ CLIP TIKTOK</h3><p>Nếu ca này có làm clip TikTok, vui lòng tick vào ô bên dưới.</p><label><input type="checkbox" checked={tiktok} onChange={(event) => setTiktok(event.target.checked)} /> Ca này có làm clip TikTok</label></div>
         </div>
       </Card>
       <Card title="LỊCH SỬ CA LÀM" action={<><DateRange value={historyRange} onChange={setHistoryRange} /><Select value={historyShift} onChange={(event) => setHistoryShift(event.target.value)} aria-label="Lọc ca làm"><option value="all">Tất cả ca</option>{shifts.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</Select></>}>
-        <TableWrap><thead><tr><th>STT</th><th>Mã NV</th><th>Tên nhân viên</th><th>Loại NV</th><th>Ca làm</th><th>Ngày</th><th>Giờ vào</th><th>Giờ ra</th><th>Vị trí</th><th>Số giờ</th><th>Lương</th><th>Trạng thái</th></tr></thead><tbody>{historyRows.slice(0, 7).map((row, index) => { const shift = getShift(row.shift); const hours = workedHours(row); const support = historySupportByAttendance.get(row); const homePay = historyPayroll.payByRecord.get(row); const rowPay = support?.isSupport ? money(support.actualPay) : homePay != null ? money(homePay) : payBasis === 'hourly' ? money(hours * rate) : 'Theo lương tháng'; return <tr key={row.id || index}><td>{index + 1}</td><td>{employeeId(employee)}</td><td>{employee.name}</td><td><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></td><td><Badge tone={support?.isSupport ? 'orange' : row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{support?.isSupport ? `Hỗ trợ · ${support.destinationStoreName}` : shift.name}</Badge></td><td>{shortDate(recordDate(row))}</td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td>{locationLabel(row.checkInLocation || row.location)}</td><td>{hours.toFixed(2)}</td><td><div className="table-stack"><strong>{rowPay}</strong>{support?.isSupport && <small>Gồm phụ cấp {money(support.allowance)}</small>}</div></td><td><Badge tone={attendanceTone(checkInStatus(row, employee))}>{checkInStatus(row, employee)}</Badge></td></tr>})}{!historyRows.length && <tr><td colSpan="12">Không có ca làm phù hợp với bộ lọc.</td></tr>}</tbody></TableWrap>
+        <TableWrap><thead><tr><th>STT</th><th>Mã NV</th><th>Tên nhân viên</th><th>Loại NV</th><th>Ca làm</th><th>Ngày</th><th>Giờ vào</th><th>Giờ ra</th><th>Vị trí</th><th>Số giờ</th><th>Lương</th><th>Trạng thái</th></tr></thead><tbody>{historyRows.slice(0, 7).map((row, index) => { const shift = getShift(row.shift); const hours = workedHours(row); const support = historySupportByAttendance.get(row); const homePay = historyPayroll.payByRecord.get(row); const rowPay = support?.isSupport ? money(support.actualPay) : historyPayroll.salaryPolicyError ? '—' : homePay != null ? money(homePay) : payBasis === 'hourly' ? money(hours * rate) : 'Theo lương tháng'; return <tr key={row.id || index}><td>{index + 1}</td><td>{employeeId(employee)}</td><td>{employee.name}</td><td><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></td><td><Badge tone={support?.isSupport ? 'orange' : row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{support?.isSupport ? `Hỗ trợ · ${support.destinationStoreName}` : shift.name}</Badge></td><td>{shortDate(recordDate(row))}</td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td>{locationLabel(row.checkInLocation || row.location)}</td><td>{hours.toFixed(2)}</td><td><div className="table-stack"><strong>{rowPay}</strong>{support?.isSupport && <small>Gồm phụ cấp {money(support.allowance)}</small>}</div></td><td><Badge tone={attendanceTone(checkInStatus(row, employee))}>{checkInStatus(row, employee)}</Badge></td></tr>})}{!historyRows.length && <tr><td colSpan="12">Không có ca làm phù hợp với bộ lọc.</td></tr>}</tbody></TableWrap>
         <TableFooter shown={Math.min(7, historyRows.length)} total={historyRows.length} />
       </Card>
     </div>
@@ -497,7 +581,7 @@ export function EmployeeHome() {
 export function EmployeePayroll() {
   const app = useApp()
   const employee = findCurrentEmployee(app)
-  const allRows = attendanceForEmployee(Array.isArray(app.attendance) ? app.attendance : [], employee)
+  const allRows = attendanceForEmployee(Array.isArray(app.attendance) ? app.attendance : [], employee, app.employees)
   const periods = [...new Set(allRows.map((row) => recordDate(row).slice(0, 7)).filter(Boolean))].sort().reverse()
   const [period, setPeriod] = useState(() => periods[0] || 'all')
   const rows = period === 'all' ? allRows : allRows.filter((row) => recordDate(row).startsWith(period))
@@ -506,6 +590,8 @@ export function EmployeePayroll() {
   const compensationRows = supportAttendanceCompensationRows({
     attendance: allRows,
     employeeId: employeeId(employee),
+    employee,
+    employees: app.employees,
     supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
     stores: Array.isArray(app.stores) ? app.stores : [],
   })
@@ -520,18 +606,21 @@ export function EmployeePayroll() {
   const base = homePayroll.base
   const bonus = rows.reduce((total, row) => total + (Number(row.bonus) || 0), 0)
   const total = base + supportTotals.actualPay + bonus
+  const payrollUnavailable = Boolean(homePayroll.salaryPolicyError)
+  const payrollMoney = (value) => payrollUnavailable ? '—' : money(value)
   const type = employeeType(employee)
   return (
     <div className="page">
       <PageHeader title="BẢNG LƯƠNG" subtitle={`Thống kê lương cửa hàng chính, ca hỗ trợ và thưởng của ${employee.name || 'nhân viên'}.`} actions={<><Select value={period} onChange={(event) => setPeriod(event.target.value)} aria-label="Kỳ lương"><option value="all">Tất cả kỳ lương</option>{periods.map((item) => <option key={item} value={item}>{item.split('-').reverse().join('/')}</option>)}</Select><Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge></>} />
+      {homePayroll.salaryPolicyError && <InfoNote tone="red">Mã cấu hình lương đang trùng hoa/thường. Hệ thống không tạm tính lương cửa hàng chính cho đến khi Admin xử lý dữ liệu.</InfoNote>}
       <div className="metric-grid metric-grid--four">
-        <MetricCard label="TỔNG THU NHẬP" value={money(total)} helper="Lương cửa hàng chính + ca hỗ trợ + thưởng" icon={Wallet} tone="green" />
-        <MetricCard label="LƯƠNG CỬA HÀNG CHÍNH" value={money(base)} helper={homePayroll.policy ? `${totalHours.toFixed(2)} giờ · Đến ${homePayroll.policy.thresholdHours} giờ: ${money(homePayroll.policy.standardHourlyRateVnd)}/giờ · Vượt: ${money(homePayroll.policy.excessHourlyRateVnd)}/giờ` : payBasis === 'hourly' ? `${totalHours.toFixed(2)} giờ × ${money(hourlyRate)}/giờ` : usesMonthlyHoursFormula(employee) ? `${totalHours.toFixed(2)} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || monthlySalary)}` : `Lương tháng ${money(monthlySalary)}`} icon={Banknote} tone="blue" />
-        <MetricCard label="LƯƠNG CA HỖ TRỢ" value={money(supportTotals.actualPay)} helper={`${supportTotals.hours.toFixed(2)} giờ · Gồm phụ cấp ${money(supportTotals.allowance)}`} icon={Clock3} tone="green" />
-        <MetricCard label="TỔNG THƯỞNG" value={money(bonus)} helper="Các khoản thưởng đã ghi nhận" icon={Gift} tone="orange" />
+        <MetricCard label="TỔNG THU NHẬP" value={payrollMoney(total)} helper={payrollUnavailable ? 'Chờ Admin xử lý dữ liệu trùng' : 'Lương cửa hàng chính + ca hỗ trợ + thưởng'} icon={Wallet} tone="green" />
+        <MetricCard label="LƯƠNG CỬA HÀNG CHÍNH" value={payrollMoney(base)} helper={payrollUnavailable ? 'Không hiển thị số tạm tính có thể sai' : homePayroll.policy ? `${totalHours.toFixed(2)} giờ · Đến ${homePayroll.policy.thresholdHours} giờ: ${money(homePayroll.policy.standardHourlyRateVnd)}/giờ · Vượt: ${money(homePayroll.policy.excessHourlyRateVnd)}/giờ` : payBasis === 'hourly' ? `${totalHours.toFixed(2)} giờ × ${money(hourlyRate)}/giờ` : usesMonthlyHoursFormula(employee) ? `${totalHours.toFixed(2)} / ${employee.requiredMonthlyHours} giờ × ${money(employee.baseSalary || monthlySalary)}` : `Lương tháng ${money(monthlySalary)}`} icon={Banknote} tone="blue" />
+        <MetricCard label="LƯƠNG CA HỖ TRỢ" value={payrollMoney(supportTotals.actualPay)} helper={payrollUnavailable ? 'Tổng thu nhập tạm thời không khả dụng' : `${supportTotals.hours.toFixed(2)} giờ · Gồm phụ cấp ${money(supportTotals.allowance)}`} icon={Clock3} tone="green" />
+        <MetricCard label="TỔNG THƯỞNG" value={payrollMoney(bonus)} helper="Các khoản thưởng đã ghi nhận" icon={Gift} tone="orange" />
       </div>
       <Card title="CHI TIẾT LƯƠNG THEO CA">
-        <TableWrap><thead><tr><th>STT</th><th>Ngày làm</th><th>Ca làm</th><th>Thời gian vào</th><th>Thời gian kết ca</th><th>Số giờ</th><th>Cơ chế lương</th><th>Thưởng ca</th><th>Thành tiền</th></tr></thead><tbody>{rows.map((row, index) => { const hours = workedHours(row); const rowBonus = Number(row.bonus) || 0; const support = supportByAttendance.get(row); const rowPolicy = homePayroll.policiesByPeriod.get(recordDate(row).slice(0, 7)); const rowPay = support?.isSupport ? support.actualPay : homePayroll.payByRecord.get(row); const mechanism = support?.isSupport ? `${money(support.hourlyRate)}/giờ · Phụ cấp ${money(support.allowance)}` : rowPolicy ? `Đến ${rowPolicy.thresholdHours} giờ: ${money(rowPolicy.standardHourlyRateVnd)}/giờ · Vượt: ${money(rowPolicy.excessHourlyRateVnd)}/giờ` : payBasis === 'hourly' ? `${money(hourlyRate)}/giờ` : usesMonthlyHoursFormula(employee) ? `${hours.toFixed(2)} / ${employee.requiredMonthlyHours} giờ` : `${money(monthlySalary)}/tháng`; return <tr key={row.id || index}><td>{index + 1}</td><td>{shortDate(recordDate(row))}</td><td><Badge tone={support?.isSupport ? 'orange' : row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{support?.isSupport ? `Hỗ trợ · ${support.destinationStoreName}` : getShift(row.shift).name}</Badge></td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td>{hours.toFixed(2)}</td><td>{mechanism}</td><td>{money(rowBonus)}</td><td className="green-text"><strong>{rowPay != null ? money(rowPay + rowBonus) : `Theo lương tháng${rowBonus ? ` + ${money(rowBonus)}` : ''}`}</strong></td></tr>})}</tbody></TableWrap>
+        <TableWrap><thead><tr><th>STT</th><th>Ngày làm</th><th>Ca làm</th><th>Thời gian vào</th><th>Thời gian kết ca</th><th>Số giờ</th><th>Cơ chế lương</th><th>Thưởng ca</th><th>Thành tiền</th></tr></thead><tbody>{rows.map((row, index) => { const hours = workedHours(row); const rowBonus = Number(row.bonus) || 0; const support = supportByAttendance.get(row); const rowPolicy = homePayroll.policiesByPeriod.get(recordDate(row).slice(0, 7)); const rowPay = support?.isSupport ? support.actualPay : homePayroll.payByRecord.get(row); const mechanism = payrollUnavailable ? 'Không khả dụng' : support?.isSupport ? `${money(support.hourlyRate)}/giờ · Phụ cấp ${money(support.allowance)}` : rowPolicy ? `Đến ${rowPolicy.thresholdHours} giờ: ${money(rowPolicy.standardHourlyRateVnd)}/giờ · Vượt: ${money(rowPolicy.excessHourlyRateVnd)}/giờ` : payBasis === 'hourly' ? `${money(hourlyRate)}/giờ` : usesMonthlyHoursFormula(employee) ? `${hours.toFixed(2)} / ${employee.requiredMonthlyHours} giờ` : `${money(monthlySalary)}/tháng`; return <tr key={row.id || index}><td>{index + 1}</td><td>{shortDate(recordDate(row))}</td><td><Badge tone={support?.isSupport ? 'orange' : row.shift === 'ca2' ? 'orange' : row.shift === 'ca3' ? 'blue' : 'green'}>{support?.isSupport ? `Hỗ trợ · ${support.destinationStoreName}` : getShift(row.shift).name}</Badge></td><td>{formatTime(row.checkIn)}</td><td>{formatTime(row.checkOut)}</td><td>{hours.toFixed(2)}</td><td>{mechanism}</td><td>{payrollMoney(rowBonus)}</td><td className="green-text"><strong>{payrollUnavailable ? '—' : rowPay != null ? money(rowPay + rowBonus) : `Theo lương tháng${rowBonus ? ` + ${money(rowBonus)}` : ''}`}</strong></td></tr>})}</tbody></TableWrap>
         <TableFooter shown={rows.length} total={rows.length} />
       </Card>
     </div>
@@ -541,7 +630,7 @@ export function EmployeePayroll() {
 export function EmployeeCashflow() {
   const app = useApp()
   const employee = findCurrentEmployee(app)
-  const allRows = attendanceForEmployee(Array.isArray(app.attendance) ? app.attendance : [], employee).sort((a, b) => recordDate(b).localeCompare(recordDate(a)))
+  const allRows = attendanceForEmployee(Array.isArray(app.attendance) ? app.attendance : [], employee, app.employees).sort((a, b) => recordDate(b).localeCompare(recordDate(a)))
   const [dateRange, setDateRange] = useState(() => dateRangeForRows(allRows))
   const [shiftFilter, setShiftFilter] = useState('all')
   const rows = filterRowsByRange(allRows, dateRange).filter((row) => shiftFilter === 'all' || row.shift === shiftFilter).slice(0, 7)
@@ -574,10 +663,12 @@ export function EmployeeCashflow() {
 export function EmployeeShiftHistory() {
   const app = useApp()
   const employee = findCurrentEmployee(app)
-  const allRows = attendanceForEmployee(Array.isArray(app.attendance) ? app.attendance : [], employee)
+  const allRows = attendanceForEmployee(Array.isArray(app.attendance) ? app.attendance : [], employee, app.employees)
   const supportRows = supportAttendanceCompensationRows({
     attendance: allRows,
     employeeId: employeeId(employee),
+    employee,
+    employees: app.employees,
     supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
     stores: Array.isArray(app.stores) ? app.stores : [],
   })
@@ -609,6 +700,7 @@ export function EmployeeShiftHistory() {
   return (
     <div className="page">
       <PageHeader title="LỊCH SỬ CA LÀM" subtitle={`Xem lịch sử ca làm của ${employee.name || 'nhân viên'}.`} icon={Clock3} actions={<Badge tone={type === 'Full-Time' ? 'blue' : 'green'}>{type}</Badge>} />
+      {homePayroll.salaryPolicyError && <InfoNote tone="red">Mã cấu hình lương đang trùng hoa/thường. Thành tiền của ca tại cửa hàng chính tạm thời không được tính.</InfoNote>}
       {filterPanel}
       <Card action={<ExportButton onClick={() => downloadCsv('lich-su-ca-lam.csv', rows)} />}>
         <TableWrap>
@@ -618,7 +710,9 @@ export function EmployeeShiftHistory() {
             const support = supportByAttendance.get(row)
             const rowPolicy = homePayroll.policiesByPeriod.get(recordDate(row).slice(0, 7))
             const calculatedHomePay = homePayroll.payByRecord.get(row)
-            const homePay = calculatedHomePay != null
+            const homePay = homePayroll.salaryPolicyError
+              ? '—'
+              : calculatedHomePay != null
               ? money(calculatedHomePay)
               : payBasis === 'hourly'
                 ? money(hours * hourlyRate)

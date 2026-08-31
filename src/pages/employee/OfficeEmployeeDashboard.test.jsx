@@ -345,4 +345,165 @@ describe('operational-role attendance overview', () => {
       shiftEnd: '17:00',
     }))
   })
+
+  it('does not mix attendance or daily schedules from an employee id case collision', () => {
+    const exactProfile = {
+      ...profile,
+      id: 'VP-CASE',
+      code: 'VP-CASE',
+      unit: 'office',
+      workShifts: [{ id: 'EXACT-SHIFT', name: 'Ca hồ sơ chính xác', start: '08:00', end: '17:00' }],
+    }
+    const otherProfile = {
+      ...exactProfile,
+      id: 'vp-case',
+      code: 'vp-case',
+      name: 'Nhân viên chữ thường',
+    }
+    const date = vietnamToday()
+    mocked.app = makeApp({
+      session: { role: 'employee', employeeId: 'VP-CASE', storeId: 'OFFICE' },
+      currentEmployee: exactProfile,
+      employees: [exactProfile, otherProfile],
+      attendance: [{
+        id: 'ATT-EXACT', employeeId: 'VP-CASE', date, shiftName: 'Ca đúng nhân viên',
+        checkIn: '08:00', checkOut: '17:00', hours: 8,
+      }, {
+        id: 'ATT-OTHER', employeeId: 'vp-case', date, shiftName: 'Ca của nhân viên khác',
+        checkIn: '09:00', checkOut: '17:00', hours: 7,
+      }],
+      supportWorkSchedules: [{
+        id: 'SCHEDULE-OTHER', employeeId: 'vp-case', date,
+        shiftName: 'Lịch của nhân viên khác', start: '10:00', end: '18:00',
+      }],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+
+    expect(screen.getByText('Ca đúng nhân viên')).toBeTruthy()
+    expect(screen.queryByText('Ca của nhân viên khác')).toBeNull()
+    expect(screen.queryByText('Lịch của nhân viên khác')).toBeNull()
+    expect(screen.getByText('Ca hồ sơ chính xác')).toBeTruthy()
+  })
+
+  it('uses the exact store id payroll period before a case-insensitive alias', () => {
+    const officeProfile = {
+      ...profile,
+      id: 'VP-PAYROLL-COLLISION',
+      code: 'VP-PAYROLL-COLLISION',
+      unit: 'office',
+      storeId: 'OFFICE',
+      position: 'Nhân viên văn phòng',
+      monthlySalary: 8_000_000,
+    }
+    const period = vietnamToday().slice(0, 7)
+    mocked.app = makeApp({
+      session: { role: 'employee', employeeId: officeProfile.id, storeId: 'OFFICE' },
+      currentEmployee: officeProfile,
+      employees: [officeProfile],
+      payrollPeriods: [{
+        id: 'PAY-OFFICE-UPPER', storeId: 'OFFICE', period, status: 'Đã chốt',
+        rows: [{ employeeId: officeProfile.id, baseSalary: 1_000_000, gross: 1_000_000 }],
+      }, {
+        id: 'PAY-OFFICE-LOWER', storeId: 'office', period, status: 'Đã chốt',
+        needsReclose: true,
+        rows: [{ employeeId: officeProfile.id, baseSalary: 9_000_000, gross: 9_000_000 }],
+      }],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+
+    expect(screen.queryByText(/Kỳ lương có nhiều bản ghi trùng mã cửa hàng/u)).toBeNull()
+    expect(screen.getAllByText('1,000,000 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+  })
+
+  it('uses the exact employee id payroll row before a case-insensitive alias', () => {
+    const officeProfile = {
+      ...profile,
+      id: 'VP-PAYROLL-ROW',
+      code: 'VP-PAYROLL-ROW',
+      unit: 'office',
+      storeId: 'OFFICE',
+      position: 'Nhân viên văn phòng',
+      monthlySalary: 8_000_000,
+    }
+    const period = vietnamToday().slice(0, 7)
+    mocked.app = makeApp({
+      session: { role: 'employee', employeeId: officeProfile.id, storeId: 'OFFICE' },
+      currentEmployee: officeProfile,
+      employees: [officeProfile],
+      payrollPeriods: [{
+        id: 'PAY-OFFICE-ROW-COLLISION', storeId: 'OFFICE', period, status: 'Đã chốt',
+        rows: [{ employeeId: 'VP-PAYROLL-ROW', baseSalary: 1_000_000, gross: 1_000_000 }, {
+          employeeId: 'vp-payroll-row', baseSalary: 9_000_000, gross: 9_000_000,
+        }],
+      }],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+
+    expect(screen.queryByText(/Kỳ lương có nhiều dòng trùng mã nhân viên/u)).toBeNull()
+    expect(screen.getAllByText('1,000,000 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+  })
+
+  it('fails closed when a payroll store alias is ambiguous without an exact match', () => {
+    const officeProfile = {
+      ...profile,
+      id: 'VP-PAYROLL-AMBIGUOUS-STORE',
+      code: 'VP-PAYROLL-AMBIGUOUS-STORE',
+      unit: 'office',
+      storeId: 'OFFICE',
+      monthlySalary: 8_000_000,
+    }
+    const period = vietnamToday().slice(0, 7)
+    mocked.app = makeApp({
+      session: { role: 'employee', employeeId: officeProfile.id, storeId: 'OFFICE' },
+      currentEmployee: officeProfile,
+      employees: [officeProfile],
+      payrollPeriods: [{
+        id: 'PAY-OFFICE-MIXED-ONE', storeId: 'Office', period, status: 'Đã chốt',
+        rows: [{ employeeId: officeProfile.id, gross: 1_000_000 }],
+      }, {
+        id: 'PAY-OFFICE-MIXED-TWO', storeId: 'office', period, status: 'Đã chốt',
+        rows: [{ employeeId: officeProfile.id, gross: 9_000_000 }],
+      }],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+
+    expect(screen.getByText(/Kỳ lương có nhiều bản ghi trùng mã cửa hàng/u)).toBeTruthy()
+    expect(screen.queryByText('1,000,000 đ')).toBeNull()
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+  })
+
+  it('fails closed when an employee payroll alias is ambiguous without an exact match', () => {
+    const officeProfile = {
+      ...profile,
+      id: 'VP-PAYROLL-AMBIGUOUS-ROW',
+      code: 'VP-PAYROLL-AMBIGUOUS-ROW',
+      unit: 'office',
+      storeId: 'OFFICE',
+      monthlySalary: 8_000_000,
+    }
+    const period = vietnamToday().slice(0, 7)
+    mocked.app = makeApp({
+      session: { role: 'employee', employeeId: officeProfile.id, storeId: 'OFFICE' },
+      currentEmployee: officeProfile,
+      employees: [officeProfile],
+      payrollPeriods: [{
+        id: 'PAY-OFFICE-AMBIGUOUS-ROW', storeId: 'OFFICE', period, status: 'Đã chốt',
+        rows: [{ employeeId: 'vp-payroll-ambiguous-row', gross: 1_000_000 }, {
+          employeeId: 'Vp-Payroll-Ambiguous-Row', gross: 9_000_000,
+        }],
+      }],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+
+    expect(screen.getByText(/Kỳ lương có nhiều dòng trùng mã nhân viên/u)).toBeTruthy()
+    expect(screen.queryByText('1,000,000 đ')).toBeNull()
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+  })
 })

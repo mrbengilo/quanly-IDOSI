@@ -76,4 +76,24 @@ describe('employee work-history route', () => {
     expect(screen.getAllByText('377,000 đ').length).toBeGreaterThan(0)
     expect(screen.queryByText('Ca đã xóa')).toBeNull()
   })
+
+  it('does not mix attendance from an employee whose id differs only by case', () => {
+    mocked.app = employeeApp()
+    mocked.app.employees.push({
+      id: 'e01', name: 'Nhân viên chữ thường', storeId: 'S01', unit: 'store', employmentType: 'Full-Time',
+    })
+    mocked.app.attendance.push({
+      id: 'ATT-OTHER-CASE', employeeId: 'e01', storeId: 'S01', date: '2026-08-21',
+      shift: 'ca1', shiftName: 'Ca của nhân viên khác', checkIn: '08:00', checkOut: '17:00', hours: 8,
+    })
+
+    render(
+      <MemoryRouter initialEntries={['/employee/work-history']}>
+        <Routes><Route path="/employee/work-history" element={<EmployeeShiftHistory />} /></Routes>
+      </MemoryRouter>,
+    )
+
+    expect(screen.getByText('Ca cửa hàng chính')).toBeTruthy()
+    expect(screen.queryByText('Ca của nhân viên khác')).toBeNull()
+  })
 })

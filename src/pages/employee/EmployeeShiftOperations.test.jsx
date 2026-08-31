@@ -8,8 +8,8 @@ vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 
 const baseApp = () => ({
   session: { role: 'employee', employeeId: 'E01', code: 'E01', storeId: 'S01' },
-  currentEmployee: { id: 'E01', name: 'Nguyễn An', storeId: 'S01', unit: 'store' },
-  employees: [{ id: 'E01', name: 'Nguyễn An', storeId: 'S01', unit: 'store' }],
+  currentEmployee: { id: 'EMP-DB-01', code: 'E01', name: 'Nguyễn An', storeId: 'S01', unit: 'store' },
+  employees: [{ id: 'EMP-DB-01', code: 'E01', name: 'Nguyễn An', storeId: 'S01', unit: 'store' }],
   stores: [{ id: 'S01', name: 'Dosii NTL' }],
   attendance: [{
     id: 'ATT-01', employeeId: 'E01', storeId: 'S01', date: '2026-08-22',
@@ -59,6 +59,42 @@ describe('employee shift operations', () => {
     }))
   })
 
+  it('keeps case-colliding employee attendance and expenses isolated by exact id', async () => {
+    mocked.app.employees = [
+      mocked.app.currentEmployee,
+      { id: 'e01', name: 'Nhân viên chữ thường', storeId: 'S01', unit: 'store' },
+    ]
+    mocked.app.attendance = [{
+      ...mocked.app.attendance[0],
+      id: 'ATT-LOWER-EMPLOYEE',
+      employeeId: 'e01',
+    }, {
+      ...mocked.app.attendance[0],
+      id: 'ATT-UPPER-EMPLOYEE',
+      employeeId: 'E01',
+    }]
+    mocked.app.expenseEntries = [{
+      id: 'EXP-UPPER', sourceType: 'shift-expense-item', employeeId: 'E01',
+      storeId: 'S01', name: 'Chi phí đúng nhân viên', amount: 20_000,
+    }, {
+      id: 'EXP-LOWER', sourceType: 'shift-expense-item', employeeId: 'e01',
+      storeId: 'S01', name: 'Chi phí nhân viên khác', amount: 90_000,
+    }]
+
+    render(<EmployeeShiftExpensePage />)
+
+    expect(screen.getByText('Chi phí đúng nhân viên')).toBeTruthy()
+    expect(screen.queryByText('Chi phí nhân viên khác')).toBeNull()
+    fireEvent.change(screen.getByLabelText(/Tên chi phí/i), { target: { value: 'Bổ sung vật dụng' } })
+    fireEvent.change(screen.getByLabelText(/Số tiền/i), { target: { value: '30' } })
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
+
+    await waitFor(() => expect(mocked.app.addShiftExpense).toHaveBeenCalledTimes(1))
+    expect(mocked.app.addShiftExpense).toHaveBeenCalledWith(expect.objectContaining({
+      attendanceId: 'ATT-UPPER-EMPLOYEE',
+    }))
+  })
+
   it('requires one reason for incomplete fixed work and submits every task with the calculated progress', async () => {
     mocked.app.tasks = [{
       id: 'TASK-01', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
@@ -85,7 +121,7 @@ describe('employee shift operations', () => {
     }))
   })
 
-  it('keeps reward work out of the mandatory task screen because it has its own menu', async () => {
+  it('keeps reward work and already-completed fixed work out of the mandatory task screen', () => {
     mocked.app.tasks = [{
       id: 'TASK-FIXED', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
       employeeIds: ['E01'], title: 'Mở cửa đúng quy trình', required: true, catalogKind: 'FIXED_TASK', completedBy: { E01: true },
@@ -99,18 +135,54 @@ describe('employee shift operations', () => {
 
     expect(screen.queryByText('Tùy chọn · Thưởng 50,000 đ')).toBeNull()
     expect(screen.queryByText('Quay clip sản phẩm')).toBeNull()
+    expect(screen.queryByText('Mở cửa đúng quy trình')).toBeNull()
     expect(screen.getByText(/Công việc nhận thưởng được tick và lưu riêng/i)).toBeTruthy()
+    expect(screen.getByText('1/1 · 100%')).toBeTruthy()
     expect(screen.queryByLabelText(/Lý do công việc bắt buộc/u)).toBeNull()
-    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }))
+    expect(mocked.app.saveStoreTaskProgress).not.toHaveBeenCalled()
+  })
 
-    await waitFor(() => expect(mocked.app.saveStoreTaskProgress).toHaveBeenCalledWith(expect.objectContaining({
-      incompleteReason: '',
-      tasks: [
-        { id: 'TASK-FIXED', completed: true },
-        { id: 'TASK-REWARD', completed: false },
-      ],
-    })))
+  it('shows only checklist rows bound to the current open attendance', () => {
+    mocked.app.tasks = [{
+      id: 'TASK-CURRENT', checklistAttendanceId: 'att-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
+      employeeIds: ['E01'], title: 'Checklist ca đang mở', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+    }, {
+      id: 'TASK-CLOSED', checklistAttendanceId: 'ATT-CLOSED', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
+      employeeIds: ['E01'], title: 'Checklist ca đã đóng', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+    }, {
+      id: 'TASK-MANUAL', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
+      employeeIds: ['E01'], title: 'Công việc giao thêm trong ca', required: true, completedBy: {},
+    }]
+
+    renderAssignedTasks()
+
+    expect(screen.getByText('Checklist ca đang mở')).toBeTruthy()
+    expect(screen.getByText('Công việc giao thêm trong ca')).toBeTruthy()
+    expect(screen.queryByText('Checklist ca đã đóng')).toBeNull()
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2)
+  })
+
+  it('does not attach a lowercase checklist binding to an exact uppercase attendance collision', () => {
+    mocked.app.attendance = [{
+      ...mocked.app.attendance[0],
+      id: 'ATT-X',
+    }, {
+      ...mocked.app.attendance[0],
+      id: 'att-x',
+      checkOut: '12:00',
+      checkOutAt: '2026-08-22T05:00:00.000Z',
+    }]
+    mocked.app.tasks = [{
+      id: 'TASK-LOWER', checklistAttendanceId: 'att-x', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
+      employeeIds: ['E01'], title: 'Chỉ thuộc ca chữ thường', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+    }]
+
+    renderAssignedTasks()
+
+    expect(screen.queryByText('Chỉ thuộc ca chữ thường')).toBeNull()
+    expect(screen.queryByRole('checkbox')).toBeNull()
   })
 
   it('opens a future assignment from its notification deep link without allowing an early save', () => {

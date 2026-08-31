@@ -44,6 +44,79 @@ describe('work reward statistics', () => {
     })])
   })
 
+  it('matches employee, store, attendance, catalog and legacy completion ids without casing sensitivity', () => {
+    const rows = workRewardRows({
+      employeeId: 'vp-01',
+      storeId: 'store-01',
+      employees: [{ id: 'vp-01', name: 'Nhân viên VP', unit: 'office', storeId: 'STORE-01' }],
+      attendance: [{
+        id: 'ATT-CASE', employeeId: 'VP-01', unit: 'office', storeId: 'STORE-01', workDate: '2026-08-28',
+        checklistSnapshot: { tasks: [rewardTask] },
+      }],
+      workCatalogProgress: [{
+        attendanceId: 'att-case', catalogItemId: 'CATALOG-REWARD-CLEAN', checked: true, status: 'CLAIMED',
+      }],
+      tasks: [{
+        checklistAttendanceId: 'att-case', catalogItemId: 'CATALOG-REWARD-CLEAN', completedBy: { 'vp-01': true },
+      }],
+    })
+
+    expect(rows).toEqual([expect.objectContaining({
+      attendanceId: 'ATT-CASE', employeeId: 'VP-01', employeeName: 'Nhân viên VP', completed: true,
+    })])
+  })
+
+  it('keeps employee and store filters exact-first and fails closed for ambiguous casing aliases', () => {
+    const employees = [
+      { id: 'EM01', name: 'Nhân viên chữ hoa', unit: 'office', storeId: 'STORE-X' },
+      { id: 'em01', name: 'Nhân viên chữ thường', unit: 'office', storeId: 'store-x' },
+    ]
+    const attendance = [
+      { id: 'ATT-UPPER', employeeId: 'EM01', storeId: 'STORE-X', unit: 'office', workDate: '2026-08-28', checklistSnapshot: { tasks: [rewardTask] } },
+      { id: 'ATT-LOWER', employeeId: 'em01', storeId: 'store-x', unit: 'office', workDate: '2026-08-28', checklistSnapshot: { tasks: [rewardTask] } },
+    ]
+
+    expect(workRewardRows({ employees, attendance, employeeId: 'EM01', storeId: 'STORE-X' }))
+      .toEqual([expect.objectContaining({ attendanceId: 'ATT-UPPER', employeeName: 'Nhân viên chữ hoa', storeId: 'STORE-X' })])
+    expect(workRewardRows({ employees, attendance, employeeId: 'EM01', storeId: 'StOrE-X' })).toEqual([])
+    expect(workRewardRows({ employees, attendance, employeeId: 'Em01' })).toEqual([])
+  })
+
+  it('does not share reward progress between exact attendance ids that collide by casing', () => {
+    const rows = workRewardRows({
+      attendance: [{
+        id: 'ATT-X', employeeId: 'VP-01', unit: 'office', workDate: '2026-08-28',
+        checklistSnapshot: { tasks: [rewardTask] },
+      }, {
+        id: 'att-x', employeeId: 'VP-02', unit: 'office', workDate: '2026-08-28',
+        checklistSnapshot: { tasks: [rewardTask] },
+      }],
+      workCatalogProgress: [{
+        attendanceId: 'att-x', catalogItemId: rewardTask.id, checked: true, status: 'CLAIMED',
+      }],
+    })
+
+    expect(rows.find((row) => row.attendanceId === 'ATT-X')?.completed).toBe(false)
+    expect(rows.find((row) => row.attendanceId === 'att-x')?.completed).toBe(true)
+  })
+
+  it('does not share reward progress between exact catalog ids that collide by casing', () => {
+    const upperReward = { ...rewardTask, id: 'REWARD-X', catalogItemId: 'REWARD-X', name: 'Thưởng chữ hoa' }
+    const lowerReward = { ...rewardTask, id: 'reward-x', catalogItemId: 'reward-x', name: 'Thưởng chữ thường' }
+    const rows = workRewardRows({
+      attendance: [{
+        id: 'ATT-CATALOG-COLLISION', employeeId: 'VP-01', unit: 'office', workDate: '2026-08-28',
+        checklistSnapshot: { tasks: [upperReward, lowerReward] },
+      }],
+      workCatalogProgress: [{
+        attendanceId: 'ATT-CATALOG-COLLISION', catalogItemId: 'reward-x', checked: true, status: 'CLAIMED',
+      }],
+    })
+
+    expect(rows.find((row) => row.catalogItemId === 'REWARD-X')?.completed).toBe(false)
+    expect(rows.find((row) => row.catalogItemId === 'reward-x')?.completed).toBe(true)
+  })
+
   it('keeps legacy completedBy as a read-only fallback and summarizes only completed rewards', () => {
     const rows = workRewardRows({
       attendance: [
@@ -58,6 +131,22 @@ describe('work reward statistics', () => {
     expect(rows.find((row) => row.attendanceId === 'ATT-02')?.completed).toBe(false)
     expect(statistics.byDay).toEqual([{ key: '2026-08-28', label: '28/08/2026', count: 1, amountVnd: 2_000 }])
     expect(statistics.byMonth).toEqual([{ key: '2026-08', label: 'Tháng 08/2026', count: 1, amountVnd: 2_000 }])
+  })
+
+  it('gives the exact legacy employee key precedence over differently-cased aliases', () => {
+    const rows = workRewardRows({
+      attendance: [{
+        id: 'ATT-LEGACY-EMPLOYEE-CASE', employeeId: 'E01', unit: 'business_support', workDate: '2026-08-28',
+        checklistSnapshot: { tasks: [rewardTask] },
+      }],
+      tasks: [{
+        checklistAttendanceId: 'ATT-LEGACY-EMPLOYEE-CASE', catalogItemId: rewardTask.id,
+        completedBy: { E01: false, e01: true },
+      }],
+    })
+
+    expect(rows).toEqual([expect.objectContaining({ employeeId: 'E01', completed: false, paid: false })])
+    expect(rewardStatistics(rows).byDay).toEqual([])
   })
 
   it('recognizes canonical claimed progress while explicit unchecked and void states win', () => {

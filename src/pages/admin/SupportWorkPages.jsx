@@ -25,7 +25,13 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
-import { money, shortDate, today } from '../../utils'
+import {
+  money,
+  operationalIdentifierRecordMatch,
+  sameOperationalIdentifier,
+  shortDate,
+  today,
+} from '../../utils'
 import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { ROLE_KEYS, roleProfileCode, roleProfilesFromApp } from './roleManagementUtils'
 import { isFinalSupportWorkStatus, supportWorkEvaluation, supportWorkProgress, supportWorkStatus } from './supportWorkUtils'
@@ -56,6 +62,27 @@ const formatDateTime24 = (value) => {
 }
 
 const assignmentActor = (actor) => actor?.name || actor?.displayName || actor?.username || actor || 'Hệ thống'
+const profileIdentifiers = (profile = {}) => [profile.id, profile.code, profile.employeeId]
+const matchedRecord = (records, reference, identifiersOf = (record) => [record?.id]) => {
+  const match = operationalIdentifierRecordMatch(records, reference, identifiersOf)
+  return match.ambiguous ? null : match.record
+}
+const matchedProfile = (profiles, reference) => matchedRecord(profiles, reference, profileIdentifiers)
+const matchedProgress = (records, row) => {
+  const candidates = (Array.isArray(records) ? records : []).filter((item) => (
+    sameOperationalIdentifier(item.attendanceId || item.checklistAttendanceId, row.attendanceId)
+    && sameOperationalIdentifier(
+      item.catalogItemId || item.workCatalogItemId || item.taskId,
+      row.catalogItemId,
+    )
+  ))
+  const exact = candidates.filter((item) => (
+    String(item.attendanceId || item.checklistAttendanceId || '').trim() === String(row.attendanceId || '').trim()
+    && String(item.catalogItemId || item.workCatalogItemId || item.taskId || '').trim() === String(row.catalogItemId || '').trim()
+  ))
+  if (exact.length === 1) return exact[0]
+  return exact.length === 0 && candidates.length === 1 ? candidates[0] : null
+}
 const supportTaskIsRequired = (task = {}) => {
   if (task.required === true) return true
   if (task.required === false) return false
@@ -96,12 +123,13 @@ function AssignmentHistoryEntry({ entry }) {
 }
 
 function SupportAssignmentHistoryTable({ assignments = [], profiles = [], requestedId = '' }) {
+  const requestedAssignment = matchedRecord(assignments, requestedId, (assignment) => [assignment.id])
   return <Card title="Lịch sử giao việc và tiến độ hoàn thành">
     <TableWrap><thead><tr><th>Ngày giao</th><th>Nhân viên</th><th>Danh sách công việc</th><th>Tiến độ</th><th>Trạng thái</th><th>Ghi chú kết quả</th><th>Lịch sử thời gian</th></tr></thead>
       <tbody>{assignments.map((assignment) => {
         const progress = supportWorkProgress(assignment)
         const status = supportWorkStatus(assignment.status)
-        return <tr key={assignment.id} className={requestedId === String(assignment.id) ? 'assignment-row--highlight' : ''}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || profiles.find((profile) => roleProfileCode(profile) === assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{task.description && <small>{task.description}</small>}{task.employeeNote && <small>Ghi chú nhân viên: {task.employeeNote}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || assignment.tasks?.find((task) => task.employeeNote)?.employeeNote || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
+        return <tr key={assignment.id} className={requestedAssignment === assignment ? 'assignment-row--highlight' : ''}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || matchedProfile(profiles, assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{task.description && <small>{task.description}</small>}{task.employeeNote && <small>Ghi chú nhân viên: {task.employeeNote}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || assignment.tasks?.find((task) => task.employeeNote)?.employeeNote || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
       })}{!assignments.length && <tr><td colSpan="7">Chưa có lịch sử giao việc.</td></tr>}</tbody>
     </TableWrap>
   </Card>
@@ -281,7 +309,7 @@ export function AdminSupportWorkPage() {
         <tbody>{sortedAssignments.map((assignment) => {
           const progress = supportWorkProgress(assignment)
           const status = supportWorkStatus(assignment.status)
-          return <tr key={assignment.id}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || allProfiles.find((profile) => roleProfileCode(profile) === assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{Number(task.amountVnd || 0) > 0 && <small>{task.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'Thưởng ' : ''}{money(task.amountVnd)}</small>}{task.description && <small>{task.description}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
+          return <tr key={assignment.id}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || matchedProfile(allProfiles, assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{Number(task.amountVnd || 0) > 0 && <small>{task.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'Thưởng ' : ''}{money(task.amountVnd)}</small>}{task.description && <small>{task.description}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
         })}{!sortedAssignments.length && <tr><td colSpan="7">Chưa có lịch sử giao việc.</td></tr>}</tbody>
       </TableWrap>
     </Card>
@@ -360,9 +388,12 @@ export function SupportWorkInboxPage() {
     || app.session?.code
     || '',
   )
+  const employeeRecords = Array.isArray(app.employees) ? app.employees : []
+  const currentEmployee = matchedProfile(employeeRecords, employeeId)
   const assignments = (Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])
-    .filter((assignment) => employeeId && String(assignment.employeeId) === employeeId)
+    .filter((assignment) => currentEmployee && matchedProfile(employeeRecords, assignment.employeeId) === currentEmployee)
     .toSorted((left, right) => String(right.date || right.assignedAt).localeCompare(String(left.date || left.assignedAt)))
+  const requestedAssignment = matchedRecord(assignments, requestedId, (assignment) => [assignment.id])
   const pendingAssignments = assignments.filter((assignment) => !assignment.submittedAt)
   const completedTasks = assignments.reduce((sum, assignment) => sum + supportWorkProgress(assignment).completed, 0)
   const totalTasks = assignments.reduce((sum, assignment) => sum + supportWorkProgress(assignment).total, 0)
@@ -383,7 +414,7 @@ export function SupportWorkInboxPage() {
       <MetricCard label="TỔNG CÔNG VIỆC ĐƯỢC GIAO" value={totalTasks} icon={ListChecks} tone="blue" />
     </div>
     {assignments.length
-      ? <div className="support-assignment-list">{assignments.map((assignment) => <SupportAssignmentCard key={`${assignment.id}:${assignment.updatedAt || ''}`} assignment={assignment} highlighted={requestedId === String(assignment.id)} onUpdate={update} />)}</div>
+      ? <div className="support-assignment-list">{assignments.map((assignment) => <SupportAssignmentCard key={`${assignment.id}:${assignment.updatedAt || ''}`} assignment={assignment} highlighted={requestedAssignment === assignment} onUpdate={update} />)}</div>
       : <Card><InfoNote>Admin chưa giao công việc cho tài khoản của bạn.</InfoNote></Card>}
   </div>
 }
@@ -410,8 +441,13 @@ export function SupportAssignedWorkPage() {
     employees: app.employees,
     employeeId,
   }), [app.attendance, app.workCatalogProgress, app.compensationEntries, app.tasks, app.employees, employeeId])
+  const rewardKey = (row) => `${row.attendanceId}:${row.catalogItemId}`
   const dayRewardRows = rewardRows.filter((row) => row.workDate === rewardDate)
-  const actionableDayRewardRows = dayRewardRows.filter((row) => row.attendanceOpen)
+  const actionableDayRewardRows = dayRewardRows.filter((row) => (
+    row.attendanceOpen
+    && !row.completed
+    && rewardAcknowledged[rewardKey(row)]?.checked !== true
+  ))
   const completedDayRows = dayRewardRows.filter((row) => row.completed)
   const paidDayRows = dayRewardRows.filter((row) => row.paid)
   const rewardMonth = rewardDate.slice(0, 7)
@@ -430,7 +466,6 @@ export function SupportAssignedWorkPage() {
   }, new Map()).values()]
   const statistics = useMemo(() => rewardStatistics(rewardRows), [rewardRows])
 
-  const rewardKey = (row) => `${row.attendanceId}:${row.catalogItemId}`
   const awaitingRewardSync = (row) => {
     const acknowledged = rewardAcknowledged[rewardKey(row)]
     return Boolean(acknowledged && Number(row.progressVersion || 0) < Number(acknowledged.version || 0))
@@ -461,10 +496,7 @@ export function SupportAssignedWorkPage() {
     const savedAcknowledgements = {}
     try {
       for (const row of changedRows) {
-        const progress = (Array.isArray(app.workCatalogProgress) ? app.workCatalogProgress : []).find((item) => (
-          String(item.attendanceId || item.checklistAttendanceId || '') === String(row.attendanceId)
-          && String(item.catalogItemId || item.workCatalogItemId || item.taskId || '') === String(row.catalogItemId)
-        ))
+        const progress = matchedProgress(app.workCatalogProgress, row)
         const expectedEntityVersion = Number(progress?.version)
         const checked = checkedInDraft(row)
         const result = await app.setWorkReward({
