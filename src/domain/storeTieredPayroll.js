@@ -190,6 +190,7 @@ export function effectiveStoreSalaryConfig(configs, {
   storeId,
   period,
   store,
+  canonicalOwnerAliases = false,
 } = {}) {
   const normalizedEmployeeId = requiredId(employeeId, 'employeeId')
   const normalizedStoreId = requiredId(storeId || store?.id, 'storeId')
@@ -229,8 +230,11 @@ export function effectiveStoreSalaryConfig(configs, {
     identifier(config.employeeId) === normalizedEmployeeId
     && identifier(config.storeId) === normalizedStoreId
   ))
-  let ownerScopedMatches = exactOwnerMatches
-  if (ownerScopedMatches.length === 0 && ownerMatches.length > 0) {
+  // Callers that have already resolved one canonical employee and store may
+  // safely treat historical casing variants as versions of the same owner.
+  // Same-period duplicates remain blocked by the collision check above.
+  let ownerScopedMatches = canonicalOwnerAliases ? ownerMatches : exactOwnerMatches
+  if (!canonicalOwnerAliases && ownerScopedMatches.length === 0 && ownerMatches.length > 0) {
     const ownerKeys = new Set(ownerMatches.map(salaryConfigOwnerKey))
     if (ownerKeys.size > 1) {
       throwStoreSalaryConfigIdentifierCollision(ownerMatches, {

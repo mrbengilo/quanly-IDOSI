@@ -161,6 +161,41 @@ describe('store tiered payroll', () => {
     })
   })
 
+  it('uses canonical employee and store owners for case-only configuration history', () => {
+    const store = { id: 'SM-TNV', name: 'SM TNV', status: 'Đang hoạt động' }
+    const configs = [{
+      id: 'CFG-UPPER-HISTORY', employeeId: 'ST-ABC', storeId: 'SM-TNV', effectiveFrom: '2026-07',
+      standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 26_000, thresholdHours: 208,
+    }, {
+      id: 'CFG-LOWER-HISTORY', employeeId: 'st-abc', storeId: 'sm-tnv', effectiveFrom: '2026-08',
+      standardHourlyRateVnd: 31_000, excessHourlyRateVnd: 27_000, thresholdHours: 208,
+    }]
+
+    expect(effectiveStoreSalaryConfig(configs, {
+      employeeId: 'St-Abc', storeId: 'Sm-Tnv', period: '2026-08', store,
+      canonicalOwnerAliases: true,
+    })).toMatchObject({
+      employeeId: 'St-Abc', storeId: 'Sm-Tnv', standardHourlyRateVnd: 31_000,
+      effectiveFrom: '2026-08', version: 1,
+    })
+  })
+
+  it('still rejects same-period duplicates when canonical owner aliases are enabled', () => {
+    const store = { id: 'SM-TNV', name: 'SM TNV', status: 'Đang hoạt động' }
+    const configs = [{
+      id: 'CFG-UPPER-DUPLICATE', employeeId: 'ST-ABC', storeId: 'SM-TNV', effectiveFrom: '2026-08',
+      standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 26_000, thresholdHours: 208,
+    }, {
+      id: 'CFG-LOWER-DUPLICATE', employeeId: 'st-abc', storeId: 'sm-tnv', effectiveFrom: '2026-08',
+      standardHourlyRateVnd: 31_000, excessHourlyRateVnd: 27_000, thresholdHours: 208,
+    }]
+
+    expect(() => effectiveStoreSalaryConfig(configs, {
+      employeeId: 'St-Abc', storeId: 'Sm-Tnv', period: '2026-08', store,
+      canonicalOwnerAliases: true,
+    })).toThrow('STORE_SALARY_CONFIG_IDENTIFIER_COLLISION')
+  })
+
   it('selects the latest effective per-employee configuration for a payroll period', () => {
     const configs = [
       { employeeId: 'NV-01', storeId: dosiiStore.id, effectiveFrom: '2026-08', version: 1, standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 25_000 },

@@ -10519,6 +10519,7 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
           storeId,
           period,
           store: payrollUnit,
+          canonicalOwnerAliases: true,
         })
       } catch (error) {
         if (error?.code !== STORE_SALARY_CONFIG_IDENTIFIER_COLLISION) throw error

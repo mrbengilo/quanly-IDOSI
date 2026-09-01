@@ -304,6 +304,7 @@ const fullTimeSalaryPolicyFor = ({ configs, employee, store, period }) => {
       storeId: store?.id,
       period,
       store,
+      canonicalOwnerAliases: true,
     })
     return {
       policy: configured || defaultStoreFullTimeSalaryPolicy(store),
