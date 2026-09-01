@@ -6,12 +6,14 @@ import App, { RouteErrorBoundary } from './App'
 const mocked = vi.hoisted(() => ({
   session: { role: 'admin', name: 'Admin' },
   currentEmployee: undefined,
+  remoteDataReady: true,
 }))
 
 vi.mock('./state/AppContext', () => ({
   useApp: () => ({
     authReady: true,
     currentEmployee: mocked.currentEmployee,
+    remoteDataReady: mocked.remoteDataReady,
     session: mocked.session,
   }),
 }))
@@ -63,12 +65,14 @@ function CurrentRoute() {
 const renderRoute = (path, role) => {
   mocked.session = { role, name: role }
   mocked.currentEmployee = undefined
+  mocked.remoteDataReady = true
   return render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
 }
 
 describe('App role routes', () => {
   afterEach(() => {
     cleanup()
+    mocked.remoteDataReady = true
     vi.restoreAllMocks()
   })
 
@@ -96,6 +100,23 @@ describe('App role routes', () => {
 
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
     expect(screen.queryByText('Cài đặt thông tin đơn hàng route')).toBeNull()
+  })
+
+  it('shows the Admin overview while the remaining shared state hydrates', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteDataReady = false
+    render(<MemoryRouter initialEntries={['/admin/overview']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Admin overview')).toBeTruthy()
+  })
+
+  it('holds detail routes until the complete shared state is available', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteDataReady = false
+    render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(screen.queryByText('Admin cashflow')).toBeNull()
   })
 
   it('allows Admin to open the aggregate work-registration schedule', async () => {

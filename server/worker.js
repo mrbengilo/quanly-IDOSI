@@ -75,6 +75,7 @@ const MAX_PBKDF2_VERIFICATION_ITERATIONS = 1_000_000
 const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'employee'])
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
 const globalStateSnapshotCaches = new WeakMap()
+const INITIAL_ADMIN_STATE_COLLECTIONS = Object.freeze(['stores', 'orders', 'expenseEntries'])
 
 const ACCOUNT_AVATAR_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 const MAX_AVATAR_DIMENSION = 4096
@@ -3037,7 +3038,18 @@ const stateEntityIdentity = (value, serialized) => {
   return `value:${serialized}`
 }
 
-const loadStateEntityRows = async (db, scope) => {
+const stateCollectionFilter = (collectionKeys) => {
+  const keys = Array.isArray(collectionKeys)
+    ? [...new Set(collectionKeys.map((key) => String(key || '').trim()).filter(Boolean))]
+    : []
+  return {
+    keys,
+    sql: keys.length ? ` AND collection_key IN (${keys.map(() => '?').join(', ')})` : '',
+  }
+}
+
+const loadStateEntityRows = async (db, scope, collectionKeys = null) => {
+  const collectionFilter = stateCollectionFilter(collectionKeys)
   const rows = []
   let cursor = null
   let metadataBuffer = []
@@ -3050,21 +3062,24 @@ const loadStateEntityRows = async (db, scope) => {
             SELECT collection_key, entity_key, entity_order, value_bytes
             FROM state_entities
             WHERE scope_key = ? AND (
+              1 = 1${collectionFilter.sql}
+            ) AND (
               collection_key > ?
               OR (collection_key = ? AND entity_order > ?)
               OR (collection_key = ? AND entity_order = ? AND entity_key > ?)
             )
             ORDER BY collection_key, entity_order, entity_key
             LIMIT ${STATE_ENTITY_PAGE_SIZE}
-          `, scope, cursor.collectionKey, cursor.collectionKey, cursor.entityOrder,
+          `, scope, ...collectionFilter.keys,
+          cursor.collectionKey, cursor.collectionKey, cursor.entityOrder,
           cursor.collectionKey, cursor.entityOrder, cursor.entityKey)
         : await all(db, `
             SELECT collection_key, entity_key, entity_order, value_bytes
             FROM state_entities
-            WHERE scope_key = ?
+            WHERE scope_key = ?${collectionFilter.sql}
             ORDER BY collection_key, entity_order, entity_key
             LIMIT ${STATE_ENTITY_PAGE_SIZE}
-          `, scope)
+          `, scope, ...collectionFilter.keys)
       if (!metadataBuffer.length) break
       metadataExhausted = metadataBuffer.length < STATE_ENTITY_PAGE_SIZE
     }
@@ -3084,21 +3099,24 @@ const loadStateEntityRows = async (db, scope) => {
           SELECT collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at
           FROM state_entities
           WHERE scope_key = ? AND (
+            1 = 1${collectionFilter.sql}
+          ) AND (
             collection_key > ?
             OR (collection_key = ? AND entity_order > ?)
             OR (collection_key = ? AND entity_order = ? AND entity_key > ?)
           )
           ORDER BY collection_key, entity_order, entity_key
           LIMIT ${pageCount}
-        `, scope, cursor.collectionKey, cursor.collectionKey, cursor.entityOrder,
+        `, scope, ...collectionFilter.keys,
+        cursor.collectionKey, cursor.collectionKey, cursor.entityOrder,
         cursor.collectionKey, cursor.entityOrder, cursor.entityKey)
       : await all(db, `
           SELECT collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at
           FROM state_entities
-          WHERE scope_key = ?
+          WHERE scope_key = ?${collectionFilter.sql}
           ORDER BY collection_key, entity_order, entity_key
           LIMIT ${pageCount}
-        `, scope)
+        `, scope, ...collectionFilter.keys)
     if (page.length !== pageCount) {
       throw new ApiError(409, 'STATE_SNAPSHOT_CHANGED', 'Trạng thái thay đổi trong khi đang đọc.')
     }
@@ -3263,6 +3281,49 @@ const loadState = async (db, scope) => {
     if (latest
       && Number(latest.version) === Number(row.version)
       && String(latest.last_request_id || '') === String(row.last_request_id || '')) return row
+  }
+  throw new ApiError(409, 'STATE_READ_CONFLICT', 'Trạng thái đang được cập nhật; vui lòng thử lại.')
+}
+
+const retainStateCollections = (row, collectionKeys) => {
+  if (!row) return null
+  const retained = new Set(collectionKeys)
+  const state = parseStoredJson(row.value_json, null)
+  if (!isPlainRecord(state)) throw new ApiError(500, 'STATE_CORRUPT', 'Trạng thái lưu trữ không hợp lệ.')
+  row.value_json = JSON.stringify(Object.fromEntries(Object.entries(state).filter(([key, value]) => (
+    !Array.isArray(value) || retained.has(key)
+  ))))
+  return row
+}
+
+const loadStateCollections = async (db, scope, collectionKeys) => {
+  const collectionFilter = stateCollectionFilter(collectionKeys)
+  if (!collectionFilter.keys.length) throw new ApiError(500, 'STATE_COLLECTIONS_INVALID', 'Thiếu danh mục trạng thái cần tải.')
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const row = await first(db, `
+      SELECT scope_key, value_json, version, updated_at, updated_by, last_request_id
+      FROM app_state
+      WHERE scope_key = ?
+      LIMIT 1
+    `, scope)
+    if (!row) return null
+    const manifests = await all(db, `
+      SELECT collection_key, created_at, updated_at
+      FROM state_collections
+      WHERE scope_key = ?${collectionFilter.sql}
+      ORDER BY collection_key
+    `, scope, ...collectionFilter.keys)
+    const hydrated = manifests.length
+      ? hydrateStateSnapshot(row, manifests, await loadStateEntityRows(db, scope, collectionFilter.keys))
+      : row
+    const latest = await first(db, `
+      SELECT version, last_request_id FROM app_state WHERE scope_key = ? LIMIT 1
+    `, scope)
+    if (latest
+      && Number(latest.version) === Number(row.version)
+      && String(latest.last_request_id || '') === String(row.last_request_id || '')) {
+      return retainStateCollections(hydrated, collectionFilter.keys)
+    }
   }
   throw new ApiError(409, 'STATE_READ_CONFLICT', 'Trạng thái đang được cập nhật; vui lòng thử lại.')
 }
@@ -3920,9 +3981,14 @@ const login = async (request, env, context) => {
     available_roles: availableRoles,
     needs_role_selection: availableRoles.length > 1,
   }, context.now, globalState)
-  let bootstrapRow = globalStateRow || await loadState(db, 'global')
-  bootstrapRow = await migrateLegacyAccountAvatars(db, env, effectiveUser, context, bootstrapRow)
-  bootstrapRow = await persistOpenStoreAttendanceChecklistRepairs(db, effectiveUser, context, bootstrapRow)
+  const partialBootstrap = effectiveUser.role === 'admin'
+  let bootstrapRow = partialBootstrap
+    ? await loadStateCollections(db, 'global', INITIAL_ADMIN_STATE_COLLECTIONS)
+    : globalStateRow || await loadState(db, 'global')
+  if (!partialBootstrap) {
+    bootstrapRow = await migrateLegacyAccountAvatars(db, env, effectiveUser, context, bootstrapRow)
+    bootstrapRow = await persistOpenStoreAttendanceChecklistRepairs(db, effectiveUser, context, bootstrapRow)
+  }
   const policies = await listPolicies(db)
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
   const publicEffectiveUser = publicUser(effectiveUser)
@@ -3945,6 +4011,10 @@ const login = async (request, env, context) => {
       version: Number(bootstrapRow?.version || 0),
       updatedAt: bootstrapRow?.updated_at || null,
       policies,
+      ...(partialBootstrap ? {
+        partial: true,
+        loadedCollections: INITIAL_ADMIN_STATE_COLLECTIONS,
+      } : {}),
     },
     ...(visibleUsers ? { users: visibleUsers } : {}),
   }))
@@ -3990,10 +4060,15 @@ const getBootstrap = async (request, env, context, url) => {
   const user = await requireSession(request, db, context)
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  let stateRow = scope === 'global' && user._globalStateRow
-    ? user._globalStateRow
-    : await loadState(db, scope)
-  if (scope === 'global') {
+  const partialBootstrap = scope === 'global'
+    && user.role === 'admin'
+    && url.searchParams.get('profile') === 'initial'
+  let stateRow = partialBootstrap
+    ? await loadStateCollections(db, scope, INITIAL_ADMIN_STATE_COLLECTIONS)
+    : scope === 'global' && user._globalStateRow
+      ? user._globalStateRow
+      : await loadState(db, scope)
+  if (scope === 'global' && !partialBootstrap) {
     stateRow = await migrateLegacyAccountAvatars(db, env, user, context, stateRow)
     stateRow = await persistOpenStoreAttendanceChecklistRepairs(db, user, context, stateRow)
   }
@@ -4007,6 +4082,10 @@ const getBootstrap = async (request, env, context, url) => {
     version: Number(stateRow?.version || 0),
     updatedAt: stateRow?.updated_at || null,
     policies,
+    ...(partialBootstrap ? {
+      partial: true,
+      loadedCollections: INITIAL_ADMIN_STATE_COLLECTIONS,
+    } : {}),
   }))
 }
 
@@ -4599,10 +4678,13 @@ const stateCommand = async (db, user, body, commandContext) => {
     assertNoCaseCollidingOperationalIdentifiers(nextState)
   }
   const nextVersion = currentVersion + 1
+  const includeState = body.includeState !== false
   const responseBody = apiPayload(commandContext, {
     command: body.type,
     scope,
-    state: scope === 'global' ? projectSharedState(nextState, user) : nextState,
+    ...(includeState ? {
+      state: scope === 'global' ? projectSharedState(nextState, user) : nextState,
+    } : {}),
     version: nextVersion,
     updatedAt: commandContext.now,
   })
@@ -20154,10 +20236,17 @@ const listUsers = async (request, env, context) => {
 const getAccountAvatar = async (request, env, context) => {
   const db = getDatabase(env)
   const actor = await requireSession(request, db, context)
-  let current = actor._globalStateRow || await loadState(db, 'global')
-  current = await migrateLegacyAccountAvatars(db, env, actor, context, current)
-  const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
-  const metadata = normalizeAccountAvatarMetadata(ownAccountSettings(state, actor).avatar)
+  const shell = await first(db, `
+    SELECT value_json FROM app_state WHERE scope_key = 'global' LIMIT 1
+  `)
+  const shellState = parseStoredJson(shell?.value_json, {})
+  let metadata = normalizeAccountAvatarMetadata(ownAccountSettings(shellState, actor).avatar)
+  if (!metadata) {
+    let current = actor._globalStateRow || await loadState(db, 'global')
+    current = await migrateLegacyAccountAvatars(db, env, actor, context, current)
+    const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
+    metadata = normalizeAccountAvatarMetadata(ownAccountSettings(state, actor).avatar)
+  }
   if (!metadata) throw new ApiError(404, 'ACCOUNT_AVATAR_NOT_FOUND', 'Tài khoản chưa có ảnh đại diện.')
   const bucket = env?.IDENTITY_IMAGES
   if (!bucket?.get) {

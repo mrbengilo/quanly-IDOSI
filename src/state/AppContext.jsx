@@ -344,6 +344,25 @@ const sharedStateSnapshot = (state) => {
   return snapshot
 }
 
+const sharedStateReferences = (state) => Object.fromEntries(Object.entries(state).filter(([key]) => (
+  key !== 'settings' && !SERVER_EXCLUDED_FIELDS.has(key)
+)))
+
+const cloneSharedStateValue = (key, value) => {
+  const serialized = JSON.stringify({ [key]: value }, (nestedKey, nestedValue) => (
+    SERVER_EXCLUDED_FIELDS.has(nestedKey) ? undefined : nestedValue
+  ))
+  return JSON.parse(serialized)[key]
+}
+
+const sharedStateDelta = (state, previousReferences = {}) => {
+  const references = sharedStateReferences(state)
+  const patch = Object.fromEntries(Object.entries(references).flatMap(([key, value]) => (
+    Object.is(value, previousReferences[key]) ? [] : [[key, cloneSharedStateValue(key, value)]]
+  )))
+  return { patch, references }
+}
+
 const recordTimestamp = (record) => String(record?.updatedAt || record?.createdAt || record?.deletedAt || '')
 const mergeArrayRecordKey = (record, index, origin, collection) => {
   const direct = record?.id || record?.code
@@ -364,17 +383,31 @@ const mergeRecordArrays = (remoteRows = [], localRows = [], collection = '') => 
   return [...records.values()]
 }
 
-const mergeSharedState = (remoteState = {}, localState = {}) => {
-  const merged = { ...remoteState, ...localState }
-  REMOTE_ARRAY_KEYS.forEach((key) => {
-    merged[key] = mergeRecordArrays(remoteState[key], localState[key], key)
-  })
-  const deletedStoreIds = new Set((merged.deletedStores || []).map((store) => String(store.id || store.storeId || '')))
-  const deletedEmployeeIds = new Set((merged.deletedEmployees || []).map((employee) => String(employee.id || employee.employeeId || employee.code || '')))
-  merged.stores = (merged.stores || []).filter((store) => !deletedStoreIds.has(String(store.id)))
-  merged.employees = (merged.employees || []).filter((employee) => !deletedEmployeeIds.has(String(employee.id || employee.code)))
-  merged.stateVersion = Math.max(Number(remoteState.stateVersion) || 0, Number(localState.stateVersion) || 0) + 1
-  return merged
+const mergeSharedStatePatch = (remoteState = {}, localPatch = {}) => {
+  const mergedPatch = Object.fromEntries(Object.entries(localPatch).map(([key, value]) => [
+    key,
+    REMOTE_ARRAY_KEYS.includes(key) && Array.isArray(value)
+      ? mergeRecordArrays(remoteState[key], value, key)
+      : value,
+  ]))
+  const effective = { ...remoteState, ...mergedPatch }
+  if (Object.hasOwn(localPatch, 'stores') || Object.hasOwn(localPatch, 'deletedStores')) {
+    const deletedStoreIds = new Set((effective.deletedStores || []).map((store) => String(store.id || store.storeId || '')))
+    mergedPatch.stores = (effective.stores || []).filter((store) => !deletedStoreIds.has(String(store.id)))
+  }
+  if (Object.hasOwn(localPatch, 'employees') || Object.hasOwn(localPatch, 'deletedEmployees')) {
+    const deletedEmployeeIds = new Set((effective.deletedEmployees || []).map((employee) => String(employee.id || employee.employeeId || employee.code || '')))
+    mergedPatch.employees = (effective.employees || []).filter((employee) => (
+      !deletedEmployeeIds.has(String(employee.id || employee.code))
+    ))
+  }
+  if (Object.hasOwn(localPatch, 'stateVersion')) {
+    mergedPatch.stateVersion = Math.max(
+      Number(remoteState.stateVersion) || 0,
+      Number(localPatch.stateVersion) || 0,
+    ) + 1
+  }
+  return mergedPatch
 }
 
 export const mergeLegacyCredentialMigration = (current, migratedAccounts, remoteEnabled) => (
@@ -1459,6 +1492,7 @@ export function AppProvider({ children }) {
   const [credentialsReady, setCredentialsReady] = useState(false)
   const [sessionRestoreReady, setSessionRestoreReady] = useState(() => !hasApiSession())
   const [apiStatus, setApiStatus] = useState('local')
+  const [remoteDataReady, setRemoteDataReady] = useState(true)
   const [attendanceCheckoutRequests, setAttendanceCheckoutRequests] = useState({})
   const apiRef = useRef({
     enabled: false,
@@ -1471,7 +1505,8 @@ export function AppProvider({ children }) {
     syncing: false,
     pending: null,
     timer: null,
-    lastSerialized: '',
+    lastStateReferences: {},
+    fullStateReady: false,
     systemResetIdempotencyKey: null,
   })
   const localAttendanceCheckInClaimsRef = useRef(new Set())
@@ -1509,21 +1544,36 @@ export function AppProvider({ children }) {
     remote.user = { ...remoteUser, role: normalizeAuthRole(remoteUser.role) }
     remote.version = Number(payload.version || 0)
     remote.hydratedVersion = Number(payload.version || 0)
+    remote.fullStateReady = payload.partial !== true
     if (Array.isArray(payload.policies)) {
       remote.policyVersions = Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
     }
     remote.suppressNext = true
-    remote.lastSerialized = JSON.stringify(sharedStateSnapshot(hydrated))
+    remote.lastStateReferences = sharedStateReferences(hydrated)
     if (typeof localStorage !== 'undefined') {
       localStorage.removeItem(STORAGE_KEY)
       localStorage.removeItem(LEGACY_STORAGE_KEY)
     }
     setApiStatus('connected')
+    setRemoteDataReady(remote.fullStateReady)
     rememberActiveStore(remoteUser, hydrated.activeStoreId)
     activeStoreIdRef.current = hydrated.activeStoreId
     setState(hydrated)
     return hydrated.session
   }, [])
+
+  const hydrateCompleteRemoteState = useCallback(async (expectedUser, preferredActiveStoreId = null) => {
+    const payload = await apiBootstrapState('global')
+    if (canListAccounts(payload.user?.role)) {
+      const users = await apiListUsers()
+      payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
+    }
+    const remote = apiRef.current
+    const expectedUserId = String(expectedUser?.id || '')
+    if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+    activateRemotePayload(payload, payload.user || expectedUser, preferredActiveStoreId || activeStoreIdRef.current)
+    return payload
+  }, [activateRemotePayload])
 
   const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`) => {
     const remote = apiRef.current
@@ -1642,12 +1692,18 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (!hasApiSession()) return undefined
     let active = true
-    apiBootstrapState('global').then(async (payload) => {
-      if (canListAccounts(payload.user?.role)) {
+    apiBootstrapState('global', { profile: 'initial' }).then(async (payload) => {
+      if (!payload.partial && canListAccounts(payload.user?.role)) {
         const users = await apiListUsers()
         payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
       }
-      if (active) activateRemotePayload(payload)
+      if (!active) return
+      activateRemotePayload(payload)
+      if (payload.partial) {
+        void hydrateCompleteRemoteState(payload.user).catch(() => {
+          if (active && apiRef.current.enabled) setApiStatus('error')
+        })
+      }
     }).catch(() => {
       clearApiSession()
       if (active) setApiStatus('local')
@@ -1655,7 +1711,7 @@ export function AppProvider({ children }) {
       if (active) setSessionRestoreReady(true)
     })
     return () => { active = false }
-  }, [activateRemotePayload])
+  }, [activateRemotePayload, hydrateCompleteRemoteState])
 
   useEffect(() => {
     const remote = apiRef.current
@@ -1774,16 +1830,15 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     const remote = apiRef.current
-    if (!credentialsReady || !remote.enabled || remote.role !== 'admin' || !state.session) return undefined
-    const snapshot = sharedStateSnapshot(state)
-    const serialized = JSON.stringify(snapshot)
+    if (!credentialsReady || !remote.enabled || !remote.fullStateReady || remote.role !== 'admin' || !state.session) return undefined
+    const delta = sharedStateDelta(state, remote.lastStateReferences)
     if (remote.suppressNext) {
       remote.suppressNext = false
-      remote.lastSerialized = serialized
+      remote.lastStateReferences = delta.references
       return undefined
     }
-    if (serialized === remote.lastSerialized) return undefined
-    remote.pending = { snapshot, serialized }
+    if (!Object.keys(delta.patch).length) return undefined
+    remote.pending = delta
     window.clearTimeout(remote.timer)
     remote.timer = window.setTimeout(async () => {
       if (remote.syncing) return
@@ -1794,30 +1849,34 @@ export function AppProvider({ children }) {
           let pending = remote.pending
           remote.pending = null
           try {
-            const result = await apiCommand('state.replace', { state: pending.snapshot }, {
+            const result = await apiCommand('state.merge', { patch: pending.patch }, {
               expectedVersion: remote.version,
-              idempotencyKey: `state:${crypto.randomUUID()}`,
+              idempotencyKey: `state-patch:${crypto.randomUUID()}`,
+              includeState: false,
             })
             remote.version = Number(result.version)
             remote.hydratedVersion = Number(result.version)
-            remote.lastSerialized = pending.serialized
+            remote.lastStateReferences = pending.references
           } catch (error) {
             if (error.code !== 'VERSION_CONFLICT') throw error
             const latest = await apiGetState('global')
-            const merged = mergeSharedState(latest.state, pending.snapshot)
-            pending = { snapshot: merged, serialized: JSON.stringify(merged) }
-            const result = await apiCommand('state.replace', { state: merged }, {
+            const mergedPatch = mergeSharedStatePatch(latest.state, pending.patch)
+            const result = await apiCommand('state.merge', { patch: mergedPatch }, {
               expectedVersion: Number(latest.version),
-              idempotencyKey: `state-merge:${crypto.randomUUID()}`,
+              idempotencyKey: `state-patch-merge:${crypto.randomUUID()}`,
+              includeState: false,
             })
             remote.version = Number(result.version)
             remote.hydratedVersion = Number(result.version)
-            remote.lastSerialized = pending.serialized
             remote.suppressNext = true
-            setState((current) => ({
-              ...hydrateRemoteState(merged, remote.user, latest.policies, current.activeStoreId),
-              session: current.session,
-            }))
+            setState((current) => {
+              const hydrated = {
+                ...hydrateRemoteState({ ...latest.state, ...mergedPatch }, remote.user, latest.policies, current.activeStoreId),
+                session: current.session,
+              }
+              remote.lastStateReferences = sharedStateReferences(hydrated)
+              return hydrated
+            })
           }
         }
         setApiStatus('connected')
@@ -1846,13 +1905,20 @@ export function AppProvider({ children }) {
       const isSystemOperator = canListAccounts(authenticated.user.role)
       const embeddedUsers = Array.isArray(authenticated.users) ? { users: authenticated.users } : null
       const [bootstrap, users] = await Promise.all([
-        authenticated.bootstrap ? Promise.resolve(authenticated.bootstrap) : apiBootstrapState('global'),
+        authenticated.bootstrap
+          ? Promise.resolve(authenticated.bootstrap)
+          : apiBootstrapState('global', { profile: isSystemOperator ? 'initial' : '' }),
         isSystemOperator ? (embeddedUsers || apiListUsers()) : Promise.resolve(null),
       ])
-      if (users) {
+      if (users && !bootstrap.partial) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       const session = activateRemotePayload(bootstrap, authenticated.user)
+      if (bootstrap.partial) {
+        void hydrateCompleteRemoteState(authenticated.user).catch(() => {
+          if (apiRef.current.enabled) setApiStatus('error')
+        })
+      }
       setSessionRestoreReady(true)
       return { ok: true, account: session }
     } catch (error) {
@@ -1962,10 +2028,13 @@ export function AppProvider({ children }) {
     apiRef.current.user = null
     apiRef.current.version = 0
     apiRef.current.hydratedVersion = 0
+    apiRef.current.fullStateReady = false
     apiRef.current.pending = null
     apiRef.current.suppressNext = false
+    apiRef.current.lastStateReferences = {}
     window.clearTimeout(apiRef.current.timer)
     setApiStatus('local')
+    setRemoteDataReady(true)
     if (wasRemote) {
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem(STORAGE_KEY)
@@ -5652,6 +5721,7 @@ export function AppProvider({ children }) {
     activeStore,
     currentEmployee,
     authReady: sessionRestoreReady,
+    remoteDataReady,
     apiStatus,
     toast,
     notify,

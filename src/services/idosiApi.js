@@ -131,10 +131,11 @@ const stateReadRequest = (path, options = {}) => request(path, {
   ...options,
 })
 
-export const apiBootstrapState = (scope = 'global', options = {}) => stateReadRequest(
-  `/api/bootstrap?scope=${encodeURIComponent(scope)}`,
-  options,
-)
+export const apiBootstrapState = (scope = 'global', { profile = '', ...options } = {}) => {
+  const query = new URLSearchParams({ scope })
+  if (profile) query.set('profile', profile)
+  return stateReadRequest(`/api/bootstrap?${query.toString()}`, options)
+}
 export const apiGetState = (scope = 'global', options = {}) => stateReadRequest(
   `/api/state?scope=${encodeURIComponent(scope)}`,
   options,
@@ -152,10 +153,17 @@ export const apiCommand = (type, payload, {
   expectedVersion = 0,
   scope = 'global',
   idempotencyKey = `${type}:${crypto.randomUUID()}`,
+  includeState = true,
 } = {}) => request('/api/command', {
   method: 'POST',
   headers: { 'Idempotency-Key': idempotencyKey },
-  body: { type, scope, expectedVersion, payload },
+  body: {
+    type,
+    scope,
+    expectedVersion,
+    payload,
+    ...(includeState === false ? { includeState: false } : {}),
+  },
 })
 
 export const apiListUsers = (options = {}) => stateReadRequest('/api/users', options)

@@ -138,6 +138,49 @@ describe('remote command active-store preservation', () => {
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
   })
 
+  it('renders the compact Admin bootstrap before the complete state finishes loading', async () => {
+    let resolveCompleteBootstrap
+    const completeBootstrap = new Promise((resolve) => { resolveCompleteBootstrap = resolve })
+    api.apiLogin.mockResolvedValue({
+      user: adminUser,
+      bootstrap: {
+        user: adminUser,
+        state: {
+          stores: [{ id: 'STORE-A', name: 'Cửa hàng A', status: 'Đang hoạt động' }],
+          orders: [],
+          expenseEntries: [],
+        },
+        policies: [],
+        version: 1,
+        partial: true,
+        loadedCollections: ['stores', 'orders', 'expenseEntries'],
+      },
+      users: [adminUser],
+    })
+    api.apiBootstrapState.mockReturnValueOnce(completeBootstrap)
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('admin', 'password')).ok).toBe(true)
+    })
+
+    expect(appRef.current.session).toMatchObject({ role: 'admin' })
+    expect(appRef.current.remoteDataReady).toBe(false)
+    expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
+    expect(api.apiBootstrapState).toHaveBeenCalledWith('global')
+
+    await act(async () => {
+      resolveCompleteBootstrap({ user: adminUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
+      await completeBootstrap
+      await Promise.resolve()
+    })
+
+    expect(appRef.current.remoteDataReady).toBe(true)
+    expect(appRef.current.employees).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'HTKD-001' }),
+    ]))
+  })
+
   it('returns from a successful mutation before the background full-state reconciliation finishes', async () => {
     let resolveRefresh
     api.apiGetState.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))
