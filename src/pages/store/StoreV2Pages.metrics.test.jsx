@@ -357,6 +357,67 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.getAllByText('80,000 đ').length).toBeGreaterThan(0)
   })
 
+  it('keeps selected-store manager attendance out of employee payroll without locking the preview', () => {
+    const storeManager = {
+      ...employee,
+      id: 'S01-MANAGER',
+      name: 'Quản lý cửa hàng',
+      unit: 'store_manager',
+      employmentType: 'Full-Time',
+      payBasis: 'monthly',
+      monthlySalary: 12_000_000,
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [employee, storeManager],
+      attendance: [{
+        id: 'A-EMPLOYEE', storeId: store.id, employeeId: employee.id,
+        date: today(), hours: 4, status: 'Đi đúng giờ',
+      }, {
+        id: 'A-MANAGER-1', storeId: store.id, employeeId: storeManager.id,
+        date: today(), hours: 4, status: 'Đi đúng giờ',
+      }, {
+        id: 'A-MANAGER-2', storeId: store.id, employeeId: storeManager.id,
+        date: today(), hours: 4, status: 'Đi đúng giờ',
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.queryByText(/Không thể tính lương kỳ này/u)).toBeNull()
+    const table = screen.getByRole('columnheader', { name: 'Lương cứng' }).closest('table')
+    expect(within(table).getByText(employee.name)).toBeTruthy()
+    expect(within(table).queryByText(storeManager.name)).toBeNull()
+    expect(screen.getAllByText('80,000 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('12,000,000 đ')).toBeNull()
+  })
+
+  it('still locks employee payroll for foreign-store attendance without a support transfer', () => {
+    const foreignEmployee = {
+      ...employee,
+      id: 'S02-UNLINKED',
+      name: 'Nhân viên cửa hàng khác',
+      storeId: 'S02',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [employee, foreignEmployee],
+      attendance: [{
+        id: 'A-EMPLOYEE', storeId: store.id, employeeId: employee.id,
+        date: today(), hours: 4, status: 'Đi đúng giờ',
+      }, {
+        id: 'A-FOREIGN', storeId: store.id, employeeId: foreignEmployee.id,
+        date: today(), hours: 4, status: 'Đi đúng giờ',
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText(/Không thể tính lương kỳ này/u)).toBeTruthy()
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(4)
+    expect(screen.queryByText(foreignEmployee.name)).toBeNull()
+  })
+
   it('reads the canonical salaryConfig from a locked tiered payroll snapshot', () => {
     const fullTimeEmployee = {
       ...employee,

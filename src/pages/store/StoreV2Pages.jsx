@@ -97,6 +97,15 @@ const employeeIdentifierValues = (employee = {}) => [
   employee.employeeCode,
 ].map(compactIdentifier).filter(Boolean)
 const employeePrimaryIdentifier = (employee = {}) => employeeIdentifierValues(employee)[0] || ''
+const employeeOperationalUnit = (employee = {}) => compactIdentifier(
+  employee.unit || employee.unitType || employee.department || 'store',
+).toLocaleLowerCase('en-US')
+const isStoreManagerProfile = (employee = {}) => [
+  'store_manager',
+  'store-manager',
+  'store manager',
+  'manager',
+].includes(employeeOperationalUnit(employee))
 const attendanceEmployeeReference = (record = {}) => compactIdentifier(record.employeeId || record.employeeCode)
 const payrollRowEmployeeReference = (row = {}) => compactIdentifier(row?.employeeId || row?.employeeCode)
 const attendanceShiftIdentifier = (record = {}) => compactIdentifier(record.shiftId || record.shift)
@@ -876,7 +885,14 @@ export function StorePayrollV2() {
     ...scopedEmployees,
     ...employees.filter((employee) => inboundSupportEmployees.has(employee) && !scopedEmployees.includes(employee)),
   ]
-  if (attendanceLinks.some(({ employee }) => employee && !liveParticipants.includes(employee))) {
+  const selectedStoreManagerAttendance = new Set(attendanceLinks
+    .filter(({ employee }) => employee
+      && isStoreManagerProfile(employee)
+      && storeReferenceMatches(employee.storeId))
+    .map(({ employee }) => employee))
+  if (attendanceLinks.some(({ employee }) => employee
+    && !liveParticipants.includes(employee)
+    && !selectedStoreManagerAttendance.has(employee))) {
     payrollPreviewError ||= Object.assign(new Error('ATTENDANCE_EMPLOYEE_OUT_OF_SCOPE'), {
       code: 'ATTENDANCE_EMPLOYEE_OUT_OF_SCOPE',
     })
