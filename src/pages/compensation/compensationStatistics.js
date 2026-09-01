@@ -7,6 +7,7 @@ import {
 } from './compensationViewModel'
 import {
   operationalIdentifierEntry,
+  sameOperationalIdentifier,
 } from '../../utils'
 
 const monthLabel = (period) => {
@@ -150,7 +151,20 @@ const operationalReferenceIndex = (records = [], identifierValuesOf = (record) =
     return foldedMatches.size === 1 && foldedMatches.has(record)
   }
 
-  return { key, matches, resolve }
+  const collisionFor = (reference) => {
+    const requested = String(reference ?? '').trim()
+    if (!requested) return null
+    const collisionKey = normalizedReference(requested)
+    const foldedMatches = folded.get(collisionKey) || new Set()
+    return foldedMatches.size > 1
+      ? { key: collisionKey, records: [...foldedMatches] }
+      : null
+  }
+  const foldedCollisions = [...folded.entries()]
+    .filter(([, records]) => records.size > 1)
+    .map(([key, records]) => ({ key, records: [...records] }))
+
+  return { collisionFor, foldedCollisions, key, matches, resolve }
 }
 
 const rewardReferenceKeyResolver = (attendanceRecords) => {
@@ -315,5 +329,227 @@ export const rewardStatistics = (rows = []) => {
     byDay: summarize((row) => row.workDate, (date) => String(date || '').split('-').reverse().join('/')),
     byMonth: summarize((row) => row.month || String(row.workDate || '').slice(0, 7), monthLabel),
     byEmployee: summarize((row) => row.employeeId, (id, row) => row.employeeName || id || 'Không xác định'),
+  }
+}
+
+const revenueDailyId = (record = {}) => String(record.id || record.calculationId || '').trim()
+const revenueAllocationDailyId = (record = {}) => String(
+  record.revenueBonusDailyId || record.calculationId || '',
+).trim()
+const revenueBusinessDate = (record = {}) => String(
+  record.businessDate || record.date || record.calculationDate || record.createdAt || '',
+).slice(0, 10)
+const revenueAmount = (record = {}) => {
+  const amount = Number(
+    record.amountVnd ?? record.allocatedVnd ?? record.amount ?? record.bonusVnd ?? 0,
+  )
+  return Number.isSafeInteger(amount) && amount >= 0 ? amount : 0
+}
+const isSuperseded = (record = {}) => Boolean(record.supersededAt)
+  || normalize(record.status) === 'superseded'
+const isEffectiveRevenueRecord = (record = {}) => !isVoided(record) && !isSuperseded(record)
+
+/**
+ * Projects effective daily revenue-bonus calculations into immutable history
+ * rows. Store/date scopes with more than one effective daily record are excluded
+ * in full: choosing either record would double-count money or silently invent a
+ * winner. Collision metadata lets callers surface the data-integrity problem.
+ *
+ * Allocation snapshots retain historical employee names after a profile leaves
+ * the active directory. Separate allocation collections remain supported for
+ * backend state, while AppContext's nested allocation projection is preferred
+ * when present.
+ */
+export const revenueBonusHistoryProjection = ({
+  revenueBonusDaily = [],
+  revenueBonusAllocations = [],
+  employees = [],
+  storeId = '',
+} = {}) => {
+  const dailyRecords = Array.isArray(revenueBonusDaily) ? revenueBonusDaily : []
+  const allocationRecords = Array.isArray(revenueBonusAllocations) ? revenueBonusAllocations : []
+  const employeeIndex = operationalReferenceIndex(
+    Array.isArray(employees) ? employees : [],
+    employeeIdentifiers,
+  )
+  const employeeCollisionByKey = new Map()
+  const employeeCollisionsByRecord = employeeIndex.foldedCollisions.reduce((index, collision) => {
+    collision.records.forEach((record) => {
+      const collisions = index.get(record) || []
+      collisions.push(collision)
+      index.set(record, collisions)
+    })
+    return index
+  }, new Map())
+  const dailyIndex = operationalReferenceIndex(dailyRecords, (record) => [revenueDailyId(record)])
+  const effectiveDailyRecords = dailyRecords
+    .filter(isEffectiveRevenueRecord)
+    .filter((daily) => !storeId || sameOperationalIdentifier(daily.storeId, storeId))
+  const dailyByScope = effectiveDailyRecords.reduce((groups, daily) => {
+    const storeKey = normalizedReference(daily.storeId)
+    const businessDate = revenueBusinessDate(daily)
+    const scopeKey = JSON.stringify([storeKey, businessDate])
+    const records = groups.get(scopeKey) || []
+    records.push(daily)
+    groups.set(scopeKey, records)
+    return groups
+  }, new Map())
+  const collidingDailyRecords = new Set()
+  const collisions = [...dailyByScope.values()]
+    .filter((records) => records.length > 1)
+    .map((records) => {
+      records.forEach((record) => collidingDailyRecords.add(record))
+      return {
+        storeId: String(records[0]?.storeId || '').trim(),
+        storeKey: normalizedReference(records[0]?.storeId),
+        businessDate: revenueBusinessDate(records[0]),
+        recordIds: records.map(revenueDailyId).filter(Boolean).toSorted(),
+        recordCount: records.length,
+      }
+    })
+    .toSorted((left, right) => `${right.businessDate} ${right.storeKey}`
+      .localeCompare(`${left.businessDate} ${left.storeKey}`))
+
+  const rows = effectiveDailyRecords
+    .filter((daily) => !collidingDailyRecords.has(daily))
+    .flatMap((daily) => {
+      const dailyId = revenueDailyId(daily)
+      const dailyStoreId = String(daily.storeId || '').trim()
+      const businessDate = revenueBusinessDate(daily)
+      const nestedAllocations = Array.isArray(daily.allocations) ? daily.allocations : []
+      const linkedAllocations = nestedAllocations.length
+        ? nestedAllocations
+        : allocationRecords.filter((allocation) => (
+            dailyIndex.resolve(revenueAllocationDailyId(allocation)).record === daily
+          ))
+
+      return linkedAllocations
+        .filter(isEffectiveRevenueRecord)
+        .filter((allocation) => (
+          !allocation.storeId
+          || !dailyStoreId
+          || sameOperationalIdentifier(allocation.storeId, dailyStoreId)
+        ))
+        .flatMap((allocation, index) => {
+          const allocationEmployeeId = entryEmployeeId(allocation)
+          const employeeResolution = employeeIndex.resolve(allocationEmployeeId)
+          const directEmployeeCollision = employeeIndex.collisionFor(allocationEmployeeId)
+          const relevantEmployeeCollisions = new Map([
+            ...(directEmployeeCollision ? [[directEmployeeCollision.key, directEmployeeCollision]] : []),
+            ...((employeeResolution.record && employeeCollisionsByRecord.get(employeeResolution.record)) || [])
+              .map((collision) => [collision.key, collision]),
+          ])
+          if (relevantEmployeeCollisions.size) {
+            relevantEmployeeCollisions.forEach((employeeCollision) => {
+              if (employeeCollisionByKey.has(employeeCollision.key)) return
+              employeeCollisionByKey.set(employeeCollision.key, {
+                employeeKey: employeeCollision.key,
+                employeeIds: [...new Set(employeeCollision.records
+                  .map((record) => String(record.id || record.code || record.employeeId || '').trim())
+                  .filter(Boolean))].toSorted(),
+                recordCount: employeeCollision.records.length,
+              })
+            })
+            return []
+          }
+          const employee = employeeResolution.record
+          const employeeId = String(
+            employee?.id || employee?.code || employee?.employeeId || allocationEmployeeId,
+          ).trim()
+          const workedSeconds = Math.max(0, Number(
+            allocation.workedSeconds ?? allocation.weightUnits ?? 0,
+          ) || 0)
+          const approvedSalesHours = Math.max(0, Number(
+            allocation.approvedSalesHours
+              ?? allocation.workedHours
+              ?? allocation.hours
+              ?? (workedSeconds / 3_600),
+          ) || 0)
+
+          return [{
+            id: String(allocation.id || `${dailyId || businessDate}:${employeeId || 'unknown'}:${index}`),
+            revenueBonusDailyId: dailyId,
+            storeId: dailyStoreId || String(allocation.storeId || '').trim(),
+            storeName: String(daily.storeName || allocation.storeName || '').trim(),
+            businessDate,
+            month: String(daily.period || allocation.period || businessDate.slice(0, 7)).slice(0, 7),
+            employeeId,
+            employeeName: String(
+              allocation.employeeName
+                || employee?.name
+                || employee?.displayName
+                || allocationEmployeeId
+                || 'Không xác định',
+            ).trim(),
+            workedSeconds,
+            approvedSalesHours,
+            weightPercent: allocation.weightPercent == null ? null : Number(allocation.weightPercent),
+            amountVnd: revenueAmount(allocation),
+            status: allocation.status || daily.status || 'APPROVED',
+            recordedAt: String(
+              allocation.approvedAt
+                || allocation.createdAt
+                || daily.calculatedAt
+                || daily.createdAt
+                || '',
+            ),
+          }]
+        })
+    })
+    .toSorted((left, right) => `${right.businessDate} ${right.recordedAt} ${right.id}`
+      .localeCompare(`${left.businessDate} ${left.recordedAt} ${left.id}`))
+
+  return {
+    rows,
+    collisions,
+    employeeCollisions: [...employeeCollisionByKey.values()]
+      .toSorted((left, right) => left.employeeKey.localeCompare(right.employeeKey)),
+  }
+}
+
+export const revenueBonusHistoryRows = (options = {}) => (
+  revenueBonusHistoryProjection(options).rows
+)
+
+export const revenueBonusStatistics = (rows = [], { month = '' } = {}) => {
+  const effective = (Array.isArray(rows) ? rows : []).filter(isEffectiveRevenueRecord)
+  const summarize = (keyFor, labelFor, groupKeyFor = keyFor) => [...effective.reduce((groups, row) => {
+    const key = String(keyFor(row) || '')
+    const groupKey = String(groupKeyFor(row) || key)
+    const current = groups.get(groupKey) || {
+      key,
+      label: labelFor(key, row),
+      count: 0,
+      amountVnd: 0,
+    }
+    current.count += 1
+    current.amountVnd += revenueAmount(row)
+    groups.set(groupKey, current)
+    return groups
+  }, new Map()).values()].toSorted((left, right) => right.key.localeCompare(left.key))
+  const requestedMonth = /^\d{4}-(?:0[1-9]|1[0-2])$/u.test(String(month || '').trim())
+    ? String(month).trim()
+    : ''
+
+  return {
+    byDay: summarize(
+      (row) => revenueBusinessDate(row),
+      (date) => date ? date.split('-').reverse().join('/') : 'Không xác định',
+    ),
+    byEmployee: summarize(
+      (row) => entryEmployeeId(row),
+      (employeeId, row) => row.employeeName || employeeId || 'Không xác định',
+      (row) => normalize(entryEmployeeId(row)),
+    ),
+    byMonth: summarize(
+      (row) => row.month || revenueBusinessDate(row).slice(0, 7),
+      monthLabel,
+    ),
+    requestedMonth,
+    monthlyTotalVnd: requestedMonth
+      ? effective
+          .filter((row) => (row.month || revenueBusinessDate(row).slice(0, 7)) === requestedMonth)
+          .reduce((total, row) => total + revenueAmount(row), 0)
+      : 0,
   }
 }
