@@ -871,13 +871,15 @@ export function StoreTasks() {
     targetUnit: 'store',
     storeId,
   }), [attendance, workCatalogProgress, compensationEntries, tasks, storeEmployees, storeId])
-  const rewardCount = rewardRows.filter((row) => row.completed && row.payoutStatus !== 'void').length
-  const violationCount = activeWorkCatalogItems(workCatalogItems, {
+  const rewardCount = useMemo(() => rewardRows.filter((row) => (
+    row.completed && row.payoutStatus !== 'void'
+  )).length, [rewardRows])
+  const violationCount = useMemo(() => activeWorkCatalogItems(workCatalogItems, {
     targetGroup: WORK_CATALOG_TARGET.STORE,
     storeId,
     date: today(),
     kinds: WORK_CATALOG_KIND.VIOLATION,
-  }).length
+  }).length, [workCatalogItems, storeId])
   const scopedAssignmentHistory = taskAssignmentHistory.filter((assignment) => (
     !assignment.storeId || storeFor(stores, assignment.storeId) === activeStore
   ))
@@ -935,12 +937,11 @@ export function StoreTasks() {
         </button>}
       </div>
 
-      <section
+      {activeTaskTab === 'reward' && <section
         id="store-task-reward-panel"
         className="store-task-tab-panel"
         role="tabpanel"
         aria-labelledby="store-task-reward-tab"
-        hidden={activeTaskTab !== 'reward'}
       >
         {requestedAssignmentId && <Card className="store-task-progress-card" title="Kết quả công việc bắt buộc nhân viên đã gửi">
           {!requestedAssignment && <InfoNote tone="orange">Không tìm thấy lượt giao việc này trong phạm vi cửa hàng hiện tại.</InfoNote>}
@@ -968,16 +969,15 @@ export function StoreTasks() {
         </Card>}
         <InfoNote>Danh sách thưởng do nhân viên tự tick và lưu trong mục <strong>“Công việc tính thưởng”</strong> sau khi điểm danh. Trang cửa hàng chỉ theo dõi lịch sử và thống kê.</InfoNote>
         <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} sections="reward" rewardRows={rewardRows} />
-      </section>
+      </section>}
 
-      {canManageViolations && <section
+      {canManageViolations && activeTaskTab === 'violation' && <section
         id="store-task-violation-panel"
         className="store-task-tab-panel store-task-tab-panel--violation"
         role="tabpanel"
         aria-labelledby="store-task-violation-tab"
-        hidden={activeTaskTab !== 'violation'}
       >
-        <ViolationManagementPage targetUnit="store" embedded />
+        <ViolationManagementPage targetUnit="store" storeId={storeId} embedded />
       </section>}
     </div>
   )

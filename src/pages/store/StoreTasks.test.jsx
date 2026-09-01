@@ -11,7 +11,7 @@ vi.mock('../../state/AppContext', async (importOriginal) => ({
 }))
 
 vi.mock('../compensation/ViolationManagementPage', () => ({
-  ViolationManagementPage: ({ targetUnit, embedded }) => <div data-testid="store-violation-management" data-target-unit={targetUnit} data-embedded={String(embedded)} />,
+  ViolationManagementPage: ({ targetUnit, storeId, embedded }) => <div data-testid="store-violation-management" data-target-unit={targetUnit} data-store-id={storeId} data-embedded={String(embedded)} />,
 }))
 
 vi.mock('../compensation/UnitCompensationStatistics', () => ({
@@ -83,19 +83,17 @@ describe('StoreTasks reward and violation tabs', () => {
 
     const rewardTab = screen.getByRole('tab', { name: /Thưởng công việc/i })
     const violationTab = screen.getByRole('tab', { name: /Vi phạm/i })
-    const rewardPanel = document.getElementById('store-task-reward-panel')
-    const violationPanel = document.getElementById('store-task-violation-panel')
-
-    expect(rewardPanel.hidden).toBe(false)
-    expect(violationPanel.hidden).toBe(true)
+    expect(document.getElementById('store-task-reward-panel')).toBeTruthy()
+    expect(document.getElementById('store-task-violation-panel')).toBeNull()
     fireEvent.click(violationTab)
 
     expect(rewardTab.getAttribute('aria-selected')).toBe('false')
     expect(violationTab.getAttribute('aria-selected')).toBe('true')
-    expect(rewardPanel.hidden).toBe(true)
-    expect(violationPanel.hidden).toBe(false)
+    expect(document.getElementById('store-task-reward-panel')).toBeNull()
+    expect(document.getElementById('store-task-violation-panel')).toBeTruthy()
     expect(screen.getByTestId('store-violation-management').dataset).toMatchObject({
       targetUnit: 'store',
+      storeId: store.id,
       embedded: 'true',
     })
   })
