@@ -492,6 +492,7 @@ const setupSupportTransferRuntime = async ({
   workCatalogItems = [],
   expenseEntries = [],
   cashTransactions = [],
+  extraEmployees = [],
 } = {}) => {
   const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: token }
   const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
@@ -510,7 +511,7 @@ const setupSupportTransferRuntime = async ({
       }, {
         id: 'HTKD-TRANSFER', name: 'Hỗ trợ vận hành', storeId: 'BUSINESS_SUPPORT',
         unit: 'business_support', status: 'Đang làm việc',
-      }],
+      }, ...extraEmployees],
       supportTransfers: [transfer],
       attendance,
       payrollPeriods,
@@ -568,6 +569,89 @@ const setupSupportTransferRuntime = async ({
   expect(supportLogin.status).toBe(200)
   const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
   return { env, adminAuthorization, employeeAuthorization, managerAuthorization, supportAuthorization }
+}
+
+const supportViolationFixture = ({ suffix, assessedAmountVnd }) => {
+  const transferId = `TR-SUPPORT-VIOLATION-${suffix}`
+  const attendanceId = `ATT-SUPPORT-VIOLATION-${suffix}`
+  const catalogItemId = `CAT-SUPPORT-VIOLATION-${suffix}`
+  const shiftId = `SUPPORT_TRANSFER_${suffix}`
+  const transfer = {
+    id: transferId,
+    employeeId: 'E01',
+    fromStoreId: 'S01',
+    toStoreId: 'S02',
+    startAt: '2026-08-31T15:00:00.000Z',
+    endAt: '2026-08-31T19:00:00.000Z',
+    fromDate: '2026-08-31',
+    toDate: '2026-09-01',
+    hourlySupportRate: 30_000,
+    allowance: 0,
+    status: 'Đã duyệt',
+    createdAt: '2026-08-25T00:00:00.000Z',
+    deletedAt: null,
+  }
+  const attendance = [{
+    id: attendanceId,
+    employeeId: 'E01',
+    employeeName: 'Nhân viên hỗ trợ',
+    unit: 'store',
+    storeId: 'S02',
+    homeStoreId: 'S01',
+    supportStoreId: 'S02',
+    supportTransferId: transferId,
+    supportTransferSnapshot: {
+      id: transferId,
+      fromStoreId: 'S01',
+      toStoreId: 'S02',
+      startAt: transfer.startAt,
+      endAt: transfer.endAt,
+    },
+    date: '2026-08-31',
+    workDate: '2026-08-31',
+    attendanceDate: '2026-08-31',
+    shiftId,
+    shift: shiftId,
+    shiftName: 'Ca hỗ trợ qua đêm',
+    shiftStart: '22:00',
+    shiftEnd: '02:00',
+    shiftVersion: 1,
+    shiftSource: 'support-transfer',
+    employmentTypeSnapshot: 'Part-Time',
+    checkIn: '22:00',
+    checkInAt: transfer.startAt,
+    checkOut: '02:00',
+    checkOutAt: transfer.endAt,
+    workedSeconds: 14_400,
+    workedMinutes: 240,
+    hours: 4,
+    deletedAt: null,
+  }]
+  const workCatalogItems = [{
+    id: catalogItemId,
+    code: `store.violation.support_${suffix.toLowerCase()}`,
+    kind: 'VIOLATION',
+    targetGroup: 'store',
+    storeId: 'S02',
+    shiftId: null,
+    shiftName: null,
+    name: 'Vi phạm trong ca hỗ trợ',
+    amountVnd: assessedAmountVnd,
+    active: true,
+    sortOrder: 1,
+    effectiveFrom: null,
+    effectiveTo: null,
+    version: 1,
+    deletedAt: null,
+  }]
+  const extraEmployees = [{
+    id: 'QL01',
+    name: 'Quản lý cửa hàng nhà',
+    storeId: 'S01',
+    unit: 'store_manager',
+    status: 'Đang làm việc',
+  }]
+  return { transfer, attendance, workCatalogItems, extraEmployees, transferId, attendanceId, catalogItemId, shiftId }
 }
 
 describe('IDOSI Worker security primitives', () => {
@@ -14846,6 +14930,484 @@ describe('IDOSI Worker security primitives', () => {
       }, { ...adminAuthorization, 'idempotency-key': 'support-work-reward-september-payroll-0001' }), env)
       expect(septemberDestinationPayroll.status).toBe(201)
       expect((await septemberDestinationPayroll.json()).period.rows.some(({ employeeId }) => employeeId === 'E01')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('recognizes a support violation refund once at the destination without double-counting payroll profit', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-01T02:00:00.000Z'))
+      const fixture = supportViolationFixture({ suffix: 'PARTIAL', assessedAmountVnd: 150_000 })
+      const zeroAppliedCatalogItem = {
+        ...fixture.workCatalogItems[0],
+        id: 'ZZZ-CAT-SUPPORT-VIOLATION-PARTIAL',
+        code: 'store.violation.support_partial_overflow',
+        name: 'Vi phạm vượt quá lương còn lại',
+        amountVnd: 40_000,
+        sortOrder: 2,
+      }
+      const {
+        env,
+        adminAuthorization,
+        employeeAuthorization,
+        managerAuthorization,
+      } = await setupSupportTransferRuntime({
+        token: 'bootstrap-support-violation-refund-partial',
+        transfer: fixture.transfer,
+        attendance: fixture.attendance,
+        workCatalogItems: [...fixture.workCatalogItems, zeroAppliedCatalogItem],
+        extraEmployees: fixture.extraEmployees,
+      })
+      const homeManagerCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create',
+        payload: {
+          username: 'transfer.home.manager',
+          password: 'transfer-home-manager-password',
+          displayName: 'Quản lý cửa hàng nhà',
+          role: 'store_manager',
+          storeId: 'S01',
+          employeeId: 'QL01',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-home-manager-0001' }), env)
+      expect(homeManagerCreated.status).toBe(201)
+      const homeManagerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'transfer.home.manager', password: 'transfer-home-manager-password',
+      }), env)
+      expect(homeManagerLogin.status).toBe(200)
+      const homeManagerAuthorization = { authorization: `Bearer ${(await homeManagerLogin.json()).token}` }
+
+      const createCommand = {
+        type: 'violation.create_batch',
+        expectedVersion: 1,
+        payload: {
+          targetUnit: 'store',
+          storeId: 'S02',
+          employeeId: 'E01',
+          occurredOn: '2026-08-31',
+          attendanceId: fixture.attendanceId,
+          shiftId: fixture.shiftId,
+          catalogItemIds: [fixture.catalogItemId],
+          note: 'Ghi nhận tại cửa hàng hỗ trợ',
+        },
+      }
+      const homeManagerDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', createCommand, {
+        ...homeManagerAuthorization, 'idempotency-key': 'support-violation-home-manager-denied-0001',
+      }), env)
+      expect(homeManagerDenied.status).toBe(403)
+      expect(await homeManagerDenied.json()).toMatchObject({ error: { code: 'STORE_SCOPE_FORBIDDEN' } })
+      const employeeDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', createCommand, {
+        ...employeeAuthorization, 'idempotency-key': 'support-violation-employee-denied-0001',
+      }), env)
+      expect(employeeDenied.status).toBe(403)
+      expect(await employeeDenied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
+      expect(readHydratedState(env.DB.database)).toMatchObject({ violations: [], violationRefunds: [] })
+
+      const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', createCommand, {
+        ...managerAuthorization, 'idempotency-key': 'support-violation-create-0001',
+      }), env)
+      expect(created.status).toBe(201)
+      const createdBody = await created.json()
+      expect(createdBody).toMatchObject({ version: 2, createdCount: 1, existingCount: 0 })
+
+      const createdState = readHydratedState(env.DB.database)
+      expect(createdState.violations).toHaveLength(1)
+      expect(createdState.violationRefunds).toHaveLength(1)
+      const [violation] = createdState.violations
+      expect(violation).toMatchObject({
+        employeeId: 'E01',
+        storeId: 'S02',
+        attendanceId: fixture.attendanceId,
+        shiftId: fixture.shiftId,
+        occurredOn: '2026-08-31',
+        period: '2026-08',
+        amountVnd: 150_000,
+        supportTransferId: fixture.transferId,
+        employeeHomeStoreId: 'S01',
+        supportStoreId: 'S02',
+      })
+      expect(createdState.violationRefunds[0]).toMatchObject({
+        id: `violation-refund:v1:${violation.id}`,
+        sourceType: 'support-violation-refund',
+        sourceId: violation.id,
+        violationId: violation.id,
+        violationOccurrenceKey: violation.occurrenceKey,
+        storeId: 'S02',
+        employeeId: 'E01',
+        employeeName: 'Nhân viên hỗ trợ',
+        employeeHomeStoreId: 'S01',
+        supportStoreId: 'S02',
+        supportTransferId: fixture.transferId,
+        attendanceId: fixture.attendanceId,
+        shiftId: fixture.shiftId,
+        occurredOn: '2026-08-31',
+        period: '2026-08',
+        assessedAmountVnd: 150_000,
+        appliedAmountVnd: 0,
+        remainingReceivableVnd: 150_000,
+        amountVnd: 0,
+        status: 'PENDING_PAYROLL',
+        recognized: false,
+        recognizedAt: null,
+        payrollPeriodId: null,
+        voidedAt: null,
+        version: 1,
+      })
+
+      const protocolReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', createCommand, {
+        ...managerAuthorization, 'idempotency-key': 'support-violation-create-0001',
+      }), env)
+      expect(protocolReplay.status).toBe(201)
+      expect(protocolReplay.headers.get('idempotency-replayed')).toBe('true')
+      expect(await protocolReplay.json()).toEqual(createdBody)
+      const logicalReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        ...createCommand,
+        expectedVersion: 2,
+        payload: { ...createCommand.payload, storeId: 's02' },
+      }, {
+        ...managerAuthorization, 'idempotency-key': 'support-violation-logical-replay-0001',
+      }), env)
+      expect(logicalReplay.status).toBe(200)
+      expect(await logicalReplay.json()).toMatchObject({
+        version: 2, createdCount: 0, existingCount: 1, existing: true,
+      })
+      expect(readHydratedState(env.DB.database)).toMatchObject({
+        violations: [expect.objectContaining({ id: violation.id })],
+        violationRefunds: [expect.objectContaining({ sourceId: violation.id })],
+      })
+
+      const destinationProjectionResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: managerAuthorization,
+      }), env)
+      expect(destinationProjectionResponse.status).toBe(200)
+      const destinationProjection = (await destinationProjectionResponse.json()).state
+      expect(destinationProjection.violations || []).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: violation.id, employeeId: 'E01' }),
+      ]))
+      expect(destinationProjection.violationRefunds).toEqual([
+        expect.objectContaining({ sourceId: violation.id, storeId: 'S02', status: 'PENDING_PAYROLL' }),
+      ])
+
+      const homeProjectionResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: homeManagerAuthorization,
+      }), env)
+      expect(homeProjectionResponse.status).toBe(200)
+      const homeProjection = (await homeProjectionResponse.json()).state
+      expect(homeProjection.violations || []).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: violation.id }),
+      ]))
+      expect(homeProjection.violationRefunds || []).toEqual([])
+
+      const employeeProjectionResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: employeeAuthorization,
+      }), env)
+      expect(employeeProjectionResponse.status).toBe(200)
+      const employeeProjection = (await employeeProjectionResponse.json()).state
+      expect(employeeProjection.violations).toEqual([
+        expect.objectContaining({ id: violation.id, employeeId: 'E01' }),
+      ])
+      expect(employeeProjection.violationRefunds || []).toEqual([])
+
+      const overflowCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'violation.create_batch',
+        expectedVersion: 2,
+        payload: {
+          ...createCommand.payload,
+          catalogItemIds: [zeroAppliedCatalogItem.id],
+          note: 'Khoản vi phạm không còn lương để khấu trừ',
+        },
+      }, { ...managerAuthorization, 'idempotency-key': 'support-violation-overflow-create-0001' }), env)
+      expect(overflowCreated.status).toBe(201)
+      expect(await overflowCreated.json()).toMatchObject({ version: 3, createdCount: 1 })
+      const overflowCreatedState = readHydratedState(env.DB.database)
+      const overflowViolation = overflowCreatedState.violations
+        .find(({ catalogItemId }) => catalogItemId === zeroAppliedCatalogItem.id)
+      expect(overflowViolation).toBeTruthy()
+      expect(overflowCreatedState.violationRefunds.find(({ sourceId }) => sourceId === overflowViolation.id))
+        .toMatchObject({
+          assessedAmountVnd: 40_000,
+          appliedAmountVnd: 0,
+          remainingReceivableVnd: 40_000,
+          amountVnd: 0,
+          status: 'PENDING_PAYROLL',
+          recognized: false,
+        })
+
+      const destinationClose = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 3, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-destination-close-0001' }), env)
+      expect(destinationClose.status).toBe(201)
+      const destinationCloseBody = await destinationClose.json()
+      const destinationRow = destinationCloseBody.period.rows.find(({ employeeId }) => employeeId === 'E01')
+      expect(destinationRow).toMatchObject({
+        employeeId: 'E01',
+        hours: 4,
+        baseSalary: 120_000,
+        gross: 120_000,
+        violationVnd: 190_000,
+        appliedViolationVnd: 120_000,
+        remainingViolationReceivableVnd: 70_000,
+        remaining: 0,
+        netPayVnd: 0,
+        supportActualPay: 120_000,
+        supportTransferIds: [fixture.transferId],
+      })
+      expect(destinationCloseBody.period.financeSnapshot).toMatchObject({
+        revenue: 120_000,
+        employeePayrollExpense: 120_000,
+        earnedPayrollExpense: 120_000,
+        expense: 120_000,
+        profit: 0,
+      })
+      expect(destinationCloseBody.payrollAccrual).toMatchObject({
+        storeId: 'S02', amount: 120_000, grossPayrollExpense: 120_000, recognized: true,
+      })
+
+      const destinationClosedState = readHydratedState(env.DB.database)
+      expect(destinationClosedState.violationRefunds).toHaveLength(2)
+      expect(destinationClosedState.violationRefunds).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          id: `violation-refund:v1:${violation.id}`,
+          sourceId: violation.id,
+          storeId: 'S02',
+          assessedAmountVnd: 150_000,
+          appliedAmountVnd: 120_000,
+          remainingReceivableVnd: 30_000,
+          amountVnd: 120_000,
+          status: 'RECOGNIZED',
+          recognized: true,
+          payrollPeriodId: destinationCloseBody.period.id,
+        }),
+        expect.objectContaining({
+          id: `violation-refund:v1:${overflowViolation.id}`,
+          sourceId: overflowViolation.id,
+          storeId: 'S02',
+          assessedAmountVnd: 40_000,
+          appliedAmountVnd: 0,
+          remainingReceivableVnd: 40_000,
+          amountVnd: 0,
+          status: 'PENDING_PAYROLL',
+          recognized: false,
+          recognizedAt: null,
+          payrollPeriodId: null,
+        }),
+      ]))
+      expect(destinationClosedState.violationRefunds.find(({ sourceId }) => sourceId === violation.id)?.recognizedAt)
+        .toBeTruthy()
+      expect(destinationClosedState.cashTransactions).toEqual([])
+
+      const homeClose = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 4, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-home-close-0001' }), env)
+      expect(homeClose.status).toBe(201)
+      const homeCloseBody = await homeClose.json()
+      expect(homeCloseBody.period.rows.find(({ employeeId }) => employeeId === 'E01')).toMatchObject({
+        employeeId: 'E01',
+        hours: 0,
+        baseSalary: 0,
+        violationVnd: 0,
+        appliedViolationVnd: 0,
+        remainingViolationReceivableVnd: 0,
+        remaining: 0,
+      })
+      expect(homeCloseBody.period.financeSnapshot).toMatchObject({ revenue: 0, profit: 0 })
+      expect(readHydratedState(env.DB.database).violationRefunds).toHaveLength(2)
+
+      const septemberClose = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-09' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-september-close-0001' }), env)
+      expect(septemberClose.status).toBe(201)
+      const septemberPeriod = (await septemberClose.json()).period
+      expect(septemberPeriod.rows.some(({ employeeId }) => employeeId === 'E01')).toBe(false)
+      expect(septemberPeriod.financeSnapshot.revenue).toBe(0)
+      expect(readHydratedState(env.DB.database).violationRefunds).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
+  it('keeps a support violation refund auditable through void, reclose, payment, and lock lifecycle', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-01T02:00:00.000Z'))
+      const fixture = supportViolationFixture({ suffix: 'LIFECYCLE', assessedAmountVnd: 20_000 })
+      const { env, adminAuthorization, managerAuthorization } = await setupSupportTransferRuntime({
+        token: 'bootstrap-support-violation-refund-lifecycle',
+        transfer: fixture.transfer,
+        attendance: fixture.attendance,
+        workCatalogItems: fixture.workCatalogItems,
+      })
+      const createPayload = {
+        targetUnit: 'store',
+        storeId: 'S02',
+        employeeId: 'E01',
+        occurredOn: '2026-08-31',
+        attendanceId: fixture.attendanceId,
+        shiftId: fixture.shiftId,
+        catalogItemIds: [fixture.catalogItemId],
+      }
+      const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'violation.create_batch', expectedVersion: 1, payload: createPayload,
+      }, { ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-create-0001' }), env)
+      expect(created.status).toBe(201)
+      const createdState = readHydratedState(env.DB.database)
+      const violationId = createdState.violations[0].id
+      const refundId = `violation-refund:v1:${violationId}`
+      expect(createdState.violationRefunds).toEqual([
+        expect.objectContaining({ id: refundId, assessedAmountVnd: 20_000, status: 'PENDING_PAYROLL' }),
+      ])
+
+      const firstClose = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 2, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-lifecycle-close-0001' }), env)
+      expect(firstClose.status).toBe(201)
+      expect((await firstClose.json()).period.rows.find(({ employeeId }) => employeeId === 'E01')).toMatchObject({
+        gross: 120_000,
+        violationVnd: 20_000,
+        appliedViolationVnd: 20_000,
+        remaining: 100_000,
+      })
+      expect(readHydratedState(env.DB.database).violationRefunds).toEqual([
+        expect.objectContaining({
+          id: refundId,
+          assessedAmountVnd: 20_000,
+          appliedAmountVnd: 20_000,
+          amountVnd: 20_000,
+          status: 'RECOGNIZED',
+          recognized: true,
+        }),
+      ])
+
+      const voidCommand = {
+        type: 'violation.void',
+        expectedVersion: 3,
+        payload: { id: violationId, expectedVersion: 1, reason: 'Hủy do ghi nhận nhầm' },
+      }
+      const voided = await worker.fetch(jsonRequest('https://idosi.example/api/command', voidCommand, {
+        ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-void-0001',
+      }), env)
+      expect(voided.status).toBe(200)
+      expect(await voided.json()).toMatchObject({
+        version: 4,
+        violation: { id: violationId, status: 'VOID', version: 2 },
+      })
+      const voidedState = readHydratedState(env.DB.database)
+      expect(voidedState.payrollPeriods.find(({ storeId, period }) => storeId === 'S02' && period === '2026-08'))
+        .toMatchObject({ needsReclose: true })
+      expect(voidedState.violationRefunds).toEqual([
+        expect.objectContaining({
+          id: refundId,
+          assessedAmountVnd: 20_000,
+          appliedAmountVnd: 0,
+          amountVnd: 0,
+          status: 'VOID',
+          recognized: false,
+          voidReason: 'Hủy do ghi nhận nhầm',
+        }),
+      ])
+      expect(voidedState.violationRefunds[0].voidedAt).toBeTruthy()
+
+      const protocolVoidReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', voidCommand, {
+        ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-void-0001',
+      }), env)
+      expect(protocolVoidReplay.status).toBe(200)
+      expect(protocolVoidReplay.headers.get('idempotency-replayed')).toBe('true')
+      const logicalVoidReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        ...voidCommand,
+        expectedVersion: 4,
+        payload: { ...voidCommand.payload, expectedVersion: 2 },
+      }, { ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-void-logical-0001' }), env)
+      expect(logicalVoidReplay.status).toBe(200)
+      expect(await logicalVoidReplay.json()).toMatchObject({ version: 4, existing: true })
+      expect(readHydratedState(env.DB.database).violationRefunds).toHaveLength(1)
+
+      const reactivated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'violation.create_batch', expectedVersion: 4, payload: createPayload,
+      }, { ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-reactivate-0001' }), env)
+      expect(reactivated.status).toBe(200)
+      expect(await reactivated.json()).toMatchObject({
+        version: 5,
+        createdCount: 0,
+        reactivatedCount: 1,
+        violations: [{ id: violationId, status: 'ACTIVE', version: 3 }],
+      })
+      expect(readHydratedState(env.DB.database).violationRefunds).toEqual([
+        expect.objectContaining({
+          id: refundId,
+          assessedAmountVnd: 20_000,
+          appliedAmountVnd: 0,
+          amountVnd: 0,
+          status: 'PENDING_PAYROLL',
+          recognized: false,
+          voidedAt: null,
+        }),
+      ])
+
+      const reclosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-lifecycle-reclose-0001' }), env)
+      expect(reclosed.status).toBe(200)
+      const reclosedBody = await reclosed.json()
+      expect(reclosedBody.period.financeSnapshot).toMatchObject({
+        revenue: 20_000,
+        employeePayrollExpense: 120_000,
+        expense: 120_000,
+        profit: -100_000,
+      })
+      expect(readHydratedState(env.DB.database).violationRefunds).toEqual([
+        expect.objectContaining({
+          id: refundId,
+          amountVnd: 20_000,
+          status: 'RECOGNIZED',
+          payrollPeriodId: reclosedBody.period.id,
+        }),
+      ])
+
+      const paid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.pay', expectedVersion: 6, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-lifecycle-pay-0001' }), env)
+      expect(paid.status).toBe(200)
+      expect(await paid.json()).toMatchObject({
+        version: 7,
+        payments: [{ employeeId: 'E01', amount: 100_000 }],
+      })
+      const paidState = readHydratedState(env.DB.database)
+      expect(paidState.cashTransactions).toEqual([
+        expect.objectContaining({
+          storeId: 'S02', employeeId: 'E01', direction: 'out', amount: 100_000,
+          sourceType: 'payroll-payment',
+        }),
+      ])
+      expect(paidState.cashTransactions.some(({ direction }) => direction === 'in')).toBe(false)
+      expect(paidState.violationRefunds).toEqual([
+        expect.objectContaining({ id: refundId, amountVnd: 20_000, status: 'RECOGNIZED' }),
+      ])
+
+      const voidAfterPay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'violation.void', expectedVersion: 7,
+        payload: { id: violationId, expectedVersion: 3, reason: 'Không được hủy sau khi chi' },
+      }, { ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-paid-void-0001' }), env)
+      expect(voidAfterPay.status).toBe(409)
+      expect(await voidAfterPay.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
+
+      const locked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.lock', expectedVersion: 7, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-lifecycle-lock-0001' }), env)
+      expect(locked.status).toBe(200)
+      expect(await locked.json()).toMatchObject({ version: 8, period: { status: 'Đã khóa' } })
+
+      const createAfterLock = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'violation.create_batch', expectedVersion: 8, payload: createPayload,
+      }, { ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-locked-create-0001' }), env)
+      expect(createAfterLock.status).toBe(409)
+      expect(await createAfterLock.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_LOCKED' } })
+      const finalState = readHydratedState(env.DB.database)
+      expect(finalState.violations).toHaveLength(1)
+      expect(finalState.violationRefunds).toHaveLength(1)
+      expect(finalState.violationRefunds[0]).toMatchObject({
+        id: refundId, assessedAmountVnd: 20_000, amountVnd: 20_000, status: 'RECOGNIZED',
+      })
     } finally {
       vi.useRealTimers()
     }
