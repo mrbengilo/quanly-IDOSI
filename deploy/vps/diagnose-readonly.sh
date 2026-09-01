@@ -191,6 +191,10 @@ done
 section 'payroll_collision_summary'
 compose exec -T app node <<'NODE'
 import { DatabaseSync } from 'node:sqlite'
+import {
+  effectiveStoreSalaryConfig,
+  STORE_SALARY_CONFIG_IDENTIFIER_COLLISION,
+} from '/app/src/domain/storeTieredPayroll.js'
 
 const database = new DatabaseSync(process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite', {
   readOnly: true,
@@ -478,6 +482,151 @@ for (const [collectionKey, records] of payrollSources) {
     )
   }
 }
+
+// Reproduce the fail-closed preflight used by StorePayrollV2 for the reported
+// production scope. Output contains only aggregate error codes, never employee
+// identities, record payloads, notes, or monetary values.
+const previewStoreId = 'SM-TNV'
+const previewPeriod = '2026-08'
+const previewStores = stores.filter((record) => folded(record.id) === folded(previewStoreId))
+const previewStore = previewStores.length === 1 ? previewStores[0] : null
+const previewStoreMatches = (reference) => Boolean(previewStore)
+  && folded(reference) === folded(previewStore.id)
+const previewAttendancePeriod = (record) => String(
+  record.date || record.workDate || record.checkInAt || record.createdAt || '',
+).slice(0, 7)
+const previewScopedEmployees = previewStore ? appEmployees.filter((employee) => (
+  String(employee.unit || 'store') === 'store'
+  && !employee.deletedAt
+  && previewStoreMatches(employee.storeId)
+  && employee.status !== 'Đã nghỉ việc'
+)) : []
+const previewAttendance = previewStore ? collection('attendance').filter((record) => (
+  record && !record.deletedAt
+  && previewStoreMatches(record.storeId)
+  && previewAttendancePeriod(record) === previewPeriod
+)) : []
+const previewAttendanceLinks = previewAttendance.map((record) => ({
+  record,
+  match: uniqueMatch(appEmployees, record.employeeId || record.employeeCode),
+}))
+const previewInboundSupportEmployees = new Set(previewAttendanceLinks
+  .filter(({ record, match }) => match.record
+    && !match.record.deletedAt
+    && !previewStoreMatches(match.record.storeId)
+    && attendanceSupportLink(record, match.record))
+  .map(({ match }) => match.record))
+const previewParticipants = [
+  ...previewScopedEmployees,
+  ...appEmployees.filter((employee) => (
+    previewInboundSupportEmployees.has(employee) && !previewScopedEmployees.includes(employee)
+  )),
+]
+const previewPeriodCandidates = previewStore ? payrollPeriods.filter((record) => (
+  !record.supersededAt && previewStoreMatches(record.storeId) && record.period === previewPeriod
+)) : []
+const previewIssues = {}
+const addPreviewIssue = (code) => {
+  previewIssues[code] = (previewIssues[code] || 0) + 1
+}
+let previewPrimaryBlocker = ''
+const blockPreview = (code) => {
+  addPreviewIssue(code)
+  previewPrimaryBlocker ||= code
+}
+if (previewStores.length !== 1) blockPreview(previewStores.length > 1 ? 'STORE_IDENTIFIER_COLLISION' : 'STORE_NOT_FOUND')
+if (previewPeriodCandidates.length > 1) blockPreview('PAYROLL_PERIOD_IDENTIFIER_COLLISION')
+if (collisionSummary(previewScopedEmployees, identifiers).groups > 0) blockPreview('EMPLOYEE_IDENTIFIER_COLLISION')
+for (const { match } of previewAttendanceLinks) {
+  if (match.ambiguous) blockPreview('EMPLOYEE_IDENTIFIER_COLLISION')
+  else if (!match.record) blockPreview('ATTENDANCE_EMPLOYEE_NOT_FOUND')
+}
+for (const { match } of previewAttendanceLinks) {
+  if (match.record && !previewParticipants.includes(match.record)) blockPreview('ATTENDANCE_EMPLOYEE_OUT_OF_SCOPE')
+}
+if (collisionSummary(previewParticipants, identifiers).groups > 0) blockPreview('EMPLOYEE_IDENTIFIER_COLLISION')
+
+const previewSourceCollections = [
+  ['salaryAdjustments', collection('salaryAdjustments')],
+  ['compensationEntries', collection('compensationEntries')],
+  ['revenueBonusAllocations', collection('revenueBonusAllocations')],
+  ['violations', collection('violations')],
+  ['salaryAdvances', collection('salaryAdvances')],
+]
+const previewSourceRelevant = (collectionKey, record) => {
+  if (!record || !previewStoreMatches(record.storeId)) return false
+  if (collectionKey === 'salaryAdjustments') {
+    return record.period === previewPeriod && record.status !== 'Đã hủy' && !record.deletedAt
+  }
+  if (collectionKey === 'salaryAdvances') {
+    return record.period === previewPeriod && record.status === 'Đã chi'
+  }
+  return sourcePeriod(record) === previewPeriod
+}
+const previewSourceReference = (collectionKey, record) => collectionKey === 'salaryAdjustments'
+  || collectionKey === 'salaryAdvances'
+  ? String(record.employeeId || record.employeeCode || '').trim()
+  : sourceEmployeeReference(record)
+const previewNeedsSalaryPolicy = (employee) => {
+  const employmentType = String(
+    employee.employmentType || employee.employeeType || employee.type || 'Full-Time',
+  ).trim()
+  const payBasis = String(
+    employee.payBasis || employee.salaryBasis || employee.salaryType || employee.salaryUnit || '',
+  ).trim().toLowerCase()
+  const unit = String(employee.unit || employee.unitType || '').trim().toLowerCase()
+  return ['tiered-hourly', 'tiered_hourly', 'store_full_time_tiered'].includes(payBasis)
+    || (/full[- ]?time/iu.test(employmentType) && (!unit || unit === 'store'))
+}
+const previewSeenSourceIssues = new Set()
+const blockPreviewSource = (collectionKey, recordIndex, code) => {
+  const key = `${collectionKey}\u0000${recordIndex}\u0000${code}`
+  if (previewSeenSourceIssues.has(key)) return
+  previewSeenSourceIssues.add(key)
+  blockPreview(code)
+}
+for (const employee of previewParticipants) {
+  if (previewNeedsSalaryPolicy(employee) && previewStore) {
+    const employeeId = identifiers(employee)[0] || ''
+    try {
+      effectiveStoreSalaryConfig(salaryConfigs, {
+        employeeId,
+        storeId: previewStore.id,
+        period: previewPeriod,
+        store: previewStore,
+        canonicalOwnerAliases: true,
+      })
+    } catch (error) {
+      if (error?.code === STORE_SALARY_CONFIG_IDENTIFIER_COLLISION) {
+        blockPreview(STORE_SALARY_CONFIG_IDENTIFIER_COLLISION)
+      }
+    }
+  }
+  for (const [collectionKey, records] of previewSourceCollections) {
+    for (const [recordIndex, record] of records.entries()) {
+      if (!previewSourceRelevant(collectionKey, record)) continue
+      const reference = previewSourceReference(collectionKey, record)
+      const match = uniqueMatch(appEmployees, reference)
+      if (!reference) blockPreviewSource(collectionKey, recordIndex, `PAYROLL_SOURCE_EMPLOYEE_NOT_FOUND:${collectionKey}`)
+      else if (match.ambiguous) blockPreviewSource(collectionKey, recordIndex, `EMPLOYEE_IDENTIFIER_COLLISION:${collectionKey}`)
+      else if (!match.record) blockPreviewSource(collectionKey, recordIndex, `PAYROLL_SOURCE_EMPLOYEE_NOT_FOUND:${collectionKey}`)
+      else if (!previewParticipants.includes(match.record)) {
+        blockPreviewSource(collectionKey, recordIndex, `PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE:${collectionKey}`)
+      }
+    }
+  }
+}
+console.log(`payroll_preview_probe=${JSON.stringify({
+  storeId: previewStoreId,
+  period: previewPeriod,
+  primaryBlocker: previewPrimaryBlocker || 'none',
+  storeMatches: previewStores.length,
+  periodCandidates: previewPeriodCandidates.length,
+  scopedEmployees: previewScopedEmployees.length,
+  attendanceRecords: previewAttendance.length,
+  participants: previewParticipants.length,
+  issues: previewIssues,
+})}`)
 
 const scopeIssuesJson = (map) => JSON.stringify([...map.entries()]
   .map(([scope, issues]) => {
