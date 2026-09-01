@@ -1459,6 +1459,7 @@ export function AppProvider({ children }) {
   const [credentialsReady, setCredentialsReady] = useState(false)
   const [sessionRestoreReady, setSessionRestoreReady] = useState(() => !hasApiSession())
   const [apiStatus, setApiStatus] = useState('local')
+  const [remoteDataReady, setRemoteDataReady] = useState(true)
   const [attendanceCheckoutRequests, setAttendanceCheckoutRequests] = useState({})
   const apiRef = useRef({
     enabled: false,
@@ -1472,6 +1473,7 @@ export function AppProvider({ children }) {
     pending: null,
     timer: null,
     lastSerialized: '',
+    fullStateReady: false,
     systemResetIdempotencyKey: null,
   })
   const localAttendanceCheckInClaimsRef = useRef(new Set())
@@ -1509,6 +1511,7 @@ export function AppProvider({ children }) {
     remote.user = { ...remoteUser, role: normalizeAuthRole(remoteUser.role) }
     remote.version = Number(payload.version || 0)
     remote.hydratedVersion = Number(payload.version || 0)
+    remote.fullStateReady = payload.partial !== true
     if (Array.isArray(payload.policies)) {
       remote.policyVersions = Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
     }
@@ -1519,11 +1522,25 @@ export function AppProvider({ children }) {
       localStorage.removeItem(LEGACY_STORAGE_KEY)
     }
     setApiStatus('connected')
+    setRemoteDataReady(remote.fullStateReady)
     rememberActiveStore(remoteUser, hydrated.activeStoreId)
     activeStoreIdRef.current = hydrated.activeStoreId
     setState(hydrated)
     return hydrated.session
   }, [])
+
+  const hydrateCompleteRemoteState = useCallback(async (expectedUser, preferredActiveStoreId = null) => {
+    const payload = await apiBootstrapState('global')
+    if (canListAccounts(payload.user?.role)) {
+      const users = await apiListUsers()
+      payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
+    }
+    const remote = apiRef.current
+    const expectedUserId = String(expectedUser?.id || '')
+    if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+    activateRemotePayload(payload, payload.user || expectedUser, preferredActiveStoreId || activeStoreIdRef.current)
+    return payload
+  }, [activateRemotePayload])
 
   const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`) => {
     const remote = apiRef.current
@@ -1642,12 +1659,18 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (!hasApiSession()) return undefined
     let active = true
-    apiBootstrapState('global').then(async (payload) => {
-      if (canListAccounts(payload.user?.role)) {
+    apiBootstrapState('global', { profile: 'initial' }).then(async (payload) => {
+      if (!payload.partial && canListAccounts(payload.user?.role)) {
         const users = await apiListUsers()
         payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
       }
-      if (active) activateRemotePayload(payload)
+      if (!active) return
+      activateRemotePayload(payload)
+      if (payload.partial) {
+        void hydrateCompleteRemoteState(payload.user).catch(() => {
+          if (active && apiRef.current.enabled) setApiStatus('error')
+        })
+      }
     }).catch(() => {
       clearApiSession()
       if (active) setApiStatus('local')
@@ -1655,7 +1678,7 @@ export function AppProvider({ children }) {
       if (active) setSessionRestoreReady(true)
     })
     return () => { active = false }
-  }, [activateRemotePayload])
+  }, [activateRemotePayload, hydrateCompleteRemoteState])
 
   useEffect(() => {
     const remote = apiRef.current
@@ -1774,7 +1797,7 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     const remote = apiRef.current
-    if (!credentialsReady || !remote.enabled || remote.role !== 'admin' || !state.session) return undefined
+    if (!credentialsReady || !remote.enabled || !remote.fullStateReady || remote.role !== 'admin' || !state.session) return undefined
     const snapshot = sharedStateSnapshot(state)
     const serialized = JSON.stringify(snapshot)
     if (remote.suppressNext) {
@@ -1846,13 +1869,20 @@ export function AppProvider({ children }) {
       const isSystemOperator = canListAccounts(authenticated.user.role)
       const embeddedUsers = Array.isArray(authenticated.users) ? { users: authenticated.users } : null
       const [bootstrap, users] = await Promise.all([
-        authenticated.bootstrap ? Promise.resolve(authenticated.bootstrap) : apiBootstrapState('global'),
+        authenticated.bootstrap
+          ? Promise.resolve(authenticated.bootstrap)
+          : apiBootstrapState('global', { profile: isSystemOperator ? 'initial' : '' }),
         isSystemOperator ? (embeddedUsers || apiListUsers()) : Promise.resolve(null),
       ])
-      if (users) {
+      if (users && !bootstrap.partial) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       const session = activateRemotePayload(bootstrap, authenticated.user)
+      if (bootstrap.partial) {
+        void hydrateCompleteRemoteState(authenticated.user).catch(() => {
+          if (apiRef.current.enabled) setApiStatus('error')
+        })
+      }
       setSessionRestoreReady(true)
       return { ok: true, account: session }
     } catch (error) {
@@ -1962,10 +1992,12 @@ export function AppProvider({ children }) {
     apiRef.current.user = null
     apiRef.current.version = 0
     apiRef.current.hydratedVersion = 0
+    apiRef.current.fullStateReady = false
     apiRef.current.pending = null
     apiRef.current.suppressNext = false
     window.clearTimeout(apiRef.current.timer)
     setApiStatus('local')
+    setRemoteDataReady(true)
     if (wasRemote) {
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem(STORAGE_KEY)
@@ -5652,6 +5684,7 @@ export function AppProvider({ children }) {
     activeStore,
     currentEmployee,
     authReady: sessionRestoreReady,
+    remoteDataReady,
     apiStatus,
     toast,
     notify,

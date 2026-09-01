@@ -131,10 +131,11 @@ const stateReadRequest = (path, options = {}) => request(path, {
   ...options,
 })
 
-export const apiBootstrapState = (scope = 'global', options = {}) => stateReadRequest(
-  `/api/bootstrap?scope=${encodeURIComponent(scope)}`,
-  options,
-)
+export const apiBootstrapState = (scope = 'global', { profile = '', ...options } = {}) => {
+  const query = new URLSearchParams({ scope })
+  if (profile) query.set('profile', profile)
+  return stateReadRequest(`/api/bootstrap?${query.toString()}`, options)
+}
 export const apiGetState = (scope = 'global', options = {}) => stateReadRequest(
   `/api/state?scope=${encodeURIComponent(scope)}`,
   options,

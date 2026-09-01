@@ -655,6 +655,62 @@ describe('IDOSI Worker security primitives', () => {
     }), env)
     expect(authenticatedState.status).toBe(200)
   })
+
+  it('returns a compact Admin login bootstrap while preserving the complete state endpoint', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-admin-initial-profile' }
+    const historicalDetail = 'x'.repeat(180_000)
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.initial', password: 'admin-initial-password',
+      initialState: {
+        staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
+        stores: [{ id: 'S01', name: 'Cửa hàng 01' }],
+        orders: [{ id: 'ORDER-01', storeId: 'S01', amount: 100_000, createdAt: '2026-09-01' }],
+        expenseEntries: [{ id: 'EXPENSE-01', storeId: 'S01', amount: 20_000, createdAt: '2026-09-01' }],
+        tasks: [{ id: 'TASK-HEAVY-01', storeId: 'S01', detail: historicalDetail }],
+        taskAssignmentHistory: [{ id: 'HISTORY-HEAVY-01', tasks: [{ id: 'TASK-HEAVY-01', detail: historicalDetail }] }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.initial', password: 'admin-initial-password',
+    }), env)
+    expect(login.status).toBe(200)
+    const loginBody = await login.json()
+    expect(loginBody.bootstrap).toMatchObject({
+      partial: true,
+      loadedCollections: ['stores', 'orders', 'expenseEntries'],
+      state: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01' }],
+        orders: [expect.objectContaining({ id: 'ORDER-01' })],
+        expenseEntries: [expect.objectContaining({ id: 'EXPENSE-01' })],
+      },
+    })
+    expect(loginBody.bootstrap.state).not.toHaveProperty('tasks')
+    expect(loginBody.bootstrap.state).not.toHaveProperty('taskAssignmentHistory')
+
+    const authorization = { authorization: `Bearer ${loginBody.token}` }
+    const initial = await worker.fetch(new Request(
+      'https://idosi.example/api/bootstrap?scope=global&profile=initial',
+      { headers: authorization },
+    ), env)
+    expect(initial.status).toBe(200)
+    expect(await initial.json()).toMatchObject({
+      partial: true,
+      loadedCollections: ['stores', 'orders', 'expenseEntries'],
+    })
+
+    const complete = await worker.fetch(new Request('https://idosi.example/api/state?scope=global', {
+      headers: authorization,
+    }), env)
+    expect(complete.status).toBe(200)
+    const completeBody = await complete.json()
+    expect(completeBody.state.tasks).toEqual([expect.objectContaining({ id: 'TASK-HEAVY-01', detail: historicalDetail })])
+    expect(completeBody.state.taskAssignmentHistory)
+      .toEqual([expect.objectContaining({ id: 'HISTORY-HEAVY-01' })])
+    expect(JSON.stringify(loginBody).length).toBeLessThan(JSON.stringify(completeBody).length / 2)
+  })
+
   it('rejects ambiguous SQL account links whose employee ids differ only by letter case', async () => {
     const transfer = {
       id: 'TR-AUTH-COLLISION', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
@@ -12728,9 +12784,8 @@ describe('IDOSI Worker security primitives', () => {
     }), env)
     expect(login.status).toBe(200)
     const loginBody = await login.json()
-    expect(loginBody.bootstrap.version).toBe(2)
-    expect(loginBody.bootstrap.state.attendance[0].checklistSnapshot)
-      .toMatchObject({ storeChecklistRepairVersion: 1 })
+    expect(loginBody.bootstrap).toMatchObject({ version: 1, partial: true })
+    expect(loginBody.bootstrap.state).not.toHaveProperty('attendance')
     const authorization = { authorization: `Bearer ${loginBody.token}` }
 
     const stateResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
@@ -12739,6 +12794,8 @@ describe('IDOSI Worker security primitives', () => {
     expect(stateResponse.status).toBe(200)
     const stateBody = await stateResponse.json()
     expect(stateBody.version).toBe(2)
+    expect(stateBody.state.attendance[0].checklistSnapshot)
+      .toMatchObject({ storeChecklistRepairVersion: 1 })
     expect(readHydratedState(env.DB.database).tasks).toHaveLength(52)
 
     const saved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {

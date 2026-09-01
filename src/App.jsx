@@ -1,5 +1,5 @@
 import { Component, lazy, Suspense } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { isOfficeProfile } from './domain/officeProfile'
 import Login from './pages/Login'
 import { useApp } from './state/AppContext'
@@ -138,12 +138,17 @@ export class RouteErrorBoundary extends Component {
 }
 
 function RoleGuard({ roles, children }) {
-  const { session, authReady = true } = useApp()
+  const { session, authReady = true, remoteDataReady = true } = useApp()
+  const location = useLocation()
   if (!authReady) return <RouteLoading message="Đang khôi phục màn hình..." />
   if (!session) return <Navigate to="/login" replace />
   if (session.needsRoleSelection) return <Navigate to="/select-role" replace />
   const allowedRoles = Array.isArray(roles) ? roles : [roles]
   if (!allowedRoles.includes(canonicalRole(session.role))) return <Navigate to={homeFor(session)} replace />
+  const initialAdminOverview = canonicalRole(session.role) === 'admin' && location.pathname === '/admin/overview'
+  if (!remoteDataReady && !initialAdminOverview) {
+    return <RouteLoading message="Đang tải dữ liệu chi tiết của hệ thống..." />
+  }
   return children
 }
 

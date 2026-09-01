@@ -187,6 +187,18 @@ describe('IDOSI private account avatar', () => {
 })
 
 describe('IDOSI lightweight state synchronization', () => {
+  it('requests the compact initial bootstrap profile for progressive Admin hydration', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, partial: true, state: { stores: [] }, version: 12 }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiBootstrapState('global', { profile: 'initial' })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/bootstrap?scope=global&profile=initial')
+  })
+
   it('loads only state metadata with the active bearer session', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ token: 'session-token', user: { id: 'admin' } }) })
