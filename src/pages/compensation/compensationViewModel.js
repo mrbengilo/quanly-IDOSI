@@ -91,20 +91,22 @@ export const activeEmployees = (employees = []) => employees.filter((employee) =
 export const employeesForTarget = ({ employees = [], targetUnit = 'store', storeId = '' } = {}) => {
   const active = activeEmployees(employees)
   if (targetUnit !== 'store') return active.filter((employee) => employeeUnit(employee) === targetUnit)
+  const employeeStoreReferences = (employee) => [
+    employee?.storeId,
+    employee?.supportStoreId,
+    employee?.supportAssignment?.toStoreId,
+  ].map((value) => String(value || '').trim()).filter(Boolean)
   const storeReferences = [...new Set(active
     .filter((candidate) => employeeUnit(candidate) === 'store')
-    .map((candidate) => String(candidate.storeId || '').trim())
-    .filter(Boolean))]
+    .flatMap(employeeStoreReferences))]
     .map((id) => ({ id }))
   const targetStore = operationalIdentifierRecordMatch(storeReferences, storeId, (store) => [store.id]).record
   if (!targetStore) return []
   return active.filter((employee) => (
     employeeUnit(employee) === 'store'
-    && operationalIdentifierRecordMatch(
-      storeReferences,
-      employee.storeId,
-      (store) => [store.id],
-    ).record === targetStore
+    && employeeStoreReferences(employee).some((reference) => (
+      operationalIdentifierRecordMatch(storeReferences, reference, (store) => [store.id]).record === targetStore
+    ))
   ))
 }
 

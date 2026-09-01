@@ -64,6 +64,23 @@ describe('compensation view models', () => {
     expect(managerCandidates({ employees, managerAccounts, storeId: 'Store-01' })).toEqual([])
   })
 
+  it('includes an inbound support employee only in the exact destination store scope', () => {
+    const employees = [
+      { id: 'HOME-01', unit: 'store', storeId: 'S02' },
+      {
+        id: 'SUPPORT-01', unit: 'store', storeId: 'S01', homeStoreId: 'S01',
+        supportStoreId: 'S02', supportAssignment: { id: 'TR-01', fromStoreId: 'S01', toStoreId: 'S02' },
+      },
+    ]
+
+    expect(employeesForTarget({ employees, targetUnit: 'store', storeId: 'S02' }).map((item) => item.id))
+      .toEqual(['HOME-01', 'SUPPORT-01'])
+    expect(employeesForTarget({ employees, targetUnit: 'store', storeId: 'S01' }).map((item) => item.id))
+      .toEqual(['SUPPORT-01'])
+    expect(employeesForTarget({ employees, targetUnit: 'store', storeId: 's02' }).map((item) => item.id))
+      .toEqual(['HOME-01', 'SUPPORT-01'])
+  })
+
   it('normalizes nested revenue allocations without leaking unrelated records', () => {
     const rows = revenueAllocations([{ id: 'RB-1', storeId: 'CH001', businessDate: '2026-08-26', allocations: [{ id: 'A-1', employeeId: 'NV-01', allocatedVnd: 35 }] }])
     expect(rows).toEqual([{ id: 'A-1', employeeId: 'NV-01', allocatedVnd: 35, storeId: 'CH001', businessDate: '2026-08-26', calculationId: 'RB-1' }])

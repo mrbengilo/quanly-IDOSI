@@ -9,6 +9,7 @@ describe('domain state migration', () => {
   it('removes retired KPI policy fields while preserving unrelated persisted data', () => {
     const persistedCompensation = [{ id: 'CMP-1', amountVnd: 35 }]
     const persistedViolations = [{ id: 'VIO-1', amountVnd: 50_000 }]
+    const persistedViolationRefunds = [{ id: 'VRF-1', amountVnd: 50_000 }]
     const persistedRevenue = [{ id: 'RBD-1', storeId: 'CH001' }]
     const stored = {
       schemaVersion: 2,
@@ -16,6 +17,7 @@ describe('domain state migration', () => {
       orders: [{ id: 'ORD-1', amount: 35 }],
       compensationEntries: persistedCompensation,
       violations: persistedViolations,
+      violationRefunds: persistedViolationRefunds,
       revenueBonusDaily: persistedRevenue,
       policies: {
         lateToleranceMinutes: 15,
@@ -31,6 +33,7 @@ describe('domain state migration', () => {
     expect(migrated.orders).toEqual(stored.orders)
     expect(migrated.compensationEntries).toBe(persistedCompensation)
     expect(migrated.violations).toBe(persistedViolations)
+    expect(migrated.violationRefunds).toBe(persistedViolationRefunds)
     expect(migrated.revenueBonusDaily).toBe(persistedRevenue)
     expect(migrated.policies).not.toHaveProperty('employeeKpiRates')
     expect(migrated.policies).not.toHaveProperty('managerKpiRate')
@@ -48,6 +51,7 @@ describe('domain state migration', () => {
       storeShiftTaskTemplates: [],
       compensationEntries: [],
       violations: [],
+      violationRefunds: [],
       revenueBonusDaily: [],
       revenueBonusAllocations: [],
       teamRewardClaims: [],
