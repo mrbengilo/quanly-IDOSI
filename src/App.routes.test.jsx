@@ -51,7 +51,7 @@ vi.mock('./pages/compensation', () => ({
   ManagerCompensationPage: () => <div>Quản lý thưởng phụ cấp</div>,
   MyCompensationPage: () => <div>Thu nhập của tôi</div>,
   MyViolationsPage: () => <div>Vi phạm của tôi</div>,
-  RevenueBonusPage: () => <div>Thưởng doanh thu ngày</div>,
+  RevenueBonusPage: ({ storeScoped = false }) => <div data-testid="revenue-bonus-route" data-store-scoped={String(storeScoped)}>Thưởng doanh thu ngày</div>,
   ViolationManagementPage: ({ targetUnit, embedded }) => <div data-testid={`violation-${targetUnit}`} data-embedded={String(Boolean(embedded))}>{`Quản lý vi phạm ${targetUnit}`}</div>,
 }))
 
@@ -173,6 +173,21 @@ describe('App role routes', () => {
     renderRoute('/store/revenue-bonus', 'store_manager')
 
     expect(await screen.findByText('Thưởng doanh thu ngày')).toBeTruthy()
+    expect(screen.getByTestId('revenue-bonus-route').dataset.storeScoped).toBe('true')
+  })
+
+  it('keeps the Admin daily-revenue route globally selectable', async () => {
+    renderRoute('/admin/compensation/revenue', 'admin')
+
+    expect(await screen.findByText('Thưởng doanh thu ngày')).toBeTruthy()
+    expect(screen.getByTestId('revenue-bonus-route').dataset.storeScoped).toBe('false')
+  })
+
+  it('locks the employee daily-revenue route to their active store', async () => {
+    renderRoute('/employee/revenue-bonus', 'employee')
+
+    expect(await screen.findByText('Thưởng doanh thu ngày')).toBeTruthy()
+    expect(screen.getByTestId('revenue-bonus-route').dataset.storeScoped).toBe('true')
   })
 
   it('allows an employee to read only their compensation statement', async () => {

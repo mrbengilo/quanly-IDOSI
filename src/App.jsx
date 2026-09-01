@@ -259,7 +259,7 @@ export default function App() {
         <Route path="/store/attendance" element={<StoreAttendanceV2 />} />
         <Route path="/store/payroll" element={<StorePayrollV2 />} />
         <Route path="/store/salary-settings" element={<RoleGuard roles={['admin', 'business_support']}><StoreSalarySettings /></RoleGuard>} />
-        <Route path="/store/revenue-bonus" element={<RevenueBonusPage />} />
+        <Route path="/store/revenue-bonus" element={<RevenueBonusPage storeScoped />} />
         <Route path="/store/my-compensation" element={<MyCompensationPage />} />
         <Route path="/store/my-violations" element={<MyViolationsPage />} />
         <Route path="/store/cashflow" element={<StoreCashflowV2 />} />
@@ -299,7 +299,7 @@ export default function App() {
         <Route path="/employee/payroll" element={<EmployeePayrollPage />} />
         <Route path="/employee/compensation" element={<MyCompensationPage />} />
         <Route path="/employee/violations" element={<MyViolationsPage />} />
-        <Route path="/employee/revenue-bonus" element={<StoreEmployeeRoute><RevenueBonusPage /></StoreEmployeeRoute>} />
+        <Route path="/employee/revenue-bonus" element={<StoreEmployeeRoute><RevenueBonusPage storeScoped /></StoreEmployeeRoute>} />
         <Route path="/employee/cashflow" element={<StoreEmployeeRoute><EmployeeCashflow /></StoreEmployeeRoute>} />
       </Route>
 
