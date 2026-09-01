@@ -7,10 +7,6 @@ import {
 } from './compensationViewModel'
 import {
   operationalIdentifierEntry,
-  operationalIdentifierRecordMatch,
-  operationalIdentifierReferenceKey,
-  operationalIdentifierReferenceMatchesRecord,
-  sameOperationalIdentifier,
 } from '../../utils'
 
 const monthLabel = (period) => {
@@ -86,34 +82,97 @@ const completionTime = (record = {}) => String(
   record.completedAt || record.rewardedAt || record.claimedAt || record.updatedAt || record.createdAt || '',
 )
 
-const operationalReferenceRecord = (records, reference, identifierOf) => {
-  const requested = String(reference || '').trim()
-  if (!requested) return null
-  const candidates = (Array.isArray(records) ? records : []).filter((record) => (
-    sameOperationalIdentifier(identifierOf(record), requested)
-  ))
-  const exact = candidates.filter((record) => String(identifierOf(record) || '').trim() === requested)
-  if (exact.length === 1) return exact[0]
-  return exact.length === 0 && candidates.length === 1 ? candidates[0] : null
-}
-
-const attendanceReferenceKey = (attendanceRecords, reference, catalogId) => {
-  const attendanceKey = operationalIdentifierReferenceKey(attendanceRecords, reference, attendanceId)
-  const sourceAttendance = operationalReferenceRecord(attendanceRecords, reference, attendanceId)
-  const snapshotTasks = Array.isArray(sourceAttendance?.checklistSnapshot?.tasks)
-    ? sourceAttendance.checklistSnapshot.tasks
-    : []
-  const catalogKey = operationalIdentifierReferenceKey(snapshotTasks, catalogId, catalogItemId)
-  return `${attendanceKey}:${catalogKey}`
-}
-
 const employeeIdentifiers = (employee = {}) => [employee.id, employee.code, employee.employeeId]
 const distinctIdentifierRecords = (values = []) => [...new Set(values
   .map((value) => String(value || '').trim())
   .filter(Boolean))].map((id) => ({ id }))
-const matchedOperationalRecord = (records, reference, identifierValuesOf = (record) => [record?.id]) => {
-  const match = operationalIdentifierRecordMatch(records, reference, identifierValuesOf)
-  return match.ambiguous ? null : match.record
+
+const normalizedReference = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
+
+/**
+ * Builds the exact-first, case-insensitive lookup once for a collection.
+ * The previous reward projection rescanned the complete attendance/employee
+ * collection for every progress and task row, which made route rendering grow
+ * quadratically with production history. Sets preserve the existing fail-closed
+ * behaviour when identifiers collide by casing or exact spelling.
+ */
+const operationalReferenceIndex = (records = [], identifierValuesOf = (record) => [record?.id]) => {
+  const source = Array.isArray(records) ? records : []
+  const exact = new Map()
+  const folded = new Map()
+  const valuesByRecord = new Map()
+  const add = (index, key, record) => {
+    const matches = index.get(key) || new Set()
+    matches.add(record)
+    index.set(key, matches)
+  }
+
+  source.forEach((record) => {
+    const rawValues = identifierValuesOf(record)
+    const values = [...new Set((Array.isArray(rawValues) ? rawValues : [rawValues])
+      .map((value) => String(value ?? '').trim())
+      .filter(Boolean))]
+    valuesByRecord.set(record, values)
+    values.forEach((value) => {
+      add(exact, value, record)
+      add(folded, normalizedReference(value), record)
+    })
+  })
+
+  const resolve = (reference) => {
+    const requested = String(reference ?? '').trim()
+    if (!requested) return { record: null, ambiguous: false }
+    const exactMatches = exact.get(requested) || new Set()
+    if (exactMatches.size === 1) return { record: exactMatches.values().next().value, ambiguous: false }
+    if (exactMatches.size > 1) return { record: null, ambiguous: true }
+    const foldedMatches = folded.get(normalizedReference(requested)) || new Set()
+    return foldedMatches.size === 1
+      ? { record: foldedMatches.values().next().value, ambiguous: false }
+      : { record: null, ambiguous: foldedMatches.size > 1 }
+  }
+
+  const key = (reference) => {
+    const requested = String(reference ?? '').trim()
+    if (!requested) return ''
+    const foldedMatches = folded.get(normalizedReference(requested)) || new Set()
+    return foldedMatches.size > 1
+      ? `exact:${requested}`
+      : `folded:${normalizedReference(requested)}`
+  }
+
+  const matches = (record, reference) => {
+    const requested = String(reference ?? '').trim()
+    if (!record || !requested) return false
+    const values = valuesByRecord.get(record) || []
+    if (values.includes(requested)) return true
+    if (!values.some((value) => normalizedReference(value) === normalizedReference(requested))) return false
+    const foldedMatches = folded.get(normalizedReference(requested)) || new Set()
+    return foldedMatches.size === 1 && foldedMatches.has(record)
+  }
+
+  return { key, matches, resolve }
+}
+
+const rewardReferenceKeyResolver = (attendanceRecords) => {
+  const attendanceIndex = operationalReferenceIndex(attendanceRecords, attendanceId)
+  const catalogIndexes = new Map()
+  const emptyCatalogIndex = operationalReferenceIndex([], catalogItemId)
+  const catalogIndexFor = (attendanceRecord) => {
+    if (!attendanceRecord) return emptyCatalogIndex
+    if (!catalogIndexes.has(attendanceRecord)) {
+      const snapshotTasks = Array.isArray(attendanceRecord.checklistSnapshot?.tasks)
+        ? attendanceRecord.checklistSnapshot.tasks
+        : []
+      catalogIndexes.set(attendanceRecord, operationalReferenceIndex(snapshotTasks, catalogItemId))
+    }
+    return catalogIndexes.get(attendanceRecord)
+  }
+
+  return (attendanceReference, catalogReference) => {
+    const attendanceKey = attendanceIndex.key(attendanceReference)
+    const sourceAttendance = attendanceIndex.resolve(attendanceReference).record
+    return `${attendanceKey}:${catalogIndexFor(sourceAttendance).key(catalogReference)}`
+  }
 }
 
 /**
@@ -133,37 +192,34 @@ export const workRewardRows = ({
 } = {}) => {
   const attendanceRecords = (Array.isArray(attendance) ? attendance : []).filter((record) => !record.deletedAt)
   const employeeRecords = Array.isArray(employees) ? employees : []
-  const employeeFor = (reference) => matchedOperationalRecord(employeeRecords, reference, employeeIdentifiers)
+  const employeeIndex = operationalReferenceIndex(employeeRecords, employeeIdentifiers)
+  const employeeFor = (reference) => employeeIndex.resolve(reference).record
   const employeeFilterSource = employeeRecords.length
     ? employeeRecords
     : distinctIdentifierRecords(attendanceRecords.map(attendanceEmployeeId))
-  const employeeFilterMatch = employeeId
-    ? operationalIdentifierRecordMatch(
-      employeeFilterSource,
-      employeeId,
-      employeeRecords.length ? employeeIdentifiers : (record) => [record.id],
-    )
-    : null
+  const employeeFilterIndex = employeeRecords.length
+    ? employeeIndex
+    : operationalReferenceIndex(employeeFilterSource, (record) => [record.id])
+  const employeeFilterMatch = employeeId ? employeeFilterIndex.resolve(employeeId) : null
   if (employeeFilterMatch?.ambiguous || (employeeId && !employeeFilterMatch?.record)) return []
   const storeReferences = distinctIdentifierRecords([
     ...attendanceRecords.map((record) => record.storeId),
     ...employeeRecords.map((employee) => employee.storeId),
   ])
-  const storeFilterMatch = storeId
-    ? operationalIdentifierRecordMatch(storeReferences, storeId, (record) => [record.id])
-    : null
+  const storeIndex = operationalReferenceIndex(storeReferences, (record) => [record.id])
+  const storeFilterMatch = storeId ? storeIndex.resolve(storeId) : null
   if (storeFilterMatch?.ambiguous || (storeId && !storeFilterMatch?.record)) return []
+  const rewardReferenceKey = rewardReferenceKeyResolver(attendanceRecords)
   const progressByKey = new Map((Array.isArray(workCatalogProgress) ? workCatalogProgress : [])
-    .map((record) => [attendanceReferenceKey(
-      attendanceRecords,
+    .map((record) => [rewardReferenceKey(
       progressAttendanceId(record),
       progressCatalogItemId(record),
     ), record])
     .filter(([key]) => !key.startsWith(':') && !key.endsWith(':')))
   const compensationRecords = Array.isArray(compensationEntries) ? compensationEntries : []
+  const compensationIndex = operationalReferenceIndex(compensationRecords, (entry) => [entry.id])
   const tasksByKey = new Map((Array.isArray(tasks) ? tasks : [])
-    .map((task) => [attendanceReferenceKey(
-      attendanceRecords,
+    .map((task) => [rewardReferenceKey(
       task.checklistAttendanceId || task.attendanceId,
       catalogItemId(task),
     ), task])
@@ -173,11 +229,7 @@ export const workRewardRows = ({
     .filter((record) => {
       if (!employeeFilterMatch?.record) return true
       if (!employeeRecords.length) {
-        return operationalIdentifierReferenceMatchesRecord(
-          employeeFilterSource,
-          employeeFilterMatch.record,
-          attendanceEmployeeId(record),
-        )
+        return employeeFilterIndex.matches(employeeFilterMatch.record, attendanceEmployeeId(record))
       }
       return employeeFor(attendanceEmployeeId(record)) === employeeFilterMatch.record
     })
@@ -188,18 +240,14 @@ export const workRewardRows = ({
     .filter((record) => {
       if (!storeFilterMatch?.record) return true
       const employee = employeeFor(attendanceEmployeeId(record))
-      return operationalIdentifierReferenceMatchesRecord(
-        storeReferences,
-        storeFilterMatch.record,
-        record.storeId || employee?.storeId,
-      )
+      return storeIndex.matches(storeFilterMatch.record, record.storeId || employee?.storeId)
     })
     .flatMap((record) => {
       const snapshotTasks = Array.isArray(record.checklistSnapshot?.tasks) ? record.checklistSnapshot.tasks : []
       return snapshotTasks.filter(isRewardTask).map((task, index) => {
         const sourceAttendanceId = attendanceId(record)
         const sourceCatalogItemId = catalogItemId(task)
-        const rewardProgressKey = attendanceReferenceKey(attendanceRecords, sourceAttendanceId, sourceCatalogItemId)
+        const rewardProgressKey = rewardReferenceKey(sourceAttendanceId, sourceCatalogItemId)
         const progress = progressByKey.get(rewardProgressKey)
         const legacyTask = tasksByKey.get(rewardProgressKey)
         const recordEmployeeId = attendanceEmployeeId(record)
@@ -210,11 +258,7 @@ export const workRewardRows = ({
           ? Boolean(completionEntry.value)
           : false
         const completed = progress ? completionState(progress) : completionState(legacyTask) || completedBy
-        const compensationEntry = matchedOperationalRecord(
-          compensationRecords,
-          progress?.compensationEntryId,
-          (entry) => [entry.id],
-        )
+        const compensationEntry = compensationIndex.resolve(progress?.compensationEntryId).record
         const progressStatus = normalize(progress?.status || compensationEntry?.status)
         const payoutStatus = ['pending_team_review', 'pending', 'submitted'].includes(progressStatus)
           ? 'pending'

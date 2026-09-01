@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
   BarChart3,
@@ -48,7 +48,7 @@ import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { optimizeIdentityImage } from '../../domain/identityImage'
 import { cashSeries, shifts } from '../../data'
 import { apiGetIdentityImage } from '../../services/idosiApi'
-import { useApp } from '../../state/AppContext'
+import { nextSupportTransferBoundaryDelay, useApp } from '../../state/AppContext'
 import { UnitCompensationStatistics } from '../compensation/UnitCompensationStatistics'
 import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
 import { workRewardRows } from '../compensation/compensationStatistics'
@@ -190,12 +190,26 @@ const transferTimeLabel = (record = {}) => {
   return `${formatTaskDate(record.fromDate)} – ${formatTaskDate(record.toDate)}`
 }
 
-const useTransferClock = () => {
+const useTransferClock = (transfers = []) => {
   const [moment, setMoment] = useState(() => new Date())
   useEffect(() => {
-    const timer = window.setInterval(() => setMoment(new Date()), 1_000)
-    return () => window.clearInterval(timer)
-  }, [])
+    let active = true
+    let timer = null
+    const scheduleNextBoundary = () => {
+      const delay = nextSupportTransferBoundaryDelay(transfers, Date.now())
+      if (delay == null) return
+      timer = window.setTimeout(() => {
+        if (!active) return
+        setMoment(new Date())
+        scheduleNextBoundary()
+      }, Math.min(delay, 2_147_000_000))
+    }
+    scheduleNextBoundary()
+    return () => {
+      active = false
+      if (timer != null) window.clearTimeout(timer)
+    }
+  }, [transfers])
   return moment
 }
 
@@ -203,7 +217,6 @@ const readIdentityImage = async (file) => file ? (await optimizeIdentityImage(fi
 
 const useStoreScope = () => {
   const app = useApp()
-  const transferClock = useTransferClock()
   const stores = Array.isArray(app.stores) ? app.stores : []
   const requestedStoreId = ['employee', 'store_manager'].includes(app.session?.role)
     ? app.session.storeId
@@ -212,6 +225,7 @@ const useStoreScope = () => {
   const storeId = String(activeStore?.id || '')
   const allEmployees = Array.isArray(app.employees) ? app.employees : []
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
+  const transferClock = useTransferClock(supportTransfers)
   const employees = storeEmployeesForDate(allEmployees, supportTransfers, stores, storeId, transferClock)
   const attendance = activeStore ? (Array.isArray(app.attendance) ? app.attendance : []).filter((record) => (
     record.storeId ? storeFor(stores, record.storeId) === activeStore : Boolean(employeeFor(employees, record.employeeId))
@@ -458,9 +472,9 @@ export function StoreSchedule() {
 
 export function StoreEmployees() {
   const app = useApp()
-  const transferClock = useTransferClock()
   const employees = Array.isArray(app.employees) ? app.employees : []
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
+  const transferClock = useTransferClock(supportTransfers)
   const stores = Array.isArray(app.stores) ? app.stores : []
   const salaryConfigs = Array.isArray(app.storeEmployeeSalaryConfigs) ? app.storeEmployeeSalaryConfigs : []
   const salaryPeriod = today().slice(0, 7)
@@ -848,7 +862,7 @@ export function StoreTasks() {
   const requestedAssignmentId = String(searchParams.get('assignment') || '').trim()
   const canManageViolations = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const [activeTaskTab, setActiveTaskTab] = useState('reward')
-  const rewardRows = workRewardRows({
+  const rewardRows = useMemo(() => workRewardRows({
     attendance,
     workCatalogProgress,
     compensationEntries,
@@ -856,7 +870,7 @@ export function StoreTasks() {
     employees: storeEmployees,
     targetUnit: 'store',
     storeId,
-  })
+  }), [attendance, workCatalogProgress, compensationEntries, tasks, storeEmployees, storeId])
   const rewardCount = rewardRows.filter((row) => row.completed && row.payoutStatus !== 'void').length
   const violationCount = activeWorkCatalogItems(workCatalogItems, {
     targetGroup: WORK_CATALOG_TARGET.STORE,
@@ -953,7 +967,7 @@ export function StoreTasks() {
           </>}
         </Card>}
         <InfoNote>Danh sách thưởng do nhân viên tự tick và lưu trong mục <strong>“Công việc tính thưởng”</strong> sau khi điểm danh. Trang cửa hàng chỉ theo dõi lịch sử và thống kê.</InfoNote>
-        <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} sections="reward" />
+        <UnitCompensationStatistics targetUnit="store" storeId={storeId} employees={storeEmployees} sections="reward" rewardRows={rewardRows} />
       </section>
 
       {canManageViolations && <section
