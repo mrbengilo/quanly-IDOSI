@@ -153,10 +153,17 @@ export const apiCommand = (type, payload, {
   expectedVersion = 0,
   scope = 'global',
   idempotencyKey = `${type}:${crypto.randomUUID()}`,
+  includeState = true,
 } = {}) => request('/api/command', {
   method: 'POST',
   headers: { 'Idempotency-Key': idempotencyKey },
-  body: { type, scope, expectedVersion, payload },
+  body: {
+    type,
+    scope,
+    expectedVersion,
+    payload,
+    ...(includeState === false ? { includeState: false } : {}),
+  },
 })
 
 export const apiListUsers = (options = {}) => stateReadRequest('/api/users', options)

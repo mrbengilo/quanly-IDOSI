@@ -711,6 +711,33 @@ describe('IDOSI Worker security primitives', () => {
     expect(JSON.stringify(loginBody).length).toBeLessThan(JSON.stringify(completeBody).length / 2)
   })
 
+  it('can acknowledge a state patch without serializing the complete projected state', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-state-patch-no-response-state' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.patch', password: 'admin-patch-password',
+      initialState: { stores: [{ id: 'S01', name: 'Cửa hàng 01' }] },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.patch', password: 'admin-patch-password',
+    }), env)
+    const loginBody = await login.json()
+    const patched = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'state.merge',
+      expectedVersion: loginBody.bootstrap.version,
+      includeState: false,
+      payload: { patch: { activeStoreId: 'S01' } },
+    }, {
+      authorization: `Bearer ${loginBody.token}`,
+      'idempotency-key': 'state-patch-no-response-state-0001',
+    }), env)
+    expect(patched.status).toBe(200)
+    const patchedBody = await patched.json()
+    expect(patchedBody).toMatchObject({ command: 'state.merge', version: 2 })
+    expect(patchedBody).not.toHaveProperty('state')
+    expect(readHydratedState(env.DB.database)).toMatchObject({ activeStoreId: 'S01' })
+  })
+
   it('rejects ambiguous SQL account links whose employee ids differ only by letter case', async () => {
     const transfer = {
       id: 'TR-AUTH-COLLISION', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',

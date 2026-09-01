@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   apiAddressSuggestions,
   apiBootstrapState,
+  apiCommand,
   apiGetAccountAvatar,
   apiGetEmployeeAvatar,
   apiGetIdentityImage,
@@ -197,6 +198,27 @@ describe('IDOSI lightweight state synchronization', () => {
     await apiBootstrapState('global', { profile: 'initial' })
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/bootstrap?scope=global&profile=initial')
+  })
+
+  it('can request a version-only state patch response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, command: 'state.merge', version: 13 }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiCommand('state.merge', { patch: { activeStoreId: 'S01' } }, {
+      expectedVersion: 12,
+      idempotencyKey: 'state-merge-version-only-0001',
+      includeState: false,
+    })
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      type: 'state.merge',
+      expectedVersion: 12,
+      includeState: false,
+      payload: { patch: { activeStoreId: 'S01' } },
+    })
   })
 
   it('loads only state metadata with the active bearer session', async () => {

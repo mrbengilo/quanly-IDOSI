@@ -4678,10 +4678,13 @@ const stateCommand = async (db, user, body, commandContext) => {
     assertNoCaseCollidingOperationalIdentifiers(nextState)
   }
   const nextVersion = currentVersion + 1
+  const includeState = body.includeState !== false
   const responseBody = apiPayload(commandContext, {
     command: body.type,
     scope,
-    state: scope === 'global' ? projectSharedState(nextState, user) : nextState,
+    ...(includeState ? {
+      state: scope === 'global' ? projectSharedState(nextState, user) : nextState,
+    } : {}),
     version: nextVersion,
     updatedAt: commandContext.now,
   })

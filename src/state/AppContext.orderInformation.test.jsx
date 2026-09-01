@@ -218,9 +218,62 @@ describe('AppContext order information options', () => {
         await vi.advanceTimersByTimeAsync(500)
       })
 
-      const stateReplace = api.apiCommand.mock.calls.find(([type]) => type === 'state.replace')
-      expect(stateReplace?.[1]?.state?.attendance).toEqual([attendance])
-      expect(stateReplace?.[1]?.state?.auditLogs).toEqual([audit])
+      const statePatch = api.apiCommand.mock.calls.find(([type]) => type === 'state.merge')
+      expect(statePatch?.[1]?.patch?.officeAdjustments).toEqual(expect.arrayContaining([
+        expect.objectContaining({ employeeId, amount: 1_000 }),
+      ]))
+      expect(statePatch?.[1]?.patch).not.toHaveProperty('attendance')
+      expect(statePatch?.[1]?.patch).not.toHaveProperty('auditLogs')
+      expect(statePatch?.[2]).toMatchObject({ includeState: false })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rebases only the changed collection after an Admin patch version conflict', async () => {
+    await renderRemote('admin')
+    const concurrentAdjustment = {
+      id: 'OFFICE-REMOTE-CONCURRENT',
+      employeeId: remoteState.employees[0].id,
+      amount: 2_000,
+      type: 'Thưởng',
+      content: 'Ghi nhận từ phiên khác',
+    }
+    api.apiCommand
+      .mockRejectedValueOnce(Object.assign(new Error('conflict'), { code: 'VERSION_CONFLICT' }))
+      .mockResolvedValueOnce({ version: 3 })
+    api.apiGetState.mockResolvedValue({
+      user: users.admin,
+      state: { ...remoteState, officeAdjustments: [concurrentAdjustment] },
+      policies: [],
+      version: 2,
+    })
+
+    vi.useFakeTimers()
+    try {
+      act(() => {
+        appRef.current.addOfficeAdjustment({
+          employeeId: remoteState.employees[0].id,
+          employeeName: remoteState.employees[0].name,
+          amount: 1_000,
+          type: 'Thưởng',
+          content: 'Ghi nhận tại phiên hiện tại',
+        })
+      })
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+
+      const statePatches = api.apiCommand.mock.calls.filter(([type]) => type === 'state.merge')
+      expect(statePatches).toHaveLength(2)
+      expect(statePatches[1][1].patch.officeAdjustments).toEqual(expect.arrayContaining([
+        concurrentAdjustment,
+        expect.objectContaining({ amount: 1_000, content: 'Ghi nhận tại phiên hiện tại' }),
+      ]))
+      expect(statePatches[1][1].patch).not.toHaveProperty('attendance')
+      expect(statePatches[1][1].patch).not.toHaveProperty('orders')
+      expect(appRef.current.officeAdjustments).toEqual(expect.arrayContaining([
+        concurrentAdjustment,
+        expect.objectContaining({ amount: 1_000, content: 'Ghi nhận tại phiên hiện tại' }),
+      ]))
     } finally {
       vi.useRealTimers()
     }
