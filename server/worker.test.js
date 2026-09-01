@@ -14226,15 +14226,20 @@ describe('IDOSI Worker security primitives', () => {
           { id: 'QL-S02', name: 'Quản lý S02', unit: 'store_manager', storeId: 'S02', status: 'Đang làm việc' },
           { id: 'E-S02', name: 'Nhân viên S02', unit: 'store', storeId: 'S02', status: 'Đang làm việc' },
         ],
+        shiftDefinitions: [{
+          id: 'shift-day', storeId: 'S02', name: 'Ca ngày', start: '08:00', end: '12:00', active: true,
+        }],
         orders: [{
           id: 'ORDER-HOT-01', storeId: 'S02', employeeId: 'E-S02', amount: 16_000_001,
           status: 'Hoàn tất', createdAt: '2026-08-20T03:00:00.000Z',
         }],
         attendance: [{
           id: 'ATT-HOT-MANAGER', storeId: 'S02', employeeId: 'QL-S02', date: '2026-08-20',
+          shiftId: 'shift-day', shiftName: 'Ca ngày', shiftStart: '08:00', shiftEnd: '12:00',
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', hours: 4,
         }, {
           id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
+          shiftId: 'shift-day', shiftName: 'Ca ngày', shiftStart: '08:00', shiftEnd: '12:00',
           checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
         }],
         compensationEntries: [
@@ -14277,6 +14282,7 @@ describe('IDOSI Worker security primitives', () => {
     expect((await supportLive.json()).snapshot).toMatchObject({
       storeId: 'S02', businessDate: '2026-08-20', revenueVnd: 16_000_001,
       percentagePoolVnd: 640_000, totalWorkedSeconds: 28_800, attendanceCount: 2,
+      calculationEligibility: { allowed: true, code: 'READY', finalShiftId: 'shift-day' },
       allocations: [
         { employeeId: 'E-S02', workedSeconds: 14_400, amountVnd: 320_000 },
         { employeeId: 'QL-S02', workedSeconds: 14_400, amountVnd: 320_000 },
@@ -14284,6 +14290,7 @@ describe('IDOSI Worker security primitives', () => {
     })
     const managerLive = await worker.fetch(new Request(liveUrl, { headers: managerAuthorization }), env)
     expect((await managerLive.json()).snapshot.allocations).toEqual([
+      expect.objectContaining({ employeeId: 'E-S02', amountVnd: 320_000 }),
       expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 320_000 }),
     ])
     const employeeLive = await worker.fetch(new Request(liveUrl, { headers: employeeAuthorization }), env)
@@ -14302,11 +14309,34 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-denied-0001' }), env)
     expect(managerDenied.status).toBe(403)
 
-    const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    const stateBeforeOpenAttempt = readHydratedState(env.DB.database)
+    replaceStateCollection(env.DB.database, 'attendance', stateBeforeOpenAttempt.attendance.map((record) => (
+      record.id === 'ATT-HOT-EMPLOYEE' ? { ...record, checkOutAt: null, checkOut: null } : record
+    )))
+    const blockedLive = await worker.fetch(new Request(liveUrl, { headers: supportAuthorization }), env)
+    const blockedEligibility = (await blockedLive.json()).snapshot.calculationEligibility
+    expect(blockedEligibility).toMatchObject({
+      allowed: false, code: 'ATTENDANCE_OPEN', openAttendanceCount: 1,
+    })
+    expect(blockedEligibility).not.toHaveProperty('openAttendanceIds')
+    const openAttendanceDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.calculate_day', expectedVersion: 1,
       payload: { storeId: 'S02', businessDate: '2026-08-20' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-open-denied-0001' }), env)
+    expect(openAttendanceDenied.status).toBe(409)
+    expect(await openAttendanceDenied.json()).toMatchObject({
+      error: { code: 'REVENUE_BONUS_ATTENDANCE_OPEN' },
+    })
+    replaceStateCollection(env.DB.database, 'attendance', stateBeforeOpenAttempt.attendance)
+    const versionAfterOpenDenial = Number(env.DB.database.prepare(
+      'SELECT version FROM app_state WHERE scope_key = ?',
+    ).get('global')?.version || 0)
+
+    const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.calculate_day', expectedVersion: versionAfterOpenDenial,
+      payload: { storeId: 'S02', businessDate: '2026-08-20' },
     }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-calculate-0001' }), env)
-    expect(calculated.status).toBe(201)
+    expect(calculated.status, JSON.stringify(await calculated.clone().json())).toBe(201)
     const calculatedBody = await calculated.json()
     expect(calculatedBody.revenueBonus).toMatchObject({
       storeId: 'S02', milestoneId: 'dosii.daily.over_15_000_000', milestonePoolVnd: 0,
@@ -14337,8 +14367,8 @@ describe('IDOSI Worker security primitives', () => {
     expect(managerStateResponse.status).toBe(200)
     const managerState = (await managerStateResponse.json()).state
     expect(managerState.revenueBonusDaily).toEqual([expect.not.objectContaining({ allocations: expect.anything() })])
-    expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
-    expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
+    expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId).sort()).toEqual(['E-S02', 'QL-S02'])
+    expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId).sort()).toEqual(['E-S02', 'QL-S02'])
     expect(managerState.compensationEntries.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
     expect(managerState.violations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
     expect(managerState.compensationTeamTotals).toEqual(expect.arrayContaining([
@@ -14348,7 +14378,7 @@ describe('IDOSI Worker security primitives', () => {
       daily: managerState.revenueBonusDaily,
       allocations: managerState.revenueBonusAllocations,
       participants: managerState.teamRewardParticipants,
-    })).not.toContain('E-S02')
+    })).toContain('E-S02')
 
     const employeeStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: employeeAuthorization }), env)
     expect(employeeStateResponse.status).toBe(200)
@@ -14456,53 +14486,47 @@ describe('IDOSI Worker security primitives', () => {
     expect(replay.headers.get('idempotency-replayed')).toBe('true')
     expect(await replay.json()).toEqual(approvedBody)
 
-    const stateBeforeSupersede = readHydratedState(env.DB.database)
-    const allocationIdsToSupersede = stateBeforeSupersede.revenueBonusAllocations
-      .filter(({ revenueBonusDailyId }) => revenueBonusDailyId === exactDaily.id)
-      .map(({ id }) => id)
-    const claimIdsToSupersede = stateBeforeSupersede.teamRewardClaims
-      .filter(({ revenueBonusDailyId }) => revenueBonusDailyId === exactDaily.id)
-      .map(({ id }) => id)
-    const participantIdsToSupersede = stateBeforeSupersede.teamRewardParticipants
-      .filter(({ revenueBonusDailyId }) => revenueBonusDailyId === exactDaily.id)
-      .map(({ id }) => id)
-    replaceStateCollection(env.DB.database, 'revenueBonusDaily', stateBeforeSupersede.revenueBonusDaily
+    const stateBeforeImmutableRetry = readHydratedState(env.DB.database)
+    replaceStateCollection(env.DB.database, 'revenueBonusDaily', stateBeforeImmutableRetry.revenueBonusDaily
       .filter(({ id }) => id !== siblingDailyId)
       .map((record) => record.id === exactDaily.id
         ? { ...record, fingerprint: 'stale-case-alias-fingerprint' }
         : record))
-    replaceStateCollection(env.DB.database, 'revenueBonusAllocations', stateBeforeSupersede.revenueBonusAllocations
+    replaceStateCollection(env.DB.database, 'revenueBonusAllocations', stateBeforeImmutableRetry.revenueBonusAllocations
       .filter(({ id }) => id !== siblingAllocation.id)
       .map((record) => record.revenueBonusDailyId === exactDaily.id
         ? { ...record, revenueBonusDailyId: siblingDailyId }
         : record))
-    replaceStateCollection(env.DB.database, 'teamRewardClaims', stateBeforeSupersede.teamRewardClaims
+    replaceStateCollection(env.DB.database, 'teamRewardClaims', stateBeforeImmutableRetry.teamRewardClaims
       .filter(({ id }) => id !== siblingClaimId)
       .map((record) => record.revenueBonusDailyId === exactDaily.id
         ? { ...record, revenueBonusDailyId: siblingDailyId }
         : record))
-    replaceStateCollection(env.DB.database, 'teamRewardParticipants', stateBeforeSupersede.teamRewardParticipants
+    replaceStateCollection(env.DB.database, 'teamRewardParticipants', stateBeforeImmutableRetry.teamRewardParticipants
       .filter(({ id }) => id !== siblingParticipant.id)
       .map((record) => record.revenueBonusDailyId === exactDaily.id
         ? { ...record, revenueBonusDailyId: siblingDailyId }
         : record))
+    const stateBeforeRejectedRetry = readHydratedState(env.DB.database)
 
     const recalculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.calculate_day', expectedVersion: approvedBody.version,
       payload: { storeId: 's02', businessDate: '2026-08-20' },
     }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-recalculate-alias-0001' }), env)
-    expect(recalculated.status).toBe(201)
-    const stateAfterSupersede = readHydratedState(env.DB.database)
-    expect(stateAfterSupersede.revenueBonusDaily.find(({ id }) => id === exactDaily.id)).toMatchObject({ status: 'SUPERSEDED' })
-    for (const collection of [
-      ['revenueBonusAllocations', allocationIdsToSupersede],
-      ['teamRewardClaims', claimIdsToSupersede],
-      ['teamRewardParticipants', participantIdsToSupersede],
+    expect(recalculated.status).toBe(409)
+    expect(await recalculated.json()).toMatchObject({
+      error: { code: 'REVENUE_BONUS_DAY_ALREADY_CALCULATED' },
+    })
+    const stateAfterRejectedRetry = readHydratedState(env.DB.database)
+    for (const collectionKey of [
+      'revenueBonusDaily',
+      'revenueBonusAllocations',
+      'teamRewardClaims',
+      'teamRewardParticipants',
+      'periodReconciliations',
+      'jobRuns',
     ]) {
-      const [collectionKey, identifiers] = collection
-      expect(stateAfterSupersede[collectionKey]
-        .filter(({ id }) => identifiers.includes(id))
-        .every(({ status }) => status === 'SUPERSEDED'), collectionKey).toBe(true)
+      expect(stateAfterRejectedRetry[collectionKey], collectionKey).toEqual(stateBeforeRejectedRetry[collectionKey])
     }
   }, 60_000)
 

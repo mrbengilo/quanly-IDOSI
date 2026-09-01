@@ -12,6 +12,7 @@ import {
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { applyAdvanceToNetPay, applyViolationWaterfall } from '../src/domain/compensationSettlement.js'
+import { revenueBonusEligibility } from '../src/domain/revenueBonusEligibility.js'
 import {
   STORE_EMPLOYMENT_TYPE,
   STORE_FULL_TIME_THRESHOLD_HOURS,
@@ -2398,11 +2399,11 @@ export const projectSharedState = (rawState, user) => {
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => sameIdentifier(record.storeId, storeId))
         .map(redactRevenueBonusDaily),
       revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations', (record) => (
-        sameIdentifier(record.storeId, storeId) && belongsToEmployee(record, ownEmployeeId)
+        sameIdentifier(record.storeId, storeId)
       )),
       teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => sameIdentifier(record.storeId, storeId)),
       teamRewardParticipants: filterArray(state, 'teamRewardParticipants', (record) => (
-        sameIdentifier(record.storeId, storeId) && belongsToEmployee(record, ownEmployeeId)
+        sameIdentifier(record.storeId, storeId)
       )),
       periodReconciliations: filterArray(state, 'periodReconciliations', (record) => sameIdentifier(record.storeId, storeId)),
       jobRuns: filterArray(state, 'jobRuns', (record) => sameIdentifier(record.storeId, storeId)),
@@ -4081,7 +4082,7 @@ const getRevenueBonusLive = async (request, env, context, url) => {
   const store = requireActivePhysicalStore(state, storeId)
   const live = revenueBonusLiveSnapshot({ state, store, businessDate, now: context.now })
   const viewerEmployeeId = String(user.employee_id || '').trim()
-  const canViewAllAllocations = ['admin', 'business_support'].includes(user.role)
+  const canViewAllAllocations = ['admin', 'business_support', 'store_manager'].includes(user.role)
   return jsonResponse(apiPayload(context, {
     snapshot: {
       ...live,
@@ -17887,6 +17888,19 @@ const liveAttendanceSeconds = (record, nowMs, projectOpen = true) => {
   return Math.max(Math.trunc(storedSeconds), Math.min(elapsedSeconds, 24 * 60 * 60))
 }
 
+const publicRevenueBonusEligibility = (eligibility = {}) => {
+  const {
+    openAttendanceIds,
+    conflictingIds,
+    existingId,
+    ...safeEligibility
+  } = eligibility
+  void openAttendanceIds
+  void conflictingIds
+  void existingId
+  return safeEligibility
+}
+
 export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new Date().toISOString() } = {}) => {
   const storeId = String(store?.id || '')
   const nowMs = Date.parse(now)
@@ -17956,6 +17970,14 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
       status: 'LIVE',
     }
   })
+  const calculationEligibility = publicRevenueBonusEligibility(revenueBonusEligibility({
+    storeId,
+    businessDate,
+    schedule: Array.isArray(state?.schedule) ? state.schedule : [],
+    shiftDefinitions: Array.isArray(state?.shiftDefinitions) ? state.shiftDefinitions : [],
+    attendance: Array.isArray(state?.attendance) ? state.attendance : [],
+    dailyRecords: Array.isArray(state?.revenueBonusDaily) ? state.revenueBonusDaily : [],
+  }))
   return {
     storeId,
     businessDate,
@@ -17973,6 +17995,7 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
     openAttendanceCount,
     activeEmployeeCount: activeEmployeeIds.size,
     participantCount: participants.length,
+    calculationEligibility,
     allocations,
   }
 }
@@ -18172,6 +18195,35 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   const businessDate = compensationDate(payload.businessDate, 'Ngày tính thưởng')
   const period = businessDate.slice(0, 7)
   assertPayrollNotPaidOrLocked(state, storeId, period)
+  const dailyRecords = Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []
+  const eligibility = revenueBonusEligibility({
+    storeId,
+    businessDate,
+    schedule: Array.isArray(state.schedule) ? state.schedule : [],
+    shiftDefinitions: Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [],
+    attendance: Array.isArray(state.attendance) ? state.attendance : [],
+    dailyRecords,
+  })
+  if (eligibility.code === 'DATA_COLLISION') {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_DAILY_SCOPE_COLLISION',
+      eligibility.message,
+      {
+        storeId,
+        businessDate,
+        conflictingIdentifiers: eligibility.conflictingIds,
+      },
+    )
+  }
+  if (!['READY', 'ALREADY_CALCULATED'].includes(eligibility.code)) {
+    throw new ApiError(
+      409,
+      `REVENUE_BONUS_${eligibility.code}`,
+      eligibility.message,
+      publicRevenueBonusEligibility(eligibility),
+    )
+  }
   const orders = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
     sameIdentifier(order.storeId, storeId)
     && dateFromRecord(order) === businessDate
@@ -18221,22 +18273,14 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     milestone,
     participants,
   })
-  const dailyRecords = Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []
-  const currentDailyCandidates = dailyRecords.filter((record) => (
-    sameIdentifier(record.storeId, storeId)
-    && String(record.businessDate || '') === businessDate
-    && !record.supersededAt
-    && !record.voidedAt
-  ))
-  if (currentDailyCandidates.length > 1) {
-    throw new ApiError(
-      409,
-      'REVENUE_BONUS_DAILY_SCOPE_COLLISION',
-      'Cửa hàng có nhiều kết quả thưởng ngày đang hiệu lực; cần xử lý dữ liệu trùng trước khi tính lại.',
-      { storeId, businessDate, conflictingIdentifiers: currentDailyCandidates.map((record) => String(record.id || '')) },
-    )
-  }
-  const currentDaily = currentDailyCandidates[0] || null
+  const currentDaily = eligibility.code === 'ALREADY_CALCULATED'
+    ? uniqueIdentifierRecordMatch({
+        records: dailyRecords,
+        identifier: eligibility.existingId,
+        collisionCode: 'REVENUE_BONUS_DAILY_IDENTIFIER_COLLISION',
+        collisionMessage: 'Mã kết quả thưởng ngày đang trùng với nhiều bản ghi; không thể tính thưởng an toàn.',
+      })?.record || null
+    : null
   const currentDailyReferenceMatches = (reference) => Boolean(currentDaily) && mutationIdentifierReferenceMatchesRecord({
     records: dailyRecords,
     record: currentDaily,
@@ -18253,6 +18297,14 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
         .filter((record) => currentDailyReferenceMatches(record.revenueBonusDailyId)),
       existing: true,
     }, 200, commandContext)
+  }
+  if (currentDaily) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_DAY_ALREADY_CALCULATED',
+      'Thưởng doanh thu của ngày này đã được tính; không thể ghi đè kết quả lịch sử.',
+      publicRevenueBonusEligibility(eligibility),
+    )
   }
   const calculationId = `rbd_${crypto.randomUUID()}`
   const actorSnapshot = serverActorSnapshot(actor)
@@ -18344,12 +18396,6 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     createdAt: commandContext.now,
     version: 1,
   })) : []
-  const supersedeDaily = (record) => currentDaily && record === currentDaily
-    ? { ...record, status: 'SUPERSEDED', supersededAt: commandContext.now, supersededBy: calculationId }
-    : record
-  const supersedeDailyChild = (record) => currentDailyReferenceMatches(record.revenueBonusDailyId)
-    ? { ...record, status: 'SUPERSEDED', supersededAt: commandContext.now, supersededBy: calculationId }
-    : record
   const reconciliation = {
     id: `prc_${crypto.randomUUID()}`,
     storeId,
@@ -18381,18 +18427,18 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
   }
   const nextState = {
     ...state,
-    revenueBonusDaily: [daily, ...dailyRecords.map(supersedeDaily)],
+    revenueBonusDaily: [daily, ...dailyRecords],
     revenueBonusAllocations: [
       ...allocations,
-      ...(Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []).map(supersedeDailyChild),
+      ...(Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []),
     ],
     teamRewardClaims: [
       ...(teamClaim ? [teamClaim] : []),
-      ...(Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []).map(supersedeDailyChild),
+      ...(Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []),
     ],
     teamRewardParticipants: [
       ...teamParticipants,
-      ...(Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : []).map(supersedeDailyChild),
+      ...(Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : []),
     ],
     periodReconciliations: [reconciliation, ...(Array.isArray(state.periodReconciliations) ? state.periodReconciliations : [])],
     jobRuns: [jobRun, ...(Array.isArray(state.jobRuns) ? state.jobRuns : [])],
@@ -18403,7 +18449,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     action: body.type,
     entityType: 'revenue-bonus-day',
     entityId: calculationId,
-    before: currentDaily || null,
+    before: null,
     after: daily,
     metadata: { storeId, businessDate, period, revenueVnd, totalPoolVnd, unallocatedVnd, participantCount: participants.length },
     response: { command: body.type, revenueBonus: daily, allocations, teamClaim, teamParticipants, reconciliation, jobRun },
