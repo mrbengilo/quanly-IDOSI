@@ -54,6 +54,7 @@ vi.mock('./pages/compensation', () => ({
   MyCompensationPage: () => <div>Thu nhập của tôi</div>,
   MyViolationsPage: () => <div>Vi phạm của tôi</div>,
   RevenueBonusPage: ({ storeScoped = false }) => <div data-testid="revenue-bonus-route" data-store-scoped={String(storeScoped)}>Thưởng doanh thu ngày</div>,
+  ViolationRefundPage: () => <div>Hoàn trả vi phạm route</div>,
   ViolationManagementPage: ({ targetUnit, embedded }) => <div data-testid={`violation-${targetUnit}`} data-embedded={String(Boolean(embedded))}>{`Quản lý vi phạm ${targetUnit}`}</div>,
 }))
 
@@ -195,6 +196,19 @@ describe('App role routes', () => {
 
     expect(await screen.findByText('Thưởng doanh thu ngày')).toBeTruthy()
     expect(screen.getByTestId('revenue-bonus-route').dataset.storeScoped).toBe('true')
+  })
+
+  it.each(['admin', 'business_support', 'store_manager'])('allows %s to read the current-store violation refunds', async (role) => {
+    renderRoute('/store/violation-refunds', role)
+
+    expect(await screen.findByText('Hoàn trả vi phạm route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/store/violation-refunds')
+  })
+
+  it('keeps store violation refunds unavailable to employees', async () => {
+    renderRoute('/store/violation-refunds', 'employee')
+
+    expect(screen.queryByText('Hoàn trả vi phạm route')).toBeNull()
   })
 
   it('keeps the Admin daily-revenue route globally selectable', async () => {

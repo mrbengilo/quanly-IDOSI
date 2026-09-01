@@ -272,18 +272,21 @@ describe('AppShell notifications', () => {
     const adminView = render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
     expect(screen.getByRole('link', { name: 'Cài đặt lương' }).getAttribute('href')).toBe('/store/salary-settings')
     expect(screen.getByRole('link', { name: /Công việc tính thưởng & vi phạm/i }).getAttribute('href')).toBe('/store/tasks')
+    expect(screen.getByRole('link', { name: 'Hoàn trả vi phạm' }).getAttribute('href')).toBe('/store/violation-refunds')
 
     adminView.unmount()
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001' }
     const supportView = render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
     expect(screen.getByRole('link', { name: 'Cài đặt lương' }).getAttribute('href')).toBe('/store/salary-settings')
     expect(screen.getByRole('link', { name: /Công việc tính thưởng & vi phạm/i }).getAttribute('href')).toBe('/store/tasks')
+    expect(screen.getByRole('link', { name: 'Hoàn trả vi phạm' }).getAttribute('href')).toBe('/store/violation-refunds')
 
     supportView.unmount()
     mocked.session = { role: 'store_manager', name: 'Quản lý cửa hàng', storeId: 'CH001' }
     render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
     expect(screen.queryByRole('link', { name: 'Cài đặt lương' })).toBeNull()
     expect(screen.getByRole('link', { name: /Công việc tính thưởng & vi phạm/i }).getAttribute('href')).toBe('/store/tasks')
+    expect(screen.getByRole('link', { name: 'Hoàn trả vi phạm' }).getAttribute('href')).toBe('/store/violation-refunds')
   })
 
   it('opens the role selector below the logo and keeps the account avatar for a multi-role account', async () => {
