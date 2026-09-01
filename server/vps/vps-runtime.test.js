@@ -375,8 +375,9 @@ describe('IDOSI VPS runtime', () => {
         password: 'admin-snapshot-cache-password',
       })
       expect(adminLogin.response.status).toBe(200)
+      expect(adminLogin.body.bootstrap.partial).toBe(true)
       expect(adminLogin.body.bootstrap.state.settings.bio).toBe('raw-cache-secret-must-not-leak')
-      expect(observedSnapshots).toEqual([false])
+      expect(observedSnapshots).toEqual([])
       observedSnapshots.length = 0
       const adminHeaders = { authorization: `Bearer ${adminLogin.body.token}` }
 
@@ -392,7 +393,7 @@ describe('IDOSI VPS runtime', () => {
         },
       }, { ...adminHeaders, 'idempotency-key': 'snapshot-cache-support-user' })
       expect(supportCreated.response.status).toBe(201)
-      expect(observedSnapshots).toEqual([true])
+      expect(observedSnapshots).toEqual([false])
       observedSnapshots.length = 0
 
       const warmState = await fetch(`${baseUrl}/api/state`, { headers: adminHeaders }).then((response) => response.json())
@@ -500,7 +501,11 @@ describe('IDOSI VPS runtime', () => {
         password: 'admin-oversized-snapshot-password',
       })
       expect(login.response.status).toBe(200)
-      expect(login.body.bootstrap).toMatchObject({ version: 2 })
+      expect(login.body.bootstrap).toMatchObject({
+        version: 2,
+        partial: true,
+      })
+      expect(login.body.bootstrap.state).not.toHaveProperty('oversizedCacheRows')
 
       const stateResponse = await fetch(`${baseUrl}/api/state`, {
         headers: { authorization: `Bearer ${login.body.token}` },
@@ -508,7 +513,7 @@ describe('IDOSI VPS runtime', () => {
       const state = await stateResponse.json()
       expect(stateResponse.status).toBe(200)
       expect(state.state.oversizedCacheRows).toHaveLength(9)
-      expect(observedSnapshots).toEqual([false, false])
+      expect(observedSnapshots).toEqual([false])
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose))
     }
@@ -551,6 +556,10 @@ describe('IDOSI VPS runtime', () => {
       })
       expect(login.response.status).toBe(200)
       const headers = { authorization: `Bearer ${login.body.token}` }
+
+      const warmState = await fetch(`${baseUrl}/api/state`, { headers })
+      expect(warmState.status).toBe(200)
+      expect(await warmState.json()).toMatchObject({ state: { phase2Marker: 'coherent' } })
 
       injectMalformedSnapshot = true
       const failedRefresh = await fetch(`${baseUrl}/api/state`, { headers })
