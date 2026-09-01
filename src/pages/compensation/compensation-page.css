@@ -363,6 +363,15 @@
   border-color: #42a768;
 }
 
+.reward-task-checklist > label.is-locked {
+  cursor: not-allowed;
+  opacity: .62;
+}
+
+.reward-task-checklist > label.is-locked:hover {
+  border-color: #dbe8df;
+}
+
 .reward-task-checklist input,
 .compensation-catalog-checklist input {
   accent-color: #07883f;
