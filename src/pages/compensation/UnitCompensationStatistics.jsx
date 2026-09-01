@@ -47,7 +47,13 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
 
   return <div className="compensation-unit-statistics">
     {showReward && <Card title={`Lịch sử nhận thưởng — ${unitLabel}`}>
-      <RewardHistoryTable rows={rewardRows} employees={scopedEmployees} showEmployee />
+      <RewardHistoryTable
+        key={`${targetUnit}:${storeId}`}
+        rows={rewardRows}
+        employees={scopedEmployees}
+        showEmployee
+        filterable={targetUnit === 'store'}
+      />
     </Card>}
     {showReward && <Card title={`Thống kê thưởng — ${unitLabel}`}>
       <CompensationStatisticsGrid statistics={rewardSummary} employees={scopedEmployees} showEmployee mode="reward" />
