@@ -628,6 +628,25 @@ for (const employee of previewParticipants) {
     }
   }
 }
+const previewOutOfScopeAttendance = previewAttendanceLinks.filter(({ match }) => (
+  match.record && !previewParticipants.includes(match.record)
+))
+const previewOutOfScopeEmployeeKeys = new Set(previewOutOfScopeAttendance
+  .map(({ match }) => folded(identifiers(match.record)[0]))
+  .filter(Boolean))
+const previewOutOfScopeCategories = new Map()
+for (const { record, match } of previewOutOfScopeAttendance) {
+  const employee = match.record
+  const category = {
+    unit: normalizedText(employee.unit || employee.unitType || employee.department || 'store') || 'store',
+    status: normalizedText(employee.status || 'unknown') || 'unknown',
+    sameHomeStore: previewStoreMatches(employee.storeId),
+    deleted: Boolean(employee.deletedAt),
+    linkedSupport: attendanceSupportLink(record, employee),
+  }
+  const key = JSON.stringify(category)
+  previewOutOfScopeCategories.set(key, (previewOutOfScopeCategories.get(key) || 0) + 1)
+}
 console.log(`payroll_preview_probe=${JSON.stringify({
   storeReference: previewStoreReference,
   resolvedStoreId: previewStore?.id || '',
@@ -639,6 +658,10 @@ console.log(`payroll_preview_probe=${JSON.stringify({
   scopedEmployees: previewScopedEmployees.length,
   attendanceRecords: previewAttendance.length,
   participants: previewParticipants.length,
+  outOfScopeAttendanceRecords: previewOutOfScopeAttendance.length,
+  outOfScopeEmployees: previewOutOfScopeEmployeeKeys.size,
+  outOfScopeCategories: [...previewOutOfScopeCategories]
+    .map(([category, records]) => ({ ...JSON.parse(category), records })),
   issues: previewIssues,
 })}`)
 
