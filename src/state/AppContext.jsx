@@ -4112,6 +4112,55 @@ export function AppProvider({ children }) {
     return result
   }
 
+  const setWorkRewards = async (payload = {}) => {
+    const role = normalizeAuthRole(state.session?.role)
+    if (!['employee', 'business_support'].includes(role)) {
+      throw new Error('Chỉ nhân viên được tự ghi nhận công việc tính thưởng của mình.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để ghi nhận tiền thưởng an toàn.')
+    }
+    const items = (Array.isArray(payload.items) ? payload.items : []).map((item) => ({
+      catalogItemId: item.catalogItemId,
+      checked: item.checked === true,
+      ...(item.expectedEntityVersion == null ? {} : { expectedEntityVersion: item.expectedEntityVersion }),
+    }))
+    const result = await runRemoteDomainCommand(
+      'work_reward.set_batch',
+      { attendanceId: payload.attendanceId, items },
+      payload.idempotencyKey || `work-reward-batch:${crypto.randomUUID()}`,
+    )
+    const rewards = Array.isArray(result?.rewards) ? result.rewards : []
+    const entries = Array.isArray(result?.entries) ? result.entries : []
+    const teamClaims = Array.isArray(result?.teamClaims) ? result.teamClaims : []
+    if (rewards.length || entries.length || teamClaims.length) {
+      setState((current) => {
+        const mergeRecords = (records, updates) => {
+          let next = Array.isArray(records) ? [...records] : []
+          for (const update of updates) {
+            const match = resolveRecordIdentifier(next, update?.id)
+            if (match.ambiguous) return null
+            next = match.record
+              ? next.map((record) => record === match.record ? update : record)
+              : [update, ...next]
+          }
+          return next
+        }
+        const nextProgress = mergeRecords(current.workCatalogProgress, rewards)
+        const nextEntries = mergeRecords(current.compensationEntries, entries)
+        const nextTeamClaims = mergeRecords(current.teamRewardClaims, teamClaims)
+        if (!nextProgress || !nextEntries || !nextTeamClaims) return current
+        return {
+          ...current,
+          workCatalogProgress: nextProgress,
+          compensationEntries: nextEntries,
+          teamRewardClaims: nextTeamClaims,
+        }
+      })
+    }
+    return result
+  }
+
   const createWorkCatalogItem = async (payload = {}) => {
     requireWorkCatalogOperator()
     return runRemoteDomainCommand(
@@ -5665,6 +5714,7 @@ export function AppProvider({ children }) {
     deleteWorkCatalogItem,
     restoreWorkCatalogItem,
     setWorkReward,
+    setWorkRewards,
     createViolation,
     createViolationBatch,
     voidViolation,

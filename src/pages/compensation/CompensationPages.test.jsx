@@ -189,6 +189,68 @@ describe('compensation pages', () => {
     expect(screen.getAllByText('−2,000 đ').length).toBeGreaterThan(0)
   })
 
+  it('filters store reward history by historical date, shift and employee and totals the visible rows', () => {
+    const rewardRows = [{
+      id: 'R-1', employeeId: 'NV-01', employeeName: 'Nhân viên Một', workDate: '2026-08-25',
+      shiftId: 'ca1', shiftName: 'Ca 1', title: 'Đi làm đúng giờ', amountVnd: 3_000,
+      completed: true, payoutStatus: 'approved', completedAt: '2026-08-25T01:00:00.000Z',
+    }, {
+      id: 'R-2', employeeId: 'NV-FORMER', employeeName: 'Nhân viên đã nghỉ', workDate: '2026-08-25',
+      shiftId: 'ca2', shiftName: 'Ca 2', title: 'Dọn quầy', amountVnd: 5_000,
+      completed: true, payoutStatus: 'approved', completedAt: '2026-08-25T06:00:00.000Z',
+    }, {
+      id: 'R-3', employeeId: 'NV-01', employeeName: 'Nhân viên Một', workDate: '2026-08-26',
+      shiftId: 'ca2', shiftName: 'Ca 2', title: 'Đổ rác', amountVnd: 7_000,
+      completed: true, payoutStatus: 'approved', completedAt: '2026-08-26T06:00:00.000Z',
+    }, {
+      id: 'R-VOID', employeeId: 'NV-01', employeeName: 'Nhân viên Một', workDate: '2026-08-25',
+      shiftId: 'ca1', shiftName: 'Ca 1', title: 'Đã hủy', amountVnd: 99_000,
+      completed: true, payoutStatus: 'void', completedAt: '2026-08-25T01:00:00.000Z',
+    }, {
+      id: 'R-OPEN', employeeId: 'NV-01', employeeName: 'Nhân viên Một', workDate: '2026-08-25',
+      shiftId: 'ca1', shiftName: 'Ca 1', title: 'Chưa hoàn thành', amountVnd: 88_000,
+      completed: false, payoutStatus: 'pending', completedAt: '',
+    }]
+    const scopedEmployees = employees.filter((employee) => employee.storeId === 'CH001')
+    const view = render(<UnitCompensationStatistics
+      targetUnit="store"
+      storeId="CH001"
+      employees={scopedEmployees}
+      sections="reward"
+      rewardRows={rewardRows}
+    />)
+    const historyCard = screen.getByRole('heading', { name: 'Lịch sử nhận thưởng — cửa hàng' }).closest('section')
+    const dateFilter = within(historyCard).getByLabelText('Ngày nhận thưởng')
+    const shiftFilter = within(historyCard).getByLabelText('Ca nhận thưởng')
+    const employeeFilter = within(historyCard).getByLabelText('Nhân viên nhận thưởng')
+    const historyHeader = historyCard.querySelector('thead')
+
+    expect(within(employeeFilter).getByRole('option', { name: 'Nhân viên đã nghỉ' })).toBeTruthy()
+    expect(within(historyHeader).getByText('+15,000 đ')).toBeTruthy()
+
+    fireEvent.change(dateFilter, { target: { value: '2026-08-25' } })
+    expect(within(historyHeader).getByText('+8,000 đ')).toBeTruthy()
+    fireEvent.change(shiftFilter, { target: { value: 'shift:id:ca2' } })
+    expect(within(historyHeader).getByText('+5,000 đ')).toBeTruthy()
+    expect(within(historyCard).queryByText('Đi làm đúng giờ')).toBeNull()
+    expect(within(historyCard).getByText('Dọn quầy')).toBeTruthy()
+
+    fireEvent.change(employeeFilter, { target: { value: 'employee:id:NV-FORMER' } })
+    fireEvent.change(dateFilter, { target: { value: '2026-08-26' } })
+    expect(within(historyHeader).getByText('+0 đ')).toBeTruthy()
+    expect(within(historyCard).getByText('Không có lịch sử phù hợp bộ lọc.')).toBeTruthy()
+
+    view.rerender(<UnitCompensationStatistics
+      targetUnit="office"
+      employees={scopedEmployees}
+      sections="reward"
+      rewardRows={rewardRows}
+    />)
+    expect(screen.queryByLabelText('Ngày nhận thưởng')).toBeNull()
+    expect(screen.queryByLabelText('Ca nhận thưởng')).toBeNull()
+    expect(screen.queryByLabelText('Nhân viên nhận thưởng')).toBeNull()
+  })
+
   it('shows the signed-in employee violation date, shift and negative deduction clearly', () => {
     mocked.app = {
       ...baseApp('employee'),

@@ -644,6 +644,7 @@ const BUSINESS_SUPPORT_SELF_SERVICE_COMMANDS = new Set([
   'notification.clear_all',
   'task.progress.save',
   'work_reward.set',
+  'work_reward.set_batch',
   'user.change_password',
 ])
 const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
@@ -16658,18 +16659,10 @@ const rewardCatalogSnapshotForAttendance = (attendance, requestedCatalogItemId) 
   }
 }
 
-const workRewardCommand = async (db, actor, body, commandContext) => {
-  if (body.type !== 'work_reward.set') {
-    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh công việc tính thưởng không được hỗ trợ.')
-  }
-  if (!['employee', 'business_support'].includes(actor.role)) {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được tự ghi nhận công việc tính thưởng của mình.')
-  }
-  const payload = isPlainRecord(body.payload) ? body.payload : {}
+const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandType = 'work_reward.set' }) => {
   if (payload.checked !== true) {
     throw new ApiError(400, 'WORK_REWARD_CHECKED_INVALID', 'Công việc tính thưởng chỉ được tick và lưu một lần; không thể bỏ chọn sau khi đã ghi nhận.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
   const actorEmployeeId = String(actor.employee_id || actor.user_id || '').trim()
   const employee = compensationEmployee(state, actorEmployeeId)
   const employeeId = String(employee.id || employee.code || employee.employeeId)
@@ -16763,14 +16756,18 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
     const claimActive = previousClaim && !previousClaim.deletedAt && !previousClaim.voidedAt
       && ['pending', 'approved'].includes(normalizeTextKey(previousClaim.status))
     if (previous?.checked === true && claimActive) {
-      return recordNoopCommand(db, actor, {
-        command: body.type,
-        version: Number(current.version),
-        checked: payload.checked,
-        reward: previous,
-        entry: null,
-        existing: true,
-      }, 200, commandContext)
+      return {
+        changed: false,
+        nextState: state,
+        response: {
+          checked: payload.checked,
+          reward: previous,
+          entry: null,
+          teamClaim: previousClaim,
+          existing: true,
+        },
+        status: 200,
+      }
     }
     if (previous) {
       throw new ApiError(409, 'WORK_REWARD_ALREADY_RECORDED', 'Công việc tính thưởng này đã được ghi nhận trước đó và không thể tick lại.')
@@ -16893,21 +16890,23 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
         }),
         ...(previousClaim ? [] : [teamClaim]),
       ],
-      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
-    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
-      action: body.type,
-      entityType: 'work-catalog-team-reward',
-      entityId: teamClaimId,
-      before: previous,
-      after: reward,
-      metadata: {
-        storeId, employeeId, period, attendanceId, catalogItemId: catalogSnapshot.id,
-        amountVnd: catalogSnapshot.amountVnd, checked: payload.checked, teamClaimId,
-      },
-      response: { command: body.type, checked: payload.checked, reward, entry: null, teamClaim },
+    return {
+      changed: true,
+      nextState,
+      response: { checked: payload.checked, reward, entry: null, teamClaim },
       status: previous || !payload.checked ? 200 : 201,
-    }, commandContext)
+      audit: {
+        entityType: 'work-catalog-team-reward',
+        entityId: teamClaimId,
+        before: previous,
+        after: reward,
+        metadata: {
+          storeId, employeeId, period, attendanceId, catalogItemId: catalogSnapshot.id,
+          amountVnd: catalogSnapshot.amountVnd, checked: payload.checked, teamClaimId,
+        },
+      },
+    }
   }
   const entryActive = Boolean(previousEntry
     && !previousEntry.deletedAt
@@ -16915,14 +16914,18 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
     && normalizeTextKey(previousEntry.status) === 'approved')
   const alreadyChecked = previous?.checked === true && entryActive
   if (alreadyChecked) {
-    return recordNoopCommand(db, actor, {
-      command: body.type,
-      version: Number(current.version),
-      checked: payload.checked,
-      reward: previous,
-      entry: previousEntry,
-      existing: true,
-    }, 200, commandContext)
+    return {
+      changed: false,
+      nextState: state,
+      response: {
+        checked: payload.checked,
+        reward: previous,
+        entry: previousEntry,
+        teamClaim: null,
+        existing: true,
+      },
+      status: 200,
+    }
   }
   if (previous || previousEntry) {
     throw new ApiError(409, 'WORK_REWARD_ALREADY_RECORDED', 'Công việc tính thưởng này đã được ghi nhận trước đó và không thể tick lại.')
@@ -17010,21 +17013,178 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
     compensationEntries: previousEntry
       ? compensationEntries.map((record, index) => index === previousEntryMatch.index ? entry : record)
       : [entry, ...compensationEntries],
-    payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
+    payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, commandType),
+  }
+  return {
+    changed: true,
+    nextState,
+    response: { checked: payload.checked, reward, entry, teamClaim: null },
+    status: previous || !payload.checked ? 200 : 201,
+    audit: {
+      entityType: 'work-catalog-reward',
+      entityId: progressId,
+      before: previous,
+      after: reward,
+      metadata: {
+        storeId, employeeId, period, attendanceId, catalogItemId: catalogSnapshot.id,
+        amountVnd: catalogSnapshot.amountVnd, checked: payload.checked, compensationEntryId: entryId,
+      },
+    },
+  }
+}
+
+const workRewardCommand = async (db, actor, body, commandContext) => {
+  if (!['work_reward.set', 'work_reward.set_batch'].includes(body.type)) {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh công việc tính thưởng không được hỗ trợ.')
+  }
+  if (!['employee', 'business_support'].includes(actor.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được tự ghi nhận công việc tính thưởng của mình.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body)
+
+  if (body.type === 'work_reward.set') {
+    const plan = planWorkRewardClaim({ state, actor, payload, commandContext, commandType: body.type })
+    const response = { command: body.type, ...plan.response }
+    if (!plan.changed) {
+      return recordNoopCommand(db, actor, {
+        ...response,
+        version: Number(current.version),
+      }, plan.status, commandContext)
+    }
+    const nextState = {
+      ...plan.nextState,
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      ...plan.audit,
+      response,
+      status: plan.status,
+    }, commandContext)
+  }
+
+  const attendanceId = String(payload.attendanceId || '').trim()
+  if (!attendanceId) throw new ApiError(400, 'ATTENDANCE_REQUIRED', 'Cần chọn ca chấm công để ghi nhận thưởng.')
+  if (!Array.isArray(payload.items) || payload.items.length < 1 || payload.items.length > 100) {
+    throw new ApiError(400, 'WORK_REWARD_BATCH_INVALID', 'Cần chọn từ 1 đến 100 công việc tính thưởng.')
+  }
+  const seenCatalogItemIds = new Map()
+  const items = payload.items.map((item, index) => {
+    if (!isPlainRecord(item)) {
+      throw new ApiError(400, 'WORK_REWARD_BATCH_INVALID', `Công việc tính thưởng thứ ${index + 1} không hợp lệ.`)
+    }
+    const catalogItemId = String(item.catalogItemId || '').trim()
+    const catalogItemKey = normalizeIdentifierKey(catalogItemId)
+    if (!catalogItemKey || item.checked !== true) {
+      throw new ApiError(400, 'WORK_REWARD_BATCH_INVALID', 'Mỗi công việc tính thưởng phải có mã hợp lệ và được tick trước khi lưu.')
+    }
+    if (seenCatalogItemIds.has(catalogItemKey)) {
+      throw new ApiError(400, 'WORK_REWARD_BATCH_DUPLICATE', 'Mỗi công việc tính thưởng chỉ được gửi một lần trong cùng yêu cầu.', {
+        normalizedIdentifier: catalogItemKey,
+        conflictingIdentifiers: [seenCatalogItemIds.get(catalogItemKey), catalogItemId],
+      })
+    }
+    seenCatalogItemIds.set(catalogItemKey, catalogItemId)
+    const itemAttendanceId = String(item.attendanceId || '').trim()
+    if (itemAttendanceId && !sameIdentifier(itemAttendanceId, attendanceId)) {
+      throw new ApiError(400, 'WORK_REWARD_BATCH_ATTENDANCE_MISMATCH', 'Mọi công việc trong một lần lưu phải thuộc cùng ca chấm công.')
+    }
+    return {
+      attendanceId,
+      catalogItemId,
+      checked: true,
+      ...(item.expectedEntityVersion == null ? {} : { expectedEntityVersion: item.expectedEntityVersion }),
+    }
+  })
+
+  const batchEmployeeId = String(actor.employee_id || actor.user_id || '').trim()
+  const batchEmployee = compensationEmployee(state, batchEmployeeId)
+  const batchCanonicalEmployeeId = String(batchEmployee.id || batchEmployee.code || batchEmployee.employeeId)
+  const batchAttendance = uniqueIdentifierRecordMatch({
+    records: state.attendance,
+    identifier: attendanceId,
+    identifierOf: (record) => record?.id,
+    predicate: (record) => !record?.deletedAt && belongsToEmployee(record, batchCanonicalEmployeeId),
+    collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể ghi nhận thưởng an toàn.',
+  })?.record || null
+  if (!batchAttendance) throw new ApiError(404, 'ATTENDANCE_NOT_FOUND', 'Không tìm thấy ca chấm công của nhân viên.')
+  const teamPrograms = new Map()
+  for (const item of items) {
+    const snapshot = rewardCatalogSnapshotForAttendance(batchAttendance, item.catalogItemId)
+    if (snapshot.rewardScope !== 'team') continue
+    const programId = String(snapshot.milestoneProgramId || 'team-work-reward').trim()
+    const programKey = normalizeIdentifierKey(programId)
+    if (teamPrograms.has(programKey)) {
+      throw new ApiError(400, 'WORK_REWARD_TEAM_MILESTONE_BATCH_CONFLICT', 'Mỗi chương trình thưởng team chỉ được chọn một mốc trong cùng ngày.', {
+        milestoneProgramId: programId,
+        catalogItemIds: [teamPrograms.get(programKey), item.catalogItemId],
+      })
+    }
+    teamPrograms.set(programKey, item.catalogItemId)
+  }
+
+  let workingState = state
+  const plans = []
+  for (const item of items) {
+    const plan = planWorkRewardClaim({
+      state: workingState,
+      actor,
+      payload: item,
+      commandContext,
+      commandType: body.type,
+    })
+    plans.push({ item, ...plan })
+    workingState = plan.nextState
+  }
+
+  const results = plans.map((plan) => ({
+    catalogItemId: String(plan.response.reward?.catalogItemId || plan.item.catalogItemId),
+    checked: true,
+    reward: plan.response.reward,
+    entry: plan.response.entry || null,
+    teamClaim: plan.response.teamClaim || null,
+    existing: plan.response.existing === true,
+  }))
+  const changedPlans = plans.filter((plan) => plan.changed)
+  const response = {
+    command: body.type,
+    attendanceId: String(results[0]?.reward?.attendanceId || attendanceId),
+    results,
+    rewards: results.map((result) => result.reward),
+    entries: results.map((result) => result.entry).filter(Boolean),
+    teamClaims: results.map((result) => result.teamClaim).filter(Boolean),
+    createdCount: changedPlans.length,
+    existingCount: plans.length - changedPlans.length,
+  }
+  if (!changedPlans.length) {
+    return recordNoopCommand(db, actor, {
+      ...response,
+      version: Number(current.version),
+      existing: true,
+    }, 200, commandContext)
+  }
+  const nextState = {
+    ...workingState,
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
     action: body.type,
-    entityType: 'work-catalog-reward',
-    entityId: progressId,
-    before: previous,
-    after: reward,
+    entityType: 'work-catalog-reward-batch',
+    entityId: `${response.attendanceId}:${String(results[0]?.reward?.employeeId || actor.employee_id || actor.user_id || '').trim()}`,
+    before: changedPlans.map((plan) => plan.audit?.before || null),
+    after: changedPlans.map((plan) => plan.audit?.after || plan.response.reward),
     metadata: {
-      storeId, employeeId, period, attendanceId, catalogItemId: catalogSnapshot.id,
-      amountVnd: catalogSnapshot.amountVnd, checked: payload.checked, compensationEntryId: entryId,
+      attendanceId: response.attendanceId,
+      catalogItemIds: results.map((result) => result.catalogItemId),
+      compensationEntryIds: results.map((result) => result.entry?.id).filter(Boolean),
+      teamClaimIds: results.map((result) => result.teamClaim?.id).filter(Boolean),
+      createdCount: response.createdCount,
+      existingCount: response.existingCount,
     },
-    response: { command: body.type, checked: payload.checked, reward, entry },
-    status: previous || !payload.checked ? 200 : 201,
+    response,
+    status: 201,
   }, commandContext)
 }
 
@@ -19831,7 +19991,7 @@ const executeCommand = async (request, env, context) => {
     if (String(body.type || '').startsWith('work_catalog.')) {
       return await workCatalogCommand(db, user, body, commandContext)
     }
-    if (body.type === 'work_reward.set') {
+    if (body.type === 'work_reward.set' || body.type === 'work_reward.set_batch') {
       return await workRewardCommand(db, user, body, commandContext)
     }
     if (String(body.type || '').startsWith('violation.')) {

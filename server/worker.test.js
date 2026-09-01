@@ -14648,6 +14648,210 @@ describe('IDOSI Worker security primitives', () => {
     expect(finalState.compensationEntries).toHaveLength(1)
   }, 30_000)
 
+  it('records a self-service reward batch atomically and replays it without duplicate money', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-self-work-reward-batch' }
+    const attendanceId = 'ATT-OFFICE-REWARD-BATCH-01'
+    const regularOneId = 'CAT-OFFICE-REWARD-BATCH-ONE'
+    const regularTwoId = 'CAT-OFFICE-REWARD-BATCH-TWO'
+    const invalidExistingId = 'CAT-OFFICE-REWARD-BATCH-EXISTING-INVALID'
+    const teamLowId = 'CAT-OFFICE-REWARD-BATCH-TEAM-LOW'
+    const teamHighId = 'CAT-OFFICE-REWARD-BATCH-TEAM-HIGH'
+    const rewardTask = (catalogItemId, name, amountVnd, extra = {}) => ({
+      catalogItemId,
+      catalogCode: catalogItemId.toLowerCase(),
+      catalogVersion: 1,
+      kind: 'REWARD_TASK',
+      targetGroup: 'office',
+      name,
+      amountVnd,
+      effectiveDate: '2026-08-29',
+      required: false,
+      ...extra,
+    })
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'self-work-reward-batch-admin-password',
+      initialState: {
+        employees: [{
+          id: 'OFFICE-REWARD-BATCH-01', name: 'Nhân viên văn phòng batch', storeId: 'OFFICE', unit: 'office',
+          status: 'Đang làm việc', employmentType: 'Full-Time',
+        }],
+        attendance: [{
+          id: attendanceId, employeeId: 'OFFICE-REWARD-BATCH-01', employeeName: 'Nhân viên văn phòng batch',
+          storeId: 'OFFICE', unit: 'office', workDate: '2026-08-29', date: '2026-08-29',
+          shiftId: 'office_day', shift: 'office_day', shiftName: 'Ca 1',
+          shiftStart: '08:00', shiftEnd: '17:00', shiftVersion: 1, shiftSource: 'profile-work-shift',
+          employmentTypeSnapshot: 'Full-Time', checkIn: '08:00', checkInAt: '2026-08-29T01:00:00.000Z',
+          checkOut: null, checkOutAt: null,
+          checklistSnapshot: {
+            source: 'work-catalog', targetGroup: 'office', shiftId: 'office_day',
+            tasks: [
+              rewardTask(regularOneId, 'Công việc batch 1', 3_000),
+              rewardTask(regularTwoId, 'Công việc batch 2', 5_000),
+              rewardTask(invalidExistingId, 'Công việc có tiến độ mồ côi', 7_000),
+              rewardTask(teamLowId, 'Mốc team thấp', 200_000, {
+                rewardScope: 'team', milestoneProgramId: 'office.batch.team', milestoneId: 'low',
+              }),
+              rewardTask(teamHighId, 'Mốc team cao', 350_000, {
+                rewardScope: 'team', milestoneProgramId: 'OFFICE.BATCH.TEAM', milestoneId: 'high',
+              }),
+            ],
+          },
+        }],
+        payrollPeriods: [{
+          id: 'PAY-OFFICE-REWARD-BATCH-2026-08', storeId: 'OFFICE', period: '2026-08', status: 'Đã chốt',
+        }],
+        workCatalogProgress: [{
+          id: `work-catalog-progress:v1:OFFICE-REWARD-BATCH-01:2026-08-29:${attendanceId}:${invalidExistingId}`,
+          employeeId: 'OFFICE-REWARD-BATCH-01', attendanceId, workDate: '2026-08-29',
+          catalogItemId: invalidExistingId, checked: false, status: 'VOID', version: 1,
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'self-work-reward-batch-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const createdUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', payload: {
+        username: 'office.reward.batch', password: 'office-reward-batch-password', role: 'employee',
+        storeId: 'OFFICE', employeeId: 'OFFICE-REWARD-BATCH-01', displayName: 'Nhân viên văn phòng batch',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'create-office-reward-batch-user-0001' }), env)
+    expect(createdUser.status).toBe(201)
+    const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'office.reward.batch', password: 'office-reward-batch-password',
+    }), env)
+    const employeeAuthorization = { authorization: `Bearer ${(await employeeLogin.json()).token}` }
+    const globalVersion = () => Number(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get().version)
+    const mutationCounts = () => {
+      const current = readHydratedState(env.DB.database)
+      return {
+        version: globalVersion(),
+        progress: current.workCatalogProgress.length,
+        entries: current.compensationEntries.length,
+        teamClaims: current.teamRewardClaims.length,
+      }
+    }
+    const initialCounts = mutationCounts()
+    expect(initialCounts).toMatchObject({ version: 1, progress: 1, entries: 0, teamClaims: 0 })
+
+    const invalidSecond = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set_batch', expectedVersion: initialCounts.version,
+      payload: {
+        attendanceId,
+        items: [
+          { catalogItemId: regularOneId, checked: true },
+          { catalogItemId: invalidExistingId, checked: true },
+        ],
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-batch-invalid-second-0001' }), env)
+    expect(invalidSecond.status).toBe(409)
+    expect(await invalidSecond.json()).toMatchObject({ error: { code: 'WORK_REWARD_ALREADY_RECORDED' } })
+    expect(mutationCounts()).toEqual(initialCounts)
+
+    const duplicateAlias = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set_batch', expectedVersion: initialCounts.version,
+      payload: {
+        attendanceId,
+        items: [
+          { catalogItemId: regularOneId, checked: true },
+          { catalogItemId: regularOneId.toLowerCase(), checked: true },
+        ],
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-batch-duplicate-alias-0001' }), env)
+    expect(duplicateAlias.status).toBe(400)
+    expect(await duplicateAlias.json()).toMatchObject({ error: { code: 'WORK_REWARD_BATCH_DUPLICATE' } })
+    expect(mutationCounts()).toEqual(initialCounts)
+
+    const teamConflict = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'work_reward.set_batch', expectedVersion: initialCounts.version,
+      payload: {
+        attendanceId,
+        items: [
+          { catalogItemId: teamHighId, checked: true },
+          { catalogItemId: teamLowId, checked: true },
+        ],
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'office-reward-batch-team-conflict-0001' }), env)
+    expect(teamConflict.status).toBe(400)
+    expect(await teamConflict.json()).toMatchObject({ error: { code: 'WORK_REWARD_TEAM_MILESTONE_BATCH_CONFLICT' } })
+    expect(mutationCounts()).toEqual(initialCounts)
+
+    const batchBody = {
+      type: 'work_reward.set_batch', expectedVersion: initialCounts.version,
+      payload: {
+        attendanceId: attendanceId.toLowerCase(),
+        items: [
+          { catalogItemId: regularOneId.toLowerCase(), checked: true },
+          { catalogItemId: regularTwoId, checked: true },
+        ],
+      },
+    }
+    const idempotencyKey = 'office-reward-batch-success-0001'
+    const saved = await worker.fetch(jsonRequest('https://idosi.example/api/command', batchBody, {
+      ...employeeAuthorization, 'idempotency-key': idempotencyKey,
+    }), env)
+    expect(saved.status).toBe(201)
+    const savedBody = await saved.json()
+    expect(savedBody).toMatchObject({
+      command: 'work_reward.set_batch', version: initialCounts.version + 1,
+      attendanceId, createdCount: 2, existingCount: 0,
+      rewards: [
+        { attendanceId, catalogItemId: regularOneId, checked: true, status: 'CLAIMED', amountVnd: 3_000 },
+        { attendanceId, catalogItemId: regularTwoId, checked: true, status: 'CLAIMED', amountVnd: 5_000 },
+      ],
+      entries: [
+        { sourceType: 'work-catalog-claim', amountVnd: 3_000, status: 'APPROVED' },
+        { sourceType: 'work-catalog-claim', amountVnd: 5_000, status: 'APPROVED' },
+      ],
+    })
+    expect(mutationCounts()).toEqual({
+      version: initialCounts.version + 1,
+      progress: 3,
+      entries: 2,
+      teamClaims: 0,
+    })
+    expect(readHydratedState(env.DB.database).payrollPeriods[0]).toMatchObject({
+      needsReclose: true,
+      invalidationReason: 'work_reward.set_batch',
+    })
+
+    const replayed = await worker.fetch(jsonRequest('https://idosi.example/api/command', batchBody, {
+      ...employeeAuthorization, 'idempotency-key': idempotencyKey,
+    }), env)
+    expect(replayed.status).toBe(201)
+    expect(replayed.headers.get('Idempotency-Replayed')).toBe('true')
+    expect(await replayed.json()).toEqual(savedBody)
+    expect(mutationCounts()).toEqual({
+      version: initialCounts.version + 1,
+      progress: 3,
+      entries: 2,
+      teamClaims: 0,
+    })
+
+    const logicalReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      ...batchBody,
+      expectedVersion: initialCounts.version + 1,
+    }, {
+      ...employeeAuthorization, 'idempotency-key': 'office-reward-batch-logical-replay-0001',
+    }), env)
+    expect(logicalReplay.status).toBe(200)
+    expect(await logicalReplay.json()).toMatchObject({
+      command: 'work_reward.set_batch',
+      version: initialCounts.version + 1,
+      createdCount: 0,
+      existingCount: 2,
+      existing: true,
+    })
+    expect(mutationCounts()).toEqual({
+      version: initialCounts.version + 1,
+      progress: 3,
+      entries: 2,
+      teamClaims: 0,
+    })
+  }, 30_000)
+
   it('creates violation batches atomically with shift snapshots, duplicate protection, and target-unit authorization', async () => {
     const catalog = (id, code, targetGroup, name, amountVnd, storeId = null) => ({
       id, code, kind: 'VIOLATION', targetGroup, storeId, shiftId: null, shiftName: null,

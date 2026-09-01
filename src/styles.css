@@ -489,7 +489,67 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   gap: 9px;
 }
 
-.task-checklist > div {
+.shift-checklist-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.shift-checklist-tabs > button {
+  display: grid;
+  gap: 3px;
+  min-height: 88px;
+  padding: 13px 15px;
+  border: 1px solid #cfe1d5;
+  border-radius: 12px;
+  background: #fff;
+  color: #395448;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease, background .18s ease;
+}
+
+.shift-checklist-tabs > button:hover {
+  border-color: #77bb91;
+  transform: translateY(-1px);
+}
+
+.shift-checklist-tabs > button:focus-visible {
+  outline: 3px solid rgb(8 123 61 / 16%);
+  outline-offset: 2px;
+}
+
+.shift-checklist-tabs > button.is-selected {
+  border-color: #07883f;
+  background: linear-gradient(145deg, #e7f8ed, #f7fcf9);
+  box-shadow: 0 8px 22px rgb(7 136 63 / 13%);
+  color: #076a35;
+}
+
+.shift-checklist-tabs strong,
+.shift-checklist-tabs small,
+.shift-checklist-tabs span {
+  display: block;
+}
+
+.shift-checklist-tabs strong {
+  font-size: 15px;
+}
+
+.shift-checklist-tabs small {
+  color: #64766c;
+}
+
+.shift-checklist-tabs span {
+  margin-top: 4px;
+  color: #07883f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.task-checklist > div,
+.task-checklist > label {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -501,30 +561,52 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   background: #fff;
 }
 
-.task-checklist > div.done {
+.task-checklist > label {
+  cursor: pointer;
+}
+
+.task-checklist > label > input {
+  width: 20px;
+  height: 20px;
+  accent-color: #07883f;
+}
+
+.task-checklist > div.done,
+.task-checklist > label.done {
   border-color: #aed8ba;
   background: #eef9f1;
 }
 
+.task-checklist > label.is-locked {
+  opacity: .62;
+  cursor: not-allowed;
+}
+
 .task-checklist > div > div,
+.task-checklist > label > span,
 .task-checklist > div strong,
-.task-checklist > div small {
+.task-checklist > label strong,
+.task-checklist > div small,
+.task-checklist > label small {
   min-width: 0;
   display: block;
 }
 
-.task-checklist > div strong {
+.task-checklist > div strong,
+.task-checklist > label strong {
   color: #143326;
   overflow-wrap: anywhere;
 }
 
-.task-checklist > div small {
+.task-checklist > div small,
+.task-checklist > label small {
   margin-top: 4px;
   color: #66756d;
   line-height: 1.45;
 }
 
-.task-checklist > div.done strong {
+.task-checklist > div.done strong,
+.task-checklist > label.done strong {
   color: #387251;
   text-decoration: line-through;
 }
@@ -581,11 +663,21 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
     font-size: 21px;
   }
 
-  .task-checklist > div {
+  .shift-checklist-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .shift-checklist-tabs > button {
+    min-height: 72px;
+  }
+
+  .task-checklist > div,
+  .task-checklist > label {
     grid-template-columns: auto minmax(0, 1fr);
   }
 
-  .task-checklist > div > .badge {
+  .task-checklist > div > .badge,
+  .task-checklist > label > .badge {
     grid-column: 2;
     justify-self: start;
   }
@@ -903,13 +995,15 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
     grid-row: 1;
   }
 
-  .task-checklist > div {
+  .task-checklist > div,
+  .task-checklist > label {
     align-items: start;
     gap: 8px;
     padding: 11px;
   }
 
-  .task-checklist > div > .badge {
+  .task-checklist > div > .badge,
+  .task-checklist > label > .badge {
     max-width: 100%;
     white-space: normal;
   }

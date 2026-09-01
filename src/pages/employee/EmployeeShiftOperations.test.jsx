@@ -119,9 +119,12 @@ describe('employee shift operations', () => {
       incompleteReason: 'Chưa kiểm xong kho cuối ca',
       idempotencyKey: expect.stringMatching(/^task-progress:/u),
     }))
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: /Kiểm tra quầy/i }).disabled).toBe(true))
+    expect(screen.getByText('Đã lưu')).toBeTruthy()
+    expect(screen.getByText('Kiểm tra quầy').closest('label').classList.contains('is-locked')).toBe(true)
   })
 
-  it('keeps reward work and already-completed fixed work out of the mandatory task screen', () => {
+  it('keeps reward work separate and shows already-completed fixed work dimmed and locked', () => {
     mocked.app.tasks = [{
       id: 'TASK-FIXED', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
       employeeIds: ['E01'], title: 'Mở cửa đúng quy trình', required: true, catalogKind: 'FIXED_TASK', completedBy: { E01: true },
@@ -135,13 +138,38 @@ describe('employee shift operations', () => {
 
     expect(screen.queryByText('Tùy chọn · Thưởng 50,000 đ')).toBeNull()
     expect(screen.queryByText('Quay clip sản phẩm')).toBeNull()
-    expect(screen.queryByText('Mở cửa đúng quy trình')).toBeNull()
+    expect(screen.getByText('Mở cửa đúng quy trình')).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /Mở cửa đúng quy trình/i }).checked).toBe(true)
+    expect(screen.getByRole('checkbox', { name: /Mở cửa đúng quy trình/i }).disabled).toBe(true)
+    expect(screen.getByText('Mở cửa đúng quy trình').closest('label').classList.contains('is-locked')).toBe(true)
     expect(screen.getByText(/Công việc nhận thưởng được tick và lưu riêng/i)).toBeTruthy()
     expect(screen.getByText('1/1 · 100%')).toBeTruthy()
     expect(screen.queryByLabelText(/Lý do công việc bắt buộc/u)).toBeNull()
     expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }))
     expect(mocked.app.saveStoreTaskProgress).not.toHaveBeenCalled()
+  })
+
+  it('shows the three canonical shift tabs and enables updates only for the checked-in shift', () => {
+    mocked.app.tasks = [{
+      id: 'TASK-MORNING', checklistAttendanceId: 'ATT-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
+      employeeIds: ['E01'], title: 'Checklist ca sáng', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+    }]
+
+    renderAssignedTasks()
+
+    expect(screen.getByRole('tab', { name: /Ca Sáng/i }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: /Ca Chiều/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /Ca Tối/i })).toBeTruthy()
+    expect(screen.getByText('Checklist ca sáng')).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /Checklist ca sáng/i }).disabled).toBe(false)
+
+    fireEvent.click(screen.getByRole('tab', { name: /Ca Chiều/i }))
+
+    expect(screen.queryByText('Checklist ca sáng')).toBeNull()
+    expect(screen.getByText(/Chỉ ca đang điểm danh mới được tick và lưu/i)).toBeTruthy()
+    expect(screen.getByText(/Chưa có công việc bắt buộc cho ca này/i)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
   })
 
   it('shows only checklist rows bound to the current open attendance', () => {
