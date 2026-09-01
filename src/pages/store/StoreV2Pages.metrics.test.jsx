@@ -357,6 +357,85 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.getAllByText('80,000 đ').length).toBeGreaterThan(0)
   })
 
+  it('attributes a support work reward to the destination payroll without leaking it to the home store', () => {
+    const homeStore = { id: 'S02', name: 'Dosii TNV' }
+    const supportEmployee = {
+      ...employee,
+      id: 'S02-SUPPORT-01',
+      name: 'Nhân viên hỗ trợ nhận thưởng',
+      storeId: homeStore.id,
+      hourlyRate: 35_000,
+    }
+    const supportTransfer = {
+      id: 'TR-REWARD-01', employeeId: supportEmployee.id,
+      fromStoreId: homeStore.id, toStoreId: store.id,
+      hourlySupportRate: 45_000, allowance: 50_000,
+    }
+    const supportAttendance = {
+      id: 'ATT-SUPPORT-REWARD', storeId: store.id, employeeId: supportEmployee.id,
+      date: today(), hours: 2, status: 'Đi đúng giờ', supportTransferId: supportTransfer.id,
+      supportCompensation: {
+        transferId: supportTransfer.id, homeStoreId: homeStore.id, supportStoreId: store.id,
+        hours: 2, hourlyRate: 45_000, basePay: 90_000, allowance: 50_000, totalPay: 140_000,
+      },
+    }
+    const supportReward = {
+      id: 'WORK-SUPPORT-REWARD', employeeId: supportEmployee.id.toLowerCase(),
+      storeId: store.id.toLowerCase(), supportStoreId: store.id.toLowerCase(),
+      homeStoreId: homeStore.id.toLowerCase(), supportTransferId: supportTransfer.id.toLowerCase(),
+      attendanceId: supportAttendance.id.toLowerCase(), effectiveDate: today(),
+      type: 'WORK', amountVnd: 25_000, status: 'APPROVED',
+    }
+    const unrelatedDestinationEntries = [{
+      ...supportReward,
+      id: 'MANUAL-SUPPORT-REWARD',
+      type: 'MANUAL',
+      amountVnd: 11_000,
+    }, {
+      ...supportReward,
+      id: 'ORPHAN-SUPPORT-REWARD',
+      supportStoreId: null,
+      homeStoreId: null,
+      supportTransferId: null,
+      attendanceId: null,
+      amountVnd: 13_000,
+    }]
+    mocked.app = {
+      ...baseApp(),
+      stores: [store, homeStore],
+      employees: [supportEmployee],
+      attendance: [supportAttendance],
+      supportTransfers: [supportTransfer],
+      compensationEntries: [supportReward, ...unrelatedDestinationEntries],
+    }
+
+    renderPage(StorePayrollV2)
+
+    let table = screen.getByRole('columnheader', { name: 'Thưởng công việc' }).closest('table')
+    let row = within(table).getByText(supportEmployee.name).closest('tr')
+    expect(within(row).getAllByRole('cell')[4].textContent).toContain('25,000 đ')
+    expect(within(row).getAllByRole('cell')[10].textContent).toBe('165,000 đ')
+    expect(within(row).getByText(/Thưởng hỗ trợ ghi nhận tại Dosii KVC.*TR-REWARD-01/iu)).toBeTruthy()
+
+    cleanup()
+    mocked.app = {
+      ...baseApp(),
+      stores: [store, homeStore],
+      activeStoreId: homeStore.id,
+      activeStore: homeStore,
+      employees: [supportEmployee],
+      compensationEntries: [supportReward],
+    }
+
+    renderPage(StorePayrollV2)
+
+    table = screen.getByRole('columnheader', { name: 'Thưởng công việc' }).closest('table')
+    row = within(table).getByText(supportEmployee.name).closest('tr')
+    expect(within(row).getAllByRole('cell')[4].textContent).toBe('0 đ')
+    expect(within(row).getAllByRole('cell')[10].textContent).toBe('0 đ')
+    expect(within(row).queryByText(/Thưởng hỗ trợ ghi nhận/iu)).toBeNull()
+  })
+
   it('keeps selected-store manager attendance out of employee payroll without locking the preview', () => {
     const storeManager = {
       ...employee,
@@ -789,11 +868,17 @@ describe('store order, attendance, and payroll summaries', () => {
           employeeName: 'Tên snapshot hỗ trợ',
           hours: 2,
           baseSalary: 90_000,
+          workBonusVnd: 25_000,
+          supportWorkBonusVnd: 25_000,
           allowanceVnd: 50_000,
-          gross: 140_000,
-          remaining: 140_000,
+          gross: 165_000,
+          remaining: 165_000,
           supportActualPay: 140_000,
-          supportCompensation: { hours: 2, basePay: 90_000, allowance: 50_000, totalPay: 140_000 },
+          supportTransferIds: ['TR-SNAPSHOT-01'],
+          supportCompensation: {
+            hours: 2, basePay: 90_000, allowance: 50_000, totalPay: 140_000,
+            transferIds: ['TR-SNAPSHOT-01'],
+          },
           salarySnapshot: { employmentType: 'Part-Time', hourlyRate: 45_000 },
         }],
       }],
@@ -808,8 +893,10 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(within(homeRow).getByText(/home-code/i)).toBeTruthy()
     expect(within(supportRow).getByText(/support-code/i)).toBeTruthy()
     expect(within(supportRow).getByText('45,000 đ/giờ')).toBeTruthy()
-    expect(within(supportRow).getByText('140,000 đ')).toBeTruthy()
-    expect(screen.getAllByText('220,000 đ').length).toBeGreaterThan(0)
+    expect(within(supportRow).getByText('165,000 đ')).toBeTruthy()
+    expect(within(supportRow).getAllByRole('cell')[4].textContent).toContain('25,000 đ')
+    expect(within(supportRow).getByText(/Thưởng hỗ trợ ghi nhận tại Dosii KVC.*TR-SNAPSHOT-01/iu)).toBeTruthy()
+    expect(screen.getAllByText('245,000 đ').length).toBeGreaterThan(0)
   })
 
   it('locks immutable payroll totals when a snapshot employee alias is globally ambiguous', () => {
