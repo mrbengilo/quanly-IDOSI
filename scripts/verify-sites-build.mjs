@@ -12,6 +12,7 @@ const workerDomainFiles = [
   'compensationSettlement.js',
   'storeTieredPayroll.js',
   'managerRevenueBonus.js',
+  'revenueBonusEligibility.js',
   'workCatalog.js',
 ].map((fileName) => resolve(root, 'dist', 'src', 'domain', fileName))
 const hostingPath = resolve(root, 'dist', '.openai', 'hosting.json')

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { rewardStatistics, violationStatistics, workRewardRows } from './compensationStatistics'
+import {
+  revenueBonusHistoryProjection,
+  revenueBonusHistoryRows,
+  revenueBonusStatistics,
+  rewardStatistics,
+  violationStatistics,
+  workRewardRows,
+} from './compensationStatistics'
 
 describe('violationStatistics', () => {
   it('summarizes active violations by day, month, and employee without counting voided records', () => {
@@ -13,6 +20,180 @@ describe('violationStatistics', () => {
     expect(result.byDay).toEqual([{ key: '2026-08-28', label: '28/08/2026', count: 2, amountVnd: 8_000, severity }])
     expect(result.byMonth).toEqual([{ key: '2026-08', label: 'Tháng 08/2026', count: 2, amountVnd: 8_000, severity }])
     expect(result.byEmployee).toEqual([{ key: 'VP-01', label: 'Nhân viên VP cũ', count: 2, amountVnd: 8_000, severity }])
+  })
+})
+
+describe('revenue bonus history and statistics', () => {
+  it('flattens only effective store allocations and preserves historical employee snapshots', () => {
+    const rows = revenueBonusHistoryRows({
+      storeId: 'store-01',
+      employees: [{ id: 'E-OLD', name: 'Tên hồ sơ hiện tại' }, { id: 'E-02', name: 'Nhân viên Hai' }],
+      revenueBonusDaily: [{
+        id: 'RBD-AUG', storeId: 'STORE-01', storeName: 'Dosii Một', businessDate: '2026-08-31', period: '2026-08',
+        status: 'APPROVED', calculatedAt: '2026-08-31T15:00:00Z',
+        allocations: [{
+          id: 'RBA-AUG', employeeId: 'E-OLD', employeeName: 'Nhân viên đã nghỉ',
+          amountVnd: 3_000, workedSeconds: 7_200, weightPercent: 40, status: 'APPROVED',
+        }, {
+          id: 'RBA-AUG-VOID', employeeId: 'E-02', amountVnd: 99_000, status: 'VOID',
+        }],
+      }, {
+        id: 'RBD-SEP', storeId: 'STORE-01', businessDate: '2026-09-01', period: '2026-09', status: 'APPROVED',
+      }, {
+        id: 'RBD-SUPERSEDED', storeId: 'STORE-01', businessDate: '2026-08-30', status: 'SUPERSEDED',
+        allocations: [{ id: 'RBA-SUPERSEDED', employeeId: 'E-02', amountVnd: 77_000 }],
+      }, {
+        id: 'RBD-VOID', storeId: 'STORE-01', businessDate: '2026-08-29', voidedAt: '2026-08-30T00:00:00Z',
+        allocations: [{ id: 'RBA-VOID', employeeId: 'E-02', amountVnd: 66_000 }],
+      }, {
+        id: 'RBD-OTHER', storeId: 'STORE-02', businessDate: '2026-08-31', status: 'APPROVED',
+        allocations: [{ id: 'RBA-OTHER', employeeId: 'E-02', amountVnd: 55_000 }],
+      }],
+      revenueBonusAllocations: [{
+        id: 'RBA-SEP', revenueBonusDailyId: 'rbd-sep', storeId: 'store-01', employeeId: 'E-02',
+        employeeName: 'Tên chụp tháng 9', amountVnd: 7_000, workedSeconds: 3_600, status: 'APPROVED',
+      }, {
+        id: 'RBA-SEP-SUPERSEDED', revenueBonusDailyId: 'RBD-SEP', storeId: 'STORE-01', employeeId: 'E-OLD',
+        amountVnd: 88_000, status: 'SUPERSEDED',
+      }, {
+        id: 'RBA-ORPHAN', revenueBonusDailyId: 'UNKNOWN', storeId: 'STORE-01', employeeId: 'E-02',
+        amountVnd: 44_000, status: 'APPROVED',
+      }],
+    })
+
+    expect(rows).toEqual([{
+      id: 'RBA-SEP', revenueBonusDailyId: 'RBD-SEP', storeId: 'STORE-01', storeName: '',
+      businessDate: '2026-09-01', month: '2026-09', employeeId: 'E-02', employeeName: 'Tên chụp tháng 9',
+      workedSeconds: 3_600, approvedSalesHours: 1, weightPercent: null, amountVnd: 7_000,
+      status: 'APPROVED', recordedAt: '',
+    }, {
+      id: 'RBA-AUG', revenueBonusDailyId: 'RBD-AUG', storeId: 'STORE-01', storeName: 'Dosii Một',
+      businessDate: '2026-08-31', month: '2026-08', employeeId: 'E-OLD', employeeName: 'Nhân viên đã nghỉ',
+      workedSeconds: 7_200, approvedSalesHours: 2, weightPercent: 40, amountVnd: 3_000,
+      status: 'APPROVED', recordedAt: '2026-08-31T15:00:00Z',
+    }])
+  })
+
+  it('aggregates effective history by day, employee and month and totals only the requested month', () => {
+    const rows = [{
+      id: 'A1', businessDate: '2026-08-30', month: '2026-08', employeeId: 'E-01', employeeName: 'Nhân viên cũ', amountVnd: 3_000,
+    }, {
+      id: 'A2', businessDate: '2026-08-31', month: '2026-08', employeeId: 'E-01', employeeName: 'Nhân viên cũ', amountVnd: 5_000,
+    }, {
+      id: 'A2-CASE', businessDate: '2026-08-31', month: '2026-08', employeeId: 'e-01', employeeName: 'Tên viết thường', amountVnd: 2_000,
+    }, {
+      id: 'A3', businessDate: '2026-09-01', month: '2026-09', employeeId: 'E-02', employeeName: 'Nhân viên Hai', amountVnd: 7_000,
+    }, {
+      id: 'A4', businessDate: '2026-08-31', month: '2026-08', employeeId: 'E-02', amountVnd: 99_000, status: 'SUPERSEDED',
+    }]
+    const result = revenueBonusStatistics(rows, { month: '2026-08' })
+
+    expect(result.byDay).toEqual([
+      { key: '2026-09-01', label: '01/09/2026', count: 1, amountVnd: 7_000 },
+      { key: '2026-08-31', label: '31/08/2026', count: 2, amountVnd: 7_000 },
+      { key: '2026-08-30', label: '30/08/2026', count: 1, amountVnd: 3_000 },
+    ])
+    expect(result.byEmployee).toEqual([
+      { key: 'E-02', label: 'Nhân viên Hai', count: 1, amountVnd: 7_000 },
+      { key: 'E-01', label: 'Nhân viên cũ', count: 3, amountVnd: 10_000 },
+    ])
+    expect(result.byMonth).toEqual([
+      { key: '2026-09', label: 'Tháng 09/2026', count: 1, amountVnd: 7_000 },
+      { key: '2026-08', label: 'Tháng 08/2026', count: 3, amountVnd: 10_000 },
+    ])
+    expect(result).toMatchObject({ requestedMonth: '2026-08', monthlyTotalVnd: 10_000 })
+    expect(revenueBonusStatistics(rows, { month: '2026-13' })).toMatchObject({
+      requestedMonth: '', monthlyTotalVnd: 0,
+    })
+  })
+
+  it('excludes case-folded store/date collisions from rows and statistics', () => {
+    const options = {
+      storeId: 'STORE-01',
+      revenueBonusDaily: [{
+        id: 'RBD-COLLISION-UPPER', storeId: 'STORE-01', businessDate: '2026-08-31', status: 'APPROVED',
+        allocations: [{ id: 'RBA-COLLISION-UPPER', employeeId: 'E-01', amountVnd: 3_000 }],
+      }, {
+        id: 'RBD-COLLISION-LOWER', storeId: 'store-01', businessDate: '2026-08-31', status: 'APPROVED',
+        allocations: [{ id: 'RBA-COLLISION-LOWER', employeeId: 'E-01', amountVnd: 5_000 }],
+      }, {
+        id: 'RBD-SAFE', storeId: 'Store-01', businessDate: '2026-08-30', status: 'APPROVED',
+        allocations: [{ id: 'RBA-SAFE', employeeId: 'E-01', amountVnd: 7_000 }],
+      }, {
+        id: 'RBD-VOID-SAME-SCOPE', storeId: 'STORE-01', businessDate: '2026-08-30', status: 'VOID',
+        allocations: [{ id: 'RBA-VOID-SAME-SCOPE', employeeId: 'E-01', amountVnd: 99_000 }],
+      }],
+    }
+
+    const projection = revenueBonusHistoryProjection(options)
+
+    expect(projection).toEqual({
+      rows: [expect.objectContaining({
+        id: 'RBA-SAFE', revenueBonusDailyId: 'RBD-SAFE', businessDate: '2026-08-30', amountVnd: 7_000,
+      })],
+      collisions: [{
+        storeId: 'STORE-01', storeKey: 'store-01', businessDate: '2026-08-31',
+        recordIds: ['RBD-COLLISION-LOWER', 'RBD-COLLISION-UPPER'], recordCount: 2,
+      }],
+      employeeCollisions: [],
+    })
+    expect(revenueBonusHistoryRows(options)).toEqual(projection.rows)
+    expect(revenueBonusStatistics(projection.rows, { month: '2026-08' })).toMatchObject({
+      monthlyTotalVnd: 7_000,
+      byDay: [{ key: '2026-08-30', label: '30/08/2026', count: 1, amountVnd: 7_000 }],
+    })
+  })
+
+  it('keeps case variants for one employee profile and groups them under its canonical id', () => {
+    const projection = revenueBonusHistoryProjection({
+      employees: [{ id: 'E01', code: 'e01', name: 'Nhân viên Một' }],
+      revenueBonusDaily: [{
+        id: 'RBD-ALIASES', storeId: 'STORE-01', businessDate: '2026-08-31', status: 'APPROVED',
+        allocations: [
+          { id: 'RBA-ALIAS-UPPER', employeeId: 'E01', amountVnd: 3_000 },
+          { id: 'RBA-ALIAS-LOWER', employeeId: 'e01', amountVnd: 5_000 },
+        ],
+      }],
+    })
+
+    expect(projection.employeeCollisions).toEqual([])
+    expect(projection.rows).toEqual([
+      expect.objectContaining({ id: 'RBA-ALIAS-UPPER', employeeId: 'E01', amountVnd: 3_000 }),
+      expect.objectContaining({ id: 'RBA-ALIAS-LOWER', employeeId: 'E01', amountVnd: 5_000 }),
+    ])
+    expect(revenueBonusStatistics(projection.rows).byEmployee).toEqual([{
+      key: 'E01', label: 'Nhân viên Một', count: 2, amountVnd: 8_000,
+    }])
+  })
+
+  it('excludes allocations when distinct employee profiles collide after case folding', () => {
+    const projection = revenueBonusHistoryProjection({
+      employees: [
+        { id: 'E01', code: 'EMPLOYEE-UPPER', name: 'Hồ sơ chữ hoa' },
+        { id: 'e01', code: 'EMPLOYEE-LOWER', name: 'Hồ sơ chữ thường' },
+        { id: 'E02', name: 'Hồ sơ an toàn' },
+      ],
+      revenueBonusDaily: [{
+        id: 'RBD-EMPLOYEE-COLLISION', storeId: 'STORE-01', businessDate: '2026-08-31', status: 'APPROVED',
+        allocations: [
+          { id: 'RBA-COLLISION-UPPER', employeeId: 'E01', amountVnd: 3_000 },
+          { id: 'RBA-COLLISION-LOWER', employeeId: 'e01', amountVnd: 5_000 },
+          { id: 'RBA-COLLIDING-PROFILE-ALIAS', employeeId: 'EMPLOYEE-UPPER', amountVnd: 11_000 },
+          { id: 'RBA-SAFE-EMPLOYEE', employeeId: 'E02', amountVnd: 7_000 },
+        ],
+      }],
+    })
+
+    expect(projection.rows).toEqual([
+      expect.objectContaining({ id: 'RBA-SAFE-EMPLOYEE', employeeId: 'E02', amountVnd: 7_000 }),
+    ])
+    expect(projection.employeeCollisions).toEqual([{
+      employeeKey: 'e01', employeeIds: ['E01', 'e01'], recordCount: 2,
+    }])
+    expect(revenueBonusStatistics(projection.rows, { month: '2026-08' })).toMatchObject({
+      monthlyTotalVnd: 7_000,
+      byEmployee: [{ key: 'E02', label: 'Hồ sơ an toàn', count: 1, amountVnd: 7_000 }],
+    })
   })
 })
 
