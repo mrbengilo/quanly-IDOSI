@@ -901,16 +901,21 @@ export function StorePayrollV2() {
     if (!isRelevant(item)) return false
     const reference = referenceOf(item)
     const match = operationalIdentifierRecordMatch(employees, reference, employeeIdentifierValues)
+    const explicitlyScopedToStore = Boolean(compactIdentifier(item.storeId)) && storeReferenceMatches(item.storeId)
     if (!reference || match.ambiguous || !match.record) {
-      payrollPreviewError ||= Object.assign(new Error('PAYROLL_SOURCE_EMPLOYEE_IDENTIFIER_INVALID'), {
-        code: match.ambiguous ? 'EMPLOYEE_IDENTIFIER_COLLISION' : 'PAYROLL_SOURCE_EMPLOYEE_NOT_FOUND',
-      })
+      if (explicitlyScopedToStore) {
+        payrollPreviewError ||= Object.assign(new Error('PAYROLL_SOURCE_EMPLOYEE_IDENTIFIER_INVALID'), {
+          code: match.ambiguous ? 'EMPLOYEE_IDENTIFIER_COLLISION' : 'PAYROLL_SOURCE_EMPLOYEE_NOT_FOUND',
+        })
+      }
       return false
     }
     if (!immutableSnapshotRows && !liveParticipants.includes(match.record)) {
-      payrollPreviewError ||= Object.assign(new Error('PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE'), {
-        code: 'PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE',
-      })
+      if (explicitlyScopedToStore) {
+        payrollPreviewError ||= Object.assign(new Error('PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE'), {
+          code: 'PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE',
+        })
+      }
       return false
     }
     return match.record === employee
