@@ -486,9 +486,21 @@ for (const [collectionKey, records] of payrollSources) {
 // Reproduce the fail-closed preflight used by StorePayrollV2 for the reported
 // production scope. Output contains only aggregate error codes, never employee
 // identities, record payloads, notes, or monetary values.
-const previewStoreId = 'SM-TNV'
+const previewStoreReference = 'SM TNV'
 const previewPeriod = '2026-08'
-const previewStores = stores.filter((record) => folded(record.id) === folded(previewStoreId))
+const previewStoreIdentifiers = (record = {}) => [
+  record.id,
+  record.code,
+  record.short,
+  record.employeePrefix,
+  record.name,
+].map((value) => String(value || '').trim()).filter(Boolean)
+const previewStoreReferenceFolded = folded(previewStoreReference)
+const previewStoreReferenceText = normalizedText(previewStoreReference)
+const previewStores = stores.filter((record) => previewStoreIdentifiers(record).some((identifier) => (
+  folded(identifier) === previewStoreReferenceFolded
+  || normalizedText(identifier) === previewStoreReferenceText
+)))
 const previewStore = previewStores.length === 1 ? previewStores[0] : null
 const previewStoreMatches = (reference) => Boolean(previewStore)
   && folded(reference) === folded(previewStore.id)
@@ -617,7 +629,9 @@ for (const employee of previewParticipants) {
   }
 }
 console.log(`payroll_preview_probe=${JSON.stringify({
-  storeId: previewStoreId,
+  storeReference: previewStoreReference,
+  resolvedStoreId: previewStore?.id || '',
+  resolvedStoreCode: previewStore?.code || previewStore?.short || '',
   period: previewPeriod,
   primaryBlocker: previewPrimaryBlocker || 'none',
   storeMatches: previewStores.length,
