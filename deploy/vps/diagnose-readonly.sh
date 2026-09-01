@@ -188,5 +188,122 @@ for pattern in error tls handshake timeout refused reset unreachable certificate
   printf 'caddy_log_%s_count=%s\n' "$pattern" "$(grep -Eic "$pattern" <<<"$caddy_logs" || true)"
 done
 
+section 'payroll_collision_summary'
+compose exec -T app node <<'NODE'
+import { DatabaseSync } from 'node:sqlite'
+
+const database = new DatabaseSync(process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite', {
+  readOnly: true,
+})
+const collection = (key) => database.prepare(`
+  SELECT value_json
+  FROM state_entities
+  WHERE scope_key = 'global' AND collection_key = ?
+  ORDER BY entity_order, entity_key
+`).all(key).map((row) => JSON.parse(row.value_json))
+const folded = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
+const active = (record) => record && !record.deletedAt
+const identifiers = (record = {}) => [
+  record.id,
+  record.code,
+  record.employeeId,
+  record.employeeCode,
+].map((value) => String(value ?? '').trim()).filter(Boolean)
+const collisionSummary = (records, keysOf) => {
+  const ownersByKey = new Map()
+  records.forEach((record, index) => {
+    const keys = new Set(keysOf(record).map(folded).filter(Boolean))
+    for (const key of keys) {
+      if (!ownersByKey.has(key)) ownersByKey.set(key, new Set())
+      ownersByKey.get(key).add(index)
+    }
+  })
+  const groups = [...ownersByKey.values()].filter((owners) => owners.size > 1)
+  return { groups: groups.length, records: new Set(groups.flatMap((owners) => [...owners])).size }
+}
+const scopedCollisionSummary = (records, scopeOf, keysOf) => collisionSummary(
+  records,
+  (record) => keysOf(record).map((key) => `${folded(scopeOf(record))}\u0000${folded(key)}`),
+)
+const uniqueMatch = (records, reference) => {
+  const requested = String(reference ?? '').trim()
+  if (!requested) return { record: null, ambiguous: false }
+  const matches = records.filter((record) => identifiers(record).some((value) => folded(value) === folded(requested)))
+  const exact = matches.filter((record) => identifiers(record).includes(requested))
+  if (exact.length === 1) return { record: exact[0], ambiguous: false }
+  if (exact.length > 1 || matches.length > 1) return { record: null, ambiguous: true }
+  return { record: matches[0] || null, ambiguous: false }
+}
+
+const stores = collection('stores').filter(active)
+const employees = collection('employees').filter(active)
+const attendance = collection('attendance').filter(active)
+const payrollPeriods = collection('payrollPeriods').filter((record) => record && !record.supersededAt)
+const salaryConfigs = collection('storeEmployeeSalaryConfigs')
+  .filter((record) => active(record) && record.active !== false && record.isActive !== false)
+
+const storeCollisions = collisionSummary(stores, (store) => [store.id])
+const employeeCollisions = scopedCollisionSummary(
+  employees,
+  (employee) => employee.storeId,
+  identifiers,
+)
+const payrollPeriodCollisions = collisionSummary(
+  payrollPeriods,
+  (record) => [`${folded(record.storeId)}\u0000${String(record.period || '').trim()}`],
+)
+const salaryConfigCollisions = collisionSummary(
+  salaryConfigs,
+  (record) => [
+    `${folded(record.storeId)}\u0000${folded(record.employeeId)}\u0000${String(record.effectiveFrom || '').trim()}`,
+  ],
+)
+const payrollRowCollisions = payrollPeriods.reduce((summary, period) => {
+  const rows = Array.isArray(period.rows) ? period.rows : []
+  const collisions = collisionSummary(rows, (row) => [row.employeeId, row.employeeCode])
+  summary.groups += collisions.groups
+  summary.records += collisions.records
+  return summary
+}, { groups: 0, records: 0 })
+
+let attendanceMissingEmployee = 0
+let attendanceAmbiguousEmployee = 0
+let attendanceEmployeeOutOfStore = 0
+const attendanceAffectedStores = new Set()
+for (const record of attendance) {
+  const reference = record.employeeId || record.employeeCode
+  const match = uniqueMatch(employees, reference)
+  if (match.ambiguous) attendanceAmbiguousEmployee += 1
+  else if (!match.record) attendanceMissingEmployee += 1
+  else if (folded(match.record.storeId) !== folded(record.storeId)) attendanceEmployeeOutOfStore += 1
+  else continue
+  attendanceAffectedStores.add(folded(record.storeId))
+}
+
+const summary = {
+  stores: stores.length,
+  employees: employees.length,
+  attendance: attendance.length,
+  payroll_periods: payrollPeriods.length,
+  salary_configs: salaryConfigs.length,
+  store_identifier_collision_groups: storeCollisions.groups,
+  store_identifier_collision_records: storeCollisions.records,
+  employee_identifier_collision_groups: employeeCollisions.groups,
+  employee_identifier_collision_records: employeeCollisions.records,
+  payroll_period_collision_groups: payrollPeriodCollisions.groups,
+  payroll_period_collision_records: payrollPeriodCollisions.records,
+  salary_config_collision_groups: salaryConfigCollisions.groups,
+  salary_config_collision_records: salaryConfigCollisions.records,
+  payroll_row_collision_groups: payrollRowCollisions.groups,
+  payroll_row_collision_records: payrollRowCollisions.records,
+  attendance_missing_employee: attendanceMissingEmployee,
+  attendance_ambiguous_employee: attendanceAmbiguousEmployee,
+  attendance_employee_out_of_store: attendanceEmployeeOutOfStore,
+  attendance_affected_store_count: attendanceAffectedStores.size,
+}
+for (const [key, value] of Object.entries(summary)) console.log(`${key}=${value}`)
+database.close()
+NODE
+
 section 'diagnostic_complete'
 printf 'mutations=none rollback=not_run deploy=not_run\n'
