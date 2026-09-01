@@ -14640,6 +14640,217 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 60_000)
 
+  it('charges a support-transfer work reward only to the destination payroll and keeps retries immutable', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-31T16:00:00.000Z'))
+      const transfer = {
+        id: 'TR-WORK-REWARD-CROSS-MONTH', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        startAt: '2026-08-31T15:00:00.000Z', endAt: '2026-08-31T19:00:00.000Z',
+        fromDate: '2026-08-31', toDate: '2026-09-01', hourlySupportRate: 30_000, allowance: 0,
+        status: 'Đã duyệt', createdAt: '2026-08-25T00:00:00.000Z',
+      }
+      const attendanceId = 'ATT-SUPPORT-WORK-REWARD'
+      const catalogItemId = 'CAT-SUPPORT-WORK-REWARD'
+      const attendance = [{
+        id: attendanceId,
+        employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', unit: 'store',
+        storeId: 's02', homeStoreId: 's01', supportTransferId: transfer.id.toLowerCase(),
+        supportTransferSnapshot: {
+          id: transfer.id.toLowerCase(), fromStoreId: 's01', toStoreId: 's02',
+          startAt: transfer.startAt, endAt: transfer.endAt,
+        },
+        date: '2026-08-31', workDate: '2026-08-31', attendanceDate: '2026-08-31',
+        shiftId: 'SUPPORT_TRANSFER_TR_WORK_REWARD', shift: 'SUPPORT_TRANSFER_TR_WORK_REWARD',
+        shiftName: 'Ca hỗ trợ cửa hàng', shiftStart: '22:00', shiftEnd: '02:00',
+        shiftVersion: 1, shiftSource: 'support-transfer', employmentTypeSnapshot: 'Part-Time',
+        checkIn: '23:00', checkInAt: '2026-08-31T16:00:00.000Z', checkOut: null, checkOutAt: null,
+        checklistSnapshot: {
+          source: 'work-catalog', targetGroup: 'store', shiftId: 'SUPPORT_TRANSFER_TR_WORK_REWARD',
+          tasks: [{
+            catalogItemId, catalogCode: 'store.reward.support_exact', catalogVersion: 3,
+            kind: 'REWARD_TASK', targetGroup: 'store', name: 'Hoàn thành công việc tại cửa hàng hỗ trợ',
+            amountVnd: 7_000, effectiveDate: '2026-08-31', required: false,
+          }],
+        },
+        deletedAt: null,
+      }]
+      const { env, adminAuthorization, employeeAuthorization, managerAuthorization } = await setupSupportTransferRuntime({
+        token: 'bootstrap-support-work-reward-scope', transfer, attendance,
+      })
+      replaceStateCollection(env.DB.database, 'compensationEntries', [{
+        id: 'COMP-LEGACY-HOME-WORK', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+        type: 'WORK', targetUnit: 'store', amountVnd: 1_000, effectiveDate: '2026-08-15',
+        period: '2026-08', status: 'APPROVED', sourceType: 'legacy-work-reward', deletedAt: null,
+      }])
+
+      const command = {
+        type: 'work_reward.set', expectedVersion: 1,
+        payload: { attendanceId: attendanceId.toLowerCase(), catalogItemId: catalogItemId.toLowerCase(), checked: true },
+      }
+      const claimed = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, {
+        ...employeeAuthorization, 'idempotency-key': 'support-work-reward-claim-0001',
+      }), env)
+      expect(claimed.status).toBe(201)
+      const claimedBody = await claimed.json()
+      expect(claimedBody).toMatchObject({
+        version: 2,
+        reward: {
+          employeeId: 'E01', storeId: 'S02', supportTransferId: transfer.id,
+          homeStoreId: 'S01', supportStoreId: 'S02', attendanceId, amountVnd: 7_000,
+        },
+        entry: {
+          employeeId: 'E01', storeId: 'S02', supportTransferId: transfer.id,
+          homeStoreId: 'S01', supportStoreId: 'S02', attendanceId, amountVnd: 7_000,
+          type: 'WORK', status: 'APPROVED',
+        },
+      })
+
+      const protocolReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, {
+        ...employeeAuthorization, 'idempotency-key': 'support-work-reward-claim-0001',
+      }), env)
+      expect(protocolReplay.status).toBe(201)
+      expect(protocolReplay.headers.get('idempotency-replayed')).toBe('true')
+      expect(await protocolReplay.json()).toEqual(claimedBody)
+
+      const logicalReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        ...command, expectedVersion: 2,
+      }, {
+        ...employeeAuthorization, 'idempotency-key': 'support-work-reward-logical-replay-0001',
+      }), env)
+      expect(logicalReplay.status).toBe(200)
+      expect(await logicalReplay.json()).toMatchObject({ version: 2, existing: true })
+      expect(readHydratedState(env.DB.database).compensationEntries).toHaveLength(2)
+
+      const destinationManagerState = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: managerAuthorization,
+      }), env)
+      expect(destinationManagerState.status).toBe(200)
+      expect((await destinationManagerState.json()).state.compensationTeamTotals).toEqual([
+        expect.objectContaining({ period: '2026-08', workVnd: 7_000 }),
+      ])
+
+      const claimedState = readHydratedState(env.DB.database)
+      const destinationNonWorkEntries = [{
+        id: 'COMP-SUPPORT-MANUAL-NOT-WORK', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+        type: 'MANUAL', targetUnit: 'store', storeId: 'S02', supportStoreId: 'S02',
+        homeStoreId: 'S01', supportTransferId: transfer.id, amountVnd: 11_000,
+        effectiveDate: '2026-08-31', period: '2026-08', status: 'APPROVED', deletedAt: null,
+      }, {
+        id: 'COMP-SUPPORT-ORPHAN-WORK', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+        type: 'WORK', targetUnit: 'store', storeId: 'S02', amountVnd: 13_000,
+        effectiveDate: '2026-08-31', period: '2026-08', status: 'APPROVED', deletedAt: null,
+      }]
+      const destinationCompensationEntries = [
+        ...claimedState.compensationEntries,
+        ...destinationNonWorkEntries,
+      ]
+      replaceStateCollection(env.DB.database, 'compensationEntries', destinationCompensationEntries)
+      replaceStateCollection(env.DB.database, 'attendance', claimedState.attendance.map((record) => (
+        record.id === attendanceId
+          ? {
+              ...record, checkOut: '02:00', checkOutAt: transfer.endAt,
+              workedSeconds: 10_800, workedMinutes: 180, hours: 3,
+            }
+          : record
+      )))
+      replaceStateCollection(env.DB.database, 'supportTransfers', claimedState.supportTransfers.map((record) => (
+        record.id === transfer.id
+          ? { ...record, status: 'Hoàn tất', completedAt: transfer.endAt }
+          : record
+      )))
+      replaceStateCollection(env.DB.database, 'expenseEntries', [{
+        id: 'EXP-SUPPORT-WORK-REWARD-ATTENDANCE', storeId: 'S02', employeeId: 'E01',
+        sourceType: 'support-attendance-compensation', sourceId: attendanceId,
+        amount: 90_000, recognized: true, occurredAt: transfer.endAt, deletedAt: null,
+      }])
+
+      replaceStateCollection(env.DB.database, 'compensationEntries', [
+        ...destinationCompensationEntries,
+        {
+          id: 'COMP-SUPPORT-CONFLICT', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+          type: 'WORK', targetUnit: 'store', storeId: 'S01', supportStoreId: 'S02',
+          homeStoreId: 'S01', supportTransferId: transfer.id, amountVnd: 17_000,
+          effectiveDate: '2026-08-31', period: '2026-08', status: 'APPROVED', deletedAt: null,
+        },
+      ])
+      const conflictedPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 2, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-work-reward-conflicted-payroll-0001' }), env)
+      expect(conflictedPayroll.status).toBe(409)
+      expect(await conflictedPayroll.json()).toMatchObject({ error: { code: 'COMPENSATION_STORE_SCOPE_MISMATCH' } })
+      replaceStateCollection(env.DB.database, 'compensationEntries', destinationCompensationEntries)
+
+      const destinationPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 2, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-work-reward-destination-payroll-0001' }), env)
+      expect(destinationPayroll.status).toBe(201)
+      const destinationPayrollBody = await destinationPayroll.json()
+      const destinationRow = destinationPayrollBody.period.rows
+        .find(({ employeeId }) => employeeId === 'E01')
+      expect(destinationRow).toMatchObject({
+        employeeId: 'E01', hours: 3, baseSalary: 90_000,
+        workBonusVnd: 7_000, supportWorkBonusVnd: 7_000,
+        bonusVnd: 7_000, gross: 97_000, supportActualPay: 90_000,
+        supportTransferIds: [transfer.id],
+      })
+      expect(destinationPayrollBody).toMatchObject({
+        period: {
+          financeSnapshot: {
+            employeePayrollExpense: 97_000,
+            recognizedSupportExpense: 90_000,
+            employeeNetPayrollExpense: 7_000,
+            earnedPayrollExpense: 97_000,
+            netPayrollExpense: 7_000,
+            expense: 97_000,
+          },
+        },
+        payrollAccrual: {
+          amount: 7_000,
+          grossPayrollExpense: 97_000,
+          supportCompensationAccrued: 90_000,
+          recognized: true,
+        },
+      })
+
+      const paidDestination = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.pay', expectedVersion: 3, payload: { storeId: 'S02', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-work-reward-destination-pay-0001' }), env)
+      expect(paidDestination.status).toBe(200)
+      expect(await paidDestination.json()).toMatchObject({
+        version: 4,
+        payments: [{ employeeId: 'E01', amount: 97_000, accruedExpenseAmount: 90_000 }],
+      })
+      const paidState = readHydratedState(env.DB.database)
+      expect(paidState.expenseEntries.filter(({ sourceType }) => (
+        sourceType === 'support-attendance-compensation'
+      ))).toHaveLength(1)
+      expect(paidState.expenseEntries.find(({ sourceType }) => sourceType === 'payroll-payment')).toMatchObject({
+        employeeId: 'E01', amount: 97_000, recognized: false,
+        supportExpectedAmount: 90_000, accruedAmount: 90_000,
+      })
+
+      const homePayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 4, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-work-reward-home-payroll-0001' }), env)
+      expect(homePayroll.status).toBe(201)
+      const homeRow = (await homePayroll.json()).period.rows.find(({ employeeId }) => employeeId === 'E01')
+      expect(homeRow).toMatchObject({
+        employeeId: 'E01', hours: 0, baseSalary: 0,
+        workBonusVnd: 1_000, bonusVnd: 1_000, gross: 1_000,
+      })
+      expect(homeRow).not.toHaveProperty('supportWorkBonusVnd')
+
+      const septemberDestinationPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-09' },
+      }, { ...adminAuthorization, 'idempotency-key': 'support-work-reward-september-payroll-0001' }), env)
+      expect(septemberDestinationPayroll.status).toBe(201)
+      expect((await septemberDestinationPayroll.json()).period.rows.some(({ employeeId }) => employeeId === 'E01')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
   it('records a self-service work reward once and rejects unchecking or reticking it', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-self-work-reward' }
     const attendanceId = 'ATT-OFFICE-REWARD-01'
