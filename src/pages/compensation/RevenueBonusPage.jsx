@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Calculator, CheckCircle2, CircleDollarSign, Clock3, Store, WalletCards, XCircle } from 'lucide-react'
 import { useApp } from '../../state/AppContext'
 import {
@@ -13,7 +13,7 @@ import {
   Select,
   TableWrap,
 } from '../../components/UI'
-import { businessDate as toBusinessDate, money } from '../../utils'
+import { businessDate as toBusinessDate, money, operationalIdentifierRecordMatch } from '../../utils'
 import {
   canonicalRole,
   entityId,
@@ -22,6 +22,7 @@ import {
   revenueAllocations,
   revenueRecordDate,
   revenueRecordTotal,
+  sameOperationalIdentifier,
   statusLabel,
   statusTone,
   storesVisibleToRole,
@@ -33,7 +34,10 @@ import {
   selectRevenueBonusTier,
 } from '../../domain/compensationPolicies'
 import { allocateByLargestRemainder } from '../../domain/compensationAllocation'
+import { revenueBonusEligibility } from '../../domain/revenueBonusEligibility'
+import { classifyStorePayrollPolicy, STORE_PAYROLL_POLICY } from '../../domain/storeTieredPayroll'
 import { apiGetRevenueBonusLive } from '../../services/idosiApi'
+import { revenueBonusHistoryProjection, revenueBonusStatistics } from './compensationStatistics'
 import {
   AccessDenied,
   ActionError,
@@ -71,10 +75,42 @@ const liveWorkedSeconds = (record, nowMs, projectOpen = true) => {
 
 const liveWorkedHours = (record, nowMs, projectOpen = true) => liveWorkedSeconds(record, nowMs, projectOpen) / 3_600
 
+const employeeIdentifiers = (employee = {}) => [employee.id, employee.code, employee.employeeId].filter(Boolean)
+const identifierKey = (value) => String(value || '').trim().toLocaleLowerCase('en-US')
+
+const resolvedEntityId = (records, reference, identifiers = (record) => [entityId(record)]) => (
+  entityId(operationalIdentifierRecordMatch(records, reference, identifiers).record)
+)
+
+const effectiveDailyRecord = (record = {}) => !record.deletedAt
+  && !record.voidedAt
+  && !record.supersededAt
+  && !['VOID', 'VOIDED', 'SUPERSEDED', 'CANCELLED'].includes(String(record.status || '').trim().toUpperCase())
+
+const employeeResolver = (employees = []) => {
+  const exact = new Map()
+  const folded = new Map()
+  for (const employee of employees) {
+    for (const identifier of new Set(employeeIdentifiers(employee).map((value) => String(value).trim()).filter(Boolean))) {
+      exact.set(identifier, [...(exact.get(identifier) || []), employee])
+      const foldedKey = identifier.toLocaleLowerCase('en-US')
+      folded.set(foldedKey, [...(folded.get(foldedKey) || []), employee])
+    }
+  }
+  return (reference) => {
+    const requested = String(reference || '').trim()
+    if (!requested) return null
+    const exactMatches = exact.get(requested) || []
+    if (exactMatches.length) return exactMatches.length === 1 ? exactMatches[0] : null
+    const matches = folded.get(requested.toLocaleLowerCase('en-US')) || []
+    return matches.length === 1 ? matches[0] : null
+  }
+}
+
 const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, nowMs }) => {
   if (!Array.isArray(app.orders) || !Array.isArray(app.attendance)) return null
   const orders = app.orders.filter((order) => (
-    String(order.storeId || '') === storeId
+    sameOperationalIdentifier(order.storeId, storeId)
     && recordBusinessDate(order) === selectedDate
     && !order.deletedAt
     && String(order.status || '') !== 'Đã xóa'
@@ -84,20 +120,23 @@ const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, nowMs }
   const revenueVnd = orders.reduce((sum, order) => sum + Number(order.amount), 0)
   if (!Number.isSafeInteger(revenueVnd)) return null
   const percentage = calculateRevenueBonus({ programId, revenueVnd })
-  const employeeById = new Map((Array.isArray(app.employees) ? app.employees : []).flatMap((employee) => (
-    [employee.id, employee.code, employee.employeeId].filter(Boolean).map((id) => [String(id), employee])
-  )))
+  const employeeRecords = Array.isArray(app.employees) ? app.employees : []
+  const resolveEmployee = employeeResolver(employeeRecords)
+  const employeeById = new Map()
   const weightByEmployee = new Map()
   let attendanceCount = 0
   let openAttendanceCount = 0
   const activeEmployeeIds = new Set()
   const projectOpenAttendance = selectedDate === vietnamToday()
   app.attendance.forEach((attendance) => {
-    const employeeId = String(attendance.employeeId || '')
-    if (!employeeId || (employeeById.size && !employeeById.has(employeeId))
-      || String(attendance.storeId || '') !== storeId
+    if (!sameOperationalIdentifier(attendance.storeId, storeId)
       || recordBusinessDate(attendance) !== selectedDate
       || attendance.deletedAt) return
+    const employee = resolveEmployee(attendance.employeeId)
+    const employeeId = entityId(employee) || String(attendance.employeeId || '').trim()
+    if (!employeeId || (employeeRecords.length && !employee)
+    ) return
+    employeeById.set(employeeId, employee)
     attendanceCount += 1
     if (!attendance.checkOutAt && !attendance.checkOut) {
       openAttendanceCount += 1
@@ -124,6 +163,14 @@ const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, nowMs }
     openAttendanceCount,
     activeEmployeeCount: activeEmployeeIds.size,
     participantCount: participants.length,
+    calculationEligibility: revenueBonusEligibility({
+      storeId,
+      businessDate: selectedDate,
+      schedule: Array.isArray(app.schedule) ? app.schedule : [],
+      shiftDefinitions: Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : [],
+      attendance: app.attendance,
+      dailyRecords: Array.isArray(app.revenueBonusDaily) ? app.revenueBonusDaily : (app.revenueBonuses || []),
+    }),
     allocations: allocation.allocations.map((row) => ({
       employeeId: row.id,
       employeeName: employeeById.get(row.id)?.name || row.id,
@@ -150,42 +197,158 @@ const revenueTierLabel = (tier) => {
   return `${minimum} ${tier.minimumRevenueVnd.toLocaleString('vi-VN')} – ${maximum} ${tier.maximumRevenueVnd.toLocaleString('vi-VN')} đ`
 }
 
-export function RevenueBonusPage() {
+const displayMonth = (month) => {
+  const match = String(month || '').match(/^(\d{4})-(\d{2})$/u)
+  return match ? `Tháng ${match[2]}/${match[1]}` : 'Tháng chưa xác định'
+}
+
+function RevenueStatisticsTable({ title, rows, firstColumn = 'Thời gian' }) {
+  return <div>
+    <h3>{title}</h3>
+    <TableWrap className="compensation-table">
+      <thead><tr><th>{firstColumn}</th><th>Số lần</th><th>Tổng thưởng</th></tr></thead>
+      <tbody>{rows.map((row) => <tr key={row.key}>
+        <td><strong>{row.label}</strong></td>
+        <td>{row.count}</td>
+        <td><strong>{money(row.amountVnd)}</strong></td>
+      </tr>)}{!rows.length && <tr><td colSpan="3" className="compensation-empty">Chưa có dữ liệu.</td></tr>}</tbody>
+    </TableWrap>
+  </div>
+}
+
+const RevenueHistorySections = memo(function RevenueHistorySections({
+  currentEmployeeName,
+  collisions,
+  employeeCollisions,
+  employeeOptions,
+  filteredRows,
+  filteredTotal,
+  historyDate,
+  historyEmployeeId,
+  historyMonth,
+  privateView,
+  rows,
+  setHistoryDate,
+  setHistoryEmployeeId,
+  setHistoryMonth,
+  statistics,
+  stores,
+}) {
+  return <>
+    <Card title="Lịch sử ghi nhận thưởng doanh thu" action={<Badge tone="blue">Tổng thưởng: {money(filteredTotal)}</Badge>}>
+      {(collisions.length > 0 || employeeCollisions.length > 0) && <InfoNote tone="red">
+        Dữ liệu có {collisions.length} ngày trùng kết quả và {employeeCollisions.length} nhóm mã nhân viên mơ hồ. Hệ thống đã loại các dòng này khỏi lịch sử và thống kê để không cộng nhầm tiền; Admin cần xử lý dữ liệu.
+      </InfoNote>}
+      <div className="compensation-form-grid reward-history-filters">
+        <Field label="Ngày ghi nhận">
+          <Input aria-label="Ngày ghi nhận thưởng doanh thu" type="date" value={historyDate} onChange={(event) => {
+            const date = event.target.value
+            setHistoryDate(date)
+            if (date) setHistoryMonth(date.slice(0, 7))
+          }} />
+        </Field>
+        <Field label="Tháng ghi nhận">
+          <Input aria-label="Tháng ghi nhận thưởng doanh thu" type="month" value={historyMonth} onChange={(event) => {
+            const month = event.target.value
+            setHistoryMonth(month)
+            if (historyDate && !historyDate.startsWith(month)) setHistoryDate('')
+          }} />
+        </Field>
+        {!privateView ? <Field label="Nhân viên">
+          <Select aria-label="Nhân viên nhận thưởng doanh thu" value={historyEmployeeId} onChange={(event) => setHistoryEmployeeId(event.target.value)}>
+            <option value="">Tất cả nhân viên</option>
+            {employeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}
+          </Select>
+        </Field> : <div className="compensation-fixed-scope" role="group" aria-label="Nhân viên hiện tại"><span>Nhân viên</span><strong>{currentEmployeeName}</strong></div>}
+      </div>
+      <TableWrap className="compensation-table">
+        <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Cửa hàng</th><th>Thời gian làm thực tế</th><th>Tỷ trọng</th><th>Tiền thưởng</th><th>Trạng thái</th></tr></thead>
+        <tbody>{filteredRows.map((row) => <tr key={row.id}>
+          <td>{displayDate(row.businessDate)}</td>
+          <td><strong>{row.employeeName}</strong><small className="compensation-subline">{row.employeeId}</small></td>
+          <td>{storeName(stores, row.storeId, row.storeName)}</td>
+          <td>{Number(row.approvedSalesHours || 0).toFixed(2)} giờ</td>
+          <td>{row.weightPercent == null ? '—' : `${Number(row.weightPercent).toFixed(2)}%`}</td>
+          <td><strong>{money(row.amountVnd)}</strong></td>
+          <td><Badge tone={statusTone(row)}>{statusLabel(row)}</Badge></td>
+        </tr>)}{!filteredRows.length && <tr><td colSpan="7" className="compensation-empty">Không có lịch sử phù hợp bộ lọc.</td></tr>}</tbody>
+      </TableWrap>
+    </Card>
+    <Card title="Thống kê thưởng doanh thu" action={<Badge tone="green">{rows.length} lượt ghi nhận</Badge>}>
+      <div className="compensation-summary-strip">
+        <span>Tổng thưởng doanh thu {displayMonth(statistics.requestedMonth).toLocaleLowerCase('vi-VN')}</span>
+        <strong>{money(statistics.monthlyTotalVnd)}</strong>
+      </div>
+      <div className="compensation-statistics-grid">
+        <RevenueStatisticsTable title="Theo ngày" rows={statistics.byDay} />
+        <RevenueStatisticsTable title="Theo nhân viên" rows={statistics.byEmployee} firstColumn="Nhân viên" />
+        <RevenueStatisticsTable title="Theo tháng" rows={statistics.byMonth} />
+      </div>
+    </Card>
+  </>
+})
+
+export function RevenueBonusPage({ storeScoped = false }) {
   const app = useApp()
   const role = canonicalRole(app.session?.role)
-  const currentEmployeeId = entityId(app.currentEmployee) || String(app.session?.employeeId || '')
+  const currentEmployeeId = String(entityId(app.currentEmployee) || app.session?.employeeId || '')
   const currentStoreId = String(app.session?.storeId || app.currentEmployee?.storeId || '')
   const privileged = ['admin', 'business_support'].includes(role)
   const storeManager = role === 'store_manager'
   const employeeView = ['employee', 'office'].includes(role)
-  const privateAllocationView = storeManager || employeeView
+  const privateAllocationView = employeeView
   const allowed = privileged || storeManager || employeeView
   const stores = useMemo(() => storesVisibleToRole(
     app.stores,
     privileged ? app.session : { ...app.session, storeId: currentStoreId },
   ), [app.stores, app.session, privileged, currentStoreId])
   const [storeSelection, setStoreSelection] = useState('')
-  const [nowMs, setNowMs] = useState(() => Date.now())
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000)
-    return () => window.clearInterval(timer)
-  }, [])
-  const activeOperationalStoreId = privileged && stores.some((store) => entityId(store) === String(app.activeStoreId || ''))
-    ? String(app.activeStoreId)
-    : ''
-  const selectedStoreId = storeSelection || activeOperationalStoreId || entityId(stores[0]) || currentStoreId
   const [businessDate, setBusinessDate] = useState(vietnamToday)
+  const [historyDate, setHistoryDate] = useState('')
+  const [historyMonth, setHistoryMonth] = useState(() => vietnamToday().slice(0, 7))
+  const [historyEmployeeId, setHistoryEmployeeId] = useState('')
+  const [submittedCalculationScope, setSubmittedCalculationScope] = useState('')
+  const submittedCalculationRef = useRef('')
   const [remoteLiveSnapshot, setRemoteLiveSnapshot] = useState(null)
+  const [remotePollError, setRemotePollError] = useState(null)
+  const [remoteLastSuccess, setRemoteLastSuccess] = useState(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  const serverBacked = ['connected', 'syncing'].includes(app.apiStatus)
+  const activeOperationalStoreId = resolvedEntityId(stores, app.activeStoreId)
+  const selectedGlobalStoreId = resolvedEntityId(stores, storeSelection)
+    || activeOperationalStoreId
+    || entityId(stores[0])
+  const scopedStoreReference = privileged
+    ? String(app.activeStoreId || '')
+    : String(currentStoreId || app.activeStoreId || '')
+  const selectedScopedStoreId = resolvedEntityId(stores, scopedStoreReference)
+  const selectedStoreId = String((storeScoped ? selectedScopedStoreId : selectedGlobalStoreId) || '')
+  const shouldTickLocalClock = !serverBacked
+    && businessDate === vietnamToday()
+    && (app.attendance || []).some((attendance) => (
+      !attendance.deletedAt
+      && sameOperationalIdentifier(entryStoreId(attendance), selectedStoreId)
+      && recordBusinessDate(attendance) === businessDate
+      && !attendance.checkOutAt
+      && !attendance.checkOut
+    ))
+  useEffect(() => {
+    if (!shouldTickLocalClock) return undefined
+    const timer = window.setInterval(() => setNowMs(Date.now()), 5_000)
+    return () => window.clearInterval(timer)
+  }, [shouldTickLocalClock])
   const { busyKey, error, run } = useCompensationAction(app)
-  const records = (app.revenueBonuses || [])
-    .filter((record) => entryStoreId(record) === selectedStoreId && revenueRecordDate(record) === businessDate)
-    .filter((record) => !record.supersededAt && !record.voidedAt)
+  const scopedRecords = (app.revenueBonuses || [])
+    .filter((record) => sameOperationalIdentifier(entryStoreId(record), selectedStoreId) && revenueRecordDate(record) === businessDate)
+    .filter(effectiveDailyRecord)
+  const selectedDayCollision = scopedRecords.length > 1
+  const records = selectedDayCollision ? [] : scopedRecords
   const milestoneClaims = (app.teamRewardClaims || [])
-    .filter((claim) => entryStoreId(claim) === selectedStoreId && revenueRecordDate(claim) === businessDate)
+    .filter((claim) => sameOperationalIdentifier(entryStoreId(claim), selectedStoreId) && revenueRecordDate(claim) === businessDate)
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
   const savedAllocations = revenueAllocations(records)
-    .filter((allocation) => entryStoreId(allocation) === selectedStoreId && revenueRecordDate(allocation) === businessDate)
-    .filter((allocation) => !privateAllocationView || entryEmployeeId(allocation) === currentEmployeeId)
+    .filter((allocation) => sameOperationalIdentifier(entryStoreId(allocation), selectedStoreId) && revenueRecordDate(allocation) === businessDate)
+    .filter((allocation) => !privateAllocationView || sameOperationalIdentifier(entryEmployeeId(allocation), currentEmployeeId))
   const savedPoolTotal = records.reduce((sum, record) => sum + revenueRecordTotal(record), 0)
   const savedRevenueTotal = records.reduce((sum, record) => sum + recordRevenue(record), 0)
   const savedAllocationTotal = savedAllocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
@@ -194,46 +357,100 @@ export function RevenueBonusPage() {
   const savedMilestoneAllocationByEmployee = new Map()
   for (const allocation of revenueAllocations(records)) {
     const employeeId = entryEmployeeId(allocation)
+    const employeeKey = identifierKey(employeeId)
     const milestoneAmount = Math.max(0, Number(allocation?.milestonePoolVnd || 0))
-    if (employeeId && milestoneAmount > 0) {
-      savedMilestoneAllocationByEmployee.set(employeeId, (savedMilestoneAllocationByEmployee.get(employeeId) || 0) + milestoneAmount)
+    if (employeeKey && milestoneAmount > 0) {
+      savedMilestoneAllocationByEmployee.set(employeeKey, (savedMilestoneAllocationByEmployee.get(employeeKey) || 0) + milestoneAmount)
     }
   }
   const savedMilestoneAllocatedTotal = [...savedMilestoneAllocationByEmployee.values()].reduce((sum, amount) => sum + amount, 0)
   const savedMilestoneUnallocatedTotal = Math.max(0, savedMilestonePoolTotal - savedMilestoneAllocatedTotal)
-  const selectedStore = stores.find((store) => entityId(store) === selectedStoreId) || null
-  const selectedStoreIdentity = [selectedStore?.name, selectedStore?.short, selectedStore?.code]
-    .filter(Boolean)
-    .join(' ')
-    .toLocaleLowerCase('vi-VN')
-  const isSmStore = selectedStoreIdentity.includes('secondmall') || /(^|\s)sm($|\s)/u.test(selectedStoreIdentity)
-  const revenueProgram = isSmStore
+  const selectedStore = operationalIdentifierRecordMatch(stores, selectedStoreId, (store) => [entityId(store)]).record
+  const historyProjection = useMemo(() => revenueBonusHistoryProjection({
+      revenueBonusDaily: Array.isArray(app.revenueBonusDaily) ? app.revenueBonusDaily : (app.revenueBonuses || []),
+      revenueBonusAllocations: Array.isArray(app.revenueBonusAllocations) ? app.revenueBonusAllocations : [],
+      employees: Array.isArray(app.employees) ? app.employees : [],
+      storeId: selectedStoreId,
+    }), [app.employees, app.revenueBonusAllocations, app.revenueBonusDaily, app.revenueBonuses, selectedStoreId])
+  const historyRows = useMemo(() => {
+    const rows = historyProjection.rows
+    return privateAllocationView
+      ? rows.filter((row) => sameOperationalIdentifier(row.employeeId, currentEmployeeId))
+      : rows
+  }, [currentEmployeeId, historyProjection, privateAllocationView])
+  const historyEmployeeOptions = useMemo(() => [...historyRows.reduce((options, row) => {
+    const employeeId = String(row.employeeId || '').trim()
+    if (!employeeId) return options
+    const key = employeeId.toLocaleLowerCase('en-US')
+    if (!options.has(key)) options.set(key, { id: employeeId, name: row.employeeName || employeeId })
+    return options
+  }, new Map()).values()].toSorted((left, right) => left.name.localeCompare(right.name, 'vi-VN')), [historyRows])
+  const filteredHistoryRows = useMemo(() => historyRows.filter((row) => (
+    (!historyDate || row.businessDate === historyDate)
+    && (!historyMonth || row.month === historyMonth)
+    && (!historyEmployeeId || sameOperationalIdentifier(row.employeeId, historyEmployeeId))
+  )), [historyDate, historyEmployeeId, historyMonth, historyRows])
+  const historyStatistics = useMemo(() => revenueBonusStatistics(historyRows, { month: historyMonth }), [historyMonth, historyRows])
+  const filteredHistoryTotal = useMemo(() => filteredHistoryRows.reduce(
+    (total, row) => total + Math.max(0, Number(row.amountVnd || 0)),
+    0,
+  ), [filteredHistoryRows])
+  const selectedStorePolicy = classifyStorePayrollPolicy(selectedStore)
+  const revenueProgram = selectedStorePolicy === STORE_PAYROLL_POLICY.SM_TNV
     ? REVENUE_BONUS_PROGRAMS[REVENUE_BONUS_PROGRAM_IDS.SM_DAILY]
-    : REVENUE_BONUS_PROGRAMS[REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY]
+    : selectedStorePolicy === STORE_PAYROLL_POLICY.DOSII
+      ? REVENUE_BONUS_PROGRAMS[REVENUE_BONUS_PROGRAM_IDS.DOSII_DAILY]
+      : null
   const localLiveSnapshot = useMemo(() => (
-    privileged || storeManager || app.apiStatus === 'local'
+    !serverBacked && revenueProgram
       ? buildLocalLiveSnapshot({
-          app,
+          app: {
+            orders: app.orders,
+            attendance: app.attendance,
+            employees: app.employees,
+            schedule: app.schedule,
+            shiftDefinitions: app.shiftDefinitions,
+            revenueBonusDaily: app.revenueBonusDaily,
+            revenueBonuses: app.revenueBonuses,
+          },
           storeId: selectedStoreId,
           selectedDate: businessDate,
           programId: revenueProgram.id,
           nowMs,
         })
       : null
-  ), [app, businessDate, nowMs, privileged, revenueProgram.id, selectedStoreId, storeManager])
+  ), [
+    app.attendance,
+    app.employees,
+    app.orders,
+    app.revenueBonusDaily,
+    app.revenueBonuses,
+    app.schedule,
+    app.shiftDefinitions,
+    businessDate,
+    nowMs,
+    revenueProgram,
+    selectedStoreId,
+    serverBacked,
+  ])
 
   useEffect(() => {
-    if (!selectedStoreId || !['connected', 'syncing'].includes(app.apiStatus)) return undefined
+    if (!selectedStoreId || !serverBacked) return undefined
     let active = true
     let busy = false
+    const scope = `${identifierKey(selectedStoreId)}:${businessDate}`
     const refresh = async () => {
       if (busy || (typeof document !== 'undefined' && document.hidden)) return
       busy = true
       try {
         const response = await apiGetRevenueBonusLive({ storeId: selectedStoreId, businessDate })
-        if (active) setRemoteLiveSnapshot(response?.snapshot || null)
+        if (active) {
+          setRemoteLiveSnapshot(response?.snapshot || null)
+          setRemoteLastSuccess({ scope, at: Date.now() })
+          setRemotePollError(null)
+        }
       } catch {
-        // Giữ số liệu gần nhất; chu kỳ kế tiếp sẽ tự thử lại.
+        if (active) setRemotePollError({ scope })
       } finally {
         busy = false
       }
@@ -244,14 +461,27 @@ export function RevenueBonusPage() {
       active = false
       window.clearInterval(timer)
     }
-  }, [app.apiStatus, businessDate, selectedStoreId])
+  }, [businessDate, selectedStoreId, serverBacked])
 
-  const matchingRemoteSnapshot = remoteLiveSnapshot
-    && String(remoteLiveSnapshot.storeId || '') === selectedStoreId
+  const calculationScope = `${identifierKey(selectedStoreId)}:${businessDate}`
+  const matchingRemoteSnapshot = serverBacked && remoteLiveSnapshot
+    && sameOperationalIdentifier(remoteLiveSnapshot.storeId, selectedStoreId)
     && String(remoteLiveSnapshot.businessDate || '') === businessDate
     ? remoteLiveSnapshot
     : null
-  const liveSnapshot = matchingRemoteSnapshot || localLiveSnapshot
+  const remoteDataStale = serverBacked && remotePollError?.scope === calculationScope
+  const remoteLastSuccessAt = remoteLastSuccess?.scope === calculationScope ? remoteLastSuccess.at : null
+  const calculationEligibility = serverBacked
+    ? matchingRemoteSnapshot?.calculationEligibility || null
+    : localLiveSnapshot?.calculationEligibility || null
+  const calculationCollision = calculationEligibility?.code === 'DATA_COLLISION' || selectedDayCollision
+  const calculationDone = !calculationCollision && (calculationEligibility?.code === 'ALREADY_CALCULATED'
+    || records.length > 0
+    || submittedCalculationScope === calculationScope)
+  const awaitingSavedResult = calculationDone && records.length !== 1
+  const calculationReady = !remoteDataStale && !calculationCollision && calculationEligibility?.code === 'READY' && !calculationDone
+  const liveSnapshot = calculationDone || calculationCollision ? null : (matchingRemoteSnapshot || localLiveSnapshot)
+  const attendanceSnapshot = matchingRemoteSnapshot || localLiveSnapshot
   const revenueTotal = Number(liveSnapshot?.revenueVnd ?? savedRevenueTotal) || 0
   const poolTotal = liveSnapshot
     ? (Number(liveSnapshot.percentagePoolVnd || 0) + savedMilestonePoolTotal)
@@ -260,15 +490,15 @@ export function RevenueBonusPage() {
     ? (Number(liveSnapshot.unallocatedVnd || 0) + savedMilestoneUnallocatedTotal)
     : savedUnallocatedTotal
   const visibleLiveAllocations = (Array.isArray(liveSnapshot?.allocations) ? liveSnapshot.allocations : [])
-    .filter((allocation) => !privateAllocationView || entryEmployeeId(allocation) === currentEmployeeId)
+    .filter((allocation) => !privateAllocationView || sameOperationalIdentifier(entryEmployeeId(allocation), currentEmployeeId))
     .map((allocation, index) => ({
       ...allocation,
       id: allocation.id || `live:${entryEmployeeId(allocation)}:${index}`,
       storeId: selectedStoreId,
       businessDate,
       approvedSalesHours: Number(allocation.workedSeconds || 0) / 3_600,
-      milestonePoolVnd: savedMilestoneAllocationByEmployee.get(entryEmployeeId(allocation)) || 0,
-      allocatedVnd: allocationAmount(allocation) + (savedMilestoneAllocationByEmployee.get(entryEmployeeId(allocation)) || 0),
+      milestonePoolVnd: savedMilestoneAllocationByEmployee.get(identifierKey(entryEmployeeId(allocation))) || 0,
+      allocatedVnd: allocationAmount(allocation) + (savedMilestoneAllocationByEmployee.get(identifierKey(entryEmployeeId(allocation))) || 0),
     }))
   const allocations = liveSnapshot ? visibleLiveAllocations : savedAllocations
   const allocationTotal = liveSnapshot
@@ -277,38 +507,80 @@ export function RevenueBonusPage() {
   const allocatedTotal = liveSnapshot
     ? (Number(liveSnapshot.allocatedVnd || 0) + savedMilestoneAllocatedTotal)
     : savedAllocationTotal
-  const currentRevenueTier = selectRevenueBonusTier({ programId: revenueProgram.id, revenueVnd: Math.max(0, Math.trunc(revenueTotal)) })
+  const currentRevenueTier = !awaitingSavedResult && revenueProgram
+    ? selectRevenueBonusTier({ programId: revenueProgram.id, revenueVnd: Math.max(0, Math.trunc(revenueTotal)) })
+    : null
   const storeAttendance = (app.attendance || []).filter((attendance) => (
     !attendance.deletedAt
-    && entryStoreId(attendance) === selectedStoreId
+    && sameOperationalIdentifier(entryStoreId(attendance), selectedStoreId)
     && recordBusinessDate(attendance) === businessDate
   ))
   const localActualHours = storeAttendance
-    .filter((attendance) => entryEmployeeId(attendance) === currentEmployeeId)
+    .filter((attendance) => sameOperationalIdentifier(entryEmployeeId(attendance), currentEmployeeId))
     .reduce((sum, attendance) => sum + liveWorkedHours(attendance, nowMs, businessDate === vietnamToday()), 0)
-  const ownLiveAllocation = visibleLiveAllocations.find((allocation) => entryEmployeeId(allocation) === currentEmployeeId)
-  const actualHours = ownLiveAllocation
-    ? Math.max(Number(ownLiveAllocation.workedSeconds || 0) / 3_600, localActualHours)
-    : localActualHours
-  const projectedAtMs = Date.parse(liveSnapshot?.projectedAt || '')
+  const ownAttendanceAllocation = (Array.isArray(attendanceSnapshot?.allocations) ? attendanceSnapshot.allocations : [])
+    .find((allocation) => sameOperationalIdentifier(entryEmployeeId(allocation), currentEmployeeId))
+  const ownSavedAllocation = savedAllocations
+    .find((allocation) => sameOperationalIdentifier(entryEmployeeId(allocation), currentEmployeeId))
+  const savedActualHours = Number(ownSavedAllocation?.approvedSalesHours
+    ?? ownSavedAllocation?.workedHours
+    ?? ownSavedAllocation?.hours
+    ?? (ownSavedAllocation?.workedSeconds == null ? 0 : Number(ownSavedAllocation.workedSeconds) / 3_600)) || 0
+  const actualHours = Math.max(
+    Number(ownAttendanceAllocation?.workedSeconds || 0) / 3_600,
+    savedActualHours,
+    localActualHours,
+  )
+  const projectedAtMs = Date.parse(attendanceSnapshot?.projectedAt || '')
   const liveExtraSeconds = Number.isFinite(projectedAtMs) && nowMs > projectedAtMs && businessDate === vietnamToday()
-    ? Math.floor((nowMs - projectedAtMs) / 1_000) * Number(liveSnapshot?.openAttendanceCount || 0)
+    ? Math.floor((nowMs - projectedAtMs) / 1_000) * Number(attendanceSnapshot?.openAttendanceCount || 0)
     : 0
-  const totalStoreHours = liveSnapshot
-    ? (Number(liveSnapshot.totalWorkedSeconds || 0) + liveExtraSeconds) / 3_600
+  const totalStoreHours = attendanceSnapshot
+    ? (Number(attendanceSnapshot.totalWorkedSeconds || 0) + liveExtraSeconds) / 3_600
     : storeAttendance.reduce((sum, attendance) => sum + liveWorkedHours(attendance, nowMs, businessDate === vietnamToday()), 0)
-  const attendanceCount = Number(liveSnapshot?.attendanceCount ?? storeAttendance.length) || 0
-  const liveDataLabel = liveSnapshot ? 'Tự cập nhật mỗi 5 giây' : displayDate(businessDate)
+  const attendanceCount = Number(attendanceSnapshot?.attendanceCount ?? storeAttendance.length) || 0
+  const formattedLastRemoteSuccess = remoteLastSuccessAt
+    ? new Date(remoteLastSuccessAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : ''
+  const liveDataLabel = liveSnapshot
+    ? remoteDataStale
+      ? `Dữ liệu gần nhất${formattedLastRemoteSuccess ? ` lúc ${formattedLastRemoteSuccess}` : ''}`
+      : 'Tự cập nhật mỗi 5 giây'
+    : displayDate(businessDate)
+  const eligibilityTone = calculationCollision
+    ? 'red'
+    : awaitingSavedResult
+      ? 'orange'
+    : calculationReady || calculationDone
+      ? 'green'
+      : 'orange'
+  const eligibilityMessage = calculationCollision
+    ? 'Ngày này có nhiều kết quả thưởng đang hiệu lực; cần xử lý dữ liệu trùng trước khi xem hoặc tính thưởng.'
+    : awaitingSavedResult
+    ? 'Thưởng doanh thu của ngày này đã được tính; hệ thống đang đồng bộ kết quả đã lưu.'
+    : calculationDone
+    ? 'Thưởng doanh thu của ngày này đã được tính và không thể tính lại.'
+    : calculationEligibility?.message
+    || (serverBacked
+      ? 'Đang kiểm tra trạng thái ca cuối cùng và kết quả thưởng đã lưu.'
+      : 'Chưa đủ dữ liệu để kiểm tra điều kiện tính thưởng doanh thu.')
 
   if (!allowed || !selectedStoreId) return <AccessDenied subtitle="Tài khoản này không có phạm vi cửa hàng để xem thưởng doanh thu." />
+  if (!revenueProgram) return <AccessDenied subtitle="Cửa hàng hiện tại chưa có chính sách thưởng doanh thu được hệ thống hỗ trợ." />
 
-  const calculate = () => run({
-    key: 'calculate',
-    action: app.calculateRevenueBonusDay,
-    payload: { storeId: selectedStoreId, businessDate },
-    success: `Đã tính thưởng doanh thu ngày ${displayDate(businessDate)}.`,
-    unavailable: 'Chức năng tính thưởng doanh thu đang được đồng bộ với máy chủ. Dữ liệu đã tính trước đó vẫn được giữ nguyên.',
-  })
+  const calculate = async () => {
+    if (!calculationReady || submittedCalculationRef.current === calculationScope) return
+    submittedCalculationRef.current = calculationScope
+    const result = await run({
+      key: 'calculate',
+      action: app.calculateRevenueBonusDay,
+      payload: { storeId: selectedStoreId, businessDate },
+      success: `Đã tính thưởng doanh thu ngày ${displayDate(businessDate)}.`,
+      unavailable: 'Chức năng tính thưởng doanh thu đang được đồng bộ với máy chủ. Dữ liệu đã tính trước đó vẫn được giữ nguyên.',
+    })
+    if (result && result.ok !== false) setSubmittedCalculationScope(calculationScope)
+    else submittedCalculationRef.current = ''
+  }
 
   const decideMilestone = (claim, approve) => {
     if (!approve && typeof window !== 'undefined' && !window.confirm('Từ chối đề nghị thưởng mốc này? Quyết định sẽ được lưu để đối soát.')) return
@@ -329,29 +601,45 @@ export function RevenueBonusPage() {
           ? 'Hiển thị tổng quỹ của cửa hàng và khoản thưởng của chính bạn; không hiển thị phần của đồng nghiệp.'
           : `Theo dõi quỹ và phân bổ thưởng theo giờ bán hàng được duyệt tại ${storeName(stores, selectedStoreId)}.`}
         icon={CircleDollarSign}
-        actions={privileged && <Button icon={Calculator} loading={busyKey === 'calculate'} disabled={Boolean(busyKey)} onClick={calculate}>TÍNH THƯỞNG NGÀY</Button>}
+        actions={privileged && <Button
+          icon={calculationDone ? CheckCircle2 : Calculator}
+          loading={busyKey === 'calculate'}
+          disabled={Boolean(busyKey) || !calculationReady}
+          onClick={calculate}
+          title={eligibilityMessage}
+        >{awaitingSavedResult ? 'ĐANG ĐỒNG BỘ KẾT QUẢ' : calculationDone ? 'ĐÃ TÍNH THƯỞNG' : 'TÍNH THƯỞNG NGÀY'}</Button>}
       />
       <Card className="compensation-filter-card">
         <div className="compensation-filter-grid">
           <Field label="Ngày kinh doanh"><Input aria-label="Ngày kinh doanh" type="date" value={businessDate} onChange={(event) => setBusinessDate(event.target.value)} /></Field>
-          {privileged && <Field label="Cửa hàng"><Select aria-label="Cửa hàng" value={selectedStoreId} onChange={(event) => setStoreSelection(event.target.value)}>{stores.map((store) => <option key={entityId(store)} value={entityId(store)}>{store.name}</option>)}</Select></Field>}
-          {!privileged && <div className="compensation-fixed-scope"><span>Phạm vi cửa hàng</span><strong>{storeName(stores, selectedStoreId)}</strong></div>}
+          {privileged && !storeScoped && <Field label="Cửa hàng"><Select aria-label="Cửa hàng" value={selectedStoreId} onChange={(event) => {
+            setStoreSelection(event.target.value)
+            setHistoryEmployeeId('')
+          }}>{stores.map((store) => <option key={entityId(store)} value={entityId(store)}>{store.name}</option>)}</Select></Field>}
+          {(!privileged || storeScoped) && <div className="compensation-fixed-scope" role="group" aria-label="Cửa hàng hiện tại"><span>Cửa hàng</span><strong>{storeName(stores, selectedStoreId)}</strong></div>}
         </div>
         <ActionError message={error} />
+        {remoteDataStale && <InfoNote tone="red">
+          Không thể cập nhật dữ liệu trực tiếp. {formattedLastRemoteSuccess
+            ? `Đang hiển thị lần cập nhật gần nhất lúc ${formattedLastRemoteSuccess}; hệ thống sẽ tự thử lại.`
+            : 'Hệ thống sẽ tự thử lại.'}
+        </InfoNote>}
+        {privileged && <InfoNote tone={eligibilityTone}>{eligibilityMessage}</InfoNote>}
       </Card>
       {privateAllocationView ? <div className="metric-grid compensation-metrics compensation-metrics--employee">
-        <MetricCard compact label="TỔNG QUỸ CỦA TEAM" value={money(poolTotal)} helper={liveDataLabel} icon={CircleDollarSign} tone="blue" />
-        <MetricCard compact label="THƯỞNG DOANH THU CỦA TÔI" value={money(allocationTotal)} helper={liveSnapshot ? 'Tạm tính theo giờ thực tế' : displayDate(businessDate)} icon={WalletCards} tone="green" />
+        <MetricCard compact label="TỔNG QUỸ CỦA TEAM" value={awaitingSavedResult ? 'Đang đồng bộ…' : money(poolTotal)} helper={liveDataLabel} icon={CircleDollarSign} tone="blue" />
+        <MetricCard compact label="THƯỞNG DOANH THU CỦA TÔI" value={awaitingSavedResult ? 'Đang đồng bộ…' : money(allocationTotal)} helper={awaitingSavedResult ? 'Kết quả đã lưu đang được đồng bộ' : liveSnapshot ? 'Tạm tính theo giờ thực tế' : displayDate(businessDate)} icon={WalletCards} tone="green" />
         <MetricCard compact label="THỜI GIAN LÀM THỰC TẾ" value={formatWorkedHours(actualHours)} helper="Theo ca đã chấm công" icon={Clock3} tone="blue" />
         <MetricCard compact label="TỔNG GIỜ LÀM CỬA HÀNG" value={formatWorkedHours(totalStoreHours)} helper={`${attendanceCount} ca trong ngày`} icon={Clock3} tone="orange" />
-      </div> : <div className="metric-grid compensation-metrics">
-        <MetricCard compact label="DOANH THU ĐỦ ĐIỀU KIỆN" value={money(revenueTotal)} helper={liveDataLabel} icon={Store} tone="green" />
-        <MetricCard compact label="TỔNG QUỸ THƯỞNG" value={money(poolTotal)} helper={liveSnapshot ? 'Tạm tính theo doanh thu thực tế' : ''} icon={CircleDollarSign} tone="blue" />
-        <MetricCard compact label="ĐÃ PHÂN BỔ" value={money(allocatedTotal)} helper={liveSnapshot ? 'Tạm tính theo giờ thực tế' : ''} icon={WalletCards} tone="green" />
-        <MetricCard compact label="CHƯA PHÂN BỔ" value={money(unallocatedTotal)} helper={unallocatedTotal > 0 ? 'Cần xử lý trước khi chốt sổ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
+      </div> : <div className="metric-grid compensation-metrics compensation-metrics--revenue-team">
+        <MetricCard compact label="DOANH THU ĐỦ ĐIỀU KIỆN" value={awaitingSavedResult ? 'Đang đồng bộ…' : money(revenueTotal)} helper={liveDataLabel} icon={Store} tone="green" />
+        <MetricCard compact label="TỔNG QUỸ THƯỞNG" value={awaitingSavedResult ? 'Đang đồng bộ…' : money(poolTotal)} helper={awaitingSavedResult ? 'Kết quả đã lưu đang được đồng bộ' : liveSnapshot ? 'Tạm tính theo doanh thu thực tế' : ''} icon={CircleDollarSign} tone="blue" />
+        <MetricCard compact label="ĐÃ PHÂN BỔ" value={awaitingSavedResult ? 'Đang đồng bộ…' : money(allocatedTotal)} helper={liveSnapshot ? 'Tạm tính theo giờ thực tế' : ''} icon={WalletCards} tone="green" />
+        <MetricCard compact label="CHƯA PHÂN BỔ" value={awaitingSavedResult ? 'Đang đồng bộ…' : money(unallocatedTotal)} helper={awaitingSavedResult ? 'Chờ dữ liệu đối soát' : unallocatedTotal > 0 ? 'Cần xử lý trước khi chốt sổ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
+        <MetricCard compact label="TỔNG GIỜ LÀM CỬA HÀNG" value={formatWorkedHours(totalStoreHours)} helper={`${attendanceCount} ca trong ngày`} icon={Clock3} tone="orange" />
       </div>}
-      <Card className="revenue-milestones-card" title={`Mốc thưởng doanh thu ${revenueProgram.id === REVENUE_BONUS_PROGRAM_IDS.SM_DAILY ? 'SM TNV' : 'Dosii'}`} action={<Badge tone={currentRevenueTier ? 'green' : 'blue'}>{currentRevenueTier ? `Đang ở mốc ${currentRevenueTier.rateBasisPoints / 100}%` : 'Chưa đạt mốc'}</Badge>}>
-        <div className="revenue-milestones-summary"><span>Doanh thu đã ghi nhận</span><strong>{money(revenueTotal)}</strong></div>
+      <Card className="revenue-milestones-card" title={`Mốc thưởng doanh thu ${revenueProgram.id === REVENUE_BONUS_PROGRAM_IDS.SM_DAILY ? 'SM TNV' : 'Dosii'}`} action={<Badge tone={currentRevenueTier ? 'green' : awaitingSavedResult ? 'orange' : 'blue'}>{awaitingSavedResult ? 'Đang đồng bộ kết quả' : currentRevenueTier ? `Đang ở mốc ${currentRevenueTier.rateBasisPoints / 100}%` : 'Chưa đạt mốc'}</Badge>}>
+        <div className="revenue-milestones-summary"><span>Doanh thu đã ghi nhận</span><strong>{awaitingSavedResult ? 'Đang đồng bộ…' : money(revenueTotal)}</strong></div>
         <div className="revenue-milestone-list">
           {revenueProgram.tiers.map((tier) => {
             const reached = tier.minimumInclusive
@@ -397,9 +685,27 @@ export function RevenueBonusPage() {
             <td>{allocation.weightPercent != null ? `${Number(allocation.weightPercent).toFixed(2)}%` : allocation.weight != null ? `${(Number(allocation.weight) * 100).toFixed(2)}%` : '—'}</td>
             <td><strong>{money(allocationAmount(allocation))}</strong></td>
             <td><Badge tone={allocation.status === 'LIVE' ? 'blue' : statusTone(allocation)}>{allocation.status === 'LIVE' ? 'Tạm tính trực tiếp' : statusLabel(allocation)}</Badge></td>
-          </tr>)}{!allocations.length && <tr><td colSpan={privateAllocationView ? 6 : 7} className="compensation-empty">Chưa có phân bổ thưởng doanh thu cho ngày đã chọn.</td></tr>}</tbody>
+          </tr>)}{!allocations.length && <tr><td colSpan={privateAllocationView ? 6 : 7} className="compensation-empty">{awaitingSavedResult ? 'Đang đồng bộ phân bổ thưởng đã lưu.' : 'Chưa có phân bổ thưởng doanh thu cho ngày đã chọn.'}</td></tr>}</tbody>
         </TableWrap>
       </Card>
+      <RevenueHistorySections
+        collisions={historyProjection.collisions}
+        currentEmployeeName={employeeName(app.employees || [], currentEmployeeId)}
+        employeeCollisions={historyProjection.employeeCollisions || []}
+        employeeOptions={historyEmployeeOptions}
+        filteredRows={filteredHistoryRows}
+        filteredTotal={filteredHistoryTotal}
+        historyDate={historyDate}
+        historyEmployeeId={historyEmployeeId}
+        historyMonth={historyMonth}
+        privateView={privateAllocationView}
+        rows={historyRows}
+        setHistoryDate={setHistoryDate}
+        setHistoryEmployeeId={setHistoryEmployeeId}
+        setHistoryMonth={setHistoryMonth}
+        statistics={historyStatistics}
+        stores={stores}
+      />
       {!privateAllocationView && <Card title="Lịch sử tính quỹ trong ngày">
         <TableWrap className="compensation-table"><thead><tr><th>Mã tính</th><th>Chương trình</th><th>Doanh thu</th><th>Quỹ tỷ lệ</th><th>Thưởng mốc cao nhất</th><th>Tổng quỹ</th><th>Trạng thái</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}><td>{record.id}</td><td>{record.programLabel || record.programId || '—'}</td><td>{money(recordRevenue(record))}</td><td>{money(record.percentagePoolVnd || 0)}</td><td>{money(record.milestonePoolVnd || record.hotPoolVnd || 0)}</td><td><strong>{money(revenueRecordTotal(record))}</strong></td><td><Badge tone={statusTone(record)}>{statusLabel(record)}</Badge></td></tr>)}{!records.length && <tr><td colSpan="7" className="compensation-empty">Chưa tính quỹ thưởng cho ngày này.</td></tr>}</tbody></TableWrap>
       </Card>}

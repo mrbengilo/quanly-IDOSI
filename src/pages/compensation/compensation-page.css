@@ -100,6 +100,10 @@
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.compensation-metrics--revenue-team {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .revenue-milestones-card {
   border-color: #a9d9bd;
 }
