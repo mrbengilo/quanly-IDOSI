@@ -195,6 +195,7 @@ import { DatabaseSync } from 'node:sqlite'
 const database = new DatabaseSync(process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite', {
   readOnly: true,
 })
+database.exec('PRAGMA query_only = ON')
 const collection = (key) => database.prepare(`
   SELECT value_json
   FROM state_entities
@@ -202,6 +203,12 @@ const collection = (key) => database.prepare(`
   ORDER BY entity_order, entity_key
 `).all(key).map((row) => JSON.parse(row.value_json))
 const folded = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
+const normalizedText = (value) => String(value ?? '')
+  .trim()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/gu, '')
+  .replace(/[\u0111Đ]/gu, 'd')
+  .toLocaleLowerCase('en-US')
 const active = (record) => record && !record.deletedAt
 const identifiers = (record = {}) => [
   record.id,
@@ -235,20 +242,36 @@ const uniqueMatch = (records, reference, valuesOf = identifiers) => {
   return { record: matches[0] || null, ambiguous: false }
 }
 
-const stores = collection('stores').filter(active)
-const employees = collection('employees').filter(active)
+const appStores = collection('stores')
+const appEmployees = collection('employees')
+const stores = appStores.filter(active)
+const employees = appEmployees.filter(active)
+const payrollEligibleEmployees = employees.filter((record) => (
+  String(record.unit || 'store') === 'store' && record.status !== 'Đã nghỉ việc'
+))
 const attendance = collection('attendance').filter(active)
 const supportTransfers = collection('supportTransfers')
 const payrollPeriods = collection('payrollPeriods').filter((record) => record && !record.supersededAt)
 const salaryConfigs = collection('storeEmployeeSalaryConfigs')
   .filter((record) => active(record) && record.active !== false && record.isActive !== false)
+const payrollSources = [
+  ['salaryAdjustments', collection('salaryAdjustments')],
+  ['salaryAdvances', collection('salaryAdvances')],
+  ['compensationEntries', collection('compensationEntries')],
+  ['revenueBonusAllocations', collection('revenueBonusAllocations')],
+  ['violations', collection('violations')],
+]
 
 const storeCollisions = collisionSummary(stores, (store) => [store.id])
+const appStoreCollisions = collisionSummary(appStores, (store) => [store.id])
 const employeeCollisions = scopedCollisionSummary(
   employees,
   (employee) => employee.storeId,
   identifiers,
 )
+const globalEmployeeCollisions = collisionSummary(employees, identifiers)
+const appEmployeeCollisions = collisionSummary(appEmployees, identifiers)
+const payrollEligibleGlobalEmployeeCollisions = collisionSummary(payrollEligibleEmployees, identifiers)
 const payrollPeriodCollisions = collisionSummary(
   payrollPeriods,
   (record) => [`${folded(record.storeId)}\u0000${String(record.period || '').trim()}`],
@@ -273,6 +296,32 @@ let attendanceEmployeeOutOfStoreLinkedSupport = 0
 let attendanceEmployeeOutOfStoreUnlinked = 0
 const attendanceAffectedStores = new Set()
 const attendanceUnlinkedByMonth = new Map()
+const frontendAttendanceAmbiguityByScope = new Map()
+const frontendAttendanceOutOfScopeByScope = new Map()
+const incrementScopeIssue = (map, storeId, period, issue) => {
+  const scope = `${String(storeId || 'unknown').trim() || 'unknown'}\u0000${period || 'unknown'}`
+  const summary = map.get(scope) || {}
+  summary[issue] = (summary[issue] || 0) + 1
+  map.set(scope, summary)
+}
+const transferForAttendance = (record) => {
+  const transferId = record.supportCompensation?.transferId
+    || record.compensation?.support?.transferId
+    || record.supportTransferId
+    || record.transferId
+    || ''
+  if (!transferId) return null
+  const match = uniqueMatch(supportTransfers, transferId, (transfer) => [transfer.id])
+  return match.ambiguous ? null : match.record
+}
+const homeStoreForAttendance = (record) => (
+  record.supportCompensation?.homeStoreId
+  || record.compensation?.support?.homeStoreId
+  || record.homeStoreId
+  || transferForAttendance(record)?.fromStoreId
+  || record.storeId
+  || ''
+)
 const attendanceSupportLink = (record, employee) => {
   const canonical = record.supportCompensation || record.compensation?.support || {}
   const transferId = canonical.transferId || record.supportTransferId || record.transferId || ''
@@ -299,6 +348,32 @@ const attendanceSupportLink = (record, employee) => {
 for (const record of attendance) {
   const reference = record.employeeId || record.employeeCode
   const match = uniqueMatch(employees, reference)
+  const appMatch = uniqueMatch(appEmployees, reference)
+  if (appMatch.ambiguous) {
+    const month = String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 7) || 'unknown'
+    const homeStoreId = homeStoreForAttendance(record)
+    const scopedMatch = uniqueMatch(
+      payrollEligibleEmployees.filter((employee) => folded(employee.storeId) === folded(homeStoreId)),
+      reference,
+    )
+    incrementScopeIssue(frontendAttendanceAmbiguityByScope, record.storeId, month, 'frontend_global_ambiguous')
+    incrementScopeIssue(
+      frontendAttendanceAmbiguityByScope,
+      record.storeId,
+      month,
+      scopedMatch.ambiguous ? 'home_scope_ambiguous' : scopedMatch.record ? 'home_scope_unique' : 'home_scope_missing',
+    )
+  } else if (appMatch.record
+    && folded(appMatch.record.storeId) === folded(record.storeId)
+    && (appMatch.record.deletedAt || appMatch.record.status === 'Đã nghỉ việc')) {
+    const month = String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 7) || 'unknown'
+    incrementScopeIssue(
+      frontendAttendanceOutOfScopeByScope,
+      record.storeId,
+      month,
+      appMatch.record.deletedAt ? 'local_deleted_employee_attendance' : 'local_resigned_employee_attendance',
+    )
+  }
   if (match.ambiguous) attendanceAmbiguousEmployee += 1
   else if (!match.record) attendanceMissingEmployee += 1
   else if (folded(match.record.storeId) !== folded(record.storeId)) {
@@ -313,17 +388,126 @@ for (const record of attendance) {
   attendanceAffectedStores.add(folded(record.storeId))
 }
 
+const sourcePeriod = (record) => {
+  const explicitPeriod = String(record.period || '').trim()
+  if (/^\d{4}-\d{2}/u.test(explicitPeriod)) return explicitPeriod.slice(0, 7)
+  return String(
+    record.effectiveDate || record.occurredOn || record.businessDate || record.date
+    || record.workDate || record.createdAt || '',
+  ).slice(0, 7) || 'unknown'
+}
+const frontendSourceAmbiguityByScope = new Map()
+const frontendSourceBlockersByScope = new Map()
+const activeCompensationStatuses = new Set(['approved', 'active', 'confirmed', 'da duyet', 'da xac nhan'])
+const rejectedCompensationStatuses = new Set(['rejected', 'cancelled', 'canceled', 'tu choi', 'da huy'])
+const sourceWouldBePreflightedByUi = (collectionKey, record) => {
+  if (collectionKey === 'salaryAdjustments') return !record.deletedAt && record.status !== 'Đã hủy'
+  if (collectionKey === 'salaryAdvances') return record.status === 'Đã chi'
+  return ['compensationEntries', 'revenueBonusAllocations', 'violations'].includes(collectionKey)
+}
+const sourceWouldBeIgnoredByCanonicalPayroll = (collectionKey, record) => {
+  if (record.deletedAt || record.voidedAt || record.supersededAt) return true
+  if (collectionKey === 'salaryAdvances') return record.status !== 'Đã chi'
+  if (collectionKey === 'salaryAdjustments') return record.status === 'Đã hủy'
+  if (collectionKey === 'compensationEntries'
+    && (normalizedText(record.targetUnit) === 'store_manager'
+      || String(record.sourceType || '') === 'manager-revenue-bonus')) return true
+  if (!['compensationEntries', 'revenueBonusAllocations', 'violations'].includes(collectionKey)) return false
+  const status = normalizedText(record.status)
+  return rejectedCompensationStatuses.has(status)
+    || (!record.approvedAt && !activeCompensationStatuses.has(status))
+}
+const sourceEmployeeReference = (record) => (
+  record.employeeId || record.targetEmployeeId || record.employee?.id
+  || record.employee?.code || record.employeeCode || ''
+)
+const liveParticipantCache = new Map()
+const liveParticipantsForScope = (storeId, period) => {
+  const key = `${folded(storeId)}\u0000${period}`
+  if (liveParticipantCache.has(key)) return liveParticipantCache.get(key)
+  const participants = payrollEligibleEmployees.filter((employee) => folded(employee.storeId) === folded(storeId))
+  for (const record of attendance) {
+    const attendancePeriod = String(
+      record.date || record.workDate || record.checkInAt || record.createdAt || '',
+    ).slice(0, 7)
+    if (folded(record.storeId) !== folded(storeId) || attendancePeriod !== period) continue
+    const match = uniqueMatch(appEmployees, record.employeeId || record.employeeCode)
+    if (match.ambiguous || !match.record || match.record.deletedAt || participants.includes(match.record)) continue
+    if (attendanceSupportLink(record, match.record)) participants.push(match.record)
+  }
+  liveParticipantCache.set(key, participants)
+  return participants
+}
+for (const [collectionKey, records] of payrollSources) {
+  for (const record of records) {
+    if (!record || !String(record.storeId || '').trim()) continue
+    const reference = sourceEmployeeReference(record)
+    if (!String(reference || '').trim()) continue
+    const period = sourcePeriod(record)
+    if (!sourceWouldBePreflightedByUi(collectionKey, record)) continue
+    const globalMatch = uniqueMatch(appEmployees, reference)
+    if (globalMatch.ambiguous) {
+      const scopedMatch = uniqueMatch(
+        payrollEligibleEmployees.filter((employee) => folded(employee.storeId) === folded(record.storeId)),
+        reference,
+      )
+      incrementScopeIssue(frontendSourceAmbiguityByScope, record.storeId, period, `${collectionKey}_frontend_global_ambiguous`)
+      incrementScopeIssue(
+        frontendSourceAmbiguityByScope,
+        record.storeId,
+        period,
+        `${collectionKey}_${scopedMatch.ambiguous ? 'store_scope_ambiguous' : scopedMatch.record ? 'store_scope_unique' : 'store_scope_missing'}`,
+      )
+    }
+    const blocker = globalMatch.ambiguous
+      ? 'match_ambiguous'
+      : !globalMatch.record
+        ? 'match_missing'
+        : !liveParticipantsForScope(record.storeId, period).includes(globalMatch.record)
+          ? 'match_unique_out_of_live_participants'
+          : ''
+    if (!blocker) continue
+    const canonicalDisposition = sourceWouldBeIgnoredByCanonicalPayroll(collectionKey, record)
+      ? 'canonical_ignored'
+      : 'canonical_active'
+    incrementScopeIssue(
+      frontendSourceBlockersByScope,
+      record.storeId,
+      period,
+      `${collectionKey}_${blocker}_${canonicalDisposition}`,
+    )
+  }
+}
+
+const scopeIssuesJson = (map) => JSON.stringify([...map.entries()]
+  .map(([scope, issues]) => {
+    const [storeId, period] = scope.split('\u0000')
+    return { storeId, period, issues }
+  })
+  .sort((left, right) => `${left.storeId}\u0000${left.period}`.localeCompare(`${right.storeId}\u0000${right.period}`)))
+
 const summary = {
+  app_store_records: appStores.length,
   stores: stores.length,
+  app_employee_records: appEmployees.length,
   employees: employees.length,
+  payroll_eligible_employees: payrollEligibleEmployees.length,
   attendance: attendance.length,
   payroll_periods: payrollPeriods.length,
   salary_configs: salaryConfigs.length,
   support_transfers: supportTransfers.length,
   store_identifier_collision_groups: storeCollisions.groups,
   store_identifier_collision_records: storeCollisions.records,
+  app_store_identifier_collision_groups: appStoreCollisions.groups,
+  app_store_identifier_collision_records: appStoreCollisions.records,
   employee_identifier_collision_groups: employeeCollisions.groups,
   employee_identifier_collision_records: employeeCollisions.records,
+  global_employee_identifier_collision_groups: globalEmployeeCollisions.groups,
+  global_employee_identifier_collision_records: globalEmployeeCollisions.records,
+  app_employee_identifier_collision_groups: appEmployeeCollisions.groups,
+  app_employee_identifier_collision_records: appEmployeeCollisions.records,
+  payroll_eligible_global_employee_collision_groups: payrollEligibleGlobalEmployeeCollisions.groups,
+  payroll_eligible_global_employee_collision_records: payrollEligibleGlobalEmployeeCollisions.records,
   payroll_period_collision_groups: payrollPeriodCollisions.groups,
   payroll_period_collision_records: payrollPeriodCollisions.records,
   salary_config_collision_groups: salaryConfigCollisions.groups,
@@ -338,6 +522,10 @@ const summary = {
 }
 for (const [key, value] of Object.entries(summary)) console.log(`${key}=${value}`)
 console.log(`attendance_unlinked_by_month=${JSON.stringify(Object.fromEntries([...attendanceUnlinkedByMonth].sort()))}`)
+console.log(`frontend_attendance_ambiguity_by_scope=${scopeIssuesJson(frontendAttendanceAmbiguityByScope)}`)
+console.log(`frontend_attendance_out_of_scope_by_scope=${scopeIssuesJson(frontendAttendanceOutOfScopeByScope)}`)
+console.log(`frontend_source_ambiguity_by_scope=${scopeIssuesJson(frontendSourceAmbiguityByScope)}`)
+console.log(`frontend_source_blockers_by_scope=${scopeIssuesJson(frontendSourceBlockersByScope)}`)
 database.close()
 NODE
 
