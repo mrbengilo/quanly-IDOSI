@@ -421,6 +421,73 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(cells[10].textContent).toBe('150,000 đ')
   })
 
+  it('ignores legacy unscoped payroll sources owned by another store or office profile', () => {
+    const otherStoreEmployee = {
+      ...employee,
+      id: 'S02-001',
+      name: 'Nhân viên cửa hàng khác',
+      storeId: 'S02',
+    }
+    const officeEmployee = {
+      ...employee,
+      id: 'VP-001',
+      name: 'Nhân viên văn phòng',
+      unit: 'office',
+      storeId: 'OFFICE',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [employee, otherStoreEmployee, officeEmployee],
+      attendance: [{
+        id: 'A-LOCAL', storeId: store.id, employeeId: employee.id,
+        date: today(), hours: 4, status: 'Đi đúng giờ',
+      }],
+      salaryAdjustments: [{
+        id: 'LOCAL-LEGACY', employeeId: employee.id, period: today().slice(0, 7),
+        type: 'Thưởng khác', amount: 10_000, status: 'Đã duyệt',
+      }, {
+        id: 'OTHER-LEGACY', employeeId: otherStoreEmployee.id, period: today().slice(0, 7),
+        type: 'Thưởng khác', amount: 8_000_000, status: 'Đã duyệt',
+      }, {
+        id: 'OFFICE-LEGACY', employeeId: officeEmployee.id, period: today().slice(0, 7),
+        type: 'Thưởng khác', amount: 9_000_000, status: 'Đã duyệt',
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.queryByText(/Không thể tính lương kỳ này/u)).toBeNull()
+    expect(screen.getAllByText('90,000 đ').length).toBeGreaterThan(0)
+    expect(screen.queryByText('8,000,000 đ')).toBeNull()
+    expect(screen.queryByText('9,000,000 đ')).toBeNull()
+  })
+
+  it('still locks payroll for an explicitly scoped source linked to an out-of-scope employee', () => {
+    const otherStoreEmployee = {
+      ...employee,
+      id: 'S02-001',
+      name: 'Nhân viên cửa hàng khác',
+      storeId: 'S02',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [employee, otherStoreEmployee],
+      attendance: [{
+        id: 'A-LOCAL', storeId: store.id, employeeId: employee.id,
+        date: today(), hours: 4, status: 'Đi đúng giờ',
+      }],
+      salaryAdjustments: [{
+        id: 'INVALID-SCOPED', storeId: store.id, employeeId: otherStoreEmployee.id,
+        period: today().slice(0, 7), type: 'Thưởng khác', amount: 8_000_000, status: 'Đã duyệt',
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByText(/Không thể tính lương kỳ này/u)).toBeTruthy()
+    expect(screen.queryByText('8,000,000 đ')).toBeNull()
+  })
+
   it('blocks payroll actions and exposes a repair message when salary config ids collide by case', () => {
     const fullTimeEmployee = {
       ...employee,
