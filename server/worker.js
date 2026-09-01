@@ -17861,8 +17861,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
 }
 
 const revenueBonusProgramForStore = (store) => {
-  const identity = normalizeTextKey([store.name, store.short, store.code].filter(Boolean).join(' '))
-  const isSm = identity.includes('secondmall') || /(^|\s)sm($|\s)/u.test(identity)
+  const isSm = classifyStorePayrollPolicy(store) === STORE_PAYROLL_POLICY.SM_TNV
   return isSm
     ? {
         programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,

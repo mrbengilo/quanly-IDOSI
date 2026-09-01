@@ -158,13 +158,12 @@ export function classifyStorePayrollPolicy(store = {}) {
   const explicitPolicy = normalizePolicy(store.payrollPolicy || store.salaryPolicy || store.storeGroup || store.brand)
   if (explicitPolicy) return explicitPolicy
 
-  const identity = [store.code, store.short, store.name, store.employeePrefix, store.slug]
+  const identity = [store.id, store.code, store.short, store.name, store.employeePrefix, store.slug]
     .map(normalizeText)
     .filter(Boolean)
     .join(' | ')
-  const compact = identity.replace(/\s+/gu, '')
 
-  if (compact.includes('SM234') || compact.includes('SECONDMALL') || /(^|\|)\s*SM\s+TNV\s*(\||$)/u.test(identity)) {
+  if (/(^|\s)(SM\s+TNV|SM234|SECOND\s*MALL)(\s|$)/u.test(identity)) {
     return STORE_PAYROLL_POLICY.SM_TNV
   }
   if (/(^|\s)(DOSII|IDOSI)(\s|$)/u.test(identity)) return STORE_PAYROLL_POLICY.DOSII

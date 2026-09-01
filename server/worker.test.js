@@ -23,6 +23,7 @@ import worker, {
 } from './worker'
 import {
   DEFAULT_STORE_WORK_CATALOG_ITEMS,
+  REVENUE_BONUS_PROGRAM_IDS,
   STAFF_WORK_CATALOG_SEED_VERSION,
   TEAM_MILESTONE_PROGRAM_IDS,
 } from '../src/domain/compensationPolicies'
@@ -97,6 +98,31 @@ describe('live revenue bonus projection', () => {
       storeId: 'S01', revenueVnd: 6_500_000, orderCount: 1,
       totalWorkedSeconds: 7_200, participantCount: 1,
       allocations: [{ employeeId: 'E01', employeeName: 'Nhân viên hiện tại', workedSeconds: 7_200 }],
+    })
+  })
+
+  it('selects the SM revenue policy from the canonical SM-TNV store code', () => {
+    const snapshot = revenueBonusLiveSnapshot({
+      now: '2026-08-30T05:00:00.000Z',
+      businessDate: '2026-08-30',
+      store: { id: 'STORE-SM', code: 'SM-TNV', name: 'Cửa hàng trung tâm' },
+      state: {
+        employees: [{ id: 'E01', name: 'Nhân viên SM', storeId: 'STORE-SM' }],
+        orders: [{
+          id: 'ORDER-SM-CODE', storeId: 'STORE-SM', amount: 6_500_000,
+          status: 'Hoàn tất', createdAt: '2026-08-30T03:00:00.000Z',
+        }],
+        attendance: [{
+          id: 'ATT-SM-CODE', employeeId: 'E01', storeId: 'STORE-SM', date: '2026-08-30',
+          checkInAt: '2026-08-30T01:00:00.000Z', checkOutAt: '2026-08-30T03:00:00.000Z',
+          workedSeconds: 7_200,
+        }],
+      },
+    })
+
+    expect(snapshot).toMatchObject({
+      programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,
+      percentagePoolVnd: 390_000,
     })
   })
 })
