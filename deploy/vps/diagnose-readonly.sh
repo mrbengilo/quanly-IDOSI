@@ -225,11 +225,11 @@ const scopedCollisionSummary = (records, scopeOf, keysOf) => collisionSummary(
   records,
   (record) => keysOf(record).map((key) => `${folded(scopeOf(record))}\u0000${folded(key)}`),
 )
-const uniqueMatch = (records, reference) => {
+const uniqueMatch = (records, reference, valuesOf = identifiers) => {
   const requested = String(reference ?? '').trim()
   if (!requested) return { record: null, ambiguous: false }
-  const matches = records.filter((record) => identifiers(record).some((value) => folded(value) === folded(requested)))
-  const exact = matches.filter((record) => identifiers(record).includes(requested))
+  const matches = records.filter((record) => valuesOf(record).some((value) => folded(value) === folded(requested)))
+  const exact = matches.filter((record) => valuesOf(record).map((value) => String(value ?? '').trim()).includes(requested))
   if (exact.length === 1) return { record: exact[0], ambiguous: false }
   if (exact.length > 1 || matches.length > 1) return { record: null, ambiguous: true }
   return { record: matches[0] || null, ambiguous: false }
@@ -238,6 +238,7 @@ const uniqueMatch = (records, reference) => {
 const stores = collection('stores').filter(active)
 const employees = collection('employees').filter(active)
 const attendance = collection('attendance').filter(active)
+const supportTransfers = collection('supportTransfers')
 const payrollPeriods = collection('payrollPeriods').filter((record) => record && !record.supersededAt)
 const salaryConfigs = collection('storeEmployeeSalaryConfigs')
   .filter((record) => active(record) && record.active !== false && record.isActive !== false)
@@ -268,14 +269,46 @@ const payrollRowCollisions = payrollPeriods.reduce((summary, period) => {
 
 let attendanceMissingEmployee = 0
 let attendanceAmbiguousEmployee = 0
-let attendanceEmployeeOutOfStore = 0
+let attendanceEmployeeOutOfStoreLinkedSupport = 0
+let attendanceEmployeeOutOfStoreUnlinked = 0
 const attendanceAffectedStores = new Set()
+const attendanceUnlinkedByMonth = new Map()
+const attendanceSupportLink = (record, employee) => {
+  const canonical = record.supportCompensation || record.compensation?.support || {}
+  const transferId = canonical.transferId || record.supportTransferId || record.transferId || ''
+  const transferIdMatch = transferId
+    ? uniqueMatch(supportTransfers, transferId, (transfer) => [transfer.id])
+    : { record: null, ambiguous: false }
+  const employeeReference = String(record.employeeId || record.employeeCode || '').trim()
+  const storeReference = String(record.storeId || '').trim()
+  const transferScopeReference = `${employeeReference}\u0000${storeReference}`
+  const transferScopeMatch = !transferId && employeeReference && storeReference
+    ? uniqueMatch(
+        supportTransfers,
+        transferScopeReference,
+        (transfer) => [`${String(transfer.employeeId || transfer.employeeCode || '').trim()}\u0000${String(transfer.toStoreId || '').trim()}`],
+      )
+    : { record: null, ambiguous: false }
+  if (transferIdMatch.ambiguous || transferScopeMatch.ambiguous) return false
+  const transfer = transferIdMatch.record || transferScopeMatch.record
+  const homeStoreId = canonical.homeStoreId || record.homeStoreId || transfer?.fromStoreId || employee.storeId || ''
+  const supportStoreId = canonical.supportStoreId || record.supportStoreId || transfer?.toStoreId || record.storeId || ''
+  return Boolean(transferId || canonical.supportStoreId || record.supportStoreId)
+    || Boolean(homeStoreId && supportStoreId && folded(homeStoreId) !== folded(supportStoreId) && transfer)
+}
 for (const record of attendance) {
   const reference = record.employeeId || record.employeeCode
   const match = uniqueMatch(employees, reference)
   if (match.ambiguous) attendanceAmbiguousEmployee += 1
   else if (!match.record) attendanceMissingEmployee += 1
-  else if (folded(match.record.storeId) !== folded(record.storeId)) attendanceEmployeeOutOfStore += 1
+  else if (folded(match.record.storeId) !== folded(record.storeId)) {
+    if (attendanceSupportLink(record, match.record)) attendanceEmployeeOutOfStoreLinkedSupport += 1
+    else {
+      attendanceEmployeeOutOfStoreUnlinked += 1
+      const month = String(record.date || record.workDate || record.checkInAt || record.createdAt || '').slice(0, 7) || 'unknown'
+      attendanceUnlinkedByMonth.set(month, (attendanceUnlinkedByMonth.get(month) || 0) + 1)
+    }
+  }
   else continue
   attendanceAffectedStores.add(folded(record.storeId))
 }
@@ -286,6 +319,7 @@ const summary = {
   attendance: attendance.length,
   payroll_periods: payrollPeriods.length,
   salary_configs: salaryConfigs.length,
+  support_transfers: supportTransfers.length,
   store_identifier_collision_groups: storeCollisions.groups,
   store_identifier_collision_records: storeCollisions.records,
   employee_identifier_collision_groups: employeeCollisions.groups,
@@ -298,10 +332,12 @@ const summary = {
   payroll_row_collision_records: payrollRowCollisions.records,
   attendance_missing_employee: attendanceMissingEmployee,
   attendance_ambiguous_employee: attendanceAmbiguousEmployee,
-  attendance_employee_out_of_store: attendanceEmployeeOutOfStore,
+  attendance_employee_out_of_store_linked_support: attendanceEmployeeOutOfStoreLinkedSupport,
+  attendance_employee_out_of_store_unlinked: attendanceEmployeeOutOfStoreUnlinked,
   attendance_affected_store_count: attendanceAffectedStores.size,
 }
 for (const [key, value] of Object.entries(summary)) console.log(`${key}=${value}`)
+console.log(`attendance_unlinked_by_month=${JSON.stringify(Object.fromEntries([...attendanceUnlinkedByMonth].sort()))}`)
 database.close()
 NODE
 
