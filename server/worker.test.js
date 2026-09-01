@@ -12072,6 +12072,57 @@ describe('IDOSI Worker security primitives', () => {
     ])
   })
 
+  it('projects a large support-attendance snapshot without recalculating the transfer allowance per row', () => {
+    const attendanceCount = 1_000
+    const transfer = {
+      id: 'TR-PROJECTION-PERFORMANCE', employeeId: 'E-SUPPORT', fromStoreId: 'S-HOME', toStoreId: 'S-RECEIVE',
+      startAt: '2026-08-01T00:00:00.000Z', endAt: '2026-09-01T00:00:00.000Z',
+      hourlySupportRate: 29_000, allowance: 50_000, status: 'Hoàn tất',
+    }
+    const attendance = Array.from({ length: attendanceCount }, (_, index) => {
+      const day = String((index % 28) + 1).padStart(2, '0')
+      const hour = index % 23
+      return {
+        id: `ATT-PROJECTION-${index}`,
+        employeeId: 'E-SUPPORT',
+        storeId: 'S-RECEIVE',
+        supportTransferId: transfer.id,
+        date: `2026-08-${day}`,
+        checkInAt: `2026-08-${day}T${String(hour).padStart(2, '0')}:00:00.000Z`,
+        checkOutAt: `2026-08-${day}T${String(hour + 1).padStart(2, '0')}:00:00.000Z`,
+        workedSeconds: 3_600,
+        hours: 1,
+      }
+    })
+    const state = {
+      schemaVersion: 2,
+      stateVersion: 1,
+      stores: [{ id: 'S-HOME', name: 'Home' }, { id: 'S-RECEIVE', name: 'Receive' }],
+      employees: [{ id: 'E-SUPPORT', storeId: 'S-HOME', unit: 'store' }],
+      attendance,
+      supportTransfers: [transfer],
+      notifications: [],
+    }
+
+    const startedAt = performance.now()
+    const projection = projectSharedState(state, { role: 'admin', user_id: 'ADMIN' })
+    const durationMs = performance.now() - startedAt
+
+    expect(projection.attendance).toHaveLength(attendanceCount)
+    expect(projection.attendance.filter((record) => record.supportAllowanceApplied)).toHaveLength(1)
+    expect(projection.attendance[0]).toMatchObject({
+      supportActualPay: 79_000,
+      supportAllowance: 50_000,
+      supportAllowanceApplied: true,
+    })
+    expect(projection.attendance[1]).toMatchObject({
+      supportActualPay: 29_000,
+      supportAllowance: 0,
+      supportAllowanceApplied: false,
+    })
+    expect(durationMs).toBeLessThan(1_000)
+  })
+
   it('normalizes store expense vouchers and enforces scoped update with Admin-only soft delete', async () => {
     expect(normalizeFixedExpenseItems([
       { category: 'Set up', amount: 1_000_000 },

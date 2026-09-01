@@ -2149,6 +2149,7 @@ const withEmployeeAccountAvatar = (state, employee = {}) => {
 
 export const projectSharedState = (rawState, user) => {
   const normalizedState = normalizeSharedStateForStorage(rawState)
+  const supportCompensationContext = createSupportCompensationProjectionContext(normalizedState)
   // Folded employee IDs are safe at an authorization boundary only when they
   // resolve to exactly one profile. Admin keeps access to repair legacy data;
   // every operational projection fails closed instead of leaking peer records.
@@ -2162,7 +2163,7 @@ export const projectSharedState = (rawState, user) => {
     } : {}),
     ...(Object.hasOwn(normalizedState, 'attendance') ? {
       attendance: (Array.isArray(normalizedState.attendance) ? normalizedState.attendance : [])
-        .map((record) => withSupportCompensation(normalizedState, record)),
+        .map((record) => withSupportCompensation(normalizedState, record, supportCompensationContext)),
     } : {}),
   }
   const common = {
@@ -2182,10 +2183,6 @@ export const projectSharedState = (rawState, user) => {
     void accountSettings
     return {
       ...adminState,
-      ...(Object.hasOwn(state, 'attendance') ? {
-        attendance: (Array.isArray(state.attendance) ? state.attendance : [])
-          .map((record) => withSupportCompensation(state, record)),
-      } : {}),
       notifications: filterArray(state, 'notifications', () => true).map((record) => projectNotificationForActor(record, user)),
       settings: ownAccountSettings(state, user),
       session: null,
@@ -10069,14 +10066,47 @@ const supportAllowanceAttendanceId = (state, transfer) => {
 const storeNameForId = (state, storeId) => (Array.isArray(state.stores) ? state.stores : [])
   .find((record) => sameIdentifier(record.id, storeId) && !record.deletedAt)?.name || null
 
-export const supportCompensationForAttendance = (state, record) => {
+const createSupportCompensationProjectionContext = (state) => {
+  const transfersById = new Map()
+  for (const transfer of Array.isArray(state.supportTransfers) ? state.supportTransfers : []) {
+    if (!isPlainRecord(transfer)
+      || transfer.deletedAt
+      || ['Đã xóa', 'Đã hủy'].includes(String(transfer.status || ''))) continue
+    const key = normalizeIdentifierKey(transfer.id)
+    if (key && !transfersById.has(key)) transfersById.set(key, transfer)
+  }
+
+  const storeNamesById = new Map()
+  for (const store of Array.isArray(state.stores) ? state.stores : []) {
+    if (!isPlainRecord(store) || store.deletedAt) continue
+    const key = normalizeIdentifierKey(store.id)
+    if (key && !storeNamesById.has(key)) storeNamesById.set(key, store.name || null)
+  }
+
+  const allowanceAttendanceIds = new WeakMap()
+  return {
+    transferForId: (transferId) => transfersById.get(normalizeIdentifierKey(transferId)) || null,
+    storeNameForId: (storeId) => storeNamesById.get(normalizeIdentifierKey(storeId)) || null,
+    allowanceAttendanceIdFor: (transfer) => {
+      if (!isPlainRecord(transfer)) return null
+      if (!allowanceAttendanceIds.has(transfer)) {
+        allowanceAttendanceIds.set(transfer, supportAllowanceAttendanceId(state, transfer))
+      }
+      return allowanceAttendanceIds.get(transfer)
+    },
+  }
+}
+
+export const supportCompensationForAttendance = (state, record, projectionContext = null) => {
   const transferId = String(record?.supportTransferId || record?.supportCompensation?.transferId || '')
   if (!transferId) return null
-  const transfer = (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((candidate) => (
-    sameIdentifier(candidate.id, transferId)
-    && !candidate.deletedAt
-    && !['Đã xóa', 'Đã hủy'].includes(String(candidate.status || ''))
-  ))
+  const transfer = projectionContext?.transferForId
+    ? projectionContext.transferForId(transferId)
+    : (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((candidate) => (
+        sameIdentifier(candidate.id, transferId)
+        && !candidate.deletedAt
+        && !['Đã xóa', 'Đã hủy'].includes(String(candidate.status || ''))
+      ))
   if (!transfer) return isPlainRecord(record.supportCompensation) ? record.supportCompensation : null
   const bounds = supportTransferTimeBounds(transfer)
   if (!bounds) return isPlainRecord(record.supportCompensation) ? record.supportCompensation : null
@@ -10089,18 +10119,24 @@ export const supportCompensationForAttendance = (state, record) => {
   const configuredAllowance = Number.isSafeInteger(allowanceValue) && allowanceValue >= 0 ? allowanceValue : 0
   // The selected row is an exact persisted attendance identity. A legacy
   // case-colliding alias must never receive the same one-time allowance.
+  const allowanceAttendanceId = projectionContext?.allowanceAttendanceIdFor
+    ? projectionContext.allowanceAttendanceIdFor(transfer)
+    : supportAllowanceAttendanceId(state, transfer)
   const allowanceApplied = Boolean(
     hours > 0
-    && String(record.id || '') === String(supportAllowanceAttendanceId(state, transfer) || ''),
+    && String(record.id || '') === String(allowanceAttendanceId || ''),
   )
   const allowance = allowanceApplied ? configuredAllowance : 0
   const totalPay = safeMoneySum(basePay, allowance, 'Lương thực nhận ca hỗ trợ')
+  const projectedStoreName = (storeId) => projectionContext?.storeNameForId
+    ? projectionContext.storeNameForId(storeId)
+    : storeNameForId(state, storeId)
   return {
     transferId,
     homeStoreId: String(transfer.fromStoreId || record.homeStoreId || ''),
-    homeStoreName: storeNameForId(state, transfer.fromStoreId) || record.supportCompensation?.homeStoreName || null,
+    homeStoreName: projectedStoreName(transfer.fromStoreId) || record.supportCompensation?.homeStoreName || null,
     supportStoreId: String(transfer.toStoreId || record.storeId || ''),
-    supportStoreName: storeNameForId(state, transfer.toStoreId) || record.supportCompensation?.supportStoreName || null,
+    supportStoreName: projectedStoreName(transfer.toStoreId) || record.supportCompensation?.supportStoreName || null,
     transferStartAt: bounds.startAt,
     transferEndAt: bounds.endAt,
     hourlyRate,
@@ -10114,8 +10150,8 @@ export const supportCompensationForAttendance = (state, record) => {
   }
 }
 
-const withSupportCompensation = (state, record) => {
-  const supportCompensation = supportCompensationForAttendance(state, record)
+const withSupportCompensation = (state, record, projectionContext = null) => {
+  const supportCompensation = supportCompensationForAttendance(state, record, projectionContext)
   if (!supportCompensation) return record
   return {
     ...record,
