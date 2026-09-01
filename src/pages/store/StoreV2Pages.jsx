@@ -45,6 +45,7 @@ import { useApp } from '../../state/AppContext'
 import {
   entryDate,
   entryEmployeeId,
+  entryType,
   payrollCompensationTotalsForEmployee,
   sameOperationalIdentifier,
 } from '../compensation/compensationViewModel'
@@ -217,6 +218,71 @@ const attendancePayDetails = (record = {}, employee = {}, transfers = []) => {
   const hours = Math.max(0, Number(record.hours || 0))
   const hourlyRate = Math.max(0, getHourlyRate(employee))
   return { kind: 'part-time-home', amount: hours * hourlyRate, support: null, hours, hourlyRate }
+}
+const supportTransferIdentifiers = (supportDetails = []) => [...new Set(supportDetails
+  .map((pay) => compactIdentifier(pay?.support?.transferId))
+  .filter(Boolean))]
+const workEntryMatchesPayrollStore = ({
+  entry,
+  employee,
+  attendanceRecords,
+  transfers,
+  storeReferenceMatches,
+  allowedSupportTransferIds = null,
+}) => {
+  if (entryType(entry) !== 'WORK') return false
+  const supportStoreId = compactIdentifier(entry?.supportStoreId)
+  const transferId = compactIdentifier(entry?.supportTransferId)
+  const employeeReferences = employeeIdentifierValues(employee)
+  let transferStoreId = ''
+  if (transferId) {
+    const employeeTransfers = transfers.filter((transfer) => (
+      employeeReferences.some((reference) => sameOperationalIdentifier(transfer?.employeeId, reference))
+    ))
+    const transferMatch = operationalIdentifierRecordMatch(employeeTransfers, transferId, (transfer) => [transfer?.id])
+    if (transferMatch.ambiguous) return false
+    transferStoreId = compactIdentifier(transferMatch.record?.toStoreId)
+  }
+  const attendanceId = compactIdentifier(entry?.attendanceId)
+  let attendanceStoreId = ''
+  let attendanceTransferId = ''
+  if (attendanceId) {
+    const employeeAttendance = attendanceRecords.filter((record) => (
+      employeeReferences.some((reference) => sameOperationalIdentifier(attendanceEmployeeReference(record), reference))
+      && (!transferId || sameOperationalIdentifier(record?.supportTransferId, transferId))
+    ))
+    const match = operationalIdentifierRecordMatch(employeeAttendance, attendanceId, (record) => [record?.id])
+    if (match.ambiguous || !match.record) return false
+    attendanceStoreId = compactIdentifier(match.record.storeId)
+    attendanceTransferId = compactIdentifier(match.record.supportTransferId)
+  }
+  const accountingStoreId = compactIdentifier(entry?.storeId)
+  const storeReferences = [supportStoreId, transferStoreId, attendanceStoreId, accountingStoreId].filter(Boolean)
+  if (!storeReferences.length || storeReferences.some((reference) => !storeReferenceMatches(reference))) return false
+  if (allowedSupportTransferIds instanceof Set) {
+    const resolvedTransferId = transferId || attendanceTransferId
+    if (!resolvedTransferId
+      || !allowedSupportTransferIds.has(resolvedTransferId.toLocaleLowerCase('en-US'))) return false
+  }
+  return true
+}
+const supportWorkEntryHasCanonicalAudit = ({
+  entry,
+  employee,
+  supportDetails,
+  storeReferenceMatches,
+}) => {
+  if (entryType(entry) !== 'WORK') return false
+  const transferId = compactIdentifier(entry?.supportTransferId)
+  const homeStoreId = compactIdentifier(entry?.homeStoreId)
+  const supportStoreId = compactIdentifier(entry?.supportStoreId)
+  const accountingStoreId = compactIdentifier(entry?.storeId)
+  if (!transferId || !homeStoreId || !supportStoreId || !accountingStoreId) return false
+  if (!storeReferenceMatches(accountingStoreId) || !storeReferenceMatches(supportStoreId)) return false
+  if (!sameOperationalIdentifier(homeStoreId, employee?.storeId)) return false
+  return supportTransferIdentifiers(supportDetails).some((candidate) => (
+    sameOperationalIdentifier(candidate, transferId)
+  ))
 }
 const canManageStoreOperations = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(role)
 const newImportForm = () => ({ name: '', quantity: 1, weight: '', price: '', shippingAmount: '', reason: '' })
@@ -945,6 +1011,11 @@ export function StorePayrollV2() {
       : records.map((record) => attendancePayDetails(record, employee, supportTransfers))
         .filter((pay) => pay.kind === 'support')
     const inboundSupport = !snapshotRow && !storeReferenceMatches(employee.storeId) && supportDetails.length > 0
+    const inboundSupportTransferIds = inboundSupport
+      ? new Set(supportTransferIdentifiers(supportDetails).map((identifier) => (
+          identifier.toLocaleLowerCase('en-US')
+        )))
+      : null
     const hours = snapshotRow ? Number(snapshotRow.hours || 0) : records.reduce((sum, record) => sum + Number(record.hours || 0), 0)
     let liveSalaryPolicy = null
     if (!snapshotRow && !inboundSupport) {
@@ -997,22 +1068,48 @@ export function StorePayrollV2() {
         if (!Number.isSafeInteger(amount) || amount < 0) return sum
         return sum + (adjustmentKind(item.bonusSource || item.type) === 'VIOLATION' ? -amount : amount)
       }, 0)
-    const canonical = snapshotRow || inboundSupport
+    const liveCompensationEntries = snapshotRow ? [] : employeeSources(
+      compensationEntries,
+      employee,
+      (item) => entryDate(item).startsWith(period)
+        && (inboundSupport
+          ? workEntryMatchesPayrollStore({
+              entry: item,
+              employee,
+              attendanceRecords: attendance,
+              transfers: supportTransfers,
+              storeReferenceMatches,
+              allowedSupportTransferIds: inboundSupportTransferIds,
+            })
+          : entryType(item) === 'WORK' && (item.attendanceId || item.supportTransferId || item.supportStoreId)
+            ? workEntryMatchesPayrollStore({
+                entry: item,
+                employee,
+                attendanceRecords: attendance,
+                transfers: supportTransfers,
+                storeReferenceMatches,
+              })
+            : (!item.storeId || storeReferenceMatches(item.storeId))),
+    )
+    const supportAuditEntries = inboundSupport ? liveCompensationEntries.filter((entry) => (
+      supportWorkEntryHasCanonicalAudit({
+        entry,
+        employee,
+        supportDetails,
+        storeReferenceMatches,
+      })
+    )) : []
+    const canonical = snapshotRow
       ? { manual: 0, work: 0, allowance: 0, revenue: 0, violations: 0 }
       : payrollCompensationTotalsForEmployee({
-          compensationEntries: employeeSources(
-            compensationEntries,
-            employee,
-            (item) => entryDate(item).startsWith(period)
-              && (!item.storeId || storeReferenceMatches(item.storeId)),
-          ),
-          revenueBonusAllocations: employeeSources(
+          compensationEntries: liveCompensationEntries,
+          revenueBonusAllocations: inboundSupport ? [] : employeeSources(
             revenueBonusAllocations,
             employee,
             (item) => entryDate(item).startsWith(period)
               && (!item.storeId || storeReferenceMatches(item.storeId)),
           ),
-          violations: employeeSources(
+          violations: inboundSupport ? [] : employeeSources(
             compensationViolations,
             employee,
             (item) => entryDate(item).startsWith(period)
@@ -1024,6 +1121,21 @@ export function StorePayrollV2() {
         })
     const revenueBonus = snapshotRow ? Number(snapshotRow.revenueBonusVnd || 0) : canonical.revenue
     const workBonus = snapshotRow ? Number(snapshotRow.workBonusVnd || 0) : canonical.work
+    const supportWorkBonus = snapshotRow
+      ? Number(snapshotRow.supportWorkBonusVnd || 0)
+      : inboundSupport
+        ? payrollCompensationTotalsForEmployee({
+            compensationEntries: supportAuditEntries,
+            employeeId: employeePrimaryIdentifier(employee),
+            employeeIdentifiers: employeeIdentifierValues(employee),
+            period,
+          }).work
+        : 0
+    const supportTransferIds = snapshotRow
+      ? (Array.isArray(snapshotRow.supportTransferIds)
+          ? snapshotRow.supportTransferIds
+          : snapshotRow.supportCompensation?.transferIds || [])
+      : supportTransferIdentifiers(supportDetails)
     const manualBonus = snapshotRow ? Number(snapshotRow.manualBonusVnd || 0) : canonical.manual + Math.max(0, legacyAdjustmentNet)
     const tiktokAllowance = snapshotRow
       ? Number(snapshotRow.salarySnapshot?.tiktokAllowance || 0)
@@ -1070,6 +1182,8 @@ export function StorePayrollV2() {
       hourlyRate,
       revenueBonus,
       workBonus,
+      supportWorkBonus,
+      supportTransferIds,
       manualBonus,
       tiktokAllowance,
       otherAllowance,
@@ -1180,7 +1294,7 @@ export function StorePayrollV2() {
       </div>
       <Card title="Chi tiết lương thưởng">
         <TableWrap><thead><tr><th>Nhân viên</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng doanh thu</th><th>Thưởng công việc</th><th>Thưởng thủ công</th><th>Phụ cấp TikTok</th><th>Phụ cấp khác</th><th>Vi phạm</th><th>Đã ứng</th><th>Thực nhận</th></tr></thead><tbody>
-          {rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
+          {rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}{row.supportWorkBonus > 0 && <small className="table-note">Thưởng hỗ trợ ghi nhận tại {store?.name || storeId}{row.supportTransferIds.length ? ` • ${row.supportTransferIds.join(', ')}` : ''}</small>}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
           {payrollPreviewError
             ? <tr><td colSpan="11">Số liệu đang được khóa cho đến khi Admin xử lý dữ liệu trùng.</td></tr>
             : <tr className="total-row"><td colSpan="10">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr>}

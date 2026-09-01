@@ -1346,6 +1346,89 @@ const linkedSupportTransferForAttendance = (state, attendance, employeeId, store
   )) || null
 }
 
+const compensationRecordScope = (state, record, employeeHomeStoreId = '') => {
+  const supportTransferId = String(record?.supportTransferId || '').trim()
+  const supportStoreId = String(record?.supportStoreId || '').trim()
+  const explicitStoreId = String(record?.storeId || '').trim()
+  const attendanceId = String(record?.attendanceId || '').trim()
+  let transfer = null
+  let attendance = null
+
+  if (supportTransferId) {
+    transfer = uniqueIdentifierRecordMatch({
+      records: state?.supportTransfers,
+      identifier: supportTransferId,
+      identifierOf: (candidate) => candidate?.id,
+      collisionCode: 'COMPENSATION_SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+      collisionMessage: 'Khoản thưởng tham chiếu mơ hồ tới nhiều phiếu điều chuyển; không thể xác định cửa hàng trả lương.',
+    })?.record || null
+    if (transfer && record?.employeeId && !sameIdentifier(transfer.employeeId, record.employeeId)) {
+      throw new ApiError(409, 'COMPENSATION_SUPPORT_TRANSFER_SCOPE_MISMATCH', 'Khoản thưởng và phiếu điều chuyển không cùng nhân viên.')
+    }
+  }
+
+  if (attendanceId) {
+    attendance = uniqueIdentifierRecordMatch({
+      records: state?.attendance,
+      identifier: attendanceId,
+      identifierOf: (candidate) => candidate?.id,
+      collisionCode: 'COMPENSATION_ATTENDANCE_IDENTIFIER_COLLISION',
+      collisionMessage: 'Khoản thưởng tham chiếu mơ hồ tới nhiều bản chấm công; không thể xác định cửa hàng trả lương.',
+    })?.record || null
+    if (attendance && record?.employeeId && !belongsToEmployee(attendance, record.employeeId)) {
+      throw new ApiError(409, 'COMPENSATION_ATTENDANCE_SCOPE_MISMATCH', 'Khoản thưởng và bản chấm công không cùng nhân viên.')
+    }
+    if (attendance?.supportTransferId && supportTransferId
+      && !sameIdentifier(attendance.supportTransferId, supportTransferId)) {
+      throw new ApiError(409, 'COMPENSATION_SUPPORT_TRANSFER_SCOPE_MISMATCH', 'Khoản thưởng và bản chấm công tham chiếu hai phiếu điều chuyển khác nhau.')
+    }
+  }
+
+  if (!transfer && attendance?.supportTransferId) {
+    transfer = uniqueIdentifierRecordMatch({
+      records: state?.supportTransfers,
+      identifier: attendance.supportTransferId,
+      identifierOf: (candidate) => candidate?.id,
+      collisionCode: 'COMPENSATION_SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+      collisionMessage: 'Khoản thưởng tham chiếu mơ hồ tới nhiều phiếu điều chuyển; không thể xác định cửa hàng trả lương.',
+    })?.record || null
+    if (transfer && record?.employeeId && !sameIdentifier(transfer.employeeId, record.employeeId)) {
+      throw new ApiError(409, 'COMPENSATION_SUPPORT_TRANSFER_SCOPE_MISMATCH', 'Khoản thưởng và phiếu điều chuyển không cùng nhân viên.')
+    }
+  }
+
+  const derivedTransferId = String(supportTransferId || attendance?.supportTransferId || '').trim()
+  const storeCandidates = [
+    supportStoreId,
+    String(transfer?.toStoreId || '').trim(),
+    String(attendance?.storeId || '').trim(),
+    explicitStoreId,
+  ].filter(Boolean)
+  const canonicalStoreId = storeCandidates[0] || ''
+  if (storeCandidates.some((candidate) => !sameIdentifier(candidate, canonicalStoreId))) {
+    throw new ApiError(409, 'COMPENSATION_STORE_SCOPE_MISMATCH', 'Khoản thưởng có thông tin cửa hàng mâu thuẫn; cần đối soát trước khi tính lương.')
+  }
+  if (canonicalStoreId) return { storeId: canonicalStoreId, supportTransferId: derivedTransferId }
+
+  // Legacy rows without any support marker or store snapshot belong only to
+  // the employee's home payroll. Never let such a row leak into an inbound
+  // support payroll merely because the employee also worked there.
+  if (derivedTransferId) return { storeId: '', supportTransferId: derivedTransferId }
+  return {
+    storeId: String(record?.homeStoreId || employeeHomeStoreId || '').trim(),
+    supportTransferId: '',
+  }
+}
+
+const compensationRecordStoreId = (state, record, employeeHomeStoreId = '') => (
+  compensationRecordScope(state, record, employeeHomeStoreId).storeId
+)
+
+const compensationRecordBelongsToStore = (state, record, storeId, employeeHomeStoreId = '') => {
+  const recordStoreId = compensationRecordStoreId(state, record, employeeHomeStoreId)
+  return Boolean(recordStoreId && sameIdentifier(recordStoreId, storeId))
+}
+
 const parseShiftTime = (value) => {
   const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/u)
   if (!match) return null
@@ -2317,7 +2400,13 @@ export const projectSharedState = (rawState, user) => {
       key,
       (record) => belongsToAllowedStoreEmployees(record, historicalStoreEmployeeIds),
     )
-    const ownCompensationEntries = historicalVisibleScoped('compensationEntries')
+    const storeCompensationEntries = historicalVisibleScoped('compensationEntries')
+      .filter((record) => {
+        const employee = (Array.isArray(state.employees) ? state.employees : [])
+          .find((candidate) => belongsToEmployee(record, candidate.id || candidate.code))
+        return compensationRecordBelongsToStore(state, record, storeId, employee?.storeId)
+      })
+    const ownCompensationEntries = storeCompensationEntries
       .filter((record) => belongsToEmployee(record, ownEmployeeId))
     const ownViolations = historicalVisibleScoped('violations')
       .filter((record) => belongsToEmployee(record, ownEmployeeId))
@@ -2338,7 +2427,7 @@ export const projectSharedState = (rawState, user) => {
         const normalized = Number(amount)
         return Number.isSafeInteger(normalized) && normalized >= 0 ? normalized : 0
       }
-      for (const record of historicalVisibleScoped('compensationEntries')) {
+      for (const record of storeCompensationEntries) {
         if (record.deletedAt || record.voidedAt || !['approved', 'active', 'confirmed'].includes(normalizeTextKey(record.status))) continue
         const period = String(record.period || monthFromRecord(record) || '').trim()
         if (!/^\d{4}-\d{2}$/u.test(period)) continue
@@ -10494,21 +10583,46 @@ const compensationRecordActiveForPayroll = (record, employeeId, period) => (
   && ['approved', 'active', 'confirmed', 'da duyet', 'da xac nhan'].includes(normalizeTextKey(record.status))
 )
 
-const compensationAmountTotalsFor = (state, employeeId, period) => {
+const compensationAmountTotalsFor = (
+  state,
+  employeeId,
+  period,
+  {
+    storeId = '',
+    employeeHomeStoreId = '',
+    supportTransferIds = null,
+  } = {},
+) => {
   const totals = { manual: 0, work: 0, allowance: 0, revenue: 0 }
+  const allowedSupportTransferIds = supportTransferIds instanceof Set
+    ? new Set([...supportTransferIds].map(normalizeIdentifierKey).filter(Boolean))
+    : null
   const add = (field, value, label) => {
     totals[field] = safeMoneySum(totals[field], asVnd(value, label), label)
   }
   for (const record of Array.isArray(state.compensationEntries) ? state.compensationEntries : []) {
     if (!compensationRecordActiveForPayroll(record, employeeId, period)
+      || !compensationRecordBelongsToStore(state, record, storeId, employeeHomeStoreId)
       || employeeUnit({ unit: record.targetUnit }) === 'store_manager'
       || String(record.sourceType || '') === 'manager-revenue-bonus') continue
     const type = String(record.type || record.kind || '').trim().toUpperCase()
+    if (allowedSupportTransferIds) {
+      const recordSupportTransferId = compensationRecordScope(
+        state,
+        record,
+        employeeHomeStoreId,
+      ).supportTransferId
+      if (type !== 'WORK'
+        || !recordSupportTransferId
+        || !allowedSupportTransferIds.has(normalizeIdentifierKey(recordSupportTransferId))) continue
+    }
     const field = type === 'WORK' ? 'work' : type === 'ALLOWANCE' ? 'allowance' : type === 'REVENUE' ? 'revenue' : 'manual'
     add(field, record.amountVnd ?? record.amount ?? 0, 'Tổng thưởng/phụ cấp')
   }
+  if (allowedSupportTransferIds) return totals
   for (const record of Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []) {
-    if (!compensationRecordActiveForPayroll(record, employeeId, period)) continue
+    if (!compensationRecordActiveForPayroll(record, employeeId, period)
+      || !compensationRecordBelongsToStore(state, record, storeId, employeeHomeStoreId)) continue
     add('revenue', record.amountVnd ?? record.amount ?? 0, 'Tổng thưởng doanh thu')
   }
   return totals
@@ -10719,9 +10833,13 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
       ? Number(supportPay.allowance || 0)
       : (Number.isSafeInteger(Number(employee.tiktokAllowance)) ? Number(employee.tiktokAllowance) : 0)
     const adjustment = supportPay ? 0 : adjustmentAmountFor(state, employeeId, period)
-    const compensation = supportPay
-      ? { manual: 0, work: 0, allowance: 0, revenue: 0 }
-      : compensationAmountTotalsFor(state, employeeId, period)
+    const compensation = compensationAmountTotalsFor(state, employeeId, period, {
+      storeId,
+      employeeHomeStoreId: employee.storeId,
+      ...(supportPay ? {
+        supportTransferIds: new Set(supportPay.transfers.map((record) => record.id)),
+      } : {}),
+    })
     const legacyBonus = Math.max(0, adjustment)
     const legacyDeduction = Math.max(0, -adjustment)
     const manualBonusVnd = safeMoneySum(compensation.manual, legacyBonus, 'Tổng thưởng thủ công')
@@ -10772,6 +10890,7 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
       advancesPaid,
       ...(supportPay ? {
         supportTransferIds: supportPay.transfers.map((record) => record.id),
+        supportWorkBonusVnd: workBonusVnd,
         supportHourlyPay: supportPay.base,
         supportAllowance: supportPay.allowance,
         supportActualPay: supportPay.totalPay,
@@ -16778,6 +16897,56 @@ const rewardCatalogSnapshotForAttendance = (attendance, requestedCatalogItemId) 
   }
 }
 
+const workRewardSupportScope = ({ state, attendance, employeeId }) => {
+  const attendanceSnapshot = isPlainRecord(attendance?.supportTransferSnapshot)
+    ? attendance.supportTransferSnapshot
+    : null
+  const requestedTransferId = String(
+    attendance?.supportTransferId || attendanceSnapshot?.id || '',
+  ).trim()
+  if (!requestedTransferId) {
+    return { supportTransferId: null, homeStoreId: null, supportStoreId: null }
+  }
+  const transferMatch = uniqueIdentifierRecordMatch({
+    records: state?.supportTransfers,
+    identifier: requestedTransferId,
+    identifierOf: (record) => record?.id,
+    predicate: (record) => !record?.deletedAt,
+    collisionCode: 'WORK_REWARD_SUPPORT_TRANSFER_COLLISION',
+    collisionMessage: 'Ca chấm công tham chiếu mơ hồ tới nhiều phiếu điều chuyển; không thể ghi nhận thưởng.',
+  })
+  const transfer = transferMatch?.record || null
+  if (!transfer) {
+    throw new ApiError(
+      409,
+      'WORK_REWARD_SUPPORT_TRANSFER_NOT_FOUND',
+      'Không tìm thấy phiếu điều chuyển chính xác của ca chấm công; không thể ghi nhận thưởng.',
+    )
+  }
+  const supportTransferId = String(transfer.id || '').trim()
+  const homeStoreId = String(transfer.fromStoreId || '').trim()
+  const supportStoreId = String(transfer.toStoreId || '').trim()
+  const attendanceStoreId = String(attendance?.storeId || '').trim()
+  const attendanceHomeStoreId = String(attendance?.homeStoreId || attendanceSnapshot?.fromStoreId || '').trim()
+  const snapshotSupportStoreId = String(attendanceSnapshot?.toStoreId || '').trim()
+  const scopeMatches = supportTransferId
+    && homeStoreId
+    && supportStoreId
+    && sameIdentifier(transfer.employeeId, employeeId)
+    && sameIdentifier(attendanceStoreId, supportStoreId)
+    && (!attendanceHomeStoreId || sameIdentifier(attendanceHomeStoreId, homeStoreId))
+    && (!snapshotSupportStoreId || sameIdentifier(snapshotSupportStoreId, supportStoreId))
+    && (!attendanceSnapshot?.id || sameIdentifier(attendanceSnapshot.id, supportTransferId))
+  if (!scopeMatches) {
+    throw new ApiError(
+      409,
+      'WORK_REWARD_SUPPORT_SCOPE_MISMATCH',
+      'Ca chấm công và phiếu điều chuyển không cùng nhân viên hoặc cửa hàng; không thể ghi nhận thưởng.',
+    )
+  }
+  return { supportTransferId, homeStoreId, supportStoreId }
+}
+
 const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandType = 'work_reward.set' }) => {
   if (payload.checked !== true) {
     throw new ApiError(400, 'WORK_REWARD_CHECKED_INVALID', 'Công việc tính thưởng chỉ được tick và lưu một lần; không thể bỏ chọn sau khi đã ghi nhận.')
@@ -16813,8 +16982,12 @@ const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandTyp
   if (catalogSnapshot.targetGroup && catalogSnapshot.targetGroup !== targetUnit) {
     throw new ApiError(409, 'WORK_REWARD_UNIT_MISMATCH', 'Công việc tính thưởng không thuộc nhóm nhân viên hiện tại.')
   }
+  const supportScope = workRewardSupportScope({ state, attendance, employeeId })
+  if (supportScope.supportTransferId && targetUnit !== 'store') {
+    throw new ApiError(409, 'WORK_REWARD_SUPPORT_UNIT_MISMATCH', 'Ca hỗ trợ cửa hàng không thể nhận công việc thưởng của nhóm khác.')
+  }
   const storeId = targetUnit === 'store'
-    ? String(attendance.storeId || employee.storeId || '').trim()
+    ? String(supportScope.supportStoreId || attendance.storeId || employee.storeId || '').trim()
     : targetUnit === 'office' ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID
   if (!storeId) throw new ApiError(409, 'WORK_REWARD_STORE_REQUIRED', 'Ca chấm công thiếu cửa hàng để ghi nhận thưởng.')
   const period = workDate.slice(0, 7)
@@ -16933,6 +17106,7 @@ const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandTyp
       employeeName,
       targetGroup: targetUnit,
       storeId,
+      ...supportScope,
       attendanceId,
       workDate,
       period,
@@ -16968,6 +17142,7 @@ const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandTyp
       sourceType: 'work-catalog-team-claim',
       rewardProgressId: progressId,
       storeId,
+      ...supportScope,
       businessDate: workDate,
       workDate,
       period,
@@ -17023,6 +17198,7 @@ const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandTyp
         metadata: {
           storeId, employeeId, period, attendanceId, catalogItemId: catalogSnapshot.id,
           amountVnd: catalogSnapshot.amountVnd, checked: payload.checked, teamClaimId,
+          ...supportScope,
         },
       },
     }
@@ -17057,6 +17233,7 @@ const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandTyp
     employeeName,
     targetGroup: targetUnit,
     storeId,
+    ...supportScope,
     attendanceId,
     workDate,
     period,
@@ -17095,6 +17272,7 @@ const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandTyp
     employeeId,
     employeeName,
     storeId,
+    ...supportScope,
     amountVnd: catalogSnapshot.amountVnd,
     effectiveDate: workDate,
     period,
@@ -17147,6 +17325,7 @@ const planWorkRewardClaim = ({ state, actor, payload, commandContext, commandTyp
       metadata: {
         storeId, employeeId, period, attendanceId, catalogItemId: catalogSnapshot.id,
         amountVnd: catalogSnapshot.amountVnd, checked: payload.checked, compensationEntryId: entryId,
+        ...supportScope,
       },
     },
   }
@@ -18974,8 +19153,8 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     const supportExpectedAmount = row.supportCompensation
       ? asVnd(row.supportActualPay ?? row.supportCompensation.totalPay ?? 0, 'Lương hỗ trợ trong kỳ')
       : 0
-    if (row.supportCompensation && supportExpectedAmount !== amount) {
-      throw new ApiError(409, 'SUPPORT_PAYROLL_ACCRUAL_MISMATCH', 'Chi lương hỗ trợ không khớp chi phí đã ghi nhận theo chấm công; cần chốt lại kỳ lương.', {
+    if (row.supportCompensation && supportExpectedAmount > amount) {
+      throw new ApiError(409, 'SUPPORT_PAYROLL_ACCRUAL_MISMATCH', 'Chi lương hỗ trợ thấp hơn phần lương đã ghi nhận theo chấm công; cần chốt lại kỳ lương.', {
         employeeId,
         paymentAmount: amount,
         expectedAmount: supportExpectedAmount,
