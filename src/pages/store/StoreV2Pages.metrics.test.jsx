@@ -516,6 +516,42 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.queryByText('29,000 đ/giờ')).toBeNull()
   })
 
+  it('renders SM-TNV payroll from case-only salary configuration history', () => {
+    const smStore = { id: 'Sm-Tnv', name: 'SM TNV', status: 'Đang hoạt động' }
+    const smEmployee = {
+      ...employee,
+      id: 'St-Abc',
+      storeId: smStore.id,
+      employmentType: 'Full-Time',
+      payBasis: 'tiered-hourly',
+      hourlyRate: null,
+    }
+    mocked.app = {
+      ...baseApp(),
+      stores: [smStore],
+      activeStore: smStore,
+      activeStoreId: smStore.id,
+      employees: [smEmployee],
+      attendance: [{
+        id: 'ATT-SM-PAYROLL', storeId: 'SM-TNV', employeeId: 'ST-ABC',
+        date: today(), hours: 4, status: 'Đi đúng giờ',
+      }],
+      storeEmployeeSalaryConfigs: [{
+        id: 'CFG-SM-UPPER', employeeId: 'ST-ABC', storeId: 'SM-TNV', effectiveFrom: '2026-07',
+        thresholdHours: 208, standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 26_000,
+      }, {
+        id: 'CFG-SM-LOWER', employeeId: 'st-abc', storeId: 'sm-tnv', effectiveFrom: today().slice(0, 7),
+        thresholdHours: 208, standardHourlyRateVnd: 31_000, excessHourlyRateVnd: 27_000,
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.queryByText(/Không thể tính lương kỳ này/u)).toBeNull()
+    expect(screen.getByText('31,000 đ/giờ')).toBeTruthy()
+    expect(screen.getAllByText('124,000 đ').length).toBeGreaterThan(0)
+  })
+
   it('locks every store payroll total when active period ids collide by store casing', () => {
     mocked.app = {
       ...baseApp(),

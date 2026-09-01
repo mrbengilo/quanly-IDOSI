@@ -61,7 +61,7 @@ export function StoreSalarySettings() {
     if (!selectedId || !storeId || !defaults) return { config: null, collision: null }
     return safeEffectiveStoreSalaryConfig(
       app.storeEmployeeSalaryConfigs || [],
-      { employeeId: selectedId, storeId, period, store },
+      { employeeId: selectedId, storeId, period, store, canonicalOwnerAliases: true },
     )
   }, [app.storeEmployeeSalaryConfigs, selectedId, storeId, period, store, defaults])
   const currentConfig = currentConfigResult.config
@@ -157,7 +157,9 @@ export function StoreSalarySettings() {
         <tbody>{employees.map((employee) => {
           const id = profileId(employee)
           const configResult = defaults
-            ? safeEffectiveStoreSalaryConfig(app.storeEmployeeSalaryConfigs || [], { employeeId: id, storeId, period, store })
+            ? safeEffectiveStoreSalaryConfig(app.storeEmployeeSalaryConfigs || [], {
+              employeeId: id, storeId, period, store, canonicalOwnerAliases: true,
+            })
             : { config: null, collision: null }
           const config = configResult.config
           const policy = config || defaults

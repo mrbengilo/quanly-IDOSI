@@ -179,6 +179,7 @@ export const resolveStoreEmployeeSalaryPolicy = (employee = {}, {
         storeId: store.id,
         period,
         store,
+        canonicalOwnerAliases: true,
       })
     } catch (error) {
       if (error?.code === STORE_SALARY_CONFIG_IDENTIFIER_COLLISION) throw error

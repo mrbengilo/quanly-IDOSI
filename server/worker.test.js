@@ -5526,6 +5526,53 @@ describe('IDOSI Worker security primitives', () => {
     })
   })
 
+  it('closes payroll with canonical case-only salary configuration history', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-canonical-config-history' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'canonical-config-history-password',
+      initialState: {
+        stores: [{ id: 'Sm-Tnv', short: 'SM TNV', name: 'SM TNV', status: 'Đang hoạt động' }],
+        employees: [{
+          id: 'St-Abc', name: 'Nhân viên SM TNV', storeId: 'Sm-Tnv', unit: 'store',
+          employmentType: 'Full-Time', storeSalaryConfigRequired: true, status: 'Đang làm việc',
+        }],
+        attendance: [{
+          id: 'ATT-CANONICAL-CONFIG', employeeId: 'ST-ABC', storeId: 'SM-TNV', workDate: '2026-08-20',
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', hours: 4,
+        }],
+        payrollPeriods: [], payrollPayments: [], salaryAdjustments: [], salaryAdvances: [],
+        expenseEntries: [], cashTransactions: [], orders: [],
+        storeEmployeeSalaryConfigs: [{
+          id: 'CFG-CANONICAL-UPPER', employeeId: 'ST-ABC', storeId: 'SM-TNV', effectiveFrom: '2026-07',
+          version: 1, active: true, thresholdHours: 208, standardHourlyRateVnd: 29_000, excessHourlyRateVnd: 26_000,
+        }, {
+          id: 'CFG-CANONICAL-LOWER', employeeId: 'st-abc', storeId: 'sm-tnv', effectiveFrom: '2026-08',
+          version: 2, active: true, thresholdHours: 208, standardHourlyRateVnd: 31_000, excessHourlyRateVnd: 27_000,
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'canonical-config-history-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'SM-TNV', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'canonical-config-history-close-0001' }), env)
+
+    expect(closed.status).toBe(201)
+    expect(await closed.json()).toMatchObject({
+      period: { rows: [expect.objectContaining({
+        employeeId: 'St-Abc', hours: 4, baseSalary: 124_000,
+        salarySnapshot: expect.objectContaining({
+          salaryConfigSource: 'configured',
+          salaryConfig: expect.objectContaining({ standardHourlyRateVnd: 31_000 }),
+        }),
+      })] },
+    })
+  })
+
   it('authorizes, snapshots, invalidates, and locks employee salary configurations by period', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-tiered-config-payroll' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
