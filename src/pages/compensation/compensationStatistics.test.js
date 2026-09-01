@@ -187,4 +187,46 @@ describe('work reward statistics', () => {
     expect(rows[0]).toMatchObject({ completed: true, paid: false, payoutStatus: 'pending' })
     expect(rewardStatistics(rows).byDay).toEqual([])
   })
+
+  it('builds a production-sized reward history without blocking the browser thread', () => {
+    const employees = Array.from({ length: 30 }, (_, index) => ({
+      id: `STORE-EMPLOYEE-${index}`,
+      name: `Nhân viên ${index}`,
+      unit: 'store',
+      storeId: 'STORE-PERFORMANCE',
+    }))
+    const rewardTasks = Array.from({ length: 5 }, (_, index) => ({
+      ...rewardTask,
+      id: `REWARD-${index}`,
+      catalogItemId: `REWARD-${index}`,
+      name: `Công việc ${index}`,
+    }))
+    const attendance = Array.from({ length: 400 }, (_, index) => ({
+      id: `ATTENDANCE-${index}`,
+      employeeId: employees[index % employees.length].id,
+      unit: 'store',
+      storeId: 'STORE-PERFORMANCE',
+      workDate: '2026-08-28',
+      checklistSnapshot: { tasks: rewardTasks },
+    }))
+    const workCatalogProgress = attendance.flatMap((record) => rewardTasks.map((task) => ({
+      attendanceId: record.id,
+      catalogItemId: task.id,
+      checked: true,
+      status: 'CLAIMED',
+    })))
+
+    const startedAt = performance.now()
+    const rows = workRewardRows({
+      attendance,
+      workCatalogProgress,
+      employees,
+      targetUnit: 'store',
+      storeId: 'STORE-PERFORMANCE',
+    })
+    const elapsedMs = performance.now() - startedAt
+
+    expect(rows).toHaveLength(2_000)
+    expect(elapsedMs).toBeLessThan(1_000)
+  })
 })

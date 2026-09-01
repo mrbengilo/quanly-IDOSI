@@ -5,7 +5,8 @@ import { StoreTasks } from './StoreOperations'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
-vi.mock('../../state/AppContext', () => ({
+vi.mock('../../state/AppContext', async (importOriginal) => ({
+  ...await importOriginal(),
   useApp: () => mocked.app,
 }))
 
