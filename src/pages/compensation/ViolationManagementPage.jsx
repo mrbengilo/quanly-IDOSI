@@ -150,7 +150,7 @@ const resolveShiftOptions = ({
   ))
 }
 
-export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embedded = false }) {
+export function ViolationManagementPage({ targetUnit: requestedTargetUnit, storeId: requestedStoreId = '', embedded = false }) {
   const app = useApp()
   const role = canonicalRole(app.session?.role)
   const targetUnit = requestedTargetUnit || routeTargetUnit()
@@ -158,9 +158,20 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
   const canManage = (['admin', 'business_support'].includes(role)
     && (targetUnit !== 'business_support' || role === 'admin'))
     || (role === 'store_manager' && targetUnit === 'store')
-  const stores = useMemo(() => storesVisibleToRole(app.stores, app.session), [app.stores, app.session])
+  const visibleStores = useMemo(() => storesVisibleToRole(app.stores, app.session), [app.stores, app.session])
+  const stores = useMemo(() => {
+    const fixedStoreId = String(requestedStoreId || '').trim()
+    if (!fixedStoreId) return visibleStores
+    const exact = visibleStores.filter((store) => entityId(store) === fixedStoreId)
+    if (exact.length === 1) return exact
+    const normalized = fixedStoreId.toLocaleLowerCase('en-US')
+    const folded = visibleStores.filter((store) => entityId(store).toLocaleLowerCase('en-US') === normalized)
+    return folded.length === 1 ? folded : []
+  }, [visibleStores, requestedStoreId])
   const [storeSelection, setStoreSelection] = useState('')
-  const selectedStoreId = targetUnit === 'store' ? storeSelection || entityId(stores[0]) : ''
+  const selectedStoreId = targetUnit === 'store'
+    ? String(requestedStoreId || '').trim() || storeSelection || entityId(stores[0])
+    : ''
   const employees = useMemo(() => employeesForTarget({
     employees: app.employees,
     targetUnit,
@@ -199,11 +210,12 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
   const selectedPolicies = policies.filter((policy) => selectedPolicyIdSet.has(policy.id))
   const selectedTotalVnd = selectedPolicies.reduce((sum, policy) => sum + Math.abs(Number(policy.amountVnd || 0)), 0)
   const visibleEmployeeIds = useMemo(() => new Set(employees.map(entityId)), [employees])
-  const rows = (app.violations || [])
+  const rows = useMemo(() => (Array.isArray(app.violations) ? app.violations : [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
     .filter((entry) => targetUnit !== 'store' || entryStoreId(entry) === selectedStoreId)
     .filter((entry) => visibleEmployeeIds.has(entryEmployeeId(entry)))
-    .sort((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || '')))
+    .toSorted((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || ''))), [app.violations, targetUnit, selectedStoreId, visibleEmployeeIds])
+  const statistics = useMemo(() => violationStatistics(rows), [rows])
 
   if (!permittedUnit || !canManage) {
     const subtitle = targetUnit === 'business_support'
@@ -287,9 +299,11 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
       <Card title="Ghi nhận vi phạm">
         <div className="compensation-form-grid">
           {targetUnit === 'store' && <Field label="Cửa hàng" required>
-            <Select aria-label="Cửa hàng" value={selectedStoreId} onChange={(event) => { setStoreSelection(event.target.value); setEmployeeSelection(''); resetDependentSelection() }}>
-              {stores.map((store) => <option key={entityId(store)} value={entityId(store)}>{store.name}</option>)}
-            </Select>
+            {requestedStoreId
+              ? <Input aria-label="Cửa hàng" value={stores[0]?.name || selectedStoreId} readOnly />
+              : <Select aria-label="Cửa hàng" value={selectedStoreId} onChange={(event) => { setStoreSelection(event.target.value); setEmployeeSelection(''); resetDependentSelection() }}>
+                {stores.map((store) => <option key={entityId(store)} value={entityId(store)}>{store.name}</option>)}
+              </Select>}
           </Field>}
           <Field label="Ngày phát sinh" required>
             <Input aria-label="Ngày phát sinh" type="date" value={occurredOn} onChange={(event) => { setOccurredOn(event.target.value); resetDependentSelection() }} />
@@ -347,7 +361,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, embed
           </tbody>
         </TableWrap>
       </Card>
-      <Card title="Thống kê số lần và đánh giá mức độ vi phạm"><CompensationStatisticsGrid statistics={violationStatistics(rows)} employees={employees} showEmployee mode="violation" /></Card>
+      <Card title="Thống kê số lần và đánh giá mức độ vi phạm"><CompensationStatisticsGrid statistics={statistics} employees={employees} showEmployee mode="violation" /></Card>
     </div>
   )
 }

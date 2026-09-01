@@ -223,13 +223,16 @@ function AdminSupportAssignmentPageContent() {
 
 export function AdminSupportWorkPage() {
   const app = useApp()
-  const supportProfiles = roleProfilesFromApp(app, ROLE_KEYS.businessSupport)
-  const officeProfiles = (Array.isArray(app.employees) ? app.employees : []).filter((profile) => (
+  const supportProfiles = useMemo(() => roleProfilesFromApp({
+    employees: app.employees,
+    businessSupportEmployees: app.businessSupportEmployees,
+  }, ROLE_KEYS.businessSupport), [app.employees, app.businessSupportEmployees])
+  const officeProfiles = useMemo(() => (Array.isArray(app.employees) ? app.employees : []).filter((profile) => (
     !profile.deletedAt
     && ['office', 'văn phòng', 'van phong'].includes(String(profile.unit || profile.unitType || profile.department || '').trim().toLocaleLowerCase('vi-VN'))
     && !['Đã nghỉ việc', 'inactive'].includes(String(profile.status || ''))
-  ))
-  const allProfiles = [...supportProfiles, ...officeProfiles]
+  )), [app.employees])
+  const allProfiles = useMemo(() => [...supportProfiles, ...officeProfiles], [supportProfiles, officeProfiles])
   const [form, setForm] = useState({ date: today(), targetUnit: 'business_support', employeeId: '', selectedCatalogIds: [] })
   const profiles = form.targetUnit === 'office' ? officeProfiles : supportProfiles
   const [busy, setBusy] = useState(false)
@@ -252,15 +255,15 @@ export function AdminSupportWorkPage() {
   const sortedAssignments = useMemo(() => [...(Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])].toSorted((left, right) => (
     String(right.assignedAt || right.updatedAt || right.date).localeCompare(String(left.assignedAt || left.updatedAt || left.date))
   )), [app.supportWorkAssignments])
-  const supportRewardRows = workRewardRows({
+  const supportRewardRows = useMemo(() => workRewardRows({
     attendance: app.attendance,
     workCatalogProgress: app.workCatalogProgress,
     compensationEntries: app.compensationEntries,
     tasks: app.tasks,
     employees: supportProfiles,
     targetUnit: 'business_support',
-  })
-  const supportRewardStatistics = rewardStatistics(supportRewardRows)
+  }), [app.attendance, app.workCatalogProgress, app.compensationEntries, app.tasks, supportProfiles])
+  const supportRewardStatistics = useMemo(() => rewardStatistics(supportRewardRows), [supportRewardRows])
   const toggleCatalogTask = (catalogItemId) => setForm((current) => ({
     ...current,
     selectedCatalogIds: current.selectedCatalogIds.includes(catalogItemId)

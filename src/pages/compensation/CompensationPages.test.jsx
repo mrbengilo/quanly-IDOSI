@@ -140,6 +140,24 @@ describe('compensation pages', () => {
     expect(screen.getByText(/Không tìm thấy ca đã chấm công hoặc ca đã phân/i)).toBeTruthy()
   })
 
+  it('locks an embedded store violation workflow to the active store', () => {
+    mocked.app = {
+      ...baseApp(),
+      attendance: [{
+        id: 'ATT-NV-02', employeeId: 'NV-02', storeId: 'CH001', unit: 'store', workDate: '2026-08-26',
+        shiftId: 'ca1', shiftName: 'Ca 1', shiftStart: '07:00', shiftEnd: '12:00',
+      }],
+    }
+    render(<ViolationManagementPage targetUnit="store" storeId="CH001" embedded />)
+
+    const storeField = screen.getByLabelText('Cửa hàng')
+    expect(storeField.tagName).toBe('INPUT')
+    expect(storeField.readOnly).toBe(true)
+    expect(storeField.value).toBe('Dosii NTL')
+    expect(screen.queryByRole('option', { name: 'SM TNV' })).toBeNull()
+    expect(screen.getByLabelText('Nhân viên').textContent).not.toContain('Quản lý Hai')
+  })
+
   it('reports an idempotent violation batch as unchanged instead of claiming a new deduction', async () => {
     mocked.app = {
       ...baseApp(),
