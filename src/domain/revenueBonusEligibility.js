@@ -204,4 +204,3 @@ export function revenueBonusEligibility({
     message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.READY,
   })
 }
-

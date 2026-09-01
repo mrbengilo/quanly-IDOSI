@@ -13,6 +13,7 @@ const workerDomainSources = [
   'compensationSettlement.js',
   'storeTieredPayroll.js',
   'managerRevenueBonus.js',
+  'revenueBonusEligibility.js',
   'workCatalog.js',
 ]
 const migrationsSource = resolve(root, 'drizzle')
