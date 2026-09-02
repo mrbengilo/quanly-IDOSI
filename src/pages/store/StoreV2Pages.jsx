@@ -39,7 +39,13 @@ import {
 } from '../../components/UI'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
-import { calculateAvailableSalary, financeSummaryFromState, financeTransactionsFromState } from '../../domain'
+import {
+  calculateAvailableSalary,
+  financeSummaryFromState,
+  financeTransactionsFromState,
+  isPayrollPeriodActionable,
+  payrollPeriodActionDate,
+} from '../../domain'
 import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { activeOccupationLabels, findOccupationOption, occupationValueAllowed, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
@@ -1066,6 +1072,8 @@ export function StorePayrollV2() {
     return next
   }, { replace: true })
   const [modal, setModal] = useState(null)
+  const [payrollConfirmation, setPayrollConfirmation] = useState(null)
+  const [processingPayrollAction, setProcessingPayrollAction] = useState(false)
   const [form, setForm] = useState({ employeeId: '', type: 'Thưởng khác', amount: '', note: '' })
   const [savingAdjustment, setSavingAdjustment] = useState(false)
   const payrollRole = String(app.session?.role || '').trim().toLowerCase()
@@ -1472,6 +1480,26 @@ export function StorePayrollV2() {
                 ? 'Ghi chú không được vượt quá 1.000 ký tự.'
                 : ''
   const payrollActionUnavailable = Boolean(payrollPreviewError) || !scopedEmployees.length
+  const payrollActionDate = payrollPeriodActionDate(period)
+  const payrollPeriodActionable = isPayrollPeriodActionable(period, today())
+  const payrollIsClosed = currentPeriod?.status === 'Đã chốt' && !currentPeriod?.needsReclose
+  const payrollIsPaid = currentPeriod?.status === 'Đã chi' && Boolean(currentPeriod?.confirmedAt)
+  const payrollIsLocked = currentPeriod?.status === 'Đã khóa' || Boolean(currentPeriod?.lockedAt)
+  const closePayrollDisabled = Boolean(payrollPreviewError)
+    || !payrollPeriodActionable
+    || payrollIsLocked
+    || payrollIsPaid
+    || payrollIsClosed
+  const confirmPayrollDisabled = Boolean(payrollPreviewError)
+    || !payrollPeriodActionable
+    || !currentPeriod
+    || !payrollIsClosed
+    || Boolean(currentPeriod?.needsReclose)
+  const lockPayrollDisabled = Boolean(payrollPreviewError)
+    || !payrollPeriodActionable
+    || !currentPeriod
+    || !payrollIsPaid
+    || payrollIsLocked
 
   const openAdjustment = (type) => {
     if (!canOperatePayroll) return
@@ -1520,21 +1548,60 @@ export function StorePayrollV2() {
     const result = await confirmSalaryAdvance(advanceId)
     if (!result.ok) notify(result.message, 'info')
   }
-  const handleClosePayroll = async () => {
-    if (!canOperatePayroll) return
-    const result = await closePayrollPeriod(storeId, period)
-    if (!result.ok) notify(result.message, 'info')
+  const requestPayrollAction = (action) => {
+    if (processingPayrollAction) return
+    if (action === 'close' && (!canOperatePayroll || closePayrollDisabled)) return
+    if (action === 'pay' && (!canOperatePayroll || confirmPayrollDisabled)) return
+    if (action === 'lock' && (!canLockPayroll || lockPayrollDisabled)) return
+    setPayrollConfirmation(action)
   }
-  const handleConfirmPayroll = async () => {
-    if (!canOperatePayroll) return
-    const result = await confirmPayrollPayment(storeId, period)
-    if (!result.ok) notify(result.message, 'info')
+  const handlePayrollAction = async () => {
+    if (!payrollConfirmation || processingPayrollAction) return
+    const action = payrollConfirmation
+    if (action === 'close' && (!canOperatePayroll || closePayrollDisabled)) return
+    if (action === 'pay' && (!canOperatePayroll || confirmPayrollDisabled)) return
+    if (action === 'lock' && (!canLockPayroll || lockPayrollDisabled)) return
+    setProcessingPayrollAction(true)
+    try {
+      const result = action === 'close'
+        ? await closePayrollPeriod(storeId, period)
+        : action === 'pay'
+          ? await confirmPayrollPayment(storeId, period)
+          : await lockPayrollPeriod(storeId, period)
+      if (!result?.ok) {
+        notify(result?.message || 'Không thể xử lý kỳ lương.', 'info')
+        return
+      }
+      setPayrollConfirmation(null)
+    } catch (error) {
+      notify(error?.message || 'Không thể xử lý kỳ lương.', 'info')
+    } finally {
+      setProcessingPayrollAction(false)
+    }
   }
-  const handleLockPayroll = async () => {
-    if (!canLockPayroll) return
-    const result = await lockPayrollPeriod(storeId, period)
-    if (!result.ok) notify(result.message, 'info')
-  }
+  const payrollConfirmationDetails = payrollConfirmation === 'close'
+    ? {
+        title: currentPeriod?.needsReclose ? 'Xác nhận chốt lại sổ' : 'Xác nhận chốt sổ',
+        message: `Chốt số liệu lương thưởng kỳ ${period} của ${store?.name || storeId}? Sau khi chốt mới có thể xác nhận chi lương.`,
+        label: currentPeriod?.needsReclose ? 'CHỐT LẠI SỔ' : 'CHỐT SỔ',
+        variant: 'primary',
+        icon: FileText,
+      }
+    : payrollConfirmation === 'pay'
+      ? {
+          title: 'Xác nhận chi lương',
+          message: `Xác nhận đã chi lương kỳ ${period} của ${store?.name || storeId}? Thao tác này tạo các bút toán chi lương và không thể thực hiện lần hai.`,
+          label: 'XÁC NHẬN CHI LƯƠNG',
+          variant: 'primary',
+          icon: Banknote,
+        }
+      : {
+          title: 'Xác nhận khóa kỳ lương thưởng',
+          message: `Khóa kỳ lương ${period} của ${store?.name || storeId}? Sau khi khóa, dữ liệu của kỳ này không thể chỉnh sửa.`,
+          label: 'KHÓA KỲ CHI LƯƠNG THƯỞNG',
+          variant: 'danger',
+          icon: ShieldCheck,
+        }
 
   return (
     <div className="page">
@@ -1572,8 +1639,9 @@ export function StorePayrollV2() {
         </tbody></TableWrap>
       </Card>
       <Card title="Xử lý cuối kỳ" action={<Badge tone={currentPeriod?.status === 'Đã khóa' ? 'red' : currentPeriod?.confirmedAt ? 'green' : 'orange'}>{currentPeriod?.needsReclose ? 'Cần chốt lại' : currentPeriod?.status || 'Chưa chốt'}</Badge>}>
-        {canOperatePayroll ? <div className="period-actions"><Button variant="outline" icon={FileText} onClick={handleClosePayroll} disabled={Boolean(payrollPreviewError) || currentPeriod?.status === 'Đã khóa'}>{currentPeriod?.needsReclose ? 'CHỐT LẠI SỔ' : 'CHỐT SỔ'}</Button><Button icon={Banknote} onClick={handleConfirmPayroll} disabled={Boolean(payrollPreviewError) || Boolean(currentPeriod?.confirmedAt) || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>XÁC NHẬN CHI LƯƠNG</Button>{canLockPayroll && <Button variant="danger" icon={ShieldCheck} onClick={handleLockPayroll} disabled={Boolean(payrollPreviewError) || !currentPeriod || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>KHÓA KỲ CHI LƯƠNG THƯỞNG</Button>}</div> : <InfoNote>Trạng thái kỳ lương chỉ được xem.</InfoNote>}
+        {canOperatePayroll ? <><div className="period-actions"><Button variant="outline" icon={FileText} onClick={() => requestPayrollAction('close')} disabled={closePayrollDisabled}>{currentPeriod?.needsReclose ? 'CHỐT LẠI SỔ' : 'CHỐT SỔ'}</Button><Button icon={Banknote} onClick={() => requestPayrollAction('pay')} disabled={confirmPayrollDisabled}>XÁC NHẬN CHI LƯƠNG</Button>{canLockPayroll && <Button variant="danger" icon={ShieldCheck} onClick={() => requestPayrollAction('lock')} disabled={lockPayrollDisabled}>KHÓA KỲ CHI LƯƠNG THƯỞNG</Button>}</div>{!payrollPeriodActionable && payrollActionDate && <InfoNote tone="orange">Kỳ {period} chỉ được chốt và chi từ ngày <strong>{shortDate(payrollActionDate)}</strong>. Các nút sẽ tự mở theo đúng thứ tự sau khi kỳ kết thúc.</InfoNote>}</> : <InfoNote>Trạng thái kỳ lương chỉ được xem.</InfoNote>}
       </Card>
+      {canOperatePayroll && <Modal open={Boolean(payrollConfirmation)} onClose={() => !processingPayrollAction && setPayrollConfirmation(null)} title={payrollConfirmationDetails.title} footer={<><Button variant="outline" disabled={processingPayrollAction} onClick={() => setPayrollConfirmation(null)}>Hủy</Button><Button variant={payrollConfirmationDetails.variant} icon={payrollConfirmationDetails.icon} loading={processingPayrollAction} disabled={processingPayrollAction} onClick={handlePayrollAction}>{payrollConfirmationDetails.label}</Button></>}><InfoNote tone={payrollConfirmation === 'lock' ? 'orange' : 'green'}>{payrollConfirmationDetails.message}</InfoNote></Modal>}
       {canOperatePayroll && <Modal open={Boolean(modal)} onClose={closeAdjustment} title={modal === 'advance' ? 'Tạo ứng lương' : `Tạo ${form.type.toLowerCase()}`} footer={<><Button variant="outline" disabled={savingAdjustment} onClick={closeAdjustment}>Hủy</Button><Button icon={Save} loading={savingAdjustment} disabled={savingAdjustment || Boolean(adjustmentFormError)} onClick={handleSaveAdjustment}>TẠO</Button></>}><div className="form-grid"><Field label="Nhân viên" required><Select value={form.employeeId} required disabled={savingAdjustment} onChange={(event) => setForm({ ...form, employeeId: event.target.value })}>{scopedEmployees.map((employee) => <option key={employeePrimaryIdentifier(employee)} value={employeePrimaryIdentifier(employee)}>{employee.name} — {employeePrimaryIdentifier(employee)}</option>)}</Select></Field>{modal !== 'advance' && <Field label="Loại" required><Select value={form.type} required disabled={savingAdjustment} onChange={(event) => setForm({ ...form, type: event.target.value })}><option>Thưởng khác</option><option>Phụ cấp khác</option><option>Khấu trừ</option></Select></Field>}<Field label="Số tiền" required><MoneyInput value={form.amount} required disabled={savingAdjustment} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="Nhập số tiền" /></Field>{modal === 'advance' && (advanceOperationError ? <InfoNote tone="red">{advanceOperationError}</InfoNote> : <InfoNote>Lương khả dụng hiện tại: <strong>{money(selectedAdvanceAvailability.available)}</strong>. Khoản ứng phải nhỏ hơn mức này.</InfoNote>)}{form.amount && adjustmentFormError && <InfoNote tone="red">{adjustmentFormError}</InfoNote>}<Field label="Ghi chú" required className="span-2"><Input value={form.note} required maxLength={1_000} disabled={savingAdjustment} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field></div></Modal>}
     </div>
   )

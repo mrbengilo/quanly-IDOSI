@@ -1249,9 +1249,15 @@ describe('IDOSI VPS runtime', () => {
       expect(duplicate.response.status).toBe(409)
       expect(duplicate.body).toMatchObject({ error: { code: 'OFFICE_ATTENDANCE_ALREADY_RECORDED' } })
 
+      vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z')) // 01/09 00:00 Vietnam
+      const payrollAdminLogin = await postJson(baseUrl, '/api/login', {
+        username: 'admin-effective-vps', password: 'effective-vps-admin-password',
+      })
+      expect(payrollAdminLogin.response.status).toBe(200)
+      const payrollAdminHeaders = { authorization: `Bearer ${payrollAdminLogin.body.token}` }
       const officePayroll = await postJson(baseUrl, '/api/command', {
         type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'OFFICE', period: '2026-08' },
-      }, { ...adminHeaders, 'idempotency-key': 'vps-effective-office-payroll' })
+      }, { ...payrollAdminHeaders, 'idempotency-key': 'vps-effective-office-payroll' })
       expect(officePayroll.response.status).toBe(201)
       expect(officePayroll.body.period.rows).toEqual([
         expect.objectContaining({
@@ -1265,7 +1271,7 @@ describe('IDOSI VPS runtime', () => {
 
       const supportPayroll = await postJson(baseUrl, '/api/command', {
         type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'BUSINESS_SUPPORT', period: '2026-08' },
-      }, { ...adminHeaders, 'idempotency-key': 'vps-effective-support-payroll' })
+      }, { ...payrollAdminHeaders, 'idempotency-key': 'vps-effective-support-payroll' })
       expect(supportPayroll.response.status).toBe(201)
       expect(supportPayroll.body.period.rows).toEqual([
         expect.objectContaining({

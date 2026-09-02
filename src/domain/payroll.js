@@ -1,5 +1,6 @@
 import { createFinanceTransaction, upsertFinanceTransaction } from './finance'
 import { applyAdvanceToNetPay, applyViolationWaterfall } from './compensationSettlement'
+export { isPayrollPeriodActionable, payrollPeriodActionDate } from './payrollPeriodLifecycle'
 
 const normalizeText = (value) => String(value ?? '')
   .trim()
