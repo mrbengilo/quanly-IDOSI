@@ -5193,9 +5193,20 @@ export function AppProvider({ children }) {
         const result = await runRemoteDomainCommand('support_transfer.update', commandPayload)
         const transfer = result.transfer
         if (!transfer) return { ok: false, message: 'Máy chủ không trả về phiếu điều chuyển.' }
+        const attendanceUpdates = new Map((Array.isArray(result.attendance) ? result.attendance : [])
+          .map((record) => [String(record.id || ''), record]))
+        const expenseUpdates = new Map((Array.isArray(result.expenseEntries) ? result.expenseEntries : [])
+          .map((record) => [String(record.id || ''), record]))
         setState((current) => ({
           ...current,
           supportTransfers: current.supportTransfers.map((item) => item.id === transfer.id ? transfer : item),
+          attendance: current.attendance.map((item) => attendanceUpdates.get(String(item.id || '')) || item),
+          expenseEntries: [
+            ...current.expenseEntries.map((item) => expenseUpdates.get(String(item.id || '')) || item),
+            ...[...expenseUpdates.entries()]
+              .filter(([id]) => !current.expenseEntries.some((item) => String(item.id || '') === id))
+              .map(([, item]) => item),
+          ],
         }))
         notify('Đã cập nhật điều chuyển hỗ trợ.')
         return { ok: true, transfer }
@@ -5214,7 +5225,26 @@ export function AppProvider({ children }) {
       updatedAt: new Date().toISOString(),
       updatedBy: actorSnapshot(state.session),
     }
-    updateCollection('supportTransfers', (items) => items.map((item) => item.id === transfer.id ? transfer : item))
+    setState((current) => ({
+      ...current,
+      supportTransfers: current.supportTransfers.map((item) => item.id === transfer.id ? transfer : item),
+      attendance: current.attendance.map((record) => String(record.supportTransferId || '').toLocaleLowerCase('vi-VN') === String(transfer.id || '').toLocaleLowerCase('vi-VN')
+        ? {
+            ...record,
+            supportHourlyRate: transfer.hourlySupportRate,
+            supportTransferSnapshot: {
+              ...(record.supportTransferSnapshot || {}),
+              id: transfer.id,
+              fromStoreId: transfer.fromStoreId,
+              toStoreId: transfer.toStoreId,
+              startAt: transfer.startAt,
+              endAt: transfer.endAt,
+              hourlySupportRate: transfer.hourlySupportRate,
+              allowance: transfer.allowance,
+            },
+          }
+        : record),
+    }))
     notify('Đã cập nhật điều chuyển hỗ trợ.')
     return { ok: true, transfer }
   }

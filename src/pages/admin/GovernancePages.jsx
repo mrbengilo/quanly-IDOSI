@@ -304,6 +304,7 @@ export function SupportTransfersPage() {
   const {
     stores = [],
     employees = [],
+    attendance = [],
     supportTransfers = [],
     saveSupportTransfer,
     updateSupportTransfer,
@@ -318,6 +319,11 @@ export function SupportTransfersPage() {
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteReason, setDeleteReason] = useState('')
   const employee = useMemo(() => employees.find((item) => item.id === form.employeeId), [employees, form.employeeId])
+  const editingHasAttendance = useMemo(() => {
+    if (!editingId) return false
+    const key = String(editingId).trim().toLocaleLowerCase('vi-VN')
+    return attendance.some((record) => !record.deletedAt && String(record.supportTransferId || '').trim().toLocaleLowerCase('vi-VN') === key)
+  }, [attendance, editingId])
   const availableEmployees = employees.filter((item) => String(item.unit || 'store') === 'store' && !item.deletedAt && (!form.fromStoreId || String(item.storeId) === String(form.fromStoreId)))
   const resetEditor = () => {
     setEditingId('')
@@ -367,7 +373,7 @@ export function SupportTransfersPage() {
       <Field label="Thời gian kết thúc" required hint="Mốc kết thúc không còn thuộc thời gian hỗ trợ"><Input type="datetime-local" lang="vi" step="60" min={form.startAt} value={form.endAt} onChange={(event) => setForm((current) => ({ ...current, endAt: event.target.value }))} /></Field>
       <Field label="Cửa hàng điều chuyển" required><Select value={form.fromStoreId} onChange={(event) => setForm((current) => ({ ...current, fromStoreId: event.target.value, employeeId: '', toStoreId: current.toStoreId === event.target.value ? '' : current.toStoreId }))} disabled={Boolean(editingId)}><option value="">Chọn cửa hàng đi</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
       <Field label="Nhân viên" required><Select value={form.employeeId} onChange={(event) => setForm((current) => ({ ...current, employeeId: event.target.value }))} disabled={!form.fromStoreId || Boolean(editingId)}><option value="">Chọn nhân viên</option>{availableEmployees.map((item) => <option key={item.id} value={item.id}>{item.name} — {item.id}</option>)}</Select></Field>
-      <Field label="Cửa hàng nhận hỗ trợ" required><Select value={form.toStoreId} onChange={(event) => setForm((current) => ({ ...current, toStoreId: event.target.value }))}><option value="">Chọn cửa hàng nhận</option>{stores.filter((store) => String(store.id) !== String(form.fromStoreId)).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
+      <Field label="Cửa hàng nhận hỗ trợ" required hint={editingHasAttendance ? 'Đã phát sinh chấm công; chỉ Admin được sửa thời gian, lương, phụ cấp và ghi chú.' : ''}><Select value={form.toStoreId} onChange={(event) => setForm((current) => ({ ...current, toStoreId: event.target.value }))} disabled={editingHasAttendance}><option value="">Chọn cửa hàng nhận</option>{stores.filter((store) => String(store.id) !== String(form.fromStoreId)).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
       <Field label="Lương hỗ trợ (theo giờ)" required><MoneyInput value={form.hourlySupportRate} onChange={(event) => setForm((current) => ({ ...current, hourlySupportRate: event.target.value }))} placeholder="Nhập số tiền" /></Field>
       <Field label="Phụ cấp"><MoneyInput value={form.allowance} onChange={(event) => setForm((current) => ({ ...current, allowance: event.target.value }))} placeholder="Nhập số tiền" /></Field>
       <Field label="Ghi chú" className="span-2"><textarea maxLength={500} value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} placeholder="Nội dung hỗ trợ hoặc lưu ý cho cửa hàng nhận" /></Field>

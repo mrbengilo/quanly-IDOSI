@@ -8738,13 +8738,18 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(409, 'SUPPORT_TRANSFER_DELETED', 'Điều chuyển hỗ trợ đã bị xóa.')
   }
   const canonicalTransferId = String(previous?.id || transferId).trim()
-  if (previous && (Array.isArray(state.attendance) ? state.attendance : []).some((record) => (
-    !record.deletedAt && sameIdentifier(record.supportTransferId, previous.id)
-  ))) {
+  const linkedAttendance = previous ? linkedAttendanceForSupportTransfer(state, previous) : []
+  if (linkedAttendance.length && (
+    operation === 'delete'
+    || actor.role !== 'admin'
+    || String(payload.status ?? previous.status ?? '') === 'Đã hủy'
+  )) {
     throw new ApiError(
       409,
       'SUPPORT_TRANSFER_ATTENDANCE_IMMUTABLE',
-      'Điều chuyển đã phát sinh chấm công; không thể sửa, hủy hoặc xóa.',
+      operation === 'update' && actor.role === 'admin'
+        ? 'Điều chuyển đã phát sinh chấm công; Admin chỉ được cập nhật thời gian, lương, phụ cấp và ghi chú, không được hủy.'
+        : 'Điều chuyển đã phát sinh chấm công; không thể sửa, hủy hoặc xóa.',
     )
   }
   const requestedEmployeeId = String(payload.employeeId ?? previous?.employeeId ?? '').trim()
@@ -8774,6 +8779,17 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   const toStoreId = String(destinationStore.id || requestedToStoreId).trim()
   if (sameIdentifier(fromStoreId, toStoreId)) {
     throw new ApiError(400, 'SUPPORT_STORE_INVALID', 'Cửa hàng hỗ trợ phải khác cửa hàng hiện tại của nhân viên.')
+  }
+  if (linkedAttendance.length && (
+    !sameIdentifier(employeeId, previous.employeeId)
+    || !sameIdentifier(fromStoreId, previous.fromStoreId)
+    || !sameIdentifier(toStoreId, previous.toStoreId)
+  )) {
+    throw new ApiError(
+      409,
+      'SUPPORT_TRANSFER_ATTENDANCE_SCOPE_IMMUTABLE',
+      'Điều chuyển đã phát sinh chấm công; không thể đổi nhân viên hoặc cửa hàng liên quan.',
+    )
   }
   const requestedLegacyStartDate = payload.fromDate ?? payload.startDate ?? payload.date
   const requestedLegacyEndDate = payload.toDate ?? payload.endDate ?? payload.date
@@ -8807,6 +8823,21 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   const timeBounds = supportTransferTimeBounds({ startAt, endAt })
   if (!timeBounds || timeBounds.endMs - timeBounds.startMs > 366 * 24 * 60 * 60 * 1_000) {
     throw new ApiError(400, 'TRANSFER_DATE_RANGE_INVALID', 'Khoảng điều chuyển phải theo thứ tự và không vượt quá 366 ngày.')
+  }
+  for (const record of linkedAttendance) {
+    const checkInMs = Date.parse(String(record.checkInAt || ''))
+    const checkOutMs = Date.parse(String(record.checkOutAt || ''))
+    if (!Number.isFinite(checkInMs)
+      || checkInMs < timeBounds.startMs
+      || checkInMs >= timeBounds.endMs
+      || (Number.isFinite(checkOutMs) && (checkOutMs <= checkInMs || checkOutMs > timeBounds.endMs))) {
+      throw new ApiError(
+        409,
+        'SUPPORT_TRANSFER_ATTENDANCE_BOUNDS_CONFLICT',
+        'Thời gian điều chuyển mới không bao phủ toàn bộ chấm công đã ghi nhận.',
+        { attendanceId: record.id, checkInAt: record.checkInAt, checkOutAt: record.checkOutAt || null },
+      )
+    }
   }
   const { fromDate, toDate } = supportTransferCalendarRange(timeBounds)
   const months = monthsInDateRange(fromDate, toDate)
@@ -8895,11 +8926,107 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
       ? { createdAt: commandContext.now, createdBy: serverActorSnapshot(actor) }
       : { updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor) }),
   }
-  const nextState = {
+  const linkedAttendanceIds = new Set(linkedAttendance.map((record) => String(record.id || '')))
+  const transferState = {
     ...state,
     supportTransfers: operation === 'create'
       ? [transfer, ...transfers]
       : transfers.map((record, index) => index === previousMatch.index ? transfer : record),
+  }
+  const nextAttendance = linkedAttendance.length
+    ? (Array.isArray(state.attendance) ? state.attendance : []).map((record) => {
+        if (!linkedAttendanceIds.has(String(record.id || ''))) return record
+        const refreshed = withSupportCompensation(transferState, {
+          ...record,
+          supportTransferSnapshot: {
+            ...(isPlainRecord(record.supportTransferSnapshot) ? record.supportTransferSnapshot : {}),
+            id: transfer.id,
+            fromStoreId: transfer.fromStoreId,
+            toStoreId: transfer.toStoreId,
+            startAt: transfer.startAt,
+            endAt: transfer.endAt,
+            hourlySupportRate: transfer.hourlySupportRate,
+            allowance: transfer.allowance,
+          },
+          supportHourlyRate: transfer.hourlySupportRate,
+          updatedAt: commandContext.now,
+          updatedBy: serverActorSnapshot(actor),
+        })
+        return refreshed
+      })
+    : (Array.isArray(state.attendance) ? state.attendance : [])
+  let nextExpenseEntries = Array.isArray(state.expenseEntries) ? [...state.expenseEntries] : []
+  const changedExpenseIds = new Set()
+  const changedAttendance = nextAttendance.filter((record) => linkedAttendanceIds.has(String(record.id || '')))
+  for (const record of changedAttendance) {
+    const compensation = isPlainRecord(record.supportCompensation) ? record.supportCompensation : null
+    const supportAmount = Number(compensation?.totalPay || 0)
+    const sourceRecord = linkedAttendance.find((candidate) => String(candidate.id || '') === String(record.id || ''))
+    const matchingExpenseIndexes = nextExpenseEntries.flatMap((entry, index) => (
+      String(entry?.sourceType || '') === 'support-attendance-compensation'
+      && sourceRecord
+      && mutationIdentifierReferenceMatchesRecord({
+        records: Array.isArray(state.attendance) ? state.attendance : [],
+        record: sourceRecord,
+        reference: entry?.sourceId,
+        collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+        collisionMessage: 'Chi phí hỗ trợ đang tham chiếu mơ hồ tới nhiều bản chấm công; không thể cập nhật an toàn.',
+      })
+        ? [index]
+        : []
+    ))
+    if (matchingExpenseIndexes.length > 1) {
+      throw new ApiError(
+        409,
+        'SUPPORT_COMPENSATION_EXPENSE_COLLISION',
+        'Bản chấm công đang có nhiều chi phí hỗ trợ cùng nguồn; cần đối soát dữ liệu trước khi cập nhật điều chuyển.',
+        { attendanceId: record.id },
+      )
+    }
+    const expenseIndex = matchingExpenseIndexes[0] ?? -1
+    if (supportAmount > 0) {
+      assertAccountingPeriodOpen(state, record.storeId, monthFromRecord(record))
+      const expense = {
+        ...(expenseIndex >= 0 ? nextExpenseEntries[expenseIndex] : {
+          id: `exp_support_${record.id}`,
+          storeId: record.storeId,
+          employeeId: record.employeeId,
+          attendanceId: record.id,
+          supportTransferId: transfer.id,
+          type: 'Lương ca hỗ trợ',
+          category: 'payroll-support',
+          sourceType: 'support-attendance-compensation',
+          sourceId: record.id,
+          createdAt: commandContext.now,
+          createdBy: actor.user_id,
+        }),
+        amount: supportAmount,
+        description: `Lương hỗ trợ ${record.employeeName || record.employeeId}: ${compensation.hours} giờ × ${compensation.hourlyRate} đ${compensation.allowance ? ` + ${compensation.allowance} đ phụ cấp` : ''}`,
+        recognized: true,
+        occurredAt: record.checkOutAt || record.updatedAt || commandContext.now,
+        deletedAt: null,
+        voidedAt: null,
+        updatedAt: commandContext.now,
+        updatedBy: actor.user_id,
+      }
+      if (expenseIndex >= 0) nextExpenseEntries[expenseIndex] = expense
+      else nextExpenseEntries.unshift(expense)
+      changedExpenseIds.add(String(expense.id || ''))
+    } else if (expenseIndex >= 0) {
+      nextExpenseEntries[expenseIndex] = {
+        ...nextExpenseEntries[expenseIndex],
+        recognized: false,
+        voidedAt: commandContext.now,
+        updatedAt: commandContext.now,
+        updatedBy: actor.user_id,
+      }
+      changedExpenseIds.add(String(nextExpenseEntries[expenseIndex].id || ''))
+    }
+  }
+  const nextState = {
+    ...transferState,
+    attendance: nextAttendance,
+    expenseEntries: nextExpenseEntries,
     payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
@@ -8909,8 +9036,13 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     entityId: canonicalTransferId,
     before: previous,
     after: transfer,
-    metadata: { payrollTargets },
-    response: { command: body.type, transfer },
+    metadata: { payrollTargets, linkedAttendanceIds: [...linkedAttendanceIds] },
+    response: {
+      command: body.type,
+      transfer,
+      attendance: changedAttendance,
+      expenseEntries: nextExpenseEntries.filter((entry) => changedExpenseIds.has(String(entry.id || ''))),
+    },
     status: operation === 'create' ? 201 : 200,
   }, commandContext)
 }

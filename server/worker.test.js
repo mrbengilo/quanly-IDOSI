@@ -12413,6 +12413,88 @@ describe('IDOSI Worker security primitives', () => {
     })
   }, 30_000)
 
+  it('lets Admin update an active support transfer and reconciles linked attendance compensation', async () => {
+    const transfer = {
+      id: 'TR-ACTIVE-ADMIN-EDIT', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+      startAt: '2026-08-20T01:00:00.000Z', endAt: '2026-08-20T05:00:00.000Z',
+      fromDate: '2026-08-20', toDate: '2026-08-20', hourlySupportRate: 45_000, allowance: 150_000,
+      status: 'Đã duyệt', createdAt: '2026-08-19T00:00:00.000Z',
+    }
+    const attendance = [{
+      id: 'ATT-ACTIVE-EDIT-CLOSED', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+      storeId: 'S02', homeStoreId: 'S01', supportTransferId: transfer.id,
+      date: '2026-08-20', workDate: '2026-08-20', attendanceDate: '2026-08-20',
+      checkInAt: '2026-08-20T01:10:00.000Z', checkOutAt: '2026-08-20T02:10:00.000Z',
+      workedSeconds: 3_600, hours: 1, deletedAt: null,
+    }, {
+      id: 'ATT-ACTIVE-EDIT-OPEN', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+      storeId: 'S02', homeStoreId: 'S01', supportTransferId: transfer.id,
+      date: '2026-08-20', workDate: '2026-08-20', attendanceDate: '2026-08-20',
+      checkInAt: '2026-08-20T03:00:00.000Z', checkOutAt: null,
+      workedSeconds: 0, hours: 0, deletedAt: null,
+    }]
+    const expenseEntries = [{
+      id: 'exp_support_ATT-ACTIVE-EDIT-CLOSED', storeId: 'S02', employeeId: 'E01',
+      attendanceId: attendance[0].id, supportTransferId: transfer.id,
+      type: 'Lương ca hỗ trợ', category: 'payroll-support', amount: 195_000,
+      sourceType: 'support-attendance-compensation', sourceId: attendance[0].id,
+      recognized: true, occurredAt: attendance[0].checkOutAt,
+    }]
+    const { env, adminAuthorization, supportAuthorization } = await setupSupportTransferRuntime({
+      token: 'bootstrap-active-transfer-admin-edit', transfer, attendance, expenseEntries,
+    })
+
+    const supportDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.update', expectedVersion: 1,
+      payload: { transferId: transfer.id, hourlySupportRate: 50_000 },
+    }, { ...supportAuthorization, 'idempotency-key': 'active-transfer-support-edit-denied-0001' }), env)
+    expect(supportDenied.status).toBe(409)
+    expect(await supportDenied.json()).toMatchObject({ error: { code: 'SUPPORT_TRANSFER_ATTENDANCE_IMMUTABLE' } })
+
+    const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.update', expectedVersion: 1,
+      payload: {
+        transferId: transfer.id,
+        startAt: '2026-08-20T00:30:00.000Z', endAt: '2026-08-20T06:00:00.000Z',
+        hourlySupportRate: 50_000, allowance: 200_000, note: 'Admin cập nhật ca đang hoạt động',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'active-transfer-admin-edit-0001' }), env)
+    expect(updated.status).toBe(200)
+    expect(await updated.json()).toMatchObject({
+      version: 2,
+      transfer: {
+        id: transfer.id, startAt: '2026-08-20T00:30:00.000Z', endAt: '2026-08-20T06:00:00.000Z',
+        hourlySupportRate: 50_000, allowance: 200_000, note: 'Admin cập nhật ca đang hoạt động',
+      },
+      attendance: expect.arrayContaining([
+        expect.objectContaining({
+          id: attendance[0].id, supportHourlyRate: 50_000, supportActualPay: 250_000,
+          supportTransferSnapshot: expect.objectContaining({ hourlySupportRate: 50_000, allowance: 200_000 }),
+        }),
+        expect.objectContaining({
+          id: attendance[1].id, supportHourlyRate: 50_000,
+          supportTransferSnapshot: expect.objectContaining({ endAt: '2026-08-20T06:00:00.000Z' }),
+        }),
+      ]),
+      expenseEntries: [expect.objectContaining({
+        id: expenseEntries[0].id, amount: 250_000, recognized: true,
+      })],
+    })
+    const state = readHydratedState(env.DB.database)
+    expect(state.supportTransfers[0]).toMatchObject({ hourlySupportRate: 50_000, allowance: 200_000 })
+    expect(state.attendance.find(({ id }) => id === attendance[0].id)).toMatchObject({
+      supportHourlyRate: 50_000, supportActualPay: 250_000,
+    })
+    expect(state.expenseEntries.find(({ id }) => id === expenseEntries[0].id)).toMatchObject({ amount: 250_000 })
+
+    const deleteDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_transfer.delete', expectedVersion: 2,
+      payload: { transferId: transfer.id, reason: 'Không được xóa ca đã chấm công' },
+    }, { ...adminAuthorization, 'idempotency-key': 'active-transfer-admin-delete-denied-0001' }), env)
+    expect(deleteDenied.status).toBe(409)
+    expect(await deleteDenied.json()).toMatchObject({ error: { code: 'SUPPORT_TRANSFER_ATTENDANCE_IMMUTABLE' } })
+  }, 30_000)
+
   it('checks into an overnight support transfer using the exact previous-day start instant', async () => {
     vi.useFakeTimers()
     try {
