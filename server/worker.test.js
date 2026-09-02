@@ -2492,6 +2492,140 @@ describe('IDOSI Worker security primitives', () => {
     expect(JSON.stringify(employeeProjection)).not.toMatch(/77000000|Hồ sơ HTKD gốc|Hồ sơ HTKD khác/u)
   })
 
+  it('projects an Admin store workspace without loading another store operational data', () => {
+    const selected = (id, extra = {}) => ({ id: `${id}-S01`, storeId: 'S01', employeeId: 'E01', ...extra })
+    const foreign = (id, extra = {}) => ({
+      id: `${id}-S02`, storeId: 'S02', employeeId: 'E02', note: 'FOREIGN_STORE_SECRET', ...extra,
+    })
+    const state = {
+      schemaVersion: 2,
+      stateVersion: 12,
+      stores: [
+        { id: 'S01', name: 'Cửa hàng 1', revenue: 1_000_000 },
+        { id: 'S02', name: 'Cửa hàng 2', revenue: 99_999_999, privateNote: 'FOREIGN_STORE_SECRET' },
+      ],
+      employees: [
+        { id: 'E01', storeId: 'S01', unit: 'store', name: 'Nhân viên cửa hàng 1' },
+        { id: 'E02', storeId: 'S02', unit: 'store', name: 'FOREIGN_STORE_SECRET' },
+        { id: 'E-INBOUND', storeId: 'S02', unit: 'store', name: 'Nhân viên hỗ trợ hợp lệ' },
+      ],
+      supportTransfers: [
+        {
+          id: 'TRANSFER-INBOUND', employeeId: 'E-INBOUND', fromStoreId: 'S02', toStoreId: 'S01',
+          startAt: '2020-01-01T00:00:00.000Z', endAt: '2099-01-01T00:00:00.000Z', status: 'Đang hỗ trợ',
+        },
+        {
+          id: 'TRANSFER-FOREIGN', employeeId: 'E02', fromStoreId: 'S02', toStoreId: 'S03',
+          startAt: '2020-01-01T00:00:00.000Z', endAt: '2099-01-01T00:00:00.000Z', status: 'Đang hỗ trợ',
+          note: 'FOREIGN_STORE_SECRET',
+        },
+      ],
+      attendance: [selected('ATT'), foreign('ATT'), selected('ATT-INBOUND', { employeeId: 'E-INBOUND' })],
+      schedule: [selected('SCHEDULE'), foreign('SCHEDULE')],
+      tasks: [selected('TASK'), foreign('TASK')],
+      taskAssignmentHistory: [selected('TASK-HISTORY'), foreign('TASK-HISTORY')],
+      salaryAdjustments: [selected('ADJUSTMENT'), foreign('ADJUSTMENT')],
+      salaryAdvances: [selected('ADVANCE'), foreign('ADVANCE')],
+      payrollPeriods: [
+        selected('PAYROLL', { period: '2026-09', rows: [{ employeeId: 'E01', gross: 1_000_000 }] }),
+        foreign('PAYROLL', { period: '2026-09', rows: [{ employeeId: 'E02', gross: 99_999_999 }] }),
+      ],
+      payrollPayments: [selected('PAYMENT'), foreign('PAYMENT')],
+      storeEmployeeSalaryConfigs: [selected('SALARY-CONFIG'), foreign('SALARY-CONFIG')],
+      workCatalogItems: [
+        { id: 'CATALOG-GLOBAL', targetGroup: 'store' },
+        { id: 'CATALOG-S01', targetGroup: 'store', storeId: 'S01' },
+        { id: 'CATALOG-S02', targetGroup: 'store', storeId: 'S02', note: 'FOREIGN_STORE_SECRET' },
+      ],
+      workCatalogProgress: [selected('WORK-PROGRESS'), foreign('WORK-PROGRESS')],
+      storeShiftTaskTemplates: [
+        { id: 'TEMPLATE-GLOBAL' }, selected('TEMPLATE'), foreign('TEMPLATE'),
+      ],
+      compensationEntries: [
+        selected('COMPENSATION', { type: 'MANUAL', period: '2026-09', status: 'approved', amountVnd: 100_000 }),
+        foreign('COMPENSATION', { type: 'MANUAL', period: '2026-09', status: 'approved', amountVnd: 90_000_000 }),
+      ],
+      violations: [selected('VIOLATION'), foreign('VIOLATION')],
+      violationRefunds: [selected('REFUND'), foreign('REFUND')],
+      revenueBonusDaily: [selected('REVENUE'), foreign('REVENUE')],
+      revenueBonusAllocations: [selected('ALLOCATION'), foreign('ALLOCATION')],
+      teamRewardClaims: [selected('CLAIM'), foreign('CLAIM')],
+      teamRewardParticipants: [selected('PARTICIPANT'), foreign('PARTICIPANT')],
+      periodReconciliations: [selected('RECONCILIATION'), foreign('RECONCILIATION')],
+      jobRuns: [selected('JOB'), foreign('JOB')],
+      shiftDefinitions: [selected('SHIFT'), foreign('SHIFT')],
+      orders: [selected('ORDER'), foreign('ORDER')],
+      expenseEntries: [selected('EXPENSE'), foreign('EXPENSE')],
+      fixedExpenses: [selected('FIXED'), foreign('FIXED')],
+      cashTransactions: [selected('CASH'), foreign('CASH')],
+      importVouchers: [selected('VOUCHER'), foreign('VOUCHER')],
+      imports: [selected('IMPORT'), foreign('IMPORT')],
+      notifications: [selected('NOTICE'), foreign('NOTICE')],
+      deletedEmployees: [
+        { id: 'E01-DELETED', storeId: 'S01', unit: 'store' },
+        { id: 'E02-DELETED', storeId: 'S02', unit: 'store', name: 'FOREIGN_STORE_SECRET' },
+      ],
+    }
+
+    const projection = projectSharedState(state, { role: 'admin', user_id: 'ADMIN-1' }, { storeId: 'S01' })
+
+    expect(projection.activeStoreId).toBe('S01')
+    expect(projection.employees.map(({ id }) => id)).toEqual(['E01', 'E-INBOUND'])
+    expect(projection.attendance.map(({ id }) => id)).toEqual(['ATT-S01', 'ATT-INBOUND-S01'])
+    expect(projection.compensationEntries.map(({ id }) => id)).toEqual(['COMPENSATION-S01'])
+    expect(projection.violations.map(({ id }) => id)).toEqual(['VIOLATION-S01'])
+    expect(projection.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
+    expect(projection.storeShiftTaskTemplates.map(({ id }) => id)).toEqual(['TEMPLATE-GLOBAL', 'TEMPLATE-S01'])
+    expect(projection.supportTransfers.map(({ id }) => id)).toEqual(['TRANSFER-INBOUND'])
+    expect(projection.stores).toEqual([
+      expect.objectContaining({ id: 'S01', revenue: 1_000_000 }),
+      { id: 'S02', name: 'Cửa hàng 2' },
+    ])
+    expect(JSON.stringify(projection)).not.toContain('FOREIGN_STORE_SECRET')
+    expect(JSON.stringify(projection).length).toBeLessThan(JSON.stringify(projectSharedState(state, { role: 'admin' })).length)
+  })
+
+  it('serves the selected store projection from the authenticated state endpoint', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-store-workspace-projection' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.store.scope', password: 'store-workspace-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 1' }, { id: 'S02', name: 'Cửa hàng 2' }],
+        employees: [
+          { id: 'E01', storeId: 'S01', unit: 'store', name: 'Nhân viên 1' },
+          { id: 'E02', storeId: 'S02', unit: 'store', name: 'Nhân viên 2' },
+        ],
+        orders: [
+          { id: 'ORDER-S01', storeId: 'S01', employeeId: 'E01' },
+          { id: 'ORDER-S02', storeId: 'S02', employeeId: 'E02' },
+        ],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.store.scope', password: 'store-workspace-password',
+    }), env)
+    const loginBody = await login.json()
+    const authorization = { authorization: `Bearer ${loginBody.token}` }
+
+    const response = await worker.fetch(new Request(
+      'https://idosi.example/api/state?scope=global&view=store&storeId=S01',
+      { headers: authorization },
+    ), env)
+    expect(response.status).toBe(200)
+    const payload = await response.json()
+    expect(payload).toMatchObject({ projection: 'store', storeId: 'S01', state: { activeStoreId: 'S01' } })
+    expect(payload.state.employees.map(({ id }) => id)).toEqual(['E01'])
+    expect(payload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
+
+    const missingStore = await worker.fetch(new Request(
+      'https://idosi.example/api/state?scope=global&view=store&storeId=S99',
+      { headers: authorization },
+    ), env)
+    expect(missingStore.status).toBe(400)
+    expect(await missingStore.json()).toMatchObject({ error: { code: 'STORE_INVALID' } })
+  })
+
   it('preserves SPA fallback and exposes a no-cache API health response', async () => {
     const html = '<!doctype html><div id="root"></div>'
     const env = {

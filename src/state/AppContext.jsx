@@ -58,6 +58,7 @@ import {
   apiCommand,
   apiGetAccountAvatar,
   apiGetState,
+  apiGetStoreWorkspaceState,
   apiGetStateMetadata,
   apiLogin,
   apiSelectSessionRole,
@@ -1103,6 +1104,12 @@ const rememberActiveStore = (account, storeId) => {
   }
 }
 
+const browserUsesStoreWorkspace = () => {
+  if (typeof window === 'undefined') return false
+  const route = String(window.location?.hash || '').replace(/^#/u, '').split('?')[0]
+  return route === '/store' || route.startsWith('/store/')
+}
+
 const accountKey = (account = {}) => String(account.id || account.code || account.employeeCode || '')
 
 const toSession = (account, source) => {
@@ -1493,6 +1500,7 @@ export function AppProvider({ children }) {
   const [sessionRestoreReady, setSessionRestoreReady] = useState(() => !hasApiSession())
   const [apiStatus, setApiStatus] = useState('local')
   const [remoteDataReady, setRemoteDataReady] = useState(true)
+  const [remoteProjection, setRemoteProjection] = useState({ kind: 'local', storeId: '' })
   const [attendanceCheckoutRequests, setAttendanceCheckoutRequests] = useState({})
   const apiRef = useRef({
     enabled: false,
@@ -1507,6 +1515,12 @@ export function AppProvider({ children }) {
     timer: null,
     lastStateReferences: {},
     fullStateReady: false,
+    projection: 'local',
+    projectionStoreId: '',
+    projectionRequestId: 0,
+    pendingProjectionKey: '',
+    pendingProjectionPromise: null,
+    domainReconciliations: 0,
     systemResetIdempotencyKey: null,
   })
   const localAttendanceCheckInClaimsRef = useRef(new Set())
@@ -1545,6 +1559,10 @@ export function AppProvider({ children }) {
     remote.version = Number(payload.version || 0)
     remote.hydratedVersion = Number(payload.version || 0)
     remote.fullStateReady = payload.partial !== true
+    remote.projection = payload.projection === 'store' ? 'store' : 'global'
+    remote.projectionStoreId = remote.projection === 'store'
+      ? String(payload.storeId || hydrated.activeStoreId || '')
+      : ''
     if (Array.isArray(payload.policies)) {
       remote.policyVersions = Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
     }
@@ -1556,70 +1574,155 @@ export function AppProvider({ children }) {
     }
     setApiStatus('connected')
     setRemoteDataReady(remote.fullStateReady)
+    setRemoteProjection({ kind: remote.projection, storeId: remote.projectionStoreId })
     rememberActiveStore(remoteUser, hydrated.activeStoreId)
     activeStoreIdRef.current = hydrated.activeStoreId
     setState(hydrated)
     return hydrated.session
   }, [])
 
-  const hydrateCompleteRemoteState = useCallback(async (expectedUser, preferredActiveStoreId = null) => {
-    let payload = await apiBootstrapState('global')
+  const loadCompleteRemoteProjection = useCallback((expectedUser, {
+    kind = 'global',
+    storeId = '',
+    preferredActiveStoreId = null,
+    force = false,
+    blocking = true,
+    bootstrap = false,
+  } = {}) => {
+    const normalizedKind = kind === 'store' ? 'store' : 'global'
+    const normalizedStoreId = normalizedKind === 'store' ? String(storeId || '').trim() : ''
+    const projectionKey = normalizedKind === 'store' ? `store:${normalizedStoreId}` : 'global'
     let remote = apiRef.current
     const expectedUserId = String(expectedUser?.id || '')
-    if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
-    // A home-screen command can commit while the initial full projection is
-    // still downloading. Never let that older response roll the rendered
-    // version backwards; replace it with a fresh authoritative projection.
-    if (Number(payload.version || 0) < Number(remote.version || 0)) {
-      payload = await apiGetState('global')
+    if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) {
+      return Promise.resolve(null)
+    }
+    if (!force && remote.fullStateReady
+      && remote.projection === normalizedKind
+      && (normalizedKind !== 'store' || sameIdentifier(remote.projectionStoreId, normalizedStoreId))) {
+      return Promise.resolve(null)
+    }
+    if (remote.pendingProjectionKey === projectionKey && remote.pendingProjectionPromise) {
+      return remote.pendingProjectionPromise
+    }
+    const requestId = ++remote.projectionRequestId
+    if (blocking) {
+      remote.fullStateReady = false
+      setRemoteDataReady(false)
+    }
+    const readProjection = () => normalizedKind === 'store'
+      ? apiGetStoreWorkspaceState(normalizedStoreId)
+      : apiGetState('global')
+    const request = (async () => {
+      let payload = normalizedKind === 'global' && bootstrap
+        ? await apiBootstrapState('global')
+        : await readProjection()
       remote = apiRef.current
-      if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
-    }
-    if (canListAccounts(payload.user?.role)) {
-      const users = await apiListUsers()
-      payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
-    }
-    remote = apiRef.current
-    if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
-    if (Number(payload.version || 0) < Number(remote.version || 0)) return null
-    activateRemotePayload(payload, payload.user || expectedUser, preferredActiveStoreId || activeStoreIdRef.current)
-    return payload
+      if (!remote.enabled
+        || requestId !== remote.projectionRequestId
+        || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+      // A command can commit while a projection is downloading. Replace an
+      // older response before it can roll the rendered version backwards.
+      if (Number(payload.version || 0) < Number(remote.version || 0)) {
+        payload = await readProjection()
+        remote = apiRef.current
+        if (!remote.enabled
+          || requestId !== remote.projectionRequestId
+          || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+      }
+      if (normalizedKind === 'global' && canListAccounts(payload.user?.role)) {
+        const users = await apiListUsers()
+        payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
+      }
+      remote = apiRef.current
+      if (!remote.enabled
+        || requestId !== remote.projectionRequestId
+        || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)
+        || Number(payload.version || 0) < Number(remote.version || 0)) return null
+      activateRemotePayload(
+        payload,
+        payload.user || expectedUser,
+        preferredActiveStoreId || normalizedStoreId || activeStoreIdRef.current,
+      )
+      return payload
+    })().finally(() => {
+      const current = apiRef.current
+      if (current.pendingProjectionPromise === request) {
+        current.pendingProjectionKey = ''
+        current.pendingProjectionPromise = null
+      }
+    })
+    remote.pendingProjectionKey = projectionKey
+    remote.pendingProjectionPromise = request
+    return request
   }, [activateRemotePayload])
+
+  const hydrateCompleteRemoteState = useCallback((expectedUser, preferredActiveStoreId = null) => {
+    const preferredStoreId = preferredActiveStoreId
+      || activeStoreIdRef.current
+      || readRememberedActiveStore(expectedUser)
+    const useStoreProjection = isSystemRole(expectedUser?.role)
+      && browserUsesStoreWorkspace()
+      && Boolean(preferredStoreId)
+    return loadCompleteRemoteProjection(expectedUser, {
+      kind: useStoreProjection ? 'store' : 'global',
+      storeId: useStoreProjection ? preferredStoreId : '',
+      preferredActiveStoreId: preferredStoreId,
+      bootstrap: !useStoreProjection,
+    })
+  }, [loadCompleteRemoteProjection])
+
+  const ensureStoreWorkspaceData = useCallback((storeId, options = {}) => {
+    const remote = apiRef.current
+    if (!remote.enabled || !isSystemRole(remote.role) || !String(storeId || '').trim()) return Promise.resolve(null)
+    return loadCompleteRemoteProjection(remote.user, {
+      kind: 'store',
+      storeId,
+      preferredActiveStoreId: storeId,
+      ...options,
+    })
+  }, [loadCompleteRemoteProjection])
+
+  const ensureSystemWorkspaceData = useCallback((options = {}) => {
+    const remote = apiRef.current
+    if (!remote.enabled || !isSystemRole(remote.role)) return Promise.resolve(null)
+    return loadCompleteRemoteProjection(remote.user, {
+      kind: 'global',
+      preferredActiveStoreId: activeStoreIdRef.current,
+      ...options,
+    })
+  }, [loadCompleteRemoteProjection])
 
   const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`) => {
     const remote = apiRef.current
+    const reconcileProjection = ({ blocking = false } = {}) => loadCompleteRemoteProjection(remote.user, {
+      kind: remote.projection === 'store' ? 'store' : 'global',
+      storeId: remote.projectionStoreId,
+      preferredActiveStoreId: activeStoreIdRef.current,
+      force: true,
+      blocking,
+    })
     try {
       const result = await apiCommand(type, payload, {
         expectedVersion: remote.version,
         idempotencyKey,
       })
       remote.version = Number(result.version)
-      if (remote.role === 'admin') {
-        // Admin still has a small number of legacy local mutations that are
-        // persisted through a whole-state replace. Applying a domain-command
-        // refresh in the background could race with that snapshot and lose one
-        // of the two writes, so keep the ordered reconciliation for Admin.
-        const latest = await apiGetState('global')
-        activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
-        return result
-      }
       // The mutation is already durable when POST resolves. Do not keep the
-      // Save/Create button blocked behind another full shared-state download.
-      // Reconcile in the background; discard a response if a newer mutation
-      // completed while it was in flight.
-      const committedVersion = Number(result.version || 0)
-      void apiGetState('global').then((latest) => {
-        if (Number(latest?.version || 0) < Number(remote.version || committedVersion)) return
-        activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
-      }).catch(() => {
+      // Save/Create button blocked behind projection download or JSON parsing.
+      // Reconcile the current workspace in the background. Admin's legacy
+      // snapshot synchronizer pauses during this authoritative refresh.
+      remote.domainReconciliations += 1
+      void reconcileProjection().catch(() => {
         setApiStatus('error')
+      }).finally(() => {
+        remote.domainReconciliations = Math.max(0, remote.domainReconciliations - 1)
       })
       return result
     } catch (error) {
       if (error.code === 'VERSION_CONFLICT') {
         try {
-          const latest = await apiGetState('global')
-          activateRemotePayload(latest, remote.user, activeStoreIdRef.current)
+          await reconcileProjection({ blocking: true })
         } catch {
           setApiStatus('error')
         }
@@ -1727,7 +1830,9 @@ export function AppProvider({ children }) {
   useEffect(() => {
     const remote = apiRef.current
     const role = normalizeAuthRole(state.session?.role)
-    if (!credentialsReady || !remote.enabled || !remote.fullStateReady || !state.session || !['business_support', 'store_manager', 'employee'].includes(role)) return undefined
+    const scopedAdmin = role === 'admin' && remote.projection === 'store'
+    if (!credentialsReady || !remote.enabled || !remote.fullStateReady || !state.session
+      || (!scopedAdmin && !['business_support', 'store_manager', 'employee'].includes(role))) return undefined
     let active = true
     let busy = false
     let pendingForce = false
@@ -1762,10 +1867,16 @@ export function AppProvider({ children }) {
           && metadataUserVersion !== Number(remote.user?.version || 0)
         const metadataChanged = forceRefresh || stateVersionAdvanced || policiesChanged || userChanged
         if (!active || !metadataChanged) return
-        const latest = await apiGetState('global')
+        const requestedProjection = remote.projection
+        const requestedStoreId = remote.projectionStoreId
+        const latest = requestedProjection === 'store'
+          ? await apiGetStoreWorkspaceState(requestedStoreId)
+          : await apiGetState('global')
+        if (remote.projection !== requestedProjection
+          || (requestedProjection === 'store' && !sameIdentifier(remote.projectionStoreId, requestedStoreId))) return
         const effectiveUserChanged = remoteEffectiveUserChanged(remote.user, latest.user)
         if (!forceRefresh && !metadataChanged && !effectiveUserChanged) return
-        if (metadataChanged && canListAccounts(role)) {
+        if (requestedProjection === 'global' && metadataChanged && canListAccounts(role)) {
           const users = await apiListUsers()
           latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
         }
@@ -1794,7 +1905,7 @@ export function AppProvider({ children }) {
       if (boundaryTimer != null) window.clearTimeout(boundaryTimer)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [activateRemotePayload, credentialsReady, state.activeStoreId, state.session, state.supportTransfers])
+  }, [activateRemotePayload, credentialsReady, remoteProjection, state.activeStoreId, state.session, state.supportTransfers])
 
   useEffect(() => {
     if (credentialsReady) return undefined
@@ -1841,8 +1952,13 @@ export function AppProvider({ children }) {
 
   useEffect(() => {
     const remote = apiRef.current
-    if (!credentialsReady || !remote.enabled || !remote.fullStateReady || remote.role !== 'admin' || !state.session) return undefined
+    if (!credentialsReady || !remote.enabled || !remote.fullStateReady
+      || remote.projection !== 'global' || remote.role !== 'admin' || !state.session) return undefined
     const delta = sharedStateDelta(state, remote.lastStateReferences)
+    if (remote.domainReconciliations > 0) {
+      remote.lastStateReferences = delta.references
+      return undefined
+    }
     if (remote.suppressNext) {
       remote.suppressNext = false
       remote.lastStateReferences = delta.references
@@ -2049,12 +2165,19 @@ export function AppProvider({ children }) {
     apiRef.current.version = 0
     apiRef.current.hydratedVersion = 0
     apiRef.current.fullStateReady = false
+    apiRef.current.projection = 'local'
+    apiRef.current.projectionStoreId = ''
+    apiRef.current.projectionRequestId += 1
+    apiRef.current.pendingProjectionKey = ''
+    apiRef.current.pendingProjectionPromise = null
+    apiRef.current.domainReconciliations = 0
     apiRef.current.pending = null
     apiRef.current.suppressNext = false
     apiRef.current.lastStateReferences = {}
     window.clearTimeout(apiRef.current.timer)
     setApiStatus('local')
     setRemoteDataReady(true)
+    setRemoteProjection({ kind: 'local', storeId: '' })
     if (wasRemote) {
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem(STORAGE_KEY)
@@ -2077,6 +2200,9 @@ export function AppProvider({ children }) {
     rememberActiveStore(apiRef.current.user || state.session, id)
     activeStoreIdRef.current = id
     setState((current) => ({ ...current, activeStoreId: id }))
+    if (browserUsesStoreWorkspace() && apiRef.current.enabled && isSystemRole(apiRef.current.role)) {
+      void ensureStoreWorkspaceData(id).catch(() => setApiStatus('error'))
+    }
     return true
   }
 
@@ -5864,6 +5990,7 @@ export function AppProvider({ children }) {
     currentEmployee,
     authReady: sessionRestoreReady,
     remoteDataReady,
+    remoteProjection,
     apiStatus,
     toast,
     notify,
@@ -5873,6 +6000,8 @@ export function AppProvider({ children }) {
     logout,
     setActiveStoreId,
     setActiveStore: setActiveStoreId,
+    ensureStoreWorkspaceData,
+    ensureSystemWorkspaceData,
     addStore,
     updateStore,
     deleteStore,

@@ -140,6 +140,14 @@ export const apiGetState = (scope = 'global', options = {}) => stateReadRequest(
   `/api/state?scope=${encodeURIComponent(scope)}`,
   options,
 )
+export const apiGetStoreWorkspaceState = (storeId, options = {}) => {
+  const query = new URLSearchParams({
+    scope: 'global',
+    view: 'store',
+    storeId: String(storeId || ''),
+  })
+  return stateReadRequest(`/api/state?${query.toString()}`, options)
+}
 export const apiGetStateMetadata = (scope = 'global') => request(`/api/state-metadata?scope=${encodeURIComponent(scope)}`)
 export const apiGetRevenueBonusLive = ({ storeId, businessDate }) => {
   const query = new URLSearchParams({

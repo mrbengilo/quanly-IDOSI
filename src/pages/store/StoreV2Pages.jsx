@@ -283,6 +283,8 @@ const workEntryMatchesPayrollStore = ({
   transfers,
   storeReferenceMatches,
   allowedSupportTransferIds = null,
+  matchAttendance = null,
+  matchSupportTransfer = null,
 }) => {
   if (entryType(entry) !== 'WORK') return false
   const supportStoreId = compactIdentifier(entry?.supportStoreId)
@@ -290,23 +292,24 @@ const workEntryMatchesPayrollStore = ({
   const employeeReferences = employeeIdentifierValues(employee)
   let transferStoreId = ''
   if (transferId) {
-    const employeeTransfers = transfers.filter((transfer) => (
-      employeeReferences.some((reference) => sameOperationalIdentifier(transfer?.employeeId, reference))
-    ))
-    const transferMatch = operationalIdentifierRecordMatch(employeeTransfers, transferId, (transfer) => [transfer?.id])
-    if (transferMatch.ambiguous) return false
+    const transferMatch = matchSupportTransfer
+      ? matchSupportTransfer(transferId)
+      : operationalIdentifierRecordMatch(transfers, transferId, (transfer) => [transfer?.id])
+    if (transferMatch.ambiguous || (transferMatch.record && !employeeReferences.some((reference) => (
+      sameOperationalIdentifier(transferMatch.record.employeeId, reference)
+    )))) return false
     transferStoreId = compactIdentifier(transferMatch.record?.toStoreId)
   }
   const attendanceId = compactIdentifier(entry?.attendanceId)
   let attendanceStoreId = ''
   let attendanceTransferId = ''
   if (attendanceId) {
-    const employeeAttendance = attendanceRecords.filter((record) => (
-      employeeReferences.some((reference) => sameOperationalIdentifier(attendanceEmployeeReference(record), reference))
-      && (!transferId || sameOperationalIdentifier(record?.supportTransferId, transferId))
-    ))
-    const match = operationalIdentifierRecordMatch(employeeAttendance, attendanceId, (record) => [record?.id])
-    if (match.ambiguous || !match.record) return false
+    const match = matchAttendance
+      ? matchAttendance(attendanceId)
+      : operationalIdentifierRecordMatch(attendanceRecords, attendanceId, (record) => [record?.id])
+    if (match.ambiguous || !match.record
+      || !employeeReferences.some((reference) => sameOperationalIdentifier(attendanceEmployeeReference(match.record), reference))
+      || (transferId && !sameOperationalIdentifier(match.record.supportTransferId, transferId))) return false
     attendanceStoreId = compactIdentifier(match.record.storeId)
     attendanceTransferId = compactIdentifier(match.record.supportTransferId)
   }
@@ -990,6 +993,8 @@ export function StorePayrollV2() {
     (item) => item.id,
   )
   const matchEmployee = createOperationalIdentifierResolver(employees, employeeIdentifierValues)
+  const matchAttendance = createOperationalIdentifierResolver(attendance, (record) => [record?.id])
+  const matchSupportTransfer = createOperationalIdentifierResolver(supportTransfers, (record) => [record?.id])
   const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store'
     && !employee.deletedAt
     && storeReferenceMatches(employee.storeId)
@@ -1028,6 +1033,13 @@ export function StorePayrollV2() {
     }
     return { record, employee: match.ambiguous ? null : match.record }
   })
+  const attendanceByEmployee = new Map()
+  attendanceLinks.forEach(({ record, employee }) => {
+    if (!employee) return
+    const records = attendanceByEmployee.get(employee)
+    if (records) records.push(record)
+    else attendanceByEmployee.set(employee, [record])
+  })
   const inboundSupportEmployees = new Set(attendanceLinks
     .filter(({ record, employee }) => employee
       && !employee.deletedAt
@@ -1038,13 +1050,14 @@ export function StorePayrollV2() {
     ...scopedEmployees,
     ...employees.filter((employee) => inboundSupportEmployees.has(employee) && !scopedEmployees.includes(employee)),
   ]
+  const liveParticipantSet = new Set(liveParticipants)
   const selectedStoreManagerAttendance = new Set(attendanceLinks
     .filter(({ employee }) => employee
       && isStoreManagerProfile(employee)
       && storeReferenceMatches(employee.storeId))
     .map(({ employee }) => employee))
   if (attendanceLinks.some(({ employee }) => employee
-    && !liveParticipants.includes(employee)
+    && !liveParticipantSet.has(employee)
     && !selectedStoreManagerAttendance.has(employee))) {
     payrollPreviewError ||= Object.assign(new Error('ATTENDANCE_EMPLOYEE_OUT_OF_SCOPE'), {
       code: 'ATTENDANCE_EMPLOYEE_OUT_OF_SCOPE',
@@ -1066,33 +1079,69 @@ export function StorePayrollV2() {
         return { employee: match.record, snapshotRow }
       }).filter(Boolean)
     : liveParticipants.map((employee) => ({ employee, snapshotRow: null }))
-  const employeeSources = (sources, employee, isRelevant, referenceOf = entryEmployeeId) => sources.filter((item) => {
-    if (!isRelevant(item)) return false
-    const reference = referenceOf(item)
-    const match = matchEmployee(reference)
-    const explicitlyScopedToStore = Boolean(compactIdentifier(item.storeId)) && storeReferenceMatches(item.storeId)
-    if (!reference || match.ambiguous || !match.record) {
-      if (explicitlyScopedToStore) {
-        payrollPreviewError ||= Object.assign(new Error('PAYROLL_SOURCE_EMPLOYEE_IDENTIFIER_INVALID'), {
-          code: match.ambiguous ? 'EMPLOYEE_IDENTIFIER_COLLISION' : 'PAYROLL_SOURCE_EMPLOYEE_NOT_FOUND',
-        })
+  const groupEmployeeSources = (sources, isRelevant, referenceOf = entryEmployeeId) => {
+    const grouped = new Map()
+    if (immutableSnapshotRows || payrollPreviewError) return grouped
+    sources.forEach((item) => {
+      if (!isRelevant(item)) return
+      const reference = referenceOf(item)
+      const match = matchEmployee(reference)
+      const explicitlyScopedToStore = Boolean(compactIdentifier(item.storeId)) && storeReferenceMatches(item.storeId)
+      if (!reference || match.ambiguous || !match.record) {
+        if (explicitlyScopedToStore) {
+          payrollPreviewError ||= Object.assign(new Error('PAYROLL_SOURCE_EMPLOYEE_IDENTIFIER_INVALID'), {
+            code: match.ambiguous ? 'EMPLOYEE_IDENTIFIER_COLLISION' : 'PAYROLL_SOURCE_EMPLOYEE_NOT_FOUND',
+          })
+        }
+        return
       }
-      return false
-    }
-    if (!immutableSnapshotRows && !liveParticipants.includes(match.record)) {
-      if (explicitlyScopedToStore) {
-        payrollPreviewError ||= Object.assign(new Error('PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE'), {
-          code: 'PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE',
-        })
+      if (!liveParticipantSet.has(match.record)) {
+        if (explicitlyScopedToStore) {
+          payrollPreviewError ||= Object.assign(new Error('PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE'), {
+            code: 'PAYROLL_SOURCE_EMPLOYEE_OUT_OF_SCOPE',
+          })
+        }
+        return
       }
-      return false
-    }
-    return match.record === employee
-  })
+      const records = grouped.get(match.record)
+      if (records) records.push(item)
+      else grouped.set(match.record, [item])
+    })
+    return grouped
+  }
+  const salaryAdjustmentsByEmployee = groupEmployeeSources(
+    salaryAdjustments,
+    (item) => item.period === period
+      && item.status !== 'Đã hủy'
+      && !item.deletedAt
+      && (!item.storeId || storeReferenceMatches(item.storeId)),
+    (item) => compactIdentifier(item.employeeId || item.employeeCode),
+  )
+  const compensationEntriesByEmployee = groupEmployeeSources(
+    compensationEntries,
+    (item) => entryDate(item).startsWith(period),
+  )
+  const revenueAllocationsByEmployee = groupEmployeeSources(
+    revenueBonusAllocations,
+    (item) => entryDate(item).startsWith(period)
+      && (!item.storeId || storeReferenceMatches(item.storeId)),
+  )
+  const violationsByEmployee = groupEmployeeSources(
+    compensationViolations,
+    (item) => entryDate(item).startsWith(period)
+      && (!item.storeId || storeReferenceMatches(item.storeId)),
+  )
+  const salaryAdvancesByEmployee = groupEmployeeSources(
+    salaryAdvances,
+    (item) => item.period === period
+      && item.status === 'Đã chi'
+      && (!item.storeId || storeReferenceMatches(item.storeId)),
+    (item) => compactIdentifier(item.employeeId || item.employeeCode),
+  )
   const previewRows = payrollPreviewError ? [] : participantRows.flatMap(({ employee, snapshotRow }, index) => {
     const records = snapshotRow
       ? []
-      : attendanceLinks.filter((item) => item.employee === employee).map((item) => item.record)
+      : attendanceByEmployee.get(employee) || []
     const supportDetails = snapshotRow
       ? []
       : records.map((record) => attendancePayDetails(record, employee, supportTransfers))
@@ -1141,25 +1190,15 @@ export function StorePayrollV2() {
       : !snapshotRow && !inboundSupport && Number(employee.requiredMonthlyHours) > 0
         ? Math.floor(getMonthlySalary(employee) / Number(employee.requiredMonthlyHours))
         : 0
-    const legacyAdjustmentNet = snapshotRow || inboundSupport ? 0 : employeeSources(
-      salaryAdjustments,
-      employee,
-      (item) => item.period === period
-        && item.status !== 'Đã hủy'
-        && !item.deletedAt
-        && (!item.storeId || storeReferenceMatches(item.storeId)),
-      (item) => compactIdentifier(item.employeeId || item.employeeCode),
-    )
+    const legacyAdjustmentNet = snapshotRow || inboundSupport ? 0 : (salaryAdjustmentsByEmployee.get(employee) || [])
       .reduce((sum, item) => {
         const amount = Number(item.amount || 0)
         if (!Number.isSafeInteger(amount) || amount < 0) return sum
         return sum + (adjustmentKind(item.bonusSource || item.type) === 'VIOLATION' ? -amount : amount)
       }, 0)
-    const liveCompensationEntries = snapshotRow ? [] : employeeSources(
-      compensationEntries,
-      employee,
-      (item) => entryDate(item).startsWith(period)
-        && (inboundSupport
+    const liveCompensationEntries = snapshotRow ? [] : (compensationEntriesByEmployee.get(employee) || [])
+      .filter((item) => (
+        inboundSupport
           ? workEntryMatchesPayrollStore({
               entry: item,
               employee,
@@ -1167,6 +1206,8 @@ export function StorePayrollV2() {
               transfers: supportTransfers,
               storeReferenceMatches,
               allowedSupportTransferIds: inboundSupportTransferIds,
+              matchAttendance,
+              matchSupportTransfer,
             })
           : entryType(item) === 'WORK' && (item.attendanceId || item.supportTransferId || item.supportStoreId)
             ? workEntryMatchesPayrollStore({
@@ -1175,9 +1216,11 @@ export function StorePayrollV2() {
                 attendanceRecords: attendance,
                 transfers: supportTransfers,
                 storeReferenceMatches,
+                matchAttendance,
+                matchSupportTransfer,
               })
-            : (!item.storeId || storeReferenceMatches(item.storeId))),
-    )
+            : (!item.storeId || storeReferenceMatches(item.storeId))
+      ))
     const supportAuditEntries = inboundSupport ? liveCompensationEntries.filter((entry) => (
       supportWorkEntryHasCanonicalAudit({
         entry,
@@ -1190,18 +1233,8 @@ export function StorePayrollV2() {
       ? { manual: 0, work: 0, allowance: 0, revenue: 0, violations: 0 }
       : payrollCompensationTotalsForEmployee({
           compensationEntries: liveCompensationEntries,
-          revenueBonusAllocations: inboundSupport ? [] : employeeSources(
-            revenueBonusAllocations,
-            employee,
-            (item) => entryDate(item).startsWith(period)
-              && (!item.storeId || storeReferenceMatches(item.storeId)),
-          ),
-          violations: inboundSupport ? [] : employeeSources(
-            compensationViolations,
-            employee,
-            (item) => entryDate(item).startsWith(period)
-              && (!item.storeId || storeReferenceMatches(item.storeId)),
-          ),
+          revenueBonusAllocations: inboundSupport ? [] : revenueAllocationsByEmployee.get(employee) || [],
+          violations: inboundSupport ? [] : violationsByEmployee.get(employee) || [],
           employeeId: employeePrimaryIdentifier(employee),
           employeeIdentifiers: employeeIdentifierValues(employee),
           period,
@@ -1236,14 +1269,8 @@ export function StorePayrollV2() {
     const violations = snapshotRow ? Number(snapshotRow.violationVnd || 0) : canonical.violations + Math.max(0, -legacyAdjustmentNet)
     const advances = snapshotRow
       ? Number(snapshotRow.advancesPaid ?? snapshotRow.appliedAdvanceVnd ?? 0)
-      : inboundSupport ? 0 : employeeSources(
-          salaryAdvances,
-          employee,
-          (item) => item.period === period
-            && item.status === 'Đã chi'
-            && (!item.storeId || storeReferenceMatches(item.storeId)),
-          (item) => compactIdentifier(item.employeeId || item.employeeCode),
-        ).reduce((sum, item) => sum + Number(item.amount || 0), 0)
+      : inboundSupport ? 0 : (salaryAdvancesByEmployee.get(employee) || [])
+        .reduce((sum, item) => sum + Number(item.amount || 0), 0)
     const settlement = calculateAvailableSalary({
       basePay: earnedBase,
       revenueBonus,
