@@ -340,10 +340,20 @@ export function EmployeeDashboardV2() {
   const incompleteTasks = activeShiftTasks.filter((task) => taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId, app.employees))
   const incompleteRewardTasks = activeShiftTasks.filter((task) => !taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId, app.employees))
   const incompleteTaskIds = incompleteTasks.map((task) => String(task.id || '')).filter(Boolean)
+  let localTaskProgress = null
+  if (app.apiStatus === 'local' && activeRecord) {
+    try {
+      localTaskProgress = JSON.parse(globalThis.sessionStorage?.getItem(`idosi:task-progress:${activeRecord.id}`) || 'null')
+    } catch {
+      localTaskProgress = null
+    }
+  }
+  const taskProgress = activeRecord?.taskProgress || localTaskProgress
   const savedIncompleteProgress = savedTaskProgressCoversIncompleteTasks({
-    progress: activeRecord?.taskProgress,
+    progress: taskProgress,
     attendanceId: activeRecord?.id,
     employeeId,
+    employeeIds: employeeAliases(dashboardEmployee),
     incompleteTaskIds,
   })
   const expectedRevenue = shiftRevenueBreakdown(activeShiftOrders)
@@ -424,7 +434,7 @@ export function EmployeeDashboardV2() {
         location,
         cashRevenue: parseMoney(cashRevenue),
         transferRevenue: parseMoney(transferRevenue),
-        incompleteTaskReason: savedIncompleteProgress ? activeRecord.taskProgress.incompleteReason : '',
+        incompleteTaskReason: savedIncompleteProgress ? taskProgress.incompleteReason : '',
       })
       if (!result?.ok) {
         notify?.(result?.message || 'Không thể kết ca.', 'info')

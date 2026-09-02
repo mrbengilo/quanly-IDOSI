@@ -21,7 +21,8 @@ describe('attendance task progress', () => {
     expect(savedTaskProgressCoversIncompleteTasks({
       progress,
       attendanceId: 'att-01',
-      employeeId: 'st-01',
+      employeeId: 'employee-db-01',
+      employeeIds: ['st-01'],
       incompleteTaskIds: ['task-02', 'TASK-03'],
     })).toBe(true)
     expect(savedTaskProgressCoversIncompleteTasks({
@@ -29,6 +30,13 @@ describe('attendance task progress', () => {
       attendanceId: 'ATT-01',
       employeeId: 'ST-01',
       incompleteTaskIds: ['TASK-02'],
+    })).toBe(false)
+    expect(savedTaskProgressCoversIncompleteTasks({
+      progress,
+      attendanceId: 'ATT-01',
+      employeeId: 'ST-02',
+      employeeIds: ['employee-db-02'],
+      incompleteTaskIds: ['TASK-02', 'TASK-03'],
     })).toBe(false)
     expect(savedTaskProgressCoversIncompleteTasks({
       progress: { ...progress, incompleteReason: '' },

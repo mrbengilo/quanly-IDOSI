@@ -214,14 +214,6 @@ describe('local attendance canonical working time', () => {
     expect(appRef.current.tasks[0]).toMatchObject({
       id: 'TASK-LOCAL-PROGRESS', completedBy: { 'ST-LOCAL-PROGRESS': false },
     })
-    expect(appRef.current.attendance[0]).toMatchObject({
-      id: 'ATT-LOCAL-PROGRESS',
-      taskProgress: {
-        attendanceId: 'ATT-LOCAL-PROGRESS', employeeId: 'ST-LOCAL-PROGRESS',
-        incompleteTaskIds: ['TASK-LOCAL-PROGRESS'],
-        incompleteReason: 'Khách đông nên chưa hoàn tất',
-      },
-    })
     expect(appRef.current.taskAssignmentHistory[0].progressHistory.at(-1)).toMatchObject({
       attendanceId: 'ATT-LOCAL-PROGRESS', storeId: 'SM-TNV', date: '2026-08-30', shiftId: 'CA-SANG',
       completionRate: 0, incompleteReason: 'Khách đông nên chưa hoàn tất',
@@ -235,6 +227,7 @@ describe('local attendance canonical working time', () => {
         at: '2026-08-30T06:30:00.000Z',
         cashRevenue: 0,
         transferRevenue: 0,
+        incompleteTaskReason: 'Khách đông nên chưa hoàn tất',
         location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
       })
     })

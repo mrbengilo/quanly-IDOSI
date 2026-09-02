@@ -33,6 +33,7 @@ export const savedTaskProgressCoversIncompleteTasks = ({
   progress,
   attendanceId,
   employeeId,
+  employeeIds,
   incompleteTaskIds,
 } = {}) => {
   if (!progress || typeof progress !== 'object' || Array.isArray(progress)) return false
@@ -40,7 +41,8 @@ export const savedTaskProgressCoversIncompleteTasks = ({
   if (!expectedIds.length || !String(progress.incompleteReason || '').trim()) return false
   if (!String(progress.submittedAt || '').trim()) return false
   if (normalizedIdentifier(progress.attendanceId) !== normalizedIdentifier(attendanceId)) return false
-  if (employeeId && normalizedIdentifier(progress.employeeId) !== normalizedIdentifier(employeeId)) return false
+  const acceptedEmployeeIds = normalizedIds([employeeId, ...(Array.isArray(employeeIds) ? employeeIds : [])])
+  if (acceptedEmployeeIds.length && !acceptedEmployeeIds.includes(normalizedIdentifier(progress.employeeId))) return false
   const savedIds = normalizedIds(progress.incompleteTaskIds)
   return savedIds.length === expectedIds.length
     && savedIds.every((taskId, index) => taskId === expectedIds[index])

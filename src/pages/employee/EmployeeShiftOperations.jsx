@@ -325,6 +325,19 @@ export function EmployeeAssignedTasksPage() {
         // The progress command records the complete checklist in one atomic
         // request. Reward claims are intentionally handled in the separate
         // “Công việc tính thưởng” screen against the attendance snapshot.
+        if (app.apiStatus === 'local') {
+          try {
+            globalThis.sessionStorage?.setItem(`idosi:task-progress:${attendance.id}`, JSON.stringify({
+              attendanceId: attendance.id,
+              employeeId: attendance.employeeId || employeeId,
+              incompleteTaskIds: incompleteRequiredTasks.map((task) => String(task.id || '')).filter(Boolean),
+              incompleteReason: normalizedReason,
+              submittedAt: result.submittedAt || new Date().toISOString(),
+            }))
+          } catch {
+            // Session storage is only a compatibility bridge for local/demo mode.
+          }
+        }
         setAcknowledgedTaskIds((current) => new Set([
           ...current,
           ...newlyCompletedTasks.map((task) => String(task.id)),
