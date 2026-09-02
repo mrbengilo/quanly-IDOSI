@@ -49,9 +49,9 @@ const insertEntity = async (database, collectionKey, entityKey, value, order = 1
   ).run()
 }
 
-const seedTargetFixture = async (database, profile = targetProfile) => {
+const seedTargetFixture = async (database, profile = targetProfile, targetStore = store) => {
   const compactState = {
-    stores: [store],
+    stores: [targetStore],
     employees: [unrelatedEmployee],
     deletedEmployees: [profile],
     attendance: [
@@ -99,7 +99,7 @@ const seedTargetFixture = async (database, profile = targetProfile) => {
       VALUES ('global', ?, ?, ?)
     `).bind(collection, timestamp, timestamp).run()
   }
-  await insertEntity(database, 'stores', 'store-tnv', store)
+  await insertEntity(database, 'stores', 'store-tnv', targetStore)
   await insertEntity(database, 'employees', 'employee-keep', unrelatedEmployee)
   await insertEntity(database, 'deletedEmployees', 'manager-target', profile)
   await insertEntity(database, 'attendance', 'attendance-target', compactState.attendance[0])
@@ -255,6 +255,24 @@ describe('VPS exact test-manager data fix', () => {
         storeId: 'CH-TNV',
         deletedByCollection: { deletedEmployees: 1, attendance: 1 },
       },
+    })
+    reopened.close()
+  })
+
+  it('recognizes the TNV store by its stable legacy aliases', async () => {
+    const { databasePath, database } = await temporaryDatabase()
+    await seedTargetFixture(database, targetProfile, {
+      ...store,
+      name: 'Idosi Tô Ngọc Vân',
+      code: 'SM-TNV',
+      short: 'TNV',
+    })
+    database.close()
+
+    const reopened = createSqliteD1({ databasePath })
+    expect(reopened.dataFixResult).toMatchObject({
+      status: 'applied',
+      marker: { employeeId: 'QLCH-004', storeId: 'CH-TNV' },
     })
     reopened.close()
   })

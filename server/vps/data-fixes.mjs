@@ -7,6 +7,13 @@ const TARGET = Object.freeze({
   employeeName: 'Trần Thị Ngọc Bích',
   storeName: 'SM TNV',
 })
+const TARGET_STORE_IDENTITIES = new Set([
+  'sm tnv',
+  'tnv',
+  'idosi tnv',
+  'idosi to ngoc van',
+  'to ngoc van',
+])
 
 const PROFILE_COLLECTIONS = new Set(['employees', 'deletedEmployees'])
 const STORE_COLLECTIONS = new Set(['stores', 'deletedStores'])
@@ -176,6 +183,12 @@ const isArchivedProfileEntry = ({ collection, profile }) => (
   || ['da nghi viec', 'inactive'].includes(normalizedText(profile.status))
 )
 
+const isTargetStore = (store, storeId) => (
+  identifier(store.id) === identifier(storeId)
+  && [store.name, store.code, store.storeCode, store.short, store.employeePrefix]
+    .some((value) => TARGET_STORE_IDENTITIES.has(normalizedText(value)))
+)
+
 const exactTargetEvidence = (externalRows, compactState) => {
   const identifierMatches = logicalProfileEntries(externalRows, compactState)
     .filter(({ profile }) => isTargetIdentifier(profileId(profile)))
@@ -190,10 +203,7 @@ const exactTargetEvidence = (externalRows, compactState) => {
   }
   const [storeId] = storeIds
   const stores = logicalRows(externalRows, compactState, STORE_COLLECTIONS)
-  const exactStore = stores.some((store) => (
-    identifier(store.id) === identifier(storeId)
-    && compactText(store.name) === TARGET.storeName
-  ))
+  const exactStore = stores.some((store) => isTargetStore(store, storeId))
   if (!exactStore) {
     throw new Error('Data-fix QLCH-004 dừng an toàn vì cửa hàng đích không khớp SM TNV.')
   }
