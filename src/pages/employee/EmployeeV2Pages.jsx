@@ -30,7 +30,9 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { SearchableSelect } from '../../components/SearchableSelect'
+import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
 import { resolveShiftCandidates } from '../../domain'
+import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../../domain/storeTieredPayroll'
 import { activeOccupationLabels, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
@@ -255,6 +257,7 @@ export function EmployeeDashboardV2() {
   const employeeId = employeeKey(employee)
   const workDate = today()
   const allOwnAttendance = employeeAttendance(attendance, employee, { employees: app.employees, stores })
+  const overdueAttendance = overdueOpenAttendance(allOwnAttendance, now)
   const activeRecord = allOwnAttendance.find((record) => !record.checkOutAt && !record.checkOut)
   const sessionStoreId = String(session?.storeId || employee?.storeId || '')
   // An expired transfer no longer grants destination access, but its still-open
@@ -430,6 +433,7 @@ export function EmployeeDashboardV2() {
 
   return (
     <div className="page employee-home">
+      <OverdueAttendanceModal records={overdueAttendance} actionLabel="Kết ca" />
       <div className="employee-hero-title">
         <img src="/favicon.png" width="56" height="56" alt="Logo IDOSI" />
         <h1>{store?.name || 'Cửa hàng IDOSI'}</h1>

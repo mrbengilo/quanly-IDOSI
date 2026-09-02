@@ -22,6 +22,8 @@ import {
   TableFooter,
   TableWrap,
 } from '../../components/UI'
+import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
+import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { useApp } from '../../state/AppContext'
 import {
   reconcileAttendanceShiftId,
@@ -287,6 +289,7 @@ export function OfficeEmployeeDashboard() {
   const employee = currentOfficeEmployee(app)
   const roleDetails = attendanceRoleDetails(app.session, employee)
   const { isOperationalRole, title, unitLabel, defaultPosition } = roleDetails
+  const storeManagerAudience = app.session?.role === 'store_manager' || employee.unit === 'store_manager'
   const employeeId = officeEmployeeKey(employee)
   const [now, setNow] = useState(() => new Date())
   const [filterMode, setFilterMode] = useState('month')
@@ -321,6 +324,18 @@ export function OfficeEmployeeDashboard() {
     )).map((record) => ({ ...record, employeeId })),
     employee,
   ), [app.attendance, app.employees, employee, employeeId])
+  const ownOverdueAttendance = useMemo(() => overdueOpenAttendance(allRows, now), [allRows, now])
+  const storeOverdueAttendance = useMemo(() => {
+    if (!storeManagerAudience) return []
+    const storeId = String(app.session?.storeId || employee.storeId || '').trim()
+    return overdueOpenAttendance((Array.isArray(app.attendance) ? app.attendance : []).filter((record) => (
+      sameOperationalIdentifier(record.storeId, storeId)
+    )), now).map((record) => {
+      const reference = employeeRecordAliases(record)[0]
+      const match = operationalIdentifierRecordMatch(app.employees, reference, employeeAliases)
+      return { ...record, employeeName: match.ambiguous ? record.employeeName : match.record?.name || record.employeeName }
+    })
+  }, [app.attendance, app.employees, app.session?.storeId, employee.storeId, now, storeManagerAudience])
   const openRecord = allRows.find((record) => !record.checkOut && !record.checkOutAt)
   const todayRecord = allRows.find((record) => officeRecordDate(record) === dateKey)
   const selectedMonth = (filterMode === 'month' ? filterValue : filterValue.slice(0, 7)) || dateKey.slice(0, 7)
@@ -389,6 +404,11 @@ export function OfficeEmployeeDashboard() {
 
   return (
     <div className="page office-employee-dashboard">
+      <OverdueAttendanceModal
+        records={storeManagerAudience ? storeOverdueAttendance : ownOverdueAttendance}
+        audience={storeManagerAudience ? 'store' : 'employee'}
+        actionLabel="Ra về"
+      />
       <PageHeader title={title} subtitle={`${employee.name || 'Nhân viên'} • ${employee.position || defaultPosition}`} icon={Fingerprint} />
 
       <div className="office-attendance-hero">

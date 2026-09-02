@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EmployeePayrollDetails } from '../employee/EmployeeV2Pages'
 import { today } from '../../utils'
-import { StoreAttendanceV2, StoreOrdersPage, StorePayrollV2, StoreReportsV2 } from './StoreV2Pages'
+import { StoreAttendanceV2, StoreOrdersPage, StoreOverviewV2, StorePayrollV2, StoreReportsV2 } from './StoreV2Pages'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
@@ -56,9 +56,36 @@ const baseApp = (role = 'admin') => ({
 
 const renderPage = (Page, route = '/') => render(<MemoryRouter initialEntries={[route]}><Page /></MemoryRouter>)
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('store order, attendance, and payroll summaries', () => {
+  it('shows only the current store overdue employees in a dismissible warning', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-09-02T03:00:00.000Z')
+    mocked.app = {
+      ...baseApp(),
+      attendance: [{
+        id: 'ATT-STORE-OLD', storeId: store.id, employeeId: employee.id, date: '2026-09-01',
+        shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:00',
+      }, {
+        id: 'ATT-OTHER-STORE', storeId: 'S02', employeeId: 'S02-001', employeeName: 'Nhân viên cửa hàng khác',
+        date: '2026-09-01', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:00',
+      }],
+    }
+
+    renderPage(StoreOverviewV2, '/store/overview')
+
+    expect(screen.getByRole('dialog', { name: 'CẢNH BÁO NHÂN VIÊN CHƯA KẾT CA' })).toBeTruthy()
+    expect(screen.getByText(employee.name)).toBeTruthy()
+    expect(screen.getByText('chưa kết ca ngày 01/09/26 · Ca sáng')).toBeTruthy()
+    expect(screen.queryByText('Nhân viên cửa hàng khác')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'ĐÃ HIỂU' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('summarizes the current store and active filters by payment method', () => {
     mocked.app = {
       ...baseApp(),

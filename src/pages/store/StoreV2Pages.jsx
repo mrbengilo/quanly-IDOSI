@@ -38,7 +38,9 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { SearchableSelect } from '../../components/SearchableSelect'
+import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
 import { calculateAvailableSalary, financeSummaryFromState, financeTransactionsFromState } from '../../domain'
+import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { activeOccupationLabels, findOccupationOption, occupationValueAllowed, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
 import { useApp } from '../../state/AppContext'
@@ -332,15 +334,26 @@ export function StoreOverviewV2() {
   const app = useStoreData()
   const navigate = useNavigate()
   const { storeId, store, employees = [], orders = [], attendance = [], schedule = [] } = app
+  const [now, setNow] = useState(() => new Date())
   const [period, setPeriod] = useState(today().slice(0, 7))
   const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
   const storeEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
   const todayOrders = orders.filter((order) => order.storeId === storeId && !order.deletedAt && businessDate(order.createdAt) === today())
-  const openAttendance = attendance.filter((record) => record.storeId === storeId && !record.deletedAt && !record.checkOutAt && !record.checkOut)
+  const openAttendance = attendance.filter((record) => sameOperationalIdentifier(record.storeId, storeId) && !record.deletedAt && !record.checkOutAt && !record.checkOut)
   const todayAssignments = schedule.filter((record) => record.storeId === storeId && (!record.date || record.date === today()))
+  const overdueAttendance = overdueOpenAttendance(openAttendance, now).map((record) => {
+    const match = operationalIdentifierRecordMatch(employees, attendanceEmployeeReference(record), employeeIdentifierValues)
+    return { ...record, employeeName: match.ambiguous ? record.employeeName : match.record?.name || record.employeeName }
+  })
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   return (
     <div className="page">
+      <OverdueAttendanceModal records={overdueAttendance} audience="store" />
       <PageHeader title={store?.name || 'TỔNG QUAN CỬA HÀNG'} subtitle="Không gian vận hành cửa hàng dành cho Admin." icon={Store} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} />
       <div className="metrics-grid metrics-grid--4">
         <MetricCard label="DOANH THU KỲ" value={money(summary.revenue)} icon={TrendingUp} tone="green" />
