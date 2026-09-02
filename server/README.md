@@ -294,6 +294,10 @@ Các lệnh chính:
   số liệu đơn hàng. Mỗi lần sửa ghi before/after server-side vào
   `attendanceAudit`. Kỳ lương đã chi/khóa chặn sửa; kỳ đã chốt được
   đánh dấu cần chốt lại.
+- `attendance.emergency_close`: chỉ Admin, payload `attendanceId`, `reason`. Máy chủ
+  dùng thời điểm hiện tại để kết thúc một ca đang mở, bỏ qua lịch/khung giờ/checklist
+  bắt buộc và bước khai báo doanh thu; vẫn đối soát doanh thu từ đơn hoàn tất, ghi audit,
+  tính lại giờ/lương hỗ trợ và từ chối thay đổi kỳ lương đã chi hoặc đã khóa.
 - `order.update`: Admin hoặc Hỗ trợ KD, payload `orderId`, các trường khách hàng/
   `amount`/`paymentMethod` cần sửa và `reason` bắt buộc. `order.delete`
   nhận `orderId`, `reason` và chỉ xóa mềm. Cả hai tính lại tổng ca và ghi

@@ -11567,6 +11567,274 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+const attendanceEmergencyCloseCommand = async (db, actor, body, commandContext) => {
+  assertAdmin(actor, 'Chỉ Admin được kết ca khẩn cấp.')
+  if (body.type !== 'attendance.emergency_close') {
+    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh kết ca khẩn cấp không được hỗ trợ.')
+  }
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const reason = String(payload.reason || '').trim()
+  if (!reason || reason.length > 500) {
+    throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do kết ca khẩn cấp từ 1 đến 500 ký tự.')
+  }
+  const requestedAttendanceId = String(payload.attendanceId || payload.id || '').trim()
+  if (!requestedAttendanceId) throw new ApiError(400, 'ATTENDANCE_ID_REQUIRED', 'Cần chọn bản ghi chấm công.')
+
+  const { current, state } = await loadGlobalCommandState(db, body)
+  const attendance = Array.isArray(state.attendance) ? state.attendance : []
+  const previousMatch = uniqueIdentifierRecordMatch({
+    records: attendance,
+    identifier: requestedAttendanceId,
+    predicate: (record) => !record.deletedAt,
+    collisionCode: 'ATTENDANCE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể kết ca an toàn.',
+  })
+  const previous = previousMatch?.record || null
+  if (!previous) throw new ApiError(404, 'ATTENDANCE_NOT_FOUND', 'Không tìm thấy bản ghi chấm công.')
+  if (previous.checkOutAt || previous.checkOut || previous.checkOutTime) {
+    throw new ApiError(409, 'ATTENDANCE_NOT_OPEN', 'Ca làm việc này đã kết thúc.')
+  }
+
+  const attendanceId = String(previous.id || requestedAttendanceId).trim()
+  const storeId = String(previous.storeId || '').trim()
+  const employeeId = employeeReference(previous)
+  if (!storeId || !employeeId) {
+    throw new ApiError(409, 'ATTENDANCE_SCOPE_INVALID', 'Bản ghi chấm công thiếu liên kết nhân viên hoặc cửa hàng.')
+  }
+  const checkInMs = Date.parse(String(previous.checkInAt || ''))
+  const checkOutMs = Date.parse(commandContext.now)
+  if (!Number.isFinite(checkInMs) || !Number.isFinite(checkOutMs) || checkOutMs < checkInMs) {
+    throw new ApiError(409, 'ATTENDANCE_TIME_INVALID', 'Thời gian vào ca đang lưu không hợp lệ.')
+  }
+  const period = asMonth(monthFromRecord(previous), 'Kỳ chấm công')
+  assertPayrollNotPaidOrLocked(state, storeId, period)
+
+  const employeeRecords = [
+    ...(Array.isArray(state.employees) ? state.employees : []),
+    ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
+  ]
+  const linkedEmployee = uniqueEmployeeIdentifierRecordMatch({
+    records: employeeRecords,
+    identifier: employeeId,
+  })?.record || null
+  const linkedTransfer = linkedSupportTransferForAttendance(state, previous, employeeId, storeId)
+  const transferBounds = linkedTransfer ? supportTransferTimeBounds(linkedTransfer) : null
+  if (previous.supportTransferId && (!linkedTransfer || !transferBounds)) {
+    throw new ApiError(
+      409,
+      'SUPPORT_TRANSFER_TIME_INVALID',
+      'Bản ghi chấm công hỗ trợ thiếu phiếu điều chuyển hoặc thời gian điều chuyển hợp lệ.',
+    )
+  }
+
+  const localNow = localDateTimeParts(commandContext.now)
+  const payableCheckOutMs = transferBounds ? Math.min(checkOutMs, transferBounds.endMs) : checkOutMs
+  const elapsedSeconds = Math.max(0, Math.floor((checkOutMs - checkInMs) / 1_000))
+  const workedSeconds = Math.max(0, Math.floor((payableCheckOutMs - checkInMs) / 1_000))
+  const shiftStart = parseShiftTime(previous.shiftStart)
+  const shiftEnd = parseShiftTime(previous.shiftEnd)
+  let departureDelta = 0
+  if (shiftStart && shiftEnd) {
+    let endMinute = shiftEnd.minuteOfDay
+    let currentMinute = localNow.minuteOfDay
+    if (endMinute <= shiftStart.minuteOfDay) {
+      endMinute += 1_440
+      if (currentMinute < shiftStart.minuteOfDay) currentMinute += 1_440
+    }
+    departureDelta = currentMinute - endMinute
+  }
+
+  const attendanceReferenceMatches = (reference) => mutationIdentifierReferenceMatchesRecord({
+    records: attendance,
+    record: previous,
+    reference,
+    collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
+    collisionMessage: 'Mã chấm công tham chiếu trong dữ liệu ca đang mơ hồ; cần xử lý dữ liệu trùng trước khi kết ca.',
+  })
+  const relatedOrders = (Array.isArray(state.orders) ? state.orders : []).filter((order) => (
+    !order.deletedAt
+    && String(order.status || '') === 'Hoàn tất'
+    && orderCreatedByEmployee(order, employeeId)
+    && sameIdentifier(order.storeId, storeId)
+    && (
+      (String(order.attendanceId || '').trim() && attendanceReferenceMatches(order.attendanceId))
+      || (!order.attendanceId
+        && (
+          (!String(order.shiftId || order.shift || '').trim()
+            && !String(previous.shiftId || previous.shift || '').trim())
+          || sameIdentifier(order.shiftId || order.shift, previous.shiftId || previous.shift)
+        )
+        && Date.parse(order.createdAt) >= checkInMs
+        && Date.parse(order.createdAt) <= checkOutMs)
+    )
+  ))
+  const revenue = relatedOrders.reduce(
+    (sum, order) => safeMoneySum(sum, Number(order.amount || 0), 'Doanh thu đơn hàng trong ca'),
+    0,
+  )
+  const cash = relatedOrders
+    .filter((order) => order.paymentMethod === 'Tiền mặt')
+    .reduce((sum, order) => safeMoneySum(sum, Number(order.amount || 0), 'Tiền mặt đơn hàng trong ca'), 0)
+  const transfer = revenue - cash
+  const officeAttendance = officeLikeEmployee(previous)
+    || officeLikeEmployee(linkedEmployee)
+    || previous.attendanceMode === 'office'
+  const expenseEntries = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
+  const recordedShiftExpense = officeAttendance ? 0 : expenseEntries
+    .filter((entry) => (
+      entry.recognized !== false
+      && attendanceReferenceMatches(entry.attendanceId)
+      && String(entry.sourceType || '') === 'shift-expense-item'
+    ))
+    .reduce((sum, entry) => safeMoneySum(sum, Number(entry.amount || 0), 'Tổng chi phí trong ca'), 0)
+
+  const nextBase = {
+    ...previous,
+    checkOut: localNow.time,
+    checkOutTime: localNow.time,
+    checkOutAt: commandContext.now,
+    checkOutLocation: null,
+    departureTag: shiftEnd && departureDelta < 0 ? 'Về sớm' : 'Đã ra về',
+    ...(officeAttendance ? { workdayCredit: workedSeconds > 0 ? 1 : 0 } : {}),
+    ...(transferBounds ? { elapsedSeconds } : {}),
+    workedSeconds,
+    workedMinutes: workedSeconds / 60,
+    hours: workedSeconds / 3_600,
+    revenue,
+    cash,
+    transfer,
+    orderCount: relatedOrders.length,
+    expense: recordedShiftExpense,
+    shiftExpenseTotal: recordedShiftExpense,
+    emergencyClosedAt: commandContext.now,
+    emergencyClosedBy: serverActorSnapshot(actor),
+    emergencyCloseReason: reason,
+    editedAt: commandContext.now,
+    editedBy: serverActorSnapshot(actor),
+    editReason: reason,
+    updatedAt: commandContext.now,
+    updatedBy: serverActorSnapshot(actor),
+  }
+  const attendanceCandidate = attendance.map((record, index) => (
+    index === previousMatch.index ? nextBase : record
+  ))
+  const compensationState = linkedTransfer ? { ...state, attendance: attendanceCandidate } : state
+  const next = linkedTransfer ? withSupportCompensation(compensationState, nextBase) : nextBase
+  const nextAttendance = attendanceCandidate.map((record, index) => (
+    index === previousMatch.index ? next : record
+  ))
+
+  let nextExpenseEntries = [...expenseEntries]
+  const supportCompensation = isPlainRecord(next.supportCompensation) ? next.supportCompensation : null
+  const supportAmount = Number(supportCompensation?.totalPay || 0)
+  if (supportAmount > 0) {
+    assertAccountingPeriodOpen(state, storeId, period)
+    const matchingIndexes = nextExpenseEntries.flatMap((entry, index) => (
+      String(entry?.sourceType || '') === 'support-attendance-compensation'
+      && attendanceReferenceMatches(entry?.sourceId)
+        ? [index]
+        : []
+    ))
+    if (matchingIndexes.length > 1) {
+      throw new ApiError(
+        409,
+        'SUPPORT_COMPENSATION_EXPENSE_COLLISION',
+        'Bản chấm công đang có nhiều chi phí hỗ trợ cùng nguồn; cần đối soát dữ liệu trước khi kết ca.',
+        { attendanceId },
+      )
+    }
+    const supportExpense = {
+      ...(matchingIndexes.length ? nextExpenseEntries[matchingIndexes[0]] : {
+        id: `exp_support_${attendanceId}`,
+        storeId,
+        employeeId,
+        attendanceId,
+        supportTransferId: linkedTransfer?.id || null,
+        type: 'Lương ca hỗ trợ',
+        category: 'payroll-support',
+        sourceType: 'support-attendance-compensation',
+        sourceId: attendanceId,
+        createdAt: commandContext.now,
+        createdBy: actor.user_id,
+      }),
+      amount: supportAmount,
+      description: `Lương hỗ trợ ${next.employeeName || employeeId}: ${supportCompensation.hours} giờ × ${supportCompensation.hourlyRate} đ${supportCompensation.allowance ? ` + ${supportCompensation.allowance} đ phụ cấp` : ''}`,
+      recognized: true,
+      occurredAt: commandContext.now,
+      deletedAt: null,
+      voidedAt: null,
+      updatedAt: commandContext.now,
+      updatedBy: actor.user_id,
+    }
+    if (matchingIndexes.length) nextExpenseEntries[matchingIndexes[0]] = supportExpense
+    else nextExpenseEntries.unshift(supportExpense)
+  }
+
+  const changedFields = [
+    'checkOut', 'checkOutTime', 'checkOutAt', 'departureTag', 'workdayCredit',
+    'workedSeconds', 'workedMinutes', 'hours', 'revenue', 'cash', 'transfer',
+    'orderCount', 'expense', 'shiftExpenseTotal', 'supportCompensation',
+    'supportActualPay', 'emergencyClosedAt', 'emergencyClosedBy', 'emergencyCloseReason',
+  ].filter((field) => JSON.stringify(next[field]) !== JSON.stringify(previous[field]))
+  const auditRecord = {
+    id: `ata_${crypto.randomUUID()}`,
+    action: 'Kết ca khẩn cấp',
+    attendanceId,
+    storeId,
+    employeeId,
+    before: previous,
+    after: next,
+    changedFields,
+    reason,
+    actor: serverActorSnapshot(actor),
+    createdAt: commandContext.now,
+  }
+  const nextState = {
+    ...state,
+    attendance: nextAttendance,
+    expenseEntries: nextExpenseEntries,
+    supportTransfers: linkedTransfer
+      ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).map((record) => (
+          String(record.id || '') === String(linkedTransfer.id || '')
+            ? {
+                ...record,
+                status: 'Hoàn tất',
+                completedAt: commandContext.now,
+                completedAttendanceId: attendanceId,
+                updatedAt: commandContext.now,
+              }
+            : record
+        ))
+      : (Array.isArray(state.supportTransfers) ? state.supportTransfers : []),
+    attendanceAudit: [auditRecord, ...(Array.isArray(state.attendanceAudit) ? state.attendanceAudit : [])],
+    auditLogs: [auditRecord, ...(Array.isArray(state.auditLogs) ? state.auditLogs : [])],
+    payrollPeriods: invalidateClosedPayrollPeriods(
+      state,
+      { storeId, period },
+      commandContext.now,
+      body.type,
+    ),
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'attendance',
+    entityId: attendanceId,
+    before: previous,
+    after: next,
+    metadata: {
+      reason,
+      changedFields,
+      storeId,
+      employeeId,
+      period,
+      serverTimestamp: commandContext.now,
+      bypassedChecks: ['schedule', 'shift-window', 'required-checklist', 'declared-revenue'],
+    },
+    response: { command: body.type, attendance: next, audit: auditRecord },
+  }, commandContext)
+}
+
 const normalizedOperationalResetType = (value) => {
   const normalized = normalizeTextKey(value).replace(/\s+/gu, '_')
   if (['order', 'orders', 'don_hang'].includes(normalized)) return 'orders'
@@ -20893,6 +21161,9 @@ const executeCommand = async (request, env, context) => {
     if (body.type === 'policies.set') return await policiesCommand(db, user, body, commandContext)
     if (body.type === 'attendance.update') {
       return await attendanceUpdateCommand(db, user, body, commandContext)
+    }
+    if (body.type === 'attendance.emergency_close') {
+      return await attendanceEmergencyCloseCommand(db, user, body, commandContext)
     }
     if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
       return await attendanceCommand(db, user, body, commandContext)
