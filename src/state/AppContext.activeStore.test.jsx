@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   apiCommand: vi.fn(),
   apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
+  apiGetStoreWorkspaceState: vi.fn(),
   apiGetStateMetadata: vi.fn(),
   apiLogin: vi.fn(),
   apiListUsers: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock('../services/idosiApi', () => ({
   apiCommand: api.apiCommand,
   apiGetAccountAvatar: api.apiGetAccountAvatar,
   apiGetState: api.apiGetState,
+  apiGetStoreWorkspaceState: api.apiGetStoreWorkspaceState,
   apiGetStateMetadata: api.apiGetStateMetadata,
   apiLogin: api.apiLogin,
   apiListUsers: api.apiListUsers,
@@ -87,6 +89,7 @@ const renderProvider = () => render(<AppProvider><AppProbe ref={appRef} /></AppP
 describe('remote command active-store preservation', () => {
   beforeEach(() => {
     appRef = createRef()
+    window.history.replaceState({}, '', '/')
     sessionStorage.clear()
     localStorage.clear()
     const bootstrap = () => ({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
@@ -95,6 +98,12 @@ describe('remote command active-store preservation', () => {
     api.apiListUsers.mockResolvedValue({ users: [supportUser] })
     api.apiSelectSessionRole.mockResolvedValue({ user: supportUser })
     api.apiGetState.mockImplementation(async () => bootstrap())
+    api.apiGetStoreWorkspaceState.mockImplementation(async (storeId) => ({
+      ...bootstrap(),
+      projection: 'store',
+      storeId,
+      state: makeRemoteState(storeId),
+    }))
     api.apiGetStateMetadata.mockResolvedValue({ version: 1 })
     api.apiCommand.mockResolvedValue({ version: 2, store: { id: 'STORE-A', name: 'Cửa hàng A mới' } })
   })
@@ -106,6 +115,7 @@ describe('remote command active-store preservation', () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
     vi.clearAllMocks()
+    window.history.replaceState({}, '', '/')
   })
 
   it('keeps store B selected after a successful command refresh returns global store A', async () => {
@@ -225,6 +235,87 @@ describe('remote command active-store preservation', () => {
     })
 
     expect(appRef.current.remoteDataReady).toBe(true)
+  })
+
+  it('hydrates a direct Admin store route with only the remembered store projection', async () => {
+    window.location.hash = '#/store/payroll'
+    sessionStorage.setItem('idosi-active-store:USER-ADMIN', 'STORE-B')
+    const compactState = {
+      stores: [
+        { id: 'STORE-A', name: 'Cửa hàng A' },
+        { id: 'STORE-B', name: 'Cửa hàng B' },
+      ],
+      orders: [],
+      expenseEntries: [],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: adminUser,
+      users: [adminUser],
+      bootstrap: {
+        user: adminUser,
+        state: compactState,
+        policies: [],
+        version: 1,
+        partial: true,
+      },
+    })
+    api.apiGetStoreWorkspaceState.mockResolvedValue({
+      user: adminUser,
+      projection: 'store',
+      storeId: 'STORE-B',
+      state: {
+        ...makeRemoteState('STORE-B'),
+        employees: [{ id: 'E-B', storeId: 'STORE-B', unit: 'store', name: 'Nhân viên B' }],
+      },
+      policies: [],
+      version: 1,
+    })
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('admin', 'password')).ok).toBe(true)
+      await Promise.resolve()
+    })
+
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-B')
+    expect(api.apiBootstrapState).not.toHaveBeenCalled()
+    expect(appRef.current.remoteProjection).toEqual({ kind: 'store', storeId: 'STORE-B' })
+    expect(appRef.current.activeStoreId).toBe('STORE-B')
+    expect(appRef.current.employees.map(({ id }) => id)).toEqual(['E-B'])
+  })
+
+  it('finishes an Admin store Save before the scoped background reconciliation', async () => {
+    window.location.hash = '#/store/orders'
+    const scopedPayload = {
+      user: adminUser,
+      projection: 'store',
+      storeId: 'STORE-A',
+      state: makeRemoteState('STORE-A'),
+      policies: [],
+      version: 1,
+    }
+    api.apiLogin.mockResolvedValue({ user: adminUser, bootstrap: scopedPayload, users: [adminUser] })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('admin', 'password')).ok).toBe(true)
+    })
+
+    let resolveRefresh
+    api.apiGetStoreWorkspaceState.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))
+    let result
+    await act(async () => {
+      result = await appRef.current.updateStore('STORE-A', { name: 'Cửa hàng A mới' })
+    })
+
+    expect(result.ok).toBe(true)
+    expect(resolveRefresh).toBeTypeOf('function')
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A')
+    expect(api.apiGetState).not.toHaveBeenCalled()
+
+    await act(async () => {
+      resolveRefresh({ ...scopedPayload, version: 2 })
+      await Promise.resolve()
+    })
   })
 
   it('uses a compact bootstrap when switching an authenticated session role', async () => {

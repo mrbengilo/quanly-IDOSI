@@ -7,13 +7,21 @@ const mocked = vi.hoisted(() => ({
   session: { role: 'admin', name: 'Admin' },
   currentEmployee: undefined,
   remoteDataReady: true,
+  remoteProjection: { kind: 'local', storeId: '' },
+  activeStoreId: 'S01',
+  ensureStoreWorkspaceData: vi.fn(() => Promise.resolve()),
+  ensureSystemWorkspaceData: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('./state/AppContext', () => ({
   useApp: () => ({
     authReady: true,
     currentEmployee: mocked.currentEmployee,
+    activeStoreId: mocked.activeStoreId,
     remoteDataReady: mocked.remoteDataReady,
+    remoteProjection: mocked.remoteProjection,
+    ensureStoreWorkspaceData: mocked.ensureStoreWorkspaceData,
+    ensureSystemWorkspaceData: mocked.ensureSystemWorkspaceData,
     session: mocked.session,
   }),
 }))
@@ -81,6 +89,7 @@ const renderRoute = (path, role) => {
   mocked.session = { role, name: role }
   mocked.currentEmployee = undefined
   mocked.remoteDataReady = true
+  mocked.remoteProjection = { kind: 'local', storeId: '' }
   return render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
 }
 
@@ -88,6 +97,9 @@ describe('App role routes', () => {
   afterEach(() => {
     cleanup()
     mocked.remoteDataReady = true
+    mocked.remoteProjection = { kind: 'local', storeId: '' }
+    mocked.ensureStoreWorkspaceData.mockClear()
+    mocked.ensureSystemWorkspaceData.mockClear()
     vi.restoreAllMocks()
   })
 
@@ -145,6 +157,34 @@ describe('App role routes', () => {
 
     expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
     expect(screen.getByTestId('current-route').textContent).toBe(path)
+  })
+
+  it('loads and waits for the selected store projection before mounting Admin store pages', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteProjection = { kind: 'global', storeId: '' }
+    render(<MemoryRouter initialEntries={['/store/payroll']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(mocked.ensureStoreWorkspaceData).toHaveBeenCalledWith('S01')
+    expect(screen.queryByText('Store payroll')).toBeNull()
+  })
+
+  it('mounts Admin store pages only when their projection matches the active store', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteProjection = { kind: 'store', storeId: 'S01' }
+    render(<MemoryRouter initialEntries={['/store/payroll']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Store payroll')).toBeTruthy()
+  })
+
+  it('reloads the global projection before returning from a store to system pages', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteProjection = { kind: 'store', storeId: 'S01' }
+    render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledOnce()
+    expect(screen.queryByText('Admin cashflow')).toBeNull()
   })
 
   it('allows Admin to open the aggregate work-registration schedule', async () => {
