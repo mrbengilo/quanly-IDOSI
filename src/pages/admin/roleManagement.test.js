@@ -22,7 +22,10 @@ import {
   validateRoleProfile,
 } from './roleManagementUtils'
 
-const mocked = vi.hoisted(() => ({ app: {} }))
+const mocked = vi.hoisted(() => ({
+  app: {},
+  financeOverview: vi.fn(() => Promise.resolve({ period: '2026-09', summaries: [] })),
+}))
 
 function CurrentRoute() {
   const location = useLocation()
@@ -33,9 +36,15 @@ vi.mock('../../state/AppContext', () => ({
   useApp: () => mocked.app,
 }))
 
+vi.mock('../../services/idosiApi', async (importOriginal) => ({
+  ...await importOriginal(),
+  apiGetFinanceOverview: (...args) => mocked.financeOverview(...args),
+}))
+
 afterEach(() => {
   cleanup()
   mocked.app = {}
+  mocked.financeOverview.mockClear()
 })
 
 const validForm = (roleKey = ROLE_KEYS.businessSupport) => ({
@@ -438,6 +447,22 @@ describe('role management permissions and form', () => {
 })
 
 describe('Business Support read-only system views', () => {
+  it('renders the Admin store directory while remote finance data is still loading', async () => {
+    mocked.financeOverview.mockResolvedValueOnce({
+      period: '2026-09',
+      summaries: [{ storeId: 'CH001', revenue: 200_000, expense: 150_000, profit: 50_000 }],
+    })
+    mocked.app = {
+      ...baseApp('admin'),
+      apiStatus: 'connected',
+      stores: [{ id: 'CH001', name: 'SecondMall SM234', location: 'TP. HCM', status: 'Đang hoạt động' }],
+    }
+
+    expect(() => render(createElement(MemoryRouter, null, createElement(AdminStores)))).not.toThrow()
+    expect(screen.getByRole('heading', { level: 1, name: 'Danh sách cửa hàng' })).toBeTruthy()
+    expect(await screen.findByText('(25.00%)')).toBeTruthy()
+  })
+
   it('can inspect stores without store mutation controls', () => {
     mocked.app = {
       ...baseApp('business_support'),

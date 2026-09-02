@@ -57,6 +57,15 @@ import { resolveOriginalRoleProfile, roleProfileAddress, roleProfileCode } from 
 
 const sum = (items, key) => items.reduce((total, item) => total + (Number(item[key]) || 0), 0)
 const percent = (value, total) => total > 0 ? `${((value / total) * 100).toFixed(2)}%` : '0.00%'
+const normalizeFinanceSummary = (summary = {}) => {
+  const revenue = Number(summary.revenue) || 0
+  const expense = Number(summary.expense) || 0
+  const profit = Number.isFinite(Number(summary.profit)) ? Number(summary.profit) : revenue - expense
+  const marginPercent = Number.isFinite(Number(summary.marginPercent))
+    ? Number(summary.marginPercent)
+    : revenue > 0 ? (profit / revenue) * 100 : 0
+  return { revenue, expense, profit, marginPercent }
+}
 const emptyStoreForm = { name: '', location: '', address: '' }
 const initialAvatarCrop = Object.freeze({ positionX: 0, positionY: 0, zoom: 1 })
 
@@ -174,14 +183,10 @@ export function AdminStores() {
     return () => { active = false }
   }, [financePeriod, remoteFinance])
   const filtered = stores.filter((item) => `${item.name} ${item.location} ${item.address}`.toLowerCase().includes(query.toLowerCase()))
-  const remoteFinanceByStore = new Map(financeOverview.summaries.map((summary) => [String(summary.storeId), {
-    revenue: Number(summary.revenue || 0),
-    expense: Number(summary.expense || 0),
-    profit: Number(summary.profit || 0),
-  }]))
-  const financeByStore = new Map(stores.map((store) => [store.id, remoteFinance
-    ? remoteFinanceByStore.get(String(store.id)) || { revenue: 0, expense: 0, profit: 0 }
-    : financeSummaryFromState(app, { storeId: store.id })]))
+  const remoteFinanceByStore = new Map(financeOverview.summaries.map((summary) => [String(summary.storeId), summary]))
+  const financeByStore = new Map(stores.map((store) => [store.id, normalizeFinanceSummary(remoteFinance
+    ? remoteFinanceByStore.get(String(store.id))
+    : financeSummaryFromState(app, { storeId: store.id }))]))
   const revenue = [...financeByStore.values()].reduce((total, summary) => total + summary.revenue, 0)
   const expense = [...financeByStore.values()].reduce((total, summary) => total + summary.expense, 0)
   const activeStoreEmployees = employees.filter((employee) => {
