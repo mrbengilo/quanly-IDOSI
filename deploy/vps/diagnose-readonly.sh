@@ -265,6 +265,43 @@ const payrollSources = [
   ['revenueBonusAllocations', collection('revenueBonusAllocations')],
   ['violations', collection('violations')],
 ]
+const orders = collection('orders').filter((record) => (
+  active(record) && record.source !== 'legacy-opening-balance'
+))
+
+// Checkout uses the attendance link stamped by order.create. Report only
+// aggregate counts so this production-wide integrity probe never emits
+// employee, customer, order, or revenue details.
+const openAttendance = attendance.filter((record) => !record.checkOutAt && !record.checkOut)
+const openAttendanceSet = new Set(openAttendance)
+const linkedOrdersByAttendance = new Map()
+for (const order of orders) {
+  const match = uniqueMatch(attendance, order.attendanceId, (record) => [record.id, record.code, record.attendanceId])
+  if (!match.record || match.ambiguous) continue
+  if (!linkedOrdersByAttendance.has(match.record)) linkedOrdersByAttendance.set(match.record, [])
+  linkedOrdersByAttendance.get(match.record).push(order)
+}
+const openAttendanceWithOrders = [...linkedOrdersByAttendance]
+  .filter(([record, records]) => openAttendanceSet.has(record) && records.length > 0)
+const affectedStoreReferences = new Set(openAttendanceWithOrders
+  .map(([record]) => folded(record.storeId))
+  .filter(Boolean))
+const dosiiCanThoStores = stores.filter((record) => [record.id, record.code, record.short, record.name]
+  .some((value) => normalizedText(value) === normalizedText('Dosii Cần Thơ')))
+const dosiiCanThoStoreSet = new Set(dosiiCanThoStores)
+const storeForAttendance = (record) => {
+  const match = uniqueMatch(stores, record.storeId, (store) => [store.id, store.code, store.short, store.name])
+  return match.ambiguous ? null : match.record
+}
+const dosiiCanThoShiftCandidates = [...linkedOrdersByAttendance]
+  .filter(([record]) => dosiiCanThoStoreSet.has(storeForAttendance(record)))
+  .map(([, records]) => ({
+    orderCount: records.length,
+    revenue: records.reduce((total, order) => total + Math.max(0, Math.trunc(Number(order.amount) || 0)), 0),
+  }))
+const dosiiCanThoExpectedShiftMatches = dosiiCanThoShiftCandidates
+  .filter(({ orderCount, revenue }) => orderCount === 5 && revenue === 240_000)
+  .length
 
 const storeCollisions = collisionSummary(stores, (store) => [store.id])
 const appStoreCollisions = collisionSummary(appStores, (store) => [store.id])
@@ -707,6 +744,15 @@ const summary = {
   attendance_affected_store_count: attendanceAffectedStores.size,
 }
 for (const [key, value] of Object.entries(summary)) console.log(`${key}=${value}`)
+console.log(`checkout_revenue_integrity=${JSON.stringify({
+  openAttendanceRecords: openAttendance.length,
+  openAttendanceWithLinkedOrders: openAttendanceWithOrders.length,
+  linkedOrdersForOpenAttendance: openAttendanceWithOrders
+    .reduce((total, [, records]) => total + records.length, 0),
+  affectedStoreCount: affectedStoreReferences.size,
+  dosiiCanThoStoreMatches: dosiiCanThoStores.length,
+  dosiiCanThoExpectedShiftMatches,
+})}`)
 console.log(`attendance_unlinked_by_month=${JSON.stringify(Object.fromEntries([...attendanceUnlinkedByMonth].sort()))}`)
 console.log(`frontend_attendance_ambiguity_by_scope=${scopeIssuesJson(frontendAttendanceAmbiguityByScope)}`)
 console.log(`frontend_attendance_out_of_scope_by_scope=${scopeIssuesJson(frontendAttendanceOutOfScopeByScope)}`)

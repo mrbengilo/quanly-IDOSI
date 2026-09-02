@@ -589,6 +589,18 @@ describe('IDOSI VPS runtime', () => {
       expect(employeesPayload.state).not.toHaveProperty('attendance')
       expect(globalSnapshotReads).toBe(0)
 
+      const employeeHomeResponse = await fetch(`${baseUrl}/api/system-screens/employee-home`, {
+        headers: employeeHeaders,
+      })
+      const employeeHomePayload = await employeeHomeResponse.json()
+      expect(employeeHomeResponse.status).toBe(200)
+      expect(employeeHomePayload).toMatchObject({ projection: 'global', screen: 'employee-home' })
+      expect(employeeHomePayload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
+      expect(JSON.stringify(employeeHomePayload)).not.toContain('FOREIGN_STORE_SECRET')
+      // Checkout must receive the employee's own store orders without materializing global state.
+      expect(storeSnapshotReads).toBe(4)
+      expect(globalSnapshotReads).toBe(0)
+
       const employeeOrdersResponse = await fetch(`${baseUrl}/api/system-screens/employee-orders`, {
         headers: employeeHeaders,
       })
@@ -598,7 +610,7 @@ describe('IDOSI VPS runtime', () => {
       expect(employeeOrdersPayload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
       expect(JSON.stringify(employeeOrdersPayload)).not.toContain('FOREIGN_STORE_SECRET')
       // One small session-context read resolves transfers, then one screen read.
-      expect(storeSnapshotReads).toBe(4)
+      expect(storeSnapshotReads).toBe(6)
       expect(globalSnapshotReads).toBe(0)
 
       const forbiddenSystemScreen = await fetch(`${baseUrl}/api/system-screens/employees`, {
