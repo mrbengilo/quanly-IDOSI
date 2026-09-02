@@ -28,6 +28,68 @@ import {
   TEAM_MILESTONE_PROGRAM_IDS,
 } from '../src/domain/compensationPolicies'
 
+describe('Payroll period lifecycle date gate', () => {
+  it('opens close, pay and lock only from the first Vietnam business day of the next month', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-30T16:59:59.000Z')) // 30/09 23:59:59 Vietnam
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-payroll-date-gate' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin',
+        password: 'payroll-date-gate-password',
+        initialState: {
+          stores: [{ id: 'S01', name: 'Dosii KVC', status: 'Đang hoạt động' }],
+          employees: [], attendance: [], payrollPeriods: [], payrollPayments: [],
+          expenseEntries: [], cashTransactions: [], salaryAdjustments: [], salaryAdvances: [], orders: [],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'payroll-date-gate-password',
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+      const earlyClose = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 1,
+        payload: { storeId: 'S01', period: '2026-09' },
+      }, { ...authorization, 'idempotency-key': 'payroll-date-gate-early-close' }), env)
+      expect(earlyClose.status).toBe(409)
+      expect(await earlyClose.json()).toMatchObject({
+        error: {
+          code: 'PAYROLL_PERIOD_NOT_ENDED',
+          details: { period: '2026-09', actionDate: '2026-10-01', currentBusinessDate: '2026-09-30' },
+        },
+      })
+      expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get())
+        .toEqual({ version: 1 })
+
+      vi.setSystemTime(new Date('2026-09-30T17:00:00.000Z')) // 01/10 00:00 Vietnam
+      const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 1,
+        payload: { storeId: 'S01', period: '2026-09' },
+      }, { ...authorization, 'idempotency-key': 'payroll-date-gate-close' }), env)
+      expect(closed.status).toBe(201)
+      expect(await closed.json()).toMatchObject({ version: 2, period: { status: 'Đã chốt' } })
+
+      const paid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.pay', expectedVersion: 2,
+        payload: { storeId: 'S01', period: '2026-09' },
+      }, { ...authorization, 'idempotency-key': 'payroll-date-gate-pay' }), env)
+      expect(paid.status).toBe(200)
+      expect(await paid.json()).toMatchObject({ version: 3, period: { status: 'Đã chi' } })
+
+      const locked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.lock', expectedVersion: 3,
+        payload: { storeId: 'S01', period: '2026-09' },
+      }, { ...authorization, 'idempotency-key': 'payroll-date-gate-lock' }), env)
+      expect(locked.status).toBe(200)
+      expect(await locked.json()).toMatchObject({ version: 4, period: { status: 'Đã khóa' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 const projectReconciledSharedState = (state, actor) => projectSharedState(
   reconcileOpenStoreAttendanceChecklists(state),
   actor,
@@ -5958,32 +6020,46 @@ describe('IDOSI Worker security primitives', () => {
         adjustment: { employeeId: 'TNV-001', storeId: 'S01', amount: 500_000 },
       })
 
+      vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z')) // 01/09 00:00 Vietnam
+      const payrollSupportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'support.one', password: 'support-one-password',
+      }), env)
+      const payrollSupportAuthorization = { authorization: `Bearer ${(await payrollSupportLogin.json()).token}` }
+      const payrollAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'operational-roles-admin-password',
+      }), env)
+      const payrollAdminAuthorization = { authorization: `Bearer ${(await payrollAdminLogin.json()).token}` }
+
       const payrollClosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 8, payload: { storeId: 'S01', period: '2026-08' },
-      }, { ...supportAuthorization, 'idempotency-key': 'support-cross-store-payroll-close-0001' }), env)
+      }, { ...payrollSupportAuthorization, 'idempotency-key': 'support-cross-store-payroll-close-0001' }), env)
       expect(payrollClosed.status).toBe(201)
       expect((await payrollClosed.json()).period.rows.map(({ employeeId }) => employeeId)).toEqual(['TNV-001'])
 
       const payrollPaid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.pay', expectedVersion: 9, payload: { storeId: 'S01', period: '2026-08' },
-      }, { ...supportAuthorization, 'idempotency-key': 'support-cross-store-payroll-pay-0001' }), env)
+      }, { ...payrollSupportAuthorization, 'idempotency-key': 'support-cross-store-payroll-pay-0001' }), env)
       expect(payrollPaid.status).toBe(200)
       expect(await payrollPaid.json()).toMatchObject({ version: 10, period: { status: 'Đã chi' } })
 
       const supportLockDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.lock', expectedVersion: 10, payload: { storeId: 'S01', period: '2026-08' },
-      }, { ...supportAuthorization, 'idempotency-key': 'support-payroll-lock-denied-0001' }), env)
+      }, { ...payrollSupportAuthorization, 'idempotency-key': 'support-payroll-lock-denied-0001' }), env)
       expect(supportLockDenied.status).toBe(403)
       expect(await supportLockDenied.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
 
       const payrollLocked = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.lock', expectedVersion: 10, payload: { storeId: 'S01', period: '2026-08' },
-      }, { ...adminAuthorization, 'idempotency-key': 'admin-payroll-lock-after-support-pay-0001' }), env)
+      }, { ...payrollAdminAuthorization, 'idempotency-key': 'admin-payroll-lock-after-support-pay-0001' }), env)
       expect(payrollLocked.status).toBe(200)
       expect(await payrollLocked.json()).toMatchObject({ version: 11, period: { status: 'Đã khóa' } })
 
+      const payrollStoreManagerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'store.manager.one', password: 'store-manager-one-password',
+      }), env)
+      const payrollStoreManagerAuthorization = { authorization: `Bearer ${(await payrollStoreManagerLogin.json()).token}` }
       const storeManagerState = await worker.fetch(new Request('https://idosi.example/api/state', {
-        headers: storeManagerAuthorization,
+        headers: payrollStoreManagerAuthorization,
       }), env)
       const storeManagerProjection = (await storeManagerState.json()).state
       expect(storeManagerProjection.stores.map(({ id }) => id)).toEqual(['S01'])
@@ -7180,9 +7256,14 @@ describe('IDOSI Worker security primitives', () => {
       expect(managerOfficePayrollDenied.status).toBe(403)
       expect(await managerOfficePayrollDenied.json()).toMatchObject({ error: { code: 'OFFICE_FORBIDDEN' } })
 
+      vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z')) // 01/09 00:00 Vietnam
+      const payrollAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'office-attendance-admin-password',
+      }), env)
+      const payrollAdminAuthorization = { authorization: `Bearer ${(await payrollAdminLogin.json()).token}` }
       const payrollClosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'OFFICE', period: '2026-08' },
-      }, { ...adminAuthorization, 'idempotency-key': 'office-payroll-close-0001' }), env)
+      }, { ...payrollAdminAuthorization, 'idempotency-key': 'office-payroll-close-0001' }), env)
       expect(payrollClosed.status).toBe(201)
       expect(await payrollClosed.json()).toMatchObject({
         version: 7,
@@ -7196,7 +7277,11 @@ describe('IDOSI Worker security primitives', () => {
         },
       })
 
-      const officeState = await worker.fetch(new Request('https://idosi.example/api/state', { headers: officeAuthorization }), env)
+      const refreshedOfficeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'office.employee', password: 'office-employee-password',
+      }), env)
+      const refreshedOfficeAuthorization = { authorization: `Bearer ${(await refreshedOfficeLogin.json()).token}` }
+      const officeState = await worker.fetch(new Request('https://idosi.example/api/state', { headers: refreshedOfficeAuthorization }), env)
       expect(officeState.status).toBe(200)
       const officeStateBody = await officeState.json()
       expect(officeStateBody).toMatchObject({
@@ -7230,7 +7315,7 @@ describe('IDOSI Worker security primitives', () => {
           employeeId: 'VP001', salary: 21_000_000,
           standardWorkDaysPeriod: '2026-08', standardWorkDays: 18,
         },
-      }, { ...adminAuthorization, 'idempotency-key': 'office-payroll-profile-update-0001' }), env)
+      }, { ...payrollAdminAuthorization, 'idempotency-key': 'office-payroll-profile-update-0001' }), env)
       expect(payrollProfileUpdated.status).toBe(200)
       expect(await payrollProfileUpdated.json()).toMatchObject({ version: 8 })
       const dirtyPeriod = readHydratedState(env.DB.database)
@@ -7239,13 +7324,13 @@ describe('IDOSI Worker security primitives', () => {
 
       const dirtyOfficePay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.pay', expectedVersion: 8, payload: { storeId: 'OFFICE', period: '2026-08' },
-      }, { ...adminAuthorization, 'idempotency-key': 'office-payroll-pay-dirty-0001' }), env)
+      }, { ...payrollAdminAuthorization, 'idempotency-key': 'office-payroll-pay-dirty-0001' }), env)
       expect(dirtyOfficePay.status).toBe(409)
       expect(await dirtyOfficePay.json()).toMatchObject({ error: { code: 'PAYROLL_NEEDS_RECLOSE' } })
 
       const officePayrollReclosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 8, payload: { storeId: 'OFFICE', period: '2026-08' },
-      }, { ...adminAuthorization, 'idempotency-key': 'office-payroll-reclose-0001' }), env)
+      }, { ...payrollAdminAuthorization, 'idempotency-key': 'office-payroll-reclose-0001' }), env)
       expect(officePayrollReclosed.status).toBe(200)
       expect(await officePayrollReclosed.json()).toMatchObject({
         version: 9,
@@ -7253,17 +7338,21 @@ describe('IDOSI Worker security primitives', () => {
       })
       const officePayrollPaid = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.pay', expectedVersion: 9, payload: { storeId: 'OFFICE', period: '2026-08' },
-      }, { ...adminAuthorization, 'idempotency-key': 'office-payroll-pay-0001' }), env)
+      }, { ...payrollAdminAuthorization, 'idempotency-key': 'office-payroll-pay-0001' }), env)
       expect(officePayrollPaid.status).toBe(200)
       expect(await officePayrollPaid.json()).toMatchObject({ version: 10 })
       const paidTargetChangeDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'employee.update', expectedVersion: 10,
         payload: { employeeId: 'VP001', standardWorkDaysPeriod: '2026-08', standardWorkDays: 19 },
-      }, { ...adminAuthorization, 'idempotency-key': 'office-paid-target-denied-0001' }), env)
+      }, { ...payrollAdminAuthorization, 'idempotency-key': 'office-paid-target-denied-0001' }), env)
       expect(paidTargetChangeDenied.status).toBe(409)
       expect(await paidTargetChangeDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
 
-      const managerState = await worker.fetch(new Request('https://idosi.example/api/state', { headers: managerAuthorization }), env)
+      const refreshedManagerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'office.manager', password: 'office-manager-password',
+      }), env)
+      const refreshedManagerAuthorization = { authorization: `Bearer ${(await refreshedManagerLogin.json()).token}` }
+      const managerState = await worker.fetch(new Request('https://idosi.example/api/state', { headers: refreshedManagerAuthorization }), env)
       expect(managerState.status).toBe(200)
       const managerStateBody = await managerState.json()
       expect(managerStateBody.state.employees.map(({ id }) => id)).toEqual(['VP001', 'HTKD-OFFICE'])
@@ -7459,13 +7548,16 @@ describe('IDOSI Worker security primitives', () => {
 
   it('commits production domain commands atomically with RBAC, audit, and finance deduplication', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-finance-secret' }
-    const localDate = new Intl.DateTimeFormat('en-CA', {
+    const currentBusinessDate = new Intl.DateTimeFormat('en-CA', {
       timeZone: 'Asia/Ho_Chi_Minh',
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
     }).format(new Date())
-    const period = localDate.slice(0, 7)
+    const [currentYear, currentMonth] = currentBusinessDate.split('-').map(Number)
+    const previousMonthDate = new Date(Date.UTC(currentYear, currentMonth - 2, 1))
+    const period = `${previousMonthDate.getUTCFullYear()}-${String(previousMonthDate.getUTCMonth() + 1).padStart(2, '0')}`
+    const localDate = `${period}-20`
     const occurredAt = `${localDate}T12:00:00+07:00`
     const initialState = {
       schemaVersion: 2,
@@ -10504,6 +10596,8 @@ describe('IDOSI Worker security primitives', () => {
       expect(stateAfterSupportShift.supportTransfers.find(({ id }) => id === transferCreatedBody.transfer.id)).toMatchObject({
         status: 'Hoàn tất',
       })
+      vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z')) // 01/09 00:00 Vietnam
+      supportAuthorization = await loginAs('support.ops', 'support-ops-password')
       const destinationPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 15, payload: { storeId: 'S02', period: '2026-08' },
       }, { ...supportAuthorization, 'idempotency-key': 'support-destination-payroll-0001' }), env)
@@ -10515,6 +10609,7 @@ describe('IDOSI Worker security primitives', () => {
         supportAllowance: 180_000, gross: 360_000,
         supportTransferIds: [transferCreatedBody.transfer.id],
       })
+      employeeAuthorization = await loginAs('employee.one', 'employee-one-password')
       const employeeReturnedHome = await worker.fetch(new Request('https://idosi.example/api/state', {
         headers: employeeAuthorization,
       }), env)
@@ -11735,6 +11830,7 @@ describe('IDOSI Worker security primitives', () => {
         attendance: { shiftStart: '08:30', shiftEnd: '17:00', workdayCredit: 1 },
       })
 
+      vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z')) // 01/09 00:00 Vietnam
       const refreshedAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
         username: 'admin', password: 'effective-working-time-admin',
       }), env)
@@ -12374,9 +12470,14 @@ describe('IDOSI Worker security primitives', () => {
       expect(checkedOut.status).toBe(200)
       expect(await checkedOut.json()).toMatchObject({ version: 3, attendance: { id: attendanceId, workedSeconds: 3_600 } })
 
+      vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z')) // 01/09 00:00 Vietnam
+      const payrollAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'transfer-runtime-admin-password',
+      }), env)
+      const payrollAdminAuthorization = { authorization: `Bearer ${(await payrollAdminLogin.json()).token}` }
       const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 3, payload: { storeId: 'S02', period: '2026-08' },
-      }, { ...adminAuthorization, 'idempotency-key': 'open-payroll-guard-close-after-checkout-0001' }), env)
+      }, { ...payrollAdminAuthorization, 'idempotency-key': 'open-payroll-guard-close-after-checkout-0001' }), env)
       expect(closed.status).toBe(201)
       expect(await closed.json()).toMatchObject({ version: 4, period: { storeId: 'S02', period: '2026-08', status: 'Đã chốt' } })
     } finally {
@@ -12747,20 +12848,29 @@ describe('IDOSI Worker security primitives', () => {
         hours: 3, baseSalary: 135_000, supportHourlyPay: 135_000, supportAllowance: 180_000,
         supportActualPay: 315_000, gross: 315_000, supportTransferIds: [transfer.id],
       })
+      vi.setSystemTime(new Date('2026-09-30T17:00:00.000Z')) // 01/10 00:00 Vietnam
+      const octoberAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'transfer-runtime-admin-password',
+      }), env)
+      const octoberAdminAuthorization = { authorization: `Bearer ${(await octoberAdminLogin.json()).token}` }
       const septemberPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-09' },
-      }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-sep-0001' }), env)
+      }, { ...octoberAdminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-sep-0001' }), env)
       expect(septemberPayroll.status).toBe(201)
       expect((await septemberPayroll.json()).period.rows.some(({ employeeId }) => employeeId === 'E01')).toBe(false)
       const homePayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 6, payload: { storeId: 'S01', period: '2026-08' },
-      }, { ...adminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-home-0001' }), env)
+      }, { ...octoberAdminAuthorization, 'idempotency-key': 'cross-month-transfer-payroll-home-0001' }), env)
       expect(homePayroll.status).toBe(201)
       const homeEmployeeRow = (await homePayroll.json()).period.rows.find(({ employeeId }) => employeeId === 'E01')
       expect(homeEmployeeRow).toMatchObject({ hours: 0, baseSalary: 0, gross: 0 })
       expect(homeEmployeeRow).not.toHaveProperty('supportAllowance')
+      const payrollManagerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'transfer.manager', password: 'transfer-manager-password',
+      }), env)
+      const payrollManagerAuthorization = { authorization: `Bearer ${(await payrollManagerLogin.json()).token}` }
       const managerPayrollState = (await (await worker.fetch(new Request('https://idosi.example/api/state', {
-        headers: managerAuthorization,
+        headers: payrollManagerAuthorization,
       }), env)).json()).state
       expect(managerPayrollState.payrollPeriods.find(({ period }) => period === '2026-08').rows).toEqual([
         expect.objectContaining({ employeeId: 'E01', supportAllowance: 180_000 }),
@@ -15595,6 +15705,7 @@ describe('IDOSI Worker security primitives', () => {
           effectiveDate: '2026-08-31', period: '2026-08', status: 'APPROVED', deletedAt: null,
         },
       ])
+      vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z')) // 01/09 00:00 Vietnam
       const conflictedPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 2, payload: { storeId: 'S02', period: '2026-08' },
       }, { ...adminAuthorization, 'idempotency-key': 'support-work-reward-conflicted-payroll-0001' }), env)
@@ -15662,9 +15773,14 @@ describe('IDOSI Worker security primitives', () => {
       })
       expect(homeRow).not.toHaveProperty('supportWorkBonusVnd')
 
+      vi.setSystemTime(new Date('2026-09-30T17:00:00.000Z')) // 01/10 00:00 Vietnam
+      const octoberAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'transfer-runtime-admin-password',
+      }), env)
+      const octoberAdminAuthorization = { authorization: `Bearer ${(await octoberAdminLogin.json()).token}` }
       const septemberDestinationPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-09' },
-      }, { ...adminAuthorization, 'idempotency-key': 'support-work-reward-september-payroll-0001' }), env)
+      }, { ...octoberAdminAuthorization, 'idempotency-key': 'support-work-reward-september-payroll-0001' }), env)
       expect(septemberDestinationPayroll.status).toBe(201)
       expect((await septemberDestinationPayroll.json()).period.rows.some(({ employeeId }) => employeeId === 'E01')).toBe(false)
     } finally {
@@ -15951,9 +16067,14 @@ describe('IDOSI Worker security primitives', () => {
       expect(homeCloseBody.period.financeSnapshot).toMatchObject({ revenue: 0, profit: 0 })
       expect(readHydratedState(env.DB.database).violationRefunds).toHaveLength(2)
 
+      vi.setSystemTime(new Date('2026-09-30T17:00:00.000Z')) // 01/10 00:00 Vietnam
+      const octoberAdminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'transfer-runtime-admin-password',
+      }), env)
+      const octoberAdminAuthorization = { authorization: `Bearer ${(await octoberAdminLogin.json()).token}` }
       const septemberClose = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 5, payload: { storeId: 'S02', period: '2026-09' },
-      }, { ...adminAuthorization, 'idempotency-key': 'support-violation-september-close-0001' }), env)
+      }, { ...octoberAdminAuthorization, 'idempotency-key': 'support-violation-september-close-0001' }), env)
       expect(septemberClose.status).toBe(201)
       const septemberPeriod = (await septemberClose.json()).period
       expect(septemberPeriod.rows.some(({ employeeId }) => employeeId === 'E01')).toBe(false)

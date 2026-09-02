@@ -7,10 +7,22 @@ import {
   confirmPayrollPayment,
   confirmSalaryAdvance,
   createSalaryAdvance,
+  isPayrollPeriodActionable,
+  payrollPeriodActionDate,
   validateSalaryAdvance,
 } from './payroll'
 
 describe('payroll and salary advances', () => {
+  it('opens payroll period actions on the first business day of the following month', () => {
+    expect(payrollPeriodActionDate('2026-08')).toBe('2026-09-01')
+    expect(payrollPeriodActionDate('2026-12')).toBe('2027-01-01')
+    expect(payrollPeriodActionDate('2026-13')).toBe('')
+    expect(isPayrollPeriodActionable('2026-08', '2026-08-31')).toBe(false)
+    expect(isPayrollPeriodActionable('2026-08', '2026-09-01')).toBe(true)
+    expect(isPayrollPeriodActionable('2026-08', '2026-10-15')).toBe(true)
+    expect(isPayrollPeriodActionable('invalid', '2026-09-01')).toBe(false)
+  })
+
   it('calculates available salary from confirmed values only', () => {
     const result = calculateAvailableSalary({
       basePay: 8_000_000,

@@ -11,6 +11,7 @@ const workerDomainFiles = [
   'compensationPolicies.js',
   'compensationAllocation.js',
   'compensationSettlement.js',
+  'payrollPeriodLifecycle.js',
   'storeTieredPayroll.js',
   'managerRevenueBonus.js',
   'revenueBonusEligibility.js',

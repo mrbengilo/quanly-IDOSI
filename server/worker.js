@@ -16,6 +16,7 @@ import {
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { applyAdvanceToNetPay, applyViolationWaterfall } from '../src/domain/compensationSettlement.js'
+import { isPayrollPeriodActionable, payrollPeriodActionDate } from '../src/domain/payrollPeriodLifecycle.js'
 import { revenueBonusEligibility } from '../src/domain/revenueBonusEligibility.js'
 import {
   STORE_EMPLOYMENT_TYPE,
@@ -20365,6 +20366,16 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   const existing = payrollPeriodFor(state, storeId, period)
   const actorSnapshot = serverActorSnapshot(actor)
   assertPayrollHasNoOpenAttendance(state, storeId, period)
+  const currentBusinessDate = localDateTimeParts(commandContext.now).date
+  if (!isPayrollPeriodActionable(period, currentBusinessDate)) {
+    const actionDate = payrollPeriodActionDate(period)
+    throw new ApiError(
+      409,
+      'PAYROLL_PERIOD_NOT_ENDED',
+      `Kỳ lương ${period} chỉ được chốt, xác nhận chi hoặc khóa từ ngày ${actionDate.split('-').reverse().join('/')}.`,
+      { period, actionDate, currentBusinessDate },
+    )
+  }
 
   if (operation === 'close') {
     if (existing?.lockedAt || existing?.status === 'Đã khóa') {
