@@ -7771,7 +7771,7 @@ describe('IDOSI Worker security primitives', () => {
     ]))
   })
 
-  it('lets business support create store managers, mutate orders, and complete Admin assignments', async () => {
+  it('lets business support edit non-financial order fields while reserving financial edits and deletion for Admin', async () => {
     const env = { DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-support-work' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'support-work-admin-password',
@@ -7839,15 +7839,27 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...supportAuthorization, 'idempotency-key': 'support-create-store-employee-invalid-0001' }), env)
     expect(invalidStoreEmployee.status).toBe(400)
     expect(await invalidStoreEmployee.json()).toMatchObject({ error: { code: 'CCCD_INVALID' } })
-    const orderUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    const financialOrderUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'order.update', expectedVersion: 3,
       payload: { orderId: 'ORDER-SUPPORT-01', amount: 600_000, reason: 'Đối soát lại đơn hàng' },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-order-financial-update-0001' }), env)
+    expect(financialOrderUpdate.status).toBe(403)
+    expect(await financialOrderUpdate.json()).toMatchObject({ error: { code: 'ORDER_AMOUNT_ADMIN_ONLY' } })
+    const orderUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 3,
+      payload: {
+        orderId: 'ORDER-SUPPORT-01', customerName: 'Khách hàng đã đối soát',
+        paymentMethod: 'Chuyển khoản', reason: 'Đối soát hồ sơ và hình thức thanh toán',
+      },
     }, { ...supportAuthorization, 'idempotency-key': 'support-order-update-0001' }), env)
     expect(orderUpdated.status).toBe(200)
     expect(await orderUpdated.json()).toMatchObject({
       version: 4,
-      order: { id: 'ORDER-SUPPORT-01', amount: 600_000 },
-      audit: { actor: { role: 'business_support' }, reason: 'Đối soát lại đơn hàng' },
+      order: { id: 'ORDER-SUPPORT-01', amount: 500_000, paymentMethod: 'Chuyển khoản', customerName: 'Khách hàng đã đối soát' },
+      audit: {
+        actor: { role: 'business_support' }, reason: 'Đối soát hồ sơ và hình thức thanh toán',
+        changedFields: ['customerName', 'paymentMethod'], createdAt: expect.any(String),
+      },
     })
 
     const assigned = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -8011,8 +8023,18 @@ describe('IDOSI Worker security primitives', () => {
       type: 'order.delete', expectedVersion: 10,
       payload: { orderId: 'ORDER-SUPPORT-01', reason: 'Đơn hàng nhập trùng' },
     }, { ...supportAuthorization, 'idempotency-key': 'support-order-delete-0001' }), env)
-    expect(orderDeleted.status).toBe(200)
-    expect(await orderDeleted.json()).toMatchObject({ version: 11, order: { status: 'Đã xóa' } })
+    expect(orderDeleted.status).toBe(403)
+    expect(await orderDeleted.json()).toMatchObject({ error: { code: 'ORDER_DELETE_ADMIN_ONLY' } })
+    const adminDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.delete', expectedVersion: 10,
+      payload: { orderId: 'ORDER-SUPPORT-01', reason: 'Admin xác nhận đơn hàng nhập trùng' },
+    }, { ...adminAuthorization, 'idempotency-key': 'admin-order-delete-support-flow-0001' }), env)
+    expect(adminDeleted.status).toBe(200)
+    expect(await adminDeleted.json()).toMatchObject({
+      version: 11,
+      order: { status: 'Đã xóa' },
+      audit: { actor: { role: 'admin' }, createdAt: expect.any(String) },
+    })
 
     const supportAudit = await worker.fetch(new Request('https://idosi.example/api/audit?limit=100', {
       headers: supportAuthorization,
