@@ -1,11 +1,14 @@
 import { Buffer } from 'node:buffer'
 
-export const TEST_MANAGER_PURGE_MARKER = 'data-fix:2026-09-02:purge-test-manager-qlch-004-v1'
+export const TEST_MANAGER_PURGE_MARKER = 'data-fix:2026-09-02:purge-test-manager-qlch-014-v1'
 
 const TARGET = Object.freeze({
-  employeeId: 'QLCH-004',
+  employeeId: 'QLCH-014',
   employeeName: 'Trần Thị Ngọc Bích',
+  storeId: 'CH010',
   storeName: 'SM TNV',
+  deletedFrom: '2026-09-01T17:00:00.000Z',
+  deletedBefore: '2026-09-02T17:00:00.000Z',
 })
 const TARGET_STORE_IDENTITIES = new Set([
   'sm tnv',
@@ -183,6 +186,19 @@ const isArchivedProfileEntry = ({ collection, profile }) => (
   || ['da nghi viec', 'inactive'].includes(normalizedText(profile.status))
 )
 
+const isTargetManagerProfile = (profile) => (
+  normalizedText(profile.name) === normalizedText(TARGET.employeeName)
+  && [profile.unit, profile.role, profile.accountRole]
+    .some((value) => normalizedText(value) === 'store manager')
+)
+
+const wasDeletedOnTargetDay = (profile) => {
+  const deletedAt = Date.parse(compactText(profile.deletedAt))
+  return Number.isFinite(deletedAt)
+    && deletedAt >= Date.parse(TARGET.deletedFrom)
+    && deletedAt < Date.parse(TARGET.deletedBefore)
+}
+
 const isTargetStore = (store, storeId) => (
   identifier(store.id) === identifier(storeId)
   && [store.name, store.code, store.storeCode, store.short, store.employeePrefix]
@@ -194,18 +210,24 @@ const exactTargetEvidence = (externalRows, compactState) => {
     .filter(({ profile }) => isTargetIdentifier(profileId(profile)))
   if (!identifierMatches.length) return null
   if (!identifierMatches.every(isArchivedProfileEntry)) {
-    throw new Error('Data-fix QLCH-004 dừng an toàn vì hồ sơ theo mã vẫn còn hoạt động.')
+    throw new Error('Data-fix QLCH-014 dừng an toàn vì hồ sơ theo mã vẫn còn hoạt động.')
+  }
+  if (!identifierMatches.every(({ profile }) => isTargetManagerProfile(profile))) {
+    throw new Error('Data-fix QLCH-014 dừng an toàn vì tên hoặc vai trò quản lý không khớp.')
+  }
+  if (!identifierMatches.some(({ profile }) => wasDeletedOnTargetDay(profile))) {
+    throw new Error('Data-fix QLCH-014 dừng an toàn vì hồ sơ không được xóa trong ngày 02/09/2026 giờ Việt Nam.')
   }
 
   const storeIds = new Set(identifierMatches.map(({ profile }) => compactText(profile.storeId)).filter(Boolean))
-  if (storeIds.size !== 1) {
-    throw new Error('Data-fix QLCH-004 dừng an toàn vì hồ sơ không quy về đúng một cửa hàng.')
+  if (storeIds.size !== 1 || identifier([...storeIds][0]) !== TARGET.storeId) {
+    throw new Error('Data-fix QLCH-014 dừng an toàn vì hồ sơ không quy về đúng cửa hàng CH010.')
   }
   const [storeId] = storeIds
   const stores = logicalRows(externalRows, compactState, STORE_COLLECTIONS)
   const exactStore = stores.some((store) => isTargetStore(store, storeId))
   if (!exactStore) {
-    throw new Error('Data-fix QLCH-004 dừng an toàn vì cửa hàng đích không khớp SM TNV.')
+    throw new Error('Data-fix QLCH-014 dừng an toàn vì cửa hàng đích không khớp CH010/SM TNV.')
   }
 
   return {
@@ -347,7 +369,7 @@ export const applyVpsDataFixes = (database, now = new Date().toISOString()) => {
     `).run(TEST_MANAGER_PURGE_MARKER, JSON.stringify(marker), now)
 
     const violations = database.prepare('PRAGMA foreign_key_check').all()
-    if (violations.length) throw new Error(`Data-fix QLCH-004 tạo ${violations.length} lỗi khóa ngoại.`)
+    if (violations.length) throw new Error(`Data-fix QLCH-014 tạo ${violations.length} lỗi khóa ngoại.`)
     database.exec('COMMIT')
     return { status: 'applied', marker }
   } catch (error) {
