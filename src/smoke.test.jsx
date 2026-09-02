@@ -234,7 +234,7 @@ describe('IDOSI page smoke tests', () => {
     expect(await screen.findByRole('heading', { name: 'ĐƠN HÀNG' })).toBeTruthy()
     expect(screen.queryByText(/Chế độ chỉ xem/i)).toBeNull()
     expect(screen.getAllByRole('button', { name: /^Sửa$/i }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: /^Xóa$/i }).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /^Xóa$/i })).toBeNull()
   })
 
   it('guards direct system routes while allowing business support to self-attend', async () => {

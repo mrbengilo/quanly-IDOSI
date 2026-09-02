@@ -14461,12 +14461,12 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
   if (previous.source === 'legacy-opening-balance') {
     throw new ApiError(409, 'LEGACY_ORDER_IMMUTABLE', 'Không thể thay đổi bản ghi doanh thu chuyển tiếp.')
   }
-  assertPayrollNotPaidOrLocked(state, previous.storeId, monthFromRecord(previous))
   const actorSnapshot = serverActorSnapshot(actor)
   let next
   let action
   let changedFields
   if (body.type === 'order.delete') {
+    assertPayrollNotPaidOrLocked(state, previous.storeId, monthFromRecord(previous))
     action = 'Xóa'
     changedFields = ['status', 'deletedAt', 'deletedBy']
     next = {
@@ -14546,6 +14546,7 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
         'Chỉ Admin được thay đổi số tiền của đơn hàng.',
       )
     }
+    assertPayrollNotPaidOrLocked(state, previous.storeId, monthFromRecord(previous))
     if (!changedFields.length) {
       return recordNoopCommand(db, actor, {
         command: body.type,

@@ -6666,7 +6666,7 @@ describe('IDOSI Worker security primitives', () => {
     const orderUpdatedAfterAttendance = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'order.update', expectedVersion: 3,
       payload: { orderId: 'ORDER-ATT-TRANSFER', amount: 2_000_000, reason: 'Cập nhật doanh thu sau chỉnh công' },
-    }, { ...managerAuthorization, 'idempotency-key': 'attendance-followup-order-update-0001' }), env)
+    }, { ...adminAuthorization, 'idempotency-key': 'attendance-followup-order-update-0001' }), env)
     expect(orderUpdatedAfterAttendance.status).toBe(200)
     expect(await orderUpdatedAfterAttendance.json()).toMatchObject({ version: 4, order: { amount: 2_000_000 } })
     expect(readHydratedState(env.DB.database).attendance.find(({ id }) => id === 'ATT-AUG')).toMatchObject({
@@ -9011,23 +9011,11 @@ describe('IDOSI Worker security primitives', () => {
       username: 'admin', password: 'order-operational-reset-admin-password',
     }), env)
     const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
-    const supportUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'user.create', expectedVersion: 0,
-      payload: {
-        role: 'business_support', employeeId: 'HTKD-RESET', username: 'support.reset',
-        password: 'support-reset-password', displayName: 'Hỗ trợ KD',
-      },
-    }, { ...adminAuthorization, 'idempotency-key': 'support-reset-user-create-0001' }), env)
-    expect(supportUser.status).toBe(201)
-    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
-      username: 'support.reset', password: 'support-reset-password',
-    }), env)
-    const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
 
     const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'order.update', expectedVersion: 1,
       payload: { orderId: 'ORDER-RESET-01', amount: 250_000, reason: 'Đối soát doanh thu' },
-    }, { ...supportAuthorization, 'idempotency-key': 'order-before-operational-reset-0001' }), env)
+    }, { ...adminAuthorization, 'idempotency-key': 'order-before-operational-reset-0001' }), env)
     expect(updated.status).toBe(200)
     expect(await updated.json()).toMatchObject({ version: 2, order: { amount: 250_000 } })
     let state = readHydratedState(env.DB.database)
@@ -9134,20 +9122,30 @@ describe('IDOSI Worker security primitives', () => {
     }), env)
     const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
 
-    for (const [index, authorization] of [supportAuthorization, adminAuthorization].entries()) {
-      const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'order.update', expectedVersion: 1,
-        payload: { orderId: 'ORDER-PAID', amount: 200_000, reason: 'Kỳ đã chi' },
-      }, { ...authorization, 'idempotency-key': `paid-order-update-denied-${index}` }), env)
-      expect(denied.status).toBe(409)
-      expect(await denied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
-    }
+    const supportAmountDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 1,
+      payload: { orderId: 'ORDER-PAID', amount: 200_000, reason: 'HTKD không được sửa số tiền' },
+    }, { ...supportAuthorization, 'idempotency-key': 'paid-order-support-amount-denied' }), env)
+    expect(supportAmountDenied.status).toBe(403)
+    expect(await supportAmountDenied.json()).toMatchObject({ error: { code: 'ORDER_AMOUNT_ADMIN_ONLY' } })
+    const paidOrderUpdateDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 1,
+      payload: { orderId: 'ORDER-PAID', amount: 200_000, reason: 'Kỳ đã chi' },
+    }, { ...adminAuthorization, 'idempotency-key': 'paid-order-admin-update-denied' }), env)
+    expect(paidOrderUpdateDenied.status).toBe(409)
+    expect(await paidOrderUpdateDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
     const deleteDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'order.delete', expectedVersion: 1,
       payload: { orderId: 'ORDER-PAID', reason: 'Kỳ đã chi' },
     }, { ...supportAuthorization, 'idempotency-key': 'paid-order-delete-denied-0001' }), env)
-    expect(deleteDenied.status).toBe(409)
-    expect(await deleteDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
+    expect(deleteDenied.status).toBe(403)
+    expect(await deleteDenied.json()).toMatchObject({ error: { code: 'ORDER_DELETE_ADMIN_ONLY' } })
+    const paidOrderDeleteDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.delete', expectedVersion: 1,
+      payload: { orderId: 'ORDER-PAID', reason: 'Kỳ đã chi' },
+    }, { ...adminAuthorization, 'idempotency-key': 'paid-order-admin-delete-denied' }), env)
+    expect(paidOrderDeleteDenied.status).toBe(409)
+    expect(await paidOrderDeleteDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
 
     const staleReset = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'operational_reset.restore', expectedVersion: 1,
