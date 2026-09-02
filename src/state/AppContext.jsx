@@ -4112,9 +4112,40 @@ export function AppProvider({ children }) {
     const actorRole = normalizeAuthRole(state.session?.role)
     if (!['admin', 'business_support'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền sửa đơn hàng.' }
     const previous = state.orders.find((item) => item.id === id && !item.deletedAt)
-    if (!previous) return { ok: false, message: 'Không tìm thấy đơn hàng.' }
+    const remoteOrderMutation = apiRef.current.enabled
+    if (!previous && !remoteOrderMutation) return { ok: false, message: 'Không tìm thấy đơn hàng.' }
     const reason = String(payload.reason || '').trim()
     if (!reason) return { ok: false, message: 'Cần nhập lý do chỉnh sửa.' }
+    if (!previous) {
+      if (actorRole === 'business_support' && payload.amount != null) {
+        return { ok: false, message: 'Chỉ Admin được thay đổi số tiền của đơn hàng.' }
+      }
+      if (payload.amount != null && nonNegativeInteger(payload.amount) <= 0) {
+        return { ok: false, message: 'Số tiền đơn hàng phải lớn hơn 0.' }
+      }
+      if (payload.paymentMethod != null && !ORDER_PAYMENT_METHODS.includes(String(payload.paymentMethod).trim())) {
+        return { ok: false, message: 'Vui lòng chọn hình thức thanh toán.' }
+      }
+      try {
+        const result = await runRemoteDomainCommand('order.update', {
+          orderId: id,
+          ...(payload.customerName != null ? { customerName: String(payload.customerName).trim() } : {}),
+          ...(payload.customerPhone != null ? { customerPhone: normalizePhone(payload.customerPhone) } : {}),
+          ...(payload.customerAge != null ? { customerAge: payload.customerAge } : {}),
+          ...(payload.gender != null ? { gender: String(payload.gender).trim() } : {}),
+          ...(payload.occupation != null ? { occupation: String(payload.occupation).trim() } : {}),
+          ...(payload.acquisitionChannel != null ? { acquisitionChannel: String(payload.acquisitionChannel).trim() } : {}),
+          ...(payload.paymentMethod != null ? { paymentMethod: String(payload.paymentMethod).trim() } : {}),
+          ...(payload.amount != null ? { amount: nonNegativeInteger(payload.amount) } : {}),
+          reason,
+        })
+        notify(`Đã cập nhật đơn hàng ${result.order.code}.`)
+        return { ok: true, order: result.order, existing: result.existing }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật đơn hàng.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
     const candidate = {
       ...previous,
       customerName: payload.customerName == null ? previous.customerName : String(payload.customerName).trim(),
@@ -4173,7 +4204,8 @@ export function AppProvider({ children }) {
   const deleteOrder = async (id, reason = '') => {
     if (normalizeAuthRole(state.session?.role) !== 'admin') return { ok: false, message: 'Chỉ Admin được xóa đơn hàng.' }
     const previous = state.orders.find((item) => item.id === id && !item.deletedAt)
-    if (!previous || previous.source === 'legacy-opening-balance') return { ok: false, message: 'Không thể xóa bản ghi doanh thu chuyển tiếp.' }
+    if (previous?.source === 'legacy-opening-balance') return { ok: false, message: 'Không thể xóa bản ghi doanh thu chuyển tiếp.' }
+    if (!previous && !apiRef.current.enabled) return { ok: false, message: 'Không tìm thấy đơn hàng.' }
     const normalizedReason = String(reason || '').trim()
     if (!normalizedReason) return { ok: false, message: 'Cần nhập lý do xóa đơn hàng.' }
     if (apiRef.current.enabled) {
