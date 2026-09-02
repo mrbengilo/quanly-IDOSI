@@ -53,6 +53,16 @@ vi.mock('./pages/employee/EmployeeV2Pages', () => ({
   EmployeeDashboardV2: () => <div>Store employee home</div>,
 }))
 
+vi.mock('./pages/store/StoreV2Pages', () => ({
+  StoreAttendanceV2: () => <div>Store attendance</div>,
+  StoreCashflowV2: () => <div>Store cashflow</div>,
+  StoreImportsV2: () => <div>Store imports</div>,
+  StoreOverviewV2: () => <div>Store management overview</div>,
+  StoreOrdersPage: () => <div>Store orders</div>,
+  StorePayrollV2: () => <div>Store payroll</div>,
+  StoreReportsV2: () => <div>Store reports</div>,
+}))
+
 vi.mock('./pages/compensation', () => ({
   ManagerCompensationPage: () => <div>Quản lý thưởng phụ cấp</div>,
   MyCompensationPage: () => <div>Thu nhập của tôi</div>,
@@ -110,7 +120,7 @@ describe('App role routes', () => {
   it.each([
     ['admin', '/admin/overview', 'Admin overview'],
     ['business_support', '/support/overview', 'Role home'],
-    ['store_manager', '/store/overview', 'Role home'],
+    ['store_manager', '/store/overview', 'Store management overview'],
     ['employee', '/employee/home', 'Store employee home'],
   ])('shows the %s home while the remaining shared state hydrates', async (role, path, expectedText) => {
     mocked.session = { role, name: role, ...(role === 'employee' ? { employeeId: 'E01', storeId: 'S01' } : {}) }
