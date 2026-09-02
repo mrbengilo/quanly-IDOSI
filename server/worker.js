@@ -4195,7 +4195,30 @@ const selectSessionRole = async (request, env, context) => {
     role_selected_at: context.now,
     needs_role_selection: false,
   }, context.now, actor._globalState || null)
-  return jsonResponse(apiPayload(context, { user: publicUser(effective) }))
+  const loadedCollections = initialStateCollectionsForUser(effective, actor._globalState || {})
+  const [bootstrapRow, policies] = await Promise.all([
+    loadStateCollections(db, 'global', loadedCollections),
+    listPolicies(db),
+  ])
+  const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
+  const publicEffectiveUser = publicUser(effective)
+  return jsonResponse(apiPayload(context, {
+    user: publicEffectiveUser,
+    // Return the role's compact first-screen projection with the session update.
+    // This removes a second authenticated round trip before the client can
+    // enter the selected workspace; the full projection still hydrates later.
+    bootstrap: {
+      user: publicEffectiveUser,
+      scope: 'global',
+      projection: effective.role,
+      state: projectSharedState(bootstrapState, effective),
+      version: Number(bootstrapRow?.version || 0),
+      updatedAt: bootstrapRow?.updated_at || null,
+      policies,
+      partial: true,
+      loadedCollections,
+    },
+  }))
 }
 
 const getBootstrap = async (request, env, context, url) => {

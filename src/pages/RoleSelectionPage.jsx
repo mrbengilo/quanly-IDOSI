@@ -1,4 +1,5 @@
-import { BriefcaseBusiness, ShieldCheck, Store, UserRound } from 'lucide-react'
+import { useState } from 'react'
+import { BriefcaseBusiness, LoaderCircle, ShieldCheck, Store, UserRound } from 'lucide-react'
 import { Navigate, useNavigate } from 'react-router-dom'
 import { Avatar, Brand, Button } from '../components/UI'
 import { useApp } from '../state/AppContext'
@@ -17,17 +18,35 @@ const rolePresentation = {
   employee: { label: 'Nhân viên', description: 'Điểm danh, đơn hàng và công việc cá nhân', icon: UserRound },
 }
 
+const roleOptionKey = (option = {}) => [
+  option.role || '',
+  option.storeId || '',
+  option.employeeId || '',
+].join(':')
+
 export default function RoleSelectionPage() {
   const { session, settings, selectSessionRole } = useApp()
   const navigate = useNavigate()
+  const [pendingRoleKey, setPendingRoleKey] = useState('')
   const options = Array.isArray(session?.availableRoles) ? session.availableRoles : []
   if (!session) return <Navigate to="/login" replace />
   if (options.length <= 1 && !session.needsRoleSelection) return <Navigate to={destinations[session.role] || '/login'} replace />
 
-  const choose = async (option) => {
-    const result = await selectSessionRole(option)
-    if (result?.ok) navigate(destinations[result.account?.role] || '/login', { replace: true })
+  const choose = async (option, optionKey) => {
+    if (pendingRoleKey) return
+    setPendingRoleKey(optionKey)
+    try {
+      const result = await selectSessionRole(option)
+      if (result?.ok) {
+        navigate(destinations[result.account?.role] || '/login', { replace: true })
+        return
+      }
+    } finally {
+      setPendingRoleKey('')
+    }
   }
+
+  const currentRoleKey = roleOptionKey(session)
 
   return <main className="role-selection-page">
     <section className="role-selection-card">
@@ -43,22 +62,35 @@ export default function RoleSelectionPage() {
         <h1>Chọn vai trò đăng nhập</h1>
         <p>Mỗi vai trò mở đúng không gian và quyền hạn tương ứng. Bạn có thể đổi lại vai trò bất cứ lúc nào.</p>
       </div>
-      <div className="role-selection-grid">
+      <div
+        className="role-selection-grid"
+        role="group"
+        aria-label="Vai trò có thể chọn"
+        style={{ '--role-option-count': Math.max(options.length, 1) }}
+      >
         {options.map((option) => {
           const presentation = rolePresentation[option.role] || rolePresentation.employee
           const Icon = presentation.icon
+          const optionKey = roleOptionKey(option)
+          const isCurrent = optionKey === currentRoleKey
+          const isPending = optionKey === pendingRoleKey
           return <Button
-            key={`${option.role}:${option.storeId || ''}:${option.employeeId || ''}`}
+            key={optionKey}
             type="button"
             variant="outline"
-            className="role-selection-option"
-            onClick={() => choose(option)}
+            className={`role-selection-option${isCurrent ? ' is-selected' : ''}${isPending ? ' is-pending' : ''}`}
+            aria-pressed={isCurrent || isPending}
+            aria-busy={isPending}
+            disabled={Boolean(pendingRoleKey)}
+            onClick={() => choose(option, optionKey)}
           >
-            <span className="role-selection-option__icon"><Icon size={28} /></span>
-            <span>
+            <span className="role-selection-option__icon">
+              {isPending ? <LoaderCircle className="spin" size={28} /> : <Icon size={28} />}
+            </span>
+            <span className="role-selection-option__copy">
               <strong>{option.label || presentation.label}</strong>
               <small>{option.profileName || presentation.description}</small>
-              {option.role === session.role && String(option.employeeId || '') === String(session.employeeId || '') && <em>Vai trò hiện tại</em>}
+              {(isPending || isCurrent) && <em>{isPending ? 'Đang mở...' : 'Vai trò hiện tại'}</em>}
             </span>
           </Button>
         })}
