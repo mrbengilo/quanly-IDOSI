@@ -2364,10 +2364,12 @@ export const projectSharedState = (rawState, user) => {
         || employeeIdentifierValues(record).some((identifier) => sameIdentifier(identifier, ownEmployeeId)))
     ))
     const projectionTimestamp = new Date().toISOString()
-    const inboundTransfers = filterArray(state, 'supportTransfers', (record) => (
-      sameIdentifier(record.toStoreId, storeId)
-      && isSupportTransferActiveAt(record, projectionTimestamp)
-    ))
+    const inboundTransfers = filterArray(state, 'supportTransfers', (record) => {
+      if (!sameIdentifier(record.toStoreId, storeId)) return false
+      if (isSupportTransferActiveAt(record, projectionTimestamp)) return true
+      const openContext = openSupportTransferContextFor(state, record.employeeId)
+      return Boolean(openContext && sameIdentifier(openContext.transfer.id, record.id))
+    })
     const inboundTransferByEmployee = new Map(inboundTransfers.map((record) => [normalizeIdentifierKey(record.employeeId), record]))
     const transferredEmployees = filterArray(state, 'employees', (record) => (
       employeeUnit(record) === 'store'
@@ -3021,6 +3023,40 @@ const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
+const openSupportTransferContextFor = (state, employeeId) => {
+  const contexts = []
+  for (const attendance of Array.isArray(state?.attendance) ? state.attendance : []) {
+    const transferId = String(attendance?.supportTransferId || '').trim()
+    if (
+      !transferId
+      || attendance.deletedAt
+      || attendance.checkOut
+      || attendance.checkOutAt
+      || !belongsToEmployee(attendance, employeeId)
+    ) continue
+    const transfer = uniqueIdentifierRecordMatch({
+      records: state?.supportTransfers,
+      identifier: transferId,
+      identifierOf: (record) => record?.id,
+      predicate: (record) => (
+        supportTransferUsable(record)
+        && supportTransferMatchesEmployeeStore(record, employeeId, attendance.storeId)
+      ),
+      collisionCode: 'OPEN_SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+      collisionMessage: 'Ca hỗ trợ đang mở tham chiếu mơ hồ tới nhiều phiếu điều chuyển.',
+    })?.record || null
+    if (transfer) contexts.push({ attendance, transfer })
+  }
+  if (contexts.length > 1) {
+    throw new ApiError(
+      409,
+      'OPEN_SUPPORT_ATTENDANCE_COLLISION',
+      'Nhân viên đang có nhiều ca hỗ trợ cùng mở; cần đối soát chấm công trước khi tiếp tục.',
+    )
+  }
+  return contexts[0] || null
+}
+
 const supportTransferToStoreOnDate = (state, employeeId, storeId, at) => (Array.isArray(state.supportTransfers)
   ? state.supportTransfers
   : [])
@@ -3046,12 +3082,20 @@ const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = nul
   const state = preloadedState == null
     ? parseStoredJson((await loadState(db, 'global'))?.value_json, {})
     : preloadedState
-  const transfer = activeSupportTransferFor(state, user.employee_id, now)
+  const openContext = openSupportTransferContextFor(state, user.employee_id)
+  const transfer = openContext?.transfer || activeSupportTransferFor(state, user.employee_id, now)
   if (!transfer?.toStoreId) return user
+  const homeStoreId = String(
+    openContext?.attendance?.homeStoreId
+    || transfer.fromStoreId
+    || user.home_store_id
+    || user.store_id
+    || '',
+  ).trim()
   return {
     ...user,
-    home_store_id: user.store_id || transfer.fromStoreId || null,
-    store_id: String(transfer.toStoreId),
+    home_store_id: homeStoreId || null,
+    store_id: String(openContext?.attendance?.storeId || transfer.toStoreId),
     active_transfer_id: String(transfer.id || ''),
   }
 }
@@ -4121,7 +4165,7 @@ const login = async (request, env, context) => {
     ),
   ])
 
-  const effectiveUser = await resolveEffectiveEmployeeStore(db, {
+  const selectedUser = {
     ...user,
     last_login_at: context.now,
     role: initialRole.role,
@@ -4129,11 +4173,12 @@ const login = async (request, env, context) => {
     employee_id: initialRole.employeeId,
     available_roles: availableRoles,
     needs_role_selection: availableRoles.length > 1,
-  }, context.now, globalState)
-  const loadedCollections = initialStateCollectionsForUser(effectiveUser, globalState || {})
+  }
+  const loadedCollections = initialStateCollectionsForUser(selectedUser, globalState || {})
   const bootstrapRow = await loadStateCollections(db, 'global', loadedCollections)
   const policies = await listPolicies(db)
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
+  const effectiveUser = await resolveEffectiveEmployeeStore(db, selectedUser, context.now, bootstrapState)
   const publicEffectiveUser = publicUser(effectiveUser)
   const visibleUsers = OPERATIONS_ROLES.has(effectiveUser.role)
     ? (await visibleUserRowsForActor(db, effectiveUser)).map(publicUser)
@@ -4184,7 +4229,7 @@ const selectSessionRole = async (request, env, context) => {
     WHERE id = ? AND revoked_at IS NULL AND expires_at > ?
   `, selected.role, selected.storeId || null, selected.employeeId || null, context.now, context.now, actor.session_id, context.now)
   if (changes(result) !== 1) throw new ApiError(401, 'SESSION_INVALID', 'Phiên đăng nhập không còn hợp lệ.')
-  const effective = await resolveEffectiveEmployeeStore(db, {
+  const selectedUser = {
     ...actor,
     role: selected.role,
     store_id: selected.storeId || null,
@@ -4194,13 +4239,14 @@ const selectSessionRole = async (request, env, context) => {
     active_employee_id: selected.employeeId || null,
     role_selected_at: context.now,
     needs_role_selection: false,
-  }, context.now, actor._globalState || null)
-  const loadedCollections = initialStateCollectionsForUser(effective, actor._globalState || {})
+  }
+  const loadedCollections = initialStateCollectionsForUser(selectedUser, actor._globalState || {})
   const [bootstrapRow, policies] = await Promise.all([
     loadStateCollections(db, 'global', loadedCollections),
     listPolicies(db),
   ])
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
+  const effective = await resolveEffectiveEmployeeStore(db, selectedUser, context.now, bootstrapState)
   const publicEffectiveUser = publicUser(effective)
   return jsonResponse(apiPayload(context, {
     user: publicEffectiveUser,
@@ -4244,11 +4290,14 @@ const getBootstrap = async (request, env, context, url) => {
   }
   const policies = await listPolicies(db)
   const rawState = stateRow ? parseStoredJson(stateRow.value_json, {}) : {}
+  const effectiveUser = partialBootstrap
+    ? await resolveEffectiveEmployeeStore(db, user, context.now, rawState)
+    : user
   return jsonResponse(apiPayload(context, {
-    user: publicUser(user),
+    user: publicUser(effectiveUser),
     scope,
-    projection: scope === 'global' ? user.role : 'private',
-    state: scope === 'global' ? projectSharedState(rawState, user) : sanitizeStateValue(rawState),
+    projection: scope === 'global' ? effectiveUser.role : 'private',
+    state: scope === 'global' ? projectSharedState(rawState, effectiveUser) : sanitizeStateValue(rawState),
     version: Number(stateRow?.version || 0),
     updatedAt: stateRow?.updated_at || null,
     policies,
