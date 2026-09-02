@@ -6,6 +6,7 @@ import {
   apiGetAccountAvatar,
   apiGetEmployeeAvatar,
   apiGetIdentityImage,
+  apiGetStoreWorkspaceState,
   apiGetStateMetadata,
   apiListUsers,
   apiLogin,
@@ -219,6 +220,18 @@ describe('IDOSI lightweight state synchronization', () => {
       includeState: false,
       payload: { patch: { activeStoreId: 'S01' } },
     })
+  })
+
+  it('requests only the selected store workspace projection', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, projection: 'store', storeId: 'CH 01', state: {} }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiGetStoreWorkspaceState('CH 01')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/state?scope=global&view=store&storeId=CH+01')
   })
 
   it('loads only state metadata with the active bearer session', async () => {

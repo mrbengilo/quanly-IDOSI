@@ -2279,13 +2279,37 @@ const withEmployeeAccountAvatar = (state, employee = {}) => {
   return avatar ? { ...employee, avatar } : { ...employee }
 }
 
-export const projectSharedState = (rawState, user) => {
+const storeDirectoryRecord = (record = {}, selectedStoreId = '') => {
+  if (sameIdentifier(record.id, selectedStoreId)) return { ...record }
+  return Object.fromEntries([
+    'id', 'name', 'short', 'code', 'status', 'employeePrefix',
+  ].flatMap((key) => record[key] == null ? [] : [[key, record[key]]]))
+}
+
+const notificationBelongsToStoreWorkspace = (state, record, storeId, visibleEmployeeIds) => {
+  const explicitStoreIds = [
+    record?.storeId,
+    record?.data?.storeId,
+    record?.order?.storeId,
+    record?.data?.order?.storeId,
+    referencedOrderForNotification(state, record)?.storeId,
+  ].map((value) => String(value || '').trim()).filter(Boolean)
+  if (explicitStoreIds.length) return explicitStoreIds.every((value) => sameIdentifier(value, storeId))
+  const references = employeeReferences(record)
+  return references.length > 0 && references.every((reference) => (
+    visibleEmployeeIds.has(normalizeIdentifierKey(reference))
+  ))
+}
+
+export const projectSharedState = (rawState, user, { storeId: requestedWorkspaceStoreId = '' } = {}) => {
   const normalizedState = normalizeSharedStateForStorage(rawState)
   const supportCompensationContext = createSupportCompensationProjectionContext(normalizedState)
+  const systemOperatorStoreWorkspace = ['admin', 'business_support'].includes(user.role)
+    && Boolean(String(requestedWorkspaceStoreId || '').trim())
   // Folded employee IDs are safe at an authorization boundary only when they
   // resolve to exactly one profile. Admin keeps access to repair legacy data;
   // every operational projection fails closed instead of leaking peer records.
-  if (user.role !== 'admin') assertNoCaseCollidingOperationalIdentifiers(normalizedState)
+  if (user.role !== 'admin' || systemOperatorStoreWorkspace) assertNoCaseCollidingOperationalIdentifiers(normalizedState)
   let state = {
     ...normalizedState,
     orderInformationOptions: orderInformationOptionsFromState(normalizedState),
@@ -2310,7 +2334,7 @@ export const projectSharedState = (rawState, user) => {
       accountProfile: projectActorAccountProfile(state, user),
     }),
   }
-  if (user.role === 'admin') {
+  if (user.role === 'admin' && !systemOperatorStoreWorkspace) {
     const { accountSettings, ...adminState } = state
     void accountSettings
     return {
@@ -2321,7 +2345,7 @@ export const projectSharedState = (rawState, user) => {
     }
   }
 
-  if (user.role === 'business_support') {
+  if (user.role === 'business_support' && !systemOperatorStoreWorkspace) {
     const ownEmployeeId = String(user.employee_id || '')
     const ownAttendance = filterArray(state, 'attendance', (record) => belongsToEmployee(record, ownEmployeeId))
     const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
@@ -2346,8 +2370,10 @@ export const projectSharedState = (rawState, user) => {
     }
   }
 
-  if (user.role === 'store_manager') {
-    const requestedStoreId = String(user.store_id || '')
+  if (user.role === 'store_manager' || systemOperatorStoreWorkspace) {
+    const requestedStoreId = systemOperatorStoreWorkspace
+      ? String(requestedWorkspaceStoreId || '')
+      : String(user.store_id || '')
     const storeId = String(
       (Array.isArray(state.stores) ? state.stores : []).find((record) => sameIdentifier(record.id, requestedStoreId))?.id
       || requestedStoreId,
@@ -2457,7 +2483,8 @@ export const projectSharedState = (rawState, user) => {
       })
     const ownCompensationEntries = storeCompensationEntries
       .filter((record) => belongsToEmployee(record, ownEmployeeId))
-    const ownViolations = historicalVisibleScoped('violations')
+    const storeViolations = historicalVisibleScoped('violations')
+    const ownViolations = storeViolations
       .filter((record) => belongsToEmployee(record, ownEmployeeId))
     const compensationTeamTotals = (() => {
       const totals = new Map()
@@ -2508,7 +2535,9 @@ export const projectSharedState = (rawState, user) => {
       activeAttendanceId: ownOpenAttendance?.id || null,
       checkedInAt: ownOpenAttendance?.checkInAt || ownOpenAttendance?.checkIn || null,
       finishedShift: Boolean(!ownOpenAttendance && ownLatestAttendance?.checkOutAt),
-      stores: filterArray(state, 'stores', (record) => sameIdentifier(record.id, storeId)),
+      stores: systemOperatorStoreWorkspace
+        ? filterArray(state, 'stores', () => true).map((record) => storeDirectoryRecord(record, storeId))
+        : filterArray(state, 'stores', (record) => sameIdentifier(record.id, storeId)),
       employees,
       attendance: historicalVisibleScoped('attendance'),
       schedule: employeeScoped('schedule'),
@@ -2517,7 +2546,11 @@ export const projectSharedState = (rawState, user) => {
       )),
       tasks: employeeScoped('tasks'),
       taskAssignmentHistory: historicalEmployeeScoped('taskAssignmentHistory'),
-      notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
+      notifications: filterArray(state, 'notifications', (record) => (
+        canAccessNotification(state, user, record)
+        && (!systemOperatorStoreWorkspace
+          || notificationBelongsToStoreWorkspace(state, record, storeId, historicalVisibleEmployeeIds))
+      ))
         .map((record) => projectNotificationForActor(record, user)),
       salaryAdjustments: employeeScoped('salaryAdjustments'),
       salaryAdvances: employeeScoped('salaryAdvances'),
@@ -2534,9 +2567,11 @@ export const projectSharedState = (rawState, user) => {
         && !record.deletedAt
       )),
       workCatalogProgress: historicalEmployeeScoped('workCatalogProgress'),
-      storeShiftTaskTemplates: state.storeShiftTaskTemplates,
-      compensationEntries: ownCompensationEntries,
-      violations: ownViolations,
+      storeShiftTaskTemplates: filterArray(state, 'storeShiftTaskTemplates', (record) => (
+        !record.storeId || sameIdentifier(record.storeId, storeId)
+      )),
+      compensationEntries: systemOperatorStoreWorkspace ? storeCompensationEntries : ownCompensationEntries,
+      violations: systemOperatorStoreWorkspace ? storeViolations : ownViolations,
       violationRefunds: filterArray(state, 'violationRefunds', (record) => (
         sameIdentifier(record.storeId, storeId)
       )),
@@ -4267,6 +4302,21 @@ const selectSessionRole = async (request, env, context) => {
   }))
 }
 
+const requestedStoreWorkspaceId = (url, user, state, scope) => {
+  const view = String(url.searchParams.get('view') || '').trim()
+  if (!view) return ''
+  if (view !== 'store') throw new ApiError(400, 'STATE_VIEW_INVALID', 'Chế độ tải dữ liệu không hợp lệ.')
+  if (scope !== 'global') throw new ApiError(400, 'STATE_VIEW_SCOPE_INVALID', 'Không gian cửa hàng chỉ dùng với dữ liệu hệ thống.')
+  if (!['admin', 'business_support', 'store_manager'].includes(user.role)) {
+    throw new ApiError(403, 'STATE_VIEW_FORBIDDEN', 'Tài khoản không có quyền tải dữ liệu quản trị cửa hàng.')
+  }
+  const requested = String(url.searchParams.get('storeId') || '').trim()
+  if (user.role === 'store_manager' && !sameIdentifier(requested, user.store_id)) {
+    throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được tải dữ liệu cửa hàng được phân công.')
+  }
+  return String(requireActivePhysicalStore(state, requested).id)
+}
+
 const getBootstrap = async (request, env, context, url) => {
   const db = getDatabase(env)
   const initialProfileRequested = url.searchParams.get('profile') === 'initial'
@@ -4275,7 +4325,8 @@ const getBootstrap = async (request, env, context, url) => {
     : {})
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  const partialBootstrap = scope === 'global' && initialProfileRequested
+  const storeWorkspaceRequested = url.searchParams.get('view') === 'store'
+  const partialBootstrap = scope === 'global' && initialProfileRequested && !storeWorkspaceRequested
   const loadedCollections = partialBootstrap
     ? initialStateCollectionsForUser(user, user._globalState || {})
     : []
@@ -4293,11 +4344,15 @@ const getBootstrap = async (request, env, context, url) => {
   const effectiveUser = partialBootstrap
     ? await resolveEffectiveEmployeeStore(db, user, context.now, rawState)
     : user
+  const storeId = requestedStoreWorkspaceId(url, effectiveUser, rawState, scope)
   return jsonResponse(apiPayload(context, {
     user: publicUser(effectiveUser),
     scope,
-    projection: scope === 'global' ? effectiveUser.role : 'private',
-    state: scope === 'global' ? projectSharedState(rawState, effectiveUser) : sanitizeStateValue(rawState),
+    projection: storeId ? 'store' : scope === 'global' ? effectiveUser.role : 'private',
+    ...(storeId ? { storeId } : {}),
+    state: scope === 'global'
+      ? projectSharedState(rawState, effectiveUser, storeId ? { storeId } : {})
+      : sanitizeStateValue(rawState),
     version: Number(stateRow?.version || 0),
     updatedAt: stateRow?.updated_at || null,
     policies,
@@ -4322,11 +4377,15 @@ const getState = async (request, env, context, url) => {
   }
   const policies = await listPolicies(db)
   const rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  const storeId = requestedStoreWorkspaceId(url, user, rawState, scope)
   return jsonResponse(apiPayload(context, {
     user: publicUser(user),
     scope,
-    projection: scope === 'global' ? user.role : 'private',
-    state: scope === 'global' ? projectSharedState(rawState, user) : sanitizeStateValue(rawState),
+    projection: storeId ? 'store' : scope === 'global' ? user.role : 'private',
+    ...(storeId ? { storeId } : {}),
+    state: scope === 'global'
+      ? projectSharedState(rawState, user, storeId ? { storeId } : {})
+      : sanitizeStateValue(rawState),
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,
     updatedBy: row?.updated_by || null,
