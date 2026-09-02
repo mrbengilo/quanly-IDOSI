@@ -59,6 +59,7 @@ describe('operational-role attendance overview', () => {
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -138,6 +139,47 @@ describe('operational-role attendance overview', () => {
     render(<OfficeEmployeeDashboard />)
     expect(screen.getByRole('heading', { name: 'TỔNG QUAN NHÂN VIÊN HỖ TRỢ KD' })).toBeTruthy()
     expect(screen.queryByText('Bảng lương theo ngày công')).toBeNull()
+  })
+
+  it('warns support staff about yesterday open attendance and requires checkout before another check-in', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-09-02T03:00:00.000Z')
+    const supportProfile = { ...profile, id: 'HTKD-001', code: 'HTKD-001', unit: 'business_support', position: 'NV hỗ trợ KD' }
+    mocked.app = makeApp({
+      session: { role: 'business_support', employeeId: supportProfile.id },
+      currentEmployee: supportProfile,
+      employees: [supportProfile],
+      attendance: [{
+        id: 'CC-YESTERDAY', employeeId: supportProfile.id, date: '2026-09-01',
+        shiftName: 'Ca hành chính', shiftStart: '08:00', shiftEnd: '17:00', checkIn: '08:00',
+      }],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+
+    expect(screen.getByText('Bạn chưa bấm “Ra về” ngày hôm qua')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'ĐÃ HIỂU' }))
+    expect(screen.getByRole('button', { name: 'BẤM ĐIỂM DANH' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'RA VỀ' }).disabled).toBe(false)
+  })
+
+  it('shows a store-wide overdue warning to the store manager', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-09-02T03:00:00.000Z')
+    const coworker = { id: 'ST-002', code: 'ST-002', name: 'Trần Thị Ngọc Bích', unit: 'store', storeId: profile.storeId }
+    mocked.app = makeApp({
+      employees: [profile, coworker],
+      attendance: [{
+        id: 'CC-COWORKER-YESTERDAY', employeeId: coworker.id, storeId: profile.storeId, date: '2026-09-01',
+        shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '18:00', checkIn: '13:00',
+      }],
+    })
+
+    render(<OfficeEmployeeDashboard />)
+
+    expect(screen.getByRole('dialog', { name: 'CẢNH BÁO NHÂN VIÊN CHƯA KẾT CA' })).toBeTruthy()
+    expect(screen.getByText(coworker.name)).toBeTruthy()
+    expect(screen.getByText('chưa kết ca ngày 01/09/26 · Ca chiều')).toBeTruthy()
   })
 
   it.each([

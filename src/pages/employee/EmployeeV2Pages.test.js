@@ -292,6 +292,33 @@ describe('store employee current-shift orders', () => {
     expect(screen.queryByText(/900,000 đ/u)).toBeNull()
   })
 
+  it('warns about yesterday open shift and keeps new check-in unavailable until checkout', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-09-02T03:00:00.000Z')
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01', homeStoreId: 'S01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' },
+      employees: [{ id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' }],
+      stores: [{ id: 'S01', name: 'SM TNV' }],
+      attendance: [{
+        id: 'ATT-YESTERDAY', employeeId: 'E01', storeId: 'S01', date: '2026-09-01',
+        shiftId: 'CA-SANG', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00',
+        checkIn: '08:00', checkInAt: '2026-09-01T01:00:00.000Z',
+      }],
+      orders: [], schedule: [], tasks: [], taskAssignmentHistory: [], shiftDefinitions: [], supportTransfers: [], policies: {},
+      checkIn: vi.fn(), checkOut: vi.fn(), setTaskDone: vi.fn(), notify: vi.fn(),
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeeDashboardV2)))
+
+    expect(screen.getByRole('dialog', { name: 'CẢNH BÁO CHẤM CÔNG QUÁ HẠN' })).toBeTruthy()
+    expect(screen.getByText('Bạn chưa bấm “Kết ca” ngày hôm qua')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'ĐÃ HIỂU' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByRole('button', { name: 'KẾT CA' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'ĐIỂM DANH' })).toBeNull()
+  })
+
   it('keeps checkout blocked until every fixed active-shift task is completed', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-08-20T09:00:00.000Z')
