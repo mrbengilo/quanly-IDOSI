@@ -14438,8 +14438,13 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
 }
 
 const orderMutationCommand = async (db, actor, body, commandContext) => {
-  if (!['admin', 'business_support'].includes(actor.role)) {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được sửa hoặc xóa đơn hàng.')
+  const isAdmin = actor.role === 'admin'
+  const isBusinessSupport = actor.role === 'business_support'
+  if (body.type === 'order.delete' && !isAdmin) {
+    throw new ApiError(403, 'ORDER_DELETE_ADMIN_ONLY', 'Chỉ Admin được xóa đơn hàng.')
+  }
+  if (body.type === 'order.update' && !isAdmin && !isBusinessSupport) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được sửa đơn hàng.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const reason = String(payload.reason || '').trim()
@@ -14456,12 +14461,12 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
   if (previous.source === 'legacy-opening-balance') {
     throw new ApiError(409, 'LEGACY_ORDER_IMMUTABLE', 'Không thể thay đổi bản ghi doanh thu chuyển tiếp.')
   }
-  assertPayrollNotPaidOrLocked(state, previous.storeId, monthFromRecord(previous))
   const actorSnapshot = serverActorSnapshot(actor)
   let next
   let action
   let changedFields
   if (body.type === 'order.delete') {
+    assertPayrollNotPaidOrLocked(state, previous.storeId, monthFromRecord(previous))
     action = 'Xóa'
     changedFields = ['status', 'deletedAt', 'deletedBy']
     next = {
@@ -14534,6 +14539,14 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
       'acquisitionChannel', 'amount', 'paymentMethod',
     ]
       .filter((key) => JSON.stringify(candidate[key]) !== JSON.stringify(previous[key]))
+    if (isBusinessSupport && changedFields.includes('amount')) {
+      throw new ApiError(
+        403,
+        'ORDER_AMOUNT_ADMIN_ONLY',
+        'Chỉ Admin được thay đổi số tiền của đơn hàng.',
+      )
+    }
+    assertPayrollNotPaidOrLocked(state, previous.storeId, monthFromRecord(previous))
     if (!changedFields.length) {
       return recordNoopCommand(db, actor, {
         command: body.type,

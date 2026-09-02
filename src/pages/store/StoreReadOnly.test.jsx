@@ -285,11 +285,11 @@ describe('business-support store workspace permissions', () => {
     confirm.mockRestore()
   })
 
-  it('allows order correction, cashflow, and payroll operations', () => {
+  it('allows non-destructive order correction, cashflow, and payroll operations', () => {
     const orderView = renderPage(StoreOrdersPage)
     expect(screen.getByText('DH-001')).toBeTruthy()
     expect(screen.getAllByRole('button', { name: /^Sửa$/i }).length).toBeGreaterThan(0)
-    expect(screen.getAllByRole('button', { name: /^Xóa$/i }).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /^Xóa$/i })).toBeNull()
     orderView.unmount()
 
     const cashflowView = renderPage(StoreCashflowV2)

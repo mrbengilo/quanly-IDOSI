@@ -3797,7 +3797,8 @@ export function AppProvider({ children }) {
   }
 
   const updateOrder = async (id, payload = {}) => {
-    if (!['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))) return { ok: false, message: 'Tài khoản không có quyền sửa đơn hàng.' }
+    const actorRole = normalizeAuthRole(state.session?.role)
+    if (!['admin', 'business_support'].includes(actorRole)) return { ok: false, message: 'Tài khoản không có quyền sửa đơn hàng.' }
     const previous = state.orders.find((item) => item.id === id && !item.deletedAt)
     if (!previous) return { ok: false, message: 'Không tìm thấy đơn hàng.' }
     const reason = String(payload.reason || '').trim()
@@ -3827,6 +3828,9 @@ export function AppProvider({ children }) {
     }
     const changedFields = ['customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod']
       .filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(candidate[key]))
+    if (actorRole === 'business_support' && changedFields.includes('amount')) {
+      return { ok: false, message: 'Chỉ Admin được thay đổi số tiền của đơn hàng.' }
+    }
     if (!changedFields.length) return { ok: true, order: previous, existing: true }
     if (apiRef.current.enabled) {
       try {
@@ -3855,7 +3859,7 @@ export function AppProvider({ children }) {
   }
 
   const deleteOrder = async (id, reason = '') => {
-    if (!['admin', 'business_support'].includes(normalizeAuthRole(state.session?.role))) return { ok: false, message: 'Tài khoản không có quyền xóa đơn hàng.' }
+    if (normalizeAuthRole(state.session?.role) !== 'admin') return { ok: false, message: 'Chỉ Admin được xóa đơn hàng.' }
     const previous = state.orders.find((item) => item.id === id && !item.deletedAt)
     if (!previous || previous.source === 'legacy-opening-balance') return { ok: false, message: 'Không thể xóa bản ghi doanh thu chuyển tiếp.' }
     const normalizedReason = String(reason || '').trim()

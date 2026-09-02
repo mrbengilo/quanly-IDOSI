@@ -35,8 +35,8 @@ const order = (overrides = {}) => ({
   ...overrides,
 })
 
-const makeApp = (orderOverrides = {}) => ({
-  session: { role: 'admin' },
+const makeApp = (orderOverrides = {}, role = 'admin') => ({
+  session: { role },
   stores: [store],
   activeStoreId: store.id,
   activeStore: store,
@@ -121,5 +121,43 @@ describe('StoreOrdersPage order information editing', () => {
       amount: 35,
       reason: 'Sửa tiền, giữ nghề lịch sử',
     }))
+  })
+
+  it('lets business support edit customer and payment information without exposing amount or delete mutations', async () => {
+    mocked.app = makeApp({}, 'business_support')
+    renderPage()
+
+    expect(screen.getByText(/HTKD được sửa thông tin và hình thức thanh toán/u)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Sửa' }))
+
+    const dialog = screen.getByRole('dialog')
+    const amount = within(dialog).getByLabelText(/Số tiền/u)
+    const payment = within(dialog).getByLabelText(/Hình thức thanh toán/u)
+    expect(amount.disabled).toBe(true)
+    expect(payment.disabled).toBe(false)
+
+    fireEvent.change(within(dialog).getByLabelText(/Tên khách hàng/u), { target: { value: 'Khách đã cập nhật' } })
+    fireEvent.change(payment, { target: { value: 'Chuyển khoản' } })
+    fireEvent.change(within(dialog).getByLabelText(/Lý do chỉnh sửa/u), { target: { value: 'Đối soát thông tin' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU THAY ĐỔI' }))
+
+    await waitFor(() => expect(mocked.app.updateOrder).toHaveBeenCalledTimes(1))
+    const [, payload] = mocked.app.updateOrder.mock.calls[0]
+    expect(payload).toMatchObject({
+      customerName: 'Khách đã cập nhật',
+      paymentMethod: 'Chuyển khoản',
+      reason: 'Đối soát thông tin',
+    })
+    expect(payload).not.toHaveProperty('amount')
+  })
+
+  it('keeps store managers in read-only mode', () => {
+    mocked.app = makeApp({}, 'manager')
+    renderPage()
+
+    expect(screen.getByText(/Chế độ chỉ xem/u)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Sửa' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
   })
 })

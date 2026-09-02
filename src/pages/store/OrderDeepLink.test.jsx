@@ -161,7 +161,7 @@ describe('order notification deep links', () => {
     expect(screen.getByRole('button', { name: 'TẠO ĐƠN HÀNG' }).disabled).toBe(false)
   })
 
-  it('shows edit and delete order controls to Business Support', () => {
+  it('shows only the edit order control to Business Support', () => {
     mocked.app = {
       session: { role: 'business_support' },
       activeStoreId: 'S01',
@@ -175,6 +175,6 @@ describe('order notification deep links', () => {
     render(<MemoryRouter initialEntries={['/store/orders']}><StoreOrdersPage /></MemoryRouter>)
 
     expect(screen.getByRole('button', { name: /^Sửa$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Xóa$/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Xóa$/i })).toBeNull()
   })
 })
