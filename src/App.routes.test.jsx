@@ -49,6 +49,10 @@ vi.mock('./pages/employee/OfficeEmployeeDashboard', () => ({
   OfficeEmployeePayrollPage: () => <div>Office payroll</div>,
 }))
 
+vi.mock('./pages/employee/EmployeeV2Pages', () => ({
+  EmployeeDashboardV2: () => <div>Store employee home</div>,
+}))
+
 vi.mock('./pages/compensation', () => ({
   ManagerCompensationPage: () => <div>Quản lý thưởng phụ cấp</div>,
   MyCompensationPage: () => <div>Thu nhập của tôi</div>,
@@ -103,21 +107,34 @@ describe('App role routes', () => {
     expect(screen.queryByText('Cài đặt thông tin đơn hàng route')).toBeNull()
   })
 
-  it('shows the Admin overview while the remaining shared state hydrates', async () => {
-    mocked.session = { role: 'admin', name: 'Admin' }
+  it.each([
+    ['admin', '/admin/overview', 'Admin overview'],
+    ['business_support', '/support/overview', 'Role home'],
+    ['store_manager', '/store/overview', 'Role home'],
+    ['employee', '/employee/home', 'Store employee home'],
+  ])('shows the %s home while the remaining shared state hydrates', async (role, path, expectedText) => {
+    mocked.session = { role, name: role, ...(role === 'employee' ? { employeeId: 'E01', storeId: 'S01' } : {}) }
+    mocked.currentEmployee = role === 'employee' ? { id: 'E01', unit: 'store', storeId: 'S01' } : undefined
     mocked.remoteDataReady = false
-    render(<MemoryRouter initialEntries={['/admin/overview']}><CurrentRoute /><App /></MemoryRouter>)
+    render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
 
-    expect(await screen.findByText('Admin overview')).toBeTruthy()
+    expect(await screen.findByText(expectedText)).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe(path)
   })
 
-  it('holds detail routes until the complete shared state is available', async () => {
-    mocked.session = { role: 'admin', name: 'Admin' }
+  it.each([
+    ['admin', '/admin/cashflow'],
+    ['business_support', '/support/tasks'],
+    ['store_manager', '/store/reports'],
+    ['employee', '/employee/orders'],
+  ])('holds %s detail routes until the complete shared state is available', async (role, path) => {
+    mocked.session = { role, name: role, ...(role === 'employee' ? { employeeId: 'E01', storeId: 'S01' } : {}) }
+    mocked.currentEmployee = role === 'employee' ? { id: 'E01', unit: 'store', storeId: 'S01' } : undefined
     mocked.remoteDataReady = false
-    render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+    render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
 
     expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
-    expect(screen.queryByText('Admin cashflow')).toBeNull()
+    expect(screen.getByTestId('current-route').textContent).toBe(path)
   })
 
   it('allows Admin to open the aggregate work-registration schedule', async () => {

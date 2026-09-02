@@ -1563,14 +1563,25 @@ export function AppProvider({ children }) {
   }, [])
 
   const hydrateCompleteRemoteState = useCallback(async (expectedUser, preferredActiveStoreId = null) => {
-    const payload = await apiBootstrapState('global')
+    let payload = await apiBootstrapState('global')
+    let remote = apiRef.current
+    const expectedUserId = String(expectedUser?.id || '')
+    if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+    // A home-screen command can commit while the initial full projection is
+    // still downloading. Never let that older response roll the rendered
+    // version backwards; replace it with a fresh authoritative projection.
+    if (Number(payload.version || 0) < Number(remote.version || 0)) {
+      payload = await apiGetState('global')
+      remote = apiRef.current
+      if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+    }
     if (canListAccounts(payload.user?.role)) {
       const users = await apiListUsers()
       payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
     }
-    const remote = apiRef.current
-    const expectedUserId = String(expectedUser?.id || '')
+    remote = apiRef.current
     if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+    if (Number(payload.version || 0) < Number(remote.version || 0)) return null
     activateRemotePayload(payload, payload.user || expectedUser, preferredActiveStoreId || activeStoreIdRef.current)
     return payload
   }, [activateRemotePayload])
@@ -1699,7 +1710,7 @@ export function AppProvider({ children }) {
       }
       if (!active) return
       activateRemotePayload(payload)
-      if (payload.partial) {
+      if (payload.partial && !payload.user?.needsRoleSelection) {
         void hydrateCompleteRemoteState(payload.user).catch(() => {
           if (active && apiRef.current.enabled) setApiStatus('error')
         })
@@ -1716,7 +1727,7 @@ export function AppProvider({ children }) {
   useEffect(() => {
     const remote = apiRef.current
     const role = normalizeAuthRole(state.session?.role)
-    if (!credentialsReady || !remote.enabled || !state.session || !['business_support', 'store_manager', 'employee'].includes(role)) return undefined
+    if (!credentialsReady || !remote.enabled || !remote.fullStateReady || !state.session || !['business_support', 'store_manager', 'employee'].includes(role)) return undefined
     let active = true
     let busy = false
     let pendingForce = false
@@ -1907,14 +1918,14 @@ export function AppProvider({ children }) {
       const [bootstrap, users] = await Promise.all([
         authenticated.bootstrap
           ? Promise.resolve(authenticated.bootstrap)
-          : apiBootstrapState('global', { profile: isSystemOperator ? 'initial' : '' }),
+          : apiBootstrapState('global', { profile: 'initial' }),
         isSystemOperator ? (embeddedUsers || apiListUsers()) : Promise.resolve(null),
       ])
       if (users && !bootstrap.partial) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       const session = activateRemotePayload(bootstrap, authenticated.user)
-      if (bootstrap.partial) {
+      if (bootstrap.partial && !authenticated.user?.needsRoleSelection) {
         void hydrateCompleteRemoteState(authenticated.user).catch(() => {
           if (apiRef.current.enabled) setApiStatus('error')
         })
@@ -1990,12 +2001,17 @@ export function AppProvider({ children }) {
     if (apiRef.current.enabled) {
       try {
         const response = await apiSelectSessionRole(selected)
-        const payload = await apiBootstrapState('global')
-        if (canListAccounts(response.user?.role)) {
+        const payload = await apiBootstrapState('global', { profile: 'initial' })
+        if (!payload.partial && canListAccounts(response.user?.role)) {
           const users = await apiListUsers()
           payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
         }
         const session = activateRemotePayload(payload, response.user, selected.storeId)
+        if (payload.partial) {
+          void hydrateCompleteRemoteState(response.user, selected.storeId).catch(() => {
+            if (apiRef.current.enabled) setApiStatus('error')
+          })
+        }
         return { ok: true, account: session }
       } catch (error) {
         notify(error.message || 'Không thể chuyển vai trò đăng nhập.', 'info')

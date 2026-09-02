@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   apiLogin: vi.fn(),
   apiListUsers: vi.fn(),
   apiLogout: vi.fn(),
+  apiSelectSessionRole: vi.fn(),
   clearApiSession: vi.fn(),
 }))
 
@@ -24,6 +25,7 @@ vi.mock('../services/idosiApi', () => ({
   apiLogin: api.apiLogin,
   apiListUsers: api.apiListUsers,
   apiLogout: api.apiLogout,
+  apiSelectSessionRole: api.apiSelectSessionRole,
   apiPolicyEntries: () => [],
   apiPolicyMap: () => ({}),
   clearApiSession: api.clearApiSession,
@@ -91,6 +93,7 @@ describe('remote command active-store preservation', () => {
     api.apiLogin.mockResolvedValue({ user: supportUser })
     api.apiBootstrapState.mockImplementation(async () => bootstrap())
     api.apiListUsers.mockResolvedValue({ users: [supportUser] })
+    api.apiSelectSessionRole.mockResolvedValue({ user: supportUser })
     api.apiGetState.mockImplementation(async () => bootstrap())
     api.apiGetStateMetadata.mockResolvedValue({ version: 1 })
     api.apiCommand.mockResolvedValue({ version: 2, store: { id: 'STORE-A', name: 'Cửa hàng A mới' } })
@@ -179,6 +182,122 @@ describe('remote command active-store preservation', () => {
     expect(appRef.current.employees).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'HTKD-001' }),
     ]))
+  })
+
+  it('renders a compact non-Admin bootstrap before the complete state finishes loading', async () => {
+    let resolveCompleteBootstrap
+    const completeBootstrap = new Promise((resolve) => { resolveCompleteBootstrap = resolve })
+    api.apiLogin.mockResolvedValue({
+      user: supportUser,
+      bootstrap: {
+        user: supportUser,
+        state: {
+          stores: [{ id: 'STORE-A', name: 'Cửa hàng A', status: 'Đang hoạt động' }],
+          employees: [{
+            id: 'HTKD-001', name: 'Hỗ trợ KD', unit: 'business_support',
+            storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc',
+          }],
+          attendance: [],
+          supportWorkSchedules: [],
+        },
+        policies: [],
+        version: 1,
+        partial: true,
+        loadedCollections: ['employees', 'stores', 'attendance', 'supportWorkSchedules'],
+      },
+      users: [supportUser],
+    })
+    api.apiBootstrapState.mockReturnValueOnce(completeBootstrap)
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+
+    expect(appRef.current.session).toMatchObject({ role: 'business_support', employeeId: 'HTKD-001' })
+    expect(appRef.current.remoteDataReady).toBe(false)
+    expect(api.apiBootstrapState).toHaveBeenCalledWith('global')
+
+    await act(async () => {
+      resolveCompleteBootstrap({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
+      await completeBootstrap
+      await Promise.resolve()
+    })
+
+    expect(appRef.current.remoteDataReady).toBe(true)
+  })
+
+  it('uses a compact bootstrap when switching an authenticated session role', async () => {
+    const availableRoles = [
+      { role: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-001', label: 'Hỗ trợ KD' },
+      { role: 'store_manager', storeId: 'STORE-A', employeeId: 'QL-001', label: 'Quản lý CH' },
+    ]
+    const selectableSupportUser = { ...supportUser, availableRoles, needsRoleSelection: true }
+    const managerUser = {
+      ...supportUser,
+      role: 'store_manager',
+      storeId: 'STORE-A',
+      employeeId: 'QL-001',
+      availableRoles,
+      needsRoleSelection: false,
+    }
+    const managerState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{
+        id: 'QL-001', name: 'Quản lý 01', unit: 'store_manager',
+        storeId: 'STORE-A', status: 'Đang làm việc',
+      }],
+      attendance: [],
+      supportWorkSchedules: [],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: selectableSupportUser,
+      bootstrap: {
+        user: selectableSupportUser,
+        state: makeRemoteState('STORE-A'),
+        policies: [],
+        version: 1,
+        partial: true,
+        loadedCollections: ['employees', 'stores'],
+      },
+      users: [supportUser],
+    })
+    api.apiSelectSessionRole.mockResolvedValue({ user: managerUser })
+    let resolveCompleteBootstrap
+    const completeBootstrap = new Promise((resolve) => { resolveCompleteBootstrap = resolve })
+    api.apiBootstrapState
+      .mockResolvedValueOnce({
+        user: managerUser,
+        state: managerState,
+        policies: [],
+        version: 1,
+        partial: true,
+        loadedCollections: ['employees', 'stores', 'attendance', 'supportWorkSchedules'],
+      })
+      .mockReturnValueOnce(completeBootstrap)
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
+    })
+    expect(api.apiBootstrapState).not.toHaveBeenCalled()
+    await act(async () => {
+      expect((await appRef.current.selectSessionRole(availableRoles[1])).ok).toBe(true)
+    })
+
+    expect(api.apiSelectSessionRole).toHaveBeenCalledWith(availableRoles[1])
+    expect(api.apiBootstrapState).toHaveBeenNthCalledWith(1, 'global', { profile: 'initial' })
+    expect(api.apiBootstrapState).toHaveBeenNthCalledWith(2, 'global')
+    expect(appRef.current.session).toMatchObject({ role: 'store_manager', employeeId: 'QL-001', storeId: 'STORE-A' })
+    expect(appRef.current.remoteDataReady).toBe(false)
+
+    await act(async () => {
+      resolveCompleteBootstrap({ user: managerUser, state: managerState, policies: [], version: 1 })
+      await completeBootstrap
+      await Promise.resolve()
+    })
+
+    expect(appRef.current.remoteDataReady).toBe(true)
   })
 
   it('returns from a successful mutation before the background full-state reconciliation finishes', async () => {
