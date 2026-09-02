@@ -54,6 +54,10 @@ import {
 import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'
 import { resolveExactlyOneActiveStoreManager } from '../domain/managerRevenueBonus'
 import {
+  createAttendanceTaskProgress,
+  savedTaskProgressCoversIncompleteTasks,
+} from '../domain/taskProgress'
+import {
   apiBootstrapState,
   apiCommand,
   apiGetAccountAvatar,
@@ -2851,8 +2855,44 @@ export function AppProvider({ children }) {
       }
     }
     const { completedTasks, totalTasks, completionRate } = mandatoryProgress()
-    if (existing) return { ok: true, existing: true, completedTasks, totalTasks, completionRate, submittedAt: existing.at }
     const timestamp = new Date().toISOString()
+    const taskProgress = createAttendanceTaskProgress({
+      attendanceId: openAttendance.id,
+      employeeId,
+      completedTasks,
+      totalTasks,
+      completionRate,
+      incompleteTaskIds: incompleteTaskIds.map((taskId) => taskIdByKey.get(taskId) || taskId),
+      incompleteReason: incompleteTaskIds.length ? incompleteReason : '',
+      fingerprint,
+      submittedAt: existing?.at || timestamp,
+    })
+    if (existing) {
+      const alreadyAttached = !incompleteTaskIds.length || savedTaskProgressCoversIncompleteTasks({
+        progress: openAttendance.taskProgress,
+        attendanceId: openAttendance.id,
+        employeeId,
+        incompleteTaskIds: taskProgress.incompleteTaskIds,
+      })
+      if (!alreadyAttached) {
+        setState((current) => ({
+          ...current,
+          attendance: current.attendance.map((record) => String(record.id || '') === String(openAttendance.id || '')
+            ? { ...record, taskProgress, updatedAt: timestamp }
+            : record),
+          stateVersion: Math.max(1, Number(current.stateVersion) || 1) + 1,
+        }))
+      }
+      return {
+        ok: true,
+        existing: true,
+        restored: !alreadyAttached,
+        completedTasks,
+        totalTasks,
+        completionRate,
+        submittedAt: existing.at,
+      }
+    }
     const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
     const assignmentKeys = new Set(assignmentIds.map(normalizedIdentifier))
     if (assignmentKeys.size !== assignmentIds.length) {
@@ -2873,6 +2913,9 @@ export function AppProvider({ children }) {
     })
     setState((current) => ({
       ...current,
+      attendance: current.attendance.map((record) => String(record.id || '') === String(openAttendance.id || '')
+        ? { ...record, taskProgress, updatedAt: timestamp }
+        : record),
       tasks: current.tasks.map((task) => submittedByExactTaskId.has(String(task.id || '')) ? {
         ...task,
         completedBy: withCanonicalIdentifierEntry(task.completedBy, employeeId, submittedByExactTaskId.get(String(task.id || ''))),
@@ -5844,15 +5887,22 @@ export function AppProvider({ children }) {
       if (completion.ambiguous) return true
       return !(completion.found ? completion.value : task.done)
     })
+    const incompleteTaskIds = incompleteTasks.map((task) => String(task.id || '')).filter(Boolean)
+    const savedIncompleteProgress = savedTaskProgressCoversIncompleteTasks({
+      progress: openRecord.taskProgress,
+      attendanceId: openRecord.id,
+      employeeId,
+      incompleteTaskIds,
+    })
     if (storeEmployeeAttendance && (cashRevenue !== expectedCashRevenue || transferRevenue !== expectedTransferRevenue)) {
       const message = `Doanh thu kết ca chưa khớp: tiền mặt ${expectedCashRevenue.toLocaleString('en-US')} đ, chuyển khoản ${expectedTransferRevenue.toLocaleString('en-US')} đ.`
       notify(message, 'info')
       return { ok: false, message, expectedCashRevenue, expectedTransferRevenue }
     }
-    if (storeEmployeeAttendance && incompleteTasks.length) {
-      const message = `Cần hoàn thành đủ ${incompleteTasks.length} công việc cố định còn lại trước khi kết ca.`
+    if (storeEmployeeAttendance && incompleteTasks.length && !savedIncompleteProgress) {
+      const message = 'Cần nhập ghi chú và bấm LƯU KẾT QUẢ cho công việc chưa hoàn thành trước khi kết ca.'
       notify(message, 'info')
-      return { ok: false, message, incompleteTaskIds: incompleteTasks.map((task) => task.id) }
+      return { ok: false, message, code: 'TASK_PROGRESS_REQUIRED', incompleteTaskIds }
     }
     const recordedShiftExpense = state.expenseEntries
       .filter((entry) => entry.recognized !== false
@@ -5876,8 +5926,13 @@ export function AppProvider({ children }) {
       cash: storeEmployeeAttendance ? expectedCashRevenue : Number(payload.cash) || Number(openRecord.cash) || 0,
       transfer: storeEmployeeAttendance ? expectedTransferRevenue : Number(payload.transfer) || Number(openRecord.transfer) || 0,
       orderCount: storeEmployeeAttendance ? relatedOrders.length : Number(openRecord.orderCount) || 0,
-      incompleteTaskReason: '',
-      incompleteTaskIds: incompleteTasks.map((task) => task.id),
+      incompleteTaskReason: incompleteTasks.length ? String(openRecord.taskProgress?.incompleteReason || '') : '',
+      incompleteTaskIds,
+      incompleteTasksSnapshot: incompleteTasks.map((task) => ({
+        id: task.id,
+        assignmentId: task.assignmentId || null,
+        title: task.title || task.name || '',
+      })),
       tiktok: Boolean(payload.tiktok ?? openRecord.tiktok),
       note: payload.note ?? openRecord.note,
     }
