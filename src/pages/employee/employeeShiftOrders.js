@@ -6,13 +6,12 @@ import {
   occupationValueAllowed,
   ORDER_PAYMENT_METHODS,
 } from '../../domain/orderInformationSettings'
+import { referenceMatchesAttendanceShift } from './employeeShiftScope'
 
 const attendanceDate = (record) => String(record?.date || record?.workDate || record?.checkInAt || record?.createdAt || '').slice(0, 10)
 const employeeAliases = (employee) => [employee?.id, employee?.code, employee?.employeeId, employee?.employeeCode]
   .map((value) => String(value || '').trim()).filter(Boolean)
 const storeAliases = (store = {}) => [store.id, store.code]
-  .map((value) => String(value || '').trim()).filter(Boolean)
-const shiftAliases = (shift = {}) => [shift.id, shift.code]
   .map((value) => String(value || '').trim()).filter(Boolean)
 const attendanceIdentifier = (record) => String(record?.id || record?.code || record?.attendanceId || '')
 const attendanceAliases = (record) => [record?.id, record?.code, record?.attendanceId]
@@ -98,13 +97,7 @@ export const ordersForOpenAttendance = (
     canonicalOpenRecord.storeId ? { id: String(canonicalOpenRecord.storeId) } : null,
   )
   const attendanceShift = String(canonicalOpenRecord.shiftId || canonicalOpenRecord.shift || '')
-  const shift = resolveTarget(
-    shiftDefinitions,
-    attendanceShift,
-    shiftAliases,
-    attendanceShift ? { id: attendanceShift } : null,
-  )
-  if ((canonicalOpenRecord.storeId && !store) || (attendanceShift && !shift)) return []
+  if (canonicalOpenRecord.storeId && !store) return []
   return orders
     .filter((order) => {
       if (
@@ -123,7 +116,11 @@ export const ordersForOpenAttendance = (
       }
       const orderShift = String(order.shiftId || order.shift || '')
       const sameLegacyShift = (!orderShift && !attendanceShift)
-        || referenceMatchesTarget(shiftDefinitions, shift, orderShift, shiftAliases)
+        || referenceMatchesAttendanceShift({
+          attendance: canonicalOpenRecord,
+          reference: orderShift,
+          shiftDefinitions,
+        })
       return sameLegacyShift && businessDate(order.createdAt) === attendanceDate(canonicalOpenRecord)
     })
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))

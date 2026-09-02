@@ -133,6 +133,24 @@ describe('store employee current-shift orders', () => {
     expect(rows.map(({ id }) => id)).toEqual(['EXACT-SHIFT'])
   })
 
+  it('keeps support-shift orders when the synthetic attendance shift is not a stored definition', () => {
+    const openRecord = {
+      id: 'ATT-SUPPORT', employeeId: 'NV-01', storeId: 'S02',
+      date: '2026-08-18', shiftId: 'SUPPORT_TRANSFER_TR-01',
+    }
+    const rows = ordersForOpenAttendance([{
+      id: 'ORDER-SUPPORT', employeeId: 'NV-01', createdByEmployeeId: 'NV-01', storeId: 'S02',
+      attendanceId: 'ATT-SUPPORT', shiftId: 'SUPPORT_TRANSFER_TR-01',
+      createdAt: '2026-08-18T09:00:00+07:00',
+    }], 'NV-01', openRecord, [openRecord], {
+      employees: [{ id: 'NV-01' }],
+      stores: [{ id: 'S01' }, { id: 'S02' }],
+      shiftDefinitions: [{ id: 'CA-1', storeId: 'S02' }, { id: 'CA-2', storeId: 'S02' }],
+    })
+
+    expect(rows.map(({ id }) => id)).toEqual(['ORDER-SUPPORT'])
+  })
+
   it('does not reveal a coworker order through an employee order deep link', () => {
     mocked.app = {
       currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01' },
