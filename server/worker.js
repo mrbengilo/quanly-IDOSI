@@ -18122,7 +18122,6 @@ const violationCommand = async (db, actor, body, commandContext) => {
     if (actor.role === 'store_manager' && targetUnit !== 'store') {
       throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được ghi nhận vi phạm nhân viên thuộc cửa hàng của mình.')
     }
-    if (targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.')
     const employee = compensationEmployee(state, payload.employeeId)
     const employeeId = String(employee.id || employee.code || employee.employeeId)
     if (employeeUnit(employee) !== targetUnit) {
@@ -18349,7 +18348,6 @@ const violationCommand = async (db, actor, body, commandContext) => {
     if (actor.role === 'store_manager' && targetUnit !== 'store') {
       throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được ghi nhận vi phạm nhân viên thuộc cửa hàng của mình.')
     }
-    if (targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.')
     const employee = compensationEmployee(state, payload.employeeId)
     const employeeId = String(employee.id || employee.code || employee.employeeId)
     const actualUnit = employeeUnit(employee)
@@ -18567,7 +18565,6 @@ const violationCommand = async (db, actor, body, commandContext) => {
   const previous = records.find((record) => String(record.id || '') === violationId)
   if (!previous) throw new ApiError(404, 'VIOLATION_NOT_FOUND', 'Không tìm thấy vi phạm.')
   expectedEntityVersion(payload, previous)
-  if (previous.targetUnit === 'business_support') assertAdmin(actor, 'Chỉ Admin được hủy vi phạm của Nhân viên hỗ trợ KD.')
   if (previous.targetUnit === 'store') {
     assertOperationalStoreAccess(actor, previous.storeId)
     requireActivePhysicalStore(state, previous.storeId)

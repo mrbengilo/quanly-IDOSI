@@ -32,11 +32,12 @@ import {
   shortDate,
   today,
 } from '../../utils'
-import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
+import { WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { ROLE_KEYS, roleProfileCode, roleProfilesFromApp } from './roleManagementUtils'
 import { isFinalSupportWorkStatus, supportWorkEvaluation, supportWorkProgress, supportWorkStatus } from './supportWorkUtils'
 import { rewardStatistics, workRewardRows } from '../compensation/compensationStatistics'
 import { CompensationStatisticsGrid, RewardHistoryTable } from '../compensation/CompensationStatisticsTables'
+import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
 import '../task-assignment.css'
 import '../compensation/compensation-page.css'
 
@@ -223,38 +224,11 @@ function AdminSupportAssignmentPageContent() {
 
 export function AdminSupportWorkPage() {
   const app = useApp()
+  const [activeTab, setActiveTab] = useState('reward')
   const supportProfiles = useMemo(() => roleProfilesFromApp({
     employees: app.employees,
     businessSupportEmployees: app.businessSupportEmployees,
   }, ROLE_KEYS.businessSupport), [app.employees, app.businessSupportEmployees])
-  const officeProfiles = useMemo(() => (Array.isArray(app.employees) ? app.employees : []).filter((profile) => (
-    !profile.deletedAt
-    && ['office', 'văn phòng', 'van phong'].includes(String(profile.unit || profile.unitType || profile.department || '').trim().toLocaleLowerCase('vi-VN'))
-    && !['Đã nghỉ việc', 'inactive'].includes(String(profile.status || ''))
-  )), [app.employees])
-  const allProfiles = useMemo(() => [...supportProfiles, ...officeProfiles], [supportProfiles, officeProfiles])
-  const [form, setForm] = useState({ date: today(), targetUnit: 'business_support', employeeId: '', selectedCatalogIds: [] })
-  const profiles = form.targetUnit === 'office' ? officeProfiles : supportProfiles
-  const [busy, setBusy] = useState(false)
-  const catalogTasks = useMemo(() => activeWorkCatalogItems(app.workCatalogItems || [], {
-    targetGroup: form.targetUnit,
-    date: form.date,
-    kinds: [WORK_CATALOG_KIND.FIXED_TASK, WORK_CATALOG_KIND.REWARD_TASK],
-  }), [app.workCatalogItems, form.targetUnit, form.date])
-  const selectedCatalogIdSet = new Set(form.selectedCatalogIds)
-  const validTasks = catalogTasks.filter((item) => selectedCatalogIdSet.has(item.id)).map((item) => ({
-    name: item.name,
-    description: '',
-    catalogItemId: item.id,
-    catalogCode: item.code,
-    catalogVersion: item.version,
-    kind: item.kind,
-    amountVnd: item.amountVnd,
-    required: item.kind === WORK_CATALOG_KIND.FIXED_TASK,
-  }))
-  const sortedAssignments = useMemo(() => [...(Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])].toSorted((left, right) => (
-    String(right.assignedAt || right.updatedAt || right.date).localeCompare(String(left.assignedAt || left.updatedAt || left.date))
-  )), [app.supportWorkAssignments])
   const supportRewardRows = useMemo(() => workRewardRows({
     attendance: app.attendance,
     workCatalogProgress: app.workCatalogProgress,
@@ -264,64 +238,21 @@ export function AdminSupportWorkPage() {
     targetUnit: 'business_support',
   }), [app.attendance, app.workCatalogProgress, app.compensationEntries, app.tasks, supportProfiles])
   const supportRewardStatistics = useMemo(() => rewardStatistics(supportRewardRows), [supportRewardRows])
-  const toggleCatalogTask = (catalogItemId) => setForm((current) => ({
-    ...current,
-    selectedCatalogIds: current.selectedCatalogIds.includes(catalogItemId)
-      ? current.selectedCatalogIds.filter((id) => id !== catalogItemId)
-      : [...current.selectedCatalogIds, catalogItemId],
-  }))
-
-  const send = async () => {
-    if (!form.date) return app.notify?.('Vui lòng chọn ngày giao việc.', 'info')
-    if (!form.employeeId) return app.notify?.('Vui lòng chọn nhân viên nhận việc.', 'info')
-    if (!validTasks.length) return app.notify?.('Vui lòng tick ít nhất một công việc trong danh mục đang hoạt động.', 'info')
-    if (typeof app.assignSupportWork !== 'function') return app.notify?.('Chức năng giao việc chưa sẵn sàng.', 'info')
-    setBusy(true)
-    try {
-      const result = await app.assignSupportWork({ date: form.date, targetUnit: form.targetUnit, employeeId: form.employeeId, tasks: validTasks })
-      if (result?.ok === false) return app.notify?.(result.message || 'Không thể giao việc.', 'info')
-      setForm({ date: today(), targetUnit: 'business_support', employeeId: '', selectedCatalogIds: [] })
-    } finally {
-      setBusy(false)
-    }
-  }
 
   return <div className="page support-work-page">
-    <PageHeader title="CÔNG VIỆC TÍNH THƯỞNG & VI PHẠM HTKD" subtitle="Quản lý công việc HTKD/Khối văn phòng, lịch sử nhận thưởng và vi phạm HTKD theo ngày, ca." icon={ClipboardCheck} />
-    <Card title="Tạo danh sách công việc">
-      <div className="support-work-form-head">
-        <Field label="Chọn ngày" required><Input type="date" value={form.date} onChange={(event) => setForm((current) => ({ ...current, date: event.target.value }))} /></Field>
-        <Field label="Nhóm nhân viên" required><Select aria-label="Nhóm nhân viên" value={form.targetUnit} onChange={(event) => setForm((current) => ({ ...current, targetUnit: event.target.value, employeeId: '', selectedCatalogIds: [] }))}><option value="business_support">Nhân viên hỗ trợ KD</option><option value="office">Khối văn phòng</option></Select></Field>
-        <Field label={form.targetUnit === 'office' ? 'Nhân viên Khối văn phòng' : 'Nhân viên hỗ trợ kinh doanh'} required><Select aria-label="Nhân viên nhận việc" value={form.employeeId} onChange={(event) => setForm((current) => ({ ...current, employeeId: event.target.value }))}><option value="">Chọn nhân viên</option>{profiles.map((profile) => <option key={roleProfileCode(profile)} value={roleProfileCode(profile)}>{profile.name} — {roleProfileCode(profile)}</option>)}</Select></Field>
-      </div>
-      <InfoNote>Tick trực tiếp công việc cần giao. Số tiền thưởng nằm dưới tên; danh sách được quản lý tại “Danh mục công việc & vi phạm”.</InfoNote>
-      <div className="employee-picker support-work-templates task-template-picker" role="group" aria-label="Danh mục công việc">
-        {catalogTasks.map((item) => {
-          const selected = selectedCatalogIdSet.has(item.id)
-          return <label key={item.id} className={selected ? 'selected' : ''}><input type="checkbox" checked={selected} onChange={() => toggleCatalogTask(item.id)} /><span><strong>{item.name}</strong><small>{item.kind === WORK_CATALOG_KIND.REWARD_TASK ? `Thưởng ${money(item.amountVnd)}` : item.amountVnd ? money(item.amountVnd) : 'Công việc cố định'}</small></span></label>
-        })}
-      </div>
-      {!catalogTasks.length && <InfoNote tone="orange">Chưa có công việc đang hoạt động cho nhóm và ngày đã chọn.</InfoNote>}
-      <div className="support-work-actions">
-        <Button icon={Save} loading={busy} disabled={busy || !validTasks.length} onClick={send}>LƯU</Button>
-      </div>
-    </Card>
-
-    <Card title="Lịch sử giao việc">
-      <TableWrap><thead><tr><th>Ngày giao</th><th>Nhân viên</th><th>Danh sách công việc</th><th>Tiến độ</th><th>Trạng thái</th><th>Lý do chưa hoàn thành</th><th>Lịch sử thời gian</th></tr></thead>
-        <tbody>{sortedAssignments.map((assignment) => {
-          const progress = supportWorkProgress(assignment)
-          const status = supportWorkStatus(assignment.status)
-          return <tr key={assignment.id}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || matchedProfile(allProfiles, assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{Number(task.amountVnd || 0) > 0 && <small>{task.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'Thưởng ' : ''}{money(task.amountVnd)}</small>}{task.description && <small>{task.description}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
-        })}{!sortedAssignments.length && <tr><td colSpan="7">Chưa có lịch sử giao việc.</td></tr>}</tbody>
-      </TableWrap>
-    </Card>
-    <Card title="Lịch sử nhận thưởng của HTKD">
-      <RewardHistoryTable rows={supportRewardRows} employees={supportProfiles} showEmployee />
-    </Card>
-    <Card title="Thống kê thưởng của HTKD">
-      <CompensationStatisticsGrid statistics={supportRewardStatistics} employees={supportProfiles} showEmployee mode="reward" />
-    </Card>
+    <PageHeader title="CÔNG VIỆC TÍNH THƯỞNG & VI PHẠM HTKD" subtitle="Theo dõi thưởng công việc và ghi nhận vi phạm của Nhân viên hỗ trợ KD." icon={ClipboardCheck} />
+    <div className="store-task-tabs support-work-tabs" role="tablist" aria-label="Thưởng công việc và vi phạm HTKD">
+      <button type="button" role="tab" aria-selected={activeTab === 'reward'} className={activeTab === 'reward' ? 'is-active is-reward' : ''} onClick={() => setActiveTab('reward')}>Thưởng công việc</button>
+      <button type="button" role="tab" aria-selected={activeTab === 'violation'} className={activeTab === 'violation' ? 'is-active is-violation' : ''} onClick={() => setActiveTab('violation')}>Vi phạm</button>
+    </div>
+    {activeTab === 'reward' ? <>
+      <Card title="Lịch sử công việc tính thưởng HTKD">
+        <RewardHistoryTable rows={supportRewardRows} employees={supportProfiles} showEmployee filterFields={['date', 'employee']} />
+      </Card>
+      <Card title="Thống kê đánh giá thưởng theo nhân viên HTKD">
+        <CompensationStatisticsGrid statistics={supportRewardStatistics} employees={supportProfiles} showEmployee mode="reward" />
+      </Card>
+    </> : <ViolationManagementPage targetUnit="business_support" embedded />}
   </div>
 }
 

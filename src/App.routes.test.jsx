@@ -200,11 +200,10 @@ describe('App role routes', () => {
     expect(screen.queryByText('Quản lý vi phạm business_support')).toBeNull()
   })
 
-  it('combines HTKD reward tasks and embedded violation management on the Admin task route', async () => {
-    renderRoute('/admin/tasks', 'admin')
+  it.each(['admin', 'business_support'])('opens the shared HTKD reward and violation workspace for %s', async (role) => {
+    renderRoute('/admin/tasks', role)
 
     expect(await screen.findByText('Công việc tính thưởng HTKD route')).toBeTruthy()
-    expect(screen.getByTestId('violation-business_support').dataset.embedded).toBe('true')
     expect(screen.getByTestId('current-route').textContent).toBe('/admin/tasks')
   })
 

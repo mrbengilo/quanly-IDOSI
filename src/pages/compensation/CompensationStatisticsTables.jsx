@@ -62,10 +62,14 @@ export function CompensationStatisticsGrid({
   </div>
 }
 
-export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false }) {
+export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false, filterFields }) {
   const [dateFilter, setDateFilter] = useState('')
   const [shiftFilter, setShiftFilter] = useState('all')
   const [employeeFilter, setEmployeeFilter] = useState('all')
+  const filterByDate = filterable || filterFields?.includes('date')
+  const filterByShift = filterable || filterFields?.includes('shift')
+  const filterByEmployee = filterable || filterFields?.includes('employee')
+  const hasFilters = filterByDate || filterByShift || filterByEmployee
   const completedRows = useMemo(() => rows.filter((row) => row.completed && row.payoutStatus !== 'void'), [rows])
   const { shiftOptions, employeeOptions } = useMemo(() => {
     const shifts = new Map()
@@ -86,34 +90,34 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
     }
   }, [completedRows, employees])
   const filteredRows = useMemo(() => completedRows.filter((row) => (
-    (!dateFilter || row.workDate === dateFilter)
-    && (shiftFilter === 'all' || historicalOptionKey('shift', row.shiftId, row.shiftName || 'Chưa gắn ca') === shiftFilter)
-    && (employeeFilter === 'all' || historicalOptionKey('employee', row.employeeId, row.employeeName) === employeeFilter)
-  )), [completedRows, dateFilter, employeeFilter, shiftFilter])
+    (!filterByDate || !dateFilter || row.workDate === dateFilter)
+    && (!filterByShift || shiftFilter === 'all' || historicalOptionKey('shift', row.shiftId, row.shiftName || 'Chưa gắn ca') === shiftFilter)
+    && (!filterByEmployee || employeeFilter === 'all' || historicalOptionKey('employee', row.employeeId, row.employeeName) === employeeFilter)
+  )), [completedRows, dateFilter, employeeFilter, filterByDate, filterByEmployee, filterByShift, shiftFilter])
   const filteredTotal = useMemo(() => filteredRows.reduce((total, row) => (
     total + Math.max(0, Number(row.amountVnd) || 0)
   ), 0), [filteredRows])
 
   return <>
-    {filterable && <div className="form-grid form-grid--3" role="group" aria-label="Bộ lọc lịch sử nhận thưởng">
-      <Field label="Ngày">
+    {hasFilters && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử nhận thưởng">
+      {filterByDate && <Field label="Ngày">
         <Input type="date" aria-label="Ngày nhận thưởng" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
-      </Field>
-      <Field label="Ca">
+      </Field>}
+      {filterByShift && <Field label="Ca">
         <Select aria-label="Ca nhận thưởng" value={shiftFilter} onChange={(event) => setShiftFilter(event.target.value)}>
           <option value="all">Tất cả ca</option>
           {shiftOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </Select>
-      </Field>
-      <Field label="Nhân viên">
+      </Field>}
+      {filterByEmployee && <Field label="Nhân viên">
         <Select aria-label="Nhân viên nhận thưởng" value={employeeFilter} onChange={(event) => setEmployeeFilter(event.target.value)}>
           <option value="all">Tất cả nhân viên</option>
           {employeeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </Select>
-      </Field>
+      </Field>}
     </div>}
     <TableWrap className="compensation-table reward-history-table">
-      <thead><tr>{showEmployee && <th>Nhân viên</th>}<th>Ngày</th><th>Ca làm</th><th>Công việc</th><th>Tiền thưởng{filterable && <small className="compensation-subline">Tổng: <strong className="compensation-credit">+{money(filteredTotal)}</strong></small>}</th><th>Ghi nhận lúc</th><th>Trạng thái</th></tr></thead>
+      <thead><tr>{showEmployee && <th>Nhân viên</th>}<th>Ngày</th><th>Ca làm</th><th>Công việc</th><th>Tiền thưởng{hasFilters && <small className="compensation-subline">Tổng: <strong className="compensation-credit">+{money(filteredTotal)}</strong></small>}</th><th>Ghi nhận lúc</th><th>Trạng thái</th></tr></thead>
       <tbody>
         {filteredRows.map((row) => <tr key={row.id}>
           {showEmployee && <td><strong>{employeeName(employees, row.employeeId, row.employeeName)}</strong><small className="compensation-subline">{row.employeeId}</small></td>}

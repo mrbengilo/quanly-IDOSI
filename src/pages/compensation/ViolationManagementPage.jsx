@@ -155,8 +155,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   const role = canonicalRole(app.session?.role)
   const targetUnit = requestedTargetUnit || routeTargetUnit()
   const permittedUnit = ['store', 'office', 'business_support'].includes(targetUnit)
-  const canManage = (['admin', 'business_support'].includes(role)
-    && (targetUnit !== 'business_support' || role === 'admin'))
+  const canManage = ['admin', 'business_support'].includes(role)
     || (role === 'store_manager' && targetUnit === 'store')
   const visibleStores = useMemo(() => storesVisibleToRole(app.stores, app.session), [app.stores, app.session])
   const stores = useMemo(() => {
@@ -183,6 +182,8 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   const [shiftSelection, setShiftSelection] = useState('')
   const [note, setNote] = useState('')
   const [validation, setValidation] = useState('')
+  const [historyDateFilter, setHistoryDateFilter] = useState('')
+  const [historyEmployeeFilter, setHistoryEmployeeFilter] = useState('all')
   const { busyKey, error, run } = useCompensationAction(app)
   const selectedEmployeeId = employeeSelection || entityId(employees[0])
   const selectedEmployee = employees.find((employee) => entityId(employee) === selectedEmployeeId) || null
@@ -209,18 +210,29 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   const selectedPolicyIdSet = new Set(selectedPolicyIds)
   const selectedPolicies = policies.filter((policy) => selectedPolicyIdSet.has(policy.id))
   const selectedTotalVnd = selectedPolicies.reduce((sum, policy) => sum + Math.abs(Number(policy.amountVnd || 0)), 0)
-  const visibleEmployeeIds = useMemo(() => new Set(employees.map(entityId)), [employees])
   const rows = useMemo(() => (Array.isArray(app.violations) ? app.violations : [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
     .filter((entry) => targetUnit !== 'store' || entryStoreId(entry) === selectedStoreId)
-    .filter((entry) => visibleEmployeeIds.has(entryEmployeeId(entry)))
-    .toSorted((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || ''))), [app.violations, targetUnit, selectedStoreId, visibleEmployeeIds])
+    .toSorted((left, right) => String(right.createdAt || right.occurredOn || '').localeCompare(String(left.createdAt || left.occurredOn || ''))), [app.violations, targetUnit, selectedStoreId])
+  const historyEmployeeOptions = useMemo(() => [...rows.reduce((options, entry) => {
+    const employeeId = entryEmployeeId(entry)
+    if (employeeId && !options.has(employeeId)) {
+      options.set(employeeId, employeeName(employees, employeeId, entry.employeeName))
+    }
+    return options
+  }, new Map())].map(([value, label]) => ({ value, label })), [rows, employees])
+  const historyFilterable = targetUnit === 'business_support'
+  const filteredRows = useMemo(() => rows.filter((entry) => (
+    (!historyFilterable || !historyDateFilter || entryDate(entry) === historyDateFilter)
+    && (!historyFilterable || historyEmployeeFilter === 'all' || entryEmployeeId(entry) === historyEmployeeFilter)
+  )), [rows, historyFilterable, historyDateFilter, historyEmployeeFilter])
+  const filteredViolationTotal = useMemo(() => filteredRows
+    .filter((entry) => !isVoided(entry))
+    .reduce((total, entry) => total + Math.abs(entryAmount(entry)), 0), [filteredRows])
   const statistics = useMemo(() => violationStatistics(rows), [rows])
 
   if (!permittedUnit || !canManage) {
-    const subtitle = targetUnit === 'business_support'
-      ? 'Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.'
-      : role === 'store_manager'
+    const subtitle = role === 'store_manager'
         ? 'Quản lý cửa hàng chỉ được ghi nhận vi phạm tại cửa hàng được phân công.'
         : 'Chỉ Admin và Nhân viên hỗ trợ KD được quản lý vi phạm của đơn vị này.'
     return embedded ? <InfoNote tone="orange">{subtitle}</InfoNote> : <AccessDenied subtitle={subtitle} />
@@ -342,11 +354,22 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
         <ActionError message={error} />
         <div className="compensation-actions"><Button icon={Save} loading={busyKey === 'create'} disabled={!employees.length || !selectedShift || !selectedPolicies.length || Boolean(busyKey)} onClick={createViolation}>LƯU VI PHẠM</Button></div>
       </Card>
-      <Card title="Lịch sử vi phạm" action={<Badge tone="red">{rows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
+      <Card title="Lịch sử vi phạm" action={<Badge tone="red">{filteredRows.filter((entry) => !isVoided(entry)).length} đang hiệu lực</Badge>}>
+        {historyFilterable && <div className="form-grid compensation-history-filters" role="group" aria-label="Bộ lọc lịch sử vi phạm">
+          <Field label="Ngày">
+            <Input type="date" aria-label="Ngày vi phạm" value={historyDateFilter} onChange={(event) => setHistoryDateFilter(event.target.value)} />
+          </Field>
+          <Field label="Nhân viên">
+            <Select aria-label="Nhân viên vi phạm" value={historyEmployeeFilter} onChange={(event) => setHistoryEmployeeFilter(event.target.value)}>
+              <option value="all">Tất cả nhân viên</option>
+              {historyEmployeeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </Select>
+          </Field>
+        </div>}
         <TableWrap className="compensation-table">
-          <thead><tr><th>Ngày</th><th>Ca làm</th><th>Nhân viên</th>{targetUnit === 'store' && <th>Cửa hàng</th>}<th>Nội dung</th><th>Số tiền bị trừ</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+          <thead><tr><th>Ngày</th><th>Ca làm</th><th>Nhân viên</th>{targetUnit === 'store' && <th>Cửa hàng</th>}<th>Nội dung</th><th>Số tiền bị trừ{historyFilterable && <small className="compensation-subline">Tổng: <strong className="compensation-debit">−{money(filteredViolationTotal)}</strong></small>}</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>
-            {rows.map((entry) => <tr key={entry.id}>
+            {filteredRows.map((entry) => <tr key={entry.id}>
               <td>{displayDate(entryDate(entry))}</td>
               <td><strong>{violationShiftLabel(entry)}</strong>{shiftTime(entry) && <small className="compensation-subline">{shiftTime(entry)}</small>}</td>
               <td><strong>{employeeName(employees, entryEmployeeId(entry), entry.employeeName)}</strong><small className="compensation-subline">{entryEmployeeId(entry)}</small></td>
@@ -357,7 +380,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
               <td><Badge tone={statusTone(entry)}>{statusLabel(entry)}</Badge></td>
               <td>{!isVoided(entry) && typeof app.voidViolation === 'function' ? <Button variant="danger" icon={XCircle} loading={busyKey === `void:${entry.id}`} disabled={Boolean(busyKey)} onClick={() => voidViolation(entry)}>Hủy</Button> : <span>—</span>}</td>
             </tr>)}
-            {!rows.length && <tr><td colSpan={targetUnit === 'store' ? 9 : 8} className="compensation-empty">Chưa có vi phạm trong phạm vi này.</td></tr>}
+            {!filteredRows.length && <tr><td colSpan={targetUnit === 'store' ? 9 : 8} className="compensation-empty">{rows.length ? 'Không có lịch sử phù hợp bộ lọc.' : 'Chưa có vi phạm trong phạm vi này.'}</td></tr>}
           </tbody>
         </TableWrap>
       </Card>

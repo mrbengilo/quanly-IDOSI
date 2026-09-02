@@ -101,15 +101,15 @@ describe('compensation pages', () => {
     })))
   })
 
-  it('denies manager mutations and reserves HTKD violations for Admin', () => {
+  it('denies store-manager compensation mutations and lets HTKD manage peer violations', () => {
     mocked.app = baseApp('store_manager')
     const { rerender } = render(<ManagerCompensationPage />)
     expect(screen.getByRole('heading', { name: 'KHÔNG CÓ QUYỀN TRUY CẬP' })).toBeTruthy()
 
     mocked.app = baseApp('business_support')
     rerender(<ViolationManagementPage targetUnit="business_support" />)
-    expect(screen.getByText('Chỉ Admin được ghi nhận vi phạm cho Nhân viên hỗ trợ KD.')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'GHI NHẬN VI PHẠM' })).toBeNull()
+    expect(screen.getByText('Ghi nhận vi phạm')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'LƯU VI PHẠM' })).toBeTruthy()
   })
 
   it('creates a policy-backed violation batch using only server-resolved catalog and shift identifiers', async () => {

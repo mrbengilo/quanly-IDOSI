@@ -16106,31 +16106,34 @@ describe('IDOSI Worker security primitives', () => {
     expect(supportCreatesOffice.status).toBe(201)
     expect(await supportCreatesOffice.json()).toMatchObject({ version: 3, createdCount: 1 })
 
-    const supportDeniedForHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+    const supportCreatesHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'violation.create_batch', expectedVersion: 3,
       payload: {
         targetUnit: 'business_support', employeeId: 'HTKD-VIO-01', occurredOn: '2026-08-28',
         shiftId: 'support_pm', catalogItemIds: ['VIO-HTKD-LATE'],
       },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-htkd-violation-denied-0001' }), env)
-    expect(supportDeniedForHtkd.status).toBe(403)
-    expect(await supportDeniedForHtkd.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
-
-    const adminCreatesHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'violation.create_batch', expectedVersion: 3,
-      payload: {
-        targetUnit: 'business_support', employeeId: 'HTKD-VIO-01', occurredOn: '2026-08-28',
-        shiftId: 'support_pm', catalogItemIds: ['VIO-HTKD-LATE'],
-      },
-    }, { ...adminAuthorization, 'idempotency-key': 'admin-htkd-violation-batch-0001' }), env)
-    expect(adminCreatesHtkd.status).toBe(201)
-    expect(await adminCreatesHtkd.json()).toMatchObject({
+    }, { ...supportAuthorization, 'idempotency-key': 'support-htkd-violation-batch-0001' }), env)
+    expect(supportCreatesHtkd.status).toBe(201)
+    const supportCreatesHtkdBody = await supportCreatesHtkd.json()
+    expect(supportCreatesHtkdBody).toMatchObject({
       version: 4, createdCount: 1,
       violations: [{
         employeeId: 'HTKD-VIO-01', attendanceId: null, shiftId: 'support_pm', shiftName: 'Ca chiều',
         shiftStart: '13:00', shiftEnd: '17:00', shiftSource: 'profile-work-shift',
         employmentTypeSnapshot: 'Thực Tập Sinh', amountVnd: 6_000,
       }],
+    })
+
+    const adminRetriesHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.create_batch', expectedVersion: 4,
+      payload: {
+        targetUnit: 'business_support', employeeId: 'HTKD-VIO-01', occurredOn: '2026-08-28',
+        shiftId: 'support_pm', catalogItemIds: ['VIO-HTKD-LATE'],
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'admin-htkd-violation-retry-0001' }), env)
+    expect(adminRetriesHtkd.status).toBe(200)
+    expect(await adminRetriesHtkd.json()).toMatchObject({
+      version: 4, createdCount: 0, existingCount: 1, existing: true,
     })
 
     const legacyCreate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -16152,7 +16155,8 @@ describe('IDOSI Worker security primitives', () => {
       },
     }, { ...adminAuthorization, 'idempotency-key': 'admin-store-scheduled-violation-batch-0001' }), env)
     expect(storeScheduled.status).toBe(201)
-    expect(await storeScheduled.json()).toMatchObject({
+    const storeScheduledBody = await storeScheduled.json()
+    expect(storeScheduledBody).toMatchObject({
       version: 6, createdCount: 1,
       violations: [{
         employeeId: 'STORE-VIO-01', attendanceId: null, storeId: 'S01', shiftId: 'STORE-AM',
@@ -16160,8 +16164,28 @@ describe('IDOSI Worker security primitives', () => {
         shiftSource: 'store-schedule-snapshot', employmentTypeSnapshot: 'Part-Time', amountVnd: 7_000,
       }],
     })
+    const supportVoidsHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'violation.void', expectedVersion: 6,
+      payload: {
+        id: supportCreatesHtkdBody.violations[0].id,
+        expectedVersion: 1,
+        reason: 'HTKD hủy bản ghi nhầm',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'support-htkd-violation-void-0001' }), env)
+    expect(supportVoidsHtkd.status).toBe(200)
+    expect(await supportVoidsHtkd.json()).toMatchObject({
+      version: 7,
+      violation: { id: supportCreatesHtkdBody.violations[0].id, status: 'VOID', version: 2 },
+    })
     const finalState = readHydratedState(env.DB.database)
     expect(finalState.violations).toHaveLength(6)
+    expect(finalState.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: supportCreatesHtkdBody.violations[0].id,
+        status: 'VOID',
+        voidReason: 'HTKD hủy bản ghi nhầm',
+      }),
+    ]))
     expect(finalState.payrollPeriods).toEqual(expect.arrayContaining([
       expect.objectContaining({ storeId: 'OFFICE', needsReclose: true }),
       expect.objectContaining({ storeId: 'BUSINESS_SUPPORT', needsReclose: true }),

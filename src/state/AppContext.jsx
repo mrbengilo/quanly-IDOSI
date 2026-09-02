@@ -4098,9 +4098,6 @@ export function AppProvider({ children }) {
     if (role === 'store_manager' && targetUnit !== 'store') {
       throw new Error('Quản lý cửa hàng chỉ được ghi nhận vi phạm tại cửa hàng được phân công.')
     }
-    if (targetUnit === 'business_support' && role !== 'admin') {
-      throw new Error('Chỉ Admin được quản lý vi phạm của Nhân viên hỗ trợ KD.')
-    }
     if (!apiRef.current.enabled) {
       throw new Error('Cần kết nối máy chủ để cập nhật dữ liệu lương thưởng an toàn.')
     }
