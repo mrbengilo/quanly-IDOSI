@@ -42,6 +42,141 @@ const LEGACY_PBKDF2_FIXTURE = Object.freeze({
   iterations: 210_000,
   algorithm: 'PBKDF2-SHA256',
 })
+
+describe('Admin emergency attendance close', () => {
+  it('closes an open shift with server time while bypassing employee checkout prerequisites', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-20T10:30:00.000Z')) // 17:30 Vietnam
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-emergency-attendance-close' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin',
+        password: 'emergency-close-admin-password',
+        initialState: {
+          stores: [{ id: 'S99', name: 'Cửa hàng ngoài phạm vi', short: 'S99' }],
+          employees: [
+            { id: 'E99', name: 'Nhân viên cửa hàng', storeId: 'S99', unit: 'store' },
+            { id: 'HTKD-EMERGENCY', name: 'Hỗ trợ KD', storeId: 'BUSINESS_SUPPORT', unit: 'business_support' },
+          ],
+          attendance: [
+            {
+              id: 'ATT-OPEN-EMERGENCY', employeeId: 'E99', storeId: 'S99', unit: 'store',
+              date: '2026-08-20', workDate: '2026-08-20', attendanceDate: '2026-08-20',
+              shiftId: 'SHIFT-NOT-ASSIGNED', shiftName: 'Ca chưa đăng ký', shiftStart: '08:00', shiftEnd: '17:00',
+              checkIn: '08:00', checkInTime: '08:00', checkInAt: '2026-08-20T01:00:00.000Z',
+              checkOut: null, checkOutTime: null, checkOutAt: null,
+              checklistSnapshot: { source: 'work-catalog', templateId: 'WORK-CATALOG', tasks: [{ id: 'TASK-REQUIRED', required: true }] },
+              status: 'Đi đúng giờ', arrivalTag: 'Đi đúng giờ', departureTag: 'Chưa ra về', workedSeconds: 0, hours: 0,
+            },
+            {
+              id: 'ATT-PAID-OPEN', employeeId: 'E99', storeId: 'S99', unit: 'store',
+              date: '2026-07-01', workDate: '2026-07-01', attendanceDate: '2026-07-01',
+              shiftId: 'SHIFT-PAID', shiftStart: '08:00', shiftEnd: '17:00',
+              checkIn: '08:00', checkInAt: '2026-07-01T01:00:00.000Z', checkOut: null, checkOutAt: null,
+            },
+          ],
+          tasks: [{
+            id: 'TASK-REQUIRED', checklistAttendanceId: 'ATT-OPEN-EMERGENCY', required: true,
+            employeeIds: ['E99'], completedBy: {}, title: 'Công việc bắt buộc chưa hoàn thành',
+          }],
+          orders: [
+            {
+              id: 'ORDER-CASH', attendanceId: 'ATT-OPEN-EMERGENCY', employeeId: 'E99', storeId: 'S99',
+              amount: 1_000_000, paymentMethod: 'Tiền mặt', status: 'Hoàn tất', createdAt: '2026-08-20T03:00:00.000Z',
+            },
+            {
+              id: 'ORDER-TRANSFER', attendanceId: 'ATT-OPEN-EMERGENCY', employeeId: 'E99', storeId: 'S99',
+              amount: 500_000, paymentMethod: 'Chuyển khoản', status: 'Hoàn tất', createdAt: '2026-08-20T04:00:00.000Z',
+            },
+          ],
+          payrollPeriods: [
+            { id: 'PAY-AUG-EMERGENCY', storeId: 'S99', period: '2026-08', status: 'Đã chốt', needsReclose: false },
+            { id: 'PAY-JUL-EMERGENCY', storeId: 'S99', period: '2026-07', status: 'Đã chi', confirmedAt: '2026-07-31T00:00:00.000Z' },
+          ],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+
+      const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'emergency-close-admin-password',
+      }), env)
+      const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+      const supportCreate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create', expectedVersion: 0,
+        payload: {
+          role: 'business_support', employeeId: 'HTKD-EMERGENCY', username: 'emergency.support',
+          password: 'emergency-support-password', displayName: 'Hỗ trợ KD',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'emergency-close-support-create-0001' }), env)
+      expect(supportCreate.status).toBe(201)
+      const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'emergency.support', password: 'emergency-support-password',
+      }), env)
+      const supportAuthorization = { authorization: `Bearer ${(await supportLogin.json()).token}` }
+      const currentVersion = () => Number(
+        env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()?.version || 0,
+      )
+
+      const supportDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.emergency_close', expectedVersion: currentVersion(),
+        payload: { attendanceId: 'ATT-OPEN-EMERGENCY', reason: 'Không thuộc quyền HTKD' },
+      }, { ...supportAuthorization, 'idempotency-key': 'emergency-close-support-denied-0001' }), env)
+      expect(supportDenied.status).toBe(403)
+      expect(await supportDenied.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+
+      const paidDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.emergency_close', expectedVersion: currentVersion(),
+        payload: { attendanceId: 'ATT-PAID-OPEN', reason: 'Không được sửa kỳ đã chi' },
+      }, { ...adminAuthorization, 'idempotency-key': 'emergency-close-paid-denied-0001' }), env)
+      expect(paidDenied.status).toBe(409)
+      expect(await paidDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
+
+      const command = {
+        type: 'attendance.emergency_close', expectedVersion: currentVersion(),
+        payload: { attendanceId: 'ATT-OPEN-EMERGENCY', reason: 'Admin xác nhận ca bị treo' },
+      }
+      const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, {
+        ...adminAuthorization, 'idempotency-key': 'emergency-close-success-0001',
+      }), env)
+      expect(closed.status).toBe(200)
+      expect(await closed.json()).toMatchObject({
+        version: command.expectedVersion + 1,
+        attendance: {
+          id: 'ATT-OPEN-EMERGENCY', checkOut: '17:30', checkOutAt: '2026-08-20T10:30:00.000Z',
+          workedSeconds: 34_200, workedMinutes: 570, hours: 9.5,
+          revenue: 1_500_000, cash: 1_000_000, transfer: 500_000, orderCount: 2,
+          emergencyClosedAt: '2026-08-20T10:30:00.000Z', emergencyCloseReason: 'Admin xác nhận ca bị treo',
+          emergencyClosedBy: { role: 'admin' },
+        },
+        audit: { action: 'Kết ca khẩn cấp', reason: 'Admin xác nhận ca bị treo', actor: { role: 'admin' } },
+      })
+      const state = readHydratedState(env.DB.database)
+      expect(state.payrollPeriods.find(({ id }) => id === 'PAY-AUG-EMERGENCY')).toMatchObject({
+        needsReclose: true, invalidationReason: 'attendance.emergency_close',
+      })
+      expect(state.tasks.find(({ id }) => id === 'TASK-REQUIRED')).toMatchObject({ completedBy: {} })
+      const audit = env.DB.database.prepare("SELECT metadata_json FROM audit_log WHERE action = 'attendance.emergency_close' ORDER BY id DESC").get()
+      expect(JSON.parse(audit.metadata_json)).toMatchObject({
+        reason: 'Admin xác nhận ca bị treo', storeId: 'S99', employeeId: 'E99',
+        bypassedChecks: ['schedule', 'shift-window', 'required-checklist', 'declared-revenue'],
+      })
+
+      const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, {
+        ...adminAuthorization, 'idempotency-key': 'emergency-close-success-0001',
+      }), env)
+      expect(replay.status).toBe(200)
+      expect(await replay.json()).toMatchObject({ version: command.expectedVersion + 1, attendance: { id: 'ATT-OPEN-EMERGENCY' } })
+
+      const alreadyClosed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        ...command, expectedVersion: currentVersion(),
+      }, { ...adminAuthorization, 'idempotency-key': 'emergency-close-already-closed-0001' }), env)
+      expect(alreadyClosed.status).toBe(409)
+      expect(await alreadyClosed.json()).toMatchObject({ error: { code: 'ATTENDANCE_NOT_OPEN' } })
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+})
 const MAX_PBKDF2_FIXTURE = Object.freeze({
   password: 'legacy-1m-password',
   hash: 'QpKdpyaoBblHhf6crhvx1vVYV0Is4m9twVmOsBx-pl0',

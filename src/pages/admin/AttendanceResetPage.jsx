@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Clock3, Save } from 'lucide-react'
+import { Clock3, Save, ShieldAlert } from 'lucide-react'
 import { Avatar, Badge, Button, Card, Field, InfoNote, Input, Modal, PageHeader, Select, TableWrap } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
 import { shortDate } from '../../utils'
@@ -13,11 +13,15 @@ const employeeUnit = (employee = {}) => {
 }
 
 const initialForm = { checkIn: '', checkOut: '', reason: '' }
+const attendanceIsOpen = (record = {}) => !record.checkOutAt && !record.checkOut && !record.checkOutTime
 
 export function AttendanceResetPage() {
-  const { attendance = [], employees = [], stores = [], updateAttendance, notify, session } = useApp()
+  const { attendance = [], employees = [], stores = [], updateAttendance, emergencyCloseAttendance, notify, session } = useApp()
   const [scope, setScope] = useState({ unit: 'store', storeId: '', employeeId: '' })
   const [editing, setEditing] = useState(null)
+  const [emergencyTarget, setEmergencyTarget] = useState(null)
+  const [emergencyReason, setEmergencyReason] = useState('')
+  const [emergencyBusy, setEmergencyBusy] = useState(false)
   const [form, setForm] = useState(initialForm)
   const isAdmin = session?.role === 'admin'
   const scopedEmployees = useMemo(() => employees.filter((employee) => (
@@ -49,6 +53,29 @@ export function AttendanceResetPage() {
       setForm(initialForm)
     }
   }
+  const openEmergencyClose = (record) => {
+    setEmergencyTarget(record)
+    setEmergencyReason('')
+  }
+  const closeEmergencyModal = () => {
+    if (emergencyBusy) return
+    setEmergencyTarget(null)
+    setEmergencyReason('')
+  }
+  const emergencyClose = async () => {
+    const reason = emergencyReason.trim()
+    if (!emergencyTarget || !reason || emergencyBusy) return
+    setEmergencyBusy(true)
+    try {
+      const result = await emergencyCloseAttendance?.(emergencyTarget.id, reason)
+      if (result?.ok) {
+        setEmergencyTarget(null)
+        setEmergencyReason('')
+      }
+    } finally {
+      setEmergencyBusy(false)
+    }
+  }
 
   return <div className="page governance-page">
     <PageHeader title="RESET DỮ LIỆU CHẤM CÔNG" subtitle="Chọn đơn vị, nhân viên và chỉnh giờ vào/giờ ra. Mọi thay đổi đều được lưu nhật ký." icon={Clock3} />
@@ -62,12 +89,30 @@ export function AttendanceResetPage() {
     </Card>
     <Card title={selectedEmployee ? `Lịch sử chấm công · ${selectedEmployee.name}` : 'Lịch sử chấm công'}>
       <TableWrap><thead><tr><th>Nhân viên</th><th>Ngày</th><th>Ca</th><th>Giờ vào</th><th>Giờ ra</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>
-        {rows.map((record) => <tr key={record.id}><td><div className="person-cell"><Avatar name={selectedEmployee?.name || record.employeeId} src={selectedEmployee?.avatar} employeeId={record.employeeId} color={selectedEmployee?.color} /><span><strong>{selectedEmployee?.name || record.employeeId}</strong><small>{record.employeeId}</small></span></div></td><td>{shortDate(record.date || record.workDate)}</td><td><strong>{record.shiftName || record.shift || '—'}</strong><small className="table-sub">{record.shiftStart || '—'}–{record.shiftEnd || '—'}</small></td><td>{record.checkIn || String(record.checkInAt || '').slice(11, 16) || '—'}</td><td>{record.checkOut || String(record.checkOutAt || '').slice(11, 16) || '—'}</td><td><Badge tone={String(record.status || '').includes('trễ') ? 'red' : String(record.status || '').includes('sớm') ? 'green' : 'blue'}>{record.status || 'Đã ghi nhận'}</Badge></td><td><Button variant="outline" onClick={() => openEdit(record)}>Chỉnh sửa</Button></td></tr>)}
+        {rows.map((record) => {
+          const open = attendanceIsOpen(record)
+          return <tr key={record.id}>
+            <td><div className="person-cell"><Avatar name={selectedEmployee?.name || record.employeeId} src={selectedEmployee?.avatar} employeeId={record.employeeId} color={selectedEmployee?.color} /><span><strong>{selectedEmployee?.name || record.employeeId}</strong><small>{record.employeeId}</small></span></div></td>
+            <td>{shortDate(record.date || record.workDate)}</td>
+            <td><strong>{record.shiftName || record.shift || '—'}</strong><small className="table-sub">{record.shiftStart || '—'}–{record.shiftEnd || '—'}</small></td>
+            <td>{record.checkIn || String(record.checkInAt || '').slice(11, 16) || '—'}</td>
+            <td>{record.checkOut || String(record.checkOutAt || '').slice(11, 16) || '—'}</td>
+            <td><Badge tone={open ? 'orange' : String(record.status || '').includes('trễ') ? 'red' : String(record.status || '').includes('sớm') ? 'green' : 'blue'}>{open ? 'Đang làm' : record.status || 'Đã ghi nhận'}</Badge></td>
+            <td><div className="row-actions--wrap"><Button variant="outline" onClick={() => openEdit(record)}>Chỉnh sửa</Button>{open && <Button variant="danger" icon={ShieldAlert} onClick={() => openEmergencyClose(record)}>KẾT CA KHẨN CẤP</Button>}</div></td>
+          </tr>
+        })}
         {!rows.length && <tr><td colSpan="7">{scope.employeeId ? 'Nhân viên chưa có dữ liệu chấm công.' : 'Chọn nhân viên để xem dữ liệu.'}</td></tr>}
       </tbody></TableWrap>
     </Card>
     <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Chỉnh sửa giờ chấm công" footer={<><Button variant="outline" onClick={() => setEditing(null)}>Hủy</Button><Button icon={Save} onClick={save}>LƯU</Button></>}>
       <div className="form-grid"><Field label="Giờ vào" required><Input type="time" value={form.checkIn} onChange={(event) => setForm((current) => ({ ...current, checkIn: event.target.value }))} /></Field><Field label="Giờ ra"><Input type="time" value={form.checkOut} onChange={(event) => setForm((current) => ({ ...current, checkOut: event.target.value }))} /></Field><Field label="Lý do chỉnh sửa" required className="span-2"><textarea maxLength={500} value={form.reason} onChange={(event) => setForm((current) => ({ ...current, reason: event.target.value }))} placeholder="Nhập lý do để lưu nhật ký" /></Field></div>
+    </Modal>
+    <Modal open={Boolean(emergencyTarget)} onClose={closeEmergencyModal} title="Kết ca khẩn cấp" footer={<><Button variant="outline" disabled={emergencyBusy} onClick={closeEmergencyModal}>Hủy</Button><Button variant="danger" icon={ShieldAlert} loading={emergencyBusy} disabled={emergencyBusy || !emergencyReason.trim()} onClick={emergencyClose}>XÁC NHẬN KẾT CA</Button></>}>
+      <div className="form-stack">
+        <InfoNote tone="orange">Hệ thống dùng giờ máy chủ để kết ca ngay và ghi đầy đủ nhật ký. Thao tác này bỏ qua lịch, khung giờ, checklist bắt buộc và bước khai báo doanh thu; kỳ lương đã chi hoặc đã khóa vẫn được bảo vệ.</InfoNote>
+        <p><strong>{selectedEmployee?.name || emergencyTarget?.employeeName || emergencyTarget?.employeeId}</strong><small className="table-note">Vào ca lúc {emergencyTarget?.checkIn || String(emergencyTarget?.checkInAt || '').slice(11, 16) || '—'} · {shortDate(emergencyTarget?.date || emergencyTarget?.workDate)}</small></p>
+        <Field label="Lý do kết ca khẩn cấp" required><textarea autoFocus maxLength={500} value={emergencyReason} onChange={(event) => setEmergencyReason(event.target.value)} placeholder="Ví dụ: Thiết bị nhân viên lỗi, Admin đã đối soát và xác nhận kết ca" /></Field>
+      </div>
     </Modal>
   </div>
 }
