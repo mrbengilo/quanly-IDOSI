@@ -202,10 +202,7 @@ function StoreEmployeeRoute({ children }) {
 }
 
 function StoreOverviewRoute() {
-  const { session } = useApp()
-  return canonicalRole(session?.role) === 'store_manager'
-    ? <OfficeEmployeeDashboard />
-    : <StoreOverviewV2 />
+  return <StoreOverviewV2 />
 }
 
 export default function App() {

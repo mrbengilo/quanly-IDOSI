@@ -281,9 +281,10 @@ describe('IDOSI page smoke tests', () => {
     renderAppWithRouteProbe()
     await loginAs('store.manager')
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
-    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^BẤM ĐIỂM DANH$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^RA VỀ$/i }).disabled).toBe(true)
+    expect(await screen.findByRole('heading', { name: 'Idosi Tô Ngọc Vân' })).toBeTruthy()
+    expect(screen.getByText('Không gian vận hành dành cho Admin và quản lý cửa hàng.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^BẤM ĐIỂM DANH$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^RA VỀ$/i })).toBeNull()
     expect(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Quay về trang quản lý chính/i })).toBeNull()
 
@@ -292,7 +293,7 @@ describe('IDOSI page smoke tests', () => {
     expect(await screen.findByRole('link', { name: /^Nhân viên cửa hàng$/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('link', { name: /^Tổng quan$/i }))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
-    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Idosi Tô Ngọc Vân' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('link', { name: /^Nhân viên cửa hàng$/i }))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/employees'))
@@ -301,7 +302,7 @@ describe('IDOSI page smoke tests', () => {
 
     fireEvent.click(screen.getByText('Mở trực tiếp trang hệ thống'))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
-    expect(await screen.findByRole('heading', { name: 'TỔNG QUAN QUẢN LÝ CỬA HÀNG' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Idosi Tô Ngọc Vân' })).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Danh sách cửa hàng$/i })).toBeNull()
 
     fireEvent.click(screen.getByText('Mở trực tiếp đơn hàng cửa hàng'))

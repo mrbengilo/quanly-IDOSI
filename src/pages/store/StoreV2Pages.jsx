@@ -354,7 +354,7 @@ export function StoreOverviewV2() {
   return (
     <div className="page">
       <OverdueAttendanceModal records={overdueAttendance} audience="store" />
-      <PageHeader title={store?.name || 'TỔNG QUAN CỬA HÀNG'} subtitle="Không gian vận hành cửa hàng dành cho Admin." icon={Store} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} />
+      <PageHeader title={store?.name || 'TỔNG QUAN CỬA HÀNG'} subtitle="Không gian vận hành dành cho Admin và quản lý cửa hàng." icon={Store} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} />
       <div className="metrics-grid metrics-grid--4">
         <MetricCard label="DOANH THU KỲ" value={money(summary.revenue)} icon={TrendingUp} tone="green" />
         <MetricCard label="CHI PHÍ KỲ" value={money(summary.expense)} icon={TrendingDown} tone="orange" />
