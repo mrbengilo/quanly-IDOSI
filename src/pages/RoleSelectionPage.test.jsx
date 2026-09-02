@@ -24,7 +24,6 @@ describe('RoleSelectionPage', () => {
       availableRoles: [
         { role: 'store_manager', label: 'Quản lý CH', employeeId: 'QLCH-01', storeId: 'S01' },
         { role: 'employee', label: 'Nhân viên', employeeId: 'E-STORE-01', storeId: 'S01' },
-        { role: 'business_support', label: 'Hỗ trợ KD', employeeId: 'HTKD-01', storeId: 'BUSINESS_SUPPORT' },
       ],
     }
   })
@@ -36,16 +35,43 @@ describe('RoleSelectionPage', () => {
     </Routes></MemoryRouter>)
 
     expect(screen.getByRole('img', { name: 'Ảnh đại diện Nguyễn Minh Khôi' }).getAttribute('src')).toBe('/avatar-user.jpg')
-    expect(screen.getByText('Vai trò hiện tại')).toBeTruthy()
+    const roleGroup = screen.getByRole('group', { name: 'Vai trò có thể chọn' })
+    expect(roleGroup.style.getPropertyValue('--role-option-count')).toBe('2')
     const managerButton = screen.getByRole('button', { name: /^Quản lý CH Quản lý cửa hàng/u })
     expect(managerButton).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Nhân viên Điểm danh/u })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Hỗ trợ KD Không gian/u })).toBeTruthy()
     fireEvent.click(managerButton)
 
     await waitFor(() => expect(mocked.selectSessionRole).toHaveBeenCalledWith(
       expect.objectContaining({ role: 'store_manager', employeeId: 'QLCH-01', storeId: 'S01' }),
     ))
     expect(await screen.findByRole('heading', { name: 'Không gian quản lý' })).toBeTruthy()
+  })
+
+  it('shows immediate pressed feedback and blocks duplicate role switches', async () => {
+    let finishSelection
+    mocked.selectSessionRole.mockImplementationOnce((option) => new Promise((resolve) => {
+      finishSelection = () => resolve({ ok: false, account: option })
+    }))
+    render(<MemoryRouter initialEntries={['/select-role']}><Routes>
+      <Route path="/select-role" element={<RoleSelectionPage />} />
+    </Routes></MemoryRouter>)
+
+    const managerButton = screen.getByRole('button', { name: /^Quản lý CH Quản lý cửa hàng/u })
+    const employeeButton = screen.getByRole('button', { name: /^Nhân viên Điểm danh/u })
+    fireEvent.click(managerButton)
+    fireEvent.click(managerButton)
+
+    await waitFor(() => expect(managerButton.getAttribute('aria-busy')).toBe('true'))
+    expect(managerButton.getAttribute('aria-pressed')).toBe('true')
+    expect(managerButton.classList.contains('is-pending')).toBe(true)
+    expect(managerButton.disabled).toBe(true)
+    expect(employeeButton.disabled).toBe(true)
+    expect(screen.getByText('Đang mở...')).toBeTruthy()
+    expect(mocked.selectSessionRole).toHaveBeenCalledTimes(1)
+
+    finishSelection()
+    await waitFor(() => expect(managerButton.disabled).toBe(false))
+    expect(managerButton.classList.contains('is-pending')).toBe(false)
   })
 })
