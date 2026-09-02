@@ -192,6 +192,39 @@ describe('employee shift operations', () => {
     expect(screen.getAllByRole('checkbox')).toHaveLength(2)
   })
 
+  it('shows the support attendance checklist when its synthetic shift is not a stored definition', () => {
+    mocked.app.session = {
+      role: 'employee', employeeId: 'E01', code: 'E01',
+      storeId: 'S02', homeStoreId: 'S01', activeTransferId: 'TR-01',
+    }
+    mocked.app.currentEmployee = {
+      id: 'EMP-DB-01', code: 'E01', name: 'Nguyễn An', storeId: 'S01', unit: 'store',
+    }
+    mocked.app.employees = [mocked.app.currentEmployee]
+    mocked.app.stores = [{ id: 'S01', name: 'Dosii Home' }, { id: 'S02', name: 'Dosii Support' }]
+    mocked.app.shiftDefinitions = [
+      { id: 'CA-1', storeId: 'S02', name: 'Ca sáng', start: '07:00', end: '12:00' },
+      { id: 'CA-2', storeId: 'S02', name: 'Ca chiều', start: '12:00', end: '17:00' },
+    ]
+    mocked.app.attendance = [{
+      id: 'ATT-SUPPORT', employeeId: 'E01', storeId: 'S02', supportTransferId: 'TR-01',
+      date: '2026-08-22', shiftId: 'SUPPORT_TRANSFER_TR-01', shiftName: 'Ca hỗ trợ cửa hàng',
+      shiftStart: '12:00', shiftEnd: '17:00', checkIn: '13:00', checkInAt: '2026-08-22T06:00:00.000Z',
+      checkOut: null, checkOutAt: null,
+    }]
+    mocked.app.tasks = [{
+      id: 'TASK-SUPPORT', checklistAttendanceId: 'ATT-SUPPORT', storeId: 'S02', date: '2026-08-22',
+      shiftId: 'SUPPORT_TRANSFER_TR-01', employeeIds: ['E01'], title: 'Checklist cửa hàng hỗ trợ',
+      required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+    }]
+
+    renderAssignedTasks()
+
+    expect(screen.getByText('Checklist cửa hàng hỗ trợ')).toBeTruthy()
+    expect(screen.getByRole('checkbox', { name: /Checklist cửa hàng hỗ trợ/i }).disabled).toBe(false)
+    expect(screen.getByRole('tab', { name: /Ca Chiều/i }).getAttribute('aria-selected')).toBe('true')
+  })
+
   it('does not attach a lowercase checklist binding to an exact uppercase attendance collision', () => {
     mocked.app.attendance = [{
       ...mocked.app.attendance[0],

@@ -10156,12 +10156,34 @@ describe('IDOSI Worker security primitives', () => {
         source: 'work-catalog', storeChecklistRepairVersion: 1, tasks: [],
       })
       vi.setSystemTime(new Date('2026-08-21T05:00:00.000Z'))
+      const loginAfterTransferEnd = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'employee.one', password: 'employee-one-password',
+      }), env)
+      expect(loginAfterTransferEnd.status).toBe(200)
+      const loginAfterTransferEndBody = await loginAfterTransferEnd.json()
+      expect(loginAfterTransferEndBody).toMatchObject({
+        user: {
+          storeId: 'S02', homeStoreId: 'S01', activeTransferId: transferCreatedBody.transfer.id,
+        },
+        bootstrap: {
+          user: {
+            storeId: 'S02', homeStoreId: 'S01', activeTransferId: transferCreatedBody.transfer.id,
+          },
+          state: { activeStoreId: 'S02' },
+        },
+      })
+      employeeAuthorization = { authorization: `Bearer ${loginAfterTransferEndBody.token}` }
       const stateAtExclusiveEnd = await worker.fetch(new Request('https://idosi.example/api/state', {
         headers: employeeAuthorization,
       }), env)
       expect(stateAtExclusiveEnd.status).toBe(200)
       const stateAtExclusiveEndBody = await stateAtExclusiveEnd.json()
-      expect(stateAtExclusiveEndBody).toMatchObject({ user: { storeId: 'S01' }, state: { activeStoreId: 'S01' } })
+      expect(stateAtExclusiveEndBody).toMatchObject({
+        user: {
+          storeId: 'S02', homeStoreId: 'S01', activeTransferId: transferCreatedBody.transfer.id,
+        },
+        state: { activeStoreId: 'S02' },
+      })
       expect(stateAtExclusiveEndBody.state.attendance.find(({ id }) => id === destinationAttendanceId)).toMatchObject({
         storeId: 'S02', checkOutAt: null,
       })
@@ -10170,21 +10192,37 @@ describe('IDOSI Worker security primitives', () => {
         headers: destinationManagerAuthorization,
       }), env)
       expect(destinationAtExclusiveEnd.status).toBe(200)
-      expect((await destinationAtExclusiveEnd.json()).state.employees.some(({ id }) => id === 'E01')).toBe(false)
+      expect((await destinationAtExclusiveEnd.json()).state.employees.some(({ id }) => id === 'E01')).toBe(true)
       vi.setSystemTime(new Date('2026-08-21T07:00:00.000Z'))
-      const destinationCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 13,
+      const destinationOrderAfterTransferEnd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'order.create', expectedVersion: 13,
         payload: {
-          attendanceId: destinationAttendanceId, cashRevenue: 0, transferRevenue: 0,
+          storeId: 'S02', customerName: 'Khách sau giờ điều chuyển', gender: 'Nữ', occupation: 'Nhân viên VP',
+          acquisitionChannel: 'Facebook', amount: 120_000, paymentMethod: 'Tiền mặt',
+        },
+      }, { ...employeeAuthorization, 'idempotency-key': 'employee-support-order-after-transfer-end-0001' }), env)
+      expect(destinationOrderAfterTransferEnd.status).toBe(201)
+      expect(await destinationOrderAfterTransferEnd.json()).toMatchObject({
+        version: 14,
+        order: {
+          storeId: 'S02', employeeId: 'E01', attendanceId: destinationAttendanceId,
+          supportTransferId: transferCreatedBody.transfer.id, amount: 120_000,
+        },
+      })
+      const destinationCheckOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 14,
+        payload: {
+          attendanceId: destinationAttendanceId, cashRevenue: 120_000, transferRevenue: 0,
           location: { latitude: 10.81, longitude: 106.68, accuracy: 7 },
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-support-check-out-0001' }), env)
       expect(destinationCheckOut.status).toBe(200)
       expect(await destinationCheckOut.json()).toMatchObject({
-        version: 14,
+        version: 15,
         attendance: {
           storeId: 'S02', homeStoreId: 'S01', supportTransferId: transferCreatedBody.transfer.id,
           elapsedSeconds: 21_600, workedSeconds: 14_400, hours: 4,
+          revenue: 120_000, cash: 120_000, transfer: 0, orderCount: 1,
         },
       })
       const stateAfterSupportShift = readHydratedState(env.DB.database)
@@ -10192,11 +10230,11 @@ describe('IDOSI Worker security primitives', () => {
         status: 'Hoàn tất',
       })
       const destinationPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'payroll.close', expectedVersion: 14, payload: { storeId: 'S02', period: '2026-08' },
+        type: 'payroll.close', expectedVersion: 15, payload: { storeId: 'S02', period: '2026-08' },
       }, { ...supportAuthorization, 'idempotency-key': 'support-destination-payroll-0001' }), env)
       expect(destinationPayroll.status).toBe(201)
       const destinationPayrollBody = await destinationPayroll.json()
-      expect(destinationPayrollBody).toMatchObject({ version: 15, period: { storeId: 'S02' } })
+      expect(destinationPayrollBody).toMatchObject({ version: 16, period: { storeId: 'S02' } })
       expect(destinationPayrollBody.period.rows.find(({ employeeId }) => employeeId === 'E01')).toMatchObject({
         employeeId: 'E01', hours: 4, baseSalary: 180_000, supportHourlyPay: 180_000,
         supportAllowance: 180_000, gross: 360_000,

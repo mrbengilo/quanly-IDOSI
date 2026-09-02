@@ -16,15 +16,13 @@ import {
   taskAssignedToEmployee,
   taskCompletedByEmployee,
 } from './taskScope'
+import { referenceMatchesAttendanceShift } from './employeeShiftScope'
 
 const employeeKey = (record) => String(record?.id || record?.code || record?.employeeId || '')
 const employeeAliases = (record) => [record?.id, record?.code, record?.employeeId, record?.employeeCode]
   .map((value) => String(value || '').trim())
   .filter(Boolean)
 const storeAliases = (record) => [record?.id, record?.code]
-  .map((value) => String(value || '').trim())
-  .filter(Boolean)
-const shiftAliases = (record) => [record?.id, record?.code]
   .map((value) => String(value || '').trim())
   .filter(Boolean)
 const attendanceAliases = (record) => [record?.id, record?.code, record?.attendanceId]
@@ -101,8 +99,7 @@ const taskMatchesAttendance = (task, attendance, employeeId, {
   shiftDefinitions = [],
 } = {}) => {
   const store = resolveTarget(stores, attendance.storeId, storeAliases, { id: String(attendance.storeId || '') })
-  const shift = resolveTarget(shiftDefinitions, shiftIdOf(attendance), shiftAliases, { id: shiftIdOf(attendance) })
-  if (!store || (shiftIdOf(attendance) && !shift)) return false
+  if (!store) return false
   return !task.deletedAt
     && referenceMatchesTarget(stores, store, task.storeId, storeAliases)
     && recordDate(task) === recordDate(attendance)
@@ -113,7 +110,11 @@ const taskMatchesAttendance = (task, attendance, employeeId, {
       task.checklistAttendanceId,
       attendanceAliases,
     ))
-    && (!shiftIdOf(task) || referenceMatchesTarget(shiftDefinitions, shift, shiftIdOf(task), shiftAliases))
+    && (!shiftIdOf(task) || referenceMatchesAttendanceShift({
+      attendance,
+      reference: shiftIdOf(task),
+      shiftDefinitions,
+    }))
 }
 
 export function EmployeeShiftExpensePage() {

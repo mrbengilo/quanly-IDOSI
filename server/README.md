@@ -202,8 +202,9 @@ Các lệnh chính:
   viên tự chuyển sang cửa hàng nhận; cửa hàng nhận thấy hồ sơ cùng thời gian,
   lương giờ hỗ trợ, phụ cấp và có thể xếp ca/giao việc. Chấm công, đơn hàng,
   doanh thu và chi phí lương hỗ trợ được ghi vào cửa hàng nhận. Lương hỗ trợ =
-  giờ làm thực tế × `hourlySupportRate`, cộng `allowance`; khi hết thời gian hoặc
-  kết ca hỗ trợ, session tự trở về cửa hàng gốc. Mọi lệnh commit state + audit +
+  giờ làm thực tế × `hourlySupportRate`, cộng `allowance`. Nếu thời gian điều chuyển
+  đã hết nhưng ca hỗ trợ còn mở, session vẫn giữ tại cửa hàng nhận để nhập đơn và
+  kết ca; chỉ sau khi kết ca hỗ trợ mới tự trở về cửa hàng gốc. Mọi lệnh commit state + audit +
   receipt idempotency nguyên tử.
 - `account_settings.update`: mọi tài khoản đăng nhập tự cập nhật tài khoản hiện tại với
   payload `name`, `email`, `phone`, `birthday`, `gender`, `address`, `bio`,
@@ -270,7 +271,8 @@ Các lệnh chính:
   đã liên kết profile; server dùng ca mặc định `08:00-17:00` cho hai vai trò.
   Nhân viên cửa hàng đang trong thời gian điều chuyển có thể điểm danh trực tiếp
   tại cửa hàng nhận mà không cần lịch phân ca; server tạo snapshot ca hỗ trợ từ
-  giờ hoạt động cửa hàng. Sau khi kết ca hỗ trợ, session tự trở lại cửa hàng gốc.
+  giờ hoạt động cửa hàng. Ca hỗ trợ đang mở tiếp tục giữ session tại cửa hàng nhận
+  dù phiếu đã hết giờ; sau khi kết ca hỗ trợ, session tự trở lại cửa hàng gốc.
 - `attendance.check_out`: payload `attendanceId?`, `location`, `expense?`,
   `tiktok?`. Với nhân viên cửa hàng, bắt buộc thêm `cashRevenue` và
   `transferRevenue`; server chỉ tổng hợp đơn `Hoàn tất` đúng employee/store/
