@@ -11,18 +11,18 @@ import { createSqliteD1 } from './sqlite-d1.mjs'
 const temporaryDirectories = []
 const timestamp = '2026-09-02T08:00:00.000Z'
 const targetProfile = {
-  id: 'QLCH-004',
-  code: 'QLCH-004',
-  employeeCode: 'QLCH-004',
+  id: 'QLCH-014',
+  code: 'QLCH-014',
+  employeeCode: 'QLCH-014',
   name: 'Trần Thị Ngọc Bích',
   unit: 'store_manager',
-  storeId: 'CH-TNV',
+  storeId: 'CH010',
   authUserId: 'usr-manager-test',
   status: 'Đã nghỉ việc',
-  deletedAt: '2026-09-01T08:00:00.000Z',
+  deletedAt: '2026-09-01T17:12:53.151Z',
 }
-const store = { id: 'CH-TNV', name: 'SM TNV' }
-const unrelatedEmployee = { id: 'NV-KEEP', code: 'NV-KEEP', name: 'Nhân viên giữ lại', unit: 'store', storeId: 'CH-TNV' }
+const store = { id: 'CH010', short: 'SM TNV', name: 'SM TNV' }
+const unrelatedEmployee = { id: 'NV-KEEP', code: 'NV-KEEP', name: 'Nhân viên giữ lại', unit: 'store', storeId: 'CH010' }
 
 const temporaryDatabase = async () => {
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-data-fix-'))
@@ -55,22 +55,22 @@ const seedTargetFixture = async (database, profile = targetProfile, targetStore 
     employees: [unrelatedEmployee],
     deletedEmployees: [profile],
     attendance: [
-      { id: 'ATT-TARGET', employeeId: 'QLCH-004', storeId: 'CH-TNV', checkInAt: '2026-09-01T01:00:00.000Z' },
-      { id: 'ATT-KEEP', employeeId: 'NV-KEEP', storeId: 'CH-TNV', checkInAt: '2026-09-01T01:00:00.000Z' },
+      { id: 'ATT-TARGET', employeeId: 'QLCH-014', storeId: 'CH010', checkInAt: '2026-09-01T01:00:00.000Z' },
+      { id: 'ATT-KEEP', employeeId: 'NV-KEEP', storeId: 'CH010', checkInAt: '2026-09-01T01:00:00.000Z' },
     ],
     supportWorkSchedules: [
-      { id: 'WORK-TARGET', employeeId: 'QLCH-004', date: '2026-09-01' },
+      { id: 'WORK-TARGET', employeeId: 'QLCH-014', date: '2026-09-01' },
       { id: 'WORK-KEEP', employeeId: 'NV-KEEP', date: '2026-09-01' },
     ],
     payrollPeriods: [{
       id: 'PAYROLL-2026-09',
-      storeId: 'CH-TNV',
+      storeId: 'CH010',
       rows: [
-        { employeeId: 'QLCH-004', amount: 0 },
+        { employeeId: 'QLCH-014', amount: 0 },
         { employeeId: 'NV-KEEP', amount: 1_000_000 },
       ],
     }],
-    orders: [{ id: 'ORDER-KEEP', storeId: 'CH-TNV', createdByEmployeeId: 'QLCH-004', amount: 150_000 }],
+    orders: [{ id: 'ORDER-KEEP', storeId: 'CH010', createdByEmployeeId: 'QLCH-014', amount: 150_000 }],
     accountSettings: {
       'usr-manager-test': { notifications: true },
       'usr-keep': { notifications: false },
@@ -85,7 +85,7 @@ const seedTargetFixture = async (database, profile = targetProfile, targetStore 
       ('admin-test', 'admin-test', 'admin-test', 'Admin Test', 'hash', 'salt', 100000,
         'PBKDF2-SHA256', 'admin', 'active', 1, NULL, NULL, ?, ?, ?),
       ('usr-manager-test', 'manager-test', 'manager-test', 'Trần Thị Ngọc Bích', 'hash', 'salt', 100000,
-        'PBKDF2-SHA256', 'store_manager', 'inactive', 4, 'CH-TNV', 'QLCH-004', ?, ?, ?)
+        'PBKDF2-SHA256', 'store_manager', 'inactive', 4, 'CH010', 'QLCH-014', ?, ?, ?)
   `).bind(timestamp, timestamp, timestamp, timestamp, timestamp, timestamp).run()
   await database.prepare(`
     INSERT INTO app_state (scope_key, value_json, version, updated_at, updated_by, last_request_id)
@@ -124,9 +124,9 @@ const seedTargetFixture = async (database, profile = targetProfile, targetStore 
     ) VALUES
       ('audit-target', 'usr-manager-test', 'store_manager', 'attendance.check_in', 'attendance', 'ATT-TARGET',
         NULL, ?, NULL, ?),
-      ('audit-keep', 'admin-test', 'admin', 'store.update', 'store', 'CH-TNV',
+      ('audit-keep', 'admin-test', 'admin', 'store.update', 'store', 'CH010',
         NULL, NULL, '{"kept":true}', ?)
-  `).bind(JSON.stringify({ employeeId: 'QLCH-004' }), timestamp, timestamp).run()
+  `).bind(JSON.stringify({ employeeId: 'QLCH-014' }), timestamp, timestamp).run()
 }
 
 afterEach(async () => {
@@ -135,7 +135,7 @@ afterEach(async () => {
 })
 
 describe('VPS exact test-manager data fix', () => {
-  it('purges only QLCH-004 work/account data and is idempotent', async () => {
+  it('purges only QLCH-014 work/account data and is idempotent', async () => {
     const { databasePath, database } = await temporaryDatabase()
     await seedTargetFixture(database)
     database.close()
@@ -145,8 +145,8 @@ describe('VPS exact test-manager data fix', () => {
     expect(reopened.dataFixResult).toMatchObject({
       status: 'applied',
       marker: {
-        employeeId: 'QLCH-004',
-        storeId: 'CH-TNV',
+        employeeId: 'QLCH-014',
+        storeId: 'CH010',
         deletedByCollection: { deletedEmployees: 1, attendance: 1, supportWorkSchedules: 1 },
         deletedUsers: 1,
         deletedAuditRows: 1,
@@ -168,7 +168,7 @@ describe('VPS exact test-manager data fix', () => {
     expect(JSON.parse((await reopened.prepare(`
       SELECT value_json FROM state_entities
       WHERE scope_key = 'global' AND collection_key = 'orders'
-    `).first()).value_json)).toMatchObject({ id: 'ORDER-KEEP', createdByEmployeeId: 'QLCH-004' })
+    `).first()).value_json)).toMatchObject({ id: 'ORDER-KEEP', createdByEmployeeId: 'QLCH-014' })
     expect(await reopened.prepare("SELECT id FROM users WHERE id = 'usr-manager-test'").first()).toBeNull()
     expect(await reopened.prepare("SELECT id FROM sessions WHERE id = 'session-target'").first()).toBeNull()
     expect(await reopened.prepare("SELECT actor_id FROM command_receipts WHERE idempotency_key = 'target-command'").first()).toBeNull()
@@ -182,7 +182,7 @@ describe('VPS exact test-manager data fix', () => {
     expect(compact.attendance.map(({ id }) => id)).toEqual(['ATT-KEEP'])
     expect(compact.supportWorkSchedules.map(({ id }) => id)).toEqual(['WORK-KEEP'])
     expect(compact.payrollPeriods[0].rows).toEqual([{ employeeId: 'NV-KEEP', amount: 1_000_000 }])
-    expect(compact.orders).toEqual([{ id: 'ORDER-KEEP', storeId: 'CH-TNV', createdByEmployeeId: 'QLCH-004', amount: 150_000 }])
+    expect(compact.orders).toEqual([{ id: 'ORDER-KEEP', storeId: 'CH010', createdByEmployeeId: 'QLCH-014', amount: 150_000 }])
     expect(compact.accountSettings).toEqual({ 'usr-keep': { notifications: false } })
     expect(JSON.parse((await reopened.prepare(
       'SELECT value_json FROM system_metadata WHERE meta_key = ?',
@@ -195,7 +195,7 @@ describe('VPS exact test-manager data fix', () => {
     idempotent.close()
   }, 30_000)
 
-  it('fails closed without changing data when archived QLCH-004 resolves to another store', async () => {
+  it('fails closed without changing data when archived QLCH-014 resolves to another store', async () => {
     const { database } = await temporaryDatabase()
     await seedTargetFixture(database, { ...targetProfile, storeId: 'CH-OTHER' })
 
@@ -217,7 +217,7 @@ describe('VPS exact test-manager data fix', () => {
       unitType: 'store',
       department: 'store',
       roleType: 'employee',
-      accountRole: 'employee',
+      accountRole: 'store_manager',
       position: 'Quản lý cửa hàng',
       jobPosition: 'Quản lý cửa hàng',
       isStoreManager: true,
@@ -228,15 +228,15 @@ describe('VPS exact test-manager data fix', () => {
     expect(reopened.dataFixResult).toMatchObject({
       status: 'applied',
       marker: {
-        employeeId: 'QLCH-004',
+        employeeId: 'QLCH-014',
         deletedByCollection: { deletedEmployees: 1, attendance: 1 },
       },
     })
     reopened.close()
   })
 
-  it('purges the exact archived code even when legacy display metadata is inconsistent', async () => {
-    const { databasePath, database } = await temporaryDatabase()
+  it('fails closed when the archived code has inconsistent identity metadata', async () => {
+    const { database } = await temporaryDatabase()
     await seedTargetFixture(database, {
       ...targetProfile,
       name: 'Tên hiển thị legacy không đồng nhất',
@@ -245,18 +245,21 @@ describe('VPS exact test-manager data fix', () => {
       department: 'store',
       position: 'Dữ liệu legacy',
     })
-    database.close()
 
-    const reopened = createSqliteD1({ databasePath })
-    expect(reopened.dataFixResult).toMatchObject({
-      status: 'applied',
-      marker: {
-        employeeId: 'QLCH-004',
-        storeId: 'CH-TNV',
-        deletedByCollection: { deletedEmployees: 1, attendance: 1 },
-      },
-    })
-    reopened.close()
+    expect(() => applyVpsDataFixes(database.database, timestamp)).toThrow(/tên hoặc vai trò/u)
+    expect(await database.prepare('SELECT value_json FROM system_metadata WHERE meta_key = ?')
+      .bind(TEST_MANAGER_PURGE_MARKER).first()).toBeNull()
+    database.close()
+  })
+
+  it('fails closed when the matching manager was not deleted on 02/09/2026 Vietnam time', async () => {
+    const { database } = await temporaryDatabase()
+    await seedTargetFixture(database, { ...targetProfile, deletedAt: '2026-09-01T16:59:59.999Z' })
+
+    expect(() => applyVpsDataFixes(database.database, timestamp)).toThrow(/không được xóa trong ngày/u)
+    expect(await database.prepare('SELECT value_json FROM system_metadata WHERE meta_key = ?')
+      .bind(TEST_MANAGER_PURGE_MARKER).first()).toBeNull()
+    database.close()
   })
 
   it('recognizes the TNV store by its stable legacy aliases', async () => {
@@ -272,7 +275,7 @@ describe('VPS exact test-manager data fix', () => {
     const reopened = createSqliteD1({ databasePath })
     expect(reopened.dataFixResult).toMatchObject({
       status: 'applied',
-      marker: { employeeId: 'QLCH-004', storeId: 'CH-TNV' },
+      marker: { employeeId: 'QLCH-014', storeId: 'CH010' },
     })
     reopened.close()
   })
