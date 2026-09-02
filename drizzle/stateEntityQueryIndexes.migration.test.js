@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { afterEach, describe, expect, it } from 'vitest'
 import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
