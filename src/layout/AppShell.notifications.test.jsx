@@ -221,7 +221,8 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Danh sách nhân viên cửa hàng/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Cài đặt chính sách/i }).getAttribute('href')).toBe('/admin/policies')
     expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
-    expect(screen.getByRole('link', { name: /Reset dữ liệu/i }).getAttribute('href')).toBe('/admin/reset')
+    expect(screen.queryByRole('link', { name: /Chỉnh sửa chấm công/i })).toBeNull()
+    expect(screen.getByRole('link', { name: /Khôi phục dữ liệu/i }).getAttribute('href')).toBe('/admin/data-restore')
     expect(screen.getByRole('link', { name: /Điều chuyển nhân sự/i }).getAttribute('href')).toBe('/admin/support-transfers')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.getByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i }).getAttribute('href')).toBe('/admin/work-registration-schedules')
@@ -234,7 +235,7 @@ describe('AppShell notifications', () => {
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
   })
 
-  it('gives business support its employee directory, policy and survey access without Reset dữ liệu', () => {
+  it('gives business support its employee directory, policy and survey access without Admin recovery tools', () => {
     mocked.session = { role: 'business_support', name: 'Hỗ trợ KD', employeeId: 'HTKD001' }
     render(<MemoryRouter initialEntries={['/support/overview']}><AppShell /></MemoryRouter>)
 
@@ -255,7 +256,8 @@ describe('AppShell notifications', () => {
     expect(screen.getByRole('link', { name: /Khảo sát thông tin KH/i }).getAttribute('href')).toBe('/admin/customer-survey')
     expect(screen.getByRole('link', { name: /Cài đặt thông tin đơn hàng/i }).getAttribute('href')).toBe('/admin/order-information-settings')
     expect(screen.queryByRole('link', { name: /Lịch đăng ký làm việc của HTKD và KVP/i })).toBeNull()
-    expect(screen.queryByRole('link', { name: /Reset dữ liệu/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Chỉnh sửa chấm công/i })).toBeNull()
+    expect(screen.queryByRole('link', { name: /Khôi phục dữ liệu/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Vi phạm nhân viên$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Vi phạm Khối văn phòng$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Thưởng doanh thu ngày$/i })).toBeNull()

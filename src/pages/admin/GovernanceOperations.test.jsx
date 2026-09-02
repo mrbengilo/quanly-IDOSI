@@ -186,6 +186,30 @@ describe('Hỗ trợ KD operations', () => {
     ))
   })
 
+  it('keeps transfer scope fixed while Admin edits time and compensation after attendance exists', () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.supportTransfers = [{
+      id: 'TR-ACTIVE', employeeId: 'SM234-001', fromStoreId: 'CH001', toStoreId: 'CH002',
+      startAt: '2026-08-20T01:00:00.000Z', endAt: '2026-08-20T05:00:00.000Z',
+      hourlySupportRate: 30_000, allowance: 200_000, status: 'Đã duyệt',
+    }]
+    mocked.attendance = [{
+      id: 'ATT-ACTIVE', employeeId: 'SM234-001', storeId: 'CH002',
+      supportTransferId: 'tr-active', checkInAt: '2026-08-20T01:30:00.000Z', checkOutAt: null,
+    }]
+    render(<SupportTransfersPage />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sửa' }))
+
+    expect(screen.getByLabelText(/Cửa hàng điều chuyển/i).disabled).toBe(true)
+    expect(screen.getByLabelText(/^Nhân viên/i).disabled).toBe(true)
+    expect(screen.getByLabelText(/Cửa hàng nhận hỗ trợ/i).disabled).toBe(true)
+    expect(screen.getByLabelText(/Thời gian bắt đầu/i).disabled).toBe(false)
+    expect(screen.getByLabelText(/Thời gian kết thúc/i).disabled).toBe(false)
+    expect(screen.getByLabelText(/Lương hỗ trợ/i).disabled).toBe(false)
+    expect(screen.getByLabelText(/^Phụ cấp/i).disabled).toBe(false)
+  })
+
   it('blocks Business Support from the Reset dữ liệu page', () => {
     render(<ResetDataPage />)
 

@@ -5193,9 +5193,20 @@ export function AppProvider({ children }) {
         const result = await runRemoteDomainCommand('support_transfer.update', commandPayload)
         const transfer = result.transfer
         if (!transfer) return { ok: false, message: 'Máy chủ không trả về phiếu điều chuyển.' }
+        const attendanceUpdates = new Map((Array.isArray(result.attendance) ? result.attendance : [])
+          .map((record) => [String(record.id || ''), record]))
+        const expenseUpdates = new Map((Array.isArray(result.expenseEntries) ? result.expenseEntries : [])
+          .map((record) => [String(record.id || ''), record]))
         setState((current) => ({
           ...current,
           supportTransfers: current.supportTransfers.map((item) => item.id === transfer.id ? transfer : item),
+          attendance: current.attendance.map((item) => attendanceUpdates.get(String(item.id || '')) || item),
+          expenseEntries: [
+            ...current.expenseEntries.map((item) => expenseUpdates.get(String(item.id || '')) || item),
+            ...[...expenseUpdates.entries()]
+              .filter(([id]) => !current.expenseEntries.some((item) => String(item.id || '') === id))
+              .map(([, item]) => item),
+          ],
         }))
         notify('Đã cập nhật điều chuyển hỗ trợ.')
         return { ok: true, transfer }
@@ -5214,7 +5225,26 @@ export function AppProvider({ children }) {
       updatedAt: new Date().toISOString(),
       updatedBy: actorSnapshot(state.session),
     }
-    updateCollection('supportTransfers', (items) => items.map((item) => item.id === transfer.id ? transfer : item))
+    setState((current) => ({
+      ...current,
+      supportTransfers: current.supportTransfers.map((item) => item.id === transfer.id ? transfer : item),
+      attendance: current.attendance.map((record) => String(record.supportTransferId || '').toLocaleLowerCase('vi-VN') === String(transfer.id || '').toLocaleLowerCase('vi-VN')
+        ? {
+            ...record,
+            supportHourlyRate: transfer.hourlySupportRate,
+            supportTransferSnapshot: {
+              ...(record.supportTransferSnapshot || {}),
+              id: transfer.id,
+              fromStoreId: transfer.fromStoreId,
+              toStoreId: transfer.toStoreId,
+              startAt: transfer.startAt,
+              endAt: transfer.endAt,
+              hourlySupportRate: transfer.hourlySupportRate,
+              allowance: transfer.allowance,
+            },
+          }
+        : record),
+    }))
     notify('Đã cập nhật điều chuyển hỗ trợ.')
     return { ok: true, transfer }
   }
@@ -5265,6 +5295,7 @@ export function AppProvider({ children }) {
       return { ok: false, message: 'Chỉ Admin được khôi phục dữ liệu vận hành.' }
     }
     const dataType = String(payload.dataType || '')
+    const auditLogId = Number(payload.auditLogId || payload.auditId || 0)
     const requestedStoreId = String(payload.storeId || '')
     const fromDate = String(payload.fromDate || '').slice(0, 10)
     const toDate = String(payload.toDate || '').slice(0, 10)
@@ -5274,21 +5305,33 @@ export function AppProvider({ children }) {
     const scopedStore = matchedRecordOrNull(storeMatch)
     const employeeMatch = requestedEmployeeId ? resolveEmployeeIdentifier(state.employees, requestedEmployeeId) : null
     const scopedEmployee = requestedEmployeeId ? matchedRecordOrNull(employeeMatch) : null
-    if (!['orders', 'attendance'].includes(dataType) || !scopedStore || (requestedEmployeeId && !scopedEmployee)) {
+    const selectedEmployeeRestore = dataType === 'employees' && Number.isSafeInteger(auditLogId) && auditLogId > 0
+    if (!['orders', 'attendance', 'employees'].includes(dataType)
+      || (!selectedEmployeeRestore && !scopedStore)
+      || (requestedEmployeeId && !scopedEmployee)) {
       return { ok: false, message: 'Loại dữ liệu hoặc cửa hàng chưa hợp lệ.' }
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/u.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/u.test(toDate) || fromDate > toDate) {
+    if (!selectedEmployeeRestore
+      && (!/^\d{4}-\d{2}-\d{2}$/u.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/u.test(toDate) || fromDate > toDate)) {
       return { ok: false, message: 'Khoảng ngày khôi phục chưa hợp lệ.' }
     }
     if (!reason || reason.length > 500) return { ok: false, message: 'Lý do khôi phục phải có từ 1 đến 500 ký tự.' }
-    const storeId = scopedStore.id
+    const storeId = scopedStore?.id || requestedStoreId
     const employeeId = scopedEmployee?.id || scopedEmployee?.code || ''
-    const commandPayload = { dataType, storeId, fromDate, toDate, ...(employeeId ? { employeeId } : {}), reason }
+    const commandPayload = {
+      dataType,
+      ...(storeId ? { storeId } : {}),
+      ...(!selectedEmployeeRestore ? { fromDate, toDate } : {}),
+      ...(employeeId ? { employeeId } : {}),
+      ...(auditLogId > 0 ? { auditLogId } : {}),
+      reason,
+    }
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('operational_reset.restore', commandPayload)
         const restoredCount = Number(result.reset?.restoredCount ?? result.restoredCount ?? 0)
-        notify(`Đã khôi phục ${restoredCount} bản ghi ${dataType === 'orders' ? 'đơn hàng' : 'chấm công'}.`)
+        const label = dataType === 'orders' ? 'đơn hàng' : dataType === 'attendance' ? 'chấm công' : 'nhân viên'
+        notify(`Đã khôi phục ${restoredCount} bản ghi ${label}.`)
         return { ok: true, ...result }
       } catch (error) {
         notify(error.message || 'Không thể khôi phục dữ liệu vận hành.', 'info')
@@ -5296,6 +5339,9 @@ export function AppProvider({ children }) {
       }
     }
 
+    if (dataType === 'employees') {
+      return { ok: false, message: 'Khôi phục nhân viên cần kết nối máy chủ production.' }
+    }
     const collection = dataType === 'orders' ? 'orders' : 'attendance'
     const collectionRecords = Array.isArray(state[collection]) ? state[collection] : []
     const sourceAudits = dataType === 'orders'

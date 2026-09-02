@@ -21,6 +21,7 @@ const StoreManagerManagement = lazyNamed(loadRoleManagement, 'StoreManagerManage
 
 const CustomerSurveyPage = lazyNamed(() => import('./pages/admin/CustomerSurveyPage'), 'CustomerSurveyPage')
 const AttendanceResetPage = lazyNamed(() => import('./pages/admin/AttendanceResetPage'), 'AttendanceResetPage')
+const DataRestorePage = lazyNamed(() => import('./pages/admin/DataRestorePage'), 'DataRestorePage')
 const AdminWorkRegistrationSchedulePage = lazyNamed(() => import('./pages/admin/AdminWorkRegistrationSchedulePage'), 'AdminWorkRegistrationSchedulePage')
 const OrderInformationSettingsPage = lazyNamed(() => import('./pages/admin/OrderInformationSettingsPage'), 'OrderInformationSettingsPage')
 const WorkCatalogSettingsPage = lazyNamed(() => import('./pages/admin/WorkCatalogSettingsPage'), 'WorkCatalogSettingsPage')
@@ -288,6 +289,7 @@ export default function AppRoutes() {
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
         <Route path="/admin/assignments" element={<AdminSupportAssignmentPage />} />
         <Route path="/admin/reset" element={<AttendanceResetPage />} />
+        <Route path="/admin/data-restore" element={<DataRestorePage />} />
         <Route path="/admin/work-registration-schedules" element={<AdminWorkRegistrationSchedulePage />} />
         <Route path="/admin/violations/business-support" element={<ViolationManagementPage targetUnit="business_support" />} />
       </Route>

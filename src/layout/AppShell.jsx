@@ -129,7 +129,7 @@ const systemMenus = {
     workCatalogSettingsOperation,
     { label: 'Cài đặt chính sách', path: '/admin/policies', icon: Settings },
     systemOperations[4],
-    { label: 'Reset dữ liệu', path: '/admin/reset', icon: CalendarClock },
+    { label: 'Khôi phục dữ liệu', path: '/admin/data-restore', icon: RotateCcw },
     { label: 'Lịch sử sửa/xóa đơn hàng', path: '/admin/order-audit', icon: ClipboardCheck },
   ],
   business_support: businessSupportMenu,
