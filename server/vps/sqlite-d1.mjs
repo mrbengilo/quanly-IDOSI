@@ -242,7 +242,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   reports: ['orders', 'expenseEntries', 'violationRefunds'],
   settings: ['storeEmployeeSalaryConfigs'],
   'employee-home': [
-    'attendance', 'schedule', 'supportWorkSchedules', 'officeAdjustments',
+    'orders', 'attendance', 'schedule', 'supportWorkSchedules', 'officeAdjustments',
     'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions',
   ],
   'employee-tasks': [
