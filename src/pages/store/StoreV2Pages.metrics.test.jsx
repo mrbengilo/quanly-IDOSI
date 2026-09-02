@@ -178,29 +178,36 @@ describe('store order, attendance, and payroll summaries', () => {
     }))
     const filterEmployees = vi.fn((...args) => Array.prototype.filter.call(trackedEmployees, ...args))
     Object.defineProperty(trackedEmployees, 'filter', { value: filterEmployees })
+    const trackedAdjustments = Array.from({ length: 240 }, (_, index) => ({
+      id: `ADJ-${index + 1}`,
+      employeeId: trackedEmployees[index % trackedEmployees.length].id,
+      storeId: store.id,
+      period: today().slice(0, 7),
+      type: 'Thưởng khác',
+      amount: 10_000,
+      status: 'Đã tạo',
+    }))
+    const scanAdjustments = vi.fn(function scan(callback, thisArg) {
+      return Array.prototype.forEach.call(this, callback, thisArg)
+    })
+    Object.defineProperty(trackedAdjustments, 'forEach', { value: scanAdjustments })
     mocked.app = {
       ...baseApp(),
       employees: trackedEmployees,
-      salaryAdjustments: Array.from({ length: 240 }, (_, index) => ({
-        id: `ADJ-${index + 1}`,
-        employeeId: trackedEmployees[index % trackedEmployees.length].id,
-        storeId: store.id,
-        period: today().slice(0, 7),
-        type: 'Thưởng khác',
-        amount: 10_000,
-        status: 'Đã tạo',
-      })),
+      salaryAdjustments: trackedAdjustments,
     }
 
     renderPage(StorePayrollV2)
     const initialFilterCalls = filterEmployees.mock.calls.length
     expect(initialFilterCalls).toBeLessThanOrEqual(3)
+    expect(scanAdjustments).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: 'TẠO THƯỞNG' }))
     fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '125000' } })
     fireEvent.change(screen.getByLabelText('Ghi chú *'), { target: { value: 'Không tính lại bảng lương' } })
 
     expect(filterEmployees).toHaveBeenCalledTimes(initialFilterCalls)
+    expect(scanAdjustments).toHaveBeenCalledTimes(1)
   })
 
   it('reuses the available-salary calculation while an advance form is edited', () => {
