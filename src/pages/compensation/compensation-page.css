@@ -75,6 +75,11 @@
   gap: 14px;
 }
 
+.compensation-history-filters {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  margin-bottom: 16px;
+}
+
 .compensation-fixed-scope {
   align-items: flex-start;
   background: var(--compensation-surface);

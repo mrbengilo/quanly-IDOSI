@@ -89,6 +89,7 @@ const businessSupportMenu = [
   { label: 'Tổng quan', path: '/support/overview', icon: LayoutDashboard },
   { label: 'Công việc tính thưởng', path: '/support/tasks', icon: ClipboardCheck },
   { label: 'Công việc được giao', path: '/support/assigned-work', icon: ListChecks },
+  { label: 'Công việc tính thưởng & Vi phạm HTKD', path: '/admin/tasks', icon: ClipboardCheck },
   { label: 'Lịch làm việc của tôi', path: '/support/my-schedule', icon: CalendarCheck },
   { label: 'Thu nhập của tôi', path: '/support/my-compensation', icon: WalletCards },
   { label: 'Vi phạm của tôi', path: '/support/my-violations', icon: ShieldAlert },

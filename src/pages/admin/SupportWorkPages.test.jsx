@@ -67,12 +67,16 @@ describe('support work screens', () => {
       workCatalogItems: [supportFixedTask, supportRewardTask, officeFixedTask, officeRewardTask],
       attendance: [],
       workCatalogProgress: [],
+      compensationEntries: [],
+      violations: [],
       tasks: [],
       supportWorkAssignments: [],
       assignSupportWork: vi.fn().mockResolvedValue({ ok: true }),
       updateSupportWork: vi.fn().mockResolvedValue({ ok: true }),
       setWorkReward: vi.fn().mockResolvedValue({ ok: true }),
       setWorkRewards: vi.fn().mockResolvedValue({ ok: true, rewards: [], entries: [], teamClaims: [] }),
+      createViolationBatch: vi.fn().mockResolvedValue({ ok: true, createdCount: 1, existingCount: 0 }),
+      voidViolation: vi.fn().mockResolvedValue({ ok: true }),
       updateWorkCatalogItem: vi.fn().mockResolvedValue({ ok: true }),
       createWorkCatalogItem: vi.fn().mockResolvedValue({ ok: true }),
       deleteWorkCatalogItem: vi.fn().mockResolvedValue({ ok: true }),
@@ -86,97 +90,69 @@ describe('support work screens', () => {
 
   afterEach(cleanup)
 
-  it('sends selected support catalog items with their immutable catalog and reward snapshot fields', async () => {
+  it('shows only the reward and violation tabs while assignment stays on its dedicated page', () => {
     render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
 
-    fireEvent.change(screen.getByLabelText('Nhân viên nhận việc'), { target: { value: 'HTKD-001' } })
-    fireEvent.click(screen.getByRole('checkbox', { name: /Kiểm tra báo cáo/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /Đánh giá trưng bày cửa hàng/i }))
-    expect(screen.getByText('Thưởng 75,000 đ')).toBeTruthy()
-    expect(screen.queryByLabelText(/Tên công việc/i)).toBeNull()
-    expect(screen.queryByPlaceholderText(/Nhập tên công việc/i)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /^LƯU$/i }))
-
-    await waitFor(() => expect(mocked.app.assignSupportWork).toHaveBeenCalledTimes(1))
-    expect(mocked.app.assignSupportWork.mock.calls[0][0]).toMatchObject({
-      employeeId: 'HTKD-001',
-      targetUnit: 'business_support',
-      tasks: [
-        {
-          name: supportFixedTask.name,
-          description: '',
-          catalogItemId: supportFixedTask.id,
-          catalogCode: supportFixedTask.code,
-          catalogVersion: supportFixedTask.version,
-          kind: 'FIXED_TASK',
-          amountVnd: 0,
-          required: true,
-        },
-        {
-          name: supportRewardTask.name,
-          description: '',
-          catalogItemId: supportRewardTask.id,
-          catalogCode: supportRewardTask.code,
-          catalogVersion: supportRewardTask.version,
-          kind: 'REWARD_TASK',
-          amountVnd: 75_000,
-          required: false,
-        },
-      ],
-    })
+    expect(screen.getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Thưởng công việc', 'Vi phạm'])
+    expect(screen.getByRole('tab', { name: 'Thưởng công việc' }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.queryByText('Tạo danh sách công việc')).toBeNull()
+    expect(screen.queryByText('Lịch sử giao việc')).toBeNull()
+    expect(screen.queryByLabelText('Nhân viên nhận việc')).toBeNull()
   })
 
-  it('switches the checkbox catalog and employee scope when Admin assigns work to Office', async () => {
-    render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
-
-    expect(screen.getByRole('checkbox', { name: /Kiểm tra báo cáo/i })).toBeTruthy()
-    expect(screen.queryByRole('checkbox', { name: /Đối chiếu hồ sơ văn phòng/i })).toBeNull()
-    fireEvent.change(screen.getByLabelText('Nhóm nhân viên'), { target: { value: 'office' } })
-    expect(screen.queryByRole('checkbox', { name: /Kiểm tra báo cáo/i })).toBeNull()
-    expect(screen.getByRole('checkbox', { name: /Đối chiếu hồ sơ văn phòng/i })).toBeTruthy()
-    fireEvent.change(screen.getByLabelText('Nhân viên nhận việc'), { target: { value: 'VP-001' } })
-    fireEvent.click(screen.getByRole('checkbox', { name: /Đối chiếu hồ sơ văn phòng/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^LƯU$/i }))
-
-    await waitFor(() => expect(mocked.app.assignSupportWork).toHaveBeenCalledWith(expect.objectContaining({
-      employeeId: 'VP-001', targetUnit: 'office',
-      tasks: [expect.objectContaining({
-        name: officeFixedTask.name,
-        catalogItemId: officeFixedTask.id,
-        catalogCode: officeFixedTask.code,
-        catalogVersion: officeFixedTask.version,
-        kind: 'FIXED_TASK',
-        amountVnd: 0,
-        required: true,
-      })],
-    })))
-  })
-
-  it('only derives reusable checkbox choices from active catalog data, never assignment history', () => {
-    mocked.app.supportWorkAssignments = [{
-      id: 'SWA-TEMPLATE',
-      date: '2026-08-18',
-      employeeId: 'HTKD-001',
-      tasks: [{ id: 'T1', name: 'Tiêu đề chỉ có trong lịch sử', completed: false }],
+  it('filters HTKD reward history by date and employee and shows the filtered total', () => {
+    mocked.app.attendance = [{
+      id: 'ATT-CLOSED', employeeId: 'HTKD-001', employeeName: 'Nguyễn Hỗ Trợ', unit: 'business_support', workDate: '2026-08-28',
+      shiftId: 'afternoon', shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '17:30', checkOutAt: '2026-08-28T10:30:00Z',
+      checklistSnapshot: { tasks: [supportRewardTask] },
     }]
-    mocked.app.workCatalogItems = [
-      supportFixedTask,
-      supportRewardTask,
-      { ...supportFixedTask, id: `${supportFixedTask.id}:inactive`, code: `${supportFixedTask.code}.inactive`, name: 'Công việc đã ngừng', active: false },
-      { ...supportRewardTask, id: `${supportRewardTask.id}:violation`, code: `${supportRewardTask.code}.violation`, name: 'Nội dung vi phạm', kind: 'VIOLATION', amountVnd: 50_000 },
-      officeFixedTask,
-    ]
-
+    mocked.app.workCatalogProgress = [{
+      attendanceId: 'ATT-CLOSED', catalogItemId: supportRewardTask.id, checked: true, status: 'CLAIMED', completedAt: '2026-08-28T10:00:00Z',
+    }]
     render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
 
-    const picker = screen.getByRole('group', { name: 'Danh mục công việc' })
-    expect(picker.classList.contains('task-template-picker')).toBe(true)
-    expect(picker.textContent).toContain(supportFixedTask.name)
-    expect(picker.textContent).toContain(supportRewardTask.name)
-    expect(picker.textContent).not.toContain('Tiêu đề chỉ có trong lịch sử')
-    expect(picker.textContent).not.toContain('Công việc đã ngừng')
-    expect(picker.textContent).not.toContain('Nội dung vi phạm')
-    expect(picker.textContent).not.toContain(officeFixedTask.name)
+    expect(screen.getByLabelText('Ngày nhận thưởng')).toBeTruthy()
+    expect(screen.getByLabelText('Nhân viên nhận thưởng')).toBeTruthy()
+    expect(screen.queryByLabelText('Ca nhận thưởng')).toBeNull()
+    expect(screen.getByText('Tổng:').parentElement.textContent).toContain('+75,000 đ')
+    fireEvent.change(screen.getByLabelText('Ngày nhận thưởng'), { target: { value: '2026-08-29' } })
+    expect(screen.getByText('Không có lịch sử phù hợp bộ lọc.')).toBeTruthy()
+    expect(screen.getByText('Tổng:').parentElement.textContent).toContain('+0 đ')
+  })
+
+  it('lets a HTKD account use the HTKD violation tab and filter its history', async () => {
+    mocked.app.session = { role: 'business_support', employeeId: 'HTKD-001', name: 'Nguyễn Hỗ Trợ' }
+    mocked.app.employees = [{
+      ...supportProfile,
+      workShifts: [{ id: 'support_am', name: 'Ca sáng', start: '08:00', end: '12:00' }],
+    }]
+    mocked.app.workCatalogItems = [{
+      id: 'VIO-HTKD-LATE', code: 'htkd.violation.late', kind: 'VIOLATION', targetGroup: 'business_support',
+      name: 'HTKD đi trễ', amountVnd: 6_000, active: true, sortOrder: 1, version: 1,
+    }]
+    mocked.app.violations = [{
+      id: 'VIO-HISTORY-1', targetUnit: 'business_support', employeeId: 'HTKD-001', employeeName: 'Nguyễn Hỗ Trợ',
+      occurredOn: '2026-08-27', shiftId: 'support_am', shiftName: 'Ca sáng', title: 'HTKD đi trễ',
+      amountVnd: 6_000, status: 'ACTIVE', version: 1,
+    }]
+    render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Vi phạm' }))
+    expect(screen.getByText('Ghi nhận vi phạm')).toBeTruthy()
+    expect(screen.getByLabelText('Ngày vi phạm')).toBeTruthy()
+    expect(screen.getByLabelText('Nhân viên vi phạm')).toBeTruthy()
+    expect(screen.getByText('Tổng:').parentElement.textContent).toContain('−6,000 đ')
+    fireEvent.change(screen.getByLabelText('Ngày vi phạm'), { target: { value: '2026-08-28' } })
+    expect(screen.getByText('Không có lịch sử phù hợp bộ lọc.')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Ngày vi phạm'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: /HTKD đi trễ/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU VI PHẠM' }))
+    await waitFor(() => expect(mocked.app.createViolationBatch).toHaveBeenCalledWith(expect.objectContaining({
+      targetUnit: 'business_support',
+      employeeId: 'HTKD-001',
+      shiftId: 'support_am',
+      catalogItemIds: ['VIO-HTKD-LATE'],
+    })))
   })
 
   it('lets Admin enter multiple manual tasks and sends them once to the employee selected in each tab', async () => {
@@ -429,8 +405,8 @@ describe('support work screens', () => {
 
     mocked.app.session = { role: 'admin', name: 'Admin' }
     rerender(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
-    expect(screen.getByText('Lịch sử nhận thưởng của HTKD')).toBeTruthy()
-    expect(screen.getByText('Thống kê thưởng của HTKD')).toBeTruthy()
+    expect(screen.getByText('Lịch sử công việc tính thưởng HTKD')).toBeTruthy()
+    expect(screen.getByText('Thống kê đánh giá thưởng theo nhân viên HTKD')).toBeTruthy()
     expect(screen.getAllByText('+75,000 đ').length).toBeGreaterThan(0)
   })
 
@@ -454,7 +430,7 @@ describe('support work screens', () => {
       ],
     }]
 
-    const { container } = render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
+    const { container } = render(<MemoryRouter><AdminSupportAssignmentPage /></MemoryRouter>)
     const history = container.querySelector('.assignment-history')
     expect(history.textContent).toContain('Nội dung đã giao')
     expect(history.textContent).toContain('Danh sách trước')

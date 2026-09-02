@@ -208,13 +208,6 @@ function StoreOverviewRoute() {
     : <StoreOverviewV2 />
 }
 
-function AdminSupportRewardViolationPage() {
-  return <>
-    <AdminSupportWorkPage />
-    <ViolationManagementPage targetUnit="business_support" embedded />
-  </>
-}
-
 export default function App() {
   const { session, authReady = true } = useApp()
   return (
@@ -249,6 +242,7 @@ export default function App() {
         <Route path="/admin/work-catalog" element={<WorkCatalogSettingsPage />} />
         <Route path="/admin/compensation/managers" element={<ManagerCompensationPage />} />
         <Route path="/admin/compensation/revenue" element={<RevenueBonusPage />} />
+        <Route path="/admin/tasks" element={<AdminSupportWorkPage />} />
         <Route path="/admin/violations/store" element={<ViolationManagementPage targetUnit="store" />} />
         <Route path="/admin/violations/office" element={<ViolationManagementPage targetUnit="office" />} />
       </Route>
@@ -285,7 +279,6 @@ export default function App() {
       </Route>
 
       <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
-        <Route path="/admin/tasks" element={<AdminSupportRewardViolationPage />} />
         <Route path="/admin/assignments" element={<AdminSupportAssignmentPage />} />
         <Route path="/admin/reset" element={<AttendanceResetPage />} />
         <Route path="/admin/work-registration-schedules" element={<AdminWorkRegistrationSchedulePage />} />
