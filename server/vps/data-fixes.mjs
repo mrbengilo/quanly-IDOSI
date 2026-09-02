@@ -75,6 +75,11 @@ const EMPLOYEE_ARRAY_KEYS = new Set([
 const compactText = (value) => String(value ?? '').trim().normalize('NFC')
 const identifier = (value) => compactText(value).toLocaleUpperCase('en-US')
 const normalizedKey = (value) => compactText(value).replace(/[^A-Za-z0-9]/gu, '').toLocaleLowerCase('en-US')
+const normalizedRole = (value) => compactText(value)
+  .normalize('NFD')
+  .replace(/\p{M}/gu, '')
+  .toLocaleLowerCase('en-US')
+  .replace(/[-_\s]+/gu, ' ')
 const parseJson = (value, fallback = null) => {
   try {
     return JSON.parse(String(value))
@@ -84,12 +89,20 @@ const parseJson = (value, fallback = null) => {
 }
 const isRecord = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 const profileId = (profile = {}) => profile.id || profile.code || profile.employeeId || profile.employeeCode
-const profileUnit = (profile = {}) => compactText(
-  profile.unit || profile.unitType || profile.department || profile.roleType || profile.accountRole,
-).toLocaleLowerCase('en-US')
-const isManagerUnit = (profile = {}) => [
-  'store_manager', 'store-manager', 'store manager', 'quản lý cửa hàng', 'quan ly cua hang', 'qlch',
-].includes(profileUnit(profile))
+const isManagerUnit = (profile = {}) => profile.isStoreManager === true || [
+  profile.unit,
+  profile.unitType,
+  profile.department,
+  profile.employeeGroup,
+  profile.accessRole,
+  profile.accountRole,
+  profile.systemRole,
+  profile.roleType,
+  profile.profileType,
+  profile.role,
+  profile.position,
+  profile.jobPosition,
+].some((value) => ['store manager', 'quan ly cua hang', 'qlch'].includes(normalizedRole(value)))
 const isTargetIdentifier = (value) => identifier(value) === TARGET.employeeId
 
 const directlyReferencesTarget = (value) => {

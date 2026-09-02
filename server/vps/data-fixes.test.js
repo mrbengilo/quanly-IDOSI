@@ -208,4 +208,30 @@ describe('VPS exact test-manager data fix', () => {
       .bind(TEST_MANAGER_PURGE_MARKER).first()).toBeNull()
     database.close()
   })
+
+  it('accepts the exact legacy manager profile where unit remained store', async () => {
+    const { databasePath, database } = await temporaryDatabase()
+    await seedTargetFixture(database, {
+      ...targetProfile,
+      unit: 'store',
+      unitType: 'store',
+      department: 'store',
+      roleType: 'employee',
+      accountRole: 'employee',
+      position: 'Quản lý cửa hàng',
+      jobPosition: 'Quản lý cửa hàng',
+      isStoreManager: true,
+    })
+    database.close()
+
+    const reopened = createSqliteD1({ databasePath })
+    expect(reopened.dataFixResult).toMatchObject({
+      status: 'applied',
+      marker: {
+        employeeId: 'QLCH-004',
+        deletedByCollection: { deletedEmployees: 1, attendance: 1 },
+      },
+    })
+    reopened.close()
+  })
 })
