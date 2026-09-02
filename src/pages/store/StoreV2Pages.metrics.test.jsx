@@ -68,6 +68,82 @@ afterEach(() => {
 })
 
 describe('store order, attendance, and payroll summaries', () => {
+  it('keeps current-period payroll actions dimmed until the first day of the next month', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-15T03:00:00.000Z'))
+    mocked.app = baseApp()
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.getByRole('button', { name: 'CHỐT SỔ' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN CHI LƯƠNG' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'KHÓA KỲ CHI LƯƠNG THƯỞNG' }).disabled).toBe(true)
+    expect(screen.getByText(/chỉ được chốt và chi từ ngày/u).textContent).toContain('01/10/26')
+  })
+
+  it.each([
+    {
+      label: 'CHỐT SỔ',
+      periodRecord: null,
+      method: 'closePayrollPeriod',
+      dialog: 'Xác nhận chốt sổ',
+    },
+    {
+      label: 'XÁC NHẬN CHI LƯƠNG',
+      periodRecord: { id: 'PAY-CLOSED', status: 'Đã chốt', closedAt: '2026-08-31T17:00:00.000Z', rows: [] },
+      method: 'confirmPayrollPayment',
+      dialog: 'Xác nhận chi lương',
+    },
+    {
+      label: 'KHÓA KỲ CHI LƯƠNG THƯỞNG',
+      periodRecord: { id: 'PAY-PAID', status: 'Đã chi', confirmedAt: '2026-09-01T01:00:00.000Z', rows: [] },
+      method: 'lockPayrollPeriod',
+      dialog: 'Xác nhận khóa kỳ lương thưởng',
+    },
+  ])('requires one confirmation before $label', async ({ label, periodRecord, method, dialog }) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-09-02T03:00:00.000Z'))
+    const action = vi.fn(async () => ({ ok: true }))
+    mocked.app = {
+      ...baseApp(),
+      [method]: action,
+      payrollPeriods: periodRecord ? [{ ...periodRecord, storeId: store.id, period: '2026-08' }] : [],
+    }
+
+    renderPage(StorePayrollV2)
+    fireEvent.change(screen.getByDisplayValue('2026-09'), { target: { value: '2026-08' } })
+
+    const actionButton = screen.getByRole('button', { name: label })
+    expect(actionButton.disabled).toBe(false)
+    fireEvent.click(actionButton)
+    expect(action).not.toHaveBeenCalled()
+    const confirmation = screen.getByRole('dialog', { name: dialog })
+    fireEvent.click(within(confirmation).getByRole('button', { name: label }))
+
+    await waitFor(() => expect(action).toHaveBeenCalledTimes(1))
+    expect(action).toHaveBeenCalledWith(store.id, '2026-08')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: dialog })).toBeNull())
+  })
+
+  it('enforces the close, pay, lock sequence and disables completed steps', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-02T03:00:00.000Z'))
+    mocked.app = {
+      ...baseApp(),
+      payrollPeriods: [{
+        id: 'PAY-CLOSED-SEQUENCE', storeId: store.id, period: '2026-08',
+        status: 'Đã chốt', closedAt: '2026-09-01T01:00:00.000Z', rows: [],
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+    fireEvent.change(screen.getByDisplayValue('2026-09'), { target: { value: '2026-08' } })
+
+    expect(screen.getByRole('button', { name: 'CHỐT SỔ' }).disabled).toBe(true)
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN CHI LƯƠNG' }).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: 'KHÓA KỲ CHI LƯƠNG THƯỞNG' }).disabled).toBe(true)
+  })
+
   it.each([
     ['TẠO THƯỞNG', 'Thưởng khác'],
     ['TẠO PHỤ CẤP', 'Phụ cấp khác'],
