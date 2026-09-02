@@ -4351,7 +4351,11 @@ export function AppProvider({ children }) {
     const employee = employeeMatch.record
     const amount = nonNegativeInteger(payload.amount)
     const period = payload.period || monthKey()
+    const type = String(payload.type || '').trim()
+    const note = String(payload.note || '').trim()
     if (!employee || amount <= 0) return { ok: false, message: 'Nhân viên hoặc số tiền chưa hợp lệ.' }
+    if (!['Thưởng khác', 'Phụ cấp khác', 'Khấu trừ'].includes(type)) return { ok: false, message: 'Loại điều chỉnh lương chưa hợp lệ.' }
+    if (!note || note.length > 1_000) return { ok: false, message: 'Ghi chú bắt buộc, tối đa 1.000 ký tự.' }
     const payrollMatches = state.payrollPeriods.filter((item) => (
       !item.supersededAt
       && item.period === period
@@ -4369,9 +4373,9 @@ export function AppProvider({ children }) {
         const result = await runRemoteDomainCommand('salary_adjustment.create', {
           employeeId: employee.id,
           period,
-          type: payload.type || 'Thưởng khác',
+          type,
           amount,
-          note: String(payload.note || '').trim(),
+          note,
         }, payload.idempotencyKey || `salary-adjustment:${crypto.randomUUID()}`)
         notify(`Đã tạo khoản ${result.adjustment.type.toLowerCase()}.`)
         return { ok: true, adjustment: result.adjustment }
@@ -4381,7 +4385,7 @@ export function AppProvider({ children }) {
       }
     }
     const timestamp = new Date().toISOString()
-    const record = { id: uid('ADJ'), employeeId: employee.id, employeeName: employee.name, storeId: employee.storeId, period, type: payload.type || 'Thưởng khác', amount, note: String(payload.note || '').trim(), status: 'Đã tạo', createdAt: timestamp, createdBy: actorSnapshot(state.session) }
+    const record = { id: uid('ADJ'), employeeId: employee.id, employeeName: employee.name, storeId: employee.storeId, period, type, amount, note, status: 'Đã tạo', createdAt: timestamp, createdBy: actorSnapshot(state.session) }
     setState((current) => ({
       ...current,
       salaryAdjustments: [record, ...current.salaryAdjustments],
@@ -4416,7 +4420,9 @@ export function AppProvider({ children }) {
     const employee = employeeMatch.record
     const period = payload.period || monthKey()
     const amount = nonNegativeInteger(payload.amount)
+    const note = String(payload.note || '').trim()
     if (!employee) return { ok: false, message: 'Nhân viên chưa hợp lệ.' }
+    if (!note || note.length > 1_000) return { ok: false, message: 'Ghi chú bắt buộc, tối đa 1.000 ký tự.' }
     const salaryResult = availableSalaryResult(employee.id, period)
     if (!salaryResult.ok) {
       notify(salaryResult.message, 'info')
@@ -4431,7 +4437,7 @@ export function AppProvider({ children }) {
           employeeId: employee.id,
           period,
           amount,
-          note: String(payload.note || '').trim(),
+          note,
         }, idempotencyKey || `salary-advance:${crypto.randomUUID()}`)
         notify('Đã tạo đề nghị ứng lương.')
         return { ok: true, advance: result.advance }
@@ -4442,7 +4448,7 @@ export function AppProvider({ children }) {
     }
     if (idempotencyKey && state.idempotencyKeys.includes(idempotencyKey)) return { ok: true, existing: true }
     const timestamp = new Date().toISOString()
-    const advance = { id: uid('ADV'), employeeId: employee.id, employeeName: employee.name, storeId: employee.storeId, period, amount, availableAtCreation: available, remainingAfter: available - amount, note: String(payload.note || '').trim(), status: 'Mới tạo', createdAt: timestamp, createdBy: actorSnapshot(state.session), confirmedAt: null, confirmedBy: null, idempotencyKey: idempotencyKey || null }
+    const advance = { id: uid('ADV'), employeeId: employee.id, employeeName: employee.name, storeId: employee.storeId, period, amount, availableAtCreation: available, remainingAfter: available - amount, note, status: 'Mới tạo', createdAt: timestamp, createdBy: actorSnapshot(state.session), confirmedAt: null, confirmedBy: null, idempotencyKey: idempotencyKey || null }
     setState((current) => ({ ...current, salaryAdvances: [advance, ...current.salaryAdvances], idempotencyKeys: idempotencyKey ? [...current.idempotencyKeys, idempotencyKey] : current.idempotencyKeys, stateVersion: current.stateVersion + 1 }))
     notify('Đã tạo đề nghị ứng lương.')
     return { ok: true, advance }

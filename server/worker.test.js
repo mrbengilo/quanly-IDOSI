@@ -7563,6 +7563,24 @@ describe('IDOSI Worker security primitives', () => {
       expense: { recognized: false },
     })
 
+    for (const [index, command] of [{
+      type: 'salary_adjustment.create',
+      payload: { employeeId: 'E01', period, type: 'Thưởng khác', amount: 500_000 },
+    }, {
+      type: 'salary_advance.create',
+      payload: { employeeId: 'E01', period, amount: 500_000 },
+    }].entries()) {
+      const missingNote = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        ...command,
+        expectedVersion: 10,
+      }, {
+        ...adminAuthorization,
+        'idempotency-key': `payroll-note-required-${index}`,
+      }), env)
+      expect(missingNote.status, command.type).toBe(400)
+      expect(await missingNote.json(), command.type).toMatchObject({ error: { code: 'NOTE_REQUIRED' } })
+    }
+
     const salaryAdjustment = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'salary_adjustment.create',
       expectedVersion: 10,

@@ -16448,6 +16448,7 @@ const salaryAdjustmentCommand = async (db, actor, body, commandContext) => {
   }
   const amount = asVnd(payload.amount, 'Số tiền điều chỉnh', { positive: true })
   const note = String(payload.note || '').trim()
+  if (!note) throw new ApiError(400, 'NOTE_REQUIRED', 'Vui lòng nhập ghi chú.')
   if (note.length > 1_000) throw new ApiError(400, 'NOTE_TOO_LONG', 'Ghi chú không được vượt quá 1.000 ký tự.')
   const adjustment = {
     id: `adj_${crypto.randomUUID()}`,
@@ -16516,15 +16517,16 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
     assertOperationalStoreAccess(actor, storeId)
     requirePayrollUnit(state, storeId)
     assertPayrollNotPaidOrLocked(state, storeId, period)
+    const amount = asVnd(payload.amount, 'Số tiền ứng', { positive: true })
+    const note = String(payload.note || '').trim()
+    if (!note) throw new ApiError(400, 'NOTE_REQUIRED', 'Vui lòng nhập ghi chú.')
+    if (note.length > 1_000) throw new ApiError(400, 'NOTE_TOO_LONG', 'Ghi chú không được vượt quá 1.000 ký tự.')
     const snapshot = await calculatePayrollSnapshot(db, state, storeId, period)
     const payrollRow = snapshot.rows.find((row) => sameIdentifier(row.employeeId, employeeId))
     const available = Number(payrollRow?.remaining || 0)
-    const amount = asVnd(payload.amount, 'Số tiền ứng', { positive: true })
     if (amount >= available) {
       throw new ApiError(409, 'SALARY_ADVANCE_TOO_HIGH', 'Số tiền ứng phải nhỏ hơn lương khả dụng.', { availableSalary: available })
     }
-    const note = String(payload.note || '').trim()
-    if (note.length > 1_000) throw new ApiError(400, 'NOTE_TOO_LONG', 'Ghi chú không được vượt quá 1.000 ký tự.')
     const advance = {
       id: `adv_${crypto.randomUUID()}`,
       employeeId,
