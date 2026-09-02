@@ -1,4 +1,4 @@
-import { lazy, useEffect } from 'react'
+import { lazy, useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { isOfficeProfile } from './domain/officeProfile'
 import { employeeScreen, storeScreenForPath, systemScreenForPath } from './domain/workspaceScreens'
@@ -114,6 +114,16 @@ function RouteLoading({ message = 'Đang tải màn hình...' }) {
   return <div className="route-loading" role="status" aria-live="polite" aria-busy="true">{message}</div>
 }
 
+function ProjectionLoadFailure({ onRetry }) {
+  return <div className="route-loading" role="alert">
+    <section className="route-loading__error">
+      <strong>Không thể tải dữ liệu màn hình</strong>
+      <p>Kết nối có thể vừa bị gián đoạn. Dữ liệu hiện có không bị thay đổi.</p>
+      <button type="button" className="button" onClick={onRetry}>Thử lại</button>
+    </section>
+  </div>
+}
+
 function RoleGuard({ roles, children }) {
   const {
     session,
@@ -124,6 +134,8 @@ function RoleGuard({ roles, children }) {
     ensureStoreWorkspaceData,
     ensureSystemWorkspaceData,
   } = useApp()
+  const [projectionFailure, setProjectionFailure] = useState(null)
+  const [projectionRetry, setProjectionRetry] = useState(0)
   const location = useLocation()
   const role = canonicalRole(session?.role)
   const systemOperator = ['admin', 'business_support'].includes(role)
@@ -146,23 +158,36 @@ function RoleGuard({ roles, children }) {
     && !storeWorkspace
     && Boolean(routeSystemScreen)
     && (systemOperator || employeeProjectionRequired || accountProjectionRequired)
+  const projectionKey = storeProjectionRequired
+    ? `store:${routeStoreId}:${routeStoreScreen}:${routeStorePeriod}`
+    : systemProjectionRequired
+      ? `system:${routeSystemScreen}`
+      : ''
 
   useEffect(() => {
     if (!authReady || !session || !remoteSession) return
+    let active = true
+    const load = (request) => {
+      setProjectionFailure(null)
+      Promise.resolve().then(request).catch(() => {
+        if (active) setProjectionFailure({ key: projectionKey })
+      })
+    }
     if (storeProjectionRequired && routeStoreId) {
-      void ensureStoreWorkspaceData?.(routeStoreId, {
+      load(() => ensureStoreWorkspaceData?.(routeStoreId, {
         screen: routeStoreScreen,
         ...(routeStorePeriod ? { period: routeStorePeriod } : {}),
-      }).catch(() => {})
-      return
+      }))
+      return () => { active = false }
     }
     if (systemProjectionRequired && (
       !remoteDataReady
       || remoteProjection.kind === 'store'
       || String(remoteProjection.screen || '') !== routeSystemScreen
     )) {
-      void ensureSystemWorkspaceData?.({ screen: routeSystemScreen }).catch(() => {})
+      load(() => ensureSystemWorkspaceData?.({ screen: routeSystemScreen }))
     }
+    return () => { active = false }
   }, [
     authReady,
     ensureStoreWorkspaceData,
@@ -179,6 +204,8 @@ function RoleGuard({ roles, children }) {
     storeProjectionRequired,
     systemProjectionRequired,
     remoteSession,
+    projectionKey,
+    projectionRetry,
   ])
 
   if (!authReady) return <RouteLoading message="Đang khôi phục màn hình..." />
@@ -197,6 +224,9 @@ function RoleGuard({ roles, children }) {
     && String(remoteProjection.screen || '') === routeSystemScreen
   )
   const compactHomeReady = initialRoleHome && remoteProjection.kind !== 'store'
+  if (projectionFailure?.key === projectionKey && !compactHomeReady) {
+    return <ProjectionLoadFailure onRetry={() => setProjectionRetry((current) => current + 1)} />
+  }
   if ((!remoteDataReady || !selectedStoreProjectionReady || !systemProjectionReady) && !compactHomeReady) {
     return <RouteLoading message="Đang tải dữ liệu chi tiết của hệ thống..." />
   }
