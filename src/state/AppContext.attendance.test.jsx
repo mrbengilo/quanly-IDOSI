@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
   apiGetStoreWorkspaceState: vi.fn(),
+  apiGetSystemScreenState: vi.fn(),
   apiLogin: vi.fn(async () => {
     const error = new Error('API unavailable in local fallback test')
     error.code = 'NETWORK_ERROR'

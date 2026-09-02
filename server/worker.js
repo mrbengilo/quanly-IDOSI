@@ -80,7 +80,10 @@ const MAX_PBKDF2_VERIFICATION_ITERATIONS = 1_000_000
 const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'employee'])
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
 const globalStateSnapshotCaches = new WeakMap()
-const INITIAL_ADMIN_STATE_COLLECTIONS = Object.freeze(['stores', 'orders', 'expenseEntries'])
+// Authentication must stay bounded as operational history grows. The Admin
+// landing screen only needs the store directory; detailed finance/history is
+// loaded explicitly by the destination workspace.
+const INITIAL_ADMIN_STATE_COLLECTIONS = Object.freeze(['stores'])
 const SESSION_CONTEXT_STATE_COLLECTIONS = Object.freeze([
   'employees',
   'deletedEmployees',
@@ -88,15 +91,21 @@ const SESSION_CONTEXT_STATE_COLLECTIONS = Object.freeze([
   'deletedStores',
   'supportTransfers',
 ])
+const EMPLOYEE_SESSION_CONTEXT_STATE_COLLECTIONS = Object.freeze([
+  ...SESSION_CONTEXT_STATE_COLLECTIONS,
+  'attendance',
+])
 const INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
   'attendance',
   'supportWorkSchedules',
+  'officeAdjustments',
+  'salaryAdjustments',
+  'payrollPeriods',
 ])
 const INITIAL_STORE_MANAGER_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
   'attendance',
-  'supportWorkSchedules',
 ])
 const INITIAL_OFFICE_EMPLOYEE_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
@@ -110,10 +119,156 @@ const INITIAL_STORE_EMPLOYEE_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
   'attendance',
   'schedule',
-  'tasks',
-  'orders',
   'shiftDefinitions',
 ])
+const STORE_SCREEN_NAMES = new Set([
+  'overview',
+  'schedule',
+  'employees',
+  'orders',
+  'tasks',
+  'imports',
+  'expenses',
+  'attendance',
+  'payroll',
+  'salary-settings',
+  'revenue-bonus',
+  'violation-refunds',
+  'my-compensation',
+  'my-violations',
+  'cashflow',
+  'reports',
+  'settings',
+])
+const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
+  'account-settings': ['employees', 'deletedEmployees', 'accountSettings'],
+  stores: ['stores', 'employees'],
+  cashflow: ['stores', 'orders', 'expenseEntries', 'fixedExpenses', 'cashTransactions', 'violationRefunds'],
+  reports: ['stores', 'employees', 'orders', 'expenseEntries', 'violationRefunds'],
+  employees: ['stores', 'employees', 'deletedEmployees'],
+  'business-support': ['stores', 'employees', 'deletedEmployees', 'attendance'],
+  'business-support-schedule': [
+    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'schedule',
+  ],
+  'store-managers': ['stores', 'employees', 'deletedEmployees', 'attendance'],
+  office: [
+    'employees', 'deletedEmployees', 'attendance', 'supportWorkAssignments', 'supportWorkSchedules',
+    'salaryAdjustments', 'compensationEntries', 'violations', 'payrollPeriods',
+  ],
+  settings: ['employees', 'deletedEmployees', 'accountSettings'],
+  policies: [],
+  'order-audit': ['stores', 'orderAudit'],
+  'customer-survey': ['stores', 'orders', 'orderInformationOptions'],
+  'support-transfers': ['stores', 'employees', 'supportTransfers', 'attendance'],
+  'order-information-settings': ['orderInformationOptions'],
+  'work-catalog': [
+    'stores', 'employees', 'workCatalogItems', 'workCatalogProgress', 'storeShiftTaskTemplates',
+    'attendance', 'compensationEntries', 'teamRewardClaims', 'shiftDefinitions',
+  ],
+  'compensation-managers': ['stores', 'employees', 'compensationEntries', 'payrollPeriods'],
+  'compensation-revenue': [
+    'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions',
+    'revenueBonusDaily', 'revenueBonusAllocations', 'salaryAdjustments', 'periodReconciliations',
+  ],
+  tasks: [
+    'employees', 'supportWorkAssignments', 'notifications', 'workCatalogItems',
+    'workCatalogProgress', 'attendance', 'compensationEntries', 'tasks',
+  ],
+  assignments: ['employees', 'supportWorkAssignments', 'notifications', 'workCatalogItems'],
+  reset: [
+    'stores', 'employees', 'attendance', 'attendanceAudit', 'auditLogs', 'operationalResetHistory',
+  ],
+  'work-registration-schedules': [
+    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'schedule',
+  ],
+  'violations-store': [
+    'stores', 'employees', 'violations', 'violationRefunds', 'compensationEntries',
+    'attendance', 'orders', 'payrollPeriods', 'workCatalogItems',
+  ],
+  'violations-office': ['employees', 'violations', 'compensationEntries', 'attendance', 'payrollPeriods', 'workCatalogItems'],
+  'violations-business-support': [
+    'employees', 'violations', 'compensationEntries', 'attendance', 'payrollPeriods', 'workCatalogItems',
+  ],
+  'support-overview': [
+    'employees', 'attendance', 'supportWorkAssignments', 'supportWorkSchedules',
+    'compensationEntries', 'violations', 'salaryAdjustments', 'officeAdjustments', 'payrollPeriods',
+  ],
+  'support-tasks': [
+    'employees', 'supportWorkAssignments', 'notifications', 'workCatalogItems',
+    'workCatalogProgress', 'attendance', 'compensationEntries', 'tasks',
+  ],
+  'support-schedule': [
+    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'schedule',
+  ],
+  'support-compensation': [
+    'employees', 'compensationEntries', 'salaryAdjustments', 'payrollPeriods',
+    'violations', 'revenueBonusDaily', 'revenueBonusAllocations',
+  ],
+  'support-violations': ['employees', 'violations', 'violationRefunds'],
+  'employee-home': [
+    'stores', 'employees', 'attendance', 'schedule', 'supportWorkSchedules',
+    'officeAdjustments', 'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions',
+  ],
+  'employee-tasks': [
+    'stores', 'employees', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments',
+    'workCatalogItems', 'workCatalogProgress', 'compensationEntries', 'attendance', 'notifications',
+  ],
+  'employee-assigned-work': ['employees', 'supportWorkAssignments', 'notifications'],
+  'employee-reward-tasks': [
+    'stores', 'employees', 'attendance', 'tasks', 'workCatalogItems',
+    'workCatalogProgress', 'compensationEntries',
+  ],
+  'employee-shift-expenses': [
+    'stores', 'employees', 'attendance', 'expenseEntries', 'tasks',
+    'taskAssignmentHistory', 'shiftDefinitions',
+  ],
+  'employee-orders': [
+    'stores', 'employees', 'orders', 'attendance', 'notifications',
+    'payrollPeriods', 'orderInformationOptions',
+  ],
+  'employee-attendance': [
+    'stores', 'employees', 'attendance', 'schedule', 'supportWorkSchedules',
+    'expenseEntries', 'shiftDefinitions',
+  ],
+  'employee-work-history': [
+    'stores', 'employees', 'attendance', 'schedule', 'supportWorkSchedules',
+    'expenseEntries', 'shiftDefinitions',
+  ],
+  'employee-schedule': [
+    'stores', 'employees', 'schedule', 'supportWorkSchedules', 'shiftDefinitions',
+  ],
+  'employee-payroll': [
+    'stores', 'employees', 'attendance', 'officeAdjustments', 'salaryAdjustments',
+    'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'storeEmployeeSalaryConfigs',
+    'compensationEntries', 'violations', 'violationRefunds', 'revenueBonusDaily',
+    'revenueBonusAllocations', 'teamRewardClaims', 'teamRewardParticipants', 'expenseEntries',
+  ],
+  'employee-compensation': [
+    'stores', 'employees', 'compensationEntries', 'salaryAdjustments', 'payrollPeriods',
+    'violations', 'revenueBonusDaily', 'revenueBonusAllocations',
+  ],
+  'employee-violations': [
+    'stores', 'employees', 'violations', 'violationRefunds', 'attendance', 'schedule',
+    'supportWorkSchedules', 'shiftDefinitions', 'workCatalogItems',
+  ],
+  'employee-revenue-bonus': [
+    'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions',
+    'revenueBonusDaily', 'revenueBonusAllocations', 'salaryAdjustments',
+    'teamRewardClaims', 'teamRewardParticipants',
+  ],
+  'employee-cashflow': ['stores', 'employees', 'orders', 'expenseEntries', 'attendance'],
+})
+const SYSTEM_SCREEN_NAMES = new Set(Object.keys(SYSTEM_SCREEN_COLLECTIONS))
+const HISTORY_COLLECTIONS = Object.freeze({
+  orders: 'orders',
+  attendance: 'attendance',
+  imports: 'importVouchers',
+  expenses: 'expenseEntries',
+  compensation: 'compensationEntries',
+  violations: 'violations',
+  'salary-advances': 'salaryAdvances',
+  'payroll-payments': 'payrollPayments',
+})
 
 const ACCOUNT_AVATAR_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 const MAX_AVATAR_DIMENSION = 4096
@@ -772,6 +927,7 @@ class ApiError extends Error {
 }
 
 const textEncoder = new TextEncoder()
+const textDecoder = new TextDecoder()
 
 const toBase64Url = (bytes) => {
   let binary = ''
@@ -784,6 +940,29 @@ const fromBase64Url = (value) => {
   const padding = '='.repeat((4 - (normalized.length % 4)) % 4)
   const binary = atob(`${normalized}${padding}`)
   return Uint8Array.from(binary, (character) => character.charCodeAt(0))
+}
+
+const encodeHistoryCursor = (row) => toBase64Url(textEncoder.encode(JSON.stringify({
+  occurredOn: String(row.occurred_on || ''),
+  order: Number(row.entity_order),
+  key: String(row.entity_key),
+})))
+
+const decodeHistoryCursor = (value) => {
+  const source = String(value || '').trim()
+  if (!source) return { beforeOccurredOn: null, beforeOrder: null, beforeKey: '' }
+  if (source.length > 512) throw new ApiError(400, 'HISTORY_CURSOR_INVALID', 'Con trỏ lịch sử không hợp lệ.')
+  try {
+    const parsed = JSON.parse(textDecoder.decode(fromBase64Url(source)))
+    const beforeOrder = Number(parsed?.order)
+    const beforeKey = String(parsed?.key || '')
+    const beforeOccurredOn = String(parsed?.occurredOn || '')
+    if (!Number.isSafeInteger(beforeOrder) || !beforeKey || beforeKey.length > 512
+      || beforeOccurredOn.length > 32) throw new Error('invalid')
+    return { beforeOccurredOn, beforeOrder, beforeKey }
+  } catch {
+    throw new ApiError(400, 'HISTORY_CURSOR_INVALID', 'Con trỏ lịch sử không hợp lệ.')
+  }
 }
 
 const decodeIdentityImage = (value, side) => {
@@ -3040,9 +3219,26 @@ const requireSession = async (request, db, context, {
   let globalStateRow = null
   let globalState = null
   if (session.role !== 'admin') {
-    globalStateRow = Array.isArray(stateCollections)
-      ? await loadStateCollections(db, 'global', stateCollections)
-      : await loadState(db, 'global')
+    const candidateRole = String(session.active_role || session.role || '')
+    const candidateStoreId = String(session.active_store_id || session.store_id || '').trim()
+    const candidateEmployeeId = String(session.active_employee_id || session.employee_id || '').trim()
+    const requestedCollections = Array.isArray(stateCollections)
+      ? (candidateRole === 'employee'
+          ? EMPLOYEE_SESSION_CONTEXT_STATE_COLLECTIONS
+          : stateCollections)
+      : null
+    const canUseScopedSession = Boolean(requestedCollections)
+      && typeof db?.readStoreStateSnapshot === 'function'
+      && ['store_manager', 'employee'].includes(candidateRole)
+      && Boolean(candidateStoreId)
+    globalStateRow = canUseScopedSession
+      ? retainStateCollections(
+          await loadStoreState(db, 'global', candidateStoreId, candidateEmployeeId, 'session'),
+          requestedCollections,
+        )
+      : requestedCollections
+        ? await loadStateCollections(db, 'global', requestedCollections)
+        : await loadState(db, 'global')
     globalState = parseStoredJson(globalStateRow?.value_json, {})
   }
   const assumed = await resolveSessionRole(db, session, globalState)
@@ -3408,6 +3604,7 @@ const hydrateStateSnapshot = (row, manifests = [], entities = []) => {
     })
   }
   row.value_json = JSON.stringify(hydrated)
+  Object.defineProperty(row, '_hydratedState', { value: hydrated, enumerable: false })
   Object.defineProperty(row, '_externalCollections', { value: metadata, enumerable: false })
   return row
 }
@@ -3433,6 +3630,12 @@ const loadStateSnapshot = async (db, scope) => {
 const cloneStateSnapshotRow = (row) => {
   if (!row) return null
   const clone = { ...row }
+  if (isPlainRecord(row._hydratedState)) {
+    Object.defineProperty(clone, '_hydratedState', { value: row._hydratedState, enumerable: false })
+  }
+  if (isPlainRecord(row._commandState)) {
+    Object.defineProperty(clone, '_commandState', { value: row._commandState, enumerable: false, configurable: true })
+  }
   if (row._externalCollections instanceof Map) {
     const metadata = new Map([...row._externalCollections].map(([key, collection]) => [key, {
       ...collection,
@@ -3494,6 +3697,27 @@ const loadOptimizedStateSnapshot = async (db, scope) => {
   return cloneStateSnapshotRow(row)
 }
 
+const loadOptimizedStoreStateSnapshot = async (db, scope, storeId, actorEmployeeId = '', screen = '', period = '') => {
+  const snapshot = await db.readStoreStateSnapshot(scope, storeId, actorEmployeeId, screen, period)
+  if (snapshot?.unchanged !== false
+    || !Array.isArray(snapshot.manifests)
+    || !Array.isArray(snapshot.entities)) {
+    throw new ApiError(500, 'STATE_SNAPSHOT_INVALID', 'SQLite không trả về snapshot cửa hàng hợp lệ.')
+  }
+  const row = hydrateStateSnapshot(snapshot.row, snapshot.manifests, snapshot.entities)
+  if (row) {
+    // A store snapshot contains complete manifests but only the entities that
+    // belong to one store. Persistence must therefore delete matching entity
+    // keys individually; treating an empty projected array as an empty global
+    // collection would remove records owned by every other store.
+    Object.defineProperty(row, '_storeEntityProjection', {
+      value: true,
+      enumerable: false,
+    })
+  }
+  return row
+}
+
 const loadState = async (db, scope) => {
   if (typeof db?.readStateSnapshot === 'function') return loadOptimizedStateSnapshot(db, scope)
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -3515,6 +3739,12 @@ const loadState = async (db, scope) => {
   }
   throw new ApiError(409, 'STATE_READ_CONFLICT', 'Trạng thái đang được cập nhật; vui lòng thử lại.')
 }
+
+const loadStoreState = async (db, scope, storeId, actorEmployeeId = '', screen = '', period = '') => (
+  typeof db?.readStoreStateSnapshot === 'function'
+    ? loadOptimizedStoreStateSnapshot(db, scope, storeId, actorEmployeeId, screen, period)
+    : loadState(db, scope)
+)
 
 const retainStateCollections = (row, collectionKeys) => {
   if (!row) return null
@@ -3557,6 +3787,57 @@ const loadStateCollections = async (db, scope, collectionKeys) => {
     }
   }
   throw new ApiError(409, 'STATE_READ_CONFLICT', 'Trạng thái đang được cập nhật; vui lòng thử lại.')
+}
+
+const loadInitialStateCollections = async (db, user, collectionKeys) => {
+  const actorStoreId = String(user?.store_id || user?.storeId || '').trim()
+  const actorEmployeeId = String(user?.employee_id || user?.employeeId || '').trim()
+  const canUseScopedSnapshot = typeof db?.readStoreStateSnapshot === 'function'
+    && ['business_support', 'store_manager', 'employee'].includes(user?.role)
+    && Boolean(actorStoreId)
+  if (!canUseScopedSnapshot) return loadStateCollections(db, 'global', collectionKeys)
+  const initialScreen = collectionKeys === INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS
+    ? 'initial-support'
+    : collectionKeys === INITIAL_STORE_MANAGER_STATE_COLLECTIONS
+      ? 'initial-manager'
+      : collectionKeys === INITIAL_OFFICE_EMPLOYEE_STATE_COLLECTIONS
+        ? 'initial-office-employee'
+        : collectionKeys === INITIAL_STORE_EMPLOYEE_STATE_COLLECTIONS
+          ? 'initial-store-employee'
+          : 'initial'
+  const scoped = await loadStoreState(db, 'global', actorStoreId, actorEmployeeId, initialScreen)
+  return retainStateCollections(scoped, collectionKeys)
+}
+
+const requireStateReadSession = async (request, db, context) => {
+  const session = await requireSession(request, db, context, { resolveOperationalContext: false })
+  if (session.role === 'admin') return session
+  const candidateRole = String(session.active_role || session.role || '')
+  const candidateStoreId = String(session.active_store_id || session.store_id || '').trim()
+  const candidateEmployeeId = String(session.active_employee_id || session.employee_id || '').trim()
+  const operationalRow = ['store_manager', 'employee'].includes(candidateRole) && candidateStoreId
+    ? await loadStoreState(db, 'global', candidateStoreId, candidateEmployeeId, 'session')
+    : await loadStateCollections(db, 'global', SESSION_CONTEXT_STATE_COLLECTIONS)
+  const operationalState = parseStoredJson(operationalRow?.value_json, {})
+  const assumed = await resolveSessionRole(db, session, operationalState)
+  const effective = await resolveEffectiveEmployeeStore(db, assumed, context.now, operationalState)
+  if (operationalRow) {
+    Object.defineProperty(effective, '_globalStateRow', { value: operationalRow, enumerable: false })
+    Object.defineProperty(effective, '_globalState', { value: operationalState, enumerable: false })
+    Object.defineProperty(effective, '_operationalStateRow', { value: operationalRow, enumerable: false })
+  }
+  return effective
+}
+
+const repairScopedStoreStateIfNeeded = async (db, actor, context, row, storeId, screen = '', period = '') => {
+  if (!row) return row
+  if (typeof db?.readStoreStateSnapshot !== 'function') {
+    return persistOpenStoreAttendanceChecklistRepairs(db, actor, context, row)
+  }
+  const normalized = normalizeSharedStateForStorage(parseStoredJson(row.value_json, {}))
+  if (reconcileOpenStoreAttendanceChecklists(normalized) === normalized) return row
+  await persistOpenStoreAttendanceChecklistRepairs(db, actor, context)
+  return loadStoreState(db, 'global', storeId, actor.employee_id, screen, period)
 }
 
 const assignStateEntityOrders = (descriptors) => {
@@ -3635,6 +3916,73 @@ const packJsonArrayPayloads = (items, maximumBytes = MAX_STATE_BATCH_JSON_BYTES)
   return { payloads, oversized }
 }
 
+const stateEntityQueryDimensions = (collectionKey, value) => {
+  if (!isPlainRecord(value)) {
+    return {
+      storeId: null, employeeId: null, occurredOn: null, periodKey: null, recordId: null, openFlag: null,
+    }
+  }
+  const firstText = (...values) => {
+    for (const candidate of values) {
+      const normalized = String(candidate ?? '').trim()
+      if (normalized) return normalized
+    }
+    return null
+  }
+  const storeId = firstText(
+    value.storeId,
+    value.store_id,
+    value.supportStoreId,
+    value.toStoreId,
+    value.fromStoreId,
+    value.data?.storeId,
+    value.order?.storeId,
+    value.data?.order?.storeId,
+  )
+  const employeeId = firstText(
+    value.employeeId,
+    value.employee_id,
+    value.staffId,
+    ['employees', 'deletedEmployees'].includes(collectionKey) ? value.id : null,
+  )
+  const occurredValue = firstText(
+    value.effectiveDate,
+    value.businessDate,
+    value.occurredOn,
+    value.occurredAt,
+    value.date,
+    value.workDate,
+    value.createdAt,
+    value.updatedAt,
+    value.period,
+    value.month,
+  )
+  const periodValue = firstText(
+    value.period,
+    value.month,
+    value.effectiveDate,
+    value.businessDate,
+    value.occurredOn,
+    value.occurredAt,
+    value.date,
+    value.workDate,
+    value.createdAt,
+    value.updatedAt,
+  )
+  return {
+    storeId,
+    employeeId,
+    occurredOn: occurredValue?.slice(0, 10) || null,
+    periodKey: periodValue?.slice(0, 7) || null,
+    recordId: firstText(value.id, value.code, value.key, value.periodId),
+    openFlag: collectionKey === 'attendance'
+      ? Number(value.deletedAt == null
+        && !String(value.checkOut ?? '').trim()
+        && !String(value.checkOutAt ?? '').trim())
+      : null,
+  }
+}
+
 const prepareStatePersistencePlan = (current, nextState, now) => {
   if (containsEmbeddedImageData(nextState)) {
     throw new ApiError(400, 'EMBEDDED_IMAGE_STATE_FORBIDDEN', 'Ảnh riêng tư phải được lưu trong kho ảnh; trạng thái chỉ được chứa metadata.')
@@ -3653,6 +4001,7 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
   const existingCollections = current?._externalCollections instanceof Map
     ? current._externalCollections
     : new Map()
+  const commandState = isPlainRecord(current?._commandState) ? current._commandState : null
   const manifestCreates = []
   const manifestDeletes = []
   const entityUpserts = []
@@ -3668,6 +4017,10 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
   }
 
   for (const [collectionKey, values] of nextCollections) {
+    // Domain commands construct nextState by spreading their normalized input
+    // and replacing only affected arrays. Preserve that reference signal so a
+    // one-row Save does not stringify and diff every historical collection.
+    if (commandState && values === commandState[collectionKey]) continue
     const existingRows = existingCollections.get(collectionKey)?.rows || []
     const queues = new Map()
     for (const row of existingRows) {
@@ -3685,10 +4038,10 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
       const identity = stateEntityIdentity(value, valueJson)
       const match = queues.get(identity)?.shift() || null
       if (match) usedKeys.add(match.entityKey)
-      return { valueJson, valueBytes, match }
+      return { valueJson, valueBytes, match, ...stateEntityQueryDimensions(collectionKey, value) }
     })
     assignStateEntityOrders(descriptors)
-    if (existingRows.length && usedKeys.size === 0) {
+    if (existingRows.length && usedKeys.size === 0 && !current?._storeEntityProjection) {
       collectionClears.push(collectionKey)
     } else {
       for (const row of existingRows) {
@@ -3707,6 +4060,12 @@ const prepareStatePersistencePlan = (current, nextState, now) => {
           recordJson: descriptor.valueJson,
           valueBytes: descriptor.valueBytes,
           createdAt: descriptor.match?.createdAt || now,
+          storeId: descriptor.storeId,
+          employeeId: descriptor.employeeId,
+          occurredOn: descriptor.occurredOn,
+          periodKey: descriptor.periodKey,
+          recordId: descriptor.recordId,
+          openFlag: descriptor.openFlag,
         })
       }
     }
@@ -3761,7 +4120,9 @@ const statePersistenceStatements = (db, scope, plan, nextVersion, requestId, now
   for (const payload of packedUpserts.payloads) {
     statements.push(db.prepare(`
       INSERT INTO state_entities (
-        scope_key, collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at
+        scope_key, collection_key, entity_key, entity_order,
+        value_json, value_bytes, created_at, updated_at,
+        store_id, employee_id, occurred_on, period_key, record_id, open_flag
       )
       SELECT
         ?,
@@ -3771,27 +4132,47 @@ const statePersistenceStatements = (db, scope, plan, nextVersion, requestId, now
         json_extract(entry.value, '$.recordJson'),
         json_extract(entry.value, '$.valueBytes'),
         json_extract(entry.value, '$.createdAt'),
-        ?
+        ?,
+        json_extract(entry.value, '$.storeId'),
+        json_extract(entry.value, '$.employeeId'),
+        json_extract(entry.value, '$.occurredOn'),
+        json_extract(entry.value, '$.periodKey'),
+        json_extract(entry.value, '$.recordId'),
+        json_extract(entry.value, '$.openFlag')
       FROM json_each(?) AS entry
       WHERE EXISTS (${stateSuccessSql})
       ON CONFLICT(scope_key, collection_key, entity_key) DO UPDATE SET
         entity_order = excluded.entity_order,
         value_json = excluded.value_json,
         value_bytes = excluded.value_bytes,
+        store_id = excluded.store_id,
+        employee_id = excluded.employee_id,
+        occurred_on = excluded.occurred_on,
+        period_key = excluded.period_key,
+        record_id = excluded.record_id,
+        open_flag = excluded.open_flag,
         updated_at = excluded.updated_at
     `).bind(scope, now, payload, scope, nextVersion, requestId))
   }
   for (const item of packedUpserts.oversized) {
     statements.push(db.prepare(`
       INSERT INTO state_entities (
-        scope_key, collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at
+        scope_key, collection_key, entity_key, entity_order,
+        value_json, value_bytes, created_at, updated_at,
+        store_id, employee_id, occurred_on, period_key, record_id, open_flag
       )
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
       WHERE EXISTS (${stateSuccessSql})
       ON CONFLICT(scope_key, collection_key, entity_key) DO UPDATE SET
         entity_order = excluded.entity_order,
         value_json = excluded.value_json,
         value_bytes = excluded.value_bytes,
+        store_id = excluded.store_id,
+        employee_id = excluded.employee_id,
+        occurred_on = excluded.occurred_on,
+        period_key = excluded.period_key,
+        record_id = excluded.record_id,
+        open_flag = excluded.open_flag,
         updated_at = excluded.updated_at
     `).bind(
       scope,
@@ -3802,6 +4183,12 @@ const statePersistenceStatements = (db, scope, plan, nextVersion, requestId, now
       item.valueBytes,
       item.createdAt,
       now,
+      item.storeId,
+      item.employeeId,
+      item.occurredOn,
+      item.periodKey,
+      item.recordId,
+      item.openFlag,
       scope,
       nextVersion,
       requestId,
@@ -4215,7 +4602,7 @@ const login = async (request, env, context) => {
     needs_role_selection: availableRoles.length > 1,
   }
   const loadedCollections = initialStateCollectionsForUser(selectedUser, globalState || {})
-  const bootstrapRow = await loadStateCollections(db, 'global', loadedCollections)
+  const bootstrapRow = await loadInitialStateCollections(db, selectedUser, loadedCollections)
   const policies = await listPolicies(db)
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
   const effectiveUser = await resolveEffectiveEmployeeStore(db, selectedUser, context.now, bootstrapState)
@@ -4282,7 +4669,7 @@ const selectSessionRole = async (request, env, context) => {
   }
   const loadedCollections = initialStateCollectionsForUser(selectedUser, actor._globalState || {})
   const [bootstrapRow, policies] = await Promise.all([
-    loadStateCollections(db, 'global', loadedCollections),
+    loadInitialStateCollections(db, selectedUser, loadedCollections),
     listPolicies(db),
   ])
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
@@ -4307,7 +4694,7 @@ const selectSessionRole = async (request, env, context) => {
   }))
 }
 
-const requestedStoreWorkspaceId = (url, user, state, scope) => {
+const requestedStoreWorkspaceReference = (url, user, scope) => {
   const view = String(url.searchParams.get('view') || '').trim()
   if (!view) return ''
   if (view !== 'store') throw new ApiError(400, 'STATE_VIEW_INVALID', 'Chế độ tải dữ liệu không hợp lệ.')
@@ -4319,28 +4706,56 @@ const requestedStoreWorkspaceId = (url, user, state, scope) => {
   if (user.role === 'store_manager' && !sameIdentifier(requested, user.store_id)) {
     throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được tải dữ liệu cửa hàng được phân công.')
   }
-  return String(requireActivePhysicalStore(state, requested).id)
+  return requested
+}
+
+const requestedStoreWorkspaceScreen = (url) => {
+  const screen = String(url.searchParams.get('screen') || '').trim()
+  if (!screen) return ''
+  if (!STORE_SCREEN_NAMES.has(screen)) {
+    throw new ApiError(400, 'STORE_SCREEN_INVALID', 'Màn hình cửa hàng không hợp lệ.')
+  }
+  return screen
+}
+
+const requestedStoreWorkspacePeriod = (url, screen) => {
+  const period = String(url.searchParams.get('period') || '').trim()
+  if (!period) return ''
+  if (screen !== 'payroll') {
+    throw new ApiError(400, 'STORE_SCREEN_PERIOD_UNSUPPORTED', 'Màn hình này không hỗ trợ lọc theo kỳ.')
+  }
+  return asMonth(period, 'Kỳ dữ liệu màn hình')
+}
+
+const requestedStoreWorkspaceId = (url, user, state, scope) => {
+  const requested = requestedStoreWorkspaceReference(url, user, scope)
+  return requested ? String(requireActivePhysicalStore(state, requested).id) : ''
 }
 
 const getBootstrap = async (request, env, context, url) => {
   const db = getDatabase(env)
   const initialProfileRequested = url.searchParams.get('profile') === 'initial'
-  const user = await requireSession(request, db, context, initialProfileRequested
+  const storeWorkspaceRequested = url.searchParams.get('view') === 'store'
+  const user = await requireSession(request, db, context, initialProfileRequested || storeWorkspaceRequested
     ? { stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS }
     : {})
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  const storeWorkspaceRequested = url.searchParams.get('view') === 'store'
+  const requestedStoreId = requestedStoreWorkspaceReference(url, user, scope)
+  const requestedScreen = requestedStoreId ? requestedStoreWorkspaceScreen(url) : ''
+  const requestedPeriod = requestedScreen ? requestedStoreWorkspacePeriod(url, requestedScreen) : ''
   const partialBootstrap = scope === 'global' && initialProfileRequested && !storeWorkspaceRequested
   const loadedCollections = partialBootstrap
     ? initialStateCollectionsForUser(user, user._globalState || {})
     : []
   let stateRow = partialBootstrap
-    ? await loadStateCollections(db, scope, loadedCollections)
-    : scope === 'global' && user._globalStateRow
+    ? await loadInitialStateCollections(db, user, loadedCollections)
+    : requestedStoreId
+      ? await loadStoreState(db, scope, requestedStoreId, user.employee_id, requestedScreen, requestedPeriod)
+      : scope === 'global' && user._globalStateRow
       ? user._globalStateRow
       : await loadState(db, scope)
-  if (scope === 'global' && !partialBootstrap) {
+  if (scope === 'global' && !partialBootstrap && !requestedStoreId) {
     stateRow = await migrateLegacyAccountAvatars(db, env, user, context, stateRow)
     stateRow = await persistOpenStoreAttendanceChecklistRepairs(db, user, context, stateRow)
   }
@@ -4355,6 +4770,8 @@ const getBootstrap = async (request, env, context, url) => {
     scope,
     projection: storeId ? 'store' : scope === 'global' ? effectiveUser.role : 'private',
     ...(storeId ? { storeId } : {}),
+    ...(storeId && requestedScreen ? { screen: requestedScreen } : {}),
+    ...(storeId && requestedPeriod ? { period: requestedPeriod } : {}),
     state: scope === 'global'
       ? projectSharedState(rawState, effectiveUser, storeId ? { storeId } : {})
       : sanitizeStateValue(rawState),
@@ -4370,13 +4787,24 @@ const getBootstrap = async (request, env, context, url) => {
 
 const getState = async (request, env, context, url) => {
   const db = getDatabase(env)
-  const user = await requireSession(request, db, context)
+  const user = await requireStateReadSession(request, db, context)
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  let row = scope === 'global' && user._globalStateRow
-    ? user._globalStateRow
+  const requestedStoreId = requestedStoreWorkspaceReference(url, user, scope)
+  const requestedScreen = requestedStoreId ? requestedStoreWorkspaceScreen(url) : ''
+  const requestedPeriod = requestedScreen ? requestedStoreWorkspacePeriod(url, requestedScreen) : ''
+  const actorStoreId = !requestedStoreId && ['store_manager', 'employee'].includes(user.role)
+    ? String(user.store_id || '').trim()
+    : ''
+  const scopedStoreId = requestedStoreId || actorStoreId
+  let row = scopedStoreId
+    ? requestedStoreId || !user._operationalStateRow
+      ? await loadStoreState(db, scope, scopedStoreId, user.employee_id, requestedScreen, requestedPeriod)
+      : user._operationalStateRow
     : await loadState(db, scope)
-  if (scope === 'global') {
+  if (scope === 'global' && scopedStoreId) {
+    row = await repairScopedStoreStateIfNeeded(db, user, context, row, scopedStoreId, requestedScreen, requestedPeriod)
+  } else if (scope === 'global') {
     row = await migrateLegacyAccountAvatars(db, env, user, context, row)
     row = await persistOpenStoreAttendanceChecklistRepairs(db, user, context, row)
   }
@@ -4388,6 +4816,8 @@ const getState = async (request, env, context, url) => {
     scope,
     projection: storeId ? 'store' : scope === 'global' ? user.role : 'private',
     ...(storeId ? { storeId } : {}),
+    ...(storeId && requestedScreen ? { screen: requestedScreen } : {}),
+    ...(storeId && requestedPeriod ? { period: requestedPeriod } : {}),
     state: scope === 'global'
       ? projectSharedState(rawState, user, storeId ? { storeId } : {})
       : sanitizeStateValue(rawState),
@@ -4423,6 +4853,236 @@ const getStateMetadata = async (request, env, context, url) => {
       policy.policy_key,
       Number(policy.version || 0),
     ])),
+  }))
+}
+
+const getSystemScreen = async (request, env, context, screen) => {
+  if (!SYSTEM_SCREEN_NAMES.has(screen)) {
+    throw new ApiError(400, 'SYSTEM_SCREEN_INVALID', 'Màn hình hệ thống không hợp lệ.')
+  }
+  const db = getDatabase(env)
+  const user = await requireStateReadSession(request, db, context)
+  const isEmployeeScreen = screen.startsWith('employee-')
+  const isAccountScreen = screen === 'account-settings'
+  const systemOperator = ['admin', 'business_support'].includes(user.role)
+  if (!systemOperator
+    && !(user.role === 'employee' && isEmployeeScreen)
+    && !(isAccountScreen && ['store_manager', 'employee'].includes(user.role))) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền tải màn hình hệ thống này.')
+  }
+  const collections = SYSTEM_SCREEN_COLLECTIONS[screen]
+  const useEmployeeStoreProjection = user.role === 'employee'
+    && isEmployeeScreen
+    && Boolean(String(user.store_id || '').trim())
+  const readScreen = () => useEmployeeStoreProjection
+    ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
+    : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
+  let row = await readScreen()
+  if (collections.includes('attendance') && await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
+    await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
+    row = await readScreen()
+  }
+  const [policies, users] = await Promise.all([
+    listPolicies(db),
+    systemOperator ? visibleUserRowsForActor(db, user) : Promise.resolve([]),
+  ])
+  const rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  return jsonResponse(apiPayload(context, {
+    user: publicUser(user),
+    scope: 'global',
+    projection: 'global',
+    screen,
+    state: projectSharedState(rawState, user),
+    version: Number(row?.version || 0),
+    updatedAt: row?.updated_at || null,
+    policies,
+    ...(systemOperator ? { users: users.map(publicUser) } : {}),
+  }))
+}
+
+const financeOverviewDate = (record, fields) => {
+  for (const field of fields) {
+    const value = String(record?.[field] || '').trim()
+    if (/^\d{4}-\d{2}/u.test(value)) return value.slice(0, 7)
+    const local = value.match(/\d{1,2}\/\d{1,2}\/(\d{4})/u)
+    if (local) {
+      const [day, month] = value.split('/')
+      return `${local[1]}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`.slice(0, 7)
+    }
+  }
+  return ''
+}
+
+const fallbackFinanceOverview = async (db, period) => {
+  const row = await loadStateCollections(db, 'global', ['orders', 'expenseEntries', 'violationRefunds'])
+  const state = row ? parseStoredJson(row.value_json, {}) : {}
+  const totals = new Map()
+  const add = (storeId, field, amount) => {
+    const normalizedStoreId = String(storeId || '').trim()
+    const normalizedAmount = Number(amount)
+    if (!normalizedStoreId || !Number.isSafeInteger(normalizedAmount) || normalizedAmount < 0) return
+    const current = totals.get(normalizedStoreId) || { storeId: normalizedStoreId, revenue: 0, expense: 0 }
+    current[field] += normalizedAmount
+    totals.set(normalizedStoreId, current)
+  }
+  for (const order of Array.isArray(state.orders) ? state.orders : []) {
+    if (order?.deletedAt || order?.status === 'Đã xóa'
+      || financeOverviewDate(order, ['createdAt']) !== period) continue
+    add(order.storeId, 'revenue', order.amount)
+  }
+  for (const expense of Array.isArray(state.expenseEntries) ? state.expenseEntries : []) {
+    if (expense?.recognized === false || expense?.deletedAt
+      || financeOverviewDate(expense, ['occurredAt', 'createdAt']) !== period) continue
+    add(expense.storeId, 'expense', expense.amount)
+  }
+  for (const refund of Array.isArray(state.violationRefunds) ? state.violationRefunds : []) {
+    if (refund?.recognized !== true || String(refund?.status || '').toUpperCase() !== 'RECOGNIZED'
+      || refund?.deletedAt || refund?.voidedAt
+      || financeOverviewDate(refund, ['occurredOn', 'recognizedAt', 'createdAt']) !== period) continue
+    add(refund.storeId || refund.supportStoreId, 'revenue', refund.amountVnd ?? refund.amount)
+  }
+  return [...totals.values()].sort((left, right) => left.storeId.localeCompare(right.storeId))
+}
+
+const getFinanceOverview = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const user = await requireSession(request, db, context, {
+    stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+  })
+  if (!['admin', 'business_support'].includes(user.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem tổng quan tài chính hệ thống.')
+  }
+  const period = asMonth(url.searchParams.get('period'), 'Kỳ tổng quan')
+  const rawSummaries = typeof db?.readFinanceOverview === 'function'
+    ? await db.readFinanceOverview(period)
+    : await fallbackFinanceOverview(db, period)
+  const summaries = rawSummaries.map((row) => {
+    const storeId = String(row.storeId || row.store_id || '').trim()
+    const revenue = Number(row.revenue || 0)
+    const expense = Number(row.expense || 0)
+    if (!storeId
+      || !Number.isSafeInteger(revenue) || revenue < 0
+      || !Number.isSafeInteger(expense) || expense < 0) {
+      throw new ApiError(500, 'FINANCE_OVERVIEW_INVALID', 'Dữ liệu tổng quan tài chính không hợp lệ.')
+    }
+    return { storeId, revenue, expense, profit: revenue - expense }
+  })
+  return jsonResponse(apiPayload(context, { period, summaries }))
+}
+
+const historyRecordPeriod = (record) => financeOverviewDate(record, [
+  'period', 'month', 'effectiveDate', 'businessDate', 'occurredOn',
+  'occurredAt', 'date', 'workDate', 'createdAt', 'updatedAt',
+])
+
+const fallbackEntityHistory = async ({
+  db,
+  collectionKey,
+  storeId,
+  employeeId,
+  period,
+  beforeOccurredOn,
+  beforeOrder,
+  beforeKey,
+  limit,
+}) => {
+  const row = await loadStateCollections(db, 'global', [collectionKey])
+  const state = row ? parseStoredJson(row.value_json, {}) : {}
+  const records = (Array.isArray(state[collectionKey]) ? state[collectionKey] : [])
+    .map((value, index) => ({
+      entity_key: String(value?.id || value?.code || `legacy:${index}`),
+      entity_order: (index + 1) * STATE_ENTITY_ORDER_STEP,
+      occurred_on: historyRecordPeriod(value) || '',
+      value_json: JSON.stringify(value),
+      value_bytes: jsonByteLength(JSON.stringify(value)),
+      value,
+    }))
+    .filter(({ value }) => sameIdentifier(value?.storeId || value?.supportStoreId, storeId))
+    .filter(({ value }) => !employeeId || sameIdentifier(value?.employeeId, employeeId))
+    .filter(({ value }) => !period || historyRecordPeriod(value) === period)
+    .sort((left, right) => String(right.occurred_on).localeCompare(String(left.occurred_on))
+      || right.entity_order - left.entity_order
+      || right.entity_key.localeCompare(left.entity_key))
+    .filter((record) => beforeOrder === null
+      || String(record.occurred_on) < String(beforeOccurredOn || '')
+      || (String(record.occurred_on) === String(beforeOccurredOn || '')
+        && (record.entity_order < beforeOrder
+          || (record.entity_order === beforeOrder && record.entity_key < beforeKey))))
+    .slice(0, limit)
+  return records
+}
+
+const getEntityHistory = async (request, env, context, url, historyKind) => {
+  const collectionKey = HISTORY_COLLECTIONS[historyKind]
+  if (!collectionKey) throw new ApiError(404, 'HISTORY_KIND_NOT_FOUND', 'Không tìm thấy loại lịch sử.')
+  const db = getDatabase(env)
+  const user = await requireStateReadSession(request, db, context)
+  if (!['admin', 'business_support', 'store_manager', 'employee'].includes(user.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem lịch sử này.')
+  }
+  const requestedStoreId = String(url.searchParams.get('storeId') || '').trim()
+  if (!requestedStoreId) throw new ApiError(400, 'STORE_REQUIRED', 'Vui lòng chọn cửa hàng cần xem lịch sử.')
+  if (['store_manager', 'employee'].includes(user.role)
+    && !sameIdentifier(requestedStoreId, user.store_id)) {
+    throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Tài khoản chỉ được xem lịch sử của cửa hàng đang làm việc.')
+  }
+  const storeRow = await loadStateCollections(db, 'global', ['stores'])
+  const storeState = storeRow ? parseStoredJson(storeRow.value_json, {}) : {}
+  const storeId = String(requireActivePhysicalStore(storeState, requestedStoreId).id)
+  const requestedEmployeeId = String(url.searchParams.get('employeeId') || '').trim()
+  const employeeId = user.role === 'employee'
+    ? String(user.employee_id || '').trim()
+    : requestedEmployeeId
+  if (user.role === 'employee' && requestedEmployeeId
+    && !sameIdentifier(requestedEmployeeId, employeeId)) {
+    throw new ApiError(403, 'EMPLOYEE_SCOPE_FORBIDDEN', 'Nhân viên chỉ được xem lịch sử của chính mình.')
+  }
+  const period = String(url.searchParams.get('period') || '').trim()
+  if (period && !/^\d{4}-\d{2}$/u.test(period)) {
+    throw new ApiError(400, 'HISTORY_PERIOD_INVALID', 'Kỳ lịch sử phải có định dạng YYYY-MM.')
+  }
+  const limit = Math.min(100, Math.max(10, Number(url.searchParams.get('limit')) || 50))
+  const cursor = decodeHistoryCursor(url.searchParams.get('cursor'))
+  const rows = typeof db?.readEntityHistory === 'function'
+    ? await db.readEntityHistory({
+        scope: 'global',
+        collectionKey,
+        storeId,
+        employeeId,
+        period,
+        ...cursor,
+        limit: limit + 1,
+      })
+    : await fallbackEntityHistory({
+        db,
+        collectionKey,
+        storeId,
+        employeeId,
+        period,
+        ...cursor,
+        limit: limit + 1,
+      })
+  const hasMore = rows.length > limit
+  const page = rows.slice(0, limit)
+  const records = page.map((row) => {
+    const serialized = String(row.value_json)
+    if (jsonByteLength(serialized) !== Number(row.value_bytes)
+      || Number(row.value_bytes) > MAX_STATE_ENTITY_BYTES) {
+      throw new ApiError(500, 'STATE_ENTITY_CORRUPT', 'Bản ghi lịch sử không hợp lệ.')
+    }
+    return sanitizeStateValue(parseStoredJson(serialized, null))
+  })
+  return jsonResponse(apiPayload(context, {
+    kind: historyKind,
+    collection: collectionKey,
+    storeId,
+    period: period || null,
+    records,
+    page: {
+      limit,
+      hasMore,
+      nextCursor: hasMore ? encodeHistoryCursor(page.at(-1)) : null,
+    },
   }))
 }
 
@@ -5343,7 +6003,7 @@ const operationalIdentifierHistoryRepairCommand = async (db, actor, body, comman
   if (!reason || reason.length > 500) {
     throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do xử lý bí danh từ 1 đến 500 ký tự.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const collection = kind === 'employee' ? 'employees' : 'stores'
   const historyCollection = kind === 'employee' ? 'deletedEmployees' : 'deletedStores'
   const identifierValues = kind === 'employee'
@@ -5422,16 +6082,341 @@ const assertOperationalStoreAccess = (actor, storeId) => {
   }
 }
 
-const loadGlobalCommandState = async (db, body) => {
+const normalizedCommandState = (current) => {
+  // Entity snapshots are already persisted in normalized/sanitized form. Reuse
+  // the object assembled while reading rows instead of parsing one giant JSON
+  // string and recursively cloning it again for every Save.
+  const state = isPlainRecord(current?._hydratedState)
+    ? current._hydratedState
+    : normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
+  if (current && isPlainRecord(state)) {
+    Object.defineProperty(current, '_commandState', {
+      value: state,
+      enumerable: false,
+      configurable: true,
+    })
+  }
+  return state
+}
+
+const COMMAND_PROJECTION_BASE_COLLECTIONS = Object.freeze([
+  'stores',
+  'employees',
+  'supportTransfers',
+])
+
+const PAYROLL_COMMAND_COLLECTIONS = Object.freeze([
+  'deletedEmployees', 'attendance', 'schedule', 'officeAdjustments', 'salaryAdjustments', 'salaryAdvances',
+  'payrollPeriods', 'payrollPayments', 'storeEmployeeSalaryConfigs', 'compensationEntries',
+  'violations', 'violationRefunds', 'revenueBonusDaily', 'revenueBonusAllocations',
+  'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
+  'orders', 'expenseEntries', 'fixedExpenses', 'cashTransactions', 'workCatalogProgress',
+])
+
+const commandStateProjection = (body) => {
+  const type = String(body?.type || '')
+  const payload = isPlainRecord(body?.payload) ? body.payload : {}
+  const projection = (
+    screen,
+    collections,
+    recordCollection = '',
+    recordId = '',
+    employeeId = '',
+    scoped = true,
+  ) => ({
+    screen,
+    collections: [...new Set([...COMMAND_PROJECTION_BASE_COLLECTIONS, ...collections])],
+    directStoreId: String(payload.storeId || '').trim(),
+    recordCollection,
+    recordId: String(recordId || '').trim(),
+    employeeId: String(employeeId || '').trim(),
+    scoped,
+  })
+  if (type.startsWith('order.')) {
+    return projection(
+      'command-order',
+      [
+        'attendance', 'orders', 'notifications', 'payrollPeriods', 'orderAudit',
+        'auditLogs', 'orderInformationOptions', 'shiftDefinitions',
+      ],
+      'orders',
+      payload.orderId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('fixed_expense.')) {
+    return projection(
+      'command-expense',
+      ['expenseEntries', 'fixedExpenses', 'payrollPeriods'],
+      'fixedExpenses',
+      payload.expenseId || payload.fixedExpenseId || payload.id,
+    )
+  }
+  if (type.startsWith('expense.')) {
+    return projection(
+      'command-expense',
+      ['expenseEntries', 'fixedExpenses', 'payrollPeriods'],
+      'expenseEntries',
+      payload.expenseId || payload.id,
+    )
+  }
+  if (type.startsWith('import.') || type.startsWith('import_voucher.')) {
+    return projection(
+      'command-import',
+      ['importVouchers', 'expenseEntries', 'payrollPeriods'],
+      'importVouchers',
+      payload.voucherId || payload.id,
+    )
+  }
+  if (type.startsWith('compensation_entry.')) {
+    return projection(
+      'command-compensation',
+      ['compensationEntries', 'payrollPeriods'],
+      'compensationEntries',
+      payload.entryId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('salary_adjustment.')) {
+    return projection(
+      'command-salary-adjustment',
+      ['salaryAdjustments', 'payrollPeriods'],
+      'salaryAdjustments',
+      payload.adjustmentId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('store_salary_config.')) {
+    return projection(
+      'command-salary-config',
+      ['storeEmployeeSalaryConfigs', 'payrollPeriods'],
+      'storeEmployeeSalaryConfigs',
+      payload.configId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('store.')) {
+    return projection(
+      'command-store',
+      ['deletedStores', 'orders', 'workCatalogItems'],
+      'stores',
+      payload.storeId || payload.id,
+      '',
+      false,
+    )
+  }
+  if (type === 'tasks.assign' || type === 'tasks.replace_scope') {
+    return projection('command-task', [
+      'tasks', 'taskAssignmentHistory', 'supportWorkSchedules', 'notifications',
+      'accountSettings', 'deletedEmployees', 'shiftDefinitions',
+      'workCatalogItems', 'storeShiftTaskTemplates',
+    ], '', '', payload.employeeId)
+  }
+  if (type.startsWith('employee.')) {
+    return projection(
+      'command-employee',
+      ['deletedEmployees', 'schedule', 'payrollPeriods', 'accountSettings'],
+      'employees',
+      payload.employeeId || payload.id,
+      payload.employeeId,
+      false,
+    )
+  }
+  if (type.startsWith('shift_definition.')) {
+    return projection('command-shift-definition', ['shiftDefinitions'], '', '', '', false)
+  }
+  if (type.startsWith('schedule.')) {
+    return projection(
+      'command-schedule',
+      ['schedule', 'shiftDefinitions'],
+      'schedule',
+      payload.scheduleId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('account_settings.')) {
+    return projection('command-account-settings', ['accountSettings'], '', '', '', false)
+  }
+  if (type.startsWith('notification.')) {
+    return projection('command-notification', ['notifications'], 'notifications', payload.notificationId || payload.id)
+  }
+  if (type.startsWith('support_transfer.')) {
+    return projection(
+      'command-support-transfer',
+      ['attendance', 'deletedEmployees', 'supportTransfers', 'payrollPeriods', 'payrollPayments'],
+      'supportTransfers',
+      payload.transferId || payload.id,
+      payload.employeeId,
+      false,
+    )
+  }
+  if (type.startsWith('operational_reset.')) {
+    return projection('command-operational-reset', [
+      'attendance', 'attendanceAudit', 'auditLogs', 'deletedEmployees', 'orderAudit',
+      'orders', 'operationalResetHistory', 'taskAssignmentHistory', 'tasks', 'workCatalogItems',
+      'payrollPeriods', 'workCatalogProgress', 'compensationEntries', 'violations',
+    ], '', '', payload.employeeId, false)
+  }
+  if (type.startsWith('attendance.')) {
+    return projection(
+      'command-attendance',
+      [
+        'attendance', 'schedule', 'supportWorkSchedules', 'payrollPeriods', 'tasks',
+        'taskAssignmentHistory', 'workCatalogItems', 'workCatalogProgress', 'shiftDefinitions',
+        'orders', 'expenseEntries', 'cashTransactions', 'compensationEntries', 'violations',
+      ],
+      'attendance',
+      payload.attendanceId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('order_information.')) {
+    return projection(
+      'command-order-information',
+      ['orderInformationOptions', 'orders'],
+      '', '', '', false,
+    )
+  }
+  if (type.startsWith('support_work.')) {
+    return projection(
+      'command-support-work',
+      ['supportWorkAssignments', 'notifications', 'workCatalogItems'],
+      'supportWorkAssignments',
+      payload.assignmentId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('support_schedule.')) {
+    return projection(
+      'command-support-schedule',
+      ['supportWorkSchedules', 'supportWorkScheduleHistory', 'notifications'],
+      'supportWorkSchedules',
+      payload.scheduleId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('task.')) {
+    return projection(
+      'command-task-progress',
+      ['attendance', 'tasks', 'taskAssignmentHistory', 'notifications', 'workCatalogItems'],
+      'taskAssignmentHistory',
+      payload.assignmentId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type === 'shift_expense.create') {
+    return projection(
+      'command-shift-expense',
+      ['attendance', 'expenseEntries', 'cashTransactions'],
+      '', '', payload.employeeId,
+    )
+  }
+  if (type.startsWith('salary_advance.')) {
+    return projection(
+      'command-salary-advance',
+      PAYROLL_COMMAND_COLLECTIONS,
+      'salaryAdvances',
+      payload.advanceId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('work_catalog.')) {
+    return projection(
+      'command-work-catalog',
+      [
+        'workCatalogItems', 'workCatalogProgress', 'storeShiftTaskTemplates', 'attendance',
+        'tasks', 'taskAssignmentHistory', 'schedule', 'shiftDefinitions',
+        'compensationEntries', 'teamRewardClaims',
+      ],
+      'workCatalogItems',
+      payload.itemId || payload.catalogItemId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('work_reward.')) {
+    return projection(
+      'command-work-reward',
+      ['attendance', 'schedule', 'shiftDefinitions'],
+      'attendance',
+      payload.attendanceId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('violation.')) {
+    return projection(
+      'command-violation',
+      [...PAYROLL_COMMAND_COLLECTIONS, 'workCatalogItems', 'shiftDefinitions'],
+      'violations',
+      payload.violationId || payload.id,
+      payload.employeeId,
+    )
+  }
+  if (type.startsWith('revenue_bonus.')) {
+    return projection('command-revenue-bonus', [
+      ...PAYROLL_COMMAND_COLLECTIONS, 'shiftDefinitions', 'workCatalogItems',
+    ])
+  }
+  if (type.startsWith('payroll.')) {
+    return projection(
+      'command-payroll',
+      PAYROLL_COMMAND_COLLECTIONS,
+      'payrollPeriods',
+      payload.periodId || payload.id,
+      payload.employeeId,
+    )
+  }
+  return null
+}
+
+const commandProjectionStoreId = async (db, projection, actor) => {
+  if (!projection.scoped) return ''
+  const actorStoreId = ['store_manager', 'employee'].includes(String(actor?.role || ''))
+    ? String(actor?.store_id || '').trim()
+    : ''
+  if (actorStoreId) return actorStoreId
+  if (projection.directStoreId) return projection.directStoreId
+  const lookup = async (collectionKey, recordId) => {
+    if (!collectionKey || !recordId) return ''
+    const rows = await all(db, `
+      SELECT store_id
+      FROM state_entities
+      WHERE scope_key = 'global'
+        AND collection_key = ?
+        AND record_id = ? COLLATE NOCASE
+      LIMIT 2
+    `, collectionKey, recordId)
+    if (rows.length !== 1) return ''
+    return String(rows[0].store_id || '').trim()
+  }
+  return await lookup(projection.recordCollection, projection.recordId)
+    || await lookup('employees', projection.employeeId)
+}
+
+const loadGlobalCommandState = async (db, body, actor = null) => {
   const expectedVersion = commandExpectedVersion(body)
-  const current = body._preloadedGlobalStateRow || await loadState(db, 'global')
+  const projection = commandStateProjection(body)
+  const projectionStoreId = projection
+    ? await commandProjectionStoreId(db, projection, actor)
+    : ''
+  const current = body._preloadedGlobalStateRow
+    || (projection && projectionStoreId && typeof db?.readStoreStateSnapshot === 'function'
+      ? await loadStoreState(
+          db,
+          'global',
+          projectionStoreId,
+          String(actor?.employee_id || ''),
+          projection.screen,
+        )
+      : projection
+        ? await loadStateCollections(db, 'global', projection.collections)
+        : await loadState(db, 'global'))
   const currentVersion = Number(current?.version || 0)
   if (!current || currentVersion !== expectedVersion) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
   }
   return {
     current,
-    state: normalizeSharedStateForStorage(parseStoredJson(current.value_json, {})),
+    state: normalizedCommandState(current),
   }
 }
 
@@ -5487,7 +6472,7 @@ const storeCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Quản lý cửa hàng chỉ được cập nhật cửa hàng được phân công.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const stores = Array.isArray(state.stores) ? state.stores : []
   const requestedName = String(payload.name || '').trim().slice(0, 160)
   const storeId = operation === 'create'
@@ -5840,7 +6825,7 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
     || (body.type === 'tasks.assign' && payload.tasks.length < 1)) {
     throw new ApiError(400, 'TASKS_INVALID', 'Danh sách giao việc phải có từ 1 đến 100 công việc.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const store = requireStore(state, requestedStoreId)
   const storeId = String(store.id || requestedStoreId)
   let shift = null
@@ -7272,7 +8257,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
   if (operation === 'delete') assertAdmin(actor, 'Chỉ Admin được xóa nhân viên khỏi hệ thống.')
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const profilePayload = isPlainRecord(payload.employee) ? payload.employee : payload
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const employees = Array.isArray(state.employees) ? state.employees : []
   let employeeId = operation === 'create'
     ? String(profilePayload.id || profilePayload.code || profilePayload.employeeCode || '').trim().toUpperCase()
@@ -8021,7 +9006,7 @@ const shiftDefinitionCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh ca làm việc không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const definitions = Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : []
   let shiftId = operation === 'create'
     ? String(payload.id || `shift_${crypto.randomUUID()}`).trim()
@@ -8132,7 +9117,7 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
   if (!/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])$/u.test(date)) {
     throw new ApiError(400, 'SCHEDULE_DATE_INVALID', 'Ngày phân ca phải có định dạng YYYY-MM-DD.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const store = requireStore(state, requestedStoreId)
   const storeId = String(store.id || requestedStoreId).trim()
   const storeEmployees = new Map((Array.isArray(state.employees) ? state.employees : [])
@@ -8309,7 +9294,7 @@ const accountSettingsCommand = async (db, actor, body, commandContext, env) => {
   }
   const payload = accountSettingsPayload(body)
   const updatesAvatar = payload.avatar !== undefined
-  const { current, state: storedState } = await loadGlobalCommandState(db, body)
+  const { current, state: storedState } = await loadGlobalCommandState(db, body, actor)
   const avatarMutation = updatesAvatar
     ? await beginAccountAvatarMutationCleanup(
       db,
@@ -8561,7 +9546,7 @@ const notificationCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh thông báo không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const notifications = Array.isArray(state.notifications) ? state.notifications : []
 
   if (operation === 'mark_read') {
@@ -8704,7 +9689,7 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được xóa lịch sử điều chuyển nhân sự.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const transfers = Array.isArray(state.supportTransfers) ? state.supportTransfers : []
   const transferId = operation === 'create'
     ? String(payload.id || `support_${crypto.randomUUID()}`).trim()
@@ -9139,7 +10124,7 @@ const systemResetDemoCommand = async (db, actor, body, commandContext, env) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh hệ thống không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state: storedState } = await loadGlobalCommandState(db, body)
+  const { current, state: storedState } = await loadGlobalCommandState(db, body, actor)
   const avatarMutation = hasLegacyAccountAvatarData(storedState)
     ? await beginAccountAvatarMutationCleanup(db, actor.user_id, commandContext.requestId, commandContext.now)
     : null
@@ -10002,7 +10987,7 @@ const systemResetAllCommand = async (db, actor, body, commandContext, env) => {
     return finalizeSystemResetAll(db, pendingRow)
   }
 
-  const { current, state: storedState } = await loadGlobalCommandState(db, body)
+  const { current, state: storedState } = await loadGlobalCommandState(db, body, actor)
   const avatarMutation = hasLegacyAccountAvatarData(storedState)
     ? await beginAccountAvatarMutationCleanup(db, actor.user_id, commandContext.requestId, commandContext.now)
     : null
@@ -11482,7 +12467,7 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   }
   const requestedAttendanceId = String(payload.attendanceId || payload.id || '').trim()
   if (!requestedAttendanceId) throw new ApiError(400, 'ATTENDANCE_ID_REQUIRED', 'Cần chọn bản ghi chấm công.')
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
   const previousMatch = uniqueIdentifierRecordMatch({
     records: attendance,
@@ -11825,7 +12810,7 @@ const attendanceEmergencyCloseCommand = async (db, actor, body, commandContext) 
   const requestedAttendanceId = String(payload.attendanceId || payload.id || '').trim()
   if (!requestedAttendanceId) throw new ApiError(400, 'ATTENDANCE_ID_REQUIRED', 'Cần chọn bản ghi chấm công.')
 
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const attendance = Array.isArray(state.attendance) ? state.attendance : []
   const previousMatch = uniqueIdentifierRecordMatch({
     records: attendance,
@@ -12310,7 +13295,7 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
   if (dataType === 'employees' && !selectedAudit) {
     throw new ApiError(400, 'OPERATIONAL_RESTORE_AUDIT_REQUIRED', 'Khôi phục nhân viên cần chọn chính xác một bản ghi lịch sử.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const selectedRecord = selectedAudit?.after || selectedAudit?.before || null
   const requestedStoreId = String(payload.storeId || selectedRecord?.storeId || '').trim()
   assertOperationalStoreAccess(actor, requestedStoreId)
@@ -13435,7 +14420,7 @@ export function reconcileOpenStoreAttendanceChecklists(state) {
 async function persistOpenStoreAttendanceChecklistRepairs(db, actor, context, currentRow = null, attempt = 0) {
   const current = currentRow || await loadState(db, 'global')
   if (!current) return current
-  const normalizedState = normalizeSharedStateForStorage(parseStoredJson(current.value_json, {}))
+  const normalizedState = normalizedCommandState(current)
   const reconciledState = reconcileOpenStoreAttendanceChecklists(normalizedState)
   if (reconciledState === normalizedState) return current
   const repairedState = {
@@ -13537,17 +14522,46 @@ async function persistOpenStoreAttendanceChecklistRepairs(db, actor, context, cu
   return repairedRow
 }
 
+const hasPendingOpenStoreAttendanceChecklistRepair = async (db) => {
+  const pending = await first(db, `
+    SELECT 1
+    FROM state_entities
+    WHERE scope_key = 'global'
+      AND collection_key = 'attendance'
+      AND open_flag = 1
+      AND (
+        COALESCE(CAST(json_extract(value_json, '$.checklistSnapshot.storeChecklistRepairVersion') AS INTEGER), 0)
+          < ?
+        OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL
+      )
+    LIMIT 1
+  `, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION)
+  if (pending) return true
+  // Rows inserted by pre-migration maintenance scripts may not have query
+  // dimensions yet. The NULL branch is indexed and normally empty after 0012.
+  return Boolean(await first(db, `
+    SELECT 1
+    FROM state_entities
+    WHERE scope_key = 'global'
+      AND collection_key = 'attendance'
+      AND open_flag IS NULL
+      AND json_extract(value_json, '$.deletedAt') IS NULL
+      AND trim(COALESCE(CAST(json_extract(value_json, '$.checkOut') AS TEXT), '')) = ''
+      AND trim(COALESCE(CAST(json_extract(value_json, '$.checkOutAt') AS TEXT), '')) = ''
+      AND (
+        COALESCE(CAST(json_extract(value_json, '$.checklistSnapshot.storeChecklistRepairVersion') AS INTEGER), 0)
+          < ?
+        OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL
+      )
+    LIMIT 1
+  `, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION))
+}
+
 const attendanceCommand = async (db, actor, body, commandContext) => {
   if (!['employee', 'business_support', 'store_manager'].includes(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Lệnh chấm công trực tiếp chỉ dành cho tài khoản nhân sự.')
   }
-  const expectedVersion = commandExpectedVersion(body)
-  const current = body._preloadedGlobalStateRow || await loadState(db, 'global')
-  const currentVersion = Number(current?.version || 0)
-  if (!current || currentVersion !== expectedVersion) {
-    throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
-  }
-  const state = normalizeSharedStateForStorage(parseStoredJson(current.value_json, {}))
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const employeeId = String(actor.employee_id || actor.user_id || '')
   const storeId = String(actor.store_id || '')
@@ -14490,7 +15504,7 @@ const orderInformationCommand = async (db, actor, body, commandContext) => {
   if (payload.kind !== undefined && String(payload.kind) !== ORDER_INFORMATION_KIND) {
     throw new ApiError(400, 'ORDER_INFORMATION_KIND_INVALID', 'Hiện chỉ hỗ trợ danh mục nghề nghiệp; hình thức thanh toán là trường hệ thống.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const { options, occupations } = orderInformationOptionsForMutation(state)
   const actorSnapshot = serverActorSnapshot(actor)
 
@@ -14679,13 +15693,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ORDER_READ_ONLY', 'Tài khoản quản lý vận hành chỉ được xem danh sách đơn hàng.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const expectedVersion = commandExpectedVersion(body)
-  const current = body._preloadedGlobalStateRow || await loadState(db, 'global')
-  const currentVersion = Number(current?.version || 0)
-  if (!current || currentVersion !== expectedVersion) {
-    throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
-  }
-  const state = normalizeSharedStateForStorage(parseStoredJson(current.value_json, {}))
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const requestedStoreId = String(payload.storeId || '').trim()
   const scopedStoreId = actor.role === 'admin' ? requestedStoreId : String(actor.store_id || '').trim()
   if (!scopedStoreId || (actor.role === 'employee' && requestedStoreId && !sameIdentifier(requestedStoreId, scopedStoreId))) {
@@ -14879,7 +15887,7 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
   if (!reason || reason.length > 500) {
     throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do từ 1 đến 500 ký tự.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const orderId = String(payload.orderId || payload.id || '').trim()
   const orders = Array.isArray(state.orders) ? state.orders : []
   const previous = orders.find((order) => String(order.id || '') === orderId)
@@ -15125,7 +16133,7 @@ const normalizeAssignedSupportTasks = (rawTasks, previousTasks, actor, timestamp
 
 const supportWorkCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const assignments = Array.isArray(state.supportWorkAssignments) ? state.supportWorkAssignments : []
 
   if (body.type === 'support_work.assign') {
@@ -15426,7 +16434,7 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh phân lịch làm việc không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const schedules = Array.isArray(state.supportWorkSchedules) ? state.supportWorkSchedules : []
   const actorEmployeeId = String(actor.employee_id || '').trim()
   const actorEmployee = uniqueEmployeeIdentifierRecordMatch({
@@ -15612,7 +16620,7 @@ const taskDoneCommand = async (db, actor, body, commandContext) => {
   if (typeof payload.done !== 'boolean') {
     throw new ApiError(400, 'TASK_STATUS_INVALID', 'Trạng thái công việc phải là true hoặc false.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const taskId = String(payload.taskId || payload.id || '').trim()
   const tasks = Array.isArray(state.tasks) ? state.tasks : []
   const matchingTasks = tasks
@@ -15766,7 +16774,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được gửi kết quả công việc trong ca.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const employeeId = String(actor.employee_id || actor.user_id || '').trim()
   const employee = uniqueEmployeeIdentifierRecordMatch({
     records: state.employees,
@@ -16159,7 +17167,7 @@ const shiftExpenseCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên cửa hàng được nhập chi phí trong ca.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const actorEmployeeId = String(actor.employee_id || actor.user_id || '').trim()
   const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
     [record.id, record.code, record.employeeId].some((candidateId) => sameIdentifier(candidateId, actorEmployeeId))
@@ -16371,7 +17379,7 @@ const expenseCommand = async (db, actor, body, commandContext) => {
   if (!['create', 'update', 'delete'].includes(operation)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh chi phí không được hỗ trợ.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const actorSnapshot = serverActorSnapshot(actor)
   const expenses = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
   const fixedExpenses = Array.isArray(state.fixedExpenses) ? state.fixedExpenses : []
@@ -16659,7 +17667,7 @@ const importVoucherCommand = async (db, actor, body, commandContext) => {
   if (!['create', 'update', 'delete'].includes(operation)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh phiếu nhập không được hỗ trợ.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const vouchers = Array.isArray(state.importVouchers) ? state.importVouchers : []
   const expenses = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
   const actorSnapshot = serverActorSnapshot(actor)
@@ -16904,7 +17912,7 @@ const salaryAdjustmentCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh điều chỉnh lương không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const requestedEmployeeId = String(payload.employeeId || '').trim()
   const employee = uniqueEmployeeIdentifierRecordMatch({
     records: state.employees,
@@ -16976,7 +17984,7 @@ const salaryAdvanceCommand = async (db, actor, body, commandContext) => {
   if (!['create', 'update', 'confirm'].includes(operation)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh ứng lương không được hỗ trợ.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const advances = Array.isArray(state.salaryAdvances) ? state.salaryAdvances : []
   const actorSnapshot = serverActorSnapshot(actor)
 
@@ -17236,7 +18244,7 @@ const storeSalaryConfigPeriods = (state, storeId, employeeId, effectiveFrom) => 
 const storeSalaryConfigCollisionRepairCommand = async (db, actor, body, commandContext) => {
   assertAdmin(actor, 'Chỉ Admin được xử lý cấu hình lương trùng mã.')
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const requestedStoreId = String(payload.storeId || '').trim()
   const store = requireActivePhysicalStore(state, requestedStoreId)
   const storeId = String(store.id || requestedStoreId).trim()
@@ -17341,7 +18349,7 @@ const storeSalaryConfigCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh cấu hình lương cửa hàng không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const requestedStoreId = String(payload.storeId || '').trim()
   assertOperationalStoreAccess(actor, requestedStoreId)
   const store = requireActivePhysicalStore(state, requestedStoreId)
@@ -17492,7 +18500,7 @@ const compensationEntryCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh thưởng/phụ cấp không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const entries = Array.isArray(state.compensationEntries) ? state.compensationEntries : []
   const actorSnapshot = serverActorSnapshot(actor)
 
@@ -17681,7 +18689,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh danh mục công việc không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const records = Array.isArray(state.workCatalogItems) ? state.workCatalogItems : []
   const actorSnapshot = serverActorSnapshot(actor)
 
@@ -18338,7 +19346,7 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ nhân viên được tự ghi nhận công việc tính thưởng của mình.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
 
   if (body.type === 'work_reward.set') {
     const plan = planWorkRewardClaim({ state, actor, payload, commandContext, commandType: body.type })
@@ -18925,7 +19933,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền quản lý vi phạm.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const records = Array.isArray(state.violations) ? state.violations : []
   const actorSnapshot = serverActorSnapshot(actor)
   if (operation === 'create_batch') {
@@ -19756,7 +20764,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh thưởng doanh thu không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   if (body.type !== 'revenue_bonus.calculate_day') {
     return revenueBonusMilestoneDecision(db, actor, body, commandContext, current, state, payload)
   }
@@ -20127,7 +21135,7 @@ const upsertManagerRevenueBonusEntry = (state, managerRevenueBonus, actorSnapsho
 const payrollPeriodCollisionRepairCommand = async (db, actor, body, commandContext) => {
   assertAdmin(actor, 'Chỉ Admin được xử lý kỳ lương trùng mã.')
   const payload = isPlainRecord(body.payload) ? body.payload : {}
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const requestedStoreId = String(payload.storeId || '').trim()
   const payrollUnit = requirePayrollUnit(state, requestedStoreId)
   const storeId = String(payrollUnit.id || requestedStoreId).trim()
@@ -20356,7 +21364,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
   } else {
     assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được chốt hoặc chi kỳ lương.')
   }
-  const { current, state } = await loadGlobalCommandState(db, body)
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
   const requestedStoreId = String(payload.storeId || '').trim()
   assertOperationalStoreAccess(actor, requestedStoreId)
   const period = asMonth(payload.period)
@@ -21150,7 +22158,8 @@ const userCommand = async (db, actor, body, commandContext) => {
       throw new ApiError(400, 'EMPLOYEE_SCOPE_INVALID', 'Tài khoản cần mã đơn vị và mã nhân viên hợp lệ.')
     }
     if (role === 'employee') assertOperationalStoreAccess(actor, requestedStoreId)
-    const globalState = body._preloadedGlobalStateRow || await loadState(db, 'global')
+    const globalState = body._preloadedGlobalStateRow
+      || await loadStateCollections(db, 'global', ['stores', 'employees', 'deletedEmployees'])
     const state = normalizeSharedStateForStorage(parseStoredJson(globalState?.value_json, {}))
     assertNoCaseCollidingOperationalIdentifiers(state)
     const employeeProfile = uniqueEmployeeIdentifierRecordMatch({
@@ -21319,7 +22328,8 @@ const userCommand = async (db, actor, body, commandContext) => {
     }
     if (target.role === 'employee') {
       assertOperationalStoreAccess(actor, storeId)
-      const globalState = body._preloadedGlobalStateRow || await loadState(db, 'global')
+      const globalState = body._preloadedGlobalStateRow
+        || await loadStateCollections(db, 'global', ['stores'])
       const state = normalizeSharedStateForStorage(parseStoredJson(globalState?.value_json, {}))
       const validStore = uniqueIdentifierRecordMatch({
         records: state.stores,
@@ -21579,7 +22589,9 @@ const userCommand = async (db, actor, body, commandContext) => {
 
 const executeCommand = async (request, env, context) => {
   const db = getDatabase(env)
-  const user = await requireSession(request, db, context)
+  const user = await requireSession(request, db, context, {
+    stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+  })
   const body = await readJson(request)
   const updatesAccountAvatar = body.type === 'account_settings.update' && accountSettingsUpdatesAvatar(body)
   const skipsAccountAvatarCleanup = body.type === 'account_settings.update' && !updatesAccountAvatar
@@ -21606,8 +22618,9 @@ const executeCommand = async (request, env, context) => {
   if (user.role === 'business_support' && !businessSupportCommandAllowed(body)) {
     throw new ApiError(403, 'BUSINESS_SUPPORT_READ_ONLY', 'Nhân viên hỗ trợ KD không có quyền thực hiện thao tác này.')
   }
-  const collisionStateRow = user._globalStateRow || await loadState(db, 'global')
-  const collisionState = normalizeSharedStateForStorage(parseStoredJson(collisionStateRow?.value_json, {}))
+  const collisionStateRow = user._globalStateRow
+    || await loadStateCollections(db, 'global', SESSION_CONTEXT_STATE_COLLECTIONS)
+  const collisionState = normalizedCommandState(collisionStateRow)
   try {
     assertNoCaseCollidingOperationalIdentifiers(collisionState)
   } catch (error) {
@@ -21644,12 +22657,15 @@ const executeCommand = async (request, env, context) => {
     hash,
     userAgent: String(request.headers.get('user-agent') || '').slice(0, 512),
   }
-  const persistedGlobalStateRow = await persistOpenStoreAttendanceChecklistRepairs(
-    db,
-    user,
-    commandContext,
-    collisionStateRow,
-  )
+  const checklistRepairPending = await hasPendingOpenStoreAttendanceChecklistRepair(db)
+  const persistedGlobalStateRow = checklistRepairPending
+    ? await persistOpenStoreAttendanceChecklistRepairs(
+        db,
+        user,
+        commandContext,
+        await loadState(db, 'global'),
+      )
+    : null
   if (persistedGlobalStateRow) {
     Object.defineProperty(body, '_preloadedGlobalStateRow', {
       value: persistedGlobalStateRow,
@@ -22359,6 +23375,49 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/state-metadata') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getStateMetadata(request, env, context, url)
+  }
+  const storeScreenMatch = path.match(/^\/api\/store-screens\/([^/]+)$/u)
+  if (storeScreenMatch) {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    let screen
+    try {
+      screen = decodeURIComponent(storeScreenMatch[1])
+    } catch {
+      throw new ApiError(400, 'STORE_SCREEN_INVALID', 'Màn hình cửa hàng không hợp lệ.')
+    }
+    if (!STORE_SCREEN_NAMES.has(screen)) {
+      throw new ApiError(400, 'STORE_SCREEN_INVALID', 'Màn hình cửa hàng không hợp lệ.')
+    }
+    url.searchParams.set('scope', 'global')
+    url.searchParams.set('view', 'store')
+    url.searchParams.set('screen', screen)
+    return getState(request, env, context, url)
+  }
+  const systemScreenMatch = path.match(/^\/api\/system-screens\/([^/]+)$/u)
+  if (systemScreenMatch) {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    let screen
+    try {
+      screen = decodeURIComponent(systemScreenMatch[1])
+    } catch {
+      throw new ApiError(400, 'SYSTEM_SCREEN_INVALID', 'Màn hình hệ thống không hợp lệ.')
+    }
+    return getSystemScreen(request, env, context, screen)
+  }
+  if (path === '/api/finance-overview') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getFinanceOverview(request, env, context, url)
+  }
+  const historyMatch = path.match(/^\/api\/history\/([^/]+)$/u)
+  if (historyMatch) {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    let historyKind
+    try {
+      historyKind = decodeURIComponent(historyMatch[1])
+    } catch {
+      throw new ApiError(404, 'HISTORY_KIND_NOT_FOUND', 'Không tìm thấy loại lịch sử.')
+    }
+    return getEntityHistory(request, env, context, url, historyKind)
   }
   if (path === '/api/revenue-bonus/live') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])

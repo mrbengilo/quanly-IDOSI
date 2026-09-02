@@ -542,6 +542,7 @@ class MemoryD1 {
       'drizzle/0006_recursive_profile_secret_scrub.sql',
       'drizzle/0007_session_roles.sql',
       'drizzle/0008_order_information_options.sql',
+      'drizzle/0012_state_entity_query_indexes.sql',
     ]) {
       const migration = readFileSync(file, 'utf8').replaceAll('--> statement-breakpoint', '')
       this.database.exec(migration)
@@ -937,7 +938,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(authenticatedState.status).toBe(200)
   })
 
-  it('returns a compact Admin login bootstrap while preserving the complete state endpoint', async () => {
+  it('keeps historical finance rows out of the Admin login bootstrap while preserving the complete state endpoint', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-admin-initial-profile' }
     const historicalDetail = 'x'.repeat(180_000)
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
@@ -960,13 +961,13 @@ describe('IDOSI Worker security primitives', () => {
     const loginBody = await login.json()
     expect(loginBody.bootstrap).toMatchObject({
       partial: true,
-      loadedCollections: ['stores', 'orders', 'expenseEntries'],
+      loadedCollections: ['stores'],
       state: {
         stores: [{ id: 'S01', name: 'Cửa hàng 01' }],
-        orders: [expect.objectContaining({ id: 'ORDER-01' })],
-        expenseEntries: [expect.objectContaining({ id: 'EXPENSE-01' })],
       },
     })
+    expect(loginBody.bootstrap.state).not.toHaveProperty('orders')
+    expect(loginBody.bootstrap.state).not.toHaveProperty('expenseEntries')
     expect(loginBody.bootstrap.state).not.toHaveProperty('tasks')
     expect(loginBody.bootstrap.state).not.toHaveProperty('taskAssignmentHistory')
 
@@ -978,7 +979,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(initial.status).toBe(200)
     expect(await initial.json()).toMatchObject({
       partial: true,
-      loadedCollections: ['stores', 'orders', 'expenseEntries'],
+      loadedCollections: ['stores'],
     })
 
     const complete = await worker.fetch(new Request('https://idosi.example/api/state?scope=global', {
@@ -990,6 +991,100 @@ describe('IDOSI Worker security primitives', () => {
     expect(completeBody.state.taskAssignmentHistory)
       .toEqual([expect.objectContaining({ id: 'HISTORY-HEAVY-01' })])
     expect(JSON.stringify(loginBody).length).toBeLessThan(JSON.stringify(completeBody).length / 2)
+  })
+
+  it('serves a compact monthly finance overview without returning historical rows', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-finance-overview' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.finance.overview', password: 'admin-finance-overview-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01' }, { id: 'S02', name: 'Cửa hàng 02' }],
+        orders: [
+          { id: 'ORDER-S01', storeId: 'S01', amount: 100_000, createdAt: '2026-09-01T01:00:00.000Z' },
+          { id: 'ORDER-S02', storeId: 'S02', amount: 200_000, createdAt: '2026-09-02T01:00:00.000Z' },
+          { id: 'ORDER-AUGUST', storeId: 'S01', amount: 900_000, createdAt: '2026-08-31T01:00:00.000Z' },
+        ],
+        expenseEntries: [
+          { id: 'EXPENSE-S01', storeId: 'S01', amount: 20_000, occurredAt: '2026-09-03T01:00:00.000Z' },
+          { id: 'EXPENSE-DELETED', storeId: 'S01', amount: 700_000, occurredAt: '2026-09-03', deletedAt: '2026-09-04' },
+        ],
+        violationRefunds: [{
+          id: 'REFUND-S01', storeId: 'S01', amountVnd: 30_000,
+          status: 'RECOGNIZED', recognized: true, occurredOn: '2026-09-04',
+        }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.finance.overview', password: 'admin-finance-overview-password',
+    }), env)
+    const loginBody = await login.json()
+    const response = await worker.fetch(new Request(
+      'https://idosi.example/api/finance-overview?period=2026-09',
+      { headers: { authorization: `Bearer ${loginBody.token}` } },
+    ), env)
+    const body = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(body).toMatchObject({
+      period: '2026-09',
+      summaries: [
+        { storeId: 'S01', revenue: 130_000, expense: 20_000, profit: 110_000 },
+        { storeId: 'S02', revenue: 200_000, expense: 0, profit: 200_000 },
+      ],
+    })
+    expect(body).not.toHaveProperty('orders')
+    expect(body).not.toHaveProperty('expenseEntries')
+  })
+
+  it('paginates retained store history without leaking another store', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-history-pages' }
+    const s01Orders = Array.from({ length: 23 }, (_, index) => ({
+      id: `ORDER-S01-${String(index + 1).padStart(2, '0')}`,
+      storeId: 'S01',
+      amount: (index + 1) * 1_000,
+      createdAt: `2026-09-${String((index % 20) + 1).padStart(2, '0')}T01:00:00.000Z`,
+      ...(index === 19 ? { deletedAt: '2026-09-20T02:00:00.000Z', status: 'Đã xóa' } : {}),
+    }))
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.history.pages', password: 'admin-history-pages-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01' }, { id: 'S02', name: 'Cửa hàng 02' }],
+        orders: [
+          ...s01Orders,
+          { id: 'ORDER-S02-SECRET', storeId: 'S02', amount: 9_999_999, note: 'FOREIGN_HISTORY_SECRET', createdAt: '2026-09-30' },
+        ],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.history.pages', password: 'admin-history-pages-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const first = await worker.fetch(new Request(
+      'https://idosi.example/api/history/orders?storeId=S01&period=2026-09&limit=10',
+      { headers: authorization },
+    ), env)
+    const firstBody = await first.json()
+    expect(first.status).toBe(200)
+    expect(firstBody).toMatchObject({
+      kind: 'orders', storeId: 'S01', period: '2026-09',
+      page: { limit: 10, hasMore: true },
+    })
+    expect(firstBody.records).toHaveLength(10)
+    expect(firstBody.page.nextCursor).toEqual(expect.any(String))
+
+    const second = await worker.fetch(new Request(
+      `https://idosi.example/api/history/orders?storeId=S01&period=2026-09&limit=10&cursor=${encodeURIComponent(firstBody.page.nextCursor)}`,
+      { headers: authorization },
+    ), env)
+    const secondBody = await second.json()
+    expect(second.status).toBe(200)
+    expect(secondBody.records).toHaveLength(10)
+    expect(new Set([...firstBody.records, ...secondBody.records].map(({ id }) => id)).size).toBe(20)
+    expect(JSON.stringify([firstBody, secondBody])).not.toContain('FOREIGN_HISTORY_SECRET')
+    expect([...firstBody.records, ...secondBody.records].some(({ deletedAt }) => deletedAt)).toBe(true)
   })
 
   it('returns a role-safe compact login bootstrap for every non-Admin account', async () => {
@@ -1093,12 +1188,13 @@ describe('IDOSI Worker security primitives', () => {
     const sessionContextCollections = ['employees', 'deletedEmployees', 'stores', 'deletedStores', 'supportTransfers']
     expect(loginBodies.support.bootstrap.loadedCollections).toEqual([
       ...sessionContextCollections, 'attendance', 'supportWorkSchedules',
+      'officeAdjustments', 'salaryAdjustments', 'payrollPeriods',
     ])
     expect(loginBodies.manager.bootstrap.loadedCollections).toEqual([
-      ...sessionContextCollections, 'attendance', 'supportWorkSchedules',
+      ...sessionContextCollections, 'attendance',
     ])
     expect(loginBodies.storeEmployee.bootstrap.loadedCollections).toEqual([
-      ...sessionContextCollections, 'attendance', 'schedule', 'tasks', 'orders', 'shiftDefinitions',
+      ...sessionContextCollections, 'attendance', 'schedule', 'shiftDefinitions',
     ])
     expect(loginBodies.officeEmployee.bootstrap.loadedCollections).toEqual([
       ...sessionContextCollections, 'attendance', 'supportWorkSchedules',
@@ -1112,15 +1208,13 @@ describe('IDOSI Worker security primitives', () => {
     expect(loginBodies.support.bootstrap.state).not.toHaveProperty('taskAssignmentHistory')
     expect(loginBodies.manager.bootstrap.state.employees.map(({ id }) => id)).toEqual(['QL-01', 'E01'])
     expect(loginBodies.manager.bootstrap.state.attendance.map(({ id }) => id).sort()).toEqual(['ATT-E01', 'ATT-QL'])
-    expect(loginBodies.manager.bootstrap.state.supportWorkSchedules).toEqual([
-      expect.objectContaining({ id: 'WS-QL' }),
-    ])
+    expect(loginBodies.manager.bootstrap.state.supportWorkSchedules).toEqual([])
     expect(loginBodies.storeEmployee.bootstrap.state).toMatchObject({
       employees: [expect.objectContaining({ id: 'E01' })],
       attendance: [expect.objectContaining({ id: 'ATT-E01' })],
       schedule: [expect.objectContaining({ id: 'SCH-E01' })],
-      tasks: [expect.objectContaining({ id: 'TASK-E01' })],
-      orders: [expect.objectContaining({ id: 'ORDER-E01' })],
+      tasks: [],
+      orders: [],
       shiftDefinitions: [expect.objectContaining({ id: 'SHIFT-S01' })],
     })
     expect(loginBodies.officeEmployee.bootstrap.state).toMatchObject({
@@ -1720,6 +1814,7 @@ describe('IDOSI Worker security primitives', () => {
     // apply the later session-role schema without altering the historical 0004
     // data assertions above.
     database.exec(readFileSync('drizzle/0007_session_roles.sql', 'utf8').replaceAll('--> statement-breakpoint', ''))
+    database.exec(readFileSync('drizzle/0012_state_entity_query_indexes.sql', 'utf8').replaceAll('--> statement-breakpoint', ''))
 
     const migratedD1 = new MemoryD1()
     migratedD1.database.close()
@@ -3198,7 +3293,7 @@ describe('IDOSI Worker security primitives', () => {
       state: {
         stores: [{ id: 'SM234' }],
         employees: [{ id: 'NV001' }],
-        orders: [{ code: 'SM234-00007' }],
+        orders: [],
       },
     })
     expect(employeeLoginBody.bootstrap.policies).toHaveLength(5)
@@ -9878,7 +9973,7 @@ describe('IDOSI Worker security primitives', () => {
         projection: 'store_manager',
         partial: true,
         loadedCollections: expect.arrayContaining([
-          'employees', 'stores', 'attendance', 'supportWorkSchedules',
+          'employees', 'stores', 'attendance',
         ]),
         state: {
           stores: [expect.objectContaining({ id: 'S01' })],

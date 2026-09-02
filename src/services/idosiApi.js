@@ -140,7 +140,8 @@ export const apiGetState = (scope = 'global', options = {}) => stateReadRequest(
   `/api/state?scope=${encodeURIComponent(scope)}`,
   options,
 )
-export const apiGetStoreWorkspaceState = (storeId, options = {}) => {
+export const apiGetStoreWorkspaceState = (storeId, { screen = '', ...options } = {}) => {
+  if (screen) return apiGetStoreScreenState(storeId, screen, options)
   const query = new URLSearchParams({
     scope: 'global',
     view: 'store',
@@ -148,7 +149,38 @@ export const apiGetStoreWorkspaceState = (storeId, options = {}) => {
   })
   return stateReadRequest(`/api/state?${query.toString()}`, options)
 }
+export const apiGetStoreScreenState = (storeId, screen, { period = '', ...options } = {}) => {
+  const query = new URLSearchParams({ storeId: String(storeId || '') })
+  if (period) query.set('period', String(period))
+  return stateReadRequest(
+    `/api/store-screens/${encodeURIComponent(String(screen || ''))}?${query.toString()}`,
+    options,
+  )
+}
+export const apiGetSystemScreenState = (screen, options = {}) => stateReadRequest(
+  `/api/system-screens/${encodeURIComponent(String(screen || ''))}`,
+  options,
+)
 export const apiGetStateMetadata = (scope = 'global') => request(`/api/state-metadata?scope=${encodeURIComponent(scope)}`)
+export const apiGetFinanceOverview = (period) => stateReadRequest(
+  `/api/finance-overview?period=${encodeURIComponent(String(period || ''))}`,
+)
+export const apiGetHistory = (kind, {
+  storeId,
+  employeeId = '',
+  period = '',
+  cursor = '',
+  limit = 50,
+} = {}) => {
+  const query = new URLSearchParams({
+    storeId: String(storeId || ''),
+    limit: String(limit),
+  })
+  if (employeeId) query.set('employeeId', String(employeeId))
+  if (period) query.set('period', String(period))
+  if (cursor) query.set('cursor', String(cursor))
+  return stateReadRequest(`/api/history/${encodeURIComponent(String(kind || ''))}?${query.toString()}`)
+}
 export const apiGetRevenueBonusLive = ({ storeId, businessDate }) => {
   const query = new URLSearchParams({
     storeId: String(storeId || ''),

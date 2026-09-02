@@ -487,7 +487,7 @@ for (const [collectionKey, records] of payrollSources) {
 // production scope. Output contains only aggregate error codes, never employee
 // identities, record payloads, notes, or monetary values.
 const previewStoreReference = 'SM TNV'
-const previewPeriod = '2026-08'
+const previewPeriod = new Date(Date.now() + (7 * 60 * 60 * 1_000)).toISOString().slice(0, 7)
 const previewStoreIdentifiers = (record = {}) => [
   record.id,
   record.code,

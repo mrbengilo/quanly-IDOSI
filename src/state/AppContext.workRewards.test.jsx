@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
   apiGetStoreWorkspaceState: vi.fn(),
+  apiGetSystemScreenState: vi.fn(),
   apiGetStateMetadata: vi.fn(),
   apiLogin: vi.fn(),
   apiListUsers: vi.fn(),
