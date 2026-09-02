@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
   apiGetStoreWorkspaceState: vi.fn(),
+  apiGetSystemScreenState: vi.fn(),
   apiLogin: vi.fn(),
   apiSelectSessionRole: vi.fn(),
   apiListUsers: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../services/idosiApi', () => ({
   apiGetAccountAvatar: api.apiGetAccountAvatar,
   apiGetState: api.apiGetState,
   apiGetStoreWorkspaceState: api.apiGetStoreWorkspaceState,
+  apiGetSystemScreenState: api.apiGetSystemScreenState,
   apiLogin: api.apiLogin,
   apiSelectSessionRole: api.apiSelectSessionRole,
   apiListUsers: api.apiListUsers,
@@ -139,14 +141,39 @@ describe('AppContext order information options', () => {
     api.localFallback = false
     localStorage.clear()
     sessionStorage.clear()
-    api.apiCommand.mockImplementation(async (type, payload) => ({
-      version: 2,
-      option: { id: payload.optionId || 'OCC-NEW', ...payload },
-      options: remoteState.orderInformationOptions,
-      order: type === 'order.update'
-        ? { ...remoteState.legacyOrder, ...payload }
-        : { ...remoteState.legacyOrder, id: 'ORD-NEW', code: 'NEW-001', ...payload },
-    }))
+    api.apiCommand.mockImplementation(async (type, payload) => {
+      if (type === 'order_information.reorder') {
+        const byId = new Map(appRef.current.orderInformationOptions.map((option) => [String(option.id), option]))
+        return {
+          version: 2,
+          options: payload.orderedIds.map((id, index) => ({ ...byId.get(String(id)), sortOrder: (index + 1) * 100 })),
+        }
+      }
+      if (type.startsWith('order_information.')) {
+        const previous = appRef.current?.orderInformationOptions
+          .find((option) => String(option.id) === String(payload.optionId))
+        const created = type === 'order_information.create'
+          ? { id: 'OCC-NEW', kind: 'occupation', active: true, sortOrder: 9999 }
+          : previous
+        return {
+          version: 2,
+          option: {
+            ...created,
+            ...payload,
+            ...(type === 'order_information.disable' ? { active: false, deleteReason: payload.reason } : {}),
+            ...(type === 'order_information.restore' ? { active: true, deletedAt: null, deleteReason: '' } : {}),
+          },
+        }
+      }
+      return {
+        version: 2,
+        option: { id: payload.optionId || 'OCC-NEW', ...payload },
+        options: remoteState.orderInformationOptions,
+        order: type === 'order.update'
+          ? { ...remoteState.legacyOrder, ...payload }
+          : { ...remoteState.legacyOrder, id: 'ORD-NEW', code: 'NEW-001', ...payload },
+      }
+    })
   })
 
   afterEach(() => {
@@ -297,7 +324,7 @@ describe('AppContext order information options', () => {
   it('hydrates the remote collection, exposes CRUD actions, and uses the worker command contract', async () => {
     await renderRemote('admin')
     const [first, second, third, fourth] = remoteState.orderInformationOptions
-    const reversedIds = [...remoteState.orderInformationOptions].reverse().map((option) => option.id)
+    let reversedIds
 
     expect(appRef.current.orderInformationOptions.map((option) => option.id)).toEqual(
       remoteState.orderInformationOptions.map((option) => option.id),
@@ -317,6 +344,7 @@ describe('AppContext order information options', () => {
     await act(async () => {
       expect((await appRef.current.restoreOrderInformationOption(first.id)).ok).toBe(true)
     })
+    reversedIds = [...appRef.current.orderInformationOptions].reverse().map((option) => option.id)
     await act(async () => {
       expect((await appRef.current.reorderOrderInformationOptions(reversedIds)).ok).toBe(true)
     })
