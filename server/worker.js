@@ -2485,7 +2485,11 @@ const notificationBelongsToStoreWorkspace = (state, record, storeId, visibleEmpl
   ))
 }
 
-export const projectSharedState = (rawState, user, { storeId: requestedWorkspaceStoreId = '' } = {}) => {
+export const projectSharedState = (
+  rawState,
+  user,
+  { storeId: requestedWorkspaceStoreId = '', screen: requestedWorkspaceScreen = '' } = {},
+) => {
   const normalizedState = normalizeSharedStateForStorage(rawState)
   const supportCompensationContext = createSupportCompensationProjectionContext(normalizedState)
   const systemOperatorStoreWorkspace = ['admin', 'business_support'].includes(user.role)
@@ -2607,8 +2611,38 @@ export const projectSharedState = (rawState, user, { storeId: requestedWorkspace
         },
       }
     })
+    const historicalInboundEmployeeIds = filterArray(state, 'supportTransfers', (record) => (
+      sameIdentifier(record.toStoreId, storeId)
+      && !record.deletedAt
+      && String(record.status || '') !== 'Đã xóa'
+    )).map((record) => normalizeIdentifierKey(record.employeeId)).filter(Boolean)
+    const payrollSnapshotEmployeeIds = requestedWorkspaceScreen === 'payroll'
+      ? filterArray(state, 'attendance', (record) => {
+          if (record.deletedAt || !sameIdentifier(record.storeId, storeId)) return false
+          const supportSnapshot = isPlainRecord(record.supportCompensation)
+            ? record.supportCompensation
+            : isPlainRecord(record.compensation?.support)
+              ? record.compensation.support
+              : null
+          const supportStoreId = supportSnapshot?.supportStoreId || record.supportStoreId
+          return Boolean(supportStoreId) && sameIdentifier(supportStoreId, storeId)
+        }).map((record) => normalizeIdentifierKey(employeeReference(record))).filter(Boolean)
+      : []
+    const historicalPayrollEmployeeIds = new Set([
+      ...historicalInboundEmployeeIds,
+      ...payrollSnapshotEmployeeIds,
+    ])
+    const historicalPayrollEmployees = requestedWorkspaceScreen === 'payroll'
+      ? filterArray(state, 'employees', (record) => (
+          employeeUnit(record) === 'store'
+          && !record.deletedAt
+          && employeeIdentifierValues(record).some((identifier) => (
+            historicalPayrollEmployeeIds.has(normalizeIdentifierKey(identifier))
+          ))
+        ))
+      : []
     const employees = [...homeEmployees]
-    for (const employee of transferredEmployees) {
+    for (const employee of [...transferredEmployees, ...historicalPayrollEmployees]) {
       if (!employees.some((record) => (
         employeeIdentifierValues(record).some((left) => employeeIdentifierValues(employee).some((right) => sameIdentifier(left, right)))
       ))) {
@@ -2620,14 +2654,10 @@ export const projectSharedState = (rawState, user, { storeId: requestedWorkspace
     )))
     const storeEmployeeIds = new Set(employees.filter((record) => employeeUnit(record) === 'store')
       .flatMap((record) => employeeIdentifierValues(record).map(normalizeIdentifierKey).filter(Boolean)))
-    const historicalInboundEmployeeIds = filterArray(state, 'supportTransfers', (record) => (
-      sameIdentifier(record.toStoreId, storeId)
-      && !record.deletedAt
-      && String(record.status || '') !== 'Đã xóa'
-    )).map((record) => normalizeIdentifierKey(record.employeeId)).filter(Boolean)
     const historicalStoreEmployeeIds = new Set([
       ...storeEmployeeIds,
       ...historicalInboundEmployeeIds,
+      ...payrollSnapshotEmployeeIds,
       ...filterArray(state, 'deletedEmployees', (record) => (
         sameIdentifier(record.storeId, storeId) && employeeUnit(record) === 'store'
       )).flatMap((record) => employeeIdentifierValues(record).map(normalizeIdentifierKey).filter(Boolean)),
@@ -4773,7 +4803,7 @@ const getBootstrap = async (request, env, context, url) => {
     ...(storeId && requestedScreen ? { screen: requestedScreen } : {}),
     ...(storeId && requestedPeriod ? { period: requestedPeriod } : {}),
     state: scope === 'global'
-      ? projectSharedState(rawState, effectiveUser, storeId ? { storeId } : {})
+      ? projectSharedState(rawState, effectiveUser, storeId ? { storeId, screen: requestedScreen } : {})
       : sanitizeStateValue(rawState),
     version: Number(stateRow?.version || 0),
     updatedAt: stateRow?.updated_at || null,
@@ -4819,7 +4849,7 @@ const getState = async (request, env, context, url) => {
     ...(storeId && requestedScreen ? { screen: requestedScreen } : {}),
     ...(storeId && requestedPeriod ? { period: requestedPeriod } : {}),
     state: scope === 'global'
-      ? projectSharedState(rawState, user, storeId ? { storeId } : {})
+      ? projectSharedState(rawState, user, storeId ? { storeId, screen: requestedScreen } : {})
       : sanitizeStateValue(rawState),
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,

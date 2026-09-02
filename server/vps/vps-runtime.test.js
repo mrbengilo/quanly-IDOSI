@@ -479,6 +479,7 @@ describe('IDOSI VPS runtime', () => {
             { id: 'E01', storeId: 'S01', unit: 'store', name: 'Nhân viên 01' },
             { id: 'E02', storeId: 'S02', unit: 'store', name: foreignSecret },
             { id: 'E-INBOUND', storeId: 'S02', unit: 'store', name: 'Nhân viên hỗ trợ' },
+            { id: 'E-SNAPSHOT', storeId: 'S02', unit: 'store', name: 'Nhân viên hỗ trợ từ snapshot' },
           ],
           supportTransfers: [{
             id: 'TRANSFER-INBOUND', employeeId: 'E-INBOUND', fromStoreId: 'S02', toStoreId: 'S01',
@@ -487,6 +488,14 @@ describe('IDOSI VPS runtime', () => {
           attendance: [
             { id: 'ATT-S01', storeId: 'S01', employeeId: 'E01', checkOutAt: '2026-09-01T09:00:00.000Z' },
             { id: 'ATT-INBOUND', employeeId: 'E-INBOUND', checkOutAt: '2026-09-01T09:00:00.000Z' },
+            {
+              id: 'ATT-SNAPSHOT', storeId: 'S01', employeeId: 'E-SNAPSHOT', date: '2026-09-02',
+              checkOutAt: '2026-09-02T09:00:00.000Z',
+              supportCompensation: {
+                homeStoreId: 'S02', supportStoreId: 'S01', hours: 4,
+                hourlyRate: 29_000, basePay: 116_000, allowance: 0, totalPay: 116_000,
+              },
+            },
             { id: 'ATT-S02', storeId: 'S02', employeeId: 'E02', checkOutAt: '2026-09-01T09:00:00.000Z', note: foreignSecret },
           ],
           orders: [
@@ -554,11 +563,28 @@ describe('IDOSI VPS runtime', () => {
       expect(storeSnapshotReads).toBe(1)
       expect(globalSnapshotReads).toBe(0)
 
+      const payrollResponse = await fetch(
+        `${baseUrl}/api/store-screens/payroll?storeId=S01&period=2026-09`,
+        { headers },
+      )
+      const payrollPayload = await payrollResponse.json()
+      expect(payrollResponse.status).toBe(200)
+      expect(payrollPayload).toMatchObject({
+        projection: 'store', storeId: 'S01', screen: 'payroll', period: '2026-09',
+      })
+      expect(payrollPayload.state.employees.map(({ id }) => id)).toEqual([
+        'E01', 'E-INBOUND', 'E-SNAPSHOT',
+      ])
+      expect(payrollPayload.state.attendance.map(({ id }) => id)).toEqual(['ATT-SNAPSHOT'])
+      expect(JSON.stringify(payrollPayload)).not.toContain('FOREIGN_STORE_SECRET')
+      expect(storeSnapshotReads).toBe(2)
+      expect(globalSnapshotReads).toBe(0)
+
       const employeesResponse = await fetch(`${baseUrl}/api/system-screens/employees`, { headers })
       const employeesPayload = await employeesResponse.json()
       expect(employeesResponse.status).toBe(200)
       expect(employeesPayload).toMatchObject({ projection: 'global', screen: 'employees' })
-      expect(employeesPayload.state.employees.map(({ id }) => id).sort()).toEqual(['E-INBOUND', 'E01', 'E02'])
+      expect(employeesPayload.state.employees.map(({ id }) => id).sort()).toEqual(['E-INBOUND', 'E-SNAPSHOT', 'E01', 'E02'])
       expect(employeesPayload.state).not.toHaveProperty('orders')
       expect(employeesPayload.state).not.toHaveProperty('attendance')
       expect(globalSnapshotReads).toBe(0)
@@ -572,7 +598,7 @@ describe('IDOSI VPS runtime', () => {
       expect(employeeOrdersPayload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
       expect(JSON.stringify(employeeOrdersPayload)).not.toContain('FOREIGN_STORE_SECRET')
       // One small session-context read resolves transfers, then one screen read.
-      expect(storeSnapshotReads).toBe(3)
+      expect(storeSnapshotReads).toBe(4)
       expect(globalSnapshotReads).toBe(0)
 
       const forbiddenSystemScreen = await fetch(`${baseUrl}/api/system-screens/employees`, {

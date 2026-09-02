@@ -2742,6 +2742,35 @@ describe('IDOSI Worker security primitives', () => {
     expect(JSON.stringify(projection).length).toBeLessThan(JSON.stringify(projectSharedState(state, { role: 'admin' })).length)
   })
 
+  it('keeps snapshot-only support employees in the selected store payroll projection', () => {
+    const state = {
+      stores: [{ id: 'S01' }, { id: 'S02' }],
+      employees: [
+        { id: 'E01', storeId: 'S01', unit: 'store', name: 'Nhân viên cửa hàng' },
+        { id: 'E-SUPPORT', storeId: 'S02', unit: 'store', name: 'Nhân viên hỗ trợ lịch sử' },
+        { id: 'E-FOREIGN', storeId: 'S02', unit: 'store', name: 'FOREIGN_STORE_SECRET' },
+      ],
+      supportTransfers: [],
+      attendance: [{
+        id: 'ATT-SUPPORT', storeId: 'S01', employeeId: 'E-SUPPORT', date: '2026-09-02',
+        supportCompensation: {
+          homeStoreId: 'S02', supportStoreId: 'S01', hours: 4,
+          hourlyRate: 29_000, basePay: 116_000, allowance: 0, totalPay: 116_000,
+        },
+      }],
+    }
+    const actor = { role: 'admin', user_id: 'ADMIN-1' }
+
+    const regularProjection = projectSharedState(state, actor, { storeId: 'S01' })
+    expect(regularProjection.employees.map(({ id }) => id)).toEqual(['E01'])
+    expect(regularProjection.attendance).toEqual([])
+
+    const payrollProjection = projectSharedState(state, actor, { storeId: 'S01', screen: 'payroll' })
+    expect(payrollProjection.employees.map(({ id }) => id)).toEqual(['E01', 'E-SUPPORT'])
+    expect(payrollProjection.attendance.map(({ id }) => id)).toEqual(['ATT-SUPPORT'])
+    expect(JSON.stringify(payrollProjection)).not.toContain('FOREIGN_STORE_SECRET')
+  })
+
   it('serves the selected store projection from the authenticated state endpoint', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-store-workspace-projection' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {

@@ -955,6 +955,9 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.queryByText(/Không thể tính lương kỳ này/u)).toBeNull()
     expect(screen.getByText('31,000 đ/giờ')).toBeTruthy()
     expect(screen.getAllByText('124,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getByRole('button', { name: 'TẠO THƯỞNG' }).disabled).toBe(false)
+    expect(screen.getByRole('button', { name: 'TẠO PHỤ CẤP' }).disabled).toBe(false)
+    expect(screen.getAllByRole('button', { name: 'TẠO ỨNG LƯƠNG' }).every((button) => !button.disabled)).toBe(true)
   })
 
   it('locks every store payroll total when active period ids collide by store casing', () => {
