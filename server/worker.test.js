@@ -9359,6 +9359,20 @@ describe('IDOSI Worker security primitives', () => {
     expect(roleSelected.status).toBe(200)
     expect(await roleSelected.json()).toMatchObject({
       user: { role: 'store_manager', employeeId: 'QLCH-001', storeId: 'S01' },
+      bootstrap: {
+        user: { role: 'store_manager', employeeId: 'QLCH-001', storeId: 'S01' },
+        projection: 'store_manager',
+        partial: true,
+        loadedCollections: expect.arrayContaining([
+          'employees', 'stores', 'attendance', 'supportWorkSchedules',
+        ]),
+        state: {
+          stores: [expect.objectContaining({ id: 'S01' })],
+          employees: expect.arrayContaining([
+            expect.objectContaining({ id: 'DOSII-TNV-001', storeId: 'S01' }),
+          ]),
+        },
+      },
     })
     const managerProjection = await worker.fetch(new Request('https://idosi.example/api/state', {
       headers: { authorization: `Bearer ${managerToken}` },
@@ -9442,6 +9456,10 @@ describe('IDOSI Worker security primitives', () => {
     expect(tripleManagerSelection.status).toBe(200)
     expect(await tripleManagerSelection.json()).toMatchObject({
       user: { role: 'store_manager', employeeId: linkedManagerProfile.id, storeId: 'S01' },
+      bootstrap: {
+        user: { role: 'store_manager', employeeId: linkedManagerProfile.id, storeId: 'S01' },
+        partial: true,
+      },
     })
 
     const managerSettingsUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {

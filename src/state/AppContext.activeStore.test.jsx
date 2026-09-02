@@ -262,18 +262,20 @@ describe('remote command active-store preservation', () => {
       },
       users: [supportUser],
     })
-    api.apiSelectSessionRole.mockResolvedValue({ user: managerUser })
-    let resolveCompleteBootstrap
-    const completeBootstrap = new Promise((resolve) => { resolveCompleteBootstrap = resolve })
-    api.apiBootstrapState
-      .mockResolvedValueOnce({
+    api.apiSelectSessionRole.mockResolvedValue({
+      user: managerUser,
+      bootstrap: {
         user: managerUser,
         state: managerState,
         policies: [],
         version: 1,
         partial: true,
         loadedCollections: ['employees', 'stores', 'attendance', 'supportWorkSchedules'],
-      })
+      },
+    })
+    let resolveCompleteBootstrap
+    const completeBootstrap = new Promise((resolve) => { resolveCompleteBootstrap = resolve })
+    api.apiBootstrapState
       .mockReturnValueOnce(completeBootstrap)
     renderProvider()
 
@@ -286,8 +288,8 @@ describe('remote command active-store preservation', () => {
     })
 
     expect(api.apiSelectSessionRole).toHaveBeenCalledWith(availableRoles[1])
-    expect(api.apiBootstrapState).toHaveBeenNthCalledWith(1, 'global', { profile: 'initial' })
-    expect(api.apiBootstrapState).toHaveBeenNthCalledWith(2, 'global')
+    expect(api.apiBootstrapState).toHaveBeenCalledTimes(1)
+    expect(api.apiBootstrapState).toHaveBeenCalledWith('global')
     expect(appRef.current.session).toMatchObject({ role: 'store_manager', employeeId: 'QL-001', storeId: 'STORE-A' })
     expect(appRef.current.remoteDataReady).toBe(false)
 

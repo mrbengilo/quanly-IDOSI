@@ -2001,7 +2001,11 @@ export function AppProvider({ children }) {
     if (apiRef.current.enabled) {
       try {
         const response = await apiSelectSessionRole(selected)
-        const payload = await apiBootstrapState('global', { profile: 'initial' })
+        // Newer servers return the compact first-screen projection together
+        // with the role update. Keep the fallback for a safe rolling deploy
+        // against an older API release.
+        const payload = response.bootstrap
+          || await apiBootstrapState('global', { profile: 'initial' })
         if (!payload.partial && canListAccounts(response.user?.role)) {
           const users = await apiListUsers()
           payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
