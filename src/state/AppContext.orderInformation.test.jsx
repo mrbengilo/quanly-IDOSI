@@ -43,6 +43,9 @@ const users = {
   store_manager: {
     id: 'SM-01', username: 'manager', displayName: 'Quản lý', role: 'store_manager', storeId: 'CH001', status: 'active', version: 1,
   },
+  business_support: {
+    id: 'SUPPORT-01', username: 'support', displayName: 'Nhân viên hỗ trợ KD', role: 'business_support', status: 'active', version: 1,
+  },
 }
 
 const createRemoteFixture = () => {
@@ -171,7 +174,9 @@ describe('AppContext order information options', () => {
         options: remoteState.orderInformationOptions,
         order: type === 'order.update'
           ? { ...remoteState.legacyOrder, ...payload }
-          : { ...remoteState.legacyOrder, id: 'ORD-NEW', code: 'NEW-001', ...payload },
+          : type === 'order.delete'
+            ? { ...remoteState.legacyOrder, status: 'Đã xóa', deletedAt: '2026-08-30T00:00:00.000Z' }
+            : { ...remoteState.legacyOrder, id: 'ORD-NEW', code: 'NEW-001', ...payload },
       }
     })
   })
@@ -489,5 +494,74 @@ describe('AppContext order information options', () => {
       orderId: remoteState.unknownLegacyOrder.id,
       occupation: remoteState.unknownLegacyOrder.occupation,
     })
+  })
+
+  it('lets the authoritative API update and delete history orders outside the bounded client projection', async () => {
+    const historicalOrder = remoteState.legacyOrder
+    remoteState = {
+      ...remoteState,
+      orders: remoteState.orders.filter((order) => order.id !== historicalOrder.id),
+    }
+    await renderRemote('admin')
+
+    let updated
+    let deleted
+    await act(async () => {
+      updated = await appRef.current.updateOrder(historicalOrder.id, {
+        customerName: 'Khách lịch sử đã sửa',
+        paymentMethod: 'Chuyển khoản',
+        amount: 420_000,
+        reason: 'Đối soát đơn lịch sử',
+      })
+      deleted = await appRef.current.deleteOrder(historicalOrder.id, 'Xóa nhầm đơn lịch sử')
+    })
+
+    expect(updated).toMatchObject({ ok: true })
+    expect(deleted).toMatchObject({ ok: true })
+    expect(commandPayload('order.update')).toMatchObject({
+      orderId: historicalOrder.id,
+      customerName: 'Khách lịch sử đã sửa',
+      paymentMethod: 'Chuyển khoản',
+      amount: 420_000,
+      reason: 'Đối soát đơn lịch sử',
+    })
+    expect(commandPayload('order.delete')).toEqual({
+      orderId: historicalOrder.id,
+      reason: 'Xóa nhầm đơn lịch sử',
+    })
+  })
+
+  it('lets business support update a history order but still rejects any amount mutation client-side', async () => {
+    const historicalOrder = remoteState.legacyOrder
+    remoteState = {
+      ...remoteState,
+      orders: remoteState.orders.filter((order) => order.id !== historicalOrder.id),
+    }
+    await renderRemote('business_support')
+
+    let updated
+    let amountDenied
+    await act(async () => {
+      updated = await appRef.current.updateOrder(historicalOrder.id, {
+        customerName: 'Khách HTKD cập nhật',
+        paymentMethod: 'Chuyển khoản',
+        reason: 'Đối soát thông tin khách',
+      })
+      amountDenied = await appRef.current.updateOrder(historicalOrder.id, {
+        amount: 420_000,
+        reason: 'Thử sửa tiền',
+      })
+    })
+
+    expect(updated).toMatchObject({ ok: true })
+    expect(amountDenied).toMatchObject({ ok: false, message: 'Chỉ Admin được thay đổi số tiền của đơn hàng.' })
+    const updateCommands = api.apiCommand.mock.calls.filter(([type]) => type === 'order.update')
+    expect(updateCommands).toHaveLength(1)
+    expect(updateCommands[0][1]).toMatchObject({
+      orderId: historicalOrder.id,
+      customerName: 'Khách HTKD cập nhật',
+      paymentMethod: 'Chuyển khoản',
+    })
+    expect(updateCommands[0][1]).not.toHaveProperty('amount')
   })
 })
