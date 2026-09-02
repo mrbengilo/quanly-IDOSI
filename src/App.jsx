@@ -92,6 +92,7 @@ const ManagerCompensationPage = lazyNamed(loadCompensationPages, 'ManagerCompens
 const MyCompensationPage = lazyNamed(loadCompensationPages, 'MyCompensationPage')
 const MyViolationsPage = lazyNamed(loadCompensationPages, 'MyViolationsPage')
 const RevenueBonusPage = lazyNamed(loadCompensationPages, 'RevenueBonusPage')
+const ViolationRefundPage = lazyNamed(loadCompensationPages, 'ViolationRefundPage')
 const ViolationManagementPage = lazyNamed(loadCompensationPages, 'ViolationManagementPage')
 
 const canonicalRole = (role) => role === 'manager' ? 'business_support' : role
@@ -265,6 +266,7 @@ export default function App() {
         <Route path="/store/payroll" element={<StorePayrollV2 />} />
         <Route path="/store/salary-settings" element={<RoleGuard roles={['admin', 'business_support']}><StoreSalarySettings /></RoleGuard>} />
         <Route path="/store/revenue-bonus" element={<RevenueBonusPage storeScoped />} />
+        <Route path="/store/violation-refunds" element={<ViolationRefundPage />} />
         <Route path="/store/my-compensation" element={<MyCompensationPage />} />
         <Route path="/store/my-violations" element={<MyViolationsPage />} />
         <Route path="/store/cashflow" element={<StoreCashflowV2 />} />

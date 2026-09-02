@@ -5,7 +5,7 @@ import {
 } from '../domain/compensationPolicies'
 import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'
 
-export const DOMAIN_SCHEMA_VERSION = 5
+export const DOMAIN_SCHEMA_VERSION = 6
 
 const pad = (value, length = 5) => String(value).padStart(length, '0')
 
@@ -82,6 +82,7 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   storeShiftTaskTemplates: [],
   compensationEntries: [],
   violations: [],
+  violationRefunds: [],
   revenueBonusDaily: [],
   revenueBonusAllocations: [],
   teamRewardClaims: [],
@@ -162,6 +163,7 @@ export const migrateDomainState = (stored, context) => {
     storeShiftTaskTemplates: mergeArray(stored, defaults, 'storeShiftTaskTemplates'),
     compensationEntries: mergeArray(stored, defaults, 'compensationEntries'),
     violations: mergeArray(stored, defaults, 'violations'),
+    violationRefunds: mergeArray(stored, defaults, 'violationRefunds'),
     revenueBonusDaily: mergeArray(stored, defaults, 'revenueBonusDaily'),
     revenueBonusAllocations: mergeArray(stored, defaults, 'revenueBonusAllocations'),
     teamRewardClaims: mergeArray(stored, defaults, 'teamRewardClaims'),

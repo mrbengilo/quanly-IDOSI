@@ -248,7 +248,7 @@ const REMOTE_ARRAY_KEYS = [
   'orders', 'orderInformationOptions', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
   'storeEmployeeSalaryConfigs', 'workCatalogItems', 'workCatalogProgress',
-  'storeShiftTaskTemplates', 'compensationEntries', 'violations', 'revenueBonusDaily', 'revenueBonusAllocations',
+  'storeShiftTaskTemplates', 'compensationEntries', 'violations', 'violationRefunds', 'revenueBonusDaily', 'revenueBonusAllocations',
   'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
   'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
 ]

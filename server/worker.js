@@ -1551,6 +1551,7 @@ const COMPENSATION_STATE_COLLECTIONS = Object.freeze([
   'storeShiftTaskTemplates',
   'compensationEntries',
   'violations',
+  'violationRefunds',
   'revenueBonusDaily',
   'revenueBonusAllocations',
   'teamRewardClaims',
@@ -2485,6 +2486,9 @@ export const projectSharedState = (rawState, user) => {
       storeShiftTaskTemplates: state.storeShiftTaskTemplates,
       compensationEntries: ownCompensationEntries,
       violations: ownViolations,
+      violationRefunds: filterArray(state, 'violationRefunds', (record) => (
+        sameIdentifier(record.storeId, storeId)
+      )),
       compensationTeamTotals,
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => sameIdentifier(record.storeId, storeId))
         .map(redactRevenueBonusDaily),
@@ -10518,16 +10522,39 @@ const recognizedExpensesFor = (state, storeId, period, { excludeSourceTypes = []
   return amount
 }
 
-const revenueFor = (state, storeId, period) => (Array.isArray(state.orders) ? state.orders : [])
-  .filter((order) => (
-    sameIdentifier(order.storeId, storeId)
-    && monthFromRecord(order) === period
-    && !order.deletedAt
-    && order.status !== 'Đã xóa'
-    && Number.isSafeInteger(Number(order.amount))
-    && Number(order.amount) >= 0
-  ))
-  .reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Tổng doanh thu trong kỳ'), 0)
+const recognizedViolationRefundRevenueFor = (state, storeId, period) => (
+  Array.isArray(state.violationRefunds) ? state.violationRefunds : []
+).filter((refund) => (
+  sameIdentifier(refund.storeId, storeId)
+  && String(refund.period || '') === period
+  && refund.status === 'RECOGNIZED'
+  && refund.recognized === true
+  && !refund.deletedAt
+  && !refund.voidedAt
+  && Number.isSafeInteger(Number(refund.amountVnd))
+  && Number(refund.amountVnd) >= 0
+)).reduce((sum, refund) => safeMoneySum(
+  sum,
+  Number(refund.amountVnd),
+  'Tổng hoàn trả vi phạm trong kỳ',
+), 0)
+
+const revenueFor = (state, storeId, period, { violationRefundAmountVnd } = {}) => {
+  const orderRevenue = (Array.isArray(state.orders) ? state.orders : [])
+    .filter((order) => (
+      sameIdentifier(order.storeId, storeId)
+      && monthFromRecord(order) === period
+      && !order.deletedAt
+      && order.status !== 'Đã xóa'
+      && Number.isSafeInteger(Number(order.amount))
+      && Number(order.amount) >= 0
+    ))
+    .reduce((sum, order) => safeMoneySum(sum, Number(order.amount), 'Tổng doanh thu trong kỳ'), 0)
+  const violationRefundRevenue = violationRefundAmountVnd === undefined
+    ? recognizedViolationRefundRevenueFor(state, storeId, period)
+    : asVnd(violationRefundAmountVnd, 'Tổng hoàn trả vi phạm trong kỳ')
+  return safeMoneySum(orderRevenue, violationRefundRevenue, 'Tổng doanh thu trong kỳ')
+}
 
 const adjustmentKind = (record = {}) => {
   const type = normalizeTextKey(record.type || record.kind || record.adjustmentType)
@@ -10687,19 +10714,66 @@ const managerRevenueBonusFor = (state, storeId, period, profitBeforeManagerCompe
   }
 }
 
-const violationAmountFor = (state, employeeId, period) => (Array.isArray(state.violations) ? state.violations : [])
-  .filter((record) => (
-    belongsToEmployee(record, employeeId)
-    && monthFromRecord(record) === period
-    && !record.deletedAt
-    && !record.voidedAt
-    && ['active', 'approved', 'confirmed', 'dang ap dung', 'da duyet'].includes(normalizeTextKey(record.status))
-  ))
-  .reduce((sum, record) => safeMoneySum(
-    sum,
-    asVnd(record.amountVnd ?? record.amount ?? 0, 'Số tiền vi phạm'),
-    'Tổng vi phạm',
-  ), 0)
+const activeViolationRecordsFor = (state, employeeId, period) => (
+  Array.isArray(state.violations) ? state.violations : []
+).filter((record) => (
+  belongsToEmployee(record, employeeId)
+  && monthFromRecord(record) === period
+  && !record.deletedAt
+  && !record.voidedAt
+  && ['active', 'approved', 'confirmed', 'dang ap dung', 'da duyet'].includes(normalizeTextKey(record.status))
+))
+
+const violationRecordScope = (state, record, employeeHomeStoreId = '') => {
+  const scope = compensationRecordScope(state, record, employeeHomeStoreId)
+  return {
+    storeId: scope.storeId,
+    supportTransferId: String(scope.supportTransferId || record?.supportTransferId || '').trim(),
+  }
+}
+
+const violationRecordsForPayroll = (state, {
+  employeeId,
+  employeeHomeStoreId,
+  storeId,
+  period,
+  supportTransferIds = null,
+} = {}) => activeViolationRecordsFor(state, employeeId, period).filter((record) => {
+  const scope = violationRecordScope(state, record, employeeHomeStoreId)
+  if (!sameIdentifier(scope.storeId, storeId)) return false
+  if (supportTransferIds instanceof Set) {
+    return Boolean(scope.supportTransferId)
+      && supportTransferIds.has(normalizeIdentifierKey(scope.supportTransferId))
+  }
+  return !scope.supportTransferId
+})
+
+const violationAmountForRecords = (records) => records.reduce((sum, record) => safeMoneySum(
+  sum,
+  asVnd(record.amountVnd ?? record.amount ?? 0, 'Số tiền vi phạm'),
+  'Tổng vi phạm',
+), 0)
+
+const orderedViolationRecords = (records) => [...records].sort((left, right) => (
+  String(left.occurredOn || left.workDate || left.date || '').localeCompare(String(right.occurredOn || right.workDate || right.date || ''))
+  || String(left.createdAt || '').localeCompare(String(right.createdAt || ''))
+  || String(left.id || '').localeCompare(String(right.id || ''))
+))
+
+const allocateAppliedViolationRefunds = (records, appliedViolationVnd) => {
+  let remaining = asVnd(appliedViolationVnd, 'Vi phạm đã áp dụng')
+  return orderedViolationRecords(records).map((record) => {
+    const assessedAmountVnd = asVnd(record.amountVnd ?? record.amount ?? 0, 'Số tiền vi phạm')
+    const appliedAmountVnd = Math.min(remaining, assessedAmountVnd)
+    remaining -= appliedAmountVnd
+    return {
+      violationId: String(record.id || '').trim(),
+      assessedAmountVnd,
+      appliedAmountVnd,
+      remainingReceivableVnd: assessedAmountVnd - appliedAmountVnd,
+    }
+  })
+}
 
 const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => {
   const payrollUnit = requirePayrollUnit(state, requestedStoreId)
@@ -10735,7 +10809,6 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
     participantIds.add(participantKey)
     participants.push({ employee, hours: supportPay.hours, workedDays: 0, supportPay })
   }
-  const revenue = revenueFor(state, storeId, period)
   const attendanceProratedPayroll = ['office', 'business_support'].includes(String(payrollUnit.unit || ''))
   const rows = participants.map(({ employee, hours, workedDays, supportPay }) => {
     const employeeId = String(employee.id || employee.code || '')
@@ -10848,8 +10921,18 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
     const bonusVnd = [manualBonusVnd, workBonusVnd, revenueBonusVnd]
       .reduce((sum, value) => safeMoneySum(sum, value, 'Tổng thưởng'), 0)
     const allowanceVnd = safeMoneySum(baseAllowance, compensation.allowance, 'Tổng phụ cấp')
+    const supportTransferIds = supportPay
+      ? new Set(supportPay.transfers.map((record) => normalizeIdentifierKey(record.id)).filter(Boolean))
+      : null
+    const violationRecords = violationRecordsForPayroll(state, {
+      employeeId,
+      employeeHomeStoreId: employee.storeId,
+      storeId,
+      period,
+      supportTransferIds,
+    })
     const violationVnd = safeMoneySum(
-      supportPay ? 0 : violationAmountFor(state, employeeId, period),
+      violationAmountForRecords(violationRecords),
       legacyDeduction,
       'Tổng vi phạm/khấu trừ',
     )
@@ -10862,6 +10945,14 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
       allowanceVnd,
       violationVnd,
     })
+    const violationRefundAllocations = supportPay
+      ? allocateAppliedViolationRefunds(violationRecords, violationSettlement.appliedViolationVnd)
+      : []
+    const violationRefundVnd = violationRefundAllocations.reduce((sum, allocation) => safeMoneySum(
+      sum,
+      allocation.appliedAmountVnd,
+      'Tổng hoàn trả vi phạm của nhân viên hỗ trợ',
+    ), 0)
     const advancesPaid = supportPay ? 0 : paidAdvancesFor(state, employeeId, period)
     const advanceSettlement = applyAdvanceToNetPay({
       netPayVnd: violationSettlement.netPayVnd,
@@ -10887,6 +10978,8 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
       violationVnd,
       appliedViolationVnd: violationSettlement.appliedViolationVnd,
       remainingViolationReceivableVnd: violationSettlement.remainingReceivableVnd,
+      violationRefundVnd,
+      violationRefundAllocations,
       advancesPaid,
       ...(supportPay ? {
         supportTransferIds: supportPay.transfers.map((record) => record.id),
@@ -10932,6 +11025,15 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
       },
     }
   })
+  const violationRefundAllocations = rows.flatMap((row) => row.violationRefundAllocations || [])
+  const violationRefundRevenueVnd = violationRefundAllocations.reduce((sum, allocation) => safeMoneySum(
+    sum,
+    allocation.appliedAmountVnd,
+    'Tổng hoàn trả vi phạm trong kỳ',
+  ), 0)
+  const revenue = revenueFor(state, storeId, period, {
+    violationRefundAmountVnd: violationRefundRevenueVnd,
+  })
   const recognizedSupportExpense = rows.reduce((sum, row) => {
     if (!row.supportCompensation) return sum
     const accrued = recognizedSupportCompensationFor(state, storeId, row.employeeId, row.supportDetails)
@@ -10946,7 +11048,11 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
   }, 0)
   const employeePayrollExpense = rows.reduce((sum, row) => safeMoneySum(
     sum,
-    Math.max(0, asVnd(row.gross ?? 0, 'Tổng lương') - asVnd(row.appliedViolationVnd ?? 0, 'Vi phạm đã áp dụng')),
+    Math.max(0, safeMoneySum(
+      asVnd(row.gross ?? 0, 'Tổng lương'),
+      -asVnd(row.appliedViolationVnd ?? 0, 'Vi phạm đã áp dụng'),
+      'Chi phí lương sau vi phạm',
+    ) + asVnd(row.violationRefundVnd ?? 0, 'Hoàn trả vi phạm')),
     'Chi phí lương trong kỳ',
   ), 0)
   if (recognizedSupportExpense > employeePayrollExpense) {
@@ -11004,9 +11110,11 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
   }
   return {
     rows,
+    violationRefundAllocations,
     managerRevenueBonus,
     financeSnapshot: {
       revenue,
+      violationRefundRevenueVnd,
       expense,
       profit,
       recognizedExpense,
@@ -17486,6 +17594,205 @@ const workRewardCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+const supportTransferIncludesAttendance = (transfer, attendance, occurredOn) => {
+  const bounds = supportTransferTimeBounds(transfer)
+  if (!bounds) return false
+  const checkInAt = String(attendance?.checkInAt || '').trim()
+  const checkIn = String(attendance?.checkIn || attendance?.checkInTime || '').trim().slice(0, 5)
+  const attendanceAt = transferDateTimeEpoch(checkInAt)
+    ?? (checkIn ? transferDateTimeEpoch(`${occurredOn}T${checkIn}`) : null)
+  if (attendanceAt != null) return bounds.startMs <= attendanceAt && attendanceAt < bounds.endMs
+  const dayStart = transferDateTimeEpoch(`${occurredOn}T00:00`)
+  const nextDate = shiftCalendarDate(occurredOn, 1)
+  const dayEnd = transferDateTimeEpoch(`${nextDate}T00:00`)
+  return Number.isFinite(dayStart) && Number.isFinite(dayEnd)
+    && bounds.startMs < dayEnd && bounds.endMs > dayStart
+}
+
+const resolveStoreViolationScope = (state, employee, employeeId, storeId, occurredOn, attendanceId) => {
+  const canonicalHomeStoreId = String(employee?.storeId || '').trim()
+  const canonicalStoreId = String(storeId || '').trim()
+  let attendance = null
+  if (attendanceId) {
+    attendance = uniqueIdentifierRecordMatch({
+      records: state.attendance,
+      identifier: attendanceId,
+      predicate: (record) => !record.deletedAt,
+      collisionCode: 'VIOLATION_ATTENDANCE_IDENTIFIER_COLLISION',
+      collisionMessage: 'Mã chấm công đang trùng với nhiều bản ghi; không thể xác định cửa hàng chịu vi phạm.',
+    })?.record || null
+    if (!attendance
+      || !belongsToEmployee(attendance, employeeId)
+      || dateFromRecord(attendance) !== occurredOn
+      || !sameIdentifier(attendance.storeId, canonicalStoreId)) {
+      throw new ApiError(409, 'VIOLATION_ATTENDANCE_SCOPE_MISMATCH', 'Ca chấm công không khớp nhân viên, ngày hoặc cửa hàng chịu vi phạm.')
+    }
+  }
+
+  const supportTransferId = String(attendance?.supportTransferId || '').trim()
+  if (!supportTransferId) {
+    if (!sameIdentifier(canonicalHomeStoreId, canonicalStoreId)) {
+      throw new ApiError(
+        409,
+        'VIOLATION_SUPPORT_ATTENDANCE_REQUIRED',
+        'Nhân viên hỗ trợ cửa hàng phải có bản chấm công liên kết đúng phiếu điều chuyển.',
+      )
+    }
+    return {
+      storeId: canonicalStoreId,
+      employeeHomeStoreId: canonicalHomeStoreId,
+      supportStoreId: '',
+      supportTransferId: '',
+      supportAssignmentSnapshot: null,
+    }
+  }
+
+  const transfer = uniqueIdentifierRecordMatch({
+    records: state.supportTransfers,
+    identifier: supportTransferId,
+    predicate: (record) => !record.deletedAt && !['Đã xóa', 'Đã hủy'].includes(String(record.status || '')),
+    collisionCode: 'VIOLATION_SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã phiếu điều chuyển đang trùng với nhiều bản ghi; không thể hoàn trả vi phạm an toàn.',
+  })?.record || null
+  if (!transfer) {
+    throw new ApiError(409, 'VIOLATION_SUPPORT_TRANSFER_NOT_FOUND', 'Không tìm thấy phiếu điều chuyển hợp lệ của ca hỗ trợ.')
+  }
+  if (!sameIdentifier(transfer.employeeId, employeeId)
+    || !sameIdentifier(transfer.toStoreId, canonicalStoreId)) {
+    throw new ApiError(409, 'VIOLATION_SUPPORT_TRANSFER_SCOPE_MISMATCH', 'Phiếu điều chuyển không khớp nhân viên hoặc cửa hàng hỗ trợ.')
+  }
+  const attendanceHomeStoreId = String(attendance.homeStoreId || attendance.supportAssignment?.fromStoreId || '').trim()
+  const employeeHomeStoreId = attendanceHomeStoreId || String(transfer.fromStoreId || canonicalHomeStoreId).trim()
+  if (!employeeHomeStoreId || !sameIdentifier(transfer.fromStoreId, employeeHomeStoreId)) {
+    throw new ApiError(409, 'VIOLATION_SUPPORT_HOME_STORE_MISMATCH', 'Cửa hàng gốc trong ca chấm công và phiếu điều chuyển không khớp.')
+  }
+  if (attendance.supportStoreId && !sameIdentifier(attendance.supportStoreId, canonicalStoreId)) {
+    throw new ApiError(409, 'VIOLATION_SUPPORT_STORE_MISMATCH', 'Cửa hàng hỗ trợ trong ca chấm công không khớp cửa hàng chịu vi phạm.')
+  }
+  const attendanceAssignment = isPlainRecord(attendance.supportAssignment) ? attendance.supportAssignment : null
+  if (attendanceAssignment?.id && !sameIdentifier(attendanceAssignment.id, transfer.id)) {
+    throw new ApiError(409, 'VIOLATION_SUPPORT_TRANSFER_SCOPE_MISMATCH', 'Snapshot ca chấm công tham chiếu phiếu điều chuyển khác.')
+  }
+  if (!supportTransferIncludesAttendance(transfer, attendance, occurredOn)) {
+    throw new ApiError(409, 'VIOLATION_SUPPORT_TRANSFER_TIME_MISMATCH', 'Thời điểm chấm công không nằm trong thời gian hỗ trợ của phiếu điều chuyển.')
+  }
+  const transferBounds = supportTransferTimeBounds(transfer)
+  return {
+    storeId: canonicalStoreId,
+    employeeHomeStoreId,
+    supportStoreId: canonicalStoreId,
+    supportTransferId: String(transfer.id || supportTransferId).trim(),
+    supportAssignmentSnapshot: {
+      id: String(transfer.id || supportTransferId).trim(),
+      fromStoreId: String(transfer.fromStoreId || '').trim(),
+      toStoreId: String(transfer.toStoreId || '').trim(),
+      startAt: transferBounds?.startAt || transfer.startAt || null,
+      endAt: transferBounds?.endAt || transfer.endAt || null,
+      status: transfer.status || null,
+      version: Number(transfer.version || 1),
+    },
+  }
+}
+
+const violationRefundId = (violationId) => `violation-refund:v1:${String(violationId || '').trim()}`
+
+const exactViolationRefundMatch = (refunds, violationId) => {
+  const exactId = String(violationId || '').trim()
+  if (!exactId) return null
+  const matches = (Array.isArray(refunds) ? refunds : []).map((record, index) => ({ record, index })).filter(({ record }) => (
+    String(record?.violationId || record?.sourceId || '').trim() === exactId
+  ))
+  if (matches.length > 1) {
+    throw new ApiError(409, 'VIOLATION_REFUND_SOURCE_COLLISION', 'Một vi phạm đang có nhiều bản ghi hoàn trả; cần đối soát trước khi tiếp tục.', {
+      violationId: exactId,
+      refundIds: matches.map(({ record }) => String(record.id || '')),
+    })
+  }
+  return matches[0] || null
+}
+
+const pendingViolationRefund = (violation, previous, actorSnapshot, timestamp) => {
+  const assessedAmountVnd = asVnd(violation.amountVnd ?? violation.amount ?? 0, 'Số tiền vi phạm', { positive: true })
+  const base = {
+    id: previous?.id || violationRefundId(violation.id),
+    sourceType: 'support-violation-refund',
+    sourceId: String(violation.id || '').trim(),
+    violationId: String(violation.id || '').trim(),
+    violationOccurrenceKey: String(violation.occurrenceKey || violation.id || '').trim(),
+    storeId: String(violation.supportStoreId || violation.storeId || '').trim(),
+    employeeId: String(violation.employeeId || '').trim(),
+    employeeName: violation.employeeName || violation.employeeId,
+    employeeHomeStoreId: String(violation.employeeHomeStoreId || '').trim(),
+    supportStoreId: String(violation.supportStoreId || violation.storeId || '').trim(),
+    supportTransferId: String(violation.supportTransferId || '').trim(),
+    attendanceId: String(violation.attendanceId || '').trim(),
+    shiftId: String(violation.shiftId || violation.shift || '').trim(),
+    shiftName: violation.shiftName || violation.shiftId || violation.shift,
+    shiftStart: violation.shiftStart || null,
+    shiftEnd: violation.shiftEnd || null,
+    policyCode: violation.policyCode || violation.catalogCode || null,
+    title: violation.title || violation.catalogSnapshot?.name || null,
+    occurredOn: String(violation.occurredOn || violation.workDate || violation.date || '').trim(),
+    occurredAt: violation.occurredAt || violation.createdAt || timestamp,
+    period: String(violation.period || monthFromRecord(violation)).trim(),
+    assessedAmountVnd,
+    appliedAmountVnd: 0,
+    remainingReceivableVnd: assessedAmountVnd,
+    amountVnd: 0,
+    status: 'PENDING_PAYROLL',
+    recognized: false,
+    recognizedAt: null,
+    payrollPeriodId: null,
+    createdAt: previous?.createdAt || timestamp,
+    createdBy: previous?.createdBy || actorSnapshot,
+    updatedAt: timestamp,
+    updatedBy: actorSnapshot,
+    voidedAt: null,
+    voidedBy: null,
+    voidReason: null,
+    deletedAt: null,
+    version: previous ? Number(previous.version || 1) + 1 : 1,
+  }
+  return base
+}
+
+const upsertPendingViolationRefunds = (refunds, violations, actorSnapshot, timestamp) => {
+  const next = [...(Array.isArray(refunds) ? refunds : [])]
+  const selected = []
+  for (const violation of violations) {
+    if (!violation?.supportTransferId) continue
+    const previousMatch = exactViolationRefundMatch(next, violation.id)
+    const refund = pendingViolationRefund(violation, previousMatch?.record || null, actorSnapshot, timestamp)
+    if (previousMatch) next[previousMatch.index] = refund
+    else next.unshift(refund)
+    selected.push(refund)
+  }
+  return { records: next, selected }
+}
+
+const voidViolationRefund = (refunds, violationId, actorSnapshot, timestamp, reason) => {
+  const next = [...(Array.isArray(refunds) ? refunds : [])]
+  const previousMatch = exactViolationRefundMatch(next, violationId)
+  if (!previousMatch) return { records: next, refund: null }
+  const refund = {
+    ...previousMatch.record,
+    appliedAmountVnd: 0,
+    amountVnd: 0,
+    status: 'VOID',
+    recognized: false,
+    recognizedAt: null,
+    payrollPeriodId: null,
+    voidedAt: timestamp,
+    voidedBy: actorSnapshot,
+    voidReason: reason,
+    updatedAt: timestamp,
+    updatedBy: actorSnapshot,
+    version: Number(previousMatch.record.version || 1) + 1,
+  }
+  next[previousMatch.index] = refund
+  return { records: next, refund }
+}
+
 const resolveStoreViolationShiftSnapshot = (state, employee, employeeId, storeId, occurredOn, requestedShiftId) => {
   const assignments = (Array.isArray(state.schedule) ? state.schedule : []).filter((record) => (
     !record.deletedAt
@@ -17678,9 +17985,25 @@ const resolveViolationShiftSnapshot = (state, employee, employeeId, storeId, tar
   }
 }
 
-const violationOccurrenceKey = ({ employeeId, occurredOn, shiftId, catalogItemId }) => {
+const violationOccurrenceKey = ({
+  employeeId,
+  occurredOn,
+  shiftId,
+  catalogItemId,
+  storeId = '',
+  attendanceId = '',
+  supportTransferId = '',
+}) => {
   try {
-    return workCatalogViolationKey({ employeeId, workDate: occurredOn, shiftRef: shiftId, catalogItemId })
+    const legacyKey = workCatalogViolationKey({ employeeId, workDate: occurredOn, shiftRef: shiftId, catalogItemId })
+    if (!supportTransferId) return legacyKey
+    return [
+      'support-violation:v1',
+      legacyKey,
+      encodeURIComponent(String(storeId || '').trim()),
+      encodeURIComponent(String(attendanceId || '').trim()),
+      encodeURIComponent(String(supportTransferId || '').trim()),
+    ].join(':')
   } catch (error) {
     throw new ApiError(409, 'VIOLATION_IDENTITY_INVALID', 'Không thể tạo định danh ổn định cho vi phạm.', {
       reason: error instanceof Error ? error.message : String(error),
@@ -17695,6 +18018,12 @@ const violationMatchesOccurrence = (record, occurrenceKey, identity) => (
     && String(record?.occurredOn || record?.workDate || record?.date || '') === identity.occurredOn
     && String(record?.shiftId || record?.shift || '') === identity.shiftId
     && String(record?.catalogItemId || '') === identity.catalogItemId
+    && (!identity.supportTransferId || (
+      String(record?.storeId || '') === identity.storeId
+      && String(record?.attendanceId || '') === identity.attendanceId
+      && String(record?.supportTransferId || '') === identity.supportTransferId
+    ))
+    && (identity.supportTransferId || !record?.supportTransferId)
   )
 )
 
@@ -17722,15 +18051,13 @@ const violationCommand = async (db, actor, body, commandContext) => {
     if (employeeUnit(employee) !== targetUnit) {
       throw new ApiError(409, 'EMPLOYEE_UNIT_MISMATCH', 'Nhân viên không thuộc nhóm đã chọn.')
     }
-    const storeId = targetUnit === 'store'
+    let storeId = targetUnit === 'store'
       ? String(payload.storeId || employee.storeId || '').trim()
       : targetUnit === 'office' ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID
     if (targetUnit === 'store') {
       assertOperationalStoreAccess(actor, storeId)
-      requireActivePhysicalStore(state, storeId)
-      if (String(employee.storeId || '') !== storeId) {
-        throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng đã chọn.')
-      }
+      const store = requireActivePhysicalStore(state, storeId)
+      storeId = String(store.id || storeId).trim()
     }
     const occurredOn = compensationDate(payload.occurredOn, 'Ngày phát sinh')
     const period = occurredOn.slice(0, 7)
@@ -17744,6 +18071,22 @@ const violationCommand = async (db, actor, body, commandContext) => {
       occurredOn,
       payload,
     )
+    const storeScope = targetUnit === 'store'
+      ? resolveStoreViolationScope(
+          state,
+          employee,
+          employeeId,
+          storeId,
+          occurredOn,
+          shiftSnapshot.attendanceId,
+        )
+      : {
+          storeId,
+          employeeHomeStoreId: String(employee.storeId || '').trim(),
+          supportStoreId: '',
+          supportTransferId: '',
+          supportAssignmentSnapshot: null,
+        }
     if (!Array.isArray(payload.catalogItemIds)) {
       throw new ApiError(400, 'VIOLATION_CATALOG_REQUIRED', 'Cần chọn ít nhất một nội dung vi phạm.')
     }
@@ -17788,7 +18131,15 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const reactivated = []
     for (const catalogItemId of catalogItemIds) {
       const catalogItem = catalogById.get(catalogItemId)
-      const identity = { employeeId, occurredOn, shiftId: shiftSnapshot.shiftId, catalogItemId }
+      const identity = {
+        employeeId,
+        occurredOn,
+        shiftId: shiftSnapshot.shiftId,
+        catalogItemId,
+        storeId,
+        attendanceId: shiftSnapshot.attendanceId || '',
+        supportTransferId: storeScope.supportTransferId,
+      }
       const occurrenceKey = violationOccurrenceKey(identity)
       const existing = records.find((record) => violationMatchesOccurrence(record, occurrenceKey, identity)) || null
       if (existing) {
@@ -17824,6 +18175,12 @@ const violationCommand = async (db, actor, body, commandContext) => {
         employeeId,
         employeeName,
         storeId,
+        employeeHomeStoreId: storeScope.employeeHomeStoreId,
+        ...(storeScope.supportTransferId ? {
+          supportStoreId: storeScope.supportStoreId,
+          supportTransferId: storeScope.supportTransferId,
+          supportAssignmentSnapshot: storeScope.supportAssignmentSnapshot,
+        } : {}),
         policyCode: catalogItem.code,
         title: catalogItem.name,
         amountVnd: catalogItem.amountVnd,
@@ -17832,6 +18189,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
         catalogVersion: catalogItem.version,
         catalogSnapshot,
         occurredOn,
+        occurredAt: commandContext.now,
         workDate: occurredOn,
         date: occurredOn,
         period,
@@ -17866,12 +18224,19 @@ const violationCommand = async (db, actor, body, commandContext) => {
         existing: true,
       }, 200, commandContext)
     }
+    const refundState = upsertPendingViolationRefunds(
+      state.violationRefunds,
+      [...created, ...reactivated],
+      actorSnapshot,
+      commandContext.now,
+    )
     const nextState = {
       ...state,
       violations: [
         ...created,
         ...records.map((record) => reactivated.find((item) => String(item.id || '') === String(record.id || '')) || record),
       ],
+      violationRefunds: refundState.records,
       payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
@@ -17883,13 +18248,15 @@ const violationCommand = async (db, actor, body, commandContext) => {
       after: selected,
       metadata: {
         targetUnit, storeId, employeeId, period, shiftId: shiftSnapshot.shiftId,
-        attendanceId: shiftSnapshot.attendanceId, createdCount: created.length,
+        attendanceId: shiftSnapshot.attendanceId, supportTransferId: storeScope.supportTransferId || null,
+        refundIds: refundState.selected.map((refund) => refund.id), createdCount: created.length,
         reactivatedCount: reactivated.length,
         existingCount: selected.length - created.length - reactivated.length,
       },
       response: {
         command: body.type,
         violations: selected,
+        refunds: refundState.selected,
         createdCount: created.length,
         reactivatedCount: reactivated.length,
         existingCount: selected.length - created.length - reactivated.length,
@@ -17910,13 +18277,13 @@ const violationCommand = async (db, actor, body, commandContext) => {
     const employeeId = String(employee.id || employee.code || employee.employeeId)
     const actualUnit = employeeUnit(employee)
     if (actualUnit !== targetUnit) throw new ApiError(409, 'EMPLOYEE_UNIT_MISMATCH', 'Nhân viên không thuộc nhóm đã chọn.')
-    const storeId = targetUnit === 'store'
+    let storeId = targetUnit === 'store'
       ? String(payload.storeId || employee.storeId || '').trim()
       : targetUnit === 'office' ? OFFICE_STORE_ID : BUSINESS_SUPPORT_STORE_ID
     if (targetUnit === 'store') {
       assertOperationalStoreAccess(actor, storeId)
-      requireActivePhysicalStore(state, storeId)
-      if (String(employee.storeId || '') !== storeId) throw new ApiError(409, 'EMPLOYEE_STORE_MISMATCH', 'Nhân viên không thuộc cửa hàng đã chọn.')
+      const store = requireActivePhysicalStore(state, storeId)
+      storeId = String(store.id || storeId).trim()
     }
     const occurredOn = compensationDate(payload.occurredOn, 'Ngày phát sinh')
     const period = occurredOn.slice(0, 7)
@@ -17930,6 +18297,22 @@ const violationCommand = async (db, actor, body, commandContext) => {
       occurredOn,
       payload,
     )
+    const storeScope = targetUnit === 'store'
+      ? resolveStoreViolationScope(
+          state,
+          employee,
+          employeeId,
+          storeId,
+          occurredOn,
+          shiftSnapshot.attendanceId,
+        )
+      : {
+          storeId,
+          employeeHomeStoreId: String(employee.storeId || '').trim(),
+          supportStoreId: '',
+          supportTransferId: '',
+          supportAssignmentSnapshot: null,
+        }
     const catalogItemId = String(payload.catalogItemId || '').trim()
     let catalogItem = null
     let policyCode = String(payload.policyCode || '').trim()
@@ -17972,6 +18355,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
       occurredOn,
       shiftId: shiftSnapshot.shiftId,
       catalogItemId: occurrenceCatalogItemId,
+      storeId,
+      attendanceId: shiftSnapshot.attendanceId || '',
+      supportTransferId: storeScope.supportTransferId,
     }
     const occurrenceKey = violationOccurrenceKey(occurrenceIdentity)
     const existing = records.find((record) => violationMatchesOccurrence(record, occurrenceKey, occurrenceIdentity)) || null
@@ -17990,6 +18376,12 @@ const violationCommand = async (db, actor, body, commandContext) => {
         const nextState = {
           ...state,
           violations: records.map((record) => String(record.id || '') === String(existing.id || '') ? revived : record),
+          violationRefunds: upsertPendingViolationRefunds(
+            state.violationRefunds,
+            [revived],
+            actorSnapshot,
+            commandContext.now,
+          ).records,
           payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
           stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
         }
@@ -18020,6 +18412,12 @@ const violationCommand = async (db, actor, body, commandContext) => {
       employeeId,
       employeeName: employee.name || employee.displayName || employeeId,
       storeId,
+      employeeHomeStoreId: storeScope.employeeHomeStoreId,
+      ...(storeScope.supportTransferId ? {
+        supportStoreId: storeScope.supportStoreId,
+        supportTransferId: storeScope.supportTransferId,
+        supportAssignmentSnapshot: storeScope.supportAssignmentSnapshot,
+      } : {}),
       policyCode,
       title,
       amountVnd,
@@ -18038,6 +18436,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
         },
       } : {}),
       occurredOn,
+      occurredAt: commandContext.now,
       workDate: occurredOn,
       date: occurredOn,
       attendanceId: shiftSnapshot.attendanceId,
@@ -18059,9 +18458,16 @@ const violationCommand = async (db, actor, body, commandContext) => {
       deletedAt: null,
       voidedAt: null,
     }
+    const refundState = upsertPendingViolationRefunds(
+      state.violationRefunds,
+      [violation],
+      actorSnapshot,
+      commandContext.now,
+    )
     const nextState = {
       ...state,
       violations: [violation, ...records],
+      violationRefunds: refundState.records,
       payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
@@ -18071,8 +18477,12 @@ const violationCommand = async (db, actor, body, commandContext) => {
       entityId: violation.id,
       before: null,
       after: violation,
-      metadata: { targetUnit, storeId, employeeId, period, policyCode, amountVnd },
-      response: { command: body.type, violation },
+      metadata: {
+        targetUnit, storeId, employeeId, period, policyCode, amountVnd,
+        supportTransferId: storeScope.supportTransferId || null,
+        refundId: refundState.selected[0]?.id || null,
+      },
+      response: { command: body.type, violation, refund: refundState.selected[0] || null },
       status: 201,
     }, commandContext)
   }
@@ -18104,9 +18514,17 @@ const violationCommand = async (db, actor, body, commandContext) => {
     updatedBy: actorSnapshot,
     version: Number(previous.version || 1) + 1,
   }
+  const refundState = voidViolationRefund(
+    state.violationRefunds,
+    violationId,
+    actorSnapshot,
+    commandContext.now,
+    reason,
+  )
   const nextState = {
     ...state,
     violations: records.map((record) => String(record.id || '') === violationId ? next : record),
+    violationRefunds: refundState.records,
     payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId: previous.storeId, period }, commandContext.now, body.type),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
@@ -18116,8 +18534,14 @@ const violationCommand = async (db, actor, body, commandContext) => {
     entityId: violationId,
     before: previous,
     after: next,
-    metadata: { targetUnit: previous.targetUnit, storeId: previous.storeId, employeeId: previous.employeeId, period },
-    response: { command: body.type, violation: next },
+    metadata: {
+      targetUnit: previous.targetUnit,
+      storeId: previous.storeId,
+      employeeId: previous.employeeId,
+      period,
+      refundId: refundState.refund?.id || null,
+    },
+    response: { command: body.type, violation: next, refund: refundState.refund },
   }, commandContext)
 }
 
@@ -18942,6 +19366,97 @@ const payrollAccrualReferencesPeriod = (entry, payrollPeriod, payrollPeriods = [
   })
 )
 
+const reconcileViolationRefundsForPayrollClose = ({
+  refunds,
+  storeId,
+  period,
+  payrollPeriodId,
+  allocations,
+  timestamp,
+  actorSnapshot,
+}) => {
+  const next = [...(Array.isArray(refunds) ? refunds : [])]
+  const allocationByViolation = new Map()
+  for (const allocation of Array.isArray(allocations) ? allocations : []) {
+    const violationId = String(allocation?.violationId || '').trim()
+    if (!violationId || allocationByViolation.has(violationId)) {
+      throw new ApiError(409, 'VIOLATION_REFUND_ALLOCATION_COLLISION', 'Phân bổ hoàn trả vi phạm bị trùng hoặc thiếu mã nguồn.')
+    }
+    allocationByViolation.set(violationId, allocation)
+  }
+
+  const recognized = []
+  for (const [violationId, allocation] of allocationByViolation) {
+    const refundMatch = exactViolationRefundMatch(next, violationId)
+    if (!refundMatch) {
+      throw new ApiError(409, 'VIOLATION_REFUND_LEDGER_MISSING', 'Vi phạm hỗ trợ chưa có bản ghi hoàn trả để chốt lương an toàn.', {
+        violationId,
+      })
+    }
+    const previous = refundMatch.record
+    if (!sameIdentifier(previous.storeId, storeId) || String(previous.period || '') !== period) {
+      throw new ApiError(409, 'VIOLATION_REFUND_SCOPE_MISMATCH', 'Bản ghi hoàn trả không thuộc cửa hàng hoặc kỳ lương đang chốt.', {
+        violationId,
+        refundId: previous.id,
+      })
+    }
+    if (previous.status === 'VOID' || previous.voidedAt) {
+      throw new ApiError(409, 'VIOLATION_REFUND_VOIDED', 'Không thể phân bổ hoàn trả cho vi phạm đã hủy.', { violationId })
+    }
+    const assessedAmountVnd = asVnd(allocation.assessedAmountVnd, 'Số tiền vi phạm', { positive: true })
+    if (assessedAmountVnd !== asVnd(previous.assessedAmountVnd, 'Số tiền vi phạm', { positive: true })) {
+      throw new ApiError(409, 'VIOLATION_REFUND_AMOUNT_MISMATCH', 'Số tiền hoàn trả không khớp snapshot vi phạm.', { violationId })
+    }
+    const appliedAmountVnd = asVnd(allocation.appliedAmountVnd, 'Số tiền hoàn trả vi phạm')
+    const remainingReceivableVnd = asVnd(allocation.remainingReceivableVnd, 'Khoản vi phạm còn phải thu')
+    if (safeMoneySum(appliedAmountVnd, remainingReceivableVnd, 'Đối soát hoàn trả vi phạm') !== assessedAmountVnd) {
+      throw new ApiError(409, 'VIOLATION_REFUND_ALLOCATION_INVALID', 'Phân bổ hoàn trả không khớp số tiền vi phạm.', { violationId })
+    }
+    const refund = {
+      ...previous,
+      appliedAmountVnd,
+      remainingReceivableVnd,
+      amountVnd: appliedAmountVnd,
+      status: appliedAmountVnd > 0 ? 'RECOGNIZED' : 'PENDING_PAYROLL',
+      recognized: appliedAmountVnd > 0,
+      recognizedAt: appliedAmountVnd > 0 ? timestamp : null,
+      payrollPeriodId: appliedAmountVnd > 0 ? payrollPeriodId : null,
+      updatedAt: timestamp,
+      updatedBy: actorSnapshot,
+      version: Number(previous.version || 1) + 1,
+    }
+    next[refundMatch.index] = refund
+    if (appliedAmountVnd > 0) recognized.push(refund)
+  }
+
+  for (let index = 0; index < next.length; index += 1) {
+    const previous = next[index]
+    const violationId = String(previous.violationId || previous.sourceId || '').trim()
+    if (!sameIdentifier(previous.storeId, storeId)
+      || String(previous.period || '') !== period
+      || previous.status === 'VOID'
+      || previous.voidedAt
+      || allocationByViolation.has(violationId)) continue
+    if (previous.status === 'PENDING_PAYROLL'
+      && previous.recognized === false
+      && Number(previous.amountVnd || 0) === 0) continue
+    next[index] = {
+      ...previous,
+      appliedAmountVnd: 0,
+      remainingReceivableVnd: asVnd(previous.assessedAmountVnd, 'Số tiền vi phạm', { positive: true }),
+      amountVnd: 0,
+      status: 'PENDING_PAYROLL',
+      recognized: false,
+      recognizedAt: null,
+      payrollPeriodId: null,
+      updatedAt: timestamp,
+      updatedBy: actorSnapshot,
+      version: Number(previous.version || 1) + 1,
+    }
+  }
+  return { records: next, recognized }
+}
+
 const payrollCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const operation = body.type.split('.').at(-1)
@@ -18994,6 +19509,15 @@ const payrollCommand = async (db, actor, body, commandContext) => {
       lockedBy: null,
       needsReclose: false,
     }
+    const refundState = reconcileViolationRefundsForPayrollClose({
+      refunds: state.violationRefunds,
+      storeId,
+      period,
+      payrollPeriodId: next.id,
+      allocations: snapshot.violationRefundAllocations,
+      timestamp: commandContext.now,
+      actorSnapshot,
+    })
     const expenseEntries = Array.isArray(state.expenseEntries) ? state.expenseEntries : []
     const earnedPayrollExpense = asVnd(next.financeSnapshot?.earnedPayrollExpense ?? 0, 'Chi phí lương trong kỳ')
     const accruedSupportCompensation = asVnd(
@@ -19045,6 +19569,7 @@ const payrollCommand = async (db, actor, body, commandContext) => {
         || !(sameIdentifier(record.storeId, storeId) && String(record.period || '') === period)
       ))],
       compensationEntries: managerBonusState.entries,
+      violationRefunds: refundState.records,
       expenseEntries: previousPayrollAccrual
         ? expenseEntries.map((entry) => entry === previousPayrollAccrual ? payrollAccrual : entry)
         : [payrollAccrual, ...expenseEntries],
@@ -19061,12 +19586,15 @@ const payrollCommand = async (db, actor, body, commandContext) => {
         period,
         rowCount: next.rows.length,
         managerRevenueBonusId: managerBonusState.entry?.id || null,
+        violationRefundIds: refundState.recognized.map((refund) => refund.id),
+        violationRefundRevenueVnd: next.financeSnapshot?.violationRefundRevenueVnd || 0,
       },
       response: {
         command: body.type,
         period: next,
         payrollAccrual,
         managerRevenueBonusEntry: managerBonusState.entry,
+        violationRefunds: refundState.recognized,
       },
       status: existing ? 200 : 201,
     }, commandContext)
@@ -19153,11 +19681,21 @@ const payrollCommand = async (db, actor, body, commandContext) => {
     const supportExpectedAmount = row.supportCompensation
       ? asVnd(row.supportActualPay ?? row.supportCompensation.totalPay ?? 0, 'Lương hỗ trợ trong kỳ')
       : 0
-    if (row.supportCompensation && supportExpectedAmount > amount) {
+    const appliedSupportViolationVnd = row.supportCompensation
+      ? asVnd(row.violationRefundVnd ?? 0, 'Vi phạm hỗ trợ đã áp dụng')
+      : 0
+    const supportMinimumPaymentAmount = Math.max(0, safeMoneySum(
+      supportExpectedAmount,
+      -Math.min(supportExpectedAmount, appliedSupportViolationVnd),
+      'Lương hỗ trợ tối thiểu sau vi phạm',
+    ))
+    if (row.supportCompensation && supportMinimumPaymentAmount > amount) {
       throw new ApiError(409, 'SUPPORT_PAYROLL_ACCRUAL_MISMATCH', 'Chi lương hỗ trợ thấp hơn phần lương đã ghi nhận theo chấm công; cần chốt lại kỳ lương.', {
         employeeId,
         paymentAmount: amount,
         expectedAmount: supportExpectedAmount,
+        appliedViolationAmount: appliedSupportViolationVnd,
+        minimumPaymentAmount: supportMinimumPaymentAmount,
       })
     }
     const supportAccruedAmount = row.supportCompensation

@@ -38,7 +38,32 @@ export function financeTransactionsFromState(state = {}) {
       shiftId: entry.shiftId,
     }))
 
-  return [...orderTransactions, ...expenseTransactions]
+  const violationRefundTransactions = (state.violationRefunds || [])
+    .filter((refund) => (
+      refund.recognized === true
+      && String(refund.status || '').toUpperCase() === 'RECOGNIZED'
+      && !refund.deletedAt
+      && !refund.voidedAt
+      && validInteger(refund.amountVnd ?? refund.amount)
+    ))
+    .map((refund) => createFinanceTransaction({
+      id: `violation-refund:${refund.id}`,
+      storeId: refund.storeId || refund.supportStoreId,
+      direction: 'in',
+      type: 'Hoàn trả vi phạm',
+      category: 'violation-refund',
+      amount: Number(refund.amountVnd ?? refund.amount),
+      status: 'confirmed',
+      // The credit belongs to the violation's business period even when the
+      // payroll that establishes the actually collected amount closes later.
+      occurredAt: refund.occurredOn || refund.recognizedAt || refund.createdAt,
+      sourceType: refund.sourceType || 'support-violation-refund',
+      sourceId: refund.sourceId || refund.violationId || refund.id,
+      employeeId: refund.employeeId,
+      shiftId: refund.shiftId,
+    }))
+
+  return [...orderTransactions, ...violationRefundTransactions, ...expenseTransactions]
 }
 
 export function financeSummaryFromState(state = {}, filters = {}) {
