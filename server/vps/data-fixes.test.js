@@ -195,9 +195,9 @@ describe('VPS exact test-manager data fix', () => {
     idempotent.close()
   }, 30_000)
 
-  it('fails closed without changing data when QLCH-004 has a different identity', async () => {
+  it('fails closed without changing data when archived QLCH-004 resolves to another store', async () => {
     const { database } = await temporaryDatabase()
-    await seedTargetFixture(database, { ...targetProfile, name: 'Người khác' })
+    await seedTargetFixture(database, { ...targetProfile, storeId: 'CH-OTHER' })
 
     expect(() => applyVpsDataFixes(database.database, timestamp)).toThrow(/dừng an toàn/u)
     expect(await database.prepare(`
@@ -229,6 +229,30 @@ describe('VPS exact test-manager data fix', () => {
       status: 'applied',
       marker: {
         employeeId: 'QLCH-004',
+        deletedByCollection: { deletedEmployees: 1, attendance: 1 },
+      },
+    })
+    reopened.close()
+  })
+
+  it('purges the exact archived code even when legacy display metadata is inconsistent', async () => {
+    const { databasePath, database } = await temporaryDatabase()
+    await seedTargetFixture(database, {
+      ...targetProfile,
+      name: 'Tên hiển thị legacy không đồng nhất',
+      unit: 'store',
+      unitType: 'store',
+      department: 'store',
+      position: 'Dữ liệu legacy',
+    })
+    database.close()
+
+    const reopened = createSqliteD1({ databasePath })
+    expect(reopened.dataFixResult).toMatchObject({
+      status: 'applied',
+      marker: {
+        employeeId: 'QLCH-004',
+        storeId: 'CH-TNV',
         deletedByCollection: { deletedEmployees: 1, attendance: 1 },
       },
     })
