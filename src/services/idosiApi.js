@@ -176,6 +176,12 @@ export const apiCommand = (type, payload, {
 
 export const apiListUsers = (options = {}) => stateReadRequest('/api/users', options)
 
+export const apiGetAudit = ({ limit = 100, beforeId = 0 } = {}, options = {}) => {
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (Number(beforeId) > 0) query.set('beforeId', String(beforeId))
+  return stateReadRequest(`/api/audit?${query.toString()}`, options)
+}
+
 export const apiAddressSuggestions = (params = {}) => {
   const query = new URLSearchParams()
   Object.entries(params).forEach(([key, value]) => {

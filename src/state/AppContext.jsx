@@ -5295,6 +5295,7 @@ export function AppProvider({ children }) {
       return { ok: false, message: 'Chỉ Admin được khôi phục dữ liệu vận hành.' }
     }
     const dataType = String(payload.dataType || '')
+    const auditLogId = Number(payload.auditLogId || payload.auditId || 0)
     const requestedStoreId = String(payload.storeId || '')
     const fromDate = String(payload.fromDate || '').slice(0, 10)
     const toDate = String(payload.toDate || '').slice(0, 10)
@@ -5304,21 +5305,33 @@ export function AppProvider({ children }) {
     const scopedStore = matchedRecordOrNull(storeMatch)
     const employeeMatch = requestedEmployeeId ? resolveEmployeeIdentifier(state.employees, requestedEmployeeId) : null
     const scopedEmployee = requestedEmployeeId ? matchedRecordOrNull(employeeMatch) : null
-    if (!['orders', 'attendance'].includes(dataType) || !scopedStore || (requestedEmployeeId && !scopedEmployee)) {
+    const selectedEmployeeRestore = dataType === 'employees' && Number.isSafeInteger(auditLogId) && auditLogId > 0
+    if (!['orders', 'attendance', 'employees'].includes(dataType)
+      || (!selectedEmployeeRestore && !scopedStore)
+      || (requestedEmployeeId && !scopedEmployee)) {
       return { ok: false, message: 'Loại dữ liệu hoặc cửa hàng chưa hợp lệ.' }
     }
-    if (!/^\d{4}-\d{2}-\d{2}$/u.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/u.test(toDate) || fromDate > toDate) {
+    if (!selectedEmployeeRestore
+      && (!/^\d{4}-\d{2}-\d{2}$/u.test(fromDate) || !/^\d{4}-\d{2}-\d{2}$/u.test(toDate) || fromDate > toDate)) {
       return { ok: false, message: 'Khoảng ngày khôi phục chưa hợp lệ.' }
     }
     if (!reason || reason.length > 500) return { ok: false, message: 'Lý do khôi phục phải có từ 1 đến 500 ký tự.' }
-    const storeId = scopedStore.id
+    const storeId = scopedStore?.id || requestedStoreId
     const employeeId = scopedEmployee?.id || scopedEmployee?.code || ''
-    const commandPayload = { dataType, storeId, fromDate, toDate, ...(employeeId ? { employeeId } : {}), reason }
+    const commandPayload = {
+      dataType,
+      ...(storeId ? { storeId } : {}),
+      ...(!selectedEmployeeRestore ? { fromDate, toDate } : {}),
+      ...(employeeId ? { employeeId } : {}),
+      ...(auditLogId > 0 ? { auditLogId } : {}),
+      reason,
+    }
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('operational_reset.restore', commandPayload)
         const restoredCount = Number(result.reset?.restoredCount ?? result.restoredCount ?? 0)
-        notify(`Đã khôi phục ${restoredCount} bản ghi ${dataType === 'orders' ? 'đơn hàng' : 'chấm công'}.`)
+        const label = dataType === 'orders' ? 'đơn hàng' : dataType === 'attendance' ? 'chấm công' : 'nhân viên'
+        notify(`Đã khôi phục ${restoredCount} bản ghi ${label}.`)
         return { ok: true, ...result }
       } catch (error) {
         notify(error.message || 'Không thể khôi phục dữ liệu vận hành.', 'info')
@@ -5326,6 +5339,9 @@ export function AppProvider({ children }) {
       }
     }
 
+    if (dataType === 'employees') {
+      return { ok: false, message: 'Khôi phục nhân viên cần kết nối máy chủ production.' }
+    }
     const collection = dataType === 'orders' ? 'orders' : 'attendance'
     const collectionRecords = Array.isArray(state[collection]) ? state[collection] : []
     const sourceAudits = dataType === 'orders'

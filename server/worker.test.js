@@ -6814,7 +6814,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(paidPeriodDenied.status).toBe(409)
     expect(await paidPeriodDenied.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
     expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()).toEqual({ version: 4 })
-    const audit = env.DB.database.prepare("SELECT metadata_json FROM audit_log WHERE action = 'attendance.update' ORDER BY id DESC").get()
+    const audit = env.DB.database.prepare("SELECT id, metadata_json FROM audit_log WHERE action = 'attendance.update' ORDER BY id DESC").get()
     expect(JSON.parse(audit.metadata_json)).toMatchObject({
       reason: 'Đối soát máy chấm công', storeId: 'S01', employeeId: 'E01',
     })
@@ -6822,7 +6822,7 @@ describe('IDOSI Worker security primitives', () => {
     const resetAttendanceCommand = {
       type: 'operational_reset.restore', expectedVersion: 4,
       payload: {
-        dataType: 'attendance', storeId: 'S01', employeeId: 'E01',
+        dataType: 'attendance', auditLogId: audit.id, storeId: 'S01', employeeId: 'E01',
         fromDate: '2026-08-14', toDate: '2026-08-14', reason: 'Khôi phục lần chỉnh gần nhất',
       },
     }
@@ -9173,12 +9173,20 @@ describe('IDOSI Worker security primitives', () => {
     let state = readHydratedState(env.DB.database)
     expect(state.attendance[0]).toMatchObject({ revenue: 250_000, cash: 250_000, transfer: 0, orderCount: 1 })
     expect(state.payrollPeriods[0]).toMatchObject({ needsReclose: true, invalidationReason: 'order.update' })
+    const auditResponse = await worker.fetch(new Request('https://idosi.example/api/audit?limit=100', {
+      headers: adminAuthorization,
+    }), env)
+    expect(auditResponse.status).toBe(200)
+    const orderUpdateAuditId = (await auditResponse.json()).audit
+      .find((item) => item.action === 'order.update' && item.entityId === 'ORDER-RESET-01')?.id
+    expect(orderUpdateAuditId).toEqual(expect.any(Number))
 
     const resetCommand = {
       type: 'operational_reset.restore', expectedVersion: 2,
       payload: {
         dataType: 'orders', storeId: 'S01', employeeId: 'E01',
-        fromDate: '2026-08-18', toDate: '2026-08-18', reason: 'Hoàn tác lần sửa gần nhất',
+        fromDate: '2026-08-18', toDate: '2026-08-18', auditLogId: orderUpdateAuditId,
+        reason: 'Hoàn tác chính xác lần sửa đã chọn',
       },
     }
     const restored = await worker.fetch(jsonRequest('https://idosi.example/api/command', resetCommand, {
@@ -9206,7 +9214,7 @@ describe('IDOSI Worker security primitives', () => {
         action: 'Khôi phục', orderId: 'ORDER-RESET-01', changedFields: ['amount'],
         revenueBefore: 250_000, revenueAfter: 100_000,
       }),
-      expect.objectContaining({ action: 'Sửa', orderId: 'ORDER-RESET-01', restoredAt: expect.any(String) }),
+      expect.objectContaining({ action: 'Sửa', orderId: 'ORDER-RESET-01' }),
     ]))
     expect(state.operationalResetHistory[0]).toMatchObject({
       dataType: 'orders', restoredCount: 1, restoredIds: ['ORDER-RESET-01'], createdBy: { role: 'admin' },
@@ -9216,12 +9224,119 @@ describe('IDOSI Worker security primitives', () => {
     expect(state.payrollPeriods).toHaveLength(1)
     const audit = env.DB.database.prepare("SELECT actor_role, entity_type, metadata_json FROM audit_log WHERE action = 'operational_reset.restore'").get()
     expect(audit).toMatchObject({ actor_role: 'admin', entity_type: 'operational-reset' })
-    expect(JSON.parse(audit.metadata_json)).toMatchObject({ dataType: 'orders', restoredCount: 1 })
+    expect(JSON.parse(audit.metadata_json)).toMatchObject({
+      dataType: 'orders', restoredCount: 1, sourceAuditLogId: orderUpdateAuditId,
+    })
     const protectedHistoryMutation = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'state.merge', expectedVersion: 3, payload: { patch: { attendanceAudit: [], operationalResetHistory: [] } },
     }, { ...adminAuthorization, 'idempotency-key': 'operational-history-raw-mutation-denied-0001' }), env)
     expect(protectedHistoryMutation.status).toBe(400)
     expect(await protectedHistoryMutation.json()).toMatchObject({ error: { code: 'DOMAIN_COMMAND_REQUIRED' } })
+  })
+
+  it('restores one deleted employee audit with the original account reactivated', async () => {
+    const env = {
+      DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-employee-audit-restore',
+    }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'employee-restore-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01', short: 'S01', status: 'Đang hoạt động' }],
+        employees: [{
+          id: 'E-RESTORE', code: 'E-RESTORE', name: 'Nhân viên cần khôi phục', storeId: 'S01', unit: 'store',
+          status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 30_000,
+          phone: '0901234567', cccd: '012345678901', address: 'TP.HCM', startDate: '2026-08-01',
+          identityImages: {
+            front: { key: 'identity/E-RESTORE/front' },
+            back: { key: 'identity/E-RESTORE/back' },
+          },
+        }],
+        attendance: [], orders: [], deletedEmployees: [], operationalResetHistory: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'employee-restore-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+    const employeeUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', payload: {
+        role: 'employee', employeeId: 'E-RESTORE', storeId: 'S01',
+        username: 'employee.restore', password: 'employee-restore-password', displayName: 'Nhân viên cần khôi phục',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'employee-audit-restore-user-create' }), env)
+    expect(employeeUser.status).toBe(201)
+
+    const deleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.delete', expectedVersion: 1, payload: { employeeId: 'E-RESTORE' },
+    }, { ...adminAuthorization, 'idempotency-key': 'employee-audit-restore-delete' }), env)
+    expect(deleted.status).toBe(200)
+    expect(await deleted.json()).toMatchObject({ version: 2, employee: { id: 'E-RESTORE', status: 'Đã nghỉ việc' } })
+    const loginWhileDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'employee.restore', password: 'employee-restore-password',
+    }), env)
+    expect(loginWhileDeleted.status).toBe(403)
+
+    const auditResponse = await worker.fetch(new Request('https://idosi.example/api/audit?limit=100', {
+      headers: adminAuthorization,
+    }), env)
+    expect(auditResponse.status).toBe(200)
+    const employeeDeleteAuditId = (await auditResponse.json()).audit
+      .find((item) => item.action === 'employee.delete' && item.entityId === 'E-RESTORE')?.id
+    expect(employeeDeleteAuditId).toEqual(expect.any(Number))
+
+    const restored = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'operational_reset.restore', expectedVersion: 2,
+      payload: { dataType: 'employees', auditLogId: employeeDeleteAuditId, reason: 'Khôi phục nhân viên bị xóa nhầm' },
+    }, { ...adminAuthorization, 'idempotency-key': 'employee-audit-restore-selected' }), env)
+    expect(restored.status).toBe(200)
+    expect(await restored.json()).toMatchObject({
+      version: 3, restoredCount: 1, restoredIds: ['E-RESTORE'],
+      restored: [expect.objectContaining({
+        id: 'E-RESTORE', name: 'Nhân viên cần khôi phục', status: 'Đang làm việc',
+      })],
+    })
+    const state = readHydratedState(env.DB.database)
+    expect(state.employees).toEqual([expect.objectContaining({ id: 'E-RESTORE', status: 'Đang làm việc' })])
+    expect(state.deletedEmployees).toEqual([])
+    expect(state.stores[0]).toMatchObject({ employees: 1 })
+    expect(state.operationalResetHistory[0]).toMatchObject({
+      dataType: 'employees', restoredIds: ['E-RESTORE'], sourceAuditIds: [`d1:${employeeDeleteAuditId}`],
+    })
+    const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'employee.restore', password: 'employee-restore-password',
+    }), env)
+    expect(employeeLogin.status).toBe(200)
+    expect(await employeeLogin.json()).toMatchObject({ user: { employeeId: 'E-RESTORE', status: 'active' } })
+
+    const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 3,
+      payload: {
+        employeeId: 'E-RESTORE', name: 'Tên nhập sai cần hoàn tác', identityImages: testIdentityImages(),
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'employee-audit-restore-update' }), env)
+    const updatedBody = await updated.json()
+    expect(updated.status, JSON.stringify(updatedBody)).toBe(200)
+    expect(updatedBody).toMatchObject({ version: 4, employee: { name: 'Tên nhập sai cần hoàn tác' } })
+    const updateAuditResponse = await worker.fetch(new Request('https://idosi.example/api/audit?limit=100', {
+      headers: adminAuthorization,
+    }), env)
+    const employeeUpdateAuditId = (await updateAuditResponse.json()).audit
+      .find((item) => item.action === 'employee.update' && item.entityId === 'E-RESTORE')?.id
+    expect(employeeUpdateAuditId).toEqual(expect.any(Number))
+
+    const restoredUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'operational_reset.restore', expectedVersion: 4,
+      payload: { dataType: 'employees', auditLogId: employeeUpdateAuditId, reason: 'Hoàn tác tên nhân viên nhập sai' },
+    }, { ...adminAuthorization, 'idempotency-key': 'employee-audit-restore-update-selected' }), env)
+    expect(restoredUpdate.status).toBe(200)
+    expect(await restoredUpdate.json()).toMatchObject({
+      version: 5,
+      restored: [expect.objectContaining({ id: 'E-RESTORE', name: 'Nhân viên cần khôi phục' })],
+    })
+    expect(readHydratedState(env.DB.database).employees).toEqual([
+      expect.objectContaining({ id: 'E-RESTORE', name: 'Nhân viên cần khôi phục' }),
+    ])
   })
 
   it('blocks paid order mutations and stale operational restore snapshots', async () => {

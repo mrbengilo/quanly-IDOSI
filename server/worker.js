@@ -12083,7 +12083,46 @@ const normalizedOperationalResetType = (value) => {
   const normalized = normalizeTextKey(value).replace(/\s+/gu, '_')
   if (['order', 'orders', 'don_hang'].includes(normalized)) return 'orders'
   if (['attendance', 'attendances', 'cham_cong'].includes(normalized)) return 'attendance'
+  if (['employee', 'employees', 'nhan_vien'].includes(normalized)) return 'employees'
   return ''
+}
+
+const loadOperationalRestoreAudit = async (db, auditLogId, dataType) => {
+  if (!Number.isSafeInteger(auditLogId) || auditLogId <= 0) return null
+  const row = await first(db, `
+    SELECT id, actor_id, actor_role, action, entity_type, entity_id,
+      before_json, after_json, metadata_json, server_timestamp
+    FROM audit_log WHERE id = ? LIMIT 1
+  `, auditLogId)
+  if (!row) throw new ApiError(404, 'OPERATIONAL_RESTORE_AUDIT_NOT_FOUND', 'Không tìm thấy bản ghi lịch sử cần khôi phục.')
+  const expected = {
+    orders: { entityType: 'order', actions: new Set(['order.update', 'order.delete']) },
+    attendance: { entityType: 'attendance', actions: new Set(['attendance.update']) },
+    employees: { entityType: 'employee', actions: new Set(['employee.update', 'employee.delete']) },
+  }[dataType]
+  if (!expected
+    || String(row.entity_type || '') !== expected.entityType
+    || !expected.actions.has(String(row.action || ''))) {
+    throw new ApiError(400, 'OPERATIONAL_RESTORE_AUDIT_UNSUPPORTED', 'Bản ghi lịch sử này chưa hỗ trợ khôi phục tự động.')
+  }
+  const before = sanitizeStateValue(parseStoredJson(row.before_json))
+  const after = sanitizeStateValue(parseStoredJson(row.after_json))
+  if (!isPlainRecord(before) || before.truncated === true
+    || (row.action !== 'employee.delete' && (!isPlainRecord(after) || after.truncated === true))) {
+    throw new ApiError(409, 'OPERATIONAL_RESTORE_AUDIT_INCOMPLETE', 'Bản ghi lịch sử không có đủ dữ liệu trước/sau để khôi phục an toàn.')
+  }
+  return {
+    auditLogId,
+    actorId: String(row.actor_id || ''),
+    actorRole: String(row.actor_role || ''),
+    action: String(row.action || ''),
+    entityType: String(row.entity_type || ''),
+    entityId: String(row.entity_id || before.id || '').trim(),
+    before,
+    after: isPlainRecord(after) ? after : null,
+    metadata: sanitizeStateValue(parseStoredJson(row.metadata_json, {})),
+    createdAt: String(row.server_timestamp || ''),
+  }
 }
 
 const recordEmployeeId = (record) => String(record?.employeeId || record?.employeeCode || '').trim()
@@ -12121,6 +12160,14 @@ const operationalAuditFingerprint = (record, dataType) => {
     : ['id', 'storeId', 'employeeId', 'shiftId', 'shift', ...ATTENDANCE_CORRECTION_FIELDS]
   return JSON.stringify(Object.fromEntries(keys.map((key) => [key, record?.[key] ?? null])))
 }
+
+const stateAuditMatchesSelectedD1Audit = (audit, selectedAudit, dataType, entityKey) => (
+  Boolean(selectedAudit)
+  && sameIdentifier(audit?.[entityKey] || audit?.before?.id, selectedAudit.entityId)
+  && String(audit?.createdAt || '') === selectedAudit.createdAt
+  && operationalAuditFingerprint(audit?.before, dataType) === operationalAuditFingerprint(selectedAudit.before, dataType)
+  && operationalAuditFingerprint(audit?.after, dataType) === operationalAuditFingerprint(selectedAudit.after, dataType)
+)
 
 const recordWithinOperationalResetScope = (record, scope) => {
   if (!isPlainRecord(record) || !sameIdentifier(record.storeId, scope.storeId)) return false
@@ -12246,23 +12293,38 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const dataType = normalizedOperationalResetType(payload.dataType ?? payload.type)
   if (!dataType) {
-    throw new ApiError(400, 'OPERATIONAL_RESET_TYPE_INVALID', 'Chỉ có thể khôi phục chỉnh sửa đơn hàng hoặc chấm công.')
+    throw new ApiError(400, 'OPERATIONAL_RESET_TYPE_INVALID', 'Chỉ có thể khôi phục đơn hàng, chấm công hoặc hồ sơ nhân viên.')
   }
   const reason = String(payload.reason || '').trim()
   if (!reason || reason.length > 500) {
     throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do khôi phục từ 1 đến 500 ký tự.')
   }
+  const auditLogId = Number(payload.auditLogId || payload.auditId || 0)
+  if (payload.auditLogId !== undefined || payload.auditId !== undefined) {
+    if (!Number.isSafeInteger(auditLogId) || auditLogId <= 0) {
+      throw new ApiError(400, 'OPERATIONAL_RESTORE_AUDIT_ID_INVALID', 'Mã bản ghi lịch sử cần khôi phục không hợp lệ.')
+    }
+  }
+  const selectedAudit = await loadOperationalRestoreAudit(db, auditLogId, dataType)
+  if (dataType === 'employees' && !selectedAudit) {
+    throw new ApiError(400, 'OPERATIONAL_RESTORE_AUDIT_REQUIRED', 'Khôi phục nhân viên cần chọn chính xác một bản ghi lịch sử.')
+  }
   const { current, state } = await loadGlobalCommandState(db, body)
-  const requestedStoreId = String(payload.storeId || '').trim()
+  const selectedRecord = selectedAudit?.after || selectedAudit?.before || null
+  const requestedStoreId = String(payload.storeId || selectedRecord?.storeId || '').trim()
   assertOperationalStoreAccess(actor, requestedStoreId)
-  const store = requireStore(state, requestedStoreId)
+  const store = dataType === 'employees' && [OFFICE_STORE_ID, BUSINESS_SUPPORT_STORE_ID]
+    .some((storeReference) => sameIdentifier(storeReference, requestedStoreId))
+    ? { id: requestedStoreId }
+    : requireStore(state, requestedStoreId)
   const storeId = String(store.id || requestedStoreId).trim()
-  const fromDate = optionalCalendarDate(payload.fromDate ?? payload.startDate ?? payload.date, 'Từ ngày')
-  const toDate = optionalCalendarDate(payload.toDate ?? payload.endDate ?? payload.date, 'Đến ngày')
-  if (!fromDate || !toDate) {
+  const selectedDate = dateFromRecord(selectedRecord)
+  const fromDate = optionalCalendarDate(payload.fromDate ?? payload.startDate ?? payload.date ?? selectedDate, 'Từ ngày')
+  const toDate = optionalCalendarDate(payload.toDate ?? payload.endDate ?? payload.date ?? selectedDate, 'Đến ngày')
+  if (dataType !== 'employees' && (!fromDate || !toDate)) {
     throw new ApiError(400, 'OPERATIONAL_RESET_DATE_REQUIRED', 'Cần chọn khoảng ngày khôi phục.')
   }
-  monthsInDateRange(fromDate, toDate)
+  if (dataType !== 'employees') monthsInDateRange(fromDate, toDate)
   const requestedEmployeeId = String(payload.employeeId || '').trim()
   let employeeId = requestedEmployeeId
   if (requestedEmployeeId) {
@@ -12283,18 +12345,29 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       throw new ApiError(400, 'OPERATIONAL_RESET_EMPLOYEE_INVALID', 'Nhân viên không thuộc cửa hàng đã chọn.')
     }
   }
-  const scope = { storeId, fromDate, toDate, employeeId }
+  const scope = { storeId, fromDate: fromDate || '', toDate: toDate || '', employeeId }
   const resetId = `opr_${crypto.randomUUID()}`
   const actorSnapshot = serverActorSnapshot(actor)
   let beforeRecords = []
   let restoredRecords = []
   let sourceAuditIds = []
   let nextState
+  let additionalStatements = []
+  let stateGuard = null
 
   if (dataType === 'orders') {
     const orders = Array.isArray(state.orders) ? state.orders : []
     const orderAudit = Array.isArray(state.orderAudit) ? state.orderAudit : []
-    const latestAudits = latestRestorableAuditByEntity(orderAudit, {
+    const selectedOrderAudit = selectedAudit ? [{
+      id: `d1_audit_${selectedAudit.auditLogId}`,
+      action: selectedAudit.action === 'order.delete' ? 'Xóa' : 'Sửa',
+      orderId: selectedAudit.entityId,
+      before: selectedAudit.before,
+      after: selectedAudit.after,
+      createdAt: selectedAudit.createdAt,
+      auditLogId: selectedAudit.auditLogId,
+    }] : orderAudit
+    const latestAudits = latestRestorableAuditByEntity(selectedOrderAudit, {
       actions: new Set(['Sửa', 'Xóa']), entityKey: 'orderId', scope,
     })
     const restorationById = new Map()
@@ -12315,7 +12388,7 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       }
       beforeRecords.push(currentOrder)
       restoredRecords.push(restored)
-      sourceAuditIds.push(String(audit.id || ''))
+      sourceAuditIds.push(audit.auditLogId ? `d1:${audit.auditLogId}` : String(audit.id || ''))
       restorationById.set(orderId, { restored, audit })
     }
     if (!restorationById.size) {
@@ -12352,7 +12425,9 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
         : attendance
     ))
     const restoredAudit = orderAudit.map((audit) => (
-      sourceAuditIds.includes(String(audit.id || ''))
+      (selectedAudit
+        ? stateAuditMatchesSelectedD1Audit(audit, selectedAudit, dataType, 'orderId')
+        : sourceAuditIds.includes(String(audit.id || '')))
         ? { ...audit, restoredAt: commandContext.now, restoredBy: actorSnapshot, resetId }
         : audit
     ))
@@ -12394,10 +12469,18 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
-  } else {
+  } else if (dataType === 'attendance') {
     const attendance = Array.isArray(state.attendance) ? state.attendance : []
     const stateAttendanceAudit = Array.isArray(state.attendanceAudit) ? state.attendanceAudit : []
-    const attendanceAudit = [
+    const attendanceAudit = selectedAudit ? [{
+      id: `ata_d1_${selectedAudit.auditLogId}`,
+      action: 'Sửa',
+      attendanceId: selectedAudit.entityId,
+      before: selectedAudit.before,
+      after: selectedAudit.after,
+      createdAt: selectedAudit.createdAt,
+      auditLogId: selectedAudit.auditLogId,
+    }] : [
       ...stateAttendanceAudit,
       ...await legacyAttendanceAuditsForScope(db, stateAttendanceAudit, scope),
     ]
@@ -12421,7 +12504,7 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       }
       beforeRecords.push(currentAttendance)
       restoredRecords.push(restored)
-      sourceAuditIds.push(String(audit.id || ''))
+      sourceAuditIds.push(audit.auditLogId ? `d1:${audit.auditLogId}` : String(audit.id || ''))
       restorationById.set(attendanceId, { restored, audit })
     }
     if (!restorationById.size) {
@@ -12440,8 +12523,10 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       { storeId: String(beforeRecords[index].storeId || ''), period: monthFromRecord(beforeRecords[index]) },
     ]).map((target) => [`${target.storeId}:${target.period}`, target])).values()]
     for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
-    const restoredAudit = attendanceAudit.map((audit) => (
-      sourceAuditIds.includes(String(audit.id || ''))
+    const restoredAudit = (selectedAudit ? stateAttendanceAudit : attendanceAudit).map((audit) => (
+      (selectedAudit
+        ? stateAuditMatchesSelectedD1Audit(audit, selectedAudit, dataType, 'attendanceId')
+        : sourceAuditIds.includes(String(audit.id || '')))
         ? { ...audit, restoredAt: commandContext.now, restoredBy: actorSnapshot, resetId }
         : audit
     ))
@@ -12479,6 +12564,136 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
+  } else {
+    const employees = Array.isArray(state.employees) ? state.employees : []
+    const deletedEmployees = Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []
+    const employeeIdToRestore = String(selectedAudit.entityId || selectedAudit.before.id || selectedAudit.before.code || '').trim()
+    const currentMatches = employees.filter((record) => sameIdentifier(record.id || record.code, employeeIdToRestore) && !record.deletedAt)
+    if (currentMatches.length > 1) {
+      throw new ApiError(409, 'EMPLOYEE_IDENTIFIER_COLLISION', 'Mã nhân viên đang trùng; không thể khôi phục an toàn.')
+    }
+    const currentEmployee = currentMatches[0] || null
+    let deletedEmployee = null
+    if (selectedAudit.action === 'employee.delete') {
+      if (currentEmployee) {
+        throw new ApiError(409, 'OPERATIONAL_RESET_STALE_AUDIT', 'Nhân viên đã được khôi phục hoặc tạo lại sau bản ghi xóa này.')
+      }
+      const deletedMatches = deletedEmployees.filter((record) => (
+        sameIdentifier(record.id || record.code, employeeIdToRestore)
+        && String(record.deletedAt || '') === selectedAudit.createdAt
+      ))
+      if (deletedMatches.length !== 1) {
+        throw new ApiError(409, 'OPERATIONAL_RESTORE_EMPLOYEE_HISTORY_MISMATCH', 'Không thể đối chiếu duy nhất hồ sơ nhân viên đã xóa với bản ghi lịch sử.')
+      }
+      deletedEmployee = deletedMatches[0]
+    } else {
+      if (!currentEmployee
+        || JSON.stringify(canonicalize(currentEmployee)) !== JSON.stringify(canonicalize(selectedAudit.after))) {
+        throw new ApiError(409, 'OPERATIONAL_RESET_STALE_AUDIT', 'Hồ sơ nhân viên đã thay đổi sau bản chỉnh sửa này; hãy tải lại dữ liệu.')
+      }
+    }
+    const baseline = selectedAudit.before
+    const baselineUnit = employeeUnit(baseline)
+    const baselineStore = baselineUnit === 'business_support'
+      ? { id: BUSINESS_SUPPORT_STORE_ID }
+      : baselineUnit === 'office'
+        ? { id: OFFICE_STORE_ID }
+        : requireStore(state, baseline.storeId)
+    const authTarget = await uniqueUserByEmployeeIdentifier(db, employeeIdToRestore)
+    if (!authTarget) {
+      throw new ApiError(409, 'EMPLOYEE_ACCOUNT_NOT_FOUND', 'Không tìm thấy tài khoản gốc của nhân viên để khôi phục đồng bộ.')
+    }
+    const employeePayrollFields = [
+      'status', 'employmentType', 'payBasis', 'salaryBasis', 'salary', 'monthlySalary',
+      'hourlyRate', 'baseSalary', 'requiredMonthlyHours', 'standardWorkDays', 'payFormula', 'tiktokAllowance',
+    ]
+    const currentComparable = currentEmployee || deletedEmployee || {}
+    const compensationChanged = employeePayrollFields.some((field) => (
+      JSON.stringify(canonicalize(currentComparable[field])) !== JSON.stringify(canonicalize(baseline[field]))
+    ))
+    const payrollTargets = compensationChanged
+      ? [{ storeId: String(baselineStore.id || baseline.storeId), period: localDateTimeParts(commandContext.now).date.slice(0, 7) }]
+      : []
+    for (const target of payrollTargets) assertPayrollNotPaidOrLocked(state, target.storeId, target.period)
+    const nextAuthVersion = Number(authTarget.version || 1) + 1
+    const { identityImages: currentIdentityImages } = currentComparable
+    const restored = sanitizeStateValue({
+      ...baseline,
+      ...(currentIdentityImages ? { identityImages: currentIdentityImages } : {}),
+      authUserId: authTarget.id,
+      authVersion: nextAuthVersion,
+      status: baseline.status || 'Đang làm việc',
+      restoredAt: commandContext.now,
+      restoredBy: actorSnapshot,
+      restoreReason: reason,
+      updatedAt: commandContext.now,
+      updatedBy: actorSnapshot,
+    })
+    delete restored.deletedAt
+    delete restored.deletedBy
+    delete restored.deleteReason
+    if (!currentIdentityImages) delete restored.identityImages
+    const accountStatus = employeeStatusValues(restored.status).account
+    const nextEmployees = currentEmployee
+      ? employees.map((record) => record === currentEmployee ? restored : record)
+      : [restored, ...employees]
+    const sourceAuditId = `d1:${selectedAudit.auditLogId}`
+    const historyRecord = {
+      id: resetId, dataType, ...scope, reason, restoredCount: 1,
+      restoredIds: [restored.id], sourceAuditIds: [sourceAuditId],
+      createdAt: commandContext.now, createdBy: actorSnapshot,
+    }
+    beforeRecords = [currentComparable]
+    restoredRecords = [restored]
+    sourceAuditIds = [sourceAuditId]
+    nextState = {
+      ...state,
+      employees: nextEmployees,
+      deletedEmployees: deletedEmployees.filter((record) => record !== deletedEmployee),
+      stores: (Array.isArray(state.stores) ? state.stores : []).map((item) => ({
+        ...item,
+        employees: nextEmployees.filter((employee) => (
+          sameIdentifier(employee.storeId, item.id)
+          && employeeUnit(employee) === 'store'
+          && !employee.deletedAt
+          && !['Đã nghỉ việc', 'inactive'].includes(String(employee.status || ''))
+        )).length,
+      })),
+      auditLogs: [{
+        id: `employee_restore_${crypto.randomUUID()}`,
+        action: 'Khôi phục', entity: 'Nhân viên', entityId: restored.id,
+        before: currentComparable, after: restored, reason, actor: actorSnapshot,
+        resetId, sourceAuditId, createdAt: commandContext.now,
+      }, ...(Array.isArray(state.auditLogs) ? state.auditLogs : [])],
+      operationalResetHistory: [historyRecord, ...(Array.isArray(state.operationalResetHistory) ? state.operationalResetHistory : [])],
+      payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    const nextStateVersion = Number(current.version) + 1
+    stateGuard = {
+      sql: 'SELECT 1 FROM users WHERE id = ? AND version = ?',
+      bindings: [authTarget.id, Number(authTarget.version || 1)],
+    }
+    additionalStatements = [db.prepare(`
+      UPDATE users
+      SET display_name = ?, store_id = ?, employee_id = ?, status = ?, version = ?, updated_at = ?
+      WHERE id = ? AND version = ?
+        AND EXISTS (
+          SELECT 1 FROM app_state
+          WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+        )
+    `).bind(
+      restored.name,
+      restored.storeId,
+      restored.id,
+      accountStatus,
+      nextAuthVersion,
+      commandContext.now,
+      authTarget.id,
+      Number(authTarget.version || 1),
+      nextStateVersion,
+      commandContext.requestId,
+    )]
   }
 
   const reset = nextState.operationalResetHistory[0]
@@ -12488,7 +12703,10 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
     entityId: resetId,
     before: beforeRecords,
     after: restoredRecords,
-    metadata: { dataType, scope, reason, sourceAuditIds, restoredCount: restoredRecords.length },
+    metadata: {
+      dataType, scope, reason, sourceAuditIds, restoredCount: restoredRecords.length,
+      ...(selectedAudit ? { sourceAuditLogId: selectedAudit.auditLogId } : {}),
+    },
     response: {
       command: body.type,
       reset,
@@ -12496,6 +12714,8 @@ const operationalResetCommand = async (db, actor, body, commandContext) => {
       restoredIds: restoredRecords.map((record) => record.id),
       restored: restoredRecords,
     },
+    additionalStatements,
+    stateGuard,
   }, commandContext)
 }
 
