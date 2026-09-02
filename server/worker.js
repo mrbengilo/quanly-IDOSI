@@ -76,6 +76,39 @@ const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'empl
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
 const globalStateSnapshotCaches = new WeakMap()
 const INITIAL_ADMIN_STATE_COLLECTIONS = Object.freeze(['stores', 'orders', 'expenseEntries'])
+const SESSION_CONTEXT_STATE_COLLECTIONS = Object.freeze([
+  'employees',
+  'deletedEmployees',
+  'stores',
+  'deletedStores',
+  'supportTransfers',
+])
+const INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS = Object.freeze([
+  ...SESSION_CONTEXT_STATE_COLLECTIONS,
+  'attendance',
+  'supportWorkSchedules',
+])
+const INITIAL_STORE_MANAGER_STATE_COLLECTIONS = Object.freeze([
+  ...SESSION_CONTEXT_STATE_COLLECTIONS,
+  'attendance',
+  'supportWorkSchedules',
+])
+const INITIAL_OFFICE_EMPLOYEE_STATE_COLLECTIONS = Object.freeze([
+  ...SESSION_CONTEXT_STATE_COLLECTIONS,
+  'attendance',
+  'supportWorkSchedules',
+  'payrollPeriods',
+  'salaryAdjustments',
+  'officeAdjustments',
+])
+const INITIAL_STORE_EMPLOYEE_STATE_COLLECTIONS = Object.freeze([
+  ...SESSION_CONTEXT_STATE_COLLECTIONS,
+  'attendance',
+  'schedule',
+  'tasks',
+  'orders',
+  'shiftDefinitions',
+])
 
 const ACCOUNT_AVATAR_CONTENT_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 const MAX_AVATAR_DIMENSION = 4096
@@ -2079,6 +2112,19 @@ const actorRoleEmployeeProfile = (state, user) => {
     : null
 }
 
+const initialStateCollectionsForUser = (user, sessionContextState = {}) => {
+  if (user?.role === 'admin') return INITIAL_ADMIN_STATE_COLLECTIONS
+  if (user?.role === 'business_support') return INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS
+  if (user?.role === 'store_manager') return INITIAL_STORE_MANAGER_STATE_COLLECTIONS
+  if (user?.role === 'employee') {
+    const profile = actorRoleEmployeeProfile(sessionContextState, user)
+    return employeeUnit(profile) === 'office'
+      ? INITIAL_OFFICE_EMPLOYEE_STATE_COLLECTIONS
+      : INITIAL_STORE_EMPLOYEE_STATE_COLLECTIONS
+  }
+  throw new ApiError(403, 'ROLE_INVALID', 'Vai trò tài khoản không hợp lệ.')
+}
+
 const canonicalActorEmployeeProfile = (state, user) => {
   const employees = Array.isArray(state?.employees) ? state.employees : []
   let current = actorRoleEmployeeProfile(state, user)
@@ -2464,6 +2510,9 @@ export const projectSharedState = (rawState, user) => {
       employees,
       attendance: historicalVisibleScoped('attendance'),
       schedule: employeeScoped('schedule'),
+      supportWorkSchedules: filterArray(state, 'supportWorkSchedules', (record) => (
+        belongsToEmployee(record, ownEmployeeId)
+      )),
       tasks: employeeScoped('tasks'),
       taskAssignmentHistory: historicalEmployeeScoped('taskAssignmentHistory'),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
@@ -2903,7 +2952,10 @@ const bearerToken = (request) => {
   return match?.[1] || null
 }
 
-const requireSession = async (request, db, context, { resolveOperationalContext = true } = {}) => {
+const requireSession = async (request, db, context, {
+  resolveOperationalContext = true,
+  stateCollections = null,
+} = {}) => {
   const token = bearerToken(request)
   if (!token || token.length < 32 || token.length > 512) {
     throw new ApiError(401, 'AUTH_REQUIRED', 'Vui lòng đăng nhập để tiếp tục.')
@@ -2946,7 +2998,9 @@ const requireSession = async (request, db, context, { resolveOperationalContext 
   let globalStateRow = null
   let globalState = null
   if (session.role !== 'admin') {
-    globalStateRow = await loadState(db, 'global')
+    globalStateRow = Array.isArray(stateCollections)
+      ? await loadStateCollections(db, 'global', stateCollections)
+      : await loadState(db, 'global')
     globalState = parseStoredJson(globalStateRow?.value_json, {})
   }
   const assumed = await resolveSessionRole(db, session, globalState)
@@ -4025,7 +4079,9 @@ const login = async (request, env, context) => {
   }
   if (!VALID_ROLES.has(user.role)) throw new ApiError(403, 'ROLE_INVALID', 'Vai trò tài khoản không hợp lệ.')
 
-  const globalStateRow = user.role === 'admin' ? null : await loadState(db, 'global')
+  const globalStateRow = user.role === 'admin'
+    ? null
+    : await loadStateCollections(db, 'global', SESSION_CONTEXT_STATE_COLLECTIONS)
   const globalState = globalStateRow ? parseStoredJson(globalStateRow.value_json, {}) : null
   const availableRoles = await availableRoleOptionsForUser(db, user, globalState)
   const initialRole = availableRoles.find((option) => option.role === user.role) || availableRoles[0]
@@ -4074,14 +4130,8 @@ const login = async (request, env, context) => {
     available_roles: availableRoles,
     needs_role_selection: availableRoles.length > 1,
   }, context.now, globalState)
-  const partialBootstrap = effectiveUser.role === 'admin'
-  let bootstrapRow = partialBootstrap
-    ? await loadStateCollections(db, 'global', INITIAL_ADMIN_STATE_COLLECTIONS)
-    : globalStateRow || await loadState(db, 'global')
-  if (!partialBootstrap) {
-    bootstrapRow = await migrateLegacyAccountAvatars(db, env, effectiveUser, context, bootstrapRow)
-    bootstrapRow = await persistOpenStoreAttendanceChecklistRepairs(db, effectiveUser, context, bootstrapRow)
-  }
+  const loadedCollections = initialStateCollectionsForUser(effectiveUser, globalState || {})
+  const bootstrapRow = await loadStateCollections(db, 'global', loadedCollections)
   const policies = await listPolicies(db)
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
   const publicEffectiveUser = publicUser(effectiveUser)
@@ -4104,10 +4154,8 @@ const login = async (request, env, context) => {
       version: Number(bootstrapRow?.version || 0),
       updatedAt: bootstrapRow?.updated_at || null,
       policies,
-      ...(partialBootstrap ? {
-        partial: true,
-        loadedCollections: INITIAL_ADMIN_STATE_COLLECTIONS,
-      } : {}),
+      partial: true,
+      loadedCollections,
     },
     ...(visibleUsers ? { users: visibleUsers } : {}),
   }))
@@ -4115,7 +4163,9 @@ const login = async (request, env, context) => {
 
 const selectSessionRole = async (request, env, context) => {
   const db = getDatabase(env)
-  const actor = await requireSession(request, db, context)
+  const actor = await requireSession(request, db, context, {
+    stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+  })
   const body = await readJson(request)
   const requestedRole = String(body.role || '').trim()
   const requestedStoreId = String(body.storeId || '').trim()
@@ -4150,14 +4200,18 @@ const selectSessionRole = async (request, env, context) => {
 
 const getBootstrap = async (request, env, context, url) => {
   const db = getDatabase(env)
-  const user = await requireSession(request, db, context)
+  const initialProfileRequested = url.searchParams.get('profile') === 'initial'
+  const user = await requireSession(request, db, context, initialProfileRequested
+    ? { stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS }
+    : {})
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
-  const partialBootstrap = scope === 'global'
-    && user.role === 'admin'
-    && url.searchParams.get('profile') === 'initial'
+  const partialBootstrap = scope === 'global' && initialProfileRequested
+  const loadedCollections = partialBootstrap
+    ? initialStateCollectionsForUser(user, user._globalState || {})
+    : []
   let stateRow = partialBootstrap
-    ? await loadStateCollections(db, scope, INITIAL_ADMIN_STATE_COLLECTIONS)
+    ? await loadStateCollections(db, scope, loadedCollections)
     : scope === 'global' && user._globalStateRow
       ? user._globalStateRow
       : await loadState(db, scope)
@@ -4177,7 +4231,7 @@ const getBootstrap = async (request, env, context, url) => {
     policies,
     ...(partialBootstrap ? {
       partial: true,
-      loadedCollections: INITIAL_ADMIN_STATE_COLLECTIONS,
+      loadedCollections,
     } : {}),
   }))
 }

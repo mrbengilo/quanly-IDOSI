@@ -146,8 +146,8 @@ function RoleGuard({ roles, children }) {
   if (session.needsRoleSelection) return <Navigate to="/select-role" replace />
   const allowedRoles = Array.isArray(roles) ? roles : [roles]
   if (!allowedRoles.includes(canonicalRole(session.role))) return <Navigate to={homeFor(session)} replace />
-  const initialAdminOverview = canonicalRole(session.role) === 'admin' && location.pathname === '/admin/overview'
-  if (!remoteDataReady && !initialAdminOverview) {
+  const initialRoleHome = location.pathname === homeFor(session)
+  if (!remoteDataReady && !initialRoleHome) {
     return <RouteLoading message="Đang tải dữ liệu chi tiết của hệ thống..." />
   }
   return children
