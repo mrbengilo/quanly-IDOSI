@@ -5844,15 +5844,17 @@ export function AppProvider({ children }) {
       if (completion.ambiguous) return true
       return !(completion.found ? completion.value : task.done)
     })
+    const incompleteTaskIds = incompleteTasks.map((task) => String(task.id || '')).filter(Boolean)
+    const incompleteTaskReason = String(payload.incompleteTaskReason || '').trim()
     if (storeEmployeeAttendance && (cashRevenue !== expectedCashRevenue || transferRevenue !== expectedTransferRevenue)) {
       const message = `Doanh thu kết ca chưa khớp: tiền mặt ${expectedCashRevenue.toLocaleString('en-US')} đ, chuyển khoản ${expectedTransferRevenue.toLocaleString('en-US')} đ.`
       notify(message, 'info')
       return { ok: false, message, expectedCashRevenue, expectedTransferRevenue }
     }
-    if (storeEmployeeAttendance && incompleteTasks.length) {
-      const message = `Cần hoàn thành đủ ${incompleteTasks.length} công việc cố định còn lại trước khi kết ca.`
+    if (storeEmployeeAttendance && incompleteTasks.length && !incompleteTaskReason) {
+      const message = 'Cần nhập ghi chú và bấm LƯU KẾT QUẢ cho công việc chưa hoàn thành trước khi kết ca.'
       notify(message, 'info')
-      return { ok: false, message, incompleteTaskIds: incompleteTasks.map((task) => task.id) }
+      return { ok: false, message, code: 'TASK_PROGRESS_REQUIRED', incompleteTaskIds }
     }
     const recordedShiftExpense = state.expenseEntries
       .filter((entry) => entry.recognized !== false
@@ -5876,8 +5878,8 @@ export function AppProvider({ children }) {
       cash: storeEmployeeAttendance ? expectedCashRevenue : Number(payload.cash) || Number(openRecord.cash) || 0,
       transfer: storeEmployeeAttendance ? expectedTransferRevenue : Number(payload.transfer) || Number(openRecord.transfer) || 0,
       orderCount: storeEmployeeAttendance ? relatedOrders.length : Number(openRecord.orderCount) || 0,
-      incompleteTaskReason: '',
-      incompleteTaskIds: incompleteTasks.map((task) => task.id),
+      incompleteTaskReason: incompleteTasks.length ? incompleteTaskReason : '',
+      incompleteTaskIds,
       tiktok: Boolean(payload.tiktok ?? openRecord.tiktok),
       note: payload.note ?? openRecord.note,
     }

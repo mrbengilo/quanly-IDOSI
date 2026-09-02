@@ -10203,22 +10203,10 @@ describe('IDOSI Worker security primitives', () => {
       expect(taskProgressSaved.status).toBe(200)
       expect(await taskProgressSaved.json()).toMatchObject({ version: 10 })
 
-      const reasonRequired = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-        type: 'attendance.check_out', expectedVersion: 10,
-        payload: {
-          attendanceId, cashRevenue: 100_000, transferRevenue: 200_000,
-          location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
-        },
-      }, { ...employeeAuthorization, 'idempotency-key': 'employee-checkout-reason-required-0001' }), env)
-      expect(reasonRequired.status).toBe(400)
-      expect(await reasonRequired.json()).toMatchObject({
-        error: { code: 'INCOMPLETE_TASK_REASON_REQUIRED', details: { taskIds: ['TASK-FUTURE-02'] } },
-      })
       const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_out', expectedVersion: 10,
         payload: {
           attendanceId, cashRevenue: 100_000, transferRevenue: 200_000,
-          incompleteTaskReason: 'Chưa hoàn tất kiểm hàng vì khách đông',
           location: { latitude: 10.8, longitude: 106.7, accuracy: 8 },
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'employee-checkout-success-0001' }), env)
@@ -12216,7 +12204,7 @@ describe('IDOSI Worker security primitives', () => {
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'catalog-repair-checkout-required-work-0001' }), env)
       expect(stillBlockedByRequiredWork.status).toBe(409)
-      expect(await stillBlockedByRequiredWork.json()).toMatchObject({ error: { code: 'CHECKLIST_INCOMPLETE' } })
+      expect(await stillBlockedByRequiredWork.json()).toMatchObject({ error: { code: 'TASK_PROGRESS_REQUIRED' } })
       state = readHydratedState(env.DB.database)
       expect(state.attendance[0]).toHaveProperty('checklistSnapshot.tasks')
       expect(state.attendance[0]).not.toHaveProperty('checklistRepairError')
@@ -13236,7 +13224,7 @@ describe('IDOSI Worker security primitives', () => {
       },
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-bypass-denied-0001' }), env)
     expect(denied.status).toBe(409)
-    expect(await denied.json()).toMatchObject({ error: { code: 'CHECKLIST_INCOMPLETE' } })
+    expect(await denied.json()).toMatchObject({ error: { code: 'TASK_PROGRESS_REQUIRED' } })
     const stateBeforeProgress = readHydratedState(env.DB.database)
     const persistedFixedTask = stateBeforeProgress.tasks.find(({ id }) => id === fixedTask.id)
     const foreignTaskId = fixedTask.id === fixedTask.id.toUpperCase()
@@ -13247,6 +13235,7 @@ describe('IDOSI Worker security primitives', () => {
       : checkedInBody.attendance.id.toUpperCase()
     expect(foreignTaskId).not.toBe(fixedTask.id)
     expect(attendanceAlias).not.toBe(checkedInBody.attendance.id)
+    vi.setSystemTime(new Date('2026-08-20T06:30:00.000Z'))
     replaceStateCollection(env.DB.database, 'tasks', [
       ...stateBeforeProgress.tasks.map((task) => ({
         ...task,
@@ -13268,19 +13257,51 @@ describe('IDOSI Worker security primitives', () => {
       payload: {
         attendanceId: checkedInBody.attendance.id,
         tasks: [
-          { id: fixedTask.id, completed: true },
+          { id: fixedTask.id, completed: false },
           { id: rewardTask.id, completed: false },
         ],
+        incompleteReason: 'Khách đông nên chưa hoàn tất mở cửa',
       },
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-progress-0001' }), env)
     expect(progress.status).toBe(200)
     expect(await progress.json()).toMatchObject({
-      version: 3, totalTasks: 1, completedTasks: 1, completionRate: 100,
-      requiredTasks: 1, completedRequiredTasks: 1, rewardTasks: 1, completedRewardTasks: 0,
+      version: 3, totalTasks: 1, completedTasks: 0, completionRate: 0,
+      requiredTasks: 1, completedRequiredTasks: 0, rewardTasks: 1, completedRewardTasks: 0,
     })
     const stateAfterProgress = readHydratedState(env.DB.database)
-    expect(stateAfterProgress.tasks.find(({ id }) => id === fixedTask.id)?.completedBy).toMatchObject({ E01: true })
+    expect(stateAfterProgress.tasks.find(({ id }) => id === fixedTask.id)?.completedBy).toMatchObject({ E01: false })
+    expect(stateAfterProgress.attendance.find(({ id }) => id === checkedInBody.attendance.id)?.taskProgress).toMatchObject({
+      attendanceId: checkedInBody.attendance.id,
+      employeeId: 'E01',
+      incompleteTaskIds: [fixedTask.id],
+      incompleteReason: 'Khách đông nên chưa hoàn tất mở cửa',
+    })
     expect(stateAfterProgress.tasks.find(({ id }) => id === foreignTaskId)?.completedBy).toEqual({ QL02: false })
+
+    replaceStateCollection(env.DB.database, 'attendance', stateAfterProgress.attendance.map((record) => {
+      if (record.id !== checkedInBody.attendance.id) return record
+      const legacyRecord = { ...record }
+      delete legacyRecord.taskProgress
+      return legacyRecord
+    }))
+    const restoredProgress = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'task.progress.save', expectedVersion: 3,
+      payload: {
+        attendanceId: checkedInBody.attendance.id,
+        tasks: [
+          { id: fixedTask.id, completed: false },
+          { id: rewardTask.id, completed: false },
+        ],
+        incompleteReason: 'Khách đông nên chưa hoàn tất mở cửa',
+      },
+    }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-progress-restore-0001' }), env)
+    expect(restoredProgress.status).toBe(200)
+    expect(await restoredProgress.json()).toMatchObject({ version: 4, existing: true, restored: true })
+    expect(readHydratedState(env.DB.database).attendance
+      .find(({ id }) => id === checkedInBody.attendance.id)?.taskProgress).toMatchObject({
+        attendanceId: checkedInBody.attendance.id,
+        incompleteTaskIds: [fixedTask.id],
+      })
 
     replaceStateCollection(env.DB.database, 'tasks', stateAfterProgress.tasks.map((task) => {
       if (task.id === fixedTask.id) return { ...task, completedBy: { E01: false } }
@@ -13300,7 +13321,7 @@ describe('IDOSI Worker security primitives', () => {
       }
     }))
     const collisionCheckout = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.check_out', expectedVersion: 3,
+      type: 'attendance.check_out', expectedVersion: 4,
       payload: {
         attendanceId: checkedInBody.attendance.id, cashRevenue: 0, transferRevenue: 0,
         location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
@@ -13311,7 +13332,7 @@ describe('IDOSI Worker security primitives', () => {
 
     replaceStateCollection(env.DB.database, 'tasks', stateAfterProgress.tasks)
     const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'attendance.check_out', expectedVersion: 3,
+      type: 'attendance.check_out', expectedVersion: 4,
       payload: {
         attendanceId: checkedInBody.attendance.id, cashRevenue: 0, transferRevenue: 0,
         location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
@@ -13319,9 +13340,11 @@ describe('IDOSI Worker security primitives', () => {
     }, { ...employeeAuthorization, 'idempotency-key': 'canonical-checklist-checkout-0001' }), env)
     expect(checkedOut.status).toBe(200)
     expect(await checkedOut.json()).toMatchObject({
-      version: 4,
+      version: 5,
       attendance: {
-        id: checkedInBody.attendance.id, incompleteTaskReason: null, incompleteTasksSnapshot: [],
+        id: checkedInBody.attendance.id,
+        incompleteTaskReason: 'Khách đông nên chưa hoàn tất mở cửa',
+        incompleteTasksSnapshot: [expect.objectContaining({ id: fixedTask.id, title: 'Mở cửa hàng' })],
       },
     })
   }, 30_000)

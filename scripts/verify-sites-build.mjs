@@ -7,6 +7,7 @@ const client = resolve(root, 'dist', 'client')
 const workerPath = resolve(root, 'dist', 'server', 'index.js')
 const workerDomainFiles = [
   'storeShiftChecklist.js',
+  'taskProgress.js',
   'compensationPolicies.js',
   'compensationAllocation.js',
   'compensationSettlement.js',

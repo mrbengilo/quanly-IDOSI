@@ -2,6 +2,10 @@ import {
   validateStoreChecklistCheckout,
 } from '../src/domain/storeShiftChecklist.js'
 import {
+  createAttendanceTaskProgress,
+  savedTaskProgressCoversIncompleteTasks,
+} from '../src/domain/taskProgress.js'
+import {
   DEFAULT_WORK_CATALOG_ITEMS,
   STAFF_WORK_CATALOG_SEED_VERSION,
   REVENUE_BONUS_PROGRAM_IDS,
@@ -13665,7 +13669,11 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
             checked: completedByEmployeeValue(task.completedBy, employeeId) === true,
           })),
         })
-    if (!checklistValidation.allowed) {
+    const missingPersistedTask = checklistValidation.missingTaskIds.some((taskId) => (
+      !checklistTaskById.has(normalizeIdentifierKey(taskId))
+    ))
+    if (!checklistValidation.allowed
+      && (checklistValidation.code !== 'CHECKLIST_INCOMPLETE' || missingPersistedTask)) {
       throw new ApiError(409, checklistValidation.code, 'Bạn phải hoàn thành toàn bộ checklist bắt buộc trước khi kết ca.', {
         attendanceId: openRecord.id,
         missingTaskIds: checklistValidation.missingTaskIds,
@@ -13679,7 +13687,6 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
   }
   const incompleteTasks = storeEmployee
       ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
-        if (attendanceReferenceMatches(task.checklistAttendanceId)) return false
         if (!workTaskIsRequired(task)) return false
         if (!taskAppliesToEmployee(task, employeeId, attendanceStoreId)) return false
         if (String(task.date || task.workDate || '') !== attendanceDate) return false
@@ -13689,13 +13696,22 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
         return completedByEmployeeValue(completedBy, employeeId) !== true && task.done !== true
       })
     : []
-  const incompleteTaskReason = String(payload.incompleteTaskReason || '').trim()
+  const incompleteTaskIds = incompleteTasks.map((task) => String(task.id || '')).filter(Boolean)
+  const savedIncompleteProgress = savedTaskProgressCoversIncompleteTasks({
+    progress: openRecord.taskProgress,
+    attendanceId: openRecord.id,
+    employeeId,
+    incompleteTaskIds,
+  })
+  const incompleteTaskReason = incompleteTasks.length && savedIncompleteProgress
+    ? String(openRecord.taskProgress?.incompleteReason || '').trim()
+    : ''
   if (incompleteTaskReason.length > 1_000) {
     throw new ApiError(400, 'INCOMPLETE_TASK_REASON_INVALID', 'Lý do chưa hoàn thành công việc không được vượt quá 1.000 ký tự.')
   }
-  if (incompleteTasks.length && !incompleteTaskReason) {
-    throw new ApiError(400, 'INCOMPLETE_TASK_REASON_REQUIRED', 'Cần nhập lý do cho các công việc chưa hoàn thành trước khi kết ca.', {
-      taskIds: incompleteTasks.map((task) => task.id),
+  if (incompleteTasks.length && !savedIncompleteProgress) {
+    throw new ApiError(409, 'TASK_PROGRESS_REQUIRED', 'Cần nhập ghi chú và bấm LƯU KẾT QUẢ cho danh sách công việc chưa hoàn thành trước khi kết ca.', {
+      taskIds: incompleteTaskIds,
     })
   }
   if (officeEmployee && (Number(payload.expense || 0) !== 0 || payload.tiktok === true)) {
@@ -15555,6 +15571,17 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   ))
   if (existingSubmission) {
     const { completedTasks, totalTasks, completionRate } = mandatoryProgress()
+    const restoredProgress = createAttendanceTaskProgress({
+      attendanceId: openAttendance.id,
+      employeeId,
+      completedTasks,
+      totalTasks,
+      completionRate,
+      incompleteTaskIds,
+      incompleteReason,
+      fingerprint: submissionFingerprint,
+      submittedAt: existingSubmission.at || commandContext.now,
+    })
     const existingResult = {
       attendanceId: openAttendance.id,
       employeeId,
@@ -15563,6 +15590,32 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       completionRate,
       incompleteReason,
       submittedAt: existingSubmission.at,
+    }
+    if (!savedTaskProgressCoversIncompleteTasks({
+      progress: openAttendance.taskProgress,
+      attendanceId: openAttendance.id,
+      employeeId,
+      incompleteTaskIds,
+    }) && incompleteTaskIds.length) {
+      const restoredState = {
+        ...state,
+        attendance: attendance.map((record) => record === openAttendance ? {
+          ...record,
+          taskProgress: restoredProgress,
+          updatedAt: commandContext.now,
+          updatedBy: serverActorSnapshot(actor),
+        } : record),
+        stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+      }
+      return commitGlobalStateDomainCommand(db, actor, current, restoredState, {
+        action: body.type,
+        entityType: 'task-progress',
+        entityId: `${openAttendance.id}:${employeeId}`,
+        before: openAttendance.taskProgress || null,
+        after: restoredProgress,
+        metadata: { attendanceId: openAttendance.id, restoredFromHistory: true },
+        response: { command: body.type, ...existingResult, existing: true, restored: true },
+      }, commandContext)
     }
     return recordNoopCommand(db, actor, {
       command: body.type,
@@ -15684,6 +15737,17 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const completedRewardTasks = [...submittedById]
     .filter(([taskId, completed]) => !requiredTaskIds.has(taskId) && completed)
     .length
+  const taskProgress = createAttendanceTaskProgress({
+    attendanceId: openAttendance.id,
+    employeeId,
+    completedTasks,
+    totalTasks,
+    completionRate,
+    incompleteTaskIds,
+    incompleteReason: incompleteTaskIds.length ? incompleteReason : '',
+    fingerprint: submissionFingerprint,
+    submittedAt: commandContext.now,
+  })
   const notifications = (assignmentIds.length ? assignmentResults : [{ assignmentId: '', totalTasks, completedTasks, completionRate }])
     .map((result) => ({
       id: `ntf_${crypto.randomUUID()}`,
@@ -15701,6 +15765,12 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     }))
   const nextState = {
     ...state,
+    attendance: attendance.map((record) => record === openAttendance ? {
+      ...record,
+      taskProgress,
+      updatedAt: commandContext.now,
+      updatedBy: serverActorSnapshot(actor),
+    } : record),
     tasks: nextTasks,
     taskAssignmentHistory: nextHistories,
     notifications: [...notifications, ...(Array.isArray(state.notifications) ? state.notifications : [])],

@@ -8,6 +8,7 @@ const server = resolve(dist, 'server')
 const workerSource = resolve(root, 'server', 'worker.js')
 const workerDomainSources = [
   'storeShiftChecklist.js',
+  'taskProgress.js',
   'compensationPolicies.js',
   'compensationAllocation.js',
   'compensationSettlement.js',

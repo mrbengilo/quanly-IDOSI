@@ -337,7 +337,7 @@ describe('store employee current-shift orders', () => {
     expect(screen.queryByRole('button', { name: 'ĐIỂM DANH' })).toBeNull()
   })
 
-  it('keeps checkout blocked until every fixed active-shift task is completed', () => {
+  it('keeps checkout blocked until incomplete required work has a saved progress note', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-08-20T09:00:00.000Z')
     mocked.app = {
@@ -362,9 +362,61 @@ describe('store employee current-shift orders', () => {
     fireEvent.change(screen.getByLabelText(/^Tiền mặt/u), { target: { value: '0' } })
     fireEvent.change(screen.getByLabelText(/^Chuyển khoản/u), { target: { value: '0' } })
 
-    expect(screen.getByText(/Còn 1 công việc cố định chưa hoàn thành/u)).toBeTruthy()
+    expect(screen.getByText(/Còn 1 công việc bắt buộc chưa hoàn thành/u)).toBeTruthy()
     expect(screen.getByRole('button', { name: 'XÁC NHẬN KẾT CA' }).disabled).toBe(true)
     expect(screen.queryByLabelText(/Lý do/u)).toBeNull()
+  })
+
+  it('allows checkout after the exact incomplete checklist and note were saved', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T11:00:00.000Z')
+    Object.defineProperty(globalThis.navigator, 'geolocation', {
+      configurable: true,
+      value: {
+        getCurrentPosition: vi.fn((success) => success({
+          coords: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
+        })),
+      },
+    })
+    const checkOut = vi.fn().mockResolvedValue({ ok: true })
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01', homeStoreId: 'S01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' },
+      employees: [{ id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' }],
+      stores: [{ id: 'S01', name: 'Dosii TNV' }],
+      attendance: [{
+        id: 'ATT-E01', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+        shiftId: 'CA-SAME', shiftName: 'Ca chung', shiftStart: '08:00', shiftEnd: '17:00',
+        checkIn: '08:00', checkInAt: '2026-08-20T01:00:00.000Z',
+        taskProgress: {
+          attendanceId: 'ATT-E01', employeeId: 'E01', completedTasks: 0, totalTasks: 1,
+          completionRate: 0, incompleteTaskIds: ['TASK-OPEN'],
+          incompleteReason: 'Khách đông nên chưa hoàn tất', submittedAt: '2026-08-20T10:00:00.000Z',
+        },
+      }],
+      orders: [], schedule: [], taskAssignmentHistory: [], shiftDefinitions: [], supportTransfers: [], policies: {},
+      tasks: [{
+        id: 'TASK-OPEN', storeId: 'S01', date: '2026-08-20', shiftId: 'CA-SAME',
+        employeeIds: ['E01'], title: 'Kiểm tra quầy', catalogKind: 'FIXED_TASK', required: true, completedBy: {},
+      }],
+      checkIn: vi.fn(), checkOut, setTaskDone: vi.fn(), notify: vi.fn(),
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeeDashboardV2)))
+    fireEvent.click(screen.getByRole('button', { name: 'KẾT CA' }))
+    fireEvent.change(screen.getByLabelText(/^Tiền mặt/u), { target: { value: '0' } })
+    fireEvent.change(screen.getByLabelText(/^Chuyển khoản/u), { target: { value: '0' } })
+
+    expect(screen.getByText(/Đã lưu ghi chú cho 1 công việc chưa hoàn thành/u)).toBeTruthy()
+    const confirm = screen.getByRole('button', { name: 'XÁC NHẬN KẾT CA' })
+    expect(confirm.disabled).toBe(false)
+    fireEvent.click(confirm)
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkOut).toHaveBeenCalledWith(expect.objectContaining({
+      attendanceId: 'ATT-E01',
+      incompleteTaskReason: 'Khách đông nên chưa hoàn tất',
+    }))
   })
 
   it('shows reward money without making optional reward work block checkout or require a reason', () => {

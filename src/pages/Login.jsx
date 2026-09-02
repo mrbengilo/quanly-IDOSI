@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Eye, EyeOff, LockKeyhole, ShieldCheck, UserRound } from 'lucide-react'
+import { Eye, EyeOff, ShieldCheck, UserRound } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Brand, Button, Input } from '../components/UI'
 import { demoAccounts } from '../data'
@@ -113,7 +113,7 @@ export default function Login() {
           <label className="login-field">
             <span>Mật khẩu</span>
             <span className="password-input">
-              <Input icon={LockKeyhole} type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Nhập mật khẩu" autoComplete="current-password" />
+              <Input icon={ShieldCheck} type={showPassword ? 'text' : 'password'} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Nhập mật khẩu" autoComplete="current-password" />
               <button type="button" onClick={() => setShowPassword((current) => !current)} aria-label="Hiện mật khẩu">{showPassword ? <EyeOff size={20} /> : <Eye size={20} />}</button>
             </span>
           </label>
@@ -124,7 +124,7 @@ export default function Login() {
           </div>
           {error && <div className="login-error">{error}</div>}
           {recoveryMessage && <div className="login-security" role="status"><ShieldCheck size={20} /> {recoveryMessage}</div>}
-          <Button type="submit" loading={loading} className="login-submit" icon={LockKeyhole}>Đăng nhập</Button>
+          <Button type="submit" loading={loading} className="login-submit" icon={ShieldCheck}>Đăng nhập</Button>
 
           <div className="login-divider"><span>chọn nhanh tên tài khoản</span></div>
           <div className="demo-accounts">

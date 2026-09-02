@@ -162,7 +162,7 @@ describe('local attendance canonical working time', () => {
     expect(api.apiCommand).toHaveBeenCalledWith('support_work.update', expect.objectContaining({ assignmentId: 'ASSIGN-CASE' }), expect.any(Object))
   })
 
-  it('persists local store task progress with the canonical attendance scope in one save', async () => {
+  it('persists incomplete local task progress and uses its note to finish the open attendance', async () => {
     const initial = createInitialState()
     const employee = {
       id: 'ST-LOCAL-PROGRESS', code: 'ST-LOCAL-PROGRESS', name: 'Nhân viên cửa hàng',
@@ -205,17 +205,39 @@ describe('local attendance canonical working time', () => {
     await act(async () => {
       result = await appRef.current.saveStoreTaskProgress({
         attendanceId: 'att-local-progress',
-        tasks: [{ id: 'task-local-progress', completed: true }],
+        tasks: [{ id: 'task-local-progress', completed: false }],
+        incompleteReason: 'Khách đông nên chưa hoàn tất',
       })
     })
 
-    expect(result).toMatchObject({ ok: true, completedTasks: 1, totalTasks: 1, completionRate: 100 })
+    expect(result).toMatchObject({ ok: true, completedTasks: 0, totalTasks: 1, completionRate: 0 })
     expect(appRef.current.tasks[0]).toMatchObject({
-      id: 'TASK-LOCAL-PROGRESS', completedBy: { 'ST-LOCAL-PROGRESS': true },
+      id: 'TASK-LOCAL-PROGRESS', completedBy: { 'ST-LOCAL-PROGRESS': false },
     })
     expect(appRef.current.taskAssignmentHistory[0].progressHistory.at(-1)).toMatchObject({
       attendanceId: 'ATT-LOCAL-PROGRESS', storeId: 'SM-TNV', date: '2026-08-30', shiftId: 'CA-SANG',
-      completionRate: 100,
+      completionRate: 0, incompleteReason: 'Khách đông nên chưa hoàn tất',
+    })
+
+    let checkedOut
+    await act(async () => {
+      checkedOut = await appRef.current.checkOut({
+        employeeId: employee.id,
+        attendanceId: 'ATT-LOCAL-PROGRESS',
+        at: '2026-08-30T06:30:00.000Z',
+        cashRevenue: 0,
+        transferRevenue: 0,
+        incompleteTaskReason: 'Khách đông nên chưa hoàn tất',
+        location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
+      })
+    })
+    expect(checkedOut).toMatchObject({
+      ok: true,
+      record: {
+        id: 'ATT-LOCAL-PROGRESS',
+        incompleteTaskReason: 'Khách đông nên chưa hoàn tất',
+        incompleteTaskIds: ['TASK-LOCAL-PROGRESS'],
+      },
     })
   })
 

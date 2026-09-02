@@ -576,6 +576,14 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
   accent-color: #07883f;
 }
 
+.task-checklist > label > .task-checklist__title {
+  color: #143326;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .task-checklist > div.done,
 .task-checklist > label.done {
   border-color: #aed8ba;
