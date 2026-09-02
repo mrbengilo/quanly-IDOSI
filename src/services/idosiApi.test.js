@@ -6,7 +6,10 @@ import {
   apiGetAccountAvatar,
   apiGetEmployeeAvatar,
   apiGetIdentityImage,
+  apiGetHistory,
+  apiGetStoreScreenState,
   apiGetStoreWorkspaceState,
+  apiGetSystemScreenState,
   apiGetStateMetadata,
   apiListUsers,
   apiLogin,
@@ -232,6 +235,44 @@ describe('IDOSI lightweight state synchronization', () => {
     await apiGetStoreWorkspaceState('CH 01')
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/state?scope=global&view=store&storeId=CH+01')
+  })
+
+  it('requests a dedicated store screen API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, projection: 'store', storeId: 'CH 01', screen: 'payroll', state: {} }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiGetStoreScreenState('CH 01', 'payroll')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/store-screens/payroll?storeId=CH+01')
+  })
+
+  it('requests a dedicated system screen API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, projection: 'global', screen: 'employees', state: {} }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiGetSystemScreenState('employees')
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/system-screens/employees')
+  })
+
+  it('requests a cursor-paginated store history page', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, records: [], page: { hasMore: false, nextCursor: null } }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await apiGetHistory('orders', {
+      storeId: 'CH 01', period: '2026-09', cursor: 'next-page', limit: 25,
+    })
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/history/orders?storeId=CH+01&limit=25&period=2026-09&cursor=next-page')
   })
 
   it('loads only state metadata with the active bearer session', async () => {

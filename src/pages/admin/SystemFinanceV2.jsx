@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   BarChart3,
   MapPin,
@@ -15,6 +15,7 @@ import {
   Button,
   Card,
   ExportButton,
+  InfoNote,
   Input,
   MetricCard,
   PageHeader,
@@ -23,6 +24,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { financeSummaryFromState } from '../../domain'
+import { apiGetFinanceOverview } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { businessDate, downloadCsv, money, shortDate, today } from '../../utils'
 
@@ -74,16 +76,16 @@ const storeEmployeeCount = (employees = [], storeId) => employees.filter((employ
   && employee.status !== 'Đã nghỉ việc'
 )).length
 
-function SystemMetrics({ rows }) {
+function SystemMetrics({ rows, loading = false }) {
   const totals = totalsFrom(rows)
   const margin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : 0
   return (
     <div className="metric-grid metric-grid--five">
       <MetricCard label="CỬA HÀNG" value={rows.length} suffix="cửa hàng" icon={Store} tone="blue" compact />
-      <MetricCard label="DOANH THU" value={money(totals.revenue)} icon={TrendingUp} tone="green" compact />
-      <MetricCard label="CHI PHÍ" value={money(totals.expense)} icon={TrendingDown} tone="orange" compact />
-      <MetricCard label="LỢI NHUẬN" value={money(totals.profit)} icon={Wallet} tone={totals.profit >= 0 ? 'green' : 'red'} compact />
-      <MetricCard label="BIÊN LỢI NHUẬN" value={`${margin.toFixed(2)}%`} icon={BarChart3} tone="blue" compact />
+      <MetricCard label="DOANH THU" value={loading ? '…' : money(totals.revenue)} icon={TrendingUp} tone="green" compact />
+      <MetricCard label="CHI PHÍ" value={loading ? '…' : money(totals.expense)} icon={TrendingDown} tone="orange" compact />
+      <MetricCard label="LỢI NHUẬN" value={loading ? '…' : money(totals.profit)} icon={Wallet} tone={totals.profit >= 0 ? 'green' : 'red'} compact />
+      <MetricCard label="BIÊN LỢI NHUẬN" value={loading ? '…' : `${margin.toFixed(2)}%`} icon={BarChart3} tone="blue" compact />
     </div>
   )
 }
@@ -123,10 +125,57 @@ function FinanceTableFilters({ filter, onChange, stores, scope }) {
 
 export function AdminOverviewV2() {
   const app = useApp()
-  const { stores, setActiveStoreId, session } = app
+  const { stores, setActiveStoreId, session, apiStatus } = app
   const navigate = useNavigate()
   const [period, setPeriod] = useState(today().slice(0, 7))
-  const rows = useMemo(() => summariesFor(app, period), [app, period])
+  const remoteOverviewEnabled = Boolean(apiStatus && apiStatus !== 'local')
+  const [overview, setOverview] = useState({ period: '', summaries: [], loading: false, error: '' })
+  useEffect(() => {
+    if (!remoteOverviewEnabled) return undefined
+    let active = true
+    apiGetFinanceOverview(period).then((payload) => {
+      if (!active) return
+      setOverview({
+        period: payload.period,
+        summaries: Array.isArray(payload.summaries) ? payload.summaries : [],
+        loading: false,
+        error: '',
+      })
+    }).catch((error) => {
+      if (!active) return
+      setOverview((current) => ({
+        ...current,
+        period,
+        summaries: [],
+        loading: false,
+        error: error?.message || 'Không thể tải tổng quan tài chính.',
+      }))
+    })
+    return () => { active = false }
+  }, [period, remoteOverviewEnabled])
+  const overviewLoading = remoteOverviewEnabled && overview.period !== period
+  const rows = useMemo(() => {
+    if (!remoteOverviewEnabled) return summariesFor(app, period)
+    const summaryByStore = new Map(overview.summaries.map((summary) => [String(summary.storeId), summary]))
+    return stores.map((store) => {
+      const summary = summaryByStore.get(String(store.id)) || { revenue: 0, expense: 0, profit: 0 }
+      const revenue = Number(summary.revenue || 0)
+      const expense = Number(summary.expense || 0)
+      const profit = revenue - expense
+      return {
+        store,
+        summary: {
+          transactions: [],
+          revenue,
+          expense,
+          profit,
+          marginPercent: revenue > 0 ? (profit / revenue) * 100 : 0,
+          revenueByType: {},
+          expenseByType: {},
+        },
+      }
+    })
+  }, [app, overview.summaries, period, remoteOverviewEnabled, stores])
   const activeStores = stores.filter((store) => !['Tạm ngưng', 'Ngừng hoạt động'].includes(store.status))
   const openStore = (store) => {
     if (setActiveStoreId?.(store.id) !== false) navigate('/store/overview')
@@ -140,7 +189,8 @@ export function AdminOverviewV2() {
         icon={BarChart3}
         actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />}
       />
-      <SystemMetrics rows={rows} />
+      <SystemMetrics rows={rows} loading={overviewLoading} />
+      {overview.error && <InfoNote tone="orange">{overview.error}</InfoNote>}
       <div className="section-heading">
         <div><h2>Không gian cửa hàng</h2><p>Chọn một cửa hàng để mở lịch làm việc, đơn hàng, chấm công và bảng lương nhân viên.</p></div>
         <div className="section-heading__actions"><Badge tone="green">{activeStores.length} cửa hàng hoạt động</Badge><Button variant="ghost" onClick={() => navigate('/admin/stores')}>Danh sách cửa hàng</Button></div>
@@ -153,8 +203,8 @@ export function AdminOverviewV2() {
               <div className="store-card__title"><h3>{store.name}</h3><Badge tone={store.status === 'Hoạt động' || store.status === 'Đang hoạt động' ? 'green' : 'orange'}>{store.status || 'Hoạt động'}</Badge></div>
               <p><MapPin size={17} /> {store.location || store.address || 'Chưa cập nhật địa chỉ'}</p>
               <div className="store-card__finance">
-                <span><small>Doanh thu trong kỳ</small><strong>{money(summary.revenue)}</strong></span>
-                <span><small>Lợi nhuận trong kỳ</small><strong>{money(summary.profit)}</strong></span>
+                <span><small>Doanh thu trong kỳ</small><strong>{overviewLoading ? '…' : money(summary.revenue)}</strong></span>
+                <span><small>Lợi nhuận trong kỳ</small><strong>{overviewLoading ? '…' : money(summary.profit)}</strong></span>
               </div>
               <Button onClick={() => openStore(store)}>Mở cửa hàng <span>→</span></Button>
             </div>

@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   apiGetAccountAvatar: vi.fn(),
   apiGetState: vi.fn(),
   apiGetStoreWorkspaceState: vi.fn(),
+  apiGetSystemScreenState: vi.fn(),
   apiGetStateMetadata: vi.fn(),
   apiLogin: vi.fn(),
   apiListUsers: vi.fn(),
@@ -23,6 +24,7 @@ vi.mock('../services/idosiApi', () => ({
   apiGetAccountAvatar: api.apiGetAccountAvatar,
   apiGetState: api.apiGetState,
   apiGetStoreWorkspaceState: api.apiGetStoreWorkspaceState,
+  apiGetSystemScreenState: api.apiGetSystemScreenState,
   apiGetStateMetadata: api.apiGetStateMetadata,
   apiLogin: api.apiLogin,
   apiListUsers: api.apiListUsers,
@@ -119,6 +121,7 @@ describe('remote command active-store preservation', () => {
   })
 
   it('keeps store B selected after a successful command refresh returns global store A', async () => {
+    vi.useFakeTimers()
     renderProvider()
     await act(async () => {
       expect((await appRef.current.login('support-one', 'password')).ok).toBe(true)
@@ -130,6 +133,8 @@ describe('remote command active-store preservation', () => {
       expect((await appRef.current.updateStore('STORE-A', { name: 'Cửa hàng A mới' })).ok).toBe(true)
     })
 
+    expect(api.apiGetState).not.toHaveBeenCalled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
     expect(api.apiGetState).toHaveBeenCalledWith('global')
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
   })
@@ -151,9 +156,7 @@ describe('remote command active-store preservation', () => {
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
   })
 
-  it('renders the compact Admin bootstrap before the complete state finishes loading', async () => {
-    let resolveCompleteBootstrap
-    const completeBootstrap = new Promise((resolve) => { resolveCompleteBootstrap = resolve })
+  it('keeps the compact Admin home without starting a global state download', async () => {
     api.apiLogin.mockResolvedValue({
       user: adminUser,
       bootstrap: {
@@ -170,7 +173,6 @@ describe('remote command active-store preservation', () => {
       },
       users: [adminUser],
     })
-    api.apiBootstrapState.mockReturnValueOnce(completeBootstrap)
     renderProvider()
 
     await act(async () => {
@@ -180,23 +182,11 @@ describe('remote command active-store preservation', () => {
     expect(appRef.current.session).toMatchObject({ role: 'admin' })
     expect(appRef.current.remoteDataReady).toBe(false)
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-A')
-    expect(api.apiBootstrapState).toHaveBeenCalledWith('global')
-
-    await act(async () => {
-      resolveCompleteBootstrap({ user: adminUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
-      await completeBootstrap
-      await Promise.resolve()
-    })
-
-    expect(appRef.current.remoteDataReady).toBe(true)
-    expect(appRef.current.employees).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'HTKD-001' }),
-    ]))
+    expect(api.apiBootstrapState).not.toHaveBeenCalled()
+    expect(api.apiGetState).not.toHaveBeenCalled()
   })
 
-  it('renders a compact non-Admin bootstrap before the complete state finishes loading', async () => {
-    let resolveCompleteBootstrap
-    const completeBootstrap = new Promise((resolve) => { resolveCompleteBootstrap = resolve })
+  it('keeps the compact support home without starting a global state download', async () => {
     api.apiLogin.mockResolvedValue({
       user: supportUser,
       bootstrap: {
@@ -217,7 +207,6 @@ describe('remote command active-store preservation', () => {
       },
       users: [supportUser],
     })
-    api.apiBootstrapState.mockReturnValueOnce(completeBootstrap)
     renderProvider()
 
     await act(async () => {
@@ -226,15 +215,83 @@ describe('remote command active-store preservation', () => {
 
     expect(appRef.current.session).toMatchObject({ role: 'business_support', employeeId: 'HTKD-001' })
     expect(appRef.current.remoteDataReady).toBe(false)
-    expect(api.apiBootstrapState).toHaveBeenCalledWith('global')
+    expect(api.apiBootstrapState).not.toHaveBeenCalled()
+    expect(api.apiGetState).not.toHaveBeenCalled()
+  })
+
+  it('hydrates one explicit system screen without downloading global state', async () => {
+    api.apiLogin.mockResolvedValue({
+      user: adminUser,
+      bootstrap: {
+        user: adminUser,
+        state: { stores: [{ id: 'STORE-A', name: 'Cửa hàng A' }] },
+        policies: [],
+        version: 1,
+        partial: true,
+      },
+      users: [adminUser],
+    })
+    api.apiGetSystemScreenState.mockResolvedValue({
+      user: adminUser,
+      users: [adminUser],
+      projection: 'global',
+      screen: 'employees',
+      state: makeRemoteState('STORE-A'),
+      policies: [],
+      version: 1,
+    })
+    renderProvider()
+    await act(async () => {
+      expect((await appRef.current.login('admin', 'password')).ok).toBe(true)
+      await appRef.current.ensureSystemWorkspaceData({ screen: 'employees' })
+    })
+
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledWith('employees')
+    expect(api.apiGetState).not.toHaveBeenCalled()
+    expect(appRef.current.remoteProjection).toEqual({
+      kind: 'global', storeId: '', screen: 'employees', period: '',
+    })
+  })
+
+  it('hydrates a direct employee route with its own screen API instead of global state', async () => {
+    window.location.hash = '#/employee/orders'
+    const employeeState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{ id: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A' }],
+      orders: [{ id: 'ORDER-E01', employeeId: 'E01', storeId: 'STORE-A' }],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: employeeHomeUser,
+      bootstrap: {
+        user: employeeHomeUser,
+        state: { stores: employeeState.stores.slice(0, 1), employees: employeeState.employees },
+        policies: [],
+        version: 1,
+        partial: true,
+      },
+    })
+    api.apiGetSystemScreenState.mockResolvedValue({
+      user: employeeHomeUser,
+      projection: 'global',
+      screen: 'employee-orders',
+      state: employeeState,
+      policies: [],
+      version: 1,
+    })
+    renderProvider()
 
     await act(async () => {
-      resolveCompleteBootstrap({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 1 })
-      await completeBootstrap
+      expect((await appRef.current.login('employee-one', 'password')).ok).toBe(true)
       await Promise.resolve()
     })
 
-    expect(appRef.current.remoteDataReady).toBe(true)
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledWith('employee-orders')
+    expect(api.apiBootstrapState).not.toHaveBeenCalled()
+    expect(api.apiGetState).not.toHaveBeenCalled()
+    expect(appRef.current.remoteProjection).toEqual({
+      kind: 'global', storeId: '', screen: 'employee-orders', period: '',
+    })
+    expect(appRef.current.orders.map(({ id }) => id)).toEqual(['ORDER-E01'])
   })
 
   it('hydrates a direct Admin store route with only the remembered store projection', async () => {
@@ -263,6 +320,7 @@ describe('remote command active-store preservation', () => {
       user: adminUser,
       projection: 'store',
       storeId: 'STORE-B',
+      screen: 'payroll',
       state: {
         ...makeRemoteState('STORE-B'),
         employees: [{ id: 'E-B', storeId: 'STORE-B', unit: 'store', name: 'Nhân viên B' }],
@@ -277,19 +335,21 @@ describe('remote command active-store preservation', () => {
       await Promise.resolve()
     })
 
-    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-B')
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-B', { screen: 'payroll' })
     expect(api.apiBootstrapState).not.toHaveBeenCalled()
-    expect(appRef.current.remoteProjection).toEqual({ kind: 'store', storeId: 'STORE-B' })
+    expect(appRef.current.remoteProjection).toEqual({ kind: 'store', storeId: 'STORE-B', screen: 'payroll', period: '' })
     expect(appRef.current.activeStoreId).toBe('STORE-B')
     expect(appRef.current.employees.map(({ id }) => id)).toEqual(['E-B'])
   })
 
   it('finishes an Admin store Save before the scoped background reconciliation', async () => {
+    vi.useFakeTimers()
     window.location.hash = '#/store/orders'
     const scopedPayload = {
       user: adminUser,
       projection: 'store',
       storeId: 'STORE-A',
+      screen: 'orders',
       state: makeRemoteState('STORE-A'),
       policies: [],
       version: 1,
@@ -308,8 +368,10 @@ describe('remote command active-store preservation', () => {
     })
 
     expect(result.ok).toBe(true)
+    expect(resolveRefresh).toBeUndefined()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_500) })
     expect(resolveRefresh).toBeTypeOf('function')
-    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A')
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'orders' })
     expect(api.apiGetState).not.toHaveBeenCalled()
 
     await act(async () => {
@@ -318,7 +380,7 @@ describe('remote command active-store preservation', () => {
     })
   })
 
-  it('uses a compact bootstrap when switching an authenticated session role', async () => {
+  it('hydrates only the assigned store when switching to a store-manager role', async () => {
     const availableRoles = [
       { role: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-001', label: 'Hỗ trợ KD' },
       { role: 'store_manager', storeId: 'STORE-A', employeeId: 'QL-001', label: 'Quản lý CH' },
@@ -364,10 +426,9 @@ describe('remote command active-store preservation', () => {
         loadedCollections: ['employees', 'stores', 'attendance', 'supportWorkSchedules'],
       },
     })
-    let resolveCompleteBootstrap
-    const completeBootstrap = new Promise((resolve) => { resolveCompleteBootstrap = resolve })
-    api.apiBootstrapState
-      .mockReturnValueOnce(completeBootstrap)
+    let resolveStoreProjection
+    const storeProjection = new Promise((resolve) => { resolveStoreProjection = resolve })
+    api.apiGetStoreWorkspaceState.mockReturnValueOnce(storeProjection)
     renderProvider()
 
     await act(async () => {
@@ -379,21 +440,32 @@ describe('remote command active-store preservation', () => {
     })
 
     expect(api.apiSelectSessionRole).toHaveBeenCalledWith(availableRoles[1])
-    expect(api.apiBootstrapState).toHaveBeenCalledTimes(1)
-    expect(api.apiBootstrapState).toHaveBeenCalledWith('global')
+    expect(api.apiBootstrapState).not.toHaveBeenCalled()
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledOnce()
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'overview' })
     expect(appRef.current.session).toMatchObject({ role: 'store_manager', employeeId: 'QL-001', storeId: 'STORE-A' })
     expect(appRef.current.remoteDataReady).toBe(false)
 
     await act(async () => {
-      resolveCompleteBootstrap({ user: managerUser, state: managerState, policies: [], version: 1 })
-      await completeBootstrap
+      resolveStoreProjection({
+        user: managerUser,
+        projection: 'store',
+        storeId: 'STORE-A',
+        screen: 'overview',
+        state: managerState,
+        policies: [],
+        version: 1,
+      })
+      await storeProjection
       await Promise.resolve()
     })
 
     expect(appRef.current.remoteDataReady).toBe(true)
+    expect(appRef.current.remoteProjection).toEqual({ kind: 'store', storeId: 'STORE-A', screen: 'overview', period: '' })
   })
 
   it('returns from a successful mutation before the background full-state reconciliation finishes', async () => {
+    vi.useFakeTimers()
     let resolveRefresh
     api.apiGetState.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))
     renderProvider()
@@ -404,6 +476,10 @@ describe('remote command active-store preservation', () => {
     await act(async () => {
       const result = await appRef.current.updateStore('STORE-A', { name: 'Cửa hàng A mới' })
       expect(result.ok).toBe(true)
+      expect(resolveRefresh).toBeUndefined()
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000)
       expect(resolveRefresh).toBeTypeOf('function')
       resolveRefresh({ user: supportUser, state: makeRemoteState('STORE-A'), policies: [], version: 2 })
       await Promise.resolve()
@@ -424,9 +500,12 @@ describe('remote command active-store preservation', () => {
       expect((await appRef.current.updateStore('STORE-A', { name: 'Cửa hàng A mới' })).ok).toBe(true)
       await Promise.resolve()
     })
+    expect(api.apiGetState).not.toHaveBeenCalled()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
     expect(api.apiGetState).toHaveBeenCalledTimes(1)
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_010) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_010) })
 
     expect(api.apiGetStateMetadata).toHaveBeenCalledWith('global')
     expect(api.apiGetState).toHaveBeenCalledTimes(2)
@@ -440,7 +519,7 @@ describe('remote command active-store preservation', () => {
     })
     api.apiGetState.mockClear()
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_010) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_010) })
 
     expect(api.apiGetStateMetadata).toHaveBeenCalledWith('global')
     expect(api.apiGetState).not.toHaveBeenCalled()
@@ -459,7 +538,7 @@ describe('remote command active-store preservation', () => {
     })
     api.apiGetState.mockClear()
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(5_010) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_010) })
 
     expect(api.apiGetState).toHaveBeenCalledWith('global')
   })
@@ -544,7 +623,7 @@ describe('remote command active-store preservation', () => {
 
   it('drains a forced transfer-boundary refresh after an in-flight metadata poll finishes', async () => {
     vi.useFakeTimers()
-    vi.setSystemTime('2026-08-20T06:59:54.000Z')
+    vi.setSystemTime('2026-08-20T06:59:24.000Z')
     const transfer = {
       id: 'TR-BUSY', employeeId: 'E01', fromStoreId: 'STORE-A', toStoreId: 'STORE-B',
       startAt: '2026-08-20T14:00', endAt: '2026-08-20T21:00', status: 'Đã duyệt',
@@ -570,9 +649,9 @@ describe('remote command active-store preservation', () => {
     })
     api.apiGetState.mockClear()
 
-    act(() => { vi.advanceTimersByTime(5_000) })
+    act(() => { vi.advanceTimersByTime(30_000) })
     expect(api.apiGetStateMetadata).toHaveBeenCalledWith('global')
-    act(() => { vi.advanceTimersByTime(1_030) })
+    act(() => { vi.advanceTimersByTime(6_030) })
     expect(api.apiGetState).not.toHaveBeenCalled()
 
     await act(async () => {

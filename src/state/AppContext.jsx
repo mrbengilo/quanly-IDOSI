@@ -37,6 +37,7 @@ import { createDomainState, defaultPolicies, migrateDomainState } from './initia
 import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
 import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
+import { employeeScreen, systemScreenForPath } from '../domain/workspaceScreens'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../domain/storeTieredPayroll'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
@@ -59,6 +60,7 @@ import {
   apiGetAccountAvatar,
   apiGetState,
   apiGetStoreWorkspaceState,
+  apiGetSystemScreenState,
   apiGetStateMetadata,
   apiLogin,
   apiSelectSessionRole,
@@ -505,6 +507,11 @@ export const canManagePolicies = (role) => ['admin', 'business_support'].include
 const isActiveAccount = (status) => !['tạm ngưng', 'tạm nghỉ', 'đã nghỉ việc', 'inactive', 'disabled'].includes(normalizeText(status))
 const isSystemRole = (role) => ['admin', 'business_support', 'manager'].includes(normalizeText(role))
 const isStoreWorkspaceRole = (role) => ['admin', 'business_support', 'manager', 'store_manager'].includes(normalizeText(role))
+const shouldHydrateInitialProjection = (user) => {
+  const role = normalizeAuthRole(user?.role)
+  if (!['admin', 'business_support'].includes(role)) return true
+  return browserUsesStoreWorkspace()
+}
 const STORE_EXPENSE_CATEGORIES = new Set(['Set up', 'Mặt bằng', 'Điện', 'Nước', 'Wifi', 'Marketing', 'Rác', 'Khác'])
 const LEGACY_STORE_EXPENSE_CATEGORIES = {
   'Wi-Fi': 'Wifi',
@@ -1110,6 +1117,19 @@ const browserUsesStoreWorkspace = () => {
   return route === '/store' || route.startsWith('/store/')
 }
 
+const browserStoreWorkspaceScreen = () => {
+  if (typeof window === 'undefined') return 'overview'
+  const route = String(window.location?.hash || '').replace(/^#/u, '').split('?')[0]
+  const screen = route.match(/^\/store\/([^/]+)/u)?.[1] || 'overview'
+  return screen === 'shifts' ? 'schedule' : screen
+}
+
+const browserSystemWorkspaceScreen = () => {
+  if (typeof window === 'undefined') return ''
+  const route = String(window.location?.hash || '').replace(/^#/u, '').split('?')[0]
+  return systemScreenForPath(route)
+}
+
 const accountKey = (account = {}) => String(account.id || account.code || account.employeeCode || '')
 
 const toSession = (account, source) => {
@@ -1437,6 +1457,88 @@ export const buildLocalPayrollFinanceSnapshot = ({ state, storeId, period, netPa
   }
 }
 
+const remoteResultRecordId = (record) => String(
+  record?.id || record?.code || record?.key || record?.periodId || '',
+).trim()
+
+const mergeRemoteResultRecords = (records, updates) => {
+  let next = Array.isArray(records) ? [...records] : []
+  for (const update of (Array.isArray(updates) ? updates : [updates]).filter(Boolean)) {
+    const updateId = remoteResultRecordId(update)
+    if (!updateId) continue
+    const matches = next.filter((record) => remoteResultRecordId(record) === updateId)
+    if (matches.length > 1) continue
+    next = matches.length
+      ? next.map((record) => record === matches[0] ? update : record)
+      : [update, ...next]
+  }
+  return next
+}
+
+const remoteCommandResultPatches = (type, result) => {
+  const patches = new Map()
+  const replacements = new Map()
+  const add = (collection, value) => {
+    const updates = (Array.isArray(value) ? value : [value]).filter(Boolean)
+    if (updates.length) patches.set(collection, [...(patches.get(collection) || []), ...updates])
+  }
+  if (type.startsWith('store.')) add(type === 'store.delete' ? 'deletedStores' : 'stores', result.store)
+  if (type.startsWith('employee.')) add(type === 'employee.delete' ? 'deletedEmployees' : 'employees', result.employee)
+  if (type.startsWith('order.')) {
+    add('orders', result.order)
+    add('notifications', result.notification)
+  }
+  if (type.startsWith('fixed_expense.')) {
+    add('fixedExpenses', result.expense)
+    add('expenseEntries', result.expenseEntry)
+  } else if (type.startsWith('expense.')) add('expenseEntries', result.expense || result.expenseEntry)
+  if (type.startsWith('import.') || type.startsWith('import_voucher.')) {
+    add('importVouchers', result.voucher)
+    add('expenseEntries', result.expenseEntry)
+  }
+  if (type.startsWith('compensation_entry.')) add('compensationEntries', result.entry)
+  if (type.startsWith('salary_adjustment.')) add('salaryAdjustments', result.adjustment)
+  if (type.startsWith('salary_advance.')) add('salaryAdvances', result.advance)
+  if (type.startsWith('store_salary_config.')) add('storeEmployeeSalaryConfigs', result.salaryConfig)
+  if (type.startsWith('work_catalog.')) add('workCatalogItems', result.item)
+  if (type === 'work_reward.set' || type === 'work_reward.set_batch') {
+    add('workCatalogProgress', result.reward || result.rewards)
+    add('compensationEntries', result.entry || result.entries)
+    add('teamRewardClaims', result.teamClaim || result.teamClaims)
+  }
+  if (type.startsWith('violation.')) {
+    add('violations', result.violation || result.violations)
+    add('compensationEntries', result.entry || result.entries)
+  }
+  if (type.startsWith('revenue_bonus.')) {
+    add('revenueBonusDaily', result.daily || result.bonus || result.bonuses)
+    add('revenueBonusAllocations', result.allocation || result.allocations)
+    add('salaryAdjustments', result.adjustment || result.adjustments)
+  }
+  if (type.startsWith('payroll.')) {
+    add('payrollPeriods', result.period)
+    add('payrollPayments', result.payment || result.payments)
+    add('expenseEntries', result.expenseEntry || result.expenseEntries)
+  }
+  if (type.startsWith('attendance.')) {
+    add('attendance', result.attendance)
+    add('tasks', result.tasks)
+  }
+  if (type.startsWith('shift_definition.')) add('shiftDefinitions', result.shift)
+  if (type.startsWith('support_transfer.')) add('supportTransfers', result.transfer)
+  if (type === 'order_information.reorder' && Array.isArray(result.options)) {
+    replacements.set('orderInformationOptions', result.options)
+  } else if (type.startsWith('order_information.')) {
+    add('orderInformationOptions', result.option || result.options)
+  }
+  if (type.startsWith('schedule.')) add('schedule', result.assignment || result.assignments)
+  if (type.startsWith('support_work.')) add('supportWorkAssignments', result.assignment || result.assignments)
+  if (type.startsWith('support_schedule.')) add('supportWorkSchedules', result.schedule || result.schedules)
+  if (type === 'task.done' || type === 'task.set_done') add('tasks', result.task)
+  if (type === 'task.progress.save') add('tasks', result.tasks)
+  return { patches, replacements }
+}
+
 const voucherDate = (value = new Date()) => {
   const date = resolveDate(value)
   return `${String(date.getDate()).padStart(2, '0')}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getFullYear()).slice(-2)}`
@@ -1500,7 +1602,9 @@ export function AppProvider({ children }) {
   const [sessionRestoreReady, setSessionRestoreReady] = useState(() => !hasApiSession())
   const [apiStatus, setApiStatus] = useState('local')
   const [remoteDataReady, setRemoteDataReady] = useState(true)
-  const [remoteProjection, setRemoteProjection] = useState({ kind: 'local', storeId: '' })
+  const [remoteProjection, setRemoteProjection] = useState({
+    kind: 'local', storeId: '', screen: '', period: '',
+  })
   const [attendanceCheckoutRequests, setAttendanceCheckoutRequests] = useState({})
   const apiRef = useRef({
     enabled: false,
@@ -1517,10 +1621,13 @@ export function AppProvider({ children }) {
     fullStateReady: false,
     projection: 'local',
     projectionStoreId: '',
+    projectionScreen: '',
+    projectionPeriod: '',
     projectionRequestId: 0,
     pendingProjectionKey: '',
     pendingProjectionPromise: null,
     domainReconciliations: 0,
+    reconcileTimer: null,
     systemResetIdempotencyKey: null,
   })
   const localAttendanceCheckInClaimsRef = useRef(new Set())
@@ -1563,6 +1670,8 @@ export function AppProvider({ children }) {
     remote.projectionStoreId = remote.projection === 'store'
       ? String(payload.storeId || hydrated.activeStoreId || '')
       : ''
+    remote.projectionScreen = String(payload.screen || '')
+    remote.projectionPeriod = remote.projection === 'store' ? String(payload.period || '') : ''
     if (Array.isArray(payload.policies)) {
       remote.policyVersions = Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
     }
@@ -1574,7 +1683,12 @@ export function AppProvider({ children }) {
     }
     setApiStatus('connected')
     setRemoteDataReady(remote.fullStateReady)
-    setRemoteProjection({ kind: remote.projection, storeId: remote.projectionStoreId })
+    setRemoteProjection({
+      kind: remote.projection,
+      storeId: remote.projectionStoreId,
+      screen: remote.projectionScreen,
+      period: remote.projectionPeriod,
+    })
     rememberActiveStore(remoteUser, hydrated.activeStoreId)
     activeStoreIdRef.current = hydrated.activeStoreId
     setState(hydrated)
@@ -1588,10 +1702,16 @@ export function AppProvider({ children }) {
     force = false,
     blocking = true,
     bootstrap = false,
+    screen = '',
+    period = '',
   } = {}) => {
     const normalizedKind = kind === 'store' ? 'store' : 'global'
     const normalizedStoreId = normalizedKind === 'store' ? String(storeId || '').trim() : ''
-    const projectionKey = normalizedKind === 'store' ? `store:${normalizedStoreId}` : 'global'
+    const normalizedScreen = String(screen || '').trim()
+    const normalizedPeriod = normalizedKind === 'store' ? String(period || '').trim() : ''
+    const projectionKey = normalizedKind === 'store'
+      ? `store:${normalizedStoreId}:${normalizedScreen || 'workspace'}:${normalizedPeriod || 'all'}`
+      : `global:${normalizedScreen || 'workspace'}`
     let remote = apiRef.current
     const expectedUserId = String(expectedUser?.id || '')
     if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) {
@@ -1599,7 +1719,11 @@ export function AppProvider({ children }) {
     }
     if (!force && remote.fullStateReady
       && remote.projection === normalizedKind
-      && (normalizedKind !== 'store' || sameIdentifier(remote.projectionStoreId, normalizedStoreId))) {
+      && String(remote.projectionScreen || '') === normalizedScreen
+      && (normalizedKind !== 'store' || (
+        sameIdentifier(remote.projectionStoreId, normalizedStoreId)
+        && String(remote.projectionPeriod || '') === normalizedPeriod
+      ))) {
       return Promise.resolve(null)
     }
     if (remote.pendingProjectionKey === projectionKey && remote.pendingProjectionPromise) {
@@ -1611,8 +1735,13 @@ export function AppProvider({ children }) {
       setRemoteDataReady(false)
     }
     const readProjection = () => normalizedKind === 'store'
-      ? apiGetStoreWorkspaceState(normalizedStoreId)
-      : apiGetState('global')
+      ? apiGetStoreWorkspaceState(normalizedStoreId, {
+          ...(normalizedScreen ? { screen: normalizedScreen } : {}),
+          ...(normalizedPeriod ? { period: normalizedPeriod } : {}),
+        })
+      : normalizedScreen
+        ? apiGetSystemScreenState(normalizedScreen)
+        : apiGetState('global')
     const request = (async () => {
       let payload = normalizedKind === 'global' && bootstrap
         ? await apiBootstrapState('global')
@@ -1631,7 +1760,7 @@ export function AppProvider({ children }) {
           || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
       }
       if (normalizedKind === 'global' && canListAccounts(payload.user?.role)) {
-        const users = await apiListUsers()
+        const users = Array.isArray(payload.users) ? { users: payload.users } : await apiListUsers()
         payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
       }
       remote = apiRef.current
@@ -1659,16 +1788,22 @@ export function AppProvider({ children }) {
 
   const hydrateCompleteRemoteState = useCallback((expectedUser, preferredActiveStoreId = null) => {
     const preferredStoreId = preferredActiveStoreId
+      || expectedUser?.storeId
+      || expectedUser?.store_id
       || activeStoreIdRef.current
       || readRememberedActiveStore(expectedUser)
-    const useStoreProjection = isSystemRole(expectedUser?.role)
-      && browserUsesStoreWorkspace()
-      && Boolean(preferredStoreId)
+    const role = normalizeAuthRole(expectedUser?.role)
+    const systemScreen = browserSystemWorkspaceScreen()
+    const useStoreProjection = Boolean(preferredStoreId) && (
+      role === 'store_manager'
+      || (isSystemRole(role) && browserUsesStoreWorkspace())
+    )
     return loadCompleteRemoteProjection(expectedUser, {
       kind: useStoreProjection ? 'store' : 'global',
       storeId: useStoreProjection ? preferredStoreId : '',
+      screen: useStoreProjection ? browserStoreWorkspaceScreen() : systemScreen,
       preferredActiveStoreId: preferredStoreId,
-      bootstrap: !useStoreProjection,
+      bootstrap: !useStoreProjection && !systemScreen,
     })
   }, [loadCompleteRemoteProjection])
 
@@ -1685,7 +1820,11 @@ export function AppProvider({ children }) {
 
   const ensureSystemWorkspaceData = useCallback((options = {}) => {
     const remote = apiRef.current
-    if (!remote.enabled || !isSystemRole(remote.role)) return Promise.resolve(null)
+    const requestedScreen = String(options.screen || '')
+    const allowed = isSystemRole(remote.role)
+      || employeeScreen(requestedScreen)
+      || requestedScreen === 'account-settings'
+    if (!remote.enabled || !allowed) return Promise.resolve(null)
     return loadCompleteRemoteProjection(remote.user, {
       kind: 'global',
       preferredActiveStoreId: activeStoreIdRef.current,
@@ -1698,6 +1837,8 @@ export function AppProvider({ children }) {
     const reconcileProjection = ({ blocking = false } = {}) => loadCompleteRemoteProjection(remote.user, {
       kind: remote.projection === 'store' ? 'store' : 'global',
       storeId: remote.projectionStoreId,
+      screen: remote.projectionScreen,
+      period: remote.projectionPeriod,
       preferredActiveStoreId: activeStoreIdRef.current,
       force: true,
       blocking,
@@ -1708,16 +1849,39 @@ export function AppProvider({ children }) {
         idempotencyKey,
       })
       remote.version = Number(result.version)
-      // The mutation is already durable when POST resolves. Do not keep the
-      // Save/Create button blocked behind projection download or JSON parsing.
-      // Reconcile the current workspace in the background. Admin's legacy
-      // snapshot synchronizer pauses during this authoritative refresh.
-      remote.domainReconciliations += 1
-      void reconcileProjection().catch(() => {
-        setApiStatus('error')
-      }).finally(() => {
-        remote.domainReconciliations = Math.max(0, remote.domainReconciliations - 1)
-      })
+      const { patches, replacements } = remoteCommandResultPatches(type, result)
+      if (patches.size || replacements.size || type === 'employee.delete' || type === 'store.delete') {
+        setState((current) => {
+          const next = { ...current }
+          if (type === 'employee.delete' && result.employee) {
+            const deletedId = remoteResultRecordId(result.employee)
+            next.employees = (current.employees || []).filter((record) => remoteResultRecordId(record) !== deletedId)
+          }
+          if (type === 'store.delete' && result.store) {
+            const deletedId = remoteResultRecordId(result.store)
+            next.stores = (current.stores || []).filter((record) => remoteResultRecordId(record) !== deletedId)
+          }
+          for (const [collection, updates] of patches) {
+            next[collection] = mergeRemoteResultRecords(next[collection], updates)
+          }
+          for (const [collection, records] of replacements) next[collection] = records
+          return next
+        })
+      }
+      // The POST is already durable and its delta is rendered immediately.
+      // Coalesce authoritative refreshes so a burst of Save actions produces
+      // one small screen projection instead of one full download per click.
+      window.clearTimeout(remote.reconcileTimer)
+      remote.reconcileTimer = window.setTimeout(() => {
+        const currentRemote = apiRef.current
+        currentRemote.reconcileTimer = null
+        currentRemote.domainReconciliations += 1
+        void reconcileProjection().catch(() => {
+          setApiStatus('error')
+        }).finally(() => {
+          currentRemote.domainReconciliations = Math.max(0, currentRemote.domainReconciliations - 1)
+        })
+      }, remote.projection === 'store' ? 1_500 : 15_000)
       return result
     } catch (error) {
       if (error.code === 'VERSION_CONFLICT') {
@@ -1813,7 +1977,9 @@ export function AppProvider({ children }) {
       }
       if (!active) return
       activateRemotePayload(payload)
-      if (payload.partial && !payload.user?.needsRoleSelection) {
+      if (payload.partial
+        && !payload.user?.needsRoleSelection
+        && shouldHydrateInitialProjection(payload.user)) {
         void hydrateCompleteRemoteState(payload.user).catch(() => {
           if (active && apiRef.current.enabled) setApiStatus('error')
         })
@@ -1869,15 +2035,26 @@ export function AppProvider({ children }) {
         if (!active || !metadataChanged) return
         const requestedProjection = remote.projection
         const requestedStoreId = remote.projectionStoreId
+        const requestedScreen = remote.projectionScreen
+        const requestedPeriod = remote.projectionPeriod
         const latest = requestedProjection === 'store'
-          ? await apiGetStoreWorkspaceState(requestedStoreId)
-          : await apiGetState('global')
+          ? await apiGetStoreWorkspaceState(requestedStoreId, {
+              ...(requestedScreen ? { screen: requestedScreen } : {}),
+              ...(requestedPeriod ? { period: requestedPeriod } : {}),
+            })
+          : requestedScreen
+            ? await apiGetSystemScreenState(requestedScreen)
+            : await apiGetState('global')
         if (remote.projection !== requestedProjection
-          || (requestedProjection === 'store' && !sameIdentifier(remote.projectionStoreId, requestedStoreId))) return
+          || remote.projectionScreen !== requestedScreen
+          || (requestedProjection === 'store' && (
+            !sameIdentifier(remote.projectionStoreId, requestedStoreId)
+            || remote.projectionPeriod !== requestedPeriod
+          ))) return
         const effectiveUserChanged = remoteEffectiveUserChanged(remote.user, latest.user)
         if (!forceRefresh && !metadataChanged && !effectiveUserChanged) return
         if (requestedProjection === 'global' && metadataChanged && canListAccounts(role)) {
-          const users = await apiListUsers()
+          const users = Array.isArray(latest.users) ? { users: latest.users } : await apiListUsers()
           latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
         }
         if (active) activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
@@ -1888,7 +2065,7 @@ export function AppProvider({ children }) {
         if (active && pendingForce && (typeof document === 'undefined' || !document.hidden)) void refresh()
       }
     }
-    const timer = window.setInterval(refresh, 5000)
+    const timer = window.setInterval(refresh, 30_000)
     const boundaryDelay = ['store_manager', 'employee'].includes(role)
       ? nextSupportTransferBoundaryDelay(state.supportTransfers, Date.now())
       : null
@@ -2041,7 +2218,9 @@ export function AppProvider({ children }) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       const session = activateRemotePayload(bootstrap, authenticated.user)
-      if (bootstrap.partial && !authenticated.user?.needsRoleSelection) {
+      if (bootstrap.partial
+        && !authenticated.user?.needsRoleSelection
+        && shouldHydrateInitialProjection(authenticated.user)) {
         void hydrateCompleteRemoteState(authenticated.user).catch(() => {
           if (apiRef.current.enabled) setApiStatus('error')
         })
@@ -2127,7 +2306,7 @@ export function AppProvider({ children }) {
           payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
         }
         const session = activateRemotePayload(payload, response.user, selected.storeId)
-        if (payload.partial) {
+        if (payload.partial && shouldHydrateInitialProjection(response.user)) {
           void hydrateCompleteRemoteState(response.user, selected.storeId).catch(() => {
             if (apiRef.current.enabled) setApiStatus('error')
           })
@@ -2167,17 +2346,21 @@ export function AppProvider({ children }) {
     apiRef.current.fullStateReady = false
     apiRef.current.projection = 'local'
     apiRef.current.projectionStoreId = ''
+    apiRef.current.projectionScreen = ''
+    apiRef.current.projectionPeriod = ''
     apiRef.current.projectionRequestId += 1
     apiRef.current.pendingProjectionKey = ''
     apiRef.current.pendingProjectionPromise = null
     apiRef.current.domainReconciliations = 0
+    window.clearTimeout(apiRef.current.reconcileTimer)
+    apiRef.current.reconcileTimer = null
     apiRef.current.pending = null
     apiRef.current.suppressNext = false
     apiRef.current.lastStateReferences = {}
     window.clearTimeout(apiRef.current.timer)
     setApiStatus('local')
     setRemoteDataReady(true)
-    setRemoteProjection({ kind: 'local', storeId: '' })
+    setRemoteProjection({ kind: 'local', storeId: '', screen: '', period: '' })
     if (wasRemote) {
       if (typeof localStorage !== 'undefined') {
         localStorage.removeItem(STORAGE_KEY)
@@ -2201,7 +2384,10 @@ export function AppProvider({ children }) {
     activeStoreIdRef.current = id
     setState((current) => ({ ...current, activeStoreId: id }))
     if (browserUsesStoreWorkspace() && apiRef.current.enabled && isSystemRole(apiRef.current.role)) {
-      void ensureStoreWorkspaceData(id).catch(() => setApiStatus('error'))
+      void ensureStoreWorkspaceData(id, {
+        screen: apiRef.current.projectionScreen || 'overview',
+        period: apiRef.current.projectionPeriod,
+      }).catch(() => setApiStatus('error'))
     }
     return true
   }

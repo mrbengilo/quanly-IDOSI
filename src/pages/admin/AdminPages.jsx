@@ -50,6 +50,7 @@ import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
 import { mergeAccountPersonnelProfile, optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
 import { invalidateEmployeeAvatarCache } from '../../services/employeeAvatarCache'
+import { apiGetFinanceOverview } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { downloadCsv, money, shortDate, today, validateVietnamPhone } from '../../utils'
 import { resolveOriginalRoleProfile, roleProfileAddress, roleProfileCode } from './roleManagementUtils'
@@ -158,8 +159,29 @@ export function AdminStores() {
   const [editingStore, setEditingStore] = useState(null)
   const [viewingStore, setViewingStore] = useState(null)
   const [form, setForm] = useState(emptyStoreForm)
+  const remoteFinance = Boolean(app.apiStatus && app.apiStatus !== 'local')
+  const financePeriod = today().slice(0, 7)
+  const [financeOverview, setFinanceOverview] = useState({ period: '', summaries: [] })
+  useEffect(() => {
+    if (!remoteFinance) return undefined
+    let active = true
+    apiGetFinanceOverview(financePeriod).then((payload) => {
+      if (active) setFinanceOverview({
+        period: payload.period,
+        summaries: Array.isArray(payload.summaries) ? payload.summaries : [],
+      })
+    }).catch(() => {})
+    return () => { active = false }
+  }, [financePeriod, remoteFinance])
   const filtered = stores.filter((item) => `${item.name} ${item.location} ${item.address}`.toLowerCase().includes(query.toLowerCase()))
-  const financeByStore = new Map(stores.map((store) => [store.id, financeSummaryFromState(app, { storeId: store.id })]))
+  const remoteFinanceByStore = new Map(financeOverview.summaries.map((summary) => [String(summary.storeId), {
+    revenue: Number(summary.revenue || 0),
+    expense: Number(summary.expense || 0),
+    profit: Number(summary.profit || 0),
+  }]))
+  const financeByStore = new Map(stores.map((store) => [store.id, remoteFinance
+    ? remoteFinanceByStore.get(String(store.id)) || { revenue: 0, expense: 0, profit: 0 }
+    : financeSummaryFromState(app, { storeId: store.id })]))
   const revenue = [...financeByStore.values()].reduce((total, summary) => total + summary.revenue, 0)
   const expense = [...financeByStore.values()].reduce((total, summary) => total + summary.expense, 0)
   const activeStoreEmployees = employees.filter((employee) => {

@@ -162,17 +162,17 @@ describe('App role routes', () => {
   it('loads and waits for the selected store projection before mounting Admin store pages', async () => {
     mocked.session = { role: 'admin', name: 'Admin' }
     mocked.remoteProjection = { kind: 'global', storeId: '' }
-    render(<MemoryRouter initialEntries={['/store/payroll']}><CurrentRoute /><App /></MemoryRouter>)
+    render(<MemoryRouter initialEntries={['/store/payroll?period=2026-09']}><CurrentRoute /><App /></MemoryRouter>)
 
     expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
-    expect(mocked.ensureStoreWorkspaceData).toHaveBeenCalledWith('S01')
+    expect(mocked.ensureStoreWorkspaceData).toHaveBeenCalledWith('S01', { screen: 'payroll', period: '2026-09' })
     expect(screen.queryByText('Store payroll')).toBeNull()
   })
 
   it('mounts Admin store pages only when their projection matches the active store', async () => {
     mocked.session = { role: 'admin', name: 'Admin' }
-    mocked.remoteProjection = { kind: 'store', storeId: 'S01' }
-    render(<MemoryRouter initialEntries={['/store/payroll']}><CurrentRoute /><App /></MemoryRouter>)
+    mocked.remoteProjection = { kind: 'store', storeId: 'S01', screen: 'payroll', period: '2026-09' }
+    render(<MemoryRouter initialEntries={['/store/payroll?period=2026-09']}><CurrentRoute /><App /></MemoryRouter>)
 
     expect(await screen.findByText('Store payroll')).toBeTruthy()
   })
@@ -183,8 +183,49 @@ describe('App role routes', () => {
     render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
 
     expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
-    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledOnce()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'cashflow' })
     expect(screen.queryByText('Admin cashflow')).toBeNull()
+  })
+
+  it('loads the global projection on demand for a compact Admin detail route', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteDataReady = false
+    mocked.remoteProjection = { kind: 'global', storeId: '' }
+    render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'cashflow' })
+    expect(screen.queryByText('Admin cashflow')).toBeNull()
+  })
+
+  it('loads only the requested employee screen projection after compact login', async () => {
+    mocked.session = { role: 'employee', name: 'Nhân viên', employeeId: 'E01', storeId: 'S01' }
+    mocked.currentEmployee = { id: 'E01', unit: 'store', storeId: 'S01' }
+    mocked.remoteDataReady = false
+    mocked.remoteProjection = { kind: 'global', storeId: '', screen: 'employee-home' }
+    render(<MemoryRouter initialEntries={['/employee/orders']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'employee-orders' })
+  })
+
+  it('does not load the global projection behind the compact Admin home', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteDataReady = false
+    mocked.remoteProjection = { kind: 'global', storeId: '' }
+    render(<MemoryRouter initialEntries={['/admin/overview']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Admin overview')).toBeTruthy()
+    expect(mocked.ensureSystemWorkspaceData).not.toHaveBeenCalled()
+  })
+
+  it('mounts a system detail page only for its matching screen projection', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteProjection = { kind: 'global', storeId: '', screen: 'cashflow' }
+    render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Admin cashflow')).toBeTruthy()
+    expect(mocked.ensureSystemWorkspaceData).not.toHaveBeenCalled()
   })
 
   it('allows Admin to open the aggregate work-registration schedule', async () => {

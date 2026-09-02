@@ -1,6 +1,7 @@
 import { lazy, useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { isOfficeProfile } from './domain/officeProfile'
+import { employeeScreen, storeScreenForPath, systemScreenForPath } from './domain/workspaceScreens'
 import Login from './pages/Login'
 import { useApp } from './state/AppContext'
 
@@ -107,6 +108,8 @@ const homeByRole = {
 
 const homeFor = (session) => homeByRole[canonicalRole(session?.role)] || '/login'
 
+const currentVietnamMonth = () => new Date(Date.now() + (7 * 60 * 60 * 1_000)).toISOString().slice(0, 7)
+
 function RouteLoading({ message = 'Đang tải màn hình...' }) {
   return <div className="route-loading" role="status" aria-live="polite" aria-busy="true">{message}</div>
 }
@@ -124,28 +127,58 @@ function RoleGuard({ roles, children }) {
   const location = useLocation()
   const role = canonicalRole(session?.role)
   const systemOperator = ['admin', 'business_support'].includes(role)
-  const remoteProjectionRequired = systemOperator && remoteProjection.kind !== 'local'
+  const remoteSession = remoteProjection.kind !== 'local'
   const storeWorkspace = location.pathname === '/store' || location.pathname.startsWith('/store/')
-  const routeStoreId = new URLSearchParams(location.search).get('store') || activeStoreId || ''
+  const routeSearch = new URLSearchParams(location.search)
+  const routeStoreId = routeSearch.get('store') || activeStoreId || ''
+  const routeStoreScreen = storeScreenForPath(location.pathname)
+  const routeSystemScreen = systemScreenForPath(location.pathname)
+  const routeStorePeriod = routeStoreScreen === 'payroll'
+    ? routeSearch.get('period') || currentVietnamMonth()
+    : ''
+  const initialRoleHome = location.pathname === homeFor(session)
+  const storeProjectionRequired = remoteSession
+    && storeWorkspace
+    && ['admin', 'business_support', 'store_manager'].includes(role)
+  const accountProjectionRequired = routeSystemScreen === 'account-settings'
+  const employeeProjectionRequired = role === 'employee' && employeeScreen(routeSystemScreen)
+  const systemProjectionRequired = remoteSession
+    && !storeWorkspace
+    && Boolean(routeSystemScreen)
+    && (systemOperator || employeeProjectionRequired || accountProjectionRequired)
 
   useEffect(() => {
-    if (!authReady || !session || !remoteProjectionRequired) return
-    if (storeWorkspace && routeStoreId) {
-      void ensureStoreWorkspaceData?.(routeStoreId).catch(() => {})
+    if (!authReady || !session || !remoteSession) return
+    if (storeProjectionRequired && routeStoreId) {
+      void ensureStoreWorkspaceData?.(routeStoreId, {
+        screen: routeStoreScreen,
+        ...(routeStorePeriod ? { period: routeStorePeriod } : {}),
+      }).catch(() => {})
       return
     }
-    if (!storeWorkspace && remoteProjection.kind === 'store') {
-      void ensureSystemWorkspaceData?.().catch(() => {})
+    if (systemProjectionRequired && (
+      !remoteDataReady
+      || remoteProjection.kind === 'store'
+      || String(remoteProjection.screen || '') !== routeSystemScreen
+    )) {
+      void ensureSystemWorkspaceData?.({ screen: routeSystemScreen }).catch(() => {})
     }
   }, [
     authReady,
     ensureStoreWorkspaceData,
     ensureSystemWorkspaceData,
+    initialRoleHome,
+    remoteDataReady,
     remoteProjection.kind,
+    remoteProjection.screen,
     routeStoreId,
+    routeStoreScreen,
+    routeStorePeriod,
+    routeSystemScreen,
     session,
-    storeWorkspace,
-    remoteProjectionRequired,
+    storeProjectionRequired,
+    systemProjectionRequired,
+    remoteSession,
   ])
 
   if (!authReady) return <RouteLoading message="Đang khôi phục màn hình..." />
@@ -153,12 +186,16 @@ function RoleGuard({ roles, children }) {
   if (session.needsRoleSelection) return <Navigate to="/select-role" replace />
   const allowedRoles = Array.isArray(roles) ? roles : [roles]
   if (!allowedRoles.includes(role)) return <Navigate to={homeFor(session)} replace />
-  const initialRoleHome = location.pathname === homeFor(session)
-  const selectedStoreProjectionReady = !remoteProjectionRequired || !storeWorkspace || (
+  const selectedStoreProjectionReady = !storeProjectionRequired || (
     remoteProjection.kind === 'store'
     && String(remoteProjection.storeId || '').toLocaleLowerCase('en-US') === String(routeStoreId).toLocaleLowerCase('en-US')
+    && String(remoteProjection.screen || '') === routeStoreScreen
+    && (!routeStorePeriod || String(remoteProjection.period || '') === routeStorePeriod)
   )
-  const systemProjectionReady = !remoteProjectionRequired || storeWorkspace || remoteProjection.kind !== 'store'
+  const systemProjectionReady = !systemProjectionRequired || (
+    remoteProjection.kind !== 'store'
+    && String(remoteProjection.screen || '') === routeSystemScreen
+  )
   const compactHomeReady = initialRoleHome && remoteProjection.kind !== 'store'
   if ((!remoteDataReady || !selectedStoreProjectionReady || !systemProjectionReady) && !compactHomeReady) {
     return <RouteLoading message="Đang tải dữ liệu chi tiết của hệ thống..." />

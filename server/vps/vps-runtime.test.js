@@ -393,12 +393,14 @@ describe('IDOSI VPS runtime', () => {
         },
       }, { ...adminHeaders, 'idempotency-key': 'snapshot-cache-support-user' })
       expect(supportCreated.response.status).toBe(201)
-      expect(observedSnapshots).toEqual([false])
+      // Account creation now reads only the employee/store collections and
+      // never materializes the raw global snapshot.
+      expect(observedSnapshots).toEqual([])
       observedSnapshots.length = 0
 
       const warmState = await fetch(`${baseUrl}/api/state`, { headers: adminHeaders }).then((response) => response.json())
       expect(warmState).toMatchObject({ version: 1, state: { phase2Marker: 'before' } })
-      expect(observedSnapshots).toEqual([true])
+      expect(observedSnapshots).toEqual([false])
       observedSnapshots.length = 0
       const employeeRowsBefore = (await runtime.database.prepare(`
         SELECT entity_key, entity_order, created_at, updated_at
@@ -451,6 +453,279 @@ describe('IDOSI VPS runtime', () => {
       await new Promise((resolveClose) => server.close(resolveClose))
     }
   })
+
+  it('uses the SQLite store projection without materializing the global snapshot', async () => {
+    const directory = await temporaryDirectory()
+    const { server, runtime } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      bootstrapToken: 'bootstrap-sqlite-store-projection',
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    try {
+      const foreignSecret = `FOREIGN_STORE_SECRET:${'x'.repeat(50_000)}`
+      const bootstrap = await postJson(baseUrl, '/api/bootstrap', {
+        username: 'admin.sqlite.store',
+        password: 'admin-sqlite-store-password',
+        displayName: 'Admin SQLite Store',
+        initialState: {
+          stores: [
+            { id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' },
+            { id: 'S02', name: 'Cửa hàng 02', status: 'Đang hoạt động' },
+          ],
+          employees: [
+            { id: 'E01', storeId: 'S01', unit: 'store', name: 'Nhân viên 01' },
+            { id: 'E02', storeId: 'S02', unit: 'store', name: foreignSecret },
+            { id: 'E-INBOUND', storeId: 'S02', unit: 'store', name: 'Nhân viên hỗ trợ' },
+          ],
+          supportTransfers: [{
+            id: 'TRANSFER-INBOUND', employeeId: 'E-INBOUND', fromStoreId: 'S02', toStoreId: 'S01',
+            startAt: '2020-01-01T00:00:00.000Z', endAt: '2099-01-01T00:00:00.000Z', status: 'Đang hỗ trợ',
+          }],
+          attendance: [
+            { id: 'ATT-S01', storeId: 'S01', employeeId: 'E01', checkOutAt: '2026-09-01T09:00:00.000Z' },
+            { id: 'ATT-INBOUND', employeeId: 'E-INBOUND', checkOutAt: '2026-09-01T09:00:00.000Z' },
+            { id: 'ATT-S02', storeId: 'S02', employeeId: 'E02', checkOutAt: '2026-09-01T09:00:00.000Z', note: foreignSecret },
+          ],
+          orders: [
+            { id: 'ORDER-S01', storeId: 'S01', employeeId: 'E01', amount: 100_000 },
+            { id: 'ORDER-S02', storeId: 'S02', employeeId: 'E02', amount: 99_000_000, note: foreignSecret },
+          ],
+          notifications: [
+            { id: 'NOTICE-S01', data: { storeId: 'S01' } },
+            { id: 'NOTICE-S02', data: { storeId: 'S02' }, note: foreignSecret },
+          ],
+        },
+      }, { 'x-idosi-bootstrap-token': 'bootstrap-sqlite-store-projection' })
+      expect(bootstrap.response.status).toBe(201)
+
+      const login = await postJson(baseUrl, '/api/login', {
+        username: 'admin.sqlite.store',
+        password: 'admin-sqlite-store-password',
+      })
+      expect(login.response.status).toBe(200)
+      const headers = { authorization: `Bearer ${login.body.token}` }
+
+      const employeeAccount = await postJson(baseUrl, '/api/command', {
+        type: 'user.create',
+        payload: {
+          username: 'employee.sqlite.store',
+          password: 'employee-sqlite-store-password',
+          displayName: 'Nhân viên SQLite Store',
+          role: 'employee',
+          storeId: 'S01',
+          employeeId: 'E01',
+        },
+      }, { ...headers, 'idempotency-key': 'create-sqlite-store-employee' })
+      expect(employeeAccount.response.status).toBe(201)
+      const employeeLogin = await postJson(baseUrl, '/api/login', {
+        username: 'employee.sqlite.store',
+        password: 'employee-sqlite-store-password',
+      })
+      expect(employeeLogin.response.status).toBe(200)
+      const employeeHeaders = { authorization: `Bearer ${employeeLogin.body.token}` }
+
+      let storeSnapshotReads = 0
+      let globalSnapshotReads = 0
+      const readStoreStateSnapshot = runtime.database.readStoreStateSnapshot.bind(runtime.database)
+      const readStateSnapshot = runtime.database.readStateSnapshot.bind(runtime.database)
+      runtime.database.readStoreStateSnapshot = (...arguments_) => {
+        storeSnapshotReads += 1
+        return readStoreStateSnapshot(...arguments_)
+      }
+      runtime.database.readStateSnapshot = (...arguments_) => {
+        globalSnapshotReads += 1
+        return readStateSnapshot(...arguments_)
+      }
+
+      const response = await fetch(
+        `${baseUrl}/api/state?scope=global&view=store&storeId=S01`,
+        { headers },
+      )
+      const payload = await response.json()
+
+      expect(response.status).toBe(200)
+      expect(payload).toMatchObject({ projection: 'store', storeId: 'S01' })
+      expect(payload.state.employees.map(({ id }) => id)).toEqual(['E01', 'E-INBOUND'])
+      expect(payload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
+      expect(JSON.stringify(payload)).not.toContain('FOREIGN_STORE_SECRET')
+      expect(storeSnapshotReads).toBe(1)
+      expect(globalSnapshotReads).toBe(0)
+
+      const employeesResponse = await fetch(`${baseUrl}/api/system-screens/employees`, { headers })
+      const employeesPayload = await employeesResponse.json()
+      expect(employeesResponse.status).toBe(200)
+      expect(employeesPayload).toMatchObject({ projection: 'global', screen: 'employees' })
+      expect(employeesPayload.state.employees.map(({ id }) => id).sort()).toEqual(['E-INBOUND', 'E01', 'E02'])
+      expect(employeesPayload.state).not.toHaveProperty('orders')
+      expect(employeesPayload.state).not.toHaveProperty('attendance')
+      expect(globalSnapshotReads).toBe(0)
+
+      const employeeOrdersResponse = await fetch(`${baseUrl}/api/system-screens/employee-orders`, {
+        headers: employeeHeaders,
+      })
+      const employeeOrdersPayload = await employeeOrdersResponse.json()
+      expect(employeeOrdersResponse.status).toBe(200)
+      expect(employeeOrdersPayload).toMatchObject({ projection: 'global', screen: 'employee-orders' })
+      expect(employeeOrdersPayload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
+      expect(JSON.stringify(employeeOrdersPayload)).not.toContain('FOREIGN_STORE_SECRET')
+      // One small session-context read resolves transfers, then one screen read.
+      expect(storeSnapshotReads).toBe(3)
+      expect(globalSnapshotReads).toBe(0)
+
+      const forbiddenSystemScreen = await fetch(`${baseUrl}/api/system-screens/employees`, {
+        headers: employeeHeaders,
+      })
+      expect(forbiddenSystemScreen.status).toBe(403)
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  })
+
+  it('creates, edits, and deletes store records through a scoped mutation projection', async () => {
+    const directory = await temporaryDirectory()
+    const { server, runtime } = createIdosiServer({
+      databasePath: resolve(directory, 'idosi.sqlite'),
+      imagesDirectory: resolve(directory, 'images'),
+      bootstrapToken: 'bootstrap-scoped-save',
+    })
+    await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+    const address = server.address()
+    const baseUrl = `http://127.0.0.1:${address.port}`
+    try {
+      const bootstrap = await postJson(baseUrl, '/api/bootstrap', {
+        username: 'admin.scoped.save',
+        password: 'admin-scoped-save-password',
+        displayName: 'Admin Scoped Save',
+        initialState: {
+          stores: [
+            { id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' },
+            { id: 'S02', name: 'Cửa hàng 02', status: 'Đang hoạt động' },
+          ],
+          expenseEntries: [{
+            id: 'EXP-S02-KEEP', storeId: 'S02', type: 'Khác', amount: 999_000,
+            recognized: true, occurredAt: '2026-09-01', note: 'FOREIGN-STORE-MUST-STAY',
+          }],
+          supportWorkSchedules: [
+            {
+              id: 'SUP-S01-DELETE', storeId: 'S01', employeeId: 'EMP-S01',
+              workDate: '2026-09-02', startTime: '08:00', endTime: '17:00',
+            },
+            {
+              id: 'SUP-S02-KEEP', storeId: 'S02', employeeId: 'EMP-S02',
+              workDate: '2026-09-02', startTime: '08:00', endTime: '17:00',
+              note: 'FOREIGN-SCHEDULE-MUST-STAY',
+            },
+          ],
+          fixedExpenses: [],
+          payrollPeriods: [],
+        },
+      }, { 'x-idosi-bootstrap-token': 'bootstrap-scoped-save' })
+      expect(bootstrap.response.status).toBe(201)
+
+      const login = await postJson(baseUrl, '/api/login', {
+        username: 'admin.scoped.save', password: 'admin-scoped-save-password',
+      })
+      expect(login.response.status).toBe(200)
+      const headers = { authorization: `Bearer ${login.body.token}` }
+      let storeSnapshotReads = 0
+      let globalSnapshotReads = 0
+      const readStoreStateSnapshot = runtime.database.readStoreStateSnapshot.bind(runtime.database)
+      const readStateSnapshot = runtime.database.readStateSnapshot.bind(runtime.database)
+      runtime.database.readStoreStateSnapshot = (...arguments_) => {
+        storeSnapshotReads += 1
+        return readStoreStateSnapshot(...arguments_)
+      }
+      runtime.database.readStateSnapshot = (...arguments_) => {
+        globalSnapshotReads += 1
+        return readStateSnapshot(...arguments_)
+      }
+
+      const created = await postJson(baseUrl, '/api/command', {
+        type: 'expense.create',
+        expectedVersion: 1,
+        payload: {
+          storeId: 'S01', type: 'Điện', amount: 120_000,
+          occurredAt: '2026-09-02', description: 'Tiền điện',
+        },
+      }, { ...headers, 'idempotency-key': 'scoped-expense-create-0001' })
+      expect(created.response.status).toBe(201)
+      expect(created.body).toMatchObject({
+        version: 2,
+        expense: { storeId: 'S01', amount: 120_000 },
+      })
+
+      const updated = await postJson(baseUrl, '/api/command', {
+        type: 'expense.update',
+        expectedVersion: 2,
+        payload: {
+          expenseId: created.body.expense.id,
+          amount: 125_000,
+          reason: 'Điều chỉnh hóa đơn',
+        },
+      }, { ...headers, 'idempotency-key': 'scoped-expense-update-0001' })
+      expect(updated.response.status).toBe(200)
+      expect(updated.body).toMatchObject({
+        version: 3,
+        expense: { id: created.body.expense.id, storeId: 'S01', amount: 125_000 },
+      })
+
+      const deleted = await postJson(baseUrl, '/api/command', {
+        type: 'support_schedule.delete',
+        expectedVersion: 3,
+        payload: {
+          scheduleId: 'SUP-S01-DELETE',
+          reason: 'Xóa lịch kiểm thử',
+        },
+      }, { ...headers, 'idempotency-key': 'scoped-schedule-delete-0001' })
+      expect(deleted.response.status).toBe(200)
+      expect(deleted.body).toMatchObject({ version: 4 })
+      expect(storeSnapshotReads).toBe(3)
+      expect(globalSnapshotReads).toBe(0)
+
+      const persisted = (await runtime.database.prepare(`
+        SELECT record_id, store_id, value_json
+        FROM state_entities
+        WHERE scope_key = 'global' AND collection_key = 'expenseEntries'
+        ORDER BY record_id
+      `).all()).results.map((row) => ({
+        recordId: row.record_id,
+        storeId: row.store_id,
+        value: JSON.parse(row.value_json),
+      }))
+      expect(persisted).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          recordId: 'EXP-S02-KEEP', storeId: 'S02',
+          value: expect.objectContaining({ note: 'FOREIGN-STORE-MUST-STAY', amount: 999_000 }),
+        }),
+        expect.objectContaining({
+          recordId: created.body.expense.id, storeId: 'S01',
+          value: expect.objectContaining({ amount: 125_000 }),
+        }),
+      ]))
+
+      const persistedSchedules = (await runtime.database.prepare(`
+        SELECT record_id, store_id, value_json
+        FROM state_entities
+        WHERE scope_key = 'global' AND collection_key = 'supportWorkSchedules'
+        ORDER BY record_id
+      `).all()).results.map((row) => ({
+        recordId: row.record_id,
+        storeId: row.store_id,
+        value: JSON.parse(row.value_json),
+      }))
+      expect(persistedSchedules).toEqual([
+        expect.objectContaining({
+          recordId: 'SUP-S02-KEEP', storeId: 'S02',
+          value: expect.objectContaining({ note: 'FOREIGN-SCHEDULE-MUST-STAY' }),
+        }),
+      ])
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose))
+    }
+  }, 30_000)
 
   it('does not retain a global snapshot that exceeds the cache memory cap', async () => {
     const directory = await temporaryDirectory()
@@ -708,11 +983,13 @@ describe('IDOSI VPS runtime', () => {
       })
 
       const storedRows = await runtime.database.prepare(`
-        SELECT value_json FROM state_entities
+        SELECT value_json, open_flag FROM state_entities
         WHERE scope_key = ? AND collection_key = ?
         ORDER BY entity_order
       `).bind('global', 'attendance').all()
-      expect(storedRows.results.map(({ value_json: valueJson }) => JSON.parse(valueJson))).toEqual([
+      expect(storedRows.results.map(({ value_json: valueJson, open_flag: openFlag }) => ({
+        ...JSON.parse(valueJson), openFlag,
+      }))).toEqual([
         expect.objectContaining({
           id: checkedIn.body.attendance.id,
           employeeId,
@@ -721,6 +998,7 @@ describe('IDOSI VPS runtime', () => {
           shiftStart: '00:00',
           shiftEnd: '23:59',
           shiftSource: 'support-daily-schedule',
+          openFlag: 1,
         }),
       ])
     } finally {

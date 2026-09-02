@@ -43,6 +43,7 @@ import { calculateAvailableSalary, financeSummaryFromState, financeTransactionsF
 import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { activeOccupationLabels, findOccupationOption, occupationValueAllowed, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
+import { apiGetHistory } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import {
   entryDate,
@@ -71,6 +72,11 @@ const parseMoney = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 
 const EMPTY_LIST = Object.freeze([])
 const moneyInput = (value) => new Intl.NumberFormat('en-US').format(parseMoney(value))
 const timestamp = shortDateTime24
+const mergeHistoryRecords = (current, additions) => {
+  const byId = new Map((Array.isArray(current) ? current : []).map((record) => [String(record.id || record.code), record]))
+  for (const record of Array.isArray(additions) ? additions : []) byId.set(String(record.id || record.code), record)
+  return [...byId.values()]
+}
 const monthBounds = (period) => ({
   from: `${period}-01`,
   to: `${period}-${String(new Date(Number(period.slice(0, 4)), Number(period.slice(5, 7)), 0).getDate()).padStart(2, '0')}`,
@@ -491,7 +497,17 @@ export function StoreOrdersPage() {
         store: initialApp.stores.find((item) => String(item.id) === String(routeScope.storeId)),
       }
     : initialApp
-  const { storeId, store, orders = [], employees = [], orderInformationOptions = [], apiStatus, updateOrder, deleteOrder, notify } = app
+  const {
+    storeId,
+    store,
+    orders: projectionOrders = [],
+    employees = [],
+    orderInformationOptions = [],
+    apiStatus,
+    updateOrder,
+    deleteOrder,
+    notify,
+  } = app
   const orderActorRole = app.session?.role
   const canEditOrders = ['admin', 'business_support'].includes(orderActorRole)
   const canEditOrderAmount = orderActorRole === 'admin'
@@ -506,6 +522,64 @@ export function StoreOrdersPage() {
   const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAge: '', gender: 'Khác', occupation: '', acquisitionChannel: 'Khác', amount: '', paymentMethod: '', reason: '' })
   const [formErrors, setFormErrors] = useState({})
   const [saving, setSaving] = useState(false)
+  const historyPeriod = month || (date ? date.slice(0, 7) : '')
+  const historyEmployeeId = employeeId === 'all' ? '' : employeeId
+  const historyKey = `${storeId}:${historyPeriod}:${historyEmployeeId}`
+  const [history, setHistory] = useState({ key: '', records: [], page: null, error: '' })
+  const [loadingMoreHistory, setLoadingMoreHistory] = useState(false)
+  const remoteHistory = apiStatus === 'connected'
+  const historyReady = remoteHistory && history.key === historyKey
+  const orders = useMemo(() => {
+    if (!historyReady) return projectionOrders
+    const projectedById = new Map(projectionOrders.map((record) => [String(record.id || record.code), record]))
+    const merged = history.records.map((record) => projectedById.get(String(record.id || record.code)) || record)
+    const known = new Set(merged.map((record) => String(record.id || record.code)))
+    return [...projectionOrders.filter((record) => !known.has(String(record.id || record.code))), ...merged]
+  }, [history.records, historyReady, projectionOrders])
+
+  useEffect(() => {
+    if (!remoteHistory || !storeId) return undefined
+    let active = true
+    apiGetHistory('orders', {
+      storeId,
+      employeeId: historyEmployeeId,
+      period: historyPeriod,
+      limit: 50,
+    }).then((payload) => {
+      if (!active) return
+      setHistory({ key: historyKey, records: payload.records || [], page: payload.page || null, error: '' })
+    }).catch((error) => {
+      if (!active) return
+      setHistory({ key: historyKey, records: [], page: null, error: error?.message || 'Không thể tải lịch sử đơn hàng.' })
+    })
+    return () => { active = false }
+  }, [historyEmployeeId, historyKey, historyPeriod, remoteHistory, storeId])
+
+  const loadMoreHistory = async () => {
+    if (!history.page?.nextCursor || loadingMoreHistory) return
+    setLoadingMoreHistory(true)
+    try {
+      const payload = await apiGetHistory('orders', {
+        storeId,
+        employeeId: historyEmployeeId,
+        period: historyPeriod,
+        cursor: history.page.nextCursor,
+        limit: 50,
+      })
+      setHistory((current) => current.key === historyKey ? {
+        ...current,
+        records: mergeHistoryRecords(current.records, payload.records || []),
+        page: payload.page || null,
+        error: '',
+      } : current)
+    } catch (error) {
+      setHistory((current) => current.key === historyKey
+        ? { ...current, error: error?.message || 'Không thể tải thêm lịch sử đơn hàng.' }
+        : current)
+    } finally {
+      setLoadingMoreHistory(false)
+    }
+  }
   const storeOrders = orders.filter((order) => order.storeId === storeId && order.source !== 'legacy-opening-balance' && !order.deletedAt)
   const requestedOrderId = String(requestedOrderParam)
   const requestedOrder = storeOrders.find((order) => [order.id, order.code].map(String).includes(requestedOrderId))
@@ -665,6 +739,15 @@ export function StoreOrdersPage() {
             : `${first.shiftName || 'Chưa gắn ca'} — ${first.shiftStart || '--:--'}–${first.shiftEnd || '--:--'} — ${shortDate(businessDate(first.createdAt))}`
         return <Card key={key} className="order-group" title={title} action={<div className="order-group__totals"><strong>{money(groupTotal)}</strong><span>{group.length} đơn</span></div>}><TableWrap><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td>{timestamp(order.updatedAt || order.createdAt)}</td><td><strong>{order.code}</strong></td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td>{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td><strong>{money(order.amount)}</strong></td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td>{order.employeeName}<small className="table-note">{order.employeeId || '—'}</small></td><td><Badge>{order.status}</Badge></td>{canEditOrders && <td><div className="row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
       })}
+      {remoteHistory && !historyReady && <InfoNote>Đang tải trang lịch sử đơn hàng...</InfoNote>}
+      {historyReady && history.error && <InfoNote tone="red">{history.error}</InfoNote>}
+      {historyReady && history.page?.hasMore && (
+        <div className="period-actions">
+          <Button variant="outline" loading={loadingMoreHistory} disabled={loadingMoreHistory} onClick={loadMoreHistory}>
+            TẢI THÊM LỊCH SỬ
+          </Button>
+        </div>
+      )}
       {!groups.length && <InfoNote>Chưa có đơn hàng phù hợp bộ lọc.</InfoNote>}
       {canEditOrders && <Modal open={Boolean(editing)} onClose={closeEditor} title={`Sửa đơn hàng ${editing?.code || ''}`} footer={<><Button variant="outline" onClick={closeEditor} disabled={saving}>Hủy</Button><Button icon={Save} loading={saving} disabled={saving} onClick={save}>LƯU THAY ĐỔI</Button></>}>
         <div className="form-grid">
@@ -948,6 +1031,7 @@ export function StoreAttendanceV2() {
 
 export function StorePayrollV2() {
   const app = useStoreData()
+  const [payrollSearchParams, setPayrollSearchParams] = useSearchParams()
   const {
     storeId,
     store,
@@ -971,7 +1055,16 @@ export function StorePayrollV2() {
     lockPayrollPeriod,
     notify,
   } = app
-  const [period, setPeriod] = useState(today().slice(0, 7))
+  const requestedPayrollPeriod = payrollSearchParams.get('period') || ''
+  const period = /^\d{4}-\d{2}$/u.test(requestedPayrollPeriod)
+    ? requestedPayrollPeriod
+    : today().slice(0, 7)
+  const setPayrollPeriod = (nextPeriod) => setPayrollSearchParams((current) => {
+    const next = new URLSearchParams(current)
+    if (nextPeriod) next.set('period', nextPeriod)
+    else next.delete('period')
+    return next
+  }, { replace: true })
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState({ employeeId: '', type: 'Thưởng khác', amount: '', note: '' })
   const [savingAdjustment, setSavingAdjustment] = useState(false)
@@ -1449,7 +1542,7 @@ export function StorePayrollV2() {
         title="LƯƠNG THƯỞNG NHÂN VIÊN"
         subtitle={`Kỳ ${period} — ${store?.name || ''}. Thu nhập gồm lương, ba nguồn thưởng, phụ cấp và vi phạm đã ghi nhận.`}
         icon={Banknote}
-        actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />{canOperatePayroll && <><Button icon={Gift} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Thưởng khác')}>TẠO THƯỞNG</Button><Button icon={Plus} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Phụ cấp khác')}>TẠO PHỤ CẤP</Button><Button variant="outline" icon={Wallet} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button></>}</>}
+        actions={<><Input type="month" value={period} onChange={(event) => setPayrollPeriod(event.target.value)} />{canOperatePayroll && <><Button icon={Gift} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Thưởng khác')}>TẠO THƯỞNG</Button><Button icon={Plus} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Phụ cấp khác')}>TẠO PHỤ CẤP</Button><Button variant="outline" icon={Wallet} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button></>}</>}
       />
       {!canOperatePayroll && <InfoNote>Chế độ rà soát. Quản lý cửa hàng chỉ xem số liệu cửa hàng mình; Admin hoặc Nhân viên hỗ trợ KD thực hiện chốt và chi kỳ lương.</InfoNote>}
       {payrollPreviewError && <InfoNote tone="red">Không thể tính lương kỳ này vì cửa hàng, kỳ lương, hồ sơ nhân viên có mã trùng hoặc cấu hình lương không thể đối chiếu duy nhất. Toàn bộ số tổng đã được khóa để tránh hiển thị thiếu; Admin cần xử lý dữ liệu trước khi xem trước hoặc chốt lương.</InfoNote>}
