@@ -310,6 +310,24 @@ const storeStateSnapshotSql = (screen = '') => {
   const periodFilterSql = periodCollections.length
     ? `AND (params.period_key = '' OR entity.collection_key NOT IN (${sqlStringList(periodCollections)}) OR entity.period_key = params.period_key)`
     : ''
+  const payrollAttendanceEmployeeSeedSql = normalizedScreen === 'payroll'
+    ? `
+    UNION
+    SELECT DISTINCT lower(trim(attendance.employee_id)) AS employee_key
+    FROM state_entities AS attendance
+    JOIN params ON attendance.scope_key = params.scope_key
+    WHERE attendance.collection_key = 'attendance'
+      AND attendance.store_id = params.store_key COLLATE NOCASE
+      AND attendance.employee_id IS NOT NULL
+      AND trim(attendance.employee_id) <> ''
+      AND json_extract(attendance.value_json, '$.deletedAt') IS NULL
+      AND (
+        json_type(attendance.value_json, '$.supportCompensation') = 'object'
+        OR json_type(attendance.value_json, '$.compensation.support') = 'object'
+        OR trim(COALESCE(CAST(json_extract(attendance.value_json, '$.supportStoreId') AS TEXT), '')) <> ''
+      )
+      AND (params.period_key = '' OR attendance.period_key = params.period_key)`
+    : ''
   const sessionFilterSql = normalizedScreen === 'session'
     ? `AND (entity.collection_key <> 'attendance' OR (
         entity.open_flag = 1
@@ -342,6 +360,7 @@ const storeStateSnapshotSql = (screen = '') => {
     SELECT actor_employee_key AS employee_key FROM params WHERE actor_employee_key <> ''
     UNION
     SELECT employee_key FROM inbound_employee_ids WHERE employee_key <> ''
+    ${payrollAttendanceEmployeeSeedSql}
   ),
   relevant_employee_rows AS (
     SELECT employee.entity_key
