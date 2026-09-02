@@ -81,7 +81,13 @@ describe('store order, attendance, and payroll summaries', () => {
 
     const createButton = screen.getByRole('button', { name: 'TẠO' })
     expect(createButton.disabled).toBe(true)
+    expect(screen.getByLabelText('Nhân viên *').required).toBe(true)
+    expect(screen.getByLabelText('Loại *').required).toBe(true)
+    expect(screen.getByLabelText('Số tiền *').required).toBe(true)
+    expect(screen.getByLabelText('Ghi chú *').required).toBe(true)
     fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '125000' } })
+    expect(createButton.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Ghi chú *'), { target: { value: 'Thưởng theo kết quả tháng' } })
     expect(createButton.disabled).toBe(false)
 
     fireEvent.click(createButton)
@@ -93,6 +99,7 @@ describe('store order, attendance, and payroll summaries', () => {
       storeId: store.id,
       type,
       amount: 125_000,
+      note: 'Thưởng theo kết quả tháng',
       idempotencyKey: expect.stringMatching(/^store-payroll:/u),
     }))
 
@@ -113,11 +120,16 @@ describe('store order, attendance, and payroll summaries', () => {
     fireEvent.click(screen.getAllByRole('button', { name: 'TẠO ỨNG LƯƠNG' })[0])
 
     const createButton = screen.getByRole('button', { name: 'TẠO' })
+    expect(screen.getByLabelText('Nhân viên *').required).toBe(true)
+    expect(screen.getByLabelText('Số tiền *').required).toBe(true)
+    expect(screen.getByLabelText('Ghi chú *').required).toBe(true)
     fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '500000' } })
     expect(createButton.disabled).toBe(true)
     expect(screen.getByText(/Số tiền ứng phải nhỏ hơn lương khả dụng/u)).toBeTruthy()
 
     fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '200000' } })
+    expect(createButton.disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText('Ghi chú *'), { target: { value: 'Ứng lương giữa tháng' } })
     expect(createButton.disabled).toBe(false)
     fireEvent.click(createButton)
     await waitFor(() => expect(createButton.disabled).toBe(true))
@@ -127,6 +139,7 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(createSalaryAdvance).toHaveBeenCalledWith(expect.objectContaining({
       employeeId: employee.id,
       amount: 200_000,
+      note: 'Ứng lương giữa tháng',
       idempotencyKey: expect.stringMatching(/^store-payroll:/u),
     }))
 
@@ -143,6 +156,7 @@ describe('store order, attendance, and payroll summaries', () => {
     renderPage(StorePayrollV2)
     fireEvent.click(screen.getByRole('button', { name: 'TẠO THƯỞNG' }))
     fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '75000' } })
+    fireEvent.change(screen.getByLabelText('Ghi chú *'), { target: { value: 'Thử lại giao dịch' } })
     const createButton = screen.getByRole('button', { name: 'TẠO' })
 
     fireEvent.click(createButton)
@@ -154,6 +168,53 @@ describe('store order, attendance, and payroll summaries', () => {
     await waitFor(() => expect(addSalaryAdjustment).toHaveBeenCalledTimes(2))
     expect(addSalaryAdjustment.mock.calls[1][0].idempotencyKey).toBe(addSalaryAdjustment.mock.calls[0][0].idempotencyKey)
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('does not recalculate the payroll preview while an adjustment form is edited', () => {
+    const trackedEmployees = Array.from({ length: 24 }, (_, index) => ({
+      ...employee,
+      id: `S01-${String(index + 1).padStart(3, '0')}`,
+      name: `Nhân viên ${index + 1}`,
+    }))
+    const filterEmployees = vi.fn((...args) => Array.prototype.filter.call(trackedEmployees, ...args))
+    Object.defineProperty(trackedEmployees, 'filter', { value: filterEmployees })
+    mocked.app = {
+      ...baseApp(),
+      employees: trackedEmployees,
+      salaryAdjustments: Array.from({ length: 240 }, (_, index) => ({
+        id: `ADJ-${index + 1}`,
+        employeeId: trackedEmployees[index % trackedEmployees.length].id,
+        storeId: store.id,
+        period: today().slice(0, 7),
+        type: 'Thưởng khác',
+        amount: 10_000,
+        status: 'Đã tạo',
+      })),
+    }
+
+    renderPage(StorePayrollV2)
+    const initialFilterCalls = filterEmployees.mock.calls.length
+    expect(initialFilterCalls).toBeLessThanOrEqual(3)
+
+    fireEvent.click(screen.getByRole('button', { name: 'TẠO THƯỞNG' }))
+    fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '125000' } })
+    fireEvent.change(screen.getByLabelText('Ghi chú *'), { target: { value: 'Không tính lại bảng lương' } })
+
+    expect(filterEmployees).toHaveBeenCalledTimes(initialFilterCalls)
+  })
+
+  it('reuses the available-salary calculation while an advance form is edited', () => {
+    const getAvailableSalary = vi.fn(() => 500_000)
+    mocked.app = { ...baseApp(), getAvailableSalary }
+
+    renderPage(StorePayrollV2)
+    fireEvent.click(screen.getAllByRole('button', { name: 'TẠO ỨNG LƯƠNG' })[0])
+    expect(getAvailableSalary).toHaveBeenCalledTimes(1)
+
+    fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '125000' } })
+    fireEvent.change(screen.getByLabelText('Ghi chú *'), { target: { value: 'Ứng lương không tính lại' } })
+
+    expect(getAvailableSalary).toHaveBeenCalledTimes(1)
   })
 
   it('shows only the current store overdue employees in a dismissible warning', () => {
