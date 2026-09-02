@@ -394,14 +394,14 @@
   outline-offset: 3px;
 }
 
-.reward-task-checklist span,
-.reward-task-checklist span > * {
+.reward-task-checklist span {
   display: block;
 }
 
-.reward-task-checklist span small {
-  color: var(--compensation-muted);
-  margin-top: 4px;
+.reward-task-name {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .reward-task-amount {

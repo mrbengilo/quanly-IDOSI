@@ -550,7 +550,7 @@ export function SupportAssignedWorkPage() {
               const readOnly = stored || !row.attendanceOpen
               return <label key={row.id} className={stored ? 'is-complete is-locked' : readOnly ? 'is-locked' : checked ? 'is-complete' : ''}>
                 <input type="checkbox" aria-label={`${row.title} (+${money(row.amountVnd)}), ${group.shiftName || 'chưa gắn ca'}, ngày ${shortDate(group.workDate)}`} checked={checked} disabled={Boolean(rewardBusyKey) || readOnly} onChange={(event) => toggleReward(row, event.target.checked)} />
-                <span><strong>{row.title}</strong>{row.description && <small>{row.description}</small>}</span>
+                <span className="reward-task-name">{row.title}</span>
                 <b className="reward-task-amount">+{money(row.amountVnd)}</b>
                 {row.payoutStatus === 'pending' && <Badge tone="orange">Chờ duyệt team</Badge>}
                 {stored && row.payoutStatus !== 'pending' && <Badge tone="green">Đã lưu</Badge>}

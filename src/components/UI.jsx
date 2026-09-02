@@ -101,10 +101,43 @@ export function NotificationButton({ count = 3, onClick }) {
   )
 }
 
-export function Button({ children, variant = 'primary', icon: Icon, loading, className = '', type = 'button', ...props }) {
+export function Button({ children, variant = 'primary', icon: Icon, loading, className = '', type = 'button', onClick, disabled = false, ...props }) {
+  const [internalLoading, setInternalLoading] = useState(false)
+  const pendingClickRef = useRef(null)
+  const mountedRef = useRef(false)
+  const externallyBusy = props['aria-busy'] === true || props['aria-busy'] === 'true'
+  const busy = Boolean(loading || internalLoading || externallyBusy)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
+  const handleClick = (event) => {
+    if (!onClick || busy || pendingClickRef.current) return
+    const result = onClick(event)
+    if (!result || typeof result.then !== 'function') return
+
+    pendingClickRef.current = result
+    setInternalLoading(true)
+    const finish = () => {
+      if (pendingClickRef.current !== result) return
+      pendingClickRef.current = null
+      if (mountedRef.current) setInternalLoading(false)
+    }
+    Promise.resolve(result).then(finish, finish)
+  }
+
   return (
-    <button type={type} className={`button button--${variant} ${className}`} {...props}>
-      {loading ? <LoaderCircle className="spin" size={18} /> : Icon ? <Icon size={18} /> : null}
+    <button
+      type={type}
+      className={`button button--${variant} ${className}`}
+      {...props}
+      aria-busy={busy || undefined}
+      disabled={disabled || busy}
+      onClick={onClick ? handleClick : undefined}
+    >
+      {busy ? <LoaderCircle className="spin" size={18} /> : Icon ? <Icon size={18} /> : null}
       <span>{children}</span>
     </button>
   )
