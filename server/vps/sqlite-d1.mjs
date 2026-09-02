@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { DatabaseSync } from 'node:sqlite'
+import { applyVpsDataFixes } from './data-fixes.mjs'
 
 const MIGRATION_TABLE = '_vps_migrations'
 const requestMetrics = new AsyncLocalStorage()
@@ -173,6 +174,10 @@ export class SqliteD1 {
     this.database = new DatabaseSync(databasePath)
     this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
     applyMigrations(this.database, migrationsDirectory)
+    this.dataFixResult = applyVpsDataFixes(this.database)
+    if (this.dataFixResult.status === 'applied') {
+      console.info(JSON.stringify({ event: 'idosi.data_fix', ...this.dataFixResult.marker }))
+    }
   }
 
   prepare(sql) {
