@@ -153,6 +153,7 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: linear-gradie
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .55; }
+button:active:not(:disabled) { filter: brightness(.92); opacity: .82; }
 input, select, textarea { color: #172033; }
 h1, h2, h3, p { margin-top: 0; }
 svg { flex: 0 0 auto; }
@@ -160,10 +161,12 @@ svg { flex: 0 0 auto; }
 .button {
   min-height: 42px; border: 1px solid transparent; border-radius: 9px; padding: 0 18px; display: inline-flex; align-items: center;
   justify-content: center; gap: 9px; color: #fff; background: linear-gradient(135deg, var(--green-600), #007436); font-weight: 600;
-  box-shadow: 0 4px 12px rgba(4, 120, 57, .14); transition: transform .18s ease, box-shadow .18s ease, background .18s ease;
+  box-shadow: 0 4px 12px rgba(4, 120, 57, .14); transition: transform .18s ease, box-shadow .18s ease, background .18s ease, filter .18s ease, opacity .18s ease;
   max-width: 100%; line-height: 1.25; white-space: normal;
 }
 .button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(4, 120, 57, .18); }
+.button:active:not(:disabled) { transform: translateY(1px) scale(.985); box-shadow: 0 2px 7px rgba(4, 120, 57, .14); }
+.button[aria-busy='true'] { cursor: wait; filter: saturate(.72); opacity: .68; transform: none; }
 .button--outline { color: var(--green-700); background: #fff; border-color: #cfdcd4; box-shadow: none; }
 .button--ghost { color: var(--green-700); background: transparent; box-shadow: none; padding-inline: 10px; }
 .button--danger { color: #fff; background: #e5484d; box-shadow: none; }

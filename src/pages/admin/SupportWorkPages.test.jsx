@@ -31,6 +31,7 @@ const supportRewardTask = {
   kind: 'REWARD_TASK',
   targetGroup: 'business_support',
   name: 'Đánh giá trưng bày cửa hàng',
+  description: 'Mô tả nội bộ không hiển thị trong danh sách nhân viên',
   amountVnd: 75_000,
   active: true,
   sortOrder: 2,
@@ -249,12 +250,14 @@ describe('support work screens', () => {
 
     fireEvent.change(screen.getByLabelText('Ghi chú công việc 1'), { target: { value: 'Đã kiểm tra, đang chờ phản hồi' } })
 
-    fireEvent.click(screen.getByRole('button', { name: /GỬI KẾT QUẢ/i }))
+    const submitButton = screen.getByRole('button', { name: /GỬI KẾT QUẢ/i })
+    fireEvent.click(submitButton)
     expect(mocked.app.notify).toHaveBeenCalledWith(expect.stringMatching(/nhập lý do/i), 'info')
     expect(mocked.app.updateSupportWork).not.toHaveBeenCalled()
+    await waitFor(() => expect(submitButton.disabled).toBe(false))
 
     fireEvent.change(screen.getByPlaceholderText(/Nhập lý do cụ thể/i), { target: { value: 'Chờ cửa hàng phản hồi' } })
-    fireEvent.click(screen.getByRole('button', { name: /GỬI KẾT QUẢ/i }))
+    fireEvent.click(submitButton)
     await waitFor(() => expect(mocked.app.updateSupportWork).toHaveBeenCalledWith({
       assignmentId: 'SWA-1',
       tasks: [{ id: 'T1', completed: false, note: 'Đã kiểm tra, đang chờ phản hồi' }],
@@ -282,6 +285,11 @@ describe('support work screens', () => {
     const rewardCheckbox = screen.getByRole('checkbox', { name: /Đánh giá trưng bày cửa hàng \(\+75,000 đ\)/i })
     expect(screen.getByText('Ca sáng')).toBeTruthy()
     expect(screen.getByText('+75,000 đ')).toBeTruthy()
+    const taskName = screen.getByText('Đánh giá trưng bày cửa hàng')
+    expect(taskName.classList.contains('reward-task-name')).toBe(true)
+    expect(taskName.tagName).not.toBe('STRONG')
+    expect(screen.getAllByText('Đánh giá trưng bày cửa hàng')).toHaveLength(1)
+    expect(screen.queryByText('Mô tả nội bộ không hiển thị trong danh sách nhân viên')).toBeNull()
     expect(screen.queryByRole('checkbox', { name: /Kiểm tra báo cáo/i })).toBeNull()
     fireEvent.click(rewardCheckbox)
     expect(mocked.app.setWorkRewards).not.toHaveBeenCalled()

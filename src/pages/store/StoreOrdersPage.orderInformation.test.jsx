@@ -99,18 +99,20 @@ describe('StoreOrdersPage order information editing', () => {
 
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByRole('combobox', { name: 'Nghề nghiệp' }).textContent).toContain('Nghề dữ liệu cũ (Dữ liệu cũ)')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU THAY ĐỔI' }))
+    const saveButton = within(dialog).getByRole('button', { name: 'LƯU THAY ĐỔI' })
+    fireEvent.click(saveButton)
 
     expect(mocked.app.updateOrder).not.toHaveBeenCalled()
     expect(within(dialog).queryByText('Vui lòng chọn nghề nghiệp trong danh sách.')).toBeNull()
     expect(within(dialog).getByText('Vui lòng chọn hình thức thanh toán.')).toBeTruthy()
     expect(within(dialog).getByText('Số tiền đơn hàng phải lớn hơn 0.')).toBeTruthy()
     expect(within(dialog).getByText('Cần nhập lý do chỉnh sửa.')).toBeTruthy()
+    await waitFor(() => expect(saveButton.disabled).toBe(false))
 
     fireEvent.change(within(dialog).getByLabelText(/Hình thức thanh toán/u), { target: { value: 'Chuyển khoản' } })
     fireEvent.change(within(dialog).getByLabelText(/Số tiền/u), { target: { value: '35' } })
     fireEvent.change(within(dialog).getByLabelText(/Lý do chỉnh sửa/u), { target: { value: 'Sửa tiền, giữ nghề lịch sử' } })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU THAY ĐỔI' }))
+    fireEvent.click(saveButton)
 
     await waitFor(() => expect(mocked.app.updateOrder).toHaveBeenCalledTimes(1))
     expect(mocked.app.updateOrder).toHaveBeenCalledWith('ORDER-01', expect.objectContaining({
