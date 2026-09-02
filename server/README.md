@@ -301,8 +301,10 @@ Các lệnh chính:
   bắt buộc và bước khai báo doanh thu; vẫn đối soát doanh thu từ đơn hoàn tất, ghi audit,
   tính lại giờ/lương hỗ trợ và từ chối thay đổi kỳ lương đã chi hoặc đã khóa.
 - `order.update`: Admin hoặc Hỗ trợ KD, payload `orderId`, các trường khách hàng/
-  `amount`/`paymentMethod` cần sửa và `reason` bắt buộc. `order.delete`
-  nhận `orderId`, `reason` và chỉ xóa mềm. Cả hai tính lại tổng ca và ghi
+  `amount`/`paymentMethod` cần sửa và `reason` bắt buộc. Chỉ Admin được đổi
+  `amount`; Hỗ trợ KD vẫn được đổi `paymentMethod` và các trường khách hàng.
+  `order.delete` chỉ dành cho Admin, nhận `orderId`, `reason` và chỉ xóa mềm.
+  Cả hai tính lại tổng ca và ghi
   `orderAudit`. Kỳ lương đã chi/khóa chặn sửa/xóa; kỳ đã chốt bị
   invalidation để chốt lại. Hỗ trợ KD đọc lịch sử này trong shared-state projection; nếu gọi
   `GET /api/audit` thì chỉ nhận audit `order.update|order.delete`, không nhận

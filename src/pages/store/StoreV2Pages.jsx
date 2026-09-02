@@ -437,7 +437,10 @@ export function StoreOrdersPage() {
       }
     : initialApp
   const { storeId, store, orders = [], employees = [], orderInformationOptions = [], apiStatus, updateOrder, deleteOrder, notify } = app
-  const canManageOrders = ['admin', 'business_support', 'manager'].includes(app.session?.role)
+  const orderActorRole = app.session?.role
+  const canEditOrders = ['admin', 'business_support'].includes(orderActorRole)
+  const canEditOrderAmount = orderActorRole === 'admin'
+  const canDeleteOrders = orderActorRole === 'admin'
   const [view, setView] = useState('shift')
   const [query, setQuery] = useState('')
   const [date, setDate] = useState('')
@@ -541,7 +544,7 @@ export function StoreOrdersPage() {
     if (!editing || saving) return
     const amount = String(form.amount || '').trim().startsWith('-') ? -parseMoney(form.amount) : parseMoney(form.amount)
     const nextErrors = {}
-    if (!(amount > 0)) nextErrors.amount = 'Số tiền đơn hàng phải lớn hơn 0.'
+    if (canEditOrderAmount && !(amount > 0)) nextErrors.amount = 'Số tiền đơn hàng phải lớn hơn 0.'
     if (!occupationValueAllowed({
       options: orderInformationOptions,
       value: form.occupation,
@@ -556,8 +559,14 @@ export function StoreOrdersPage() {
     setSaving(true)
     try {
       const result = await updateOrder(editing.id, {
-        ...form,
-        amount,
+        customerName: form.customerName,
+        customerPhone: form.customerPhone,
+        customerAge: form.customerAge,
+        gender: form.gender,
+        occupation: form.occupation,
+        acquisitionChannel: form.acquisitionChannel,
+        paymentMethod: form.paymentMethod,
+        ...(canEditOrderAmount ? { amount } : {}),
         reason: String(form.reason).trim(),
       })
       if (!result?.ok) {
@@ -587,7 +596,9 @@ export function StoreOrdersPage() {
         <MetricCard label="TỔNG DOANH THU" value={money(orderMetrics.revenue)} icon={TrendingUp} tone="green" />
       </div>
       <Card title="Bộ lọc đơn hàng" className="filter-card"><div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, khách hàng..." /><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} aria-label="Lọc theo ngày" /><Input type="month" value={month} onChange={(event) => setMonth(event.target.value)} aria-label="Lọc theo tháng" /><Select value={shiftId} onChange={(event) => setShiftId(event.target.value)}><option value="all">Tất cả ca</option>{shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name}</option>)}</Select><Select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{employeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select><Button variant="outline" onClick={() => { setQuery(''); setDate(''); setMonth(''); setShiftId('all'); setEmployeeId('all') }}>Đặt lại</Button></div></Card>
-      {!canManageOrders && <InfoNote>Chế độ chỉ xem: tài khoản hiện tại không thể chỉnh sửa hoặc xóa đơn hàng.</InfoNote>}
+      {orderActorRole === 'business_support'
+        ? <InfoNote>HTKD được sửa thông tin và hình thức thanh toán; chỉ Admin được sửa số tiền hoặc xóa đơn hàng.</InfoNote>
+        : !canEditOrders && <InfoNote>Chế độ chỉ xem: tài khoản hiện tại không thể chỉnh sửa hoặc xóa đơn hàng.</InfoNote>}
       <div className="tabs"><button className={view === 'shift' ? 'active' : ''} onClick={() => setView('shift')}>Theo ca</button><button className={view === 'employee' ? 'active' : ''} onClick={() => setView('employee')}>Theo nhân viên</button><button className={view === 'day' ? 'active' : ''} onClick={() => setView('day')}>Theo ngày</button></div>
       {groups.map(([key, group]) => {
         const first = group[0]
@@ -597,10 +608,10 @@ export function StoreOrdersPage() {
           : view === 'day'
             ? `Ngày ${shortDate(businessDate(first.createdAt))}`
             : `${first.shiftName || 'Chưa gắn ca'} — ${first.shiftStart || '--:--'}–${first.shiftEnd || '--:--'} — ${shortDate(businessDate(first.createdAt))}`
-        return <Card key={key} className="order-group" title={title} action={<div className="order-group__totals"><strong>{money(groupTotal)}</strong><span>{group.length} đơn</span></div>}><TableWrap><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canManageOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td>{timestamp(order.updatedAt || order.createdAt)}</td><td><strong>{order.code}</strong></td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td>{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td><strong>{money(order.amount)}</strong></td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td>{order.employeeName}<small className="table-note">{order.employeeId || '—'}</small></td><td><Badge>{order.status}</Badge></td>{canManageOrders && <td><div className="row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button><Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button></div></td>}</tr>)}</tbody></TableWrap></Card>
+        return <Card key={key} className="order-group" title={title} action={<div className="order-group__totals"><strong>{money(groupTotal)}</strong><span>{group.length} đơn</span></div>}><TableWrap><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td>{timestamp(order.updatedAt || order.createdAt)}</td><td><strong>{order.code}</strong></td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td>{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td><strong>{money(order.amount)}</strong></td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td>{order.employeeName}<small className="table-note">{order.employeeId || '—'}</small></td><td><Badge>{order.status}</Badge></td>{canEditOrders && <td><div className="row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
       })}
       {!groups.length && <InfoNote>Chưa có đơn hàng phù hợp bộ lọc.</InfoNote>}
-      {canManageOrders && <Modal open={Boolean(editing)} onClose={closeEditor} title={`Sửa đơn hàng ${editing?.code || ''}`} footer={<><Button variant="outline" onClick={closeEditor} disabled={saving}>Hủy</Button><Button icon={Save} loading={saving} disabled={saving} onClick={save}>LƯU THAY ĐỔI</Button></>}>
+      {canEditOrders && <Modal open={Boolean(editing)} onClose={closeEditor} title={`Sửa đơn hàng ${editing?.code || ''}`} footer={<><Button variant="outline" onClick={closeEditor} disabled={saving}>Hủy</Button><Button icon={Save} loading={saving} disabled={saving} onClick={save}>LƯU THAY ĐỔI</Button></>}>
         <div className="form-grid">
           <Field label="Tên khách hàng"><Input value={form.customerName} onChange={(event) => updateForm('customerName', event.target.value)} /></Field>
           <Field label="Số điện thoại"><Input value={form.customerPhone} onChange={(event) => updateForm('customerPhone', event.target.value)} /></Field>
@@ -619,7 +630,7 @@ export function StoreOrdersPage() {
             />
           </Field>
           <Field label="Biết qua kênh nào"><Select value={form.acquisitionChannel} onChange={(event) => updateForm('acquisitionChannel', event.target.value)}><option>Facebook</option><option>Tiktok</option><option>Zalo</option><option>Bạn Bè</option><option>Người thân</option><option>Khác</option></Select></Field>
-          <Field label="Số tiền" required error={formErrors.amount}><MoneyInput value={form.amount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
+          <Field label="Số tiền" required={canEditOrderAmount} hint={!canEditOrderAmount ? 'Chỉ Admin được thay đổi số tiền.' : undefined} error={formErrors.amount}><MoneyInput value={form.amount} disabled={!canEditOrderAmount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
           <Field label="Hình thức thanh toán" required error={formErrors.paymentMethod}><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option value="">Chọn</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
           <Field label="Lý do chỉnh sửa" required error={formErrors.reason} className="span-2"><Input value={form.reason} onChange={(event) => updateForm('reason', event.target.value)} /></Field>
         </div>
