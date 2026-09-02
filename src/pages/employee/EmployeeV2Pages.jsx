@@ -33,6 +33,7 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
 import { resolveShiftCandidates } from '../../domain'
 import { overdueOpenAttendance } from '../../domain/overdueAttendance'
+import { savedTaskProgressCoversIncompleteTasks } from '../../domain/taskProgress'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../../domain/storeTieredPayroll'
 import { activeOccupationLabels, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
@@ -338,6 +339,13 @@ export function EmployeeDashboardV2() {
   })
   const incompleteTasks = activeShiftTasks.filter((task) => taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId, app.employees))
   const incompleteRewardTasks = activeShiftTasks.filter((task) => !taskIsRequired(task) && !taskCompletedByEmployee(task, employeeId, app.employees))
+  const incompleteTaskIds = incompleteTasks.map((task) => String(task.id || '')).filter(Boolean)
+  const savedIncompleteProgress = savedTaskProgressCoversIncompleteTasks({
+    progress: activeRecord?.taskProgress,
+    attendanceId: activeRecord?.id,
+    employeeId,
+    incompleteTaskIds,
+  })
   const expectedRevenue = shiftRevenueBreakdown(activeShiftOrders)
   const reconciliation = checkoutReconciliation({
     orders: activeShiftOrders,
@@ -345,7 +353,9 @@ export function EmployeeDashboardV2() {
     transferRevenue: parseMoney(transferRevenue),
   })
   const revenueDeclared = cashRevenue.trim() !== '' && transferRevenue.trim() !== ''
-  const checkoutReady = revenueDeclared && reconciliation.matches && incompleteTasks.length === 0
+  const checkoutReady = revenueDeclared
+    && reconciliation.matches
+    && (incompleteTasks.length === 0 || savedIncompleteProgress)
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1_000)
@@ -402,8 +412,8 @@ export function EmployeeDashboardV2() {
       notify?.('Tiền mặt và chuyển khoản phải khớp riêng từng kênh với đơn hàng trong ca.', 'info')
       return
     }
-    if (incompleteTasks.length) {
-      notify?.(`Cần hoàn thành đủ ${incompleteTasks.length} công việc cố định còn lại trước khi kết ca.`, 'info')
+    if (incompleteTasks.length && !savedIncompleteProgress) {
+      notify?.('Cần nhập ghi chú và bấm LƯU KẾT QUẢ tại “Công việc được giao” trước khi kết ca.', 'info')
       return
     }
     setLocating('out')
@@ -414,6 +424,7 @@ export function EmployeeDashboardV2() {
         location,
         cashRevenue: parseMoney(cashRevenue),
         transferRevenue: parseMoney(transferRevenue),
+        incompleteTaskReason: savedIncompleteProgress ? activeRecord.taskProgress.incompleteReason : '',
       })
       if (!result?.ok) {
         notify?.(result?.message || 'Không thể kết ca.', 'info')
@@ -539,8 +550,10 @@ export function EmployeeDashboardV2() {
           {!revenueDeclared && <InfoNote tone="orange">Vui lòng nhập rõ cả hai ô; nếu không phát sinh hãy nhập 0.</InfoNote>}
           {expectedRevenue.unknown > 0 && <InfoNote tone="orange">Có {money(expectedRevenue.unknown)} dùng hình thức thanh toán chưa hỗ trợ. Vui lòng liên hệ quản lý trước khi kết ca.</InfoNote>}
           {incompleteTasks.length > 0 && (
-            <InfoNote tone="red">
-              Còn {incompleteTasks.length} công việc cố định chưa hoàn thành. Hãy hoàn thành trước khi kết ca.
+            <InfoNote tone={savedIncompleteProgress ? 'green' : 'red'}>
+              {savedIncompleteProgress
+                ? `Đã lưu ghi chú cho ${incompleteTasks.length} công việc chưa hoàn thành. Bạn có thể kết ca.`
+                : `Còn ${incompleteTasks.length} công việc bắt buộc chưa hoàn thành. Hãy nhập ghi chú và bấm “LƯU KẾT QUẢ” tại mục “Công việc được giao”.`}
             </InfoNote>
           )}
           {incompleteRewardTasks.length > 0 && (

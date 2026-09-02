@@ -98,13 +98,22 @@ describe('employee shift operations', () => {
   it('requires one reason for incomplete fixed work and submits every task with the calculated progress', async () => {
     mocked.app.tasks = [{
       id: 'TASK-01', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
-      employeeIds: ['E01'], title: 'Kiểm tra quầy', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+      employeeIds: ['E01'], title: 'Kiểm tra quầy', description: 'Mô tả không được hiển thị',
+      required: true, catalogKind: 'FIXED_TASK', completedBy: {},
     }, {
       id: 'TASK-02', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
       employeeIds: ['E01'], title: 'Báo cáo tồn kho', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
     }]
     renderAssignedTasks()
 
+    const firstTitle = screen.getByText('Kiểm tra quầy')
+    expect(screen.getAllByText('Kiểm tra quầy')).toHaveLength(1)
+    expect(firstTitle.tagName).toBe('SPAN')
+    expect(firstTitle.classList.contains('task-checklist__title')).toBe(true)
+    expect(firstTitle.closest('strong')).toBeNull()
+    expect(screen.queryByText('Mô tả không được hiển thị')).toBeNull()
+    expect(screen.queryByText('Bắt buộc')).toBeNull()
+    expect(screen.getByText(/luôn hiển thị đến khi bạn bấm kết ca/i)).toBeTruthy()
     const checkboxes = screen.getAllByRole('checkbox')
     fireEvent.click(checkboxes[0])
     expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
@@ -122,6 +131,26 @@ describe('employee shift operations', () => {
     await waitFor(() => expect(screen.getByRole('checkbox', { name: /Kiểm tra quầy/i }).disabled).toBe(true))
     expect(screen.getByText('Đã lưu')).toBeTruthy()
     expect(screen.getByText('Kiểm tra quầy').closest('label').classList.contains('is-locked')).toBe(true)
+  })
+
+  it('allows saving an incomplete checklist with no checked task when a note is provided', async () => {
+    mocked.app.tasks = [{
+      id: 'TASK-01', assignmentId: 'ASSIGN-01', storeId: 'S01', date: '2026-08-22', shiftId: 'CA-1',
+      employeeIds: ['E01'], title: 'Kiểm tra quầy', required: true, catalogKind: 'FIXED_TASK', completedBy: {},
+    }]
+    renderAssignedTasks()
+
+    expect(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }).disabled).toBe(true)
+    fireEvent.change(screen.getByLabelText(/Lý do công việc bắt buộc chưa hoàn thành/i), {
+      target: { value: 'Khách đông nên chưa thực hiện được' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU KẾT QUẢ' }))
+
+    await waitFor(() => expect(mocked.app.saveStoreTaskProgress).toHaveBeenCalledWith(expect.objectContaining({
+      attendanceId: 'ATT-01',
+      tasks: [{ id: 'TASK-01', completed: false }],
+      incompleteReason: 'Khách đông nên chưa thực hiện được',
+    })))
   })
 
   it('keeps reward work separate and shows already-completed fixed work dimmed and locked', () => {

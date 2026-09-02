@@ -33,7 +33,6 @@ const shiftIdOf = (record) => String(record?.shiftId || record?.shift || '')
 const taskKindOf = (task = {}) => String(task.catalogKind || task.catalogSnapshot?.kind || task.kind || '')
 const taskIsReward = (task = {}) => task.rewardEligible === true || taskKindOf(task) === WORK_CATALOG_KIND.REWARD_TASK
 const taskIsRequired = (task = {}) => task.required !== false
-const taskAmount = (task = {}) => Math.max(0, Number(task.amountVnd ?? task.catalogSnapshot?.amountVnd) || 0)
 const shiftTemplateOf = (record = {}) => resolveStoreChecklistTemplate({
   id: shiftIdOf(record),
   shiftId: shiftIdOf(record),
@@ -288,7 +287,12 @@ export function EmployeeAssignedTasksPage() {
   const noteRequired = incompleteRequiredTasks.length > 0
   const newlyCompletedTasks = mandatoryTasks.filter((task) => !storedStatusFor(task) && statusFor(task))
   const selectedShiftIsOpen = Boolean(attendance && attendanceShiftKey && selectedShiftKey === attendanceShiftKey)
-  const ready = Boolean(selectedShiftIsOpen && newlyCompletedTasks.length && (!noteRequired || incompleteReason.trim()))
+  const ready = Boolean(
+    selectedShiftIsOpen
+    && displayedTasks.length
+    && (newlyCompletedTasks.length || (noteRequired && incompleteReason.trim()))
+    && (!noteRequired || incompleteReason.trim()),
+  )
   const history = useMemo(() => (app.taskAssignmentHistory || []).flatMap((assignment) => (
     (assignment.progressHistory || []).filter((event) => (
       referenceMatchesTarget(app.employees, employee, event.employeeId, employeeAliases)
@@ -340,7 +344,7 @@ export function EmployeeAssignedTasksPage() {
       {!attendance && <InfoNote tone="orange">Bạn có thể xem công việc hôm nay, nhưng chỉ được cập nhật sau khi điểm danh vào đúng ca.</InfoNote>}
       <Card title="Tiến độ công việc" action={<Badge tone={allCompleted ? 'green' : 'orange'}>{completedTasks}/{displayedTasks.length} · {completionRate}%</Badge>}>
         <Progress value={completionRate} color={allCompleted ? '#07883f' : '#f28b16'} />
-        <InfoNote>Đây là danh sách công việc bắt buộc theo ca. Công việc nhận thưởng được tick và lưu riêng tại “Công việc tính thưởng”.</InfoNote>
+        <InfoNote>Đây là danh sách công việc bắt buộc của ca đã điểm danh và luôn hiển thị đến khi bạn bấm kết ca. Công việc nhận thưởng được tick và lưu riêng tại “Công việc tính thưởng”.</InfoNote>
         <div className="shift-checklist-tabs" role="tablist" aria-label="Chọn ca làm việc">
           {STORE_CHECKLIST_TEMPLATES.map((template) => {
             const selected = selectedShiftKey === template.key
@@ -365,8 +369,6 @@ export function EmployeeAssignedTasksPage() {
           {displayedTasks.map((task) => {
             const checked = statusFor(task)
             const stored = storedStatusFor(task)
-            const reward = taskIsReward(task)
-            const amount = taskAmount(task)
             return <label key={task.id} className={stored ? 'done is-locked' : checked ? 'done' : ''}>
               <input
                 type="checkbox"
@@ -374,18 +376,14 @@ export function EmployeeAssignedTasksPage() {
                 disabled={!selectedShiftIsOpen || saving || stored}
                 onChange={(event) => setStatuses((current) => ({ ...current, [String(task.id)]: event.target.checked }))}
               />
-              <span>
-                <strong>{task.title || task.name || 'Công việc'}</strong>
-                {(task.detail || task.description) && <small>{task.detail || task.description}</small>}
-                <small>{reward ? `Tùy chọn · Thưởng ${money(amount)}` : `Bắt buộc${amount > 0 ? ` · ${money(amount)}` : ''}`}</small>
-              </span>
+              <span className="task-checklist__title">{task.title || task.name || 'Công việc'}</span>
               <Badge tone={checked ? 'green' : 'orange'}>{stored ? 'Đã lưu' : checked ? 'Chờ lưu' : 'Chưa hoàn thành'}</Badge>
             </label>
           })}
           {!displayedTasks.length && <InfoNote>Chưa có công việc bắt buộc cho ca này trong phạm vi hôm nay.</InfoNote>}
         </div>
-        {selectedShiftIsOpen && noteRequired && <Field label="Lý do công việc bắt buộc chưa hoàn thành" required hint="Không cần nhập cho công việc nhận thưởng tùy chọn." error={!incompleteReason.trim() ? 'Bắt buộc nhập lý do nếu còn công việc cố định chưa hoàn thành.' : ''}>
-          <textarea value={incompleteReason} maxLength="1000" onChange={(event) => setIncompleteReason(event.target.value)} placeholder="Nêu rõ lý do của công việc cố định chưa hoàn thành" />
+        {selectedShiftIsOpen && noteRequired && <Field label="Lý do công việc bắt buộc chưa hoàn thành" required hint="Không cần nhập cho công việc nhận thưởng tùy chọn." error={!incompleteReason.trim() ? 'Bắt buộc nhập lý do nếu còn công việc bắt buộc chưa hoàn thành.' : ''}>
+          <textarea value={incompleteReason} maxLength="1000" onChange={(event) => setIncompleteReason(event.target.value)} placeholder="Nêu rõ lý do công việc bắt buộc chưa hoàn thành" />
         </Field>}
         <Button icon={Save} loading={saving} disabled={!ready || saving} onClick={submit}>LƯU KẾT QUẢ</Button>
       </Card>
