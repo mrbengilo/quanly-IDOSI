@@ -54,10 +54,6 @@ import {
 import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'
 import { resolveExactlyOneActiveStoreManager } from '../domain/managerRevenueBonus'
 import {
-  createAttendanceTaskProgress,
-  savedTaskProgressCoversIncompleteTasks,
-} from '../domain/taskProgress'
-import {
   apiBootstrapState,
   apiCommand,
   apiGetAccountAvatar,
@@ -2855,43 +2851,14 @@ export function AppProvider({ children }) {
       }
     }
     const { completedTasks, totalTasks, completionRate } = mandatoryProgress()
+    if (existing) return { ok: true, existing: true, completedTasks, totalTasks, completionRate, submittedAt: existing.at }
     const timestamp = new Date().toISOString()
-    const taskProgress = createAttendanceTaskProgress({
+    const taskProgress = {
       attendanceId: openAttendance.id,
       employeeId,
-      completedTasks,
-      totalTasks,
-      completionRate,
       incompleteTaskIds: incompleteTaskIds.map((taskId) => taskIdByKey.get(taskId) || taskId),
       incompleteReason: incompleteTaskIds.length ? incompleteReason : '',
-      fingerprint,
-      submittedAt: existing?.at || timestamp,
-    })
-    if (existing) {
-      const alreadyAttached = !incompleteTaskIds.length || savedTaskProgressCoversIncompleteTasks({
-        progress: openAttendance.taskProgress,
-        attendanceId: openAttendance.id,
-        employeeId,
-        incompleteTaskIds: taskProgress.incompleteTaskIds,
-      })
-      if (!alreadyAttached) {
-        setState((current) => ({
-          ...current,
-          attendance: current.attendance.map((record) => String(record.id || '') === String(openAttendance.id || '')
-            ? { ...record, taskProgress, updatedAt: timestamp }
-            : record),
-          stateVersion: Math.max(1, Number(current.stateVersion) || 1) + 1,
-        }))
-      }
-      return {
-        ok: true,
-        existing: true,
-        restored: !alreadyAttached,
-        completedTasks,
-        totalTasks,
-        completionRate,
-        submittedAt: existing.at,
-      }
+      submittedAt: timestamp,
     }
     const assignmentIds = [...new Set(scopedTasks.map((task) => String(task.assignmentId || '')).filter(Boolean))]
     const assignmentKeys = new Set(assignmentIds.map(normalizedIdentifier))
@@ -5888,12 +5855,7 @@ export function AppProvider({ children }) {
       return !(completion.found ? completion.value : task.done)
     })
     const incompleteTaskIds = incompleteTasks.map((task) => String(task.id || '')).filter(Boolean)
-    const savedIncompleteProgress = savedTaskProgressCoversIncompleteTasks({
-      progress: openRecord.taskProgress,
-      attendanceId: openRecord.id,
-      employeeId,
-      incompleteTaskIds,
-    })
+    const savedIncompleteProgress = Boolean(String(openRecord.taskProgress?.incompleteReason || '').trim())
     if (storeEmployeeAttendance && (cashRevenue !== expectedCashRevenue || transferRevenue !== expectedTransferRevenue)) {
       const message = `Doanh thu kết ca chưa khớp: tiền mặt ${expectedCashRevenue.toLocaleString('en-US')} đ, chuyển khoản ${expectedTransferRevenue.toLocaleString('en-US')} đ.`
       notify(message, 'info')
@@ -5928,11 +5890,6 @@ export function AppProvider({ children }) {
       orderCount: storeEmployeeAttendance ? relatedOrders.length : Number(openRecord.orderCount) || 0,
       incompleteTaskReason: incompleteTasks.length ? String(openRecord.taskProgress?.incompleteReason || '') : '',
       incompleteTaskIds,
-      incompleteTasksSnapshot: incompleteTasks.map((task) => ({
-        id: task.id,
-        assignmentId: task.assignmentId || null,
-        title: task.title || task.name || '',
-      })),
       tiktok: Boolean(payload.tiktok ?? openRecord.tiktok),
       note: payload.note ?? openRecord.note,
     }
