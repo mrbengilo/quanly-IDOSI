@@ -198,6 +198,18 @@ describe('App role routes', () => {
     expect(screen.queryByText('Admin cashflow')).toBeNull()
   })
 
+  it('shows a recoverable error and retries when an Admin screen projection fails', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteProjection = { kind: 'global', storeId: '', screen: 'overview' }
+    mocked.ensureSystemWorkspaceData.mockRejectedValueOnce(new Error('Network unavailable'))
+    render(<MemoryRouter initialEntries={['/admin/stores']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Không thể tải dữ liệu màn hình')
+    fireEvent.click(screen.getByRole('button', { name: 'Thử lại' }))
+    await waitFor(() => expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledTimes(2))
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenLastCalledWith({ screen: 'stores' })
+  })
+
   it('loads only the requested employee screen projection after compact login', async () => {
     mocked.session = { role: 'employee', name: 'Nhân viên', employeeId: 'E01', storeId: 'S01' }
     mocked.currentEmployee = { id: 'E01', unit: 'store', storeId: 'S01' }
