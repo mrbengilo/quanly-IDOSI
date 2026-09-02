@@ -206,7 +206,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   ],
   'support-violations': ['employees', 'violations', 'violationRefunds'],
   'employee-home': [
-    'stores', 'employees', 'attendance', 'schedule', 'supportWorkSchedules',
+    'stores', 'employees', 'orders', 'attendance', 'schedule', 'supportWorkSchedules',
     'officeAdjustments', 'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions',
   ],
   'employee-tasks': [
