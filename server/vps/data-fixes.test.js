@@ -49,9 +49,9 @@ const insertEntity = async (database, collectionKey, entityKey, value, order = 1
   ).run()
 }
 
-const seedTargetFixture = async (database, profile = targetProfile) => {
+const seedTargetFixture = async (database, profile = targetProfile, targetStore = store) => {
   const compactState = {
-    stores: [store],
+    stores: [targetStore],
     employees: [unrelatedEmployee],
     deletedEmployees: [profile],
     attendance: [
@@ -99,7 +99,7 @@ const seedTargetFixture = async (database, profile = targetProfile) => {
       VALUES ('global', ?, ?, ?)
     `).bind(collection, timestamp, timestamp).run()
   }
-  await insertEntity(database, 'stores', 'store-tnv', store)
+  await insertEntity(database, 'stores', 'store-tnv', targetStore)
   await insertEntity(database, 'employees', 'employee-keep', unrelatedEmployee)
   await insertEntity(database, 'deletedEmployees', 'manager-target', profile)
   await insertEntity(database, 'attendance', 'attendance-target', compactState.attendance[0])
@@ -195,9 +195,9 @@ describe('VPS exact test-manager data fix', () => {
     idempotent.close()
   }, 30_000)
 
-  it('fails closed without changing data when QLCH-004 has a different identity', async () => {
+  it('fails closed without changing data when archived QLCH-004 resolves to another store', async () => {
     const { database } = await temporaryDatabase()
-    await seedTargetFixture(database, { ...targetProfile, name: 'Người khác' })
+    await seedTargetFixture(database, { ...targetProfile, storeId: 'CH-OTHER' })
 
     expect(() => applyVpsDataFixes(database.database, timestamp)).toThrow(/dừng an toàn/u)
     expect(await database.prepare(`
@@ -207,5 +207,73 @@ describe('VPS exact test-manager data fix', () => {
     expect(await database.prepare('SELECT value_json FROM system_metadata WHERE meta_key = ?')
       .bind(TEST_MANAGER_PURGE_MARKER).first()).toBeNull()
     database.close()
+  })
+
+  it('accepts the exact legacy manager profile where unit remained store', async () => {
+    const { databasePath, database } = await temporaryDatabase()
+    await seedTargetFixture(database, {
+      ...targetProfile,
+      unit: 'store',
+      unitType: 'store',
+      department: 'store',
+      roleType: 'employee',
+      accountRole: 'employee',
+      position: 'Quản lý cửa hàng',
+      jobPosition: 'Quản lý cửa hàng',
+      isStoreManager: true,
+    })
+    database.close()
+
+    const reopened = createSqliteD1({ databasePath })
+    expect(reopened.dataFixResult).toMatchObject({
+      status: 'applied',
+      marker: {
+        employeeId: 'QLCH-004',
+        deletedByCollection: { deletedEmployees: 1, attendance: 1 },
+      },
+    })
+    reopened.close()
+  })
+
+  it('purges the exact archived code even when legacy display metadata is inconsistent', async () => {
+    const { databasePath, database } = await temporaryDatabase()
+    await seedTargetFixture(database, {
+      ...targetProfile,
+      name: 'Tên hiển thị legacy không đồng nhất',
+      unit: 'store',
+      unitType: 'store',
+      department: 'store',
+      position: 'Dữ liệu legacy',
+    })
+    database.close()
+
+    const reopened = createSqliteD1({ databasePath })
+    expect(reopened.dataFixResult).toMatchObject({
+      status: 'applied',
+      marker: {
+        employeeId: 'QLCH-004',
+        storeId: 'CH-TNV',
+        deletedByCollection: { deletedEmployees: 1, attendance: 1 },
+      },
+    })
+    reopened.close()
+  })
+
+  it('recognizes the TNV store by its stable legacy aliases', async () => {
+    const { databasePath, database } = await temporaryDatabase()
+    await seedTargetFixture(database, targetProfile, {
+      ...store,
+      name: 'Idosi Tô Ngọc Vân',
+      code: 'SM-TNV',
+      short: 'TNV',
+    })
+    database.close()
+
+    const reopened = createSqliteD1({ databasePath })
+    expect(reopened.dataFixResult).toMatchObject({
+      status: 'applied',
+      marker: { employeeId: 'QLCH-004', storeId: 'CH-TNV' },
+    })
+    reopened.close()
   })
 })

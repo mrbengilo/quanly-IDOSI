@@ -7,6 +7,13 @@ const TARGET = Object.freeze({
   employeeName: 'Trần Thị Ngọc Bích',
   storeName: 'SM TNV',
 })
+const TARGET_STORE_IDENTITIES = new Set([
+  'sm tnv',
+  'tnv',
+  'idosi tnv',
+  'idosi to ngoc van',
+  'to ngoc van',
+])
 
 const PROFILE_COLLECTIONS = new Set(['employees', 'deletedEmployees'])
 const STORE_COLLECTIONS = new Set(['stores', 'deletedStores'])
@@ -75,6 +82,11 @@ const EMPLOYEE_ARRAY_KEYS = new Set([
 const compactText = (value) => String(value ?? '').trim().normalize('NFC')
 const identifier = (value) => compactText(value).toLocaleUpperCase('en-US')
 const normalizedKey = (value) => compactText(value).replace(/[^A-Za-z0-9]/gu, '').toLocaleLowerCase('en-US')
+const normalizedText = (value) => compactText(value)
+  .normalize('NFD')
+  .replace(/\p{M}/gu, '')
+  .toLocaleLowerCase('en-US')
+  .replace(/[-_\s]+/gu, ' ')
 const parseJson = (value, fallback = null) => {
   try {
     return JSON.parse(String(value))
@@ -84,12 +96,6 @@ const parseJson = (value, fallback = null) => {
 }
 const isRecord = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 const profileId = (profile = {}) => profile.id || profile.code || profile.employeeId || profile.employeeCode
-const profileUnit = (profile = {}) => compactText(
-  profile.unit || profile.unitType || profile.department || profile.roleType || profile.accountRole,
-).toLocaleLowerCase('en-US')
-const isManagerUnit = (profile = {}) => [
-  'store_manager', 'store-manager', 'store manager', 'quản lý cửa hàng', 'quan ly cua hang', 'qlch',
-].includes(profileUnit(profile))
 const isTargetIdentifier = (value) => identifier(value) === TARGET.employeeId
 
 const directlyReferencesTarget = (value) => {
@@ -139,13 +145,6 @@ const scrubNestedTargetRows = (value, parentKey = '') => {
   return result
 }
 
-const isExactTargetProfile = (profile) => (
-  isRecord(profile)
-  && isTargetIdentifier(profileId(profile))
-  && compactText(profile.name) === TARGET.employeeName
-  && isManagerUnit(profile)
-)
-
 const readExternalRows = (database) => {
   const placeholders = [...RELEVANT_COLLECTIONS].map(() => '?').join(', ')
   return database.prepare(`
@@ -166,24 +165,45 @@ const logicalRows = (externalRows, compactState, collections) => [
   )),
 ]
 
+const logicalProfileEntries = (externalRows, compactState) => [
+  ...externalRows
+    .filter((row) => PROFILE_COLLECTIONS.has(row.collection_key))
+    .map((row) => ({ collection: row.collection_key, profile: parseJson(row.value_json) }))
+    .filter(({ profile }) => isRecord(profile)),
+  ...[...PROFILE_COLLECTIONS].flatMap((collection) => (
+    Array.isArray(compactState?.[collection])
+      ? compactState[collection].filter(isRecord).map((profile) => ({ collection, profile }))
+      : []
+  )),
+]
+
+const isArchivedProfileEntry = ({ collection, profile }) => (
+  collection === 'deletedEmployees'
+  || Boolean(profile.deletedAt)
+  || ['da nghi viec', 'inactive'].includes(normalizedText(profile.status))
+)
+
+const isTargetStore = (store, storeId) => (
+  identifier(store.id) === identifier(storeId)
+  && [store.name, store.code, store.storeCode, store.short, store.employeePrefix]
+    .some((value) => TARGET_STORE_IDENTITIES.has(normalizedText(value)))
+)
+
 const exactTargetEvidence = (externalRows, compactState) => {
-  const profiles = logicalRows(externalRows, compactState, PROFILE_COLLECTIONS)
-  const identifierMatches = profiles.filter((profile) => isTargetIdentifier(profileId(profile)))
+  const identifierMatches = logicalProfileEntries(externalRows, compactState)
+    .filter(({ profile }) => isTargetIdentifier(profileId(profile)))
   if (!identifierMatches.length) return null
-  if (!identifierMatches.every(isExactTargetProfile)) {
-    throw new Error('Data-fix QLCH-004 dừng an toàn vì mã nhân viên không khớp duy nhất tên và vai trò dự kiến.')
+  if (!identifierMatches.every(isArchivedProfileEntry)) {
+    throw new Error('Data-fix QLCH-004 dừng an toàn vì hồ sơ theo mã vẫn còn hoạt động.')
   }
 
-  const storeIds = new Set(identifierMatches.map((profile) => compactText(profile.storeId)).filter(Boolean))
+  const storeIds = new Set(identifierMatches.map(({ profile }) => compactText(profile.storeId)).filter(Boolean))
   if (storeIds.size !== 1) {
     throw new Error('Data-fix QLCH-004 dừng an toàn vì hồ sơ không quy về đúng một cửa hàng.')
   }
   const [storeId] = storeIds
   const stores = logicalRows(externalRows, compactState, STORE_COLLECTIONS)
-  const exactStore = stores.some((store) => (
-    identifier(store.id) === identifier(storeId)
-    && compactText(store.name) === TARGET.storeName
-  ))
+  const exactStore = stores.some((store) => isTargetStore(store, storeId))
   if (!exactStore) {
     throw new Error('Data-fix QLCH-004 dừng an toàn vì cửa hàng đích không khớp SM TNV.')
   }

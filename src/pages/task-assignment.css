@@ -19,6 +19,66 @@
   word-break: normal;
 }
 
+.support-task-reuse {
+  display: grid;
+  grid-template-columns: minmax(210px, .7fr) minmax(260px, 1.3fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin: 12px 0;
+  padding: 14px;
+  color: #23563b;
+  background: #f1f9f4;
+  border: 1px solid #bfdcc9;
+  border-radius: 11px;
+}
+
+.support-task-reuse > div,
+.support-task-reuse > div > strong,
+.support-task-reuse > div > small {
+  display: block;
+}
+
+.support-task-reuse > div > small {
+  margin-top: 4px;
+  color: #61756a;
+  font-size: 11px;
+}
+
+.support-task-reuse ol {
+  display: grid;
+  gap: 3px;
+  max-height: 96px;
+  margin: 0;
+  padding-left: 22px;
+  overflow-y: auto;
+  color: #3c5648;
+  font-size: 12px;
+}
+
+.compact-task-list__title {
+  display: inline-flex !important;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.compact-task-list__title svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.compact-task-list li.is-complete,
+.compact-task-list li.is-complete strong,
+.compact-task-list li.is-complete small {
+  color: #087b3d;
+  text-decoration: none;
+}
+
+.compact-task-list li.is-incomplete,
+.compact-task-list li.is-incomplete strong,
+.compact-task-list li.is-incomplete small {
+  color: #c52c36;
+}
+
 .task-assignment-editor input:not([type='checkbox']) {
   min-width: 0;
   font-size: 14px;
@@ -184,6 +244,14 @@
 }
 
 @media (max-width: 640px) {
+  .support-task-reuse {
+    grid-template-columns: 1fr;
+  }
+
+  .support-task-reuse .button {
+    width: 100%;
+  }
+
   .store-task-progress-meta {
     grid-template-columns: 1fr;
   }

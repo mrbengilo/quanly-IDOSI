@@ -174,11 +174,34 @@ describe('support work screens', () => {
         expect.objectContaining({ name: 'Đối soát báo cáo cuối ngày', required: true }),
       ],
     }))
+    expect(screen.getByLabelText('Nhân viên nhận việc').value).toBe('')
+    expect(screen.getByLabelText('Công việc 1').value).toBe('Kiểm tra doanh thu')
+    expect(screen.getByLabelText('Công việc 2').value).toBe('Đối soát báo cáo cuối ngày')
 
     fireEvent.click(screen.getByRole('tab', { name: 'Khối văn phòng' }))
     expect(screen.getByRole('tab', { name: 'Khối văn phòng' }).getAttribute('aria-selected')).toBe('true')
     expect(screen.getByRole('option', { name: /Nguyễn Văn Phòng/i })).toBeTruthy()
     expect(screen.queryByRole('option', { name: /Nguyễn Hỗ Trợ/i })).toBeNull()
+  })
+
+  it('loads the latest persisted assignment as a clean reusable list for a later day', () => {
+    mocked.app.supportWorkAssignments = [{
+      id: 'SWA-PREVIOUS', date: '2026-08-27', targetUnit: 'business_support',
+      employeeId: 'HTKD-001', employeeName: 'Nguyễn Hỗ Trợ', assignedAt: '2026-08-27T08:00:00+07:00',
+      tasks: [
+        { id: 'OLD-1', name: 'Kiểm tra doanh thu', completed: true, employeeNote: 'Đã xong' },
+        { id: 'OLD-2', name: 'Đối soát báo cáo', completed: false },
+      ],
+    }]
+    render(<MemoryRouter><AdminSupportAssignmentPage /></MemoryRouter>)
+
+    expect(screen.getByRole('region', { name: 'Danh sách công việc dùng lại' }).textContent).toContain('27/08/26')
+    expect(screen.getByRole('region', { name: 'Danh sách công việc dùng lại' }).textContent).toContain('2 công việc')
+    fireEvent.click(screen.getByRole('button', { name: 'DÙNG LẠI DANH SÁCH' }))
+
+    expect(screen.getByLabelText('Công việc 1').value).toBe('Kiểm tra doanh thu')
+    expect(screen.getByLabelText('Công việc 2').value).toBe('Đối soát báo cáo')
+    expect(mocked.app.notify).toHaveBeenCalledWith('Đã tải 2 công việc từ ngày 27/08/26.', 'success')
   })
 
   it('preserves the unsaved Admin draft when the active assignment tab is clicked again', () => {
@@ -439,5 +462,25 @@ describe('support work screens', () => {
     expect(history.textContent).toContain('Đối chiếu cửa hàng')
     expect(history.textContent).toContain('Kiểm tra báo cáo mới')
     expect(history.textContent).toContain('Đối chiếu toàn hệ thống')
+  })
+
+  it('marks each completed history task green and every incomplete task red', () => {
+    mocked.app.supportWorkAssignments = [{
+      id: 'SWA-STATUS', date: '2026-08-28', targetUnit: 'business_support', employeeId: 'HTKD-001',
+      employeeName: 'Nguyễn Hỗ Trợ', status: 'in_progress', assignedAt: '2026-08-28T08:00:00+07:00',
+      updatedAt: '2026-08-28T09:00:00+07:00', history: [],
+      tasks: [
+        { id: 'DONE', name: 'Đã hoàn thành báo cáo', completed: true },
+        { id: 'TODO', name: 'Chưa hoàn thành đối soát', completed: false },
+      ],
+    }]
+    render(<MemoryRouter><AdminSupportAssignmentPage /></MemoryRouter>)
+
+    const completed = screen.getByLabelText('Đã hoàn thành: Đã hoàn thành báo cáo')
+    const incomplete = screen.getByLabelText('Chưa hoàn thành: Chưa hoàn thành đối soát')
+    expect(completed.closest('li').classList.contains('is-complete')).toBe(true)
+    expect(incomplete.closest('li').classList.contains('is-incomplete')).toBe(true)
+    expect(completed.querySelector('svg')).toBeTruthy()
+    expect(incomplete.querySelector('svg')).toBeTruthy()
   })
 })

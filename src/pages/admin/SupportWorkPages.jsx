@@ -8,8 +8,10 @@ import {
   Gift,
   ListChecks,
   Plus,
+  RotateCcw,
   Save,
   Trash2,
+  XCircle,
 } from 'lucide-react'
 import {
   Avatar,
@@ -91,6 +93,12 @@ const supportTaskIsRequired = (task = {}) => {
 }
 let supportDraftSequence = 0
 const newSupportDraftTask = () => ({ id: `manual-${Date.now()}-${++supportDraftSequence}`, name: '' })
+const reusableSupportDraftTasks = (tasks = []) => (Array.isArray(tasks) ? tasks : [])
+  .map((task) => ({
+    ...newSupportDraftTask(),
+    name: String(task.name || task.title || '').trim(),
+  }))
+  .filter((task) => task.name)
 
 const historyActionLabel = (action) => ({
   assigned: 'Đã giao việc',
@@ -130,7 +138,16 @@ function SupportAssignmentHistoryTable({ assignments = [], profiles = [], reques
       <tbody>{assignments.map((assignment) => {
         const progress = supportWorkProgress(assignment)
         const status = supportWorkStatus(assignment.status)
-        return <tr key={assignment.id} className={requestedAssignment === assignment ? 'assignment-row--highlight' : ''}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || matchedProfile(profiles, assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => <li key={task.id} className={task.completed ? 'is-complete' : ''}><strong>{task.name}</strong>{task.description && <small>{task.description}</small>}{task.employeeNote && <small>Ghi chú nhân viên: {task.employeeNote}</small>}</li>)}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || assignment.tasks?.find((task) => task.employeeNote)?.employeeNote || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
+        return <tr key={assignment.id} className={requestedAssignment === assignment ? 'assignment-row--highlight' : ''}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || matchedProfile(profiles, assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => {
+          const completed = Boolean(task.completed)
+          return <li key={task.id} className={completed ? 'is-complete' : 'is-incomplete'}>
+            <span className="compact-task-list__title" aria-label={`${completed ? 'Đã hoàn thành' : 'Chưa hoàn thành'}: ${task.name}`}>
+              {completed ? <CheckCircle2 aria-hidden="true" size={16} /> : <XCircle aria-hidden="true" size={16} />}
+              <strong>{task.name}</strong>
+            </span>
+            {task.description && <small>{task.description}</small>}{task.employeeNote && <small>Ghi chú nhân viên: {task.employeeNote}</small>}
+          </li>
+        })}</ol></td><td><strong>{progress.completed}/{progress.total}</strong><small className="table-note">{progress.rate.toFixed(0)}%</small></td><td><Badge tone={status.tone}>{status.label}</Badge><small className="table-note">Cập nhật: {formatDateTime24(assignment.updatedAt)}</small></td><td>{assignment.incompleteReason || assignment.tasks?.find((task) => task.employeeNote)?.employeeNote || '—'}</td><td><ol className="assignment-history">{(assignment.history || []).map((entry, index) => <AssignmentHistoryEntry entry={entry} key={`${entry.at || 'history'}-${index}`} />)}</ol></td></tr>
       })}{!assignments.length && <tr><td colSpan="7">Chưa có lịch sử giao việc.</td></tr>}</tbody>
     </TableWrap>
   </Card>
@@ -165,6 +182,12 @@ function AdminSupportAssignmentPageContent() {
   const assignments = [...(Array.isArray(app.supportWorkAssignments) ? app.supportWorkAssignments : [])]
     .filter((assignment) => String(assignment.targetUnit || 'business_support') === targetUnit)
     .toSorted((left, right) => String(right.assignedAt || right.updatedAt || right.date).localeCompare(String(left.assignedAt || left.updatedAt || left.date)))
+  const reusableAssignment = assignments.find((assignment) => (
+    Array.isArray(assignment.tasks)
+    && assignment.tasks.some((task) => String(task?.name || task?.title || '').trim())
+    && (!date || String(assignment.date || '') < date)
+    && (!employeeId || sameOperationalIdentifier(assignment.employeeId, employeeId))
+  ))
 
   const changeTargetUnit = (nextTargetUnit) => {
     if (nextTargetUnit === targetUnit) return
@@ -178,6 +201,12 @@ function AdminSupportAssignmentPageContent() {
   const updateTask = (taskId, name) => setTasks((current) => current.map((task) => task.id === taskId ? { ...task, name } : task))
   const removeTask = (taskId) => setTasks((current) => current.length > 1 ? current.filter((task) => task.id !== taskId) : current)
   const addTask = () => setTasks((current) => current.length >= 100 ? current : [...current, newSupportDraftTask()])
+  const reuseAssignmentTasks = () => {
+    const reusableTasks = reusableSupportDraftTasks(reusableAssignment?.tasks)
+    if (!reusableTasks.length) return
+    setTasks(reusableTasks)
+    app.notify?.(`Đã tải ${reusableTasks.length} công việc từ ngày ${shortDate(reusableAssignment.date)}.`, 'success')
+  }
 
   const send = async () => {
     if (!date) return app.notify?.('Vui lòng chọn ngày giao việc.', 'info')
@@ -189,7 +218,7 @@ function AdminSupportAssignmentPageContent() {
       const result = await app.assignSupportWork({ date, targetUnit, employeeId, tasks: validTasks })
       if (result?.ok === false) return app.notify?.(result.message || 'Không thể giao việc.', 'info')
       setEmployeeId('')
-      setTasks([newSupportDraftTask()])
+      setTasks(reusableSupportDraftTasks(validTasks))
     } finally {
       setBusy(false)
     }
@@ -207,6 +236,14 @@ function AdminSupportAssignmentPageContent() {
         <Field label="Nhân viên" required><Select aria-label="Nhân viên nhận việc" value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="">Chọn nhân viên</option>{profiles.map((profile) => <option key={roleProfileCode(profile)} value={roleProfileCode(profile)}>{profile.name} — {roleProfileCode(profile)}</option>)}</Select></Field>
       </div>
       <InfoNote>Nhập từng công việc, thêm dòng khi cần rồi bấm “LƯU”. Danh sách sẽ được gửi đúng tài khoản nhân viên đã chọn.</InfoNote>
+      {reusableAssignment && <section className="support-task-reuse" aria-label="Danh sách công việc dùng lại">
+        <div>
+          <strong>Danh sách gần nhất có thể dùng lại</strong>
+          <small>{shortDate(reusableAssignment.date)} · {reusableAssignment.employeeName || matchedProfile(profiles, reusableAssignment.employeeId)?.name || reusableAssignment.employeeId} · {reusableAssignment.tasks.length} công việc</small>
+        </div>
+        <ol>{reusableAssignment.tasks.map((task, index) => <li key={`${task.id || task.name}-${index}`}>{task.name || task.title}</li>)}</ol>
+        <Button type="button" variant="outline" icon={RotateCcw} disabled={busy} onClick={reuseAssignmentTasks}>DÙNG LẠI DANH SÁCH</Button>
+      </section>}
       <div className="support-task-editor task-assignment-editor" aria-label="Danh sách công việc giao">
         <div className="support-task-editor__head"><span>STT</span><span>Nội dung công việc *</span><span /></div>
         {tasks.map((task, index) => <div className="support-task-editor__row" key={task.id}>
