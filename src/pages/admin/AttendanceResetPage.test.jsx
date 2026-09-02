@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AttendanceResetPage } from './AttendanceResetPage'
 
-const mocked = vi.hoisted(() => ({ app: {}, updateAttendance: vi.fn(), notify: vi.fn() }))
+const mocked = vi.hoisted(() => ({
+  app: {},
+  updateAttendance: vi.fn(),
+  emergencyCloseAttendance: vi.fn(),
+  notify: vi.fn(),
+}))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 
@@ -11,6 +16,7 @@ describe('AttendanceResetPage', () => {
 
   beforeEach(() => {
     mocked.updateAttendance.mockReset().mockResolvedValue({ ok: true })
+    mocked.emergencyCloseAttendance.mockReset().mockResolvedValue({ ok: true })
     mocked.notify.mockReset()
     mocked.app = {
       session: { role: 'admin' },
@@ -20,10 +26,35 @@ describe('AttendanceResetPage', () => {
         { id: 'HTKD-01', name: 'Hỗ trợ KD', unit: 'business_support' },
         { id: 'NV-01', name: 'Nhân viên shop', unit: 'store', storeId: 'S01' },
       ],
-      attendance: [{ id: 'ATT-01', employeeId: 'VP-01', date: '2026-08-21', shiftName: 'Giờ hành chính', shiftStart: '08:00', shiftEnd: '17:30', checkIn: '08:12', checkOut: '17:31', status: 'Đi trễ' }],
+      attendance: [
+        { id: 'ATT-01', employeeId: 'VP-01', date: '2026-08-21', shiftName: 'Giờ hành chính', shiftStart: '08:00', shiftEnd: '17:30', checkIn: '08:12', checkOut: '17:31', status: 'Đi trễ' },
+        { id: 'ATT-OPEN', employeeId: 'NV-01', date: '2026-08-22', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:05', checkInAt: '2026-08-22T01:05:00.000Z', checkOut: null, checkOutAt: null, status: 'Đi đúng giờ' },
+      ],
       updateAttendance: mocked.updateAttendance,
+      emergencyCloseAttendance: mocked.emergencyCloseAttendance,
       notify: mocked.notify,
     }
+  })
+
+  it('lets Admin emergency-close an open attendance exactly once with a required reason', async () => {
+    render(<AttendanceResetPage />)
+    fireEvent.change(screen.getByLabelText(/Cửa hàng/u), { target: { value: 'S01' } })
+    fireEvent.change(screen.getByLabelText(/^Nhân viên/u), { target: { value: 'NV-01' } })
+
+    expect(screen.getByText('Đang làm')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'KẾT CA KHẨN CẤP' }))
+    const confirm = screen.getByRole('button', { name: 'XÁC NHẬN KẾT CA' })
+    expect(confirm.disabled).toBe(true)
+
+    fireEvent.change(screen.getByLabelText(/Lý do kết ca khẩn cấp/u), {
+      target: { value: 'Admin đã đối soát thiết bị lỗi' },
+    })
+    expect(confirm.disabled).toBe(false)
+    fireEvent.click(confirm)
+
+    await waitFor(() => expect(mocked.emergencyCloseAttendance).toHaveBeenCalledTimes(1))
+    expect(mocked.emergencyCloseAttendance).toHaveBeenCalledWith('ATT-OPEN', 'Admin đã đối soát thiết bị lỗi')
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Kết ca khẩn cấp' })).toBeNull())
   })
 
   it('only exposes attendance selection and edits the chosen employee times', async () => {

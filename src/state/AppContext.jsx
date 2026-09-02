@@ -5328,6 +5328,121 @@ export function AppProvider({ children }) {
     return { ok: true, attendance: next }
   }
 
+  const emergencyCloseAttendance = async (id, reason = '') => {
+    if (normalizeAuthRole(state.session?.role) !== 'admin') {
+      const message = 'Chỉ Admin được kết ca khẩn cấp.'
+      notify(message, 'info')
+      return { ok: false, message }
+    }
+    const previousMatch = operationalIdentifierRecordMatch(state.attendance, id, (record) => [record.id])
+    const previous = previousMatch.ambiguous ? null : previousMatch.record
+    if (!previous) return { ok: false, message: 'Không tìm thấy bản ghi chấm công.' }
+    if (previous.checkOutAt || previous.checkOut || previous.checkOutTime) {
+      return { ok: false, message: 'Ca làm việc này đã kết thúc.' }
+    }
+    const normalizedReason = String(reason || '').trim()
+    if (!normalizedReason || normalizedReason.length > 500) {
+      return { ok: false, message: 'Lý do kết ca khẩn cấp phải có từ 1 đến 500 ký tự.' }
+    }
+    const period = String(previous.date || previous.workDate || previous.checkInAt || '').slice(0, 7)
+    const payrollMatches = (state.payrollPeriods || []).filter((payroll) => (
+      !payroll.supersededAt
+      && sameIdentifier(payroll.storeId, previous.storeId)
+      && String(payroll.period || '') === period
+    ))
+    if (payrollMatches.length > 1) {
+      return { ok: false, message: 'Kỳ lương đang có dữ liệu trùng; cần Admin đối soát trước khi kết ca.' }
+    }
+    const payroll = payrollMatches[0]
+    if (payroll?.lockedAt || payroll?.status === 'Đã khóa') {
+      return { ok: false, message: 'Kỳ lương đã khóa; không thể kết ca.' }
+    }
+    if (payroll?.confirmedAt || payroll?.status === 'Đã chi') {
+      return { ok: false, message: 'Kỳ lương đã chi; không thể kết ca.' }
+    }
+
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('attendance.emergency_close', {
+          attendanceId: previous.id,
+          reason: normalizedReason,
+        })
+        if (!result.attendance) return { ok: false, message: 'Máy chủ không trả về bản ghi chấm công.' }
+        notify(`Đã kết ca khẩn cấp cho ${previous.employeeName || previous.employeeId}.`)
+        return { ok: true, attendance: result.attendance, audit: result.audit }
+      } catch (error) {
+        notify(error.message || 'Không thể kết ca khẩn cấp.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const timestamp = new Date().toISOString()
+    const checkOut = vietnamAttendanceTimeLabel(new Date(timestamp)).slice(0, 5)
+    const workedSeconds = Math.max(0, Math.floor((Date.parse(timestamp) - Date.parse(previous.checkInAt)) / 1_000))
+    if (!Number.isFinite(workedSeconds)) return { ok: false, message: 'Thời gian vào ca đang lưu không hợp lệ.' }
+    const actor = actorSnapshot(state.session)
+    const next = {
+      ...previous,
+      checkOut,
+      checkOutTime: checkOut,
+      checkOutAt: timestamp,
+      departureTag: getDepartureTag(checkOut, previous.shiftEnd, state.policies.lateToleranceMinutes),
+      workedSeconds,
+      workedMinutes: workedSeconds / 60,
+      hours: workedSeconds / 3_600,
+      emergencyClosedAt: timestamp,
+      emergencyClosedBy: actor,
+      emergencyCloseReason: normalizedReason,
+      editedAt: timestamp,
+      editedBy: actor,
+      editReason: normalizedReason,
+      updatedAt: timestamp,
+      updatedBy: actor,
+    }
+    const changedFields = ATTENDANCE_CORRECTION_FIELDS
+      .concat(['emergencyClosedAt', 'emergencyClosedBy', 'emergencyCloseReason'])
+      .filter((field) => JSON.stringify(previous[field]) !== JSON.stringify(next[field]))
+    const audit = {
+      id: uid('ATA'),
+      entity: 'attendance',
+      entityId: previous.id,
+      attendanceId: previous.id,
+      storeId: previous.storeId,
+      employeeId: previous.employeeId,
+      action: 'Kết ca khẩn cấp',
+      changedFields,
+      reason: normalizedReason,
+      before: previous,
+      after: next,
+      actor,
+      createdAt: timestamp,
+    }
+    setState((current) => ({
+      ...current,
+      attendance: current.attendance.map((record) => record === previous ? next : record),
+      attendanceAudit: [audit, ...(current.attendanceAudit || [])],
+      auditLogs: [audit, ...(current.auditLogs || [])],
+      payrollPeriods: (current.payrollPeriods || []).map((payroll) => (
+        sameIdentifier(payroll.storeId, previous.storeId)
+        && String(payroll.period || '') === period
+        && payroll.status === 'Đã chốt'
+        && !payroll.confirmedAt
+        && !payroll.lockedAt
+          ? {
+              ...payroll,
+              needsReclose: true,
+              invalidatedAt: timestamp,
+              invalidationReason: 'attendance.emergency_close',
+              updatedAt: timestamp,
+            }
+          : payroll
+      )),
+      stateVersion: current.stateVersion + 1,
+    }))
+    notify(`Đã kết ca khẩn cấp cho ${previous.employeeName || previous.employeeId}.`)
+    return { ok: true, attendance: next, audit }
+  }
+
   const deleteAttendance = (id) => {
     if (state.session?.role !== 'admin') return false
     const previousMatch = operationalIdentifierRecordMatch(state.attendance, id, (record) => [record.id])
@@ -5830,6 +5945,7 @@ export function AppProvider({ children }) {
     restoreOperationalData,
     addAttendanceRecord,
     updateAttendance,
+    emergencyCloseAttendance,
     deleteAttendance,
     checkIn,
     checkOut,
