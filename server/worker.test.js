@@ -795,6 +795,160 @@ describe('IDOSI Worker security primitives', () => {
     expect(JSON.stringify(loginBody).length).toBeLessThan(JSON.stringify(completeBody).length / 2)
   })
 
+  it('returns a role-safe compact login bootstrap for every non-Admin account', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-all-role-initial-profiles' }
+    const historicalDetail = 'x'.repeat(120_000)
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.roles', password: 'admin-roles-password',
+      initialState: {
+        staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
+        stores: [
+          { id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' },
+          { id: 'S02', name: 'Cửa hàng 02', status: 'Đang hoạt động' },
+        ],
+        employees: [
+          { id: 'HTKD-01', name: 'Hỗ trợ KD', unit: 'business_support', storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc' },
+          { id: 'QL-01', name: 'Quản lý 01', unit: 'store_manager', storeId: 'S01', status: 'Đang làm việc' },
+          { id: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'S01', status: 'Đang làm việc' },
+          { id: 'E02', name: 'Nhân viên 02', unit: 'store', storeId: 'S02', status: 'Đang làm việc' },
+          { id: 'VP-01', name: 'Nhân viên văn phòng', unit: 'office', storeId: 'OFFICE', status: 'Đang làm việc' },
+        ],
+        deletedEmployees: [],
+        deletedStores: [],
+        supportTransfers: [],
+        attendance: [
+          { id: 'ATT-HTKD', employeeId: 'HTKD-01', storeId: 'BUSINESS_SUPPORT', date: '2026-09-02', checkInAt: '2026-09-02T01:00:00.000Z' },
+          { id: 'ATT-QL', employeeId: 'QL-01', storeId: 'S01', date: '2026-09-02', checkInAt: '2026-09-02T01:00:00.000Z' },
+          { id: 'ATT-E01', employeeId: 'E01', storeId: 'S01', date: '2026-09-02', checkInAt: '2026-09-02T01:00:00.000Z' },
+          { id: 'ATT-E02', employeeId: 'E02', storeId: 'S02', date: '2026-09-02', checkInAt: '2026-09-02T01:00:00.000Z' },
+          { id: 'ATT-VP', employeeId: 'VP-01', storeId: 'OFFICE', date: '2026-09-02', checkInAt: '2026-09-02T01:00:00.000Z' },
+        ],
+        supportWorkSchedules: [
+          { id: 'WS-HTKD', employeeId: 'HTKD-01', workShifts: [{ id: 'HTKD-AM', start: '08:00', end: '17:00' }] },
+          { id: 'WS-QL', employeeId: 'QL-01', workShifts: [{ id: 'QL-AM', start: '08:00', end: '17:00' }] },
+          { id: 'WS-VP', employeeId: 'VP-01', workShifts: [{ id: 'VP-AM', start: '08:00', end: '17:00' }] },
+        ],
+        schedule: [
+          { id: 'SCH-E01', employeeId: 'E01', storeId: 'S01', date: '2026-09-02', shiftIds: ['SHIFT-S01'] },
+          { id: 'SCH-E02', employeeId: 'E02', storeId: 'S02', date: '2026-09-02', shiftIds: ['SHIFT-S02'] },
+        ],
+        shiftDefinitions: [
+          { id: 'SHIFT-S01', storeId: 'S01', name: 'Ca S01', start: '08:00', end: '17:00', active: true },
+          { id: 'SHIFT-S02', storeId: 'S02', name: 'Ca S02', start: '08:00', end: '17:00', active: true },
+        ],
+        tasks: [
+          { id: 'TASK-E01', employeeId: 'E01', employeeIds: ['E01'], storeId: 'S01', date: '2026-09-02', title: 'Việc E01' },
+          { id: 'TASK-E02', employeeId: 'E02', employeeIds: ['E02'], storeId: 'S02', date: '2026-09-02', title: 'Việc E02' },
+        ],
+        orders: [
+          { id: 'ORDER-E01', employeeId: 'E01', createdBy: 'E01', storeId: 'S01', amount: 100_000, createdAt: '2026-09-02T02:00:00.000Z' },
+          { id: 'ORDER-E02', employeeId: 'E02', createdBy: 'E02', storeId: 'S02', amount: 200_000, createdAt: '2026-09-02T02:00:00.000Z' },
+        ],
+        payrollPeriods: [{
+          id: 'PAY-VP', storeId: 'OFFICE', period: '2026-09',
+          rows: [{ employeeId: 'VP-01', employeeName: 'Nhân viên văn phòng', gross: 8_000_000 }],
+        }],
+        salaryAdjustments: [{ id: 'SAL-VP', employeeId: 'VP-01', amount: 500_000 }],
+        officeAdjustments: [{ id: 'OFFICE-VP', employeeId: 'VP-01', amount: 200_000 }],
+        taskAssignmentHistory: [
+          { id: 'HISTORY-E01', employeeId: 'E01', storeId: 'S01', tasks: [{ id: 'TASK-E01', detail: historicalDetail }] },
+          { id: 'HISTORY-VP', employeeId: 'VP-01', storeId: 'OFFICE', tasks: [{ id: 'TASK-VP', detail: historicalDetail }] },
+        ],
+        notifications: [{ id: 'NOTICE-HEAVY', title: 'Thông báo cũ', message: historicalDetail }],
+        auditLogs: [{ id: 'AUDIT-HEAVY', after: { detail: historicalDetail } }],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.roles', password: 'admin-roles-password',
+    }), env)
+    const adminBody = await adminLogin.json()
+    const adminAuthorization = { authorization: `Bearer ${adminBody.token}` }
+    const accounts = [
+      { key: 'support', username: 'role.support', password: 'role-support-password', role: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-01' },
+      { key: 'manager', username: 'role.manager', password: 'role-manager-password', role: 'store_manager', storeId: 'S01', employeeId: 'QL-01' },
+      { key: 'storeEmployee', username: 'role.store.employee', password: 'role-store-employee-password', role: 'employee', storeId: 'S01', employeeId: 'E01' },
+      { key: 'officeEmployee', username: 'role.office.employee', password: 'role-office-employee-password', role: 'employee', storeId: 'OFFICE', employeeId: 'VP-01' },
+    ]
+    for (const account of accounts) {
+      const { key, ...accountPayload } = account
+      const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create',
+        payload: { ...accountPayload, displayName: account.username },
+      }, { ...adminAuthorization, 'idempotency-key': `create-${key}-initial-profile` }), env)
+      expect(created.status, account.key).toBe(201)
+    }
+
+    const loginBodies = {}
+    for (const account of accounts) {
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: account.username, password: account.password,
+      }), env)
+      expect(response.status, account.key).toBe(200)
+      loginBodies[account.key] = await response.json()
+      expect(loginBodies[account.key].bootstrap).toMatchObject({
+        partial: true,
+        user: { role: account.role, employeeId: account.employeeId, storeId: account.storeId },
+      })
+    }
+
+    const sessionContextCollections = ['employees', 'deletedEmployees', 'stores', 'deletedStores', 'supportTransfers']
+    expect(loginBodies.support.bootstrap.loadedCollections).toEqual([
+      ...sessionContextCollections, 'attendance', 'supportWorkSchedules',
+    ])
+    expect(loginBodies.manager.bootstrap.loadedCollections).toEqual([
+      ...sessionContextCollections, 'attendance', 'supportWorkSchedules',
+    ])
+    expect(loginBodies.storeEmployee.bootstrap.loadedCollections).toEqual([
+      ...sessionContextCollections, 'attendance', 'schedule', 'tasks', 'orders', 'shiftDefinitions',
+    ])
+    expect(loginBodies.officeEmployee.bootstrap.loadedCollections).toEqual([
+      ...sessionContextCollections, 'attendance', 'supportWorkSchedules',
+      'payrollPeriods', 'salaryAdjustments', 'officeAdjustments',
+    ])
+
+    expect(loginBodies.support.bootstrap.state).toMatchObject({
+      attendance: expect.arrayContaining([expect.objectContaining({ id: 'ATT-HTKD' })]),
+      supportWorkSchedules: expect.arrayContaining([expect.objectContaining({ id: 'WS-HTKD' })]),
+    })
+    expect(loginBodies.support.bootstrap.state).not.toHaveProperty('taskAssignmentHistory')
+    expect(loginBodies.manager.bootstrap.state.employees.map(({ id }) => id)).toEqual(['QL-01', 'E01'])
+    expect(loginBodies.manager.bootstrap.state.attendance.map(({ id }) => id).sort()).toEqual(['ATT-E01', 'ATT-QL'])
+    expect(loginBodies.manager.bootstrap.state.supportWorkSchedules).toEqual([
+      expect.objectContaining({ id: 'WS-QL' }),
+    ])
+    expect(loginBodies.storeEmployee.bootstrap.state).toMatchObject({
+      employees: [expect.objectContaining({ id: 'E01' })],
+      attendance: [expect.objectContaining({ id: 'ATT-E01' })],
+      schedule: [expect.objectContaining({ id: 'SCH-E01' })],
+      tasks: [expect.objectContaining({ id: 'TASK-E01' })],
+      orders: [expect.objectContaining({ id: 'ORDER-E01' })],
+      shiftDefinitions: [expect.objectContaining({ id: 'SHIFT-S01' })],
+    })
+    expect(loginBodies.officeEmployee.bootstrap.state).toMatchObject({
+      employees: [expect.objectContaining({ id: 'VP-01' })],
+      attendance: [expect.objectContaining({ id: 'ATT-VP' })],
+      supportWorkSchedules: [expect.objectContaining({ id: 'WS-VP' })],
+      payrollPeriods: [expect.objectContaining({ id: 'PAY-VP' })],
+      salaryAdjustments: [expect.objectContaining({ id: 'SAL-VP' })],
+      officeAdjustments: [expect.objectContaining({ id: 'OFFICE-VP' })],
+    })
+    expect(JSON.stringify(loginBodies.storeEmployee)).not.toContain('TASK-E02')
+    expect(JSON.stringify(loginBodies.officeEmployee)).not.toContain('HISTORY-E01')
+
+    for (const account of accounts) {
+      const initialBody = loginBodies[account.key]
+      const complete = await worker.fetch(new Request('https://idosi.example/api/state?scope=global', {
+        headers: { authorization: `Bearer ${initialBody.token}` },
+      }), env)
+      expect(complete.status, account.key).toBe(200)
+      const completeBody = await complete.json()
+      expect(completeBody.state.taskAssignmentHistory.length, account.key).toBeGreaterThan(0)
+      expect(JSON.stringify(initialBody).length, account.key).toBeLessThan(JSON.stringify(completeBody).length / 2)
+    }
+  }, 60_000)
+
   it('can acknowledge a state patch without serializing the complete projected state', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-state-patch-no-response-state' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {

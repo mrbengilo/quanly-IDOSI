@@ -434,9 +434,18 @@ describe('IDOSI VPS runtime', () => {
         password: 'support-snapshot-cache-password',
       })
       expect(supportLogin.response.status).toBe(200)
+      expect(supportLogin.body.bootstrap.partial).toBe(true)
       expect(supportLogin.body.bootstrap.state).not.toHaveProperty('accountSettings')
       expect(supportLogin.body.bootstrap.state.settings.bio).not.toBe('raw-cache-secret-must-not-leak')
       expect(JSON.stringify(supportLogin.body.bootstrap.state)).not.toContain('raw-cache-secret-must-not-leak')
+      // Compact role login reads only its explicit collection profile and must
+      // not materialize (or evict) the shared full-snapshot cache.
+      expect(observedSnapshots).toEqual([])
+      const supportHeaders = { authorization: `Bearer ${supportLogin.body.token}` }
+      const supportState = await fetch(`${baseUrl}/api/state`, { headers: supportHeaders })
+        .then((response) => response.json())
+      expect(supportState).toMatchObject({ version: 2, state: { phase2Marker: 'after' } })
+      expect(JSON.stringify(supportState.state)).not.toContain('raw-cache-secret-must-not-leak')
       expect(observedSnapshots).toEqual([true])
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose))
