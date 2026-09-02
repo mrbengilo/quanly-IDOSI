@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EmployeePayrollDetails } from '../employee/EmployeeV2Pages'
@@ -50,6 +50,12 @@ const baseApp = (role = 'admin') => ({
   policies,
   updateOrder: vi.fn(),
   deleteOrder: vi.fn(),
+  addSalaryAdjustment: vi.fn(async () => ({ ok: true })),
+  createSalaryAdvance: vi.fn(async () => ({ ok: true })),
+  confirmSalaryAdvance: vi.fn(async () => ({ ok: true })),
+  closePayrollPeriod: vi.fn(async () => ({ ok: true })),
+  confirmPayrollPayment: vi.fn(async () => ({ ok: true })),
+  lockPayrollPeriod: vi.fn(async () => ({ ok: true })),
   notify: vi.fn(),
   getAvailableSalary: vi.fn(() => 0),
 })
@@ -62,6 +68,94 @@ afterEach(() => {
 })
 
 describe('store order, attendance, and payroll summaries', () => {
+  it.each([
+    ['TẠO THƯỞNG', 'Thưởng khác'],
+    ['TẠO PHỤ CẤP', 'Phụ cấp khác'],
+  ])('creates %s once with a stable idempotency key while saving', async (buttonName, type) => {
+    let resolveCreate
+    const addSalaryAdjustment = vi.fn(() => new Promise((resolve) => { resolveCreate = resolve }))
+    mocked.app = { ...baseApp(), addSalaryAdjustment }
+
+    renderPage(StorePayrollV2)
+    fireEvent.click(screen.getByRole('button', { name: buttonName }))
+
+    const createButton = screen.getByRole('button', { name: 'TẠO' })
+    expect(createButton.disabled).toBe(true)
+    fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '125000' } })
+    expect(createButton.disabled).toBe(false)
+
+    fireEvent.click(createButton)
+    await waitFor(() => expect(createButton.disabled).toBe(true))
+    fireEvent.click(createButton)
+    expect(addSalaryAdjustment).toHaveBeenCalledTimes(1)
+    expect(addSalaryAdjustment).toHaveBeenCalledWith(expect.objectContaining({
+      employeeId: employee.id,
+      storeId: store.id,
+      type,
+      amount: 125_000,
+      idempotencyKey: expect.stringMatching(/^store-payroll:/u),
+    }))
+
+    resolveCreate({ ok: true })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('creates an advance only below available salary and prevents duplicate submission', async () => {
+    let resolveCreate
+    const createSalaryAdvance = vi.fn(() => new Promise((resolve) => { resolveCreate = resolve }))
+    mocked.app = {
+      ...baseApp(),
+      createSalaryAdvance,
+      getAvailableSalary: vi.fn(() => 500_000),
+    }
+
+    renderPage(StorePayrollV2)
+    fireEvent.click(screen.getAllByRole('button', { name: 'TẠO ỨNG LƯƠNG' })[0])
+
+    const createButton = screen.getByRole('button', { name: 'TẠO' })
+    fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '500000' } })
+    expect(createButton.disabled).toBe(true)
+    expect(screen.getByText(/Số tiền ứng phải nhỏ hơn lương khả dụng/u)).toBeTruthy()
+
+    fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '200000' } })
+    expect(createButton.disabled).toBe(false)
+    fireEvent.click(createButton)
+    await waitFor(() => expect(createButton.disabled).toBe(true))
+    fireEvent.click(createButton)
+
+    expect(createSalaryAdvance).toHaveBeenCalledTimes(1)
+    expect(createSalaryAdvance).toHaveBeenCalledWith(expect.objectContaining({
+      employeeId: employee.id,
+      amount: 200_000,
+      idempotencyKey: expect.stringMatching(/^store-payroll:/u),
+    }))
+
+    resolveCreate({ ok: true })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  it('keeps the same transaction key when a payroll action is retried after failure', async () => {
+    const addSalaryAdjustment = vi.fn()
+      .mockResolvedValueOnce({ ok: false, message: 'Mạng tạm thời gián đoạn.' })
+      .mockResolvedValueOnce({ ok: true })
+    mocked.app = { ...baseApp(), addSalaryAdjustment }
+
+    renderPage(StorePayrollV2)
+    fireEvent.click(screen.getByRole('button', { name: 'TẠO THƯỞNG' }))
+    fireEvent.change(screen.getByPlaceholderText('Nhập số tiền'), { target: { value: '75000' } })
+    const createButton = screen.getByRole('button', { name: 'TẠO' })
+
+    fireEvent.click(createButton)
+    await waitFor(() => expect(addSalaryAdjustment).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(createButton.disabled).toBe(false))
+    expect(screen.getByRole('dialog')).toBeTruthy()
+
+    fireEvent.click(createButton)
+    await waitFor(() => expect(addSalaryAdjustment).toHaveBeenCalledTimes(2))
+    expect(addSalaryAdjustment.mock.calls[1][0].idempotencyKey).toBe(addSalaryAdjustment.mock.calls[0][0].idempotencyKey)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
   it('shows only the current store overdue employees in a dismissible warning', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-09-02T03:00:00.000Z')

@@ -907,6 +907,7 @@ export function StorePayrollV2() {
   const [period, setPeriod] = useState(today().slice(0, 7))
   const [modal, setModal] = useState(null)
   const [form, setForm] = useState({ employeeId: '', type: 'Thưởng khác', amount: '', note: '' })
+  const [savingAdjustment, setSavingAdjustment] = useState(false)
   const payrollRole = String(app.session?.role || '').trim().toLowerCase()
   const canOperatePayroll = ['admin', 'business_support', 'manager'].includes(payrollRole)
   const canLockPayroll = payrollRole === 'admin'
@@ -1251,22 +1252,61 @@ export function StorePayrollV2() {
   const advanceOperationError = payrollPreviewError
     ? 'Không thể thao tác ứng lương khi dữ liệu kỳ lương, hồ sơ nhân viên hoặc cấu hình lương đang bị trùng.'
     : selectedAdvanceAvailability.message
+  const adjustmentAmount = parseMoney(form.amount)
+  const adjustmentFormError = !form.employeeId
+    ? 'Cửa hàng chưa có nhân viên hợp lệ để thực hiện thao tác này.'
+    : adjustmentAmount <= 0
+      ? 'Số tiền phải lớn hơn 0 đ.'
+      : modal === 'advance' && selectedAdvanceAvailability.ok && adjustmentAmount >= selectedAdvanceAvailability.available
+        ? `Số tiền ứng phải nhỏ hơn lương khả dụng ${money(selectedAdvanceAvailability.available)}.`
+        : modal === 'advance'
+          ? advanceOperationError
+          : payrollPreviewError
+            ? 'Không thể tạo khoản lương thưởng khi dữ liệu kỳ lương chưa được đối chiếu duy nhất.'
+            : ''
+  const payrollActionUnavailable = Boolean(payrollPreviewError) || !scopedEmployees.length
 
   const openAdjustment = (type) => {
     if (!canOperatePayroll) return
-    setModal(type === 'Ứng lương' ? 'advance' : 'adjustment')
-    setForm({ employeeId: employeePrimaryIdentifier(scopedEmployees[0]), type, amount: '', note: '' })
-  }
-  const handleSaveAdjustment = async () => {
-    if (!canOperatePayroll) return
-    if (modal === 'advance' && advanceOperationError) {
-      notify(advanceOperationError, 'info')
+    if (payrollActionUnavailable) {
+      notify(payrollPreviewError
+        ? 'Cần xử lý dữ liệu kỳ lương trước khi tạo khoản lương thưởng.'
+        : 'Cửa hàng chưa có nhân viên hợp lệ.', 'info')
       return
     }
-    const payload = { ...form, storeId, period, amount: parseMoney(form.amount) }
-    const result = modal === 'advance' ? await createSalaryAdvance(payload) : await addSalaryAdjustment(payload)
-    if (!result.ok) return notify(result.message, 'info')
+    setModal(type === 'Ứng lương' ? 'advance' : 'adjustment')
+    setForm({
+      employeeId: employeePrimaryIdentifier(scopedEmployees[0]),
+      type,
+      amount: '',
+      note: '',
+      idempotencyKey: `store-payroll:${crypto.randomUUID()}`,
+    })
+  }
+  const closeAdjustment = () => {
+    if (savingAdjustment) return
     setModal(null)
+  }
+  const handleSaveAdjustment = async () => {
+    if (!canOperatePayroll || savingAdjustment) return
+    if (adjustmentFormError) {
+      notify(adjustmentFormError, 'info')
+      return
+    }
+    setSavingAdjustment(true)
+    try {
+      const payload = { ...form, storeId, period, amount: adjustmentAmount }
+      const result = modal === 'advance' ? await createSalaryAdvance(payload) : await addSalaryAdjustment(payload)
+      if (!result?.ok) {
+        notify(result?.message || 'Không thể tạo khoản lương thưởng.', 'info')
+        return
+      }
+      setModal(null)
+    } catch (error) {
+      notify(error?.message || 'Không thể tạo khoản lương thưởng.', 'info')
+    } finally {
+      setSavingAdjustment(false)
+    }
   }
   const handleConfirmAdvance = async (advanceId) => {
     if (!canOperatePayroll) return
@@ -1295,7 +1335,7 @@ export function StorePayrollV2() {
         title="LƯƠNG THƯỞNG NHÂN VIÊN"
         subtitle={`Kỳ ${period} — ${store?.name || ''}. Thu nhập gồm lương, ba nguồn thưởng, phụ cấp và vi phạm đã ghi nhận.`}
         icon={Banknote}
-        actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />{canOperatePayroll && <><Button icon={Gift} onClick={() => openAdjustment('Thưởng khác')}>TẠO THƯỞNG</Button><Button icon={Plus} onClick={() => openAdjustment('Phụ cấp khác')}>TẠO PHỤ CẤP</Button><Button variant="outline" icon={Wallet} disabled={Boolean(payrollPreviewError)} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button></>}</>}
+        actions={<><Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />{canOperatePayroll && <><Button icon={Gift} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Thưởng khác')}>TẠO THƯỞNG</Button><Button icon={Plus} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Phụ cấp khác')}>TẠO PHỤ CẤP</Button><Button variant="outline" icon={Wallet} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button></>}</>}
       />
       {!canOperatePayroll && <InfoNote>Chế độ rà soát. Quản lý cửa hàng chỉ xem số liệu cửa hàng mình; Admin hoặc Nhân viên hỗ trợ KD thực hiện chốt và chi kỳ lương.</InfoNote>}
       {payrollPreviewError && <InfoNote tone="red">Không thể tính lương kỳ này vì cửa hàng, kỳ lương, hồ sơ nhân viên có mã trùng hoặc cấu hình lương không thể đối chiếu duy nhất. Toàn bộ số tổng đã được khóa để tránh hiển thị thiếu; Admin cần xử lý dữ liệu trước khi xem trước hoặc chốt lương.</InfoNote>}
@@ -1313,7 +1353,7 @@ export function StorePayrollV2() {
             : <tr className="total-row"><td colSpan="10">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr>}
         </tbody></TableWrap>
       </Card>
-      <Card title="Lịch sử ứng lương của nhân viên" action={canOperatePayroll ? <Button icon={Plus} disabled={Boolean(payrollPreviewError)} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button> : null}>
+      <Card title="Lịch sử ứng lương của nhân viên" action={canOperatePayroll ? <Button icon={Plus} disabled={payrollActionUnavailable} onClick={() => openAdjustment('Ứng lương')}>TẠO ỨNG LƯƠNG</Button> : null}>
         <TableWrap><thead><tr><th>Thời gian</th><th>Nhân viên</th><th>Số tiền ứng</th><th>Lương khả dụng lúc tạo</th><th>Còn lại</th><th>Người tạo</th><th>Ghi chú</th><th>Trạng thái</th>{canOperatePayroll && <th>Hành động</th>}</tr></thead><tbody>
           {scopedSalaryAdvances.map((item) => {
             const availability = item.status === 'Mới tạo' ? salaryAvailability(item.employeeId || item.employeeCode) : { ok: true }
@@ -1325,7 +1365,7 @@ export function StorePayrollV2() {
       <Card title="Xử lý cuối kỳ" action={<Badge tone={currentPeriod?.status === 'Đã khóa' ? 'red' : currentPeriod?.confirmedAt ? 'green' : 'orange'}>{currentPeriod?.needsReclose ? 'Cần chốt lại' : currentPeriod?.status || 'Chưa chốt'}</Badge>}>
         {canOperatePayroll ? <div className="period-actions"><Button variant="outline" icon={FileText} onClick={handleClosePayroll} disabled={Boolean(payrollPreviewError) || currentPeriod?.status === 'Đã khóa'}>{currentPeriod?.needsReclose ? 'CHỐT LẠI SỔ' : 'CHỐT SỔ'}</Button><Button icon={Banknote} onClick={handleConfirmPayroll} disabled={Boolean(payrollPreviewError) || Boolean(currentPeriod?.confirmedAt) || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>XÁC NHẬN CHI LƯƠNG</Button>{canLockPayroll && <Button variant="danger" icon={ShieldCheck} onClick={handleLockPayroll} disabled={Boolean(payrollPreviewError) || !currentPeriod || currentPeriod?.status === 'Đã khóa' || currentPeriod?.needsReclose}>KHÓA KỲ CHI LƯƠNG THƯỞNG</Button>}</div> : <InfoNote>Trạng thái kỳ lương chỉ được xem.</InfoNote>}
       </Card>
-      {canOperatePayroll && <Modal open={Boolean(modal)} onClose={() => setModal(null)} title={modal === 'advance' ? 'Tạo ứng lương' : `Tạo ${form.type.toLowerCase()}`} footer={<><Button variant="outline" onClick={() => setModal(null)}>Hủy</Button><Button icon={Save} disabled={modal === 'advance' && Boolean(advanceOperationError)} onClick={handleSaveAdjustment}>TẠO</Button></>}><div className="form-grid"><Field label="Nhân viên"><Select value={form.employeeId} onChange={(event) => setForm({ ...form, employeeId: event.target.value })}>{scopedEmployees.map((employee) => <option key={employeePrimaryIdentifier(employee)} value={employeePrimaryIdentifier(employee)}>{employee.name} — {employeePrimaryIdentifier(employee)}</option>)}</Select></Field>{modal !== 'advance' && <Field label="Loại"><Select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}><option>Thưởng khác</option><option>Phụ cấp khác</option><option>Khấu trừ</option></Select></Field>}<Field label="Số tiền"><MoneyInput value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="Nhập số tiền" /></Field>{modal === 'advance' && (advanceOperationError ? <InfoNote tone="red">{advanceOperationError}</InfoNote> : <InfoNote>Lương khả dụng hiện tại: <strong>{money(selectedAdvanceAvailability.available)}</strong>. Khoản ứng phải nhỏ hơn mức này.</InfoNote>)}<Field label="Ghi chú" className="span-2"><Input value={form.note} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field></div></Modal>}
+      {canOperatePayroll && <Modal open={Boolean(modal)} onClose={closeAdjustment} title={modal === 'advance' ? 'Tạo ứng lương' : `Tạo ${form.type.toLowerCase()}`} footer={<><Button variant="outline" disabled={savingAdjustment} onClick={closeAdjustment}>Hủy</Button><Button icon={Save} loading={savingAdjustment} disabled={savingAdjustment || Boolean(adjustmentFormError)} onClick={handleSaveAdjustment}>TẠO</Button></>}><div className="form-grid"><Field label="Nhân viên"><Select value={form.employeeId} disabled={savingAdjustment} onChange={(event) => setForm({ ...form, employeeId: event.target.value })}>{scopedEmployees.map((employee) => <option key={employeePrimaryIdentifier(employee)} value={employeePrimaryIdentifier(employee)}>{employee.name} — {employeePrimaryIdentifier(employee)}</option>)}</Select></Field>{modal !== 'advance' && <Field label="Loại"><Select value={form.type} disabled={savingAdjustment} onChange={(event) => setForm({ ...form, type: event.target.value })}><option>Thưởng khác</option><option>Phụ cấp khác</option><option>Khấu trừ</option></Select></Field>}<Field label="Số tiền"><MoneyInput value={form.amount} disabled={savingAdjustment} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="Nhập số tiền" /></Field>{modal === 'advance' && (advanceOperationError ? <InfoNote tone="red">{advanceOperationError}</InfoNote> : <InfoNote>Lương khả dụng hiện tại: <strong>{money(selectedAdvanceAvailability.available)}</strong>. Khoản ứng phải nhỏ hơn mức này.</InfoNote>)}{form.amount && adjustmentFormError && <InfoNote tone="red">{adjustmentFormError}</InfoNote>}<Field label="Ghi chú" className="span-2"><Input value={form.note} disabled={savingAdjustment} onChange={(event) => setForm({ ...form, note: event.target.value })} /></Field></div></Modal>}
     </div>
   )
 }
