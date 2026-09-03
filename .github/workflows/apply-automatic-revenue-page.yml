@@ -39,6 +39,9 @@ jobs:
       - name: Apply automatic revenue tests
         run: python3 scripts/apply-automatic-revenue-tests.py
 
+      - name: Update Worker automatic revenue integration test
+        run: python3 scripts/update-worker-revenue-automatic-test.py
+
       - name: Install dependencies
         run: npm ci
 
@@ -54,6 +57,12 @@ jobs:
           src/pages/compensation/RevenueBonusStoreManager.test.jsx
           src/pages/compensation/CompensationPages.test.jsx
           src/services/idosiApi.revenueBonus.test.js
+          --maxWorkers=1
+
+      - name: Run Worker automatic revenue integration
+        run: >-
+          npx vitest run server/worker.test.js
+          -t "automatically applies the highest revenue milestone"
           --maxWorkers=1
 
       - name: Run full test suite
@@ -75,6 +84,7 @@ jobs:
           rm -f scripts/fix-automatic-revenue-page-patcher.py
           rm -f scripts/fix-automatic-revenue-page-output.py
           rm -f scripts/apply-automatic-revenue-tests.py
+          rm -f scripts/update-worker-revenue-automatic-test.py
 
       - name: Commit verified implementation
         run: |
