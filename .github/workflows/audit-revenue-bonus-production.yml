@@ -98,6 +98,7 @@ jobs:
           printf 'audit_period=2026-09-01..%s\n' "$audit_end_date"
 
           compose exec -T -e AUDIT_END_DATE="$audit_end_date" app node <<'NODE'
+          import { createHash } from 'node:crypto'
           import { DatabaseSync } from 'node:sqlite'
           import { revenueBonusEligibility } from './src/domain/revenueBonusEligibility.js'
 
@@ -130,7 +131,7 @@ jobs:
             !record.deletedAt && !record.voidedAt && !record.supersededAt
             && !['VOID', 'VOIDED', 'SUPERSEDED', 'CANCELLED'].includes(String(record.status || '').trim().toUpperCase())
           )
-          const formatMoney = (value) => Math.max(0, Number(value || 0)).toLocaleString('vi-VN')
+          const anonymize = (value) => createHash('sha256').update(String(value)).digest('hex').slice(0, 12)
           const dates = []
           for (let cursor = new Date(`${startDate}T00:00:00Z`); cursor <= new Date(`${endDate}T00:00:00Z`); cursor.setUTCDate(cursor.getUTCDate() + 1)) {
             dates.push(cursor.toISOString().slice(0, 10))
@@ -142,27 +143,20 @@ jobs:
           const shiftDefinitions = collection('shiftDefinitions')
           const employees = collection('employees')
           const dailyRecords = collection('revenueBonusDaily')
-          const orders = collection('orders')
           const nowMs = Date.now()
           const unexpected = []
           const counts = new Map()
-          let dianRow = null
+          let dianCode = null
+          let auditedStoreDays = 0
 
-          console.log('date\tstore_id\tstore_name\tattendance\tclosed\topen\torders\trevenue_vnd\tdaily_records\teligibility\trule\tmessage')
           for (const date of dates) {
-            for (const store of stores.toSorted((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id), 'vi-VN'))) {
+            for (const store of stores) {
               const storeId = String(store.id || store.code || '')
               if (!storeId) continue
+              auditedStoreDays += 1
               const sameStore = (record) => normalize(storeRef(record)) === normalize(storeId)
               const dayAttendance = attendance.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === date)
               const openAttendance = dayAttendance.filter((record) => !record.checkOutAt && !record.checkOut)
-              const dayOrders = orders.filter((record) => (
-                !record.deletedAt
-                && sameStore(record)
-                && recordDate(record) === date
-                && record.source !== 'legacy-opening-balance'
-                && String(record.status || '') !== 'Đã xóa'
-              ))
               const dayDailyRecords = dailyRecords.filter((record) => sameStore(record) && recordDate(record) === date && activeDaily(record))
               const eligibility = revenueBonusEligibility({
                 storeId,
@@ -174,7 +168,6 @@ jobs:
                 dailyRecords,
                 nowMs,
               })
-              const revenue = dayOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
               const expectedCode = dayDailyRecords.length > 1
                 ? 'DATA_COLLISION'
                 : dayDailyRecords.length === 1
@@ -185,45 +178,28 @@ jobs:
                       ? 'READY'
                       : 'NO_ATTENDANCE'
               counts.set(eligibility.code, (counts.get(eligibility.code) || 0) + 1)
-              const row = {
-                date,
-                storeId,
-                storeName: String(store.name || store.code || storeId),
-                attendanceCount: dayAttendance.length,
-                closedAttendanceCount: dayAttendance.length - openAttendance.length,
-                openAttendanceCount: openAttendance.length,
-                orderCount: dayOrders.length,
-                revenue,
-                dailyRecordCount: dayDailyRecords.length,
-                eligibilityCode: eligibility.code,
-                eligibilityRule: eligibility.eligibilityRule,
-                message: eligibility.message,
+              if (eligibility.code !== expectedCode) {
+                unexpected.push({
+                  storeHash: anonymize(storeId),
+                  date,
+                  actual: eligibility.code,
+                  expected: expectedCode,
+                })
               }
-              if (eligibility.code !== expectedCode) unexpected.push({ ...row, expectedCode })
-              if (date === '2026-09-02' && normalizedText(row.storeName).includes('di an')) dianRow = row
-              console.log([
-                date,
-                storeId,
-                row.storeName.replaceAll('\t', ' '),
-                row.attendanceCount,
-                row.closedAttendanceCount,
-                row.openAttendanceCount,
-                row.orderCount,
-                formatMoney(row.revenue),
-                row.dailyRecordCount,
-                row.eligibilityCode,
-                row.eligibilityRule,
-                String(row.message || '').replaceAll('\t', ' ').replaceAll('\n', ' '),
-              ].join('\t'))
+              const storeName = String(store.name || store.code || '')
+              if (date === '2026-09-02' && normalizedText(storeName).includes('di an')) dianCode = eligibility.code
             }
           }
 
-          console.log('eligibility_counts=' + JSON.stringify(Object.fromEntries([...counts].sort()), null, 0))
-          console.log('unexpected_blockers=' + JSON.stringify(unexpected, null, 0))
-          console.log('dosii_di_an_2026_09_02=' + JSON.stringify(dianRow, null, 0))
+          console.log(`active_store_count=${stores.length}`)
+          console.log(`audited_store_days=${auditedStoreDays}`)
+          console.log('eligibility_counts=' + JSON.stringify(Object.fromEntries([...counts].sort())))
+          console.log(`unexpected_blocker_count=${unexpected.length}`)
+          if (unexpected.length) console.log('unexpected_blockers_anonymized=' + JSON.stringify(unexpected))
+          console.log(`dosii_di_an_2026_09_02_eligibility=${dianCode || 'NOT_FOUND'}`)
           db.close()
 
-          if (!dianRow) throw new Error('Không tìm thấy cửa hàng Dosii Dĩ An trong dữ liệu production ngày 02/09/2026.')
+          if (!dianCode) throw new Error('Không tìm thấy cửa hàng Dosii Dĩ An trong dữ liệu production ngày 02/09/2026.')
           if (unexpected.length) throw new Error(`Phát hiện ${unexpected.length} cửa hàng-ngày không đúng quy tắc thưởng mới.`)
           NODE
 
