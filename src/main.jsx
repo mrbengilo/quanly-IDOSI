@@ -6,6 +6,7 @@ import { installStaleReleaseRecovery } from './runtimeRecovery'
 import { AppProvider } from './state/AppContext'
 import './styles.css'
 import './supportSchedule.css'
+import './storeOperationalEnhancements.css'
 
 installStaleReleaseRecovery()
 
