@@ -1,0 +1,51 @@
+name: Export pagination source snapshot
+
+on:
+  push:
+    branches:
+      - feat/table-pagination-performance-20260903
+    paths:
+      - .github/workflows/export-pagination-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: feat/table-pagination-performance-20260903
+
+      - name: Package pagination sources
+        run: |
+          set -Eeuo pipefail
+          tar -czf pagination-source.tar.gz \
+            src/components/UI.jsx \
+            src/styles.css \
+            src/pages/admin/SupportWorkPages.jsx \
+            src/pages/store/StoreV2Pages.jsx \
+            src/pages/store/StoreOperations.jsx \
+            src/pages/compensation/UnitCompensationStatistics.jsx \
+            src/pages/compensation/CompensationStatisticsTables.jsx \
+            src/pages/compensation/ViolationManagementPage.jsx \
+            src/pages/task-assignment.css \
+            src/pages/compensation/compensation-page.css \
+            src/services/idosiApi.js \
+            src/state/AppContext.jsx \
+            src/domain/workspaceScreens.js \
+            server/worker.js \
+            server/worker.test.js \
+            package.json
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v6
+        with:
+          name: pagination-source
+          path: pagination-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
