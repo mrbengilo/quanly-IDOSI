@@ -65,4 +65,4 @@ jobs:
           git commit -m "fix(revenue): harden automatic bonus correctness"
           git push origin HEAD:feat/automatic-live-revenue-bonus
 
-# Final retry after making the server-history assertion accept repeated summaries.
+# Final packaging retry after adding supportTransferTime.js to the server bundle.
