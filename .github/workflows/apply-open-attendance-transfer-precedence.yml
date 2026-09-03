@@ -37,6 +37,9 @@ jobs:
       - name: Apply source changes
         run: python3 .github/open-attendance-transfer-precedence/apply.py --root . --write
 
+      - name: Preserve login across legacy attendance collisions
+        run: python3 .github/open-attendance-transfer-precedence/normalize_collision.py
+
       - name: Check generated diff
         run: git diff --check
 
@@ -50,6 +53,11 @@ jobs:
         run: >-
           npm test -- server/worker.test.js
           -t "does not complete an active transfer when closing a pre-existing home attendance"
+
+      - name: Targeted attendance collision regression
+        run: >-
+          npm test -- server/worker.test.js
+          -t "targets the exact attendance id and rejects ambiguous folded ids across employee mutations"
 
       - name: Full test suite
         run: npm test
