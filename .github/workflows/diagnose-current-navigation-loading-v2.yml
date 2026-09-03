@@ -1,0 +1,130 @@
+name: Diagnose current IDOSI navigation loading v2
+
+on:
+  push:
+    branches:
+      - fix/navigation-loading-root-cause-20260903
+    paths:
+      - .github/workflows/diagnose-current-navigation-loading-v2.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-navigation-diagnostic-current
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate diagnostic script
+        run: bash -n deploy/vps/diagnose-readonly.sh
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS}"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+      - name: Run repository read-only diagnostic
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' < deploy/vps/diagnose-readonly.sh
+      - name: Compare public, local Caddy and app loopback latency
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          ROOT="${IDOSI_ROOT:-/opt/idosi}"
+          COMPOSE_FILE="${IDOSI_COMPOSE_FILE:-$ROOT/deploy/vps/compose.yml}"
+          compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+          summarize() {
+            python3 - "$1" <<'PY'
+          import math,sys
+          xs=sorted(float(x) for x in sys.argv[1].split(',') if x)
+          def p(q):
+            i=(len(xs)-1)*q; a=math.floor(i); b=math.ceil(i)
+            return xs[a] if a==b else xs[a]+(xs[b]-xs[a])*(i-a)
+          print(f'count={len(xs)} p50={p(.5):.4f}s p95={p(.95):.4f}s max={max(xs):.4f}s')
+          PY
+          }
+          echo '### public_cloudflare'
+          xs=''; for i in $(seq 1 20); do x=$(curl -sS --max-time 20 -o /dev/null -w '%{time_total}' "https://idosi.io.vn/api/health?public=$i"); xs="${xs}${xs:+,}${x}"; done; summarize "$xs"
+          curl -sSI --max-time 20 https://idosi.io.vn/api/health | tr -d '\r' | grep -Ei '^(server|cf-ray|cf-cache-status|server-timing|cache-control):' || true
+          echo '### local_caddy'
+          xs=''; for i in $(seq 1 20); do x=$(curl -ksS --resolve idosi.io.vn:443:127.0.0.1 --max-time 20 -o /dev/null -w '%{time_total}' "https://idosi.io.vn/api/health?origin=$i"); xs="${xs}${xs:+,}${x}"; done; summarize "$xs"
+          echo '### app_loopback_and_processes'
+          app_id="$(compose ps -q app)"; docker top "$app_id" -eo pid,ppid,pcpu,pmem,etime,args
+          compose exec -T app node <<'NODE'
+          const xs=[]
+          for(let i=0;i<20;i+=1){const s=performance.now();const r=await fetch(`http://127.0.0.1:3000/api/health?app=${i}`);await r.arrayBuffer();xs.push((performance.now()-s)/1000)}
+          xs.sort((a,b)=>a-b);const p=(q)=>{const i=(xs.length-1)*q,a=Math.floor(i),b=Math.ceil(i);return a===b?xs[a]:xs[a]+(xs[b]-xs[a])*(i-a)}
+          console.log(`count=${xs.length} p50=${p(.5).toFixed(4)}s p95=${p(.95).toFixed(4)}s max=${xs.at(-1).toFixed(4)}s`)
+          NODE
+          echo '### recent_api_60m'
+          log=$(mktemp); trap 'rm -f "$log"' EXIT; docker logs --since=60m --tail=150000 "$app_id" >"$log" 2>&1 || true
+          python3 - "$log" <<'PY'
+          import json,math,sys
+          from collections import defaultdict
+          rows=[]
+          for line in open(sys.argv[1],encoding='utf-8',errors='replace'):
+            i=line.find('{')
+            if i<0: continue
+            try:r=json.loads(line[i:])
+            except:continue
+            if r.get('event')=='idosi.api.request':rows.append(r)
+          def n(x):
+            try:return float(x or 0)
+            except:return 0
+          def p(xs,q):
+            xs=sorted(n(x) for x in xs)
+            if not xs:return 0
+            z=(len(xs)-1)*q;a=math.floor(z);b=math.ceil(z)
+            return xs[a] if a==b else xs[a]+(xs[b]-xs[a])*(z-a)
+          g=defaultdict(list)
+          for r in rows:g[(r.get('method'),r.get('path'))].append(r)
+          print('rows',len(rows));print('method\tpath\tcount\tp50\tp95\tmax\tdb95\tresponseKiB95\tge2s\tge5s')
+          for k,v in sorted(g.items(),key=lambda e:-p([r.get('durationMs') for r in e[1]],.95)):
+            d=[r.get('durationMs') for r in v]
+            print(k[0],k[1],len(v),round(p(d,.5),1),round(p(d,.95),1),round(max(map(n,d)),1),round(p([r.get('database',{}).get('totalMs') for r in v],.95),1),round(p([n(r.get('responseBytes'))/1024 for r in v],.95),1),sum(n(x)>=2000 for x in d),sum(n(x)>=5000 for x in d),sep='\t')
+          PY
+          echo '### sqlite_pragmas'
+          compose exec -T app node <<'NODE'
+          import {DatabaseSync} from 'node:sqlite'
+          const db=new DatabaseSync(process.env.IDOSI_DB_PATH||'/app/data/idosi.sqlite',{readOnly:true});db.exec('PRAGMA query_only=ON')
+          for(const name of ['journal_mode','cache_size','mmap_size','busy_timeout','temp_store']) console.log(name,db.prepare(`PRAGMA ${name}`).get())
+          db.close()
+          NODE
+          REMOTE
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
