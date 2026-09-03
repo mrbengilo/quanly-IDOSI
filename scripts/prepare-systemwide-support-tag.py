@@ -36,6 +36,18 @@ replace_once(
 
 replace_once(
     'scripts/apply-systemwide-support-tag.py',
+    """    \"\"\"  const employeeOptions = employees.filter((employee) => String(employee.unit || 'store') === 'store'
+    && employee.storeId === storeId)
+\"\"\",
+""",
+    """    \"\"\"  const employeeOptions = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId)
+\"\"\",
+""",
+    'repair current store-order employee-options source marker',
+)
+
+replace_once(
+    'scripts/apply-systemwide-support-tag.py',
     """    \"\"\"{rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong><small className=\"table-note\">{row.employee.id} • {row.employee.employmentType}</small></td>\"\"\",
 """,
     """    \"\"\"{rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong>{row.isSupportEmployee && <small className=\"table-note\"><Badge tone=\"orange\">Nhân viên hỗ trợ • {row.supportOriginStoreName || row.supportOriginStoreId || 'Cửa hàng khác'}</Badge></small>}<small className=\"table-note\">{row.employee.id} • {row.employee.employmentType}</small></td>\"\"\",
