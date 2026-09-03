@@ -1,6 +1,6 @@
 name: Apply IDOSI schedule preset patch
 
-# Retry after aligning the Worker command allowlist anchor.
+# Retry after aligning source anchors and the schedule-page validation import.
 on:
   push:
     branches:
@@ -48,6 +48,21 @@ jobs:
 
       - name: Apply source update
         run: python .github/idosi-schedule-presets/apply_idosi_schedule_preset_update.py --root . --write
+
+      - name: Apply reviewed follow-up fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/pages/admin/BusinessSupportSchedulePage.jsx')
+          text = path.read_text(encoding='utf-8')
+          old = "  canConfigureSupportSchedulePresets,\n  normalizeSupportSchedulePresets,\n  supportScheduleDays,"
+          new = "  canConfigureSupportSchedulePresets,\n  normalizeSupportSchedulePresets,\n  supportScheduleDays,\n  validateSupportSchedulePresets,"
+          if text.count(old) != 1:
+              raise SystemExit('schedule-page validation import anchor missing')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
 
       - name: Check generated diff
         run: git diff --check
