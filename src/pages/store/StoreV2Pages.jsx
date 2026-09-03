@@ -1352,6 +1352,31 @@ export function StorePayrollV2() {
           ? snapshotRow.supportTransferIds
           : snapshotRow.supportCompensation?.transferIds || [])
       : supportTransferIdentifiers(supportDetails)
+    const supportOriginStoreId = compactIdentifier(
+      snapshotRow?.supportCompensation?.homeStoreId
+      || snapshotRow?.supportHomeStoreId
+      || supportDetails[0]?.support?.homeStoreId
+      || (supportTransferIds.length > 0 ? employee.storeId : ''),
+    )
+    const supportOriginStoreMatch = supportOriginStoreId
+      ? operationalIdentifierRecordMatch(stores, supportOriginStoreId, (item) => [item.id])
+      : { record: null, ambiguous: false }
+    const supportOriginStoreName = compactIdentifier(
+      snapshotRow?.supportCompensation?.homeStoreName
+      || snapshotRow?.supportHomeStoreName
+      || supportDetails[0]?.support?.homeStoreName
+      || (!supportOriginStoreMatch.ambiguous ? supportOriginStoreMatch.record?.name : '')
+      || supportOriginStoreId
+      || 'Cửa hàng khác',
+    )
+    const isSupportEmployee = snapshotRow
+      ? Boolean(
+          snapshotRow.isSupportEmployee
+          || snapshotRow.supportCompensation?.isSupportEmployee
+          || supportTransferIds.length > 0
+          || Number(snapshotRow.supportActualPay || 0) > 0
+        )
+      : inboundSupport
     const manualBonus = snapshotRow ? Number(snapshotRow.manualBonusVnd || 0) : canonical.manual + Math.max(0, legacyAdjustmentNet)
     const tiktokAllowance = snapshotRow
       ? Number(snapshotRow.salarySnapshot?.tiktokAllowance || 0)
@@ -1394,6 +1419,9 @@ export function StorePayrollV2() {
       workBonus,
       supportWorkBonus,
       supportTransferIds,
+      isSupportEmployee,
+      supportOriginStoreId,
+      supportOriginStoreName,
       manualBonus,
       tiktokAllowance,
       otherAllowance,
@@ -1616,7 +1644,7 @@ export function StorePayrollV2() {
       </div>
       <Card title="Chi tiết lương thưởng">
         <TableWrap><thead><tr><th>Nhân viên</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng doanh thu</th><th>Thưởng công việc</th><th>Thưởng thủ công</th><th>Phụ cấp TikTok</th><th>Phụ cấp khác</th><th>Vi phạm</th><th>Đã ứng</th><th>Thực nhận</th></tr></thead><tbody>
-          {rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}{row.supportWorkBonus > 0 && <small className="table-note">Thưởng hỗ trợ ghi nhận tại {store?.name || storeId}{row.supportTransferIds.length ? ` • ${row.supportTransferIds.join(', ')}` : ''}</small>}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
+          {rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong>{row.isSupportEmployee && <small className="table-note"><Badge tone="orange">Nhân viên hỗ trợ • {row.supportOriginStoreName || row.supportOriginStoreId || 'Cửa hàng khác'}</Badge></small>}<small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}{row.supportWorkBonus > 0 && <small className="table-note">Thưởng hỗ trợ ghi nhận tại {store?.name || storeId}{row.supportTransferIds.length ? ` • ${row.supportTransferIds.join(', ')}` : ''}</small>}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
           {payrollPreviewError
             ? <tr><td colSpan="11">Số liệu đang được khóa cho đến khi Admin xử lý dữ liệu trùng.</td></tr>
             : <tr className="total-row"><td colSpan="10">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr>}

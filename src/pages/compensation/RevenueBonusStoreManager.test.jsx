@@ -76,4 +76,65 @@ describe('store-manager automatic daily revenue bonus', () => {
     expect(within(table).getByText(`Quản lý ${store.name}`)).toBeTruthy()
     expect(within(table).getByText(`Nhân viên ${store.name}`)).toBeTruthy()
   })
+
+  it('shows 1,400,000 VND as the actual payable amount for the equal 8h/8h/8h support example', () => {
+    const smStore = storesSeed.find((store) => store.id === 'SM-TNV')
+    const homeStore = { id: 'DOSII-HOME', name: 'Dosii cửa hàng chính' }
+    const employees = [
+      { id: 'A', name: 'Nhân viên A', unit: 'store', storeId: smStore.id },
+      { id: 'B', name: 'Nhân viên B', unit: 'store', storeId: smStore.id },
+      { id: 'C', name: 'Nhân viên hỗ trợ C', unit: 'store', storeId: homeStore.id },
+    ]
+    mocked.app = {
+      ...managerApp(smStore),
+      session: { role: 'store_manager', employeeId: 'A', storeId: smStore.id },
+      currentEmployee: employees[0],
+      stores: [smStore, homeStore],
+      employees,
+      orders: [{
+        id: 'SM-EXACT-ORDER', storeId: smStore.id, amount: 25_000_001, status: 'Hoàn tất',
+        createdAt: '2026-09-03T10:00:00+07:00',
+      }],
+      attendance: employees.map((employee) => ({
+        id: `SM-EXACT-${employee.id}`,
+        storeId: smStore.id,
+        employeeId: employee.id,
+        workDate: '2026-09-03',
+        workedSeconds: 28_800,
+        checkOutAt: '2026-09-03T10:00:00+07:00',
+        ...(employee.id === 'C' ? { supportTransferId: 'SM-EXACT-TRANSFER' } : {}),
+      })),
+      supportTransfers: [{
+        id: 'SM-EXACT-TRANSFER',
+        employeeId: 'C',
+        fromStoreId: homeStore.id,
+        toStoreId: smStore.id,
+        startAt: '2026-09-03T00:00:00+07:00',
+        endAt: '2026-09-04T00:00:00+07:00',
+        status: 'ACTIVE',
+      }],
+    }
+
+    render(<RevenueBonusPage storeScoped />)
+
+    const actualMetric = screen.getByText('THƯỞNG DOANH THU GHI NHẬN THỰC TẾ').closest('.metric')
+    const excludedMetric = screen.getByText('PHẦN KHÔNG GHI NHẬN CHI').closest('.metric')
+    expect(within(actualMetric).getByText('1,400,000 đ')).toBeTruthy()
+    expect(within(excludedMetric).getByText('700,000 đ')).toBeTruthy()
+    expect(screen.getByText(/số tiền thưởng doanh thu ghi nhận thực tế phải chi là 1,400,000 đ/iu)).toBeTruthy()
+
+    const table = screen.getByRole('heading', { name: 'Phân bổ thưởng tự động theo nhân viên' }).closest('section')
+    const rowA = within(table).getByText('Nhân viên A').closest('tr')
+    const rowB = within(table).getByText('Nhân viên B').closest('tr')
+    const rowC = within(table).getByText('Nhân viên hỗ trợ C').closest('tr')
+    expect(within(rowA).getAllByRole('cell')[5].textContent).toBe('700,000 đ')
+    expect(within(rowA).getAllByRole('cell')[6].textContent).toBe('700,000 đ')
+    expect(within(rowB).getAllByRole('cell')[5].textContent).toBe('700,000 đ')
+    expect(within(rowB).getAllByRole('cell')[6].textContent).toBe('700,000 đ')
+    expect(within(rowC).getAllByRole('cell')[5].textContent).toBe('0 đ')
+    expect(within(rowC).getAllByRole('cell')[6].textContent).toBe('0 đ')
+    expect(within(rowC).getByText('Hỗ trợ cửa hàng – không nhận thưởng')).toBeTruthy()
+    expect(within(rowC).getByText(/phần tỷ trọng 700,000 đ không ghi nhận chi/iu)).toBeTruthy()
+  })
+
 })
