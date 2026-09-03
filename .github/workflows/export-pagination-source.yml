@@ -40,6 +40,8 @@ jobs:
             src/domain/workspaceScreens.js \
             server/worker.js \
             server/worker.test.js \
+            server/vps/sqlite-d1.mjs \
+            server/vps/sqlite-d1.test.mjs \
             package.json
 
       - name: Upload source snapshot
