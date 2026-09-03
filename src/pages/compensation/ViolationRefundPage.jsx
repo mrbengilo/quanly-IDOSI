@@ -1,10 +1,12 @@
 import { useMemo, useState } from 'react'
 import { Banknote, CircleDollarSign, History, RotateCcw } from 'lucide-react'
 import { Badge, Card, Field, InfoNote, Input, MetricCard, PageHeader, Select, TableWrap } from '../../components/UI'
+import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
+import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
 import { useApp } from '../../state/AppContext'
 import { money, operationalIdentifierRecordMatch } from '../../utils'
 import { canonicalRole, entityId, operationalStores } from './compensationViewModel'
-import { AccessDenied, displayDate, displayDateTime, storeName, vietnamToday } from './compensationUi'
+import { AccessDenied, displayDate, displayDateTime, vietnamToday } from './compensationUi'
 import './compensation-page.css'
 
 const REFUND_STATUS = Object.freeze({
@@ -52,7 +54,7 @@ const shiftDescription = (refund = {}) => {
   return [name, interval].filter(Boolean).join(' · ') || 'Không gắn ca làm'
 }
 
-const isSupportEmployee = (refund, currentStoreId) => {
+const legacySupportEmployee = (refund, currentStoreId) => {
   const homeStoreId = text(refund.employeeHomeStoreId)
   return Boolean(
     refund.supportTransferId
@@ -97,10 +99,18 @@ export function ViolationRefundPage() {
     options.set(id, {
       id,
       name: text(refund.employeeName) || id,
-      support: isSupportEmployee(refund, selectedStoreId),
+      support: Boolean(resolveSupportEmployeeTagContext({
+        record: refund,
+        employeeId: refund.employeeId,
+        storeId: selectedStoreId,
+        businessDate: refundDate(refund),
+        employees: app.employees,
+        stores: app.stores,
+        supportTransfers: app.supportTransfers,
+      })),
     })
     return options
-  }, new Map()).values()].toSorted((left, right) => left.name.localeCompare(right.name, 'vi-VN')), [scopedRows, selectedStoreId])
+  }, new Map()).values()].toSorted((left, right) => left.name.localeCompare(right.name, 'vi-VN')), [app.employees, app.stores, app.supportTransfers, scopedRows, selectedStoreId])
 
   const filteredRows = useMemo(() => scopedRows.filter((refund) => {
     const date = refundDate(refund)
@@ -187,15 +197,23 @@ export function ViolationRefundPage() {
         <thead><tr><th>Thời gian</th><th>Nhân viên</th><th>Nội dung vi phạm</th><th>Số tiền hoàn trả</th><th>Trạng thái</th></tr></thead>
         <tbody>{filteredRows.map((refund, index) => {
           const presentation = statusPresentation(refund)
-          const support = isSupportEmployee(refund, selectedStoreId)
+          const supportContext = resolveSupportEmployeeTagContext({
+            record: refund,
+            employeeId: refund.employeeId,
+            storeId: selectedStoreId,
+            businessDate: refundDate(refund),
+            employees: app.employees,
+            stores: app.stores,
+            supportTransfers: app.supportTransfers,
+          })
+          const historicalSupport = legacySupportEmployee(refund, selectedStoreId)
           const subline = statusSubline(refund)
           return <tr key={refund.id || refund.sourceId || `${refundDate(refund)}-${refund.employeeId}-${index}`}>
             <td><strong>{refundTimestamp(refund)}</strong><small className="compensation-subline">{shiftDescription(refund)}</small></td>
             <td>
               <strong>{refund.employeeName || refund.employeeId || '—'}</strong>
               <small className="compensation-subline">{refund.employeeId || '—'}</small>
-              <Badge tone={support ? 'orange' : 'green'}>{support ? 'Nhân viên hỗ trợ' : 'Nhân viên chính'}</Badge>
-              {support && refund.employeeHomeStoreId && <small className="compensation-subline">Cửa hàng gốc: {storeName(stores, refund.employeeHomeStoreId)}</small>}
+              {supportContext ? <SupportEmployeeTag context={supportContext} /> : !historicalSupport ? <Badge tone="green">Nhân viên chính</Badge> : null}
             </td>
             <td><strong>{refund.title || refund.policyCode || 'Vi phạm'}</strong><small className="compensation-subline">{refund.policyCode || ''}</small></td>
             <td><strong className={refundStatus(refund) === REFUND_STATUS.VOID ? 'compensation-debit' : 'compensation-credit'}>{money(refundAmount(refund))}</strong></td>

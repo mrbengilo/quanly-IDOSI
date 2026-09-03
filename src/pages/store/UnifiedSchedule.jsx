@@ -27,6 +27,8 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
+import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
+import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
 import { supportTransferOverlapsDate } from '../../domain/supportTransferTime'
 import { downloadCsv } from '../../utils'
 import { removeShiftAssignments, replaceShiftAssignees } from './scheduleAssignments'
@@ -175,6 +177,27 @@ export function UnifiedSchedule() {
   const datesOfWeek = storeScheduleRange(date, 'week').dates
   const datesOfMonth = storeScheduleRange(date, 'month').dates
   const scheduleForEmployeeDate = (employeeId, targetDate) => scheduleByEmployeeDate.get(`${String(employeeId || '')}:${targetDate}`)
+  const supportContextForEmployeeDate = (employee, targetDate) => resolveSupportEmployeeTagContext({
+    record: {
+      employeeId: employee.id || employee.code,
+      storeId,
+      businessDate: targetDate,
+      supportAssignment: employee.supportAssignment,
+      supportStoreId: employee.supportStoreId || storeId,
+      homeStoreId: employee.homeStoreId || employee.storeId,
+      isSupportEmployee: Boolean(employee.supportAssignment || employee.supportStoreId),
+    },
+    employee,
+    employeeId: employee.id || employee.code,
+    storeId,
+    businessDate: targetDate,
+    employees: allEmployees,
+    stores: app.stores,
+    supportTransfers,
+  })
+  const supportContextForEmployeeRange = (employee, dates) => (
+    dates.map((targetDate) => supportContextForEmployeeDate(employee, targetDate)).find(Boolean) || null
+  )
 
   const resolveScheduledShift = (record, shiftId) => resolveStoreScheduleShift({
     record, shiftId, shiftDefinitions, storeId,
@@ -230,7 +253,7 @@ export function UnifiedSchedule() {
   const renderPeriodSchedule = (dates, period) => <TableWrap className={`schedule-matrix schedule-matrix--period schedule-matrix--${period}`}>
     <thead><tr><th>Nhân viên</th>{dates.map((item) => <th key={item}>{displayDate(item)}</th>)}</tr></thead>
     <tbody>{employees.map((employee) => <tr key={employee.id || employee.code}>
-      <td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>
+      <td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><SupportEmployeeTag context={supportContextForEmployeeRange(employee, dates)} /><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>
       {dates.map((item) => <td key={item}>{renderScheduleCell(employee.id || employee.code, item)}</td>)}
     </tr>)}</tbody>
   </TableWrap>
@@ -502,7 +525,7 @@ export function UnifiedSchedule() {
           <tbody>{employees.map((employee) => {
             const record = scheduleForEmployeeDate(employee.id || employee.code, date)
             const assigned = new Set(scheduleShiftIds(record))
-            return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>{dayViewShifts.map((column) => {
+            return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} /><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>{dayViewShifts.map((column) => {
               const shift = assigned.has(String(column.id)) ? resolveScheduledShift(record, column.id) : column
               return <td key={column.id}>{assigned.has(String(column.id)) ? <span className="schedule-shift-chip" style={{ '--shift-color': shift.color }}><Check /> <strong>{shift.name}</strong><small>{scheduleShiftTimeLabel(shift)}</small></span> : <span className="schedule-empty-cell">—</span>}</td>
             })}</tr>
@@ -548,7 +571,7 @@ export function UnifiedSchedule() {
           </div>
         ) : historyMode === 'day' ? (
           <EmptyState title="Chưa có lịch phân ca" description="Chọn ca và nhân viên ở trên để tạo lịch mới." />
-        ) : scheduleHistoryRows.length ? <TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca</th><th>Thời gian</th><th>Ghi chú</th><th>Cập nhật</th></tr></thead><tbody>{scheduleHistoryRows.map((row) => <tr key={row.id}><td><strong>{displayDate(row.date)}</strong></td><td>{row.employeeName}<small className="table-note">{row.employeeId}</small></td><td>{row.shift.name}</td><td>{scheduleShiftTimeLabel(row.shift)}</td><td>{row.note || '—'}</td><td>{displayDateTime(row.updatedAt)}</td></tr>)}</tbody></TableWrap> : <EmptyState title="Chưa có lịch sử phân ca" description="Không có lịch trong phạm vi đang chọn." />}
+        ) : scheduleHistoryRows.length ? <TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca</th><th>Thời gian</th><th>Ghi chú</th><th>Cập nhật</th></tr></thead><tbody>{scheduleHistoryRows.map((row) => <tr key={row.id}><td><strong>{displayDate(row.date)}</strong></td><td><strong>{row.employeeName}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employeeById.get(String(row.employeeId)) || { id: row.employeeId, name: row.employeeName }, row.date)} /><small className="table-note">{row.employeeId}</small></td><td>{row.shift.name}</td><td>{scheduleShiftTimeLabel(row.shift)}</td><td>{row.note || '—'}</td><td>{displayDateTime(row.updatedAt)}</td></tr>)}</tbody></TableWrap> : <EmptyState title="Chưa có lịch sử phân ca" description="Không có lịch trong phạm vi đang chọn." />}
         {historyMode === 'day' && createdScheduleRows.length > 0 && <TableFooter shown={createdScheduleRows.length} total={createdScheduleRows.length} />}
       </Card>
 
@@ -612,6 +635,7 @@ export function UnifiedSchedule() {
                   />
                   <Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} />
                   <strong>{employee.name}</strong>
+                  <SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} />
                   <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
                 </label>
               ))}
@@ -652,6 +676,7 @@ export function UnifiedSchedule() {
                 />
                 <Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} />
                 <strong>{employee.name}</strong>
+                <SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} />
                 <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
               </label>
             ))}

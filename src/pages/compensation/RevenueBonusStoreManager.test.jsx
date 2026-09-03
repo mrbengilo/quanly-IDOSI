@@ -134,6 +134,7 @@ describe('store-manager automatic daily revenue bonus', () => {
     expect(within(rowC).getAllByRole('cell')[5].textContent).toBe('0 đ')
     expect(within(rowC).getAllByRole('cell')[6].textContent).toBe('0 đ')
     expect(within(rowC).getByText('Hỗ trợ cửa hàng – không nhận thưởng')).toBeTruthy()
+    expect(within(rowC).getByText('Nhân viên hỗ trợ • Từ Dosii cửa hàng chính')).toBeTruthy()
     expect(within(rowC).getByText(/phần tỷ trọng 700,000 đ không ghi nhận chi/iu)).toBeTruthy()
   })
 

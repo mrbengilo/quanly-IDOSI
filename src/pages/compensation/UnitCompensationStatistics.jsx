@@ -1,5 +1,6 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { Card } from '../../components/UI'
+import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
 import { useApp } from '../../state/AppContext'
 import {
   employeesForTarget,
@@ -41,6 +42,17 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
   const rewardSummary = useMemo(() => rewardStatistics(rewardRows), [rewardRows])
   const violationSummary = useMemo(() => violationStatistics(violationRows), [violationRows])
   const unitLabel = UNIT_LABELS[targetUnit] || 'đơn vị'
+  const supportTagContextForRewardRow = useCallback((row) => targetUnit === 'store'
+    ? resolveSupportEmployeeTagContext({
+        record: row,
+        employeeId: row.employeeId,
+        storeId: row.storeId || storeId,
+        businessDate: row.workDate || row.businessDate || row.date,
+        employees: app.employees,
+        stores: app.stores,
+        supportTransfers: app.supportTransfers,
+      })
+    : null, [app.employees, app.stores, app.supportTransfers, storeId, targetUnit])
 
   const showReward = sections === 'all' || sections === 'reward'
   const showViolation = sections === 'all' || sections === 'violation'
@@ -53,6 +65,7 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
         employees={scopedEmployees}
         showEmployee
         filterable={targetUnit === 'store'}
+        supportTagContextForRow={supportTagContextForRewardRow}
       />
     </Card>}
     {showReward && <Card title={`Thống kê thưởng — ${unitLabel}`}>

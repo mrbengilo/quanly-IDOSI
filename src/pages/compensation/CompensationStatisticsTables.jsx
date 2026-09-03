@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Badge, Field, Input, Select, TableWrap } from '../../components/UI'
+import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
 import { money } from '../../utils'
 
 const employeeName = (employees = [], employeeId = '', fallback = '') => employees.find((employee) => (
@@ -62,7 +63,7 @@ export function CompensationStatisticsGrid({
   </div>
 }
 
-export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false, filterFields }) {
+export function RewardHistoryTable({ rows = [], employees = [], showEmployee = false, filterable = false, filterFields, supportTagContextForRow = null }) {
   const [dateFilter, setDateFilter] = useState('')
   const [shiftFilter, setShiftFilter] = useState('all')
   const [employeeFilter, setEmployeeFilter] = useState('all')
@@ -120,7 +121,7 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
       <thead><tr>{showEmployee && <th>Nhân viên</th>}<th>Ngày</th><th>Ca làm</th><th>Công việc</th><th>Tiền thưởng{hasFilters && <small className="compensation-subline">Tổng: <strong className="compensation-credit">+{money(filteredTotal)}</strong></small>}</th><th>Ghi nhận lúc</th><th>Trạng thái</th></tr></thead>
       <tbody>
         {filteredRows.map((row) => <tr key={row.id}>
-          {showEmployee && <td><strong>{employeeName(employees, row.employeeId, row.employeeName)}</strong><small className="compensation-subline">{row.employeeId}</small></td>}
+          {showEmployee && <td><strong>{employeeName(employees, row.employeeId, row.employeeName)}</strong><SupportEmployeeTag context={supportTagContextForRow?.(row)} className="compensation-subline" /><small className="compensation-subline">{row.employeeId}</small></td>}
           <td><strong>{displayDate(row.workDate)}</strong></td>
           <td><strong>{row.shiftName || 'Chưa gắn ca'}</strong>{row.shiftTime && <small className="compensation-subline">{row.shiftTime}</small>}</td>
           <td>{row.title}</td>

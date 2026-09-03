@@ -101,7 +101,7 @@ describe('ViolationRefundPage', () => {
     expect(within(screen.getByRole('group', { name: 'Cửa hàng hiện tại' })).getByText('Dosii NVT')).toBeTruthy()
     expect(screen.queryByRole('combobox', { name: 'Cửa hàng' })).toBeNull()
     expect(screen.getAllByText('Nhân viên chính').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Nhân viên hỗ trợ').length).toBeGreaterThan(0)
+    expect(screen.getByText('Nhân viên hỗ trợ • Từ SM TNV')).toBeTruthy()
     expect(screen.queryByText('Nhân viên cửa hàng khác')).toBeNull()
     expect(screen.queryByText('Sai phạm vi chữ hoa')).toBeNull()
     expect(within(metric('TỔNG ĐÃ CỘNG DOANH THU')).getByText('3,000 đ')).toBeTruthy()

@@ -167,7 +167,7 @@ describe('business-support store workspace permissions', () => {
     renderPage(StoreEmployees)
 
     expect(screen.getByText(supportEmployee.name)).toBeTruthy()
-    expect(screen.getByText('Nhân viên hỗ trợ')).toBeTruthy()
+    expect(screen.getAllByText('Nhân viên hỗ trợ • Từ Dosii TNV').length).toBeGreaterThan(0)
     expect(screen.getByText(/Dosii TNV.*SecondMall SM234/i)).toBeTruthy()
     expect(screen.getByText(/45,000.*giờ.*180,000/i)).toBeTruthy()
     expect(screen.getByText(/Trạng thái: Đã duyệt/i)).toBeTruthy()

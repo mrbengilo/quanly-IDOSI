@@ -368,11 +368,14 @@ export const supportPayrollDetailRows = ({ snapshotDetails = [], snapshot = null
     const startAt = detail.startAt || detail.transferStartAt
     const endAt = detail.endAt || detail.transferEndAt
     const attendanceCount = Array.isArray(detail.attendanceIds) ? detail.attendanceIds.length : 0
+    const destinationStoreId = String(detail.supportStoreId || detail.destinationStoreId || '')
     return {
       key: `${detail.transferId || 'support'}-${index}`,
       date: String(startAt || '').slice(0, 10),
+      transferId: String(detail.transferId || ''),
+      destinationStoreId,
       destinationStoreName: storeNameFor(
-        detail.supportStoreId,
+        destinationStoreId,
         stores,
         detail.supportStoreName || detail.destinationStoreName,
       ),

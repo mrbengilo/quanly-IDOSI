@@ -13,6 +13,8 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { money } from '../../utils'
+import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
+import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
 import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { resolveAttendanceWorkingTime } from '../../domain/attendanceWorkingTime'
 import {
@@ -187,6 +189,18 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
   const { busyKey, error, run } = useCompensationAction(app)
   const selectedEmployeeId = employeeSelection || entityId(employees[0])
   const selectedEmployee = employees.find((employee) => entityId(employee) === selectedEmployeeId) || null
+  const selectedSupportContext = targetUnit === 'store'
+    ? resolveSupportEmployeeTagContext({
+        record: { employeeId: selectedEmployeeId, storeId: selectedStoreId, businessDate: occurredOn },
+        employee: selectedEmployee,
+        employeeId: selectedEmployeeId,
+        storeId: selectedStoreId,
+        businessDate: occurredOn,
+        employees: app.employees,
+        stores: app.stores,
+        supportTransfers: app.supportTransfers,
+      })
+    : null
   const shiftOptions = useMemo(() => resolveShiftOptions({
     attendance: app.attendance,
     schedules: app.schedule,
@@ -324,6 +338,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
             <Select aria-label="Nhân viên" value={selectedEmployeeId} onChange={(event) => { setEmployeeSelection(event.target.value); resetDependentSelection() }} disabled={!employees.length}>
               {employees.map((employee) => <option key={entityId(employee)} value={entityId(employee)}>{employee.name} — {entityId(employee)}</option>)}
             </Select>
+            <SupportEmployeeTag context={selectedSupportContext} />
           </Field>
           <Field label="Ca nhân viên làm trong ngày" required>
             <Select aria-label="Ca nhân viên làm trong ngày" value={selectedShift?.key || ''} onChange={(event) => { setShiftSelection(event.target.value); setSelectedPolicyIds([]); setValidation('') }} disabled={!shiftOptions.length}>
@@ -372,7 +387,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
             {filteredRows.map((entry) => <tr key={entry.id}>
               <td>{displayDate(entryDate(entry))}</td>
               <td><strong>{violationShiftLabel(entry)}</strong>{shiftTime(entry) && <small className="compensation-subline">{shiftTime(entry)}</small>}</td>
-              <td><strong>{employeeName(employees, entryEmployeeId(entry), entry.employeeName)}</strong><small className="compensation-subline">{entryEmployeeId(entry)}</small></td>
+              <td><strong>{employeeName(employees, entryEmployeeId(entry), entry.employeeName)}</strong><SupportEmployeeTag context={resolveSupportEmployeeTagContext({ record: entry, employeeId: entryEmployeeId(entry), storeId: entryStoreId(entry), businessDate: entryDate(entry), employees: app.employees, stores: app.stores, supportTransfers: app.supportTransfers })} className="compensation-subline" /><small className="compensation-subline">{entryEmployeeId(entry)}</small></td>
               {targetUnit === 'store' && <td>{storeName(stores, entryStoreId(entry), entry.storeName)}</td>}
               <td>{entry.title || entry.label || entry.reason || entry.policyCode || '—'}</td>
               <td><strong className="compensation-debit">−{money(Math.abs(entryAmount(entry)))}</strong></td>
