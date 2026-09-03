@@ -10,6 +10,7 @@ const workerDomainFiles = [
   'taskProgress.js',
   'compensationPolicies.js',
   'compensationAllocation.js',
+  'automaticRevenueBonus.js',
   'compensationSettlement.js',
   'payrollPeriodLifecycle.js',
   'storeTieredPayroll.js',
