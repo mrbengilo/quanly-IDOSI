@@ -258,7 +258,7 @@ const REMOTE_ARRAY_KEYS = [
   'orders', 'orderInformationOptions', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
   'storeEmployeeSalaryConfigs', 'workCatalogItems', 'workCatalogProgress',
-  'storeShiftTaskTemplates', 'compensationEntries', 'violations', 'violationRefunds', 'revenueBonusDaily', 'revenueBonusAllocations',
+  'storeShiftTaskTemplates', 'compensationEntries', 'violations', 'violationRefunds', 'revenueBonusDaily', 'revenueBonusAllocations', 'revenueBonusOverrides',
   'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
   'importVouchers', 'auditLogs', 'attendanceAudit', 'operationalResetHistory', 'deletedStores', 'deletedEmployees', 'supportTransfers',
 ]
@@ -1522,6 +1522,7 @@ const remoteCommandResultPatches = (type, result) => {
   if (type.startsWith('revenue_bonus.')) {
     add('revenueBonusDaily', result.daily || result.bonus || result.bonuses)
     add('revenueBonusAllocations', result.allocation || result.allocations)
+    add('revenueBonusOverrides', result.override || result.overrides)
     add('salaryAdjustments', result.adjustment || result.adjustments)
   }
   if (type.startsWith('payroll.')) {
@@ -4752,6 +4753,42 @@ export function AppProvider({ children }) {
     )
   }
 
+  const requireRevenueBonusAdmin = () => {
+    if (normalizeAuthRole(state.session?.role) !== 'admin') {
+      throw new Error('Chỉ Admin được sửa, xóa hoặc khôi phục thưởng doanh thu tự động của nhân viên.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để điều chỉnh thưởng doanh thu an toàn.')
+    }
+  }
+
+  const setRevenueBonusOverride = async (payload = {}) => {
+    requireRevenueBonusAdmin()
+    return runRemoteDomainCommand(
+      'revenue_bonus.override_employee',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-override:${crypto.randomUUID()}`,
+    )
+  }
+
+  const deleteRevenueBonusOverride = async (payload = {}) => {
+    requireRevenueBonusAdmin()
+    return runRemoteDomainCommand(
+      'revenue_bonus.delete_employee',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-delete:${crypto.randomUUID()}`,
+    )
+  }
+
+  const restoreRevenueBonusOverride = async (payload = {}) => {
+    requireRevenueBonusAdmin()
+    return runRemoteDomainCommand(
+      'revenue_bonus.restore_employee',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-restore:${crypto.randomUUID()}`,
+    )
+  }
+
   const calculateRevenueBonusDay = async (payload = {}) => {
     requireRevenueBonusCalculator(payload.storeId)
     return runRemoteDomainCommand(
@@ -6419,6 +6456,9 @@ export function AppProvider({ children }) {
     createViolation,
     createViolationBatch,
     voidViolation,
+    setRevenueBonusOverride,
+    deleteRevenueBonusOverride,
+    restoreRevenueBonusOverride,
     calculateRevenueBonusDay,
     approveRevenueBonusMilestone,
     rejectRevenueBonusMilestone,

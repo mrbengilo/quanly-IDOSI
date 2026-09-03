@@ -243,7 +243,8 @@ export function calculateAutomaticRevenueBonusDay({
     businessDate,
   })
   for (const override of activeOverrides.records.values()) {
-    canonicalIdByKey.set(identifierKey(override.employeeId), override.employeeId)
+    const key = identifierKey(override.employeeId)
+    if (!canonicalIdByKey.has(key)) canonicalIdByKey.set(key, override.employeeId)
   }
 
   const totalWeightUnits = percentageAllocation.totalWeightUnits
