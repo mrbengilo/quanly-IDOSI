@@ -28,6 +28,9 @@ jobs:
           node-version: 22.13.0
           cache: npm
 
+      - name: Repair guarded patch helper
+        run: python3 scripts/fix-revenue-bonus-patcher.py
+
       - name: Apply guarded source and test changes
         run: python3 scripts/apply-revenue-bonus-21h-v2.py
 
@@ -51,6 +54,7 @@ jobs:
         run: |
           rm scripts/apply-revenue-bonus-21h.py
           rm scripts/apply-revenue-bonus-21h-v2.py
+          rm scripts/fix-revenue-bonus-patcher.py
           rm .github/workflows/apply-revenue-bonus-21h.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -61,6 +65,7 @@ jobs:
             src/pages/compensation/compensation-page.css \
             scripts/apply-revenue-bonus-21h.py \
             scripts/apply-revenue-bonus-21h-v2.py \
+            scripts/fix-revenue-bonus-patcher.py \
             .github/workflows/apply-revenue-bonus-21h.yml
           git commit -m "feat: gate daily revenue bonus calculation after 21h"
           git push origin HEAD:feat/revenue-bonus-daily-21h-lock
