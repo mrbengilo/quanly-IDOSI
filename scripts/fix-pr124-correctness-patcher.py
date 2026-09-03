@@ -2,7 +2,10 @@ from pathlib import Path
 
 path = Path('scripts/apply-pr124-correctness.py')
 text = path.read_text(encoding='utf-8')
-old = '''page = replace_once(
+
+replacements = [
+    (
+        '''page = replace_once(
     page,
     """    app.orders,
     app.revenueBonusOverrides,
@@ -13,8 +16,8 @@ old = '''page = replace_once(
 """,
     'local snapshot support dependency',
 )
-'''
-new = '''page = replace_once(
+''',
+        '''page = replace_once(
     page,
     """    app.orders,
     app.revenueBonusOverrides,
@@ -29,8 +32,30 @@ new = '''page = replace_once(
 """,
     'local snapshot support dependency',
 )
-'''
-if text.count(old) != 1:
-    raise SystemExit(f'patcher repair expected one match, found {text.count(old)}')
-path.write_text(text.replace(old, new, 1), encoding='utf-8')
-print('Repaired the local snapshot dependency matcher.')
+''',
+        'local snapshot dependency matcher',
+    ),
+    (
+        '''for test_path in [
+    'src/pages/compensation/CompensationPages.test.jsx',
+    'src/pages/compensation/RevenueBonusCutoff.test.jsx',
+    'src/pages/compensation/RevenueBonusStoreManager.test.jsx',
+]:
+''',
+        '''for test_path in [
+    'src/pages/compensation/CompensationPages.test.jsx',
+    'src/pages/compensation/RevenueBonusCutoff.test.jsx',
+]:
+''',
+        'store-manager special mock handling',
+    ),
+]
+
+for old, new, label in replacements:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f'{label}: expected one match, found {count}')
+    text = text.replace(old, new, 1)
+    print(f'Repaired {label}.')
+
+path.write_text(text, encoding='utf-8')
