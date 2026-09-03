@@ -209,6 +209,8 @@ describe('employee support compensation helpers', () => {
       snapshotDetails: summary.supportDetails,
       stores: [{ id: 'S02', name: 'Dosii KVC' }],
     })).toEqual([expect.objectContaining({
+      transferId: 'TR-01',
+      destinationStoreId: 'S02',
       destinationStoreName: 'Dosii KVC',
       timeLabel: '20/08/2026 08:00 – 20/08/2026 15:00',
       shiftLabel: '1 ca đã chốt',

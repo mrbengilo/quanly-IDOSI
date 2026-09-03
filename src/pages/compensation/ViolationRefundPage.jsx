@@ -6,7 +6,7 @@ import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTa
 import { useApp } from '../../state/AppContext'
 import { money, operationalIdentifierRecordMatch } from '../../utils'
 import { canonicalRole, entityId, operationalStores } from './compensationViewModel'
-import { AccessDenied, displayDate, displayDateTime, storeName, vietnamToday } from './compensationUi'
+import { AccessDenied, displayDate, displayDateTime, vietnamToday } from './compensationUi'
 import './compensation-page.css'
 
 const REFUND_STATUS = Object.freeze({
