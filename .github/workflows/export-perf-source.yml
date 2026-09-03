@@ -1,0 +1,32 @@
+name: Export performance source snapshot
+
+on:
+  push:
+    branches:
+      - ops/perf-source-snapshot-20260903
+    paths:
+      - .github/workflows/export-perf-source.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+      - name: Package source
+        run: |
+          set -Eeuo pipefail
+          tar -czf idosi-source-main.tgz \
+            AGENTS.md package.json package-lock.json vite.config.* \
+            src server drizzle scripts deploy .github/workflows/deploy-pages.yml \
+            .github/workflows/deploy-vps.yml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: idosi-source-main
+          path: idosi-source-main.tgz
+          if-no-files-found: error
+          retention-days: 1
