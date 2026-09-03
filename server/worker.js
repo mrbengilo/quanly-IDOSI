@@ -86,6 +86,8 @@ const MAX_PBKDF2_VERIFICATION_ITERATIONS = 1_000_000
 const VALID_ROLES = new Set(['admin', 'business_support', 'store_manager', 'employee'])
 const VALID_ACCOUNT_STATUSES = new Set(['active', 'locked', 'inactive'])
 const globalStateSnapshotCaches = new WeakMap()
+const personnelImageStateCaches = new WeakMap()
+const accountAvatarMigrationPromises = new WeakMap()
 // Authentication must stay bounded as operational history grows. The Admin
 // landing screen only needs the store directory; detailed finance/history is
 // loaded explicitly by the destination workspace.
@@ -3908,6 +3910,68 @@ const loadStateCollections = async (db, scope, collectionKeys) => {
     }
   }
   throw new ApiError(409, 'STATE_READ_CONFLICT', 'Trạng thái đang được cập nhật; vui lòng thử lại.')
+}
+
+
+const PERSONNEL_IMAGE_STATE_COLLECTIONS = Object.freeze([
+  'stores',
+  'employees',
+  'deletedEmployees',
+])
+
+const loadPersonnelImageState = async (db) => {
+  const cacheable = typeof db?.readStateSnapshot === 'function'
+  const head = await first(db, `
+    SELECT version, last_request_id
+    FROM app_state
+    WHERE scope_key = 'global'
+    LIMIT 1
+  `)
+  if (!head) return normalizeSharedStateForStorage({})
+  const version = Number(head.version || 0)
+  const lastRequestId = String(head.last_request_id || '')
+  const cached = cacheable ? personnelImageStateCaches.get(db) : null
+  if (cached
+    && cached.version === version
+    && cached.lastRequestId === lastRequestId) return cached.state
+
+  const row = await loadStateCollections(db, 'global', PERSONNEL_IMAGE_STATE_COLLECTIONS)
+  const state = normalizeSharedStateForStorage(parseStoredJson(row?.value_json, {}))
+  if (cacheable) {
+    personnelImageStateCaches.set(db, {
+      version: Number(row?.version || version),
+      lastRequestId: String(row?.last_request_id || lastRequestId),
+      state,
+    })
+  }
+  return state
+}
+
+const ensureLegacyAccountAvatarsMigrated = async (db, env, actor, context) => {
+  const marker = await first(db, `
+    SELECT value_json
+    FROM system_metadata
+    WHERE meta_key = ?
+    LIMIT 1
+  `, ACCOUNT_AVATAR_MIGRATION_METADATA_KEY)
+  if (marker) return
+
+  const existing = accountAvatarMigrationPromises.get(db)
+  if (existing) return existing
+  let pending
+  pending = (async () => {
+    try {
+      const current = await loadState(db, 'global')
+      await migrateLegacyAccountAvatars(db, env, actor, context, current)
+      personnelImageStateCaches.delete(db)
+    } finally {
+      if (accountAvatarMigrationPromises.get(db) === pending) {
+        accountAvatarMigrationPromises.delete(db)
+      }
+    }
+  })()
+  accountAvatarMigrationPromises.set(db, pending)
+  return pending
 }
 
 const loadInitialStateCollections = async (db, user, collectionKeys) => {
@@ -23238,14 +23302,15 @@ const employeeAvatarMetadata = (state, actor, profile) => {
 
 const getEmployeeAccountAvatar = async (request, env, context, employeeId) => {
   const db = getDatabase(env)
-  const actor = await requireSession(request, db, context)
+  const actor = await requireSession(request, db, context, {
+  stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+})
   const normalizedEmployeeId = String(employeeId || '').trim()
   if (!/^[A-Za-z0-9_-]{2,80}$/u.test(normalizedEmployeeId)) {
     throw employeeAvatarNotFound()
   }
-  let current = actor._globalStateRow || await loadState(db, 'global')
-  current = await migrateLegacyAccountAvatars(db, env, actor, context, current)
-  const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
+  await ensureLegacyAccountAvatarsMigrated(db, env, actor, context)
+  const state = await loadPersonnelImageState(db)
   let profile
   try {
     profile = uniqueEmployeeIdentifierRecordMatch({
@@ -23288,13 +23353,14 @@ const getEmployeeAccountAvatar = async (request, env, context, employeeId) => {
 
 const getIdentityImage = async (request, env, context, employeeId, side) => {
   const db = getDatabase(env)
-  const actor = await requireSession(request, db, context)
+  const actor = await requireSession(request, db, context, {
+  stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+})
   const normalizedEmployeeId = String(employeeId || '').trim()
   if (!/^[A-Za-z0-9_-]{2,80}$/u.test(normalizedEmployeeId) || !['front', 'back'].includes(side)) {
     throw new ApiError(404, 'IDENTITY_IMAGE_NOT_FOUND', 'Không tìm thấy ảnh CCCD.')
   }
-  const current = await loadState(db, 'global')
-  const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
+  const state = await loadPersonnelImageState(db)
   const profiles = [
     ...(Array.isArray(state.employees) ? state.employees : []),
     ...(Array.isArray(state.deletedEmployees) ? state.deletedEmployees : []),
