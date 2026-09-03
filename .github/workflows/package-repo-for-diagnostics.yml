@@ -17,9 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Package source tree
-        run: tar --exclude=.git -czf quanly-IDOSI-main-source.tar.gz .
+        run: tar --exclude=.git -czf /tmp/quanly-IDOSI-main-source.tar.gz .
       - uses: actions/upload-artifact@v4
         with:
           name: quanly-IDOSI-main-source
-          path: quanly-IDOSI-main-source.tar.gz
+          path: /tmp/quanly-IDOSI-main-source.tar.gz
           retention-days: 1
