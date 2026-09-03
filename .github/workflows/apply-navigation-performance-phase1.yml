@@ -1,0 +1,454 @@
+name: Apply navigation performance phase 1
+
+on:
+  push:
+    branches:
+      - perf/eliminate-navigation-event-loop-blocking
+    paths:
+      - .github/workflows/apply-navigation-performance-phase1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout performance branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/eliminate-navigation-event-loop-blocking
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Apply reviewed performance changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one source anchor, found {count}')
+              file_path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          worker_path = Path('server/worker.js')
+          worker = worker_path.read_text(encoding='utf-8')
+          cache_anchor = 'const globalStateSnapshotCaches = new WeakMap()\n'
+          if worker.count(cache_anchor) != 1:
+              raise SystemExit('server/worker.js: global snapshot cache anchor changed')
+          worker = worker.replace(
+              cache_anchor,
+              cache_anchor
+              + 'const personnelImageStateCaches = new WeakMap()\n'
+              + 'const accountAvatarMigrationPromises = new WeakMap()\n',
+              1,
+          )
+
+          load_start = worker.index('const loadStateCollections = async')
+          load_end_marker = '\nconst loadInitialStateCollections = async'
+          load_end = worker.index(load_end_marker, load_start)
+          helpers = r'''
+
+          const PERSONNEL_IMAGE_STATE_COLLECTIONS = Object.freeze([
+            'stores',
+            'employees',
+            'deletedEmployees',
+          ])
+
+          const loadPersonnelImageState = async (db) => {
+            const head = await first(db, `
+              SELECT version, last_request_id
+              FROM app_state
+              WHERE scope_key = 'global'
+              LIMIT 1
+            `)
+            if (!head) return normalizeSharedStateForStorage({})
+            const version = Number(head.version || 0)
+            const lastRequestId = String(head.last_request_id || '')
+            const cached = personnelImageStateCaches.get(db)
+            if (cached
+              && cached.version === version
+              && cached.lastRequestId === lastRequestId) return cached.state
+
+            const row = await loadStateCollections(db, 'global', PERSONNEL_IMAGE_STATE_COLLECTIONS)
+            const state = normalizeSharedStateForStorage(parseStoredJson(row?.value_json, {}))
+            personnelImageStateCaches.set(db, {
+              version: Number(row?.version || version),
+              lastRequestId: String(row?.last_request_id || lastRequestId),
+              state,
+            })
+            return state
+          }
+
+          const ensureLegacyAccountAvatarsMigrated = async (db, env, actor, context) => {
+            const marker = await first(db, `
+              SELECT metadata_value
+              FROM system_metadata
+              WHERE metadata_key = ?
+              LIMIT 1
+            `, ACCOUNT_AVATAR_MIGRATION_METADATA_KEY)
+            if (marker) return
+
+            const existing = accountAvatarMigrationPromises.get(db)
+            if (existing) return existing
+            let pending
+            pending = (async () => {
+              try {
+                const current = await loadState(db, 'global')
+                await migrateLegacyAccountAvatars(db, env, actor, context, current)
+                personnelImageStateCaches.delete(db)
+              } finally {
+                if (accountAvatarMigrationPromises.get(db) === pending) {
+                  accountAvatarMigrationPromises.delete(db)
+                }
+              }
+            })()
+            accountAvatarMigrationPromises.set(db, pending)
+            return pending
+          }
+          '''
+          if 'const PERSONNEL_IMAGE_STATE_COLLECTIONS' in worker:
+              raise SystemExit('server/worker.js: personnel image helper already exists')
+          worker = worker[:load_end] + helpers + worker[load_end:]
+
+          avatar_start = worker.index('const getEmployeeAccountAvatar = async')
+          avatar_end = worker.index('\nconst getIdentityImage = async', avatar_start)
+          avatar = worker[avatar_start:avatar_end]
+          avatar_old_session = '  const actor = await requireSession(request, db, context)\n'
+          avatar_new_session = """  const actor = await requireSession(request, db, context, {
+            stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+          })
+          """
+          if avatar.count(avatar_old_session) != 1:
+              raise SystemExit('server/worker.js: avatar session anchor changed')
+          avatar = avatar.replace(avatar_old_session, avatar_new_session, 1)
+          avatar_old_state = """  let current = actor._globalStateRow || await loadState(db, 'global')
+            current = await migrateLegacyAccountAvatars(db, env, actor, context, current)
+            const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
+          """
+          avatar_new_state = """  await ensureLegacyAccountAvatarsMigrated(db, env, actor, context)
+            const state = await loadPersonnelImageState(db)
+          """
+          if avatar.count(avatar_old_state) != 1:
+              raise SystemExit('server/worker.js: avatar state anchor changed')
+          avatar = avatar.replace(avatar_old_state, avatar_new_state, 1)
+          worker = worker[:avatar_start] + avatar + worker[avatar_end:]
+
+          identity_start = worker.index('const getIdentityImage = async')
+          identity_end = worker.index('\nconst listAudit = async', identity_start)
+          identity = worker[identity_start:identity_end]
+          if identity.count(avatar_old_session) != 1:
+              raise SystemExit('server/worker.js: identity session anchor changed')
+          identity = identity.replace(avatar_old_session, avatar_new_session, 1)
+          identity_old_state = """  const current = await loadState(db, 'global')
+            const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
+          """
+          identity_new_state = """  const state = await loadPersonnelImageState(db)
+          """
+          if identity.count(identity_old_state) != 1:
+              raise SystemExit('server/worker.js: identity state anchor changed')
+          identity = identity.replace(identity_old_state, identity_new_state, 1)
+          worker = worker[:identity_start] + identity + worker[identity_end:]
+          worker_path.write_text(worker, encoding='utf-8')
+
+          replace_once(
+              'server/vps/sqlite-d1.mjs',
+              "    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')\n",
+              """    this.database.exec(`
+              PRAGMA foreign_keys = ON;
+              PRAGMA journal_mode = WAL;
+              PRAGMA busy_timeout = 5000;
+              PRAGMA cache_size = -32768;
+              PRAGMA mmap_size = 67108864;
+              PRAGMA temp_store = MEMORY;
+            `)
+          """,
+          )
+
+          Path('src/services/employeeAvatarCache.js').write_text(r'''import { apiGetEmployeeAvatar } from './idosiApi'
+
+          const MAX_CONCURRENT_AVATAR_REQUESTS = 3
+          const MISSING_AVATAR_TTL_MS = 10 * 60 * 1_000
+          const TRANSIENT_FAILURE_COOLDOWN_MS = 15 * 1_000
+
+          const employeeAvatarCache = new Map()
+          const subscribers = new Set()
+          const requestQueue = []
+          const keyGenerations = new Map()
+          let globalGeneration = 0
+          let activeRequests = 0
+
+          const normalizedKey = (employeeId) => String(employeeId || '')
+            .trim()
+            .toLocaleLowerCase('en-US')
+
+          const generationFor = (key) => `${globalGeneration}:${keyGenerations.get(key) || 0}`
+
+          const revokeEntry = (entry) => {
+            if (entry?.url && typeof URL !== 'undefined' && typeof URL.revokeObjectURL === 'function') {
+              URL.revokeObjectURL(entry.url)
+            }
+          }
+
+          const drainQueue = () => {
+            while (activeRequests < MAX_CONCURRENT_AVATAR_REQUESTS && requestQueue.length) {
+              const request = requestQueue.shift()
+              activeRequests += 1
+              Promise.resolve()
+                .then(request.task)
+                .then(request.resolve, () => request.resolve(''))
+                .finally(() => {
+                  activeRequests -= 1
+                  drainQueue()
+                })
+            }
+          }
+
+          const enqueueRequest = (task) => new Promise((resolve) => {
+            requestQueue.push({ task, resolve })
+            drainQueue()
+          })
+
+          const unavailableAvatar = (error) => (
+            Number(error?.status) === 404
+            || ['EMPLOYEE_AVATAR_NOT_FOUND', 'HTTP_404'].includes(String(error?.code || ''))
+          )
+
+          export const loadEmployeeAvatarUrl = (employeeId) => {
+            const id = String(employeeId || '').trim()
+            const key = normalizedKey(id)
+            if (!key) return Promise.resolve('')
+
+            const cached = employeeAvatarCache.get(key)
+            const now = Date.now()
+            if (cached?.url) return Promise.resolve(cached.url)
+            if (cached?.promise) return cached.promise
+            if (Number(cached?.missingUntil || 0) > now || Number(cached?.retryAfter || 0) > now) {
+              return Promise.resolve('')
+            }
+
+            const requestGeneration = generationFor(key)
+            let promise
+            promise = enqueueRequest(async () => {
+              try {
+                const blob = await apiGetEmployeeAvatar(id)
+                if (generationFor(key) !== requestGeneration) return ''
+                const url = URL.createObjectURL(blob)
+                const previous = employeeAvatarCache.get(key)
+                if (previous?.url && previous.url !== url) revokeEntry(previous)
+                employeeAvatarCache.set(key, { url })
+                return url
+              } catch (error) {
+                if (generationFor(key) !== requestGeneration) return ''
+                employeeAvatarCache.set(key, unavailableAvatar(error)
+                  ? { missingUntil: Date.now() + MISSING_AVATAR_TTL_MS }
+                  : { retryAfter: Date.now() + TRANSIENT_FAILURE_COOLDOWN_MS })
+                return ''
+              }
+            }).finally(() => {
+              const current = employeeAvatarCache.get(key)
+              if (current?.promise === promise) employeeAvatarCache.delete(key)
+            })
+            employeeAvatarCache.set(key, { promise })
+            return promise
+          }
+
+          export const invalidateEmployeeAvatarCache = (employeeId = '') => {
+            const key = normalizedKey(employeeId)
+            if (key) {
+              keyGenerations.set(key, (keyGenerations.get(key) || 0) + 1)
+              revokeEntry(employeeAvatarCache.get(key))
+              employeeAvatarCache.delete(key)
+            } else {
+              globalGeneration += 1
+              employeeAvatarCache.forEach(revokeEntry)
+              employeeAvatarCache.clear()
+            }
+            subscribers.forEach((subscriber) => subscriber(key))
+          }
+
+          export const subscribeEmployeeAvatarUpdates = (subscriber) => {
+            subscribers.add(subscriber)
+            return () => subscribers.delete(subscriber)
+          }
+          '''.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+
+          Path('src/services/employeeAvatarCache.test.js').write_text(r'''import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+          const mocked = vi.hoisted(() => ({ apiGetEmployeeAvatar: vi.fn() }))
+
+          vi.mock('./idosiApi', () => ({
+            apiGetEmployeeAvatar: mocked.apiGetEmployeeAvatar,
+          }))
+
+          import {
+            invalidateEmployeeAvatarCache,
+            loadEmployeeAvatarUrl,
+          } from './employeeAvatarCache'
+
+          let createObjectUrlDescriptor
+          let revokeObjectUrlDescriptor
+
+          beforeEach(() => {
+            mocked.apiGetEmployeeAvatar.mockReset()
+            createObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, 'createObjectURL')
+            revokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL')
+            let sequence = 0
+            Object.defineProperty(URL, 'createObjectURL', {
+              configurable: true,
+              value: vi.fn(() => `blob:employee-avatar-${++sequence}`),
+            })
+            Object.defineProperty(URL, 'revokeObjectURL', {
+              configurable: true,
+              value: vi.fn(),
+            })
+          })
+
+          afterEach(() => {
+            invalidateEmployeeAvatarCache()
+            if (createObjectUrlDescriptor) Object.defineProperty(URL, 'createObjectURL', createObjectUrlDescriptor)
+            else delete URL.createObjectURL
+            if (revokeObjectUrlDescriptor) Object.defineProperty(URL, 'revokeObjectURL', revokeObjectUrlDescriptor)
+            else delete URL.revokeObjectURL
+            vi.useRealTimers()
+          })
+
+          describe('employee avatar cache', () => {
+            it('deduplicates case variants and shares one in-flight request', async () => {
+              mocked.apiGetEmployeeAvatar.mockResolvedValue(new Blob(['avatar'], { type: 'image/png' }))
+
+              const [first, second] = await Promise.all([
+                loadEmployeeAvatarUrl('NV-001'),
+                loadEmployeeAvatarUrl('nv-001'),
+              ])
+
+              expect(first).toBe('blob:employee-avatar-1')
+              expect(second).toBe(first)
+              expect(mocked.apiGetEmployeeAvatar).toHaveBeenCalledTimes(1)
+              expect(mocked.apiGetEmployeeAvatar).toHaveBeenCalledWith('NV-001')
+              expect(URL.createObjectURL).toHaveBeenCalledTimes(1)
+            })
+
+            it('negative-caches missing avatars instead of repeating expensive 404 requests', async () => {
+              const error = Object.assign(new Error('missing'), {
+                status: 404,
+                code: 'EMPLOYEE_AVATAR_NOT_FOUND',
+              })
+              mocked.apiGetEmployeeAvatar.mockRejectedValue(error)
+
+              expect(await loadEmployeeAvatarUrl('NV-MISSING')).toBe('')
+              expect(await loadEmployeeAvatarUrl('nv-missing')).toBe('')
+              expect(mocked.apiGetEmployeeAvatar).toHaveBeenCalledTimes(1)
+            })
+
+            it('bounds concurrent avatar traffic so list screens cannot starve navigation APIs', async () => {
+              let active = 0
+              let maximum = 0
+              mocked.apiGetEmployeeAvatar.mockImplementation(async () => {
+                active += 1
+                maximum = Math.max(maximum, active)
+                await new Promise((resolve) => setTimeout(resolve, 8))
+                active -= 1
+                return new Blob(['avatar'], { type: 'image/png' })
+              })
+
+              const results = await Promise.all(Array.from({ length: 9 }, (_, index) => (
+                loadEmployeeAvatarUrl(`NV-${index + 1}`)
+              )))
+
+              expect(results.every(Boolean)).toBe(true)
+              expect(mocked.apiGetEmployeeAvatar).toHaveBeenCalledTimes(9)
+              expect(maximum).toBeLessThanOrEqual(3)
+            })
+          })
+          '''.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+
+          Path('server/vps/sqlite-d1.pragmas.test.js').write_text(r'''// @vitest-environment node
+
+          import { mkdtemp, rm } from 'node:fs/promises'
+          import { tmpdir } from 'node:os'
+          import { resolve } from 'node:path'
+          import { afterEach, describe, expect, it } from 'vitest'
+          import { createSqliteD1 } from './sqlite-d1.mjs'
+
+          const temporaryDirectories = []
+
+          const pragmaValue = (database, name) => Object.values(
+            database.database.prepare(`PRAGMA ${name}`).get(),
+          )[0]
+
+          afterEach(async () => {
+            await Promise.all(temporaryDirectories.splice(0).map((directory) => (
+              rm(directory, { recursive: true, force: true })
+            )))
+          })
+
+          describe('SQLite production read configuration', () => {
+            it('keeps WAL durability while providing a bounded read cache and memory-backed temp data', async () => {
+              const directory = await mkdtemp(resolve(tmpdir(), 'idosi-sqlite-pragmas-'))
+              temporaryDirectories.push(directory)
+              const database = createSqliteD1({ databasePath: resolve(directory, 'idosi.sqlite') })
+              try {
+                expect(String(pragmaValue(database, 'journal_mode')).toLowerCase()).toBe('wal')
+                expect(pragmaValue(database, 'busy_timeout')).toBe(5_000)
+                expect(pragmaValue(database, 'cache_size')).toBe(-32_768)
+                expect(pragmaValue(database, 'mmap_size')).toBeGreaterThanOrEqual(67_108_864)
+                expect(pragmaValue(database, 'temp_store')).toBe(2)
+              } finally {
+                database.close()
+              }
+            })
+          })
+          '''.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+          PY
+
+      - name: Check generated diff
+        run: |
+          set -Eeuo pipefail
+          git diff --check
+          git status --short
+          test -n "$(git status --short)"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Targeted performance and security regression tests
+        run: npx vitest run src/services/employeeAvatarCache.test.js server/vps/sqlite-d1.pragmas.test.js server/worker.test.js
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit verified performance changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add \
+            server/worker.js \
+            server/vps/sqlite-d1.mjs \
+            server/vps/sqlite-d1.pragmas.test.js \
+            src/services/employeeAvatarCache.js \
+            src/services/employeeAvatarCache.test.js
+          git commit -m 'perf(navigation): prevent avatar reads from blocking menus'
+          git push origin HEAD:perf/eliminate-navigation-event-loop-blocking
