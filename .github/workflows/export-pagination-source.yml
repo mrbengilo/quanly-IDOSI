@@ -21,27 +21,16 @@ jobs:
         with:
           ref: feat/table-pagination-performance-20260903
 
-      - name: Package pagination sources
+      - name: Package complete source worktree
         run: |
           set -Eeuo pipefail
-          tar -czf pagination-source.tar.gz \
-            src/components/UI.jsx \
-            src/styles.css \
-            src/pages/admin/SupportWorkPages.jsx \
-            src/pages/store/StoreV2Pages.jsx \
-            src/pages/store/StoreOperations.jsx \
-            src/pages/compensation/UnitCompensationStatistics.jsx \
-            src/pages/compensation/CompensationStatisticsTables.jsx \
-            src/pages/compensation/ViolationManagementPage.jsx \
-            src/pages/task-assignment.css \
-            src/pages/compensation/compensation-page.css \
-            src/services/idosiApi.js \
-            src/state/AppContext.jsx \
-            src/domain/workspaceScreens.js \
-            server/worker.js \
-            server/worker.test.js \
-            server/vps/sqlite-d1.mjs \
-            package.json
+          tar \
+            --exclude=.git \
+            --exclude=node_modules \
+            --exclude=dist \
+            --exclude=coverage \
+            --exclude=pagination-source.tar.gz \
+            -czf pagination-source.tar.gz .
 
       - name: Upload source snapshot
         uses: actions/upload-artifact@v6
