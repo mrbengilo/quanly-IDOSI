@@ -2589,9 +2589,27 @@ export const projectSharedState = (
     const projectionTimestamp = new Date().toISOString()
     const inboundTransfers = filterArray(state, 'supportTransfers', (record) => {
       if (!sameIdentifier(record.toStoreId, storeId)) return false
-      if (isSupportTransferActiveAt(record, projectionTimestamp)) return true
-      const openContext = openSupportTransferContextFor(state, record.employeeId)
-      return Boolean(openContext && sameIdentifier(openContext.transfer.id, record.id))
+      const openAttendanceContext = openEmployeeAttendanceContextFor(state, record.employeeId)
+      if (!openAttendanceContext.hasOpenAttendance) {
+        return isSupportTransferActiveAt(record, projectionTimestamp)
+      }
+
+      // An already-open shift owns the employee's operational context. A new
+      // transfer window must not make the destination store see or operate the
+      // employee until the prior shift is closed. Ambiguous legacy open shifts
+      // fail closed here without preventing the employee from logging in.
+      const openAttendance = openAttendanceContext.attendance
+      if (!openAttendance) return false
+      const openContext = String(openAttendance.supportTransferId || '').trim()
+        ? openSupportTransferContextFor(state, record.employeeId)
+        : null
+      if (openContext) {
+        return sameIdentifier(openContext.attendance.id, openAttendance.id)
+          && sameIdentifier(openContext.attendance.storeId, storeId)
+          && sameIdentifier(openContext.transfer.id, record.id)
+      }
+      return sameIdentifier(openAttendance.storeId, record.toStoreId)
+        && isSupportTransferActiveAt(record, projectionTimestamp)
     })
     const inboundTransferByEmployee = new Map(inboundTransfers.map((record) => [normalizeIdentifierKey(record.employeeId), record]))
     const transferredEmployees = filterArray(state, 'employees', (record) => (
@@ -3299,6 +3317,24 @@ const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
 
+const openEmployeeAttendanceContextFor = (state, employeeId) => {
+  const identifier = String(employeeId || '').trim()
+  if (!identifier) {
+    return { attendance: null, hasOpenAttendance: false, ambiguous: false }
+  }
+  const openAttendance = (Array.isArray(state?.attendance) ? state.attendance : []).filter((record) => (
+    !record?.deletedAt
+    && !record?.checkOut
+    && !record?.checkOutAt
+    && belongsToEmployee(record, identifier)
+  ))
+  return {
+    attendance: openAttendance.length === 1 ? openAttendance[0] : null,
+    hasOpenAttendance: openAttendance.length > 0,
+    ambiguous: openAttendance.length > 1,
+  }
+}
+
 const openSupportTransferContextFor = (state, employeeId) => {
   const contexts = []
   for (const attendance of Array.isArray(state?.attendance) ? state.attendance : []) {
@@ -3358,12 +3394,57 @@ const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = nul
   const state = preloadedState == null
     ? parseStoredJson((await loadState(db, 'global'))?.value_json, {})
     : preloadedState
-  const openContext = openSupportTransferContextFor(state, user.employee_id)
-  const transfer = openContext?.transfer || activeSupportTransferFor(state, user.employee_id, now)
+
+  // Operational precedence is intentionally strict:
+  //   open attendance > active support-transfer window > home assignment.
+  // This prevents a scheduled transfer from moving the UI or authorization
+  // context away from a shift that the employee has not checked out yet.
+  const openAttendanceContext = openEmployeeAttendanceContextFor(state, user.employee_id)
+  if (openAttendanceContext.hasOpenAttendance) {
+    const openAttendance = openAttendanceContext.attendance
+    if (!openAttendance) {
+      // Legacy duplicate/case-colliding open records must not move the employee
+      // to a newly active transfer. Keep the selected role store and allow login
+      // so an authorized operator can repair the ambiguous attendance records.
+      return {
+        ...user,
+        active_transfer_id: null,
+      }
+    }
+
+    const openContext = String(openAttendance.supportTransferId || '').trim()
+      ? openSupportTransferContextFor(state, user.employee_id)
+      : null
+    if (openContext && sameIdentifier(openContext.attendance.id, openAttendance.id)) {
+      const homeStoreId = String(
+        openContext.attendance.homeStoreId
+        || openContext.transfer.fromStoreId
+        || user.home_store_id
+        || user.store_id
+        || '',
+      ).trim()
+      return {
+        ...user,
+        home_store_id: homeStoreId || null,
+        store_id: String(openContext.attendance.storeId || openContext.transfer.toStoreId),
+        active_transfer_id: String(openContext.transfer.id || ''),
+      }
+    }
+
+    const attendanceStoreId = String(openAttendance.storeId || user.store_id || '').trim()
+    const homeStoreId = String(openAttendance.homeStoreId || user.home_store_id || '').trim()
+    return {
+      ...user,
+      ...(homeStoreId ? { home_store_id: homeStoreId } : {}),
+      store_id: attendanceStoreId || user.store_id || null,
+      active_transfer_id: null,
+    }
+  }
+
+  const transfer = activeSupportTransferFor(state, user.employee_id, now)
   if (!transfer?.toStoreId) return user
   const homeStoreId = String(
-    openContext?.attendance?.homeStoreId
-    || transfer.fromStoreId
+    transfer.fromStoreId
     || user.home_store_id
     || user.store_id
     || '',
@@ -3371,7 +3452,7 @@ const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = nul
   return {
     ...user,
     home_store_id: homeStoreId || null,
-    store_id: String(openContext?.attendance?.storeId || transfer.toStoreId),
+    store_id: String(transfer.toStoreId),
     active_transfer_id: String(transfer.id || ''),
   }
 }
