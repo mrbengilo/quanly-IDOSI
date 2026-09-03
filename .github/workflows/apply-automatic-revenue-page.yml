@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 env:
-  AUTOMATIC_REVENUE_VERIFICATION_REVISION: "5"
+  AUTOMATIC_REVENUE_VERIFICATION_REVISION: "6"
 
 jobs:
   apply-and-verify:
