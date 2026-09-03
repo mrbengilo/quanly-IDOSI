@@ -1,0 +1,25 @@
+name: Package Repo For Diagnostics
+
+on:
+  push:
+    branches:
+      - diagnose/revenue-bonus-all-stores-20260902
+    paths:
+      - .github/workflows/package-repo-for-diagnostics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - name: Package source tree
+        run: tar --exclude=.git -czf quanly-IDOSI-main-source.tar.gz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quanly-IDOSI-main-source
+          path: quanly-IDOSI-main-source.tar.gz
+          retention-days: 1
