@@ -1,0 +1,32 @@
+name: Export clean navigation performance source
+
+on:
+  push:
+    branches:
+      - ops/export-navigation-perf-clean
+    paths:
+      - .github/workflows/export-navigation-perf-clean.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: perf/navigation-latency-complete
+      - name: Package source
+        run: |
+          set -Eeuo pipefail
+          tar -czf idosi-navigation-perf-clean.tgz \
+            AGENTS.md package.json package-lock.json vite.config.* \
+            src server drizzle scripts deploy .github/workflows/deploy-pages.yml \
+            .github/workflows/deploy-vps.yml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: idosi-navigation-perf-clean
+          path: idosi-navigation-perf-clean.tgz
+          if-no-files-found: error
+          retention-days: 1
