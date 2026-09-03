@@ -25,6 +25,8 @@ jobs:
           cache: npm
       - name: Apply guarded backend patch
         run: python3 scripts/apply-automatic-revenue-backend.py
+      - name: Preserve canonical employee identifiers
+        run: python3 scripts/fix-automatic-revenue-canonical-id.py
       - run: npm ci
       - run: npm run lint
       - name: Test automatic revenue domain
@@ -34,11 +36,13 @@ jobs:
       - name: Commit verified backend integration
         run: |
           rm scripts/apply-automatic-revenue-backend.py
+          rm scripts/fix-automatic-revenue-canonical-id.py
           rm .github/workflows/apply-automatic-revenue-backend.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add server/worker.js src/state/AppContext.jsx \
+          git add server/worker.js src/state/AppContext.jsx src/domain/automaticRevenueBonus.js \
             scripts/apply-automatic-revenue-backend.py \
+            scripts/fix-automatic-revenue-canonical-id.py \
             .github/workflows/apply-automatic-revenue-backend.yml
           git commit -m "feat(revenue): integrate automatic bonus backend"
           git push origin HEAD:feat/automatic-live-revenue-bonus
