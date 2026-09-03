@@ -2,9 +2,11 @@ name: Audit production revenue bonus eligibility
 
 on:
   push:
-    branches: [fix/revenue-bonus-final-worked-shift]
+    branches: [main]
     paths:
       - .github/workflows/audit-revenue-bonus-production.yml
+      - src/domain/revenueBonusEligibility.js
+      - server/worker.js
   workflow_dispatch:
 
 permissions:
@@ -16,13 +18,33 @@ concurrency:
 
 jobs:
   audit:
-    if: github.repository == 'mrbengilo/quanly-IDOSI'
+    if: github.repository == 'mrbengilo/quanly-IDOSI' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     environment:
       name: production
       url: https://idosi.io.vn
     steps:
+      - name: Wait for the exact main release to reach production
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 180); do
+            actual="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' \
+              "https://idosi.io.vn/api/release?_revenue_audit=$attempt" \
+              | node -e "let data='';process.stdin.on('data',chunk=>data+=chunk);process.stdin.on('end',()=>{const value=JSON.parse(data);process.stdout.write(value.data?.releaseSha||value.releaseSha||'')})" \
+              || true)"
+            if [[ "$actual" == "$EXPECTED_SHA" ]]; then
+              echo "production_release_sha=$actual"
+              exit 0
+            fi
+            echo "Waiting for production release $EXPECTED_SHA; current=${actual:-unavailable} ($attempt/180)"
+            sleep 5
+          done
+          echo "Production did not reach the expected release $EXPECTED_SHA." >&2
+          exit 1
+
       - name: Configure production SSH
         env:
           VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
@@ -44,16 +66,17 @@ jobs:
           chmod 600 "$HOME/.ssh/known_hosts"
           echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
 
-      - name: Audit all stores for 2026-09-02
+      - name: Audit every store from 01/09/2026 through yesterday
         env:
           VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
           VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -Eeuo pipefail
           ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
             -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
             -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+            "$VPS_USER@$VPS_HOST" "EXPECTED_SHA='$EXPECTED_SHA' bash -s" <<'REMOTE'
           set -Eeuo pipefail
           ROOT="${IDOSI_ROOT:-/opt/idosi}"
           COMPOSE_FILE="${IDOSI_COMPOSE_FILE:-$ROOT/deploy/vps/compose.yml}"
@@ -64,14 +87,22 @@ jobs:
           app_id="$(compose ps -q app)"
           [[ -n "$app_id" ]] || { echo 'app_container=missing'; exit 1; }
 
+          actual_sha="$(compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/release').then(r=>r.json()).then(v=>process.stdout.write(v.data?.releaseSha||v.releaseSha||''))")"
+          [[ "$actual_sha" == "$EXPECTED_SHA" ]] || {
+            echo "Production container SHA mismatch: expected $EXPECTED_SHA, got $actual_sha" >&2
+            exit 1
+          }
+          audit_end_date="$(TZ=Asia/Ho_Chi_Minh date -d 'yesterday' +%F)"
           printf 'checked_at=%s\n' "$(TZ=Asia/Ho_Chi_Minh date '+%Y-%m-%dT%H:%M:%S%z')"
-          printf 'release_sha=' && compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/release').then(r=>r.json()).then(v=>console.log(v.data?.releaseSha||v.releaseSha||'unknown'))"
+          printf 'release_sha=%s\n' "$actual_sha"
+          printf 'audit_period=2026-09-01..%s\n' "$audit_end_date"
 
-          compose exec -T app node <<'NODE'
+          compose exec -T -e AUDIT_END_DATE="$audit_end_date" app node <<'NODE'
           import { DatabaseSync } from 'node:sqlite'
           import { revenueBonusEligibility } from './src/domain/revenueBonusEligibility.js'
 
-          const targetDate = '2026-09-02'
+          const startDate = '2026-09-01'
+          const endDate = String(process.env.AUDIT_END_DATE || '')
           const dbPath = process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
           const db = new DatabaseSync(dbPath, { readOnly: true })
           db.exec('PRAGMA query_only=ON')
@@ -86,21 +117,23 @@ jobs:
             try { return [JSON.parse(row.value_json)] } catch { return [] }
           })
           const normalize = (value) => String(value ?? '').trim().toLocaleLowerCase('vi-VN')
+          const normalizedText = (value) => normalize(value)
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/gu, '')
+            .replace(/đ/gu, 'd')
           const recordDate = (record = {}) => String(
             record.businessDate || record.workDate || record.date || record.attendanceDate
             || record.createdAt || record.occurredAt || '',
           ).slice(0, 10)
           const storeRef = (record = {}) => String(record.storeId || record.unitId || record.store?.id || '')
-          const isEffectiveDaily = (record = {}) => (
+          const activeDaily = (record = {}) => (
             !record.deletedAt && !record.voidedAt && !record.supersededAt
             && !['VOID', 'VOIDED', 'SUPERSEDED', 'CANCELLED'].includes(String(record.status || '').trim().toUpperCase())
           )
           const formatMoney = (value) => Math.max(0, Number(value || 0)).toLocaleString('vi-VN')
-          const shiftLabel = (record = {}) => {
-            const name = String(record.shiftName || record.name || record.shiftId || record.shift || 'Không rõ ca').trim()
-            const start = String(record.shiftStart || record.start || record.startTime || '').trim()
-            const end = String(record.shiftEnd || record.end || record.endTime || '').trim()
-            return `${name}${start || end ? `(${start || '--:--'}-${end || '--:--'})` : ''}`
+          const dates = []
+          for (let cursor = new Date(`${startDate}T00:00:00Z`); cursor <= new Date(`${endDate}T00:00:00Z`); cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+            dates.push(cursor.toISOString().slice(0, 10))
           }
 
           const stores = collection('stores').filter((store) => !store.deletedAt && store.active !== false)
@@ -108,53 +141,90 @@ jobs:
           const schedule = collection('schedule')
           const shiftDefinitions = collection('shiftDefinitions')
           const employees = collection('employees')
-          const revenueBonusDaily = collection('revenueBonusDaily')
-          const revenueBonuses = collection('revenueBonuses')
+          const dailyRecords = collection('revenueBonusDaily')
           const orders = collection('orders')
-          const dailyRecords = revenueBonusDaily.length ? revenueBonusDaily : revenueBonuses
           const nowMs = Date.now()
+          const unexpected = []
+          const counts = new Map()
+          let dianRow = null
 
-          console.log('store_id\tstore_name\tattendance\tclosed\topen\tworked_shifts\tscheduled_rows\tconfigured_shifts\torders\trevenue_vnd\tdaily_records\teligibility\tmessage')
-          for (const store of stores.sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id), 'vi-VN'))) {
-            const storeId = String(store.id || store.code || '')
-            if (!storeId) continue
-            const sameStore = (record) => normalize(storeRef(record)) === normalize(storeId)
-            const dayAttendance = attendance.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === targetDate)
-            const openAttendance = dayAttendance.filter((record) => !record.checkOutAt && !record.checkOut)
-            const dayOrders = orders.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === targetDate && record.source !== 'legacy-opening-balance')
-            const dayDailyRecords = dailyRecords.filter((record) => sameStore(record) && recordDate(record) === targetDate && isEffectiveDaily(record))
-            const scheduledRows = schedule.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === targetDate)
-            const configuredShifts = shiftDefinitions.filter((record) => !record.deletedAt && record.active !== false && (!storeRef(record) || sameStore(record)))
-            const eligibility = revenueBonusEligibility({
-              storeId,
-              businessDate: targetDate,
-              schedule,
-              shiftDefinitions,
-              attendance,
-              employees,
-              dailyRecords,
-              nowMs,
-            })
-            const workedShifts = [...new Set(dayAttendance.map(shiftLabel))].join(',') || '-'
-            const configuredLabels = [...new Set(configuredShifts.map(shiftLabel))].join(',') || '-'
-            const revenue = dayOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
-            console.log([
-              storeId,
-              String(store.name || store.code || storeId).replaceAll('\t', ' '),
-              dayAttendance.length,
-              dayAttendance.length - openAttendance.length,
-              openAttendance.length,
-              workedShifts.replaceAll('\t', ' '),
-              scheduledRows.length,
-              configuredLabels.replaceAll('\t', ' '),
-              dayOrders.length,
-              formatMoney(revenue),
-              dayDailyRecords.length,
-              eligibility.code,
-              String(eligibility.message || '').replaceAll('\t', ' ').replaceAll('\n', ' '),
-            ].join('\t'))
+          console.log('date\tstore_id\tstore_name\tattendance\tclosed\topen\torders\trevenue_vnd\tdaily_records\teligibility\trule\tmessage')
+          for (const date of dates) {
+            for (const store of stores.toSorted((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id), 'vi-VN'))) {
+              const storeId = String(store.id || store.code || '')
+              if (!storeId) continue
+              const sameStore = (record) => normalize(storeRef(record)) === normalize(storeId)
+              const dayAttendance = attendance.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === date)
+              const openAttendance = dayAttendance.filter((record) => !record.checkOutAt && !record.checkOut)
+              const dayOrders = orders.filter((record) => (
+                !record.deletedAt
+                && sameStore(record)
+                && recordDate(record) === date
+                && record.source !== 'legacy-opening-balance'
+                && String(record.status || '') !== 'Đã xóa'
+              ))
+              const dayDailyRecords = dailyRecords.filter((record) => sameStore(record) && recordDate(record) === date && activeDaily(record))
+              const eligibility = revenueBonusEligibility({
+                storeId,
+                businessDate: date,
+                schedule,
+                shiftDefinitions,
+                attendance,
+                employees,
+                dailyRecords,
+                nowMs,
+              })
+              const revenue = dayOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
+              const expectedCode = dayDailyRecords.length > 1
+                ? 'DATA_COLLISION'
+                : dayDailyRecords.length === 1
+                  ? 'ALREADY_CALCULATED'
+                  : openAttendance.length
+                    ? 'ATTENDANCE_OPEN'
+                    : dayAttendance.length
+                      ? 'READY'
+                      : 'NO_ATTENDANCE'
+              counts.set(eligibility.code, (counts.get(eligibility.code) || 0) + 1)
+              const row = {
+                date,
+                storeId,
+                storeName: String(store.name || store.code || storeId),
+                attendanceCount: dayAttendance.length,
+                closedAttendanceCount: dayAttendance.length - openAttendance.length,
+                openAttendanceCount: openAttendance.length,
+                orderCount: dayOrders.length,
+                revenue,
+                dailyRecordCount: dayDailyRecords.length,
+                eligibilityCode: eligibility.code,
+                eligibilityRule: eligibility.eligibilityRule,
+                message: eligibility.message,
+              }
+              if (eligibility.code !== expectedCode) unexpected.push({ ...row, expectedCode })
+              if (date === '2026-09-02' && normalizedText(row.storeName).includes('di an')) dianRow = row
+              console.log([
+                date,
+                storeId,
+                row.storeName.replaceAll('\t', ' '),
+                row.attendanceCount,
+                row.closedAttendanceCount,
+                row.openAttendanceCount,
+                row.orderCount,
+                formatMoney(row.revenue),
+                row.dailyRecordCount,
+                row.eligibilityCode,
+                row.eligibilityRule,
+                String(row.message || '').replaceAll('\t', ' ').replaceAll('\n', ' '),
+              ].join('\t'))
+            }
           }
+
+          console.log('eligibility_counts=' + JSON.stringify(Object.fromEntries([...counts].sort()), null, 0))
+          console.log('unexpected_blockers=' + JSON.stringify(unexpected, null, 0))
+          console.log('dosii_di_an_2026_09_02=' + JSON.stringify(dianRow, null, 0))
           db.close()
+
+          if (!dianRow) throw new Error('Không tìm thấy cửa hàng Dosii Dĩ An trong dữ liệu production ngày 02/09/2026.')
+          if (unexpected.length) throw new Error(`Phát hiện ${unexpected.length} cửa hàng-ngày không đúng quy tắc thưởng mới.`)
           NODE
 
           log_file="$(mktemp)"
