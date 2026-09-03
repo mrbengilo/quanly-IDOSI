@@ -32,6 +32,7 @@ const base = (overrides = {}) => ({
     checkInAt: '2026-09-03T06:00:00.000Z', checkOutAt: '2026-09-03T10:00:00.000Z',
     workedSeconds: 14_400,
   }],
+  supportTransfers: [],
   overrides: [],
   nowMs: Date.parse('2026-09-03T11:00:00.000Z'),
   ...overrides,
@@ -62,6 +63,63 @@ describe('automatic daily revenue bonus', () => {
       status: 'LIVE',
     })
     expect(allocation(result, 'E02').amountVnd).toBe(445_000)
+  })
+
+  it('keeps transferred support hours in the denominator but pays that employee zero', () => {
+    const result = calculateAutomaticRevenueBonusDay(base({
+      programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,
+      milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE,
+      employees: [
+        { id: 'A', name: 'Nhân viên A', unit: 'store', storeId: 'S01' },
+        { id: 'B', name: 'Nhân viên B', unit: 'store', storeId: 'S01' },
+        { id: 'C', name: 'Nhân viên hỗ trợ C', unit: 'store', storeId: 'HOME' },
+      ],
+      orders: [{
+        id: 'O-SUPPORT', storeId: 'S01', amount: 20_000_000, status: 'Hoàn tất',
+        createdAt: '2026-09-03T10:00:00+07:00',
+      }],
+      supportTransfers: [{
+        id: 'ST-C', employeeId: 'C', fromStoreId: 'HOME', toStoreId: 'S01',
+        startAt: '2026-09-03T00:00:00+07:00', endAt: '2026-09-04T00:00:00+07:00',
+        status: 'Hoàn tất',
+      }],
+      attendance: [{
+        id: 'A-A', storeId: 'S01', employeeId: 'A', workDate: '2026-09-03',
+        workedSeconds: 28_800, checkOutAt: '2026-09-03T10:00:00.000Z',
+      }, {
+        id: 'A-B', storeId: 'S01', employeeId: 'B', workDate: '2026-09-03',
+        workedSeconds: 28_800, checkOutAt: '2026-09-03T10:00:00.000Z',
+      }, {
+        id: 'A-C', storeId: 'S01', employeeId: 'C', workDate: '2026-09-03',
+        supportTransferId: 'ST-C', workedSeconds: 14_400,
+        checkOutAt: '2026-09-03T10:00:00.000Z',
+      }],
+    }))
+
+    expect(result).toMatchObject({
+      revenueVnd: 20_000_000,
+      totalPoolVnd: 1_400_000,
+      automaticAllocatedVnd: 1_120_000,
+      allocatedVnd: 1_120_000,
+      unallocatedVnd: 280_000,
+      excludedSupportShareVnd: 280_000,
+      participantCount: 3,
+      eligibleParticipantCount: 2,
+      supportExcludedCount: 1,
+    })
+    expect(allocation(result, 'A')).toMatchObject({ amountVnd: 560_000, weightPercent: 40 })
+    expect(allocation(result, 'B')).toMatchObject({ amountVnd: 560_000, weightPercent: 40 })
+    expect(allocation(result, 'C')).toMatchObject({
+      workedSeconds: 14_400,
+      weightPercent: 20,
+      formulaShareVnd: 280_000,
+      excludedSupportShareVnd: 280_000,
+      automaticAmountVnd: 0,
+      amountVnd: 0,
+      supportTransferred: true,
+      supportTransferIds: ['ST-C'],
+      status: 'SUPPORT_EXCLUDED',
+    })
   })
 
   it('updates an open employee weight and allocation from trusted real time without a manual action', () => {
@@ -134,6 +192,31 @@ describe('automatic daily revenue bonus', () => {
       status: 'ADMIN_DELETED',
     })
     expect(result.allocatedVnd).toBe(445_000)
+  })
+
+  it('represents an Admin override as the only way to pay an excluded support employee', () => {
+    const result = calculateAutomaticRevenueBonusDay(base({
+      employees: [
+        { id: 'E01', name: 'Nguyễn An', unit: 'store', storeId: 'HOME' },
+      ],
+      attendance: [{
+        id: 'A-SUPPORT', storeId: 'S01', employeeId: 'E01', workDate: '2026-09-03',
+        supportTransferId: 'ST-01', workedSeconds: 14_400,
+        checkOutAt: '2026-09-03T05:00:00.000Z',
+      }],
+      overrides: [{
+        id: 'RBO-SUPPORT', storeId: 'S01', businessDate: '2026-09-03', employeeId: 'E01',
+        mode: 'AMOUNT', amountVnd: 50_000, reason: 'Admin quyết định thưởng riêng', status: 'ACTIVE',
+      }],
+    }))
+
+    expect(allocation(result, 'E01')).toMatchObject({
+      supportTransferred: true,
+      automaticAmountVnd: 0,
+      amountVnd: 50_000,
+      adminAdjustmentVnd: 50_000,
+      status: 'ADMIN_ADJUSTED',
+    })
   })
 
   it('keeps an override-only employee visible after the source attendance is removed', () => {
