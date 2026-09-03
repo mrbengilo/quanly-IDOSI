@@ -22,6 +22,7 @@ const SYSTEM_SCREEN_BY_PATH = Object.freeze({
   '/admin/violations/office': 'violations-office',
   '/admin/assignments': 'assignments',
   '/admin/reset': 'reset',
+  '/admin/data-restore': 'reset',
   '/admin/work-registration-schedules': 'work-registration-schedules',
   '/admin/violations/business-support': 'violations-business-support',
   '/support/overview': 'support-overview',
