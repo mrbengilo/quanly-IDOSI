@@ -3,6 +3,7 @@ import {
   calculateRevenueBonus,
   calculateTeamMilestoneReward,
 } from './compensationPolicies.js'
+import { supportTransferBounds } from './supportTransferTime.js'
 
 export const AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE = '2026-09-03'
 export const REVENUE_BONUS_OVERRIDE_MODE = Object.freeze({
@@ -50,7 +51,7 @@ const activeRecord = (record = {}) => (
   !record.deletedAt
   && !record.voidedAt
   && !record.supersededAt
-  && !['VOID', 'VOIDED', 'SUPERSEDED', 'CANCELLED', 'DELETED', 'INACTIVE']
+  && !['VOID', 'VOIDED', 'SUPERSEDED', 'CANCELLED', 'DELETED', 'INACTIVE', 'ĐÃ HỦY', 'ĐÃ XÓA']
     .includes(String(record.status || '').trim().toUpperCase())
 )
 
@@ -84,6 +85,82 @@ const employeeResolver = (employees = []) => {
 const employeeCanonicalId = (employee, fallback = '') => String(
   employee?.id || employee?.code || employee?.employeeId || employee?.employeeCode || fallback || '',
 ).trim()
+
+const employeeHomeStoreId = (employee = {}) => String(
+  employee.storeId || employee.homeStoreId || employee.assignedStoreId || '',
+).trim()
+
+const supportTransferIdentifier = (record = {}) => String(
+  record.id || record.transferId || record.supportTransferId || '',
+).trim()
+
+const attendanceSupportTransferIdentifier = (record = {}) => String(
+  record.supportTransferId || record.transferId || record.activeTransferId || '',
+).trim()
+
+const supportTransferEmployeeId = (record = {}) => String(
+  record.employeeId || record.employeeCode || record.staffId || '',
+).trim()
+
+const supportTransferDestinationStoreId = (record = {}) => String(
+  record.toStoreId
+  || record.destinationStoreId
+  || record.targetStoreId
+  || record.supportStoreId
+  || '',
+).trim()
+
+const nextCalendarDate = (date) => {
+  const parsed = new Date(`${date}T00:00:00Z`)
+  if (Number.isNaN(parsed.getTime())) return ''
+  parsed.setUTCDate(parsed.getUTCDate() + 1)
+  return parsed.toISOString().slice(0, 10)
+}
+
+const supportTransferOverlapsBusinessDate = (record, businessDate) => {
+  const bounds = supportTransferBounds(record)
+  const nextDate = nextCalendarDate(businessDate)
+  const dayStart = Date.parse(`${businessDate}T00:00:00+07:00`)
+  const dayEnd = nextDate ? Date.parse(`${nextDate}T00:00:00+07:00`) : Number.NaN
+  return Boolean(bounds
+    && Number.isFinite(dayStart)
+    && Number.isFinite(dayEnd)
+    && bounds.startMs < dayEnd
+    && bounds.endMs > dayStart)
+}
+
+const supportTransferContext = ({
+  attendance,
+  employee,
+  employeeId,
+  storeId,
+  businessDate,
+  supportTransfers,
+}) => {
+  const transfers = Array.isArray(supportTransfers) ? supportTransfers : []
+  const explicitTransferId = attendanceSupportTransferIdentifier(attendance)
+  if (explicitTransferId) {
+    const matched = transfers.find((transfer) => (
+      sameIdentifier(supportTransferIdentifier(transfer), explicitTransferId)
+    ))
+    return {
+      supportTransferred: true,
+      supportTransferId: supportTransferIdentifier(matched) || explicitTransferId,
+    }
+  }
+  const homeStoreId = employeeHomeStoreId(employee)
+  if (!homeStoreId || sameIdentifier(homeStoreId, storeId)) return null
+  const matched = transfers.find((transfer) => (
+    activeRecord(transfer)
+    && sameIdentifier(supportTransferEmployeeId(transfer), employeeId)
+    && sameIdentifier(supportTransferDestinationStoreId(transfer), storeId)
+    && supportTransferOverlapsBusinessDate(transfer, businessDate)
+  ))
+  return matched ? {
+    supportTransferred: true,
+    supportTransferId: supportTransferIdentifier(matched),
+  } : null
+}
 
 const liveWorkedSeconds = (record, nowMs, projectOpen) => {
   const storedSource = record?.approvedSalesSeconds
@@ -172,6 +249,7 @@ export function calculateAutomaticRevenueBonusDay({
   orders = [],
   attendance = [],
   employees = [],
+  supportTransfers = [],
   overrides = [],
   nowMs = Date.now(),
 } = {}) {
@@ -201,6 +279,7 @@ export function calculateAutomaticRevenueBonusDay({
   const resolveEmployee = employeeResolver(employees)
   const employeeById = new Map()
   const weights = new Map()
+  const supportContextByEmployee = new Map()
   const currentVietnamDate = vietnamDate(normalizedNowMs)
   const projectOpenAttendance = businessDate === currentVietnamDate
   let attendanceCount = 0
@@ -215,7 +294,24 @@ export function calculateAutomaticRevenueBonusDay({
     const employee = resolveEmployee(requestedEmployeeId)
     const employeeId = employeeCanonicalId(employee, requestedEmployeeId)
     if (!employeeId || ((Array.isArray(employees) && employees.length > 0) && !employee)) continue
-    employeeById.set(identifierKey(employeeId), employee)
+    const employeeKey = identifierKey(employeeId)
+    employeeById.set(employeeKey, employee)
+    const supportContext = supportTransferContext({
+      attendance: record,
+      employee,
+      employeeId,
+      storeId: normalizedStoreId,
+      businessDate,
+      supportTransfers,
+    })
+    if (supportContext) {
+      const current = supportContextByEmployee.get(employeeKey) || {
+        supportTransferred: true,
+        supportTransferIds: new Set(),
+      }
+      if (supportContext.supportTransferId) current.supportTransferIds.add(supportContext.supportTransferId)
+      supportContextByEmployee.set(employeeKey, current)
+    }
     attendanceCount += 1
     const open = !record.checkOutAt && !record.checkOut && !record.checkOutTime
     if (open) {
@@ -229,10 +325,10 @@ export function calculateAutomaticRevenueBonusDay({
   const participants = [...weights].map(([id, weightUnits]) => ({ id, weightUnits }))
   const percentageAllocation = safeAllocation(percentage.bonusVnd, participants)
   const milestoneAllocation = safeAllocation(milestone.amountVnd, participants)
-  const percentageByEmployee = new Map(
+  const formulaPercentageByEmployee = new Map(
     percentageAllocation.allocations.map((record) => [identifierKey(record.id), record.amountVnd]),
   )
-  const milestoneByEmployee = new Map(
+  const formulaMilestoneByEmployee = new Map(
     milestoneAllocation.allocations.map((record) => [identifierKey(record.id), record.amountVnd]),
   )
   const weightByEmployee = new Map(participants.map((record) => [identifierKey(record.id), record.weightUnits]))
@@ -250,9 +346,15 @@ export function calculateAutomaticRevenueBonusDay({
   const totalWeightUnits = percentageAllocation.totalWeightUnits
   const allocations = [...canonicalIdByKey].map(([employeeKey, employeeId]) => {
     const weightUnits = weightByEmployee.get(employeeKey) || 0
-    const percentagePoolVnd = percentageByEmployee.get(employeeKey) || 0
-    const milestonePoolVnd = milestoneByEmployee.get(employeeKey) || 0
+    const formulaPercentagePoolVnd = formulaPercentageByEmployee.get(employeeKey) || 0
+    const formulaMilestonePoolVnd = formulaMilestoneByEmployee.get(employeeKey) || 0
+    const formulaShareVnd = formulaPercentagePoolVnd + formulaMilestonePoolVnd
+    const supportContext = supportContextByEmployee.get(employeeKey) || null
+    const supportTransferred = Boolean(supportContext)
+    const percentagePoolVnd = supportTransferred ? 0 : formulaPercentagePoolVnd
+    const milestonePoolVnd = supportTransferred ? 0 : formulaMilestonePoolVnd
     const automaticAmountVnd = percentagePoolVnd + milestonePoolVnd
+    const excludedSupportShareVnd = supportTransferred ? formulaShareVnd : 0
     const override = activeOverrides.records.get(employeeKey) || null
     const effectiveAmountVnd = override
       ? override.mode === REVENUE_BONUS_OVERRIDE_MODE.DELETED ? 0 : override.amountVnd
@@ -260,7 +362,9 @@ export function calculateAutomaticRevenueBonusDay({
     const employee = employeeById.get(employeeKey) || resolveEmployee(employeeId)
     const status = override?.mode === REVENUE_BONUS_OVERRIDE_MODE.DELETED
       ? 'ADMIN_DELETED'
-      : override ? 'ADMIN_ADJUSTED' : 'LIVE'
+      : override
+        ? 'ADMIN_ADJUSTED'
+        : supportTransferred ? 'SUPPORT_EXCLUDED' : 'LIVE'
     return {
       id: `automatic-revenue:${normalizedStoreId}:${businessDate}:${employeeId}`,
       sourceType: 'automatic-revenue-bonus',
@@ -276,9 +380,15 @@ export function calculateAutomaticRevenueBonusDay({
       workedSeconds: weightUnits,
       approvedSalesHours: weightUnits / 3_600,
       weightPercent: totalWeightUnits > 0 ? (weightUnits / totalWeightUnits) * 100 : 0,
+      formulaPercentagePoolVnd,
+      formulaMilestonePoolVnd,
+      formulaShareVnd,
       percentagePoolVnd,
       milestonePoolVnd,
       automaticAmountVnd,
+      excludedSupportShareVnd,
+      supportTransferred,
+      supportTransferIds: supportContext ? [...supportContext.supportTransferIds].toSorted() : [],
       amountVnd: effectiveAmountVnd,
       allocatedVnd: effectiveAmountVnd,
       adminAdjustmentVnd: effectiveAmountVnd - automaticAmountVnd,
@@ -294,9 +404,13 @@ export function calculateAutomaticRevenueBonusDay({
     || left.employeeId.localeCompare(right.employeeId, 'en-US')
   ))
 
+  const formulaAllocatedVnd = allocations.reduce((sum, record) => sum + record.formulaShareVnd, 0)
+  const excludedSupportShareVnd = allocations.reduce((sum, record) => sum + record.excludedSupportShareVnd, 0)
   const automaticAllocatedVnd = allocations.reduce((sum, record) => sum + record.automaticAmountVnd, 0)
   const allocatedVnd = allocations.reduce((sum, record) => sum + record.amountVnd, 0)
-  const unallocatedVnd = percentageAllocation.unallocatedVnd + milestoneAllocation.unallocatedVnd
+  const unallocatedVnd = percentageAllocation.unallocatedVnd
+    + milestoneAllocation.unallocatedVnd
+    + excludedSupportShareVnd
   return {
     id: `automatic-revenue-day:${normalizedStoreId}:${businessDate}`,
     sourceType: 'automatic-revenue-bonus',
@@ -316,15 +430,19 @@ export function calculateAutomaticRevenueBonusDay({
     percentagePoolVnd: percentage.bonusVnd,
     milestonePoolVnd: milestone.amountVnd,
     totalPoolVnd: percentage.bonusVnd + milestone.amountVnd,
+    formulaAllocatedVnd,
     automaticAllocatedVnd,
     allocatedVnd,
     unallocatedVnd,
+    excludedSupportShareVnd,
     adminAdjustmentVnd: allocatedVnd - automaticAllocatedVnd,
     totalWorkedSeconds: totalWeightUnits,
     attendanceCount,
     openAttendanceCount,
     activeEmployeeCount: activeEmployeeIds.size,
     participantCount: participants.length,
+    eligibleParticipantCount: allocations.filter((record) => !record.supportTransferred).length,
+    supportExcludedCount: allocations.filter((record) => record.supportTransferred).length,
     overrideCount: activeOverrides.records.size,
     overrideCollisions: activeOverrides.collisions,
     status: 'LIVE',
@@ -357,6 +475,7 @@ export function calculateAutomaticRevenueBonusPeriod({
   orders = [],
   attendance = [],
   employees = [],
+  supportTransfers = [],
   overrides = [],
   nowMs = Date.now(),
 } = {}) {
@@ -370,6 +489,7 @@ export function calculateAutomaticRevenueBonusPeriod({
       orders,
       attendance,
       employees,
+      supportTransfers,
       overrides,
       nowMs,
     })
@@ -380,7 +500,10 @@ export function calculateAutomaticRevenueBonusPeriod({
     days,
     allocations: days.flatMap((day) => day.allocations),
     totalPoolVnd: days.reduce((sum, day) => sum + day.totalPoolVnd, 0),
+    automaticAllocatedVnd: days.reduce((sum, day) => sum + day.automaticAllocatedVnd, 0),
     allocatedVnd: days.reduce((sum, day) => sum + day.allocatedVnd, 0),
+    unallocatedVnd: days.reduce((sum, day) => sum + day.unallocatedVnd, 0),
+    excludedSupportShareVnd: days.reduce((sum, day) => sum + day.excludedSupportShareVnd, 0),
     adminAdjustmentVnd: days.reduce((sum, day) => sum + day.adminAdjustmentVnd, 0),
   }
 }
