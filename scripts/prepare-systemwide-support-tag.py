@@ -55,4 +55,11 @@ replace_once(
     'repair current payroll-row source marker',
 )
 
+replace_once(
+    'scripts/apply-systemwide-support-tag.py',
+    "path = 'src/index.css'\ntext = read(path)\n",
+    "path = 'src/styles.css'\ntext = read(path)\n",
+    'target the active global stylesheet',
+)
+
 print('System-wide support tag preparation completed.')
