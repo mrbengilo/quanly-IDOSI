@@ -1,5 +1,6 @@
 name: Apply IDOSI schedule preset patch
 
+# Retry after aligning the Worker command allowlist anchor.
 on:
   push:
     branches:
