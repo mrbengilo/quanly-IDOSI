@@ -49,6 +49,11 @@ replacements = [
 ''',
         'store-manager special mock handling',
     ),
+    (
+        "expect(await screen.findByText('123.456 ₫')).toBeTruthy()",
+        "expect(await screen.findByText('123,456 đ')).toBeTruthy()",
+        'automatic history currency expectation',
+    ),
 ]
 
 for old, new, label in replacements:
