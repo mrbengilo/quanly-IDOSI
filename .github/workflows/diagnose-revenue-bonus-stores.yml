@@ -1,0 +1,168 @@
+name: Diagnose Revenue Bonus Stores
+
+on:
+  push:
+    branches:
+      - diagnose/revenue-bonus-all-stores-20260902
+    paths:
+      - .github/workflows/diagnose-revenue-bonus-stores.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-production-readonly-revenue-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.repository == 'mrbengilo/quanly-IDOSI'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST production secret}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER production secret}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY production secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS production secret}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Audit 02-09-2026 eligibility for every active store
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          IDOSI_ROOT="${IDOSI_ROOT:-/opt/idosi}"
+          COMPOSE_FILE="${IDOSI_COMPOSE_FILE:-$IDOSI_ROOT/deploy/vps/compose.yml}"
+          docker compose -f "$COMPOSE_FILE" exec -T app node <<'NODE'
+          import { DatabaseSync } from 'node:sqlite'
+          import { revenueBonusEligibility } from '/app/src/domain/revenueBonusEligibility.js'
+          import { classifyStorePayrollPolicy } from '/app/src/domain/storeTieredPayroll.js'
+
+          const businessDate = '2026-09-02'
+          const checkedAt = new Date()
+          const database = new DatabaseSync(process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite', {
+            readOnly: true,
+          })
+          database.exec('PRAGMA query_only = ON')
+
+          const collection = (key) => database.prepare(`
+            SELECT value_json
+            FROM state_entities
+            WHERE scope_key = 'global' AND collection_key = ?
+            ORDER BY entity_order, entity_key
+          `).all(key).map((row) => JSON.parse(row.value_json))
+
+          const normalized = (value) => String(value ?? '')
+            .trim()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/gu, '')
+            .replace(/[đĐ]/gu, 'd')
+            .toUpperCase()
+          const inactiveStatuses = new Set([
+            'INACTIVE', 'CLOSED', 'DELETED', 'ARCHIVED', 'TAM NGUNG',
+            'NGUNG HOAT DONG', 'DA DONG', 'DA XOA',
+          ])
+          const internalIds = new Set(['OFFICE', 'BUSINESS_SUPPORT', 'ADMIN', 'SYSTEM'])
+          const activeStore = (store = {}) => {
+            const id = String(store.id || store.code || '').trim().toUpperCase()
+            if (!id || internalIds.has(id) || store.deletedAt || store.archivedAt) return false
+            if (store.active === false || store.isActive === false || store.isOperational === false) return false
+            return !inactiveStatuses.has(normalized(store.status))
+          }
+          const recordDate = (record = {}) => String(
+            record.businessDate || record.workDate || record.attendanceDate || record.date || record.createdAt || '',
+          ).slice(0, 10)
+          const sameId = (left, right) => String(left ?? '').trim().toLocaleLowerCase('en-US')
+            === String(right ?? '').trim().toLocaleLowerCase('en-US')
+
+          const stores = collection('stores').filter(activeStore)
+          const employees = collection('employees').filter((record) => record && !record.deletedAt)
+          const attendance = collection('attendance')
+          const schedule = collection('schedule')
+          const shiftDefinitions = collection('shiftDefinitions')
+          const dailyRecords = collection('revenueBonusDaily')
+          const orders = collection('orders')
+
+          const rows = stores.map((store) => {
+            const storeId = String(store.id || store.code || '').trim()
+            const scopedAttendance = attendance.filter((record) => (
+              !record?.deletedAt && sameId(record.storeId, storeId) && recordDate(record) === businessDate
+            ))
+            const scopedOrders = orders.filter((record) => (
+              !record?.deletedAt && record?.source !== 'legacy-opening-balance'
+              && sameId(record.storeId, storeId) && recordDate(record) === businessDate
+            ))
+            let eligibility
+            try {
+              eligibility = revenueBonusEligibility({
+                storeId,
+                businessDate,
+                schedule,
+                shiftDefinitions,
+                attendance,
+                employees,
+                dailyRecords,
+                nowMs: checkedAt.getTime(),
+              })
+            } catch (error) {
+              eligibility = { code: `ERROR:${error?.name || 'UNKNOWN'}`, message: error?.message || '' }
+            }
+            return {
+              storeId,
+              storeName: String(store.name || store.short || store.code || storeId),
+              policy: classifyStorePayrollPolicy(store),
+              code: eligibility.code,
+              attendanceCount: Number(eligibility.attendanceCount ?? scopedAttendance.length),
+              openAttendanceCount: Number(eligibility.openAttendanceCount || 0),
+              finalShiftAttendanceCount: Number(eligibility.finalShiftAttendanceCount || 0),
+              existingCount: Number(eligibility.existingCount || 0),
+              orderCount: scopedOrders.length,
+              cutoffAt: eligibility.cutoffAt || null,
+              finalShiftId: eligibility.finalShiftId || null,
+              finalShiftName: eligibility.finalShiftName || null,
+            }
+          }).sort((left, right) => left.storeName.localeCompare(right.storeName, 'vi-VN'))
+
+          console.log(JSON.stringify({
+            diagnostic: 'revenue-bonus-all-stores',
+            checkedAt: checkedAt.toISOString(),
+            businessDate,
+            storeCount: rows.length,
+          }))
+          for (const row of rows) console.log(JSON.stringify(row))
+          console.log(JSON.stringify({
+            summary: Object.fromEntries([...rows.reduce((map, row) => {
+              map.set(row.code, (map.get(row.code) || 0) + 1)
+              return map
+            }, new Map())]),
+          }))
+          NODE
+          REMOTE
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
