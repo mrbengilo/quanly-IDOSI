@@ -28,7 +28,7 @@ jobs:
           node-version: 22.13.0
           cache: npm
 
-      - name: Prepare guarded patch against current main and stylesheet
+      - name: Prepare guarded patch with immutable snapshot support
         run: python3 scripts/prepare-systemwide-support-tag.py
 
       - name: Apply source changes with null-safe resolver
