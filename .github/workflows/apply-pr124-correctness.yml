@@ -64,3 +64,5 @@ jobs:
           git add -A
           git commit -m "fix(revenue): harden automatic bonus correctness"
           git push origin HEAD:feat/automatic-live-revenue-bonus
+
+# Retry after tightening guarded matchers for existing tests.
