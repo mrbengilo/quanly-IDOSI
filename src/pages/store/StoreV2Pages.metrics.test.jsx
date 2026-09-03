@@ -678,6 +678,8 @@ describe('store order, attendance, and payroll summaries', () => {
 
     let table = screen.getByRole('columnheader', { name: 'Thưởng công việc' }).closest('table')
     let row = within(table).getByText(supportEmployee.name).closest('tr')
+    const supportTag = within(row).getByText('Nhân viên hỗ trợ • Dosii TNV')
+    expect(supportTag.className).toContain('badge--orange')
     expect(within(row).getAllByRole('cell')[4].textContent).toContain('25,000 đ')
     expect(within(row).getAllByRole('cell')[10].textContent).toBe('165,000 đ')
     expect(within(row).getByText(/Thưởng hỗ trợ ghi nhận tại Dosii KVC.*TR-REWARD-01/iu)).toBeTruthy()
@@ -1158,6 +1160,8 @@ describe('store order, attendance, and payroll summaries', () => {
     const table = screen.getByRole('columnheader', { name: 'Lương cứng' }).closest('table')
     const homeRow = within(table).getByText('Tên snapshot cửa hàng').closest('tr')
     const supportRow = within(table).getByText('Tên snapshot hỗ trợ').closest('tr')
+    const snapshotSupportTag = within(supportRow).getByText('Nhân viên hỗ trợ • Dosii TNV')
+    expect(snapshotSupportTag.className).toContain('badge--orange')
     expect(within(homeRow).getByText(/home-code/i)).toBeTruthy()
     expect(within(supportRow).getByText(/support-code/i)).toBeTruthy()
     expect(within(supportRow).getByText('45,000 đ/giờ')).toBeTruthy()

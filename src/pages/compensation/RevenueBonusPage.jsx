@@ -687,9 +687,9 @@ export function RevenueBonusPage({ storeScoped = false }) {
         <MetricCard compact label="TỔNG GIỜ LÀM CỬA HÀNG" value={formatWorkedHours(totalStoreHours)} helper={`${attendanceCount} ca trong ngày`} icon={Clock3} tone="orange" />
       </div> : <div className="metric-grid compensation-metrics compensation-metrics--revenue-team">
         <MetricCard compact label="DOANH THU ĐỦ ĐIỀU KIỆN" value={metricValue(money(revenueTotal))} helper={liveDataLabel} icon={Store} tone="green" />
-        <MetricCard compact label="TỔNG QUỸ THƯỞNG" value={metricValue(money(poolTotal))} helper={automaticMode ? 'Gồm thưởng tỷ lệ và mốc cao nhất' : ''} icon={CircleDollarSign} tone="blue" />
-        <MetricCard compact label="ĐÃ PHÂN BỔ HIỆU LỰC" value={metricValue(money(allocatedTotal))} helper={adminAdjustmentTotal !== 0 ? 'Đã gồm điều chỉnh của Admin' : 'Tự động theo giờ thực tế'} icon={WalletCards} tone="green" />
-        <MetricCard compact label="CHƯA PHÂN BỔ THEO CÔNG THỨC" value={metricValue(money(unallocatedTotal))} helper={excludedSupportShareTotal > 0 ? 'Phần của giờ hỗ trợ được giữ lại, không trả cho người hỗ trợ' : unallocatedTotal > 0 ? 'Thiếu thời gian làm việc hợp lệ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
+        <MetricCard compact label="TỔNG QUỸ THƯỞNG" value={metricValue(money(poolTotal))} helper={excludedSupportShareTotal > 0 ? 'Quỹ công thức trước khi loại phần nhân viên hỗ trợ' : automaticMode ? 'Gồm thưởng tỷ lệ và mốc cao nhất' : ''} icon={CircleDollarSign} tone="blue" />
+        <MetricCard compact label="THƯỞNG DOANH THU GHI NHẬN THỰC TẾ" value={metricValue(money(allocatedTotal))} helper={excludedSupportShareTotal > 0 ? 'Số tiền thực tế phải chi cho nhân viên chính' : adminAdjustmentTotal !== 0 ? 'Đã gồm điều chỉnh của Admin' : 'Tự động theo giờ thực tế'} icon={WalletCards} tone="green" />
+        <MetricCard compact label={excludedSupportShareTotal > 0 ? 'PHẦN KHÔNG GHI NHẬN CHI' : 'CHƯA PHÂN BỔ THEO CÔNG THỨC'} value={metricValue(money(unallocatedTotal))} helper={excludedSupportShareTotal > 0 ? 'Tỷ trọng theo giờ của nhân viên hỗ trợ; thưởng tự động bằng 0 đ' : unallocatedTotal > 0 ? 'Thiếu thời gian làm việc hợp lệ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
         <MetricCard compact label="ĐIỀU CHỈNH ADMIN" value={metricValue(money(adminAdjustmentTotal))} helper={adminAdjustmentTotal === 0 ? 'Chưa có điều chỉnh' : 'Chênh lệch so với kết quả tự động'} icon={Pencil} tone={adminAdjustmentTotal === 0 ? 'blue' : 'orange'} />
         <MetricCard compact label="TỔNG GIỜ LÀM CỬA HÀNG" value={formatWorkedHours(totalStoreHours)} helper={`${attendanceCount} ca trong ngày`} icon={Clock3} tone="orange" />
       </div>}
@@ -720,9 +720,9 @@ export function RevenueBonusPage({ storeScoped = false }) {
         </div>
       </Card>
 
-      {unallocatedTotal > 0 && privileged && <InfoNote tone="orange">
+      {unallocatedTotal > 0 && (privileged || storeManager) && <InfoNote tone="orange">
         {excludedSupportShareTotal > 0
-          ? `${money(excludedSupportShareTotal)} thuộc tỷ trọng giờ của nhân viên điều chuyển hỗ trợ: giờ vẫn nằm trong mẫu số nhưng nhân viên hỗ trợ không nhận thưởng doanh thu.`
+          ? `Giờ làm của nhân viên hỗ trợ vẫn nằm trong tổng giờ chia thưởng. Phần tỷ trọng ${money(excludedSupportShareTotal)} không được ghi nhận chi cho nhân viên hỗ trợ; số tiền thưởng doanh thu ghi nhận thực tế phải chi là ${money(allocatedTotal)}.`
           : 'Có quỹ chưa phân bổ do thiếu thời gian làm việc hợp lệ. Hệ thống sẽ tự phân bổ lại khi dữ liệu chấm công được cập nhật.'}
       </InfoNote>}
 
@@ -731,7 +731,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
           <thead><tr>
             {!privateAllocationView && <th>Nhân viên</th>}
             <th>Cửa hàng</th><th>Ngày</th><th>Thời gian làm thực tế</th><th>Tỷ trọng</th>
-            <th>Thưởng tự động</th><th>Thưởng hiệu lực</th><th>Trạng thái</th>
+            <th>Thưởng tự động</th><th>Thưởng ghi nhận thực tế</th><th>Trạng thái</th>
             {isAdmin && automaticMode && <th>Thao tác Admin</th>}
           </tr></thead>
           <tbody>{allocations.map((allocation, index) => {
@@ -748,7 +748,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
               <td><strong>{money(effectiveAmount)}</strong>{automaticMode && effectiveAmount !== automaticAmount && <small className="compensation-subline">Chênh lệch {money(effectiveAmount - automaticAmount)}</small>}</td>
               <td>
                 <Badge tone={revenueStatusTone(allocation)}>{revenueStatusLabel(allocation)}</Badge>
-                {allocation.supportTransferred && <small className="compensation-subline">Giờ làm vẫn được tính vào mẫu số chia thưởng.</small>}
+                {allocation.supportTransferred && <small className="compensation-subline">Theo công thức tự động: giờ làm vẫn được tính vào mẫu số; phần tỷ trọng {money(allocation.excludedSupportShareVnd || allocation.formulaShareVnd || 0)} không ghi nhận chi và thưởng tự động của nhân viên hỗ trợ bằng 0 đ.</small>}
                 {allocation.overrideReason && <small className="compensation-subline">{allocation.overrideReason}</small>}
               </td>
               {isAdmin && automaticMode && <td><div className="compensation-row-actions revenue-bonus-admin-actions">

@@ -122,6 +122,73 @@ describe('automatic daily revenue bonus', () => {
     })
   })
 
+
+  it('records 1,400,000 VND payable from a 2,100,000 VND SM pool when one of three equal workers is support', () => {
+    const result = calculateAutomaticRevenueBonusDay(base({
+      programId: REVENUE_BONUS_PROGRAM_IDS.SM_DAILY,
+      milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.SM_DAILY_REVENUE,
+      employees: [
+        { id: 'A', name: 'Nhân viên A', unit: 'store', storeId: 'S01' },
+        { id: 'B', name: 'Nhân viên B', unit: 'store', storeId: 'S01' },
+        { id: 'C', name: 'Nhân viên hỗ trợ C', unit: 'store', storeId: 'HOME' },
+      ],
+      orders: [{
+        id: 'O-SUPPORT-EXACT', storeId: 'S01', amount: 25_000_001, status: 'Hoàn tất',
+        createdAt: '2026-09-03T10:00:00+07:00',
+      }],
+      supportTransfers: [{
+        id: 'ST-C-EXACT', employeeId: 'C', fromStoreId: 'HOME', toStoreId: 'S01',
+        startAt: '2026-09-03T00:00:00+07:00', endAt: '2026-09-04T00:00:00+07:00',
+        status: 'ACTIVE',
+      }],
+      attendance: [{
+        id: 'A-A-EXACT', storeId: 'S01', employeeId: 'A', workDate: '2026-09-03',
+        workedSeconds: 28_800, checkOutAt: '2026-09-03T10:00:00.000Z',
+      }, {
+        id: 'A-B-EXACT', storeId: 'S01', employeeId: 'B', workDate: '2026-09-03',
+        workedSeconds: 28_800, checkOutAt: '2026-09-03T10:00:00.000Z',
+      }, {
+        id: 'A-C-EXACT', storeId: 'S01', employeeId: 'C', workDate: '2026-09-03',
+        supportTransferId: 'ST-C-EXACT', workedSeconds: 28_800,
+        checkOutAt: '2026-09-03T10:00:00.000Z',
+      }],
+    }))
+
+    expect(result).toMatchObject({
+      percentagePoolVnd: 1_750_000,
+      milestonePoolVnd: 350_000,
+      totalPoolVnd: 2_100_000,
+      formulaAllocatedVnd: 2_100_000,
+      automaticAllocatedVnd: 1_400_000,
+      allocatedVnd: 1_400_000,
+      unallocatedVnd: 700_000,
+      excludedSupportShareVnd: 700_000,
+      totalWorkedSeconds: 86_400,
+      participantCount: 3,
+      eligibleParticipantCount: 2,
+      supportExcludedCount: 1,
+    })
+    expect(allocation(result, 'A')).toMatchObject({
+      workedSeconds: 28_800,
+      formulaShareVnd: 700_000,
+      automaticAmountVnd: 700_000,
+      amountVnd: 700_000,
+    })
+    expect(allocation(result, 'B')).toMatchObject({
+      formulaShareVnd: 700_000,
+      automaticAmountVnd: 700_000,
+      amountVnd: 700_000,
+    })
+    expect(allocation(result, 'C')).toMatchObject({
+      formulaShareVnd: 700_000,
+      excludedSupportShareVnd: 700_000,
+      automaticAmountVnd: 0,
+      amountVnd: 0,
+      supportTransferred: true,
+      status: 'SUPPORT_EXCLUDED',
+    })
+  })
+
   it('updates an open employee weight and allocation from trusted real time without a manual action', () => {
     const input = base({
       orders: [{

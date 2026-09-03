@@ -187,6 +187,70 @@ const safeAllocation = (poolVnd, participants) => participants.length
       allocations: [],
     }
 
+const allocateComponentWithinFormulaTotals = (poolVnd, formulaAllocation) => {
+  const formulaRows = Array.isArray(formulaAllocation?.allocations)
+    ? formulaAllocation.allocations
+    : []
+  const totalWeightUnits = Number(formulaAllocation?.totalWeightUnits || 0)
+  if (!formulaRows.length || totalWeightUnits <= 0) {
+    return {
+      poolVnd,
+      totalWeightUnits: 0,
+      allocatedVnd: 0,
+      unallocatedVnd: poolVnd,
+      allocations: [],
+    }
+  }
+
+  const totalWeight = BigInt(totalWeightUnits)
+  const pool = BigInt(poolVnd)
+  const provisional = formulaRows.map((row) => {
+    const numerator = pool * BigInt(row.weightUnits)
+    const formulaAmountVnd = Number(row.amountVnd || 0)
+    return {
+      id: row.id,
+      weightUnits: row.weightUnits,
+      formulaAmountVnd,
+      amountVnd: Math.min(Number(numerator / totalWeight), formulaAmountVnd),
+      remainder: numerator % totalWeight,
+    }
+  })
+  let remainingVnd = poolVnd - provisional.reduce((sum, row) => sum + row.amountVnd, 0)
+  const remainderOrder = [...provisional].sort((left, right) => {
+    if (left.remainder > right.remainder) return -1
+    if (left.remainder < right.remainder) return 1
+    return String(left.id).localeCompare(String(right.id), 'en-US')
+  })
+
+  while (remainingVnd > 0) {
+    let advanced = false
+    for (const row of remainderOrder) {
+      if (row.amountVnd >= row.formulaAmountVnd) continue
+      row.amountVnd += 1
+      remainingVnd -= 1
+      advanced = true
+      if (remainingVnd === 0) break
+    }
+    if (!advanced) {
+      throw new RangeError('Unable to reconcile revenue bonus component allocations.')
+    }
+  }
+
+  const allocations = provisional.map(({ id, weightUnits, amountVnd }) => ({
+    id,
+    weightUnits,
+    amountVnd,
+  }))
+  const allocatedVnd = allocations.reduce((sum, row) => sum + row.amountVnd, 0)
+  return {
+    poolVnd,
+    totalWeightUnits,
+    allocatedVnd,
+    unallocatedVnd: poolVnd - allocatedVnd,
+    allocations,
+  }
+}
+
 const overrideSortKey = (record = {}) => {
   const timestamp = Date.parse(record.updatedAt || record.createdAt || '')
   const safeTimestamp = Number.isFinite(timestamp) ? timestamp : 0
@@ -323,8 +387,31 @@ export function calculateAutomaticRevenueBonusDay({
   }
 
   const participants = [...weights].map(([id, weightUnits]) => ({ id, weightUnits }))
-  const percentageAllocation = safeAllocation(percentage.bonusVnd, participants)
-  const milestoneAllocation = safeAllocation(milestone.amountVnd, participants)
+  const totalPoolVnd = percentage.bonusVnd + milestone.amountVnd
+  const formulaAllocation = safeAllocation(totalPoolVnd, participants)
+  const percentageAllocation = allocateComponentWithinFormulaTotals(
+    percentage.bonusVnd,
+    formulaAllocation,
+  )
+  const percentageByEmployeeId = new Map(
+    percentageAllocation.allocations.map((record) => [identifierKey(record.id), record.amountVnd]),
+  )
+  const milestoneAllocations = formulaAllocation.allocations.map((record) => ({
+    id: record.id,
+    weightUnits: record.weightUnits,
+    amountVnd: record.amountVnd - (percentageByEmployeeId.get(identifierKey(record.id)) || 0),
+  }))
+  const milestoneAllocatedVnd = milestoneAllocations.reduce(
+    (sum, record) => sum + record.amountVnd,
+    0,
+  )
+  const milestoneAllocation = {
+    poolVnd: milestone.amountVnd,
+    totalWeightUnits: formulaAllocation.totalWeightUnits,
+    allocatedVnd: milestoneAllocatedVnd,
+    unallocatedVnd: milestone.amountVnd - milestoneAllocatedVnd,
+    allocations: milestoneAllocations,
+  }
   const formulaPercentageByEmployee = new Map(
     percentageAllocation.allocations.map((record) => [identifierKey(record.id), record.amountVnd]),
   )
@@ -343,7 +430,7 @@ export function calculateAutomaticRevenueBonusDay({
     if (!canonicalIdByKey.has(key)) canonicalIdByKey.set(key, override.employeeId)
   }
 
-  const totalWeightUnits = percentageAllocation.totalWeightUnits
+  const totalWeightUnits = formulaAllocation.totalWeightUnits
   const allocations = [...canonicalIdByKey].map(([employeeKey, employeeId]) => {
     const weightUnits = weightByEmployee.get(employeeKey) || 0
     const formulaPercentagePoolVnd = formulaPercentageByEmployee.get(employeeKey) || 0
@@ -408,8 +495,7 @@ export function calculateAutomaticRevenueBonusDay({
   const excludedSupportShareVnd = allocations.reduce((sum, record) => sum + record.excludedSupportShareVnd, 0)
   const automaticAllocatedVnd = allocations.reduce((sum, record) => sum + record.automaticAmountVnd, 0)
   const allocatedVnd = allocations.reduce((sum, record) => sum + record.amountVnd, 0)
-  const unallocatedVnd = percentageAllocation.unallocatedVnd
-    + milestoneAllocation.unallocatedVnd
+  const unallocatedVnd = formulaAllocation.unallocatedVnd
     + excludedSupportShareVnd
   return {
     id: `automatic-revenue-day:${normalizedStoreId}:${businessDate}`,
@@ -429,7 +515,7 @@ export function calculateAutomaticRevenueBonusDay({
     milestoneId: milestone.milestoneId,
     percentagePoolVnd: percentage.bonusVnd,
     milestonePoolVnd: milestone.amountVnd,
-    totalPoolVnd: percentage.bonusVnd + milestone.amountVnd,
+    totalPoolVnd,
     formulaAllocatedVnd,
     automaticAllocatedVnd,
     allocatedVnd,
