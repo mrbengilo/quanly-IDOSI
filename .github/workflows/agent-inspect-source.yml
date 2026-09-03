@@ -1,0 +1,28 @@
+name: Agent Inspect Source
+
+on:
+  push:
+    branches:
+      - feat/configurable-support-schedule-presets
+
+permissions:
+  contents: read
+
+jobs:
+  package-source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Package repository source
+        run: |
+          tar --exclude=.git --exclude=node_modules --exclude=dist -czf /tmp/quanly-IDOSI-source.tar.gz .
+
+      - name: Upload source artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quanly-IDOSI-source-${{ github.sha }}
+          path: /tmp/quanly-IDOSI-source.tar.gz
+          retention-days: 1
