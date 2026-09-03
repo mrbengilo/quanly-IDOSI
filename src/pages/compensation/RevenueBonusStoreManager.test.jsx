@@ -7,6 +7,7 @@ const mocked = vi.hoisted(() => ({ app: {} }))
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 vi.mock('../../services/idosiApi', () => ({
   apiGetRevenueBonusLive: vi.fn(),
+  apiGetRevenueBonusPeriod: vi.fn(),
 }))
 
 const storesSeed = [
