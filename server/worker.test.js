@@ -15501,11 +15501,15 @@ describe('IDOSI Worker security primitives', () => {
     ), env)
     expect(employeeWrongStore.status).toBe(403)
 
+    const versionBeforeManagerScopeCheck = Number(env.DB.database.prepare(
+      'SELECT version FROM app_state WHERE scope_key = ?',
+    ).get('global')?.version || 0)
     const managerDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.calculate_day', expectedVersion: 1,
-      payload: { storeId: 'S02', businessDate: '2026-08-20' },
-    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-denied-0001' }), env)
+      type: 'revenue_bonus.calculate_day', expectedVersion: versionBeforeManagerScopeCheck,
+      payload: { storeId: 'S01', businessDate: '2026-08-20' },
+    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-cross-store-denied-0001' }), env)
     expect(managerDenied.status).toBe(403)
+    expect(await managerDenied.json()).toMatchObject({ error: { code: 'STORE_SCOPE_FORBIDDEN' } })
 
     const stateBeforeOpenAttempt = readHydratedState(env.DB.database)
     replaceStateCollection(env.DB.database, 'attendance', stateBeforeOpenAttempt.attendance.map((record) => (
@@ -15533,7 +15537,7 @@ describe('IDOSI Worker security primitives', () => {
     const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.calculate_day', expectedVersion: versionAfterOpenDenial,
       payload: { storeId: 'S02', businessDate: '2026-08-20' },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-calculate-0001' }), env)
+    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-calculate-0001' }), env)
     expect(calculated.status, JSON.stringify(await calculated.clone().json())).toBe(201)
     const calculatedBody = await calculated.json()
     expect(calculatedBody.revenueBonus).toMatchObject({
@@ -15652,6 +15656,13 @@ describe('IDOSI Worker security primitives', () => {
       ...stateBeforeApproval.revenueBonusAllocations,
       siblingAllocation,
     ])
+
+    const managerApprovalDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
+      payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
+    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-approve-denied-0001' }), env)
+    expect(managerApprovalDenied.status).toBe(403)
+    expect(await managerApprovalDenied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
 
     const approved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,

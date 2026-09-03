@@ -20939,9 +20939,13 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
 }
 
 const revenueBonusCommand = async (db, actor, body, commandContext) => {
-  assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được tính thưởng doanh thu.')
   if (!['revenue_bonus.calculate_day', 'revenue_bonus.approve_milestone', 'revenue_bonus.reject_milestone'].includes(body.type)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh thưởng doanh thu không được hỗ trợ.')
+  }
+  if (body.type === 'revenue_bonus.calculate_day') {
+    assertOperationsRole(actor, 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc Quản lý cửa hàng được tính thưởng doanh thu.')
+  } else {
+    assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được duyệt thưởng doanh thu.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const { current, state } = await loadGlobalCommandState(db, body, actor)

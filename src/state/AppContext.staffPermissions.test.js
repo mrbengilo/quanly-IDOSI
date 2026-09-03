@@ -3,6 +3,7 @@ import { Buffer } from 'node:buffer'
 import {
   canCreateEmployeeUnit,
   canBusinessSupportUpdateEmployee,
+  canCalculateDailyRevenueBonus,
   canDeleteSupportTransfers,
   canManageSupportTransfers,
   canManagePolicies,
@@ -57,6 +58,16 @@ describe('Business Support staff and policy permissions', () => {
     for (const protectedField of ['username', 'password', 'status', 'salary', 'unit', 'storeId', 'phone', 'address']) {
       expect(canBusinessSupportUpdateEmployee({ unit: 'business_support' }, { [protectedField]: 'blocked' }), protectedField).toBe(false)
     }
+  })
+
+  it('allows daily revenue calculation only for scoped operational roles', () => {
+    expect(canCalculateDailyRevenueBonus('admin')).toBe(true)
+    expect(canCalculateDailyRevenueBonus('business_support')).toBe(true)
+    expect(canCalculateDailyRevenueBonus('manager')).toBe(true)
+    expect(canCalculateDailyRevenueBonus('store_manager')).toBe(true)
+    expect(canCalculateDailyRevenueBonus('employee')).toBe(false)
+    expect(canCalculateDailyRevenueBonus('office')).toBe(false)
+    expect(canCalculateDailyRevenueBonus('')).toBe(false)
   })
 
   it('shares policy editing with Business Support while excluding store roles', () => {

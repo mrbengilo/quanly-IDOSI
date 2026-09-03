@@ -297,6 +297,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const currentStoreId = String(app.session?.storeId || app.currentEmployee?.storeId || '')
   const privileged = ['admin', 'business_support'].includes(role)
   const storeManager = role === 'store_manager'
+  const canCalculateDailyRevenue = privileged || storeManager
   const employeeView = ['employee', 'office'].includes(role)
   const privateAllocationView = employeeView
   const allowed = privileged || storeManager || employeeView
@@ -558,7 +559,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
     || (serverBacked
       ? 'Đang kiểm tra trạng thái ca cuối cùng và kết quả thưởng đã lưu.'
       : 'Chưa đủ dữ liệu để kiểm tra điều kiện tính thưởng doanh thu.')
-  const openAttendanceAlert = privileged && calculationEligibility?.code === 'ATTENDANCE_OPEN'
+  const openAttendanceAlert = canCalculateDailyRevenue && calculationEligibility?.code === 'ATTENDANCE_OPEN'
 
   if (!allowed || !selectedStoreId) return <AccessDenied subtitle="Tài khoản này không có phạm vi cửa hàng để xem thưởng doanh thu." />
   if (!revenueProgram) return <AccessDenied subtitle="Cửa hàng hiện tại chưa có chính sách thưởng doanh thu được hệ thống hỗ trợ." />
@@ -602,7 +603,7 @@ Mỗi cửa hàng chỉ được tính một lần cho ngày này và không th�
           ? 'Hiển thị tổng quỹ của cửa hàng và khoản thưởng của chính bạn; không hiển thị phần của đồng nghiệp.'
           : `Theo dõi quỹ và phân bổ thưởng theo giờ bán hàng được duyệt tại ${storeName(stores, selectedStoreId)}.`}
         icon={CircleDollarSign}
-        actions={privileged && <Button
+        actions={canCalculateDailyRevenue && <Button
           className={`revenue-bonus-calculate-button${calculationReady ? ' is-ready' : ''}`}
           icon={calculationDone ? CheckCircle2 : Calculator}
           loading={busyKey === 'calculate'}
@@ -626,7 +627,7 @@ Mỗi cửa hàng chỉ được tính một lần cho ngày này và không th�
             ? `Đang hiển thị lần cập nhật gần nhất lúc ${formattedLastRemoteSuccess}; hệ thống sẽ tự thử lại.`
             : 'Hệ thống sẽ tự thử lại.'}
         </InfoNote>}
-        {privileged && (openAttendanceAlert ? <div className="revenue-bonus-attendance-alert" role="alert">
+        {canCalculateDailyRevenue && (openAttendanceAlert ? <div className="revenue-bonus-attendance-alert" role="alert">
           <Clock3 size={28} aria-hidden="true" />
           <div><strong>CHƯA THỂ TÍNH THƯỞNG NGÀY</strong><p>{eligibilityMessage}</p></div>
         </div> : <InfoNote tone={eligibilityTone}>{eligibilityMessage}</InfoNote>)}
