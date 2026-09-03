@@ -13057,7 +13057,7 @@ describe('IDOSI Worker security primitives', () => {
         fromDate: '2026-08-20', toDate: '2026-08-20', hourlySupportRate: 45_000, allowance: 180_000,
         status: 'Đã duyệt', createdAt: '2026-08-01T00:00:00.000Z',
       }
-      const { env, employeeAuthorization } = await setupSupportTransferRuntime({
+      const { env, employeeAuthorization, managerAuthorization } = await setupSupportTransferRuntime({
         token: 'bootstrap-transfer-home-open',
         transfer,
         attendance: [{
@@ -13067,6 +13067,24 @@ describe('IDOSI Worker security primitives', () => {
           checkOut: null, checkOutAt: null, deletedAt: null,
         }],
       })
+
+      const stateBeforeHomeCheckoutResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: employeeAuthorization,
+      }), env)
+      expect(stateBeforeHomeCheckoutResponse.status).toBe(200)
+      const stateBeforeHomeCheckout = await stateBeforeHomeCheckoutResponse.json()
+      expect(stateBeforeHomeCheckout).toMatchObject({
+        user: { storeId: 'S01' },
+        state: { activeStoreId: 'S01', activeAttendanceId: 'ATT-HOME-OPEN' },
+      })
+      expect(stateBeforeHomeCheckout.user).not.toHaveProperty('activeTransferId')
+
+      const destinationBeforeHomeCheckout = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: managerAuthorization,
+      }), env)
+      expect(destinationBeforeHomeCheckout.status).toBe(200)
+      expect((await destinationBeforeHomeCheckout.json()).state.employees.some(({ id }) => id === 'E01')).toBe(false)
+
       const blockedDestinationCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_in', expectedVersion: 1,
         payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
@@ -13087,6 +13105,21 @@ describe('IDOSI Worker security primitives', () => {
       const unchangedTransfer = afterHomeCheckout.supportTransfers.find(({ id }) => id === transfer.id)
       expect(unchangedTransfer).toMatchObject({ status: 'Đã duyệt' })
       expect(unchangedTransfer).not.toHaveProperty('completedAt')
+
+      const stateAfterHomeCheckoutResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: employeeAuthorization,
+      }), env)
+      expect(stateAfterHomeCheckoutResponse.status).toBe(200)
+      expect(await stateAfterHomeCheckoutResponse.json()).toMatchObject({
+        user: { storeId: 'S02', homeStoreId: 'S01', activeTransferId: transfer.id },
+        state: { activeStoreId: 'S02', activeAttendanceId: null },
+      })
+
+      const destinationAfterHomeCheckout = await worker.fetch(new Request('https://idosi.example/api/state', {
+        headers: managerAuthorization,
+      }), env)
+      expect(destinationAfterHomeCheckout.status).toBe(200)
+      expect((await destinationAfterHomeCheckout.json()).state.employees.some(({ id }) => id === 'E01')).toBe(true)
 
       const destinationCheckIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_in', expectedVersion: 2,

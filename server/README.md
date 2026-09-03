@@ -271,8 +271,12 @@ Các lệnh chính:
   đã liên kết profile; server dùng ca mặc định `08:00-17:00` cho hai vai trò.
   Nhân viên cửa hàng đang trong thời gian điều chuyển có thể điểm danh trực tiếp
   tại cửa hàng nhận mà không cần lịch phân ca; server tạo snapshot ca hỗ trợ từ
-  giờ hoạt động cửa hàng. Ca hỗ trợ đang mở tiếp tục giữ session tại cửa hàng nhận
-  dù phiếu đã hết giờ; sau khi kết ca hỗ trợ, session tự trở lại cửa hàng gốc.
+  giờ hoạt động cửa hàng. Nếu nhân viên vẫn còn một ca đang mở tại cửa hàng hiện
+  tại, ca đó tiếp tục khóa session và lịch điều chuyển không được chuyển giao diện
+  hoặc quyền thao tác sang cửa hàng nhận. Chỉ sau khi kết ca, nếu phiếu điều chuyển
+  vẫn còn hiệu lực, session mới chuyển sang cửa hàng nhận để nhân viên điểm danh.
+  Ca hỗ trợ đã mở tiếp tục giữ session tại cửa hàng nhận dù phiếu đã hết giờ; sau
+  khi kết ca hỗ trợ, session tự trở lại cửa hàng gốc.
 - `attendance.check_out`: payload `attendanceId?`, `location`, `expense?`,
   `tiktok?`. Với nhân viên cửa hàng, bắt buộc thêm `cashRevenue` và
   `transferRevenue`; server chỉ tổng hợp đơn `Hoàn tất` đúng employee/store/
