@@ -1,0 +1,21 @@
+name: Inspect automatic revenue implementation context
+
+on:
+  push:
+    branches:
+      - feat/automatic-live-revenue-bonus
+    paths:
+      - .github/workflows/inspect-auto-revenue.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/automatic-live-revenue-bonus
+      - run: python3 scripts/inspect-auto-revenue-context.py
