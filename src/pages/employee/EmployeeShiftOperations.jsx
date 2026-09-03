@@ -286,7 +286,11 @@ export function EmployeeAssignedTasksPage() {
   const incompleteRequiredTasks = requiredTasks.filter((task) => !statusFor(task))
   const noteRequired = incompleteRequiredTasks.length > 0
   const newlyCompletedTasks = mandatoryTasks.filter((task) => !storedStatusFor(task) && statusFor(task))
-  const selectedShiftIsOpen = Boolean(attendance && attendanceShiftKey && selectedShiftKey === attendanceShiftKey)
+  // A legacy/custom attendance can be valid and open even when its shift name or
+  // interval does not map to one of the three display templates. The default
+  // tab already resolves from the attendance first and then from its tasks, so
+  // keep that tab editable until checkout instead of leaving Save disabled.
+  const selectedShiftIsOpen = Boolean(attendance && selectedShiftKey === defaultShiftKey)
   const ready = Boolean(
     selectedShiftIsOpen
     && displayedTasks.length
@@ -345,6 +349,8 @@ export function EmployeeAssignedTasksPage() {
         setStatuses({})
         setIncompleteReason('')
         requestRef.current = null
+      } else {
+        app.notify?.(result?.message || 'Không thể lưu kết quả công việc. Vui lòng tải lại trang và thử lại.', 'info')
       }
     } finally {
       setSaving(false)
