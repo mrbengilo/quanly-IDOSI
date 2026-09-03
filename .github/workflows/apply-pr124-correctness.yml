@@ -65,4 +65,4 @@ jobs:
           git commit -m "fix(revenue): harden automatic bonus correctness"
           git push origin HEAD:feat/automatic-live-revenue-bonus
 
-# Retry after tightening guarded matchers for existing tests.
+# Retry after aligning the UI test with the shared VND formatter.
