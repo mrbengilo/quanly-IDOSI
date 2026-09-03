@@ -1,20 +1,23 @@
-name: Build Store Revenue Patch Artifact
+name: Finalize IDOSI Store Revenue Fix
 
 on:
   pull_request:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build-patch-artifact:
+  finalize-source:
     if: github.head_ref == 'fix/store-orders-daily-revenue-gate'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
-      - name: Checkout pull request
+      - name: Checkout feature branch
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -22,41 +25,34 @@ jobs:
           node-version: 22.13.0
           cache: npm
 
+      - name: Merge latest main
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          git merge --no-edit origin/main
+
       - name: Apply requested source changes
         run: python scripts/apply-store-revenue-feature.py
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify patched source
+      - name: Verify final source
         run: |
           npm run lint
           npm test
           npm run build
           npm run sites:verify
 
-      - name: Package changed files
+      - name: Commit verified implementation
         run: |
           set -Eeuo pipefail
-          mkdir -p patched-files/src/pages/store patched-files/src/pages/compensation patched-files/src/domain patched-files/server patched-files/src
-          cp src/main.jsx patched-files/src/main.jsx
-          cp src/storeOperationalEnhancements.css patched-files/src/storeOperationalEnhancements.css
-          cp src/domain/revenueBonusEligibility.js patched-files/src/domain/revenueBonusEligibility.js
-          cp src/domain/revenueBonusEligibility.test.js patched-files/src/domain/revenueBonusEligibility.test.js
-          cp src/pages/store/StoreV2Pages.jsx patched-files/src/pages/store/StoreV2Pages.jsx
-          cp src/pages/store/orderShiftGroups.js patched-files/src/pages/store/orderShiftGroups.js
-          cp src/pages/store/orderShiftGroups.test.js patched-files/src/pages/store/orderShiftGroups.test.js
-          cp src/pages/store/StoreOrdersPage.orderInformation.test.jsx patched-files/src/pages/store/StoreOrdersPage.orderInformation.test.jsx
-          cp src/pages/compensation/RevenueBonusPage.jsx patched-files/src/pages/compensation/RevenueBonusPage.jsx
-          cp src/pages/compensation/RevenueBonusCutoff.test.jsx patched-files/src/pages/compensation/RevenueBonusCutoff.test.jsx
-          cp src/pages/compensation/CompensationPages.test.jsx patched-files/src/pages/compensation/CompensationPages.test.jsx
-          cp server/worker.js patched-files/server/worker.js
-          cp server/revenueBonusCutoff.test.js patched-files/server/revenueBonusCutoff.test.js
-
-      - name: Upload patched files
-        uses: actions/upload-artifact@v4
-        with:
-          name: idosi-store-revenue-patched-files
-          path: patched-files
-          if-no-files-found: error
-          retention-days: 1
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src server
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+          else
+            git commit -m "feat(store): sort shift orders and gate daily revenue bonus"
+          fi
+          git push origin "HEAD:${{ github.head_ref }}"
