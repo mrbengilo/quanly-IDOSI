@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiGetRevenueBonusLive, clearApiSession } from './idosiApi'
+import { apiGetRevenueBonusLive, apiGetRevenueBonusPeriod, clearApiSession } from './idosiApi'
 
 afterEach(() => {
   clearApiSession()
@@ -51,4 +51,21 @@ describe('IDOSI revenue bonus live reads', () => {
       .rejects.toMatchObject({ code: 'REVENUE_BONUS_DAILY_ALREADY', status: 409 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  it('loads automatic period history from the server-authoritative endpoint', async () => {
+    const payload = {
+      ok: true,
+      period: { storeId: 'DI-AN', period: '2026-09', days: [], allocations: [] },
+    }
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => payload })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(apiGetRevenueBonusPeriod({ storeId: 'DI-AN', period: '2026-09' }))
+      .resolves.toBe(payload)
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/revenue-bonus/period?storeId=DI-AN&period=2026-09',
+      expect.objectContaining({ method: 'GET' }),
+    )
+  })
+
 })

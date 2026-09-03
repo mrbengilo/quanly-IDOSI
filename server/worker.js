@@ -181,7 +181,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   ],
   'compensation-managers': ['stores', 'employees', 'compensationEntries', 'payrollPeriods'],
   'compensation-revenue': [
-    'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions',
+    'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions', 'supportTransfers',
     'revenueBonusDaily', 'revenueBonusAllocations', 'revenueBonusOverrides', 'salaryAdjustments', 'periodReconciliations',
   ],
   tasks: [
@@ -266,7 +266,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'supportWorkSchedules', 'shiftDefinitions', 'workCatalogItems',
   ],
   'employee-revenue-bonus': [
-    'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions',
+    'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions', 'supportTransfers',
     'revenueBonusDaily', 'revenueBonusAllocations', 'revenueBonusOverrides', 'salaryAdjustments',
     'teamRewardClaims', 'teamRewardParticipants',
   ],
@@ -2829,6 +2829,9 @@ export const projectSharedState = (
       revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations', (record) => (
         sameIdentifier(record.storeId, storeId)
       )),
+      revenueBonusOverrides: filterArray(state, 'revenueBonusOverrides', (record) => (
+        sameIdentifier(record.storeId, storeId)
+      )),
       teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => sameIdentifier(record.storeId, storeId)),
       teamRewardParticipants: filterArray(state, 'teamRewardParticipants', (record) => (
         sameIdentifier(record.storeId, storeId)
@@ -2947,6 +2950,7 @@ export const projectSharedState = (
         visibleStoreIds.has(normalizeIdentifierKey(record.storeId))
       )).map(redactRevenueBonusDaily),
       revenueBonusAllocations: own('revenueBonusAllocations'),
+      revenueBonusOverrides: own('revenueBonusOverrides'),
       teamRewardClaims: filterArray(state, 'teamRewardClaims', (record) => (
         visibleStoreIds.has(normalizeIdentifierKey(record.storeId))
       )),
@@ -5214,6 +5218,99 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
   }))
 }
 
+const revenueBonusViewerEmployeeIds = (state, user) => {
+  const profile = ownEmployeeProfile(state, user)
+  return [...new Set([
+    String(user?.employee_id || user?.employeeId || '').trim(),
+    ...employeeIdentifierValues(profile),
+  ].map(normalizeIdentifierKey).filter(Boolean))]
+}
+
+const publicAutomaticRevenueBonusAllocation = (record, includeAdminDetails = false) => {
+  if (includeAdminDetails) return record
+  const safe = { ...record }
+  delete safe.overrideId
+  delete safe.overrideReason
+  delete safe.overrideVersion
+  delete safe.supportTransferIds
+  return safe
+}
+
+const visibleAutomaticRevenueBonusAllocations = ({
+  allocations = [],
+  canViewAllAllocations = true,
+  viewerEmployeeIds = [],
+  includeAdminDetails = false,
+} = {}) => {
+  const visibleIds = new Set((Array.isArray(viewerEmployeeIds) ? viewerEmployeeIds : [])
+    .map(normalizeIdentifierKey)
+    .filter(Boolean))
+  return (Array.isArray(allocations) ? allocations : [])
+    .filter((record) => canViewAllAllocations || visibleIds.has(normalizeIdentifierKey(record.employeeId)))
+    .map((record) => publicAutomaticRevenueBonusAllocation(record, includeAdminDetails))
+}
+
+export const revenueBonusPeriodSnapshot = ({
+  state,
+  store,
+  period,
+  now = new Date().toISOString(),
+  canViewAllAllocations = true,
+  viewerEmployeeIds = [],
+  includeAdminDetails = false,
+} = {}) => {
+  const storeId = String(store?.id || '')
+  const normalizedPeriod = String(period || '').trim()
+  const nowMs = Date.parse(now)
+  if (!storeId || !/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(normalizedPeriod) || !Number.isFinite(nowMs)) {
+    throw new TypeError('store, period and a valid now timestamp are required.')
+  }
+  assertNoCaseCollidingOperationalIdentifiers(state)
+  const { programId, milestoneProgramId } = revenueBonusProgramForStore(store)
+  const calculated = calculateAutomaticRevenueBonusPeriod({
+    storeId,
+    period: normalizedPeriod,
+    programId,
+    milestoneProgramId,
+    orders: Array.isArray(state?.orders) ? state.orders : [],
+    attendance: Array.isArray(state?.attendance) ? state.attendance : [],
+    employees: Array.isArray(state?.employees) ? state.employees : [],
+    supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
+    overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
+    nowMs,
+  })
+  const allocations = visibleAutomaticRevenueBonusAllocations({
+    allocations: calculated.allocations,
+    canViewAllAllocations,
+    viewerEmployeeIds,
+    includeAdminDetails,
+  })
+  return {
+    ...calculated,
+    projectedAt: new Date(nowMs).toISOString(),
+    calculationMode: 'AUTOMATIC',
+    editableByAdminOnly: true,
+    dayCount: calculated.days.length,
+    visibleAllocatedVnd: allocations.reduce((sum, record) => sum + Number(record.amountVnd || 0), 0),
+    days: calculated.days.map((day) => ({
+      businessDate: day.businessDate,
+      projectedAt: day.projectedAt,
+      revenueVnd: day.revenueVnd,
+      totalPoolVnd: day.totalPoolVnd,
+      automaticAllocatedVnd: day.automaticAllocatedVnd,
+      allocatedVnd: day.allocatedVnd,
+      unallocatedVnd: day.unallocatedVnd,
+      excludedSupportShareVnd: day.excludedSupportShareVnd,
+      adminAdjustmentVnd: day.adminAdjustmentVnd,
+      totalWorkedSeconds: day.totalWorkedSeconds,
+      participantCount: day.participantCount,
+      eligibleParticipantCount: day.eligibleParticipantCount,
+      supportExcludedCount: day.supportExcludedCount,
+    })),
+    allocations,
+  }
+}
+
 const getRevenueBonusLive = async (request, env, context, url) => {
   const db = getDatabase(env)
   const user = await requireSession(request, db, context)
@@ -5231,15 +5328,50 @@ const getRevenueBonusLive = async (request, env, context, url) => {
   const state = normalizeSharedStateForStorage(row ? parseStoredJson(row.value_json, {}) : {})
   const store = requireActivePhysicalStore(state, storeId)
   const live = revenueBonusLiveSnapshot({ state, store, businessDate, now: context.now })
-  const viewerEmployeeId = String(user.employee_id || '').trim()
+  const canViewAllAllocations = ['admin', 'business_support', 'store_manager'].includes(user.role)
+  const snapshot = {
+    ...live,
+    allocations: visibleAutomaticRevenueBonusAllocations({
+      allocations: live.allocations,
+      canViewAllAllocations,
+      viewerEmployeeIds: revenueBonusViewerEmployeeIds(state, user),
+      includeAdminDetails: user.role === 'admin',
+    }),
+  }
+  if (user.role !== 'admin') delete snapshot.overrideCollisions
+  return jsonResponse(apiPayload(context, { snapshot }))
+}
+
+const getRevenueBonusPeriod = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const user = await requireSession(request, db, context)
+  if (!['admin', 'business_support', 'store_manager', 'employee'].includes(user.role)) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem lịch sử thưởng doanh thu cửa hàng.')
+  }
+  const storeId = String(url.searchParams.get('storeId') || '').trim()
+  const actorStoreId = String(user.store_id || '').trim()
+  if (['store_manager', 'employee'].includes(user.role) && (!storeId || !sameIdentifier(storeId, actorStoreId))) {
+    throw new ApiError(403, 'STORE_SCOPE_FORBIDDEN', 'Tài khoản chỉ được xem lịch sử thưởng doanh thu đúng cửa hàng đang làm việc.')
+  }
+  assertOperationalStoreAccess(user, storeId)
+  const period = String(url.searchParams.get('period') || '').trim()
+  if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(period)) {
+    throw new ApiError(400, 'REVENUE_BONUS_PERIOD_INVALID', 'Tháng thưởng doanh thu phải có định dạng YYYY-MM.')
+  }
+  const row = user._globalStateRow || await loadState(db, 'global')
+  const state = normalizeSharedStateForStorage(row ? parseStoredJson(row.value_json, {}) : {})
+  const store = requireActivePhysicalStore(state, storeId)
   const canViewAllAllocations = ['admin', 'business_support', 'store_manager'].includes(user.role)
   return jsonResponse(apiPayload(context, {
-    snapshot: {
-      ...live,
-      allocations: canViewAllAllocations
-        ? live.allocations
-        : live.allocations.filter((allocation) => sameIdentifier(allocation.employeeId, viewerEmployeeId)),
-    },
+    period: revenueBonusPeriodSnapshot({
+      state,
+      store,
+      period,
+      now: context.now,
+      canViewAllAllocations,
+      viewerEmployeeIds: revenueBonusViewerEmployeeIds(state, user),
+      includeAdminDetails: user.role === 'admin',
+    }),
   }))
 }
 
@@ -12077,6 +12209,7 @@ const automaticRevenueBonusPeriodFor = (state, storeId, period) => {
     orders: Array.isArray(state.orders) ? state.orders : [],
     attendance: Array.isArray(state.attendance) ? state.attendance : [],
     employees: Array.isArray(state.employees) ? state.employees : [],
+    supportTransfers: Array.isArray(state.supportTransfers) ? state.supportTransfers : [],
     overrides: Array.isArray(state.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
     nowMs: Date.now(),
   })
@@ -20718,6 +20851,7 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
       orders: Array.isArray(state?.orders) ? state.orders : [],
       attendance: Array.isArray(state?.attendance) ? state.attendance : [],
       employees: Array.isArray(state?.employees) ? state.employees : [],
+      supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
       overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
       nowMs,
     }),
@@ -23740,6 +23874,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/revenue-bonus/live') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getRevenueBonusLive(request, env, context, url)
+  }
+  if (path === '/api/revenue-bonus/period') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getRevenueBonusPeriod(request, env, context, url)
   }
   if (path === '/api/command') {
     if (request.method !== 'POST') return methodNotAllowed(['POST'])

@@ -6,11 +6,12 @@ import { RevenueBonusPage } from './RevenueBonusPage'
 import { MyViolationsPage, ViolationManagementPage } from './ViolationManagementPage'
 import { UnitCompensationStatistics } from './UnitCompensationStatistics'
 
-const mocked = vi.hoisted(() => ({ app: {}, liveRevenue: vi.fn() }))
+const mocked = vi.hoisted(() => ({ app: {}, liveRevenue: vi.fn(), periodRevenue: vi.fn() }))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 vi.mock('../../services/idosiApi', () => ({
   apiGetRevenueBonusLive: (payload) => mocked.liveRevenue(payload),
+  apiGetRevenueBonusPeriod: (payload) => mocked.periodRevenue(payload),
 }))
 
 const stores = [
@@ -75,6 +76,10 @@ describe('compensation pages', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-08-26T05:00:00.000Z'))
     mocked.liveRevenue.mockReset()
+    mocked.periodRevenue.mockReset()
+    mocked.periodRevenue.mockImplementation(({ storeId, period }) => Promise.resolve({
+      period: { storeId, period, days: [], allocations: [] },
+    }))
     mocked.app = baseApp()
   })
   afterEach(() => {

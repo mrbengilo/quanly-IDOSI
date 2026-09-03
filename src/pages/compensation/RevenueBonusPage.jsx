@@ -41,7 +41,7 @@ import {
   calculateAutomaticRevenueBonusPeriod,
 } from '../../domain/automaticRevenueBonus'
 import { classifyStorePayrollPolicy, STORE_PAYROLL_POLICY } from '../../domain/storeTieredPayroll'
-import { apiGetRevenueBonusLive } from '../../services/idosiApi'
+import { apiGetRevenueBonusLive, apiGetRevenueBonusPeriod } from '../../services/idosiApi'
 import { revenueBonusHistoryProjection, revenueBonusStatistics } from './compensationStatistics'
 import {
   AccessDenied,
@@ -100,6 +100,7 @@ const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, milesto
     orders: Array.isArray(app.orders) ? app.orders : [],
     attendance: Array.isArray(app.attendance) ? app.attendance : [],
     employees: Array.isArray(app.employees) ? app.employees : [],
+    supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
     overrides: Array.isArray(app.revenueBonusOverrides) ? app.revenueBonusOverrides : [],
     nowMs,
   })
@@ -110,6 +111,7 @@ const revenueStatusLabel = (record = {}) => {
   if (status === 'LIVE') return 'Tự động trực tiếp'
   if (status === 'ADMIN_ADJUSTED') return 'Admin đã chỉnh sửa'
   if (status === 'ADMIN_DELETED') return 'Admin đã xóa'
+  if (status === 'SUPPORT_EXCLUDED') return 'Hỗ trợ cửa hàng – không nhận thưởng'
   return statusLabel(record)
 }
 
@@ -118,6 +120,7 @@ const revenueStatusTone = (record = {}) => {
   if (status === 'LIVE') return 'blue'
   if (status === 'ADMIN_ADJUSTED') return 'orange'
   if (status === 'ADMIN_DELETED') return 'red'
+  if (status === 'SUPPORT_EXCLUDED') return 'orange'
   return statusTone(record)
 }
 
@@ -251,6 +254,8 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const [remotePollError, setRemotePollError] = useState(null)
   const [remoteLastSuccess, setRemoteLastSuccess] = useState(null)
   const [remoteRefreshVersion, setRemoteRefreshVersion] = useState(0)
+  const [remoteHistoryPeriod, setRemoteHistoryPeriod] = useState(null)
+  const [remoteHistoryError, setRemoteHistoryError] = useState(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [adminAction, setAdminAction] = useState(null)
   const [adminAmount, setAdminAmount] = useState('')
@@ -319,6 +324,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
             orders: app.orders,
             attendance: app.attendance,
             employees: app.employees,
+            supportTransfers: app.supportTransfers,
             revenueBonusOverrides: app.revenueBonusOverrides,
           },
           storeId: selectedStoreId,
@@ -333,6 +339,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
     app.employees,
     app.orders,
     app.revenueBonusOverrides,
+    app.supportTransfers,
     automaticMode,
     businessDate,
     milestoneProgramId,
@@ -371,6 +378,36 @@ export function RevenueBonusPage({ storeScoped = false }) {
     }
   }, [automaticMode, businessDate, remoteRefreshVersion, selectedStoreId, serverBacked])
 
+
+  useEffect(() => {
+    const automaticHistoryMonth = historyMonth >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE.slice(0, 7)
+    if (!selectedStoreId || !serverBacked || !automaticHistoryMonth) return undefined
+    let active = true
+    let busy = false
+    const scope = `${identifierKey(selectedStoreId)}:${historyMonth}`
+    const refresh = async () => {
+      if (busy || (typeof document !== 'undefined' && document.hidden)) return
+      busy = true
+      try {
+        const response = await apiGetRevenueBonusPeriod({ storeId: selectedStoreId, period: historyMonth })
+        if (active) {
+          setRemoteHistoryPeriod(response?.period || null)
+          setRemoteHistoryError(null)
+        }
+      } catch {
+        if (active) setRemoteHistoryError({ scope })
+      } finally {
+        busy = false
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(refresh, 10_000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [historyMonth, remoteRefreshVersion, selectedStoreId, serverBacked])
+
   const liveScope = `${identifierKey(selectedStoreId)}:${businessDate}`
   const matchingRemoteSnapshot = automaticMode && serverBacked && remoteLiveSnapshot
     && sameOperationalIdentifier(remoteLiveSnapshot.storeId, selectedStoreId)
@@ -381,6 +418,15 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const remoteLastSuccessAt = remoteLastSuccess?.scope === liveScope ? remoteLastSuccess.at : null
   const liveSnapshot = automaticMode ? (matchingRemoteSnapshot || localLiveSnapshot) : null
   const automaticLoading = automaticMode && serverBacked && !liveSnapshot && !remoteDataStale
+  const historyScope = `${identifierKey(selectedStoreId)}:${historyMonth}`
+  const automaticHistoryMonth = historyMonth >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE.slice(0, 7)
+  const matchingRemoteHistoryPeriod = automaticHistoryMonth && serverBacked && remoteHistoryPeriod
+    && sameOperationalIdentifier(remoteHistoryPeriod.storeId, selectedStoreId)
+    && String(remoteHistoryPeriod.period || '') === historyMonth
+    ? remoteHistoryPeriod
+    : null
+  const remoteHistoryUnavailable = automaticHistoryMonth && serverBacked
+    && remoteHistoryError?.scope === historyScope
   const visibleAutomaticAllocations = (Array.isArray(liveSnapshot?.allocations) ? liveSnapshot.allocations : [])
     .filter((allocation) => !privateAllocationView
       || sameOperationalIdentifier(entryEmployeeId(allocation), currentEmployeeId))
@@ -389,6 +435,8 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const poolTotal = automaticMode ? Number(liveSnapshot?.totalPoolVnd || 0) : savedPoolTotal
   const unallocatedTotal = automaticMode ? Number(liveSnapshot?.unallocatedVnd || 0) : savedUnallocatedTotal
   const allocatedTotal = automaticMode ? Number(liveSnapshot?.allocatedVnd || 0) : savedAllocationTotal
+  const adminAdjustmentTotal = automaticMode ? Number(liveSnapshot?.adminAdjustmentVnd || 0) : 0
+  const excludedSupportShareTotal = automaticMode ? Number(liveSnapshot?.excludedSupportShareVnd || 0) : 0
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
   const currentRevenueTier = revenueProgram
     ? selectRevenueBonusTier({
@@ -452,6 +500,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
       || historyMonth < AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE.slice(0, 7)) {
       return { days: [], allocations: [] }
     }
+    if (serverBacked) return matchingRemoteHistoryPeriod || { days: [], allocations: [] }
     return calculateAutomaticRevenueBonusPeriod({
       storeId: selectedStoreId,
       period: historyMonth,
@@ -460,6 +509,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
       orders: Array.isArray(app.orders) ? app.orders : [],
       attendance: Array.isArray(app.attendance) ? app.attendance : [],
       employees: Array.isArray(app.employees) ? app.employees : [],
+      supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
       overrides: Array.isArray(app.revenueBonusOverrides) ? app.revenueBonusOverrides : [],
       nowMs,
     })
@@ -468,11 +518,14 @@ export function RevenueBonusPage({ storeScoped = false }) {
     app.employees,
     app.orders,
     app.revenueBonusOverrides,
+    app.supportTransfers,
     historyMonth,
+    matchingRemoteHistoryPeriod,
     milestoneProgramId,
     nowMs,
     revenueProgram,
     selectedStoreId,
+    serverBacked,
   ])
   const automaticHistoryRows = useMemo(() => automaticHistory.allocations.map((allocation) => ({
     ...allocation,
@@ -635,8 +688,9 @@ export function RevenueBonusPage({ storeScoped = false }) {
       </div> : <div className="metric-grid compensation-metrics compensation-metrics--revenue-team">
         <MetricCard compact label="DOANH THU ĐỦ ĐIỀU KIỆN" value={metricValue(money(revenueTotal))} helper={liveDataLabel} icon={Store} tone="green" />
         <MetricCard compact label="TỔNG QUỸ THƯỞNG" value={metricValue(money(poolTotal))} helper={automaticMode ? 'Gồm thưởng tỷ lệ và mốc cao nhất' : ''} icon={CircleDollarSign} tone="blue" />
-        <MetricCard compact label="ĐÃ PHÂN BỔ" value={metricValue(money(allocatedTotal))} helper={Number(liveSnapshot?.adminAdjustmentVnd || 0) !== 0 ? 'Đã gồm điều chỉnh của Admin' : 'Tự động theo giờ thực tế'} icon={WalletCards} tone="green" />
-        <MetricCard compact label="CHƯA PHÂN BỔ" value={metricValue(money(unallocatedTotal))} helper={unallocatedTotal > 0 ? 'Thiếu thời gian làm việc hợp lệ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
+        <MetricCard compact label="ĐÃ PHÂN BỔ HIỆU LỰC" value={metricValue(money(allocatedTotal))} helper={adminAdjustmentTotal !== 0 ? 'Đã gồm điều chỉnh của Admin' : 'Tự động theo giờ thực tế'} icon={WalletCards} tone="green" />
+        <MetricCard compact label="CHƯA PHÂN BỔ THEO CÔNG THỨC" value={metricValue(money(unallocatedTotal))} helper={excludedSupportShareTotal > 0 ? 'Phần của giờ hỗ trợ được giữ lại, không trả cho người hỗ trợ' : unallocatedTotal > 0 ? 'Thiếu thời gian làm việc hợp lệ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
+        <MetricCard compact label="ĐIỀU CHỈNH ADMIN" value={metricValue(money(adminAdjustmentTotal))} helper={adminAdjustmentTotal === 0 ? 'Chưa có điều chỉnh' : 'Chênh lệch so với kết quả tự động'} icon={Pencil} tone={adminAdjustmentTotal === 0 ? 'blue' : 'orange'} />
         <MetricCard compact label="TỔNG GIỜ LÀM CỬA HÀNG" value={formatWorkedHours(totalStoreHours)} helper={`${attendanceCount} ca trong ngày`} icon={Clock3} tone="orange" />
       </div>}
 
@@ -667,7 +721,9 @@ export function RevenueBonusPage({ storeScoped = false }) {
       </Card>
 
       {unallocatedTotal > 0 && privileged && <InfoNote tone="orange">
-        Có quỹ chưa phân bổ do thiếu thời gian làm việc hợp lệ. Hệ thống sẽ tự phân bổ lại khi dữ liệu chấm công được cập nhật.
+        {excludedSupportShareTotal > 0
+          ? `${money(excludedSupportShareTotal)} thuộc tỷ trọng giờ của nhân viên điều chuyển hỗ trợ: giờ vẫn nằm trong mẫu số nhưng nhân viên hỗ trợ không nhận thưởng doanh thu.`
+          : 'Có quỹ chưa phân bổ do thiếu thời gian làm việc hợp lệ. Hệ thống sẽ tự phân bổ lại khi dữ liệu chấm công được cập nhật.'}
       </InfoNote>}
 
       <Card title={privateAllocationView ? 'Chi tiết thưởng của tôi' : 'Phân bổ thưởng tự động theo nhân viên'} action={<Badge tone={automaticMode ? 'green' : 'blue'}>{automaticMode ? 'Cập nhật trực tiếp' : `${allocations.length} dòng lịch sử`}</Badge>}>
@@ -690,7 +746,11 @@ export function RevenueBonusPage({ storeScoped = false }) {
               <td>{allocation.weightPercent != null ? `${Number(allocation.weightPercent).toFixed(2)}%` : allocation.weight != null ? `${(Number(allocation.weight) * 100).toFixed(2)}%` : '—'}</td>
               <td>{automaticMode ? money(automaticAmount) : '—'}</td>
               <td><strong>{money(effectiveAmount)}</strong>{automaticMode && effectiveAmount !== automaticAmount && <small className="compensation-subline">Chênh lệch {money(effectiveAmount - automaticAmount)}</small>}</td>
-              <td><Badge tone={revenueStatusTone(allocation)}>{revenueStatusLabel(allocation)}</Badge>{allocation.overrideReason && <small className="compensation-subline">{allocation.overrideReason}</small>}</td>
+              <td>
+                <Badge tone={revenueStatusTone(allocation)}>{revenueStatusLabel(allocation)}</Badge>
+                {allocation.supportTransferred && <small className="compensation-subline">Giờ làm vẫn được tính vào mẫu số chia thưởng.</small>}
+                {allocation.overrideReason && <small className="compensation-subline">{allocation.overrideReason}</small>}
+              </td>
               {isAdmin && automaticMode && <td><div className="compensation-row-actions revenue-bonus-admin-actions">
                 <Button variant="outline" icon={Pencil} disabled={!serverBacked || Boolean(busyKey)} onClick={() => openAdminAction(allocation, 'edit')}>Sửa</Button>
                 {!deleted && <Button variant="danger" icon={Trash2} disabled={!serverBacked || Boolean(busyKey)} onClick={() => openAdminAction(allocation, 'delete')}>Xóa</Button>}
@@ -702,6 +762,10 @@ export function RevenueBonusPage({ storeScoped = false }) {
           </td></tr>}</tbody>
         </TableWrap>
       </Card>
+
+      {remoteHistoryUnavailable && <InfoNote tone="red">
+        Không thể cập nhật lịch sử thưởng tự động từ máy chủ. Hệ thống sẽ tự thử lại; số liệu lịch sử cũ không được dùng để ước tính thay thế.
+      </InfoNote>}
 
       <RevenueHistorySections
         collisions={legacyHistoryProjection.collisions}

@@ -2,11 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RevenueBonusPage } from './RevenueBonusPage'
 
-const mocked = vi.hoisted(() => ({ app: {}, liveRevenue: vi.fn() }))
+const mocked = vi.hoisted(() => ({ app: {}, liveRevenue: vi.fn(), periodRevenue: vi.fn() }))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 vi.mock('../../services/idosiApi', () => ({
   apiGetRevenueBonusLive: (payload) => mocked.liveRevenue(payload),
+  apiGetRevenueBonusPeriod: (payload) => mocked.periodRevenue(payload),
 }))
 
 const stores = [{ id: 'CH001', name: 'Dosii NTL', code: 'DOSII-NTL' }]
@@ -88,6 +89,10 @@ describe('RevenueBonusPage automatic mode', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
     mocked.liveRevenue.mockReset()
+    mocked.periodRevenue.mockReset()
+    mocked.periodRevenue.mockImplementation(({ storeId, period }) => Promise.resolve({
+      period: { storeId, period, days: [], allocations: [] },
+    }))
     mocked.app = appFor()
   })
 
