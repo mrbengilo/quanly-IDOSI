@@ -736,7 +736,14 @@ export class SqliteD1 {
     if (!databasePath) throw new Error('Thiếu đường dẫn IDOSI_DB_PATH.')
     mkdirSync(dirname(databasePath), { recursive: true })
     this.database = new DatabaseSync(databasePath)
-    this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
+    this.database.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
+    PRAGMA cache_size = -32768;
+    PRAGMA mmap_size = 67108864;
+    PRAGMA temp_store = MEMORY;
+  `)
     applyMigrations(this.database, migrationsDirectory)
     this.dataFixResult = applyVpsDataFixes(this.database)
     if (this.dataFixResult.status === 'applied') {
