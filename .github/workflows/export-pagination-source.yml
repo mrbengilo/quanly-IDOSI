@@ -29,8 +29,8 @@ jobs:
             --exclude=node_modules \
             --exclude=dist \
             --exclude=coverage \
-            --exclude=pagination-source.tar.gz \
-            -czf pagination-source.tar.gz .
+            -czf /tmp/pagination-source.tar.gz .
+          mv /tmp/pagination-source.tar.gz pagination-source.tar.gz
 
       - name: Upload source snapshot
         uses: actions/upload-artifact@v6
