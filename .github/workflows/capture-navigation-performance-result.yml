@@ -1,0 +1,79 @@
+name: Capture navigation performance verification result
+
+on:
+  push:
+    branches:
+      - ops/capture-navigation-performance-result
+    paths:
+      - .github/workflows/capture-navigation-performance-result.yml
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ops/capture-navigation-performance-result
+          fetch-depth: 0
+
+      - name: Wait for latest main verification and capture aggregate report
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ops-results/download
+          deadline=$((SECONDS + 900))
+          run_id=''
+          conclusion=''
+          status=''
+          while (( SECONDS < deadline )); do
+            read -r run_id status conclusion < <(
+              gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow verify-navigation-performance.yml \
+                --branch main --limit 1 \
+                --json databaseId,status,conclusion \
+                --jq '.[0] | [.databaseId,.status,(.conclusion // "")] | @tsv'
+            )
+            printf 'run_id=%s status=%s conclusion=%s\n' "$run_id" "$status" "$conclusion"
+            if [[ "$status" == 'completed' ]]; then break; fi
+            sleep 10
+          done
+          [[ -n "$run_id" && "$status" == 'completed' ]] || {
+            echo 'Navigation performance verification did not finish in time.' >&2
+            exit 1
+          }
+          {
+            echo "verification_run_id=$run_id"
+            echo "verification_status=$status"
+            echo "verification_conclusion=$conclusion"
+            echo "captured_at=$(date -u +%FT%TZ)"
+          } > ops-results/navigation-performance-metadata.txt
+          if [[ "$conclusion" == 'success' ]]; then
+            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
+              --name idosi-navigation-performance-report \
+              --dir ops-results/download
+            report="$(find ops-results/download -type f -name 'navigation-performance.txt' -print -quit)"
+            [[ -n "$report" ]]
+            cp "$report" ops-results/navigation-performance-latest.txt
+          else
+            gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed \
+              > ops-results/navigation-performance-latest.txt || true
+          fi
+          rm -rf ops-results/download
+
+      - name: Remove one-shot workflow and commit result
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git rm .github/workflows/capture-navigation-performance-result.yml
+          git add ops-results/navigation-performance-metadata.txt ops-results/navigation-performance-latest.txt
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git commit -m 'ops: capture navigation performance verification result'
+          git push origin HEAD:ops/capture-navigation-performance-result
