@@ -33,11 +33,12 @@ jobs:
                   for line_no in range(start, end):
                       print(f'{line_no + 1:06d}: {lines[line_no]}')
 
-          print_block('server/worker.js', 'const loadStateCollections = async', 20, 180)
-          print_block('server/worker.js', 'const migrateLegacyAccountAvatars = async', 30, 220)
-          print_block('server/worker.js', 'const getEmployeeAccountAvatar = async', 100, 220)
-          print_block('server/worker.js', 'const getIdentityImage = async', 40, 180)
-          print_block('server/vps/sqlite-d1.mjs', 'constructor(', 30, 100)
-          print_block('src/services/employeeAvatarCache.js', 'const avatarCache', 10, 260)
-          print_block('server/worker.test.js', 'EMPLOYEE_AVATAR_NOT_FOUND', 100, 180)
+          print_block('server/worker.js', 'const requireSession = async', 20, 180)
+          print_block('server/worker.js', 'const loadStateCollections = async', 20, 80)
+          print_block('server/worker.js', 'const getEmployeeAccountAvatar = async', 110, 160)
+          print_block('server/worker.js', 'const getIdentityImage = async', 10, 110)
+          print_block('server/vps/sqlite-d1.mjs', 'constructor({ databasePath', 20, 80)
+          print_block('src/services/employeeAvatarCache.js', 'const employeeAvatarCache', 10, 120)
+          print_block('src/components/UI.jsx', 'loadEmployeeAvatarUrl', 20, 100)
+          print_block('server/worker.test.js', 'EMPLOYEE_AVATAR_NOT_FOUND', 30, 70)
           PY
