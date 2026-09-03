@@ -35,6 +35,10 @@ vi.mock('./pages/admin/OrderInformationSettingsPage', () => ({
   OrderInformationSettingsPage: () => <div>Cài đặt thông tin đơn hàng route</div>,
 }))
 
+vi.mock('./pages/admin/DataRestorePage', () => ({
+  DataRestorePage: () => <div>Khôi phục dữ liệu route</div>,
+}))
+
 vi.mock('./pages/admin/AdminWorkRegistrationSchedulePage', () => ({
   AdminWorkRegistrationSchedulePage: () => <div>Lịch đăng ký HTKD và KVP route</div>,
 }))
@@ -186,6 +190,17 @@ describe('App role routes', () => {
     expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'cashflow' })
     expect(screen.queryByText('Admin cashflow')).toBeNull()
   })
+
+  it('loads the reset projection before mounting the Admin data restore workspace', async () => {
+  mocked.session = { role: 'admin', name: 'Admin' }
+  mocked.remoteDataReady = false
+  mocked.remoteProjection = { kind: 'global', storeId: '', screen: 'stores' }
+  render(<MemoryRouter initialEntries={['/admin/data-restore']}><CurrentRoute /><App /></MemoryRouter>)
+
+  expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+  expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'reset' })
+  expect(screen.queryByText('Khôi phục dữ liệu route')).toBeNull()
+})
 
   it('loads the global projection on demand for a compact Admin detail route', async () => {
     mocked.session = { role: 'admin', name: 'Admin' }
