@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-const mainSource = readFileSync(new URL('./main.jsx', import.meta.url), 'utf8')
-const scheduleCss = readFileSync(new URL('./supportSchedule.css', import.meta.url), 'utf8')
+const mainSource = readFileSync(resolve(process.cwd(), 'src/main.jsx'), 'utf8')
+const scheduleCss = readFileSync(resolve(process.cwd(), 'src/supportSchedule.css'), 'utf8')
 
 describe('support schedule preset styles', () => {
   it('loads the input visibility override after the global stylesheet', () => {
