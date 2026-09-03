@@ -19,9 +19,6 @@ jobs:
     if: github.repository == 'mrbengilo/quanly-IDOSI'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment:
-      name: production
-      url: https://idosi.io.vn
     steps:
       - name: Configure production SSH
         env:
