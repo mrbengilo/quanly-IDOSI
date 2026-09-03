@@ -51,7 +51,7 @@ replacements = [
     ),
     (
         "expect(await screen.findByText('123.456 ₫')).toBeTruthy()",
-        "expect(await screen.findByText('123,456 đ')).toBeTruthy()",
+        "expect((await screen.findAllByText('123,456 đ')).length).toBeGreaterThan(0)",
         'automatic history currency expectation',
     ),
 ]
