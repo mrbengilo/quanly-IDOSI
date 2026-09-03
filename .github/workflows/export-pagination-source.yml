@@ -25,13 +25,13 @@ jobs:
       - name: Package repository source
         run: |
           set -Eeuo pipefail
-          tar --exclude=.git --exclude=node_modules --exclude=dist -czf pagination-source.tar.gz .
-          sha256sum pagination-source.tar.gz
+          tar --exclude=.git --exclude=node_modules --exclude=dist -czf /tmp/pagination-source.tar.gz .
+          sha256sum /tmp/pagination-source.tar.gz
 
       - name: Upload repository source
         uses: actions/upload-artifact@v6
         with:
           name: pagination-source
-          path: pagination-source.tar.gz
+          path: /tmp/pagination-source.tar.gz
           if-no-files-found: error
           retention-days: 1
