@@ -1,0 +1,225 @@
+name: Diagnose IDOSI navigation latency
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/diagnose-navigation-latency.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-navigation-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  diagnose:
+    if: github.repository == 'mrbengilo/quanly-IDOSI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - name: Checkout diagnostic source
+        uses: actions/checkout@v6
+
+      - name: Confirm production is the previous verified main release
+        if: github.event_name == 'push'
+        env:
+          EXPECTED_SHA: ${{ github.event.before }}
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const expected = process.env.EXPECTED_SHA
+          if (!/^[0-9a-f]{40}$/u.test(expected || '')) throw new Error('Missing previous main SHA')
+          const response = await fetch(`https://idosi.io.vn/api/release?_diagnostic=${Date.now()}`, {
+            headers: { 'Cache-Control': 'no-cache' },
+          })
+          if (!response.ok) throw new Error(`Release endpoint returned ${response.status}`)
+          const payload = await response.json()
+          const actual = payload?.data?.releaseSha || payload?.releaseSha || ''
+          if (actual !== expected) throw new Error(`Production SHA mismatch: expected ${expected}, got ${actual}`)
+          console.log(`production_release_sha=${actual}`)
+          NODE
+
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST production secret}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER production secret}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY production secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS production secret}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Measure production navigation dependencies
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          export LC_ALL=C
+          ROOT="${IDOSI_ROOT:-/opt/idosi}"
+          COMPOSE_FILE="${IDOSI_COMPOSE_FILE:-$ROOT/deploy/vps/compose.yml}"
+          LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
+          exec 9>"$LOCK_FILE"
+          flock -n 9 || { echo 'diagnostic_aborted=deployment_or_rollback_active'; exit 1; }
+          compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+          section() { printf '\n### %s\n' "$1"; }
+
+          section host_and_containers
+          printf 'checked_at=%s\n' "$(TZ=Asia/Ho_Chi_Minh date '+%Y-%m-%dT%H:%M:%S%z')"
+          printf 'vcpus=%s loadavg=%s\n' "$(getconf _NPROCESSORS_ONLN)" "$(tr ' ' ',' </proc/loadavg)"
+          free -m
+          df -hT / "$ROOT" | awk 'NR == 1 || !seen[$1]++'
+          compose ps
+          mapfile -t container_ids < <(compose ps -q --all)
+          if (( ${#container_ids[@]} > 0 )); then
+            docker stats --no-stream --format 'container={{.Name}} cpu={{.CPUPerc}} memory={{.MemUsage}} memory_percent={{.MemPerc}} block_io={{.BlockIO}} pids={{.PIDs}}' "${container_ids[@]}"
+          fi
+
+          section public_transport
+          for round in 1 2 3 4 5; do
+            curl -sS --max-time 20 -o /dev/null \
+              -w "round=$round route=/ code=%{http_code} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} bytes=%{size_download}\n" \
+              "https://idosi.io.vn/?_latency_probe=$round"
+            curl -sS --max-time 20 -o /dev/null \
+              -w "round=$round route=/api/health code=%{http_code} dns=%{time_namelookup} connect=%{time_connect} tls=%{time_appconnect} ttfb=%{time_starttransfer} total=%{time_total} bytes=%{size_download}\n" \
+              "https://idosi.io.vn/api/health?_latency_probe=$round"
+          done
+
+          section api_request_latency_last_24h
+          app_id="$(compose ps -q app)"
+          [[ -n "$app_id" ]] || { echo 'app_container=missing'; exit 1; }
+          log_file="$(mktemp)"
+          trap 'rm -f "$log_file"' EXIT
+          docker logs --since=24h --tail=100000 "$app_id" >"$log_file" 2>&1 || true
+          python3 - "$log_file" <<'PY'
+          import json, math, sys
+          from collections import defaultdict
+
+          rows = []
+          with open(sys.argv[1], 'r', encoding='utf-8', errors='replace') as handle:
+              for raw in handle:
+                  start = raw.find('{')
+                  if start < 0:
+                      continue
+                  try:
+                      value = json.loads(raw[start:])
+                  except Exception:
+                      continue
+                  if value.get('event') == 'idosi.api.request':
+                      rows.append(value)
+          print(f'api_log_rows={len(rows)}')
+
+          def num(value):
+              try:
+                  result = float(value)
+                  return result if math.isfinite(result) else 0.0
+              except Exception:
+                  return 0.0
+
+          def pct(values, q):
+              values = sorted(num(value) for value in values)
+              if not values:
+                  return 0.0
+              rank = (len(values) - 1) * q
+              lo, hi = math.floor(rank), math.ceil(rank)
+              return values[lo] if lo == hi else values[lo] + (values[hi] - values[lo]) * (rank - lo)
+
+          groups = defaultdict(list)
+          for row in rows:
+              groups[(row.get('method', 'GET'), row.get('path', 'unknown'))].append(row)
+          print('method\tpath\tcount\tge2s\tge5s\tp50_ms\tp95_ms\tp99_ms\tmax_ms\thandler_p95\tdb_p95\tserialize_p95\tresponse_p95_kib\tstatements_p95')
+          ranked = sorted(groups.items(), key=lambda item: (-pct([r.get('durationMs') for r in item[1]], .95), -len(item[1])))
+          for (method, path), items in ranked:
+              durations = [r.get('durationMs') for r in items]
+              print('\t'.join([
+                  str(method), str(path), str(len(items)),
+                  str(sum(num(v) >= 2000 for v in durations)), str(sum(num(v) >= 5000 for v in durations)),
+                  f'{pct(durations,.5):.1f}', f'{pct(durations,.95):.1f}', f'{pct(durations,.99):.1f}', f'{max(map(num,durations)):.1f}',
+                  f"{pct([r.get('timingMs',{}).get('handler') for r in items],.95):.1f}",
+                  f"{pct([r.get('database',{}).get('totalMs') for r in items],.95):.1f}",
+                  f"{pct([r.get('timingMs',{}).get('serialize') for r in items],.95):.1f}",
+                  f"{pct([num(r.get('responseBytes'))/1024 for r in items],.95):.1f}",
+                  f"{pct([r.get('database',{}).get('statements') for r in items],.95):.1f}",
+              ]))
+          print('\nslowest_requests_aggregate_safe')
+          print('timestamp\tmethod\tpath\tstatus\tduration_ms\thandler_ms\tdb_ms\tserialize_ms\tresponse_kib\tstatements')
+          for row in sorted(rows, key=lambda item: num(item.get('durationMs')), reverse=True)[:30]:
+              print('\t'.join([
+                  str(row.get('timestamp','')), str(row.get('method','')), str(row.get('path','')), str(row.get('status','')),
+                  f"{num(row.get('durationMs')):.1f}", f"{num(row.get('timingMs',{}).get('handler')):.1f}",
+                  f"{num(row.get('database',{}).get('totalMs')):.1f}", f"{num(row.get('timingMs',{}).get('serialize')):.1f}",
+                  f"{num(row.get('responseBytes'))/1024:.1f}", str(row.get('database',{}).get('statements',0)),
+              ]))
+          PY
+
+          section sqlite_footprint
+          compose exec -T app node <<'NODE'
+          import { statSync } from 'node:fs'
+          import { DatabaseSync } from 'node:sqlite'
+          const path = process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
+          const db = new DatabaseSync(path, { readOnly: true })
+          db.exec('PRAGMA query_only=ON')
+          console.log(`database_bytes=${statSync(path).size}`)
+          for (const pragma of ['journal_mode','synchronous','cache_size','page_size','page_count','freelist_count','wal_autocheckpoint','mmap_size','busy_timeout','temp_store']) {
+            console.log(`pragma_${pragma}=${JSON.stringify(db.prepare(`PRAGMA ${pragma}`).get())}`)
+          }
+          console.log('collection\trows\ttotal_kib\tavg_bytes\tmax_kib\topen_rows')
+          for (const row of db.prepare(`
+            SELECT collection_key, COUNT(*) AS rows, COALESCE(SUM(value_bytes),0) AS bytes,
+                   COALESCE(AVG(value_bytes),0) AS average, COALESCE(MAX(value_bytes),0) AS maximum,
+                   SUM(CASE WHEN open_flag=1 THEN 1 ELSE 0 END) AS open_rows
+            FROM state_entities WHERE scope_key='global'
+            GROUP BY collection_key ORDER BY bytes DESC, rows DESC
+          `).all()) {
+            console.log(`${row.collection_key}\t${row.rows}\t${(Number(row.bytes)/1024).toFixed(1)}\t${Number(row.average).toFixed(1)}\t${(Number(row.maximum)/1024).toFixed(1)}\t${row.open_rows}`)
+          }
+          console.log('state_entity_indexes=' + JSON.stringify(db.prepare("PRAGMA index_list('state_entities')").all()))
+          console.log('global_state=' + JSON.stringify(db.prepare("SELECT version,length(value_json) AS inline_bytes,updated_at FROM app_state WHERE scope_key='global'").get()))
+          db.close()
+          NODE
+
+          section loopback_concurrency
+          compose exec -T app node <<'NODE'
+          for (let batch = 1; batch <= 3; batch += 1) {
+            const started = performance.now()
+            const values = await Promise.all(Array.from({ length: 20 }, async (_, index) => {
+              const route = index % 2 ? '/api/health' : '/api/release'
+              const requestStarted = performance.now()
+              const response = await fetch(`http://127.0.0.1:3000${route}?burst=${batch}-${index}`)
+              await response.arrayBuffer()
+              return performance.now() - requestStarted
+            }))
+            values.sort((a,b)=>a-b)
+            console.log(`batch=${batch} total_ms=${(performance.now()-started).toFixed(1)} p50_ms=${values[10].toFixed(1)} p95_ms=${values[19].toFixed(1)} max_ms=${values.at(-1).toFixed(1)}`)
+          }
+          NODE
+
+          section diagnostic_complete
+          echo 'mutations=none output=aggregate_only'
+          REMOTE
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
