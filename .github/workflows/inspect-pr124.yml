@@ -1,0 +1,28 @@
+name: Inspect PR 124 internals
+
+on:
+  push:
+    branches:
+      - feat/automatic-live-revenue-bonus
+    paths:
+      - .github/workflows/inspect-pr124.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/automatic-live-revenue-bonus
+      - name: Inspect state scoping and transfer helpers
+        shell: bash
+        run: |
+          echo '===== STATE SCOPE 2680-2990 ====='
+          sed -n '2680,2990p' server/worker.js
+          echo '===== SUPPORT TRANSFER REFERENCES ====='
+          grep -n -C 8 -E 'linkedSupportTransferForAttendance|supportTransferId|fromStoreId|toStoreId' server/worker.js | head -n 500
+          echo '===== REVENUE OVERRIDE REFERENCES ====='
+          grep -n -C 8 'revenueBonusOverrides' server/worker.js | head -n 500
