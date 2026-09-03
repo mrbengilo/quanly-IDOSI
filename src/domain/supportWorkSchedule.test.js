@@ -1,21 +1,63 @@
 import { describe, expect, it } from 'vitest'
 import {
   SUPPORT_SCHEDULE_PRESETS,
+  canConfigureSupportSchedulePresets,
+  normalizeSupportSchedulePresets,
   supportScheduleDays,
+  supportSchedulePresetsEqual,
   shiftSupportScheduleAnchor,
   supportScheduleEmploymentMode,
   supportScheduleRange,
   supportSchedulesForView,
+  validateSupportSchedulePresets,
 } from './supportWorkSchedule'
 
 describe('support work schedule', () => {
-  it('provides the established quick-select work periods without removing custom schedules', () => {
+  it('provides the configured default quick-select work periods without removing custom schedules', () => {
     expect(SUPPORT_SCHEDULE_PRESETS).toEqual([
-      { id: 'morning', name: 'Ca sáng', start: '08:00', end: '12:00' },
+      { id: 'morning', name: 'Ca sáng', start: '08:30', end: '12:00' },
       { id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' },
-      { id: 'office-hours', name: 'Giờ hành chính', start: '08:00', end: '17:30' },
+      { id: 'office-hours', name: 'Giờ hành chính', start: '08:30', end: '17:30' },
     ])
     expect(Object.isFrozen(SUPPORT_SCHEDULE_PRESETS)).toBe(true)
+    expect(SUPPORT_SCHEDULE_PRESETS.every(Object.isFrozen)).toBe(true)
+  })
+
+  it('normalizes persisted presets in the fixed display order and falls back safely for invalid rows', () => {
+    expect(normalizeSupportSchedulePresets([
+      { id: 'office-hours', name: 'Tên không được tin cậy', start: '09:00', end: '18:00', version: 2 },
+      { id: 'morning', start: '09:15', end: '12:15' },
+      { id: 'afternoon', start: '18:00', end: '13:00' },
+    ])).toEqual([
+      { id: 'morning', name: 'Ca sáng', start: '09:15', end: '12:15' },
+      { id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' },
+      { id: 'office-hours', name: 'Giờ hành chính', start: '09:00', end: '18:00', version: 2 },
+    ])
+  })
+
+  it('validates all three periods and compares only their effective times', () => {
+    const submitted = [
+      { id: 'morning', name: 'Ca sáng', start: '08:45', end: '12:00' },
+      { id: 'afternoon', name: 'Ca chiều', start: '13:15', end: '17:30' },
+      { id: 'office-hours', name: 'Giờ hành chính', start: '08:45', end: '17:45' },
+    ]
+    expect(validateSupportSchedulePresets(submitted)).toEqual({ ok: true, presets: submitted })
+    expect(validateSupportSchedulePresets(submitted.map((preset) => (
+      preset.id === 'morning' ? { ...preset, end: '08:30' } : preset
+    )))).toMatchObject({ ok: false })
+    expect(validateSupportSchedulePresets(submitted.slice(0, 2))).toMatchObject({ ok: false })
+    expect(supportSchedulePresetsEqual(submitted, submitted.map((preset) => ({ ...preset, version: 99 })))).toBe(true)
+    expect(supportSchedulePresetsEqual(submitted, SUPPORT_SCHEDULE_PRESETS)).toBe(false)
+  })
+
+  it('authorizes Admin, HTKD and Office employees but blocks store accounts', () => {
+    expect(canConfigureSupportSchedulePresets({ role: 'admin' })).toBe(true)
+    expect(canConfigureSupportSchedulePresets({ role: 'business_support' })).toBe(true)
+    expect(canConfigureSupportSchedulePresets({ role: 'employee', employee: { unit: 'office' } })).toBe(true)
+    expect(canConfigureSupportSchedulePresets({ role: 'employee', employee: { department: 'Khối văn phòng' } })).toBe(true)
+    expect(canConfigureSupportSchedulePresets({ role: 'employee', employee: { unit: 'store' } })).toBe(false)
+    expect(canConfigureSupportSchedulePresets({ role: 'manager' })).toBe(true)
+    expect(canConfigureSupportSchedulePresets({ role: 'store_manager' })).toBe(false)
   })
 
   it('uses named shifts for Part-Time and intern profiles', () => {

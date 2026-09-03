@@ -4,8 +4,9 @@ import {
   STAFF_WORK_CATALOG_SEED_VERSION,
 } from '../domain/compensationPolicies'
 import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'
+import { SUPPORT_SCHEDULE_PRESETS, normalizeSupportSchedulePresets } from '../domain/supportWorkSchedule'
 
-export const DOMAIN_SCHEMA_VERSION = 6
+export const DOMAIN_SCHEMA_VERSION = 7
 
 const pad = (value, length = 5) => String(value).padStart(length, '0')
 
@@ -112,6 +113,8 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   auditLogs: [],
   deletedStores: [],
   deletedEmployees: [],
+  supportSchedulePresets: SUPPORT_SCHEDULE_PRESETS.map((preset) => ({ ...preset })),
+  supportSchedulePresetHistory: [],
   supportTransfers: [],
   idempotencyKeys: [],
 })
@@ -175,6 +178,8 @@ export const migrateDomainState = (stored, context) => {
     auditLogs: mergeArray(stored, defaults, 'auditLogs'),
     deletedStores: mergeArray(stored, defaults, 'deletedStores'),
     deletedEmployees: mergeArray(stored, defaults, 'deletedEmployees'),
+    supportSchedulePresets: normalizeSupportSchedulePresets(mergeArray(stored, defaults, 'supportSchedulePresets')),
+    supportSchedulePresetHistory: mergeArray(stored, defaults, 'supportSchedulePresetHistory'),
     supportTransfers: mergeArray(stored, defaults, 'supportTransfers'),
     idempotencyKeys: mergeArray(stored, defaults, 'idempotencyKeys'),
     policies: {

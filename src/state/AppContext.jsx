@@ -53,6 +53,13 @@ import {
   resolveAttendanceWorkingTime,
 } from '../domain/attendanceWorkingTime'
 import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'
+import {
+  SUPPORT_SCHEDULE_PRESETS,
+  canConfigureSupportSchedulePresets,
+  normalizeSupportSchedulePresets,
+  supportSchedulePresetsEqual,
+  validateSupportSchedulePresets,
+} from '../domain/supportWorkSchedule'
 import { resolveExactlyOneActiveStoreManager } from '../domain/managerRevenueBonus'
 import {
   apiBootstrapState,
@@ -247,7 +254,7 @@ const revenueBonusView = (dailyRecords = [], allocationRecords = []) => {
 }
 
 const REMOTE_ARRAY_KEYS = [
-  'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'officeAdjustments',
+  'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'officeAdjustments',
   'orders', 'orderInformationOptions', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
   'storeEmployeeSalaryConfigs', 'workCatalogItems', 'workCatalogProgress',
@@ -891,6 +898,7 @@ export const hydrateState = (stored) => {
 export const createLocalSystemResetState = (current = {}) => {
   const clearedState = createInitialState()
   REMOTE_ARRAY_KEYS.forEach((key) => { clearedState[key] = [] })
+  clearedState.supportSchedulePresets = SUPPORT_SCHEDULE_PRESETS.map((preset) => ({ ...preset }))
   clearedState.policyHistory = []
   clearedState.idempotencyKeys = []
   clearedState.orderCounters = {}
@@ -1533,7 +1541,10 @@ const remoteCommandResultPatches = (type, result) => {
   }
   if (type.startsWith('schedule.')) add('schedule', result.assignment || result.assignments)
   if (type.startsWith('support_work.')) add('supportWorkAssignments', result.assignment || result.assignments)
-  if (type.startsWith('support_schedule.')) add('supportWorkSchedules', result.schedule || result.schedules)
+  if (type === 'support_schedule.presets.update') {
+    if (Array.isArray(result.presets)) replacements.set('supportSchedulePresets', result.presets)
+    add('supportSchedulePresetHistory', result.history)
+  } else if (type.startsWith('support_schedule.')) add('supportWorkSchedules', result.schedule || result.schedules)
   if (type === 'task.done' || type === 'task.set_done') add('tasks', result.task)
   if (type === 'task.progress.save') add('tasks', result.tasks)
   return { patches, replacements }
@@ -3410,6 +3421,73 @@ export function AppProvider({ children }) {
     }))
     notify(payload.submit ? 'Đã gửi kết quả công việc.' : 'Đã lưu tiến độ công việc.')
     return { ok: true, assignment: updated, ...(notification ? { notification } : {}) }
+  }
+
+  const saveSupportSchedulePresets = async (records = []) => {
+    const actorRole = normalizeAuthRole(state.session?.role)
+    const actorEmployeeId = String(state.session?.employeeId || '').trim()
+    const actorEmployee = matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, actorEmployeeId))
+    if (!canConfigureSupportSchedulePresets({ role: actorRole, employee: actorEmployee })) {
+      const message = 'Tài khoản không có quyền thay đổi cấu hình khung giờ.'
+      notify(message, 'info')
+      return { ok: false, message }
+    }
+    const validation = validateSupportSchedulePresets(records)
+    if (!validation.ok) {
+      notify(validation.message, 'info')
+      return validation
+    }
+    const previous = normalizeSupportSchedulePresets(state.supportSchedulePresets)
+    if (supportSchedulePresetsEqual(previous, validation.presets)) {
+      return { ok: true, existing: true, presets: previous }
+    }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('support_schedule.presets.update', { presets: validation.presets })
+        notify('Đã cập nhật cấu hình khung giờ.')
+        return { ok: true, presets: result.presets, history: result.history }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật cấu hình khung giờ.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const version = Math.max(0, ...previous.map((preset) => Number(preset.version) || 0)) + 1
+    const presets = validation.presets.map((preset) => ({
+      ...preset,
+      version,
+      updatedAt: timestamp,
+      updatedBy: actor,
+    }))
+    const history = {
+      id: uid('SWSPH'),
+      action: 'Cập nhật khung giờ nhanh',
+      before: previous,
+      after: presets,
+      version,
+      recordedAt: timestamp,
+      recordedBy: actor,
+    }
+    setState((current) => ({
+      ...current,
+      supportSchedulePresets: presets,
+      supportSchedulePresetHistory: [history, ...(current.supportSchedulePresetHistory || [])],
+      auditLogs: [{
+        id: uid('AUD'),
+        entity: 'support-schedule-presets',
+        entityId: 'global',
+        action: 'update',
+        before: previous,
+        after: presets,
+        actor,
+        createdAt: timestamp,
+      }, ...(current.auditLogs || [])],
+      stateVersion: Math.max(1, Number(current.stateVersion) || 1) + 1,
+    }))
+    notify('Đã cập nhật cấu hình khung giờ.')
+    return { ok: true, presets, history }
   }
 
   const saveBusinessSupportSchedule = async (payload = {}) => {
@@ -6292,6 +6370,7 @@ export function AppProvider({ children }) {
     replaceTasks,
     assignSupportWork,
     updateSupportWork,
+    saveSupportSchedulePresets,
     saveBusinessSupportSchedule,
     deleteBusinessSupportSchedule,
     saveSchedule,

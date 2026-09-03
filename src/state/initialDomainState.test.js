@@ -57,6 +57,12 @@ describe('domain state migration', () => {
       teamRewardClaims: [],
       teamRewardParticipants: [],
       periodReconciliations: [],
+      supportSchedulePresets: [
+        { id: 'morning', name: 'Ca sáng', start: '08:30', end: '12:00' },
+        { id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' },
+        { id: 'office-hours', name: 'Giờ hành chính', start: '08:30', end: '17:30' },
+      ],
+      supportSchedulePresetHistory: [],
       jobRuns: [],
     })
     expect(migrated.workCatalogItems.length).toBeGreaterThan(DEFAULT_STAFF_WORK_CATALOG_ITEMS.length)

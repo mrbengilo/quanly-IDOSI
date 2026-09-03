@@ -47,6 +47,12 @@ import {
   workCatalogProgressKey,
   workCatalogViolationKey,
 } from '../src/domain/workCatalog.js'
+import {
+  canConfigureSupportSchedulePresets,
+  normalizeSupportSchedulePresets,
+  supportSchedulePresetsEqual,
+  validateSupportSchedulePresets,
+} from '../src/domain/supportWorkSchedule.js'
 
 const API_PREFIX = '/api/'
 const MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -99,6 +105,7 @@ const INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
   'attendance',
   'supportWorkSchedules',
+  'supportSchedulePresets',
   'officeAdjustments',
   'salaryAdjustments',
   'payrollPeriods',
@@ -111,6 +118,7 @@ const INITIAL_OFFICE_EMPLOYEE_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
   'attendance',
   'supportWorkSchedules',
+  'supportSchedulePresets',
   'payrollPeriods',
   'salaryAdjustments',
   'officeAdjustments',
@@ -148,7 +156,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   employees: ['stores', 'employees', 'deletedEmployees'],
   'business-support': ['stores', 'employees', 'deletedEmployees', 'attendance'],
   'business-support-schedule': [
-    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'schedule',
+    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'schedule',
   ],
   'store-managers': ['stores', 'employees', 'deletedEmployees', 'attendance'],
   office: [
@@ -179,7 +187,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'stores', 'employees', 'attendance', 'attendanceAudit', 'auditLogs', 'operationalResetHistory',
   ],
   'work-registration-schedules': [
-    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'schedule',
+    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'schedule',
   ],
   'violations-store': [
     'stores', 'employees', 'violations', 'violationRefunds', 'compensationEntries',
@@ -198,7 +206,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'workCatalogProgress', 'attendance', 'compensationEntries', 'tasks',
   ],
   'support-schedule': [
-    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'schedule',
+    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'schedule',
   ],
   'support-compensation': [
     'employees', 'compensationEntries', 'salaryAdjustments', 'payrollPeriods',
@@ -235,7 +243,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'expenseEntries', 'shiftDefinitions',
   ],
   'employee-schedule': [
-    'stores', 'employees', 'schedule', 'supportWorkSchedules', 'shiftDefinitions',
+    'stores', 'employees', 'schedule', 'supportWorkSchedules', 'supportSchedulePresets', 'shiftDefinitions',
   ],
   'employee-payroll': [
     'stores', 'employees', 'attendance', 'officeAdjustments', 'salaryAdjustments',
@@ -891,6 +899,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'support_work.update',
   'support_schedule.assign',
   'support_schedule.delete',
+  'support_schedule.presets.update',
   'compensation_entry.create',
   'compensation_entry.approve',
   'compensation_entry.void',
@@ -2882,6 +2891,7 @@ export const projectSharedState = (
         .map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
       supportWorkAssignments: own('supportWorkAssignments'),
       supportWorkSchedules: own('supportWorkSchedules'),
+      supportSchedulePresets: ownUnit === 'office' ? normalizeSupportSchedulePresets(state.supportSchedulePresets) : [],
       supportTransfers: ownSupportTransfers,
       orders: filterArray(state, 'orders', (record) => orderCreatedByEmployee(record, employeeId)),
       expenseEntries: own('expenseEntries'),
@@ -5158,6 +5168,8 @@ const DOMAIN_PROTECTED_STATE_COLLECTIONS = new Set([
   'supportWorkAssignments',
   'supportWorkSchedules',
   'supportWorkScheduleHistory',
+  'supportSchedulePresets',
+  'supportSchedulePresetHistory',
   'expenseEntries',
   'fixedExpenses',
   'cashTransactions',
@@ -6314,6 +6326,13 @@ const commandStateProjection = (body) => {
       'supportWorkAssignments',
       payload.assignmentId || payload.id,
       payload.employeeId,
+    )
+  }
+  if (type === 'support_schedule.presets.update') {
+    return projection(
+      'command-support-schedule-presets',
+      ['employees', 'supportSchedulePresets', 'supportSchedulePresetHistory'],
+      '', '', '', false,
     )
   }
   if (type.startsWith('support_schedule.')) {
@@ -16460,7 +16479,7 @@ const supportWorkCommand = async (db, actor, body, commandContext) => {
 }
 
 const supportScheduleCommand = async (db, actor, body, commandContext) => {
-  if (!['support_schedule.assign', 'support_schedule.delete'].includes(body.type)) {
+  if (!['support_schedule.assign', 'support_schedule.delete', 'support_schedule.presets.update'].includes(body.type)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh phân lịch làm việc không được hỗ trợ.')
   }
   const payload = isPlainRecord(body.payload) ? body.payload : {}
@@ -16476,8 +16495,56 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     actorEmployee?.id || actorEmployee?.code || actorEmployee?.employeeId || actorEmployeeId,
   ).trim()
   const selfManagingOfficeSchedule = actor.role === 'employee' && employeeUnit(actorEmployee) === 'office'
-  if (!['admin', 'business_support'].includes(actor.role) && !selfManagingOfficeSchedule) {
-    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc nhân viên văn phòng tự quản lý lịch của mình được thực hiện thao tác này.')
+  if (!canConfigureSupportSchedulePresets({ role: actor.role, employee: actorEmployee })) {
+    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc nhân viên Khối văn phòng được thực hiện thao tác này.')
+  }
+  if (body.type === 'support_schedule.presets.update') {
+    const validation = validateSupportSchedulePresets(payload.presets)
+    if (!validation.ok) throw new ApiError(400, 'SUPPORT_SCHEDULE_PRESETS_INVALID', validation.message)
+    const previous = normalizeSupportSchedulePresets(state.supportSchedulePresets)
+    if (supportSchedulePresetsEqual(previous, validation.presets)) {
+      return recordNoopCommand(db, actor, {
+        command: body.type,
+        version: Number(current.version),
+        presets: previous,
+        existing: true,
+      }, 200, commandContext)
+    }
+    const version = Math.max(0, ...previous.map((preset) => Number(preset.version) || 0)) + 1
+    const presets = validation.presets.map((preset) => ({
+      ...preset,
+      version,
+      updatedAt: commandContext.now,
+      updatedBy: serverActorSnapshot(actor),
+    }))
+    const changedPresetIds = presets.filter((preset) => {
+      const before = previous.find((candidate) => candidate.id === preset.id)
+      return before?.start !== preset.start || before?.end !== preset.end
+    }).map((preset) => preset.id)
+    const history = {
+      id: `swsph_${crypto.randomUUID()}`,
+      action: 'Cập nhật khung giờ nhanh',
+      before: previous,
+      after: presets,
+      version,
+      recordedAt: commandContext.now,
+      recordedBy: serverActorSnapshot(actor),
+    }
+    const nextState = {
+      ...state,
+      supportSchedulePresets: presets,
+      supportSchedulePresetHistory: [history, ...(Array.isArray(state.supportSchedulePresetHistory) ? state.supportSchedulePresetHistory : [])],
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'support-schedule-presets',
+      entityId: 'global',
+      before: previous,
+      after: presets,
+      metadata: { version, changedPresetIds },
+      response: { command: body.type, presets, history },
+    }, commandContext)
   }
   if (body.type === 'support_schedule.delete') {
     const scheduleId = String(payload.scheduleId || payload.id || '').trim()
