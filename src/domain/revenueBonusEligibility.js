@@ -1,5 +1,12 @@
 const normalizeIdentifier = (value) => String(value ?? '').trim().toLocaleLowerCase('vi-VN')
 
+export const REVENUE_BONUS_ACTUAL_ATTENDANCE_EFFECTIVE_DATE = '2026-09-01'
+
+export const REVENUE_BONUS_ELIGIBILITY_RULES = Object.freeze({
+  ACTUAL_WORKED_SHIFTS: 'ACTUAL_WORKED_SHIFTS',
+  ASSIGNED_FINAL_SHIFT: 'ASSIGNED_FINAL_SHIFT',
+})
+
 const recordDate = (record = {}) => String(
   record.businessDate || record.workDate || record.date || record.attendanceDate || '',
 ).slice(0, 10)
@@ -45,7 +52,8 @@ const shiftTimeRange = (record = {}) => {
   return { start: startParts.label, end: endParts.label, startMinute: startParts.minuteOfDay, endMinute: endParts.minuteOfDay }
 }
 
-const shiftIdentifier = (record = {}) => String(record.id || record.shiftId || record.shift || '').trim()
+const shiftIdentifier = (record = {}) => String(record.shiftId || record.shift || record.id || '').trim()
+const shiftName = (record = {}) => String(record.shiftName || record.name || '').trim()
 
 const scheduleShiftCandidates = ({ schedule = [], shiftDefinitions = [], storeId, businessDate }) => {
   const scopedDefinitions = shiftDefinitions.filter((definition) => (
@@ -97,6 +105,41 @@ const attendanceMatchesShift = (attendance, shift) => {
   return Boolean(attendanceRange && targetRange
     && attendanceRange.start === targetRange.start
     && attendanceRange.end === targetRange.end)
+}
+
+const attendanceShiftKey = (record = {}) => {
+  const identifier = normalizeIdentifier(shiftIdentifier(record))
+  if (identifier) return `id:${identifier}`
+  const range = shiftTimeRange(record)
+  const name = normalizeIdentifier(shiftName(record))
+  if (name || range) return `time:${name}:${range?.start || ''}:${range?.end || ''}`
+  return `attendance:${normalizeIdentifier(record.id)}`
+}
+
+const latestWorkedShiftDetails = (businessDate, attendance = []) => {
+  const candidates = attendance
+    .map((record) => ({ record, end: shiftEndTimestamp(businessDate, record) }))
+    .filter((candidate) => candidate.end)
+  const workedShiftCount = new Set(attendance.map(attendanceShiftKey).filter(Boolean)).size
+  if (!candidates.length) {
+    return {
+      workedShiftCount,
+      finalShiftAttendanceCount: 0,
+      finalShiftId: null,
+      finalShiftName: null,
+      finalShiftEndAt: null,
+    }
+  }
+  const latestEndTimestamp = Math.max(...candidates.map((candidate) => candidate.end.timestamp))
+  const latest = candidates.filter((candidate) => candidate.end.timestamp === latestEndTimestamp)
+  const latestRecord = latest[0].record
+  return {
+    workedShiftCount,
+    finalShiftAttendanceCount: latest.length,
+    finalShiftId: shiftIdentifier(latestRecord) || null,
+    finalShiftName: shiftName(latestRecord) || null,
+    finalShiftEndAt: latest[0].end.endAt,
+  }
 }
 
 const employeeIdentifiers = (employee = {}) => [
@@ -173,6 +216,7 @@ export const REVENUE_BONUS_ELIGIBILITY_MESSAGES = Object.freeze({
   BEFORE_DAILY_CUTOFF: 'Nút TÍNH THƯỞNG NGÀY chỉ được mở sau 21:00 của ngày kinh doanh đã chọn.',
   ALREADY_CALCULATED: 'Thưởng doanh thu của ngày này đã được tính và không thể tính lại.',
   DATA_COLLISION: 'Ngày này có nhiều kết quả thưởng đang hiệu lực; cần xử lý dữ liệu trùng.',
+  NO_ATTENDANCE: 'Ngày này chưa có nhân viên điểm danh nên chưa thể tính thưởng doanh thu.',
   FINAL_SHIFT_UNRESOLVED: 'Chưa xác định được ca cuối cùng của ngày từ lịch phân ca.',
   FINAL_SHIFT_NOT_ATTENDED: 'Chưa có nhân viên điểm danh vào ca cuối cùng của ngày.',
   ATTENDANCE_OPEN: 'Vẫn còn nhân viên chưa kết ca trong ngày.',
@@ -195,10 +239,18 @@ export function revenueBonusEligibility({
   const cutoff = dailyCutoff(businessDate)
   const currentTimestamp = normalizedTimestamp(nowMs)
   if (!cutoff || !Number.isFinite(currentTimestamp)) throw new TypeError('nowMs must be a valid timestamp.')
+  const actualWorkedShiftRule = businessDate >= REVENUE_BONUS_ACTUAL_ATTENDANCE_EFFECTIVE_DATE
+  const eligibilityRule = actualWorkedShiftRule
+    ? REVENUE_BONUS_ELIGIBILITY_RULES.ACTUAL_WORKED_SHIFTS
+    : REVENUE_BONUS_ELIGIBILITY_RULES.ASSIGNED_FINAL_SHIFT
   const common = {
     message: '',
+    eligibilityRule,
+    ruleEffectiveDate: REVENUE_BONUS_ACTUAL_ATTENDANCE_EFFECTIVE_DATE,
     existingId: null,
     attendanceCount: 0,
+    closedAttendanceCount: 0,
+    workedShiftCount: 0,
     finalShiftAttendanceCount: 0,
     openAttendanceCount: 0,
     openEmployeeNames: [],
@@ -236,6 +288,8 @@ export function revenueBonusEligibility({
     ...common,
     existingCount: 0,
     attendanceCount: dayAttendance.length,
+    closedAttendanceCount: dayAttendance.length - openAttendance.length,
+    workedShiftCount: new Set(dayAttendance.map(attendanceShiftKey).filter(Boolean)).size,
     openAttendanceCount: openAttendance.length,
     openEmployeeNames,
   }
@@ -251,6 +305,20 @@ export function revenueBonusEligibility({
       ...attendanceDetails,
       message: openAttendanceMessage(openEmployeeNames),
       openAttendanceIds: openAttendance.map((record) => String(record.id || '')).filter(Boolean),
+    })
+  }
+
+  if (actualWorkedShiftRule) {
+    if (!dayAttendance.length) {
+      return result('NO_ATTENDANCE', {
+        ...attendanceDetails,
+        message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.NO_ATTENDANCE,
+      })
+    }
+    return result('READY', {
+      ...attendanceDetails,
+      ...latestWorkedShiftDetails(businessDate, dayAttendance),
+      message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.READY,
     })
   }
 
@@ -273,7 +341,7 @@ export function revenueBonusEligibility({
     ...attendanceDetails,
     finalShiftAttendanceCount: finalAttendance.length,
     finalShiftId: shiftIdentifier(finalShift.shift) || null,
-    finalShiftName: String(finalShift.shift.name || finalShift.shift.shiftName || '').trim() || null,
+    finalShiftName: shiftName(finalShift.shift) || null,
     finalShiftEndAt: finalShift.end.endAt,
   }
   if (!finalAttendance.length) {
