@@ -21,9 +21,6 @@ jobs:
       github.ref == 'refs/heads/ops/diagnose-navigation-latency-20260903'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    environment:
-      name: production
-      url: https://idosi.io.vn
     env:
       EXPECTED_PRODUCTION_SHA: 34f8923223f22b2f69fe3c3fbfb4c99ddf0392e3
     steps:
@@ -118,7 +115,7 @@ jobs:
           trap 'rm -f "$log_file"' EXIT
           docker logs --since=24h --tail=100000 "$app_id" >"$log_file" 2>&1 || true
           python3 - "$log_file" <<'PY'
-          import json, math, statistics, sys
+          import json, math, sys
           from collections import defaultdict
 
           path = sys.argv[1]
