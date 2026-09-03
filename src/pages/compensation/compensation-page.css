@@ -594,3 +594,58 @@
     grid-column: 2;
   }
 }
+
+.revenue-bonus-allocation-table table {
+  min-width: 1080px;
+}
+
+.revenue-bonus-row--deleted {
+  opacity: .72;
+}
+
+.revenue-bonus-admin-actions {
+  flex-wrap: wrap;
+  min-width: 250px;
+}
+
+.revenue-bonus-admin-form {
+  display: grid;
+  gap: 16px;
+}
+
+.revenue-bonus-admin-summary {
+  background: #f7fbf8;
+  border: 1px solid var(--compensation-border);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px 14px;
+  grid-template-columns: minmax(140px, auto) minmax(0, 1fr);
+  padding: 14px 16px;
+}
+
+.revenue-bonus-admin-summary span {
+  color: var(--compensation-muted);
+}
+
+.revenue-bonus-admin-form textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font: inherit;
+  min-height: 104px;
+  padding: 11px 12px;
+  resize: vertical;
+  width: 100%;
+}
+
+.revenue-bonus-admin-form textarea:focus {
+  border-color: #07883f;
+  box-shadow: 0 0 0 3px rgba(7, 136, 63, .12);
+  outline: 0;
+}
+
+@media (max-width: 720px) {
+  .revenue-bonus-admin-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+

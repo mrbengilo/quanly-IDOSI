@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RevenueBonusPage } from './RevenueBonusPage'
 
@@ -9,91 +9,86 @@ vi.mock('../../services/idosiApi', () => ({
   apiGetRevenueBonusLive: (payload) => mocked.liveRevenue(payload),
 }))
 
-const readyApp = () => ({
-  session: { role: 'business_support', employeeId: 'HT-01' },
-  currentEmployee: { id: 'HT-01', name: 'Hỗ trợ KD', unit: 'business_support' },
-  activeStoreId: 'S01',
-  stores: [{ id: 'S01', name: 'Dosii NTL', code: 'DOSII-NTL' }],
-  employees: [
-    { id: 'E01', name: 'Nguyễn An', unit: 'store', storeId: 'S01' },
-    { id: 'HT-01', name: 'Hỗ trợ KD', unit: 'business_support' },
-  ],
+const stores = [{ id: 'CH001', name: 'Dosii NTL', code: 'DOSII-NTL' }]
+const employees = [
+  { id: 'NV-01', name: 'Nhân viên Một', unit: 'store', storeId: 'CH001' },
+  { id: 'NV-02', name: 'Nhân viên Hai', unit: 'store', storeId: 'CH001' },
+]
+
+const snapshot = (allocationOverrides = {}) => ({
+  id: 'automatic-revenue-day:CH001:2026-09-03',
+  sourceType: 'automatic-revenue-bonus',
+  automatic: true,
+  calculationMode: 'AUTOMATIC',
+  editableByAdminOnly: true,
+  storeId: 'CH001',
+  businessDate: '2026-09-03',
+  projectedAt: '2026-09-03T11:00:00.000Z',
+  revenueVnd: 2_000_000,
+  orderCount: 1,
+  percentagePoolVnd: 20_000,
+  milestonePoolVnd: 0,
+  totalPoolVnd: 20_000,
+  automaticAllocatedVnd: 20_000,
+  allocatedVnd: 20_000,
+  unallocatedVnd: 0,
+  adminAdjustmentVnd: 0,
+  totalWorkedSeconds: 7_200,
+  attendanceCount: 2,
+  openAttendanceCount: 0,
+  participantCount: 2,
+  allocations: [{
+    id: 'AUTO-NV-01', storeId: 'CH001', businessDate: '2026-09-03',
+    employeeId: 'NV-01', employeeName: 'Nhân viên Một', workedSeconds: 3_600,
+    approvedSalesHours: 1, weightPercent: 50, automaticAmountVnd: 10_000,
+    amountVnd: 10_000, allocatedVnd: 10_000, status: 'LIVE',
+    ...allocationOverrides,
+  }],
+})
+
+const appFor = (role = 'business_support', overrides = {}) => ({
+  session: {
+    role,
+    employeeId: role === 'employee' ? 'NV-01' : undefined,
+    storeId: ['employee', 'store_manager'].includes(role) ? 'CH001' : undefined,
+  },
+  currentEmployee: role === 'employee' ? employees[0] : null,
+  activeStoreId: 'CH001',
+  stores,
+  employees,
   orders: [{
-    id: 'O01', storeId: 'S01', amount: 1_000_000, status: 'Hoàn tất',
-    createdAt: '2026-08-26T10:00:00+07:00',
+    id: 'ORDER-1', storeId: 'CH001', amount: 2_000_000, status: 'Hoàn tất',
+    createdAt: '2026-09-03T10:00:00+07:00',
   }],
   attendance: [{
-    id: 'A01', storeId: 'S01', employeeId: 'E01', employeeName: 'Nguyễn An',
-    workDate: '2026-08-26', shiftId: 'night', shiftName: 'Ca tối',
-    shiftStart: '18:00', shiftEnd: '21:00', workedSeconds: 10_800,
-    checkInAt: '2026-08-26T11:00:00.000Z', checkOutAt: '2026-08-26T14:00:00.000Z',
+    id: 'ATT-1', storeId: 'CH001', employeeId: 'NV-01', workDate: '2026-09-03',
+    workedSeconds: 3_600, checkOutAt: '2026-09-03T10:00:00+07:00',
+  }, {
+    id: 'ATT-2', storeId: 'CH001', employeeId: 'NV-02', workDate: '2026-09-03',
+    workedSeconds: 3_600, checkOutAt: '2026-09-03T10:00:00+07:00',
   }],
-  schedule: [],
-  shiftDefinitions: [{ id: 'night', storeId: 'S01', name: 'Ca tối', start: '18:00', end: '21:00', active: true }],
-  revenueBonuses: [],
   revenueBonusDaily: [],
   revenueBonusAllocations: [],
-  teamRewardClaims: [],
+  revenueBonusOverrides: [],
+  revenueBonuses: [],
   apiStatus: 'local',
   notify: vi.fn(),
-  calculateRevenueBonusDay: vi.fn().mockResolvedValue({ ok: true }),
-  approveRevenueBonusMilestone: vi.fn(),
-  rejectRevenueBonusMilestone: vi.fn(),
+  setRevenueBonusOverride: vi.fn().mockResolvedValue({ ok: true }),
+  deleteRevenueBonusOverride: vi.fn().mockResolvedValue({ ok: true }),
+  restoreRevenueBonusOverride: vi.fn().mockResolvedValue({ ok: true }),
+  ...overrides,
 })
 
-const dianApp = () => ({
-  ...readyApp(),
-  activeStoreId: 'DI-AN',
-  stores: [{ id: 'DI-AN', name: 'Dosii Dĩ An', code: 'DOSII-DI-AN' }],
-  employees: [
-    { id: 'DIAN-E01', name: 'Nguyễn An', unit: 'store', storeId: 'DI-AN' },
-    { id: 'DIAN-E02', name: 'Trần Bình', unit: 'store', storeId: 'DI-AN' },
-    { id: 'HT-01', name: 'Hỗ trợ KD', unit: 'business_support' },
-  ],
-  orders: [
-    {
-      id: 'DIAN-O01', storeId: 'DI-AN', employeeId: 'DIAN-E01', amount: 1_000_000,
-      status: 'Hoàn tất', createdAt: '2026-09-02T10:00:00+07:00',
-    },
-    {
-      id: 'DIAN-O02', storeId: 'DI-AN', employeeId: 'DIAN-E02', amount: 1_585_000,
-      status: 'Hoàn tất', createdAt: '2026-09-02T16:00:00+07:00',
-    },
-  ],
-  attendance: [
-    {
-      id: 'DIAN-A01', storeId: 'DI-AN', employeeId: 'DIAN-E01', employeeName: 'Nguyễn An',
-      workDate: '2026-09-02', shiftId: 'morning', shiftName: 'Ca sáng',
-      shiftStart: '08:30', shiftEnd: '12:00', workedSeconds: 12_600,
-      checkInAt: '2026-09-02T01:30:00.000Z', checkOutAt: '2026-09-02T05:00:00.000Z',
-    },
-    {
-      id: 'DIAN-A02', storeId: 'DI-AN', employeeId: 'DIAN-E02', employeeName: 'Trần Bình',
-      workDate: '2026-09-02', shiftId: 'afternoon', shiftName: 'Ca chiều',
-      shiftStart: '13:00', shiftEnd: '17:30', workedSeconds: 16_200,
-      checkInAt: '2026-09-02T06:00:00.000Z', checkOutAt: '2026-09-02T10:30:00.000Z',
-    },
-  ],
-  schedule: [{
-    id: 'DIAN-SCHEDULE', storeId: 'DI-AN', employeeId: 'DIAN-E01', date: '2026-09-02',
-    shiftSnapshots: [
-      { id: 'morning', name: 'Ca sáng', start: '08:30', end: '12:00' },
-      { id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' },
-      { id: 'night', name: 'Ca tối', start: '18:00', end: '21:00' },
-    ],
-  }],
-  shiftDefinitions: [
-    { id: 'morning', storeId: 'DI-AN', name: 'Ca sáng', start: '08:30', end: '12:00', active: true },
-    { id: 'afternoon', storeId: 'DI-AN', name: 'Ca chiều', start: '13:00', end: '17:30', active: true },
-    { id: 'night', storeId: 'DI-AN', name: 'Ca tối', start: '18:00', end: '21:00', active: true },
-  ],
-})
+const automaticTable = () => screen.getByRole('heading', {
+  name: 'Phân bổ thưởng tự động theo nhân viên',
+}).closest('section')
 
-describe('RevenueBonusPage daily cutoff', () => {
+describe('RevenueBonusPage automatic mode', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
     mocked.liveRevenue.mockReset()
-    mocked.app = readyApp()
+    mocked.app = appFor()
   })
 
   afterEach(() => {
@@ -102,85 +97,128 @@ describe('RevenueBonusPage daily cutoff', () => {
     vi.useRealTimers()
   })
 
-  it('keeps TÍNH THƯỞNG NGÀY disabled before 21:00 Vietnam time', () => {
-    vi.setSystemTime(new Date('2026-08-26T13:59:59.000Z'))
+  it.each([
+    ['before the former cutoff', '2026-09-03T13:59:59.000Z'],
+    ['after the former cutoff', '2026-09-03T14:00:01.000Z'],
+  ])('never shows a manual calculation or approval action %s', (_label, now) => {
+    vi.setSystemTime(new Date(now))
+    mocked.app = appFor()
     render(<RevenueBonusPage storeScoped />)
 
-    const button = screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })
-    expect(button.disabled).toBe(true)
-    expect(screen.getByText(/chỉ được mở sau 21:00/i)).toBeTruthy()
-    expect(button.classList.contains('is-ready')).toBe(false)
+    expect(screen.getAllByText('TỰ ĐỘNG').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /TÍNH THƯỞNG NGÀY/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /ĐÃ TÍNH THƯỞNG/i })).toBeNull()
+    expect(screen.queryByRole('heading', { name: /Duyệt thưởng mốc cao nhất/i })).toBeNull()
+    expect(screen.getByText(/Không cần bấm tính hoặc duyệt/i)).toBeTruthy()
   })
 
-  it('asks for confirmation after 21:00 and submits the store day only once', async () => {
-    vi.setSystemTime(new Date('2026-08-26T14:01:00.000Z'))
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('renders the live formula immediately and includes no manual workflow', () => {
     render(<RevenueBonusPage storeScoped />)
 
-    const button = screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })
-    expect(button.disabled).toBe(false)
-    expect(button.classList.contains('is-ready')).toBe(true)
-    fireEvent.click(button)
-    fireEvent.click(button)
-
-    await waitFor(() => expect(mocked.app.calculateRevenueBonusDay).toHaveBeenCalledWith({
-      storeId: 'S01', businessDate: '2026-08-26',
-    }))
-    expect(mocked.app.calculateRevenueBonusDay).toHaveBeenCalledTimes(1)
-    expect(confirm).toHaveBeenCalledTimes(1)
-    expect(confirm.mock.calls[0][0]).toMatch(/chỉ được tính một lần/i)
+    expect(screen.getAllByText('2,000,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('20,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('10,000 đ').length).toBeGreaterThan(1)
+    expect(within(automaticTable()).getAllByText('Tự động trực tiếp').length).toBe(2)
+    expect(screen.queryByText(/chờ duyệt/i)).toBeNull()
   })
 
-  it('does not calculate when the operator cancels the confirmation', () => {
-    vi.setSystemTime(new Date('2026-08-26T14:01:00.000Z'))
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
-    render(<RevenueBonusPage storeScoped />)
-
-    fireEvent.click(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' }))
-    expect(mocked.app.calculateRevenueBonusDay).not.toHaveBeenCalled()
-  })
-
-  it('enables Dosii Dĩ An on 02/09 when its two actual shifts are closed and the unused night shift was not attended', async () => {
-    vi.setSystemTime(new Date('2026-09-03T03:00:00.000Z'))
-    mocked.app = dianApp()
-    const { container } = render(<RevenueBonusPage storeScoped />)
-    fireEvent.change(container.querySelector('input[type="date"]'), { target: { value: '2026-09-02' } })
-
-    await waitFor(() => {
-      const button = screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })
-      expect(button.disabled).toBe(false)
-      expect(button.classList.contains('is-ready')).toBe(true)
-    })
-    expect(screen.queryByText(/chưa có nhân viên điểm danh vào ca cuối cùng/i)).toBeNull()
-    expect(screen.getByText(/toàn bộ nhân viên đã kết ca/i)).toBeTruthy()
-  })
-
-  it('shows a large named warning while an employee is still working after 21:00', async () => {
-    vi.setSystemTime(new Date('2026-08-26T14:05:00.000Z'))
-    mocked.app = { ...readyApp(), apiStatus: 'connected' }
-    mocked.liveRevenue.mockResolvedValue({
-      snapshot: {
-        storeId: 'S01', businessDate: '2026-08-26', projectedAt: '2026-08-26T14:05:00.000Z',
-        revenueVnd: 1_000_000, percentagePoolVnd: 10_000, allocatedVnd: 0, unallocatedVnd: 10_000,
-        totalWorkedSeconds: 10_800, attendanceCount: 1, openAttendanceCount: 1, allocations: [],
-        calculationEligibility: {
-          allowed: false,
-          code: 'ATTENDANCE_OPEN',
-          openAttendanceCount: 1,
-          openEmployeeNames: ['Nguyễn An'],
-          message: 'Nhân viên Nguyễn An đang làm việc nên chưa tính thưởng được. Hãy chờ nhân viên Nguyễn An kết ca mới được tính thưởng.',
-        },
-      },
-    })
-
+  it('uses the server live snapshot and keeps coworker allocations private for employees', async () => {
+    mocked.app = appFor('employee', { apiStatus: 'connected', orders: [], attendance: [] })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: snapshot() })
     render(<RevenueBonusPage storeScoped />)
 
     await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledWith({
-      storeId: 'S01', businessDate: '2026-08-26',
+      storeId: 'CH001', businessDate: '2026-09-03',
     }))
-    const alert = await screen.findByRole('alert')
-    expect(alert.classList.contains('revenue-bonus-attendance-alert')).toBe(true)
-    expect(alert.textContent).toContain('Nhân viên Nguyễn An đang làm việc')
-    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' }).disabled).toBe(true)
+    expect((await screen.findAllByText('10,000 đ')).length).toBeGreaterThan(1)
+    expect(screen.queryByText('Nhân viên Hai')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sửa' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
+  })
+
+  it('allows only Admin to edit one employee bonus with a mandatory audit reason', async () => {
+    mocked.app = appFor('admin', { apiStatus: 'connected', orders: [], attendance: [] })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: snapshot() })
+    render(<RevenueBonusPage storeScoped />)
+
+    const editButton = await screen.findByRole('button', { name: 'Sửa' })
+    fireEvent.click(editButton)
+    expect(screen.getByRole('dialog', { name: 'CHỈNH SỬA THƯỞNG DOANH THU' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Số tiền thưởng hiệu lực'), { target: { value: '12000' } })
+    fireEvent.change(screen.getByLabelText('Lý do điều chỉnh thưởng doanh thu'), {
+      target: { value: 'Đối soát lại doanh thu ngày' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐIỀU CHỈNH' }))
+
+    await waitFor(() => expect(mocked.app.setRevenueBonusOverride).toHaveBeenCalledWith({
+      storeId: 'CH001',
+      businessDate: '2026-09-03',
+      employeeId: 'NV-01',
+      amountVnd: 12_000,
+      reason: 'Đối soát lại doanh thu ngày',
+    }))
+  })
+
+  it('lets Admin logically delete a bonus without removing its audit row', async () => {
+    mocked.app = appFor('admin', { apiStatus: 'connected', orders: [], attendance: [] })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: snapshot() })
+    render(<RevenueBonusPage storeScoped />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Xóa' }))
+    expect(screen.getByText(/Khoản thưởng hiệu lực của nhân viên sẽ về 0 đồng/i)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Lý do điều chỉnh thưởng doanh thu'), {
+      target: { value: 'Không đủ điều kiện sau đối soát' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'XÁC NHẬN XÓA' }))
+
+    await waitFor(() => expect(mocked.app.deleteRevenueBonusOverride).toHaveBeenCalledWith({
+      storeId: 'CH001',
+      businessDate: '2026-09-03',
+      employeeId: 'NV-01',
+      reason: 'Không đủ điều kiện sau đối soát',
+    }))
+  })
+
+  it('lets Admin restore the automatic formula after an adjustment or deletion', async () => {
+    mocked.app = appFor('admin', { apiStatus: 'connected', orders: [], attendance: [] })
+    mocked.liveRevenue.mockResolvedValue({
+      snapshot: {
+        ...snapshot({
+          amountVnd: 0,
+          allocatedVnd: 0,
+          overrideId: 'RBO-1',
+          overrideMode: 'DELETED',
+          overrideVersion: 2,
+          overrideReason: 'Đã xóa sau đối soát',
+          status: 'ADMIN_DELETED',
+        }),
+        allocatedVnd: 0,
+        adminAdjustmentVnd: -10_000,
+      },
+    })
+    render(<RevenueBonusPage storeScoped />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Khôi phục tự động' }))
+    fireEvent.change(screen.getByLabelText('Lý do điều chỉnh thưởng doanh thu'), {
+      target: { value: 'Khôi phục theo dữ liệu đã xác minh' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'KHÔI PHỤC TỰ ĐỘNG' }))
+
+    await waitFor(() => expect(mocked.app.restoreRevenueBonusOverride).toHaveBeenCalledWith({
+      storeId: 'CH001',
+      businessDate: '2026-09-03',
+      employeeId: 'NV-01',
+      expectedVersion: 2,
+      reason: 'Khôi phục theo dữ liệu đã xác minh',
+    }))
+  })
+
+  it('does not expose Admin mutation actions to Business Support', () => {
+    mocked.app = appFor('business_support')
+    render(<RevenueBonusPage storeScoped />)
+
+    expect(screen.queryByRole('button', { name: 'Sửa' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Khôi phục tự động' })).toBeNull()
   })
 })
