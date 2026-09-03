@@ -1,4 +1,4 @@
-import { lazy, useEffect, useState } from 'react'
+import { cloneElement, lazy, useEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { isOfficeProfile } from './domain/officeProfile'
 import { employeeScreen, storeScreenForPath, systemScreenForPath } from './domain/workspaceScreens'
@@ -124,7 +124,7 @@ function ProjectionLoadFailure({ onRetry }) {
   </div>
 }
 
-function RoleGuard({ roles, children }) {
+function RoleGuard({ roles, children, preserveShell = false }) {
   const {
     session,
     activeStoreId,
@@ -142,7 +142,10 @@ function RoleGuard({ roles, children }) {
   const remoteSession = remoteProjection.kind !== 'local'
   const storeWorkspace = location.pathname === '/store' || location.pathname.startsWith('/store/')
   const routeSearch = new URLSearchParams(location.search)
-  const routeStoreId = routeSearch.get('store') || activeStoreId || ''
+  const assignedStoreId = session?.storeId || session?.assignedStoreId || ''
+  const routeStoreId = role === 'store_manager'
+    ? assignedStoreId || activeStoreId || ''
+    : routeSearch.get('store') || activeStoreId || ''
   const routeStoreScreen = storeScreenForPath(location.pathname)
   const routeSystemScreen = systemScreenForPath(location.pathname)
   const routeStorePeriod = routeStoreScreen === 'payroll'
@@ -225,10 +228,27 @@ function RoleGuard({ roles, children }) {
   )
   const compactHomeReady = initialRoleHome && remoteProjection.kind !== 'store'
   if (projectionFailure?.key === projectionKey && !compactHomeReady) {
-    return <ProjectionLoadFailure onRetry={() => setProjectionRetry((current) => current + 1)} />
+    const onRetry = () => setProjectionRetry((current) => current + 1)
+    return preserveShell
+      ? cloneElement(children, {
+          workspaceStatus: {
+            kind: 'error',
+            message: 'Không thể tải dữ liệu màn hình',
+            detail: 'Kết nối có thể vừa bị gián đoạn. Dữ liệu hiện có không bị thay đổi.',
+            onRetry,
+          },
+        })
+      : <ProjectionLoadFailure onRetry={onRetry} />
   }
   if ((!remoteDataReady || !selectedStoreProjectionReady || !systemProjectionReady) && !compactHomeReady) {
-    return <RouteLoading message="Đang tải dữ liệu chi tiết của hệ thống..." />
+    return preserveShell
+      ? cloneElement(children, {
+          workspaceStatus: {
+            kind: 'loading',
+            message: 'Đang tải dữ liệu chi tiết...',
+          },
+        })
+      : <RouteLoading message="Đang tải dữ liệu chi tiết của hệ thống..." />
   }
   return children
 }
@@ -285,6 +305,14 @@ function StoreOverviewRoute() {
   return <StoreOverviewV2 />
 }
 
+function WorkspaceShell({ roles }) {
+  return (
+    <RoleGuard roles={roles} preserveShell>
+      <AppShell />
+    </RoleGuard>
+  )
+}
+
 export default function AppRoutes() {
   const { session, authReady = true } = useApp()
   return (
@@ -293,11 +321,11 @@ export default function AppRoutes() {
       <Route path="/login" element={!authReady ? <RouteLoading message="Đang khôi phục màn hình..." /> : session ? <Navigate to={session.needsRoleSelection ? '/select-role' : homeFor(session)} replace /> : <Login />} />
       <Route path="/select-role" element={<RoleSelectionPage />} />
 
-      <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager', 'employee']}><AppShell /></RoleGuard>}>
+      <Route element={<WorkspaceShell roles={['admin', 'business_support', 'store_manager', 'employee']} />}>
         <Route path="/account/settings" element={<AdminSettings />} />
       </Route>
 
-      <Route element={<RoleGuard roles={['admin', 'business_support']}><AppShell /></RoleGuard>}>
+      <Route element={<WorkspaceShell roles={['admin', 'business_support']} />}>
         <Route path="/admin/overview" element={<AdminOverviewV2 />} />
         <Route path="/admin/stores" element={<AdminStores />} />
         <Route path="/admin/cashflow" element={<AdminCashflowV2 />} />
@@ -322,7 +350,7 @@ export default function AppRoutes() {
         <Route path="/admin/violations/office" element={<ViolationManagementPage targetUnit="office" />} />
       </Route>
 
-      <Route element={<RoleGuard roles={['admin', 'business_support', 'store_manager']}><AppShell /></RoleGuard>}>
+      <Route element={<WorkspaceShell roles={['admin', 'business_support', 'store_manager']} />}>
         <Route path="/store/overview" element={<StoreOverviewRoute />} />
         <Route path="/store/shifts" element={<Navigate to="/store/schedule" replace />} />
         <Route path="/store/schedule" element={<UnifiedSchedule />} />
@@ -343,7 +371,7 @@ export default function AppRoutes() {
         <Route path="/store/settings" element={<StoreSettings />} />
       </Route>
 
-      <Route element={<RoleGuard roles="business_support"><AppShell /></RoleGuard>}>
+      <Route element={<WorkspaceShell roles="business_support" />}>
         <Route path="/support/overview" element={<OfficeEmployeeDashboard />} />
         <Route path="/support/attendance" element={<Navigate to="/support/overview" replace />} />
         <Route path="/support/tasks" element={<SupportAssignedWorkPage />} />
@@ -353,7 +381,7 @@ export default function AppRoutes() {
         <Route path="/support/my-violations" element={<MyViolationsPage />} />
       </Route>
 
-      <Route element={<RoleGuard roles="admin"><AppShell /></RoleGuard>}>
+      <Route element={<WorkspaceShell roles="admin" />}>
         <Route path="/admin/assignments" element={<AdminSupportAssignmentPage />} />
         <Route path="/admin/reset" element={<AttendanceResetPage />} />
         <Route path="/admin/data-restore" element={<DataRestorePage />} />
@@ -361,7 +389,7 @@ export default function AppRoutes() {
         <Route path="/admin/violations/business-support" element={<ViolationManagementPage targetUnit="business_support" />} />
       </Route>
 
-      <Route element={<RoleGuard roles="employee"><AppShell /></RoleGuard>}>
+      <Route element={<WorkspaceShell roles="employee" />}>
         <Route path="/employee/home" element={<EmployeeHomePage />} />
         <Route path="/employee/tasks" element={<EmployeeTasksRoute />} />
         <Route path="/employee/assigned-work" element={<SupportWorkInboxPage />} />
