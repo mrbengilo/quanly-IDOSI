@@ -1,0 +1,349 @@
+name: Apply data restore employee selector fix
+
+on:
+  push:
+    branches:
+      - fix/data-restore-employee-options
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: fix/data-restore-employee-options
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Apply reviewed source and regression changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file_path = Path(path)
+              text = file_path.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected exactly one source anchor, found {count}')
+              file_path.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'src/domain/workspaceScreens.js',
+              "  '/admin/reset': 'reset',\n",
+              "  '/admin/reset': 'reset',\n  '/admin/data-restore': 'reset',\n",
+          )
+
+          old_helpers = r"""const normalizeText = (value) => String(value || '').trim().toLocaleLowerCase('vi-VN')
+          const employeeId = (employee = {}) => String(
+            employee.id || employee.code || employee.employeeId || employee.employeeCode || '',
+          ).trim()
+          const employeeAliases = (employee = {}) => [
+            employee.id, employee.code, employee.employeeId, employee.employeeCode,
+          ].map((value) => String(value || '').trim()).filter(Boolean)
+          const employeeReferences = (record = {}) => [
+            record.employeeId, record.employeeCode, record.staffId, record.userId,
+          ].map((value) => String(value || '').trim()).filter(Boolean)
+          const storeAliases = (store = {}) => [store.id, store.code, store.storeId]
+            .map((value) => String(value || '').trim()).filter(Boolean)
+          """
+          new_helpers = r"""const normalizeText = (value) => String(value || '').trim().toLocaleLowerCase('vi-VN')
+          const normalizeUnitText = (value) => String(value ?? '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/gu, '')
+            .replace(/[đĐ]/gu, 'd')
+            .trim()
+            .toLocaleLowerCase('vi-VN')
+            .replace(/[_-]+/gu, ' ')
+            .replace(/\s+/gu, ' ')
+          const BUSINESS_SUPPORT_UNIT_ALIASES = new Set([
+            'business support', 'support', 'ho tro kinh doanh', 'ho tro kd', 'htkd',
+            'nhan vien ho tro kinh doanh', 'nhan vien ho tro kd',
+          ])
+          const OFFICE_UNIT_ALIASES = new Set([
+            'office', 'van phong', 'khoi van phong', 'vp',
+            'nhan vien van phong', 'nhan vien khoi van phong',
+          ])
+          const STORE_MANAGER_UNIT_ALIASES = new Set([
+            'store manager', 'quan ly cua hang', 'qlch', 'nhan vien quan ly cua hang',
+          ])
+          const employeeId = (employee = {}) => String(
+            employee.id || employee.code || employee.employeeId || employee.employeeCode || '',
+          ).trim()
+          const employeeAliases = (employee = {}) => [
+            employee.id, employee.code, employee.employeeId, employee.employeeCode,
+          ].map((value) => String(value || '').trim()).filter(Boolean)
+          const employeeReferences = (record = {}) => [
+            record.employeeId, record.employeeCode, record.staffId, record.userId,
+          ].map((value) => String(value || '').trim()).filter(Boolean)
+          const storeAliases = (store = {}) => [
+            store.id, store.code, store.storeId, store.storeCode, store.short,
+            store.employeePrefix, store.name,
+          ].map((value) => String(value || '').trim()).filter(Boolean)
+          const storeReferenceValue = (value) => {
+            if (!value || typeof value !== 'object') return value
+            return value.id || value.code || value.storeId || value.storeCode || value.name || ''
+          }
+          const employeeStoreReferences = (employee = {}) => [...new Set([
+            employee.storeId,
+            employee.store_id,
+            employee.assignedStoreId,
+            employee.assigned_store_id,
+            employee.homeStoreId,
+            employee.home_store_id,
+            employee.primaryStoreId,
+            employee.primary_store_id,
+            employee.storeCode,
+            employee.store_code,
+            employee.branchId,
+            employee.branch_id,
+            employee.store,
+            employee.assignedStore,
+            ...(Array.isArray(employee.storeIds) ? employee.storeIds : []),
+            ...(Array.isArray(employee.assignedStoreIds) ? employee.assignedStoreIds : []),
+          ].map(storeReferenceValue).map((value) => String(value || '').trim()).filter(Boolean))]
+          """
+          replace_once('src/pages/admin/DataRestorePage.jsx', old_helpers, new_helpers)
+
+          old_resolve = r"""const resolveTarget = (records, reference, aliases, fallback = null) => {
+            const source = Array.isArray(records) ? records : []
+            if (!source.length) return fallback
+            const result = operationalIdentifierRecordMatch(source, reference, aliases)
+            return result.ambiguous ? null : result.record || fallback
+          }
+
+          const recordMatchesEmployee = (record, employee, employees) => {
+          """
+          new_resolve = r"""const resolveTarget = (records, reference, aliases, fallback = null) => {
+            const source = Array.isArray(records) ? records : []
+            if (!source.length) return fallback
+            const result = operationalIdentifierRecordMatch(source, reference, aliases)
+            return result.ambiguous ? null : result.record || fallback
+          }
+
+          const employeeBelongsToStore = (employee, storeId, stores) => {
+            const selectedStore = resolveTarget(stores, storeId, storeAliases)
+            if (!selectedStore) return false
+            return employeeStoreReferences(employee).some((reference) => (
+              resolveTarget(stores, reference, storeAliases) === selectedStore
+            ))
+          }
+
+          const recordMatchesEmployee = (record, employee, employees) => {
+          """
+          replace_once('src/pages/admin/DataRestorePage.jsx', old_resolve, new_resolve)
+
+          old_unit = r"""const employeeUnit = (employee = {}) => {
+            const unit = normalizeText(employee.unit || employee.unitType || employee.department)
+            const storeId = String(employee.storeId || '').trim().toUpperCase()
+            if (unit === 'business_support' || storeId === 'BUSINESS_SUPPORT') return 'business_support'
+            if (unit === 'office' || storeId === 'OFFICE') return 'office'
+            if (unit === 'store_manager') return 'store_manager'
+            return unit === 'store' || !unit ? 'store' : unit
+          }
+          """
+          new_unit = r"""const employeeUnit = (employee = {}) => {
+            const explicitUnits = [
+              employee.unit, employee.unitType, employee.department, employee.employeeGroup,
+            ].map(normalizeUnitText).filter(Boolean)
+            const requestedRole = normalizeUnitText(
+              employee.roleType || employee.accountRole || employee.authRole,
+            )
+            const legacyRole = normalizeUnitText(employee.role || employee.position || employee.workPosition)
+            const storeScope = normalizeUnitText(employee.storeId || employee.store_id)
+            const hasExplicitUnit = (aliases) => explicitUnits.some((value) => aliases.has(value))
+            const normalizedRequestedRole = requestedRole === 'manager' ? 'business support' : requestedRole
+
+            if (hasExplicitUnit(BUSINESS_SUPPORT_UNIT_ALIASES)
+              || BUSINESS_SUPPORT_UNIT_ALIASES.has(normalizedRequestedRole)
+              || BUSINESS_SUPPORT_UNIT_ALIASES.has(storeScope)
+              || BUSINESS_SUPPORT_UNIT_ALIASES.has(legacyRole)) return 'business_support'
+            if (hasExplicitUnit(STORE_MANAGER_UNIT_ALIASES)
+              || explicitUnits.includes('manager')
+              || STORE_MANAGER_UNIT_ALIASES.has(requestedRole)
+              || STORE_MANAGER_UNIT_ALIASES.has(legacyRole)) return 'store_manager'
+            if (employee.isOffice === true
+              || hasExplicitUnit(OFFICE_UNIT_ALIASES)
+              || OFFICE_UNIT_ALIASES.has(storeScope)
+              || OFFICE_UNIT_ALIASES.has(legacyRole)) return 'office'
+
+            // Unknown legacy unit labels belong to ordinary store employees by
+            // default, matching the backend projection and migration contract.
+            return 'store'
+          }
+          """
+          replace_once('src/pages/admin/DataRestorePage.jsx', old_unit, new_unit)
+
+          old_scoped = r"""  const scopedEmployees = useMemo(() => employees
+            .filter((employee) => (
+              !employee.deletedAt
+              && employeeUnit(employee) === attendanceFilter.unit
+              && (attendanceFilter.unit !== 'store'
+                || !attendanceFilter.storeId
+                || resolveTarget(stores, employee.storeId, storeAliases) === resolveTarget(stores, attendanceFilter.storeId, storeAliases))
+            ))
+            .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'vi-VN')), [attendanceFilter.storeId, attendanceFilter.unit, employees, stores])
+          """
+          new_scoped = r"""  const scopedEmployees = useMemo(() => {
+            const selectedStore = attendanceFilter.unit === 'store' && attendanceFilter.storeId
+              ? resolveTarget(stores, attendanceFilter.storeId, storeAliases)
+              : null
+            return employees
+              .filter((employee) => {
+                if (employee.deletedAt || employeeUnit(employee) !== attendanceFilter.unit) return false
+                if (attendanceFilter.unit !== 'store' || !attendanceFilter.storeId) return true
+                if (employeeBelongsToStore(employee, attendanceFilter.storeId, stores)) return true
+                if (!selectedStore || !attendanceFilter.date) return false
+
+                // Historical profiles can carry an old store reference. The
+                // attendance row is authoritative for the store where the
+                // employee actually worked on the selected day, including a
+                // support-transfer shift.
+                return attendance.some((record) => (
+                  !record.deletedAt
+                  && recordDate(record) === attendanceFilter.date
+                  && recordMatchesEmployee(record, employee, employees)
+                  && resolveTarget(
+                    stores,
+                    record.storeId || record.storeCode || record.storeName,
+                    storeAliases,
+                  ) === selectedStore
+                ))
+              })
+              .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'vi-VN'))
+          }, [
+            attendance,
+            attendanceFilter.date,
+            attendanceFilter.storeId,
+            attendanceFilter.unit,
+            employees,
+            stores,
+          ])
+          """
+          replace_once('src/pages/admin/DataRestorePage.jsx', old_scoped, new_scoped)
+
+          old_mock = r"""vi.mock('./pages/admin/OrderInformationSettingsPage', () => ({
+            OrderInformationSettingsPage: () => <div>Cài đặt thông tin đơn hàng route</div>,
+          }))
+          """
+          new_mock = old_mock + r"""
+          vi.mock('./pages/admin/DataRestorePage', () => ({
+            DataRestorePage: () => <div>Khôi phục dữ liệu route</div>,
+          }))
+          """
+          replace_once('src/App.routes.test.jsx', old_mock, new_mock)
+
+          route_anchor = r"""  it('loads the global projection on demand for a compact Admin detail route', async () => {
+          """
+          route_test = r"""  it('loads the reset projection before mounting the Admin data restore workspace', async () => {
+            mocked.session = { role: 'admin', name: 'Admin' }
+            mocked.remoteDataReady = false
+            mocked.remoteProjection = { kind: 'global', storeId: '', screen: 'stores' }
+            render(<MemoryRouter initialEntries={['/admin/data-restore']}><CurrentRoute /><App /></MemoryRouter>)
+
+            expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+            expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'reset' })
+            expect(screen.queryByText('Khôi phục dữ liệu route')).toBeNull()
+          })
+
+          """ + route_anchor
+          replace_once('src/App.routes.test.jsx', route_anchor, route_test)
+
+          employee_test_anchor = r"""  it('keeps the workspace unavailable to non-Admin roles', () => {
+          """
+          employee_selector_test = r"""  it('lists canonical and legacy HTKD, Office and Store employees in the matching selector', async () => {
+            mocked.app.stores = [
+              { id: 'S01', code: 'NTL', name: 'Dosii NTL' },
+              { id: 'S02', code: 'SM-TNV', short: 'TNV', name: 'SM TNV' },
+            ]
+            mocked.app.employees = [
+              { id: 'BS-CAN', name: 'HTKD chuẩn', unit: 'business_support', storeId: 'BUSINESS_SUPPORT' },
+              { id: 'BS-LEGACY', name: 'HTKD legacy', unitType: 'Hỗ trợ kinh doanh', storeId: 'HTKD' },
+              { id: 'OF-CAN', name: 'Văn phòng chuẩn', unit: 'office', storeId: 'OFFICE' },
+              { id: 'OF-LEGACY', name: 'Văn phòng legacy', department: 'Khối văn phòng', storeId: 'VP' },
+              { id: 'ST-CAN', name: 'Cửa hàng chuẩn', unit: 'store', storeId: 'S02' },
+              { id: 'ST-LEGACY', name: 'Cửa hàng legacy', unit: 'store_employee', assignedStoreId: 'SM-TNV' },
+              { id: 'ST-WORKED', name: 'Nhân viên làm hỗ trợ', unit: 'employee', storeId: 'S01' },
+              { id: 'MGR-01', name: 'Quản lý không được hiện', unit: 'store_manager', storeId: 'S02' },
+            ]
+            mocked.app.attendance = [{
+              id: 'ATT-WORKED', employeeId: 'ST-WORKED', storeId: 'S02', date: '2026-09-03',
+              shiftName: 'Ca hỗ trợ', checkIn: '12:00', checkOut: '17:00',
+            }]
+
+            render(<DataRestorePage />)
+            await screen.findByRole('tab', { name: /CHẤM CÔNG/i })
+
+            const unitSelect = screen.getByLabelText(/Loại nhân viên/i)
+            fireEvent.change(unitSelect, { target: { value: 'business_support' } })
+            let employeeSelect = screen.getByLabelText(/^Nhân viên$/i)
+            expect(within(employeeSelect).getByRole('option', { name: /HTKD chuẩn/ })).toBeTruthy()
+            expect(within(employeeSelect).getByRole('option', { name: /HTKD legacy/ })).toBeTruthy()
+
+            fireEvent.change(unitSelect, { target: { value: 'office' } })
+            employeeSelect = screen.getByLabelText(/^Nhân viên$/i)
+            expect(within(employeeSelect).getByRole('option', { name: /Văn phòng chuẩn/ })).toBeTruthy()
+            expect(within(employeeSelect).getByRole('option', { name: /Văn phòng legacy/ })).toBeTruthy()
+
+            fireEvent.change(unitSelect, { target: { value: 'store' } })
+            fireEvent.change(screen.getByLabelText(/^Cửa hàng$/i), { target: { value: 'S02' } })
+            employeeSelect = screen.getByLabelText(/^Nhân viên$/i)
+            expect(within(employeeSelect).getByRole('option', { name: /Cửa hàng chuẩn/ })).toBeTruthy()
+            expect(within(employeeSelect).getByRole('option', { name: /Cửa hàng legacy/ })).toBeTruthy()
+            expect(within(employeeSelect).getByRole('option', { name: /Nhân viên làm hỗ trợ/ })).toBeTruthy()
+            expect(within(employeeSelect).queryByRole('option', { name: /Quản lý không được hiện/ })).toBeNull()
+          })
+
+          """ + employee_test_anchor
+          replace_once('src/pages/admin/DataRestorePage.test.jsx', employee_test_anchor, employee_selector_test)
+          PY
+
+      - name: Check generated diff
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --check
+          git diff --stat
+          grep -F "'/admin/data-restore': 'reset'" src/domain/workspaceScreens.js
+          grep -F "employeeBelongsToStore" src/pages/admin/DataRestorePage.jsx
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Targeted regression tests
+        run: npx vitest run src/pages/admin/DataRestorePage.test.jsx src/App.routes.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit verified source changes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -f .github/workflows/apply-data-restore-employee-options.yml
+          git config user.name "mrbengilo"
+          git config user.email "mrbengilo.76@gmail.com"
+          git add -A
+          git commit -m "fix(admin): load all employees in data restore"
+          git push origin HEAD:fix/data-restore-employee-options
