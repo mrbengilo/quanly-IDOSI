@@ -1,0 +1,71 @@
+name: Port navigation performance fix to latest main
+
+on:
+  push:
+    branches:
+      - perf/navigation-latency-production-v2
+    paths:
+      - .github/workflows/port-navigation-performance-production.yml
+
+permissions:
+  contents: write
+
+jobs:
+  port-test-clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: perf/navigation-latency-production-v2
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Port isolated verified performance commit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin dfd1d1dd0b94cd1b4ba6783b04bca6f5168fe703
+          git cherry-pick dfd1d1dd0b94cd1b4ba6783b04bca6f5168fe703
+          git rm .github/workflows/port-navigation-performance-production.yml
+
+      - name: Verify clean production diff
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --check HEAD~1
+          ! git diff --name-only origin/main...HEAD | grep -E '^\.github/workflows/(apply|inspect|port|export)-navigation' || {
+            echo 'Temporary workflow leaked into production diff.' >&2
+            exit 1
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Targeted regressions
+        run: npx vitest run src/services/employeeAvatarCache.test.js server/vps/sqlite-d1.pragmas.test.js server/worker.test.js
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit cleanup and push verified branch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git commit -m 'chore: remove one-shot performance port workflow'
+          git push origin HEAD:perf/navigation-latency-production-v2

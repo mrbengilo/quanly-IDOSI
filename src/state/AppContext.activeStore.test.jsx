@@ -61,6 +61,18 @@ const employeeHomeUser = {
   role: 'employee', storeId: 'STORE-A', homeStoreId: 'STORE-A', status: 'active', version: 1,
 }
 
+const storeManagerUser = {
+  id: 'USER-QL-001',
+  employeeId: 'QL-001',
+  username: 'store-manager-one',
+  displayName: 'Quản lý cửa hàng',
+  role: 'store_manager',
+  storeId: 'STORE-A',
+  homeStoreId: 'STORE-A',
+  status: 'active',
+  version: 1,
+}
+
 const makeRemoteState = (activeStoreId = 'STORE-A') => ({
   ...createInitialState(),
   stores: [
@@ -340,6 +352,96 @@ describe('remote command active-store preservation', () => {
     expect(appRef.current.remoteProjection).toEqual({ kind: 'store', storeId: 'STORE-B', screen: 'payroll', period: '' })
     expect(appRef.current.activeStoreId).toBe('STORE-B')
     expect(appRef.current.employees.map(({ id }) => id)).toEqual(['E-B'])
+  })
+
+  it('loads a new store screen for the authenticated store manager', async () => {
+    const managerState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{
+        id: 'QL-001',
+        name: 'Quản lý cửa hàng',
+        unit: 'store_manager',
+        storeId: 'STORE-A',
+        status: 'Đang làm việc',
+      }],
+    }
+    const overviewProjection = {
+      user: storeManagerUser,
+      projection: 'store',
+      storeId: 'STORE-A',
+      screen: 'overview',
+      state: managerState,
+      policies: [],
+      version: 1,
+    }
+    api.apiLogin.mockResolvedValue({ user: storeManagerUser, bootstrap: overviewProjection })
+    api.apiGetStoreWorkspaceState.mockResolvedValue({
+      ...overviewProjection,
+      screen: 'orders',
+      state: {
+        ...managerState,
+        orders: [{ id: 'ORDER-MANAGER', storeId: 'STORE-A' }],
+      },
+    })
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('store-manager-one', 'password')).ok).toBe(true)
+    })
+    api.apiGetStoreWorkspaceState.mockClear()
+
+    await act(async () => {
+      await appRef.current.ensureStoreWorkspaceData('STORE-A', { screen: 'orders' })
+    })
+
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledOnce()
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'orders' })
+    expect(api.apiGetState).not.toHaveBeenCalled()
+    expect(appRef.current.remoteDataReady).toBe(true)
+    expect(appRef.current.remoteProjection).toEqual({
+      kind: 'store', storeId: 'STORE-A', screen: 'orders', period: '',
+    })
+    expect(appRef.current.orders.map(({ id }) => id)).toContain('ORDER-MANAGER')
+  })
+
+  it('does not request another store projection for a store manager', async () => {
+    const managerState = {
+      ...makeRemoteState('STORE-A'),
+      employees: [{
+        id: 'QL-001',
+        name: 'Quản lý cửa hàng',
+        unit: 'store_manager',
+        storeId: 'STORE-A',
+        status: 'Đang làm việc',
+      }],
+    }
+    api.apiLogin.mockResolvedValue({
+      user: storeManagerUser,
+      bootstrap: {
+        user: storeManagerUser,
+        projection: 'store',
+        storeId: 'STORE-A',
+        screen: 'overview',
+        state: managerState,
+        policies: [],
+        version: 1,
+      },
+    })
+    renderProvider()
+
+    await act(async () => {
+      expect((await appRef.current.login('store-manager-one', 'password')).ok).toBe(true)
+    })
+    api.apiGetStoreWorkspaceState.mockClear()
+
+    await act(async () => {
+      await appRef.current.ensureStoreWorkspaceData('STORE-B', { screen: 'orders' })
+    })
+
+    expect(api.apiGetStoreWorkspaceState).not.toHaveBeenCalled()
+    expect(appRef.current.remoteProjection).toEqual({
+      kind: 'store', storeId: 'STORE-A', screen: 'overview', period: '',
+    })
   })
 
   it('finishes an Admin store Save before the scoped background reconciliation', async () => {
