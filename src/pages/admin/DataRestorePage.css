@@ -1,0 +1,91 @@
+.data-restore-page .data-restore-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.data-restore-tabs > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: 12px 14px;
+  border: 1px solid #d9e3de;
+  border-radius: 12px;
+  background: #fff;
+  color: #40504a;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.data-restore-tabs > button:hover {
+  border-color: #8bb9a2;
+  box-shadow: 0 4px 14px rgb(18 75 48 / 8%);
+}
+
+.data-restore-tabs > button.is-active {
+  border-color: #178653;
+  background: #edf8f2;
+  color: #0e6d42;
+  box-shadow: inset 0 0 0 1px #178653;
+}
+
+.data-restore-tabs > button span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.data-restore-tabs > button strong {
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.data-restore-tabs > button small {
+  color: #66756f;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.data-restore-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.data-restore-detail-list,
+.data-restore-change-list {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+}
+
+.data-restore-detail-list span,
+.data-restore-change-list span {
+  line-height: 1.35;
+}
+
+.data-restore-change-list span {
+  display: grid;
+  gap: 2px;
+}
+
+.data-restore-change-list strong {
+  font-size: 12px;
+}
+
+.data-restore-change-list small {
+  color: #66756f;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .data-restore-page .data-restore-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  .data-restore-tabs > button {
+    min-height: 56px;
+  }
+}
