@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Apply the IDOSI shared quick-schedule preset configuration update.
+
+Usage from the root of mrbengilo/quanly-IDOSI:
+  python path/to/apply_idosi_schedule_preset_update.py --check
+  python path/to/apply_idosi_schedule_preset_update.py --write
+
+The script validates every source anchor before writing, so a drifted repository is
+left untouched instead of receiving a partial update.
+"""
+from __future__ import annotations
+
+import argparse
+import difflib
+import hashlib
+import sys
+from pathlib import Path
+
+BUNDLE_DIR = Path(__file__).resolve().parent
+REVIEWED_BASE_COMMIT = 'fa69532a93a3ee387e0a09748d32da908f2a57c3'
+
+
+class PatchError(RuntimeError):
+    pass
+
+
+def git_blob_sha(text: str) -> str:
+    payload = text.encode('utf-8')
+    return hashlib.sha1(f'blob {len(payload)}\0'.encode('ascii') + payload).hexdigest()
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise PatchError(f"{label}: expected exactly 1 source anchor, found {count}")
+    return text.replace(old, new, 1)
+
+
+def append_once(text: str, marker: str, block: str, label: str) -> str:
+    if marker in text:
+        return text
+    if not text.endswith("\n"):
+        text += "\n"
+    return f"{text}\n{block.rstrip()}\n"
+
+
+def transform_initial_domain_state(text: str) -> str:
+    text = replace_once(
+        text,
+        "import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'\n",
+        "import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'\n"
+        "import { SUPPORT_SCHEDULE_PRESETS, normalizeSupportSchedulePresets } from '../domain/supportWorkSchedule'\n",
+        "initialDomainState import",
+    )
+    text = replace_once(text, "export const DOMAIN_SCHEMA_VERSION = 6", "export const DOMAIN_SCHEMA_VERSION = 7", "domain schema version")
+    text = replace_once(
+        text,
+        "  deletedEmployees: [],\n  supportTransfers: [],\n  idempotencyKeys: [],",
+        "  deletedEmployees: [],\n"
+        "  supportSchedulePresets: SUPPORT_SCHEDULE_PRESETS.map((preset) => ({ ...preset })),\n"
+        "  supportSchedulePresetHistory: [],\n"
+        "  supportTransfers: [],\n"
+        "  idempotencyKeys: [],",
+        "initial preset state",
+    )
+    text = replace_once(
+        text,
+        "    deletedEmployees: mergeArray(stored, defaults, 'deletedEmployees'),\n"
+        "    supportTransfers: mergeArray(stored, defaults, 'supportTransfers'),\n"
+        "    idempotencyKeys: mergeArray(stored, defaults, 'idempotencyKeys'),",
+        "    deletedEmployees: mergeArray(stored, defaults, 'deletedEmployees'),\n"
+        "    supportSchedulePresets: normalizeSupportSchedulePresets(mergeArray(stored, defaults, 'supportSchedulePresets')),\n"
+        "    supportSchedulePresetHistory: mergeArray(stored, defaults, 'supportSchedulePresetHistory'),\n"
+        "    supportTransfers: mergeArray(stored, defaults, 'supportTransfers'),\n"
+        "    idempotencyKeys: mergeArray(stored, defaults, 'idempotencyKeys'),",
+        "migrated preset state",
+    )
+    return text
+
+
+def transform_initial_domain_state_test(text: str) -> str:
+    return replace_once(
+        text,
+        "      periodReconciliations: [],\n      jobRuns: [],",
+        "      periodReconciliations: [],\n"
+        "      supportSchedulePresets: [\n"
+        "        { id: 'morning', name: 'Ca sáng', start: '08:30', end: '12:00' },\n"
+        "        { id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' },\n"
+        "        { id: 'office-hours', name: 'Giờ hành chính', start: '08:30', end: '17:30' },\n"
+        "      ],\n"
+        "      supportSchedulePresetHistory: [],\n"
+        "      jobRuns: [],",
+        "initial domain preset migration test",
+    )
+
+
+APP_CONTEXT_SAVE_FUNCTION = r'''  const saveSupportSchedulePresets = async (records = []) => {
+    const actorRole = normalizeAuthRole(state.session?.role)
+    const actorEmployeeId = String(state.session?.employeeId || '').trim()
+    const actorEmployee = matchedRecordOrNull(resolveEmployeeIdentifier(state.employees, actorEmployeeId))
+    if (!canConfigureSupportSchedulePresets({ role: actorRole, employee: actorEmployee })) {
+      const message = 'Tài khoản không có quyền thay đổi cấu hình khung giờ.'
+      notify(message, 'info')
+      return { ok: false, message }
+    }
+    const validation = validateSupportSchedulePresets(records)
+    if (!validation.ok) {
+      notify(validation.message, 'info')
+      return validation
+    }
+    const previous = normalizeSupportSchedulePresets(state.supportSchedulePresets)
+    if (supportSchedulePresetsEqual(previous, validation.presets)) {
+      return { ok: true, existing: true, presets: previous }
+    }
+    if (apiRef.current.enabled) {
+      try {
+        const result = await runRemoteDomainCommand('support_schedule.presets.update', { presets: validation.presets })
+        notify('Đã cập nhật cấu hình khung giờ.')
+        return { ok: true, presets: result.presets, history: result.history }
+      } catch (error) {
+        notify(error.message || 'Không thể cập nhật cấu hình khung giờ.', 'info')
+        return { ok: false, message: error.message }
+      }
+    }
+
+    const timestamp = new Date().toISOString()
+    const actor = actorSnapshot(state.session)
+    const version = Math.max(0, ...previous.map((preset) => Number(preset.version) || 0)) + 1
+    const presets = validation.presets.map((preset) => ({
+      ...preset,
+      version,
+      updatedAt: timestamp,
+      updatedBy: actor,
+    }))
+    const history = {
+      id: uid('SWSPH'),
+      action: 'Cập nhật khung giờ nhanh',
+      before: previous,
+      after: presets,
+      version,
+      recordedAt: timestamp,
+      recordedBy: actor,
+    }
+    setState((current) => ({
+      ...current,
+      supportSchedulePresets: presets,
+      supportSchedulePresetHistory: [history, ...(current.supportSchedulePresetHistory || [])],
+      auditLogs: [{
+        id: uid('AUD'),
+        entity: 'support-schedule-presets',
+        entityId: 'global',
+        action: 'update',
+        before: previous,
+        after: presets,
+        actor,
+        createdAt: timestamp,
+      }, ...(current.auditLogs || [])],
+      stateVersion: Math.max(1, Number(current.stateVersion) || 1) + 1,
+    }))
+    notify('Đã cập nhật cấu hình khung giờ.')
+    return { ok: true, presets, history }
+  }
+
+'''
+
+
+def transform_app_context(text: str) -> str:
+    text = replace_once(
+        text,
+        "import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'\n",
+        "import { resolveEffectiveWorkingTime } from '../domain/workTimeSchedule'\n"
+        "import {\n"
+        "  SUPPORT_SCHEDULE_PRESETS,\n"
+        "  canConfigureSupportSchedulePresets,\n"
+        "  normalizeSupportSchedulePresets,\n"
+        "  supportSchedulePresetsEqual,\n"
+        "  validateSupportSchedulePresets,\n"
+        "} from '../domain/supportWorkSchedule'\n",
+        "AppContext preset imports",
+    )
