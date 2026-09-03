@@ -1,0 +1,62 @@
+name: Apply PR 124 correctness fixes
+
+on:
+  push:
+    branches:
+      - feat/automatic-live-revenue-bonus
+    paths:
+      - .github/workflows/apply-pr124-correctness.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/automatic-live-revenue-bonus
+          fetch-depth: 0
+
+      - name: Use Node.js 22.13
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Apply guarded correctness patch
+        run: python3 scripts/apply-pr124-correctness.py
+
+      - name: Check patch formatting
+        run: git diff --check
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify sites build
+        run: npm run sites:verify
+
+      - name: Commit verified source changes
+        shell: bash
+        run: |
+          rm scripts/apply-pr124-correctness.py
+          rm .github/workflows/apply-pr124-correctness.yml
+          rm .github/workflows/inspect-pr124.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix(revenue): harden automatic bonus correctness"
+          git push origin HEAD:feat/automatic-live-revenue-bonus
