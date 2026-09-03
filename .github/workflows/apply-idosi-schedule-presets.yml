@@ -1,0 +1,76 @@
+name: Apply IDOSI schedule preset patch
+
+on:
+  push:
+    branches:
+      - feat/support-schedule-presets
+    paths:
+      - .github/workflows/apply-idosi-schedule-presets.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-idosi-schedule-presets
+  cancel-in-progress: false
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/support-schedule-presets
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Rebuild reviewed patch script
+        shell: bash
+        run: |
+          cat .github/idosi-schedule-presets/patch.part.* > .github/idosi-schedule-presets/apply_idosi_schedule_preset_update.py
+          python -m py_compile .github/idosi-schedule-presets/apply_idosi_schedule_preset_update.py
+
+      - name: Validate source anchors
+        run: python .github/idosi-schedule-presets/apply_idosi_schedule_preset_update.py --root . --check
+
+      - name: Apply source update
+        run: python .github/idosi-schedule-presets/apply_idosi_schedule_preset_update.py --root . --write
+
+      - name: Check generated diff
+        run: git diff --check
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Commit tested source changes
+        shell: bash
+        run: |
+          rm -rf .github/idosi-schedule-presets
+          rm -f .github/workflows/apply-idosi-schedule-presets.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat(schedule): configure shared quick time presets"
+          git push origin HEAD:feat/support-schedule-presets
