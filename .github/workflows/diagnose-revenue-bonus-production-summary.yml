@@ -19,9 +19,6 @@ jobs:
     if: github.repository == 'mrbengilo/quanly-IDOSI'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment:
-      name: production
-      url: https://idosi.io.vn
     env:
       EXPECTED_RELEASE_SHA: b235208209791397b67d927b810e22ab1ef786aa
     steps:
