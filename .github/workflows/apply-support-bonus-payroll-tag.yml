@@ -28,6 +28,9 @@ jobs:
           node-version: 22.13.0
           cache: npm
 
+      - name: Repair repeating-decimal assertion
+        run: python3 scripts/fix-support-bonus-patcher-test.py
+
       - name: Apply guarded source patch
         run: python3 scripts/apply-support-bonus-payroll-tag.py
 
@@ -53,6 +56,7 @@ jobs:
         shell: bash
         run: |
           rm scripts/apply-support-bonus-payroll-tag.py
+          rm scripts/fix-support-bonus-patcher-test.py
           rm .github/workflows/apply-support-bonus-payroll-tag.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
