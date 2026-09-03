@@ -1,0 +1,126 @@
+name: Finalize IDOSI navigation performance
+
+on:
+  push:
+    branches:
+      - ops/finalize-navigation-performance
+    paths:
+      - .github/workflows/finalize-navigation-performance.yml
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ops/finalize-navigation-performance
+          fetch-depth: 0
+
+      - name: Verify required fixes are present on main
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          git show origin/main:src/services/employeeAvatarCache.js | grep -F 'MAX_CONCURRENT_AVATAR_REQUESTS = 3'
+          git show origin/main:server/vps/sqlite-d1.mjs | grep -F 'readStateCollectionsSnapshot'
+          git show origin/main:server/vps/server.mjs | grep -F 'resolveWebConcurrency'
+          git show origin/main:src/state/projectionCache.js | grep -F 'createProjectionCache'
+          git show origin/main:.github/workflows/verify-navigation-performance.yml | grep -F 'navigation_performance_verification=PASS'
+
+      - name: Wait until production runs current main
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          expected="$(git rev-parse origin/main)"
+          deadline=$((SECONDS + 900))
+          actual=''
+          while (( SECONDS < deadline )); do
+            actual="$(curl -fsS --max-time 20 "https://idosi.io.vn/api/release?_finalize=$(date +%s%N)" \
+              | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const p=JSON.parse(s);process.stdout.write(p?.data?.releaseSha||p?.releaseSha||'')})" \
+              || true)"
+            echo "expected=$expected actual=$actual"
+            [[ "$actual" == "$expected" ]] && exit 0
+            sleep 10
+          done
+          echo "Production did not reach current main: expected=$expected actual=$actual" >&2
+          exit 1
+
+      - name: Dispatch a fresh production performance verification
+        id: verify
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ops-results
+          final_run=''
+          final_conclusion=''
+          for attempt in 1 2; do
+            before="$(date -u +%FT%TZ)"
+            gh workflow run verify-navigation-performance.yml --repo "$GITHUB_REPOSITORY" --ref main
+            sleep 8
+            deadline=$((SECONDS + 1200))
+            run_id=''
+            while (( SECONDS < deadline )); do
+              run_id="$(gh run list --repo "$GITHUB_REPOSITORY" \
+                --workflow verify-navigation-performance.yml \
+                --branch main --event workflow_dispatch --limit 10 \
+                --json databaseId,createdAt \
+                --jq --arg before "$before" '[.[] | select(.createdAt >= $before)][0].databaseId // empty')"
+              [[ -n "$run_id" ]] && break
+              sleep 5
+            done
+            [[ -n "$run_id" ]] || { echo 'Unable to locate dispatched verification run.' >&2; exit 1; }
+            echo "verification_attempt=$attempt run_id=$run_id"
+            if gh run watch "$run_id" --repo "$GITHUB_REPOSITORY" --exit-status; then
+              final_run="$run_id"
+              final_conclusion='success'
+              break
+            fi
+            final_run="$run_id"
+            final_conclusion='failure'
+            gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --log-failed \
+              > "ops-results/navigation-performance-failed-attempt-${attempt}.txt" || true
+            sleep 60
+          done
+          echo "run_id=$final_run" >> "$GITHUB_OUTPUT"
+          echo "conclusion=$final_conclusion" >> "$GITHUB_OUTPUT"
+          [[ "$final_conclusion" == 'success' ]] || exit 1
+
+      - name: Download final aggregate report
+        if: steps.verify.outputs.conclusion == 'success'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p ops-results/download
+          gh run download "${{ steps.verify.outputs.run_id }}" --repo "$GITHUB_REPOSITORY" \
+            --name idosi-navigation-performance-report \
+            --dir ops-results/download
+          report="$(find ops-results/download -type f -name 'navigation-performance.txt' -print -quit)"
+          [[ -n "$report" ]]
+          cp "$report" ops-results/navigation-performance-final.txt
+          {
+            echo 'status=COMPLETED'
+            echo "main_sha=$(git rev-parse origin/main)"
+            echo "production_sha=$(curl -fsS --max-time 20 https://idosi.io.vn/api/release | node -e \"let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const p=JSON.parse(s);process.stdout.write(p?.data?.releaseSha||p?.releaseSha||'')})\")"
+            echo "verification_run_id=${{ steps.verify.outputs.run_id }}"
+            echo "completed_at=$(date -u +%FT%TZ)"
+          } > ops-results/NAVIGATION_PERFORMANCE_COMPLETED.txt
+          rm -rf ops-results/download
+
+      - name: Commit completion evidence and remove one-shot workflow
+        if: steps.verify.outputs.conclusion == 'success'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git rm .github/workflows/finalize-navigation-performance.yml
+          git add ops-results/navigation-performance-final.txt ops-results/NAVIGATION_PERFORMANCE_COMPLETED.txt
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git commit -m 'ops: record completed navigation performance verification'
+          git push origin HEAD:ops/finalize-navigation-performance
