@@ -307,7 +307,9 @@ describe('compensation pages', () => {
     expect(screen.getAllByText('100 đ').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Nhân viên Hai').length).toBeGreaterThan(0)
     expect(screen.getByText('TỔNG GIỜ LÀM CỬA HÀNG')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+    const calculatedButton = screen.getByRole('button', { name: 'ĐÃ TÍNH THƯỞNG' })
+    expect(calculatedButton.disabled).toBe(true)
+    expect(screen.queryByRole('heading', { name: 'Duyệt thưởng mốc cao nhất' })).toBeNull()
   })
 
   it('filters manager revenue history by past date, synchronized month and employee with accurate totals', () => {

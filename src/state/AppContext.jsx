@@ -481,6 +481,7 @@ const isOfficeUnit = (value) => ['office', 'văn phòng', 'van phong', 'khối v
 const isBusinessSupportUnit = (value) => ['business_support', 'business support', 'support', 'hỗ trợ kinh doanh', 'ho tro kinh doanh', 'htkd'].includes(normalizeText(value))
 const isStoreManagerUnit = (value) => ['store_manager', 'store manager', 'quản lý cửa hàng', 'quan ly cua hang', 'qlch'].includes(normalizeText(value))
 const normalizeAuthRole = (role) => normalizeText(role) === 'manager' ? 'business_support' : normalizeText(role)
+export const canCalculateDailyRevenueBonus = (role) => ['admin', 'business_support', 'store_manager'].includes(normalizeAuthRole(role))
 export const remoteEffectiveUserChanged = (current = {}, latest = {}) => {
   if (!latest || typeof latest !== 'object' || !Object.keys(latest).length) return false
   const field = (record, camel, snake = camel) => String(record?.[camel] ?? record?.[snake] ?? '')
@@ -4529,6 +4530,20 @@ export function AppProvider({ children }) {
     }
   }
 
+  const requireRevenueBonusCalculator = (requestedStoreId = '') => {
+    const role = normalizeAuthRole(state.session?.role)
+    if (!canCalculateDailyRevenueBonus(role)) {
+      throw new Error('Chỉ Admin, Nhân viên hỗ trợ KD hoặc Quản lý cửa hàng được tính thưởng doanh thu.')
+    }
+    const assignedStoreId = state.session?.storeId || state.session?.store_id || ''
+    if (role === 'store_manager' && !sameIdentifier(requestedStoreId, assignedStoreId)) {
+      throw new Error('Quản lý cửa hàng chỉ được tính thưởng doanh thu cho cửa hàng được phân công.')
+    }
+    if (!apiRef.current.enabled) {
+      throw new Error('Cần kết nối máy chủ để tính thưởng doanh thu an toàn.')
+    }
+  }
+
   const setStoreEmployeeSalaryConfig = async (payload = {}) => {
     const role = normalizeAuthRole(state.session?.role)
     if (!['admin', 'business_support'].includes(role)) {
@@ -4738,7 +4753,7 @@ export function AppProvider({ children }) {
   }
 
   const calculateRevenueBonusDay = async (payload = {}) => {
-    requireCompensationOperator()
+    requireRevenueBonusCalculator(payload.storeId)
     return runRemoteDomainCommand(
       'revenue_bonus.calculate_day',
       payload,
