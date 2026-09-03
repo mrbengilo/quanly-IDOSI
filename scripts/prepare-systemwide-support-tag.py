@@ -12,18 +12,6 @@ def replace_once(path, old, new, label):
 
 
 replace_once(
-    'src/domain/supportEmployeeTag.js',
-    """  const transferReferences = explicitTransferReferences(record)
-  const referencedTransfers = transferReferences
-""",
-    """  const transferReferences = explicitTransferReferences(record)
-  if (transferReferences.length > 1) return null
-  const referencedTransfers = transferReferences
-""",
-    'fail closed on ambiguous explicit transfer references',
-)
-
-replace_once(
     'scripts/apply-systemwide-support-tag.py',
     """    \"\"\"<td>{order.employeeName}<small className=\"table-note\">{order.employeeId}</small></td>\"\"\",
     \"\"\"<td><strong>{order.employeeName || employeeFor(employees, order.employeeId)?.name || order.employeeId || '—'}</strong><SupportEmployeeTag record={order} employeeId={order.employeeId || order.employeeCode} storeId={storeId} businessDate={businessDate(order.createdAt || order.date)} employees={employees} stores={stores} supportTransfers={supportTransfers} className=\"table-note\" /><small className=\"table-note\">{order.employeeId || order.employeeCode || '—'}</small></td>\"\"\",
