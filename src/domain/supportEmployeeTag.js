@@ -14,15 +14,15 @@ const CANCELLED_TRANSFER_STATUSES = new Set([
   'CANCELED',
   'VOID',
   'VOIDED',
-  'ĐÃ HỦY',
+  'DELETED',
   'DA HUY',
-  'ĐÃ XÓA',
   'DA XOA',
 ])
 
 const compact = (value) => String(value ?? '').trim()
 const folded = (value) => compact(value).toLocaleLowerCase('en-US')
 const sameIdentifier = (left, right) => Boolean(compact(left) && folded(left) === folded(right))
+const safeRecord = (value) => value && typeof value === 'object' ? value : {}
 
 const dateFromInstant = (value) => {
   const instant = value instanceof Date ? value : new Date(value)
@@ -40,31 +40,40 @@ export const supportEmployeeBusinessDate = (value) => {
   return source ? dateFromInstant(source) : ''
 }
 
-const recordBusinessDate = (record = {}) => supportEmployeeBusinessDate(
-  record.businessDate
-  || record.workDate
-  || record.attendanceDate
-  || record.effectiveDate
-  || record.occurredOn
-  || record.date
-  || record.occurredAt
-  || record.checkInAt
-  || record.createdAt,
-)
+const recordBusinessDate = (record) => {
+  const source = safeRecord(record)
+  return supportEmployeeBusinessDate(
+    source.businessDate
+    || source.workDate
+    || source.attendanceDate
+    || source.effectiveDate
+    || source.occurredOn
+    || source.date
+    || source.occurredAt
+    || source.checkInAt
+    || source.createdAt,
+  )
+}
 
-const employeeIdentifiers = (employee = {}) => [
-  employee.id,
-  employee.code,
-  employee.employeeId,
-  employee.employeeCode,
-].map(compact).filter(Boolean)
+const employeeIdentifiers = (employee) => {
+  const source = safeRecord(employee)
+  return [
+    source.id,
+    source.code,
+    source.employeeId,
+    source.employeeCode,
+  ].map(compact).filter(Boolean)
+}
 
-const storeIdentifiers = (store = {}) => [store.id, store.code].map(compact).filter(Boolean)
-const transferIdentifiers = (transfer = {}) => [
-  transfer.id,
-  transfer.transferId,
-  transfer.supportTransferId,
-].map(compact).filter(Boolean)
+const storeIdentifiers = (store) => {
+  const source = safeRecord(store)
+  return [source.id, source.code].map(compact).filter(Boolean)
+}
+
+const transferIdentifiers = (transfer) => {
+  const source = safeRecord(transfer)
+  return [source.id, source.transferId, source.supportTransferId].map(compact).filter(Boolean)
+}
 
 const resolveUnique = (records = [], reference, identifiersOf) => {
   const requested = compact(reference)
@@ -78,24 +87,35 @@ const resolveUnique = (records = [], reference, identifiersOf) => {
   return matches.length === 1 ? matches[0] : null
 }
 
-const transferEmployeeId = (record = {}) => compact(
-  record.employeeId || record.employeeCode || record.staffId,
-)
+const transferEmployeeId = (record) => {
+  const source = safeRecord(record)
+  return compact(source.employeeId || source.employeeCode || source.staffId)
+}
 
-const transferHomeStoreId = (record = {}) => compact(
-  record.fromStoreId || record.homeStoreId || record.sourceStoreId || record.originStoreId,
-)
+const transferHomeStoreId = (record) => {
+  const source = safeRecord(record)
+  return compact(
+    source.fromStoreId || source.homeStoreId || source.sourceStoreId || source.originStoreId,
+  )
+}
 
-const transferSupportStoreId = (record = {}) => compact(
-  record.toStoreId || record.supportStoreId || record.destinationStoreId || record.targetStoreId,
-)
+const transferSupportStoreId = (record) => {
+  const source = safeRecord(record)
+  return compact(
+    source.toStoreId || source.supportStoreId || source.destinationStoreId || source.targetStoreId,
+  )
+}
 
-const transferAvailableForHistory = (record = {}) => {
-  if (record.deletedAt || record.voidedAt) return false
-  const status = compact(record.status).toLocaleUpperCase('vi-VN')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/gu, '')
-  return !CANCELLED_TRANSFER_STATUSES.has(status)
+const normalizedTransferStatus = (record) => compact(safeRecord(record).status)
+  .toLocaleUpperCase('vi-VN')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/gu, '')
+  .replace(/Đ/gu, 'D')
+
+const transferAvailableForHistory = (record) => {
+  const source = safeRecord(record)
+  if (!Object.keys(source).length || source.deletedAt || source.voidedAt) return false
+  return !CANCELLED_TRANSFER_STATUSES.has(normalizedTransferStatus(source))
 }
 
 const transferOverlapsDateIncludingCompleted = (record, businessDate) => {
@@ -111,102 +131,115 @@ const transferOverlapsDateIncludingCompleted = (record, businessDate) => {
     && bounds.endMs > dayStart
 }
 
-const nestedSupport = (record = {}) => (
-  record.supportCompensation
-  || record.compensation?.support
-  || record.supportAssignment
-  || record.supportContext
-  || {}
-)
+const nestedSupport = (record) => {
+  const source = safeRecord(record)
+  return safeRecord(
+    source.supportCompensation
+    || source.compensation?.support
+    || source.supportAssignment
+    || source.supportContext,
+  )
+}
 
-const explicitTransferReferences = (record = {}) => {
-  const support = nestedSupport(record)
+const explicitTransferReferences = (record) => {
+  const source = safeRecord(record)
+  const support = nestedSupport(source)
   return [...new Set([
-    record.supportTransferId,
-    record.transferId,
-    record.activeTransferId,
+    source.supportTransferId,
+    source.transferId,
+    source.activeTransferId,
     support.transferId,
-    ...(Array.isArray(record.supportTransferIds) ? record.supportTransferIds : []),
+    ...(Array.isArray(source.supportTransferIds) ? source.supportTransferIds : []),
     ...(Array.isArray(support.transferIds) ? support.transferIds : []),
   ].map(compact).filter(Boolean))]
 }
 
-const recordEmployeeId = (record = {}) => compact(
-  record.employeeId || record.employeeCode || record.staffId || record.userId,
-)
+const recordEmployeeId = (record) => {
+  const source = safeRecord(record)
+  return compact(source.employeeId || source.employeeCode || source.staffId || source.userId)
+}
 
-const recordStoreId = (record = {}) => {
-  const support = nestedSupport(record)
+const recordStoreId = (record) => {
+  const source = safeRecord(record)
+  const support = nestedSupport(source)
   return compact(
-    record.supportStoreId
+    source.supportStoreId
     || support.supportStoreId
-    || record.destinationStoreId
-    || record.storeId
-    || record.payrollStoreId,
+    || source.destinationStoreId
+    || source.storeId
+    || source.payrollStoreId,
   )
 }
 
-const explicitHomeStoreId = (record = {}) => {
-  const support = nestedSupport(record)
+const explicitHomeStoreId = (record) => {
+  const source = safeRecord(record)
+  const support = nestedSupport(source)
   return compact(
-    record.employeeHomeStoreId
-    || record.supportHomeStoreId
-    || record.homeStoreId
+    source.employeeHomeStoreId
+    || source.supportHomeStoreId
+    || source.homeStoreId
     || support.homeStoreId
-    || record.sourceStoreId,
+    || source.sourceStoreId,
   )
 }
 
-const explicitHomeStoreName = (record = {}) => {
-  const support = nestedSupport(record)
+const explicitHomeStoreName = (record) => {
+  const source = safeRecord(record)
+  const support = nestedSupport(source)
   return compact(
-    record.employeeHomeStoreName
-    || record.supportHomeStoreName
-    || record.homeStoreName
+    source.employeeHomeStoreName
+    || source.supportHomeStoreName
+    || source.homeStoreName
     || support.homeStoreName,
   )
 }
 
-const explicitSupportStoreName = (record = {}) => {
-  const support = nestedSupport(record)
+const explicitSupportStoreName = (record) => {
+  const source = safeRecord(record)
+  const support = nestedSupport(source)
   return compact(
-    record.supportStoreName
-    || record.destinationStoreName
+    source.supportStoreName
+    || source.destinationStoreName
     || support.supportStoreName
-    || record.storeName
-    || record.payrollStoreName,
+    || source.storeName
+    || source.payrollStoreName,
   )
 }
 
-const recordExplicitlyMarksSupport = (record = {}) => {
-  const support = nestedSupport(record)
+const recordExplicitlyMarksSupport = (record) => {
+  const source = safeRecord(record)
+  const support = nestedSupport(source)
   return Boolean(
-    record.supportTransferred === true
-    || record.isSupportEmployee === true
+    source.supportTransferred === true
+    || source.isSupportEmployee === true
     || support.isSupportEmployee === true
-    || record.supportTransferId
+    || source.supportTransferId
     || support.transferId
-    || record.supportStoreId
+    || source.supportStoreId
     || support.supportStoreId
-    || explicitTransferReferences(record).length,
+    || explicitTransferReferences(source).length,
   )
 }
+
+const transferMatchesScope = ({ transfer, employeeId, storeId, businessDate }) => (
+  transferAvailableForHistory(transfer)
+  && sameIdentifier(transferEmployeeId(transfer), employeeId)
+  && sameIdentifier(transferSupportStoreId(transfer), storeId)
+  && transferOverlapsDateIncludingCompleted(transfer, businessDate)
+)
 
 const matchingTransfers = ({ supportTransfers, employeeId, storeId, businessDate }) => (
   (Array.isArray(supportTransfers) ? supportTransfers : []).filter((transfer) => (
-    transferAvailableForHistory(transfer)
-    && sameIdentifier(transferEmployeeId(transfer), employeeId)
-    && sameIdentifier(transferSupportStoreId(transfer), storeId)
-    && transferOverlapsDateIncludingCompleted(transfer, businessDate)
+    transferMatchesScope({ transfer, employeeId, storeId, businessDate })
   ))
 )
 
 /**
  * Canonical support-employee tag context.
  *
- * The tag is intentionally presentation-only: it never changes attendance,
- * payroll or bonus calculations. Historical records before 01/09/2026 remain
- * untagged, while completed transfers can still label records on/after cutover.
+ * The tag is presentation-only: it never changes attendance, payroll or bonus
+ * calculations. Historical records before 01/09/2026 remain untagged, while a
+ * completed valid transfer can still label its records on/after the cutover.
  */
 export function resolveSupportEmployeeTagContext({
   record = {},
@@ -218,42 +251,65 @@ export function resolveSupportEmployeeTagContext({
   stores = [],
   supportTransfers = [],
 } = {}) {
-  const date = supportEmployeeBusinessDate(businessDate) || recordBusinessDate(record)
+  const sourceRecord = safeRecord(record)
+  const date = supportEmployeeBusinessDate(businessDate) || recordBusinessDate(sourceRecord)
   if (!date || date < SUPPORT_EMPLOYEE_TAG_EFFECTIVE_DATE) return null
 
-  const employeeReference = compact(employeeId) || recordEmployeeId(record)
-  const resolvedEmployee = employee || resolveUnique(employees, employeeReference, employeeIdentifiers)
+  const employeeReference = compact(employeeId) || recordEmployeeId(sourceRecord)
+  const resolvedEmployee = safeRecord(employee).id || safeRecord(employee).code
+    ? employee
+    : resolveUnique(employees, employeeReference, employeeIdentifiers)
   const canonicalEmployeeId = employeeIdentifiers(resolvedEmployee)[0] || employeeReference
-  const operationalStoreId = compact(storeId) || recordStoreId(record)
+  const operationalStoreId = compact(storeId) || recordStoreId(sourceRecord)
   if (!canonicalEmployeeId || !operationalStoreId) return null
 
-  const transferReferences = explicitTransferReferences(record)
-  const referencedTransfers = transferReferences
-    .map((reference) => resolveUnique(supportTransfers, reference, transferIdentifiers))
-    .filter(Boolean)
-    .filter((transfer, index, records) => records.indexOf(transfer) === index)
+  const transferReferences = explicitTransferReferences(sourceRecord)
+  if (transferReferences.length > 1) return null
+
   const inferredTransfers = matchingTransfers({
     supportTransfers,
     employeeId: canonicalEmployeeId,
     storeId: operationalStoreId,
     businessDate: date,
   })
-  const transfer = referencedTransfers.length === 1
-    ? referencedTransfers[0]
-    : referencedTransfers.length > 1
-      ? null
-      : inferredTransfers.length === 1
-        ? inferredTransfers[0]
-        : null
+  if (!transferReferences.length && inferredTransfers.length > 1) return null
 
-  const homeStoreId = explicitHomeStoreId(record)
+  let transfer = null
+  if (transferReferences.length === 1) {
+    const referencedTransfer = resolveUnique(
+      supportTransfers,
+      transferReferences[0],
+      transferIdentifiers,
+    )
+    if (referencedTransfer) {
+      if (!transferMatchesScope({
+        transfer: referencedTransfer,
+        employeeId: canonicalEmployeeId,
+        storeId: operationalStoreId,
+        businessDate: date,
+      })) return null
+      transfer = referencedTransfer
+    } else {
+      const immutableSnapshotEvidence = Boolean(
+        explicitHomeStoreId(sourceRecord)
+        && recordStoreId(sourceRecord)
+        && recordExplicitlyMarksSupport(sourceRecord),
+      )
+      if (!immutableSnapshotEvidence) return null
+    }
+  } else if (inferredTransfers.length === 1) {
+    transfer = inferredTransfers[0]
+  }
+
+  const resolvedEmployeeRecord = safeRecord(resolvedEmployee)
+  const homeStoreId = explicitHomeStoreId(sourceRecord)
     || transferHomeStoreId(transfer)
-    || compact(resolvedEmployee?.homeStoreId)
-    || compact(resolvedEmployee?.storeId)
-  const supportStoreId = recordStoreId(record)
+    || compact(resolvedEmployeeRecord.homeStoreId)
+    || compact(resolvedEmployeeRecord.storeId)
+  const supportStoreId = recordStoreId(sourceRecord)
     || transferSupportStoreId(transfer)
     || operationalStoreId
-  const supportEvidence = recordExplicitlyMarksSupport(record)
+  const supportEvidence = recordExplicitlyMarksSupport(sourceRecord)
     || Boolean(transfer)
     || Boolean(homeStoreId && supportStoreId && !sameIdentifier(homeStoreId, supportStoreId)
       && inferredTransfers.length === 1)
@@ -263,20 +319,21 @@ export function resolveSupportEmployeeTagContext({
 
   const homeStore = resolveUnique(stores, homeStoreId, storeIdentifiers)
   const supportStore = resolveUnique(stores, supportStoreId, storeIdentifiers)
+  const transferRecord = safeRecord(transfer)
   return {
     employeeId: canonicalEmployeeId,
     businessDate: date,
     homeStoreId,
-    homeStoreName: explicitHomeStoreName(record)
-      || compact(transfer?.fromStoreName)
-      || compact(transfer?.homeStoreName)
-      || compact(homeStore?.name)
+    homeStoreName: explicitHomeStoreName(sourceRecord)
+      || compact(transferRecord.fromStoreName)
+      || compact(transferRecord.homeStoreName)
+      || compact(safeRecord(homeStore).name)
       || homeStoreId,
     supportStoreId,
-    supportStoreName: explicitSupportStoreName(record)
-      || compact(transfer?.toStoreName)
-      || compact(transfer?.supportStoreName)
-      || compact(supportStore?.name)
+    supportStoreName: explicitSupportStoreName(sourceRecord)
+      || compact(transferRecord.toStoreName)
+      || compact(transferRecord.supportStoreName)
+      || compact(safeRecord(supportStore).name)
       || supportStoreId,
     transferId: transferIdentifiers(transfer)[0] || transferReferences[0] || '',
   }
