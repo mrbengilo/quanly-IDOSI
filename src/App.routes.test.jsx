@@ -28,7 +28,21 @@ vi.mock('./state/AppContext', () => ({
 
 vi.mock('./layout/AppShell', async () => {
   const { Outlet } = await vi.importActual('react-router-dom')
-  return { default: () => <Outlet /> }
+  return {
+    default: ({ workspaceStatus = null }) => (
+      <div data-testid="app-shell">
+        <span>Khung ứng dụng</span>
+        {workspaceStatus?.kind === 'loading' ? (
+          <div role="status">{workspaceStatus.message}</div>
+        ) : workspaceStatus?.kind === 'error' ? (
+          <div role="alert">
+            <strong>{workspaceStatus.message}</strong>
+            <button type="button" onClick={workspaceStatus.onRetry}>Thử lại</button>
+          </div>
+        ) : <Outlet />}
+      </div>
+    ),
+  }
 })
 
 vi.mock('./pages/admin/OrderInformationSettingsPage', () => ({
@@ -159,7 +173,9 @@ describe('App role routes', () => {
     mocked.remoteDataReady = false
     render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
 
-    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
+    expect(screen.getByTestId('app-shell')).toBeTruthy()
+    expect(screen.getByText('Khung ứng dụng')).toBeTruthy()
     expect(screen.getByTestId('current-route').textContent).toBe(path)
   })
 
@@ -168,7 +184,7 @@ describe('App role routes', () => {
     mocked.remoteProjection = { kind: 'global', storeId: '' }
     render(<MemoryRouter initialEntries={['/store/payroll?period=2026-09']}><CurrentRoute /><App /></MemoryRouter>)
 
-    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
     expect(mocked.ensureStoreWorkspaceData).toHaveBeenCalledWith('S01', { screen: 'payroll', period: '2026-09' })
     expect(screen.queryByText('Store payroll')).toBeNull()
   })
@@ -186,7 +202,7 @@ describe('App role routes', () => {
     mocked.remoteProjection = { kind: 'store', storeId: 'S01' }
     render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
 
-    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
     expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'cashflow' })
     expect(screen.queryByText('Admin cashflow')).toBeNull()
   })
@@ -197,7 +213,7 @@ describe('App role routes', () => {
   mocked.remoteProjection = { kind: 'global', storeId: '', screen: 'stores' }
   render(<MemoryRouter initialEntries={['/admin/data-restore']}><CurrentRoute /><App /></MemoryRouter>)
 
-  expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+  expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
   expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'reset' })
   expect(screen.queryByText('Khôi phục dữ liệu route')).toBeNull()
 })
@@ -208,7 +224,7 @@ describe('App role routes', () => {
     mocked.remoteProjection = { kind: 'global', storeId: '' }
     render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
 
-    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
     expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'cashflow' })
     expect(screen.queryByText('Admin cashflow')).toBeNull()
   })
@@ -232,7 +248,7 @@ describe('App role routes', () => {
     mocked.remoteProjection = { kind: 'global', storeId: '', screen: 'employee-home' }
     render(<MemoryRouter initialEntries={['/employee/orders']}><CurrentRoute /><App /></MemoryRouter>)
 
-    expect(await screen.findByText('Đang tải dữ liệu chi tiết của hệ thống...')).toBeTruthy()
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
     expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'employee-orders' })
   })
 

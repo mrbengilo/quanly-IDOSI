@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -170,7 +170,39 @@ const notificationKey = (item) => notificationId(item) || [
 ].join(':')
 const isAssignedTaskNotification = (item) => ['support-work-assigned', 'store-task-assigned'].includes(String(item?.type || ''))
 
-export default function AppShell() {
+function WorkspaceRouteLoading({ message = 'Đang mở danh mục...' }) {
+  return (
+    <section className="workspace-route-state workspace-route-state--loading" role="status" aria-live="polite" aria-busy="true">
+      <div className="workspace-route-state__progress" aria-hidden="true" />
+      <div className="workspace-route-state__heading">
+        <span className="workspace-route-state__spinner" aria-hidden="true" />
+        <div>
+          <strong>{message}</strong>
+          <small>Hệ thống đang đồng bộ đúng dữ liệu cho màn hình này.</small>
+        </div>
+      </div>
+      <div className="workspace-route-state__skeleton" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </div>
+    </section>
+  )
+}
+
+function WorkspaceRouteFailure({ message, detail, onRetry }) {
+  return (
+    <section className="workspace-route-state workspace-route-state--error" role="alert">
+      <div>
+        <strong>{message || 'Không thể tải dữ liệu màn hình'}</strong>
+        <p>{detail || 'Kết nối có thể vừa bị gián đoạn. Dữ liệu hiện có không bị thay đổi.'}</p>
+        <button type="button" className="button" onClick={onRetry}>Thử lại</button>
+      </div>
+    </section>
+  )
+}
+
+export default function AppShell({ workspaceStatus = null }) {
   const app = useApp()
   const { session, logout, toast, notify, stores = [], activeStoreId } = app
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -516,7 +548,21 @@ export default function AppShell() {
             <span><strong>{taskPopup.title || 'Bạn có công việc mới'}</strong><small>{taskPopup.description || taskPopup.message || 'Bấm để xem danh sách công việc được giao.'}</small></span>
           </button>
         )}
-        <Outlet context={{ openMenu: () => setMobileOpen(true), activeStore }} />
+        <div className="workspace-content-region">
+          {workspaceStatus?.kind === 'loading' ? (
+            <WorkspaceRouteLoading message={workspaceStatus.message} />
+          ) : workspaceStatus?.kind === 'error' ? (
+            <WorkspaceRouteFailure
+              message={workspaceStatus.message}
+              detail={workspaceStatus.detail}
+              onRetry={workspaceStatus.onRetry}
+            />
+          ) : (
+            <Suspense fallback={<WorkspaceRouteLoading />}>
+              <Outlet context={{ openMenu: () => setMobileOpen(true), activeStore }} />
+            </Suspense>
+          )}
+        </div>
       </main>
       <Toast toast={toast} />
     </div>
