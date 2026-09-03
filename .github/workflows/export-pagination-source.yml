@@ -1,0 +1,37 @@
+name: Export pagination implementation source
+
+on:
+  push:
+    branches:
+      - perf/date-table-pagination-20260903
+    paths:
+      - .github/workflows/export-pagination-source.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch source
+        uses: actions/checkout@v6
+        with:
+          ref: perf/date-table-pagination-20260903
+          fetch-depth: 0
+
+      - name: Package repository source
+        run: |
+          set -Eeuo pipefail
+          tar --exclude=.git --exclude=node_modules --exclude=dist -czf pagination-source.tar.gz .
+          sha256sum pagination-source.tar.gz
+
+      - name: Upload repository source
+        uses: actions/upload-artifact@v6
+        with:
+          name: pagination-source
+          path: pagination-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
