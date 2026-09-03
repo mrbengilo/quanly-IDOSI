@@ -1,0 +1,180 @@
+      }, 200, commandContext)
+    }
+    const version = Math.max(0, ...previous.map((preset) => Number(preset.version) || 0)) + 1
+    const presets = validation.presets.map((preset) => ({
+      ...preset,
+      version,
+      updatedAt: commandContext.now,
+      updatedBy: serverActorSnapshot(actor),
+    }))
+    const changedPresetIds = presets.filter((preset) => {
+      const before = previous.find((candidate) => candidate.id === preset.id)
+      return before?.start !== preset.start || before?.end !== preset.end
+    }).map((preset) => preset.id)
+    const history = {
+      id: `swsph_${crypto.randomUUID()}`,
+      action: 'Cập nhật khung giờ nhanh',
+      before: previous,
+      after: presets,
+      version,
+      recordedAt: commandContext.now,
+      recordedBy: serverActorSnapshot(actor),
+    }
+    const nextState = {
+      ...state,
+      supportSchedulePresets: presets,
+      supportSchedulePresetHistory: [history, ...(Array.isArray(state.supportSchedulePresetHistory) ? state.supportSchedulePresetHistory : [])],
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }
+    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+      action: body.type,
+      entityType: 'support-schedule-presets',
+      entityId: 'global',
+      before: previous,
+      after: presets,
+      metadata: { version, changedPresetIds },
+      response: { command: body.type, presets, history },
+    }, commandContext)
+  }
+'''
+
+
+def transform_worker(text: str) -> str:
+    text = replace_once(
+        text,
+        "} from '../src/domain/workCatalog.js'\n",
+        "} from '../src/domain/workCatalog.js'\n"
+        "import {\n"
+        "  canConfigureSupportSchedulePresets,\n"
+        "  normalizeSupportSchedulePresets,\n"
+        "  supportSchedulePresetsEqual,\n"
+        "  validateSupportSchedulePresets,\n"
+        "} from '../src/domain/supportWorkSchedule.js'\n",
+        "worker preset imports",
+    )
+    text = replace_once(
+        text,
+        "  'supportWorkSchedules',\n  'officeAdjustments',",
+        "  'supportWorkSchedules',\n  'supportSchedulePresets',\n  'officeAdjustments',",
+        "worker business support bootstrap projection",
+    )
+    text = replace_once(
+        text,
+        "  'supportWorkSchedules',\n  'supportWorkScheduleHistory',\n  'expenseEntries',",
+        "  'supportWorkSchedules',\n"
+        "  'supportWorkScheduleHistory',\n"
+        "  'supportSchedulePresets',\n"
+        "  'supportSchedulePresetHistory',\n"
+        "  'expenseEntries',",
+        "worker protected preset collections",
+    )
+    text = replace_once(
+        text,
+        "  'supportWorkSchedules',\n  'payrollPeriods',\n  'salaryAdjustments',",
+        "  'supportWorkSchedules',\n  'supportSchedulePresets',\n  'payrollPeriods',\n  'salaryAdjustments',",
+        "worker office bootstrap projection",
+    )
+    screen_replacements = {
+        "    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'schedule',\n":
+            "    'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'schedule',\n",
+        "    'stores', 'employees', 'schedule', 'supportWorkSchedules', 'shiftDefinitions',\n":
+            "    'stores', 'employees', 'schedule', 'supportWorkSchedules', 'supportSchedulePresets', 'shiftDefinitions',\n",
+    }
+    # The first schedule collection row occurs three times and all three screens need the shared config.
+    old, new = next(iter(screen_replacements.items()))
+    count = text.count(old)
+    if count != 3:
+        raise PatchError(f"worker schedule screen collections: expected 3 anchors, found {count}")
+    text = text.replace(old, new)
+    old, new = list(screen_replacements.items())[1]
+    text = replace_once(text, old, new, "worker employee schedule screen collection")
+    text = replace_once(
+        text,
+        "      supportWorkSchedules: own('supportWorkSchedules'),\n      supportTransfers: ownSupportTransfers,",
+        "      supportWorkSchedules: own('supportWorkSchedules'),\n"
+        "      supportSchedulePresets: ownUnit === 'office' ? normalizeSupportSchedulePresets(state.supportSchedulePresets) : [],\n"
+        "      supportTransfers: ownSupportTransfers,",
+        "worker employee state projection",
+    )
+    text = replace_once(
+        text,
+        "  if (type.startsWith('support_schedule.')) {\n"
+        "    return projection(\n"
+        "      'command-support-schedule',\n"
+        "      ['supportWorkSchedules', 'supportWorkScheduleHistory', 'notifications'],\n"
+        "      'supportWorkSchedules',\n"
+        "      payload.scheduleId || payload.id,\n"
+        "      payload.employeeId,\n"
+        "    )\n"
+        "  }",
+        "  if (type === 'support_schedule.presets.update') {\n"
+        "    return projection(\n"
+        "      'command-support-schedule-presets',\n"
+        "      ['employees', 'supportSchedulePresets', 'supportSchedulePresetHistory'],\n"
+        "      '', '', '', false,\n"
+        "    )\n"
+        "  }\n"
+        "  if (type.startsWith('support_schedule.')) {\n"
+        "    return projection(\n"
+        "      'command-support-schedule',\n"
+        "      ['supportWorkSchedules', 'supportWorkScheduleHistory', 'notifications'],\n"
+        "      'supportWorkSchedules',\n"
+        "      payload.scheduleId || payload.id,\n"
+        "      payload.employeeId,\n"
+        "    )\n"
+        "  }",
+        "worker command state projection",
+    )
+    command_pair = "    'support_schedule.assign',\n    'support_schedule.delete',"
+    if command_pair not in text:
+        raise PatchError("worker idempotent command list anchor missing")
+    text = replace_once(
+        text,
+        command_pair,
+        "    'support_schedule.assign',\n    'support_schedule.delete',\n    'support_schedule.presets.update',",
+        "worker command allowlist",
+    )
+    text = replace_once(
+        text,
+        "  if (!['support_schedule.assign', 'support_schedule.delete'].includes(body.type)) {",
+        "  if (!['support_schedule.assign', 'support_schedule.delete', 'support_schedule.presets.update'].includes(body.type)) {",
+        "worker support schedule command types",
+    )
+    text = replace_once(
+        text,
+        "  const selfManagingOfficeSchedule = actor.role === 'employee' && employeeUnit(actorEmployee) === 'office'\n"
+        "  if (!['admin', 'business_support'].includes(actor.role) && !selfManagingOfficeSchedule) {\n"
+        "    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc nhân viên văn phòng tự quản lý lịch của mình được thực hiện thao tác này.')\n"
+        "  }\n"
+        "  if (body.type === 'support_schedule.delete') {",
+        "  const selfManagingOfficeSchedule = actor.role === 'employee' && employeeUnit(actorEmployee) === 'office'\n"
+        "  if (!canConfigureSupportSchedulePresets({ role: actor.role, employee: actorEmployee })) {\n"
+        "    throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin, Nhân viên hỗ trợ KD hoặc nhân viên Khối văn phòng được thực hiện thao tác này.')\n"
+        "  }\n"
+        + WORKER_PRESET_BLOCK
+        + "  if (body.type === 'support_schedule.delete') {",
+        "worker preset update command",
+    )
+    return text
+
+
+WORKER_TEST_BLOCK = r'''describe('Shared support schedule preset configuration', () => {
+  it('persists for Admin, HTKD and Office without changing existing schedules, and blocks store accounts', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-support-schedule-presets' }
+    const defaults = [
+      { id: 'morning', name: 'Ca sáng', start: '08:30', end: '12:00' },
+      { id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' },
+      { id: 'office-hours', name: 'Giờ hành chính', start: '08:30', end: '17:30' },
+    ]
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin',
+      password: 'support-schedule-presets-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' }],
+        employees: [
+          { id: 'HTKD-01', name: 'Hỗ trợ KD', unit: 'business_support', storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc' },
+          { id: 'VP-01', name: 'Nhân viên văn phòng', unit: 'office', storeId: 'OFFICE', status: 'Đang làm việc' },
+          { id: 'NV-01', name: 'Nhân viên cửa hàng', unit: 'store', storeId: 'S01', status: 'Đang làm việc' },
+        ],
+        supportSchedulePresets: defaults,
+        supportSchedulePresetHistory: [],
