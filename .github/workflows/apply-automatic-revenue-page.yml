@@ -10,6 +10,9 @@ on:
 permissions:
   contents: write
 
+env:
+  AUTOMATIC_REVENUE_VERIFICATION_REVISION: "5"
+
 jobs:
   apply-and-verify:
     runs-on: ubuntu-latest
