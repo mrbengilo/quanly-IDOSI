@@ -1,0 +1,122 @@
+/* Store order groups: keep the newest shift easy to scan and separate key totals by color. */
+.page .order-group > .card__header h2 .order-group__shift-title {
+  display: grid;
+  gap: 3px;
+}
+
+.page .order-group > .card__header h2 .order-group__shift-title > strong {
+  color: #b54708;
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+
+.page .order-group > .card__header h2 .order-group__shift-title > small {
+  color: #667085;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.order-group__totals {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.order-group__total-amount,
+.order-group__order-count {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  gap: 4px;
+  padding: 7px 10px;
+  border: 1px solid #d7e3db;
+  border-radius: 9px;
+  background: #fff;
+  line-height: 1.15;
+}
+
+.order-group__total-amount small,
+.order-group__order-count small {
+  grid-column: 1 / -1;
+  color: #667085;
+  font-size: 0.64rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.page .order-group__total-amount > strong {
+  color: #d92d20;
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+.page .order-group__order-count > strong {
+  color: #175cd3;
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+.order-group__order-count em {
+  color: #175cd3;
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 800;
+}
+
+/* Daily revenue bonus: make the eligible action and unresolved open shifts unmistakable. */
+.revenue-bonus-calculate-button.is-ready {
+  filter: saturate(1.12);
+  box-shadow: 0 0 0 4px rgba(8, 121, 61, 0.14), 0 10px 24px rgba(8, 121, 61, 0.24);
+}
+
+.revenue-bonus-attendance-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 16px 18px;
+  border: 2px solid #f04438;
+  border-radius: 12px;
+  background: #fff4f2;
+  color: #7a271a;
+  box-shadow: 0 10px 24px rgba(180, 35, 24, 0.12);
+}
+
+.revenue-bonus-attendance-alert > svg {
+  margin-top: 2px;
+  color: #d92d20;
+}
+
+.revenue-bonus-attendance-alert strong {
+  display: block;
+  margin-bottom: 5px;
+  color: #b42318;
+  font-size: 0.86rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+}
+
+.revenue-bonus-attendance-alert p {
+  margin: 0;
+  font-size: clamp(1rem, 1.5vw, 1.18rem);
+  font-weight: 800;
+  line-height: 1.55;
+}
+
+@media (max-width: 640px) {
+  .order-group__totals {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .order-group__total-amount,
+  .order-group__order-count {
+    flex: 1 1 130px;
+  }
+
+  .revenue-bonus-attendance-alert {
+    padding: 13px 14px;
+  }
+}

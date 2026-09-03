@@ -99,6 +99,69 @@ const attendanceMatchesShift = (attendance, shift) => {
     && attendanceRange.end === targetRange.end)
 }
 
+const employeeIdentifiers = (employee = {}) => [
+  employee.id,
+  employee.code,
+  employee.employeeId,
+  employee.employeeCode,
+].map(normalizeIdentifier).filter(Boolean)
+
+const employeeNamesByIdentifier = (employees = []) => {
+  const names = new Map()
+  for (const employee of Array.isArray(employees) ? employees : []) {
+    const name = String(employee?.name || employee?.fullName || employee?.displayName || '').trim()
+    if (!name) continue
+    for (const identifier of employeeIdentifiers(employee)) {
+      if (!names.has(identifier)) names.set(identifier, name)
+      else if (names.get(identifier) !== name) names.set(identifier, null)
+    }
+  }
+  return names
+}
+
+const uniqueEmployeeNames = (attendance = [], employees = []) => {
+  const directory = employeeNamesByIdentifier(employees)
+  const names = []
+  const seen = new Set()
+  for (const record of attendance) {
+    const employeeReference = normalizeIdentifier(record?.employeeId || record?.employeeCode)
+    const name = String(
+      record?.employeeName
+      || record?.staffName
+      || directory.get(employeeReference)
+      || record?.employeeId
+      || record?.employeeCode
+      || 'Không xác định',
+    ).trim()
+    const key = normalizeIdentifier(name)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    names.push(name)
+  }
+  return names
+}
+
+const humanList = (values = []) => {
+  if (values.length < 2) return values[0] || ''
+  if (values.length === 2) return `${values[0]} và ${values[1]}`
+  return `${values.slice(0, -1).join(', ')} và ${values.at(-1)}`
+}
+
+const openAttendanceMessage = (employeeNames) => employeeNames.length === 1
+  ? `Nhân viên ${employeeNames[0]} đang làm việc nên chưa tính thưởng được. Hãy chờ nhân viên ${employeeNames[0]} kết ca mới được tính thưởng.`
+  : `Các nhân viên ${humanList(employeeNames)} đang làm việc nên chưa tính thưởng được. Hãy chờ các nhân viên này kết ca mới được tính thưởng.`
+
+const dailyCutoff = (businessDate) => {
+  const timestamp = Date.parse(`${businessDate}T21:00:00+07:00`)
+  return Number.isFinite(timestamp) ? { timestamp, cutoffAt: new Date(timestamp).toISOString() } : null
+}
+
+const normalizedTimestamp = (value) => {
+  if (value instanceof Date) return value.getTime()
+  if (typeof value === 'number') return value
+  return Date.parse(String(value || ''))
+}
+
 const result = (code, details) => ({
   allowed: code === 'READY',
   code,
@@ -106,7 +169,8 @@ const result = (code, details) => ({
 })
 
 export const REVENUE_BONUS_ELIGIBILITY_MESSAGES = Object.freeze({
-  READY: 'Ca cuối cùng trong ngày đã kết thúc. Có thể tính thưởng doanh thu.',
+  READY: 'Đã qua 21:00 và toàn bộ nhân viên đã kết ca. Có thể tính thưởng doanh thu.',
+  BEFORE_DAILY_CUTOFF: 'Nút TÍNH THƯỞNG NGÀY chỉ được mở sau 21:00 của ngày kinh doanh đã chọn.',
   ALREADY_CALCULATED: 'Thưởng doanh thu của ngày này đã được tính và không thể tính lại.',
   DATA_COLLISION: 'Ngày này có nhiều kết quả thưởng đang hiệu lực; cần xử lý dữ liệu trùng.',
   FINAL_SHIFT_UNRESOLVED: 'Chưa xác định được ca cuối cùng của ngày từ lịch phân ca.',
@@ -120,21 +184,28 @@ export function revenueBonusEligibility({
   schedule = [],
   shiftDefinitions = [],
   attendance = [],
+  employees = [],
   dailyRecords = [],
+  nowMs = Date.now(),
 } = {}) {
   const normalizedStoreId = normalizeIdentifier(storeId)
   if (!normalizedStoreId || !/^\d{4}-\d{2}-\d{2}$/u.test(String(businessDate))) {
     throw new TypeError('storeId and businessDate are required.')
   }
+  const cutoff = dailyCutoff(businessDate)
+  const currentTimestamp = normalizedTimestamp(nowMs)
+  if (!cutoff || !Number.isFinite(currentTimestamp)) throw new TypeError('nowMs must be a valid timestamp.')
   const common = {
     message: '',
     existingId: null,
     attendanceCount: 0,
     finalShiftAttendanceCount: 0,
     openAttendanceCount: 0,
+    openEmployeeNames: [],
     finalShiftId: null,
     finalShiftName: null,
     finalShiftEndAt: null,
+    cutoffAt: cutoff.cutoffAt,
   }
   const effectiveDaily = dailyRecords.filter((record) => activeDailyRecord(record, storeId, businessDate))
   if (effectiveDaily.length > 1) {
@@ -154,34 +225,53 @@ export function revenueBonusEligibility({
     })
   }
 
-  const candidates = scheduleShiftCandidates({ schedule, shiftDefinitions, storeId, businessDate })
-    .map((shift) => ({ shift, end: shiftEndTimestamp(businessDate, shift) }))
-    .filter((candidate) => candidate.end)
-  if (!candidates.length) {
-    return result('FINAL_SHIFT_UNRESOLVED', {
-      ...common,
-      message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.FINAL_SHIFT_UNRESOLVED,
-      existingCount: 0,
-    })
-  }
-  const finalEndTimestamp = Math.max(...candidates.map((candidate) => candidate.end.timestamp))
-  const finalCandidates = candidates.filter((candidate) => candidate.end.timestamp === finalEndTimestamp)
-  const finalShift = finalCandidates[0]
   const dayAttendance = attendance.filter((record) => (
     !record?.deletedAt
     && normalizeIdentifier(record?.storeId) === normalizedStoreId
     && recordDate(record) === businessDate
   ))
-  const finalAttendance = dayAttendance.filter((record) => (
-    finalCandidates.some((candidate) => attendanceMatchesShift(record, candidate.shift))
-  ))
   const openAttendance = dayAttendance.filter((record) => !record.checkOutAt && !record.checkOut)
-  const details = {
+  const openEmployeeNames = uniqueEmployeeNames(openAttendance, employees)
+  const attendanceDetails = {
     ...common,
     existingCount: 0,
     attendanceCount: dayAttendance.length,
-    finalShiftAttendanceCount: finalAttendance.length,
     openAttendanceCount: openAttendance.length,
+    openEmployeeNames,
+  }
+
+  if (currentTimestamp < cutoff.timestamp) {
+    return result('BEFORE_DAILY_CUTOFF', {
+      ...attendanceDetails,
+      message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.BEFORE_DAILY_CUTOFF,
+    })
+  }
+  if (openAttendance.length) {
+    return result('ATTENDANCE_OPEN', {
+      ...attendanceDetails,
+      message: openAttendanceMessage(openEmployeeNames),
+      openAttendanceIds: openAttendance.map((record) => String(record.id || '')).filter(Boolean),
+    })
+  }
+
+  const candidates = scheduleShiftCandidates({ schedule, shiftDefinitions, storeId, businessDate })
+    .map((shift) => ({ shift, end: shiftEndTimestamp(businessDate, shift) }))
+    .filter((candidate) => candidate.end)
+  if (!candidates.length) {
+    return result('FINAL_SHIFT_UNRESOLVED', {
+      ...attendanceDetails,
+      message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.FINAL_SHIFT_UNRESOLVED,
+    })
+  }
+  const finalEndTimestamp = Math.max(...candidates.map((candidate) => candidate.end.timestamp))
+  const finalCandidates = candidates.filter((candidate) => candidate.end.timestamp === finalEndTimestamp)
+  const finalShift = finalCandidates[0]
+  const finalAttendance = dayAttendance.filter((record) => (
+    finalCandidates.some((candidate) => attendanceMatchesShift(record, candidate.shift))
+  ))
+  const details = {
+    ...attendanceDetails,
+    finalShiftAttendanceCount: finalAttendance.length,
     finalShiftId: shiftIdentifier(finalShift.shift) || null,
     finalShiftName: String(finalShift.shift.name || finalShift.shift.shiftName || '').trim() || null,
     finalShiftEndAt: finalShift.end.endAt,
@@ -190,13 +280,6 @@ export function revenueBonusEligibility({
     return result('FINAL_SHIFT_NOT_ATTENDED', {
       ...details,
       message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.FINAL_SHIFT_NOT_ATTENDED,
-    })
-  }
-  if (openAttendance.length) {
-    return result('ATTENDANCE_OPEN', {
-      ...details,
-      message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.ATTENDANCE_OPEN,
-      openAttendanceIds: openAttendance.map((record) => String(record.id || '')).filter(Boolean),
     })
   }
   return result('READY', {
