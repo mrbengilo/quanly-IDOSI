@@ -168,6 +168,13 @@ const result = (code, details) => ({
   ...details,
 })
 
+export const REVENUE_BONUS_DAILY_CLOSE_RULE_EFFECTIVE_DATE = '2026-09-01'
+
+export const usesRevenueBonusDailyCloseRule = (businessDate) => (
+  /^\d{4}-\d{2}-\d{2}$/u.test(String(businessDate || ''))
+  && String(businessDate) >= REVENUE_BONUS_DAILY_CLOSE_RULE_EFFECTIVE_DATE
+)
+
 export const REVENUE_BONUS_ELIGIBILITY_MESSAGES = Object.freeze({
   READY: 'Đã qua 21:00 và toàn bộ nhân viên đã kết ca. Có thể tính thưởng doanh thu.',
   BEFORE_DAILY_CUTOFF: 'Nút TÍNH THƯỞNG NGÀY chỉ được mở sau 21:00 của ngày kinh doanh đã chọn.',
@@ -195,6 +202,7 @@ export function revenueBonusEligibility({
   const cutoff = dailyCutoff(businessDate)
   const currentTimestamp = normalizedTimestamp(nowMs)
   if (!cutoff || !Number.isFinite(currentTimestamp)) throw new TypeError('nowMs must be a valid timestamp.')
+  const dailyCloseRule = usesRevenueBonusDailyCloseRule(businessDate)
   const common = {
     message: '',
     existingId: null,
@@ -206,6 +214,8 @@ export function revenueBonusEligibility({
     finalShiftName: null,
     finalShiftEndAt: null,
     cutoffAt: cutoff.cutoffAt,
+    ruleCode: dailyCloseRule ? 'DAILY_CLOSE_V2' : 'FINAL_SHIFT_V1',
+    ruleEffectiveFrom: REVENUE_BONUS_DAILY_CLOSE_RULE_EFFECTIVE_DATE,
   }
   const effectiveDaily = dailyRecords.filter((record) => activeDailyRecord(record, storeId, businessDate))
   if (effectiveDaily.length > 1) {
@@ -258,6 +268,12 @@ export function revenueBonusEligibility({
     .map((shift) => ({ shift, end: shiftEndTimestamp(businessDate, shift) }))
     .filter((candidate) => candidate.end)
   if (!candidates.length) {
+    if (dailyCloseRule && dayAttendance.length > 0) {
+      return result('READY', {
+        ...attendanceDetails,
+        message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.READY,
+      })
+    }
     return result('FINAL_SHIFT_UNRESOLVED', {
       ...attendanceDetails,
       message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.FINAL_SHIFT_UNRESOLVED,
@@ -275,6 +291,12 @@ export function revenueBonusEligibility({
     finalShiftId: shiftIdentifier(finalShift.shift) || null,
     finalShiftName: String(finalShift.shift.name || finalShift.shift.shiftName || '').trim() || null,
     finalShiftEndAt: finalShift.end.endAt,
+  }
+  if (dailyCloseRule && dayAttendance.length > 0) {
+    return result('READY', {
+      ...details,
+      message: REVENUE_BONUS_ELIGIBILITY_MESSAGES.READY,
+    })
   }
   if (!finalAttendance.length) {
     return result('FINAL_SHIFT_NOT_ATTENDED', {
