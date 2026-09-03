@@ -1,0 +1,73 @@
+name: Apply September revenue rule
+
+on:
+  push:
+    branches:
+      - fix/revenue-bonus-global-september-rule
+    paths:
+      - scripts/apply-september-revenue-rule.py
+      - .github/workflows/apply-september-revenue-rule.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-september-revenue-rule
+  cancel-in-progress: false
+
+jobs:
+  patch-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v6
+        with:
+          ref: fix/revenue-bonus-global-september-rule
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Apply source patch
+        run: python scripts/apply-september-revenue-rule.py
+
+      - name: Validate production audit script
+        run: node --check deploy/vps/audit-revenue-bonus-readiness.mjs
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test all IDOSI suites
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Verify Sites build
+        run: npm run sites:verify
+
+      - name: Verify patch cleanliness
+        run: git diff --check
+
+      - name: Commit verified implementation
+        run: |
+          set -Eeuo pipefail
+          rm -f scripts/apply-september-revenue-rule.py
+          rm -f .github/workflows/apply-september-revenue-rule.yml
+          git add -A
+          git diff --cached --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix(revenue): enable September catch-up across stores'
+          git push origin HEAD:fix/revenue-bonus-global-september-rule
