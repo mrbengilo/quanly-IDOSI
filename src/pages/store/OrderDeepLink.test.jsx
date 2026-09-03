@@ -120,8 +120,16 @@ describe('order notification deep links', () => {
   it('highlights the requested own order in the employee view', () => {
     mocked.app = {
       currentEmployee: { id: 'E01', storeId: 'S01', name: 'Nhân viên 01' },
-      orders: [targetOrder],
-      attendance: [],
+      orders: [{
+        ...targetOrder,
+        attendanceId: 'ATT-E01-OPEN',
+        shiftId: 'CA-E01-OPEN',
+      }],
+      attendance: [{
+        id: 'ATT-E01-OPEN', employeeId: 'E01', storeId: 'S01',
+        shiftId: 'CA-E01-OPEN', shiftName: 'Ca hiện tại',
+        checkInAt: '2026-08-14T08:00:00+07:00',
+      }],
       createOrder: vi.fn(),
       notify: vi.fn(),
     }

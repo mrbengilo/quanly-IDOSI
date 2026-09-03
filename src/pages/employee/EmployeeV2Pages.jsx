@@ -588,22 +588,26 @@ export function EmployeeOrdersPage() {
   const [form, setForm] = useState(EMPTY_ORDER_FORM)
   const orderRequestRef = useRef({ fingerprint: '', idempotencyKey: '' })
   const employeeId = employeeKey(employee)
-  const effectiveStoreId = effectiveEmployeeStoreId(session, employee)
-  const store = storeForReference(stores, effectiveStoreId)
-  const rows = employeeCreatedOrders(orders, employeeId, effectiveStoreId, {
+  // The currently open attendance is the source of truth for the employee's
+  // operational store. This deliberately wins over a stale/home session after
+  // a support-transfer window has ended but before the employee checks out.
+  const openAttendance = employeeAttendance(attendance, employee, {
     employees: app.employees,
     stores,
+  }).find((record) => !record.checkOutAt && !record.checkOut)
+  const effectiveStoreId = effectiveEmployeeStoreId(session, employee)
+  const workingStoreId = String(openAttendance?.storeId || effectiveStoreId)
+  const store = storeForReference(stores, workingStoreId)
+  const rows = ordersForOpenAttendance(orders, employeeId, openAttendance, attendance, {
+    employees: app.employees,
+    stores,
+    shiftDefinitions: app.shiftDefinitions,
   })
   const total = rows.reduce((sum, order) => sum + Number(order.amount || 0), 0)
   const requestedOrderId = String(searchParams.get('order') || '')
   const requestedOrderMatch = operationalIdentifierRecordMatch(rows, requestedOrderId, (order) => [order.id, order.code])
   const requestedOrder = requestedOrderMatch.ambiguous ? null : requestedOrderMatch.record
   const requestedOrderKey = String(requestedOrder?.id || '')
-  const openAttendance = employeeAttendance(attendance, employee, {
-    employees: app.employees,
-    stores,
-    storeId: effectiveStoreId,
-  }).find((record) => !record.checkOutAt && !record.checkOut)
   const occupations = activeOccupationLabels(orderInformationOptions)
     .map((occupation) => ({ value: occupation, label: occupation }))
 
@@ -653,7 +657,7 @@ export function EmployeeOrdersPage() {
     const requestFingerprint = JSON.stringify({
       ...normalizedForm,
       employeeId,
-      storeId: effectiveStoreId,
+      storeId: workingStoreId,
       attendanceId: openAttendance?.id,
       shiftId: openAttendance?.shiftId || openAttendance?.shift,
     })
@@ -668,7 +672,7 @@ export function EmployeeOrdersPage() {
       const result = await createOrder({
         ...normalizedForm,
         employeeId,
-        storeId: effectiveStoreId,
+        storeId: workingStoreId,
         attendanceId: openAttendance?.id,
         shiftId: openAttendance?.shiftId || openAttendance?.shift,
         shiftName: openAttendance?.shiftName,
@@ -688,17 +692,19 @@ export function EmployeeOrdersPage() {
     <div className="page">
       <PageHeader
         title="ĐƠN HÀNG CỦA TÔI"
-        subtitle={`Mọi đơn hàng và doanh thu được ghi nhận cho ${store?.name || 'cửa hàng trực thuộc'}.`}
+        subtitle={openAttendance
+          ? `Chỉ hiển thị đơn hàng thuộc ca đang làm tại ${store?.name || 'cửa hàng hiện tại'}.`
+          : 'Chỉ hiển thị đơn hàng khi bạn đang có một ca làm việc mở.'}
         icon={ShoppingCart}
         actions={<Button icon={Plus} onClick={openCreate} disabled={!openAttendance}>TẠO ĐƠN HÀNG</Button>}
       />
       {!openAttendance && <InfoNote tone="orange">Bạn chưa có ca đang mở. Hãy điểm danh vào ca trước khi tạo đơn hàng.</InfoNote>}
       <div className="metric-grid metric-grid--four">
-        <MetricCard label="TỔNG ĐƠN" value={rows.length} helper="Đơn chưa bị xóa" icon={ShoppingCart} tone="blue" />
-        <MetricCard label="TỔNG DOANH THU" value={money(total)} helper="Từ đơn hàng thực tế" icon={Banknote} tone="green" />
+        <MetricCard label="ĐƠN TRONG CA" value={rows.length} helper="Chỉ tính ca đang mở" icon={ShoppingCart} tone="blue" />
+        <MetricCard label="DOANH THU TRONG CA" value={money(total)} helper="Từ đơn hàng đúng ca" icon={Banknote} tone="green" />
         <MetricCard label="CA HIỆN TẠI" value={openAttendance?.shiftName || 'Chưa vào ca'} helper={openAttendance ? `${openAttendance.shiftStart || '—'} – ${openAttendance.shiftEnd || '—'}` : 'Điểm danh trước khi tạo đơn để gắn đúng ca'} icon={Clock3} tone="orange" />
       </div>
-      <Card title="Lịch sử đơn hàng">
+      <Card title="Đơn hàng trong ca đang làm">
         {rows.length ? (
           <>
             <TableWrap>
@@ -707,7 +713,12 @@ export function EmployeeOrdersPage() {
             </TableWrap>
             <TableFooter shown={rows.length} total={rows.length} />
           </>
-        ) : <EmptyState title="Chưa có đơn hàng" description="Nhấn Tạo đơn hàng để ghi nhận đơn đầu tiên." />}
+        ) : <EmptyState
+          title={openAttendance ? 'Chưa có đơn hàng trong ca' : 'Chưa có ca đang mở'}
+          description={openAttendance
+            ? 'Đơn hàng bạn tạo trong ca sẽ tự động hiển thị tại đây.'
+            : 'Hãy điểm danh vào ca trước khi xem và tạo đơn hàng.'}
+        />}
       </Card>
       <Modal open={open} onClose={closeCreate} title={`Tạo đơn hàng • ${store?.name || 'IDOSI'}`} footer={<><Button variant="outline" onClick={closeCreate}>Hủy</Button><Button icon={ShoppingCart} loading={saving} onClick={save}>LƯU ĐƠN</Button></>}>
         <div className="form-grid">

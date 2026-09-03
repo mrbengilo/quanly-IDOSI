@@ -198,12 +198,15 @@ describe('store employee current-shift orders', () => {
       stores: [{ id: 'S01', name: 'IDOSI S01' }],
       orders: [{
         id: 'ORDER-UPPER', code: 'ORDER-UPPER', storeId: 'S01', employeeId: 'E01', createdByEmployeeId: 'E01',
-        customerName: 'Khách đúng nhân viên', amount: 120_000, createdAt: '2026-08-20T08:30:00+07:00',
+        attendanceId: 'ATT-UPPER', shiftId: 'CA-UPPER', customerName: 'Khách đúng nhân viên', amount: 120_000, createdAt: '2026-08-20T08:30:00+07:00',
       }, {
         id: 'ORDER-LOWER', code: 'ORDER-LOWER', storeId: 'S01', employeeId: 'e01', createdByEmployeeId: 'e01',
         customerName: 'Khách nhân viên khác', amount: 900_000, createdAt: '2026-08-20T08:35:00+07:00',
       }],
-      attendance: [],
+      attendance: [{
+        id: 'ATT-UPPER', employeeId: 'E01', storeId: 'S01', shiftId: 'CA-UPPER',
+        shiftName: 'Ca hiện tại', checkInAt: '2026-08-20T08:00:00+07:00',
+      }],
       createOrder: vi.fn(),
       notify: vi.fn(),
     }
@@ -225,11 +228,11 @@ describe('store employee current-shift orders', () => {
       orders: [
         {
           id: 'ORDER-HOME', code: 'S01-HOME', storeId: 'S01', employeeId: 'E01', createdByEmployeeId: 'E01',
-          customerName: 'Khách cửa hàng chính', amount: 100_000, paymentMethod: 'Tiền mặt', createdAt: '2026-08-20T08:10:00+07:00',
+          attendanceId: 'ATT-HOME', shiftId: 'CA-HOME', customerName: 'Khách cửa hàng chính', amount: 100_000, paymentMethod: 'Tiền mặt', createdAt: '2026-08-20T08:10:00+07:00',
         },
         {
           id: 'ORDER-SUPPORT', code: 'S02-OWN', storeId: 'S02', employeeId: 'E01', createdByEmployeeId: 'E01',
-          customerName: 'Khách cửa hàng hỗ trợ', amount: 220_000, paymentMethod: 'Chuyển khoản', createdAt: '2026-08-20T14:15:00+07:00',
+          attendanceId: 'ATT-SUPPORT', shiftId: 'CA-SUPPORT', customerName: 'Khách cửa hàng hỗ trợ', amount: 220_000, paymentMethod: 'Chuyển khoản', createdAt: '2026-08-20T14:15:00+07:00',
         },
         {
           id: 'ORDER-COWORKER-SUPPORT', code: 'S02-COWORKER', storeId: 'S02', employeeId: 'E02', createdByEmployeeId: 'E02',
@@ -237,7 +240,7 @@ describe('store employee current-shift orders', () => {
         },
       ],
       attendance: [
-        { id: 'ATT-HOME', employeeId: 'E01', storeId: 'S01', shiftId: 'CA-HOME', shiftName: 'Ca cửa hàng chính', checkInAt: '2026-08-20T08:00:00+07:00' },
+        { id: 'ATT-HOME', employeeId: 'E01', storeId: 'S01', shiftId: 'CA-HOME', shiftName: 'Ca cửa hàng chính', checkInAt: '2026-08-20T08:00:00+07:00', checkOutAt: '2026-08-20T12:00:00+07:00' },
         { id: 'ATT-SUPPORT', employeeId: 'E01', storeId: 'S02', shiftId: 'CA-SUPPORT', shiftName: 'Ca hỗ trợ', checkInAt: '2026-08-20T14:00:00+07:00' },
       ],
       createOrder,
@@ -250,7 +253,7 @@ describe('store employee current-shift orders', () => {
     expect(screen.getByText('Khách cửa hàng hỗ trợ')).toBeTruthy()
     expect(screen.queryByText('S01-HOME')).toBeNull()
     expect(screen.queryByText('S02-COWORKER')).toBeNull()
-    expect(screen.getByText(/Mọi đơn hàng và doanh thu được ghi nhận cho Dosii KVC/u)).toBeTruthy()
+    expect(screen.getByText(/Chỉ hiển thị đơn hàng thuộc ca đang làm tại Dosii KVC/u)).toBeTruthy()
     expect(screen.getByText('Ca hỗ trợ')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'TẠO ĐƠN HÀNG' }))
