@@ -264,7 +264,12 @@ export function resolveSupportEmployeeTagContext({
   if (!canonicalEmployeeId || !operationalStoreId) return null
 
   const transferReferences = explicitTransferReferences(sourceRecord)
-  if (transferReferences.length > 1) return null
+  const immutableSnapshotEvidence = Boolean(
+    explicitHomeStoreId(sourceRecord)
+    && recordStoreId(sourceRecord)
+    && recordExplicitlyMarksSupport(sourceRecord),
+  )
+  if (transferReferences.length > 1 && !immutableSnapshotEvidence) return null
 
   const inferredTransfers = matchingTransfers({
     supportTransfers,
@@ -282,21 +287,15 @@ export function resolveSupportEmployeeTagContext({
       transferIdentifiers,
     )
     if (referencedTransfer) {
-      if (!transferMatchesScope({
+      const referencedTransferMatches = transferMatchesScope({
         transfer: referencedTransfer,
         employeeId: canonicalEmployeeId,
         storeId: operationalStoreId,
         businessDate: date,
-      })) return null
-      transfer = referencedTransfer
-    } else {
-      const immutableSnapshotEvidence = Boolean(
-        explicitHomeStoreId(sourceRecord)
-        && recordStoreId(sourceRecord)
-        && recordExplicitlyMarksSupport(sourceRecord),
-      )
-      if (!immutableSnapshotEvidence) return null
-    }
+      })
+      if (referencedTransferMatches) transfer = referencedTransfer
+      else if (!immutableSnapshotEvidence) return null
+    } else if (!immutableSnapshotEvidence) return null
   } else if (inferredTransfers.length === 1) {
     transfer = inferredTransfers[0]
   }

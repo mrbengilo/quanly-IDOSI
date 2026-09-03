@@ -16,6 +16,8 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { businessDate as toBusinessDate, money, operationalIdentifierRecordMatch } from '../../utils'
+import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
+import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
 import {
   canonicalRole,
   entityId,
@@ -163,6 +165,7 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
   collisions,
   employeeCollisions,
   employeeOptions,
+  employees,
   filteredRows,
   filteredTotal,
   historyDate,
@@ -175,6 +178,7 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
   setHistoryMonth,
   statistics,
   stores,
+  supportTransfers,
 }) {
   return <>
     <Card title="Lịch sử ghi nhận thưởng doanh thu" action={<Badge tone="blue">Tổng thưởng: {money(filteredTotal)}</Badge>}>
@@ -207,7 +211,7 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
         <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Cửa hàng</th><th>Thời gian làm thực tế</th><th>Tỷ trọng</th><th>Tiền thưởng</th><th>Trạng thái</th></tr></thead>
         <tbody>{filteredRows.map((row) => <tr key={row.id}>
           <td>{displayDate(row.businessDate)}</td>
-          <td><strong>{row.employeeName}</strong><small className="compensation-subline">{row.employeeId}</small></td>
+          <td><strong>{row.employeeName}</strong><SupportEmployeeTag context={resolveSupportEmployeeTagContext({ record: row, employeeId: row.employeeId, storeId: row.storeId, businessDate: row.businessDate, employees, stores, supportTransfers })} className="compensation-subline" /><small className="compensation-subline">{row.employeeId}</small></td>
           <td>{storeName(stores, row.storeId, row.storeName)}</td>
           <td>{Number(row.approvedSalesHours || 0).toFixed(2)} giờ</td>
           <td>{row.weightPercent == null ? '—' : `${Number(row.weightPercent).toFixed(2)}%`}</td>
@@ -739,7 +743,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
             const effectiveAmount = allocationAmount(allocation)
             const deleted = String(allocation.status || '').toUpperCase() === 'ADMIN_DELETED'
             return <tr key={allocation.id || `${entryEmployeeId(allocation)}-${index}`} className={deleted ? 'revenue-bonus-row--deleted' : ''}>
-              {!privateAllocationView && <td><strong>{employeeName(app.employees || [], entryEmployeeId(allocation), allocation.employeeName)}</strong><small className="compensation-subline">{entryEmployeeId(allocation)}</small></td>}
+              {!privateAllocationView && <td><strong>{employeeName(app.employees || [], entryEmployeeId(allocation), allocation.employeeName)}</strong><SupportEmployeeTag context={resolveSupportEmployeeTagContext({ record: allocation, employeeId: entryEmployeeId(allocation), storeId: entryStoreId(allocation), businessDate: revenueRecordDate(allocation), employees: app.employees, stores: app.stores, supportTransfers: app.supportTransfers })} className="compensation-subline" /><small className="compensation-subline">{entryEmployeeId(allocation)}</small></td>}
               <td>{storeName(stores, entryStoreId(allocation), allocation.storeName)}</td>
               <td>{displayDate(revenueRecordDate(allocation))}</td>
               <td>{Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? (Number(allocation.workedSeconds || 0) / 3_600)).toFixed(2)} giờ</td>
@@ -772,6 +776,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
         currentEmployeeName={employeeName(app.employees || [], currentEmployeeId)}
         employeeCollisions={legacyHistoryProjection.employeeCollisions || []}
         employeeOptions={historyEmployeeOptions}
+        employees={app.employees || []}
         filteredRows={filteredHistoryRows}
         filteredTotal={filteredHistoryTotal}
         historyDate={historyDate}
@@ -783,7 +788,8 @@ export function RevenueBonusPage({ storeScoped = false }) {
         setHistoryEmployeeId={setHistoryEmployeeId}
         setHistoryMonth={setHistoryMonth}
         statistics={historyStatistics}
-        stores={stores}
+        stores={Array.isArray(app.stores) ? app.stores : stores}
+        supportTransfers={app.supportTransfers || []}
       />
 
       {!automaticMode && !privateAllocationView && <Card title="Lịch sử tính quỹ trong ngày">
