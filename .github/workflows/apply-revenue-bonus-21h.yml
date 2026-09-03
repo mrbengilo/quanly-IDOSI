@@ -29,7 +29,7 @@ jobs:
           cache: npm
 
       - name: Apply guarded source and test changes
-        run: python3 scripts/apply-revenue-bonus-21h.py
+        run: python3 scripts/apply-revenue-bonus-21h-v2.py
 
       - name: Install dependencies
         run: npm ci
@@ -50,6 +50,7 @@ jobs:
         shell: bash
         run: |
           rm scripts/apply-revenue-bonus-21h.py
+          rm scripts/apply-revenue-bonus-21h-v2.py
           rm .github/workflows/apply-revenue-bonus-21h.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -59,6 +60,7 @@ jobs:
             src/pages/compensation/CompensationPages.test.jsx \
             src/pages/compensation/compensation-page.css \
             scripts/apply-revenue-bonus-21h.py \
+            scripts/apply-revenue-bonus-21h-v2.py \
             .github/workflows/apply-revenue-bonus-21h.yml
           git commit -m "feat: gate daily revenue bonus calculation after 21h"
           git push origin HEAD:feat/revenue-bonus-daily-21h-lock
