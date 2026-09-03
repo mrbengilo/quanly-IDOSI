@@ -1,0 +1,44 @@
+name: Apply automatic revenue backend
+
+on:
+  push:
+    branches:
+      - feat/automatic-live-revenue-bonus
+    paths:
+      - .github/workflows/apply-automatic-revenue-backend.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/automatic-live-revenue-bonus
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - name: Apply guarded backend patch
+        run: python3 scripts/apply-automatic-revenue-backend.py
+      - run: npm ci
+      - run: npm run lint
+      - name: Test automatic revenue domain
+        run: npx vitest run src/domain/automaticRevenueBonus.test.js --maxWorkers=1
+      - name: Build compile check
+        run: npm run build
+      - name: Commit verified backend integration
+        run: |
+          rm scripts/apply-automatic-revenue-backend.py
+          rm .github/workflows/apply-automatic-revenue-backend.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server/worker.js src/state/AppContext.jsx \
+            scripts/apply-automatic-revenue-backend.py \
+            .github/workflows/apply-automatic-revenue-backend.yml
+          git commit -m "feat(revenue): integrate automatic bonus backend"
+          git push origin HEAD:feat/automatic-live-revenue-bonus
