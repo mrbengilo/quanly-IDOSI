@@ -17,12 +17,26 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: feat/automatic-live-revenue-bonus
-      - name: Inspect state scoping and transfer helpers
+      - name: Inspect exact integration blocks
         shell: bash
         run: |
-          echo '===== STATE SCOPE 2680-2990 ====='
-          sed -n '2680,2990p' server/worker.js
-          echo '===== SUPPORT TRANSFER REFERENCES ====='
-          grep -n -C 8 -E 'linkedSupportTransferForAttendance|supportTransferId|fromStoreId|toStoreId' server/worker.js | head -n 500
-          echo '===== REVENUE OVERRIDE REFERENCES ====='
-          grep -n -C 8 'revenueBonusOverrides' server/worker.js | head -n 500
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('server/worker.js')
+          lines = path.read_text(encoding='utf-8').splitlines()
+          for needle, before, after in [
+              ('const getRevenueBonusLive =', 5, 80),
+              ("if (path === '/api/revenue-bonus/live')", 5, 20),
+              ("revenueBonusAllocations: filterArray(state, 'revenueBonusAllocations'", 10, 30),
+              ("revenueBonusAllocations: own('revenueBonusAllocations')", 10, 25),
+              ('const automaticRevenueBonusPeriodFor =', 5, 55),
+              ('export const revenueBonusLiveSnapshot =', 5, 55),
+          ]:
+              matches = [index for index, line in enumerate(lines) if needle in line]
+              print(f'===== {needle!r}: {matches} =====')
+              for index in matches:
+                  start = max(0, index - before)
+                  end = min(len(lines), index + after + 1)
+                  for line_number in range(start, end):
+                      print(f'{line_number + 1:06d}: {lines[line_number]}')
+          PY
