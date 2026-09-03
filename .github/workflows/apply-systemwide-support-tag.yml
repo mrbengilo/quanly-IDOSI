@@ -31,10 +31,10 @@ jobs:
       - name: Prepare guarded patch against current main and stylesheet
         run: python3 scripts/prepare-systemwide-support-tag.py
 
-      - name: Apply source changes
+      - name: Apply source changes with null-safe resolver
         run: python3 scripts/apply-systemwide-support-tag.py
 
-      - name: Patch regression expectations
+      - name: Patch standardized regression expectations
         run: python3 scripts/patch-systemwide-support-tag-tests.py
 
       - name: Check formatting
