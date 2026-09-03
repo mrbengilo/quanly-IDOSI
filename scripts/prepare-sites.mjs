@@ -17,6 +17,7 @@ const workerDomainSources = [
   'managerRevenueBonus.js',
   'revenueBonusEligibility.js',
   'workCatalog.js',
+  'supportWorkSchedule.js',
 ]
 const migrationsSource = resolve(root, 'drizzle')
 const hostingSource = resolve(root, '.openai', 'hosting.json')

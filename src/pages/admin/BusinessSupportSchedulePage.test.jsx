@@ -6,6 +6,7 @@ const mocked = vi.hoisted(() => ({
   app: {},
   saveBusinessSupportSchedule: vi.fn(),
   deleteBusinessSupportSchedule: vi.fn(),
+  saveSupportSchedulePresets: vi.fn(),
 }))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
@@ -19,6 +20,7 @@ describe('BusinessSupportSchedulePage', () => {
   beforeEach(() => {
     mocked.saveBusinessSupportSchedule.mockReset().mockResolvedValue({ ok: true })
     mocked.deleteBusinessSupportSchedule.mockReset().mockResolvedValue({ ok: true })
+    mocked.saveSupportSchedulePresets.mockReset().mockResolvedValue({ ok: true })
     mocked.app = {
       session: { role: 'business_support', employeeId: 'HTKD-01', name: 'Hỗ trợ KD' },
       employees: [
@@ -30,6 +32,8 @@ describe('BusinessSupportSchedulePage', () => {
       supportWorkSchedules: [],
       saveBusinessSupportSchedule: mocked.saveBusinessSupportSchedule,
       deleteBusinessSupportSchedule: mocked.deleteBusinessSupportSchedule,
+      saveSupportSchedulePresets: mocked.saveSupportSchedulePresets,
+      supportSchedulePresets: [],
       settings: { avatar: '/avatar-office.jpg' },
     }
   })
@@ -82,9 +86,9 @@ describe('BusinessSupportSchedulePage', () => {
     fireEvent.change(screen.getByLabelText(/Chọn nhân viên/u), { target: { value: 'VP-02' } })
 
     const presets = [
-      ['Ca sáng', '08:00', '12:00'],
+      ['Ca sáng', '08:30', '12:00'],
       ['Ca chiều', '13:00', '17:30'],
-      ['Giờ hành chính', '08:00', '17:30'],
+      ['Giờ hành chính', '08:30', '17:30'],
     ]
     for (const [name, start, end] of presets) {
       const presetButton = screen.getByRole('button', { name: new RegExp(`Chọn nhanh ${name}`, 'u') })
@@ -98,8 +102,39 @@ describe('BusinessSupportSchedulePage', () => {
     fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:15' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
-      employeeId: 'VP-02', shiftName: 'Giờ hành chính', start: '08:00', end: '18:15',
+      employeeId: 'VP-02', shiftName: 'Giờ hành chính', start: '08:30', end: '18:15',
     })))
+  })
+
+  it('loads persisted quick periods and lets an authorized account save a shared configuration', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocked.app = {
+      ...mocked.app,
+      supportSchedulePresets: [
+        { id: 'morning', name: 'Ca sáng', start: '09:00', end: '12:15' },
+        { id: 'afternoon', name: 'Ca chiều', start: '13:15', end: '17:45' },
+        { id: 'office-hours', name: 'Giờ hành chính', start: '09:00', end: '17:45' },
+      ],
+    }
+    render(<BusinessSupportSchedulePage />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Chọn nhanh Ca sáng/u }))
+    expect(screen.getByLabelText(/Giờ bắt đầu/u).value).toBe('09:00')
+    expect(screen.getByLabelText(/Giờ kết thúc/u).value).toBe('12:15')
+
+    fireEvent.click(screen.getByRole('button', { name: 'CẤU HÌNH' }))
+    fireEvent.change(screen.getByLabelText('Giờ bắt đầu Ca sáng'), { target: { value: '08:45' } })
+    fireEvent.change(screen.getByLabelText('Giờ kết thúc Giờ hành chính'), { target: { value: '18:00' } })
+    fireEvent.click(screen.getByRole('button', { name: 'LƯU CẤU HÌNH' }))
+
+    await waitFor(() => expect(mocked.saveSupportSchedulePresets).toHaveBeenCalledWith([
+      { id: 'morning', name: 'Ca sáng', start: '08:45', end: '12:15' },
+      { id: 'afternoon', name: 'Ca chiều', start: '13:15', end: '17:45' },
+      { id: 'office-hours', name: 'Giờ hành chính', start: '09:00', end: '18:00' },
+    ]))
+    expect(screen.getByLabelText(/Giờ bắt đầu/u).value).toBe('08:45')
+    expect(confirm).toHaveBeenCalledWith('Bạn có chắc muốn thay đổi khung giờ mặc định? Cấu hình mới sẽ được sử dụng cho các lần tạo tiếp theo.')
+    confirm.mockRestore()
   })
 
   it('renders the personal weekly schedule horizontally with avatar and empty days', () => {

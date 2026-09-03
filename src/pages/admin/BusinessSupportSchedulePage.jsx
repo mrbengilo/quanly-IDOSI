@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react'
-import { CalendarClock, Check, ChevronLeft, ChevronRight, Edit3, History, Plus, Save, Trash2 } from 'lucide-react'
+import { CalendarClock, Check, ChevronLeft, ChevronRight, Edit3, History, Plus, Save, Settings2, Trash2 } from 'lucide-react'
 import { Avatar, Badge, Button, Card, Field, Input, PageHeader, Select, TableWrap } from '../../components/UI'
 import {
-  SUPPORT_SCHEDULE_PRESETS,
+  canConfigureSupportSchedulePresets,
+  normalizeSupportSchedulePresets,
   supportScheduleDays,
+  validateSupportSchedulePresets,
   supportScheduleEmploymentMode,
   supportScheduleRange,
   supportSchedulesForView,
@@ -40,10 +42,58 @@ const calendarDayLabel = (date) => new Intl.DateTimeFormat('vi-VN', {
 }).format(new Date(`${date}T00:00:00Z`))
 
 function SchedulePresetButtons({ onSelect, selectedName = '', selectedStart = '', selectedEnd = '' }) {
+  const app = useApp()
+  const presets = useMemo(
+    () => normalizeSupportSchedulePresets(app.supportSchedulePresets),
+    [app.supportSchedulePresets],
+  )
+  const actorEmployeeId = String(app.session?.employeeId || '').trim().toLocaleLowerCase('en-US')
+  const actorEmployee = app.currentEmployee || (app.employees || []).find((employee) => (
+    String(employee.id || employee.code || employee.employeeId || '').trim().toLocaleLowerCase('en-US') === actorEmployeeId
+  ))
+  const canConfigure = canConfigureSupportSchedulePresets({ role: app.session?.role, employee: actorEmployee })
+  const [configOpen, setConfigOpen] = useState(false)
+  const [savingConfig, setSavingConfig] = useState(false)
+  const [draftPresets, setDraftPresets] = useState(() => presets)
+
+  const openConfig = () => {
+    setDraftPresets(presets.map((preset) => ({ ...preset })))
+    setConfigOpen(true)
+  }
+  const updateDraftTime = (presetId, field, value) => setDraftPresets((current) => current.map((preset) => (
+    preset.id === presetId ? { ...preset, [field]: value } : preset
+  )))
+  const saveConfig = async () => {
+    if (savingConfig) return
+    const validation = validateSupportSchedulePresets(draftPresets)
+    if (!validation.ok) {
+      app.notify?.(validation.message, 'info')
+      return
+    }
+    const confirmed = window.confirm('Bạn có chắc muốn thay đổi khung giờ mặc định? Cấu hình mới sẽ được sử dụng cho các lần tạo tiếp theo.')
+    if (!confirmed) return
+    setSavingConfig(true)
+    const selectedWasPreset = presets.some((preset) => (
+      preset.name === selectedName && preset.start === selectedStart && preset.end === selectedEnd
+    ))
+    const result = await app.saveSupportSchedulePresets?.(validation.presets)
+    setSavingConfig(false)
+    if (result?.ok) {
+      if (selectedWasPreset) {
+        const updatedSelection = validation.presets.find((preset) => preset.name === selectedName)
+        if (updatedSelection) onSelect(updatedSelection)
+      }
+      setConfigOpen(false)
+    }
+  }
+
   return <div className="support-schedule-presets">
-    <span className="support-schedule-presets__label">Chọn nhanh khung giờ</span>
+    <div className="support-schedule-presets__heading">
+      <span className="support-schedule-presets__label">Chọn nhanh khung giờ</span>
+      {canConfigure && <Button type="button" variant="outline" icon={Settings2} className="support-schedule-presets__configure" onClick={openConfig}>CẤU HÌNH</Button>}
+    </div>
     <div className="support-schedule-presets__options" role="group" aria-label="Chọn nhanh khung giờ làm việc">
-      {SUPPORT_SCHEDULE_PRESETS.map((preset) => {
+      {presets.map((preset) => {
         const selected = preset.name === selectedName
           && preset.start === selectedStart
           && preset.end === selectedEnd
@@ -58,10 +108,24 @@ function SchedulePresetButtons({ onSelect, selectedName = '', selectedStart = ''
         >{selected && <Check aria-hidden="true" size={14} />}{preset.name}<small>{preset.start}–{preset.end}</small></Button>
       })}
     </div>
+    {configOpen && <div className="support-schedule-preset-config" role="region" aria-label="Cấu hình khung giờ nhanh">
+      <div className="support-schedule-preset-config__header" aria-hidden="true">
+        <span>Khung giờ</span><span>Giờ bắt đầu</span><span>Giờ kết thúc</span>
+      </div>
+      {draftPresets.map((preset) => <div className="support-schedule-preset-config__row" key={preset.id}>
+        <strong>{preset.name}</strong>
+        <label className="support-schedule-preset-config__time-field"><span>Giờ bắt đầu</span><Input type="time" aria-label={`Giờ bắt đầu ${preset.name}`} value={preset.start} onChange={(event) => updateDraftTime(preset.id, 'start', event.target.value)} /></label>
+        <label className="support-schedule-preset-config__time-field"><span>Giờ kết thúc</span><Input type="time" aria-label={`Giờ kết thúc ${preset.name}`} value={preset.end} onChange={(event) => updateDraftTime(preset.id, 'end', event.target.value)} /></label>
+      </div>)}
+      <div className="support-schedule-preset-config__actions">
+        <Button type="button" variant="outline" onClick={() => setConfigOpen(false)}>HỦY</Button>
+        <Button type="button" icon={Save} loading={savingConfig} onClick={saveConfig}>LƯU CẤU HÌNH</Button>
+      </div>
+    </div>}
   </div>
 }
 
-const emptyScheduleForm = () => ({ targetUnit: 'business_support', date: today(), employeeId: '', shiftName: '', start: '08:00', end: '17:30', note: '', scheduleId: '' })
+const emptyScheduleForm = () => ({ targetUnit: 'business_support', date: today(), employeeId: '', shiftName: '', start: '08:30', end: '17:30', note: '', scheduleId: '' })
 
 const configuredEmployeeShifts = (employee = {}) => {
   const candidates = employee.workShifts || employee.workingTime?.shifts || []
@@ -83,7 +147,7 @@ const emptyPersonalScheduleForm = (employee = {}, shifts = []) => {
     date: today(),
     shiftId: firstShift?.id || 'custom',
     shiftName: firstShift?.name || '',
-    start: firstShift?.start || String(employee.workStart || '08:00').slice(0, 5),
+    start: firstShift?.start || String(employee.workStart || '08:30').slice(0, 5),
     end: firstShift?.end || String(employee.workEnd || '17:30').slice(0, 5),
     note: '',
   }
@@ -123,7 +187,7 @@ export function BusinessSupportSchedulePage() {
     date: record.date || today(),
     employeeId: record.employeeId || '',
     shiftName: record.shiftName || '',
-    start: record.start || '08:00',
+    start: record.start || '08:30',
     end: record.end || '17:30',
     note: record.note || '',
   })
@@ -204,7 +268,7 @@ export function MyBusinessSupportSchedulePage() {
     const selected = configuredShifts.find((shift) => shift.id === shiftId)
     setForm((current) => selected
       ? { ...current, shiftId, shiftName: selected.name, start: selected.start, end: selected.end }
-      : { ...current, shiftId: 'custom', shiftName: '', start: '08:00', end: '12:00' })
+      : { ...current, shiftId: 'custom', shiftName: '', start: '08:30', end: '12:00' })
   }
   const selectPreset = (preset) => {
     const configured = configuredShifts.find((shift) => (
@@ -248,7 +312,7 @@ export function MyBusinessSupportSchedulePage() {
       date: record.date || today(),
       shiftId: configured?.id || 'custom',
       shiftName: record.shiftName || '',
-      start: record.start || '08:00',
+      start: record.start || '08:30',
       end: record.end || '17:30',
       note: record.note || '',
     })

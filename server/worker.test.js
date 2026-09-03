@@ -1187,7 +1187,7 @@ describe('IDOSI Worker security primitives', () => {
 
     const sessionContextCollections = ['employees', 'deletedEmployees', 'stores', 'deletedStores', 'supportTransfers']
     expect(loginBodies.support.bootstrap.loadedCollections).toEqual([
-      ...sessionContextCollections, 'attendance', 'supportWorkSchedules',
+      ...sessionContextCollections, 'attendance', 'supportWorkSchedules', 'supportSchedulePresets',
       'officeAdjustments', 'salaryAdjustments', 'payrollPeriods',
     ])
     expect(loginBodies.manager.bootstrap.loadedCollections).toEqual([
@@ -1197,7 +1197,7 @@ describe('IDOSI Worker security primitives', () => {
       ...sessionContextCollections, 'attendance', 'schedule', 'shiftDefinitions',
     ])
     expect(loginBodies.officeEmployee.bootstrap.loadedCollections).toEqual([
-      ...sessionContextCollections, 'attendance', 'supportWorkSchedules',
+      ...sessionContextCollections, 'attendance', 'supportWorkSchedules', 'supportSchedulePresets',
       'payrollPeriods', 'salaryAdjustments', 'officeAdjustments',
     ])
 
@@ -17898,5 +17898,109 @@ describe('IDOSI Worker security primitives', () => {
     expect(await importResponse.json()).toMatchObject({ error: { code: 'STORE_ID_RESERVED' } })
     expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get())
       .toEqual({ version: 1 })
+  }, 30_000)
+})
+
+describe('Shared support schedule preset configuration', () => {
+  it('persists for Admin, HTKD and Office without changing existing schedules, and blocks store accounts', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-support-schedule-presets' }
+    const defaults = [
+      { id: 'morning', name: 'Ca sáng', start: '08:30', end: '12:00' },
+      { id: 'afternoon', name: 'Ca chiều', start: '13:00', end: '17:30' },
+      { id: 'office-hours', name: 'Giờ hành chính', start: '08:30', end: '17:30' },
+    ]
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin',
+      password: 'support-schedule-presets-admin-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01', status: 'Đang hoạt động' }],
+        employees: [
+          { id: 'HTKD-01', name: 'Hỗ trợ KD', unit: 'business_support', storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc' },
+          { id: 'VP-01', name: 'Nhân viên văn phòng', unit: 'office', storeId: 'OFFICE', status: 'Đang làm việc' },
+          { id: 'NV-01', name: 'Nhân viên cửa hàng', unit: 'store', storeId: 'S01', status: 'Đang làm việc' },
+        ],
+        supportSchedulePresets: defaults,
+        supportSchedulePresetHistory: [],
+        supportWorkSchedules: [{
+          id: 'SWS-EXISTING', employeeId: 'VP-01', employeeName: 'Nhân viên văn phòng',
+          targetUnit: 'office', date: '2026-09-02', shiftName: 'Khung giờ cũ', start: '09:15', end: '16:45',
+        }],
+        supportWorkScheduleHistory: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+
+    const loginAs = async (username, password) => {
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username, password }), env)
+      expect(response.status).toBe(200)
+      return { authorization: `Bearer ${(await response.json()).token}` }
+    }
+    const createUser = async (authorization, payload, key) => {
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create', expectedVersion: 0, payload,
+      }, { ...authorization, 'idempotency-key': key }), env)
+      expect(response.status).toBe(201)
+    }
+    const globalVersion = () => Number(
+      env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get()?.version || 0,
+    )
+    const savePresets = (authorization, presets, key) => worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'support_schedule.presets.update', expectedVersion: globalVersion(), payload: { presets },
+    }, { ...authorization, 'idempotency-key': key }), env)
+
+    const adminAuthorization = await loginAs('admin', 'support-schedule-presets-admin-password')
+    await createUser(adminAuthorization, {
+      role: 'business_support', employeeId: 'HTKD-01', username: 'preset.htkd',
+      password: 'support-preset-htkd-password', displayName: 'Hỗ trợ KD',
+    }, 'support-preset-create-htkd')
+    await createUser(adminAuthorization, {
+      role: 'employee', employeeId: 'VP-01', storeId: 'OFFICE', username: 'preset.office',
+      password: 'support-preset-office-password', displayName: 'Nhân viên văn phòng',
+    }, 'support-preset-create-office')
+    await createUser(adminAuthorization, {
+      role: 'employee', employeeId: 'NV-01', storeId: 'S01', username: 'preset.store',
+      password: 'support-preset-store-password', displayName: 'Nhân viên cửa hàng',
+    }, 'support-preset-create-store')
+
+    const adminPresets = defaults.map((preset) => (
+      preset.id === 'morning' ? { ...preset, start: '08:45' } : preset
+    ))
+    const adminSave = await savePresets(adminAuthorization, adminPresets, 'support-preset-admin-save')
+    expect(adminSave.status).toBe(200)
+    expect(await adminSave.json()).toMatchObject({ presets: adminPresets })
+
+    const htkdAuthorization = await loginAs('preset.htkd', 'support-preset-htkd-password')
+    const htkdPresets = adminPresets.map((preset) => (
+      preset.id === 'afternoon' ? { ...preset, start: '13:15' } : preset
+    ))
+    const htkdSave = await savePresets(htkdAuthorization, htkdPresets, 'support-preset-htkd-save')
+    expect(htkdSave.status).toBe(200)
+
+    const officeAuthorization = await loginAs('preset.office', 'support-preset-office-password')
+    const officePresets = htkdPresets.map((preset) => (
+      preset.id === 'office-hours' ? { ...preset, end: '18:00' } : preset
+    ))
+    const officeSave = await savePresets(officeAuthorization, officePresets, 'support-preset-office-save')
+    expect(officeSave.status).toBe(200)
+
+    const storeAuthorization = await loginAs('preset.store', 'support-preset-store-password')
+    const denied = await savePresets(storeAuthorization, defaults, 'support-preset-store-denied')
+    expect(denied.status).toBe(403)
+    expect(await denied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
+
+    const invalid = await savePresets(adminAuthorization, officePresets.map((preset) => (
+      preset.id === 'morning' ? { ...preset, start: '12:00', end: '08:30' } : preset
+    )), 'support-preset-invalid-range')
+    expect(invalid.status).toBe(400)
+    expect(await invalid.json()).toMatchObject({ error: { code: 'SUPPORT_SCHEDULE_PRESETS_INVALID' } })
+
+    const state = readHydratedState(env.DB.database)
+    expect(state.supportSchedulePresets).toMatchObject(officePresets)
+    expect(state.supportSchedulePresetHistory).toHaveLength(3)
+    expect(state.supportWorkSchedules.find(({ id }) => id === 'SWS-EXISTING')).toMatchObject({
+      shiftName: 'Khung giờ cũ', start: '09:15', end: '16:45',
+    })
+    expect(env.DB.database.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE action = 'support_schedule.presets.update'").get())
+      .toEqual({ count: 3 })
   }, 30_000)
 })
