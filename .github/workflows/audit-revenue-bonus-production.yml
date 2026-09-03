@@ -1,0 +1,191 @@
+name: Audit production revenue bonus eligibility
+
+on:
+  push:
+    branches: [fix/revenue-bonus-final-worked-shift]
+    paths:
+      - .github/workflows/audit-revenue-bonus-production.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-revenue-bonus-production-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.repository == 'mrbengilo/quanly-IDOSI'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST production secret}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER production secret}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY production secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS production secret}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Audit all stores for 2026-09-02
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          ROOT="${IDOSI_ROOT:-/opt/idosi}"
+          COMPOSE_FILE="${IDOSI_COMPOSE_FILE:-$ROOT/deploy/vps/compose.yml}"
+          LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
+          exec 9>"$LOCK_FILE"
+          flock -n 9 || { echo 'audit_aborted=deployment_or_rollback_active'; exit 1; }
+          compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+          app_id="$(compose ps -q app)"
+          [[ -n "$app_id" ]] || { echo 'app_container=missing'; exit 1; }
+
+          printf 'checked_at=%s\n' "$(TZ=Asia/Ho_Chi_Minh date '+%Y-%m-%dT%H:%M:%S%z')"
+          printf 'release_sha=' && compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/release').then(r=>r.json()).then(v=>console.log(v.data?.releaseSha||v.releaseSha||'unknown'))"
+
+          compose exec -T app node <<'NODE'
+          import { DatabaseSync } from 'node:sqlite'
+          import { revenueBonusEligibility } from './src/domain/revenueBonusEligibility.js'
+
+          const targetDate = '2026-09-02'
+          const dbPath = process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
+          const db = new DatabaseSync(dbPath, { readOnly: true })
+          db.exec('PRAGMA query_only=ON')
+
+          const rowsFor = db.prepare(`
+            SELECT value_json
+            FROM state_entities
+            WHERE scope_key = 'global' AND collection_key = ?
+            ORDER BY entity_order, entity_key
+          `)
+          const collection = (name) => rowsFor.all(name).flatMap((row) => {
+            try { return [JSON.parse(row.value_json)] } catch { return [] }
+          })
+          const normalize = (value) => String(value ?? '').trim().toLocaleLowerCase('vi-VN')
+          const recordDate = (record = {}) => String(
+            record.businessDate || record.workDate || record.date || record.attendanceDate
+            || record.createdAt || record.occurredAt || '',
+          ).slice(0, 10)
+          const storeRef = (record = {}) => String(record.storeId || record.unitId || record.store?.id || '')
+          const isEffectiveDaily = (record = {}) => (
+            !record.deletedAt && !record.voidedAt && !record.supersededAt
+            && !['VOID', 'VOIDED', 'SUPERSEDED', 'CANCELLED'].includes(String(record.status || '').trim().toUpperCase())
+          )
+          const formatMoney = (value) => Math.max(0, Number(value || 0)).toLocaleString('vi-VN')
+          const shiftLabel = (record = {}) => {
+            const name = String(record.shiftName || record.name || record.shiftId || record.shift || 'Không rõ ca').trim()
+            const start = String(record.shiftStart || record.start || record.startTime || '').trim()
+            const end = String(record.shiftEnd || record.end || record.endTime || '').trim()
+            return `${name}${start || end ? `(${start || '--:--'}-${end || '--:--'})` : ''}`
+          }
+
+          const stores = collection('stores').filter((store) => !store.deletedAt && store.active !== false)
+          const attendance = collection('attendance')
+          const schedule = collection('schedule')
+          const shiftDefinitions = collection('shiftDefinitions')
+          const employees = collection('employees')
+          const revenueBonusDaily = collection('revenueBonusDaily')
+          const revenueBonuses = collection('revenueBonuses')
+          const orders = collection('orders')
+          const dailyRecords = revenueBonusDaily.length ? revenueBonusDaily : revenueBonuses
+          const nowMs = Date.now()
+
+          console.log('store_id\tstore_name\tattendance\tclosed\topen\tworked_shifts\tscheduled_rows\tconfigured_shifts\torders\trevenue_vnd\tdaily_records\teligibility\tmessage')
+          for (const store of stores.sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id), 'vi-VN'))) {
+            const storeId = String(store.id || store.code || '')
+            if (!storeId) continue
+            const sameStore = (record) => normalize(storeRef(record)) === normalize(storeId)
+            const dayAttendance = attendance.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === targetDate)
+            const openAttendance = dayAttendance.filter((record) => !record.checkOutAt && !record.checkOut)
+            const dayOrders = orders.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === targetDate && record.source !== 'legacy-opening-balance')
+            const dayDailyRecords = dailyRecords.filter((record) => sameStore(record) && recordDate(record) === targetDate && isEffectiveDaily(record))
+            const scheduledRows = schedule.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === targetDate)
+            const configuredShifts = shiftDefinitions.filter((record) => !record.deletedAt && record.active !== false && (!storeRef(record) || sameStore(record)))
+            const eligibility = revenueBonusEligibility({
+              storeId,
+              businessDate: targetDate,
+              schedule,
+              shiftDefinitions,
+              attendance,
+              employees,
+              dailyRecords,
+              nowMs,
+            })
+            const workedShifts = [...new Set(dayAttendance.map(shiftLabel))].join(',') || '-'
+            const configuredLabels = [...new Set(configuredShifts.map(shiftLabel))].join(',') || '-'
+            const revenue = dayOrders.reduce((sum, order) => sum + Number(order.amount || 0), 0)
+            console.log([
+              storeId,
+              String(store.name || store.code || storeId).replaceAll('\t', ' '),
+              dayAttendance.length,
+              dayAttendance.length - openAttendance.length,
+              openAttendance.length,
+              workedShifts.replaceAll('\t', ' '),
+              scheduledRows.length,
+              configuredLabels.replaceAll('\t', ' '),
+              dayOrders.length,
+              formatMoney(revenue),
+              dayDailyRecords.length,
+              eligibility.code,
+              String(eligibility.message || '').replaceAll('\t', ' ').replaceAll('\n', ' '),
+            ].join('\t'))
+          }
+          db.close()
+          NODE
+
+          log_file="$(mktemp)"
+          trap 'rm -f "$log_file"' EXIT
+          docker logs --since=3h --tail=100000 "$app_id" >"$log_file" 2>&1 || true
+          python3 - "$log_file" <<'PY'
+          import json, sys
+          from collections import Counter
+
+          status = Counter()
+          total = 0
+          for raw in open(sys.argv[1], 'r', encoding='utf-8', errors='replace'):
+              start = raw.find('{')
+              if start < 0:
+                  continue
+              try:
+                  row = json.loads(raw[start:])
+              except Exception:
+                  continue
+              if row.get('event') != 'idosi.api.request':
+                  continue
+              path = str(row.get('path') or '')
+              if '/api/revenue-bonus/live' not in path:
+                  continue
+              total += 1
+              status[str(row.get('status', 'unknown'))] += 1
+          print(f'revenue_live_requests_last_3h={total}')
+          print('revenue_live_status_counts=' + json.dumps(dict(sorted(status.items())), ensure_ascii=False))
+          PY
+          REMOTE
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
