@@ -1,0 +1,64 @@
+name: Apply revenue bonus 21h control
+
+on:
+  push:
+    branches:
+      - feat/revenue-bonus-daily-21h-lock
+    paths:
+      - .github/workflows/apply-revenue-bonus-21h.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/revenue-bonus-daily-21h-lock
+          fetch-depth: 0
+
+      - name: Use Node.js 22.13
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Apply guarded source and test changes
+        run: python3 scripts/apply-revenue-bonus-21h.py
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify sites build
+        run: npm run sites:verify
+
+      - name: Commit verified feature
+        shell: bash
+        run: |
+          rm scripts/apply-revenue-bonus-21h.py
+          rm .github/workflows/apply-revenue-bonus-21h.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/domain/revenueBonusEligibility.js \
+            src/domain/revenueBonusEligibility.test.js \
+            src/pages/compensation/RevenueBonusPage.jsx \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/compensation/compensation-page.css \
+            scripts/apply-revenue-bonus-21h.py \
+            .github/workflows/apply-revenue-bonus-21h.yml
+          git commit -m "feat: gate daily revenue bonus calculation after 21h"
+          git push origin HEAD:feat/revenue-bonus-daily-21h-lock
