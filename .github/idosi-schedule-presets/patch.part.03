@@ -125,13 +125,13 @@ def transform_worker(text: str) -> str:
         "  }",
         "worker command state projection",
     )
-    command_pair = "    'support_schedule.assign',\n    'support_schedule.delete',"
+    command_pair = "  'support_schedule.assign',\n  'support_schedule.delete',"
     if command_pair not in text:
         raise PatchError("worker idempotent command list anchor missing")
     text = replace_once(
         text,
         command_pair,
-        "    'support_schedule.assign',\n    'support_schedule.delete',\n    'support_schedule.presets.update',",
+        "  'support_schedule.assign',\n  'support_schedule.delete',\n  'support_schedule.presets.update',",
         "worker command allowlist",
     )
     text = replace_once(
