@@ -6,6 +6,8 @@ const dist = resolve(root, 'dist')
 const client = resolve(dist, 'client')
 const server = resolve(dist, 'server')
 const workerSource = resolve(root, 'server', 'worker.js')
+// Keep transitive Worker domain imports explicit so the prepared server bundle
+// can execute automatic revenue projections without resolving source-only files.
 const workerDomainSources = [
   'storeShiftChecklist.js',
   'taskProgress.js',
