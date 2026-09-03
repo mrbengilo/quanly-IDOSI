@@ -1821,11 +1821,17 @@ export function AppProvider({ children }) {
 
   const ensureStoreWorkspaceData = useCallback((storeId, options = {}) => {
     const remote = apiRef.current
-    if (!remote.enabled || !isSystemRole(remote.role) || !String(storeId || '').trim()) return Promise.resolve(null)
+    const requestedStoreId = String(storeId || '').trim()
+    const role = normalizeAuthRole(remote.role)
+    if (!remote.enabled || !isStoreWorkspaceRole(role) || !requestedStoreId) return Promise.resolve(null)
+    const assignedStoreId = String(remote.user?.storeId || remote.user?.store_id || '').trim()
+    if (role === 'store_manager' && assignedStoreId && !sameIdentifier(requestedStoreId, assignedStoreId)) {
+      return Promise.resolve(null)
+    }
     return loadCompleteRemoteProjection(remote.user, {
       kind: 'store',
-      storeId,
-      preferredActiveStoreId: storeId,
+      storeId: requestedStoreId,
+      preferredActiveStoreId: role === 'store_manager' && assignedStoreId ? assignedStoreId : requestedStoreId,
       ...options,
     })
   }, [loadCompleteRemoteProjection])
