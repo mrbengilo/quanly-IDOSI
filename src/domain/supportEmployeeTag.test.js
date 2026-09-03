@@ -30,6 +30,16 @@ const resolve = (overrides = {}) => resolveSupportEmployeeTagContext({
 })
 
 describe('support employee tag context', () => {
+  it('accepts null records without crashing or creating a tag', () => {
+    expect(resolveSupportEmployeeTagContext({
+      record: null,
+      employee: null,
+      employees: [],
+      stores,
+      supportTransfers: [],
+    })).toBeNull()
+  })
+
   it('keeps records before 01/09/2026 untagged', () => {
     expect(resolve({
       businessDate: '2026-08-31',
@@ -98,6 +108,20 @@ describe('support employee tag context', () => {
       employees: [employee],
       stores,
       supportTransfers: [transfer, { ...transfer, id: 'TR-02' }],
+    })).toBeNull()
+  })
+
+  it('does not trust a cancelled transfer even when its id is present', () => {
+    expect(resolve({
+      businessDate: '2026-09-02',
+      supportTransfers: [{ ...transfer, status: 'Đã hủy' }],
+    })).toBeNull()
+  })
+
+  it('does not use an explicit transfer linked to another destination store', () => {
+    expect(resolve({
+      businessDate: '2026-09-02',
+      supportTransfers: [{ ...transfer, toStoreId: 'OTHER' }],
     })).toBeNull()
   })
 })
