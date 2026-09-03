@@ -29,11 +29,28 @@ replace_exact(
     'standardize payroll tag expectations',
 )
 
-insert_once(
+replace_exact(
+    'src/pages/store/StoreV2Pages.metrics.test.jsx',
+    "expect(within(supportRow).getByText('NV hỗ trợ')).toBeTruthy()",
+    "expect(within(supportRow).getByText('Nhân viên hỗ trợ • Từ Dosii TNV')).toBeTruthy()",
+    1,
+    'standardize attendance support tag expectation',
+)
+
+replace_exact(
+    'src/pages/store/StoreReadOnly.test.jsx',
+    "expect(screen.getByText('Nhân viên hỗ trợ')).toBeTruthy()",
+    "expect(screen.getAllByText('Nhân viên hỗ trợ • Từ Dosii TNV').length).toBeGreaterThan(0)",
+    1,
+    'standardize store roster support tag expectation',
+)
+
+replace_exact(
     'src/pages/compensation/ViolationRefundPage.test.jsx',
-    "    expect(screen.getAllByText('Nhân viên hỗ trợ').length).toBeGreaterThan(0)\n",
-    "    expect(screen.getByText('Nhân viên hỗ trợ • Từ SM TNV')).toBeTruthy()\n",
-    'verify standardized violation-refund tag',
+    "expect(screen.getAllByText('Nhân viên hỗ trợ').length).toBeGreaterThan(0)",
+    "expect(screen.getByText('Nhân viên hỗ trợ • Từ SM TNV')).toBeTruthy()",
+    1,
+    'standardize violation-refund tag expectation',
 )
 
 insert_once(
