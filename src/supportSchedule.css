@@ -1,0 +1,7 @@
+/*
+ * The shared Input component renders a direct span wrapper. The global desktop
+ * caption rule also targets direct spans, so explicitly keep the input visible.
+ */
+.support-schedule-preset-config__time-field > .input-wrap {
+  display: flex;
+}
