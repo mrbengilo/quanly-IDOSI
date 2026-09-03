@@ -20734,7 +20734,9 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
     schedule: Array.isArray(state?.schedule) ? state.schedule : [],
     shiftDefinitions: Array.isArray(state?.shiftDefinitions) ? state.shiftDefinitions : [],
     attendance: Array.isArray(state?.attendance) ? state.attendance : [],
+    employees: Array.isArray(state?.employees) ? state.employees : [],
     dailyRecords: Array.isArray(state?.revenueBonusDaily) ? state.revenueBonusDaily : [],
+    nowMs,
   }))
   return {
     storeId,
@@ -20960,7 +20962,9 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     schedule: Array.isArray(state.schedule) ? state.schedule : [],
     shiftDefinitions: Array.isArray(state.shiftDefinitions) ? state.shiftDefinitions : [],
     attendance: Array.isArray(state.attendance) ? state.attendance : [],
+    employees: Array.isArray(state.employees) ? state.employees : [],
     dailyRecords,
+    nowMs: Date.parse(commandContext.now),
   })
   if (eligibility.code === 'DATA_COLLISION') {
     throw new ApiError(

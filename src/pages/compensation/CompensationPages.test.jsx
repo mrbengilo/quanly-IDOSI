@@ -713,6 +713,8 @@ describe('compensation pages', () => {
   })
 
   it('defaults privileged revenue bonus work to the active operational store', async () => {
+    vi.setSystemTime(new Date('2026-08-26T14:05:00.000Z'))
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     mocked.app = {
       ...baseApp('business_support'),
       apiStatus: 'local',
@@ -737,6 +739,7 @@ describe('compensation pages', () => {
       storeId: 'CH002', businessDate: '2026-08-26',
     }))
     expect(mocked.app.calculateRevenueBonusDay).toHaveBeenCalledTimes(1)
+    expect(confirm).toHaveBeenCalledTimes(1)
     expect(await screen.findByRole('button', { name: 'ĐANG ĐỒNG BỘ KẾT QUẢ' })).toBeTruthy()
   })
 

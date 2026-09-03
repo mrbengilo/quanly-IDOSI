@@ -169,7 +169,9 @@ const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, nowMs }
       schedule: Array.isArray(app.schedule) ? app.schedule : [],
       shiftDefinitions: Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : [],
       attendance: app.attendance,
+      employees: employeeRecords,
       dailyRecords: Array.isArray(app.revenueBonusDaily) ? app.revenueBonusDaily : (app.revenueBonuses || []),
+      nowMs,
     }),
     allocations: allocation.allocations.map((row) => ({
       employeeId: row.id,
@@ -323,15 +325,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
     : String(currentStoreId || app.activeStoreId || '')
   const selectedScopedStoreId = resolvedEntityId(stores, scopedStoreReference)
   const selectedStoreId = String((storeScoped ? selectedScopedStoreId : selectedGlobalStoreId) || '')
-  const shouldTickLocalClock = !serverBacked
-    && businessDate === vietnamToday()
-    && (app.attendance || []).some((attendance) => (
-      !attendance.deletedAt
-      && sameOperationalIdentifier(entryStoreId(attendance), selectedStoreId)
-      && recordBusinessDate(attendance) === businessDate
-      && !attendance.checkOutAt
-      && !attendance.checkOut
-    ))
+  const shouldTickLocalClock = !serverBacked && businessDate === vietnamToday()
   useEffect(() => {
     if (!shouldTickLocalClock) return undefined
     const timer = window.setInterval(() => setNowMs(Date.now()), 5_000)
@@ -564,12 +558,19 @@ export function RevenueBonusPage({ storeScoped = false }) {
     || (serverBacked
       ? 'Đang kiểm tra trạng thái ca cuối cùng và kết quả thưởng đã lưu.'
       : 'Chưa đủ dữ liệu để kiểm tra điều kiện tính thưởng doanh thu.')
+  const openAttendanceAlert = privileged && calculationEligibility?.code === 'ATTENDANCE_OPEN'
 
   if (!allowed || !selectedStoreId) return <AccessDenied subtitle="Tài khoản này không có phạm vi cửa hàng để xem thưởng doanh thu." />
   if (!revenueProgram) return <AccessDenied subtitle="Cửa hàng hiện tại chưa có chính sách thưởng doanh thu được hệ thống hỗ trợ." />
 
   const calculate = async () => {
     if (!calculationReady || submittedCalculationRef.current === calculationScope) return
+    const confirmed = typeof window === 'undefined' || window.confirm(
+      `Xác nhận tính thưởng doanh thu ngày ${displayDate(businessDate)} cho ${storeName(stores, selectedStoreId)}?
+
+Mỗi cửa hàng chỉ được tính một lần cho ngày này và không thể tính lại.`,
+    )
+    if (!confirmed) return
     submittedCalculationRef.current = calculationScope
     const result = await run({
       key: 'calculate',
@@ -602,6 +603,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
           : `Theo dõi quỹ và phân bổ thưởng theo giờ bán hàng được duyệt tại ${storeName(stores, selectedStoreId)}.`}
         icon={CircleDollarSign}
         actions={privileged && <Button
+          className={`revenue-bonus-calculate-button${calculationReady ? ' is-ready' : ''}`}
           icon={calculationDone ? CheckCircle2 : Calculator}
           loading={busyKey === 'calculate'}
           disabled={Boolean(busyKey) || !calculationReady}
@@ -624,7 +626,10 @@ export function RevenueBonusPage({ storeScoped = false }) {
             ? `Đang hiển thị lần cập nhật gần nhất lúc ${formattedLastRemoteSuccess}; hệ thống sẽ tự thử lại.`
             : 'Hệ thống sẽ tự thử lại.'}
         </InfoNote>}
-        {privileged && <InfoNote tone={eligibilityTone}>{eligibilityMessage}</InfoNote>}
+        {privileged && (openAttendanceAlert ? <div className="revenue-bonus-attendance-alert" role="alert">
+          <Clock3 size={28} aria-hidden="true" />
+          <div><strong>CHƯA THỂ TÍNH THƯỞNG NGÀY</strong><p>{eligibilityMessage}</p></div>
+        </div> : <InfoNote tone={eligibilityTone}>{eligibilityMessage}</InfoNote>)}
       </Card>
       {privateAllocationView ? <div className="metric-grid compensation-metrics compensation-metrics--employee">
         <MetricCard compact label="TỔNG QUỸ CỦA TEAM" value={awaitingSavedResult ? 'Đang đồng bộ…' : money(poolTotal)} helper={liveDataLabel} icon={CircleDollarSign} tone="blue" />

@@ -161,3 +161,25 @@ describe('StoreOrdersPage order information editing', () => {
     expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
   })
 })
+
+describe('StoreOrdersPage shift grouping', () => {
+  it('renders the newest shift first with distinct shift, amount and order-count indicators', () => {
+    mocked.app = {
+      ...makeApp(),
+      orders: [
+        order({ id: 'ORDER-MORNING', code: 'S01-00001', shiftId: 'morning', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00', amount: 100_000, createdAt: '2026-08-25T08:30:00+07:00' }),
+        order({ id: 'ORDER-AFTERNOON', code: 'S01-00002', shiftId: 'afternoon', shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '17:30', amount: 200_000, createdAt: '2026-08-25T14:00:00+07:00' }),
+        order({ id: 'ORDER-NIGHT-1', code: 'S01-00003', shiftId: 'night', shiftName: 'Ca tối', shiftStart: '18:00', shiftEnd: '21:00', amount: 300_000, createdAt: '2026-08-25T18:30:00+07:00' }),
+        order({ id: 'ORDER-NIGHT-2', code: 'S01-00004', shiftId: 'night', shiftName: 'Ca tối', shiftStart: '18:00', shiftEnd: '21:00', amount: 400_000, createdAt: '2026-08-25T20:00:00+07:00' }),
+      ],
+    }
+    const { container } = renderPage()
+    const groups = [...container.querySelectorAll('.order-group')]
+
+    expect(groups.map((group) => group.querySelector('.order-group__shift-title strong')?.textContent)).toEqual([
+      'Ca tối', 'Ca chiều', 'Ca sáng',
+    ])
+    expect(groups[0].querySelector('.order-group__total-amount strong')?.textContent).toBe('700,000 đ')
+    expect(groups[0].querySelector('.order-group__order-count strong')?.textContent).toBe('2')
+  })
+})

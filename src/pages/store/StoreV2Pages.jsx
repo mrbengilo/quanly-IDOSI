@@ -73,6 +73,7 @@ import {
   today,
 } from '../../utils'
 import { storeDailyReportRows, storeMonthlyReportRows } from './storeReportAnalytics'
+import { groupOrdersForDisplay } from './orderShiftGroups'
 
 const parseMoney = (value) => Number(String(value ?? '').replace(/\D/g, '')) || 0
 const EMPTY_LIST = Object.freeze([])
@@ -617,19 +618,7 @@ export function StoreOrdersPage() {
     const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName].join(' ').toLowerCase()
     return !query || haystack.includes(query.toLowerCase())
   })
-  const groups = useMemo(() => {
-    const keyOf = view === 'employee'
-      ? (order) => order.employeeId || 'system'
-      : view === 'day'
-        ? (order) => businessDate(order.createdAt)
-        : (order) => `${businessDate(order.createdAt)}:${order.shiftId || 'none'}`
-    return [...filtered.reduce((map, order) => {
-      const key = keyOf(order)
-      if (!map.has(key)) map.set(key, [])
-      map.get(key).push(order)
-      return map
-    }, new Map()).entries()]
-  }, [filtered, view])
+  const groups = useMemo(() => groupOrdersForDisplay(filtered, view), [filtered, view])
   const orderMetrics = filtered.reduce((metrics, order) => {
     const amount = Number(order.amount || 0)
     metrics.orders += 1
@@ -742,8 +731,14 @@ export function StoreOrdersPage() {
           ? `${first.employeeName || 'Dữ liệu hệ thống'} — ${first.employeeId || ''}`
           : view === 'day'
             ? `Ngày ${shortDate(businessDate(first.createdAt))}`
-            : `${first.shiftName || 'Chưa gắn ca'} — ${first.shiftStart || '--:--'}–${first.shiftEnd || '--:--'} — ${shortDate(businessDate(first.createdAt))}`
-        return <Card key={key} className="order-group" title={title} action={<div className="order-group__totals"><strong>{money(groupTotal)}</strong><span>{group.length} đơn</span></div>}><TableWrap><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td>{timestamp(order.updatedAt || order.createdAt)}</td><td><strong>{order.code}</strong></td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td>{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td><strong>{money(order.amount)}</strong></td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td>{order.employeeName}<small className="table-note">{order.employeeId || '—'}</small></td><td><Badge>{order.status}</Badge></td>{canEditOrders && <td><div className="row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
+            : <span className="order-group__shift-title">
+                <strong>{first.shiftName || 'Chưa gắn ca'}</strong>
+                <small>{first.shiftStart || '--:--'}–{first.shiftEnd || '--:--'} · {shortDate(businessDate(first.createdAt))}</small>
+              </span>
+        return <Card key={key} className="order-group" title={title} action={<div className="order-group__totals">
+          <span className="order-group__total-amount"><small>Tổng tiền ca</small><strong>{money(groupTotal)}</strong></span>
+          <span className="order-group__order-count"><small>Số lượng đơn</small><strong>{group.length}</strong><em>đơn</em></span>
+        </div>}><TableWrap><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td>{timestamp(order.updatedAt || order.createdAt)}</td><td><strong>{order.code}</strong></td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td>{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td><strong>{money(order.amount)}</strong></td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td>{order.employeeName}<small className="table-note">{order.employeeId || '—'}</small></td><td><Badge>{order.status}</Badge></td>{canEditOrders && <td><div className="row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
       })}
       {remoteHistory && !historyReady && <InfoNote>Đang tải trang lịch sử đơn hàng...</InfoNote>}
       {historyReady && history.error && <InfoNote tone="red">{history.error}</InfoNote>}
