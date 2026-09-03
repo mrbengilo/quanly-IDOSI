@@ -1,0 +1,119 @@
+name: Apply Revenue Bonus All-Store Fix
+
+on:
+  push:
+    branches:
+      - fix/revenue-bonus-all-stores-past-days
+    paths:
+      - .github/workflows/apply-revenue-bonus-all-stores-fix.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-revenue-bonus-all-stores-fix
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    if: github.repository == 'mrbengilo/quanly-IDOSI'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BASE_SHA: 7e3964d2d74b3f3e43277c724744dc42c927a04c
+      BRANCH_NAME: fix/revenue-bonus-all-stores-past-days
+    steps:
+      - name: Checkout bootstrap branch
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.BRANCH_NAME }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Restore clean main base and decode patches
+        run: |
+          set -Eeuo pipefail
+          cp scripts/revenue-bonus-all-stores-source.patch.gz.b64 /tmp/source.patch.gz.b64
+          cp scripts/revenue-bonus-all-stores-audit.patch.gz.b64 /tmp/audit.patch.gz.b64
+          base64 --decode /tmp/source.patch.gz.b64 | gzip --decompress > /tmp/source.patch
+          base64 --decode /tmp/audit.patch.gz.b64 | gzip --decompress > /tmp/audit.patch
+          git reset --hard "$BASE_SHA"
+          git clean -fdx
+          git config user.name "IDOSI Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git apply --check /tmp/source.patch
+          git apply --check /tmp/audit.patch
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply and verify scoped historical calculation fix
+        run: |
+          set -Eeuo pipefail
+          git apply /tmp/source.patch
+          git diff --check
+          npx eslint \
+            server/revenueBonusCutoff.test.js \
+            server/worker.js \
+            server/worker.test.js \
+            src/domain/revenueBonusEligibility.js \
+            src/domain/revenueBonusEligibility.test.js \
+            src/domain/storeTieredPayroll.test.js \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/compensation/RevenueBonusCutoff.test.jsx \
+            src/pages/compensation/RevenueBonusPage.jsx \
+            src/state/AppContext.jsx \
+            src/state/AppContext.staffPermissions.test.js
+          npx vitest run --maxWorkers=1 \
+            server/revenueBonusCutoff.test.js \
+            server/worker.test.js \
+            src/domain/revenueBonusEligibility.test.js \
+            src/domain/storeTieredPayroll.test.js \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/compensation/RevenueBonusCutoff.test.jsx \
+            src/state/AppContext.staffPermissions.test.js
+          git add \
+            server/revenueBonusCutoff.test.js \
+            server/worker.js \
+            server/worker.test.js \
+            src/domain/revenueBonusEligibility.js \
+            src/domain/revenueBonusEligibility.test.js \
+            src/domain/storeTieredPayroll.test.js \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/compensation/RevenueBonusCutoff.test.jsx \
+            src/pages/compensation/RevenueBonusPage.jsx \
+            src/state/AppContext.jsx \
+            src/state/AppContext.staffPermissions.test.js
+          git commit -m "fix(revenue-bonus): unlock scoped historical calculations"
+
+      - name: Apply all-store production audit and run final gate
+        run: |
+          set -Eeuo pipefail
+          git apply /tmp/audit.patch
+          git diff --check
+          npx eslint src/revenueBonusStoreAuditWorkflow.test.js
+          npx vitest run --maxWorkers=1 src/revenueBonusStoreAuditWorkflow.test.js
+          npm audit --omit=dev --audit-level=high
+          npm run lint
+          npm test
+          npm run build
+          npm run sites:verify
+          git add \
+            .github/workflows/audit-revenue-bonus-stores.yml \
+            src/revenueBonusStoreAuditWorkflow.test.js
+          git commit -m "ops(revenue-bonus): audit all stores after deploy"
+
+      - name: Verify clean delivery history
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-list --count "$BASE_SHA"..HEAD)" -eq 2
+          test -z "$(git status --porcelain)"
+          git log --oneline "$BASE_SHA"..HEAD
+
+      - name: Publish verified commits
+        run: git push --force-with-lease origin "HEAD:$BRANCH_NAME"
