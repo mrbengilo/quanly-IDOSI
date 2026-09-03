@@ -34,7 +34,10 @@ import {
   selectRevenueBonusTier,
 } from '../../domain/compensationPolicies'
 import { allocateByLargestRemainder } from '../../domain/compensationAllocation'
-import { revenueBonusEligibility } from '../../domain/revenueBonusEligibility'
+import {
+  revenueBonusEligibility,
+  usesRevenueBonusDailyCloseRule,
+} from '../../domain/revenueBonusEligibility'
 import { classifyStorePayrollPolicy, STORE_PAYROLL_POLICY } from '../../domain/storeTieredPayroll'
 import { apiGetRevenueBonusLive } from '../../services/idosiApi'
 import { revenueBonusHistoryProjection, revenueBonusStatistics } from './compensationStatistics'
@@ -468,14 +471,28 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const calculationEligibility = serverBacked
     ? matchingRemoteSnapshot?.calculationEligibility || null
     : localLiveSnapshot?.calculationEligibility || null
+  const attendanceSnapshot = matchingRemoteSnapshot || localLiveSnapshot
   const calculationCollision = calculationEligibility?.code === 'DATA_COLLISION' || selectedDayCollision
   const calculationDone = !calculationCollision && (calculationEligibility?.code === 'ALREADY_CALCULATED'
     || records.length > 0
     || submittedCalculationScope === calculationScope)
   const awaitingSavedResult = calculationDone && records.length !== 1
-  const calculationReady = !remoteDataStale && !calculationCollision && calculationEligibility?.code === 'READY' && !calculationDone
+  const historicalCloseRuleFallback = Boolean(
+    serverBacked
+    && businessDate < vietnamToday()
+    && usesRevenueBonusDailyCloseRule(businessDate)
+    && Number(attendanceSnapshot?.attendanceCount || 0) > 0
+    && Number(attendanceSnapshot?.openAttendanceCount || 0) === 0
+    && !calculationDone
+    && !calculationCollision
+    && [null, 'READY', 'FINAL_SHIFT_NOT_ATTENDED', 'FINAL_SHIFT_UNRESOLVED']
+      .includes(calculationEligibility?.code ?? null)
+  )
+  const calculationReady = !calculationCollision && !calculationDone && (
+    (!remoteDataStale && calculationEligibility?.code === 'READY')
+    || historicalCloseRuleFallback
+  )
   const liveSnapshot = calculationDone || calculationCollision ? null : (matchingRemoteSnapshot || localLiveSnapshot)
-  const attendanceSnapshot = matchingRemoteSnapshot || localLiveSnapshot
   const revenueTotal = Number(liveSnapshot?.revenueVnd ?? savedRevenueTotal) || 0
   const poolTotal = liveSnapshot
     ? (Number(liveSnapshot.percentagePoolVnd || 0) + savedMilestonePoolTotal)
@@ -554,9 +571,13 @@ export function RevenueBonusPage({ storeScoped = false }) {
     ? 'Thưởng doanh thu của ngày này đã được tính; hệ thống đang đồng bộ kết quả đã lưu.'
     : calculationDone
     ? 'Thưởng doanh thu của ngày này đã được tính và không thể tính lại.'
+    : historicalCloseRuleFallback
+    ? remoteDataStale
+      ? 'Ngày cũ chưa tính thưởng và toàn bộ ca đã ghi nhận đều kết thúc. Có thể bấm tính; máy chủ sẽ kiểm tra lại trước khi lưu.'
+      : 'Ngày cũ chưa tính thưởng và toàn bộ ca đã ghi nhận đều kết thúc. Có thể tính thưởng doanh thu.'
     : calculationEligibility?.message
     || (serverBacked
-      ? 'Đang kiểm tra trạng thái ca cuối cùng và kết quả thưởng đã lưu.'
+      ? 'Đang kiểm tra mốc 21:00, các ca chưa kết thúc và kết quả thưởng đã lưu.'
       : 'Chưa đủ dữ liệu để kiểm tra điều kiện tính thưởng doanh thu.')
   const openAttendanceAlert = privileged && calculationEligibility?.code === 'ATTENDANCE_OPEN'
 

@@ -21118,6 +21118,8 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     allocatedVnd: totalPoolVnd - unallocatedVnd,
     unallocatedVnd,
     participantCount: participants.length,
+    eligibilityRuleCode: eligibility.ruleCode,
+    eligibilityRuleEffectiveFrom: eligibility.ruleEffectiveFrom,
     fingerprint,
     status: 'APPROVED',
     calculatedAt: commandContext.now,

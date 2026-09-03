@@ -186,7 +186,7 @@ export const apiGetRevenueBonusLive = ({ storeId, businessDate }) => {
     storeId: String(storeId || ''),
     businessDate: String(businessDate || ''),
   })
-  return request(`/api/revenue-bonus/live?${query.toString()}`)
+  return stateReadRequest(`/api/revenue-bonus/live?${query.toString()}`)
 }
 
 export const apiCommand = (type, payload, {
