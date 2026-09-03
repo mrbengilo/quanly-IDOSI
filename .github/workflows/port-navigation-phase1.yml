@@ -1,0 +1,50 @@
+name: Port verified navigation performance fix
+
+on:
+  push:
+    branches:
+      - perf/navigation-latency-complete
+    paths:
+      - .github/workflows/port-navigation-phase1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  port-test-clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: perf/navigation-latency-complete
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - name: Port the verified isolated commit
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git cherry-pick b73a6acce26a9d34aadc99132923aa404b7a59ad
+      - name: Remove one-shot workflow from final diff
+        run: git rm .github/workflows/port-navigation-phase1.yml
+      - name: Install dependencies
+        run: npm ci
+      - name: Targeted regressions
+        run: npx vitest run src/services/employeeAvatarCache.test.js server/vps/sqlite-d1.pragmas.test.js server/worker.test.js
+      - name: Lint
+        run: npm run lint
+      - name: Full test suite
+        run: npm test
+      - name: Production build
+        run: npm run build
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+      - name: Commit clean verified branch
+        run: |
+          set -Eeuo pipefail
+          git commit -m 'chore: remove one-shot performance port workflow'
+          git push origin HEAD:perf/navigation-latency-complete
