@@ -1,0 +1,206 @@
+name: Diagnose current IDOSI navigation loading
+
+on:
+  push:
+    branches:
+      - fix/navigation-loading-root-cause-20260903
+    paths:
+      - .github/workflows/diagnose-current-navigation-loading.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout diagnostic branch
+        uses: actions/checkout@v6
+
+      - name: Package current source for local analysis
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tar --exclude=.git -czf /tmp/idosi-current-source.tar.gz .
+
+      - name: Upload current source
+        uses: actions/upload-artifact@v4
+        with:
+          name: idosi-current-source
+          path: /tmp/idosi-current-source.tar.gz
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Configure production SSH
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS}"
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Measure Cloudflare, Caddy, Node and SQLite independently
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE'
+          set -Eeuo pipefail
+          export LC_ALL=C
+          ROOT="${IDOSI_ROOT:-/opt/idosi}"
+          COMPOSE_FILE="${IDOSI_COMPOSE_FILE:-$ROOT/deploy/vps/compose.yml}"
+          compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+          section() { printf '\n### %s\n' "$1"; }
+          percentile() {
+            python3 - "$1" <<'PY'
+          import math, sys
+          values=sorted(float(v) for v in sys.argv[1].split(',') if v)
+          def p(q):
+              if not values: return 0
+              i=(len(values)-1)*q; lo=math.floor(i); hi=math.ceil(i)
+              return values[lo] if lo==hi else values[lo]+(values[hi]-values[lo])*(i-lo)
+          print(f'count={len(values)} p50={p(.5):.4f}s p95={p(.95):.4f}s p99={p(.99):.4f}s max={max(values) if values else 0:.4f}s')
+          PY
+          }
+
+          section release_and_host
+          printf 'checked_at=%s\n' "$(TZ=Asia/Ho_Chi_Minh date '+%Y-%m-%dT%H:%M:%S%z')"
+          printf 'vcpus=%s loadavg=%s\n' "$(nproc)" "$(tr ' ' ',' </proc/loadavg)"
+          free -m
+          df -hT / "$ROOT" | awk 'NR==1 || !seen[$1]++'
+          compose ps
+          app_id="$(compose ps -q app)"
+          caddy_id="$(compose ps -q caddy)"
+          [[ -n "$app_id" && -n "$caddy_id" ]]
+          docker inspect --format 'app_image={{.Config.Image}} app_status={{.State.Status}} app_health={{if .State.Health}}{{.State.Health.Status}}{{end}} restart_count={{.RestartCount}}' "$app_id"
+          docker top "$app_id" -eo pid,ppid,pcpu,pmem,etime,args | sed -E 's/(Bearer|token|password)=[^ ]+/\1=[redacted]/g'
+          mapfile -t ids < <(compose ps -q --all)
+          docker stats --no-stream --format 'container={{.Name}} cpu={{.CPUPerc}} memory={{.MemUsage}} memory_percent={{.MemPerc}} block_io={{.BlockIO}} pids={{.PIDs}}' "${ids[@]}"
+          curl -fsS --max-time 20 https://idosi.io.vn/api/release | python3 -c 'import json,sys; p=json.load(sys.stdin); print("public_release_sha="+str((p.get("data") or {}).get("releaseSha") or p.get("releaseSha") or ""))'
+
+          section latency_public_cloudflare
+          values=''
+          for i in $(seq 1 25); do
+            value="$(curl -sS --max-time 20 -o /dev/null -w '%{time_total}' "https://idosi.io.vn/api/health?layer=public-$i")"
+            values="${values}${values:+,}${value}"
+          done
+          percentile "$values"
+          curl -sSI --max-time 20 https://idosi.io.vn/api/health | tr -d '\r' | grep -Ei '^(server|cf-ray|cf-cache-status|server-timing|age|cache-control|via):' || true
+
+          section latency_local_caddy_origin
+          values=''
+          for i in $(seq 1 25); do
+            value="$(curl -ksS --resolve idosi.io.vn:443:127.0.0.1 --max-time 20 -o /dev/null -w '%{time_total}' "https://idosi.io.vn/api/health?layer=caddy-$i")"
+            values="${values}${values:+,}${value}"
+          done
+          percentile "$values"
+
+          section latency_app_loopback
+          compose exec -T app node <<'NODE'
+          const values=[]
+          for (let i=0;i<25;i+=1) {
+            const started=performance.now()
+            const response=await fetch(`http://127.0.0.1:3000/api/health?layer=app-${i}`)
+            await response.arrayBuffer()
+            values.push((performance.now()-started)/1000)
+          }
+          values.sort((a,b)=>a-b)
+          const pct=(q)=>{const i=(values.length-1)*q;const lo=Math.floor(i);const hi=Math.ceil(i);return lo===hi?values[lo]:values[lo]+(values[hi]-values[lo])*(i-lo)}
+          console.log(`count=${values.length} p50=${pct(.5).toFixed(4)}s p95=${pct(.95).toFixed(4)}s p99=${pct(.99).toFixed(4)}s max=${values.at(-1).toFixed(4)}s`)
+          NODE
+
+          section concurrent_health_burst
+          compose exec -T app node <<'NODE'
+          for (let batch=1;batch<=4;batch+=1) {
+            const started=performance.now()
+            const values=await Promise.all(Array.from({length:24}, async (_,i)=>{
+              const s=performance.now()
+              const response=await fetch(`http://127.0.0.1:3000/api/health?burst=${batch}-${i}`)
+              await response.arrayBuffer()
+              return performance.now()-s
+            }))
+            values.sort((a,b)=>a-b)
+            console.log(`batch=${batch} total_ms=${(performance.now()-started).toFixed(1)} p50_ms=${values[12].toFixed(1)} p95_ms=${values[22].toFixed(1)} max_ms=${values.at(-1).toFixed(1)}`)
+          }
+          NODE
+
+          section recent_api_latency_last_90m
+          log_file="$(mktemp)"
+          trap 'rm -f "$log_file"' EXIT
+          docker logs --since=90m --tail=200000 "$app_id" >"$log_file" 2>&1 || true
+          python3 - "$log_file" <<'PY'
+          import json, math, sys
+          from collections import defaultdict
+          rows=[]
+          for raw in open(sys.argv[1],encoding='utf-8',errors='replace'):
+              pos=raw.find('{')
+              if pos<0: continue
+              try: value=json.loads(raw[pos:])
+              except Exception: continue
+              if value.get('event')=='idosi.api.request': rows.append(value)
+          print('rows='+str(len(rows)))
+          def n(v):
+              try: return float(v or 0)
+              except Exception: return 0
+          def p(vals,q):
+              vals=sorted(n(v) for v in vals)
+              if not vals:return 0
+              r=(len(vals)-1)*q;lo=math.floor(r);hi=math.ceil(r)
+              return vals[lo] if lo==hi else vals[lo]+(vals[hi]-vals[lo])*(r-lo)
+          groups=defaultdict(list)
+          for row in rows: groups[(row.get('method',''),row.get('path',''))].append(row)
+          print('method\tpath\tcount\tge2s\tge5s\tp50_ms\tp95_ms\tp99_ms\tmax_ms\thandler_p95\tdb_p95\tserialize_p95\tresponse_p95_kib\tstatements_p95')
+          for (method,path),items in sorted(groups.items(),key=lambda x:(-p([r.get('durationMs') for r in x[1]],.95),-len(x[1]))):
+              d=[r.get('durationMs') for r in items]
+              print('\t'.join(map(str,[method,path,len(items),sum(n(v)>=2000 for v in d),sum(n(v)>=5000 for v in d),round(p(d,.5),1),round(p(d,.95),1),round(p(d,.99),1),round(max(map(n,d)),1),round(p([r.get('timingMs',{}).get('handler') for r in items],.95),1),round(p([r.get('database',{}).get('totalMs') for r in items],.95),1),round(p([r.get('timingMs',{}).get('serialize') for r in items],.95),1),round(p([n(r.get('responseBytes'))/1024 for r in items],.95),1),round(p([r.get('database',{}).get('statements') for r in items],.95),1)])))
+          print('slowest_aggregate_safe')
+          for row in sorted(rows,key=lambda r:n(r.get('durationMs')),reverse=True)[:25]:
+              print(json.dumps({
+                'timestamp':row.get('timestamp'),'method':row.get('method'),'path':row.get('path'),'status':row.get('status'),
+                'durationMs':row.get('durationMs'),'handlerMs':row.get('timingMs',{}).get('handler'),
+                'dbMs':row.get('database',{}).get('totalMs'),'serializeMs':row.get('timingMs',{}).get('serialize'),
+                'responseKiB':round(n(row.get('responseBytes'))/1024,1),'statements':row.get('database',{}).get('statements')
+              },ensure_ascii=False))
+          PY
+
+          section sqlite_runtime
+          compose exec -T app node <<'NODE'
+          import { DatabaseSync } from 'node:sqlite'
+          import { statSync } from 'node:fs'
+          const path=process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
+          const db=new DatabaseSync(path,{readOnly:true})
+          db.exec('PRAGMA query_only=ON')
+          console.log(`database_bytes=${statSync(path).size}`)
+          for (const name of ['journal_mode','synchronous','cache_size','mmap_size','busy_timeout','temp_store','wal_autocheckpoint']) {
+            console.log(`pragma_${name}=${JSON.stringify(db.prepare(`PRAGMA ${name}`).get())}`)
+          }
+          const rows=db.prepare(`SELECT collection_key,COUNT(*) count,SUM(value_bytes) bytes,MAX(value_bytes) max_bytes FROM state_entities WHERE scope_key='global' GROUP BY collection_key ORDER BY bytes DESC LIMIT 12`).all()
+          for (const row of rows) console.log(`${row.collection_key}\tcount=${row.count}\ttotal_kib=${(Number(row.bytes)/1024).toFixed(1)}\tmax_kib=${(Number(row.max_bytes)/1024).toFixed(1)}`)
+          db.close()
+          NODE
+
+          section conclusion_inputs
+          echo 'diagnostic_mode=read_only aggregate_only=true'
+          REMOTE
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
