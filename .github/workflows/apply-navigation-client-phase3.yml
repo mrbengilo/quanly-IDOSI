@@ -1,0 +1,481 @@
+name: Apply navigation client performance phase 3
+
+on:
+  push:
+    branches:
+      - perf/navigation-client-cache-phase3
+    paths:
+      - .github/workflows/apply-navigation-client-phase3.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: perf/navigation-client-cache-phase3
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Apply screen cache, stale-while-revalidate and cancellation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one anchor, found {count}: {old[:100]!r}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # Phase 2 is a hard dependency.
+          worker = Path('server/worker.js').read_text(encoding='utf-8')
+          sqlite = Path('server/vps/sqlite-d1.mjs').read_text(encoding='utf-8')
+          server = Path('server/vps/server.mjs').read_text(encoding='utf-8')
+          if 'cachedProjectSharedState' not in worker:
+              raise SystemExit('Phase 2 projection cache is missing from branch base.')
+          if 'readStateCollectionsSnapshot' not in sqlite:
+              raise SystemExit('Phase 2 collection snapshot optimization is missing from branch base.')
+          if 'resolveWebConcurrency' not in server:
+              raise SystemExit('Phase 2 web concurrency optimization is missing from branch base.')
+
+          Path('src/state/projectionCache.js').write_text(r'''const DEFAULT_MAX_ENTRIES = 10
+          const DEFAULT_TTL_MS = 5 * 60 * 1_000
+
+          const normalized = (value) => String(value || '').trim().toLocaleLowerCase('en-US')
+
+          export const projectionCacheOwner = (user = {}) => [
+            String(user.id || user.user_id || ''),
+            normalized(user.role),
+          ].join(':')
+
+          export const projectionCacheKey = ({
+            kind = 'global',
+            storeId = '',
+            screen = '',
+            period = '',
+          } = {}) => (
+            kind === 'store'
+              ? `store:${normalized(storeId)}:${String(screen || 'workspace')}:${String(period || 'all')}`
+              : `global:${String(screen || 'workspace')}`
+          )
+
+          export const createProjectionCache = ({
+            maxEntries = DEFAULT_MAX_ENTRIES,
+            ttlMs = DEFAULT_TTL_MS,
+            now = () => Date.now(),
+          } = {}) => {
+            const entries = new Map()
+            const limit = Math.max(1, Number(maxEntries) || DEFAULT_MAX_ENTRIES)
+            const lifetime = Math.max(1_000, Number(ttlMs) || DEFAULT_TTL_MS)
+
+            const removeExpired = () => {
+              const current = now()
+              for (const [key, entry] of entries) {
+                if (current - Number(entry.cachedAt || 0) > lifetime) entries.delete(key)
+              }
+            }
+
+            return {
+              get(key, { owner = '', minVersion = 0 } = {}) {
+                removeExpired()
+                const entry = entries.get(String(key || ''))
+                if (!entry
+                  || String(entry.owner || '') !== String(owner || '')
+                  || Number(entry.payload?.version || 0) < Number(minVersion || 0)) return null
+                entries.delete(key)
+                entries.set(key, entry)
+                return entry.payload
+              },
+              set(key, owner, payload) {
+                if (!key || !owner || !payload || typeof payload !== 'object') return
+                entries.delete(key)
+                entries.set(key, { owner, payload, cachedAt: now() })
+                while (entries.size > limit) entries.delete(entries.keys().next().value)
+              },
+              clear() {
+                entries.clear()
+              },
+              size() {
+                removeExpired()
+                return entries.size
+              },
+            }
+          }
+          '''.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+
+          Path('src/state/projectionCache.test.js').write_text(r'''import { describe, expect, it } from 'vitest'
+          import {
+            createProjectionCache,
+            projectionCacheKey,
+            projectionCacheOwner,
+          } from './projectionCache'
+
+          describe('projection cache', () => {
+            it('separates role and store scope while normalizing operational identifiers', () => {
+              expect(projectionCacheOwner({ id: 'USR-1', role: 'Employee' })).toBe('USR-1:employee')
+              expect(projectionCacheKey({ kind: 'store', storeId: 'DOSII-CT', screen: 'orders', period: '2026-09' }))
+                .toBe('store:dosii-ct:orders:2026-09')
+              expect(projectionCacheKey({ kind: 'global', screen: 'employee-orders' }))
+                .toBe('global:employee-orders')
+            })
+
+            it('uses LRU eviction, version guards and TTL expiry', () => {
+              let timestamp = 1_000
+              const cache = createProjectionCache({ maxEntries: 2, ttlMs: 5_000, now: () => timestamp })
+              cache.set('a', 'u:employee', { version: 3, state: { value: 'a' } })
+              cache.set('b', 'u:employee', { version: 3, state: { value: 'b' } })
+              expect(cache.get('a', { owner: 'u:employee', minVersion: 3 })?.state.value).toBe('a')
+              cache.set('c', 'u:employee', { version: 4, state: { value: 'c' } })
+              expect(cache.get('b', { owner: 'u:employee' })).toBeNull()
+              expect(cache.get('a', { owner: 'u:employee', minVersion: 4 })).toBeNull()
+              expect(cache.get('c', { owner: 'other:employee' })).toBeNull()
+              timestamp += 5_001
+              expect(cache.get('c', { owner: 'u:employee' })).toBeNull()
+              expect(cache.size()).toBe(0)
+            })
+          })
+          '''.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+
+          # Allow callers to cancel an obsolete GET when the user selects another menu.
+          api_path = Path('src/services/idosiApi.js')
+          api = api_path.read_text(encoding='utf-8')
+          old_options = """  timeoutMs = DEFAULT_TIMEOUT_MS,
+            timeoutMessage = 'Máy chủ phản hồi quá chậm. Vui lòng thử lại.',
+          } = {}) => {
+            const controller = new AbortController()
+            const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+          """.replace('\n          ', '\n')
+          new_options = """  timeoutMs = DEFAULT_TIMEOUT_MS,
+            timeoutMessage = 'Máy chủ phản hồi quá chậm. Vui lòng thử lại.',
+            signal: externalSignal,
+          } = {}) => {
+            const controller = new AbortController()
+            let externallyAborted = Boolean(externalSignal?.aborted)
+            const abortFromExternal = () => {
+              externallyAborted = true
+              controller.abort()
+            }
+            if (externalSignal) externalSignal.addEventListener('abort', abortFromExternal, { once: true })
+            if (externallyAborted) controller.abort()
+            const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+          """.replace('\n          ', '\n')
+          if api.count(old_options) != 1:
+              raise SystemExit('idosiApi.js: request option anchor changed')
+          api = api.replace(old_options, new_options, 1)
+          old_abort = """    if (error instanceof IdosiApiError) throw error
+            if (error?.name === 'AbortError') throw new IdosiApiError(timeoutMessage, { code: 'TIMEOUT' })
+            throw new IdosiApiError('Không thể kết nối máy chủ IDOSI.', { code: 'NETWORK_ERROR', details: error?.message })
+          } finally {
+            window.clearTimeout(timeout)
+          }
+          """.replace('\n          ', '\n')
+          new_abort = """    if (error instanceof IdosiApiError) throw error
+            if (error?.name === 'AbortError') {
+              if (externallyAborted) {
+                throw new IdosiApiError('Yêu cầu tải màn hình đã được thay thế.', { code: 'REQUEST_ABORTED' })
+              }
+              throw new IdosiApiError(timeoutMessage, { code: 'TIMEOUT' })
+            }
+            throw new IdosiApiError('Không thể kết nối máy chủ IDOSI.', { code: 'NETWORK_ERROR', details: error?.message })
+          } finally {
+            window.clearTimeout(timeout)
+            if (externalSignal) externalSignal.removeEventListener('abort', abortFromExternal)
+          }
+          """.replace('\n          ', '\n')
+          if api.count(old_abort) != 1:
+              raise SystemExit('idosiApi.js: abort handling anchor changed')
+          api = api.replace(old_abort, new_abort, 1)
+          api_path.write_text(api, encoding='utf-8')
+
+          Path('src/services/idosiApi.abort.test.js').write_text(r'''import { afterEach, describe, expect, it, vi } from 'vitest'
+          import { apiGetSystemScreenState } from './idosiApi'
+
+          afterEach(() => {
+            vi.unstubAllGlobals()
+          })
+
+          describe('IDOSI API request cancellation', () => {
+            it('reports an explicitly superseded screen request without retrying it as a timeout', async () => {
+              const request = vi.fn((_url, options) => new Promise((_resolve, reject) => {
+                options.signal.addEventListener('abort', () => {
+                  reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+                }, { once: true })
+              }))
+              vi.stubGlobal('fetch', request)
+              const controller = new AbortController()
+              const pending = apiGetSystemScreenState('employee-orders', { signal: controller.signal })
+              controller.abort()
+              await expect(pending).rejects.toMatchObject({ code: 'REQUEST_ABORTED' })
+              expect(request).toHaveBeenCalledTimes(1)
+            })
+          })
+          '''.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+
+          context_path = Path('src/state/AppContext.jsx')
+          context = context_path.read_text(encoding='utf-8')
+          import_anchor = "import { createDomainState, defaultPolicies, migrateDomainState } from './initialDomainState'\n"
+          if context.count(import_anchor) != 1:
+              raise SystemExit('AppContext.jsx: import anchor changed')
+          context = context.replace(
+              import_anchor,
+              import_anchor + "import { createProjectionCache, projectionCacheKey, projectionCacheOwner } from './projectionCache'\n",
+              1,
+          )
+          provider_anchor = """export function AppProvider({ children }) {
+            const [state, setState] = useState(readState)
+          """.replace('\n          ', '\n')
+          provider_replacement = provider_anchor + """  const projectionCacheRef = useRef(null)
+            if (!projectionCacheRef.current) projectionCacheRef.current = createProjectionCache()
+          """.replace('\n          ', '\n')
+          if context.count(provider_anchor) != 1:
+              raise SystemExit('AppContext.jsx: provider anchor changed')
+          context = context.replace(provider_anchor, provider_replacement, 1)
+
+          pending_anchor = '    pendingProjectionPromise: null,\n'
+          if context.count(pending_anchor) != 1:
+              raise SystemExit('AppContext.jsx: pending projection ref anchor changed')
+          context = context.replace(
+              pending_anchor,
+              pending_anchor + '    projectionAbortController: null,\n',
+              1,
+          )
+
+          start_marker = '  const loadCompleteRemoteProjection = useCallback((expectedUser, {'
+          end_marker = '\n  const hydrateCompleteRemoteState = useCallback('
+          start = context.index(start_marker)
+          end = context.index(end_marker, start)
+          new_loader = r'''  const loadCompleteRemoteProjection = useCallback((expectedUser, {
+            kind = 'global',
+            storeId = '',
+            preferredActiveStoreId = null,
+            force = false,
+            blocking = true,
+            bootstrap = false,
+            screen = '',
+            period = '',
+          } = {}) => {
+            const normalizedKind = kind === 'store' ? 'store' : 'global'
+            const normalizedStoreId = normalizedKind === 'store' ? String(storeId || '').trim() : ''
+            const normalizedScreen = String(screen || '').trim()
+            const normalizedPeriod = normalizedKind === 'store' ? String(period || '').trim() : ''
+            const projectionKey = projectionCacheKey({
+              kind: normalizedKind,
+              storeId: normalizedStoreId,
+              screen: normalizedScreen,
+              period: normalizedPeriod,
+            })
+            let remote = apiRef.current
+            const expectedUserId = String(expectedUser?.id || '')
+            if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) {
+              return Promise.resolve(null)
+            }
+            const owner = projectionCacheOwner(expectedUser || remote.user)
+            const exactProjectionLoaded = () => (
+              remote.fullStateReady
+              && remote.projection === normalizedKind
+              && String(remote.projectionScreen || '') === normalizedScreen
+              && (normalizedKind !== 'store' || (
+                sameIdentifier(remote.projectionStoreId, normalizedStoreId)
+                && String(remote.projectionPeriod || '') === normalizedPeriod
+              ))
+            )
+            let servedFromCache = false
+            if (!force && !exactProjectionLoaded()) {
+              const cached = projectionCacheRef.current.get(projectionKey, {
+                owner,
+                minVersion: remote.version,
+              })
+              if (cached) {
+                activateRemotePayload(
+                  cached,
+                  cached.user || expectedUser,
+                  preferredActiveStoreId || normalizedStoreId || activeStoreIdRef.current,
+                )
+                remote = apiRef.current
+                blocking = false
+                servedFromCache = true
+              }
+            }
+            if (!force && !servedFromCache && exactProjectionLoaded()) return Promise.resolve(null)
+            if (remote.pendingProjectionKey === projectionKey && remote.pendingProjectionPromise) {
+              return remote.pendingProjectionPromise
+            }
+            if (remote.projectionAbortController
+              && remote.pendingProjectionKey
+              && remote.pendingProjectionKey !== projectionKey) {
+              remote.projectionAbortController.abort()
+            }
+            const requestController = new AbortController()
+            remote.projectionAbortController = requestController
+            const requestId = ++remote.projectionRequestId
+            if (blocking) {
+              remote.fullStateReady = false
+              setRemoteDataReady(false)
+            }
+            const requestOptions = { signal: requestController.signal }
+            const readProjection = () => normalizedKind === 'store'
+              ? apiGetStoreWorkspaceState(normalizedStoreId, {
+                  ...(normalizedScreen ? { screen: normalizedScreen } : {}),
+                  ...(normalizedPeriod ? { period: normalizedPeriod } : {}),
+                  ...requestOptions,
+                })
+              : normalizedScreen
+                ? apiGetSystemScreenState(normalizedScreen, requestOptions)
+                : apiGetState('global', requestOptions)
+            const request = (async () => {
+              let payload = normalizedKind === 'global' && bootstrap
+                ? await apiBootstrapState('global', requestOptions)
+                : await readProjection()
+              remote = apiRef.current
+              if (!remote.enabled
+                || requestId !== remote.projectionRequestId
+                || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+              // A command can commit while a projection is downloading. Replace an
+              // older response before it can roll the rendered version backwards.
+              if (Number(payload.version || 0) < Number(remote.version || 0)) {
+                payload = await readProjection()
+                remote = apiRef.current
+                if (!remote.enabled
+                  || requestId !== remote.projectionRequestId
+                  || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
+              }
+              if (normalizedKind === 'global' && canListAccounts(payload.user?.role)) {
+                const users = Array.isArray(payload.users) ? { users: payload.users } : await apiListUsers(requestOptions)
+                payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
+              }
+              remote = apiRef.current
+              if (!remote.enabled
+                || requestId !== remote.projectionRequestId
+                || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)
+                || Number(payload.version || 0) < Number(remote.version || 0)) return null
+              projectionCacheRef.current.set(projectionKey, owner, payload)
+              activateRemotePayload(
+                payload,
+                payload.user || expectedUser,
+                preferredActiveStoreId || normalizedStoreId || activeStoreIdRef.current,
+              )
+              return payload
+            })().catch((error) => {
+              if (error?.code === 'REQUEST_ABORTED') return null
+              throw error
+            }).finally(() => {
+              const current = apiRef.current
+              if (current.pendingProjectionPromise === request) {
+                current.pendingProjectionKey = ''
+                current.pendingProjectionPromise = null
+              }
+              if (current.projectionAbortController === requestController) {
+                current.projectionAbortController = null
+              }
+            })
+            remote.pendingProjectionKey = projectionKey
+            remote.pendingProjectionPromise = request
+            return request
+          }, [activateRemotePayload])
+          '''.replace('\n          ', '\n')
+          context = context[:start] + new_loader + context[end:]
+
+          # Invalidate display caches after any durable write; version guards also prevent stale reuse.
+          command_anchor = '      remote.version = Number(result.version)\n'
+          if context.count(command_anchor) != 1:
+              raise SystemExit('AppContext.jsx: command version anchor changed')
+          context = context.replace(
+              command_anchor,
+              command_anchor + '      projectionCacheRef.current.clear()\n',
+              1,
+          )
+
+          # New login and role selection must never inherit another authorization scope.
+          login_anchor = '      const authenticated = await apiLogin(username, password)\n'
+          if context.count(login_anchor) != 1:
+              raise SystemExit('AppContext.jsx: login anchor changed')
+          context = context.replace(
+              login_anchor,
+              '      projectionCacheRef.current.clear()\n' + login_anchor,
+              1,
+          )
+          role_anchor = '        const response = await apiSelectSessionRole(selected)\n'
+          if context.count(role_anchor) != 1:
+              raise SystemExit('AppContext.jsx: role selection anchor changed')
+          context = context.replace(
+              role_anchor,
+              role_anchor + '        projectionCacheRef.current.clear()\n',
+              1,
+          )
+
+          logout_anchor = """  const logout = () => {
+            const wasRemote = apiRef.current.enabled
+          """.replace('\n          ', '\n')
+          logout_replacement = """  const logout = () => {
+            const wasRemote = apiRef.current.enabled
+            apiRef.current.projectionAbortController?.abort()
+            apiRef.current.projectionAbortController = null
+            projectionCacheRef.current.clear()
+          """.replace('\n          ', '\n')
+          if context.count(logout_anchor) != 1:
+              raise SystemExit('AppContext.jsx: logout anchor changed')
+          context = context.replace(logout_anchor, logout_replacement, 1)
+
+          unmount_anchor = """  useEffect(() => () => {
+            avatarLoadRequestRef.current += 1
+          """.replace('\n          ', '\n')
+          unmount_replacement = """  useEffect(() => () => {
+            apiRef.current.projectionAbortController?.abort()
+            projectionCacheRef.current.clear()
+            avatarLoadRequestRef.current += 1
+          """.replace('\n          ', '\n')
+          if context.count(unmount_anchor) != 1:
+              raise SystemExit('AppContext.jsx: unmount cleanup anchor changed')
+          context = context.replace(unmount_anchor, unmount_replacement, 1)
+          context_path.write_text(context, encoding='utf-8')
+          PY
+
+          git rm .github/workflows/apply-navigation-client-phase3.yml
+
+      - name: Validate generated diff
+        run: |
+          set -Eeuo pipefail
+          git diff --check
+          ! git diff --name-only | grep -F '.github/workflows/apply-navigation-client-phase3.yml'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Targeted client navigation regressions
+        run: npx vitest run src/state/projectionCache.test.js src/services/idosiApi.abort.test.js src/state/AppContext.test.jsx src/AppRoutes.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit verified Phase 3
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add src/state/AppContext.jsx src/state/projectionCache.js src/state/projectionCache.test.js \
+            src/services/idosiApi.js src/services/idosiApi.abort.test.js
+          git commit -m 'perf(navigation): cache screens and cancel stale requests'
+          git push origin HEAD:perf/navigation-client-cache-phase3
