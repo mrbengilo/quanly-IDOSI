@@ -1,0 +1,237 @@
+name: Audit production revenue bonus eligibility
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/audit-revenue-bonus-production.yml
+      - src/domain/revenueBonusEligibility.js
+      - server/worker.js
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-revenue-bonus-production-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    if: github.repository == 'mrbengilo/quanly-IDOSI' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - name: Wait for the exact main release to reach production
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 180); do
+            actual="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' \
+              "https://idosi.io.vn/api/release?_revenue_audit=$attempt" \
+              | node -e "let data='';process.stdin.on('data',chunk=>data+=chunk);process.stdin.on('end',()=>{const value=JSON.parse(data);process.stdout.write(value.data?.releaseSha||value.releaseSha||'')})" \
+              || true)"
+            if [[ "$actual" == "$EXPECTED_SHA" ]]; then
+              echo "production_release_sha=$actual"
+              exit 0
+            fi
+            echo "Waiting for production release $EXPECTED_SHA; current=${actual:-unavailable} ($attempt/180)"
+            sleep 5
+          done
+          echo "Production did not reach the expected release $EXPECTED_SHA." >&2
+          exit 1
+
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST production secret}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER production secret}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY production secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS production secret}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Audit every store from 01/09/2026 through yesterday
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "EXPECTED_SHA='$EXPECTED_SHA' bash -s" <<'REMOTE'
+          set -Eeuo pipefail
+          ROOT="${IDOSI_ROOT:-/opt/idosi}"
+          COMPOSE_FILE="${IDOSI_COMPOSE_FILE:-$ROOT/deploy/vps/compose.yml}"
+          LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
+          exec 9>"$LOCK_FILE"
+          flock -n 9 || { echo 'audit_aborted=deployment_or_rollback_active'; exit 1; }
+          compose() { docker compose -f "$COMPOSE_FILE" "$@"; }
+          app_id="$(compose ps -q app)"
+          [[ -n "$app_id" ]] || { echo 'app_container=missing'; exit 1; }
+
+          actual_sha="$(compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/release').then(r=>r.json()).then(v=>process.stdout.write(v.data?.releaseSha||v.releaseSha||''))")"
+          [[ "$actual_sha" == "$EXPECTED_SHA" ]] || {
+            echo "Production container SHA mismatch: expected $EXPECTED_SHA, got $actual_sha" >&2
+            exit 1
+          }
+          audit_end_date="$(TZ=Asia/Ho_Chi_Minh date -d 'yesterday' +%F)"
+          printf 'checked_at=%s\n' "$(TZ=Asia/Ho_Chi_Minh date '+%Y-%m-%dT%H:%M:%S%z')"
+          printf 'release_sha=%s\n' "$actual_sha"
+          printf 'audit_period=2026-09-01..%s\n' "$audit_end_date"
+
+          compose exec -T -e AUDIT_END_DATE="$audit_end_date" app node <<'NODE'
+          import { createHash } from 'node:crypto'
+          import { DatabaseSync } from 'node:sqlite'
+          import { revenueBonusEligibility } from './src/domain/revenueBonusEligibility.js'
+
+          const startDate = '2026-09-01'
+          const endDate = String(process.env.AUDIT_END_DATE || '')
+          const dbPath = process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
+          const db = new DatabaseSync(dbPath, { readOnly: true })
+          db.exec('PRAGMA query_only=ON')
+
+          const rowsFor = db.prepare(`
+            SELECT value_json
+            FROM state_entities
+            WHERE scope_key = 'global' AND collection_key = ?
+            ORDER BY entity_order, entity_key
+          `)
+          const collection = (name) => rowsFor.all(name).flatMap((row) => {
+            try { return [JSON.parse(row.value_json)] } catch { return [] }
+          })
+          const normalize = (value) => String(value ?? '').trim().toLocaleLowerCase('vi-VN')
+          const normalizedText = (value) => normalize(value)
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/gu, '')
+            .replace(/đ/gu, 'd')
+          const recordDate = (record = {}) => String(
+            record.businessDate || record.workDate || record.date || record.attendanceDate
+            || record.createdAt || record.occurredAt || '',
+          ).slice(0, 10)
+          const storeRef = (record = {}) => String(record.storeId || record.unitId || record.store?.id || '')
+          const activeDaily = (record = {}) => (
+            !record.deletedAt && !record.voidedAt && !record.supersededAt
+            && !['VOID', 'VOIDED', 'SUPERSEDED', 'CANCELLED'].includes(String(record.status || '').trim().toUpperCase())
+          )
+          const anonymize = (value) => createHash('sha256').update(String(value)).digest('hex').slice(0, 12)
+          const dates = []
+          for (let cursor = new Date(`${startDate}T00:00:00Z`); cursor <= new Date(`${endDate}T00:00:00Z`); cursor.setUTCDate(cursor.getUTCDate() + 1)) {
+            dates.push(cursor.toISOString().slice(0, 10))
+          }
+
+          const stores = collection('stores').filter((store) => !store.deletedAt && store.active !== false)
+          const attendance = collection('attendance')
+          const schedule = collection('schedule')
+          const shiftDefinitions = collection('shiftDefinitions')
+          const employees = collection('employees')
+          const dailyRecords = collection('revenueBonusDaily')
+          const nowMs = Date.now()
+          const unexpected = []
+          const counts = new Map()
+          let dianCode = null
+          let auditedStoreDays = 0
+
+          for (const date of dates) {
+            for (const store of stores) {
+              const storeId = String(store.id || store.code || '')
+              if (!storeId) continue
+              auditedStoreDays += 1
+              const sameStore = (record) => normalize(storeRef(record)) === normalize(storeId)
+              const dayAttendance = attendance.filter((record) => !record.deletedAt && sameStore(record) && recordDate(record) === date)
+              const openAttendance = dayAttendance.filter((record) => !record.checkOutAt && !record.checkOut)
+              const dayDailyRecords = dailyRecords.filter((record) => sameStore(record) && recordDate(record) === date && activeDaily(record))
+              const eligibility = revenueBonusEligibility({
+                storeId,
+                businessDate: date,
+                schedule,
+                shiftDefinitions,
+                attendance,
+                employees,
+                dailyRecords,
+                nowMs,
+              })
+              const expectedCode = dayDailyRecords.length > 1
+                ? 'DATA_COLLISION'
+                : dayDailyRecords.length === 1
+                  ? 'ALREADY_CALCULATED'
+                  : openAttendance.length
+                    ? 'ATTENDANCE_OPEN'
+                    : dayAttendance.length
+                      ? 'READY'
+                      : 'NO_ATTENDANCE'
+              counts.set(eligibility.code, (counts.get(eligibility.code) || 0) + 1)
+              if (eligibility.code !== expectedCode) {
+                unexpected.push({
+                  storeHash: anonymize(storeId),
+                  date,
+                  actual: eligibility.code,
+                  expected: expectedCode,
+                })
+              }
+              const storeName = String(store.name || store.code || '')
+              if (date === '2026-09-02' && normalizedText(storeName).includes('di an')) dianCode = eligibility.code
+            }
+          }
+
+          console.log(`active_store_count=${stores.length}`)
+          console.log(`audited_store_days=${auditedStoreDays}`)
+          console.log('eligibility_counts=' + JSON.stringify(Object.fromEntries([...counts].sort())))
+          console.log(`unexpected_blocker_count=${unexpected.length}`)
+          if (unexpected.length) console.log('unexpected_blockers_anonymized=' + JSON.stringify(unexpected))
+          console.log(`dosii_di_an_2026_09_02_eligibility=${dianCode || 'NOT_FOUND'}`)
+          db.close()
+
+          if (!dianCode) throw new Error('Không tìm thấy cửa hàng Dosii Dĩ An trong dữ liệu production ngày 02/09/2026.')
+          if (unexpected.length) throw new Error(`Phát hiện ${unexpected.length} cửa hàng-ngày không đúng quy tắc thưởng mới.`)
+          NODE
+
+          log_file="$(mktemp)"
+          trap 'rm -f "$log_file"' EXIT
+          docker logs --since=3h --tail=100000 "$app_id" >"$log_file" 2>&1 || true
+          python3 - "$log_file" <<'PY'
+          import json, sys
+          from collections import Counter
+
+          status = Counter()
+          total = 0
+          for raw in open(sys.argv[1], 'r', encoding='utf-8', errors='replace'):
+              start = raw.find('{')
+              if start < 0:
+                  continue
+              try:
+                  row = json.loads(raw[start:])
+              except Exception:
+                  continue
+              if row.get('event') != 'idosi.api.request':
+                  continue
+              path = str(row.get('path') or '')
+              if '/api/revenue-bonus/live' not in path:
+                  continue
+              total += 1
+              status[str(row.get('status', 'unknown'))] += 1
+          print(f'revenue_live_requests_last_3h={total}')
+          print('revenue_live_status_counts=' + json.dumps(dict(sorted(status.items())), ensure_ascii=False))
+          PY
+          REMOTE
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"

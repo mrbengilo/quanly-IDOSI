@@ -3,6 +3,7 @@ const DEFAULT_TIMEOUT_MS = 12_000
 const LOGIN_TIMEOUT_MS = 30_000
 const STATE_READ_TIMEOUT_MS = 30_000
 const STATE_READ_RETRIES = 1
+const REVENUE_BONUS_LIVE_TIMEOUT_MS = 15_000
 const RETRY_DELAY_MS = 250
 const PRODUCTION_LOGIN_URL = 'https://idosi.io.vn/#/login'
 
@@ -186,7 +187,11 @@ export const apiGetRevenueBonusLive = ({ storeId, businessDate }) => {
     storeId: String(storeId || ''),
     businessDate: String(businessDate || ''),
   })
-  return request(`/api/revenue-bonus/live?${query.toString()}`)
+  return request(`/api/revenue-bonus/live?${query.toString()}`, {
+    timeoutMs: REVENUE_BONUS_LIVE_TIMEOUT_MS,
+    timeoutMessage: 'Máy chủ chưa cập nhật được trạng thái tính thưởng. Hệ thống sẽ tự thử lại.',
+    retries: 1,
+  })
 }
 
 export const apiCommand = (type, payload, {
