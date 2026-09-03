@@ -41,6 +41,59 @@ const readyApp = () => ({
   rejectRevenueBonusMilestone: vi.fn(),
 })
 
+const dianSeptemberApp = ({ apiStatus = 'local', calculated = false } = {}) => ({
+  ...readyApp(),
+  activeStoreId: 'DOSII-DI-AN',
+  stores: [{ id: 'DOSII-DI-AN', name: 'Dosii Dĩ An', code: 'DOSII-DI-AN' }],
+  employees: [
+    { id: 'E01', name: 'Nguyễn An', unit: 'store', storeId: 'DOSII-DI-AN' },
+    { id: 'E02', name: 'Trần Bình', unit: 'store', storeId: 'DOSII-DI-AN' },
+    { id: 'HT-01', name: 'Hỗ trợ KD', unit: 'business_support' },
+  ],
+  orders: [{
+    id: 'DIAN-O01', storeId: 'DOSII-DI-AN', amount: 2_585_000, status: 'Hoàn tất',
+    createdAt: '2026-09-02T16:00:00+07:00',
+  }],
+  attendance: [
+    {
+      id: 'DIAN-A01', storeId: 'DOSII-DI-AN', employeeId: 'E01', employeeName: 'Nguyễn An',
+      workDate: '2026-09-02', shiftId: 'morning', shiftName: 'Ca sáng',
+      shiftStart: '08:00', shiftEnd: '12:00', workedSeconds: 14_400,
+      checkInAt: '2026-09-02T01:00:00.000Z', checkOutAt: '2026-09-02T05:00:00.000Z',
+    },
+    {
+      id: 'DIAN-A02', storeId: 'DOSII-DI-AN', employeeId: 'E02', employeeName: 'Trần Bình',
+      workDate: '2026-09-02', shiftId: 'afternoon', shiftName: 'Ca chiều',
+      shiftStart: '13:00', shiftEnd: '17:30', workedSeconds: 16_200,
+      checkInAt: '2026-09-02T06:00:00.000Z', checkOutAt: '2026-09-02T10:30:00.000Z',
+    },
+  ],
+  schedule: [{
+    id: 'DIAN-SCHEDULE', storeId: 'DOSII-DI-AN', employeeId: 'E01', date: '2026-09-02',
+    shiftIds: ['morning', 'evening'],
+    shiftSnapshots: [
+      { id: 'morning', name: 'Ca sáng', start: '08:00', end: '12:00' },
+      { id: 'evening', name: 'Ca tối', start: '18:00', end: '21:00' },
+    ],
+  }],
+  shiftDefinitions: [
+    { id: 'morning', storeId: 'DOSII-DI-AN', name: 'Ca sáng', start: '08:00', end: '12:00', active: true },
+    { id: 'evening', storeId: 'DOSII-DI-AN', name: 'Ca tối', start: '18:00', end: '21:00', active: true },
+  ],
+  revenueBonuses: calculated ? [{
+    id: 'DIAN-RB-0209', storeId: 'DOSII-DI-AN', businessDate: '2026-09-02',
+    status: 'APPROVED', revenueVnd: 2_585_000, percentagePoolVnd: 51_700,
+  }] : [],
+  revenueBonusDaily: calculated ? [{
+    id: 'DIAN-RB-0209', storeId: 'DOSII-DI-AN', businessDate: '2026-09-02', status: 'APPROVED',
+  }] : [],
+  apiStatus,
+})
+
+const selectBusinessDate = (date) => {
+  fireEvent.change(screen.getByLabelText('Ngày kinh doanh'), { target: { value: date } })
+}
+
 describe('RevenueBonusPage daily cutoff', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
@@ -90,6 +143,66 @@ describe('RevenueBonusPage daily cutoff', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' }))
     expect(mocked.app.calculateRevenueBonusDay).not.toHaveBeenCalled()
+  })
+
+  it('opens Dosii Dĩ An 02/09 under the new system-wide rule when every worked shift is closed', () => {
+    vi.setSystemTime(new Date('2026-09-03T03:00:00.000Z'))
+    mocked.app = dianSeptemberApp()
+    render(<RevenueBonusPage storeScoped />)
+    selectBusinessDate('2026-09-02')
+
+    const button = screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })
+    expect(button.disabled).toBe(false)
+    expect(button.classList.contains('is-ready')).toBe(true)
+    expect(screen.getByText(/toàn bộ nhân viên đã kết ca/i)).toBeTruthy()
+  })
+
+  it('keeps an already-calculated September store-day locked instead of reopening it', () => {
+    vi.setSystemTime(new Date('2026-09-03T03:00:00.000Z'))
+    mocked.app = dianSeptemberApp({ calculated: true })
+    render(<RevenueBonusPage storeScoped />)
+    selectBusinessDate('2026-09-02')
+
+    const button = screen.getByRole('button', { name: 'ĐÃ TÍNH THƯỞNG' })
+    expect(button.disabled).toBe(true)
+    expect(mocked.app.calculateRevenueBonusDay).not.toHaveBeenCalled()
+  })
+
+  it('uses a closed historical snapshot to keep the button available while live refresh is temporarily stale', async () => {
+    vi.setSystemTime(new Date('2026-09-03T03:00:00.000Z'))
+    mocked.app = dianSeptemberApp({ apiStatus: 'connected' })
+    mocked.liveRevenue.mockImplementation(({ businessDate }) => Promise.resolve({
+      snapshot: {
+        storeId: 'DOSII-DI-AN',
+        businessDate,
+        projectedAt: '2026-09-03T02:59:00.000Z',
+        revenueVnd: businessDate === '2026-09-02' ? 2_585_000 : 0,
+        percentagePoolVnd: businessDate === '2026-09-02' ? 51_700 : 0,
+        allocatedVnd: businessDate === '2026-09-02' ? 51_700 : 0,
+        unallocatedVnd: 0,
+        totalWorkedSeconds: businessDate === '2026-09-02' ? 30_600 : 0,
+        attendanceCount: businessDate === '2026-09-02' ? 2 : 0,
+        openAttendanceCount: 0,
+        allocations: [],
+        calculationEligibility: {
+          allowed: false,
+          code: 'FINAL_SHIFT_NOT_ATTENDED',
+          attendanceCount: businessDate === '2026-09-02' ? 2 : 0,
+          openAttendanceCount: 0,
+          message: 'Chưa có nhân viên điểm danh vào ca cuối cùng của ngày.',
+        },
+      },
+    }))
+
+    render(<RevenueBonusPage storeScoped />)
+    selectBusinessDate('2026-09-02')
+
+    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledWith({
+      storeId: 'DOSII-DI-AN', businessDate: '2026-09-02',
+    }))
+    const button = screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })
+    expect(button.disabled).toBe(false)
+    expect(screen.getByText(/ngày cũ chưa tính thưởng/i)).toBeTruthy()
   })
 
   it('shows a large named warning while an employee is still working after 21:00', async () => {
