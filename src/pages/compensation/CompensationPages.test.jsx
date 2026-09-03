@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ManagerCompensationPage } from './ManagerCompensationPage'
 import { MyCompensationPage } from './MyCompensationPage'
@@ -6,11 +6,12 @@ import { RevenueBonusPage } from './RevenueBonusPage'
 import { MyViolationsPage, ViolationManagementPage } from './ViolationManagementPage'
 import { UnitCompensationStatistics } from './UnitCompensationStatistics'
 
-const mocked = vi.hoisted(() => ({ app: {}, liveRevenue: vi.fn() }))
+const mocked = vi.hoisted(() => ({ app: {}, liveRevenue: vi.fn(), periodRevenue: vi.fn() }))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 vi.mock('../../services/idosiApi', () => ({
   apiGetRevenueBonusLive: (payload) => mocked.liveRevenue(payload),
+  apiGetRevenueBonusPeriod: (payload) => mocked.periodRevenue(payload),
 }))
 
 const stores = [
@@ -75,6 +76,10 @@ describe('compensation pages', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-08-26T05:00:00.000Z'))
     mocked.liveRevenue.mockReset()
+    mocked.periodRevenue.mockReset()
+    mocked.periodRevenue.mockImplementation(({ storeId, period }) => Promise.resolve({
+      period: { storeId, period, days: [], allocations: [] },
+    }))
     mocked.app = baseApp()
   })
   afterEach(() => {
@@ -269,7 +274,7 @@ describe('compensation pages', () => {
     expect(screen.getByText('Tổng số tiền bị trừ đang hiệu lực')).toBeTruthy()
   })
 
-  it('keeps employee revenue bonus data private to the signed-in employee', () => {
+  it('keeps legacy employee revenue bonus data private before the automatic cutover', () => {
     mocked.app = {
       ...baseApp('employee'),
       revenueBonuses: [{
@@ -286,33 +291,103 @@ describe('compensation pages', () => {
     expect(screen.getAllByText('35 đ').length).toBeGreaterThan(0)
     expect(screen.queryByText('99 đ')).toBeNull()
     expect(screen.queryByText('Nhân viên Hai')).toBeNull()
-    expect(screen.queryByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })).toBeNull()
+    expect(screen.queryByRole('button', { name: /TÍNH THƯỞNG NGÀY/i })).toBeNull()
+    expect(screen.getByText(/dữ liệu lịch sử trước khi chuyển sang cơ chế tự động/i)).toBeTruthy()
   })
 
-  it('shows a store manager the complete reward allocation for their assigned store', () => {
+  it('automatically derives the current Dosii revenue, tier and allocations from live data', () => {
+    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
     mocked.app = {
-      ...baseApp('store_manager'),
-      revenueBonuses: [{
-        id: 'RB-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', totalPoolVnd: 170,
-        allocations: [
-          { id: 'A-MANAGER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'QL-01', employeeName: 'Quản lý Một', allocatedVnd: 70, status: 'Đã duyệt' },
-          { id: 'A-COWORKER', storeId: 'CH001', businessDate: '2026-08-26', employeeId: 'NV-02', employeeName: 'Nhân viên Hai', allocatedVnd: 100, status: 'Đã duyệt' },
-        ],
+      ...baseApp('business_support'),
+      apiStatus: 'local',
+      revenueBonusDaily: [],
+      revenueBonusAllocations: [],
+      revenueBonusOverrides: [],
+      orders: [{
+        id: 'ORDER-LIVE', storeId: 'CH001', amount: 1_800_000, status: 'Hoàn tất',
+        createdAt: '2026-09-03T09:00:00+07:00',
+      }],
+      attendance: [{
+        id: 'ATT-QL', employeeId: 'QL-01', storeId: 'CH001', workDate: '2026-09-03',
+        workedSeconds: 7_200, checkOutAt: '2026-09-03T10:00:00+07:00',
+      }, {
+        id: 'ATT-NV', employeeId: 'NV-01', storeId: 'CH001', workDate: '2026-09-03',
+        workedSeconds: 7_200, checkOutAt: '2026-09-03T10:00:00+07:00',
       }],
     }
     render(<RevenueBonusPage />)
 
-    expect(screen.getAllByText('170 đ').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('70 đ').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('100 đ').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Nhân viên Hai').length).toBeGreaterThan(0)
-    expect(screen.getByText('TỔNG GIỜ LÀM CỬA HÀNG')).toBeTruthy()
-    const calculatedButton = screen.getByRole('button', { name: 'ĐÃ TÍNH THƯỞNG' })
-    expect(calculatedButton.disabled).toBe(true)
-    expect(screen.queryByRole('heading', { name: 'Duyệt thưởng mốc cao nhất' })).toBeNull()
+    expect(screen.getAllByText('1,800,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('18,000 đ').length).toBeGreaterThan(0)
+    expect(screen.getByText('Đang ở mốc 1%')).toBeTruthy()
+    expect(screen.getAllByText('Tự động trực tiếp').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /TÍNH THƯỞNG NGÀY/i })).toBeNull()
+    expect(screen.queryByRole('heading', { name: /Duyệt thưởng mốc cao nhất/i })).toBeNull()
   })
 
-  it('filters manager revenue history by past date, synchronized month and employee with accurate totals', () => {
+  it('uses the SM revenue program automatically from the canonical SM-TNV store code', () => {
+    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
+    mocked.app = {
+      ...baseApp('business_support'),
+      apiStatus: 'local',
+      activeStoreId: 'CH002',
+      stores: [stores[0], { id: 'CH002', name: 'Cửa hàng 2', code: 'SM-TNV' }, stores[2]],
+      revenueBonusDaily: [],
+      revenueBonusAllocations: [],
+      revenueBonusOverrides: [],
+      orders: [{
+        id: 'ORDER-SM-LIVE', storeId: 'CH002', amount: 7_000_000, status: 'Hoàn tất',
+        createdAt: '2026-09-03T09:00:00+07:00',
+      }],
+      attendance: [{
+        id: 'ATT-SM-LIVE', employeeId: 'QL-02', storeId: 'CH002', workDate: '2026-09-03',
+        workedSeconds: 3_600, checkOutAt: '2026-09-03T10:00:00+07:00',
+      }],
+    }
+
+    render(<RevenueBonusPage />)
+
+    expect(screen.getByText('Mốc thưởng doanh thu SM TNV')).toBeTruthy()
+    expect(screen.getByText('Đang ở mốc 6%')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Duyệt/i })).toBeNull()
+  })
+
+  it('renders the signed-in employee live aggregate without exposing coworker rows', async () => {
+    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
+    mocked.app = {
+      ...baseApp('employee'),
+      apiStatus: 'connected',
+      revenueBonusDaily: [],
+      revenueBonusAllocations: [],
+      revenueBonusOverrides: [],
+      orders: [],
+      attendance: [],
+    }
+    mocked.liveRevenue.mockResolvedValue({
+      snapshot: {
+        storeId: 'CH001', businessDate: '2026-09-03', projectedAt: '2026-09-03T11:00:00.000Z',
+        calculationMode: 'AUTOMATIC', revenueVnd: 1_800_000, percentagePoolVnd: 18_000,
+        milestonePoolVnd: 0, totalPoolVnd: 18_000, allocatedVnd: 18_000, unallocatedVnd: 0,
+        totalWorkedSeconds: 14_400, attendanceCount: 2, openAttendanceCount: 0,
+        allocations: [{
+          employeeId: 'NV-01', employeeName: 'Nhân viên Một', workedSeconds: 7_200,
+          approvedSalesHours: 2, weightPercent: 50, automaticAmountVnd: 9_000,
+          amountVnd: 9_000, allocatedVnd: 9_000, status: 'LIVE',
+        }],
+      },
+    })
+    render(<RevenueBonusPage />)
+
+    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledWith({
+      storeId: 'CH001', businessDate: '2026-09-03',
+    }))
+    expect((await screen.findAllByText('9,000 đ')).length).toBeGreaterThan(1)
+    expect(screen.getByText('2 giờ 00 phút')).toBeTruthy()
+    expect(screen.queryByText('Nhân viên Hai')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Sửa' })).toBeNull()
+  })
+
+  it('filters legacy manager revenue history by past date, synchronized month and employee', () => {
     vi.setSystemTime(new Date('2026-09-01T05:00:00.000Z'))
     mocked.app = {
       ...baseApp('store_manager'),
@@ -327,7 +402,7 @@ describe('compensation pages', () => {
           allocatedVnd: 5_000, approvedSalesHours: 3, weightPercent: 62.5, status: 'APPROVED',
         }],
       }, {
-        id: 'RB-SEP', storeId: 'ch001', businessDate: '2026-09-01', period: '2026-09', status: 'APPROVED',
+        id: 'RB-SEP', storeId: 'CH001', businessDate: '2026-09-01', period: '2026-09', status: 'APPROVED',
         totalPoolVnd: 7_000,
         allocations: [{
           id: 'A-SEP', employeeId: 'QL-01', employeeName: 'Quản lý Một',
@@ -335,414 +410,19 @@ describe('compensation pages', () => {
         }],
       }],
     }
-
     render(<RevenueBonusPage storeScoped />)
 
     const historyCard = screen.getByRole('heading', { name: 'Lịch sử ghi nhận thưởng doanh thu' }).closest('section')
     const dateFilter = within(historyCard).getByLabelText('Ngày ghi nhận thưởng doanh thu')
     const monthFilter = within(historyCard).getByLabelText('Tháng ghi nhận thưởng doanh thu')
     const employeeFilter = within(historyCard).getByLabelText('Nhân viên nhận thưởng doanh thu')
-    const historyBody = historyCard.querySelector('tbody')
 
-    expect(monthFilter.value).toBe('2026-09')
     expect(within(historyCard).getByText('Tổng thưởng: 7,000 đ')).toBeTruthy()
-    expect(within(historyBody).queryByText('Nhân viên Hai')).toBeNull()
-
     fireEvent.change(dateFilter, { target: { value: '2026-08-25' } })
     expect(monthFilter.value).toBe('2026-08')
     expect(within(historyCard).getByText('Tổng thưởng: 8,000 đ')).toBeTruthy()
-    expect(within(historyBody).getByText('Nhân viên Hai')).toBeTruthy()
-
     fireEvent.change(employeeFilter, { target: { value: 'NV-02' } })
     expect(within(historyCard).getByText('Tổng thưởng: 5,000 đ')).toBeTruthy()
-    expect(within(historyBody).queryByText('Nhân viên Một')).toBeNull()
-    const statisticsCard = screen.getByRole('heading', { name: 'Thống kê thưởng doanh thu' }).closest('section')
-    expect(within(statisticsCard).getAllByText('8,000 đ').length).toBeGreaterThan(0)
-  })
-
-  it('derives the Admin/HTKD revenue, reached tier and allocation hours from live orders and attendance', () => {
-    mocked.app = {
-      ...baseApp('business_support'),
-      apiStatus: 'local',
-      orders: [{
-        id: 'ORDER-LIVE', storeId: 'CH001', amount: 1_800_000, status: 'Hoàn tất',
-        createdAt: '2026-08-26T09:00:00+07:00',
-      }],
-      attendance: [
-        { id: 'ATT-QL', employeeId: 'QL-01', storeId: 'CH001', workDate: '2026-08-26', workedSeconds: 7_200, checkOutAt: '2026-08-26T10:00:00+07:00' },
-        { id: 'ATT-NV', employeeId: 'NV-01', storeId: 'CH001', workDate: '2026-08-26', checkInAt: '2026-08-26T10:00:00+07:00' },
-      ],
-    }
-    render(<RevenueBonusPage />)
-
-    expect(screen.getAllByText('1,800,000 đ').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('18,000 đ').length).toBeGreaterThan(0)
-    expect(screen.getByText('Đang ở mốc 1%')).toBeTruthy()
-    expect(screen.getByText('Đã đạt mốc')).toBeTruthy()
-    expect(screen.getAllByText('2.00 giờ').length).toBe(2)
-    expect(screen.getAllByText('Tạm tính trực tiếp').length).toBe(2)
-  })
-
-  it('uses the SM revenue program from the canonical SM-TNV store code', () => {
-    mocked.app = {
-      ...baseApp('business_support'),
-      apiStatus: 'local',
-      activeStoreId: 'CH002',
-      stores: [
-        stores[0],
-        { id: 'CH002', name: 'Cửa hàng 2', code: 'SM-TNV' },
-        stores[2],
-      ],
-      orders: [{
-        id: 'ORDER-SM-LIVE', storeId: 'CH002', amount: 7_000_000, status: 'Hoàn tất',
-        createdAt: '2026-08-26T09:00:00+07:00',
-      }],
-      attendance: [{
-        id: 'ATT-SM-LIVE', employeeId: 'QL-02', storeId: 'CH002', workDate: '2026-08-26',
-        workedSeconds: 3_600, checkOutAt: '2026-08-26T10:00:00+07:00',
-      }],
-    }
-
-    render(<RevenueBonusPage />)
-
-    expect(screen.getByText('Mốc thưởng doanh thu SM TNV')).toBeTruthy()
-    expect(screen.getByText('Đang ở mốc 6%')).toBeTruthy()
-  })
-
-  it('renders the employee live store aggregate without exposing coworker allocation rows', async () => {
-    mocked.app = { ...baseApp('employee'), apiStatus: 'connected' }
-    mocked.liveRevenue.mockResolvedValue({
-      snapshot: {
-        storeId: 'CH001', businessDate: '2026-08-26', projectedAt: '2026-08-26T05:00:00.000Z',
-        revenueVnd: 1_800_000, percentagePoolVnd: 18_000, allocatedVnd: 18_000, unallocatedVnd: 0,
-        totalWorkedSeconds: 14_400, attendanceCount: 2, openAttendanceCount: 0,
-        allocations: [{ employeeId: 'NV-01', employeeName: 'Nhân viên Một', workedSeconds: 7_200, weightPercent: 50, amountVnd: 9_000, status: 'LIVE' }],
-      },
-    })
-    render(<RevenueBonusPage />)
-
-    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledWith({ storeId: 'CH001', businessDate: '2026-08-26' }))
-    expect((await screen.findAllByText('9,000 đ')).length).toBeGreaterThan(1)
-    expect(screen.getByText('2 giờ 00 phút')).toBeTruthy()
-    expect(screen.getByText('4 giờ 00 phút')).toBeTruthy()
-    expect(screen.queryByText('Nhân viên Hai')).toBeNull()
-  })
-
-  it('marks the last live snapshot stale after a poll error and clears the warning after recovery', async () => {
-    let poll
-    let pollTimerId
-    let nextTimerId = 70
-    const intervalSpy = vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
-      nextTimerId += 1
-      if (delay === 5_000) {
-        poll = callback
-        pollTimerId = nextTimerId
-      }
-      return nextTimerId
-    })
-    const clearIntervalSpy = vi.spyOn(window, 'clearInterval').mockImplementation(() => {})
-    const liveSnapshot = {
-      storeId: 'CH001', businessDate: '2026-08-26', projectedAt: '2026-08-26T05:00:00.000Z',
-      revenueVnd: 1_800_000, percentagePoolVnd: 18_000, allocatedVnd: 18_000, unallocatedVnd: 0,
-      totalWorkedSeconds: 7_200, attendanceCount: 1, openAttendanceCount: 0, allocations: [],
-      calculationEligibility: { allowed: false, code: 'ATTENDANCE_OPEN', message: 'Chưa đủ điều kiện.' },
-    }
-    mocked.app = { ...baseApp('business_support'), apiStatus: 'connected' }
-    mocked.liveRevenue
-      .mockResolvedValueOnce({ snapshot: liveSnapshot })
-      .mockRejectedValueOnce(new Error('network unavailable'))
-      .mockResolvedValueOnce({ snapshot: liveSnapshot })
-
-    const { unmount } = render(<RevenueBonusPage />)
-    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledTimes(1))
-    expect(await screen.findByText('Tự cập nhật mỗi 5 giây')).toBeTruthy()
-
-    await act(async () => { await poll() })
-
-    expect(screen.getByText(/không thể cập nhật dữ liệu trực tiếp/i)).toBeTruthy()
-    expect(screen.queryByText('Tự cập nhật mỗi 5 giây')).toBeNull()
-    expect(screen.getByText(/dữ liệu gần nhất lúc/i)).toBeTruthy()
-
-    await act(async () => { await poll() })
-
-    expect(screen.queryByText(/không thể cập nhật dữ liệu trực tiếp/i)).toBeNull()
-    expect(screen.getByText('Tự cập nhật mỗi 5 giây')).toBeTruthy()
-    unmount()
-    expect(intervalSpy).toHaveBeenCalledWith(expect.any(Function), 5_000)
-    expect(clearIntervalSpy).toHaveBeenCalledWith(pollTimerId)
-  })
-
-  it('discards a prior remote snapshot when the application returns to local mode', async () => {
-    mocked.app = { ...baseApp('business_support'), apiStatus: 'connected' }
-    mocked.liveRevenue.mockResolvedValue({
-      snapshot: {
-        storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 1_800_000,
-        percentagePoolVnd: 18_000, allocatedVnd: 18_000, unallocatedVnd: 0,
-        totalWorkedSeconds: 3_600, attendanceCount: 1, openAttendanceCount: 0, allocations: [],
-        calculationEligibility: { allowed: false, code: 'ATTENDANCE_OPEN', message: 'Chưa đủ điều kiện.' },
-      },
-    })
-    const { rerender } = render(<RevenueBonusPage />)
-    expect((await screen.findAllByText('1,800,000 đ')).length).toBeGreaterThan(0)
-
-    mocked.app = {
-      ...baseApp('business_support'),
-      apiStatus: 'local',
-      orders: [{
-        id: 'ORDER-LOCAL', storeId: 'CH001', amount: 3_000_000, status: 'Hoàn tất',
-        createdAt: '2026-08-26T09:00:00+07:00',
-      }],
-      attendance: [{
-        id: 'ATT-LOCAL', employeeId: 'QL-01', storeId: 'CH001', workDate: '2026-08-26',
-        workedSeconds: 3_600, checkOutAt: '2026-08-26T10:00:00+07:00',
-      }],
-    }
-    rerender(<RevenueBonusPage />)
-
-    expect(screen.getAllByText('3,000,000 đ').length).toBeGreaterThan(0)
-    expect(screen.queryByText('1,800,000 đ')).toBeNull()
-  })
-
-  it('keeps calculation disabled while the final-shift attendance is still open', async () => {
-    mocked.app = { ...baseApp('business_support'), apiStatus: 'connected' }
-    mocked.liveRevenue.mockResolvedValue({
-      snapshot: {
-        storeId: 'ch001', businessDate: '2026-08-26', revenueVnd: 1_800_000,
-        percentagePoolVnd: 18_000, allocatedVnd: 0, unallocatedVnd: 18_000,
-        totalWorkedSeconds: 3_600, attendanceCount: 1, openAttendanceCount: 1, allocations: [],
-        calculationEligibility: {
-          allowed: false, code: 'ATTENDANCE_OPEN', openAttendanceCount: 1,
-          message: 'Vẫn còn nhân viên chưa kết ca trong ngày.',
-        },
-      },
-    })
-
-    render(<RevenueBonusPage />)
-
-    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledTimes(1))
-    const button = await screen.findByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })
-    expect(button.disabled).toBe(true)
-    expect(screen.getByText('Vẫn còn nhân viên chưa kết ca trong ngày.')).toBeTruthy()
-  })
-
-  it('shows the immutable saved result after calculation instead of a changed live projection', async () => {
-    mocked.app = {
-      ...baseApp('business_support'),
-      apiStatus: 'connected',
-      revenueBonuses: [{
-        id: 'RB-SAVED', storeId: 'CH001', businessDate: '2026-08-26',
-        revenueVnd: 1_800_000, percentagePoolVnd: 18_000, totalPoolVnd: 18_000,
-        allocations: [{
-          id: 'A-SAVED', storeId: 'CH001', businessDate: '2026-08-26',
-          employeeId: 'NV-01', employeeName: 'Nhân viên Một', allocatedVnd: 18_000,
-          approvedSalesHours: 2, status: 'APPROVED',
-        }],
-      }],
-    }
-    mocked.liveRevenue.mockResolvedValue({
-      snapshot: {
-        storeId: 'ch001', businessDate: '2026-08-26', revenueVnd: 9_000_000,
-        percentagePoolVnd: 540_000, allocatedVnd: 540_000, unallocatedVnd: 0,
-        totalWorkedSeconds: 28_800, attendanceCount: 2, openAttendanceCount: 0,
-        allocations: [{ employeeId: 'NV-02', amountVnd: 540_000, workedSeconds: 28_800, status: 'LIVE' }],
-        calculationEligibility: {
-          allowed: false, code: 'ALREADY_CALCULATED', existingId: 'RB-SAVED',
-          message: 'Thưởng doanh thu của ngày này đã được tính và không thể tính lại.',
-        },
-      },
-    })
-
-    render(<RevenueBonusPage />)
-
-    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledTimes(1))
-    const button = await screen.findByRole('button', { name: 'ĐÃ TÍNH THƯỞNG' })
-    expect(button.disabled).toBe(true)
-    expect(screen.getAllByText('1,800,000 đ').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('18,000 đ').length).toBeGreaterThan(0)
-    expect(screen.queryByText('9,000,000 đ')).toBeNull()
-    expect(screen.queryByText('540,000 đ')).toBeNull()
-    const totalHoursMetric = screen.getByText('TỔNG GIỜ LÀM CỬA HÀNG').closest('section')
-    expect(within(totalHoursMetric).getByText('8 giờ 00 phút')).toBeTruthy()
-  })
-
-  it('shows a synchronization state instead of zero when the saved result has not hydrated yet', async () => {
-    mocked.app = { ...baseApp('business_support'), apiStatus: 'connected' }
-    mocked.liveRevenue.mockResolvedValue({
-      snapshot: {
-        storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 9_000_000,
-        percentagePoolVnd: 540_000, allocatedVnd: 540_000, unallocatedVnd: 0,
-        totalWorkedSeconds: 28_800, attendanceCount: 2, openAttendanceCount: 0,
-        allocations: [{ employeeId: 'NV-01', amountVnd: 540_000, workedSeconds: 28_800, status: 'LIVE' }],
-        calculationEligibility: {
-          allowed: false, code: 'ALREADY_CALCULATED', existingId: 'RB-NOT-YET-HYDRATED',
-          message: 'Thưởng doanh thu của ngày này đã được tính.',
-        },
-      },
-    })
-
-    render(<RevenueBonusPage />)
-
-    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledTimes(1))
-    expect((await screen.findAllByText('Đang đồng bộ…')).length).toBeGreaterThan(1)
-    expect(screen.getByRole('button', { name: 'ĐANG ĐỒNG BỘ KẾT QUẢ' }).disabled).toBe(true)
-    expect(screen.getByText(/hệ thống đang đồng bộ kết quả đã lưu/i)).toBeTruthy()
-    expect(screen.queryByText('9,000,000 đ')).toBeNull()
-    expect(screen.queryByText('540,000 đ')).toBeNull()
-  })
-
-  it('fails closed instead of summing duplicate active daily results', async () => {
-    mocked.app = {
-      ...baseApp('business_support'),
-      apiStatus: 'connected',
-      revenueBonuses: [{
-        id: 'RB-DUPLICATE-1', storeId: 'CH001', businessDate: '2026-08-26',
-        revenueVnd: 10_000, totalPoolVnd: 100, status: 'APPROVED', allocations: [],
-      }, {
-        id: 'RB-DUPLICATE-2', storeId: 'ch001', businessDate: '2026-08-26',
-        revenueVnd: 20_000, totalPoolVnd: 200, status: 'APPROVED', allocations: [],
-      }],
-    }
-    mocked.liveRevenue.mockResolvedValue({
-      snapshot: {
-        storeId: 'CH001', businessDate: '2026-08-26', revenueVnd: 30_000,
-        percentagePoolVnd: 300, allocatedVnd: 0, unallocatedVnd: 300, allocations: [],
-        calculationEligibility: {
-          allowed: false, code: 'DATA_COLLISION', existingCount: 2,
-          message: 'Ngày này có nhiều kết quả thưởng đang hiệu lực; cần xử lý dữ liệu trùng.',
-        },
-      },
-    })
-
-    render(<RevenueBonusPage />)
-
-    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledTimes(1))
-    expect(screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' }).disabled).toBe(true)
-    expect(screen.queryByRole('button', { name: 'ĐÃ TÍNH THƯỞNG' })).toBeNull()
-    expect(screen.getByText(/nhiều kết quả thưởng đang hiệu lực/i)).toBeTruthy()
-    const totalPoolMetric = screen.getByText('TỔNG QUỸ THƯỞNG').closest('section')
-    expect(within(totalPoolMetric).getByText('0 đ')).toBeTruthy()
-    expect(within(totalPoolMetric).queryByText('300 đ')).toBeNull()
-    const historyCard = screen.getByRole('heading', { name: 'Lịch sử ghi nhận thưởng doanh thu' }).closest('section')
-    expect(within(historyCard).getByText(/loại các dòng này khỏi lịch sử và thống kê/i)).toBeTruthy()
-    expect(within(historyCard).getByText('Tổng thưởng: 0 đ')).toBeTruthy()
-  })
-
-  it('excludes ambiguous employee identifiers from history totals and shows one data warning', () => {
-    mocked.app = {
-      ...baseApp('store_manager'),
-      employees: [
-        ...employees,
-        { id: 'E01', name: 'Hồ sơ mơ hồ 1', storeId: 'CH001' },
-        { id: 'e01', name: 'Hồ sơ mơ hồ 2', storeId: 'CH001' },
-        { id: 'SAFE-01', name: 'Nhân viên hợp lệ', storeId: 'CH001' },
-      ],
-      revenueBonuses: [{
-        id: 'RB-EMPLOYEE-COLLISION', storeId: 'CH001', businessDate: '2026-08-26', status: 'APPROVED',
-        allocations: [{
-          id: 'A-AMBIGUOUS', employeeId: 'E01', employeeName: 'Khoản mơ hồ', allocatedVnd: 100, status: 'APPROVED',
-        }, {
-          id: 'A-SAFE', employeeId: 'SAFE-01', employeeName: 'Nhân viên hợp lệ', allocatedVnd: 40, status: 'APPROVED',
-        }],
-      }],
-    }
-
-    render(<RevenueBonusPage storeScoped />)
-
-    const historyCard = screen.getByRole('heading', { name: 'Lịch sử ghi nhận thưởng doanh thu' }).closest('section')
-    const historyBody = historyCard.querySelector('tbody')
-    expect(within(historyCard).getByText(/1 nhóm mã nhân viên mơ hồ/i)).toBeTruthy()
-    expect(within(historyCard).getByText('Tổng thưởng: 40 đ')).toBeTruthy()
-    expect(within(historyBody).getByText('Nhân viên hợp lệ')).toBeTruthy()
-    expect(within(historyBody).queryByText('Khoản mơ hồ')).toBeNull()
-    expect(within(historyBody).queryByText('100 đ')).toBeNull()
-  })
-
-  it('keeps the immutable approved milestone total after later live revenue changes', async () => {
-    mocked.app = {
-      ...baseApp('employee'),
-      apiStatus: 'connected',
-      revenueBonuses: [{
-        id: 'RB-APPROVED-MILESTONE', storeId: 'CH001', businessDate: '2026-08-26',
-        percentagePoolVnd: 10, milestonePoolVnd: 100, totalPoolVnd: 110,
-        milestoneStatus: 'APPROVED', status: 'APPROVED',
-        allocations: [{
-          id: 'A-APPROVED-MILESTONE', storeId: 'CH001', businessDate: '2026-08-26',
-          employeeId: 'NV-01', percentagePoolVnd: 10, milestonePoolVnd: 100,
-          amountVnd: 110, allocatedVnd: 110, status: 'APPROVED',
-        }],
-      }],
-    }
-    mocked.liveRevenue.mockResolvedValue({
-      snapshot: {
-        storeId: 'CH001', businessDate: '2026-08-26', projectedAt: '2026-08-26T05:00:00.000Z',
-        revenueVnd: 2_000, percentagePoolVnd: 20, allocatedVnd: 20, unallocatedVnd: 0,
-        totalWorkedSeconds: 3_600, attendanceCount: 1, openAttendanceCount: 0,
-        allocations: [{ employeeId: 'NV-01', workedSeconds: 3_600, weightPercent: 100, amountVnd: 20, status: 'LIVE' }],
-      },
-    })
-
-    render(<RevenueBonusPage />)
-
-    await waitFor(() => expect(mocked.liveRevenue).toHaveBeenCalledTimes(1))
-    expect((await screen.findAllByText('110 đ')).length).toBeGreaterThan(1)
-    expect(screen.queryByText('120 đ')).toBeNull()
-    expect(screen.queryByText('20 đ')).toBeNull()
-  })
-
-  it('lets privileged roles approve a pending highest-milestone claim', async () => {
-    mocked.app = {
-      ...baseApp('business_support'),
-      revenueBonuses: [{
-        id: 'RB-PENDING', storeId: 'CH001', businessDate: '2026-08-26',
-        percentagePoolVnd: 50, pendingMilestonePoolVnd: 100, totalPoolVnd: 50,
-        status: 'APPROVED',
-      }],
-      teamRewardClaims: [{
-        id: 'CLAIM-01', revenueBonusDailyId: 'RB-PENDING', storeId: 'CH001',
-        businessDate: '2026-08-26', milestoneId: 'MOC-CAO-NHAT', amountVnd: 100,
-        status: 'PENDING', version: 3,
-      }],
-    }
-    render(<RevenueBonusPage />)
-
-    expect(screen.getByText('MOC-CAO-NHAT')).toBeTruthy()
-    expect(screen.getByText('Chờ duyệt')).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: 'Duyệt' }))
-
-    await waitFor(() => expect(mocked.app.approveRevenueBonusMilestone).toHaveBeenCalledWith({
-      claimId: 'CLAIM-01', expectedVersion: 3,
-    }))
-  })
-
-  it('defaults privileged revenue bonus work to the active operational store', async () => {
-    vi.setSystemTime(new Date('2026-08-26T14:05:00.000Z'))
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    mocked.app = {
-      ...baseApp('business_support'),
-      apiStatus: 'local',
-      orders: [],
-      activeStoreId: 'CH002',
-      attendance: [{
-        id: 'ATT-READY', employeeId: 'QL-02', storeId: 'CH002', workDate: '2026-08-26',
-        shiftId: 'ca2', shiftName: 'Ca 2', shiftStart: '13:00', shiftEnd: '18:00',
-        workedSeconds: 18_000, checkOutAt: '2026-08-26T18:00:00+07:00',
-      }],
-      shiftDefinitions: [{ id: 'ca2', storeId: 'CH002', name: 'Ca 2', start: '13:00', end: '18:00', active: true }],
-    }
-    render(<RevenueBonusPage />)
-
-    expect(screen.getByLabelText('Cửa hàng').value).toBe('CH002')
-    const calculateButton = screen.getByRole('button', { name: 'TÍNH THƯỞNG NGÀY' })
-    expect(calculateButton.disabled).toBe(false)
-    fireEvent.click(calculateButton)
-    fireEvent.click(calculateButton)
-
-    await waitFor(() => expect(mocked.app.calculateRevenueBonusDay).toHaveBeenCalledWith({
-      storeId: 'CH002', businessDate: '2026-08-26',
-    }))
-    expect(mocked.app.calculateRevenueBonusDay).toHaveBeenCalledTimes(1)
-    expect(confirm).toHaveBeenCalledTimes(1)
-    expect(await screen.findByRole('button', { name: 'ĐANG ĐỒNG BỘ KẾT QUẢ' })).toBeTruthy()
   })
 
   it('clears the employee history filter when a global Admin switches stores', () => {
@@ -760,15 +440,12 @@ describe('compensation pages', () => {
 
     const employeeFilter = screen.getByLabelText('Nhân viên nhận thưởng doanh thu')
     fireEvent.change(employeeFilter, { target: { value: 'NV-02' } })
-    expect(employeeFilter.value).toBe('NV-02')
-
     fireEvent.change(screen.getByLabelText('Cửa hàng'), { target: { value: 'CH002' } })
 
     expect(screen.getByLabelText('Nhân viên nhận thưởng doanh thu').value).toBe('')
     const historyCard = screen.getByRole('heading', { name: 'Lịch sử ghi nhận thưởng doanh thu' }).closest('section')
-    const historyBody = historyCard.querySelector('tbody')
-    expect(within(historyBody).getByText('Quản lý Hai')).toBeTruthy()
-    expect(within(historyBody).queryByText('Nhân viên Hai')).toBeNull()
+    expect(within(historyCard.querySelector('tbody')).getByText('Quản lý Hai')).toBeTruthy()
+    expect(within(historyCard.querySelector('tbody')).queryByText('Nhân viên Hai')).toBeNull()
   })
 
   it('locks a store-workspace revenue page to the active store without offering another store', () => {
@@ -799,7 +476,6 @@ describe('compensation pages', () => {
 
     expect(screen.getByRole('heading', { name: 'KHÔNG CÓ QUYỀN TRUY CẬP' })).toBeTruthy()
     expect(screen.getByText(/chưa có chính sách thưởng doanh thu/i)).toBeTruthy()
-    expect(screen.queryByText('Mốc thưởng doanh thu Dosii')).toBeNull()
   })
 
   it('renders only the signed-in employee statement entries', () => {

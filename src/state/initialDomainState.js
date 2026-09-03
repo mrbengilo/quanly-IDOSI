@@ -6,7 +6,7 @@ import {
 import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'
 import { SUPPORT_SCHEDULE_PRESETS, normalizeSupportSchedulePresets } from '../domain/supportWorkSchedule'
 
-export const DOMAIN_SCHEMA_VERSION = 7
+export const DOMAIN_SCHEMA_VERSION = 8
 
 const pad = (value, length = 5) => String(value).padStart(length, '0')
 
@@ -86,6 +86,7 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   violationRefunds: [],
   revenueBonusDaily: [],
   revenueBonusAllocations: [],
+  revenueBonusOverrides: [],
   teamRewardClaims: [],
   teamRewardParticipants: [],
   periodReconciliations: [],
@@ -169,6 +170,7 @@ export const migrateDomainState = (stored, context) => {
     violationRefunds: mergeArray(stored, defaults, 'violationRefunds'),
     revenueBonusDaily: mergeArray(stored, defaults, 'revenueBonusDaily'),
     revenueBonusAllocations: mergeArray(stored, defaults, 'revenueBonusAllocations'),
+    revenueBonusOverrides: mergeArray(stored, defaults, 'revenueBonusOverrides'),
     teamRewardClaims: mergeArray(stored, defaults, 'teamRewardClaims'),
     teamRewardParticipants: mergeArray(stored, defaults, 'teamRewardParticipants'),
     periodReconciliations: mergeArray(stored, defaults, 'periodReconciliations'),

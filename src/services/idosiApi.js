@@ -4,6 +4,7 @@ const LOGIN_TIMEOUT_MS = 30_000
 const STATE_READ_TIMEOUT_MS = 30_000
 const STATE_READ_RETRIES = 1
 const REVENUE_BONUS_LIVE_TIMEOUT_MS = 15_000
+const REVENUE_BONUS_PERIOD_TIMEOUT_MS = 20_000
 const RETRY_DELAY_MS = 250
 const PRODUCTION_LOGIN_URL = 'https://idosi.io.vn/#/login'
 
@@ -190,6 +191,18 @@ export const apiGetRevenueBonusLive = ({ storeId, businessDate }) => {
   return request(`/api/revenue-bonus/live?${query.toString()}`, {
     timeoutMs: REVENUE_BONUS_LIVE_TIMEOUT_MS,
     timeoutMessage: 'Máy chủ chưa cập nhật được trạng thái tính thưởng. Hệ thống sẽ tự thử lại.',
+    retries: 1,
+  })
+}
+
+export const apiGetRevenueBonusPeriod = ({ storeId, period }) => {
+  const query = new URLSearchParams({
+    storeId: String(storeId || ''),
+    period: String(period || ''),
+  })
+  return request(`/api/revenue-bonus/period?${query.toString()}`, {
+    timeoutMs: REVENUE_BONUS_PERIOD_TIMEOUT_MS,
+    timeoutMessage: 'Máy chủ chưa tải được lịch sử thưởng doanh thu. Hệ thống sẽ tự thử lại.',
     retries: 1,
   })
 }

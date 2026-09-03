@@ -15410,7 +15410,10 @@ describe('IDOSI Worker security primitives', () => {
     })
   }, 30_000)
 
-  it('keeps hot milestones pending until an authorized cross-store approval and protects coworker allocations', async () => {
+  it('automatically applies the highest revenue milestone, protects coworker allocations, and restricts overrides to Admin', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-hot-approval' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'revenue-hot-admin-password',
@@ -15429,24 +15432,24 @@ describe('IDOSI Worker security primitives', () => {
         }],
         orders: [{
           id: 'ORDER-HOT-01', storeId: 'S02', employeeId: 'E-S02', amount: 16_000_001,
-          status: 'Hoàn tất', createdAt: '2026-08-20T03:00:00.000Z',
+          status: 'Hoàn tất', createdAt: '2026-09-03T03:00:00.000Z',
         }],
         attendance: [{
-          id: 'ATT-HOT-MANAGER', storeId: 'S02', employeeId: 'QL-S02', date: '2026-08-20',
+          id: 'ATT-HOT-MANAGER', storeId: 'S02', employeeId: 'QL-S02', date: '2026-09-03',
           shiftId: 'shift-day', shiftName: 'Ca ngày', shiftStart: '08:00', shiftEnd: '12:00',
-          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', hours: 4,
+          checkInAt: '2026-09-03T01:00:00.000Z', checkOutAt: '2026-09-03T05:00:00.000Z', hours: 4,
         }, {
-          id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-08-20',
+          id: 'ATT-HOT-EMPLOYEE', storeId: 'S02', employeeId: 'E-S02', date: '2026-09-03',
           shiftId: 'shift-day', shiftName: 'Ca ngày', shiftStart: '08:00', shiftEnd: '12:00',
-          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', workedSeconds: 14_400,
+          checkInAt: '2026-09-03T01:00:00.000Z', checkOutAt: '2026-09-03T05:00:00.000Z', workedSeconds: 14_400,
         }],
         compensationEntries: [
-          { id: 'COMP-MANAGER-TEAM-01', storeId: 'S02', employeeId: 'QL-S02', type: 'WORK', amountVnd: 1_000, effectiveDate: '2026-08-20', status: 'APPROVED' },
-          { id: 'COMP-COWORKER-TEAM-01', storeId: 'S02', employeeId: 'E-S02', type: 'WORK', amountVnd: 9_000, effectiveDate: '2026-08-20', status: 'APPROVED' },
+          { id: 'COMP-MANAGER-TEAM-01', storeId: 'S02', employeeId: 'QL-S02', type: 'WORK', amountVnd: 1_000, effectiveDate: '2026-09-03', status: 'APPROVED' },
+          { id: 'COMP-COWORKER-TEAM-01', storeId: 'S02', employeeId: 'E-S02', type: 'WORK', amountVnd: 9_000, effectiveDate: '2026-09-03', status: 'APPROVED' },
         ],
         violations: [
-          { id: 'VIO-MANAGER-TEAM-01', storeId: 'S02', employeeId: 'QL-S02', amountVnd: 500, occurredOn: '2026-08-20', status: 'ACTIVE' },
-          { id: 'VIO-COWORKER-TEAM-01', storeId: 'S02', employeeId: 'E-S02', amountVnd: 4_500, occurredOn: '2026-08-20', status: 'ACTIVE' },
+          { id: 'VIO-MANAGER-TEAM-01', storeId: 'S02', employeeId: 'QL-S02', amountVnd: 500, occurredOn: '2026-09-03', status: 'ACTIVE' },
+          { id: 'VIO-COWORKER-TEAM-01', storeId: 'S02', employeeId: 'E-S02', amountVnd: 4_500, occurredOn: '2026-09-03', status: 'ACTIVE' },
         ],
       },
     }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
@@ -15474,268 +15477,147 @@ describe('IDOSI Worker security primitives', () => {
     const managerAuthorization = await loginAs('manager.bonus', 'manager-bonus-password')
     const employeeAuthorization = await loginAs('employee.bonus', 'employee-bonus-password')
 
-    const liveUrl = 'https://idosi.example/api/revenue-bonus/live?storeId=S02&businessDate=2026-08-20'
+    const liveUrl = 'https://idosi.example/api/revenue-bonus/live?storeId=S02&businessDate=2026-09-03'
     const supportLive = await worker.fetch(new Request(liveUrl, { headers: supportAuthorization }), env)
     expect(supportLive.status).toBe(200)
-    expect((await supportLive.json()).snapshot).toMatchObject({
-      storeId: 'S02', businessDate: '2026-08-20', revenueVnd: 16_000_001,
-      percentagePoolVnd: 640_000, totalWorkedSeconds: 28_800, attendanceCount: 2,
-      calculationEligibility: { allowed: true, code: 'READY', finalShiftId: 'shift-day' },
+    const supportSnapshot = (await supportLive.json()).snapshot
+    expect(supportSnapshot).toMatchObject({
+      storeId: 'S02', businessDate: '2026-09-03', revenueVnd: 16_000_001,
+      calculationMode: 'AUTOMATIC', editableByAdminOnly: true,
+      percentagePoolVnd: 640_000, milestonePoolVnd: 250_000, totalPoolVnd: 890_000,
+      allocatedVnd: 890_000, totalWorkedSeconds: 28_800, attendanceCount: 2,
       allocations: [
-        { employeeId: 'E-S02', workedSeconds: 14_400, amountVnd: 320_000 },
-        { employeeId: 'QL-S02', workedSeconds: 14_400, amountVnd: 320_000 },
+        { employeeId: 'E-S02', workedSeconds: 14_400, amountVnd: 445_000 },
+        { employeeId: 'QL-S02', workedSeconds: 14_400, amountVnd: 445_000 },
       ],
     })
     const managerLive = await worker.fetch(new Request(liveUrl, { headers: managerAuthorization }), env)
     expect((await managerLive.json()).snapshot.allocations).toEqual([
-      expect.objectContaining({ employeeId: 'E-S02', amountVnd: 320_000 }),
-      expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 320_000 }),
+      expect.objectContaining({ employeeId: 'E-S02', amountVnd: 445_000 }),
+      expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 445_000 }),
     ])
     const employeeLive = await worker.fetch(new Request(liveUrl, { headers: employeeAuthorization }), env)
     expect((await employeeLive.json()).snapshot.allocations).toEqual([
-      expect.objectContaining({ employeeId: 'E-S02', amountVnd: 320_000 }),
+      expect.objectContaining({ employeeId: 'E-S02', amountVnd: 445_000 }),
     ])
     const employeeWrongStore = await worker.fetch(new Request(
-      'https://idosi.example/api/revenue-bonus/live?storeId=S01&businessDate=2026-08-20',
+      'https://idosi.example/api/revenue-bonus/live?storeId=S01&businessDate=2026-09-03',
       { headers: employeeAuthorization },
     ), env)
     expect(employeeWrongStore.status).toBe(403)
 
-    const versionBeforeManagerScopeCheck = Number(env.DB.database.prepare(
+    expect(supportSnapshot).not.toHaveProperty('calculationEligibility')
+    expect(supportSnapshot).not.toHaveProperty('pendingMilestonePoolVnd')
+
+    const currentVersion = () => Number(env.DB.database.prepare(
       'SELECT version FROM app_state WHERE scope_key = ?',
     ).get('global')?.version || 0)
-    const managerDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.calculate_day', expectedVersion: versionBeforeManagerScopeCheck,
-      payload: { storeId: 'S01', businessDate: '2026-08-20' },
-    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-cross-store-denied-0001' }), env)
-    expect(managerDenied.status).toBe(403)
-    expect(await managerDenied.json()).toMatchObject({ error: { code: 'STORE_SCOPE_FORBIDDEN' } })
-
-    const stateBeforeOpenAttempt = readHydratedState(env.DB.database)
-    replaceStateCollection(env.DB.database, 'attendance', stateBeforeOpenAttempt.attendance.map((record) => (
-      record.id === 'ATT-HOT-EMPLOYEE' ? { ...record, checkOutAt: null, checkOut: null } : record
-    )))
-    const blockedLive = await worker.fetch(new Request(liveUrl, { headers: supportAuthorization }), env)
-    const blockedEligibility = (await blockedLive.json()).snapshot.calculationEligibility
-    expect(blockedEligibility).toMatchObject({
-      allowed: false, code: 'ATTENDANCE_OPEN', openAttendanceCount: 1,
-    })
-    expect(blockedEligibility).not.toHaveProperty('openAttendanceIds')
-    const openAttendanceDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.calculate_day', expectedVersion: 1,
-      payload: { storeId: 'S02', businessDate: '2026-08-20' },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-open-denied-0001' }), env)
-    expect(openAttendanceDenied.status).toBe(409)
-    expect(await openAttendanceDenied.json()).toMatchObject({
-      error: { code: 'REVENUE_BONUS_ATTENDANCE_OPEN' },
-    })
-    replaceStateCollection(env.DB.database, 'attendance', stateBeforeOpenAttempt.attendance)
-    const versionAfterOpenDenial = Number(env.DB.database.prepare(
-      'SELECT version FROM app_state WHERE scope_key = ?',
-    ).get('global')?.version || 0)
-
-    const calculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.calculate_day', expectedVersion: versionAfterOpenDenial,
-      payload: { storeId: 'S02', businessDate: '2026-08-20' },
-    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-calculate-0001' }), env)
-    expect(calculated.status, JSON.stringify(await calculated.clone().json())).toBe(201)
-    const calculatedBody = await calculated.json()
-    expect(calculatedBody.revenueBonus).toMatchObject({
-      storeId: 'S02', milestoneId: 'dosii.daily.over_15_000_000', milestonePoolVnd: 0,
-      pendingMilestonePoolVnd: 250_000, milestoneStatus: 'PENDING',
-    })
-    expect(calculatedBody.revenueBonus.totalPoolVnd).toBe(calculatedBody.revenueBonus.percentagePoolVnd)
-    expect(calculatedBody.teamClaim).toMatchObject({ status: 'PENDING', amountVnd: 250_000 })
-    expect(calculatedBody.allocations.every(({ milestonePoolVnd, amountVnd, percentagePoolVnd }) => (
-      milestonePoolVnd === 0 && amountVnd === percentagePoolVnd
-    ))).toBe(true)
-    expect(calculatedBody.allocations.map(({ employeeName }) => employeeName).sort()).toEqual([
-      'Nhân viên S02', 'Quản lý S02',
-    ])
-    expect(calculatedBody.teamParticipants.every(({ status, amountVnd }) => status === 'PENDING' && amountVnd === 0)).toBe(true)
-
-    const caseVariantReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.calculate_day', expectedVersion: calculatedBody.version,
-      payload: { storeId: 's02', businessDate: '2026-08-20' },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-case-replay-0001' }), env)
-    expect(caseVariantReplay.status).toBe(200)
-    expect(await caseVariantReplay.json()).toMatchObject({
-      version: calculatedBody.version,
-      existing: true,
-      revenueBonus: { id: calculatedBody.revenueBonus.id, storeId: 'S02' },
-    })
-
-    const managerStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: managerAuthorization }), env)
-    expect(managerStateResponse.status).toBe(200)
-    const managerState = (await managerStateResponse.json()).state
-    expect(managerState.revenueBonusDaily).toEqual([expect.not.objectContaining({ allocations: expect.anything() })])
-    expect(managerState.revenueBonusAllocations.map(({ employeeId }) => employeeId).sort()).toEqual(['E-S02', 'QL-S02'])
-    expect(managerState.teamRewardParticipants.map(({ employeeId }) => employeeId).sort()).toEqual(['E-S02', 'QL-S02'])
-    expect(managerState.compensationEntries.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
-    expect(managerState.violations.map(({ employeeId }) => employeeId)).toEqual(['QL-S02'])
-    expect(managerState.compensationTeamTotals).toEqual(expect.arrayContaining([
-      expect.objectContaining({ period: '2026-08', workVnd: 10_000, violationsVnd: 5_000 }),
-    ]))
-    expect(JSON.stringify({
-      daily: managerState.revenueBonusDaily,
-      allocations: managerState.revenueBonusAllocations,
-      participants: managerState.teamRewardParticipants,
-    })).toContain('E-S02')
-
-    const employeeStateResponse = await worker.fetch(new Request('https://idosi.example/api/state', { headers: employeeAuthorization }), env)
-    expect(employeeStateResponse.status).toBe(200)
-    const employeeState = (await employeeStateResponse.json()).state
-    expect(employeeState.revenueBonusDaily).toEqual([expect.objectContaining({ pendingMilestonePoolVnd: 250_000 })])
-    expect(employeeState.revenueBonusDaily[0]).not.toHaveProperty('allocations')
-    expect(employeeState.revenueBonusAllocations.map(({ employeeId }) => employeeId)).toEqual(['E-S02'])
-    expect(employeeState.teamRewardParticipants.map(({ employeeId }) => employeeId)).toEqual(['E-S02'])
-    expect(JSON.stringify({
-      daily: employeeState.revenueBonusDaily,
-      allocations: employeeState.revenueBonusAllocations,
-      participants: employeeState.teamRewardParticipants,
-    })).not.toContain('QL-S02')
-
-    const stateBeforeApproval = readHydratedState(env.DB.database)
-    const exactClaim = stateBeforeApproval.teamRewardClaims.find(({ id }) => id === calculatedBody.teamClaim.id)
-    const exactDaily = stateBeforeApproval.revenueBonusDaily.find(({ id }) => id === calculatedBody.revenueBonus.id)
-    const exactParticipant = stateBeforeApproval.teamRewardParticipants.find(({ claimId }) => claimId === exactClaim.id)
-    const exactAllocation = stateBeforeApproval.revenueBonusAllocations.find(({ revenueBonusDailyId }) => (
-      revenueBonusDailyId === exactDaily.id
-    ))
-    const alternateCase = (value) => String(value).replace(/[a-z]/gi, (character) => (
-      character === character.toLowerCase() ? character.toUpperCase() : character.toLowerCase()
-    ))
-    const siblingClaimId = alternateCase(exactClaim.id)
-    const siblingDailyId = alternateCase(exactDaily.id)
-    expect(siblingClaimId).not.toBe(exactClaim.id)
-    expect(siblingDailyId).not.toBe(exactDaily.id)
-    const siblingClaim = {
-      ...exactClaim,
-      id: siblingClaimId,
-      revenueBonusDailyId: siblingDailyId,
-      status: 'PENDING',
-      amountVnd: 123_456,
-    }
-    const siblingDaily = {
-      ...exactDaily,
-      id: siblingDailyId,
-      pendingMilestonePoolVnd: 123_456,
-      milestoneStatus: 'PENDING',
-    }
-    const siblingParticipant = {
-      ...exactParticipant,
-      id: `${exactParticipant.id}-case-sibling`,
-      claimId: siblingClaimId,
-      employeeId: 'E-CASE-SIBLING',
-      status: 'PENDING',
-      proposedAmountVnd: 123_456,
-      amountVnd: 0,
-    }
-    const siblingAllocation = {
-      ...exactAllocation,
-      id: `${exactAllocation.id}-case-sibling`,
-      revenueBonusDailyId: siblingDailyId,
-      employeeId: 'E-CASE-SIBLING',
-      percentagePoolVnd: 1_234,
-      milestonePoolVnd: 0,
-      amountVnd: 1_234,
-    }
-    replaceStateCollection(env.DB.database, 'teamRewardClaims', [
-      ...stateBeforeApproval.teamRewardClaims,
-      siblingClaim,
-    ])
-    replaceStateCollection(env.DB.database, 'revenueBonusDaily', [
-      ...stateBeforeApproval.revenueBonusDaily,
-      siblingDaily,
-    ])
-    replaceStateCollection(env.DB.database, 'teamRewardParticipants', [
-      ...stateBeforeApproval.teamRewardParticipants,
-      siblingParticipant,
-    ])
-    replaceStateCollection(env.DB.database, 'revenueBonusAllocations', [
-      ...stateBeforeApproval.revenueBonusAllocations,
-      siblingAllocation,
-    ])
-
-    const managerApprovalDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
-      payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
-    }, { ...managerAuthorization, 'idempotency-key': 'manager-revenue-hot-approve-denied-0001' }), env)
-    expect(managerApprovalDenied.status).toBe(403)
-    expect(await managerApprovalDenied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
-
-    const approved = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
-      payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-approve-0001' }), env)
-    expect(approved.status).toBe(200)
-    const approvedBody = await approved.json()
-    expect(approvedBody.teamClaim).toMatchObject({ status: 'APPROVED', amountVnd: 250_000 })
-    expect(approvedBody.revenueBonus).toMatchObject({
-      milestonePoolVnd: 250_000, pendingMilestonePoolVnd: 0, milestoneStatus: 'APPROVED',
-    })
-    expect(approvedBody.revenueBonus.totalPoolVnd).toBe(
-      approvedBody.revenueBonus.percentagePoolVnd + 250_000,
-    )
-    expect(approvedBody.allocations.reduce((sum, record) => sum + record.milestonePoolVnd, 0)).toBe(250_000)
-    expect(approvedBody.allocations.every(({ revenueBonusDailyId }) => revenueBonusDailyId === exactDaily.id)).toBe(true)
-    expect(approvedBody.teamParticipants.every(({ claimId }) => claimId === exactClaim.id)).toBe(true)
-    const stateAfterApproval = readHydratedState(env.DB.database)
-    expect(stateAfterApproval.teamRewardClaims.find(({ id }) => id === siblingClaimId)).toEqual(siblingClaim)
-    expect(stateAfterApproval.revenueBonusDaily.find(({ id }) => id === siblingDailyId)).toEqual(siblingDaily)
-    expect(stateAfterApproval.teamRewardParticipants.find(({ claimId }) => claimId === siblingClaimId)).toEqual(siblingParticipant)
-    expect(stateAfterApproval.revenueBonusAllocations.find(({ revenueBonusDailyId }) => (
-      revenueBonusDailyId === siblingDailyId
-    ))).toEqual(siblingAllocation)
-    const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.approve_milestone', expectedVersion: calculatedBody.version,
-      payload: { claimId: calculatedBody.teamClaim.id, expectedEntityVersion: 1 },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-approve-0001' }), env)
-    expect(replay.status).toBe(200)
-    expect(replay.headers.get('idempotency-replayed')).toBe('true')
-    expect(await replay.json()).toEqual(approvedBody)
-
-    const stateBeforeImmutableRetry = readHydratedState(env.DB.database)
-    replaceStateCollection(env.DB.database, 'revenueBonusDaily', stateBeforeImmutableRetry.revenueBonusDaily
-      .filter(({ id }) => id !== siblingDailyId)
-      .map((record) => record.id === exactDaily.id
-        ? { ...record, fingerprint: 'stale-case-alias-fingerprint' }
-        : record))
-    replaceStateCollection(env.DB.database, 'revenueBonusAllocations', stateBeforeImmutableRetry.revenueBonusAllocations
-      .filter(({ id }) => id !== siblingAllocation.id)
-      .map((record) => record.revenueBonusDailyId === exactDaily.id
-        ? { ...record, revenueBonusDailyId: siblingDailyId }
-        : record))
-    replaceStateCollection(env.DB.database, 'teamRewardClaims', stateBeforeImmutableRetry.teamRewardClaims
-      .filter(({ id }) => id !== siblingClaimId)
-      .map((record) => record.revenueBonusDailyId === exactDaily.id
-        ? { ...record, revenueBonusDailyId: siblingDailyId }
-        : record))
-    replaceStateCollection(env.DB.database, 'teamRewardParticipants', stateBeforeImmutableRetry.teamRewardParticipants
-      .filter(({ id }) => id !== siblingParticipant.id)
-      .map((record) => record.revenueBonusDailyId === exactDaily.id
-        ? { ...record, revenueBonusDailyId: siblingDailyId }
-        : record))
-    const stateBeforeRejectedRetry = readHydratedState(env.DB.database)
-
-    const recalculated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
-      type: 'revenue_bonus.calculate_day', expectedVersion: approvedBody.version,
-      payload: { storeId: 's02', businessDate: '2026-08-20' },
-    }, { ...supportAuthorization, 'idempotency-key': 'support-revenue-hot-recalculate-alias-0001' }), env)
-    expect(recalculated.status).toBe(409)
-    expect(await recalculated.json()).toMatchObject({
-      error: { code: 'REVENUE_BONUS_DAY_ALREADY_CALCULATED' },
-    })
-    const stateAfterRejectedRetry = readHydratedState(env.DB.database)
-    for (const collectionKey of [
-      'revenueBonusDaily',
-      'revenueBonusAllocations',
-      'teamRewardClaims',
-      'teamRewardParticipants',
-      'periodReconciliations',
-      'jobRuns',
+    for (const [role, authorization] of [
+      ['business_support', supportAuthorization],
+      ['store_manager', managerAuthorization],
+      ['employee', employeeAuthorization],
     ]) {
-      expect(stateAfterRejectedRetry[collectionKey], collectionKey).toEqual(stateBeforeRejectedRetry[collectionKey])
+      const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'revenue_bonus.override_employee', expectedVersion: currentVersion(),
+        payload: {
+          storeId: 'S02', businessDate: '2026-09-03', employeeId: 'E-S02',
+          amountVnd: 500_000, reason: `Không đủ quyền ${role}`,
+        },
+      }, { ...authorization, 'idempotency-key': `revenue-auto-denied-${role}` }), env)
+      expect(denied.status, role).toBe(403)
+      const deniedBody = await denied.json()
+      expect([
+        'BUSINESS_SUPPORT_READ_ONLY',
+        'STORE_MANAGER_READ_ONLY',
+        'EMPLOYEE_READ_ONLY',
+        'ROLE_FORBIDDEN',
+      ]).toContain(deniedBody.error.code)
+    }
+
+    const retired = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.calculate_day', expectedVersion: currentVersion(),
+      payload: { storeId: 'S02', businessDate: '2026-09-03' },
+    }, { ...adminAuthorization, 'idempotency-key': 'revenue-auto-manual-retired' }), env)
+    expect(retired.status).toBe(410)
+    expect(await retired.json()).toMatchObject({
+      error: { code: 'REVENUE_BONUS_CALCULATION_AUTOMATED' },
+    })
+
+    const overridden = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.override_employee', expectedVersion: currentVersion(),
+      payload: {
+        storeId: 'S02', businessDate: '2026-09-03', employeeId: 'E-S02',
+        amountVnd: 500_000, reason: 'Admin điều chỉnh sau đối soát doanh thu',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'revenue-auto-admin-override' }), env)
+    expect([200, 201]).toContain(overridden.status)
+    expect(await overridden.json()).toMatchObject({
+      override: {
+        employeeId: 'E-S02', mode: 'AMOUNT', amountVnd: 500_000,
+        automaticAmountVndSnapshot: 445_000, status: 'ACTIVE', version: 1,
+      },
+    })
+    const adjustedLive = await worker.fetch(new Request(liveUrl, { headers: supportAuthorization }), env)
+    const adjustedSnapshot = (await adjustedLive.json()).snapshot
+    expect(adjustedSnapshot).toMatchObject({
+      automaticAllocatedVnd: 890_000, allocatedVnd: 945_000, adminAdjustmentVnd: 55_000,
+      allocations: [
+        expect.objectContaining({
+          employeeId: 'E-S02', automaticAmountVnd: 445_000, amountVnd: 500_000,
+          status: 'ADMIN_ADJUSTED',
+        }),
+        expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 445_000, status: 'LIVE' }),
+      ],
+    })
+
+    const deleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.delete_employee', expectedVersion: currentVersion(),
+      payload: {
+        storeId: 'S02', businessDate: '2026-09-03', employeeId: 'E-S02', expectedVersion: 1,
+        reason: 'Admin xóa sau khi xác minh không đủ điều kiện',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'revenue-auto-admin-delete' }), env)
+    expect(deleted.status).toBe(200)
+    expect(await deleted.json()).toMatchObject({
+      override: { mode: 'DELETED', amountVnd: 0, status: 'ACTIVE', version: 2 },
+    })
+    const deletedLive = await worker.fetch(new Request(liveUrl, { headers: employeeAuthorization }), env)
+    expect((await deletedLive.json()).snapshot.allocations).toEqual([
+      expect.objectContaining({
+        employeeId: 'E-S02', automaticAmountVnd: 445_000, amountVnd: 0,
+        status: 'ADMIN_DELETED',
+      }),
+    ])
+
+    const restored = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.restore_employee', expectedVersion: currentVersion(),
+      payload: {
+        storeId: 'S02', businessDate: '2026-09-03', employeeId: 'E-S02', expectedVersion: 2,
+        reason: 'Admin khôi phục công thức tự động sau xác minh',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'revenue-auto-admin-restore' }), env)
+    expect(restored.status).toBe(200)
+    expect(await restored.json()).toMatchObject({
+      override: { status: 'VOID', version: 3 },
+    })
+    const restoredLive = await worker.fetch(new Request(liveUrl, { headers: supportAuthorization }), env)
+    expect((await restoredLive.json()).snapshot).toMatchObject({
+      allocatedVnd: 890_000, adminAdjustmentVnd: 0, overrideCount: 0,
+      allocations: [
+        expect.objectContaining({ employeeId: 'E-S02', amountVnd: 445_000, status: 'LIVE' }),
+        expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 445_000, status: 'LIVE' }),
+      ],
+    })
+
+    const finalState = readHydratedState(env.DB.database)
+    expect(finalState.revenueBonusDaily).toEqual([])
+    expect(finalState.revenueBonusAllocations).toEqual([])
+    expect(finalState.teamRewardClaims).toEqual([])
+    expect(finalState.revenueBonusOverrides).toEqual([
+      expect.objectContaining({ employeeId: 'E-S02', status: 'VOID', version: 3 }),
+    ])
+    } finally {
+      vi.useRealTimers()
     }
   }, 60_000)
 
