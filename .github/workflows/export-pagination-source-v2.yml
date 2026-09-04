@@ -1,0 +1,37 @@
+name: Export pagination source snapshot v2
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-20260904
+    paths:
+      - .github/workflows/export-pagination-source-v2.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout pagination branch
+        uses: actions/checkout@v6
+      - name: Create source snapshot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          tar \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            --exclude='coverage' \
+            -czf /tmp/idosi-pagination-source-v2.tar.gz .
+          sha256sum /tmp/idosi-pagination-source-v2.tar.gz
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: idosi-pagination-source-v2
+          path: /tmp/idosi-pagination-source-v2.tar.gz
+          if-no-files-found: error
+          retention-days: 1
