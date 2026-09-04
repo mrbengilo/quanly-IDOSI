@@ -1,4 +1,4 @@
-name: Inspect finalizer implementation context
+name: Apply revenue cutover and order audit fix
 
 on:
   push:
@@ -6,25 +6,461 @@ on:
     paths: [.github/workflows/inspect-finalizer-context.yml]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  inspect:
+  apply:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
         with:
           ref: feat/ops-pages-cached-daily-automation
-      - name: Print remaining implementation locations
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - name: Patch revenue cutover regression and order audit normalization
         shell: bash
         run: |
           set -Eeuo pipefail
-          echo '=== SERVER ORDER AUDIT ==='
-          grep -nE 'orderAudit|order_audit' server/worker.js | head -n 120 || true
-          echo '=== SERVER AUTOMATIC/SCHEDULED REVENUE ==='
-          grep -nE 'scheduled\(|cron|automatic.*revenue|revenue.*automatic|FINALIZED|WAITING_SHIFT_CLOSE' server/worker.js wrangler.toml package.json | head -n 180 || true
-          echo '=== ORDER MUTATION TAIL ==='
-          sed -n '16240,16440p' server/worker.js
-          echo '=== SERVER PROJECTION AREAS ==='
-          grep -nE "order-audit|audit-history|orderAudit" src/App.jsx server/worker.js | head -n 160 || true
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          utils = r'''const AUDITED_FIELDS = Object.freeze({
+            customerName: 'Khách hàng',
+            customerPhone: 'Số điện thoại',
+            customerAge: 'Tuổi',
+            gender: 'Giới tính',
+            occupation: 'Nghề nghiệp',
+            acquisitionChannel: 'Kênh biết đến',
+            amount: 'Giá trị',
+            paymentMethod: 'Thanh toán',
+            status: 'Trạng thái',
+            deletedAt: 'Thời gian xóa',
+            deletedBy: 'Người xóa',
+            deleteReason: 'Lý do xóa',
+          })
+
+          const ROLE_LABELS = Object.freeze({
+            admin: 'Admin',
+            business_support: 'Hỗ trợ kinh doanh',
+            manager: 'Hỗ trợ kinh doanh',
+            store_manager: 'Quản lý cửa hàng',
+            employee: 'Nhân viên',
+            office: 'Nhân viên văn phòng',
+          })
+
+          const isPlainRecord = (value) => Boolean(value && typeof value === 'object' && !Array.isArray(value))
+          const firstText = (...values) => {
+            for (const value of values) {
+              if (typeof value === 'string' && value.trim()) return value.trim()
+              if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+            }
+            return ''
+          }
+
+          const ORDER_KEYS = Object.freeze([
+            'id', 'code', 'orderCode', 'storeId', 'employeeId', 'attendanceId',
+            'customerName', 'customerPhone', 'amount', 'paymentMethod', 'status',
+          ])
+
+          const orderSnapshot = (record = {}, side) => {
+            const direct = isPlainRecord(record?.[side]) ? record[side] : null
+            const metadataValue = isPlainRecord(record?.metadata?.[side]) ? record.metadata[side] : null
+            const candidate = direct || metadataValue
+            if (!candidate) return {}
+            if (ORDER_KEYS.some((key) => Object.hasOwn(candidate, key))) return candidate
+            for (const key of ['order', 'record', 'data']) {
+              if (isPlainRecord(candidate[key])) return candidate[key]
+            }
+            return candidate
+          }
+
+          export const orderAuditTimestamp = (record = {}) => firstText(
+            record.createdAt,
+            record.serverTimestamp,
+            record.updatedAt,
+            record.recordedAt,
+            record.occurredAt,
+            record.date,
+          )
+
+          export const orderAuditStoreId = (record = {}) => {
+            const before = orderSnapshot(record, 'before')
+            const after = orderSnapshot(record, 'after')
+            return firstText(record.storeId, record.metadata?.storeId, after.storeId, before.storeId)
+          }
+
+          export const orderAuditOrderCode = (record = {}) => {
+            const before = orderSnapshot(record, 'before')
+            const after = orderSnapshot(record, 'after')
+            return firstText(
+              record.orderCode,
+              record.metadata?.orderCode,
+              record.metadata?.code,
+              after.code,
+              after.orderCode,
+              before.code,
+              before.orderCode,
+              record.orderId,
+              record.entityId,
+            ) || '—'
+          }
+
+          export const orderAuditAction = (record = {}) => {
+            const source = firstText(record.action, record.metadata?.action).toLocaleLowerCase('vi-VN')
+            if (!source) return 'Cập nhật'
+            if (source === 'xóa' || source.includes('delete') || source.includes('remove')) return 'Xóa'
+            if (source === 'sửa' || source.includes('update') || source.includes('edit')) return 'Sửa'
+            return firstText(record.action, record.metadata?.action) || 'Cập nhật'
+          }
+
+          const actorNameFrom = (actor) => {
+            if (typeof actor === 'string') return actor.trim()
+            if (!isPlainRecord(actor)) return ''
+            return firstText(actor.name, actor.displayName, actor.fullName, actor.username, actor.email)
+          }
+
+          const actorIdFrom = (actor) => {
+            if (!isPlainRecord(actor)) return ''
+            return firstText(actor.id, actor.userId, actor.user_id, actor.employeeId, actor.employee_id)
+          }
+
+          export const orderAuditActor = (record = {}) => {
+            const actorSources = [record.actor, record.updatedBy, record.createdBy]
+            const explicitName = firstText(
+              ...actorSources.map(actorNameFrom),
+              record.actorName,
+              record.updatedByName,
+              record.createdByName,
+            )
+            if (explicitName) return explicitName
+
+            const role = firstText(
+              ...actorSources.filter(isPlainRecord).map((actor) => actor.role),
+              record.actorRole,
+              record.actor_role,
+              record.metadata?.actorRole,
+            )
+            const roleLabel = ROLE_LABELS[role] || role
+            const actorId = firstText(
+              ...actorSources.map(actorIdFrom),
+              record.actorId,
+              record.actor_id,
+              record.metadata?.actorId,
+            )
+            if (actorId && roleLabel) return `${actorId} · ${roleLabel}`
+            if (actorId) return actorId
+            if (roleLabel) return roleLabel
+            return 'Hệ thống'
+          }
+
+          const changedFieldNames = (record = {}) => {
+            const before = orderSnapshot(record, 'before')
+            const after = orderSnapshot(record, 'after')
+            const declared = Array.isArray(record.changedFields)
+              ? record.changedFields
+              : Array.isArray(record.metadata?.changedFields)
+                ? record.metadata.changedFields
+                : []
+            const inferred = Object.keys(before).length && Object.keys(after).length
+              ? [...new Set([...Object.keys(before), ...Object.keys(after)])]
+                .filter((field) => JSON.stringify(before[field]) !== JSON.stringify(after[field]))
+              : []
+            return [...new Set([...declared, ...inferred].map(String))]
+              .filter((field) => Object.hasOwn(AUDITED_FIELDS, field))
+          }
+
+          const formatActorValue = (value) => {
+            if (!isPlainRecord(value)) return String(value)
+            return firstText(value.name, value.displayName, value.fullName, value.username, value.id) || JSON.stringify(value)
+          }
+
+          const formatValue = (field, value) => {
+            if (value == null || value === '') return '—'
+            if (field === 'amount') {
+              const amount = Number(value)
+              return Number.isFinite(amount) ? `${Math.trunc(amount).toLocaleString('en-US')} đ` : String(value)
+            }
+            if (field === 'deletedAt') {
+              const parsed = new Date(value)
+              return Number.isNaN(parsed.getTime())
+                ? String(value)
+                : parsed.toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false })
+            }
+            if (field === 'deletedBy') return formatActorValue(value)
+            if (typeof value === 'boolean') return value ? 'Có' : 'Không'
+            if (typeof value === 'object') return JSON.stringify(value)
+            return String(value)
+          }
+
+          export const orderAuditChanges = (record = {}) => {
+            const before = orderSnapshot(record, 'before')
+            const after = orderSnapshot(record, 'after')
+            return changedFieldNames(record).map((field) => ({
+              field,
+              label: AUDITED_FIELDS[field],
+              before: formatValue(field, before[field]),
+              after: formatValue(field, after[field]),
+            }))
+          }
+          '''
+          Path('src/pages/admin/orderAuditUtils.js').write_text(utils, encoding='utf-8')
+
+          governance_path = Path('src/pages/admin/GovernancePages.jsx')
+          governance = governance_path.read_text(encoding='utf-8')
+          old_import = "import { orderAuditChanges } from './orderAuditUtils'"
+          new_import = """import {
+            orderAuditAction,
+            orderAuditActor,
+            orderAuditChanges,
+            orderAuditOrderCode,
+            orderAuditStoreId,
+            orderAuditTimestamp,
+          } from './orderAuditUtils'"""
+          if old_import not in governance:
+            raise SystemExit('orderAuditUtils import anchor not found')
+          governance = governance.replace(old_import, new_import, 1)
+
+          order_page = r'''export function OrderAuditPage() {
+            const { orderAudit = [], stores = [] } = useApp()
+            const [query, setQuery] = useState('')
+            const [datePage, setDatePage] = useState(0)
+            const currentDate = today()
+            const auditDates = useMemo(() => {
+              const historicalDates = [...new Set(orderAudit.map((item) => businessDate(
+                orderAuditTimestamp(item),
+              )).filter((date) => date && date <= currentDate && date !== currentDate))]
+                .sort((left, right) => right.localeCompare(left))
+              return [currentDate, ...historicalDates]
+            }, [currentDate, orderAudit])
+            const displayedDatePage = Math.min(datePage, auditDates.length - 1)
+            const selectedDate = auditDates[displayedDatePage] || currentDate
+            const normalizedQuery = query.trim().toLocaleLowerCase('vi-VN')
+            const rows = orderAudit
+              .filter((item) => businessDate(orderAuditTimestamp(item)) === selectedDate)
+              .filter((item) => !normalizedQuery || [
+                JSON.stringify(item),
+                orderAuditOrderCode(item),
+                orderAuditStoreId(item),
+                orderAuditAction(item),
+                orderAuditActor(item),
+              ].some((value) => String(value).toLocaleLowerCase('vi-VN').includes(normalizedQuery)))
+              .sort((left, right) => orderAuditTimestamp(right).localeCompare(orderAuditTimestamp(left)))
+            const storeName = (id) => stores.find((store) => store.id === id)?.name || id || '—'
+
+            return <div className="page">
+              <PageHeader title="LỊCH SỬ CHỈNH SỬA ĐƠN HÀNG" subtitle="Trang đầu tiên chỉ hiển thị thay đổi của ngày hiện tại; dùng phân trang để xem từng ngày trước đó." icon={History} />
+              <Card
+                title={`Nhật ký ngày ${shortDate(selectedDate)}`}
+                action={<div className="toolbar-wrap order-audit-date-pagination">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    aria-label="Ngày chỉnh sửa mới hơn"
+                    disabled={displayedDatePage === 0}
+                    onClick={() => setDatePage((current) => Math.max(0, current - 1))}
+                  >NGÀY MỚI HƠN</Button>
+                  <Badge tone="blue">Ngày {shortDate(selectedDate)} · {rows.length} bản ghi</Badge>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    aria-label="Ngày chỉnh sửa cũ hơn"
+                    disabled={displayedDatePage >= auditDates.length - 1}
+                    onClick={() => setDatePage((current) => Math.min(auditDates.length - 1, current + 1))}
+                  >NGÀY CŨ HƠN</Button>
+                </div>}
+              >
+                <SearchInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm theo mã đơn, người chỉnh sửa, cửa hàng..." />
+                <TableWrap><thead><tr><th>Thời gian</th><th>Đơn hàng</th><th>Cửa hàng</th><th>Thao tác</th><th>Người thực hiện</th><th>Thay đổi</th></tr></thead><tbody>
+                  {rows.map((item, index) => {
+                    const timestamp = orderAuditTimestamp(item)
+                    const action = orderAuditAction(item)
+                    const storeId = orderAuditStoreId(item)
+                    return <tr key={item.id || `${orderAuditOrderCode(item)}:${timestamp}:${index}`}><td>{shortDateTime24(timestamp)}</td><td><strong>{orderAuditOrderCode(item)}</strong></td><td>{storeName(storeId)}</td><td><Badge tone={action === 'Xóa' ? 'red' : action === 'Sửa' ? 'orange' : 'blue'}>{action}</Badge></td><td>{orderAuditActor(item)}</td><td><OrderAuditChangeList record={item} /></td></tr>
+                  })}
+                  {!rows.length && <tr><td colSpan="6">Không có chỉnh sửa đơn hàng trong ngày {shortDate(selectedDate)} phù hợp bộ lọc.</td></tr>}
+                </tbody></TableWrap>
+              </Card>
+            </div>
+          }'''
+          pattern = re.compile(r'export function OrderAuditPage\(\) \{.*?\n\}\n\nexport function ResetDataPage\(\)', re.S)
+          governance, count = pattern.subn(order_page + '\n\nexport function ResetDataPage()', governance, count=1)
+          if count != 1:
+            raise SystemExit(f'OrderAuditPage replacement count={count}')
+          governance_path.write_text(governance, encoding='utf-8')
+
+          order_test = r'''import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+          import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+          import { OrderAuditPage } from './GovernancePages'
+
+          const mocked = vi.hoisted(() => ({ app: {} }))
+
+          vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
+
+          const audit = ({ id, date, orderCode, action = 'Sửa', before, after }) => ({
+            id,
+            orderCode,
+            orderId: id,
+            storeId: 'S01',
+            action,
+            actor: { name: 'Admin IDOSI' },
+            before,
+            after,
+            createdAt: `${date}T10:15:00+07:00`,
+          })
+
+          describe('OrderAuditPage', () => {
+            beforeEach(() => {
+              vi.useFakeTimers({ toFake: ['Date'] })
+              vi.setSystemTime(new Date('2026-09-04T03:00:00.000Z'))
+              mocked.app = {
+                stores: [{ id: 'S01', name: 'Dosii Dĩ An' }],
+                orderAudit: [
+                  audit({
+                    id: 'A-TODAY', date: '2026-09-04', orderCode: 'DIAN-0003',
+                    before: { amount: 120_000 }, after: { amount: 150_000 },
+                  }),
+                  audit({
+                    id: 'A-YESTERDAY', date: '2026-09-03', orderCode: 'DIAN-0002',
+                    before: { customerName: 'Lan' }, after: { customerName: 'Linh' },
+                  }),
+                  audit({
+                    id: 'A-OLDER', date: '2026-09-01', orderCode: 'DIAN-0001', action: 'Xóa',
+                    before: { amount: 80_000 }, after: null,
+                  }),
+                ],
+              }
+            })
+
+            afterEach(() => {
+              cleanup()
+              vi.useRealTimers()
+            })
+
+            it('shows only the current business day on the first page and pages older days', () => {
+              render(<OrderAuditPage />)
+
+              expect(screen.getByText('DIAN-0003')).toBeTruthy()
+              expect(screen.queryByText('DIAN-0002')).toBeNull()
+              expect(screen.queryByText('DIAN-0001')).toBeNull()
+              expect(screen.getByText(/Ngày 04\/09\/26 · 1 bản ghi/)).toBeTruthy()
+
+              fireEvent.click(screen.getByRole('button', { name: 'Ngày chỉnh sửa cũ hơn' }))
+              expect(screen.getByText('DIAN-0002')).toBeTruthy()
+              expect(screen.queryByText('DIAN-0003')).toBeNull()
+              expect(screen.getByText('Lan')).toBeTruthy()
+              expect(screen.getByText('Linh')).toBeTruthy()
+
+              fireEvent.click(screen.getByRole('button', { name: 'Ngày chỉnh sửa cũ hơn' }))
+              expect(screen.getByText('DIAN-0001')).toBeTruthy()
+              expect(screen.queryByText('DIAN-0002')).toBeNull()
+              expect(screen.getByRole('button', { name: 'Ngày chỉnh sửa cũ hơn' }).disabled).toBe(true)
+
+              fireEvent.click(screen.getByRole('button', { name: 'Ngày chỉnh sửa mới hơn' }))
+              expect(screen.getByText('DIAN-0002')).toBeTruthy()
+            })
+
+            it('keeps before and after payloads visible inside the selected day', () => {
+              render(<OrderAuditPage />)
+              expect(screen.getByText('120,000 đ')).toBeTruthy()
+              expect(screen.getByText('150,000 đ')).toBeTruthy()
+            })
+
+            it('normalizes production audit rows with editor, timestamp, scope and changed values', () => {
+              mocked.app = {
+                stores: [{ id: 'S01', name: 'Dosii Dĩ An' }],
+                orderAudit: [{
+                  id: 77,
+                  actorId: 'usr-admin-01',
+                  actorRole: 'admin',
+                  action: 'order.update',
+                  entityType: 'order',
+                  entityId: 'ORD-001',
+                  before: {
+                    id: 'ORD-001', code: 'DIAN-0003', storeId: 'S01',
+                    amount: 120_000, customerName: 'Lan',
+                  },
+                  after: {
+                    id: 'ORD-001', code: 'DIAN-0003', storeId: 'S01',
+                    amount: 150_000, customerName: 'Linh',
+                  },
+                  metadata: { changedFields: ['amount', 'customerName'], reason: 'Đối soát' },
+                  serverTimestamp: '2026-09-04T10:15:00+07:00',
+                }],
+              }
+
+              render(<OrderAuditPage />)
+
+              expect(screen.getByText('DIAN-0003')).toBeTruthy()
+              expect(screen.getByText('Dosii Dĩ An')).toBeTruthy()
+              expect(screen.getByText('Sửa')).toBeTruthy()
+              expect(screen.getByText('usr-admin-01 · Admin')).toBeTruthy()
+              expect(screen.getByText('Lan')).toBeTruthy()
+              expect(screen.getByText('Linh')).toBeTruthy()
+              expect(screen.getByText('120,000 đ')).toBeTruthy()
+              expect(screen.getByText('150,000 đ')).toBeTruthy()
+            })
+          })
+          '''
+          Path('src/pages/admin/OrderAuditPage.test.jsx').write_text(order_test, encoding='utf-8')
+
+          domain_test_path = Path('src/domain/automaticRevenueBonus.test.js')
+          domain_test = domain_test_path.read_text(encoding='utf-8')
+          marker = "  it('waits after 22:00 while any attendance remains open and finalizes only closed stored hours', () => {"
+          historical_test = r'''  it('preserves the historical calculation before 1 September 2026', () => {
+            const historical = calculateAutomaticRevenueBonusDay(base({
+              businessDate: '2026-08-31',
+              orders: [{
+                id: 'O-HISTORY', storeId: 'S01', amount: 2_000_000, status: 'Hoàn tất',
+                createdAt: '2026-08-31T10:00:00+07:00',
+              }],
+              attendance: [{
+                id: 'A-HISTORY', storeId: 'S01', employeeId: 'E01', workDate: '2026-08-31',
+                checkInAt: '2026-08-31T08:00:00+07:00', checkOutAt: null, workedSeconds: 3_600,
+              }],
+              nowMs: Date.parse('2026-09-01T08:00:00+07:00'),
+            }))
+
+            expect(historical).toMatchObject({
+              status: 'LIVE', revenueVnd: 2_000_000, totalWorkedSeconds: 3_600,
+              openAttendanceCount: 1, allocatedVnd: 20_000,
+            })
+            expect(historical).not.toHaveProperty('finalizedAt')
+            expect(allocation(historical, 'E01')).toMatchObject({
+              workedSeconds: 3_600, amountVnd: 20_000, status: 'LIVE',
+            })
+          })
+
+          '''
+          if marker not in domain_test:
+            raise SystemExit('historical revenue test anchor not found')
+          if "preserves the historical calculation before 1 September 2026" not in domain_test:
+            domain_test = domain_test.replace(marker, historical_test + marker, 1)
+          domain_test_path.write_text(domain_test, encoding='utf-8')
+
+          worker_path = Path('server/worker.js')
+          worker = worker_path.read_text(encoding='utf-8')
+          old_message = 'Thưởng doanh thu ngày đã được hệ thống tự động tính theo thời gian thực; không còn thao tác tính thủ công.'
+          new_message = 'Thưởng doanh thu ngày được hệ thống tự động chốt sau 22:00 khi toàn bộ nhân viên đã kết ca; không còn thao tác tính thủ công.'
+          if old_message not in worker:
+            raise SystemExit('manual revenue command message anchor not found')
+          worker_path.write_text(worker.replace(old_message, new_message, 1), encoding='utf-8')
+          PY
+      - name: Install dependencies
+        run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Run focused regression tests
+        run: npx vitest run src/domain/automaticRevenueBonus.test.js server/revenueBonusCutoff.test.js server/automaticRevenueBonusPeriod.test.js src/pages/admin/OrderAuditPage.test.jsx --maxWorkers=1
+      - name: Commit and push verified patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name "mrbengilo"
+          git config user.email "mrbengilo.76@gmail.com"
+          git add server/worker.js src/domain/automaticRevenueBonus.test.js src/pages/admin/GovernancePages.jsx src/pages/admin/OrderAuditPage.test.jsx src/pages/admin/orderAuditUtils.js
+          git diff --cached --check
+          git commit -m "fix: preserve revenue cutover and normalize order audit history"
+          git push origin HEAD:feat/ops-pages-cached-daily-automation
