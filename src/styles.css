@@ -1350,3 +1350,9 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
 .employee-picker .support-employee-tag {
   grid-column: 2 / -1;
 }
+
+/* Shared data-table pagination: every ordinary data table renders at most 20 rows per page. */
+.pagination{align-items:center}
+.pagination button:disabled{cursor:not-allowed;opacity:.45}
+.pagination__ellipsis{display:grid;place-items:center;min-width:24px;height:34px;color:#77827b;font-weight:700;flex:none}
+.table-footer>span strong{color:#146b3f}

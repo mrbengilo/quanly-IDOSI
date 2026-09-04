@@ -14,8 +14,9 @@ import {
   Search,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { Children, cloneElement, Fragment, isValidElement, useEffect, useRef, useState } from 'react'
 import { loadEmployeeAvatarUrl, subscribeEmployeeAvatarUpdates } from '../services/employeeAvatarCache'
+import { buildPaginatedPages, DEFAULT_TABLE_PAGE_SIZE, normalizeTableDate, paginationSequence } from './tablePagination'
 
 const TEMPORAL_INPUT_TYPES = new Set(['date', 'time', 'month', 'datetime-local'])
 const TEMPORAL_PICKER_KEYS = new Set(['Enter', ' '])
@@ -326,33 +327,149 @@ export function SearchInput({ value, onChange, placeholder = 'Tìm kiếm...', c
   )
 }
 
-export function TableWrap({ children, className = '' }) {
+const flattenTableRows = (children) => {
+  const rows = []
+  Children.forEach(children, (child) => {
+    if (!isValidElement(child)) return
+    if (child.type === Fragment) rows.push(...flattenTableRows(child.props.children))
+    else rows.push(child)
+  })
+  return rows
+}
+
+const tableSummaryRow = (row) => {
+  if (!isValidElement(row)) return false
+  if (row.props?.['data-table-summary']) return true
+  return /(?:^|\s)(?:total-row|table-summary-row)(?:\s|$)/u.test(String(row.props?.className || ''))
+}
+
+const tableRowDate = (row) => normalizeTableDate(row?.props?.['data-page-date'])
+
+const paginationDateLabel = (rows = []) => {
+  const dates = [...new Set(rows.map(tableRowDate).filter(Boolean))]
+  if (!dates.length) return ''
+  const display = (value) => {
+    const [year, month, day] = value.split('-')
+    return `${day}/${month}/${year}`
+  }
+  if (dates.length === 1) return `Ngày ${display(dates[0])}`
+  return dates.map(display).join(' và ')
+}
+
+export function TablePagination({
+  page = 1,
+  totalPages = 1,
+  total = 0,
+  shown = 0,
+  from = 0,
+  label = '',
+  onPageChange,
+}) {
+  if (!onPageChange || totalPages <= 1) return null
+  const sequence = paginationSequence(page, totalPages)
+  const first = total > 0 ? Math.max(1, Number(from) || 1) : 0
+  const last = total > 0 ? first + Math.max(0, Number(shown) || 0) - 1 : 0
   return (
-    <div className={`table-scroll ${className}`}>
-      <table>{children}</table>
+    <div className="table-footer">
+      <span>{label && <strong>{label} · </strong>}Hiển thị {first}–{Math.max(first, last)} / {total} bản ghi</span>
+      <nav className="pagination" aria-label="Phân trang bảng dữ liệu">
+        <button type="button" aria-label="Trang trước" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>‹</button>
+        {sequence.map((item) => typeof item === 'number' ? (
+          <button
+            type="button"
+            key={item}
+            className={item === page ? 'active' : ''}
+            aria-current={item === page ? 'page' : undefined}
+            aria-label={`Trang ${item}`}
+            onClick={() => onPageChange(item)}
+          >{item}</button>
+        ) : <span className="pagination__ellipsis" aria-hidden="true" key={item}>…</span>)}
+        <button type="button" aria-label="Trang sau" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>›</button>
+      </nav>
     </div>
   )
 }
 
-export function TableFooter({ shown, total, page = 1, onPageChange }) {
-  const totalPages = Math.max(1, Math.ceil(Number(total || 0) / Math.max(1, Number(shown || total || 1))))
-  return (
-    <div className="table-footer">
-      <span>Hiển thị 1 - {shown} của {total} bản ghi</span>
-      <div className="pagination">
-        <button disabled={!onPageChange || page <= 1} onClick={() => onPageChange?.(page - 1)}>‹</button>
-        {Array.from({ length: totalPages }, (_, index) => index + 1).map((pageNumber) => (
-          <button
-            key={pageNumber}
-            className={pageNumber === page ? 'active' : ''}
-            disabled={!onPageChange}
-            onClick={() => onPageChange?.(pageNumber)}
-          >{pageNumber}</button>
-        ))}
-        <button disabled={!onPageChange || page >= totalPages} onClick={() => onPageChange?.(page + 1)}>›</button>
-      </div>
+export function TableWrap({
+  children,
+  className = '',
+  tableClassName = '',
+  tableLabel,
+  paginate = true,
+  pageSize = DEFAULT_TABLE_PAGE_SIZE,
+  firstPageDates = [],
+  paginationKey = '',
+  ...containerProps
+}) {
+  const tableChildren = flattenTableRows(children).map((child, index) => (
+    child.key == null ? cloneElement(child, { key: `table-section-${index}` }) : child
+  ))
+  const bodyIndex = tableChildren.findIndex((child) => isValidElement(child) && child.type === 'tbody')
+  const body = bodyIndex >= 0 ? tableChildren[bodyIndex] : null
+  const bodyRows = flattenTableRows(body?.props?.children).map((row, index) => (
+    row.key == null ? cloneElement(row, { key: `table-row-${index}` }) : row
+  ))
+  const summaryRows = bodyRows.filter(tableSummaryRow)
+  const dataRows = bodyRows.filter((row) => !tableSummaryRow(row))
+  const firstDateKey = (Array.isArray(firstPageDates) ? firstPageDates : []).join('|')
+  const normalizedFirstPageDates = firstDateKey.split('|').filter(Boolean)
+  const rowKey = dataRows.map((row, index) => `${String(row.key ?? index)}:${tableRowDate(row)}`).join('|')
+  const pages = paginate && body
+    ? buildPaginatedPages(dataRows, {
+        pageSize,
+        getDate: tableRowDate,
+        firstPageDates: normalizedFirstPageDates,
+        groupRemainingByDate: normalizedFirstPageDates.length > 0,
+      })
+    : [dataRows]
+  const totalPages = Math.max(1, pages.length)
+  const paginationIdentity = [paginationKey, rowKey, firstDateKey, pageSize].join('::')
+  const [paginationState, setPaginationState] = useState({ key: '', page: 1 })
+  const requestedPage = paginationState.key === paginationIdentity ? paginationState.page : 1
+  const activePage = Math.min(totalPages, Math.max(1, requestedPage))
+  const setPage = (nextPage) => {
+    const resolvedPage = typeof nextPage === 'function' ? nextPage(activePage) : nextPage
+    setPaginationState({
+      key: paginationIdentity,
+      page: Math.min(totalPages, Math.max(1, Number(resolvedPage) || 1)),
+    })
+  }
+  const visibleDataRows = pages[activePage - 1] || []
+  const paginated = paginate && body && totalPages > 1
+  const visibleRows = paginated ? [...visibleDataRows, ...summaryRows] : bodyRows
+  const visibleChildren = body
+    ? tableChildren.map((child, index) => index === bodyIndex ? cloneElement(body, body.props, ...visibleRows) : child)
+    : tableChildren
+  const offset = pages.slice(0, activePage - 1).reduce((total, pageRows) => total + pageRows.length, 0)
+
+  return <>
+    <div {...containerProps} className={`table-scroll ${className}`}>
+      <table className={tableClassName} aria-label={tableLabel}>{visibleChildren}</table>
     </div>
-  )
+    {paginated && <TablePagination
+      page={activePage}
+      totalPages={totalPages}
+      total={dataRows.length}
+      shown={visibleDataRows.length}
+      from={offset + 1}
+      label={paginationDateLabel(visibleDataRows)}
+      onPageChange={setPage}
+    />}
+  </>
+}
+
+export function TableFooter({ shown, total, page = 1, onPageChange, pageSize = shown }) {
+  if (!onPageChange) return null
+  const size = Math.max(1, Number(pageSize || shown || total || 1))
+  const totalPages = Math.max(1, Math.ceil(Number(total || 0) / size))
+  return <TablePagination
+    page={page}
+    totalPages={totalPages}
+    total={total}
+    shown={shown}
+    from={(page - 1) * size + 1}
+    onPageChange={onPageChange}
+  />
 }
 
 export function Progress({ value, color = '#07883f' }) {
