@@ -337,3 +337,34 @@ export function resolveSupportEmployeeTagContext({
     transferId: transferIdentifiers(transfer)[0] || transferReferences[0] || '',
   }
 }
+
+/**
+ * Resolves one support tag for an aggregate row without inventing a transfer.
+ * Callers may pass mixed historical records; records belonging to another
+ * employee are ignored and every candidate still goes through the canonical
+ * fail-closed resolver above.
+ */
+export function resolveSupportEmployeeTagContextFromRecords({
+  records = [],
+  ...resolverInput
+} = {}) {
+  const employeeReference = compact(resolverInput.employeeId)
+    || employeeIdentifiers(resolverInput.employee)[0]
+
+  for (const record of Array.isArray(records) ? records : []) {
+    const candidateEmployeeId = recordEmployeeId(record)
+    if (employeeReference && candidateEmployeeId
+      && !sameIdentifier(candidateEmployeeId, employeeReference)) continue
+
+    const context = resolveSupportEmployeeTagContext({
+      ...resolverInput,
+      record,
+      employeeId: employeeReference || candidateEmployeeId,
+      storeId: compact(resolverInput.storeId) || recordStoreId(record),
+      businessDate: recordBusinessDate(record) || resolverInput.businessDate,
+    })
+    if (context) return context
+  }
+
+  return null
+}

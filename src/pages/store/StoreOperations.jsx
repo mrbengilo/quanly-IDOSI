@@ -44,6 +44,7 @@ import {
 } from '../../components/UI'
 import { FinancialChart } from '../../components/Charts'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
+import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
 import { AddressAutocomplete } from '../../components/StructuredAddressAutocomplete'
 import { IdentityDocumentViewer } from '../../components/IdentityDocumentViewer'
 import { optimizeIdentityImage } from '../../domain/identityImage'
@@ -852,6 +853,8 @@ export function StoreTasks() {
     stores,
     storeId,
     employees: storeEmployees = [],
+    allEmployees = [],
+    supportTransfers = [],
     attendance = [],
     workCatalogProgress = [],
     compensationEntries = [],
@@ -898,6 +901,23 @@ export function StoreTasks() {
         .sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')))[0] || null
     : null
   const requestedEmployeeId = String(requestedProgress?.employeeId || '')
+  const requestedEmployee = operationalIdentifierRecordMatch(
+    allEmployees,
+    requestedEmployeeId,
+    (employee) => [employee.id, employee.code, employee.employeeCode],
+  )
+  const requestedSupportContext = requestedProgress && !requestedEmployee.ambiguous
+    ? resolveSupportEmployeeTagContext({
+        record: requestedProgress,
+        employee: requestedEmployee.record,
+        employeeId: requestedEmployeeId,
+        storeId,
+        businessDate: requestedProgress.date || requestedAssignment?.date,
+        employees: allEmployees,
+        stores,
+        supportTransfers,
+      })
+    : null
   const requestedTasks = (Array.isArray(requestedAssignment?.tasks) ? requestedAssignment.tasks : [])
     .filter((task) => task.required !== false)
   const taskCompletedForRequestedEmployee = (task) => {
@@ -950,7 +970,7 @@ export function StoreTasks() {
           {requestedAssignment && !requestedProgress && <InfoNote tone="orange">Lượt giao việc chưa có kết quả nhân viên gửi.</InfoNote>}
           {requestedAssignment && requestedProgress && <>
             <div className="store-task-progress-meta">
-              <div><span>Nhân viên</span><strong>{requestedProgress.employeeName || requestedEmployeeId || '—'}</strong></div>
+              <div><span>Nhân viên</span><strong>{requestedProgress.employeeName || requestedEmployeeId || '—'}</strong><SupportEmployeeTag context={requestedSupportContext} /></div>
               <div><span>Ngày / Ca</span><strong>{formatTaskDate(requestedProgress.date || requestedAssignment.date)} · {requestedProgress.shiftId || requestedAssignment.shiftId || 'Không xác định'}</strong></div>
               <div><span>Tiến độ bắt buộc</span><strong>{requestedProgress.completedTasks ?? requestedCompleted}/{requestedProgress.totalTasks ?? requestedTasks.length} ({requestedProgress.completionRate ?? 0}%)</strong></div>
               <div><span>Gửi lúc</span><strong>{formatTaskDateTime24(requestedProgress.at)}</strong></div>

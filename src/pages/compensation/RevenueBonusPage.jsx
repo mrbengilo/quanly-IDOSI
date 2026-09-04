@@ -17,7 +17,10 @@ import {
 } from '../../components/UI'
 import { businessDate as toBusinessDate, money, operationalIdentifierRecordMatch } from '../../utils'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
-import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
+import {
+  resolveSupportEmployeeTagContext,
+  resolveSupportEmployeeTagContextFromRecords,
+} from '../../domain/supportEmployeeTag'
 import {
   canonicalRole,
   entityId,
@@ -151,13 +154,13 @@ const displayMonth = (month) => {
   return match ? `Tháng ${match[2]}/${match[1]}` : 'Tháng chưa xác định'
 }
 
-function RevenueStatisticsTable({ title, rows, firstColumn = 'Thời gian' }) {
+function RevenueStatisticsTable({ title, rows, firstColumn = 'Thời gian', supportContextForRow = null }) {
   return <div>
     <h3>{title}</h3>
     <TableWrap className="compensation-table">
       <thead><tr><th>{firstColumn}</th><th>Số lần</th><th>Tổng thưởng</th></tr></thead>
       <tbody>{rows.map((row) => <tr key={row.key}>
-        <td><strong>{row.label}</strong></td>
+        <td><strong>{row.label}</strong>{supportContextForRow && <SupportEmployeeTag context={supportContextForRow(row)} className="compensation-subline" />}</td>
         <td>{row.count}</td>
         <td><strong>{money(row.amountVnd)}</strong></td>
       </tr>)}{!rows.length && <tr><td colSpan="3" className="compensation-empty">Chưa có dữ liệu.</td></tr>}</tbody>
@@ -185,6 +188,16 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
   stores,
   supportTransfers,
 }) {
+  const employeeSupportContexts = useMemo(() => new Map(
+    statistics.byEmployee.map((row) => [identifierKey(row.key), resolveSupportEmployeeTagContextFromRecords({
+      records: rows,
+      employeeId: row.key,
+      employees,
+      stores,
+      supportTransfers,
+    })]),
+  ), [employees, rows, statistics.byEmployee, stores, supportTransfers])
+
   return <>
     <Card title="Lịch sử ghi nhận thưởng doanh thu" action={<Badge tone="blue">Tổng thưởng: {money(filteredTotal)}</Badge>}>
       {(collisions.length > 0 || employeeCollisions.length > 0) && <InfoNote tone="red">
@@ -232,7 +245,12 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
       </div>
       <div className="compensation-statistics-grid">
         <RevenueStatisticsTable title="Theo ngày" rows={statistics.byDay} />
-        <RevenueStatisticsTable title="Theo nhân viên" rows={statistics.byEmployee} firstColumn="Nhân viên" />
+        <RevenueStatisticsTable
+          title="Theo nhân viên"
+          rows={statistics.byEmployee}
+          firstColumn="Nhân viên"
+          supportContextForRow={(row) => employeeSupportContexts.get(identifierKey(row.key))}
+        />
         <RevenueStatisticsTable title="Theo tháng" rows={statistics.byMonth} />
       </div>
     </Card>

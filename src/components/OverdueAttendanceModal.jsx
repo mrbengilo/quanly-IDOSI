@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import { overdueAttendanceDate } from '../domain/overdueAttendance'
 import { shortDate } from '../utils'
+import { SupportEmployeeTag } from './SupportEmployeeTag'
 import { Button, Modal } from './UI'
 
 const attendanceKey = (records = []) => records
@@ -9,7 +10,15 @@ const attendanceKey = (records = []) => records
   .sort()
   .join('|')
 
-export function OverdueAttendanceModal({ records = [], audience = 'employee', actionLabel = 'Kết ca' }) {
+export function OverdueAttendanceModal({
+  records = [],
+  audience = 'employee',
+  actionLabel = 'Kết ca',
+  storeId = '',
+  employees = [],
+  stores = [],
+  supportTransfers = [],
+}) {
   const source = Array.isArray(records) ? records : []
   const currentKey = attendanceKey(source)
   const [dismissedKey, setDismissedKey] = useState('')
@@ -32,6 +41,7 @@ export function OverdueAttendanceModal({ records = [], audience = 'employee', ac
           <ul>
             {source.map((record) => <li key={record.id || `${record.employeeId}-${overdueAttendanceDate(record)}`}>
               <strong>{record.employeeName || record.employeeId || 'Nhân viên'}</strong>
+              <SupportEmployeeTag record={record} employeeId={record.employeeId || record.employeeCode} storeId={record.storeId || storeId} businessDate={overdueAttendanceDate(record)} employees={employees} stores={stores} supportTransfers={supportTransfers} />
               <span>chưa kết ca ngày {shortDate(overdueAttendanceDate(record)) || 'trước đó'}{record.shiftName ? ` · ${record.shiftName}` : ''}</span>
             </li>)}
           </ul>

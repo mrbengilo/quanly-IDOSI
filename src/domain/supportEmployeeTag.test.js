@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   resolveSupportEmployeeTagContext,
+  resolveSupportEmployeeTagContextFromRecords,
   SUPPORT_EMPLOYEE_TAG_EFFECTIVE_DATE,
 } from './supportEmployeeTag'
 
@@ -123,5 +124,25 @@ describe('support employee tag context', () => {
       businessDate: '2026-09-02',
       supportTransfers: [{ ...transfer, toStoreId: 'OTHER' }],
     })).toBeNull()
+  })
+
+  it('finds canonical support context for aggregate employee rows', () => {
+    expect(resolveSupportEmployeeTagContextFromRecords({
+      records: [
+        { employeeId: 'OTHER', storeId: 'SUPPORT', businessDate: '2026-09-02', supportTransferId: transfer.id },
+        { employeeId: employee.id, storeId: 'HOME', businessDate: '2026-09-02' },
+        { employeeId: employee.id, storeId: 'SUPPORT', businessDate: '2026-09-03', supportTransferId: transfer.id },
+      ],
+      employee,
+      employeeId: employee.id,
+      storeId: 'SUPPORT',
+      employees: [employee],
+      stores,
+      supportTransfers: [transfer],
+    })).toMatchObject({
+      employeeId: employee.id,
+      homeStoreName: 'Dosii Cần Thơ',
+      supportStoreName: 'SM TNV',
+    })
   })
 })

@@ -348,6 +348,25 @@ const revenueAmount = (record = {}) => {
 const isSuperseded = (record = {}) => Boolean(record.supersededAt)
   || normalize(record.status) === 'superseded'
 const isEffectiveRevenueRecord = (record = {}) => !isVoided(record) && !isSuperseded(record)
+const SUPPORT_TAG_SNAPSHOT_FIELDS = [
+  'supportTransferred',
+  'isSupportEmployee',
+  'supportTransferId',
+  'supportTransferIds',
+  'supportHomeStoreId',
+  'supportHomeStoreName',
+  'supportStoreId',
+  'supportStoreName',
+  'supportCompensation',
+  'supportAssignment',
+  'supportContext',
+]
+const supportTagSnapshot = (...sources) => {
+  const merged = Object.assign({}, ...sources.filter(Boolean))
+  return Object.fromEntries(SUPPORT_TAG_SNAPSHOT_FIELDS
+    .filter((field) => Object.hasOwn(merged, field))
+    .map((field) => [field, merged[field]]))
+}
 
 /**
  * Projects effective daily revenue-bonus calculations into immutable history
@@ -467,6 +486,7 @@ export const revenueBonusHistoryProjection = ({
           ) || 0)
 
           return [{
+            ...supportTagSnapshot(daily, allocation),
             id: String(allocation.id || `${dailyId || businessDate}:${employeeId || 'unknown'}:${index}`),
             revenueBonusDailyId: dailyId,
             storeId: dailyStoreId || String(allocation.storeId || '').trim(),
