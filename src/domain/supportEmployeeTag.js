@@ -70,6 +70,33 @@ const storeIdentifiers = (store) => {
   return [source.id, source.code].map(compact).filter(Boolean)
 }
 
+const normalizedEmployeePrefix = (value) => compact(value)
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/gu, '')
+  .replace(/[^A-Za-z0-9]/gu, '')
+  .toLocaleLowerCase('en-US')
+
+const employeeCodePrefix = (value) => {
+  const match = compact(value).match(/^(.+?)[\s_-]+\d+$/u)
+  return match ? normalizedEmployeePrefix(match[1]) : ''
+}
+
+const storeEmployeePrefixes = (store) => {
+  const source = safeRecord(store)
+  return [source.employeePrefix, source.employeeCodePrefix, source.staffPrefix]
+    .map(normalizedEmployeePrefix)
+    .filter(Boolean)
+}
+
+const storeFromEmployeeCode = (stores, employeeReference) => {
+  const prefix = employeeCodePrefix(employeeReference)
+  if (!prefix) return null
+  const matches = (Array.isArray(stores) ? stores : []).filter((store) => (
+    storeEmployeePrefixes(store).includes(prefix)
+  ))
+  return matches.length === 1 ? matches[0] : null
+}
+
 const transferIdentifiers = (transfer) => {
   const source = safeRecord(transfer)
   return [source.id, source.transferId, source.supportTransferId].map(compact).filter(Boolean)
@@ -301,21 +328,25 @@ export function resolveSupportEmployeeTagContext({
   }
 
   const resolvedEmployeeRecord = safeRecord(resolvedEmployee)
+  const inferredHomeStore = storeFromEmployeeCode(stores, canonicalEmployeeId)
   const homeStoreId = explicitHomeStoreId(sourceRecord)
     || transferHomeStoreId(transfer)
     || compact(resolvedEmployeeRecord.homeStoreId)
     || compact(resolvedEmployeeRecord.storeId)
+    || storeIdentifiers(inferredHomeStore)[0]
   const supportStoreId = recordStoreId(sourceRecord)
     || transferSupportStoreId(transfer)
     || operationalStoreId
   // Legacy store records can predate the immutable support snapshot and may
   // no longer have a transfer whose exact date window can be reconstructed.
-  // The canonical employee directory still gives us unambiguous evidence:
-  // this employee belongs to one store while the record belongs to another.
+  // The canonical employee/store directory still gives us unambiguous
+  // evidence: this employee belongs to one store while the record belongs to
+  // another. Older store projections may only retain the employee code, so a
+  // unique explicit store employeePrefix is also accepted as directory data.
   // Keep explicit invalid/ambiguous transfer references fail-closed above,
   // then use the directory mismatch only as a presentation fallback.
   const directoryConfirmsExternalStore = Boolean(
-    employeeIdentifiers(resolvedEmployeeRecord).length
+    (employeeIdentifiers(resolvedEmployeeRecord).length || inferredHomeStore)
     && homeStoreId
     && supportStoreId
     && !sameIdentifier(homeStoreId, supportStoreId),
@@ -327,7 +358,7 @@ export function resolveSupportEmployeeTagContext({
   if (!supportEvidence || !homeStoreId || !supportStoreId || sameIdentifier(homeStoreId, supportStoreId)) return null
   if (!sameIdentifier(supportStoreId, operationalStoreId)) return null
 
-  const homeStore = resolveUnique(stores, homeStoreId, storeIdentifiers)
+  const homeStore = resolveUnique(stores, homeStoreId, storeIdentifiers) || inferredHomeStore
   const supportStore = resolveUnique(stores, supportStoreId, storeIdentifiers)
   const transferRecord = safeRecord(transfer)
   return {
