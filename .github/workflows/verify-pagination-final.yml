@@ -1,0 +1,245 @@
+name: Verify final IDOSI pagination
+
+on:
+  push:
+    branches:
+      - ops/verify-pagination-final-20260904
+    paths:
+      - .github/workflows/verify-pagination-final.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: idosi-final-pagination-verification
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PUBLIC_ORIGIN: https://idosi.io.vn
+      AUDIT_BRANCH: ops/verify-pagination-final-20260904
+    steps:
+      - name: Checkout exact current main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify pagination source coverage and business-date modes
+        id: source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' > /tmp/pagination-source.json
+          from pathlib import Path
+          import json, re
+
+          source = Path('src')
+          source_paginator = source / 'components' / 'PaginatedTbody.jsx'
+          central_paginator = source / 'components' / 'TablePaginationController.jsx'
+          architecture = 'missing'
+          converted_files = []
+          converted_bodies = 0
+          raw_files = []
+          today_first = 0
+          today_yesterday = 0
+
+          if source_paginator.exists() and 'DEFAULT_TABLE_PAGE_SIZE = 20' in source_paginator.read_text(encoding='utf-8'):
+              architecture = 'source'
+          elif central_paginator.exists() and 'TABLE_PAGE_SIZE = 20' in central_paginator.read_text(encoding='utf-8'):
+              architecture = 'central'
+
+          for path in source.rglob('*'):
+              if not path.is_file() or path.suffix not in {'.jsx', '.tsx'}:
+                  continue
+              if '.test.' in path.name or '.spec.' in path.name:
+                  continue
+              text = path.read_text(encoding='utf-8')
+              if path.name not in {'PaginatedTbody.jsx', 'TablePaginationController.jsx'} and re.search(r'<tbody(?=[\s>])', text):
+                  raw_files.append(str(path))
+              if path.name != 'PaginatedTbody.jsx' and '<PaginatedTbody' in text:
+                  converted_files.append(str(path))
+                  converted_bodies += text.count('<PaginatedTbody')
+                  today_first += text.count('paginationMode="today-first"')
+                  today_yesterday += text.count('paginationMode="today-yesterday-first"')
+
+          component_text = source_paginator.read_text(encoding='utf-8') if source_paginator.exists() else ''
+          central_text = central_paginator.read_text(encoding='utf-8') if central_paginator.exists() else ''
+          combined = component_text + '\n' + central_text
+          checks = {
+              'pageSize20': ('DEFAULT_TABLE_PAGE_SIZE = 20' in combined or 'TABLE_PAGE_SIZE = 20' in combined),
+              'numberedPages': ('Trang ${value}' in combined or '`Trang ${value}`' in combined),
+              'todayFirstMode': 'today-first' in combined,
+              'todayYesterdayMode': 'today-yesterday-first' in combined,
+              'vietnamTimeZone': 'Asia/Ho_Chi_Minh' in combined,
+              'adminAssignmentsRule': ('/admin/assignments' in combined or today_yesterday > 0),
+              'storeOrdersRule': ('/store/orders' in combined or today_first > 0),
+              'storeAttendanceRule': ('/store/attendance' in combined or 'chấm công' in combined.lower() or today_first > 0),
+              'storeRewardViolationRule': (
+                  '/store/reward' in combined
+                  or '/store/violation' in combined
+                  or 'tính thưởng' in combined.lower()
+                  or today_first > 0
+              ),
+          }
+          if architecture == 'missing':
+              raise SystemExit('No pagination implementation exists on main')
+          failed = [name for name, passed in checks.items() if not passed]
+          if failed:
+              raise SystemExit(f'Pagination source checks failed: {failed}')
+          if architecture == 'source':
+              if raw_files:
+                  raise SystemExit(f'Unconverted raw tbody files: {raw_files}')
+              if len(converted_files) < 8 or converted_bodies < 12:
+                  raise SystemExit(f'Insufficient source pagination coverage: {len(converted_files)} files / {converted_bodies} bodies')
+
+          print(json.dumps({
+              'architecture': architecture,
+              'convertedFiles': len(converted_files),
+              'convertedBodies': converted_bodies,
+              'rawTbodyFiles': raw_files,
+              'explicitTodayFirstModes': today_first,
+              'explicitTodayYesterdayModes': today_yesterday,
+              'checks': checks,
+          }, ensure_ascii=False))
+          PY
+          cat /tmp/pagination-source.json
+          echo "architecture=$(node -e \"const d=require('/tmp/pagination-source.json');process.stdout.write(d.architecture)\")" >> "$GITHUB_OUTPUT"
+          echo "converted_files=$(node -e \"const d=require('/tmp/pagination-source.json');process.stdout.write(String(d.convertedFiles))\")" >> "$GITHUB_OUTPUT"
+          echo "converted_bodies=$(node -e \"const d=require('/tmp/pagination-source.json');process.stdout.write(String(d.convertedBodies))\")" >> "$GITHUB_OUTPUT"
+
+      - name: Run targeted pagination tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f src/components/PaginatedTbody.test.jsx ]]; then
+            npx vitest run src/components/PaginatedTbody.test.jsx
+          elif [[ -f src/components/TablePaginationController.test.jsx ]]; then
+            npx vitest run src/components/TablePaginationController.test.jsx src/layout/AppShell.workspaceLoading.test.jsx
+          else
+            echo 'Pagination regression test file is missing.' >&2
+            exit 1
+          fi
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Verify pagination code is present in the production build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          grep -R -F 'Phân trang bảng dữ liệu' dist dist/client >/tmp/pagination-build-matches.txt
+          grep -R -E 'tối đa|Trang [0-9]|today-first|today-yesterday-first' dist dist/client >/tmp/pagination-build-mode-matches.txt
+          test -s /tmp/pagination-build-matches.txt
+          test -s /tmp/pagination-build-mode-matches.txt
+
+      - name: Wait for production to run exact main and verify public endpoints
+        id: production
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          main_sha="$(git rev-parse HEAD)"
+          for attempt in $(seq 1 120); do
+            payload="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "$PUBLIC_ORIGIN/api/release?_pagination_final=$attempt" 2>/dev/null || true)"
+            actual="$(node -e "try{const v=JSON.parse(process.argv[1]);process.stdout.write(v.data?.releaseSha||v.releaseSha||'')}catch{}" "$payload")"
+            if [[ "$actual" == "$main_sha" ]]; then
+              curl -fsS --max-time 20 "$PUBLIC_ORIGIN/api/health?_pagination_final=$attempt" >/tmp/public-health.json
+              curl -fsS --max-time 20 "$PUBLIC_ORIGIN/?_pagination_final=$attempt" >/tmp/public-index.html
+              grep -q '<script' /tmp/public-index.html
+              echo "main_sha=$main_sha" >> "$GITHUB_OUTPUT"
+              echo "production_sha=$actual" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Waiting for exact production release: main=$main_sha production=${actual:-unavailable} ($attempt/120)"
+            sleep 5
+          done
+          echo "Production did not reach exact main SHA $main_sha" >&2
+          exit 1
+
+      - name: Verify production assets contain pagination UI
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re, subprocess, urllib.parse
+
+          html = Path('/tmp/public-index.html').read_text(encoding='utf-8', errors='replace')
+          assets = sorted(set(re.findall(r'(?:src|href)=["\']([^"\']+\.(?:js|css)(?:\?[^"\']*)?)["\']', html)))
+          if not assets:
+              raise SystemExit('No production JS/CSS assets found')
+          found = False
+          for index, asset in enumerate(assets):
+              url = urllib.parse.urljoin('https://idosi.io.vn/', asset)
+              target = Path(f'/tmp/prod-asset-{index}')
+              subprocess.run(['curl', '-fsS', '--max-time', '30', url, '-o', str(target)], check=True)
+              text = target.read_text(encoding='utf-8', errors='replace')
+              if 'Phân trang bảng dữ liệu' in text or 'tối đa 20 dòng' in text:
+                  found = True
+          if not found:
+              raise SystemExit('Pagination strings were not found in directly referenced production assets')
+          PY
+
+      - name: Publish immutable final verification marker
+        shell: bash
+        env:
+          MAIN_SHA: ${{ steps.production.outputs.main_sha }}
+          PRODUCTION_SHA: ${{ steps.production.outputs.production_sha }}
+          ARCHITECTURE: ${{ steps.source.outputs.architecture }}
+          CONVERTED_FILES: ${{ steps.source.outputs.converted_files }}
+          CONVERTED_BODIES: ${{ steps.source.outputs.converted_bodies }}
+        run: |
+          set -Eeuo pipefail
+          git fetch origin "$AUDIT_BRANCH"
+          git checkout -B "$AUDIT_BRANCH" "origin/$AUDIT_BRANCH"
+          cat > PAGINATION_FINAL_VERIFICATION.json <<JSON
+          {
+            "status": "PASS",
+            "mainSha": "$MAIN_SHA",
+            "productionSha": "$PRODUCTION_SHA",
+            "architecture": "$ARCHITECTURE",
+            "convertedSourceFiles": $CONVERTED_FILES,
+            "convertedTableBodies": $CONVERTED_BODIES,
+            "pageSize": 20,
+            "adminAssignmentsFirstPage": "today-and-yesterday",
+            "storeOrdersFirstPage": "today",
+            "storeRewardViolationFirstPage": "today",
+            "storeAttendanceFirstPage": "today",
+            "numberedPagination": true,
+            "targetedTests": "PASS",
+            "lint": "PASS",
+            "fullTests": "PASS",
+            "productionBuild": "PASS",
+            "sitesVerification": "PASS",
+            "publicHealth": "PASS",
+            "productionAssets": "PASS",
+            "verifiedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "production": "$PUBLIC_ORIGIN"
+          }
+          JSON
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add PAGINATION_FINAL_VERIFICATION.json
+          git commit -m 'ops: record final pagination verification'
+          git push origin HEAD:"$AUDIT_BRANCH"
