@@ -47,6 +47,20 @@ jobs:
           bash -n deploy/vps/recover-stale-release-job.sh
           bash deploy/vps/recover-stale-release-job.test.sh
 
+      - name: Verify active public production release
+        env:
+          EXPECTED_ACTIVE_SHA: ${{ inputs.expected_active_sha }}
+        run: |
+          set -Eeuo pipefail
+          health_json="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+            'https://idosi.io.vn/api/health')"
+          jq -e '.ok == true' <<<"$health_json" >/dev/null
+
+          release_json="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+            'https://idosi.io.vn/api/release')"
+          jq -e --arg expected "$EXPECTED_ACTIVE_SHA" \
+            '.ok == true and .data.releaseSha == $expected' <<<"$release_json" >/dev/null
+
       - name: Configure production SSH
         env:
           VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
