@@ -61,7 +61,7 @@ jobs:
             src/pages/store/StoreV2Pages.jsx \
             src/pages/store/StoreV2Pages.metrics.test.jsx \
             src/styles.css | sort)"
-          actual="$(git diff --name-only -- src | sort)"
+          actual="$( { git diff --name-only -- src; git ls-files --others --exclude-standard -- src; } | sort -u)"
           test "$actual" = "$expected"
 
       - name: Install dependencies
