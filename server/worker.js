@@ -15715,11 +15715,8 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       })
     }
   }
-  const checkoutTaskCandidates = Array.isArray(openRecord.checklistSnapshot?.tasks)
-    ? checklistTasks
-    : (Array.isArray(state.tasks) ? state.tasks : [])
   const incompleteTasks = storeEmployee
-      ? checkoutTaskCandidates.filter((task) => {
+      ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
         if (task.deletedAt) return false
         if (!workTaskIsRequired(task)) return false
         if (!taskAppliesToEmployee(task, employeeId, attendanceStoreId)) return false
