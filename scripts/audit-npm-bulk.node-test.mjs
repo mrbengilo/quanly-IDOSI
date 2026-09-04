@@ -8,6 +8,7 @@ import {
   collectAdvisories,
   decodeBulkAdvisoryBody,
   requestBulkAdvisories,
+  requestGitHubAdvisories,
 } from './audit-npm-bulk.mjs'
 
 test('buildBulkAdvisoryPayload omits dev-only packages without losing production versions', () => {
@@ -66,4 +67,65 @@ test('requestBulkAdvisories retries a transient failure and decodes a gzipped su
   })
   assert.equal(calls, 2)
   assert.deepEqual(result, expected)
+})
+
+test('requestGitHubAdvisories checks exact package versions and normalizes active findings', async () => {
+  const requests = []
+  const fetchImpl = async (input, init) => {
+    const url = new URL(input)
+    const affects = url.searchParams.get('affects')
+    requests.push({ affects, authorization: new Headers(init.headers).get('authorization') })
+    if (affects === 'react@19.2.8') {
+      return new Response(JSON.stringify([
+        {
+          ghsa_id: 'GHSA-active',
+          severity: 'high',
+          summary: 'Active advisory',
+          html_url: 'https://github.com/advisories/GHSA-active',
+          withdrawn_at: null,
+          vulnerabilities: [{
+            package: { ecosystem: 'npm', name: 'react' },
+            vulnerable_version_range: '<=19.2.8',
+          }],
+        },
+        {
+          ghsa_id: 'GHSA-withdrawn',
+          severity: 'critical',
+          summary: 'Withdrawn advisory',
+          withdrawn_at: '2026-01-01T00:00:00Z',
+          vulnerabilities: [{
+            package: { ecosystem: 'npm', name: 'react' },
+            vulnerable_version_range: '<=19.2.8',
+          }],
+        },
+      ]), { status: 200 })
+    }
+    if (affects === '@scope/pkg@1.0.0') return new Response('[]', { status: 200 })
+    return new Response(JSON.stringify({ message: 'unexpected package' }), { status: 400 })
+  }
+
+  const report = await requestGitHubAdvisories({
+    react: ['19.2.8'],
+    '@scope/pkg': ['1.0.0'],
+  }, {
+    attempts: 1,
+    timeoutMs: 5_000,
+    concurrency: 2,
+    token: 'test-token',
+    fetchImpl,
+  })
+
+  assert.equal(requests.length, 2)
+  assert.ok(requests.some((request) => request.affects === '@scope/pkg@1.0.0'))
+  assert.ok(requests.every((request) => request.authorization === 'Bearer test-token'))
+  assert.deepEqual(report, {
+    react: [{
+      id: 'GHSA-active',
+      source: 'GHSA-active',
+      severity: 'high',
+      title: 'Active advisory',
+      url: 'https://github.com/advisories/GHSA-active',
+      vulnerable_versions: '<=19.2.8',
+    }],
+  })
 })
