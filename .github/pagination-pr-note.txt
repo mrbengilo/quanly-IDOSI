@@ -1,0 +1,1 @@
+Pagination changes are validated by branch workflow before merge.
