@@ -81,6 +81,18 @@ docker compose exec -T app node server/vps/verify-public-release.mjs \
   https://idosi.io.vn "$RELEASE_SHA"
 ```
 
+Production deployments bound the immutable image build to 900 seconds by
+default (`IDOSI_BUILD_TIMEOUT_SECONDS`) and emit plain BuildKit progress into
+the durable operation log. The GitHub workflow prints the latest log lines
+every five minutes while polling, so a stalled pull/build is visible and exits
+before it can hold the production deployment lock indefinitely.
+
+An active durable operation can be inspected without acquiring or changing the
+production lock by running **Inspect active IDOSI VPS deployment** from `main`
+with its exact operation ID and target SHA. The inspection is read-only: it
+validates the job files and reports the process tree, host resource snapshot,
+and bounded log tail without reading application data.
+
 ## 2. Tạo tài khoản Admin ban đầu
 
 Chạy từ `/opt/idosi/deploy/vps`:

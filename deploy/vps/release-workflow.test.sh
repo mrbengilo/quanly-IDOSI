@@ -205,6 +205,14 @@ assert_before "$TARGET_ROLLBACK_BLOCK" \
   'compose up -d --no-build app'
 grep -Fq 'verify-public-release.mjs' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
   || fail 'production workflow does not verify public static assets'
+grep -Fq 'attempt % 20 == 0' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
+  || fail 'production workflow does not emit periodic durable deployment logs'
+grep -Fq 'IDOSI_BUILD_TIMEOUT_SECONDS:-900' "$SCRIPT_DIR/deploy-release.sh" \
+  || fail 'production image build has no bounded timeout'
+grep -Fq 'timeout --foreground --signal=TERM --kill-after=30s' "$SCRIPT_DIR/deploy-release.sh" \
+  || fail 'production image build timeout cannot terminate a stalled build client'
+grep -Fq 'BUILDKIT_PROGRESS=plain' "$SCRIPT_DIR/deploy-release.sh" \
+  || fail 'production image build does not emit inspectable plain progress'
 grep -Fq 'attempt<=PUBLIC_VERIFY_ATTEMPTS' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
   || fail 'production workflow does not retry public verification during bounded cutover convergence'
 grep -Fq 'sleep "$PUBLIC_VERIFY_DELAY_SECONDS"' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \

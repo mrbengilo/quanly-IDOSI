@@ -25,15 +25,17 @@ PUBLIC_URL="${IDOSI_PUBLIC_URL:-https://idosi.io.vn}"
 [[ "$PUBLIC_URL" == https://* ]] || die 'IDOSI_PUBLIC_URL phải dùng HTTPS.'
 HEALTH_RETRIES="${IDOSI_HEALTH_RETRIES:-18}"
 HEALTH_DELAY_SECONDS="${IDOSI_HEALTH_DELAY_SECONDS:-5}"
+BUILD_TIMEOUT_SECONDS="${IDOSI_BUILD_TIMEOUT_SECONDS:-900}"
 [[ "$HEALTH_RETRIES" =~ ^[1-9][0-9]*$ ]] || die 'IDOSI_HEALTH_RETRIES phải là số nguyên dương.'
 [[ "$HEALTH_DELAY_SECONDS" =~ ^[1-9][0-9]*$ ]] || die 'IDOSI_HEALTH_DELAY_SECONDS phải là số nguyên dương.'
+[[ "$BUILD_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || die 'IDOSI_BUILD_TIMEOUT_SECONDS phải là số nguyên dương.'
 LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 SHORT_RELEASE="${RELEASE_SHA:0:12}"
 REPORT_FILE="$BACKUP_DIR/deploy-$TIMESTAMP-$SHORT_RELEASE.env"
 PENDING_REPORT_POINTER="$BACKUP_DIR/pending-$RELEASE_SHA.report"
 
-for command_name in git docker curl flock sha256sum awk date mktemp mv chmod tee basename cat rm head tail mkdir sleep; do
+for command_name in git docker curl flock sha256sum awk date mktemp mv chmod tee basename cat rm head tail mkdir sleep timeout; do
   require_command "$command_name"
 done
 docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin không hoạt động.'
@@ -459,7 +461,13 @@ git -C "$IDOSI_ROOT" checkout --detach "$RELEASE_SHA"
 export IDOSI_IMAGE="idosi-app:$RELEASE_SHA"
 export IDOSI_RELEASE_SHA="$RELEASE_SHA"
 compose config --quiet
-compose build --pull app
+log "Build image bắt đầu; timeout ${BUILD_TIMEOUT_SECONDS}s."
+(
+  cd "$COMPOSE_DIR"
+  BUILDKIT_PROGRESS=plain timeout --foreground --signal=TERM --kill-after=30s \
+    "$BUILD_TIMEOUT_SECONDS" docker compose -f compose.yml build --pull app
+)
+log 'Build image hoàn tất.'
 docker image inspect "$IDOSI_IMAGE" >/dev/null
 IMAGE_RELEASE_SHA="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$IDOSI_IMAGE")"
 [[ "$IMAGE_RELEASE_SHA" == "$RELEASE_SHA" ]] || die 'OCI image revision không khớp exact release SHA.'

@@ -238,6 +238,12 @@ jobs:
               fi
               exit 0
             fi
+            if (( attempt % 20 == 0 )); then
+              echo "Remote deployment vẫn đang chạy; log gần nhất sau $((attempt * 15)) giây:"
+              ssh "${ssh_args[@]}" "$VPS_USER@$VPS_HOST" \
+                "log_file='/opt/idosi/deploy/vps/backups/jobs/$OPERATION_ID.log'; if [ -f \"\$log_file\" ]; then tail -n 40 \"\$log_file\"; fi" \
+                || true
+            fi
             sleep 15
           done
 
