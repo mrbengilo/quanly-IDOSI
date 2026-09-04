@@ -111,33 +111,46 @@ describe('StoreTasks reward and violation tabs', () => {
 
   it('restores the mandatory progress submitted from a manager notification link', () => {
     mocked.app = makeApp('store_manager')
+    const supportStore = { id: 'CH002', name: 'Dosii KVC' }
+    const supportEmployee = {
+      id: 'SUPPORT-001', name: 'Nhân viên hỗ trợ tiến độ', unit: 'store',
+      storeId: supportStore.id, status: 'Đang làm việc',
+    }
+    mocked.app.stores = [store, supportStore]
+    mocked.app.employees = [...employees, supportEmployee]
+    mocked.app.supportTransfers = [{
+      id: 'TR-TASK', employeeId: supportEmployee.id,
+      fromStoreId: supportStore.id, toStoreId: store.id,
+      fromDate: '2026-09-02', toDate: '2026-09-02',
+    }]
     mocked.app.taskAssignmentHistory = [{
       id: 'ASSIGN-1',
       assignmentId: 'ASSIGN-1',
       storeId: store.id,
-      date: '2026-08-29',
+      date: '2026-09-02',
       shiftId: 'SHIFT-MORNING',
       tasks: [
-        { id: 'TASK-REQUIRED', title: 'Kiểm tra quầy', required: true, completedBy: { 'ST-001': true } },
-        { id: 'TASK-REWARD', title: 'Đổ rác', required: false, completedBy: { 'ST-001': false } },
+        { id: 'TASK-REQUIRED', title: 'Kiểm tra quầy', required: true, completedBy: { [supportEmployee.id]: true } },
+        { id: 'TASK-REWARD', title: 'Đổ rác', required: false, completedBy: { [supportEmployee.id]: false } },
       ],
       progressHistory: [{
         action: 'progress-submitted',
-        employeeId: 'ST-001',
-        employeeName: 'Nguyễn Thị Thúy Trang',
-        date: '2026-08-29',
+        employeeId: supportEmployee.id,
+        employeeName: supportEmployee.name,
+        date: '2026-09-02',
         shiftId: 'SHIFT-MORNING',
         completedTasks: 1,
         totalTasks: 1,
         completionRate: 100,
-        at: '2026-08-29T02:15:00.000Z',
+        at: '2026-09-02T02:15:00.000Z',
       }],
     }]
 
     renderStoreTasks('/store/tasks?assignment=ASSIGN-1')
 
     expect(screen.getByText('Kết quả công việc bắt buộc nhân viên đã gửi')).toBeTruthy()
-    expect(screen.getByText('Nguyễn Thị Thúy Trang')).toBeTruthy()
+    expect(screen.getByText(supportEmployee.name)).toBeTruthy()
+    expect(screen.getByText('Nhân viên hỗ trợ • Từ Dosii KVC')).toBeTruthy()
     expect(screen.getByText('1/1 (100%)')).toBeTruthy()
     expect(screen.getByText('Kiểm tra quầy')).toBeTruthy()
     expect(screen.queryByText('Đổ rác')).toBeNull()

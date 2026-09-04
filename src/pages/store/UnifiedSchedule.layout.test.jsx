@@ -45,6 +45,7 @@ const makeApp = () => ({
   session: { role: 'admin', employeeId: 'ADMIN' },
   activeStore: store,
   activeStoreId: store.id,
+  stores: [store],
   employees: [employee],
   supportTransfers: [],
   shiftDefinitions: [shift],
@@ -121,6 +122,35 @@ describe('store schedule visual flow', () => {
         'Giờ kết thúc': shift.end,
       })],
     )
+  })
+
+  it('tags a transferred employee in the daily matrix and daily history', () => {
+    const homeStore = { id: 'CH-KVC', name: 'Dosii KVC' }
+    const supportEmployee = {
+      ...employee,
+      id: 'DOSII-KVC-SUPPORT',
+      code: 'DOSII-KVC-SUPPORT',
+      name: 'Nhân viên hỗ trợ lịch',
+      storeId: homeStore.id,
+    }
+    mocked.app = {
+      ...makeApp(),
+      stores: [store, homeStore],
+      employees: [supportEmployee],
+      supportTransfers: [{
+        id: 'TR-SCHEDULE', employeeId: supportEmployee.id,
+        fromStoreId: homeStore.id, toStoreId: store.id,
+        fromDate: localDate(), toDate: localDate(),
+      }],
+      schedule: [{
+        id: 'LICH-SUPPORT', storeId: store.id, employeeId: supportEmployee.id,
+        date: localDate(), shiftIds: [shift.id], shiftSnapshots: [shift],
+      }],
+    }
+
+    renderSchedule()
+
+    expect(screen.getAllByText('Nhân viên hỗ trợ • Từ Dosii KVC')).toHaveLength(2)
   })
 
   it('creates a reusable shift without reintroducing a required date', async () => {

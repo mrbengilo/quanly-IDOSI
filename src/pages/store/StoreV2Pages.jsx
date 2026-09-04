@@ -42,6 +42,7 @@ import { SearchableSelect } from '../../components/SearchableSelect'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
 import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
 import { buildPaginatedPages } from '../../components/tablePagination'
+import { resolveSupportEmployeeTagContextFromRecords } from '../../domain/supportEmployeeTag'
 import {
   calculateAvailableSalary,
   financeSummaryFromState,
@@ -404,7 +405,7 @@ function useStoreData(preferredStoreId = '') {
 export function StoreOverviewV2() {
   const app = useStoreData()
   const navigate = useNavigate()
-  const { storeId, store, employees = [], orders = [], attendance = [], schedule = [] } = app
+  const { storeId, store, stores = [], employees = [], supportTransfers = [], orders = [], attendance = [], schedule = [] } = app
   const [now, setNow] = useState(() => new Date())
   const [period, setPeriod] = useState(today().slice(0, 7))
   const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
@@ -424,7 +425,14 @@ export function StoreOverviewV2() {
 
   return (
     <div className="page">
-      <OverdueAttendanceModal records={overdueAttendance} audience="store" />
+      <OverdueAttendanceModal
+        records={overdueAttendance}
+        audience="store"
+        storeId={storeId}
+        employees={employees}
+        stores={stores}
+        supportTransfers={supportTransfers}
+      />
       <PageHeader title={store?.name || 'TỔNG QUAN CỬA HÀNG'} subtitle="Không gian vận hành dành cho Admin và quản lý cửa hàng." icon={Store} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} />
       <div className="metrics-grid metrics-grid--4">
         <MetricCard label="DOANH THU KỲ" value={money(summary.revenue)} icon={TrendingUp} tone="green" />
@@ -769,7 +777,11 @@ export function StoreOrdersPage() {
         const first = group[0]
         const groupTotal = group.reduce((sum, order) => sum + Number(order.amount || 0), 0)
         const title = view === 'employee'
-          ? `${first.employeeName || 'Dữ liệu hệ thống'} — ${first.employeeId || ''}`
+          ? <span className="order-group__shift-title">
+              <strong>{first.employeeName || 'Dữ liệu hệ thống'}</strong>
+              <SupportEmployeeTag record={first} employeeId={first.employeeId || first.employeeCode} storeId={storeId} businessDate={businessDate(first.createdAt || first.date)} employees={employees} stores={stores} supportTransfers={supportTransfers} />
+              <small>{first.employeeId || first.employeeCode || '—'}</small>
+            </span>
           : view === 'day'
             ? `Ngày ${shortDate(businessDate(first.createdAt))}`
             : <span className="order-group__shift-title">
@@ -830,7 +842,7 @@ export function StoreOrdersPage() {
 
 export function StoreCashflowV2() {
   const app = useStoreData()
-  const { storeId, store, orders = [], fixedExpenses = [], employees = [], attendance = [], addFixedExpense, notify } = app
+  const { storeId, store, stores = [], orders = [], fixedExpenses = [], employees = [], supportTransfers = [], attendance = [], addFixedExpense, notify } = app
   const [period, setPeriod] = useState(today().slice(0, 7))
   const [view, setView] = useState('shift')
   const [expenseOpen, setExpenseOpen] = useState(false)
@@ -900,6 +912,11 @@ export function StoreCashflowV2() {
           .sort()
         return {
           ...row,
+          supportRecords: [
+            row.sourceOrder,
+            ...relatedAttendance,
+            { employeeId: row.employeeId, storeId, businessDate: row.date },
+          ].filter(Boolean),
           linkedExpense: relatedExpenses.reduce((total, transaction) => total + Number(transaction.amount || 0), 0),
           attendanceCount: relatedAttendance.length,
           latestCheckOut: checkOuts.at(-1) || '',
@@ -948,7 +965,17 @@ export function StoreCashflowV2() {
             ? `${shiftName}${shiftTime} — ${shortDate(row.date)}`
             : `${row.sourceOrder?.employeeName || employee?.name || 'Dữ liệu hệ thống'}${row.employeeId ? ` — ${row.employeeId}` : ''}`
         const checkOut = row.latestCheckOut ? `${row.attendanceCount} ca • ${timestamp(row.latestCheckOut)}` : '—'
-        return <tr key={row.key}><td><strong>{label}</strong></td><td>{row.orders}</td><td><strong>{money(row.revenue)}</strong></td><td>{money(row.cash)}</td><td>{money(row.transfer)}</td><td>{money(row.otherPayment)}</td><td>{money(row.linkedExpense)}</td><td>{checkOut}</td></tr>
+        const supportContext = view === 'employee' && row.employeeId
+          ? resolveSupportEmployeeTagContextFromRecords({
+              records: row.supportRecords,
+              employeeId: row.employeeId,
+              storeId,
+              employees,
+              stores,
+              supportTransfers,
+            })
+          : null
+        return <tr key={row.key}><td><strong>{label}</strong><SupportEmployeeTag context={supportContext} className="table-note" /></td><td>{row.orders}</td><td><strong>{money(row.revenue)}</strong></td><td>{money(row.cash)}</td><td>{money(row.transfer)}</td><td>{money(row.otherPayment)}</td><td>{money(row.linkedExpense)}</td><td>{checkOut}</td></tr>
       })}{!groupedRevenue.length && <tr><td colSpan="8">Chưa có giao dịch doanh thu trong kỳ.</td></tr>}{Boolean(groupedRevenue.length) && <tr className="total-row"><td>TỔNG KHỚP DOANH THU</td><td>{revenueTotals.orders}</td><td>{money(revenueTotals.revenue)}</td><td>{money(revenueTotals.cash)}</td><td>{money(revenueTotals.transfer)}</td><td>{money(revenueTotals.otherPayment)}</td><td>{money(revenueTotals.linkedExpense)}</td><td /></tr>}</tbody></TableWrap></Card>
       <Card title="Sổ giao dịch chi phí"><TableWrap><thead><tr><th>Thời gian</th><th>Loại</th><th>Nguồn</th><th>Số tiền</th><th>Trạng thái</th></tr></thead><tbody>{expenseTransactions.map((transaction) => <tr key={transaction.id}><td>{timestamp(transaction.occurredAt)}</td><td>{transaction.type}</td><td>{transaction.sourceType}</td><td><strong>{money(transaction.amount)}</strong></td><td><Badge>Đã ghi nhận</Badge></td></tr>)}{!expenseTransactions.length && <tr><td colSpan="5">Chưa có giao dịch chi phí trong kỳ.</td></tr>}{Boolean(expenseTransactions.length) && <tr className="total-row"><td colSpan="3">TỔNG KHỚP CHI PHÍ</td><td>{money(expenseTransactions.reduce((total, transaction) => total + Number(transaction.amount || 0), 0))}</td><td /></tr>}</tbody></TableWrap></Card>
       {canManageStore && <Modal open={expenseOpen} onClose={() => setExpenseOpen(false)} title="Nhập chi phí cố định" footer={<><Button variant="outline" onClick={() => setExpenseOpen(false)}>Hủy</Button><Button icon={Save} onClick={saveExpense}>LƯU</Button></>}><div className="form-grid"><Field label="Ngày phát sinh"><Input type="date" value={expenseForm.occurredAt} onChange={(event) => setExpenseForm({ ...expenseForm, occurredAt: event.target.value })} /></Field><Field label="Loại chi phí"><Select value={expenseForm.type} onChange={(event) => setExpenseForm({ ...expenseForm, type: event.target.value })}><option>Điện</option><option>Nước</option><option>Wi-Fi</option><option>Rác</option><option>Marketing</option><option>Chi phí thiết lập cửa hàng</option><option>Chi phí khác</option></Select></Field><Field label="Số tiền"><MoneyInput value={expenseForm.amount} onChange={(event) => setExpenseForm({ ...expenseForm, amount: event.target.value })} /></Field><Field label="Ghi chú"><Input value={expenseForm.note} onChange={(event) => setExpenseForm({ ...expenseForm, note: event.target.value })} /></Field></div></Modal>}
@@ -1059,7 +1086,7 @@ export function StoreAttendanceV2() {
     const rate = records.length ? (onTime / records.length) * 100 : 0
     const evaluationPolicy = policies?.attendanceEvaluation || { improveMinLateCount: 3, improveMinLateMinutes: 30 }
     const evaluation = late === 0 ? 'Chuyên cần tốt' : late >= evaluationPolicy.improveMinLateCount || lateMinutes >= evaluationPolicy.improveMinLateMinutes ? 'Cần cải thiện' : 'Cần duy trì'
-    return { employee, records: records.length, early, onTime, late, earlyMinutes, lateMinutes, rate, evaluation }
+    return { employee, sourceRecords: records, records: records.length, early, onTime, late, earlyMinutes, lateMinutes, rate, evaluation }
   }).filter((item) => item.records > 0)
 
   return <div className="page"><PageHeader title="CHẤM CÔNG CỬA HÀNG" subtitle="Lịch sử gồm nhân viên trực thuộc và nhân viên được điều chuyển đến hỗ trợ." icon={Clock3} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} /><div className="metrics-grid metrics-grid--3" aria-label="Tổng quan chấm công cửa hàng"><MetricCard label="TỔNG GIỜ GHI NHẬN" value={totalHours.toFixed(2)} suffix="giờ" icon={Clock3} tone="blue" /><MetricCard label="LƯỢT HỖ TRỢ NHẬN VÀO" value={supportRows.length} suffix="lượt" icon={Users} tone="orange" /><MetricCard label="CHI PHÍ NHÂN SỰ HỖ TRỢ" value={money(Math.floor(supportExpense))} icon={Wallet} tone="green" /></div><InfoNote>Chi phí lương hỗ trợ được ghi nhận cho <strong>{store?.name || 'cửa hàng nhận hỗ trợ'}</strong>, gồm lương theo giờ hỗ trợ và phụ cấp áp dụng một lần.</InfoNote><Card title="Lịch sử chấm công của nhân viên" action={<div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm nhân viên..." /><Select value={shift} onChange={(event) => setShift(event.target.value)}><option value="all">Tất cả ca</option>{shifts.map(({ id, name }) => <option key={id} value={id}>{name}</option>)}</Select><Select value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{scopedEmployees.map((employee) => <option key={employeePrimaryIdentifier(employee)} value={employeePrimaryIdentifier(employee)}>{employee.name}</option>)}</Select></div>}><TableWrap firstPageDates={[today()]} paginationKey={`${period}:${query}:${shift}:${employeeId}`}><thead><tr><th>STT</th><th>Nhân viên / Cửa hàng</th><th>Ca làm việc</th><th>Ngày</th><th>Giờ vào / Kết</th><th>Giờ thực tế</th><th>Trạng thái</th><th>Phút sớm / trễ</th><th>Phụ cấp TikTok</th><th>Lương thực nhận</th><th>Vị trí</th></tr></thead><tbody>{rowDetails.map(({ record, employee, pay }, index) => {
@@ -1077,7 +1104,7 @@ export function StoreAttendanceV2() {
       ? `${shortDateTime24(pay.support.transferStartAt)} – ${shortDateTime24(pay.support.transferEndAt)}`
       : ''
     return <tr key={record.id} data-page-date={businessDate(record.date || record.workDate || record.checkInAt)}><td>{index + 1}</td><td><strong>{employee?.name || record.employeeName}</strong><small className="table-note">{attendanceEmployeeReference(record)}</small>{pay.kind === 'support' ? <><SupportEmployeeTag record={{ ...record, supportCompensation: pay.support, supportStoreId: storeId, isSupportEmployee: true }} employee={employee} employeeId={attendanceEmployeeReference(record)} storeId={storeId} businessDate={record.date || record.workDate || record.checkInAt} employees={employees} stores={stores} supportTransfers={supportTransfers} /><small className="table-note">{pay.support.homeStoreName || homeStore?.name || homeStoreId || 'Cửa hàng chính'} → {pay.support.supportStoreName || supportStore?.name || store?.name || storeId}</small>{supportTime && <small className="table-note">{supportTime}</small>}<small className="table-note">{money(pay.support.hourlyRate)}/giờ · Phụ cấp {money(pay.support.allowance)}</small></> : <small className="table-note">Cửa hàng chính: {homeStore?.name || store?.name || storeId}</small>}</td><td><strong>{record.shiftName || attendanceShiftIdentifier(record)}</strong><small className="table-note">{record.shiftStart}–{record.shiftEnd}</small></td><td>{shortDate(record.date || record.workDate)}</td><td><div className="attendance-shift-timing"><span className="attendance-shift-timing__time attendance-shift-timing__time--in"><small>Vào</small><strong>{checkIn}</strong></span>{checkOut ? <><span className="attendance-shift-timing__arrow" aria-hidden="true">→</span><span className="attendance-shift-timing__time attendance-shift-timing__time--out"><small>Kết</small><strong>{checkOut}</strong></span><span className="attendance-shift-timing__state attendance-shift-timing__state--closed"><CheckCircle2 size={14} aria-hidden="true" />Đã kết ca</span></> : <span className="attendance-shift-timing__state attendance-shift-timing__state--open"><Clock3 size={14} aria-hidden="true" />Đang làm</span>}</div></td><td>{Number(record.hours || 0).toFixed(2)}</td><td><Badge tone={statusTone(status)}>{status}</Badge></td><td><span className={`attendance-minutes attendance-minutes--${minutesKind}`}>{attendanceMinutesLabel(record)}</span></td><td>{uniqueTiktokEmployees.has(employee) ? money(employee?.tiktokAllowance) : money(0)}</td><td>{pay.amount == null ? <span className="table-note" title="Nhân viên Full-Time tại cửa hàng chính không tính lương theo từng lượt chấm công">Không áp dụng</span> : <strong>{money(Math.floor(pay.amount))}</strong>}</td><td>{canViewAttendanceLocations && location.mapUrl ? <a className="attendance-location-link" href={location.mapUrl} target="_blank" rel="noreferrer" aria-label={`Xem vị trí điểm danh của ${employee?.name || record.employeeName || attendanceEmployeeReference(record)} trên Google Maps`}><MapPin size={16} aria-hidden="true" /><span>Xem vị trí</span></a> : <span className="table-note">—</span>}</td></tr>
-  })}<tr className="total-row"><td colSpan="5">TỔNG</td><td>{totalHours.toFixed(2)} giờ</td><td colSpan="2" /><td>{money(totalTiktok)}</td><td>{money(Math.floor(totalPay))}</td><td /></tr></tbody></TableWrap></Card><Card title="THỐNG KÊ ĐI LÀM ĐÚNG GIỜ"><TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Đi trễ</th><th>Đi đúng giờ</th><th>Đi sớm</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody>{stats.map((item, index) => <tr key={item.employee.id}><td>{index + 1}</td><td><strong>{item.employee.name}</strong><small className="table-note">{item.employee.id}</small></td><td className="red-text attendance-stat-value">{item.late}</td><td className="blue-text attendance-stat-value">{item.onTime}</td><td className="green-text attendance-stat-value">{item.early}</td><td className="green-text attendance-stat-value">{item.earlyMinutes}</td><td className="red-text attendance-stat-value">{item.lateMinutes}</td><td>{item.records}</td><td className="blue-text attendance-stat-value"><strong>{item.rate.toFixed(1)}%</strong></td><td><Badge tone={item.evaluation === 'Chuyên cần tốt' ? 'green' : item.evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{item.evaluation}</Badge></td></tr>)}</tbody></TableWrap></Card></div>
+  })}<tr className="total-row"><td colSpan="5">TỔNG</td><td>{totalHours.toFixed(2)} giờ</td><td colSpan="2" /><td>{money(totalTiktok)}</td><td>{money(Math.floor(totalPay))}</td><td /></tr></tbody></TableWrap></Card><Card title="THỐNG KÊ ĐI LÀM ĐÚNG GIỜ"><TableWrap><thead><tr><th>STT</th><th>Nhân viên</th><th>Đi trễ</th><th>Đi đúng giờ</th><th>Đi sớm</th><th>Tổng phút sớm</th><th>Tổng phút trễ</th><th>Tổng ca</th><th>Tỷ lệ đúng giờ</th><th>Đánh giá</th></tr></thead><tbody>{stats.map((item, index) => <tr key={item.employee.id}><td>{index + 1}</td><td><strong>{item.employee.name}</strong><SupportEmployeeTag context={resolveSupportEmployeeTagContextFromRecords({ records: item.sourceRecords, employee: item.employee, employeeId: item.employee.id, storeId, employees, stores, supportTransfers })} className="table-note" /><small className="table-note">{item.employee.id}</small></td><td className="red-text attendance-stat-value">{item.late}</td><td className="blue-text attendance-stat-value">{item.onTime}</td><td className="green-text attendance-stat-value">{item.early}</td><td className="green-text attendance-stat-value">{item.earlyMinutes}</td><td className="red-text attendance-stat-value">{item.lateMinutes}</td><td>{item.records}</td><td className="blue-text attendance-stat-value"><strong>{item.rate.toFixed(1)}%</strong></td><td><Badge tone={item.evaluation === 'Chuyên cần tốt' ? 'green' : item.evaluation === 'Cần cải thiện' ? 'red' : 'orange'}>{item.evaluation}</Badge></td></tr>)}</tbody></TableWrap></Card></div>
 }
 
 export function StorePayrollV2() {
@@ -1706,7 +1733,7 @@ export function StorePayrollV2() {
             const availability = item.status === 'Mới tạo'
               ? pendingAdvanceAvailabilityById[String(item.id)] || { ok: false, message: 'Không thể tính lương khả dụng của nhân viên.' }
               : { ok: true }
-            return <tr key={item.id}><td>{timestamp(item.createdAt)}</td><td><strong>{item.employeeName}</strong><small className="table-note">{item.employeeId}</small></td><td>{money(item.amount)}</td><td>{money(item.availableAtCreation)}</td><td>{money(item.remainingAfter)}</td><td>{item.createdBy?.name}</td><td>{item.note || '—'}</td><td><Badge tone={item.status === 'Đã chi' ? 'green' : 'orange'}>{item.status}</Badge></td>{canOperatePayroll && <td>{item.status === 'Mới tạo' ? <Button icon={CheckCircle2} disabled={!availability.ok || Boolean(payrollPreviewError)} title={!availability.ok ? availability.message : undefined} onClick={() => handleConfirmAdvance(item.id)}>XÁC NHẬN CHI</Button> : <span>{timestamp(item.confirmedAt)}</span>}</td>}</tr>
+            return <tr key={item.id}><td>{timestamp(item.createdAt)}</td><td><strong>{item.employeeName}</strong><SupportEmployeeTag record={item} employeeId={item.employeeId || item.employeeCode} storeId={storeId} businessDate={item.createdAt || `${period}-01`} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{item.employeeId}</small></td><td>{money(item.amount)}</td><td>{money(item.availableAtCreation)}</td><td>{money(item.remainingAfter)}</td><td>{item.createdBy?.name}</td><td>{item.note || '—'}</td><td><Badge tone={item.status === 'Đã chi' ? 'green' : 'orange'}>{item.status}</Badge></td>{canOperatePayroll && <td>{item.status === 'Mới tạo' ? <Button icon={CheckCircle2} disabled={!availability.ok || Boolean(payrollPreviewError)} title={!availability.ok ? availability.message : undefined} onClick={() => handleConfirmAdvance(item.id)}>XÁC NHẬN CHI</Button> : <span>{timestamp(item.confirmedAt)}</span>}</td>}</tr>
           })}
           {!scopedSalaryAdvances.length && <tr><td colSpan={canOperatePayroll ? 9 : 8}>Chưa có khoản ứng lương.</td></tr>}
         </tbody></TableWrap>

@@ -210,20 +210,22 @@ export function UnifiedSchedule() {
   const createdScheduleRows = [...new Set(daySchedule.flatMap(scheduleShiftIds))].map((shiftId) => {
     const records = daySchedule.filter((record) => scheduleShiftIds(record).includes(String(shiftId)))
     const shift = resolveScheduledShift(records[0] || {}, shiftId)
-    const employeeNames = records.map((record) => {
+    const employeeDetails = records.map((record) => {
       const employee = employeeById.get(String(record.employeeId))
-      return employee?.name || record.employeeName || record.employeeId
+      return { record, employee, name: employee?.name || record.employeeName || record.employeeId }
     })
     const timestamps = records.map((record) => record.updatedAt || record.createdAt).filter(Boolean)
     return {
       shift,
       records,
-      employeeNames,
+      employeeNames: employeeDetails.map((item) => item.name),
+      employeeDetails,
       note: records.find((record) => record.note)?.note || '',
       updatedAt: timestamps.toSorted().at(-1) || '',
     }
   }).toSorted((left, right) => String(right.shift.start || '').localeCompare(String(left.shift.start || '')))
   const historyDates = new Set(storeScheduleRange(date, historyMode).dates)
+  const focusedEmployee = employeeById.get(String(focusedEmployeeId || employees[0]?.id || ''))
   const scheduleHistoryRows = schedule
     .filter((record) => (
       historyDates.has(String(record.date || record.workDate || ''))
@@ -534,7 +536,7 @@ export function UnifiedSchedule() {
         {viewMode === 'week' && renderPeriodSchedule(datesOfWeek, 'week')}
         {viewMode === 'month' && renderPeriodSchedule(datesOfMonth, 'month')}
         {viewMode === 'employee' && <>
-          <Field label="Nhân viên"><Select value={focusedEmployeeId || employees[0]?.id || ''} onChange={(event) => setFocusedEmployeeId(event.target.value)}>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} — {employee.id}</option>)}</Select></Field>
+          <Field label="Nhân viên"><Select value={focusedEmployeeId || employees[0]?.id || ''} onChange={(event) => setFocusedEmployeeId(event.target.value)}>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} — {employee.id}</option>)}</Select>{focusedEmployee && <SupportEmployeeTag context={supportContextForEmployeeRange(focusedEmployee, mainViewRange.dates)} />}</Field>
           <TableWrap className="schedule-matrix schedule-matrix--employee"><thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ</th><th>Ghi chú</th></tr></thead><tbody>{schedule.filter((record) => String(record.employeeId) === String(focusedEmployeeId || employees[0]?.id || '') && storeScheduleRecordMatches(record, storeId)).toSorted((left, right) => String(right.date).localeCompare(String(left.date))).map((record) => {
             const assigned = resolveStoreScheduleRecordShifts({ record, shiftDefinitions, storeId })
             return <tr key={record.id || `${record.employeeId}-${record.date}`}><td>{displayDate(record.date)}</td><td>{assigned.map((shift) => shift.name).join(', ') || '—'}</td><td>{assigned.map(scheduleShiftTimeLabel).join(', ') || '—'}</td><td>{record.note || '—'}</td></tr>
@@ -558,7 +560,7 @@ export function UnifiedSchedule() {
                 <div className="created-schedule-row__content">
                   <strong>{row.shift.name}</strong>
                   <b>{scheduleShiftTimeLabel(row.shift)}</b>
-                  <span>{row.employeeNames.join(', ')}</span>
+                  <div className="created-schedule-row__employees">{row.employeeDetails.map(({ record, employee, name }) => <span key={record.id || record.employeeId}><strong>{name}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employee || { id: record.employeeId, name }, date)} /></span>)}</div>
                   {row.note && <small>Ghi chú: {row.note}</small>}
                   <small>Cập nhật: {displayDateTime(row.updatedAt)}</small>
                 </div>

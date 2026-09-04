@@ -3,7 +3,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EmployeePayrollDetails } from '../employee/EmployeeV2Pages'
 import { today } from '../../utils'
-import { StoreAttendanceV2, StoreOrdersPage, StoreOverviewV2, StorePayrollV2, StoreReportsV2 } from './StoreV2Pages'
+import { StoreAttendanceV2, StoreCashflowV2, StoreOrdersPage, StoreOverviewV2, StorePayrollV2, StoreReportsV2 } from './StoreV2Pages'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
@@ -303,11 +303,20 @@ describe('store order, attendance, and payroll summaries', () => {
   it('shows only the current store overdue employees in a dismissible warning', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-09-02T03:00:00.000Z')
+    const supportEmployee = { ...employee, id: 'S02-OVERDUE', name: 'Nhân viên hỗ trợ quá hạn', storeId: 'S02' }
     mocked.app = {
       ...baseApp(),
+      employees: [employee, supportEmployee],
+      supportTransfers: [{
+        id: 'TR-OVERDUE', employeeId: supportEmployee.id, fromStoreId: 'S02', toStoreId: store.id,
+        fromDate: '2026-09-01', toDate: '2026-09-01',
+      }],
       attendance: [{
         id: 'ATT-STORE-OLD', storeId: store.id, employeeId: employee.id, date: '2026-09-01',
         shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:00',
+      }, {
+        id: 'ATT-SUPPORT-OLD', storeId: store.id, employeeId: supportEmployee.id, date: '2026-09-01',
+        shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '17:00', checkIn: '13:00',
       }, {
         id: 'ATT-OTHER-STORE', storeId: 'S02', employeeId: 'S02-001', employeeName: 'Nhân viên cửa hàng khác',
         date: '2026-09-01', shiftName: 'Ca sáng', shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:00',
@@ -318,6 +327,8 @@ describe('store order, attendance, and payroll summaries', () => {
 
     expect(screen.getByRole('dialog', { name: 'CẢNH BÁO NHÂN VIÊN CHƯA KẾT CA' })).toBeTruthy()
     expect(screen.getByText(employee.name)).toBeTruthy()
+    expect(screen.getByText(supportEmployee.name)).toBeTruthy()
+    expect(screen.getByText('Nhân viên hỗ trợ • Từ Dosii TNV')).toBeTruthy()
     expect(screen.getByText('chưa kết ca ngày 01/09/26 · Ca sáng')).toBeTruthy()
     expect(screen.queryByText('Nhân viên cửa hàng khác')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'ĐÃ HIỂU' }))
@@ -347,6 +358,53 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(within(metrics).getByText('1')).toBeTruthy()
     expect(within(metrics).getAllByText('270,000 đ')).toHaveLength(2)
     expect(within(metrics).getByText('0 đ')).toBeTruthy()
+  })
+
+  it('tags a support employee in both order rows and employee grouping headings', () => {
+    const supportEmployee = { ...employee, id: 'S02-ORDER', name: 'Nhân viên hỗ trợ đơn hàng', storeId: 'S02' }
+    mocked.app = {
+      ...baseApp(),
+      employees: [supportEmployee],
+      supportTransfers: [{
+        id: 'TR-ORDER', employeeId: supportEmployee.id, fromStoreId: 'S02', toStoreId: store.id,
+        fromDate: today(), toDate: today(),
+      }],
+      orders: [{
+        id: 'O-SUPPORT', code: 'O-SUPPORT', storeId: store.id,
+        employeeId: supportEmployee.id, employeeName: supportEmployee.name,
+        customerName: 'Khách hỗ trợ', amount: 150_000, paymentMethod: 'Tiền mặt',
+        createdAt: `${today()}T09:00:00+07:00`,
+      }],
+    }
+
+    renderPage(StoreOrdersPage, '/store/orders')
+    fireEvent.click(screen.getByRole('button', { name: 'Theo nhân viên' }))
+
+    expect(screen.getAllByText('Nhân viên hỗ trợ • Từ Dosii TNV')).toHaveLength(2)
+  })
+
+  it('tags a support employee in the employee-grouped cashflow view', () => {
+    const supportEmployee = { ...employee, id: 'S02-CASHFLOW', name: 'Nhân viên hỗ trợ dòng tiền', storeId: 'S02' }
+    mocked.app = {
+      ...baseApp(),
+      employees: [supportEmployee],
+      supportTransfers: [{
+        id: 'TR-CASHFLOW', employeeId: supportEmployee.id, fromStoreId: 'S02', toStoreId: store.id,
+        fromDate: today(), toDate: today(),
+      }],
+      orders: [{
+        id: 'O-CASHFLOW', storeId: store.id, employeeId: supportEmployee.id,
+        employeeName: supportEmployee.name, amount: 180_000, paymentMethod: 'Tiền mặt',
+        createdAt: `${today()}T10:00:00+07:00`,
+      }],
+      expenseEntries: [],
+      addFixedExpense: vi.fn(),
+    }
+
+    renderPage(StoreCashflowV2)
+    fireEvent.click(screen.getByRole('button', { name: 'Theo nhân viên' }))
+
+    expect(screen.getByText('Nhân viên hỗ trợ • Từ Dosii TNV')).toBeTruthy()
   })
 
   it('shows daily and monthly store reports with shift revenue, expense detail and growth', () => {
@@ -488,6 +546,7 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(within(partTimeRow).getByText('80,000 đ')).toBeTruthy()
     expect(within(fullTimeRow).getByText('Không áp dụng')).toBeTruthy()
     expect(within(supportRow).getByText('Nhân viên hỗ trợ • Từ Dosii TNV')).toBeTruthy()
+    expect(screen.getAllByText('Nhân viên hỗ trợ • Từ Dosii TNV')).toHaveLength(2)
     expect(within(supportRow).getByText(/Dosii TNV.*Dosii KVC/i)).toBeTruthy()
     expect(within(supportRow).getByText('140,000 đ')).toBeTruthy()
     expect(within(screen.getByLabelText('Tổng quan chấm công cửa hàng')).getByText('140,000 đ')).toBeTruthy()
@@ -651,6 +710,29 @@ describe('store order, attendance, and payroll summaries', () => {
 
     expect(screen.getByText('20,000 đ/giờ')).toBeTruthy()
     expect(screen.getAllByText('80,000 đ').length).toBeGreaterThan(0)
+  })
+
+  it('tags a support employee in salary advance history', () => {
+    const supportEmployee = { ...employee, id: 'S02-ADVANCE', name: 'Nhân viên hỗ trợ ứng lương', storeId: 'S02' }
+    mocked.app = {
+      ...baseApp(),
+      employees: [supportEmployee],
+      supportTransfers: [{
+        id: 'TR-ADVANCE', employeeId: supportEmployee.id, fromStoreId: 'S02', toStoreId: store.id,
+        fromDate: today(), toDate: today(),
+      }],
+      salaryAdvances: [{
+        id: 'ADVANCE-SUPPORT', storeId: store.id, employeeId: supportEmployee.id,
+        employeeName: supportEmployee.name, period: today().slice(0, 7), createdAt: `${today()}T11:00:00+07:00`,
+        amount: 100_000, availableAtCreation: 300_000, remainingAfter: 200_000,
+        createdBy: { name: 'Admin' }, note: 'Ứng lương hỗ trợ', status: 'Đã chi',
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    const advanceTable = screen.getByRole('columnheader', { name: 'Số tiền ứng' }).closest('table')
+    expect(within(advanceTable).getByText('Nhân viên hỗ trợ • Từ Dosii TNV')).toBeTruthy()
   })
 
   it('attributes a support work reward to the destination payroll without leaking it to the home store', () => {
