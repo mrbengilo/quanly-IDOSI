@@ -1,0 +1,633 @@
+name: Deliver verified table pagination v3
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-v3
+    paths:
+      - .github/workflows/deliver-table-pagination-v3.yml
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: idosi-deliver-table-pagination-v3
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH_NAME: perf/paginate-data-tables-v3
+    steps:
+      - name: Checkout delivery branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-v3
+          fetch-depth: 0
+
+      - name: Synchronize with latest main
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Implement shared 20-row pagination across all data tables
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src/components
+          cat > src/components/PaginatedTbody.jsx <<'EOF'
+          import { Children, Fragment, cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
+
+          export const DEFAULT_TABLE_PAGE_SIZE = 20
+
+          const VIETNAM_TIME_ZONE = 'Asia/Ho_Chi_Minh'
+          const PAGE_WINDOW = 2
+
+          const vietnamDateKey = (date = new Date()) => {
+            const parts = new Intl.DateTimeFormat('en-US', {
+              timeZone: VIETNAM_TIME_ZONE,
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            }).formatToParts(date)
+            const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]))
+            return `${values.year}-${values.month}-${values.day}`
+          }
+
+          const previousDateKey = (dateKey) => {
+            const [year, month, day] = String(dateKey || '').split('-').map(Number)
+            const date = new Date(Date.UTC(year, month - 1, day - 1, 12))
+            return [
+              date.getUTCFullYear(),
+              String(date.getUTCMonth() + 1).padStart(2, '0'),
+              String(date.getUTCDate()).padStart(2, '0'),
+            ].join('-')
+          }
+
+          const flattenChildren = (children) => Children.toArray(children).flatMap((child) => {
+            if (typeof child === 'string' && !child.trim()) return []
+            if (child === null || child === undefined || typeof child === 'boolean') return []
+            if (isValidElement(child) && child.type === Fragment) return flattenChildren(child.props.children)
+            return [child]
+          })
+
+          const textFromNode = (node) => {
+            if (node === null || node === undefined || typeof node === 'boolean') return ''
+            if (typeof node === 'string' || typeof node === 'number') return String(node)
+            if (Array.isArray(node)) return node.map(textFromNode).join(' ')
+            if (!isValidElement(node)) return ''
+            const candidates = [
+              node.props?.date,
+              node.props?.value,
+              node.props?.businessDate,
+              node.props?.workDate,
+              node.props?.createdAt,
+              node.props?.checkInAt,
+              node.props?.timestamp,
+              textFromNode(node.props?.children),
+            ].filter(Boolean)
+            return candidates.join(' ')
+          }
+
+          const normalizeDateKey = (value) => {
+            const text = String(value || '').trim()
+            let match = text.match(/\b(20\d{2})[-/.](0[1-9]|1[0-2])[-/.]([0-2]\d|3[01])\b/u)
+            if (match) return `${match[1]}-${match[2]}-${match[3]}`
+            match = text.match(/\b([0-2]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](20\d{2})\b/u)
+            if (match) return `${match[3]}-${match[2]}-${match[1]}`
+            return ''
+          }
+
+          const rowDateKey = (row) => {
+            if (!isValidElement(row)) return ''
+            const explicit = row.props?.['data-business-date']
+              || row.props?.['data-work-date']
+              || row.props?.['data-date']
+            return normalizeDateKey(explicit) || normalizeDateKey(textFromNode(row))
+          }
+
+          const chunkRows = (rows, pageSize) => {
+            const pages = []
+            for (let index = 0; index < rows.length; index += pageSize) {
+              pages.push(rows.slice(index, index + pageSize))
+            }
+            return pages
+          }
+
+          const buildPages = (rows, mode, pageSize, todayKey) => {
+            if (!rows.length) return [[]]
+            if (!['today-first', 'today-yesterday-first'].includes(mode)) return chunkRows(rows, pageSize)
+
+            const preferredDates = new Set([todayKey])
+            if (mode === 'today-yesterday-first') preferredDates.add(previousDateKey(todayKey))
+            const preferred = []
+            const historical = []
+            rows.forEach((row) => {
+              const dateKey = rowDateKey(row)
+              if (dateKey && preferredDates.has(dateKey)) preferred.push(row)
+              else historical.push(row)
+            })
+
+            const pages = chunkRows(preferred, pageSize)
+            if (!pages.length) pages.push([])
+            pages.push(...chunkRows(historical, pageSize))
+            return pages
+          }
+
+          const visiblePageNumbers = (currentPage, pageCount) => {
+            if (pageCount <= 7) return Array.from({ length: pageCount }, (_, index) => index + 1)
+            const values = new Set([1, pageCount])
+            for (let page = currentPage - PAGE_WINDOW; page <= currentPage + PAGE_WINDOW; page += 1) {
+              if (page > 1 && page < pageCount) values.add(page)
+            }
+            const sorted = [...values].sort((left, right) => left - right)
+            const result = []
+            sorted.forEach((page, index) => {
+              if (index && page - sorted[index - 1] > 1) result.push(`ellipsis-${page}`)
+              result.push(page)
+            })
+            return result
+          }
+
+          const modeForCurrentRoute = (requestedMode) => {
+            if (requestedMode) return requestedMode
+            if (typeof window === 'undefined') return 'default'
+            const route = `${window.location.pathname || ''}${window.location.hash || ''}`.toLowerCase()
+            if (route.includes('/store/orders')) return 'today-first'
+            return 'default'
+          }
+
+          export default function PaginatedTbody({
+            children,
+            paginationMode = '',
+            pageSize = DEFAULT_TABLE_PAGE_SIZE,
+            emptyMessage = '',
+            ...tbodyProps
+          }) {
+            const rows = useMemo(() => flattenChildren(children), [children])
+            const normalizedPageSize = Math.max(1, Number(pageSize) || DEFAULT_TABLE_PAGE_SIZE)
+            const mode = modeForCurrentRoute(paginationMode)
+            const todayKey = vietnamDateKey()
+            const pages = useMemo(
+              () => buildPages(rows, mode, normalizedPageSize, todayKey),
+              [mode, normalizedPageSize, rows, todayKey],
+            )
+            const [page, setPage] = useState(1)
+            const tableBodyRef = useRef(null)
+            const pageCount = Math.max(1, pages.length)
+
+            useEffect(() => {
+              setPage((current) => Math.min(Math.max(1, current), pageCount))
+            }, [pageCount])
+
+            useEffect(() => {
+              setPage(1)
+            }, [mode, normalizedPageSize])
+
+            const selectedRows = pages[Math.min(page, pageCount) - 1] || []
+            const specialEmpty = !selectedRows.length && rows.length && mode !== 'default'
+            const defaultEmptyMessage = mode === 'today-yesterday-first'
+              ? 'Không có dữ liệu trong hôm nay và hôm qua.'
+              : 'Không có dữ liệu trong ngày hiện tại.'
+            const navigate = (nextPage) => {
+              setPage(Math.min(pageCount, Math.max(1, nextPage)))
+              if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => {
+                  tableBodyRef.current?.closest('table')?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+                })
+              }
+            }
+            const controls = visiblePageNumbers(page, pageCount)
+
+            return (
+              <tbody {...tbodyProps} ref={tableBodyRef} data-pagination-mode={mode}>
+                {selectedRows.map((row, index) => (
+                  isValidElement(row) ? cloneElement(row, { key: row.key ?? `page-row-${page}-${index}` }) : row
+                ))}
+                {specialEmpty ? (
+                  <tr className="table-pagination__empty-row">
+                    <td colSpan={100}>{emptyMessage || defaultEmptyMessage}</td>
+                  </tr>
+                ) : null}
+                {pageCount > 1 ? (
+                  <tr className="table-pagination__row">
+                    <td colSpan={100}>
+                      <nav className="table-pagination" aria-label="Phân trang bảng dữ liệu">
+                        <button type="button" onClick={() => navigate(page - 1)} disabled={page === 1} aria-label="Trang trước">‹</button>
+                        {controls.map((value) => (
+                          typeof value === 'string'
+                            ? <span key={value} className="table-pagination__ellipsis" aria-hidden="true">…</span>
+                            : (
+                              <button
+                                type="button"
+                                key={value}
+                                className={value === page ? 'active' : ''}
+                                aria-current={value === page ? 'page' : undefined}
+                                aria-label={`Trang ${value}`}
+                                onClick={() => navigate(value)}
+                              >
+                                {value}
+                              </button>
+                            )
+                        ))}
+                        <button type="button" onClick={() => navigate(page + 1)} disabled={page === pageCount} aria-label="Trang sau">›</button>
+                        <small>Trang {page}/{pageCount} • tối đa {normalizedPageSize} dòng</small>
+                      </nav>
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            )
+          }
+
+          export const paginationTestHelpers = {
+            buildPages,
+            flattenChildren,
+            normalizeDateKey,
+            previousDateKey,
+            rowDateKey,
+            vietnamDateKey,
+          }
+          EOF
+
+          cat > src/components/PaginatedTbody.test.jsx <<'EOF'
+          import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+          import { afterEach, describe, expect, it, vi } from 'vitest'
+          import PaginatedTbody from './PaginatedTbody'
+
+          const Table = ({ count = 45, mode = '', dates = [] }) => (
+            <table>
+              <PaginatedTbody paginationMode={mode}>
+                {Array.from({ length: count }, (_, index) => (
+                  <tr key={index}>
+                    <td>Dòng {index + 1}</td>
+                    <td>{dates[index] || '01/01/2026'}</td>
+                  </tr>
+                ))}
+              </PaginatedTbody>
+            </table>
+          )
+
+          describe('PaginatedTbody', () => {
+            afterEach(() => {
+              cleanup()
+              vi.useRealTimers()
+              vi.restoreAllMocks()
+            })
+
+            it('renders at most 20 data rows and changes numbered pages', () => {
+              render(<Table />)
+              const table = screen.getByRole('table')
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(20)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(20)
+              expect(within(table).getByText('Dòng 21')).toBeTruthy()
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 3' }))
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(5)
+              expect(within(table).getByText('Dòng 45')).toBeTruthy()
+            })
+
+            it('keeps today and yesterday on the first assignment-history page', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00.000Z'))
+              const dates = [
+                ...Array.from({ length: 4 }, () => '04/09/2026'),
+                ...Array.from({ length: 4 }, () => '03/09/2026'),
+                ...Array.from({ length: 4 }, () => '02/09/2026'),
+              ]
+              render(<Table count={12} mode="today-yesterday-first" dates={dates} />)
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(8)
+              expect(screen.queryByText('Dòng 9')).toBeNull()
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(4)
+              expect(screen.getByText('Dòng 9')).toBeTruthy()
+            })
+
+            it('keeps the current business date on the first store page', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00.000Z'))
+              const dates = [
+                ...Array.from({ length: 3 }, () => '04/09/2026'),
+                ...Array.from({ length: 5 }, () => '03/09/2026'),
+              ]
+              render(<Table count={8} mode="today-first" dates={dates} />)
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(3)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(5)
+            })
+          })
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          root = Path('src')
+          component = root / 'components' / 'PaginatedTbody.jsx'
+          mode_labels = [
+              ('lịch sử giao việc và tiến độ hoàn thành', 'today-yesterday-first'),
+              ('lịch sử chấm công của nhân viên', 'today-first'),
+              ('lịch sử chấm công nhân viên', 'today-first'),
+              ('công việc tính thưởng & vi phạm', 'today-first'),
+              ('công việc tính thưởng và vi phạm', 'today-first'),
+          ]
+          transformed_files = 0
+          transformed_bodies = 0
+          mode_counts = {}
+
+          for path in sorted(root.rglob('*')):
+              if not path.is_file() or path.suffix not in {'.jsx', '.tsx'}:
+                  continue
+              if path == component or '.test.' in path.name or '.spec.' in path.name:
+                  continue
+              source = path.read_text(encoding='utf-8')
+              matches = list(re.finditer(r'<tbody(?=[\s>])', source))
+              if not matches:
+                  continue
+
+              replacements = []
+              lowered = source.casefold()
+              for match in matches:
+                  start = match.start()
+                  nearby = lowered[max(0, start - 6000):min(len(lowered), start + 6000)]
+                  mode = next((candidate for label, candidate in mode_labels if label in nearby), '')
+                  replacement = '<PaginatedTbody'
+                  if mode:
+                      replacement += f' paginationMode="{mode}"'
+                      mode_counts[mode] = mode_counts.get(mode, 0) + 1
+                  replacements.append((match.start(), match.end(), replacement))
+
+              updated = source
+              for start, end, replacement in reversed(replacements):
+                  updated = updated[:start] + replacement + updated[end:]
+              updated = updated.replace('</tbody>', '</PaginatedTbody>')
+
+              relative_import = os.path.relpath(component.with_suffix(''), path.parent).replace(os.sep, '/')
+              if not relative_import.startswith('.'):
+                  relative_import = f'./{relative_import}'
+              import_line = f"import PaginatedTbody from '{relative_import}'\n"
+              if import_line.strip() not in updated:
+                  first_import = re.search(r'^import\s', updated, flags=re.MULTILINE)
+                  if first_import:
+                      updated = updated[:first_import.start()] + import_line + updated[first_import.start():]
+                  else:
+                      updated = import_line + updated
+
+              path.write_text(updated, encoding='utf-8')
+              transformed_files += 1
+              transformed_bodies += len(matches)
+
+          if transformed_files < 8 or transformed_bodies < 12:
+              raise SystemExit(f'Pagination coverage unexpectedly low: {transformed_files} files / {transformed_bodies} bodies')
+          if mode_counts.get('today-yesterday-first', 0) < 1:
+              raise SystemExit('Admin assignment history table was not identified')
+          if mode_counts.get('today-first', 0) < 2:
+              raise SystemExit('Store date-priority tables were not identified')
+          print({'transformed_files': transformed_files, 'transformed_bodies': transformed_bodies, 'mode_counts': mode_counts})
+          PY
+
+          if ! grep -q 'Shared data-table pagination' src/styles.css; then
+            cat >> src/styles.css <<'EOF'
+
+          /* Shared data-table pagination: no table mounts more than 20 business rows at once. */
+          .table-pagination__row>td{padding:14px 10px!important;background:#fbfdfb!important;border-top:1px solid #dbe8df!important;text-align:center!important}
+          .table-pagination{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;width:100%}
+          .table-pagination button{min-width:34px;height:34px;padding:0 9px;border:1px solid #cadbd0;border-radius:8px;background:#fff;color:#155d38;font-size:12px;font-weight:750;cursor:pointer;transition:background .16s,border-color .16s,color .16s,transform .16s}
+          .table-pagination button:hover:not(:disabled){border-color:#4ba873;background:#edf8f1;transform:translateY(-1px)}
+          .table-pagination button.active{border-color:#078443;background:#078443;color:#fff;box-shadow:0 5px 14px rgba(7,132,67,.2)}
+          .table-pagination button:disabled{cursor:not-allowed;opacity:.4}
+          .table-pagination small{margin-left:8px;color:#65736b;font-size:10px;font-weight:600}
+          .table-pagination__ellipsis{display:inline-grid;place-items:center;min-width:24px;color:#718078;font-weight:800}
+          .table-pagination__empty-row>td{padding:22px!important;color:#738078!important;text-align:center!important;background:#fbfdfb!important;font-size:12px!important}
+          @media(max-width:640px){.table-pagination{gap:4px}.table-pagination button{min-width:31px;height:31px;padding:0 7px}.table-pagination small{flex-basis:100%;margin:4px 0 0}}
+          EOF
+          fi
+
+          rm -f \
+            .github/workflows/export-pagination-source-v2.yml \
+            .github/workflows/apply-global-table-pagination.yml \
+            .github/workflows/finalize-table-pagination.yml \
+            .github/workflows/probe-pagination-branch.yml \
+            .github/workflows/complete-pagination-delivery.yml \
+            .github/workflows/pagination-completion-marker.yml \
+            .github/workflows/branch-v3-bootstrap.yml \
+            .github/workflows/deliver-table-pagination-v3.yml \
+            .github/pagination-pr-note.txt \
+            PAGINATION_IMPLEMENTATION_STATUS.md \
+            PAGINATION_READY.md \
+            BRANCH_CREATION_PLACEHOLDER.md \
+            STOP_TEMP_FILES.txt
+
+      - name: Verify source coverage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          raw = []
+          converted = []
+          for path in Path('src').rglob('*'):
+              if not path.is_file() or path.suffix not in {'.jsx', '.tsx'} or '.test.' in path.name or '.spec.' in path.name:
+                  continue
+              text = path.read_text(encoding='utf-8')
+              if path.name != 'PaginatedTbody.jsx' and '<tbody' in text:
+                  raw.append(str(path))
+              if '<PaginatedTbody' in text and path.name != 'PaginatedTbody.jsx':
+                  converted.append(str(path))
+          if raw:
+              raise SystemExit(f'Unconverted table bodies: {raw}')
+          if len(converted) < 8:
+              raise SystemExit(f'Only {len(converted)} source files use PaginatedTbody')
+          print({'paginated_source_files': len(converted)})
+          PY
+
+      - name: Targeted pagination tests
+        run: npx vitest run src/components/PaginatedTbody.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit and push verified candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m 'perf(tables): paginate all data tables at 20 rows'
+          git push --force-with-lease origin HEAD:"$BRANCH_NAME"
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create pull request
+        if: steps.candidate.outputs.changed == 'true'
+        id: pull_request
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH_NAME" \
+            --title 'perf: phân trang toàn bộ bảng dữ liệu tối đa 20 dòng' \
+            --body '## Phạm vi
+          - Admin/Giao việc: trang đầu ưu tiên hôm nay và hôm qua.
+          - Cửa hàng/Đơn hàng: trang đầu ưu tiên ngày hiện tại.
+          - Cửa hàng/Công việc tính thưởng & vi phạm: trang đầu ưu tiên ngày hiện tại.
+          - Cửa hàng/Chấm công: trang đầu ưu tiên ngày hiện tại.
+          - Mọi bảng còn lại: tối đa 20 dòng/trang, số trang 1,2,3… và nút trước/sau.
+
+          ## Kiểm thử
+          Targeted pagination test, lint, toàn bộ test, production build và Sites verification đã đạt trước khi mở PR.
+
+          ## An toàn
+          Không migration, không xóa dữ liệu, không đổi tổng hợp hoặc công thức tài chính.')"
+          echo "number=${pr_url##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for official pull-request verification
+        if: steps.candidate.outputs.changed == 'true'
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 240); do
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow 'Verify IDOSI' --commit "$CANDIDATE_SHA" --limit 1 --json status,conclusion,databaseId --jq '.[0] | [.status, (.conclusion // ""), (.databaseId|tostring)] | @tsv' 2>/dev/null || true)"
+            status="$(cut -f1 <<<"$row")"
+            conclusion="$(cut -f2 <<<"$row")"
+            run_id="$(cut -f3 <<<"$row")"
+            if [[ "$status" == 'completed' ]]; then
+              [[ "$conclusion" == 'success' ]] || { echo "Verify IDOSI failed: run=$run_id conclusion=$conclusion" >&2; exit 1; }
+              echo "verify_run_id=$run_id"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'Timed out waiting for Verify IDOSI.' >&2
+          exit 1
+
+      - name: Merge verified pagination pull request
+        if: steps.candidate.outputs.changed == 'true'
+        id: merge
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+        run: |
+          set -Eeuo pipefail
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash \
+            --subject 'perf(tables): paginate data lists at 20 rows' \
+            --body 'Limit every data table to 20 visible rows and prioritize current business dates on high-volume history screens.'
+          merge_sha="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json mergeCommit --jq '.mergeCommit.oid')"
+          test -n "$merge_sha"
+          echo "sha=$merge_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve release SHA
+        id: release
+        shell: bash
+        env:
+          CHANGED: ${{ steps.candidate.outputs.changed }}
+          MERGE_SHA: ${{ steps.merge.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$CHANGED" == 'true' ]]; then
+            release_sha="$MERGE_SHA"
+          else
+            git fetch origin main
+            release_sha="$(git rev-parse origin/main)"
+          fi
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for main verification and VPS deployment
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          CHANGED: ${{ steps.candidate.outputs.changed }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$CHANGED" == 'true' ]]; then
+            for attempt in $(seq 1 240); do
+              row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow 'Verify IDOSI' --commit "$RELEASE_SHA" --limit 1 --json status,conclusion,databaseId --jq '.[0] | [.status, (.conclusion // ""), (.databaseId|tostring)] | @tsv' 2>/dev/null || true)"
+              status="$(cut -f1 <<<"$row")"
+              conclusion="$(cut -f2 <<<"$row")"
+              if [[ "$status" == 'completed' ]]; then
+                [[ "$conclusion" == 'success' ]] || { echo "Main Verify IDOSI failed: $conclusion" >&2; exit 1; }
+                break
+              fi
+              sleep 10
+            done
+
+            for attempt in $(seq 1 300); do
+              row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow 'Deploy IDOSI VPS' --commit "$RELEASE_SHA" --limit 1 --json status,conclusion,databaseId --jq '.[0] | [.status, (.conclusion // ""), (.databaseId|tostring)] | @tsv' 2>/dev/null || true)"
+              status="$(cut -f1 <<<"$row")"
+              conclusion="$(cut -f2 <<<"$row")"
+              run_id="$(cut -f3 <<<"$row")"
+              if [[ "$status" == 'completed' ]]; then
+                [[ "$conclusion" == 'success' ]] || { echo "Deploy IDOSI VPS failed: run=$run_id conclusion=$conclusion" >&2; exit 1; }
+                echo "deploy_run_id=$run_id"
+                break
+              fi
+              sleep 10
+            done
+          fi
+
+      - name: Verify exact public production release
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 120); do
+            payload="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "https://idosi.io.vn/api/release?_pagination_v3=$attempt" 2>/dev/null || true)"
+            actual="$(node -e "const p=process.argv[1];try{const v=JSON.parse(p);process.stdout.write(v.data?.releaseSha||v.releaseSha||'')}catch{}" "$payload")"
+            if [[ "$actual" == "$RELEASE_SHA" ]]; then
+              curl -fsS --max-time 20 "https://idosi.io.vn/api/health?_pagination_v3=$attempt" >/dev/null
+              curl -fsS --max-time 20 "https://idosi.io.vn/?_pagination_v3=$attempt" >/dev/null
+              echo "production_release_sha=$actual"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Production did not reach exact release $RELEASE_SHA" >&2
+          exit 1
+
+      - name: Close superseded pagination pull requests
+        if: always() && steps.release.outputs.sha != ''
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for old_branch in perf/paginate-data-tables-v2 perf/paginate-data-tables-20260903; do
+            gh pr list --repo "$GITHUB_REPOSITORY" --head "$old_branch" --state open --json number --jq '.[].number' \
+              | while read -r number; do
+                  [[ -n "$number" ]] && gh pr close "$number" --repo "$GITHUB_REPOSITORY" --comment 'Đã được thay thế bởi bản phân trang đã đồng bộ và kiểm thử trên nhánh v3.' || true
+                done
+          done
