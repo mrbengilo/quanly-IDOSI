@@ -11,38 +11,20 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
         with:
           ref: feat/ops-pages-cached-daily-automation
-          fetch-depth: 0
-      - name: Print focused revenue and order-audit context
+      - name: Print concise implementation locations
         shell: bash
         run: |
           set -Eeuo pipefail
-
-          show_context() {
-            local file="$1"
-            local pattern="$2"
-            local before="${3:-35}"
-            local after="${4:-90}"
-            local limit="${5:-8}"
-            echo "===== ${file}: ${pattern} ====="
-            grep -nE "$pattern" "$file" | head -n "$limit" || true
-            while IFS=: read -r line _; do
-              [ -n "$line" ] || continue
-              local start=$((line > before ? line - before : 1))
-              local end=$((line + after))
-              echo "----- ${file}:${start}-${end} -----"
-              sed -n "${start},${end}p" "$file"
-            done < <(grep -nE "$pattern" "$file" | head -n "$limit" || true)
-          }
-
-          show_context server/worker.js 'const getRevenueBonusLive|const getRevenueBonusPeriod|finalizeAutomaticRevenue|revenueBonusPeriodCandidates' 45 150 10
-          show_context server/worker.js 'const listAudit|INSERT INTO audit_log|actor_id|order\.update|order\.delete' 35 120 12
-          show_context src/state/AppContext.jsx 'orderAudit|serverTimestamp|actorId|/api/audit|listAudit' 40 120 14
-          show_context src/pages/admin/GovernancePages.jsx 'export function OrderAuditPage|OrderAuditChangeList' 30 125 4
-          show_context src/pages/admin/orderAuditUtils.js 'AUDITED_FIELDS|orderAuditChanges' 20 120 5
-          echo '===== USER/AUDIT SCHEMA ====='
-          grep -RniE 'CREATE TABLE.*users|display_name|actor_name|CREATE TABLE.*audit_log' drizzle server | head -n 160 || true
+          echo '=== APP CONTEXT ORDER AUDIT LOCATIONS ==='
+          grep -nE 'orderAudit|/api/audit|serverTimestamp|actorId' src/state/AppContext.jsx | head -n 80 || true
+          echo '=== WORKER REVENUE LOCATIONS ==='
+          grep -nE 'getRevenueBonusLive|getRevenueBonusPeriod|finalizeAutomaticRevenue|revenueBonusPeriodCandidates|AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE' server/worker.js | head -n 100 || true
+          echo '=== WORKER AUDIT LOCATIONS ==='
+          grep -nE 'listAudit|audit_log|actor_id|order\.update|order\.delete' server/worker.js | head -n 120 || true
+          echo '=== GOVERNANCE ORDER AUDIT LOCATIONS ==='
+          grep -nE 'OrderAuditPage|OrderAuditChangeList|orderAuditChanges' src/pages/admin/GovernancePages.jsx | head -n 40 || true
