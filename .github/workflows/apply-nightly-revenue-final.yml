@@ -1,0 +1,70 @@
+name: Apply and verify nightly revenue cutoff
+
+on:
+  push:
+    branches: [feat/ops-pages-nightly-revenue-final]
+    paths:
+      - .github/workflows/apply-nightly-revenue-final.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/ops-pages-nightly-revenue-final
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - name: Prepare clean source and transformation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin feat/ops-pages-cached-daily-automation
+          mkdir -p /tmp/operational_task
+          git show origin/feat/ops-pages-cached-daily-automation:scripts/operational_task/group6_revenue_cutoff.py > /tmp/operational_task/group6_revenue_cutoff.py
+          git show origin/feat/ops-pages-cached-daily-automation:scripts/operational_task/run_group6_v2.sh > /tmp/operational_task/run_group6_v2.sh
+          git reset --hard a05d159ef726c03473be3bc7301dd69592586f07
+          python3 <<'PY'
+          from pathlib import Path
+
+          transform = Path('/tmp/operational_task/group6_revenue_cutoff.py')
+          text = transform.read_text(encoding='utf-8')
+          old = "export const AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE = '2026-09-01'\\nexport const AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR = 22"
+          new = "export const AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE = '2026-09-03'\\nexport const AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR = 22"
+          if text.count(old) != 1:
+              raise RuntimeError(f'cutover transform anchor count={text.count(old)}')
+          transform.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          runner = Path('/tmp/operational_task/run_group6_v2.sh')
+          text = runner.read_text(encoding='utf-8')
+          old_expectation = "new = \"    expect(period.days.map((day) => day.businessDate)).toEqual(['2026-09-01', '2026-09-02'])\\n\""
+          original_expectation = "new = \"    expect(period.days.map((day) => day.businessDate)).toEqual([AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE])\\n\""
+          if text.count(old_expectation) != 1:
+              raise RuntimeError(f'period expectation transform count={text.count(old_expectation)}')
+          text = text.replace(old_expectation, original_expectation, 1)
+          text = text.replace('feat/ops-pages-cached-daily-automation', 'feat/ops-pages-nightly-revenue-final')
+          runner.write_text(text, encoding='utf-8')
+          PY
+          git config user.name "mrbengilo"
+          git config user.email "mrbengilo.76@gmail.com"
+          npm ci
+      - name: Apply, test and publish clean commit series
+        shell: bash
+        run: |
+          set -o pipefail
+          bash /tmp/operational_task/run_group6_v2.sh 2>&1 | tee /tmp/nightly-revenue.log
+      - name: Print failure tail
+        if: failure()
+        shell: bash
+        run: |
+          if [ -f /tmp/nightly-revenue.log ]; then
+            echo '===== nightly revenue failure tail ====='
+            tail -n 260 /tmp/nightly-revenue.log
+          fi
