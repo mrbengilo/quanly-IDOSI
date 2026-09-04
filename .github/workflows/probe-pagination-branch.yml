@@ -1,0 +1,29 @@
+name: Probe verified pagination branch
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-v2
+    paths:
+      - .github/workflows/probe-pagination-branch.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require completed pagination implementation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -f src/components/PaginatedTbody.jsx
+          test -f src/components/PaginatedTbody.test.jsx
+          test ! -f .github/workflows/apply-global-table-pagination.yml
+          test ! -f .github/workflows/export-pagination-source-v2.yml
+          count="$(git grep -l '<PaginatedTbody' -- 'src/**/*.jsx' ':!src/**/*.test.jsx' | wc -l)"
+          test "$count" -ge 8
+          test "$(git grep -l '<tbody' -- 'src/**/*.jsx' ':!src/**/*.test.jsx' | wc -l)" -eq 0
+          echo "paginated_source_files=$count"
