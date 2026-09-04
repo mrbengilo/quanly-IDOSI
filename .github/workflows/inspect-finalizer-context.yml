@@ -17,20 +17,32 @@ jobs:
         with:
           ref: feat/ops-pages-cached-daily-automation
           fetch-depth: 0
-      - name: Print worker state and revenue context
+      - name: Print focused revenue and order-audit context
+        shell: bash
         run: |
           set -Eeuo pipefail
-          echo '===== WORKER STATE 3400-4150 ====='
-          sed -n '3400,4150p' server/worker.js
-          echo '===== WORKER REVENUE 20650-21650 ====='
-          sed -n '20650,21650p' server/worker.js
-          echo '===== WORKER ROUTER/EXPORT 23500-24050 ====='
-          sed -n '23500,24050p' server/worker.js
-          echo '===== CHECKOUT SYMBOLS ====='
-          grep -nE 'attendance.*(checkout|check.?out)|check.?out.*attendance|close.*shift|employee.*checkout' server/worker.js | head -160 || true
-          echo '===== APP CONTEXT CHECKOUT ====='
-          grep -nE 'check.?out|close.*shift|end.*shift' src/state/AppContext.jsx | head -160 || true
-          echo '===== SQLITE TRANSACTION/API ====='
-          grep -nE 'class Sqlite|batch\(|transaction|BEGIN|COMMIT|ROLLBACK|readStateSnapshot|writeState' server/vps/sqlite-d1.mjs | head -220 || true
-          echo '===== VPS RUNTIME ====='
-          sed -n '1,260p' server/vps/server.mjs
+
+          show_context() {
+            local file="$1"
+            local pattern="$2"
+            local before="${3:-35}"
+            local after="${4:-90}"
+            local limit="${5:-8}"
+            echo "===== ${file}: ${pattern} ====="
+            grep -nE "$pattern" "$file" | head -n "$limit" || true
+            while IFS=: read -r line _; do
+              [ -n "$line" ] || continue
+              local start=$((line > before ? line - before : 1))
+              local end=$((line + after))
+              echo "----- ${file}:${start}-${end} -----"
+              sed -n "${start},${end}p" "$file"
+            done < <(grep -nE "$pattern" "$file" | head -n "$limit" || true)
+          }
+
+          show_context server/worker.js 'const getRevenueBonusLive|const getRevenueBonusPeriod|finalizeAutomaticRevenue|revenueBonusPeriodCandidates' 45 150 10
+          show_context server/worker.js 'const listAudit|INSERT INTO audit_log|actor_id|order\.update|order\.delete' 35 120 12
+          show_context src/state/AppContext.jsx 'orderAudit|serverTimestamp|actorId|/api/audit|listAudit' 40 120 14
+          show_context src/pages/admin/GovernancePages.jsx 'export function OrderAuditPage|OrderAuditChangeList' 30 125 4
+          show_context src/pages/admin/orderAuditUtils.js 'AUDITED_FIELDS|orderAuditChanges' 20 120 5
+          echo '===== USER/AUDIT SCHEMA ====='
+          grep -RniE 'CREATE TABLE.*users|display_name|actor_name|CREATE TABLE.*audit_log' drizzle server | head -n 160 || true
