@@ -63,7 +63,7 @@ describe('BusinessSupportSchedulePage', () => {
 
     expect(screen.getByLabelText(/Chọn nhân viên/u).textContent).toContain('Hỗ trợ KD')
     expect(screen.getByLabelText(/Chọn nhân viên/u).textContent).not.toContain('Kế toán văn phòng')
-    fireEvent.change(screen.getByLabelText(/Loại nhân viên/u), { target: { value: 'office' } })
+    fireEvent.change(screen.getByLabelText('Loại nhân viên tạo lịch'), { target: { value: 'office' } })
     expect(screen.getByLabelText(/Chọn nhân viên/u).textContent).toContain('Kế toán văn phòng')
     expect(screen.getByLabelText(/Chọn nhân viên/u).textContent).toContain('Thực tập Marketing')
     expect(screen.getByLabelText(/Chọn nhân viên/u).textContent).not.toContain('Hỗ trợ KD —')
@@ -82,7 +82,7 @@ describe('BusinessSupportSchedulePage', () => {
   it('applies all established quick-select periods while leaving manual time inputs editable', async () => {
     render(<BusinessSupportSchedulePage />)
 
-    fireEvent.change(screen.getByLabelText(/Loại nhân viên/u), { target: { value: 'office' } })
+    fireEvent.change(screen.getByLabelText('Loại nhân viên tạo lịch'), { target: { value: 'office' } })
     fireEvent.change(screen.getByLabelText(/Chọn nhân viên/u), { target: { value: 'VP-02' } })
 
     const presets = [
@@ -236,4 +236,35 @@ describe('BusinessSupportSchedulePage', () => {
 
     expect(screen.queryByRole('button', { name: 'TẠO LỊCH LÀM VIỆC' })).toBeNull()
   })
+
+  it('filters the assigned schedule table and paginates lists longer than 20 rows', () => {
+    mocked.app = {
+      ...mocked.app,
+      employees: [
+        ...mocked.app.employees,
+        { id: 'HTKD-02', name: 'Hỗ trợ KD 2', unit: 'business_support', employmentType: 'Full-Time' },
+      ],
+      supportWorkSchedules: Array.from({ length: 25 }, (_, index) => ({
+        id: `SWS-${index + 1}`,
+        employeeId: index % 2 ? 'VP-01' : index % 4 ? 'HTKD-02' : 'HTKD-01',
+        employeeName: index % 2 ? 'Kế toán văn phòng' : index % 4 ? 'Hỗ trợ KD 2' : 'Hỗ trợ KD',
+        targetUnit: index % 2 ? 'office' : 'business_support',
+        date: `2026-09-${String(25 - index).padStart(2, '0')}`,
+        shiftName: 'Giờ hành chính', start: '08:30', end: '17:30',
+      })),
+    }
+    render(<BusinessSupportSchedulePage />)
+
+    expect(screen.getAllByRole('button', { name: /Sửa lịch của/u })).toHaveLength(20)
+    expect(screen.getByLabelText('Phân trang lịch làm việc đã phân').textContent).toContain('Trang 1 / 2')
+    fireEvent.click(screen.getByRole('button', { name: 'SAU' }))
+    expect(screen.getAllByRole('button', { name: /Sửa lịch của/u })).toHaveLength(5)
+
+    fireEvent.change(screen.getByLabelText('Loại nhân viên lịch đã phân'), { target: { value: 'office' } })
+    expect(screen.getAllByRole('button', { name: /Sửa lịch của Kế toán văn phòng/u })).toHaveLength(12)
+    expect(screen.queryByLabelText('Phân trang lịch làm việc đã phân')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Nhân viên lịch đã phân'), { target: { value: 'VP-01' } })
+    expect(screen.getByText('12 lịch')).toBeTruthy()
+  })
+
 })

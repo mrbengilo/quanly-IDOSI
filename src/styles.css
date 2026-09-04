@@ -1350,3 +1350,37 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
 .employee-picker .support-employee-tag {
   grid-column: 2 / -1;
 }
+
+
+/* Admin list pagination */
+.admin-table-filters {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(260px, 1.2fr);
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.admin-table-page-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 800;
+  color: var(--muted);
+}
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 16px;
+}
+.table-pagination__status {
+  min-width: 110px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+@media (max-width: 720px) {
+  .admin-table-filters { grid-template-columns: 1fr; }
+  .table-pagination { justify-content: space-between; }
+}

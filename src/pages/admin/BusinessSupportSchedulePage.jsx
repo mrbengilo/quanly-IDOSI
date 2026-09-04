@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import { CalendarClock, Check, ChevronLeft, ChevronRight, Edit3, History, Plus, Save, Settings2, Trash2 } from 'lucide-react'
+import { PaginationControls } from '../../components/PaginationControls'
 import { Avatar, Badge, Button, Card, Field, Input, PageHeader, Select, TableWrap } from '../../components/UI'
 import {
   canConfigureSupportSchedulePresets,
@@ -12,6 +13,7 @@ import {
 } from '../../domain/supportWorkSchedule'
 import { useApp } from '../../state/AppContext'
 import { shortDate } from '../../utils'
+import { paginateRows } from './adminTablePagination'
 
 const today = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' })
 
@@ -157,6 +159,9 @@ export function BusinessSupportSchedulePage() {
   const app = useApp()
   const [form, setForm] = useState(emptyScheduleForm)
   const [saving, setSaving] = useState(false)
+  const [assignedGroup, setAssignedGroup] = useState('')
+  const [assignedEmployeeId, setAssignedEmployeeId] = useState('')
+  const [assignedPage, setAssignedPage] = useState(0)
   const employees = scheduleEmployees(app.employees || [], form.targetUnit)
   const selectedEmployee = employees.find((employee) => String(employee.id || employee.code) === form.employeeId)
   const shiftMode = supportScheduleEmploymentMode(selectedEmployee) === 'shift'
@@ -164,6 +169,16 @@ export function BusinessSupportSchedulePage() {
   const schedules = (Array.isArray(app.supportWorkSchedules) ? app.supportWorkSchedules : [])
     .filter((record) => !record.deletedAt)
     .sort((left, right) => String(right.date || '').localeCompare(String(left.date || '')))
+  const assignedEmployeeOptions = useMemo(() => (app.employees || [])
+    .filter((employee) => !employee.deletedAt && (!assignedGroup || employeeUnit(employee) === assignedGroup))
+    .filter((employee) => ['business_support', 'office'].includes(employeeUnit(employee)))
+    .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'vi-VN')), [app.employees, assignedGroup])
+  const filteredSchedules = useMemo(() => schedules.filter((record) => (
+    (!assignedGroup || String(record.targetUnit || '') === assignedGroup)
+    && (!assignedEmployeeId || String(record.employeeId || '') === assignedEmployeeId)
+  )), [assignedEmployeeId, assignedGroup, schedules])
+  const assignedPagination = paginateRows(filteredSchedules, assignedPage)
+  const visibleSchedules = assignedPagination.rows
   const canDelete = ['admin', 'business_support', 'manager'].includes(app.session?.role)
 
   const set = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }))
@@ -203,7 +218,7 @@ export function BusinessSupportSchedulePage() {
     <Card title={form.scheduleId ? 'Chỉnh sửa lịch làm việc' : 'Tạo lịch làm việc'}>
       <form className="support-schedule-form" onSubmit={save}>
         <Field label="Chọn ngày" required><Input type="date" value={form.date} onChange={set('date')} /></Field>
-        <Field label="Loại nhân viên" required><Select value={form.targetUnit} onChange={(event) => setForm((current) => ({ ...current, targetUnit: event.target.value, employeeId: '', shiftName: '' }))}>{SCHEDULE_GROUPS.map((group) => <option key={group.value} value={group.value}>{group.label}</option>)}</Select></Field>
+        <Field label="Loại nhân viên" required><Select aria-label="Loại nhân viên tạo lịch" value={form.targetUnit} onChange={(event) => setForm((current) => ({ ...current, targetUnit: event.target.value, employeeId: '', shiftName: '' }))}>{SCHEDULE_GROUPS.map((group) => <option key={group.value} value={group.value}>{group.label}</option>)}</Select></Field>
         <Field label="Chọn nhân viên" required><Select value={form.employeeId} onChange={set('employeeId')}><option value="">Chọn {scheduleGroupLabel(form.targetUnit)}</option>{employees.map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}</Select></Field>
         {shiftMode && <Field label="Tên ca" required><Input value={form.shiftName} onChange={set('shiftName')} placeholder="Ví dụ: Ca chiều" /></Field>}
         <SchedulePresetButtons onSelect={selectPreset} selectedName={form.shiftName} selectedStart={form.start} selectedEnd={form.end} />
@@ -213,11 +228,23 @@ export function BusinessSupportSchedulePage() {
         <div className="card-actions">{form.scheduleId && <Button type="button" variant="outline" onClick={() => setForm(emptyScheduleForm())}>HỦY SỬA</Button>}<Button type="submit" icon={Save} loading={saving}>LƯU</Button></div>
       </form>
     </Card>
-    <Card title="Lịch làm việc đã phân">
+    <Card title="Lịch làm việc đã phân" action={<Badge tone="blue">{filteredSchedules.length} lịch</Badge>}>
+      <div className="admin-table-filters">
+        <Field label="Loại nhân viên"><Select aria-label="Loại nhân viên lịch đã phân" value={assignedGroup} onChange={(event) => {
+setAssignedGroup(event.target.value)
+setAssignedEmployeeId('')
+setAssignedPage(0)
+        }}><option value="">Tất cả HTKD và Văn phòng</option>{SCHEDULE_GROUPS.map((group) => <option key={group.value} value={group.value}>{group.label}</option>)}</Select></Field>
+        <Field label="Nhân viên"><Select aria-label="Nhân viên lịch đã phân" value={assignedEmployeeId} onChange={(event) => {
+setAssignedEmployeeId(event.target.value)
+setAssignedPage(0)
+        }}><option value="">Tất cả nhân viên</option>{assignedEmployeeOptions.map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}</Select></Field>
+      </div>
       <TableWrap><thead><tr><th>Nhóm</th><th>Nhân viên</th><th>Ngày</th><th>Ca / Thời gian</th><th>Ghi chú</th><th>Thao tác</th></tr></thead><tbody>
-        {schedules.map((record) => <tr key={record.id}><td>{scheduleGroupLabel(record.targetUnit)}</td><td><strong>{record.employeeName}</strong><small className="table-sub">{record.employeeId}</small></td><td>{shortDate(record.date)}</td><td><strong>{record.shiftName}</strong><small className="table-sub">{record.start}–{record.end}</small></td><td>{record.note || '—'}</td><td><div className="row-actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch của ${record.employeeName}`}><Edit3 /></button>{canDelete && <button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch của ${record.employeeName}`}><Trash2 /></button>}</div></td></tr>)}
-        {!schedules.length && <tr><td colSpan="6">Chưa có lịch làm việc.</td></tr>}
+        {visibleSchedules.map((record) => <tr key={record.id}><td>{scheduleGroupLabel(record.targetUnit)}</td><td><strong>{record.employeeName}</strong><small className="table-sub">{record.employeeId}</small></td><td>{shortDate(record.date)}</td><td><strong>{record.shiftName}</strong><small className="table-sub">{record.start}–{record.end}</small></td><td>{record.note || '—'}</td><td><div className="row-actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch của ${record.employeeName}`}><Edit3 /></button>{canDelete && <button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch của ${record.employeeName}`}><Trash2 /></button>}</div></td></tr>)}
+        {!visibleSchedules.length && <tr><td colSpan="6">Không có lịch làm việc phù hợp bộ lọc.</td></tr>}
       </tbody></TableWrap>
+      <PaginationControls page={assignedPagination.page} pageCount={assignedPagination.pageCount} onPageChange={setAssignedPage} label="lịch làm việc đã phân" />
     </Card>
     <Card title="Lịch sử phân lịch" className="support-schedule-history">
       <TableWrap><thead><tr><th>Thời gian tạo</th><th>Nhóm nhân viên</th><th>Nhân viên</th><th>Ngày làm</th><th>Loại</th><th>Ca / Thời gian</th><th>Ghi chú</th><th>Người tạo</th><th>Thao tác</th></tr></thead><tbody>

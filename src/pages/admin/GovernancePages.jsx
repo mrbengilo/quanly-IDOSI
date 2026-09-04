@@ -28,8 +28,10 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { formatVietnamTransferDateTime, isVietnamDateTimeLocal, supportTransferBounds } from '../../domain/supportTransferTime'
+import { PaginationControls } from '../../components/PaginationControls'
 import { useApp } from '../../state/AppContext'
-import { formatMoneyInput, money, parseMoneyInput, shortDate, shortDateTime24, today } from '../../utils'
+import { businessDate, formatMoneyInput, money, parseMoneyInput, shortDate, shortDateTime24, today } from '../../utils'
+import { paginateRowsByDate } from './adminTablePagination'
 import { orderAuditChanges } from './orderAuditUtils'
 
 const displayDateTime = shortDateTime24
@@ -181,8 +183,25 @@ export function SystemEmployees() {
 export function OrderAuditPage() {
   const { orderAudit = [], stores = [] } = useApp()
   const [query, setQuery] = useState('')
-  const rows = orderAudit.filter((item) => !query || [item.orderCode, item.actor?.name, item.reason].some((value) => String(value || '').toLowerCase().includes(query.toLowerCase())))
-  return <div className="page"><PageHeader title="LỊCH SỬ SỬA VÀ XÓA ĐƠN HÀNG" subtitle="Đối soát dữ liệu trước/sau của mọi thao tác ảnh hưởng doanh thu." icon={History} /><Card title="Nhật ký đơn hàng" action={<SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, người thao tác..." />}><TableWrap><thead><tr><th>Thời gian</th><th>Người thao tác</th><th>Cửa hàng</th><th>Mã đơn</th><th>Thao tác</th><th>Chi tiết thay đổi (trước → sau)</th><th>Doanh thu trước</th><th>Doanh thu sau</th><th>Lý do</th></tr></thead><tbody>{rows.map((item) => <tr key={item.id}><td>{displayDateTime(item.createdAt)}</td><td><strong>{item.actor?.name}</strong><small className="table-note">{item.actor?.role}</small></td><td>{stores.find((store) => store.id === item.storeId)?.name || item.storeId}</td><td><strong>{item.orderCode}</strong></td><td><Badge tone={item.action === 'Xóa' ? 'red' : 'orange'}>{item.action}</Badge></td><td><OrderAuditChangeList record={item} /></td><td>{money(item.revenueBefore)}</td><td>{money(item.revenueAfter)}</td><td>{item.reason || '—'}</td></tr>)}{!rows.length && <tr><td colSpan="9">Chưa có lịch sử sửa hoặc xóa đơn hàng.</td></tr>}</tbody></TableWrap></Card></div>
+  const [page, setPage] = useState(0)
+  const normalizedQuery = query.trim().toLocaleLowerCase('vi-VN')
+  const rows = orderAudit.filter((item) => !normalizedQuery || [item.orderCode, item.actor?.name, item.reason]
+    .some((value) => String(value || '').toLocaleLowerCase('vi-VN').includes(normalizedQuery)))
+  const pagination = paginateRowsByDate({
+    rows,
+    dateOf: (item) => businessDate(item.createdAt || item.updatedAt || ''),
+    focusDate: today(),
+    requestedPage: page,
+  })
+  const visibleRows = pagination.rows
+  const pageDateLabel = pagination.date ? shortDate(pagination.date) : 'Chưa xác định'
+  return <div className="page">
+    <PageHeader title="LỊCH SỬ SỬA VÀ XÓA ĐƠN HÀNG" subtitle="Trang đầu chỉ hiển thị ngày hiện tại; dùng phân trang để xem các ngày trước." icon={History} />
+    <Card title="Nhật ký đơn hàng" action={<div className="toolbar-wrap"><span className="admin-table-page-context">Ngày đang xem: <strong>{pageDateLabel}</strong></span><SearchInput value={query} onChange={(value) => { setQuery(value); setPage(0) }} placeholder="Tìm mã đơn, người thao tác..." /></div>}>
+      <TableWrap><thead><tr><th>Thời gian</th><th>Người thao tác</th><th>Cửa hàng</th><th>Mã đơn</th><th>Thao tác</th><th>Chi tiết thay đổi (trước → sau)</th><th>Doanh thu trước</th><th>Doanh thu sau</th><th>Lý do</th></tr></thead><tbody>{visibleRows.map((item) => <tr key={item.id}><td>{displayDateTime(item.createdAt)}</td><td><strong>{item.actor?.name}</strong><small className="table-note">{item.actor?.role}</small></td><td>{stores.find((store) => store.id === item.storeId)?.name || item.storeId}</td><td><strong>{item.orderCode}</strong></td><td><Badge tone={item.action === 'Xóa' ? 'red' : 'orange'}>{item.action}</Badge></td><td><OrderAuditChangeList record={item} /></td><td>{money(item.revenueBefore)}</td><td>{money(item.revenueAfter)}</td><td>{item.reason || '—'}</td></tr>)}{!visibleRows.length && <tr><td colSpan="9">Không có lịch sử sửa hoặc xóa đơn hàng trong ngày này.</td></tr>}</tbody></TableWrap>
+      <PaginationControls page={pagination.page} pageCount={pagination.pageCount} onPageChange={setPage} label="lịch sử chỉnh sửa đơn hàng" />
+    </Card>
+  </div>
 }
 
 export function ResetDataPage() {
