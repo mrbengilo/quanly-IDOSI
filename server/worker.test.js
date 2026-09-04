@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import { Buffer } from 'node:buffer'
 import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
@@ -3173,6 +3173,9 @@ describe('IDOSI Worker security primitives', () => {
   }, 60_000)
 
   it('runs bootstrap, employee lifecycle, projected state, atomic order creation, and logout end to end', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-04T14:00:00.000Z')) // 21:00 Vietnam
+    onTestFinished(() => vi.useRealTimers())
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-secret-for-test' }
     const initialState = {
       staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
@@ -3515,6 +3518,9 @@ describe('IDOSI Worker security primitives', () => {
     expect(replayedOrder.headers.get('idempotency-replayed')).toBe('true')
     expect((await replayedOrder.json()).order.code).toBe('SM234-00008')
 
+    // Keep this lifecycle assertion independent of the wall clock. After the
+    // 22:00 Vietnam cutoff, checkout can legitimately finalize daily revenue
+    // bonuses and advance the shared-state version once more.
     const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'attendance.check_out',
       expectedVersion: 4,
