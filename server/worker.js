@@ -16138,22 +16138,9 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
     updatedAt: commandContext.now,
     deletedAt: null,
   }
-  const notification = {
-    id: `ntf_${crypto.randomUUID()}`,
-    type: 'order.created',
-    storeId,
-    employeeId,
-    orderId: order.id,
-    orderCode: order.code,
-    title: `Đơn hàng mới ${order.code}`,
-    message: `${order.employeeName} vừa tạo đơn ${order.code}.`,
-    createdAt: commandContext.now,
-    readAt: null,
-  }
   const nextState = {
     ...state,
     orders: [order, ...(Array.isArray(state.orders) ? state.orders : [])],
-    notifications: [notification, ...(Array.isArray(state.notifications) ? state.notifications : [])],
     payrollPeriods: invalidateClosedPayrollPeriods(
       state,
       { storeId, period: monthFromRecord(order) },
@@ -16175,7 +16162,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
     before: null,
     after: order,
     metadata: { storeId, counterName, counterValue: nextCounterValue },
-    response: { command: body.type, order, notification },
+    response: { command: body.type, order },
     status: 201,
   }, commandContext)
 }

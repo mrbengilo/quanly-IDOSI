@@ -1493,10 +1493,7 @@ const remoteCommandResultPatches = (type, result) => {
   }
   if (type.startsWith('store.')) add(type === 'store.delete' ? 'deletedStores' : 'stores', result.store)
   if (type.startsWith('employee.')) add(type === 'employee.delete' ? 'deletedEmployees' : 'employees', result.employee)
-  if (type.startsWith('order.')) {
-    add('orders', result.order)
-    add('notifications', result.notification)
-  }
+  if (type.startsWith('order.')) add('orders', result.order)
   if (type.startsWith('fixed_expense.')) {
     add('fixedExpenses', result.expense)
     add('expenseEntries', result.expenseEntry)
@@ -4266,22 +4263,10 @@ export function AppProvider({ children }) {
       deletedAt: null,
       idempotencyKey: idempotencyKey || null,
     }
-    const notification = {
-      id: uid('NTF'),
-      type: 'order.created',
-      storeId,
-      orderId: order.id,
-      orderCode: order.code,
-      title: `Đơn hàng mới ${order.code}`,
-      message: `${order.employeeName} vừa tạo đơn ${order.code}.`,
-      createdAt: timestamp,
-      readAt: null,
-    }
     setState((current) => ({
       ...current,
       orders: [order, ...current.orders],
       orderCounters: { ...current.orderCounters, [storeId]: sequence + 1 },
-      notifications: [notification, ...current.notifications],
       idempotencyKeys: idempotencyKey ? [...current.idempotencyKeys, idempotencyKey] : current.idempotencyKeys,
       stateVersion: current.stateVersion + 1,
     }))
