@@ -1,0 +1,13 @@
+name: Pagination completion marker
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  status:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo 'This branch is managed by the completion workflow.'
