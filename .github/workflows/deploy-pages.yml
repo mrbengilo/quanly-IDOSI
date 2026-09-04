@@ -65,7 +65,9 @@ jobs:
           bash -n deploy/vps/rollback-release.sh
           bash -n deploy/vps/run-release-job.sh
           bash -n deploy/vps/finalize-release.sh
+          bash -n deploy/vps/recover-stale-release-job.sh
           bash deploy/vps/release-workflow.test.sh
+          bash deploy/vps/recover-stale-release-job.test.sh
           node scripts/verify-vps-auto-deploy.mjs
           node --check server/vps/release-info.mjs
           node --check server/vps/verify-release.mjs
