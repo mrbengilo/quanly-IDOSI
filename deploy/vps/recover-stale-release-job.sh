@@ -51,7 +51,7 @@ LOCK_FILE="${IDOSI_DEPLOY_LOCK:-/tmp/idosi-production-deploy.lock}"
 STATUS_FILE="$JOB_DIR/$OPERATION_ID.status"
 PID_FILE="$JOB_DIR/$OPERATION_ID.pid"
 EXPECTED_LOG_FILE="$JOB_DIR/$OPERATION_ID.log"
-MINIMUM_AGE_SECONDS="${IDOSI_STALE_DEPLOY_MIN_AGE_SECONDS:-3600}"
+MINIMUM_AGE_SECONDS="${IDOSI_STALE_DEPLOY_MIN_AGE_SECONDS:-900}"
 
 for command_name in awk cat chmod date docker flock git grep head kill mktemp mv ps sed seq sleep tail tr; do
   command -v "$command_name" >/dev/null 2>&1 || die "Thiếu lệnh bắt buộc: $command_name"
