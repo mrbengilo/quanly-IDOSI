@@ -111,6 +111,9 @@ const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, milesto
 const revenueStatusLabel = (record = {}) => {
   const status = String(record.status || '').trim().toUpperCase()
   if (status === 'LIVE') return 'Tự động trực tiếp'
+  if (status === 'FINALIZED') return 'Đã chốt tự động'
+  if (status === 'WAITING_CUTOFF') return 'Chờ sau 22:00'
+  if (status === 'WAITING_SHIFT_CLOSE') return 'Chờ kết ca'
   if (status === 'ADMIN_ADJUSTED') return 'Admin đã chỉnh sửa'
   if (status === 'ADMIN_DELETED') return 'Admin đã xóa'
   if (status === 'SUPPORT_EXCLUDED') return 'Hỗ trợ cửa hàng – không nhận thưởng'
@@ -120,6 +123,8 @@ const revenueStatusLabel = (record = {}) => {
 const revenueStatusTone = (record = {}) => {
   const status = String(record.status || '').trim().toUpperCase()
   if (status === 'LIVE') return 'blue'
+  if (status === 'FINALIZED') return 'green'
+  if (status === 'WAITING_CUTOFF' || status === 'WAITING_SHIFT_CLOSE') return 'orange'
   if (status === 'ADMIN_ADJUSTED') return 'orange'
   if (status === 'ADMIN_DELETED') return 'red'
   if (status === 'SUPPORT_EXCLUDED') return 'orange'
@@ -292,18 +297,18 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const shouldTickLocalClock = !serverBacked && automaticMode && businessDate === vietnamToday()
   useEffect(() => {
     if (!shouldTickLocalClock) return undefined
-    const timer = window.setInterval(() => setNowMs(Date.now()), 5_000)
-    return () => window.clearInterval(timer)
-  }, [shouldTickLocalClock])
+    const cutoffMs = Date.parse(`${businessDate}T22:00:00+07:00`)
+    const delay = Math.max(1_000, cutoffMs - Date.now() + 1_000)
+    const timer = window.setTimeout(() => setNowMs(Date.now()), Math.min(delay, 2_147_000_000))
+    return () => window.clearTimeout(timer)
+  }, [businessDate, shouldTickLocalClock])
   const { busyKey, error, setError, run } = useCompensationAction(app)
 
   const legacyDailyRecords = useMemo(() => {
     const source = Array.isArray(app.revenueBonusDaily)
       ? app.revenueBonusDaily
       : (app.revenueBonuses || [])
-    return source.filter((record) => (
-      revenueRecordDate(record) < AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE
-    ))
+    return source.filter(effectiveDailyRecord)
   }, [app.revenueBonusDaily, app.revenueBonuses])
   const scopedLegacyRecords = legacyDailyRecords
     .filter((record) => sameOperationalIdentifier(entryStoreId(record), selectedStoreId)
@@ -353,10 +358,16 @@ export function RevenueBonusPage({ storeScoped = false }) {
     serverBacked,
   ])
 
+  const scheduledSnapshotStatus = automaticMode && remoteLiveSnapshot
+    && sameOperationalIdentifier(remoteLiveSnapshot.storeId, selectedStoreId)
+    && String(remoteLiveSnapshot.businessDate || '') === businessDate
+    ? String(remoteLiveSnapshot.status || '')
+    : ''
   useEffect(() => {
     if (!selectedStoreId || !serverBacked || !automaticMode) return undefined
     let active = true
     let busy = false
+    let timer = null
     const scope = `${identifierKey(selectedStoreId)}:${businessDate}`
     const refresh = async () => {
       if (busy || (typeof document !== 'undefined' && document.hidden)) return
@@ -375,12 +386,20 @@ export function RevenueBonusPage({ storeScoped = false }) {
       }
     }
     void refresh()
-    const timer = window.setInterval(refresh, 5_000)
+    const cutoffMs = Date.parse(`${businessDate}T22:00:00+07:00`)
+    if (businessDate === vietnamToday() && Number.isFinite(cutoffMs) && Date.now() < cutoffMs) {
+      timer = window.setTimeout(refresh, Math.min(cutoffMs - Date.now() + 1_000, 2_147_000_000))
+    } else if (scheduledSnapshotStatus === 'WAITING_SHIFT_CLOSE') {
+      timer = window.setInterval(refresh, 30_000)
+    }
     return () => {
       active = false
-      window.clearInterval(timer)
+      if (timer != null) {
+        window.clearTimeout(timer)
+        window.clearInterval(timer)
+      }
     }
-  }, [automaticMode, businessDate, remoteRefreshVersion, selectedStoreId, serverBacked])
+  }, [automaticMode, businessDate, remoteRefreshVersion, scheduledSnapshotStatus, selectedStoreId, serverBacked])
 
 
   useEffect(() => {
@@ -405,12 +424,8 @@ export function RevenueBonusPage({ storeScoped = false }) {
       }
     }
     void refresh()
-    const timer = window.setInterval(refresh, 10_000)
-    return () => {
-      active = false
-      window.clearInterval(timer)
-    }
-  }, [historyMonth, remoteRefreshVersion, selectedStoreId, serverBacked])
+    return () => { active = false }
+  }, [historyMonth, remoteRefreshVersion, scheduledSnapshotStatus, selectedStoreId, serverBacked])
 
   const liveScope = `${identifierKey(selectedStoreId)}:${businessDate}`
   const matchingRemoteSnapshot = automaticMode && serverBacked && remoteLiveSnapshot
@@ -442,7 +457,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const adminAdjustmentTotal = automaticMode ? Number(liveSnapshot?.adminAdjustmentVnd || 0) : 0
   const excludedSupportShareTotal = automaticMode ? Number(liveSnapshot?.excludedSupportShareVnd || 0) : 0
   const allocationTotal = allocations.reduce((sum, allocation) => sum + allocationAmount(allocation), 0)
-  const currentRevenueTier = revenueProgram
+  const currentRevenueTier = revenueProgram && (!automaticMode || liveSnapshot?.status === 'FINALIZED')
     ? selectRevenueBonusTier({
         programId: revenueProgram.id,
         revenueVnd: Math.max(0, Math.trunc(revenueTotal)),
@@ -455,11 +470,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
   ))
   const localActualHours = storeAttendance
     .filter((attendance) => sameOperationalIdentifier(entryEmployeeId(attendance), currentEmployeeId))
-    .reduce((sum, attendance) => sum + liveWorkedHours(
-      attendance,
-      nowMs,
-      automaticMode && businessDate === vietnamToday(),
-    ), 0)
+    .reduce((sum, attendance) => sum + liveWorkedHours(attendance, nowMs, false), 0)
   const ownAutomaticAllocation = visibleAutomaticAllocations
     .find((allocation) => sameOperationalIdentifier(entryEmployeeId(allocation), currentEmployeeId))
   const ownSavedAllocation = savedAllocations
@@ -475,11 +486,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
   )
   const totalStoreHours = automaticMode && liveSnapshot
     ? Number(liveSnapshot.totalWorkedSeconds || 0) / 3_600
-    : storeAttendance.reduce((sum, attendance) => sum + liveWorkedHours(
-        attendance,
-        nowMs,
-        automaticMode && businessDate === vietnamToday(),
-      ), 0)
+    : storeAttendance.reduce((sum, attendance) => sum + liveWorkedHours(attendance, nowMs, false), 0)
   const attendanceCount = Number(liveSnapshot?.attendanceCount ?? storeAttendance.length) || 0
   const formattedLastRemoteSuccess = remoteLastSuccessAt
     ? new Date(remoteLastSuccessAt).toLocaleTimeString('vi-VN', {
@@ -489,7 +496,15 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const liveDataLabel = automaticMode
     ? remoteDataStale
       ? `Dữ liệu gần nhất${formattedLastRemoteSuccess ? ` lúc ${formattedLastRemoteSuccess}` : ''}`
-      : 'Tự động cập nhật mỗi 5 giây'
+      : liveSnapshot?.status === 'WAITING_CUTOFF'
+        ? 'Chờ tự động chốt sau 22:00'
+        : liveSnapshot?.status === 'WAITING_SHIFT_CLOSE'
+          ? 'Đang chờ tất cả nhân viên kết ca'
+          : liveSnapshot?.status === 'NO_ATTENDANCE'
+            ? 'Chưa có dữ liệu chấm công'
+            : liveSnapshot?.status === 'FINALIZED'
+              ? `Đã chốt tự động${formattedLastRemoteSuccess ? ` lúc ${formattedLastRemoteSuccess}` : ''}`
+              : 'Đang kiểm tra điều kiện chốt tự động'
     : displayDate(businessDate)
   const metricValue = (value) => automaticLoading ? 'Đang đồng bộ…' : value
 
@@ -538,9 +553,16 @@ export function RevenueBonusPage({ storeScoped = false }) {
       .find((day) => day.businessDate === allocation.businessDate)?.projectedAt || '',
   })), [automaticHistory])
   const historyRows = useMemo(() => {
-    const combined = [...legacyHistoryProjection.rows, ...automaticHistoryRows]
-      .toSorted((left, right) => `${right.businessDate} ${right.recordedAt} ${right.id}`
-        .localeCompare(`${left.businessDate} ${left.recordedAt} ${left.id}`))
+    const persistedKeys = new Set(legacyHistoryProjection.rows.map((row) => (
+      `${identifierKey(entryStoreId(row))}:${row.businessDate}:${identifierKey(row.employeeId)}`
+    )))
+    const combined = [
+      ...legacyHistoryProjection.rows,
+      ...automaticHistoryRows.filter((row) => !persistedKeys.has(
+        `${identifierKey(entryStoreId(row))}:${row.businessDate}:${identifierKey(row.employeeId)}`,
+      )),
+    ].toSorted((left, right) => `${right.businessDate} ${right.recordedAt} ${right.id}`
+      .localeCompare(`${left.businessDate} ${left.recordedAt} ${left.id}`))
     return privateAllocationView
       ? combined.filter((row) => sameOperationalIdentifier(row.employeeId, currentEmployeeId))
       : combined
@@ -647,8 +669,8 @@ export function RevenueBonusPage({ storeScoped = false }) {
       <PageHeader
         title="THƯỞNG DOANH THU THEO NGÀY"
         subtitle={privateAllocationView
-          ? 'Thưởng được hệ thống tự động cập nhật theo doanh thu và thời gian làm việc thực tế của bạn.'
-          : `Hệ thống tự động tính và cập nhật thưởng theo thời gian thực tại ${storeName(stores, selectedStoreId)}.`}
+          ? 'Thưởng được hệ thống tự động chốt sau 22:00 dựa trên doanh thu và thời gian của các ca đã kết thúc.'
+          : `Hệ thống tự động chốt thưởng sau 22:00 khi toàn bộ ca tại ${storeName(stores, selectedStoreId)} đã kết thúc.`}
         icon={CircleDollarSign}
         actions={<Badge tone="green">TỰ ĐỘNG</Badge>}
       />
@@ -669,12 +691,12 @@ export function RevenueBonusPage({ storeScoped = false }) {
         </div>
         <ActionError message={error} />
         {remoteDataStale && <InfoNote tone="red">
-          Không thể cập nhật dữ liệu trực tiếp. {formattedLastRemoteSuccess
+          Không thể cập nhật trạng thái chốt thưởng tự động. {formattedLastRemoteSuccess
             ? `Đang hiển thị lần cập nhật gần nhất lúc ${formattedLastRemoteSuccess}; hệ thống sẽ tự thử lại.`
             : 'Hệ thống sẽ tự thử lại.'}
         </InfoNote>}
         {automaticMode ? <InfoNote tone="green">
-          Không cần bấm tính hoặc duyệt. Doanh thu, giờ làm và mốc thưởng được tự động tính lại mỗi 5 giây.
+          Không cần bấm tính hoặc duyệt. Sau 22:00, hệ thống tự động lấy doanh thu đơn hàng và giờ làm đã kết ca; nếu còn ca đang làm việc, hệ thống chờ ca đó kết thúc rồi mới tính.
           {isAdmin ? ' Chỉ Admin có thể chỉnh sửa, xóa hoặc khôi phục thưởng của từng nhân viên.' : ''}
         </InfoNote> : <InfoNote tone="blue">
           Ngày này thuộc dữ liệu lịch sử trước khi chuyển sang cơ chế tự động từ {displayDate(AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE)}.
@@ -686,13 +708,13 @@ export function RevenueBonusPage({ storeScoped = false }) {
 
       {privateAllocationView ? <div className="metric-grid compensation-metrics compensation-metrics--employee">
         <MetricCard compact label="TỔNG QUỸ CỦA TEAM" value={metricValue(money(poolTotal))} helper={liveDataLabel} icon={CircleDollarSign} tone="blue" />
-        <MetricCard compact label="THƯỞNG DOANH THU CỦA TÔI" value={metricValue(money(allocationTotal))} helper={automaticMode ? 'Tự động theo giờ thực tế' : displayDate(businessDate)} icon={WalletCards} tone="green" />
+        <MetricCard compact label="THƯỞNG DOANH THU CỦA TÔI" value={metricValue(money(allocationTotal))} helper={automaticMode ? 'Theo giờ đã kết ca' : displayDate(businessDate)} icon={WalletCards} tone="green" />
         <MetricCard compact label="THỜI GIAN LÀM THỰC TẾ" value={formatWorkedHours(actualHours)} helper="Theo ca đã chấm công" icon={Clock3} tone="blue" />
         <MetricCard compact label="TỔNG GIỜ LÀM CỬA HÀNG" value={formatWorkedHours(totalStoreHours)} helper={`${attendanceCount} ca trong ngày`} icon={Clock3} tone="orange" />
       </div> : <div className="metric-grid compensation-metrics compensation-metrics--revenue-team">
         <MetricCard compact label="DOANH THU ĐỦ ĐIỀU KIỆN" value={metricValue(money(revenueTotal))} helper={liveDataLabel} icon={Store} tone="green" />
         <MetricCard compact label="TỔNG QUỸ THƯỞNG" value={metricValue(money(poolTotal))} helper={excludedSupportShareTotal > 0 ? 'Quỹ công thức trước khi loại phần nhân viên hỗ trợ' : automaticMode ? 'Gồm thưởng tỷ lệ và mốc cao nhất' : ''} icon={CircleDollarSign} tone="blue" />
-        <MetricCard compact label="THƯỞNG DOANH THU GHI NHẬN THỰC TẾ" value={metricValue(money(allocatedTotal))} helper={excludedSupportShareTotal > 0 ? 'Số tiền thực tế phải chi cho nhân viên chính' : adminAdjustmentTotal !== 0 ? 'Đã gồm điều chỉnh của Admin' : 'Tự động theo giờ thực tế'} icon={WalletCards} tone="green" />
+        <MetricCard compact label="THƯỞNG DOANH THU GHI NHẬN THỰC TẾ" value={metricValue(money(allocatedTotal))} helper={excludedSupportShareTotal > 0 ? 'Số tiền thực tế phải chi cho nhân viên chính' : adminAdjustmentTotal !== 0 ? 'Đã gồm điều chỉnh của Admin' : 'Theo giờ đã kết ca'} icon={WalletCards} tone="green" />
         <MetricCard compact label={excludedSupportShareTotal > 0 ? 'PHẦN KHÔNG GHI NHẬN CHI' : 'CHƯA PHÂN BỔ THEO CÔNG THỨC'} value={metricValue(money(unallocatedTotal))} helper={excludedSupportShareTotal > 0 ? 'Tỷ trọng theo giờ của nhân viên hỗ trợ; thưởng tự động bằng 0 đ' : unallocatedTotal > 0 ? 'Thiếu thời gian làm việc hợp lệ' : 'Đã đối soát'} icon={Clock3} tone={unallocatedTotal > 0 ? 'orange' : 'blue'} />
         <MetricCard compact label="ĐIỀU CHỈNH ADMIN" value={metricValue(money(adminAdjustmentTotal))} helper={adminAdjustmentTotal === 0 ? 'Chưa có điều chỉnh' : 'Chênh lệch so với kết quả tự động'} icon={Pencil} tone={adminAdjustmentTotal === 0 ? 'blue' : 'orange'} />
         <MetricCard compact label="TỔNG GIỜ LÀM CỬA HÀNG" value={formatWorkedHours(totalStoreHours)} helper={`${attendanceCount} ca trong ngày`} icon={Clock3} tone="orange" />
@@ -727,10 +749,10 @@ export function RevenueBonusPage({ storeScoped = false }) {
       {unallocatedTotal > 0 && (privileged || storeManager) && <InfoNote tone="orange">
         {excludedSupportShareTotal > 0
           ? `Giờ làm của nhân viên hỗ trợ vẫn nằm trong tổng giờ chia thưởng. Phần tỷ trọng ${money(excludedSupportShareTotal)} không được ghi nhận chi cho nhân viên hỗ trợ; số tiền thưởng doanh thu ghi nhận thực tế phải chi là ${money(allocatedTotal)}.`
-          : 'Có quỹ chưa phân bổ do thiếu thời gian làm việc hợp lệ. Hệ thống sẽ tự phân bổ lại khi dữ liệu chấm công được cập nhật.'}
+          : 'Có quỹ chưa phân bổ do thiếu thời gian làm việc đã kết ca hợp lệ.'}
       </InfoNote>}
 
-      <Card title={privateAllocationView ? 'Chi tiết thưởng của tôi' : 'Phân bổ thưởng tự động theo nhân viên'} action={<Badge tone={automaticMode ? 'green' : 'blue'}>{automaticMode ? 'Cập nhật trực tiếp' : `${allocations.length} dòng lịch sử`}</Badge>}>
+      <Card title={privateAllocationView ? 'Chi tiết thưởng của tôi' : 'Phân bổ thưởng tự động theo nhân viên'} action={<Badge tone={automaticMode ? 'green' : 'blue'}>{automaticMode ? 'Đối soát sau 22:00' : `${allocations.length} dòng lịch sử`}</Badge>}>
         <TableWrap className="compensation-table revenue-bonus-allocation-table">
           <thead><tr>
             {!privateAllocationView && <th>Nhân viên</th>}
@@ -762,7 +784,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
               </div></td>}
             </tr>
           })}{!allocations.length && <tr><td colSpan={(privateAllocationView ? 7 : 8) + (isAdmin && automaticMode ? 1 : 0)} className="compensation-empty">
-            {automaticLoading ? 'Đang đồng bộ phân bổ thưởng tự động.' : automaticMode ? 'Chưa có thời gian làm việc để phân bổ thưởng trong ngày này.' : 'Ngày lịch sử này chưa có phân bổ thưởng doanh thu.'}
+            {automaticLoading ? 'Đang kiểm tra trạng thái chốt thưởng tự động.' : automaticMode && liveSnapshot?.status === 'WAITING_CUTOFF' ? 'Hệ thống sẽ tính thưởng sau 22:00.' : automaticMode && liveSnapshot?.status === 'WAITING_SHIFT_CLOSE' ? 'Đang chờ tất cả nhân viên kết ca để tính thưởng.' : automaticMode ? 'Chưa có thời gian làm việc đã kết ca để phân bổ thưởng trong ngày này.' : 'Ngày lịch sử này chưa có phân bổ thưởng doanh thu.'}
           </td></tr>}</tbody>
         </TableWrap>
       </Card>
@@ -822,7 +844,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
             Khoản thưởng hiệu lực của nhân viên sẽ về 0 đồng. Dòng thưởng vẫn được giữ để Admin có thể khôi phục và phục vụ đối soát.
           </InfoNote>}
           {adminAction.mode === 'restore' && <InfoNote tone="green">
-            Hệ thống sẽ bỏ điều chỉnh của Admin và quay lại số tiền tự động theo doanh thu, mốc thưởng và thời gian làm việc hiện tại.
+            Hệ thống sẽ bỏ điều chỉnh của Admin và quay lại số tiền đã chốt theo doanh thu, mốc thưởng và thời gian của các ca đã kết thúc.
           </InfoNote>}
           <Field label="Lý do" required hint="Bắt buộc từ 3 đến 500 ký tự; được lưu vào nhật ký đối soát.">
             <textarea

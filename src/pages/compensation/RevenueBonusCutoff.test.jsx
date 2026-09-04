@@ -24,7 +24,7 @@ const snapshot = (allocationOverrides = {}) => ({
   editableByAdminOnly: true,
   storeId: 'CH001',
   businessDate: '2026-09-03',
-  projectedAt: '2026-09-03T11:00:00.000Z',
+  projectedAt: '2026-09-03T15:05:00.000Z',
   revenueVnd: 2_000_000,
   orderCount: 1,
   percentagePoolVnd: 20_000,
@@ -38,11 +38,13 @@ const snapshot = (allocationOverrides = {}) => ({
   attendanceCount: 2,
   openAttendanceCount: 0,
   participantCount: 2,
+  status: 'FINALIZED',
+  calculationEligibility: { allowed: true, code: 'FINALIZED' },
   allocations: [{
     id: 'AUTO-NV-01', storeId: 'CH001', businessDate: '2026-09-03',
     employeeId: 'NV-01', employeeName: 'Nhân viên Một', workedSeconds: 3_600,
     approvedSalesHours: 1, weightPercent: 50, automaticAmountVnd: 10_000,
-    amountVnd: 10_000, allocatedVnd: 10_000, status: 'LIVE',
+    amountVnd: 10_000, allocatedVnd: 10_000, status: 'FINALIZED',
     ...allocationOverrides,
   }],
 })
@@ -87,7 +89,7 @@ const automaticTable = () => screen.getByRole('heading', {
 describe('RevenueBonusPage automatic mode', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
+    vi.setSystemTime(new Date('2026-09-03T15:05:00.000Z'))
     mocked.liveRevenue.mockReset()
     mocked.periodRevenue.mockReset()
     mocked.periodRevenue.mockImplementation(({ storeId, period }) => Promise.resolve({
@@ -117,13 +119,13 @@ describe('RevenueBonusPage automatic mode', () => {
     expect(screen.getByText(/Không cần bấm tính hoặc duyệt/i)).toBeTruthy()
   })
 
-  it('renders the live formula immediately and includes no manual workflow', () => {
+  it('renders the finalized formula after 22:00 and includes no manual workflow', () => {
     render(<RevenueBonusPage storeScoped />)
 
     expect(screen.getAllByText('2,000,000 đ').length).toBeGreaterThan(0)
     expect(screen.getAllByText('20,000 đ').length).toBeGreaterThan(0)
     expect(screen.getAllByText('10,000 đ').length).toBeGreaterThan(1)
-    expect(within(automaticTable()).getAllByText('Tự động trực tiếp').length).toBe(2)
+    expect(within(automaticTable()).getAllByText('Đã chốt tự động').length).toBe(2)
     expect(screen.queryByText(/chờ duyệt/i)).toBeNull()
   })
 

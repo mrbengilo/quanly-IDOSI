@@ -38,30 +38,30 @@ const app = () => ({
 describe('RevenueBonusPage server-authoritative automatic history', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date('2026-09-03T12:00:00.000Z'))
+    vi.setSystemTime(new Date('2026-09-03T15:05:00.000Z'))
     mocked.app = app()
     mocked.liveRevenue.mockReset().mockResolvedValue({
       snapshot: {
-        storeId: 'S01', businessDate: '2026-09-03', projectedAt: '2026-09-03T12:00:00.000Z',
+        storeId: 'S01', businessDate: '2026-09-03', projectedAt: '2026-09-03T15:05:00.000Z',
         revenueVnd: 2_000_000, totalPoolVnd: 20_000, automaticAllocatedVnd: 20_000,
         allocatedVnd: 20_000, unallocatedVnd: 0, adminAdjustmentVnd: 0,
         totalWorkedSeconds: 7_200, attendanceCount: 2, allocations: [{
           id: 'automatic-revenue:S01:2026-09-03:E01', storeId: 'S01', businessDate: '2026-09-03',
           employeeId: 'E01', employeeName: 'Nguyễn An', workedSeconds: 3_600,
           approvedSalesHours: 1, weightPercent: 50, automaticAmountVnd: 10_000,
-          amountVnd: 10_000, status: 'LIVE',
+          amountVnd: 10_000, status: 'FINALIZED',
         }],
       },
     })
     mocked.periodRevenue.mockReset().mockResolvedValue({
       period: {
-        storeId: 'S01', period: '2026-09', projectedAt: '2026-09-03T12:00:00.000Z',
-        days: [{ businessDate: '2026-09-03', projectedAt: '2026-09-03T12:00:00.000Z' }],
+        storeId: 'S01', period: '2026-09', projectedAt: '2026-09-03T15:05:00.000Z',
+        days: [{ businessDate: '2026-09-03', projectedAt: '2026-09-03T15:05:00.000Z' }],
         allocations: [{
           id: 'server-history-E01', storeId: 'S01', businessDate: '2026-09-03', period: '2026-09',
           employeeId: 'E01', employeeName: 'Nguyễn An', workedSeconds: 3_600,
           approvedSalesHours: 1, weightPercent: 25, automaticAmountVnd: 123_456,
-          amountVnd: 123_456, status: 'LIVE',
+          amountVnd: 123_456, status: 'FINALIZED',
         }],
       },
     })

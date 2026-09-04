@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import { revenueBonusLiveSnapshot } from './worker'
 
-const stateFor = ({ revenueVnd = 2_000_000, overrides = [] } = {}) => ({
+const stateFor = ({ revenueVnd = 2_000_000, overrides = [], open = true } = {}) => ({
   stores: [{ id: 'S01', name: 'Dosii S01', code: 'DOSII-S01' }],
   employees: [
     { id: 'E01', name: 'Nguyễn An', unit: 'store', storeId: 'S01' },
@@ -15,7 +15,9 @@ const stateFor = ({ revenueVnd = 2_000_000, overrides = [] } = {}) => ({
   }],
   attendance: [{
     id: 'A01', storeId: 'S01', employeeId: 'E01', workDate: '2026-09-03',
-    checkInAt: '2026-09-03T10:00:00.000Z', checkOutAt: null, workedSeconds: 0,
+    checkInAt: '2026-09-03T09:00:00.000Z',
+    checkOutAt: open ? null : '2026-09-03T10:00:00.000Z',
+    workedSeconds: open ? 0 : 3_600,
   }, {
     id: 'A02', storeId: 'S01', employeeId: 'E02', workDate: '2026-09-03',
     checkInAt: '2026-09-03T09:00:00.000Z', checkOutAt: '2026-09-03T10:00:00.000Z',
@@ -30,33 +32,40 @@ const store = { id: 'S01', name: 'Dosii S01', code: 'DOSII-S01' }
 const allocation = (snapshot, employeeId) => snapshot.allocations.find((row) => row.employeeId === employeeId)
 
 describe('revenueBonusLiveSnapshot automatic calculation', () => {
-  it('calculates before the former 21:00 cutoff and projects an open shift from trusted server time', () => {
-    const snapshot = revenueBonusLiveSnapshot({
+  it('waits for 22:00 and then waits for an open shift to close', () => {
+    const beforeCutoff = revenueBonusLiveSnapshot({
       state: stateFor(),
       store,
       businessDate: '2026-09-03',
-      now: '2026-09-03T11:00:00.000Z',
+      now: '2026-09-03T14:59:59.000Z',
+    })
+    expect(beforeCutoff).toMatchObject({
+      calculationMode: 'AUTOMATIC', editableByAdminOnly: true,
+      revenueVnd: 2_000_000, totalPoolVnd: 0, openAttendanceCount: 1,
+      participantCount: 0, status: 'WAITING_CUTOFF',
+      calculationEligibility: { allowed: false, code: 'WAITING_CUTOFF' },
     })
 
-    expect(snapshot).toMatchObject({
-      calculationMode: 'AUTOMATIC',
-      editableByAdminOnly: true,
-      revenueVnd: 2_000_000,
-      totalPoolVnd: 20_000,
-      openAttendanceCount: 1,
-      participantCount: 2,
-    })
-    expect(snapshot).not.toHaveProperty('calculationEligibility')
-    expect(allocation(snapshot, 'E01').workedSeconds).toBe(3_600)
-    expect(snapshot.allocations.reduce((sum, row) => sum + row.amountVnd, 0)).toBe(20_000)
-  })
-
-  it('automatically applies the highest milestone without creating a pending approval', () => {
-    const snapshot = revenueBonusLiveSnapshot({
-      state: stateFor({ revenueVnd: 16_000_000 }),
+    const waitingForClose = revenueBonusLiveSnapshot({
+      state: stateFor(),
       store,
       businessDate: '2026-09-03',
-      now: '2026-09-03T11:00:00.000Z',
+      now: '2026-09-03T15:00:01.000Z',
+    })
+    expect(waitingForClose).toMatchObject({
+      revenueVnd: 2_000_000, totalPoolVnd: 0, openAttendanceCount: 1,
+      participantCount: 0, status: 'WAITING_SHIFT_CLOSE',
+      calculationEligibility: { allowed: false, code: 'WAITING_SHIFT_CLOSE' },
+    })
+    expect(waitingForClose.allocations).toEqual([])
+  })
+
+  it('finalizes the percentage and highest milestone after 22:00 when all shifts are closed', () => {
+    const snapshot = revenueBonusLiveSnapshot({
+      state: stateFor({ revenueVnd: 16_000_000, open: false }),
+      store,
+      businessDate: '2026-09-03',
+      now: '2026-09-03T15:00:01.000Z',
     })
 
     expect(snapshot).toMatchObject({
@@ -64,25 +73,27 @@ describe('revenueBonusLiveSnapshot automatic calculation', () => {
       milestonePoolVnd: 250_000,
       totalPoolVnd: 890_000,
       allocatedVnd: 890_000,
-      status: 'LIVE',
+      status: 'FINALIZED',
+      calculationEligibility: { allowed: true, code: 'FINALIZED' },
     })
     expect(snapshot).not.toHaveProperty('milestoneStatus')
     expect(snapshot).not.toHaveProperty('pendingMilestonePoolVnd')
   })
 
-  it('applies the latest Admin override to one employee while preserving the automatic amount', () => {
+  it('applies the latest Admin override after 22:00 while preserving the finalized automatic amount', () => {
     const snapshot = revenueBonusLiveSnapshot({
       state: stateFor({
+        open: false,
         overrides: [{
           id: 'RBO-1', storeId: 'S01', businessDate: '2026-09-03', employeeId: 'E01',
           employeeName: 'Nguyễn An', mode: 'AMOUNT', amountVnd: 12_345,
           reason: 'Đối soát doanh thu', status: 'ACTIVE', version: 1,
-          updatedAt: '2026-09-03T11:01:00.000Z',
+          updatedAt: '2026-09-03T15:01:00.000Z',
         }],
       }),
       store,
       businessDate: '2026-09-03',
-      now: '2026-09-03T11:00:00.000Z',
+      now: '2026-09-03T15:02:00.000Z',
     })
 
     expect(allocation(snapshot, 'E01')).toMatchObject({

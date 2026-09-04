@@ -15411,7 +15411,7 @@ describe('IDOSI Worker security primitives', () => {
   it('automatically applies the highest revenue milestone, protects coworker allocations, and restricts overrides to Admin', async () => {
     vi.useFakeTimers()
     try {
-      vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
+      vi.setSystemTime(new Date('2026-09-03T15:01:00.000Z'))
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-hot-approval' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin', password: 'revenue-hot-admin-password',
@@ -15504,7 +15504,7 @@ describe('IDOSI Worker security primitives', () => {
     ), env)
     expect(employeeWrongStore.status).toBe(403)
 
-    expect(supportSnapshot).not.toHaveProperty('calculationEligibility')
+    expect(supportSnapshot.calculationEligibility).toMatchObject({ allowed: true, code: 'FINALIZED' })
     expect(supportSnapshot).not.toHaveProperty('pendingMilestonePoolVnd')
 
     const currentVersion = () => Number(env.DB.database.prepare(
@@ -15564,7 +15564,7 @@ describe('IDOSI Worker security primitives', () => {
           employeeId: 'E-S02', automaticAmountVnd: 445_000, amountVnd: 500_000,
           status: 'ADMIN_ADJUSTED',
         }),
-        expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 445_000, status: 'LIVE' }),
+        expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 445_000, status: 'FINALIZED' }),
       ],
     })
 
@@ -15602,8 +15602,8 @@ describe('IDOSI Worker security primitives', () => {
     expect((await restoredLive.json()).snapshot).toMatchObject({
       allocatedVnd: 890_000, adminAdjustmentVnd: 0, overrideCount: 0,
       allocations: [
-        expect.objectContaining({ employeeId: 'E-S02', amountVnd: 445_000, status: 'LIVE' }),
-        expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 445_000, status: 'LIVE' }),
+        expect.objectContaining({ employeeId: 'E-S02', amountVnd: 445_000, status: 'FINALIZED' }),
+        expect.objectContaining({ employeeId: 'QL-S02', amountVnd: 445_000, status: 'FINALIZED' }),
       ],
     })
 
