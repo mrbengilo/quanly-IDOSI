@@ -5279,22 +5279,48 @@ export const revenueBonusPeriodSnapshot = ({
     overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
     nowMs,
   })
+  const daysByDate = new Map(calculated.days.map((day) => [day.businessDate, day]))
+  for (const daily of Array.isArray(state?.revenueBonusDaily) ? state.revenueBonusDaily : []) {
+    const businessDate = materializedRevenueBusinessDate(daily)
+    if (!activeMaterializedRevenueRecord(daily)
+      || !sameIdentifier(daily.storeId, storeId)
+      || !businessDate.startsWith(`${normalizedPeriod}-`)) continue
+    daysByDate.set(businessDate, materializedRevenueBonusDaySnapshot({ state, storeId, businessDate, now }))
+  }
+  const days = [...daysByDate.values()]
+    .filter(Boolean)
+    .toSorted((left, right) => String(left.businessDate).localeCompare(String(right.businessDate)))
+  const allAllocations = days.flatMap((day) => Array.isArray(day.allocations) ? day.allocations : [])
   const allocations = visibleAutomaticRevenueBonusAllocations({
-    allocations: calculated.allocations,
+    allocations: allAllocations,
     canViewAllAllocations,
     viewerEmployeeIds,
     includeAdminDetails,
   })
+  const sum = (field) => days.reduce((total, day) => total + Number(day?.[field] || 0), 0)
   return {
     ...calculated,
+    revenueVnd: sum('revenueVnd'),
+    percentagePoolVnd: sum('percentagePoolVnd'),
+    milestonePoolVnd: sum('milestonePoolVnd'),
+    totalPoolVnd: sum('totalPoolVnd'),
+    formulaAllocatedVnd: sum('formulaAllocatedVnd'),
+    automaticAllocatedVnd: sum('automaticAllocatedVnd'),
+    allocatedVnd: sum('allocatedVnd'),
+    unallocatedVnd: sum('unallocatedVnd'),
+    excludedSupportShareVnd: sum('excludedSupportShareVnd'),
+    adminAdjustmentVnd: sum('adminAdjustmentVnd'),
+    totalWorkedSeconds: sum('totalWorkedSeconds'),
     projectedAt: new Date(nowMs).toISOString(),
     calculationMode: 'AUTOMATIC',
     editableByAdminOnly: true,
-    dayCount: calculated.days.length,
-    visibleAllocatedVnd: allocations.reduce((sum, record) => sum + Number(record.amountVnd || 0), 0),
-    days: calculated.days.map((day) => ({
+    dayCount: days.length,
+    visibleAllocatedVnd: allocations.reduce((total, record) => total + Number(record.amountVnd || 0), 0),
+    days: days.map((day) => ({
       businessDate: day.businessDate,
       projectedAt: day.projectedAt,
+      finalizedAt: day.finalizedAt || null,
+      status: day.status,
       revenueVnd: day.revenueVnd,
       totalPoolVnd: day.totalPoolVnd,
       automaticAllocatedVnd: day.automaticAllocatedVnd,
@@ -5309,6 +5335,307 @@ export const revenueBonusPeriodSnapshot = ({
     })),
     allocations,
   }
+}
+
+const AUTOMATIC_REVENUE_BONUS_SYSTEM_ACTOR = Object.freeze({
+  id: 'SYSTEM',
+  name: 'Hệ thống IDOSI',
+  role: 'system',
+})
+
+const automaticRevenueCandidateScopes = (state, {
+  now,
+  storeId = '',
+  businessDate = '',
+  period = '',
+} = {}) => {
+  const currentBusinessDate = localDateTimeParts(now).date
+  const scopes = new Map()
+  const addScope = (candidateStoreId, candidateDate) => {
+    if (!candidateStoreId
+      || !/^\d{4}-\d{2}-\d{2}$/u.test(candidateDate)
+      || candidateDate < AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE
+      || candidateDate > currentBusinessDate
+      || (storeId && !sameIdentifier(candidateStoreId, storeId))
+      || (businessDate && candidateDate !== businessDate)
+      || (period && !candidateDate.startsWith(`${period}-`))) return
+    const store = (Array.isArray(state?.stores) ? state.stores : []).find((record) => (
+      !record?.deletedAt && sameIdentifier(record?.id, candidateStoreId)
+    ))
+    if (!store) return
+    const key = `${normalizeIdentifierKey(store.id)}:${candidateDate}`
+    scopes.set(key, { storeId: String(store.id), businessDate: candidateDate })
+  }
+  for (const attendance of Array.isArray(state?.attendance) ? state.attendance : []) {
+    if (!activeMaterializedRevenueRecord(attendance)) continue
+    addScope(String(attendance.storeId || ''), materializedRevenueBusinessDate(attendance))
+  }
+  if (storeId && businessDate) addScope(storeId, businessDate)
+  return [...scopes.values()].toSorted((left, right) => (
+    left.businessDate.localeCompare(right.businessDate)
+    || left.storeId.localeCompare(right.storeId, 'en-US')
+  ))
+}
+
+const baselineAutomaticRevenueRecords = ({ snapshot, finalizedAt, trigger }) => {
+  const dailyId = `rbd_auto_${crypto.randomUUID()}`
+  const allocations = (Array.isArray(snapshot.allocations) ? snapshot.allocations : []).map((record) => {
+    const amountVnd = Number(record.automaticAmountVnd ?? record.amountVnd ?? 0)
+    return {
+      ...record,
+      id: `rba_auto_${crypto.randomUUID()}`,
+      revenueBonusDailyId: dailyId,
+      sourceType: 'automatic-revenue-bonus',
+      automatic: true,
+      amountVnd,
+      allocatedVnd: amountVnd,
+      adminAdjustmentVnd: 0,
+      overrideId: null,
+      overrideMode: null,
+      overrideReason: '',
+      overrideVersion: null,
+      status: 'APPROVED',
+      calculationStatus: record.supportTransferred ? 'SUPPORT_EXCLUDED' : 'FINALIZED',
+      approvedAt: finalizedAt,
+      approvedBy: AUTOMATIC_REVENUE_BONUS_SYSTEM_ACTOR,
+      finalizedAt,
+      createdAt: finalizedAt,
+      version: 1,
+    }
+  })
+  const automaticAllocatedVnd = allocations.reduce((total, record) => total + Number(record.amountVnd || 0), 0)
+  const embeddedAllocations = allocations.map((record) => ({
+    ...record,
+    status: record.supportTransferred ? 'SUPPORT_EXCLUDED' : 'FINALIZED',
+  }))
+  const daily = {
+    ...snapshot,
+    id: dailyId,
+    sourceType: 'automatic-revenue-bonus',
+    automatic: true,
+    sourceKey: `automatic-revenue-bonus:${normalizeIdentifierKey(snapshot.storeId)}:${snapshot.businessDate}`,
+    status: 'FINALIZED',
+    calculationStatus: 'FINALIZED',
+    calculatedAt: finalizedAt,
+    calculatedBy: AUTOMATIC_REVENUE_BONUS_SYSTEM_ACTOR,
+    finalizedAt,
+    finalizedBy: AUTOMATIC_REVENUE_BONUS_SYSTEM_ACTOR,
+    finalizationTrigger: trigger,
+    automaticAllocatedVnd,
+    allocatedVnd: automaticAllocatedVnd,
+    adminAdjustmentVnd: 0,
+    overrideCount: 0,
+    overrideCollisions: [],
+    allocations: embeddedAllocations,
+    version: 1,
+    createdAt: finalizedAt,
+  }
+  const jobRun = {
+    id: `job_auto_revenue_${crypto.randomUUID()}`,
+    type: 'AUTOMATIC_REVENUE_BONUS_DAY',
+    status: 'COMPLETED',
+    storeId: snapshot.storeId,
+    businessDate: snapshot.businessDate,
+    period: snapshot.period,
+    revenueBonusDailyId: dailyId,
+    trigger,
+    startedAt: finalizedAt,
+    completedAt: finalizedAt,
+    createdAt: finalizedAt,
+  }
+  return { daily, allocations, jobRun }
+}
+
+const commitAutomaticRevenueBonusState = async (db, current, nextState, {
+  daily,
+  finalizedAt,
+  requestId,
+  trigger,
+}) => {
+  const currentVersion = Number(current.version || 0)
+  const nextVersion = currentVersion + 1
+  const stateCommit = prepareStateCommit(db, {
+    current,
+    nextState,
+    scope: 'global',
+    currentVersion,
+    nextVersion,
+    now: finalizedAt,
+    actorId: null,
+    requestId,
+  })
+  let results
+  try {
+    results = await db.batch([
+      stateCommit.mutation,
+      ...stateCommit.externalStatements,
+      db.prepare(`
+        INSERT INTO audit_log (
+          request_id, actor_id, actor_role, action, entity_type, entity_id,
+          before_json, after_json, metadata_json, server_timestamp
+        )
+        SELECT ?, NULL, 'system', 'revenue_bonus.auto_finalize_day', 'revenue_bonus_daily', ?, NULL, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM app_state
+          WHERE scope_key = 'global' AND version = ? AND last_request_id = ?
+        )
+      `).bind(
+        requestId,
+        daily.id,
+        boundedAuditJson(daily),
+        boundedAuditJson({
+          storeId: daily.storeId,
+          businessDate: daily.businessDate,
+          trigger,
+          allocationCount: Array.isArray(daily.allocations) ? daily.allocations.length : 0,
+        }),
+        finalizedAt,
+        nextVersion,
+        requestId,
+      ),
+    ])
+  } catch (error) {
+    const latest = await loadState(db, 'global')
+    if (Number(latest?.version || 0) !== currentVersion) {
+      throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
+        currentVersion: Number(latest?.version || 0),
+      })
+    }
+    throw error
+  }
+  if (changes(results?.[0]) !== 1) {
+    const latest = await loadState(db, 'global')
+    throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
+      currentVersion: Number(latest?.version || 0),
+    })
+  }
+  return nextVersion
+}
+
+const finalizeAutomaticRevenueBonusScope = async (db, scope, {
+  now,
+  trigger,
+  maxAttempts,
+}) => {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const current = await loadState(db, 'global')
+    if (!current) return { status: 'UNINITIALIZED', ...scope }
+    const state = normalizeSharedStateForStorage(parseStoredJson(current.value_json, {}))
+    const existing = materializedRevenueDailyMatches(state, scope.storeId, scope.businessDate)
+    if (existing.length > 1) {
+      return {
+        status: 'DUPLICATE',
+        ...scope,
+        recordIds: existing.map((record) => String(record.id || '')),
+      }
+    }
+    if (existing.length === 1) return { status: 'ALREADY_FINALIZED', ...scope, dailyId: existing[0].id }
+    const store = requireActivePhysicalStore(state, scope.storeId)
+    try {
+      assertPayrollNotPaidOrLocked(state, store.id, scope.businessDate.slice(0, 7))
+    } catch (error) {
+      if (error instanceof ApiError) return { status: 'PAYROLL_LOCKED', ...scope, code: error.code }
+      throw error
+    }
+    const snapshot = revenueBonusLiveSnapshot({ state, store, businessDate: scope.businessDate, now })
+    if (snapshot.status !== 'FINALIZED') return { status: snapshot.status, ...scope }
+    const finalizedAt = String(now)
+    const records = baselineAutomaticRevenueRecords({ snapshot, finalizedAt, trigger })
+    const nextState = {
+      ...state,
+      revenueBonusDaily: [records.daily, ...(Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : [])],
+      revenueBonusAllocations: [
+        ...records.allocations,
+        ...(Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []),
+      ],
+      jobRuns: [records.jobRun, ...(Array.isArray(state.jobRuns) ? state.jobRuns : [])],
+    }
+    const requestId = `auto-revenue-${crypto.randomUUID()}`
+    try {
+      const version = await commitAutomaticRevenueBonusState(db, current, nextState, {
+        daily: records.daily,
+        finalizedAt,
+        requestId,
+        trigger,
+      })
+      return {
+        status: 'FINALIZED',
+        ...scope,
+        dailyId: records.daily.id,
+        allocationCount: records.allocations.length,
+        allocatedVnd: records.daily.allocatedVnd,
+        version,
+      }
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'VERSION_CONFLICT' && attempt < maxAttempts) continue
+      throw error
+    }
+  }
+  return { status: 'VERSION_CONFLICT', ...scope }
+}
+
+export const finalizeAutomaticRevenueBonuses = async (env, {
+  now = new Date().toISOString(),
+  trigger = 'scheduled',
+  storeId = '',
+  businessDate = '',
+  period = '',
+  maxAttempts = 4,
+  maxScopes = 500,
+} = {}) => {
+  const parsedNow = new Date(now)
+  if (Number.isNaN(parsedNow.getTime())) throw new TypeError('now must be a valid timestamp.')
+  const normalizedNow = parsedNow.toISOString()
+  const db = getDatabase(env)
+  const current = await loadState(db, 'global')
+  const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json || '{}', {}))
+  const scopes = automaticRevenueCandidateScopes(state, {
+    now: normalizedNow,
+    storeId: String(storeId || '').trim(),
+    businessDate: String(businessDate || '').trim(),
+    period: String(period || '').trim(),
+  }).slice(0, Math.max(1, Math.min(Number(maxScopes) || 500, 2_000)))
+  const summary = {
+    trigger,
+    startedAt: normalizedNow,
+    candidateCount: scopes.length,
+    finalized: 0,
+    alreadyFinalized: 0,
+    waitingCutoff: 0,
+    waitingShiftClose: 0,
+    noAttendance: 0,
+    payrollLocked: 0,
+    duplicates: 0,
+    failed: 0,
+    results: [],
+  }
+  for (const scope of scopes) {
+    try {
+      const result = await finalizeAutomaticRevenueBonusScope(db, scope, {
+        now: normalizedNow,
+        trigger,
+        maxAttempts: Math.max(1, Math.min(Number(maxAttempts) || 4, 8)),
+      })
+      summary.results.push(result)
+      if (result.status === 'FINALIZED') summary.finalized += 1
+      else if (result.status === 'ALREADY_FINALIZED') summary.alreadyFinalized += 1
+      else if (result.status === 'WAITING_CUTOFF') summary.waitingCutoff += 1
+      else if (result.status === 'WAITING_SHIFT_CLOSE') summary.waitingShiftClose += 1
+      else if (result.status === 'NO_ATTENDANCE') summary.noAttendance += 1
+      else if (result.status === 'PAYROLL_LOCKED') summary.payrollLocked += 1
+      else if (result.status === 'DUPLICATE') summary.duplicates += 1
+    } catch (error) {
+      summary.failed += 1
+      summary.results.push({
+        status: 'FAILED',
+        ...scope,
+        code: error instanceof ApiError ? error.code : 'AUTOMATIC_REVENUE_BONUS_FAILED',
+        message: String(error?.message || 'Không thể tự động chốt thưởng doanh thu.'),
+      })
+    }
+  }
+  summary.completedAt = new Date().toISOString()
+  return summary
 }
 
 const getRevenueBonusLive = async (request, env, context, url) => {
@@ -12254,17 +12581,45 @@ const compensationAmountTotalsFor = (
     add(field, record.amountVnd ?? record.amount ?? 0, 'Tổng thưởng/phụ cấp')
   }
   if (allowedSupportTransferIds) return totals
+  const materializedDailyIds = new Set()
+  const materializedDateKeys = new Set()
+  for (const daily of Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []) {
+    const businessDate = materializedRevenueBusinessDate(daily)
+    if (!activeMaterializedRevenueRecord(daily)
+      || !sameIdentifier(daily.storeId, storeId)
+      || !businessDate.startsWith(`${period}-`)) continue
+    materializedDailyIds.add(normalizeIdentifierKey(daily.id))
+    materializedDateKeys.add(`${normalizeIdentifierKey(daily.storeId)}:${businessDate}`)
+  }
   for (const record of Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []) {
-    if (dateFromRecord(record) >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE
-      || !compensationRecordActiveForPayroll(record, employeeId, period)
+    if (!compensationRecordActiveForPayroll(record, employeeId, period)
       || !compensationRecordBelongsToStore(state, record, storeId, employeeHomeStoreId)) continue
+    const businessDate = materializedRevenueBusinessDate(record)
+    if (businessDate >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE) {
+      const linked = materializedDailyIds.has(normalizeIdentifierKey(record.revenueBonusDailyId))
+        || materializedDateKeys.has(`${normalizeIdentifierKey(record.storeId)}:${businessDate}`)
+      if (!linked) continue
+      const overrideResolution = materializedRevenueOverrideResolution(state, record.storeId, businessDate)
+      if (overrideResolution.collisions.length) {
+        throw new ApiError(409, 'REVENUE_BONUS_OVERRIDE_COLLISION', 'Thưởng doanh thu có nhiều điều chỉnh đang hoạt động cho cùng nhân viên.', {
+          storeId: record.storeId,
+          businessDate,
+          employeeId: record.employeeId,
+        })
+      }
+      const effective = effectiveMaterializedRevenueAllocation(record, overrideResolution)
+      add('revenue', effective.amountVnd, 'Tổng thưởng doanh thu đã chốt')
+      continue
+    }
     add('revenue', record.amountVnd ?? record.amount ?? 0, 'Tổng thưởng doanh thu lịch sử')
   }
   const automaticPeriod = automaticRevenueBonusPeriodFor(state, storeId, period)
   for (const record of automaticPeriod.allocations) {
-    if (!belongsToEmployee(record, employeeId)
+    const materializedKey = `${normalizeIdentifierKey(record.storeId)}:${materializedRevenueBusinessDate(record)}`
+    if (materializedDateKeys.has(materializedKey)
+      || !belongsToEmployee(record, employeeId)
       || !compensationRecordBelongsToStore(state, record, storeId, employeeHomeStoreId)) continue
-    add('revenue', record.amountVnd ?? 0, 'Tổng thưởng doanh thu tự động')
+    add('revenue', record.amountVnd ?? 0, 'Tổng thưởng doanh thu tự động đang chờ lưu')
   }
   return totals
 }
@@ -20823,11 +21178,148 @@ const publicRevenueBonusEligibility = (eligibility = {}) => {
   return safeEligibility
 }
 
+const activeMaterializedRevenueRecord = (record) => {
+  if (!isPlainRecord(record) || record.deletedAt || record.voidedAt || record.supersededAt) return false
+  return !['void', 'deleted', 'rejected', 'superseded'].includes(normalizeTextKey(record.status))
+}
+
+const materializedRevenueBusinessDate = (record) => dateFromRecord(record)
+
+const materializedRevenueDailyMatches = (state, storeId, businessDate) => (
+  Array.isArray(state?.revenueBonusDaily) ? state.revenueBonusDaily : []
+).filter((record) => (
+  activeMaterializedRevenueRecord(record)
+  && sameIdentifier(record.storeId, storeId)
+  && materializedRevenueBusinessDate(record) === businessDate
+))
+
+const materializedRevenueAllocationRows = (state, dailyRecord) => {
+  const stored = (Array.isArray(state?.revenueBonusAllocations) ? state.revenueBonusAllocations : [])
+    .filter((record) => (
+      activeMaterializedRevenueRecord(record)
+      && (
+        (record.revenueBonusDailyId && sameIdentifier(record.revenueBonusDailyId, dailyRecord.id))
+        || (!record.revenueBonusDailyId
+          && sameIdentifier(record.storeId, dailyRecord.storeId)
+          && materializedRevenueBusinessDate(record) === materializedRevenueBusinessDate(dailyRecord))
+      )
+    ))
+  if (stored.length) return stored
+  return Array.isArray(dailyRecord.allocations) ? dailyRecord.allocations : []
+}
+
+const materializedRevenueOverrideResolution = (state, storeId, businessDate) => {
+  const grouped = new Map()
+  for (const record of Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : []) {
+    if (!isPlainRecord(record)
+      || record.deletedAt
+      || record.voidedAt
+      || normalizeTextKey(record.status) !== 'active'
+      || !sameIdentifier(record.storeId, storeId)
+      || materializedRevenueBusinessDate(record) !== businessDate) continue
+    const employeeKey = normalizeIdentifierKey(record.employeeId)
+    if (!employeeKey) continue
+    const rows = grouped.get(employeeKey) || []
+    rows.push(record)
+    grouped.set(employeeKey, rows)
+  }
+  const records = new Map()
+  const collisions = []
+  for (const [employeeKey, rows] of grouped) {
+    const sorted = rows.toSorted((left, right) => (
+      Number(right.version || 0) - Number(left.version || 0)
+      || String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || ''))
+      || String(right.id || '').localeCompare(String(left.id || ''))
+    ))
+    records.set(employeeKey, sorted[0])
+    if (sorted.length > 1) {
+      collisions.push({
+        employeeId: String(sorted[0].employeeId || ''),
+        overrideIds: sorted.map((record) => String(record.id || '')),
+      })
+    }
+  }
+  return { records, collisions }
+}
+
+const effectiveMaterializedRevenueAllocation = (record, overrideResolution) => {
+  const employeeKey = normalizeIdentifierKey(record.employeeId)
+  const override = overrideResolution.records.get(employeeKey) || null
+  const automaticAmountVnd = Number(record.automaticAmountVnd ?? record.amountVnd ?? record.amount ?? 0)
+  const overrideMode = String(override?.mode || '').trim().toUpperCase()
+  const amountVnd = override
+    ? overrideMode === 'DELETED' ? 0 : Number(override.amountVnd ?? automaticAmountVnd)
+    : automaticAmountVnd
+  const status = override
+    ? overrideMode === 'DELETED' ? 'ADMIN_DELETED' : 'ADMIN_ADJUSTED'
+    : record.supportTransferred ? 'SUPPORT_EXCLUDED' : 'FINALIZED'
+  return {
+    ...record,
+    automaticAmountVnd,
+    amountVnd,
+    allocatedVnd: amountVnd,
+    adminAdjustmentVnd: amountVnd - automaticAmountVnd,
+    overrideId: override?.id || null,
+    overrideMode: override?.mode || null,
+    overrideReason: override?.reason || override?.note || '',
+    overrideVersion: override ? Number(override.version || 1) : null,
+    status,
+  }
+}
+
+const materializedRevenueBonusDaySnapshot = ({ state, storeId, businessDate, now }) => {
+  const matches = materializedRevenueDailyMatches(state, storeId, businessDate)
+  if (!matches.length) return null
+  if (matches.length > 1) {
+    throw new ApiError(409, 'REVENUE_BONUS_DAILY_DUPLICATE', 'Ngày thưởng doanh thu có nhiều kết quả đang hoạt động; cần Admin xử lý dữ liệu trùng.', {
+      storeId,
+      businessDate,
+      recordIds: matches.map((record) => String(record.id || '')),
+    })
+  }
+  const daily = matches[0]
+  const overrideResolution = materializedRevenueOverrideResolution(state, storeId, businessDate)
+  const allocations = materializedRevenueAllocationRows(state, daily)
+    .map((record) => effectiveMaterializedRevenueAllocation(record, overrideResolution))
+    .toSorted((left, right) => (
+      Number(right.workedSeconds || right.weightUnits || 0) - Number(left.workedSeconds || left.weightUnits || 0)
+      || String(left.employeeName || left.employeeId || '').localeCompare(String(right.employeeName || right.employeeId || ''), 'vi-VN')
+    ))
+  const automaticAllocatedVnd = allocations.reduce((sum, record) => sum + Number(record.automaticAmountVnd || 0), 0)
+  const allocatedVnd = allocations.reduce((sum, record) => sum + Number(record.amountVnd || 0), 0)
+  const projectedAt = String(now || new Date().toISOString())
+  return {
+    ...daily,
+    projectedAt,
+    finalizedAt: daily.finalizedAt || daily.calculatedAt || daily.approvedAt || daily.createdAt || projectedAt,
+    calculationMode: 'AUTOMATIC',
+    editableByAdminOnly: true,
+    status: 'FINALIZED',
+    automaticAllocatedVnd,
+    allocatedVnd,
+    adminAdjustmentVnd: allocatedVnd - automaticAllocatedVnd,
+    overrideCount: overrideResolution.records.size,
+    overrideCollisions: overrideResolution.collisions,
+    calculationEligibility: {
+      allowed: true,
+      code: 'FINALIZED',
+      message: 'Thưởng doanh thu ngày đã được hệ thống chốt chính thức sau 22:00 khi toàn bộ nhân viên kết ca.',
+      cutoffAt: daily.cutoffAt || null,
+      attendanceCount: Number(daily.attendanceCount || 0),
+      openAttendanceCount: 0,
+    },
+    allocations,
+  }
+}
+
 export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new Date().toISOString() } = {}) => {
   const storeId = String(store?.id || '')
-  const nowMs = Date.parse(now)
-  if (!storeId || !Number.isFinite(nowMs)) throw new TypeError('store and a valid now timestamp are required.')
+  if (!storeId || !/^\d{4}-\d{2}-\d{2}$/u.test(String(businessDate || ''))) {
+    throw new TypeError('store and businessDate are required.')
+  }
   assertNoCaseCollidingOperationalIdentifiers(state)
+  const persisted = materializedRevenueBonusDaySnapshot({ state, storeId, businessDate, now })
+  if (persisted) return persisted
   const { programId, milestoneProgramId } = revenueBonusProgramForStore(store)
   return {
     ...calculateAutomaticRevenueBonusDay({
@@ -20840,7 +21332,7 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
       employees: Array.isArray(state?.employees) ? state.employees : [],
       supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
       overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
-      nowMs,
+      nowMs: Date.parse(now),
     }),
     calculationMode: 'AUTOMATIC',
     editableByAdminOnly: true,
