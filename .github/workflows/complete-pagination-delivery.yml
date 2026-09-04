@@ -1,0 +1,209 @@
+name: Complete pagination delivery
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-v2
+    paths:
+      - .github/workflows/complete-pagination-delivery.yml
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: idosi-complete-pagination-delivery
+  cancel-in-progress: false
+
+jobs:
+  verify-merge-deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH_NAME: perf/paginate-data-tables-v2
+    steps:
+      - name: Checkout pagination branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-v2
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Require actual implementation and clean staging files
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -f src/components/PaginatedTbody.jsx
+          test -f src/components/PaginatedTbody.test.jsx
+          converted_count="$(git grep -l '<PaginatedTbody' -- 'src/**/*.jsx' ':!src/**/*.test.jsx' | wc -l)"
+          test "$converted_count" -ge 8
+          raw_count="$(git grep -l '<tbody' -- 'src/**/*.jsx' ':!src/**/*.test.jsx' || true)"
+          test -z "$raw_count"
+          rm -f \
+            .github/workflows/export-pagination-source-v2.yml \
+            .github/workflows/apply-global-table-pagination.yml \
+            .github/workflows/finalize-table-pagination.yml \
+            .github/workflows/probe-pagination-branch.yml \
+            .github/workflows/complete-pagination-delivery.yml \
+            .github/pagination-pr-note.txt \
+            PAGINATION_IMPLEMENTATION_STATUS.md \
+            PAGINATION_READY.md
+          git diff --check
+          echo "paginated_source_files=$converted_count"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Targeted pagination regression tests
+        run: npx vitest run src/components/PaginatedTbody.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit cleanup and push exact candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'chore: remove pagination delivery scaffolding'
+          fi
+          git push origin HEAD:"$BRANCH_NAME"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update pull request
+        id: pull_request
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pr_number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH_NAME" --state open --json number --jq '.[0].number // empty')"
+          if [[ -z "$pr_number" ]]; then
+            pr_url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH_NAME" \
+              --title 'perf: phân trang toàn bộ bảng dữ liệu tối đa 20 dòng' \
+              --body 'Áp dụng phân trang dùng chung tối đa 20 dòng cho toàn bộ bảng. Trang đầu của lịch sử giao việc ưu tiên hôm nay và hôm qua; Đơn hàng, Công việc tính thưởng & vi phạm và Chấm công cửa hàng ưu tiên ngày hiện tại. Không migration hoặc sửa dữ liệu.')"
+            pr_number="${pr_url##*/}"
+          fi
+          gh pr edit "$pr_number" --repo "$GITHUB_REPOSITORY" \
+            --title 'perf: phân trang toàn bộ bảng dữ liệu tối đa 20 dòng' \
+            --body '## Phạm vi
+          - Admin/Giao việc: trang đầu ưu tiên hôm nay và hôm qua.
+          - Cửa hàng/Đơn hàng: trang đầu ưu tiên ngày hiện tại.
+          - Cửa hàng/Công việc tính thưởng & vi phạm: trang đầu ưu tiên ngày hiện tại.
+          - Cửa hàng/Chấm công: trang đầu ưu tiên ngày hiện tại.
+          - Mọi bảng dữ liệu còn lại: tối đa 20 dòng/trang, có số trang 1,2,3… và trước/sau.
+
+          ## An toàn
+          Không sửa schema, không xóa dữ liệu, không thay đổi tổng hợp hoặc công thức tài chính. Đã chạy targeted test, lint, full test, production build và Sites verification trước khi cập nhật PR.'
+          echo "number=$pr_number" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for official Verify IDOSI checks
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ steps.candidate.outputs.sha }}
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 180); do
+            result="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow 'Verify IDOSI' --commit "$CANDIDATE_SHA" --limit 1 --json status,conclusion,databaseId --jq '.[0] | [.status, (.conclusion // ""), (.databaseId|tostring)] | @tsv' 2>/dev/null || true)"
+            status="$(cut -f1 <<<"$result")"
+            conclusion="$(cut -f2 <<<"$result")"
+            run_id="$(cut -f3 <<<"$result")"
+            if [[ "$status" == 'completed' ]]; then
+              [[ "$conclusion" == 'success' ]] || { echo "Verify IDOSI failed: run=$run_id conclusion=$conclusion" >&2; exit 1; }
+              echo "verify_run_id=$run_id"
+              exit 0
+            fi
+            echo "Waiting Verify IDOSI for $CANDIDATE_SHA ($attempt/180): ${status:-not-started}"
+            sleep 10
+          done
+          echo 'Timed out waiting for Verify IDOSI.' >&2
+          exit 1
+
+      - name: Merge verified pull request
+        id: merge
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+        run: |
+          set -Eeuo pipefail
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash \
+            --subject 'perf(tables): paginate data lists at 20 rows' \
+            --body 'Limit every data table to 20 visible business rows, prioritize current business dates on high-volume screens, and add accessible numbered pagination.'
+          merge_sha="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json mergeCommit --jq '.mergeCommit.oid')"
+          test -n "$merge_sha"
+          echo "sha=$merge_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for main verification and VPS deployment
+        shell: bash
+        env:
+          MERGE_SHA: ${{ steps.merge.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          verify_success=0
+          for attempt in $(seq 1 180); do
+            result="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow 'Verify IDOSI' --commit "$MERGE_SHA" --limit 1 --json status,conclusion,databaseId --jq '.[0] | [.status, (.conclusion // ""), (.databaseId|tostring)] | @tsv' 2>/dev/null || true)"
+            status="$(cut -f1 <<<"$result")"
+            conclusion="$(cut -f2 <<<"$result")"
+            if [[ "$status" == 'completed' ]]; then
+              [[ "$conclusion" == 'success' ]] || { echo "Main verification failed: $conclusion" >&2; exit 1; }
+              verify_success=1
+              break
+            fi
+            sleep 10
+          done
+          [[ "$verify_success" == 1 ]]
+
+          deploy_success=0
+          for attempt in $(seq 1 240); do
+            result="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow 'Deploy IDOSI VPS' --commit "$MERGE_SHA" --limit 1 --json status,conclusion,databaseId --jq '.[0] | [.status, (.conclusion // ""), (.databaseId|tostring)] | @tsv' 2>/dev/null || true)"
+            status="$(cut -f1 <<<"$result")"
+            conclusion="$(cut -f2 <<<"$result")"
+            run_id="$(cut -f3 <<<"$result")"
+            if [[ "$status" == 'completed' ]]; then
+              [[ "$conclusion" == 'success' ]] || { echo "VPS deployment failed: run=$run_id conclusion=$conclusion" >&2; exit 1; }
+              echo "deploy_run_id=$run_id"
+              deploy_success=1
+              break
+            fi
+            sleep 10
+          done
+          [[ "$deploy_success" == 1 ]]
+
+      - name: Verify exact public production release
+        shell: bash
+        env:
+          MERGE_SHA: ${{ steps.merge.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 90); do
+            actual="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "https://idosi.io.vn/api/release?_pagination=$attempt" \
+              | node -e "let value='';process.stdin.on('data',chunk=>value+=chunk);process.stdin.on('end',()=>{const data=JSON.parse(value);process.stdout.write(data.data?.releaseSha||data.releaseSha||'')})" 2>/dev/null || true)"
+            if [[ "$actual" == "$MERGE_SHA" ]]; then
+              curl -fsS --max-time 20 "https://idosi.io.vn/api/health?_pagination=$attempt" >/dev/null
+              curl -fsS --max-time 20 "https://idosi.io.vn/?_pagination=$attempt" >/dev/null
+              echo "production_release_sha=$actual"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Production did not reach exact merge SHA $MERGE_SHA" >&2
+          exit 1
