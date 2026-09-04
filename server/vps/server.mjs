@@ -3,7 +3,8 @@ import { createServer } from 'node:http'
 import { resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
-import worker from '../worker.js'
+import worker, { finalizeAutomaticRevenueBonuses } from '../worker.js'
+import { createAutomaticRevenueBonusRunner } from './automatic-revenue-bonus-runner.mjs'
 import { FileR2 } from './file-r2.mjs'
 import { createReleaseInfoResponse } from './release-info.mjs'
 import { createSqliteD1, runWithSqliteMetrics } from './sqlite-d1.mjs'
@@ -77,6 +78,13 @@ export const createVpsRuntime = ({
 
 export const createIdosiServer = (options = {}) => {
   const runtime = createVpsRuntime(options)
+  const automaticRevenueBonusRunner = createAutomaticRevenueBonusRunner({
+    env: runtime.env,
+    finalize: options.finalizeAutomaticRevenueBonuses || finalizeAutomaticRevenueBonuses,
+    enabled: options.automaticRevenueBonusEnabled ?? (process.env.NODE_ENV !== 'test'),
+    intervalMs: options.automaticRevenueBonusIntervalMs,
+    logger: options.automaticRevenueBonusLogger,
+  })
   const releaseSha = options.releaseSha ?? process.env.IDOSI_RELEASE_SHA ?? ''
   const releaseStartedAt = options.releaseStartedAt ?? new Date().toISOString()
   const requestLogger = options.requestLogger === undefined ? defaultRequestLogger : options.requestLogger
@@ -183,8 +191,12 @@ export const createIdosiServer = (options = {}) => {
   // Retire proxy connections after Caddy's 30s pool timeout, never before it.
   server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS
   server.headersTimeout = HEADERS_TIMEOUT_MS
-  server.on('close', () => runtime.database.close())
-  return { server, runtime }
+  server.once('listening', () => automaticRevenueBonusRunner.start())
+  server.on('close', () => {
+    void automaticRevenueBonusRunner.stop()
+    runtime.database.close()
+  })
+  return { server, runtime, automaticRevenueBonusRunner }
 }
 
 const isMainModule = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
