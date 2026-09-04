@@ -5,7 +5,11 @@ FROM node:24-bookworm-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,id=idosi-npm-cache,target=/root/.npm,sharing=locked \
-    npm ci --prefer-offline --no-audit --no-fund
+    npm ci --prefer-offline --no-audit --no-fund \
+      --fetch-retries=2 \
+      --fetch-retry-mintimeout=10000 \
+      --fetch-retry-maxtimeout=30000 \
+      --fetch-timeout=120000
 COPY . .
 RUN npm run build
 
