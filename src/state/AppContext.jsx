@@ -1521,6 +1521,8 @@ const remoteCommandResultPatches = (type, result) => {
     add('revenueBonusAllocations', result.allocation || result.allocations)
     add('revenueBonusOverrides', result.override || result.overrides)
     add('salaryAdjustments', result.adjustment || result.adjustments)
+    add('teamRewardClaims', result.teamClaim || result.teamClaims)
+    add('teamRewardParticipants', result.teamParticipant || result.teamParticipants)
   }
   if (type.startsWith('payroll.')) {
     add('payrollPeriods', result.period)
@@ -4844,7 +4846,7 @@ export function AppProvider({ children }) {
 
   const requireRevenueBonusAdmin = () => {
     if (normalizeAuthRole(state.session?.role) !== 'admin') {
-      throw new Error('Chỉ Admin được sửa, xóa hoặc khôi phục thưởng doanh thu tự động của nhân viên.')
+      throw new Error('Chỉ Admin được điều chỉnh hoặc xử lý dữ liệu thưởng doanh thu.')
     }
     if (!apiRef.current.enabled) {
       throw new Error('Cần kết nối máy chủ để điều chỉnh thưởng doanh thu an toàn.')
@@ -4875,6 +4877,15 @@ export function AppProvider({ children }) {
       'revenue_bonus.restore_employee',
       payload,
       payload.idempotencyKey || `revenue-bonus-restore:${crypto.randomUUID()}`,
+    )
+  }
+
+  const resolveRevenueBonusDailyCollision = async (payload = {}) => {
+    requireRevenueBonusAdmin()
+    return runRemoteDomainCommand(
+      'revenue_bonus.resolve_daily_collision',
+      payload,
+      payload.idempotencyKey || `revenue-bonus-collision:${crypto.randomUUID()}`,
     )
   }
 
@@ -6548,6 +6559,7 @@ export function AppProvider({ children }) {
     setRevenueBonusOverride,
     deleteRevenueBonusOverride,
     restoreRevenueBonusOverride,
+    resolveRevenueBonusDailyCollision,
     calculateRevenueBonusDay,
     approveRevenueBonusMilestone,
     rejectRevenueBonusMilestone,
