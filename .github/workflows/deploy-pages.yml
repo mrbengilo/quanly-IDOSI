@@ -37,10 +37,14 @@ jobs:
         run: npm ci --prefer-offline --no-audit --no-fund
 
       - name: Audit production dependencies
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/audit-npm-bulk.mjs --omit=dev --audit-level=high
 
       - name: Report full dependency audit
         continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/audit-npm-bulk.mjs --audit-level=high
 
       - name: Lint
