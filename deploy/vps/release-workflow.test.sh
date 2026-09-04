@@ -213,6 +213,10 @@ grep -Fq 'timeout --foreground --signal=TERM --kill-after=30s' "$SCRIPT_DIR/depl
   || fail 'production image build timeout cannot terminate a stalled build client'
 grep -Fq 'BUILDKIT_PROGRESS=plain' "$SCRIPT_DIR/deploy-release.sh" \
   || fail 'production image build does not emit inspectable plain progress'
+grep -Fq 'id=idosi-npm-cache,target=/root/.npm,sharing=locked' "$SCRIPT_DIR/Dockerfile" \
+  || fail 'production image build does not persist a concurrency-safe npm download cache'
+grep -Fq 'npm ci --prefer-offline --no-audit --no-fund' "$SCRIPT_DIR/Dockerfile" \
+  || fail 'production image build does not prefer the persistent npm download cache'
 grep -Fq 'attempt<=PUBLIC_VERIFY_ATTEMPTS' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
   || fail 'production workflow does not retry public verification during bounded cutover convergence'
 grep -Fq 'sleep "$PUBLIC_VERIFY_DELAY_SECONDS"' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \

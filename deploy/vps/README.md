@@ -87,6 +87,10 @@ the durable operation log. The GitHub workflow prints the latest log lines
 every five minutes while polling, so a stalled pull/build is visible and exits
 before it can hold the production deployment lock indefinitely.
 
+BuildKit also keeps a shared, locked npm download cache. Each image still uses
+`npm ci` to recreate `node_modules` exactly from the lockfile, while completed
+downloads remain reusable after source-only changes or an interrupted build.
+
 An active durable operation can be inspected without acquiring or changing the
 production lock by running **Inspect active IDOSI VPS deployment** from `main`
 with its exact operation ID and target SHA. The inspection is read-only: it

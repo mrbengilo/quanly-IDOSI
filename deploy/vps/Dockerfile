@@ -1,8 +1,11 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN --mount=type=cache,id=idosi-npm-cache,target=/root/.npm,sharing=locked \
+    npm ci --prefer-offline --no-audit --no-fund
 COPY . .
 RUN npm run build
 
