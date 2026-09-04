@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useNavigate } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -89,7 +89,10 @@ describe('support work screens', () => {
     }
   })
 
-  afterEach(cleanup)
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
 
   it('shows only the reward and violation tabs while assignment stays on its dedicated page', () => {
     render(<MemoryRouter><AdminSupportWorkPage /></MemoryRouter>)
@@ -154,6 +157,34 @@ describe('support work screens', () => {
       shiftId: 'support_am',
       catalogItemIds: ['VIO-HTKD-LATE'],
     })))
+  })
+
+  it('shows today and yesterday on the first assignment-history page and older dates on numbered pages', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-04T03:00:00.000Z'))
+    mocked.app.supportWorkAssignments = [{
+      id: 'SWA-TODAY', date: '2026-09-04', targetUnit: 'business_support',
+      employeeId: 'HTKD-001', employeeName: 'Nguyễn Hỗ Trợ', assignedAt: '2026-09-04T08:00:00+07:00',
+      tasks: [{ id: 'TASK-TODAY', name: 'Nhiệm vụ hôm nay', completed: false }],
+    }, {
+      id: 'SWA-YESTERDAY', date: '2026-09-03', targetUnit: 'business_support',
+      employeeId: 'HTKD-001', employeeName: 'Nguyễn Hỗ Trợ', assignedAt: '2026-09-03T08:00:00+07:00',
+      tasks: [{ id: 'TASK-YESTERDAY', name: 'Nhiệm vụ hôm qua', completed: true }],
+    }, {
+      id: 'SWA-OLDER', date: '2026-09-02', targetUnit: 'business_support',
+      employeeId: 'HTKD-001', employeeName: 'Nguyễn Hỗ Trợ', assignedAt: '2026-09-02T08:00:00+07:00',
+      tasks: [{ id: 'TASK-OLDER', name: 'Nhiệm vụ ngày cũ', completed: false }],
+    }]
+
+    render(<MemoryRouter><AdminSupportAssignmentPage /></MemoryRouter>)
+
+    const history = screen.getByRole('heading', { name: 'Lịch sử giao việc và tiến độ hoàn thành' }).closest('section')
+    expect(within(history).getByText('Nhiệm vụ hôm nay')).toBeTruthy()
+    expect(within(history).getByText('Nhiệm vụ hôm qua')).toBeTruthy()
+    expect(within(history).queryByText('Nhiệm vụ ngày cũ')).toBeNull()
+    fireEvent.click(within(history).getByRole('button', { name: 'Trang 2' }))
+    expect(within(history).getByText('Nhiệm vụ ngày cũ')).toBeTruthy()
+    expect(within(history).queryByText('Nhiệm vụ hôm nay')).toBeNull()
   })
 
   it('lets Admin enter multiple manual tasks and sends them once to the employee selected in each tab', async () => {

@@ -381,10 +381,14 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
             </Select>
           </Field>
         </div>}
-        <TableWrap className="compensation-table">
+        <TableWrap
+          className="compensation-table"
+          firstPageDates={targetUnit === 'store' ? [vietnamToday()] : []}
+          paginationKey={`${historyDateFilter}:${historyEmployeeFilter}`}
+        >
           <thead><tr><th>Ngày</th><th>Ca làm</th><th>Nhân viên</th>{targetUnit === 'store' && <th>Cửa hàng</th>}<th>Nội dung</th><th>Số tiền bị trừ{historyFilterable && <small className="compensation-subline">Tổng: <strong className="compensation-debit">−{money(filteredViolationTotal)}</strong></small>}</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
           <tbody>
-            {filteredRows.map((entry) => <tr key={entry.id}>
+            {filteredRows.map((entry) => <tr key={entry.id} data-page-date={entryDate(entry)}>
               <td>{displayDate(entryDate(entry))}</td>
               <td><strong>{violationShiftLabel(entry)}</strong>{shiftTime(entry) && <small className="compensation-subline">{shiftTime(entry)}</small>}</td>
               <td><strong>{employeeName(employees, entryEmployeeId(entry), entry.employeeName)}</strong><SupportEmployeeTag context={resolveSupportEmployeeTagContext({ record: entry, employeeId: entryEmployeeId(entry), storeId: entryStoreId(entry), businessDate: entryDate(entry), employees: app.employees, stores: app.stores, supportTransfers: app.supportTransfers })} className="compensation-subline" /><small className="compensation-subline">{entryEmployeeId(entry)}</small></td>

@@ -60,6 +60,29 @@ describe('Admin work registration schedule', () => {
     expect(mocked.app.deleteBusinessSupportSchedule).not.toHaveBeenCalled()
   })
 
+  it('paginates employee schedule rows at 20 records per page', () => {
+    mocked.app = {
+      ...mocked.app,
+      employees: Array.from({ length: 25 }, (_, index) => ({
+        id: `HTKD-${String(index + 1).padStart(2, '0')}`,
+        name: `Nhân viên HTKD ${String(index + 1).padStart(2, '0')}`,
+        unit: 'business_support',
+        employmentType: 'Full-Time',
+      })),
+      supportWorkSchedules: [],
+    }
+
+    render(<AdminWorkRegistrationSchedulePage />)
+
+    const support = screen.getByTestId('work-registration-business_support')
+    expect(within(support).getByText('Nhân viên HTKD 01')).toBeTruthy()
+    expect(within(support).getByText('Nhân viên HTKD 20')).toBeTruthy()
+    expect(within(support).queryByText('Nhân viên HTKD 21')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+    expect(within(support).getByText('Nhân viên HTKD 21')).toBeTruthy()
+    expect(within(support).getByText('Nhân viên HTKD 25')).toBeTruthy()
+  })
+
   it('switches between day and month ranges using date-only calendar arithmetic', () => {
     render(<AdminWorkRegistrationSchedulePage />)
 
