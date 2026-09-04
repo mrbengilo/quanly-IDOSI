@@ -1,0 +1,442 @@
+name: Finalize verified table pagination
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-v2
+    paths:
+      - .github/workflows/finalize-table-pagination.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: idosi-finalize-table-pagination
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout pagination branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-v2
+          fetch-depth: 0
+
+      - name: Reset candidate to latest main
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Create reusable table paginator and transform all data tables
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src/components
+          cat > src/components/PaginatedTbody.jsx <<'EOF'
+          import { Children, Fragment, cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
+
+          export const DEFAULT_TABLE_PAGE_SIZE = 20
+
+          const VIETNAM_TIME_ZONE = 'Asia/Ho_Chi_Minh'
+          const PAGE_WINDOW = 2
+
+          const vietnamDateKey = (date = new Date()) => new Intl.DateTimeFormat('en-CA', {
+            timeZone: VIETNAM_TIME_ZONE,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+          }).format(date)
+
+          const previousDateKey = (dateKey) => {
+            const date = new Date(`${dateKey}T12:00:00+07:00`)
+            date.setUTCDate(date.getUTCDate() - 1)
+            return vietnamDateKey(date)
+          }
+
+          const flattenChildren = (children) => Children.toArray(children).flatMap((child) => {
+            if (typeof child === 'string' && !child.trim()) return []
+            if (child === null || child === undefined || typeof child === 'boolean') return []
+            if (isValidElement(child) && child.type === Fragment) return flattenChildren(child.props.children)
+            return [child]
+          })
+
+          const textFromNode = (node) => {
+            if (node === null || node === undefined || typeof node === 'boolean') return ''
+            if (typeof node === 'string' || typeof node === 'number') return String(node)
+            if (Array.isArray(node)) return node.map(textFromNode).join(' ')
+            if (!isValidElement(node)) return ''
+            const candidateProps = [
+              node.props?.date,
+              node.props?.value,
+              node.props?.businessDate,
+              node.props?.workDate,
+              node.props?.createdAt,
+              node.props?.checkInAt,
+              node.props?.timestamp,
+            ].filter(Boolean)
+            return [...candidateProps, textFromNode(node.props?.children)].join(' ')
+          }
+
+          const normalizeDateKey = (value) => {
+            const text = String(value || '').trim()
+            let match = text.match(/\b(20\d{2})[-/.](0[1-9]|1[0-2])[-/.]([0-2]\d|3[01])\b/u)
+            if (match) return `${match[1]}-${match[2]}-${match[3]}`
+            match = text.match(/\b([0-2]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](20\d{2})\b/u)
+            if (match) return `${match[3]}-${match[2]}-${match[1]}`
+            return ''
+          }
+
+          const rowDateKey = (row) => {
+            if (!isValidElement(row)) return ''
+            const explicit = row.props?.['data-business-date']
+              || row.props?.['data-work-date']
+              || row.props?.['data-date']
+            return normalizeDateKey(explicit) || normalizeDateKey(textFromNode(row))
+          }
+
+          const chunkRows = (rows, pageSize) => {
+            const pages = []
+            for (let index = 0; index < rows.length; index += pageSize) {
+              pages.push(rows.slice(index, index + pageSize))
+            }
+            return pages
+          }
+
+          const buildPages = (rows, mode, pageSize, todayKey) => {
+            if (!rows.length) return [[]]
+            if (!['today-first', 'today-yesterday-first'].includes(mode)) return chunkRows(rows, pageSize)
+
+            const preferredDates = new Set([todayKey])
+            if (mode === 'today-yesterday-first') preferredDates.add(previousDateKey(todayKey))
+            const preferred = []
+            const historical = []
+            rows.forEach((row) => {
+              const dateKey = rowDateKey(row)
+              if (dateKey && preferredDates.has(dateKey)) preferred.push(row)
+              else historical.push(row)
+            })
+
+            const pages = []
+            const preferredPages = chunkRows(preferred, pageSize)
+            if (preferredPages.length) pages.push(...preferredPages)
+            else pages.push([])
+            pages.push(...chunkRows(historical, pageSize))
+            return pages
+          }
+
+          const visiblePageNumbers = (currentPage, pageCount) => {
+            if (pageCount <= 7) return Array.from({ length: pageCount }, (_, index) => index + 1)
+            const values = new Set([1, pageCount])
+            for (let page = currentPage - PAGE_WINDOW; page <= currentPage + PAGE_WINDOW; page += 1) {
+              if (page > 1 && page < pageCount) values.add(page)
+            }
+            const sorted = [...values].sort((left, right) => left - right)
+            const result = []
+            sorted.forEach((page, index) => {
+              if (index && page - sorted[index - 1] > 1) result.push(`ellipsis-${page}`)
+              result.push(page)
+            })
+            return result
+          }
+
+          const modeForCurrentRoute = (requestedMode) => {
+            if (requestedMode) return requestedMode
+            if (typeof window === 'undefined') return 'default'
+            const route = `${window.location.pathname || ''}${window.location.hash || ''}`.toLowerCase()
+            if (route.includes('/store/orders')) return 'today-first'
+            return 'default'
+          }
+
+          export default function PaginatedTbody({
+            children,
+            paginationMode = '',
+            pageSize = DEFAULT_TABLE_PAGE_SIZE,
+            emptyMessage = '',
+            ...tbodyProps
+          }) {
+            const rows = useMemo(() => flattenChildren(children), [children])
+            const normalizedPageSize = Math.max(1, Number(pageSize) || DEFAULT_TABLE_PAGE_SIZE)
+            const mode = modeForCurrentRoute(paginationMode)
+            const todayKey = vietnamDateKey()
+            const pages = useMemo(
+              () => buildPages(rows, mode, normalizedPageSize, todayKey),
+              [mode, normalizedPageSize, rows, todayKey],
+            )
+            const [page, setPage] = useState(1)
+            const tableBodyRef = useRef(null)
+            const pageCount = Math.max(1, pages.length)
+
+            useEffect(() => {
+              setPage((current) => Math.min(Math.max(1, current), pageCount))
+            }, [pageCount])
+
+            useEffect(() => {
+              setPage(1)
+            }, [mode, normalizedPageSize])
+
+            const selectedRows = pages[Math.min(page, pageCount) - 1] || []
+            const specialEmpty = !selectedRows.length && rows.length && mode !== 'default'
+            const defaultEmptyMessage = mode === 'today-yesterday-first'
+              ? 'Không có dữ liệu trong hôm nay và hôm qua.'
+              : 'Không có dữ liệu trong ngày hiện tại.'
+            const navigate = (nextPage) => {
+              const normalized = Math.min(pageCount, Math.max(1, nextPage))
+              setPage(normalized)
+              if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => {
+                  tableBodyRef.current?.closest('table')?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+                })
+              }
+            }
+            const controls = visiblePageNumbers(page, pageCount)
+
+            return (
+              <tbody {...tbodyProps} ref={tableBodyRef} data-pagination-mode={mode}>
+                {selectedRows.map((row, index) => (
+                  isValidElement(row) ? cloneElement(row, { key: row.key ?? `page-row-${page}-${index}` }) : row
+                ))}
+                {specialEmpty ? (
+                  <tr className="table-pagination__empty-row">
+                    <td colSpan={100}>{emptyMessage || defaultEmptyMessage}</td>
+                  </tr>
+                ) : null}
+                {pageCount > 1 ? (
+                  <tr className="table-pagination__row">
+                    <td colSpan={100}>
+                      <nav className="table-pagination" aria-label="Phân trang bảng dữ liệu">
+                        <button type="button" onClick={() => navigate(page - 1)} disabled={page === 1} aria-label="Trang trước">‹</button>
+                        {controls.map((value) => (
+                          typeof value === 'string'
+                            ? <span key={value} className="table-pagination__ellipsis" aria-hidden="true">…</span>
+                            : (
+                              <button
+                                type="button"
+                                key={value}
+                                className={value === page ? 'active' : ''}
+                                aria-current={value === page ? 'page' : undefined}
+                                aria-label={`Trang ${value}`}
+                                onClick={() => navigate(value)}
+                              >
+                                {value}
+                              </button>
+                            )
+                        ))}
+                        <button type="button" onClick={() => navigate(page + 1)} disabled={page === pageCount} aria-label="Trang sau">›</button>
+                        <small>Trang {page}/{pageCount} • tối đa {normalizedPageSize} dòng</small>
+                      </nav>
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            )
+          }
+
+          export const paginationTestHelpers = {
+            buildPages,
+            flattenChildren,
+            normalizeDateKey,
+            previousDateKey,
+            rowDateKey,
+            vietnamDateKey,
+          }
+          EOF
+
+          cat > src/components/PaginatedTbody.test.jsx <<'EOF'
+          import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+          import { afterEach, describe, expect, it, vi } from 'vitest'
+          import PaginatedTbody from './PaginatedTbody'
+
+          const Table = ({ count = 45, mode = '', dates = [] }) => (
+            <table>
+              <PaginatedTbody paginationMode={mode}>
+                {Array.from({ length: count }, (_, index) => (
+                  <tr key={index}>
+                    <td>Dòng {index + 1}</td>
+                    <td>{dates[index] || '01/01/2026'}</td>
+                  </tr>
+                ))}
+              </PaginatedTbody>
+            </table>
+          )
+
+          describe('PaginatedTbody', () => {
+            afterEach(() => {
+              cleanup()
+              vi.useRealTimers()
+              vi.restoreAllMocks()
+            })
+
+            it('renders at most 20 data rows and changes numbered pages', () => {
+              render(<Table />)
+              const table = screen.getByRole('table')
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(20)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(20)
+              expect(within(table).getByText('Dòng 21')).toBeTruthy()
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 3' }))
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(5)
+              expect(within(table).getByText('Dòng 45')).toBeTruthy()
+            })
+
+            it('keeps today and yesterday on the first assignment-history page', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00.000Z'))
+              const dates = [
+                ...Array.from({ length: 4 }, () => '04/09/2026'),
+                ...Array.from({ length: 4 }, () => '03/09/2026'),
+                ...Array.from({ length: 4 }, () => '02/09/2026'),
+              ]
+              render(<Table count={12} mode="today-yesterday-first" dates={dates} />)
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(8)
+              expect(screen.queryByText('Dòng 9')).toBeNull()
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(4)
+              expect(screen.getByText('Dòng 9')).toBeTruthy()
+            })
+
+            it('keeps the current business date on the first store page', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00.000Z'))
+              const dates = [
+                ...Array.from({ length: 3 }, () => '04/09/2026'),
+                ...Array.from({ length: 5 }, () => '03/09/2026'),
+              ]
+              render(<Table count={8} mode="today-first" dates={dates} />)
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(3)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(5)
+            })
+          })
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          root = Path('src')
+          component = root / 'components' / 'PaginatedTbody.jsx'
+          modes = [
+              ('Lịch sử giao việc và tiến độ hoàn thành', 'today-yesterday-first'),
+              ('Lịch sử chấm công của nhân viên', 'today-first'),
+              ('Công việc tính thưởng & vi phạm', 'today-first'),
+              ('Công việc tính thưởng và vi phạm', 'today-first'),
+          ]
+          transformed_files = 0
+          transformed_bodies = 0
+          mode_counts = {}
+
+          for path in sorted(root.rglob('*')):
+              if not path.is_file() or path.suffix not in {'.jsx', '.tsx'}:
+                  continue
+              if path == component or '.test.' in path.name:
+                  continue
+              source = path.read_text(encoding='utf-8')
+              matches = list(re.finditer(r'<tbody(?=[\s>])', source))
+              if not matches:
+                  continue
+
+              additions = []
+              for match in matches:
+                  start = match.start()
+                  nearby = source[max(0, start - 5000):min(len(source), start + 5000)]
+                  mode = next((candidate for label, candidate in modes if label in nearby), '')
+                  replacement = '<PaginatedTbody'
+                  if mode:
+                      replacement += f' paginationMode="{mode}"'
+                      mode_counts[mode] = mode_counts.get(mode, 0) + 1
+                  additions.append((match.start(), match.end(), replacement))
+
+              updated = source
+              for start, end, replacement in reversed(additions):
+                  updated = updated[:start] + replacement + updated[end:]
+              updated = updated.replace('</tbody>', '</PaginatedTbody>')
+
+              relative_import = os.path.relpath(component.with_suffix(''), path.parent).replace(os.sep, '/')
+              if not relative_import.startswith('.'):
+                  relative_import = f'./{relative_import}'
+              import_line = f"import PaginatedTbody from '{relative_import}'\n"
+              if 'PaginatedTbody' not in source.split('\n', 20)[0:20]:
+                  first_import = re.search(r'^import\s', updated, flags=re.MULTILINE)
+                  if first_import:
+                      updated = updated[:first_import.start()] + import_line + updated[first_import.start():]
+                  else:
+                      updated = import_line + updated
+
+              path.write_text(updated, encoding='utf-8')
+              transformed_files += 1
+              transformed_bodies += len(matches)
+
+          if transformed_files < 8 or transformed_bodies < 12:
+              raise SystemExit(f'Pagination coverage unexpectedly low: {transformed_files} files / {transformed_bodies} bodies')
+          if mode_counts.get('today-yesterday-first', 0) < 1:
+              raise SystemExit('Admin assignment history table was not identified')
+          if mode_counts.get('today-first', 0) < 2:
+              raise SystemExit('Store date-priority tables were not identified')
+          print({'transformed_files': transformed_files, 'transformed_bodies': transformed_bodies, 'mode_counts': mode_counts})
+          PY
+
+          cat >> src/styles.css <<'EOF'
+
+          /* Shared data-table pagination: no data table renders more than 20 business rows at once. */
+          .table-pagination__row>td{padding:14px 10px!important;background:#fbfdfb!important;border-top:1px solid #dbe8df!important;text-align:center!important}
+          .table-pagination{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;width:100%}
+          .table-pagination button{min-width:34px;height:34px;padding:0 9px;border:1px solid #cadbd0;border-radius:8px;background:#fff;color:#155d38;font-size:12px;font-weight:750;cursor:pointer;transition:background .16s,border-color .16s,color .16s,transform .16s}
+          .table-pagination button:hover:not(:disabled){border-color:#4ba873;background:#edf8f1;transform:translateY(-1px)}
+          .table-pagination button.active{border-color:#078443;background:#078443;color:#fff;box-shadow:0 5px 14px rgba(7,132,67,.2)}
+          .table-pagination button:disabled{cursor:not-allowed;opacity:.4}
+          .table-pagination small{margin-left:8px;color:#65736b;font-size:10px;font-weight:600}
+          .table-pagination__ellipsis{display:inline-grid;place-items:center;min-width:24px;color:#718078;font-weight:800}
+          .table-pagination__empty-row>td{padding:22px!important;color:#738078!important;text-align:center!important;background:#fbfdfb!important;font-size:12px!important}
+          @media(max-width:640px){.table-pagination{gap:4px}.table-pagination button{min-width:31px;height:31px;padding:0 7px}.table-pagination small{flex-basis:100%;margin:4px 0 0}}
+          EOF
+
+      - name: Verify pagination source coverage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --check
+          raw_count="$(git grep -l '<tbody' -- 'src/**/*.jsx' ':!src/**/*.test.jsx' || true)"
+          test -z "$raw_count"
+          converted_count="$(git grep -l '<PaginatedTbody' -- 'src/**/*.jsx' ':!src/**/*.test.jsx' | wc -l)"
+          test "$converted_count" -ge 8
+          echo "paginated_source_files=$converted_count"
+
+      - name: Targeted pagination tests
+        run: npx vitest run src/components/PaginatedTbody.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit verified implementation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add src
+          git commit -m 'perf(tables): paginate all data tables at 20 rows'
+          git push --force-with-lease origin HEAD:perf/paginate-data-tables-v2
