@@ -79,6 +79,7 @@ const appFor = (role = 'business_support', overrides = {}) => ({
   setRevenueBonusOverride: vi.fn().mockResolvedValue({ ok: true }),
   deleteRevenueBonusOverride: vi.fn().mockResolvedValue({ ok: true }),
   restoreRevenueBonusOverride: vi.fn().mockResolvedValue({ ok: true }),
+  resolveRevenueBonusDailyCollision: vi.fn().mockResolvedValue({ ok: true }),
   ...overrides,
 })
 
@@ -217,6 +218,46 @@ describe('RevenueBonusPage automatic mode', () => {
       employeeId: 'NV-01',
       expectedVersion: 2,
       reason: 'Khôi phục theo dữ liệu đã xác minh',
+    }))
+  })
+
+  it('shows Admin enough evidence to select and audit the canonical duplicate daily result', async () => {
+    const duplicateDaily = [{
+      id: 'RBD-LEGACY', storeId: 'CH001', businessDate: '2026-09-02', period: '2026-09',
+      status: 'APPROVED', sourceType: 'manual', revenueVnd: 2_000_000, totalPoolVnd: 20_000,
+      allocatedVnd: 20_000, calculatedAt: '2026-09-02T15:01:00.000Z', allocations: [{ id: 'RBA-LEGACY' }],
+    }, {
+      id: 'RBD-AUTOMATIC', storeId: 'CH001', businessDate: '2026-09-02', period: '2026-09',
+      status: 'FINALIZED', sourceType: 'automatic-revenue-bonus', automatic: true,
+      revenueVnd: 2_000_000, totalPoolVnd: 20_000, allocatedVnd: 20_000,
+      finalizedAt: '2026-09-04T01:00:00.000Z', allocations: [{ id: 'RBA-AUTOMATIC' }],
+    }]
+    mocked.app = appFor('admin', {
+      apiStatus: 'connected', orders: [], attendance: [], revenueBonusDaily: duplicateDaily,
+    })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: snapshot() })
+    render(<RevenueBonusPage storeScoped />)
+
+    const resolveButton = await screen.findByRole('button', { name: 'ĐỐI SOÁT 02/09/2026' })
+    fireEvent.click(resolveButton)
+    expect(screen.getByRole('dialog', { name: 'XỬ LÝ KẾT QUẢ THƯỞNG TRÙNG' })).toBeTruthy()
+    expect(screen.getAllByText('RBD-LEGACY').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('RBD-AUTOMATIC').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('20,000 đ').length).toBeGreaterThan(1)
+
+    fireEvent.change(screen.getByLabelText('Kết quả thưởng doanh thu giữ lại'), {
+      target: { value: 'RBD-AUTOMATIC' },
+    })
+    fireEvent.change(screen.getByLabelText('Lý do xử lý kết quả thưởng doanh thu trùng'), {
+      target: { value: 'Giữ bản tự động đã đối chiếu doanh thu và chấm công' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'XÁC NHẬN XỬ LÝ' }))
+
+    await waitFor(() => expect(mocked.app.resolveRevenueBonusDailyCollision).toHaveBeenCalledWith({
+      storeId: 'CH001',
+      businessDate: '2026-09-02',
+      keepDailyId: 'RBD-AUTOMATIC',
+      reason: 'Giữ bản tự động đã đối chiếu doanh thu và chấm công',
     }))
   })
 

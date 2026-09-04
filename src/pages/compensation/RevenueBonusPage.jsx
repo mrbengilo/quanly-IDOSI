@@ -62,6 +62,19 @@ const allocationAmount = (allocation) => Number(
 
 const recordRevenue = (record) => Number(record?.revenueVnd ?? record?.dailyRevenueVnd ?? record?.revenue ?? 0) || 0
 
+const revenueDailyId = (record = {}) => String(record.id || record.code || record.dailyId || '').trim()
+
+const revenueRecordTimestamp = (record = {}) => String(
+  record.finalizedAt || record.calculatedAt || record.approvedAt || record.createdAt || '',
+).trim()
+
+const displayTimestamp = (value) => {
+  const parsed = Date.parse(String(value || ''))
+  return Number.isFinite(parsed)
+    ? new Date(parsed).toLocaleString('vi-VN', { dateStyle: 'short', timeStyle: 'short' })
+    : 'Không có'
+}
+
 const recordBusinessDate = (record = {}) => toBusinessDate(
   record.workDate || record.attendanceDate || record.date || record.effectiveDate
   || record.occurredOn || record.occurredAt || record.createdAt || '',
@@ -195,6 +208,8 @@ function RevenueStatisticsTable({ title, rows, firstColumn = 'Thời gian', supp
 }
 
 const RevenueHistorySections = memo(function RevenueHistorySections({
+  canResolveCollisions,
+  collisionBusy,
   currentEmployeeName,
   collisions,
   employeeCollisions,
@@ -207,6 +222,7 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
   historyEmployeeId,
   historyMonth,
   privateView,
+  onResolveCollision,
   rows,
   setHistoryDate,
   setHistoryEmployeeId,
@@ -236,6 +252,16 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
       {(collisions.length > 0 || employeeCollisions.length > 0) && <InfoNote tone="red">
         Dữ liệu có {collisions.length} ngày trùng kết quả và {employeeCollisions.length} nhóm mã nhân viên mơ hồ. Hệ thống đã loại các dòng này khỏi lịch sử và thống kê để không cộng nhầm tiền; Admin cần xử lý dữ liệu.
       </InfoNote>}
+      {canResolveCollisions && collisions.length > 0 && <div className="revenue-collision-list" aria-label="Ngày thưởng doanh thu cần đối soát">
+        {collisions.map((collision) => <div className="revenue-collision-item" key={`${collision.storeKey}:${collision.businessDate}`}>
+          <span><strong>{displayDate(collision.businessDate)}</strong><small>{collision.recordCount} kết quả đang hoạt động</small></span>
+          <Button
+            variant="outline"
+            disabled={collisionBusy}
+            onClick={() => onResolveCollision(collision)}
+          >ĐỐI SOÁT {displayDate(collision.businessDate)}</Button>
+        </div>)}
+      </div>}
       <div className="compensation-form-grid reward-history-filters">
         <Field label="Ngày ghi nhận">
           <Input aria-label="Ngày ghi nhận thưởng doanh thu" type="date" value={historyDate} onChange={(event) => {
@@ -320,6 +346,9 @@ export function RevenueBonusPage({ storeScoped = false }) {
   const [adminAction, setAdminAction] = useState(null)
   const [adminAmount, setAdminAmount] = useState('')
   const [adminReason, setAdminReason] = useState('')
+  const [collisionAction, setCollisionAction] = useState(null)
+  const [collisionKeepDailyId, setCollisionKeepDailyId] = useState('')
+  const [collisionReason, setCollisionReason] = useState('')
   const serverBacked = ['connected', 'syncing'].includes(app.apiStatus)
   const activeOperationalStoreId = resolvedEntityId(stores, app.activeStoreId)
   const selectedGlobalStoreId = resolvedEntityId(stores, storeSelection)
@@ -565,6 +594,14 @@ export function RevenueBonusPage({ storeScoped = false }) {
     employees: Array.isArray(app.employees) ? app.employees : [],
     storeId: selectedStoreId,
   }), [app.employees, app.revenueBonusAllocations, legacyDailyRecords, selectedStoreId])
+  const collisionDetails = useMemo(() => legacyHistoryProjection.collisions.map((collision) => ({
+    ...collision,
+    records: legacyDailyRecords.filter((record) => (
+      effectiveDailyRecord(record)
+      && sameOperationalIdentifier(entryStoreId(record), collision.storeId)
+      && revenueRecordDate(record) === collision.businessDate
+    )),
+  })), [legacyDailyRecords, legacyHistoryProjection.collisions])
   const automaticHistory = useMemo(() => {
     if (!revenueProgram || !selectedStoreId
       || historyMonth < AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE.slice(0, 7)) {
@@ -656,6 +693,57 @@ export function RevenueBonusPage({ storeScoped = false }) {
     setAdminAction(null)
     setAdminAmount('')
     setAdminReason('')
+  }
+  const openCollisionAction = (collision) => {
+    setError('')
+    setCollisionAction(collision)
+    setCollisionKeepDailyId('')
+    setCollisionReason('')
+  }
+  const closeCollisionAction = () => {
+    if (busyKey.startsWith('revenue-collision:')) return
+    setCollisionAction(null)
+    setCollisionKeepDailyId('')
+    setCollisionReason('')
+  }
+  const submitCollisionAction = async () => {
+    if (!collisionAction || !isAdmin) return
+    if (!collisionKeepDailyId) {
+      setError('Cần chọn chính xác kết quả thưởng doanh thu được giữ lại.')
+      return
+    }
+    const reason = collisionReason.trim()
+    if (reason.length < 3) {
+      setError('Lý do xử lý dữ liệu trùng phải có ít nhất 3 ký tự.')
+      return
+    }
+    const result = await run({
+      key: `revenue-collision:${collisionAction.businessDate}`,
+      action: app.resolveRevenueBonusDailyCollision,
+      payload: {
+        storeId: collisionAction.storeId,
+        businessDate: collisionAction.businessDate,
+        keepDailyId: collisionKeepDailyId,
+        reason,
+      },
+      success: `Đã xử lý kết quả thưởng doanh thu trùng ngày ${displayDate(collisionAction.businessDate)}.`,
+      unavailable: 'Chức năng xử lý dữ liệu trùng chỉ khả dụng cho Admin khi kết nối máy chủ.',
+    })
+    if (!result || result.ok === false) return
+    setCollisionAction(null)
+    setCollisionKeepDailyId('')
+    setCollisionReason('')
+    setRemoteRefreshVersion((version) => version + 1)
+  }
+
+  const collisionAllocationCount = (daily) => {
+    const nested = (Array.isArray(daily?.allocations) ? daily.allocations : []).filter(effectiveDailyRecord)
+    if (nested.length) return nested.length
+    const dailyId = revenueDailyId(daily)
+    return (Array.isArray(app.revenueBonusAllocations) ? app.revenueBonusAllocations : [])
+      .filter((allocation) => effectiveDailyRecord(allocation)
+        && String(allocation.revenueBonusDailyId || '').trim() === dailyId)
+      .length
   }
   const submitAdminAction = async () => {
     if (!adminAction || !isAdmin) return
@@ -846,7 +934,9 @@ export function RevenueBonusPage({ storeScoped = false }) {
 
       <RevenueHistorySections
         attendance={app.attendance || []}
-        collisions={legacyHistoryProjection.collisions}
+        canResolveCollisions={isAdmin && serverBacked}
+        collisionBusy={busyKey.startsWith('revenue-collision:')}
+        collisions={collisionDetails}
         currentEmployeeName={employeeName(app.employees || [], currentEmployeeId)}
         employeeCollisions={legacyHistoryProjection.employeeCollisions || []}
         employeeOptions={historyEmployeeOptions}
@@ -856,6 +946,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
         historyDate={historyDate}
         historyEmployeeId={historyEmployeeId}
         historyMonth={historyMonth}
+        onResolveCollision={openCollisionAction}
         privateView={privateAllocationView}
         rows={historyRows}
         setHistoryDate={setHistoryDate}
@@ -869,6 +960,65 @@ export function RevenueBonusPage({ storeScoped = false }) {
       {!automaticMode && !privateAllocationView && <Card title="Lịch sử tính quỹ trong ngày">
         <TableWrap className="compensation-table"><thead><tr><th>Mã tính</th><th>Chương trình</th><th>Doanh thu</th><th>Quỹ tỷ lệ</th><th>Thưởng mốc cao nhất</th><th>Tổng quỹ</th><th>Trạng thái</th></tr></thead><tbody>{records.map((record) => <tr key={record.id}><td>{record.id}</td><td>{record.programLabel || record.programId || '—'}</td><td>{money(recordRevenue(record))}</td><td>{money(record.percentagePoolVnd || 0)}</td><td>{money(record.milestonePoolVnd || record.hotPoolVnd || 0)}</td><td><strong>{money(revenueRecordTotal(record))}</strong></td><td><Badge tone={statusTone(record)}>{statusLabel(record)}</Badge></td></tr>)}{!records.length && <tr><td colSpan="7" className="compensation-empty">Chưa có kết quả thưởng lịch sử cho ngày này.</td></tr>}</tbody></TableWrap>
       </Card>}
+
+      <Modal
+        open={Boolean(collisionAction)}
+        onClose={closeCollisionAction}
+        title="XỬ LÝ KẾT QUẢ THƯỞNG TRÙNG"
+        footer={<>
+          <Button variant="outline" disabled={busyKey.startsWith('revenue-collision:')} onClick={closeCollisionAction}>HỦY</Button>
+          <Button
+            variant="primary"
+            loading={busyKey === `revenue-collision:${collisionAction?.businessDate}`}
+            onClick={submitCollisionAction}
+          >XÁC NHẬN XỬ LÝ</Button>
+        </>}
+      >
+        {collisionAction && <div className="revenue-bonus-admin-form">
+          <InfoNote tone="red">
+            Chọn đúng một kết quả đã đối soát để giữ. Các kết quả còn lại và phân bổ liên kết sẽ được đánh dấu đã thay thế, không bị xóa khỏi lịch sử kiểm toán.
+          </InfoNote>
+          <ActionError message={error} />
+          <div className="revenue-bonus-admin-summary">
+            <span>Cửa hàng</span><strong>{storeName(stores, collisionAction.storeId)}</strong>
+            <span>Ngày thưởng</span><strong>{displayDate(collisionAction.businessDate)}</strong>
+            <span>Số kết quả trùng</span><strong>{collisionAction.recordCount}</strong>
+          </div>
+          <TableWrap className="compensation-table revenue-collision-table">
+            <thead><tr><th>Mã kết quả</th><th>Nguồn</th><th>Thời điểm ghi</th><th>Doanh thu</th><th>Tổng quỹ</th><th>Phân bổ</th></tr></thead>
+            <tbody>{collisionAction.records.map((record) => <tr key={revenueDailyId(record)}>
+              <td><strong>{revenueDailyId(record)}</strong><small className="compensation-subline">{statusLabel(record)}</small></td>
+              <td>{record.automatic || String(record.sourceType || '').includes('automatic') ? 'Tự động' : record.sourceType || 'Thủ công / dữ liệu cũ'}</td>
+              <td>{displayTimestamp(revenueRecordTimestamp(record))}</td>
+              <td>{money(recordRevenue(record))}</td>
+              <td><strong>{money(revenueRecordTotal(record))}</strong></td>
+              <td>{collisionAllocationCount(record)} nhân viên</td>
+            </tr>)}</tbody>
+          </TableWrap>
+          <Field label="Kết quả giữ lại" required hint="Đối chiếu nguồn, thời điểm, doanh thu, tổng quỹ và số phân bổ trước khi chọn.">
+            <Select
+              aria-label="Kết quả thưởng doanh thu giữ lại"
+              value={collisionKeepDailyId}
+              onChange={(event) => setCollisionKeepDailyId(event.target.value)}
+            >
+              <option value="">Chọn kết quả đã xác minh</option>
+              {collisionAction.records.map((record) => <option key={revenueDailyId(record)} value={revenueDailyId(record)}>
+                {revenueDailyId(record)} — {money(revenueRecordTotal(record))} — {displayTimestamp(revenueRecordTimestamp(record))}
+              </option>)}
+            </Select>
+          </Field>
+          <Field label="Lý do" required hint="Bắt buộc từ 3 đến 500 ký tự; được lưu vào nhật ký đối soát.">
+            <textarea
+              aria-label="Lý do xử lý kết quả thưởng doanh thu trùng"
+              value={collisionReason}
+              maxLength={500}
+              rows={4}
+              onChange={(event) => setCollisionReason(event.target.value)}
+              placeholder="Ví dụ: Giữ bản tự động đã đối chiếu với doanh thu và chấm công..."
+            />
+          </Field>
+        </div>}
+      </Modal>
 
       <Modal
         open={Boolean(adminAction)}

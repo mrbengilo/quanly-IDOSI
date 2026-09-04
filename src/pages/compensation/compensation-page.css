@@ -613,6 +613,37 @@
   gap: 16px;
 }
 
+.revenue-collision-list {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.revenue-collision-item {
+  align-items: center;
+  background: #fff8f6;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.revenue-collision-item span {
+  display: grid;
+  gap: 3px;
+}
+
+.revenue-collision-item small {
+  color: var(--compensation-muted);
+}
+
+.revenue-collision-table {
+  max-height: 320px;
+  overflow: auto;
+}
+
 .revenue-bonus-admin-summary {
   background: #f7fbf8;
   border: 1px solid var(--compensation-border);
@@ -646,6 +677,11 @@
 @media (max-width: 720px) {
   .revenue-bonus-admin-summary {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .revenue-collision-item {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 
