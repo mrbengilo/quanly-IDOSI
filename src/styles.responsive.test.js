@@ -33,6 +33,17 @@ describe('responsive CSS contracts', () => {
     expect(appStyles).not.toContain('overflow-x:clip')
   })
 
+  it('stacks support-employee tags below the employee name', () => {
+    const declarations = declarationsFor(
+      appStyles,
+      '.support-employee-tag[data-support-employee-tag="true"]',
+    )
+
+    expect(declarations).toContain('display: flex')
+    expect(declarations).not.toContain('display: inline-flex')
+    expect(declarations).toContain('max-width: 100%')
+  })
+
   it('lets survey distribution tables fit their responsive cards', () => {
     const tableDeclarations = declarationsFor(
       surveyStyles,
