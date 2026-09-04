@@ -16,7 +16,7 @@
     "vps:start": "node server/vps/server.mjs",
     "vps:bootstrap": "node server/vps/bootstrap.mjs",
     "lint": "eslint .",
-    "pretest": "npm run bundle:verify:test",
+    "pretest": "npm run bundle:verify:test && node --test scripts/audit-npm-bulk.node-test.mjs",
     "test": "vitest run --maxWorkers=1"
   },
   "dependencies": {
