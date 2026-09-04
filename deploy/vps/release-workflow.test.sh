@@ -221,6 +221,10 @@ grep -Fq -- '--fetch-retries=2' "$SCRIPT_DIR/Dockerfile" \
   || fail 'production npm install does not bound registry retries'
 grep -Fq -- '--fetch-timeout=120000' "$SCRIPT_DIR/Dockerfile" \
   || fail 'production npm install has no bounded fetch timeout'
+grep -Fq 'ENV NODE_OPTIONS=--dns-result-order=ipv4first' "$SCRIPT_DIR/Dockerfile" \
+  || fail 'production build does not prefer reachable IPv4 registry endpoints'
+grep -Fq 'network: host' "$SCRIPT_DIR/compose.yml" \
+  || fail 'production build does not use the verified VPS host network path'
 grep -Fq 'attempt<=PUBLIC_VERIFY_ATTEMPTS' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
   || fail 'production workflow does not retry public verification during bounded cutover convergence'
 grep -Fq 'sleep "$PUBLIC_VERIFY_DELAY_SECONDS"' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
