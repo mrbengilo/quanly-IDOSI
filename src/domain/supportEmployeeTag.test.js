@@ -6,8 +6,8 @@ import {
 } from './supportEmployeeTag'
 
 const stores = [
-  { id: 'HOME', name: 'Dosii Cần Thơ' },
-  { id: 'SUPPORT', name: 'SM TNV' },
+  { id: 'HOME', name: 'Dosii Cần Thơ', employeePrefix: 'HOME' },
+  { id: 'SUPPORT', name: 'SM TNV', employeePrefix: 'SUPPORT' },
 ]
 const employee = { id: 'EMP-01', name: 'Nhân viên hỗ trợ', storeId: 'HOME' }
 const transfer = {
@@ -85,6 +85,34 @@ describe('support employee tag context', () => {
       supportStoreName: 'SM TNV',
       transferId: '',
     })
+  })
+
+  it('recovers the home store from a unique legacy employee-code prefix', () => {
+    expect(resolveSupportEmployeeTagContext({
+      businessDate: '2026-09-02',
+      storeId: 'SUPPORT',
+      record: { employeeId: 'HOME-001', storeId: 'SUPPORT' },
+      employees: [],
+      stores,
+      supportTransfers: [],
+    })).toMatchObject({
+      employeeId: 'HOME-001',
+      homeStoreId: 'HOME',
+      homeStoreName: 'Dosii Cần Thơ',
+      supportStoreId: 'SUPPORT',
+      supportStoreName: 'SM TNV',
+    })
+  })
+
+  it('fails closed when a legacy employee-code prefix maps to multiple stores', () => {
+    expect(resolveSupportEmployeeTagContext({
+      businessDate: '2026-09-02',
+      storeId: 'SUPPORT',
+      record: { employeeId: 'HOME-001', storeId: 'SUPPORT' },
+      employees: [],
+      stores: [...stores, { id: 'HOME-OTHER', name: 'Cửa hàng trùng mã', employeePrefix: 'home' }],
+      supportTransfers: [],
+    })).toBeNull()
   })
 
   it('uses immutable snapshot support fields without requiring a live transfer', () => {
