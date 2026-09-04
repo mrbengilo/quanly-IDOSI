@@ -1,14 +1,28 @@
-const DEFAULT_INTERVAL_MS = 30_000
+import { AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR } from '../../src/domain/automaticRevenueBonus.js'
+
+const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1_000
+const DAY_MS = 24 * 60 * 60 * 1_000
 
 const defaultLogger = process.env.NODE_ENV === 'test'
   ? null
   : (entry) => console.info(JSON.stringify(entry))
 
+const vietnamCutoffFor = (nowMs) => {
+  const vietnamDate = new Date(nowMs + VIETNAM_UTC_OFFSET_MS)
+  const vietnamMidnightAsUtc = Date.UTC(
+    vietnamDate.getUTCFullYear(),
+    vietnamDate.getUTCMonth(),
+    vietnamDate.getUTCDate(),
+  )
+  return vietnamMidnightAsUtc
+    - VIETNAM_UTC_OFFSET_MS
+    + AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR * 60 * 60 * 1_000
+}
+
 export const createAutomaticRevenueBonusRunner = ({
   env,
   finalize,
   enabled = true,
-  intervalMs = DEFAULT_INTERVAL_MS,
   logger = defaultLogger,
 } = {}) => {
   if (typeof finalize !== 'function') throw new TypeError('finalize must be a function.')
@@ -25,7 +39,7 @@ export const createAutomaticRevenueBonusRunner = ({
     }
   }
 
-  const trigger = (reason = 'interval') => {
+  const trigger = (reason = 'manual') => {
     if (!enabled || stopped) return Promise.resolve(null)
     if (inFlight) return inFlight
     const startedAt = new Date().toISOString()
@@ -51,17 +65,31 @@ export const createAutomaticRevenueBonusRunner = ({
     return inFlight
   }
 
-  const start = () => {
+  const scheduleNextCutoff = () => {
     if (!enabled || stopped || timer) return
-    void trigger('startup')
-    const normalizedInterval = Math.max(5_000, Number(intervalMs) || DEFAULT_INTERVAL_MS)
-    timer = setInterval(() => void trigger('interval'), normalizedInterval)
+    const nowMs = Date.now()
+    const todayCutoffMs = vietnamCutoffFor(nowMs)
+    const nextCutoffMs = nowMs < todayCutoffMs ? todayCutoffMs : todayCutoffMs + DAY_MS
+    timer = setTimeout(() => {
+      timer = null
+      void trigger('daily-cutoff').finally(scheduleNextCutoff)
+    }, Math.max(0, nextCutoffMs - nowMs))
     timer.unref?.()
+  }
+
+  const start = () => {
+    if (!enabled || stopped || timer || inFlight) return
+    const nowMs = Date.now()
+    if (nowMs >= vietnamCutoffFor(nowMs)) {
+      void trigger('startup-after-cutoff').finally(scheduleNextCutoff)
+      return
+    }
+    scheduleNextCutoff()
   }
 
   const stop = () => {
     stopped = true
-    if (timer) clearInterval(timer)
+    if (timer) clearTimeout(timer)
     timer = null
     return inFlight || Promise.resolve(null)
   }
