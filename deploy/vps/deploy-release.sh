@@ -173,7 +173,10 @@ start_caddy_for_release() {
   local release_sha="$2"
   local allow_legacy="${3:-0}"
   local container_id running
-  compose create --force-recreate caddy || return 1
+  # Caddy depends on app, but the app has already passed the exact-release
+  # health checks above. Recreating dependencies here restarts the healthy app
+  # and can make Compose reject Caddy while the replacement app is starting.
+  compose up --no-deps --no-start --force-recreate caddy || return 1
   container_id="$(compose ps -q --all caddy)" || return 1
   [[ -n "$container_id" ]] || {
     die 'Không tạo được Caddy container để xác minh topology.'

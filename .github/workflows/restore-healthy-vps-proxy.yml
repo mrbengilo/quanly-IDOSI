@@ -1,0 +1,95 @@
+name: Restore healthy IDOSI VPS proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_active_sha:
+        description: Full release SHA currently healthy inside the app container
+        required: true
+        type: string
+      confirmation:
+        description: Type RESTORE_HEALTHY_PROXY
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: idosi-production
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    if: >-
+      github.repository == 'mrbengilo/quanly-IDOSI' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirmation == 'RESTORE_HEALTHY_PROXY'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: production
+      url: https://idosi.io.vn
+    steps:
+      - name: Checkout guarded recovery
+        uses: actions/checkout@v6
+
+      - name: Validate guarded recovery
+        run: bash deploy/vps/restore-healthy-proxy.test.sh
+
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST production secret}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER production secret}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY production secret}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS production secret}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" >"$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >>"$GITHUB_ENV"
+
+      - name: Restore Caddy for exact healthy app release
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          EXPECTED_ACTIVE_SHA: ${{ inputs.expected_active_sha }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -Eeuo pipefail
+          [[ "$EXPECTED_ACTIVE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          remote_script="/tmp/idosi-restore-proxy-${GITHUB_RUN_ID}.sh"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            deploy/vps/restore-healthy-proxy.sh "$VPS_USER@$VPS_HOST:$remote_script"
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "chmod 700 '$remote_script' && bash '$remote_script' '$EXPECTED_ACTIVE_SHA' '$CONFIRMATION'; result=\$?; rm -f '$remote_script'; exit \$result"
+
+      - name: Verify public production recovery
+        env:
+          EXPECTED_ACTIVE_SHA: ${{ inputs.expected_active_sha }}
+        run: |
+          set -Eeuo pipefail
+          health_json="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+            'https://idosi.io.vn/api/health')"
+          jq -e '.ok == true' <<<"$health_json" >/dev/null
+          release_json="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
+            'https://idosi.io.vn/api/release')"
+          jq -e --arg expected "$EXPECTED_ACTIVE_SHA" \
+            '.ok == true and .data.releaseSha == $expected' <<<"$release_json" >/dev/null
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
