@@ -36,6 +36,7 @@ export function CompensationStatisticsGrid({
   employees = [],
   showEmployee = false,
   mode = 'reward',
+  supportTagContextForRow = null,
 }) {
   const sources = [
     ...(showEmployee ? [{ title: 'Theo nhân viên', rows: statistics?.byEmployee || [], employee: true }] : []),
@@ -51,7 +52,7 @@ export function CompensationStatisticsGrid({
         <thead><tr><th>{source.employee ? 'Nhân viên' : 'Thời gian'}</th><th>Số lần</th><th>{violation ? 'Tổng khấu trừ' : 'Tổng thưởng'}</th>{source.employee && <th>Đánh giá</th>}</tr></thead>
         <tbody>
           {source.rows.map((row) => <tr key={row.key}>
-            <td><strong>{source.employee ? employeeName(employees, row.key, row.label) : row.label}</strong>{source.employee && <small className="compensation-subline">{row.key}</small>}</td>
+            <td><strong>{source.employee ? employeeName(employees, row.key, row.label) : row.label}</strong>{source.employee && supportTagContextForRow && <SupportEmployeeTag context={supportTagContextForRow(row)} className="compensation-subline" />}{source.employee && <small className="compensation-subline">{row.key}</small>}</td>
             <td>{row.count}</td>
             <td><strong className={violation ? 'compensation-debit' : 'compensation-credit'}>{violation ? '−' : '+'}{money(row.amountVnd)}</strong></td>
             {source.employee && <td><Badge tone="orange">Chưa cấu hình đánh giá</Badge></td>}

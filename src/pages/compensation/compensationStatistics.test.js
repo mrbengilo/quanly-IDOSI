@@ -166,6 +166,29 @@ describe('revenue bonus history and statistics', () => {
     }])
   })
 
+  it('preserves immutable support-tag evidence in projected revenue history', () => {
+    const projection = revenueBonusHistoryProjection({
+      employees: [{ id: 'SUPPORT-01', name: 'Nhân viên hỗ trợ', storeId: 'HOME' }],
+      revenueBonusDaily: [{
+        id: 'RBD-SUPPORT', storeId: 'STORE-01', businessDate: '2026-09-02', status: 'APPROVED',
+        allocations: [{
+          id: 'RBA-SUPPORT', employeeId: 'SUPPORT-01', amountVnd: 0,
+          supportTransferred: true, supportTransferIds: ['TR-SUPPORT'],
+          supportHomeStoreId: 'HOME', supportHomeStoreName: 'Cửa hàng gốc',
+          supportStoreId: 'STORE-01', supportStoreName: 'Cửa hàng hỗ trợ',
+        }],
+      }],
+    })
+
+    expect(projection.rows).toEqual([expect.objectContaining({
+      id: 'RBA-SUPPORT',
+      supportTransferred: true,
+      supportTransferIds: ['TR-SUPPORT'],
+      supportHomeStoreId: 'HOME',
+      supportStoreId: 'STORE-01',
+    })])
+  })
+
   it('excludes allocations when distinct employee profiles collide after case folding', () => {
     const projection = revenueBonusHistoryProjection({
       employees: [

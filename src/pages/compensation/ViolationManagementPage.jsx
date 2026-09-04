@@ -14,7 +14,10 @@ import {
 } from '../../components/UI'
 import { money } from '../../utils'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
-import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
+import {
+  resolveSupportEmployeeTagContext,
+  resolveSupportEmployeeTagContextFromRecords,
+} from '../../domain/supportEmployeeTag'
 import { activeWorkCatalogItems, WORK_CATALOG_KIND } from '../../domain/workCatalog'
 import { resolveAttendanceWorkingTime } from '../../domain/attendanceWorkingTime'
 import {
@@ -244,6 +247,16 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
     .filter((entry) => !isVoided(entry))
     .reduce((total, entry) => total + Math.abs(entryAmount(entry)), 0), [filteredRows])
   const statistics = useMemo(() => violationStatistics(rows), [rows])
+  const supportTagContextForSummary = (row) => targetUnit === 'store'
+    ? resolveSupportEmployeeTagContextFromRecords({
+        records: rows,
+        employeeId: row.key,
+        storeId: selectedStoreId,
+        employees: app.employees,
+        stores: app.stores,
+        supportTransfers: app.supportTransfers,
+      })
+    : null
 
   if (!permittedUnit || !canManage) {
     const subtitle = role === 'store_manager'
@@ -403,7 +416,7 @@ export function ViolationManagementPage({ targetUnit: requestedTargetUnit, store
           </tbody>
         </TableWrap>
       </Card>
-      <Card title="Thống kê số lần và đánh giá mức độ vi phạm"><CompensationStatisticsGrid statistics={statistics} employees={employees} showEmployee mode="violation" /></Card>
+      <Card title="Thống kê số lần và đánh giá mức độ vi phạm"><CompensationStatisticsGrid statistics={statistics} employees={employees} showEmployee mode="violation" supportTagContextForRow={supportTagContextForSummary} /></Card>
     </div>
   )
 }

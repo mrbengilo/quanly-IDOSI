@@ -1,6 +1,9 @@
 import { useCallback, useMemo } from 'react'
 import { Card } from '../../components/UI'
-import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
+import {
+  resolveSupportEmployeeTagContext,
+  resolveSupportEmployeeTagContextFromRecords,
+} from '../../domain/supportEmployeeTag'
 import { useApp } from '../../state/AppContext'
 import {
   employeesForTarget,
@@ -53,6 +56,26 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
         supportTransfers: app.supportTransfers,
       })
     : null, [app.employees, app.stores, app.supportTransfers, storeId, targetUnit])
+  const supportTagContextForRewardSummary = useCallback((row) => targetUnit === 'store'
+    ? resolveSupportEmployeeTagContextFromRecords({
+        records: rewardRows,
+        employeeId: row.key,
+        storeId,
+        employees: app.employees,
+        stores: app.stores,
+        supportTransfers: app.supportTransfers,
+      })
+    : null, [app.employees, app.stores, app.supportTransfers, rewardRows, storeId, targetUnit])
+  const supportTagContextForViolationSummary = useCallback((row) => targetUnit === 'store'
+    ? resolveSupportEmployeeTagContextFromRecords({
+        records: violationRows,
+        employeeId: row.key,
+        storeId,
+        employees: app.employees,
+        stores: app.stores,
+        supportTransfers: app.supportTransfers,
+      })
+    : null, [app.employees, app.stores, app.supportTransfers, storeId, targetUnit, violationRows])
 
   const showReward = sections === 'all' || sections === 'reward'
   const showViolation = sections === 'all' || sections === 'violation'
@@ -69,10 +92,10 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
       />
     </Card>}
     {showReward && <Card title={`Thống kê thưởng — ${unitLabel}`}>
-      <CompensationStatisticsGrid statistics={rewardSummary} employees={scopedEmployees} showEmployee mode="reward" />
+      <CompensationStatisticsGrid statistics={rewardSummary} employees={scopedEmployees} showEmployee mode="reward" supportTagContextForRow={supportTagContextForRewardSummary} />
     </Card>}
     {showViolation && <Card title={`Thống kê vi phạm và đánh giá — ${unitLabel}`}>
-      <CompensationStatisticsGrid statistics={violationSummary} employees={scopedEmployees} showEmployee mode="violation" />
+      <CompensationStatisticsGrid statistics={violationSummary} employees={scopedEmployees} showEmployee mode="violation" supportTagContextForRow={supportTagContextForViolationSummary} />
     </Card>}
   </div>
 }

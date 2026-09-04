@@ -257,6 +257,37 @@ describe('compensation pages', () => {
     expect(screen.queryByLabelText('Nhân viên nhận thưởng')).toBeNull()
   })
 
+  it('tags transferred employees in store reward history and employee summaries', () => {
+    vi.setSystemTime(new Date('2026-09-02T05:00:00.000Z'))
+    const supportEmployee = {
+      id: 'NV-SUPPORT-REWARD', name: 'Nhân viên Hỗ Trợ Thưởng', unit: 'store', storeId: 'CH002',
+    }
+    const rewardRows = [{
+      id: 'R-SUPPORT', employeeId: supportEmployee.id, employeeName: supportEmployee.name,
+      storeId: 'CH001', workDate: '2026-09-02', shiftId: 'ca1', shiftName: 'Ca 1',
+      title: 'Thưởng hỗ trợ', amountVnd: 3_000, completed: true, payoutStatus: 'approved',
+      completedAt: '2026-09-02T06:00:00.000Z', supportTransferId: 'TR-REWARD',
+    }]
+    mocked.app = {
+      ...baseApp(),
+      employees: [...employees, supportEmployee],
+      supportTransfers: [{
+        id: 'TR-REWARD', employeeId: supportEmployee.id, fromStoreId: 'CH002', toStoreId: 'CH001',
+        startAt: '2026-09-01T00:00:00+07:00', endAt: '2026-09-03T23:59:59+07:00', status: 'Hoàn tất',
+      }],
+    }
+
+    render(<UnitCompensationStatistics
+      targetUnit="store"
+      storeId="CH001"
+      employees={[supportEmployee]}
+      sections="reward"
+      rewardRows={rewardRows}
+    />)
+
+    expect(screen.getAllByText('Nhân viên hỗ trợ • Từ SM TNV')).toHaveLength(2)
+  })
+
   it('shows the current store reward date first and paginates older reward dates', () => {
     const rewardRows = [{
       id: 'R-CURRENT', employeeId: 'NV-01', employeeName: 'Nhân viên Một', workDate: '2026-08-26',
@@ -468,6 +499,38 @@ describe('compensation pages', () => {
     expect(within(historyCard).getByText('Tổng thưởng: 8,000 đ')).toBeTruthy()
     fireEvent.change(employeeFilter, { target: { value: 'NV-02' } })
     expect(within(historyCard).getByText('Tổng thưởng: 5,000 đ')).toBeTruthy()
+  })
+
+  it('tags a transferred employee in revenue history and employee statistics', () => {
+    vi.setSystemTime(new Date('2026-09-02T05:00:00.000Z'))
+    const supportEmployee = {
+      id: 'NV-SUPPORT', name: 'Nhân viên Điều Chuyển', unit: 'store', storeId: 'CH002',
+    }
+    mocked.app = {
+      ...baseApp('store_manager'),
+      employees: [...employees, supportEmployee],
+      supportTransfers: [{
+        id: 'TR-REVENUE', employeeId: supportEmployee.id, fromStoreId: 'CH002', toStoreId: 'CH001',
+        startAt: '2026-09-01T00:00:00+07:00', endAt: '2026-09-03T23:59:59+07:00', status: 'Hoàn tất',
+      }],
+      revenueBonuses: [{
+        id: 'RB-SUPPORT', storeId: 'CH001', businessDate: '2026-09-02', period: '2026-09', status: 'APPROVED',
+        allocations: [{
+          id: 'A-SUPPORT', employeeId: supportEmployee.id, employeeName: supportEmployee.name,
+          allocatedVnd: 0, approvedSalesHours: 4, weightPercent: 100, status: 'SUPPORT_EXCLUDED',
+          supportTransferred: true, supportTransferIds: ['TR-REVENUE'],
+          supportHomeStoreId: 'CH002', supportStoreId: 'CH001',
+        }],
+      }],
+    }
+
+    render(<RevenueBonusPage storeScoped />)
+
+    const expectedTag = 'Nhân viên hỗ trợ • Từ SM TNV'
+    const historyCard = screen.getByRole('heading', { name: 'Lịch sử ghi nhận thưởng doanh thu' }).closest('section')
+    const statisticsCard = screen.getByRole('heading', { name: 'Thống kê thưởng doanh thu' }).closest('section')
+    expect(within(historyCard).getByText(expectedTag)).toBeTruthy()
+    expect(within(statisticsCard).getByText(expectedTag)).toBeTruthy()
   })
 
   it('clears the employee history filter when a global Admin switches stores', () => {
