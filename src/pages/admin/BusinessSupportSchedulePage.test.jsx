@@ -276,6 +276,10 @@ describe('BusinessSupportSchedulePage assigned schedule table', () => {
     const card = screen.getByRole('heading', { name: 'Lịch làm việc đã phân' }).closest('.card')
     expect(card.querySelectorAll('tbody tr')).toHaveLength(20)
     expect(screen.getByText('Trang 1/3 · 45 lịch')).toBeTruthy()
+    const employeeFilter = screen.getByLabelText('Lọc nhân viên lịch đã phân')
+    expect(Array.from(employeeFilter.options, (option) => option.value)).toEqual([
+      '', 'HTKD-001', 'HTKD-002', 'VP001', 'VP002',
+    ])
 
     fireEvent.click(screen.getByRole('button', { name: 'Trang lịch đã phân sau' }))
     expect(card.querySelectorAll('tbody tr')).toHaveLength(20)

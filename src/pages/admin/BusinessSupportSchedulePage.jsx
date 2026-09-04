@@ -23,7 +23,7 @@ const ASSIGNED_SCHEDULE_PAGE_SIZE = 20
 
 const employeeUnit = (employee = {}) => String(employee.unit || employee.unitType || '').toLowerCase()
 const scheduleEmployees = (employees = [], targetUnit = 'business_support') => employees.filter((employee) => (
-  employeeUnit(employee) === targetUnit
+  (!targetUnit || employeeUnit(employee) === targetUnit)
   && !employee.deletedAt
   && !['Đã nghỉ việc', 'inactive'].includes(employee.status)
 ))

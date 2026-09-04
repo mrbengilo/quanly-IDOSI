@@ -16,7 +16,7 @@ export const cashflowSourceDates = (transactions = [], currentDate) => {
 
 export const cashflowSourceRowsForDate = (transactions = [], date) => {
   const groups = new Map()
-  for (const transaction of Array.isArray(transactions) ? transactions : []) {
+  for (const [index, transaction] of (Array.isArray(transactions) ? transactions : []).entries()) {
     if (cashflowTransactionDate(transaction) !== date) continue
     const sourceType = normalize(transaction.sourceType)
     const direction = normalize(transaction.direction) === 'out' ? 'out' : 'in'
@@ -28,9 +28,12 @@ export const cashflowSourceRowsForDate = (transactions = [], date) => {
     const category = orderRevenue
       ? 'Đơn hàng trong ngày'
       : String(transaction.category || transaction.type || 'Khác').trim()
+    const transactionId = String(
+      transaction.id || transaction.transactionId || transaction.entryId || transaction.sourceId || '',
+    ).trim()
     const key = orderRevenue
       ? `${date}:${storeId}:order-revenue`
-      : `${date}:${storeId}:${direction}:${sourceType}:${normalize(source)}:${normalize(category)}`
+      : `${date}:${storeId}:transaction:${transactionId || `${direction}:${sourceType}:${index}`}`
     const current = groups.get(key) || {
       id: key,
       date,
