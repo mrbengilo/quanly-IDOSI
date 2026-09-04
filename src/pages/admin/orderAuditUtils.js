@@ -45,15 +45,30 @@ export const formatOrderAuditValue = (field, value) => {
 }
 
 export const orderAuditChanges = (record = {}) => {
-  const changedFields = Array.isArray(record.changedFields)
+  const declaredFields = Array.isArray(record.changedFields)
     ? record.changedFields
     : Array.isArray(record.metadata?.changedFields)
       ? record.metadata.changedFields
       : []
-  return [...new Set(changedFields)].map((field) => ({
-    field,
-    label: ORDER_FIELD_LABELS[field] || field,
-    before: formatOrderAuditValue(field, record.before?.[field]),
-    after: formatOrderAuditValue(field, record.after?.[field]),
-  }))
+  const inferredFields = [...new Set([
+    ...Object.keys(record.before && typeof record.before === 'object' ? record.before : {}),
+    ...Object.keys(record.after && typeof record.after === 'object' ? record.after : {}),
+  ])].filter((field) => {
+    const before = record.before?.[field]
+    const after = record.after?.[field]
+    try {
+      return JSON.stringify(before) !== JSON.stringify(after)
+    } catch {
+      return String(before) !== String(after)
+    }
+  })
+  const changedFields = declaredFields.length ? declaredFields : inferredFields
+  return [...new Set(changedFields)]
+    .filter((field) => !['updatedAt', 'updatedBy'].includes(String(field)))
+    .map((field) => ({
+      field,
+      label: ORDER_FIELD_LABELS[field] || field,
+      before: formatOrderAuditValue(field, record.before?.[field]),
+      after: formatOrderAuditValue(field, record.after?.[field]),
+    }))
 }
