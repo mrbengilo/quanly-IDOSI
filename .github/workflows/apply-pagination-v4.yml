@@ -1,0 +1,170 @@
+name: Apply and verify IDOSI data-table pagination v4
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-v2
+    paths:
+      - .github/workflows/apply-pagination-v4.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: idosi-pagination-v4-apply
+  cancel-in-progress: false
+
+jobs:
+  apply-test-push:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BASE_SHA: f5a7df381c30fc9ab7d2d6dea588767036c43ede
+      BRANCH_NAME: perf/paginate-data-tables-v2
+    steps:
+      - name: Checkout pagination branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-v2
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Verify latest main and apply reviewed pagination patches
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA" || {
+            echo "main advanced after the pagination branch was prepared; refusing to overwrite newer work." >&2
+            exit 1
+          }
+
+          sha256sum -c <<'CHECKSUMS'
+          38e4a22f28ff5443b1c31e5717751f6f059c8a5ae91b69c91463e836ed320121  .github/pagination-fix/part00.b64
+          8bd42625258423981d6b96ba856d0b0298d9260b1ac6ce35cedbd0e79b3ff097  .github/pagination-fix/part01.b64
+          b09680346eda7ce8d05410ab561a76f4c651f50faf8b8c74f8a48bbc4b3d7ede  .github/pagination-fix/part02.b64
+          76d727604ef6dba44745475491d2d565f1a38458c830d0ecf3a1eadb83fee059  .github/pagination-fix/part03.b64
+          c5a66bc92e46505c70a8169916d8516c1a9b10312ae4eb86ea887850003a8fae  .github/pagination-fix/part04.b64
+          6aa80e6eb23e87868f39d04ba8a947f04e08d0b62d043490c008255391cbdd5c  .github/pagination-fix/part05.b64
+          2f91fdd1b59534014e7f29eee0a94b1de09647e23a34140028e8dc1651f69f1c  .github/pagination-fix/part06.b64
+          de4ef8f227dc3948b89b9f444531048a628cfbad36b8f34ab85455d9da8eab4b  .github/pagination-fix/testfix00.b64
+          4f87e4ed19b97931a4d1e427d81315593e53617c848aa5b0ef7fd0f1047a9e45  .github/pagination-fix/lintfix00.b64
+          CHECKSUMS
+
+          cat .github/pagination-fix/part*.b64 | base64 -d | gzip -d > /tmp/idosi-pagination-v2.patch
+          test "$(sha256sum /tmp/idosi-pagination-v2.patch | cut -d' ' -f1)" = \
+            "6204c2c815abbb41e4a547ecb8037feba11cac1af3a74c381baa0ac16837a8f7"
+          git apply --check /tmp/idosi-pagination-v2.patch
+          git apply /tmp/idosi-pagination-v2.patch
+
+          cat .github/pagination-fix/testfix*.b64 | base64 -d | gzip -d > /tmp/idosi-pagination-testfix.patch
+          test "$(sha256sum /tmp/idosi-pagination-testfix.patch | cut -d' ' -f1)" = \
+            "9fcbbd8e58910d773255649e70cf5d75e07bebe69d1ac97be1bd8bd93609d611"
+          git apply --check /tmp/idosi-pagination-testfix.patch
+          git apply /tmp/idosi-pagination-testfix.patch
+
+          cat .github/pagination-fix/lintfix*.b64 | base64 -d | gzip -d > /tmp/idosi-pagination-lintfix.patch
+          test "$(sha256sum /tmp/idosi-pagination-lintfix.patch | cut -d' ' -f1)" = \
+            "bd236e21258e44ebbc9f82d6fb502e608227ec36b934e596d25a5bfee45dee84"
+          git apply --check /tmp/idosi-pagination-lintfix.patch
+          git apply /tmp/idosi-pagination-lintfix.patch
+          git diff --check
+
+          expected="$(printf '%s\n' \
+            src/components/UI.jsx \
+            src/components/UI.tablePagination.test.jsx \
+            src/domain/tablePagination.js \
+            src/domain/tablePagination.test.js \
+            src/hooks/useKeyedPagination.js \
+            src/pages/admin/SupportWorkPages.jsx \
+            src/pages/admin/SupportWorkPages.test.jsx \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/compensation/CompensationStatisticsTables.jsx \
+            src/pages/compensation/UnitCompensationStatistics.jsx \
+            src/pages/compensation/ViolationManagementPage.jsx \
+            src/pages/store/StoreV2Pages.jsx \
+            src/pages/store/StoreV2Pages.metrics.test.jsx \
+            src/styles.css | sort)"
+          actual="$({ git diff --name-only -- src; git ls-files --others --exclude-standard -- src; } | sort)"
+          test "$actual" = "$expected" || {
+            echo 'Unexpected pagination patch scope:' >&2
+            diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
+            exit 1
+          }
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run targeted pagination regression tests
+        run: |
+          npx vitest run \
+            src/domain/tablePagination.test.js \
+            src/components/UI.tablePagination.test.jsx \
+            src/pages/admin/SupportWorkPages.test.jsx \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/store/StoreV2Pages.metrics.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run full test suite
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Replace staging history with atomic implementation commits
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          staging_head="$(git rev-parse HEAD)"
+          git fetch origin main
+          test "$(git rev-parse origin/main)" = "$BASE_SHA" || {
+            echo "main advanced during verification; refusing to publish a stale branch." >&2
+            exit 1
+          }
+
+          rm -rf .github/pagination-fix
+          rm -f .github/workflows/export-pagination-source-v2.yml
+          rm -f .github/workflows/apply-pagination-v2.yml
+          rm -f .github/workflows/apply-pagination-v3.yml
+          rm -f .github/workflows/apply-pagination-v4.yml
+
+          git reset --mixed "$BASE_SHA"
+          git diff --check
+
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+
+          git add \
+            src/components/UI.jsx \
+            src/components/UI.tablePagination.test.jsx \
+            src/domain/tablePagination.js \
+            src/domain/tablePagination.test.js \
+            src/hooks/useKeyedPagination.js \
+            src/styles.css
+          git commit -m 'feat(ui): paginate data tables at 20 rows'
+
+          git add \
+            src/pages/admin/SupportWorkPages.jsx \
+            src/pages/admin/SupportWorkPages.test.jsx \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/compensation/CompensationStatisticsTables.jsx \
+            src/pages/compensation/UnitCompensationStatistics.jsx \
+            src/pages/compensation/ViolationManagementPage.jsx \
+            src/pages/store/StoreV2Pages.jsx \
+            src/pages/store/StoreV2Pages.metrics.test.jsx
+          git commit -m 'perf(history): prioritize current-day records in paged views'
+
+          test -z "$(git status --porcelain)"
+          git push \
+            --force-with-lease="refs/heads/$BRANCH_NAME:$staging_head" \
+            origin "HEAD:refs/heads/$BRANCH_NAME"
