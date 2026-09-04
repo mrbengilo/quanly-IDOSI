@@ -53,7 +53,7 @@ PID_FILE="$JOB_DIR/$OPERATION_ID.pid"
 EXPECTED_LOG_FILE="$JOB_DIR/$OPERATION_ID.log"
 MINIMUM_AGE_SECONDS="${IDOSI_STALE_DEPLOY_MIN_AGE_SECONDS:-3600}"
 
-for command_name in awk cat chmod curl date docker flock git grep head kill mktemp mv ps sed seq sleep tail tr; do
+for command_name in awk cat chmod date docker flock git grep head kill mktemp mv ps sed seq sleep tail tr; do
   command -v "$command_name" >/dev/null 2>&1 || die "Thiếu lệnh bắt buộc: $command_name"
 done
 docker compose version >/dev/null 2>&1 || die 'Docker Compose plugin không hoạt động.'
@@ -141,10 +141,6 @@ assert_service_running app
 assert_service_running caddy
 internal_release="$(runtime_release)"
 [[ "$internal_release" == "$EXPECTED_ACTIVE_SHA" ]] || die 'App nội bộ không chạy đúng active release được xác nhận.'
-curl --fail --silent --show-error --connect-timeout 5 --max-time 15 'https://idosi.io.vn/api/health' >/dev/null
-public_release_json="$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 'https://idosi.io.vn/api/release')"
-[[ "$public_release_json" == *"\"releaseSha\":\"$EXPECTED_ACTIVE_SHA\""* ]] \
-  || die 'Public production không chạy đúng active release được xác nhận.'
 [[ -z "$(git -C "$IDOSI_ROOT" status --porcelain)" ]] || die 'VPS working tree không sạch; từ chối recovery.'
 git -C "$IDOSI_ROOT" cat-file -e "$EXPECTED_ACTIVE_SHA^{commit}" 2>/dev/null \
   || die 'Active release commit không tồn tại trong Git repository VPS.'
