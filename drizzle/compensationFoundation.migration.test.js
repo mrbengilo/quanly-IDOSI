@@ -26,6 +26,14 @@ const databaseBeforeMigration = () => {
 }
 
 describe('0009 compensation foundation migration', () => {
+  it('registers collections without a compound SELECT', () => {
+    const sql = migrationSql('drizzle/0009_compensation_foundation.sql')
+    const registrationStatement = sql.slice(0, sql.indexOf('-- The current compensation model'))
+
+    expect(registrationStatement).toMatch(/WITH compensation_collections\(collection_key\) AS \(\s*VALUES/iu)
+    expect(registrationStatement).not.toMatch(/\bUNION(?:\s+ALL)?\b/iu)
+  })
+
   it('keeps an uninitialized database empty for atomic bootstrap', () => {
     const database = databaseBeforeMigration()
     try {

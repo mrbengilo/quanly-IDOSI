@@ -4,20 +4,22 @@ PRAGMA foreign_keys = ON;
 -- Register the additive row-per-entity collections used by the compensation
 -- rollout. Existing state remains untouched; an empty collection is a valid
 -- production state until the corresponding business flow creates records.
+WITH compensation_collections(collection_key) AS (
+  VALUES
+    ('storeShiftTaskTemplates'),
+    ('compensationEntries'),
+    ('violations'),
+    ('revenueBonusDaily'),
+    ('revenueBonusAllocations'),
+    ('teamRewardClaims'),
+    ('teamRewardParticipants'),
+    ('periodReconciliations'),
+    ('jobRuns')
+)
 INSERT INTO state_collections (scope_key, collection_key, created_at, updated_at)
 SELECT app.scope_key, collection.collection_key, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 FROM app_state AS app
-CROSS JOIN (
-  SELECT 'storeShiftTaskTemplates' AS collection_key
-  UNION ALL SELECT 'compensationEntries'
-  UNION ALL SELECT 'violations'
-  UNION ALL SELECT 'revenueBonusDaily'
-  UNION ALL SELECT 'revenueBonusAllocations'
-  UNION ALL SELECT 'teamRewardClaims'
-  UNION ALL SELECT 'teamRewardParticipants'
-  UNION ALL SELECT 'periodReconciliations'
-  UNION ALL SELECT 'jobRuns'
-) AS collection
+CROSS JOIN compensation_collections AS collection
 WHERE app.scope_key = 'global'
 ON CONFLICT (scope_key, collection_key) DO NOTHING;
 --> statement-breakpoint
