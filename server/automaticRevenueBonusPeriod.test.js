@@ -42,7 +42,7 @@ describe('server automatic revenue period projection', () => {
       state,
       store,
       period: '2026-09',
-      now: '2026-09-03T12:00:00.000Z',
+      now: '2026-09-03T15:05:00.000Z',
       canViewAllAllocations: true,
       includeAdminDetails: true,
     })
@@ -78,7 +78,7 @@ describe('server automatic revenue period projection', () => {
       state,
       store,
       period: '2026-09',
-      now: '2026-09-03T12:00:00.000Z',
+      now: '2026-09-03T15:05:00.000Z',
       canViewAllAllocations: false,
       viewerEmployeeIds: ['B'],
       includeAdminDetails: false,

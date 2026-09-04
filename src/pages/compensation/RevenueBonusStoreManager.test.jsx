@@ -53,7 +53,7 @@ const managerApp = (store) => {
 describe('store-manager automatic daily revenue bonus', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
+    vi.setSystemTime(new Date('2026-09-03T15:05:00.000Z'))
   })
 
   afterEach(() => {

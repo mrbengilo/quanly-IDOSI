@@ -5,17 +5,11 @@ import {
 } from './compensationPolicies.js'
 import { supportTransferBounds } from './supportTransferTime.js'
 
-export const AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE = '2026-09-03'
+export const AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE = '2026-09-01'
+export const AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR = 22
 export const REVENUE_BONUS_OVERRIDE_MODE = Object.freeze({
   AMOUNT: 'AMOUNT',
   DELETED: 'DELETED',
-})
-
-const VIETNAM_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Ho_Chi_Minh',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
 })
 
 const identifierKey = (value) => String(value ?? '').trim().toLocaleLowerCase('en-US')
@@ -32,19 +26,23 @@ const recordDate = (record = {}) => String(
 ).slice(0, 10)
 
 const validBusinessDate = (value) => /^\d{4}-\d{2}-\d{2}$/u.test(String(value || ''))
+const vietnamBusinessDate = (value) => {
+  const instant = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(instant.getTime())) throw new TypeError('nowMs must be a valid timestamp.')
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(instant)
+    .filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, part.value]))
+  return `${parts.year}-${parts.month}-${parts.day}`
+}
 const sameIdentifier = (left, right) => {
   const leftKey = identifierKey(left)
   const rightKey = identifierKey(right)
   return Boolean(leftKey && rightKey && leftKey === rightKey)
-}
-
-const vietnamDate = (value) => {
-  const instant = value instanceof Date ? value : new Date(value ?? Date.now())
-  if (Number.isNaN(instant.getTime())) throw new TypeError('nowMs must be a valid timestamp.')
-  const parts = Object.fromEntries(VIETNAM_DATE_FORMATTER.formatToParts(instant)
-    .filter((part) => part.type !== 'literal')
-    .map((part) => [part.type, part.value]))
-  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 const activeRecord = (record = {}) => (
@@ -323,6 +321,7 @@ export function calculateAutomaticRevenueBonusDay({
     throw new TypeError('storeId, businessDate, programId and milestoneProgramId are required.')
   }
   if (!Number.isFinite(normalizedNowMs)) throw new TypeError('nowMs must be a valid timestamp.')
+  const finalizedOnly = businessDate >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE
 
   const scopedOrders = (Array.isArray(orders) ? orders : []).filter((order) => (
     sameIdentifier(order?.storeId, normalizedStoreId)
@@ -335,21 +334,11 @@ export function calculateAutomaticRevenueBonusDay({
   const revenueVnd = scopedOrders.reduce((sum, order) => sum + Number(order.amount), 0)
   if (!Number.isSafeInteger(revenueVnd)) throw new RangeError('Daily revenue exceeds the safe VND range.')
 
-  const percentage = calculateRevenueBonus({ programId, revenueVnd })
-  const milestone = calculateTeamMilestoneReward({
-    programId: milestoneProgramId,
-    achievedUnits: revenueVnd,
-  })
   const resolveEmployee = employeeResolver(employees)
   const employeeById = new Map()
-  const weights = new Map()
   const supportContextByEmployee = new Map()
-  const currentVietnamDate = vietnamDate(normalizedNowMs)
-  const projectOpenAttendance = businessDate === currentVietnamDate
-  let attendanceCount = 0
-  let openAttendanceCount = 0
-  const activeEmployeeIds = new Set()
-
+  const attendanceRows = []
+  const openEmployeeIds = new Set()
   for (const record of Array.isArray(attendance) ? attendance : []) {
     if (!activeRecord(record)
       || !sameIdentifier(record?.storeId, normalizedStoreId)
@@ -376,17 +365,98 @@ export function calculateAutomaticRevenueBonusDay({
       if (supportContext.supportTransferId) current.supportTransferIds.add(supportContext.supportTransferId)
       supportContextByEmployee.set(employeeKey, current)
     }
-    attendanceCount += 1
     const open = !record.checkOutAt && !record.checkOut && !record.checkOutTime
-    if (open) {
-      openAttendanceCount += 1
-      activeEmployeeIds.add(employeeId)
-    }
+    if (open) openEmployeeIds.add(employeeId)
+    attendanceRows.push({ record, employeeId, open })
+  }
+
+  const activeOverrides = activeRevenueBonusOverrides({
+    overrides,
+    storeId: normalizedStoreId,
+    businessDate,
+  })
+  const cutoffMs = Date.parse(`${businessDate}T${String(AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR).padStart(2, '0')}:00:00+07:00`)
+  const cutoffAt = Number.isFinite(cutoffMs) ? new Date(cutoffMs).toISOString() : null
+  const pendingSnapshot = (status, code, message) => ({
+    id: `automatic-revenue-day:${normalizedStoreId}:${businessDate}`,
+    sourceType: 'automatic-revenue-bonus',
+    automatic: true,
+    storeId: normalizedStoreId,
+    businessDate,
+    period: businessDate.slice(0, 7),
+    projectedAt: new Date(normalizedNowMs).toISOString(),
+    revenueVnd,
+    orderCount: scopedOrders.length,
+    programId,
+    tierId: null,
+    rateBasisPoints: 0,
+    ratePercent: 0,
+    milestoneProgramId,
+    milestoneId: null,
+    percentagePoolVnd: 0,
+    milestonePoolVnd: 0,
+    totalPoolVnd: 0,
+    formulaAllocatedVnd: 0,
+    automaticAllocatedVnd: 0,
+    allocatedVnd: 0,
+    unallocatedVnd: 0,
+    excludedSupportShareVnd: 0,
+    adminAdjustmentVnd: 0,
+    totalWorkedSeconds: 0,
+    attendanceCount: attendanceRows.length,
+    openAttendanceCount: openEmployeeIds.size,
+    activeEmployeeCount: openEmployeeIds.size,
+    participantCount: 0,
+    eligibleParticipantCount: 0,
+    supportExcludedCount: 0,
+    overrideCount: 0,
+    overrideCollisions: [],
+    status,
+    calculationEligibility: {
+      allowed: false,
+      code,
+      message,
+      cutoffAt,
+      attendanceCount: attendanceRows.length,
+      openAttendanceCount: openEmployeeIds.size,
+    },
+    allocations: [],
+  })
+
+  if (finalizedOnly && (!Number.isFinite(cutoffMs) || normalizedNowMs < cutoffMs)) {
+    return pendingSnapshot(
+      'WAITING_CUTOFF',
+      'WAITING_CUTOFF',
+      'Hệ thống sẽ tự động chốt doanh thu và giờ làm sau 22:00 giờ Việt Nam.',
+    )
+  }
+  if (finalizedOnly && openEmployeeIds.size > 0) {
+    return pendingSnapshot(
+      'WAITING_SHIFT_CLOSE',
+      'WAITING_SHIFT_CLOSE',
+      'Đã qua 22:00 nhưng vẫn còn ca đang làm việc. Hệ thống sẽ tự động tính ngay sau khi tất cả nhân viên kết ca.',
+    )
+  }
+  if (finalizedOnly && !attendanceRows.length && activeOverrides.records.size === 0) {
+    return pendingSnapshot(
+      'NO_ATTENDANCE',
+      'NO_ATTENDANCE',
+      'Ngày này chưa có dữ liệu chấm công nên hệ thống chưa thể tính thưởng doanh thu.',
+    )
+  }
+
+  const projectOpenAttendance = !finalizedOnly && businessDate === vietnamBusinessDate(normalizedNowMs)
+  const weights = new Map()
+  for (const { record, employeeId } of attendanceRows) {
     const seconds = liveWorkedSeconds(record, normalizedNowMs, projectOpenAttendance)
     if (seconds > 0) weights.set(employeeId, (weights.get(employeeId) || 0) + seconds)
   }
-
   const participants = [...weights].map(([id, weightUnits]) => ({ id, weightUnits }))
+  const percentage = calculateRevenueBonus({ programId, revenueVnd })
+  const milestone = calculateTeamMilestoneReward({
+    programId: milestoneProgramId,
+    achievedUnits: revenueVnd,
+  })
   const totalPoolVnd = percentage.bonusVnd + milestone.amountVnd
   const formulaAllocation = safeAllocation(totalPoolVnd, participants)
   const percentageAllocation = allocateComponentWithinFormulaTotals(
@@ -420,11 +490,6 @@ export function calculateAutomaticRevenueBonusDay({
   )
   const weightByEmployee = new Map(participants.map((record) => [identifierKey(record.id), record.weightUnits]))
   const canonicalIdByKey = new Map(participants.map((record) => [identifierKey(record.id), record.id]))
-  const activeOverrides = activeRevenueBonusOverrides({
-    overrides,
-    storeId: normalizedStoreId,
-    businessDate,
-  })
   for (const override of activeOverrides.records.values()) {
     const key = identifierKey(override.employeeId)
     if (!canonicalIdByKey.has(key)) canonicalIdByKey.set(key, override.employeeId)
@@ -451,7 +516,7 @@ export function calculateAutomaticRevenueBonusDay({
       ? 'ADMIN_DELETED'
       : override
         ? 'ADMIN_ADJUSTED'
-        : supportTransferred ? 'SUPPORT_EXCLUDED' : 'LIVE'
+        : supportTransferred ? 'SUPPORT_EXCLUDED' : finalizedOnly ? 'FINALIZED' : 'LIVE'
     return {
       id: `automatic-revenue:${normalizedStoreId}:${businessDate}:${employeeId}`,
       sourceType: 'automatic-revenue-bonus',
@@ -495,8 +560,7 @@ export function calculateAutomaticRevenueBonusDay({
   const excludedSupportShareVnd = allocations.reduce((sum, record) => sum + record.excludedSupportShareVnd, 0)
   const automaticAllocatedVnd = allocations.reduce((sum, record) => sum + record.automaticAmountVnd, 0)
   const allocatedVnd = allocations.reduce((sum, record) => sum + record.amountVnd, 0)
-  const unallocatedVnd = formulaAllocation.unallocatedVnd
-    + excludedSupportShareVnd
+  const unallocatedVnd = formulaAllocation.unallocatedVnd + excludedSupportShareVnd
   return {
     id: `automatic-revenue-day:${normalizedStoreId}:${businessDate}`,
     sourceType: 'automatic-revenue-bonus',
@@ -505,6 +569,7 @@ export function calculateAutomaticRevenueBonusDay({
     businessDate,
     period: businessDate.slice(0, 7),
     projectedAt: new Date(normalizedNowMs).toISOString(),
+    ...(finalizedOnly ? { finalizedAt: new Date(normalizedNowMs).toISOString() } : {}),
     revenueVnd,
     orderCount: scopedOrders.length,
     programId,
@@ -523,15 +588,25 @@ export function calculateAutomaticRevenueBonusDay({
     excludedSupportShareVnd,
     adminAdjustmentVnd: allocatedVnd - automaticAllocatedVnd,
     totalWorkedSeconds: totalWeightUnits,
-    attendanceCount,
-    openAttendanceCount,
-    activeEmployeeCount: activeEmployeeIds.size,
+    attendanceCount: attendanceRows.length,
+    openAttendanceCount: finalizedOnly ? 0 : openEmployeeIds.size,
+    activeEmployeeCount: finalizedOnly ? 0 : openEmployeeIds.size,
     participantCount: participants.length,
     eligibleParticipantCount: allocations.filter((record) => !record.supportTransferred).length,
     supportExcludedCount: allocations.filter((record) => record.supportTransferred).length,
     overrideCount: activeOverrides.records.size,
     overrideCollisions: activeOverrides.collisions,
-    status: 'LIVE',
+    status: finalizedOnly ? 'FINALIZED' : 'LIVE',
+    ...(finalizedOnly ? {
+      calculationEligibility: {
+        allowed: true,
+        code: 'FINALIZED',
+        message: 'Hệ thống đã tự động chốt doanh thu và giờ làm sau 22:00 khi toàn bộ ca đã kết thúc.',
+        cutoffAt,
+        attendanceCount: attendanceRows.length,
+        openAttendanceCount: 0,
+      },
+    } : {}),
     allocations,
   }
 }

@@ -29,8 +29,15 @@ import {
 } from '../../components/UI'
 import { formatVietnamTransferDateTime, isVietnamDateTimeLocal, supportTransferBounds } from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
-import { formatMoneyInput, money, parseMoneyInput, shortDate, shortDateTime24, today } from '../../utils'
-import { orderAuditChanges } from './orderAuditUtils'
+import { businessDate, formatMoneyInput, money, parseMoneyInput, shortDate, shortDateTime24, today } from '../../utils'
+import {
+  orderAuditAction,
+  orderAuditActor,
+  orderAuditChanges,
+  orderAuditOrderCode,
+  orderAuditStoreId,
+  orderAuditTimestamp,
+} from './orderAuditUtils'
 
 const displayDateTime = shortDateTime24
 const emptySupportTransferForm = () => ({
@@ -181,8 +188,64 @@ export function SystemEmployees() {
 export function OrderAuditPage() {
   const { orderAudit = [], stores = [] } = useApp()
   const [query, setQuery] = useState('')
-  const rows = orderAudit.filter((item) => !query || [item.orderCode, item.actor?.name, item.reason].some((value) => String(value || '').toLowerCase().includes(query.toLowerCase())))
-  return <div className="page"><PageHeader title="LỊCH SỬ SỬA VÀ XÓA ĐƠN HÀNG" subtitle="Đối soát dữ liệu trước/sau của mọi thao tác ảnh hưởng doanh thu." icon={History} /><Card title="Nhật ký đơn hàng" action={<SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, người thao tác..." />}><TableWrap><thead><tr><th>Thời gian</th><th>Người thao tác</th><th>Cửa hàng</th><th>Mã đơn</th><th>Thao tác</th><th>Chi tiết thay đổi (trước → sau)</th><th>Doanh thu trước</th><th>Doanh thu sau</th><th>Lý do</th></tr></thead><tbody>{rows.map((item) => <tr key={item.id}><td>{displayDateTime(item.createdAt)}</td><td><strong>{item.actor?.name}</strong><small className="table-note">{item.actor?.role}</small></td><td>{stores.find((store) => store.id === item.storeId)?.name || item.storeId}</td><td><strong>{item.orderCode}</strong></td><td><Badge tone={item.action === 'Xóa' ? 'red' : 'orange'}>{item.action}</Badge></td><td><OrderAuditChangeList record={item} /></td><td>{money(item.revenueBefore)}</td><td>{money(item.revenueAfter)}</td><td>{item.reason || '—'}</td></tr>)}{!rows.length && <tr><td colSpan="9">Chưa có lịch sử sửa hoặc xóa đơn hàng.</td></tr>}</tbody></TableWrap></Card></div>
+  const [datePage, setDatePage] = useState(0)
+  const currentDate = today()
+  const auditDates = useMemo(() => {
+    const historicalDates = [...new Set(orderAudit.map((item) => businessDate(
+      orderAuditTimestamp(item),
+    )).filter((date) => date && date <= currentDate && date !== currentDate))]
+      .sort((left, right) => right.localeCompare(left))
+    return [currentDate, ...historicalDates]
+  }, [currentDate, orderAudit])
+  const displayedDatePage = Math.min(datePage, auditDates.length - 1)
+  const selectedDate = auditDates[displayedDatePage] || currentDate
+  const normalizedQuery = query.trim().toLocaleLowerCase('vi-VN')
+  const rows = orderAudit
+    .filter((item) => businessDate(orderAuditTimestamp(item)) === selectedDate)
+    .filter((item) => !normalizedQuery || [
+      JSON.stringify(item),
+      orderAuditOrderCode(item),
+      orderAuditStoreId(item),
+      orderAuditAction(item),
+      orderAuditActor(item),
+    ].some((value) => String(value).toLocaleLowerCase('vi-VN').includes(normalizedQuery)))
+    .sort((left, right) => orderAuditTimestamp(right).localeCompare(orderAuditTimestamp(left)))
+  const storeName = (id) => stores.find((store) => store.id === id)?.name || id || '—'
+
+  return <div className="page">
+    <PageHeader title="LỊCH SỬ CHỈNH SỬA ĐƠN HÀNG" subtitle="Trang đầu tiên chỉ hiển thị thay đổi của ngày hiện tại; dùng phân trang để xem từng ngày trước đó." icon={History} />
+    <Card
+      title={`Nhật ký ngày ${shortDate(selectedDate)}`}
+      action={<div className="toolbar-wrap order-audit-date-pagination">
+        <Button
+          type="button"
+          variant="outline"
+          aria-label="Ngày chỉnh sửa mới hơn"
+          disabled={displayedDatePage === 0}
+          onClick={() => setDatePage((current) => Math.max(0, current - 1))}
+        >NGÀY MỚI HƠN</Button>
+        <Badge tone="blue">Ngày {shortDate(selectedDate)} · {rows.length} bản ghi</Badge>
+        <Button
+          type="button"
+          variant="outline"
+          aria-label="Ngày chỉnh sửa cũ hơn"
+          disabled={displayedDatePage >= auditDates.length - 1}
+          onClick={() => setDatePage((current) => Math.min(auditDates.length - 1, current + 1))}
+        >NGÀY CŨ HƠN</Button>
+      </div>}
+    >
+      <SearchInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm theo mã đơn, người chỉnh sửa, cửa hàng..." />
+      <TableWrap><thead><tr><th>Thời gian</th><th>Đơn hàng</th><th>Cửa hàng</th><th>Thao tác</th><th>Người thực hiện</th><th>Thay đổi</th></tr></thead><tbody>
+        {rows.map((item, index) => {
+          const timestamp = orderAuditTimestamp(item)
+          const action = orderAuditAction(item)
+          const storeId = orderAuditStoreId(item)
+          return <tr key={item.id || `${orderAuditOrderCode(item)}:${timestamp}:${index}`}><td>{shortDateTime24(timestamp)}</td><td><strong>{orderAuditOrderCode(item)}</strong></td><td>{storeName(storeId)}</td><td><Badge tone={action === 'Xóa' ? 'red' : action === 'Sửa' ? 'orange' : 'blue'}>{action}</Badge></td><td>{orderAuditActor(item)}</td><td><OrderAuditChangeList record={item} /></td></tr>
+        })}
+        {!rows.length && <tr><td colSpan="6">Không có chỉnh sửa đơn hàng trong ngày {shortDate(selectedDate)} phù hợp bộ lọc.</td></tr>}
+      </tbody></TableWrap>
+    </Card>
+  </div>
 }
 
 export function ResetDataPage() {

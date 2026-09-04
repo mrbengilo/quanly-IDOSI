@@ -1,46 +1,112 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OrderAuditPage } from './GovernancePages'
 
-vi.mock('../../state/AppContext', () => ({
-  useApp: () => ({
-    stores: [{ id: 'CH001', name: 'SecondMall SM234' }],
-    orderAudit: [{
-      id: 'ODA-1',
-      action: 'Sửa',
-      orderCode: 'DH-001',
-      storeId: 'CH001',
-      actor: { name: 'Nhân viên hỗ trợ', role: 'business_support' },
-      createdAt: '2026-08-18T14:05:06+07:00',
-      reason: 'Cập nhật thông tin khách',
-      changedFields: ['customerName', 'customerPhone', 'customerAge', 'amount', 'paymentMethod'],
-      before: { customerName: 'Khách cũ', customerPhone: '0900000000', customerAge: 24, amount: 2000, paymentMethod: 'Tiền mặt' },
-      after: { customerName: 'Khách mới', customerPhone: '0911111111', customerAge: 25, amount: 3500, paymentMethod: 'Chuyển khoản' },
-      revenueBefore: 2000,
-      revenueAfter: 3500,
-    }],
-  }),
-}))
+const mocked = vi.hoisted(() => ({ app: {} }))
+
+vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
+
+const audit = ({ id, date, orderCode, action = 'Sửa', before, after }) => ({
+  id,
+  orderCode,
+  orderId: id,
+  storeId: 'S01',
+  action,
+  actor: { name: 'Admin IDOSI' },
+  before,
+  after,
+  createdAt: `${date}T10:15:00+07:00`,
+})
 
 describe('OrderAuditPage', () => {
-  afterEach(cleanup)
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-04T03:00:00.000Z'))
+    mocked.app = {
+      stores: [{ id: 'S01', name: 'Dosii Dĩ An' }],
+      orderAudit: [
+        audit({
+          id: 'A-TODAY', date: '2026-09-04', orderCode: 'DIAN-0003',
+          before: { amount: 120_000 }, after: { amount: 150_000 },
+        }),
+        audit({
+          id: 'A-YESTERDAY', date: '2026-09-03', orderCode: 'DIAN-0002',
+          before: { customerName: 'Lan' }, after: { customerName: 'Linh' },
+        }),
+        audit({
+          id: 'A-OLDER', date: '2026-09-01', orderCode: 'DIAN-0001', action: 'Xóa',
+          before: { amount: 80_000 }, after: null,
+        }),
+      ],
+    }
+  })
 
-  it('shows before and after values for every changed order field', () => {
-    render(<MemoryRouter><OrderAuditPage /></MemoryRouter>)
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
 
-    const expectations = [
-      ['Tên khách hàng', 'Khách cũ', 'Khách mới'],
-      ['Số điện thoại', '0900000000', '0911111111'],
-      ['Tuổi', '24', '25'],
-      ['Số tiền', '2,000 đ', '3,500 đ'],
-      ['Phương thức thanh toán', 'Tiền mặt', 'Chuyển khoản'],
-    ]
-    expectations.forEach(([label, before, after]) => {
-      const change = screen.getByText(label).closest('.audit-change-item')
-      expect(change).toBeTruthy()
-      expect(within(change).getByText(before)).toBeTruthy()
-      expect(within(change).getByText(after)).toBeTruthy()
-    })
+  it('shows only the current business day on the first page and pages older days', () => {
+    render(<OrderAuditPage />)
+
+    expect(screen.getByText('DIAN-0003')).toBeTruthy()
+    expect(screen.queryByText('DIAN-0002')).toBeNull()
+    expect(screen.queryByText('DIAN-0001')).toBeNull()
+    expect(screen.getByText(/Ngày 04\/09\/26 · 1 bản ghi/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ngày chỉnh sửa cũ hơn' }))
+    expect(screen.getByText('DIAN-0002')).toBeTruthy()
+    expect(screen.queryByText('DIAN-0003')).toBeNull()
+    expect(screen.getByText('Lan')).toBeTruthy()
+    expect(screen.getByText('Linh')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ngày chỉnh sửa cũ hơn' }))
+    expect(screen.getByText('DIAN-0001')).toBeTruthy()
+    expect(screen.queryByText('DIAN-0002')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Ngày chỉnh sửa cũ hơn' }).disabled).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ngày chỉnh sửa mới hơn' }))
+    expect(screen.getByText('DIAN-0002')).toBeTruthy()
+  })
+
+  it('keeps before and after payloads visible inside the selected day', () => {
+    render(<OrderAuditPage />)
+    expect(screen.getByText('120,000 đ')).toBeTruthy()
+    expect(screen.getByText('150,000 đ')).toBeTruthy()
+  })
+
+  it('normalizes production audit rows with editor, timestamp, scope and changed values', () => {
+    mocked.app = {
+      stores: [{ id: 'S01', name: 'Dosii Dĩ An' }],
+      orderAudit: [{
+        id: 77,
+        actorId: 'usr-admin-01',
+        actorRole: 'admin',
+        action: 'order.update',
+        entityType: 'order',
+        entityId: 'ORD-001',
+        before: {
+          id: 'ORD-001', code: 'DIAN-0003', storeId: 'S01',
+          amount: 120_000, customerName: 'Lan',
+        },
+        after: {
+          id: 'ORD-001', code: 'DIAN-0003', storeId: 'S01',
+          amount: 150_000, customerName: 'Linh',
+        },
+        metadata: { changedFields: ['amount', 'customerName'], reason: 'Đối soát' },
+        serverTimestamp: '2026-09-04T10:15:00+07:00',
+      }],
+    }
+
+    render(<OrderAuditPage />)
+
+    expect(screen.getByText('DIAN-0003')).toBeTruthy()
+    expect(screen.getByText('Dosii Dĩ An')).toBeTruthy()
+    expect(screen.getByText('Sửa')).toBeTruthy()
+    expect(screen.getByText('usr-admin-01 · Admin')).toBeTruthy()
+    expect(screen.getByText('Lan')).toBeTruthy()
+    expect(screen.getByText('Linh')).toBeTruthy()
+    expect(screen.getByText('120,000 đ')).toBeTruthy()
+    expect(screen.getByText('150,000 đ')).toBeTruthy()
   })
 })

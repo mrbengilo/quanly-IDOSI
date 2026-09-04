@@ -1493,10 +1493,7 @@ const remoteCommandResultPatches = (type, result) => {
   }
   if (type.startsWith('store.')) add(type === 'store.delete' ? 'deletedStores' : 'stores', result.store)
   if (type.startsWith('employee.')) add(type === 'employee.delete' ? 'deletedEmployees' : 'employees', result.employee)
-  if (type.startsWith('order.')) {
-    add('orders', result.order)
-    add('notifications', result.notification)
-  }
+  if (type.startsWith('order.')) add('orders', result.order)
   if (type.startsWith('fixed_expense.')) {
     add('fixedExpenses', result.expense)
     add('expenseEntries', result.expenseEntry)
@@ -1585,6 +1582,42 @@ const employeePrefixForStore = (store = {}) => {
   return brand && branch && !branch.startsWith(`${brand}-`) ? `${brand}-${branch}` : branch
 }
 
+const MAX_VISITED_PROJECTION_CACHE_ENTRIES = 40
+
+const remoteProjectionDescriptor = ({ kind = 'global', storeId = '', screen = '', period = '' } = {}) => ({
+  kind: kind === 'store' ? 'store' : 'global',
+  storeId: kind === 'store' ? String(storeId || '').trim() : '',
+  screen: String(screen || '').trim(),
+  period: kind === 'store' ? String(period || '').trim() : '',
+})
+
+const remoteProjectionCacheKey = (projection = {}) => {
+  const descriptor = remoteProjectionDescriptor(projection)
+  return descriptor.kind === 'store'
+    ? `store:${descriptor.storeId}:${descriptor.screen || 'workspace'}:${descriptor.period || 'all'}`
+    : `global:${descriptor.screen || 'workspace'}`
+}
+
+const remoteProjectionUserKey = (user = {}) => String(
+  user.id || user.userId || user.username || user.employeeId || '',
+).trim()
+
+const cacheVisitedProjection = (remote, projection, state, version = remote.version) => {
+  if (!(remote.projectionCache instanceof Map) || !state) return
+  const descriptor = remoteProjectionDescriptor(projection)
+  const key = remoteProjectionCacheKey(descriptor)
+  remote.projectionCache.delete(key)
+  remote.projectionCache.set(key, {
+    projection: descriptor,
+    state,
+    version: Number(version || 0),
+    userKey: remoteProjectionUserKey(remote.user),
+  })
+  while (remote.projectionCache.size > MAX_VISITED_PROJECTION_CACHE_ENTRIES) {
+    remote.projectionCache.delete(remote.projectionCache.keys().next().value)
+  }
+}
+
 const nextEmployeeCode = (payload, state) => {
   const requestedRole = normalizeAuthRole(payload.roleType || payload.accountRole || payload.authRole)
   const businessSupport = isBusinessSupportUnit(payload.unit) || requestedRole === 'business_support'
@@ -1639,6 +1672,7 @@ export function AppProvider({ children }) {
     projectionRequestId: 0,
     pendingProjectionKey: '',
     pendingProjectionPromise: null,
+    projectionCache: new Map(),
     domainReconciliations: 0,
     reconcileTimer: null,
     systemResetIdempotencyKey: null,
@@ -1685,6 +1719,14 @@ export function AppProvider({ children }) {
       : ''
     remote.projectionScreen = String(payload.screen || '')
     remote.projectionPeriod = remote.projection === 'store' ? String(payload.period || '') : ''
+    if (remote.fullStateReady) {
+      cacheVisitedProjection(remote, {
+        kind: remote.projection,
+        storeId: remote.projectionStoreId,
+        screen: remote.projectionScreen,
+        period: remote.projectionPeriod,
+      }, hydrated, remote.version)
+    }
     if (Array.isArray(payload.policies)) {
       remote.policyVersions = Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
     }
@@ -1708,6 +1750,28 @@ export function AppProvider({ children }) {
     return hydrated.session
   }, [])
 
+  const activateCachedProjection = useCallback((cached, expectedUser) => {
+    const remote = apiRef.current
+    const expectedUserKey = remoteProjectionUserKey(expectedUser || remote.user)
+    if (!cached?.state || !remote.enabled || cached.userKey !== expectedUserKey) return false
+    const projection = remoteProjectionDescriptor(cached.projection)
+    remote.projection = projection.kind
+    remote.projectionStoreId = projection.storeId
+    remote.projectionScreen = projection.screen
+    remote.projectionPeriod = projection.period
+    remote.fullStateReady = true
+    remote.hydratedVersion = Number(cached.version || 0)
+    remote.suppressNext = true
+    remote.lastStateReferences = sharedStateReferences(cached.state)
+    setApiStatus('connected')
+    setRemoteDataReady(true)
+    setRemoteProjection(projection)
+    activeStoreIdRef.current = cached.state.activeStoreId
+    rememberActiveStore(remote.user, cached.state.activeStoreId)
+    setState(cached.state)
+    return true
+  }, [])
+
   const loadCompleteRemoteProjection = useCallback((expectedUser, {
     kind = 'global',
     storeId = '',
@@ -1722,9 +1786,13 @@ export function AppProvider({ children }) {
     const normalizedStoreId = normalizedKind === 'store' ? String(storeId || '').trim() : ''
     const normalizedScreen = String(screen || '').trim()
     const normalizedPeriod = normalizedKind === 'store' ? String(period || '').trim() : ''
-    const projectionKey = normalizedKind === 'store'
-      ? `store:${normalizedStoreId}:${normalizedScreen || 'workspace'}:${normalizedPeriod || 'all'}`
-      : `global:${normalizedScreen || 'workspace'}`
+    const projectionDescriptor = remoteProjectionDescriptor({
+      kind: normalizedKind,
+      storeId: normalizedStoreId,
+      screen: normalizedScreen,
+      period: normalizedPeriod,
+    })
+    const projectionKey = remoteProjectionCacheKey(projectionDescriptor)
     let remote = apiRef.current
     const expectedUserId = String(expectedUser?.id || '')
     if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) {
@@ -1738,6 +1806,14 @@ export function AppProvider({ children }) {
         && String(remote.projectionPeriod || '') === normalizedPeriod
       ))) {
       return Promise.resolve(null)
+    }
+    if (!force) {
+      const cached = remote.projectionCache.get(projectionKey)
+      if (cached && activateCachedProjection(cached, expectedUser)) {
+        remote.projectionCache.delete(projectionKey)
+        remote.projectionCache.set(projectionKey, cached)
+        return Promise.resolve({ cached: true, state: cached.state, projection: cached.projection })
+      }
     }
     if (remote.pendingProjectionKey === projectionKey && remote.pendingProjectionPromise) {
       return remote.pendingProjectionPromise
@@ -1797,7 +1873,7 @@ export function AppProvider({ children }) {
     remote.pendingProjectionKey = projectionKey
     remote.pendingProjectionPromise = request
     return request
-  }, [activateRemotePayload])
+  }, [activateCachedProjection, activateRemotePayload])
 
   const hydrateCompleteRemoteState = useCallback((expectedUser, preferredActiveStoreId = null) => {
     const preferredStoreId = preferredActiveStoreId
@@ -1884,6 +1960,13 @@ export function AppProvider({ children }) {
             next[collection] = mergeRemoteResultRecords(next[collection], updates)
           }
           for (const [collection, records] of replacements) next[collection] = records
+          remote.lastStateReferences = sharedStateReferences(next)
+          cacheVisitedProjection(remote, {
+            kind: remote.projection,
+            storeId: remote.projectionStoreId,
+            screen: remote.projectionScreen,
+            period: remote.projectionPeriod,
+          }, next, remote.version)
           return next
         })
       }
@@ -2198,6 +2281,12 @@ export function AppProvider({ children }) {
                 session: current.session,
               }
               remote.lastStateReferences = sharedStateReferences(hydrated)
+              cacheVisitedProjection(remote, {
+                kind: remote.projection,
+                storeId: remote.projectionStoreId,
+                screen: remote.projectionScreen,
+                period: remote.projectionPeriod,
+              }, hydrated, remote.version)
               return hydrated
             })
           }
@@ -2236,6 +2325,7 @@ export function AppProvider({ children }) {
       if (users && !bootstrap.partial) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
+      apiRef.current.projectionCache.clear()
       const session = activateRemotePayload(bootstrap, authenticated.user)
       if (bootstrap.partial
         && !authenticated.user?.needsRoleSelection
@@ -2324,6 +2414,7 @@ export function AppProvider({ children }) {
           const users = await apiListUsers()
           payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
         }
+        apiRef.current.projectionCache.clear()
         const session = activateRemotePayload(payload, response.user, selected.storeId)
         if (payload.partial && shouldHydrateInitialProjection(response.user)) {
           void hydrateCompleteRemoteState(response.user, selected.storeId).catch(() => {
@@ -2370,6 +2461,7 @@ export function AppProvider({ children }) {
     apiRef.current.projectionRequestId += 1
     apiRef.current.pendingProjectionKey = ''
     apiRef.current.pendingProjectionPromise = null
+    apiRef.current.projectionCache.clear()
     apiRef.current.domainReconciliations = 0
     window.clearTimeout(apiRef.current.reconcileTimer)
     apiRef.current.reconcileTimer = null
@@ -4171,22 +4263,10 @@ export function AppProvider({ children }) {
       deletedAt: null,
       idempotencyKey: idempotencyKey || null,
     }
-    const notification = {
-      id: uid('NTF'),
-      type: 'order.created',
-      storeId,
-      orderId: order.id,
-      orderCode: order.code,
-      title: `Đơn hàng mới ${order.code}`,
-      message: `${order.employeeName} vừa tạo đơn ${order.code}.`,
-      createdAt: timestamp,
-      readAt: null,
-    }
     setState((current) => ({
       ...current,
       orders: [order, ...current.orders],
       orderCounters: { ...current.orderCounters, [storeId]: sequence + 1 },
-      notifications: [notification, ...current.notifications],
       idempotencyKeys: idempotencyKey ? [...current.idempotencyKeys, idempotencyKey] : current.idempotencyKeys,
       stateVersion: current.stateVersion + 1,
     }))

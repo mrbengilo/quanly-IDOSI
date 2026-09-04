@@ -1,7 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { StoreOrdersPage } from '../pages/store/StoreV2Pages'
 import AppShell from './AppShell'
 
 const mocked = vi.hoisted(() => ({
@@ -84,98 +83,27 @@ describe('AppShell notifications', () => {
     expect(mocked.readNotification).not.toHaveBeenCalled()
   })
 
-  it('opens a legacy order-code notification in its authoritative store workspace', async () => {
-    mocked.notifications = baseNotifications.map((item) => (
-      item.id === 'N3' ? { ...item, orderId: undefined, orderCode: 'CH2-00001', storeId: 'CH001' } : item
-    ))
-    mocked.orders = [
-      { id: 'ORDER-CH001', code: 'CH1-00001', storeId: 'CH001', amount: 10_000, createdAt: '2026-08-20T08:00:00+07:00' },
-      { id: 'ORDER-CH002', code: 'CH2-00001', storeId: 'CH002', amount: 20_000, createdAt: '2026-08-20T09:00:00+07:00' },
+  it('shows only assigned and completed work notifications while ignoring order notifications', async () => {
+    mocked.notifications = [
+      { id: 'ORDER-HIDDEN', type: 'order.created', storeId: 'CH001', title: 'Đơn hàng không hiển thị' },
+      { id: 'WORK-ASSIGNED', type: 'support-work-assigned', employeeId: 'HTKD001', assignmentId: 'SWA-1', route: '/support/assigned-work', title: 'Công việc được giao' },
+      { id: 'WORK-DONE', type: 'support-work-submitted', assignmentId: 'SWA-3', route: '/admin/assignments?unit=business_support&assignment=SWA-3', title: 'Công việc đã hoàn thành' },
     ]
     mocked.readNotification.mockResolvedValue({ ok: true })
     render(
       <MemoryRouter initialEntries={['/admin/overview']}>
         <Routes>
           <Route element={<AppShell />}>
-            <Route path="/store/orders" element={<><StoreOrdersPage /><CurrentRoute /></>} />
             <Route path="*" element={<CurrentRoute />} />
           </Route>
         </Routes>
       </MemoryRouter>,
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
-    fireEvent.click(screen.getByText('Don moi cua hang 2'))
-
-    expect(mocked.setActiveStoreId).toHaveBeenCalledWith('CH002')
-    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/orders?store=CH002&order=ORDER-CH002'))
-    expect(document.querySelector('.global-topbar__store-name')?.textContent).toBe('Cua hang 2')
-    expect(screen.getByText('CH2-00001')).toBeTruthy()
-    expect(screen.queryByText('CH1-00001')).toBeNull()
-    await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N3'))
-    expect(mocked.readNotification).toHaveBeenCalledTimes(1)
-  })
-
-  it('uses nested order store metadata to route a duplicate code to the exact order id', async () => {
-    mocked.notifications = baseNotifications.map((item) => (
-      item.id === 'N3'
-        ? {
-            ...item,
-            orderId: undefined,
-            orderCode: 'SHARED-00001',
-            storeId: 'CH001',
-            data: { order: { id: 'ORDER-CH002-DUP', code: 'SHARED-00001', storeId: 'CH002' } },
-            title: 'Don trung ma cua hang 2',
-          }
-        : item
-    ))
-    mocked.orders = [
-      {
-        id: 'ORDER-CH001-DUP', code: 'SHARED-00001', storeId: 'CH001', customerName: 'Khach sai cua hang',
-        amount: 10_000, createdAt: '2026-08-20T08:00:00+07:00',
-      },
-      {
-        id: 'ORDER-CH002-DUP', code: 'SHARED-00001', storeId: 'CH002', customerName: 'Khach dung cua hang',
-        amount: 20_000, createdAt: '2026-08-20T09:00:00+07:00',
-      },
-    ]
-    mocked.readNotification.mockResolvedValue({ ok: true })
-    render(
-      <MemoryRouter initialEntries={['/admin/overview']}>
-        <Routes>
-          <Route element={<AppShell />}>
-            <Route path="/store/orders" element={<><StoreOrdersPage /><CurrentRoute /></>} />
-            <Route path="*" element={<CurrentRoute />} />
-          </Route>
-        </Routes>
-      </MemoryRouter>,
-    )
-
-    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
-    fireEvent.click(screen.getByText('Don trung ma cua hang 2'))
-
-    expect(mocked.setActiveStoreId).toHaveBeenCalledWith('CH002')
-    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe(
-      '/store/orders?store=CH002&order=ORDER-CH002-DUP',
-    ))
-    expect(screen.getByText('Khach dung cua hang')).toBeTruthy()
-    expect(screen.queryByText('Khach sai cua hang')).toBeNull()
-    expect(mocked.readNotification).toHaveBeenCalledWith('N3')
-  })
-
-  it('marks only the selected order notification as read', async () => {
-    mocked.notifications = baseNotifications.slice(0, 2)
-    mocked.readNotification.mockResolvedValue({ ok: true })
-    render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
-
-    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
-    fireEvent.click(screen.getByText('Don moi 1'))
-    await waitFor(() => expect(mocked.readNotification).toHaveBeenCalledWith('N1'))
-
-    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
-    expect(screen.queryByText('Don moi 1')).toBeNull()
-    expect(screen.getByText('Don moi 2')).toBeTruthy()
-    expect(mocked.readNotification).toHaveBeenCalledTimes(1)
+    const bell = screen.getByRole('button', { name: /Xem thông báo, 1 chưa đọc/i })
+    fireEvent.click(bell)
+    expect(screen.queryByText('Đơn hàng không hiển thị')).toBeNull()
+    expect(screen.getByText('Công việc đã hoàn thành')).toBeTruthy()
   })
 
   it('shows a new assigned-task popup and removes it from the bell after opening', async () => {

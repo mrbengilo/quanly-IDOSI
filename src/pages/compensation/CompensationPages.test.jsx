@@ -341,7 +341,7 @@ describe('compensation pages', () => {
   })
 
   it('automatically derives the current Dosii revenue, tier and allocations from live data', () => {
-    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
+    vi.setSystemTime(new Date('2026-09-03T15:05:00.000Z'))
     mocked.app = {
       ...baseApp('business_support'),
       apiStatus: 'local',
@@ -365,13 +365,13 @@ describe('compensation pages', () => {
     expect(screen.getAllByText('1,800,000 đ').length).toBeGreaterThan(0)
     expect(screen.getAllByText('18,000 đ').length).toBeGreaterThan(0)
     expect(screen.getByText('Đang ở mốc 1%')).toBeTruthy()
-    expect(screen.getAllByText('Tự động trực tiếp').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Đã chốt tự động').length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /TÍNH THƯỞNG NGÀY/i })).toBeNull()
     expect(screen.queryByRole('heading', { name: /Duyệt thưởng mốc cao nhất/i })).toBeNull()
   })
 
   it('uses the SM revenue program automatically from the canonical SM-TNV store code', () => {
-    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
+    vi.setSystemTime(new Date('2026-09-03T15:05:00.000Z'))
     mocked.app = {
       ...baseApp('business_support'),
       apiStatus: 'local',
@@ -398,7 +398,7 @@ describe('compensation pages', () => {
   })
 
   it('renders the signed-in employee live aggregate without exposing coworker rows', async () => {
-    vi.setSystemTime(new Date('2026-09-03T11:00:00.000Z'))
+    vi.setSystemTime(new Date('2026-09-03T15:05:00.000Z'))
     mocked.app = {
       ...baseApp('employee'),
       apiStatus: 'connected',
@@ -417,7 +417,7 @@ describe('compensation pages', () => {
         allocations: [{
           employeeId: 'NV-01', employeeName: 'Nhân viên Một', workedSeconds: 7_200,
           approvedSalesHours: 2, weightPercent: 50, automaticAmountVnd: 9_000,
-          amountVnd: 9_000, allocatedVnd: 9_000, status: 'LIVE',
+          amountVnd: 9_000, allocatedVnd: 9_000, status: 'FINALIZED',
         }],
       },
     })

@@ -34,7 +34,7 @@ const base = (overrides = {}) => ({
   }],
   supportTransfers: [],
   overrides: [],
-  nowMs: Date.parse('2026-09-03T11:00:00.000Z'),
+  nowMs: Date.parse('2026-09-03T15:01:00.000Z'),
   ...overrides,
 })
 
@@ -60,7 +60,7 @@ describe('automatic daily revenue bonus', () => {
       milestonePoolVnd: 125_000,
       automaticAmountVnd: 445_000,
       amountVnd: 445_000,
-      status: 'LIVE',
+      status: 'FINALIZED',
     })
     expect(allocation(result, 'E02').amountVnd).toBe(445_000)
   })
@@ -189,34 +189,55 @@ describe('automatic daily revenue bonus', () => {
     })
   })
 
-  it('updates an open employee weight and allocation from trusted real time without a manual action', () => {
-    const input = base({
-      orders: [{
-        id: 'O-LIVE', storeId: 'S01', amount: 2_000_000, status: 'Hoàn tất',
-        createdAt: '2026-09-03T09:00:00+07:00',
-      }],
+  it('preserves the historical calculation before 1 September 2026', () => {
+  const historical = calculateAutomaticRevenueBonusDay(base({
+    businessDate: '2026-08-31',
+    orders: [{
+      id: 'O-HISTORY', storeId: 'S01', amount: 2_000_000, status: 'Hoàn tất',
+      createdAt: '2026-08-31T10:00:00+07:00',
+    }],
+    attendance: [{
+      id: 'A-HISTORY', storeId: 'S01', employeeId: 'E01', workDate: '2026-08-31',
+      checkInAt: '2026-08-31T08:00:00+07:00', checkOutAt: null, workedSeconds: 3_600,
+    }],
+    nowMs: Date.parse('2026-09-01T08:00:00+07:00'),
+  }))
+
+  expect(historical).toMatchObject({
+    status: 'LIVE', revenueVnd: 2_000_000, totalWorkedSeconds: 3_600,
+    openAttendanceCount: 1, allocatedVnd: 20_000,
+  })
+  expect(historical).not.toHaveProperty('finalizedAt')
+  expect(allocation(historical, 'E01')).toMatchObject({
+    workedSeconds: 3_600, amountVnd: 20_000, status: 'LIVE',
+  })
+})
+
+  it('waits after 22:00 while any attendance remains open and finalizes only closed stored hours', () => {
+    const waiting = calculateAutomaticRevenueBonusDay(base({
       attendance: [{
-        id: 'A-LIVE-1', storeId: 'S01', employeeId: 'E01', workDate: '2026-09-03',
-        checkInAt: '2026-09-03T08:00:00.000Z', checkOutAt: null, workedSeconds: 0,
-      }, {
-        id: 'A-LIVE-2', storeId: 'S01', employeeId: 'E02', workDate: '2026-09-03',
-        checkInAt: '2026-09-03T08:00:00.000Z', checkOutAt: '2026-09-03T09:00:00.000Z', workedSeconds: 3_600,
+        id: 'A-OPEN', storeId: 'S01', employeeId: 'E01', workDate: '2026-09-03',
+        checkInAt: '2026-09-03T08:00:00.000Z', checkOutAt: null, workedSeconds: 3_600,
       }],
-      nowMs: Date.parse('2026-09-03T09:00:00.000Z'),
-    })
-    const first = calculateAutomaticRevenueBonusDay(input)
-    const later = calculateAutomaticRevenueBonusDay({
-      ...input,
-      nowMs: Date.parse('2026-09-03T10:00:00.000Z'),
+      nowMs: Date.parse('2026-09-03T15:05:00.000Z'),
+    }))
+    expect(waiting).toMatchObject({
+      status: 'WAITING_SHIFT_CLOSE', openAttendanceCount: 1, allocatedVnd: 0, allocations: [],
+      calculationEligibility: { allowed: false, code: 'WAITING_SHIFT_CLOSE' },
     })
 
-    expect(first.openAttendanceCount).toBe(1)
-    expect(allocation(first, 'E01').workedSeconds).toBe(3_600)
-    expect(allocation(first, 'E01').amountVnd).toBe(10_000)
-    expect(allocation(first, 'E02').amountVnd).toBe(10_000)
-    expect(allocation(later, 'E01').workedSeconds).toBe(7_200)
-    expect(allocation(later, 'E01').amountVnd).toBe(13_333)
-    expect(allocation(later, 'E02').amountVnd).toBe(6_667)
+    const finalized = calculateAutomaticRevenueBonusDay(base({
+      attendance: [{
+        id: 'A-CLOSED', storeId: 'S01', employeeId: 'E01', workDate: '2026-09-03',
+        checkInAt: '2026-09-03T08:00:00.000Z', checkOutAt: '2026-09-03T10:00:00.000Z', workedSeconds: 7_200,
+      }],
+      nowMs: Date.parse('2026-09-03T15:05:00.000Z'),
+    }))
+    expect(finalized).toMatchObject({
+      status: 'FINALIZED', openAttendanceCount: 0, totalWorkedSeconds: 7_200,
+      calculationEligibility: { allowed: true, code: 'FINALIZED' },
+    })
+    expect(allocation(finalized, 'E01').workedSeconds).toBe(7_200)
   })
 
   it('lets an active Admin amount override replace only one employee result while preserving the formula snapshot', () => {
@@ -320,7 +341,7 @@ describe('automatic daily revenue bonus', () => {
       }],
     })
 
-    expect(period.days.map((day) => day.businessDate)).toEqual([AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE])
+    expect(period.days.map((day) => day.businessDate)).toEqual(['2026-09-01', '2026-09-02'])
     expect(period.allocations).toHaveLength(1)
     expect(period.allocations[0].amountVnd).toBe(20_000)
   })
