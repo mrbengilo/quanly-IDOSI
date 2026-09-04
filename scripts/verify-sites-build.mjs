@@ -5,19 +5,6 @@ import { extname, resolve } from 'node:path'
 const root = process.cwd()
 const client = resolve(root, 'dist', 'client')
 const workerPath = resolve(root, 'dist', 'server', 'index.js')
-const workerDomainFiles = [
-  'storeShiftChecklist.js',
-  'taskProgress.js',
-  'compensationPolicies.js',
-  'compensationAllocation.js',
-  'automaticRevenueBonus.js',
-  'compensationSettlement.js',
-  'payrollPeriodLifecycle.js',
-  'storeTieredPayroll.js',
-  'managerRevenueBonus.js',
-  'revenueBonusEligibility.js',
-  'workCatalog.js',
-].map((fileName) => resolve(root, 'dist', 'src', 'domain', fileName))
 const hostingPath = resolve(root, 'dist', '.openai', 'hosting.json')
 const coreMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0000_idosi_core.sql')
 const managerMigrationPath = resolve(root, 'dist', '.openai', 'drizzle', '0001_manager_role.sql')
@@ -33,7 +20,6 @@ const migrationsDirectory = resolve(root, 'dist', '.openai', 'drizzle')
 const migrationJournalPath = resolve(root, 'dist', '.openai', 'drizzle', 'meta', '_journal.json')
 
 await access(workerPath)
-for (const workerDomainFile of workerDomainFiles) await access(workerDomainFile)
 await access(hostingPath)
 await access(coreMigrationPath)
 await access(managerMigrationPath)
@@ -62,6 +48,9 @@ const orderInformationOptionsMigration = await readFile(orderInformationOptionsM
 const compensationFoundationMigration = await readFile(compensationFoundationMigrationPath, 'utf8')
 const migrationJournal = JSON.parse(await readFile(migrationJournalPath, 'utf8'))
 const workerSource = await readFile(workerPath, 'utf8')
+assert.doesNotMatch(workerSource, /\b(?:from|import)\s*\(?\s*['"]\.\.?\//u)
+assert.match(workerSource, /CHECKLIST_COMPLETE/u)
+assert.match(workerSource, /calculateAutomaticRevenueBonusDay/u)
 assert.equal(migrationJournal.dialect, 'sqlite')
 const migrationTags = (await readdir(migrationsDirectory))
   .filter((name) => /^\d+.*\.sql$/u.test(name))
