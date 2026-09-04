@@ -9,6 +9,7 @@ import worker, {
   canReadScope,
   canUseCounter,
   canWriteScope,
+  finalizeAutomaticRevenueBonuses,
   hashPassword,
   monthFromRecord,
   isSupportTransferActiveAt,
@@ -15475,6 +15476,35 @@ describe('IDOSI Worker security primitives', () => {
     const managerAuthorization = await loginAs('manager.bonus', 'manager-bonus-password')
     const employeeAuthorization = await loginAs('employee.bonus', 'employee-bonus-password')
 
+    vi.setSystemTime(new Date('2026-09-03T14:59:59.000Z'))
+    const beforeCutoff = await finalizeAutomaticRevenueBonuses(env, {
+      now: new Date().toISOString(),
+      trigger: 'test-before-cutoff',
+      storeId: 'S02',
+      businessDate: '2026-09-03',
+    })
+    expect(beforeCutoff).toMatchObject({ finalized: 0, waitingCutoff: 1 })
+    expect(readHydratedState(env.DB.database).revenueBonusDaily).toEqual([])
+
+    vi.setSystemTime(new Date('2026-09-03T15:01:00.000Z'))
+    const finalized = await finalizeAutomaticRevenueBonuses(env, {
+      now: new Date().toISOString(),
+      trigger: 'test-after-cutoff',
+      storeId: 'S02',
+      businessDate: '2026-09-03',
+    })
+    expect(finalized).toMatchObject({ finalized: 1, alreadyFinalized: 0, failed: 0 })
+    expect(finalized.results).toEqual([
+      expect.objectContaining({ status: 'FINALIZED', storeId: 'S02', businessDate: '2026-09-03', allocationCount: 2 }),
+    ])
+    const replay = await finalizeAutomaticRevenueBonuses(env, {
+      now: new Date().toISOString(),
+      trigger: 'test-replay',
+      storeId: 'S02',
+      businessDate: '2026-09-03',
+    })
+    expect(replay).toMatchObject({ finalized: 0, alreadyFinalized: 1, failed: 0 })
+
     const liveUrl = 'https://idosi.example/api/revenue-bonus/live?storeId=S02&businessDate=2026-09-03'
     const supportLive = await worker.fetch(new Request(liveUrl, { headers: supportAuthorization }), env)
     expect(supportLive.status).toBe(200)
@@ -15608,8 +15638,23 @@ describe('IDOSI Worker security primitives', () => {
     })
 
     const finalState = readHydratedState(env.DB.database)
-    expect(finalState.revenueBonusDaily).toEqual([])
-    expect(finalState.revenueBonusAllocations).toEqual([])
+    expect(finalState.revenueBonusDaily).toEqual([
+      expect.objectContaining({
+        storeId: 'S02', businessDate: '2026-09-03', status: 'FINALIZED',
+        revenueVnd: 16_000_001, totalWorkedSeconds: 28_800, allocatedVnd: 890_000,
+      }),
+    ])
+    expect(finalState.revenueBonusAllocations).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        storeId: 'S02', businessDate: '2026-09-03', employeeId: 'E-S02',
+        workedSeconds: 14_400, amountVnd: 445_000, status: 'APPROVED', calculationStatus: 'FINALIZED',
+      }),
+      expect.objectContaining({
+        storeId: 'S02', businessDate: '2026-09-03', employeeId: 'QL-S02',
+        workedSeconds: 14_400, amountVnd: 445_000, status: 'APPROVED', calculationStatus: 'FINALIZED',
+      }),
+    ]))
+    expect(finalState.revenueBonusAllocations).toHaveLength(2)
     expect(finalState.teamRewardClaims).toEqual([])
     expect(finalState.revenueBonusOverrides).toEqual([
       expect.objectContaining({ employeeId: 'E-S02', status: 'VOID', version: 3 }),
