@@ -17,10 +17,7 @@ import {
 } from '../../components/UI'
 import { businessDate as toBusinessDate, money, operationalIdentifierRecordMatch } from '../../utils'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
-import {
-  resolveSupportEmployeeTagContext,
-  resolveSupportEmployeeTagContextFromRecords,
-} from '../../domain/supportEmployeeTag'
+import { resolveSupportEmployeeTagContextFromRecords } from '../../domain/supportEmployeeTag'
 import {
   canonicalRole,
   entityId,
@@ -86,6 +83,35 @@ const liveWorkedSeconds = (record, nowMs, projectOpen = true) => {
 const liveWorkedHours = (record, nowMs, projectOpen = true) => liveWorkedSeconds(record, nowMs, projectOpen) / 3_600
 
 const identifierKey = (value) => String(value || '').trim().toLocaleLowerCase('en-US')
+
+const resolveRevenueSupportContext = ({
+  row,
+  storeId = '',
+  businessDate = '',
+  attendance = [],
+  employees = [],
+  stores = [],
+  supportTransfers = [],
+}) => {
+  const employeeId = entryEmployeeId(row)
+  const operationalStoreId = entryStoreId(row) || String(storeId || '').trim()
+  const effectiveDate = revenueRecordDate(row) || recordBusinessDate(row) || businessDate
+  const matchingAttendance = (Array.isArray(attendance) ? attendance : []).filter((record) => (
+    sameOperationalIdentifier(entryEmployeeId(record), employeeId)
+    && sameOperationalIdentifier(entryStoreId(record), operationalStoreId)
+    && recordBusinessDate(record) === effectiveDate
+  ))
+
+  return resolveSupportEmployeeTagContextFromRecords({
+    records: [row, ...matchingAttendance],
+    employeeId,
+    storeId: operationalStoreId,
+    businessDate: effectiveDate,
+    employees,
+    stores,
+    supportTransfers,
+  })
+}
 
 const resolvedEntityId = (records, reference, identifiers = (record) => [entityId(record)]) => (
   entityId(operationalIdentifierRecordMatch(records, reference, identifiers).record)
@@ -174,6 +200,7 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
   employeeCollisions,
   employeeOptions,
   employees,
+  attendance,
   filteredRows,
   filteredTotal,
   historyDate,
@@ -189,14 +216,20 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
   supportTransfers,
 }) {
   const employeeSupportContexts = useMemo(() => new Map(
-    statistics.byEmployee.map((row) => [identifierKey(row.key), resolveSupportEmployeeTagContextFromRecords({
-      records: rows,
-      employeeId: row.key,
-      employees,
-      stores,
-      supportTransfers,
-    })]),
-  ), [employees, rows, statistics.byEmployee, stores, supportTransfers])
+    statistics.byEmployee.map((row) => {
+      const employeeRows = rows.filter((record) => (
+        sameOperationalIdentifier(record.employeeId, row.key)
+      ))
+      const context = employeeRows.reduce((resolved, record) => resolved || resolveRevenueSupportContext({
+        row: record,
+        attendance,
+        employees,
+        stores,
+        supportTransfers,
+      }), null)
+      return [identifierKey(row.key), context]
+    }),
+  ), [attendance, employees, rows, statistics.byEmployee, stores, supportTransfers])
 
   return <>
     <Card title="Lịch sử ghi nhận thưởng doanh thu" action={<Badge tone="blue">Tổng thưởng: {money(filteredTotal)}</Badge>}>
@@ -229,7 +262,7 @@ const RevenueHistorySections = memo(function RevenueHistorySections({
         <thead><tr><th>Ngày</th><th>Nhân viên</th><th>Cửa hàng</th><th>Thời gian làm thực tế</th><th>Tỷ trọng</th><th>Tiền thưởng</th><th>Trạng thái</th></tr></thead>
         <tbody>{filteredRows.map((row) => <tr key={row.id}>
           <td>{displayDate(row.businessDate)}</td>
-          <td><strong>{row.employeeName}</strong><SupportEmployeeTag context={resolveSupportEmployeeTagContext({ record: row, employeeId: row.employeeId, storeId: row.storeId, businessDate: row.businessDate, employees, stores, supportTransfers })} className="compensation-subline" /><small className="compensation-subline">{row.employeeId}</small></td>
+          <td><strong>{row.employeeName}</strong><SupportEmployeeTag context={resolveRevenueSupportContext({ row, attendance, employees, stores, supportTransfers })} className="compensation-subline" /><small className="compensation-subline">{row.employeeId}</small></td>
           <td>{storeName(stores, row.storeId, row.storeName)}</td>
           <td>{Number(row.approvedSalesHours || 0).toFixed(2)} giờ</td>
           <td>{row.weightPercent == null ? '—' : `${Number(row.weightPercent).toFixed(2)}%`}</td>
@@ -783,7 +816,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
             const effectiveAmount = allocationAmount(allocation)
             const deleted = String(allocation.status || '').toUpperCase() === 'ADMIN_DELETED'
             return <tr key={allocation.id || `${entryEmployeeId(allocation)}-${index}`} className={deleted ? 'revenue-bonus-row--deleted' : ''}>
-              {!privateAllocationView && <td><strong>{employeeName(app.employees || [], entryEmployeeId(allocation), allocation.employeeName)}</strong><SupportEmployeeTag context={resolveSupportEmployeeTagContext({ record: allocation, employeeId: entryEmployeeId(allocation), storeId: entryStoreId(allocation), businessDate: revenueRecordDate(allocation), employees: app.employees, stores: app.stores, supportTransfers: app.supportTransfers })} className="compensation-subline" /><small className="compensation-subline">{entryEmployeeId(allocation)}</small></td>}
+              {!privateAllocationView && <td><strong>{employeeName(app.employees || [], entryEmployeeId(allocation), allocation.employeeName)}</strong><SupportEmployeeTag context={resolveRevenueSupportContext({ row: allocation, storeId: selectedStoreId, businessDate, attendance: app.attendance, employees: app.employees, stores: app.stores, supportTransfers: app.supportTransfers })} className="compensation-subline" /><small className="compensation-subline">{entryEmployeeId(allocation)}</small></td>}
               <td>{storeName(stores, entryStoreId(allocation), allocation.storeName)}</td>
               <td>{displayDate(revenueRecordDate(allocation))}</td>
               <td>{Number(allocation.approvedSalesHours ?? allocation.workedHours ?? allocation.hours ?? (Number(allocation.workedSeconds || 0) / 3_600)).toFixed(2)} giờ</td>
@@ -812,6 +845,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
       </InfoNote>}
 
       <RevenueHistorySections
+        attendance={app.attendance || []}
         collisions={legacyHistoryProjection.collisions}
         currentEmployeeName={employeeName(app.employees || [], currentEmployeeId)}
         employeeCollisions={legacyHistoryProjection.employeeCollisions || []}

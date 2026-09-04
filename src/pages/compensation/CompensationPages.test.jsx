@@ -504,16 +504,19 @@ describe('compensation pages', () => {
   it('tags a legacy external-store employee in revenue history and employee statistics', () => {
     vi.setSystemTime(new Date('2026-09-02T05:00:00.000Z'))
     const supportEmployee = {
-      id: 'SMT-001', name: 'Nhân viên Điều Chuyển', unit: 'store', storeId: 'CH002',
+      id: 'DT-001', name: 'Nhân viên Điều Chuyển', unit: 'store', storeId: 'CH002',
     }
     mocked.app = {
       ...baseApp('store_manager'),
-      stores: stores.map((store) => ({
-        ...store,
-        employeePrefix: store.id === 'CH001' ? 'DNTL' : store.id === 'CH002' ? 'SMT' : '',
-      })),
       employees,
       supportTransfers: [],
+      attendance: [{
+        id: 'ATT-SUPPORT', employeeId: supportEmployee.id, storeId: 'CH001', workDate: '2026-09-02',
+        supportCompensation: {
+          homeStoreId: 'CH002', homeStoreName: 'SM TNV', supportStoreId: 'CH001',
+          supportStoreName: 'Dosii NTL', isSupportEmployee: true,
+        },
+      }],
       revenueBonuses: [{
         id: 'RB-SUPPORT', storeId: 'CH001', businessDate: '2026-09-02', period: '2026-09', status: 'APPROVED',
         allocations: [{
