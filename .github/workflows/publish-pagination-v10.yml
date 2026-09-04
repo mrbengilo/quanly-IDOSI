@@ -1,0 +1,284 @@
+name: Publish tested pagination candidate v10
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-v10-publisher
+    paths:
+      - .github/workflows/publish-pagination-v10.yml
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: idosi-pagination-publisher-v10
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH_NAME: perf/paginate-data-tables-v10-publisher
+      SOURCE_BRANCH: perf/paginate-data-tables-v9-final
+      PUBLIC_ORIGIN: https://idosi.io.vn
+    steps:
+      - name: Checkout publisher branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-v10-publisher
+          fetch-depth: 0
+
+      - name: Wait for v9 and activate only when it did not publish a production marker
+        id: decision
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          success_url="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$SOURCE_BRANCH/PAGINATION_PRODUCTION_PASS.json"
+          seen=0
+          for attempt in $(seq 1 180); do
+            if curl -fsS --max-time 15 "$success_url" | grep -q '"status": "PASS"'; then
+              echo 'publish=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            row="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow 'finalize-pagination-v9.yml' \
+              --branch "$SOURCE_BRANCH" --limit 5 --json status,conclusion,databaseId \
+              --jq '.[0] | [.status, (.conclusion // ""), (.databaseId|tostring)] | @tsv' 2>/dev/null || true)"
+            status="$(cut -f1 <<<"$row")"
+            conclusion="$(cut -f2 <<<"$row")"
+            if [[ -n "$status" ]]; then seen=1; fi
+            if [[ "$status" == 'completed' ]]; then
+              if [[ "$conclusion" == 'success' ]]; then
+                for marker_attempt in $(seq 1 30); do
+                  if curl -fsS --max-time 15 "$success_url" | grep -q '"status": "PASS"'; then
+                    echo 'publish=false' >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+                  sleep 5
+                done
+              fi
+              echo 'publish=true' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [[ "$seen" -eq 0 && "$attempt" -ge 60 ]]; then
+              echo 'publish=true' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'publish=true' >> "$GITHUB_OUTPUT"
+
+      - name: Stop any unfinished v9 run
+        if: steps.decision.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          encoded="$(node -p "encodeURIComponent(process.argv[1])" "$SOURCE_BRANCH")"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?branch=$encoded&per_page=100" \
+            --jq '.workflow_runs[] | select(.status == "queued" or .status == "in_progress") | .id' \
+            | while read -r run_id; do
+                [[ -z "$run_id" || "$run_id" == "$GITHUB_RUN_ID" ]] && continue
+                gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
+              done
+
+      - name: Checkout the tested v9 candidate
+        if: steps.decision.outputs.publish == 'true'
+        id: candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main "$SOURCE_BRANCH"
+          git checkout -B "$SOURCE_BRANCH" "origin/$SOURCE_BRANCH"
+          rm -f .github/workflows/finalize-pagination-v9.yml PAGINATION_PRODUCTION_PASS.json
+          if [[ -f src/components/PaginatedTbody.jsx ]] && grep -q 'DEFAULT_TABLE_PAGE_SIZE = 20' src/components/PaginatedTbody.jsx; then
+            echo 'architecture=source' >> "$GITHUB_OUTPUT"
+          elif [[ -f src/components/TablePaginationController.jsx ]] && grep -q 'TABLE_PAGE_SIZE = 20' src/components/TablePaginationController.jsx; then
+            echo 'architecture=central' >> "$GITHUB_OUTPUT"
+          else
+            echo 'The v9 branch does not contain a completed paginator candidate.' >&2
+            exit 1
+          fi
+
+      - name: Setup Node.js
+        if: steps.decision.outputs.publish == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.decision.outputs.publish == 'true'
+        run: npm ci
+
+      - name: Re-run targeted source paginator tests
+        if: steps.decision.outputs.publish == 'true' && steps.candidate.outputs.architecture == 'source'
+        run: npx vitest run src/components/PaginatedTbody.test.jsx
+
+      - name: Re-run targeted central paginator tests
+        if: steps.decision.outputs.publish == 'true' && steps.candidate.outputs.architecture == 'central'
+        run: npx vitest run src/components/TablePaginationController.test.jsx src/layout/AppShell.workspaceLoading.test.jsx
+
+      - name: Lint
+        if: steps.decision.outputs.publish == 'true'
+        run: npm run lint
+
+      - name: Full test suite
+        if: steps.decision.outputs.publish == 'true'
+        run: npm test
+
+      - name: Production build
+        if: steps.decision.outputs.publish == 'true'
+        run: npm run build
+
+      - name: Verify Sites bundle
+        if: steps.decision.outputs.publish == 'true'
+        run: npm run sites:verify
+
+      - name: Commit cleanup, synchronize main and retest if necessary
+        if: steps.decision.outputs.publish == 'true'
+        id: synchronized
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add -A
+          if ! git diff --cached --quiet; then git commit -m 'chore: clean pagination delivery scaffolding'; fi
+          git fetch origin main
+          if [[ "$(git merge-base HEAD origin/main)" != "$(git rev-parse origin/main)" ]]; then
+            git rebase origin/main
+            if [[ -f src/components/PaginatedTbody.test.jsx ]]; then npx vitest run src/components/PaginatedTbody.test.jsx; fi
+            if [[ -f src/components/TablePaginationController.test.jsx ]]; then npx vitest run src/components/TablePaginationController.test.jsx src/layout/AppShell.workspaceLoading.test.jsx; fi
+            npm run lint
+            npm test
+            npm run build
+            npm run sites:verify
+          fi
+          git push --force-with-lease origin HEAD:"$SOURCE_BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Merge the existing connector-created PR or fast-forward main
+        if: steps.decision.outputs.publish == 'true'
+        id: publish
+        shell: bash
+        env:
+          HEAD_SHA: ${{ steps.synchronized.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$SOURCE_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$number" ]]; then
+            if gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA" \
+              --subject 'perf(tables): paginate data lists at 20 rows' \
+              --body 'Publish the fully tested pagination candidate and requested business-date views.'; then
+              release="$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json mergeCommit --jq '.mergeCommit.oid')"
+              echo "sha=$release" >> "$GITHUB_OUTPUT"
+              echo "pr=$number" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          git fetch origin main
+          test "$(git merge-base HEAD origin/main)" = "$(git rev-parse origin/main)"
+          git push origin HEAD:main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo 'pr=fast-forward' >> "$GITHUB_OUTPUT"
+
+      - name: Configure production SSH
+        if: steps.decision.outputs.publish == 'true'
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST}"; : "${VPS_USER:?Missing IDOSI_VPS_USER}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY}"; : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"; chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"; chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Deploy exact published release
+        if: steps.decision.outputs.publish == 'true'
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          RELEASE_SHA: ${{ steps.publish.outputs.sha }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          payload="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "$PUBLIC_ORIGIN/api/release?_pagination_v10_preflight=$GITHUB_RUN_ID" 2>/dev/null || true)"
+          actual="$(node -e "try{const v=JSON.parse(process.argv[1]);process.stdout.write(v.data?.releaseSha||v.releaseSha||'')}catch{}" "$payload")"
+          if [[ "$actual" == "$RELEASE_SHA" ]] && curl -fsS --max-time 20 "$PUBLIC_ORIGIN/api/health" >/dev/null; then exit 0; fi
+          deploy="/tmp/idosi-deploy-$RELEASE_SHA.sh"; runner="/tmp/idosi-run-job-$RELEASE_SHA.sh"; finalizer="/tmp/idosi-finalize-$RELEASE_SHA.sh"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes deploy/vps/deploy-release.sh "$VPS_USER@$VPS_HOST:$deploy"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes deploy/vps/run-release-job.sh "$VPS_USER@$VPS_HOST:$runner"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes deploy/vps/finalize-release.sh "$VPS_USER@$VPS_HOST:$finalizer"
+          operation="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RELEASE_SHA:0:12}"
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" "chmod 700 '$deploy' '$runner' '$finalizer' && bash '$runner' '$RELEASE_SHA' '$operation' '$deploy'"
+          status_file="/opt/idosi/deploy/vps/backups/jobs/$operation.status"
+          for attempt in $(seq 1 360); do
+            status="$(ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" "if [ -f '$status_file' ]; then cat '$status_file'; fi" 2>/dev/null || true)"
+            if [[ "$(sed -n 's/^STATE=//p' <<<"$status" | head -n1)" == 'COMPLETED' ]]; then
+              code="$(sed -n 's/^EXIT_CODE=//p' <<<"$status" | head -n1)"; [[ "$code" == '0' ]] || exit "${code:-1}"; break
+            fi
+            sleep 15
+          done
+          verified=''
+          for attempt in $(seq 1 90); do
+            if node server/vps/verify-public-release.mjs "$PUBLIC_ORIGIN" "$RELEASE_SHA"; then verified="$(date -u +%Y%m%dT%H%M%SZ)"; break; fi
+            sleep 5
+          done
+          test -n "$verified"
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" "bash '$finalizer' '$RELEASE_SHA' '$verified' '$PUBLIC_ORIGIN' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$RELEASE_SHA' && rm -f '$deploy' '$runner' '$finalizer'"
+
+      - name: Final public verification
+        if: steps.decision.outputs.publish == 'true'
+        env:
+          RELEASE_SHA: ${{ steps.publish.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 90); do
+            payload="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "$PUBLIC_ORIGIN/api/release?_pagination_v10_final=$attempt" 2>/dev/null || true)"
+            actual="$(node -e "try{const v=JSON.parse(process.argv[1]);process.stdout.write(v.data?.releaseSha||v.releaseSha||'')}catch{}" "$payload")"
+            if [[ "$actual" == "$RELEASE_SHA" ]]; then
+              curl -fsS --max-time 20 "$PUBLIC_ORIGIN/api/health" >/dev/null
+              curl -fsS --max-time 20 "$PUBLIC_ORIGIN/" >/dev/null
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
+
+      - name: Publish v10 production marker
+        if: success() && steps.decision.outputs.publish == 'true'
+        env:
+          RELEASE_SHA: ${{ steps.publish.outputs.sha }}
+          PR_NUMBER: ${{ steps.publish.outputs.pr }}
+          ARCHITECTURE: ${{ steps.candidate.outputs.architecture }}
+        run: |
+          set -Eeuo pipefail
+          git checkout -B "$BRANCH_NAME" HEAD
+          cat > PAGINATION_PRODUCTION_PASS.json <<JSON
+          {
+            "status": "PASS",
+            "architecture": "$ARCHITECTURE",
+            "releaseSha": "$RELEASE_SHA",
+            "pullRequest": "$PR_NUMBER",
+            "verifiedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "production": "$PUBLIC_ORIGIN"
+          }
+          JSON
+          git config user.name 'mrbengilo'; git config user.email 'mrbengilo.76@gmail.com'
+          git add PAGINATION_PRODUCTION_PASS.json
+          git commit -m 'ops: record pagination production verification'
+          git push --force origin HEAD:"$BRANCH_NAME"
