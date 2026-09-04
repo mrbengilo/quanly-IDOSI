@@ -1,0 +1,103 @@
+name: Apply and verify data-table pagination
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-20260904
+    paths:
+      - .github/pagination-fix/READY
+
+permissions:
+  contents: write
+
+concurrency:
+  group: idosi-data-table-pagination
+  cancel-in-progress: false
+
+jobs:
+  apply-test-commit:
+    if: github.event.head_commit.message == 'ops: start verified table pagination'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout pagination branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-20260904
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Reassemble and apply reviewed pagination patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sha256sum -c .github/pagination-fix/SHA256SUMS
+          cat .github/pagination-fix/part*.b64 > /tmp/idosi-pagination.patch.gz.b64
+          base64 -d /tmp/idosi-pagination.patch.gz.b64 > /tmp/idosi-pagination.patch.gz
+          test "$(sha256sum /tmp/idosi-pagination.patch.gz | awk '{print $1}')" = "cc43a31b0eb91f3a2a89e0e5063a6b57e282c1e8836245557dcf06a5475f69cc"
+          gzip -dc /tmp/idosi-pagination.patch.gz > /tmp/idosi-pagination.patch
+          test "$(sha256sum /tmp/idosi-pagination.patch | awk '{print $1}')" = "24ad3f5d67deb00d69085cb3fac15cab4b4aa2105c230b174e3c6a6d9cb779ec"
+          git apply --check /tmp/idosi-pagination.patch
+          git apply /tmp/idosi-pagination.patch
+          git diff --check
+
+          expected="$(printf '%s\n' \
+            src/components/UI.jsx \
+            src/components/UI.tablePagination.test.jsx \
+            src/domain/tablePagination.js \
+            src/domain/tablePagination.test.js \
+            src/pages/admin/SupportWorkPages.jsx \
+            src/pages/admin/SupportWorkPages.test.jsx \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/compensation/CompensationStatisticsTables.jsx \
+            src/pages/compensation/UnitCompensationStatistics.jsx \
+            src/pages/compensation/ViolationManagementPage.jsx \
+            src/pages/store/StoreOperations.jsx \
+            src/pages/store/StoreV2Pages.jsx \
+            src/pages/store/StoreV2Pages.metrics.test.jsx \
+            src/styles.css | sort)"
+          actual="$(git diff --name-only -- src | sort)"
+          test "$actual" = "$expected"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run focused pagination regressions
+        run: |
+          npx vitest run --maxWorkers=1 \
+            src/components/UI.tablePagination.test.jsx \
+            src/domain/tablePagination.test.js \
+            src/pages/admin/SupportWorkPages.test.jsx \
+            src/pages/compensation/CompensationPages.test.jsx \
+            src/pages/store/StoreV2Pages.metrics.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit verified pagination implementation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -rf .github/pagination-fix
+          rm -f .github/workflows/apply-pagination-fix.yml
+          rm -f .github/workflows/export-pagination-source-v2.yml
+          git diff --check
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add -A
+          git commit -m 'perf(ui): paginate operational data tables'
+          git push origin HEAD:perf/paginate-data-tables-20260904
