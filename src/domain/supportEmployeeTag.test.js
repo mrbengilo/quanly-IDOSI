@@ -71,6 +71,22 @@ describe('support employee tag context', () => {
     })).toMatchObject({ homeStoreName: 'Dosii Cần Thơ', supportStoreName: 'SM TNV' })
   })
 
+  it('tags an external-store legacy record from the canonical employee directory', () => {
+    expect(resolveSupportEmployeeTagContext({
+      businessDate: '2026-09-02',
+      storeId: 'SUPPORT',
+      record: { employeeId: employee.id, storeId: 'SUPPORT' },
+      employees: [employee],
+      stores,
+      supportTransfers: [],
+    })).toMatchObject({
+      employeeId: employee.id,
+      homeStoreName: 'Dosii Cần Thơ',
+      supportStoreName: 'SM TNV',
+      transferId: '',
+    })
+  })
+
   it('uses immutable snapshot support fields without requiring a live transfer', () => {
     expect(resolveSupportEmployeeTagContext({
       businessDate: '2026-09-01',
@@ -94,6 +110,17 @@ describe('support employee tag context', () => {
 
   it('does not tag the employee while viewing the home store', () => {
     expect(resolve({ storeId: 'HOME' })).toBeNull()
+  })
+
+  it('does not infer an external-store tag when the employee cannot be resolved uniquely', () => {
+    expect(resolveSupportEmployeeTagContext({
+      businessDate: '2026-09-02',
+      storeId: 'SUPPORT',
+      record: { employeeId: employee.id, storeId: 'SUPPORT' },
+      employees: [employee, { ...employee, name: 'Hồ sơ trùng' }],
+      stores,
+      supportTransfers: [],
+    })).toBeNull()
   })
 
   it('fails closed when multiple transfer ids are explicitly attached', () => {
