@@ -16,6 +16,7 @@ import {
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import {
+  AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR,
   AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE,
   REVENUE_BONUS_OVERRIDE_MODE,
   calculateAutomaticRevenueBonusDay,
@@ -15219,7 +15220,7 @@ const hasPendingOpenStoreAttendanceChecklistRepair = async (db) => {
   `, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION))
 }
 
-const attendanceCommand = async (db, actor, body, commandContext) => {
+const attendanceCommand = async (db, actor, body, commandContext, env) => {
   if (!['employee', 'business_support', 'store_manager'].includes(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Lệnh chấm công trực tiếp chỉ dành cho tài khoản nhân sự.')
   }
@@ -15892,7 +15893,7 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
     ),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
-  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+  const response = await commitGlobalStateDomainCommand(db, actor, current, nextState, {
     action: body.type,
     entityType: 'attendance',
     entityId: openRecord.id,
@@ -15926,6 +15927,49 @@ const attendanceCommand = async (db, actor, body, commandContext) => {
       supportExpense: supportExpenseEntry,
     },
   }, commandContext)
+  const cutoffMs = Date.parse(
+    `${attendanceDate}T${String(AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR).padStart(2, '0')}:00:00+07:00`,
+  )
+  const attendanceCanAffectStoreRevenueBonus = ['store', 'store_manager'].includes(employeeUnit(employee))
+    || Boolean(attendanceTransfer)
+  const hasAnotherOpenAttendanceForStoreDay = attendance.some((record) => (
+    record !== openRecord
+    && !record.deletedAt
+    && sameIdentifier(record.storeId, attendanceStoreId)
+    && String(record.date || record.workDate || record.attendanceDate || '').slice(0, 10) === attendanceDate
+    && !record.checkOut
+    && !record.checkOutTime
+    && !record.checkOutAt
+  ))
+  if (attendanceCanAffectStoreRevenueBonus
+    && !hasAnotherOpenAttendanceForStoreDay
+    && Number.isFinite(cutoffMs)
+    && Date.parse(commandContext.now) >= cutoffMs) {
+    try {
+      const summary = await finalizeAutomaticRevenueBonuses(env, {
+        now: commandContext.now,
+        trigger: 'attendance-check-out',
+        storeId: attendanceStoreId,
+        businessDate: attendanceDate,
+      })
+      if (summary.failed > 0) {
+        console.error('Automatic revenue bonus finalization after checkout reported failures', {
+          storeId: attendanceStoreId,
+          businessDate: attendanceDate,
+          failed: summary.failed,
+        })
+      }
+    } catch (error) {
+      // Checkout has already committed successfully. A later VPS startup or the
+      // next daily cutoff can safely retry the idempotent finalization.
+      console.error('Automatic revenue bonus finalization after checkout failed', {
+        storeId: attendanceStoreId,
+        businessDate: attendanceDate,
+        error: String(error?.message || error),
+      })
+    }
+  }
+  return response
 }
 
 const ORDER_GENDERS = new Set(['Nam', 'Nữ', 'Khác'])
@@ -23669,7 +23713,7 @@ const executeCommand = async (request, env, context) => {
       return await attendanceEmergencyCloseCommand(db, user, body, commandContext)
     }
     if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
-      return await attendanceCommand(db, user, body, commandContext)
+      return await attendanceCommand(db, user, body, commandContext, env)
     }
     if (String(body.type || '').startsWith('order_information.')) {
       return await orderInformationCommand(db, user, body, commandContext)
