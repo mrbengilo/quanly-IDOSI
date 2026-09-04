@@ -1,0 +1,109 @@
+name: Verify pagination production assets
+
+on:
+  push:
+    branches:
+      - verify/pagination-production-86a28d3f
+    paths:
+      - .github/workflows/verify-pagination-production.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-pagination-production-86a28d3f
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      EXPECTED_RELEASE_SHA: 86a28d3fe9c4e946bd47f618e97c2f0288ecf97f
+      BASE_URL: https://idosi.io.vn
+    steps:
+      - name: Checkout verification source
+        uses: actions/checkout@v6
+
+      - name: Wait for exact pagination release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 240); do
+            actual="$(node <<'NODE'
+          const response = await fetch(`${process.env.BASE_URL}/api/release?_pagination_wait=${Date.now()}`, {
+            headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+          })
+          if (!response.ok) process.exit(2)
+          const payload = await response.json()
+          process.stdout.write(String(payload?.data?.releaseSha || payload?.releaseSha || ''))
+          NODE
+          )" || actual=""
+            if [[ "$actual" == "$EXPECTED_RELEASE_SHA" ]]; then
+              echo "production_release_sha=$actual"
+              exit 0
+            fi
+            echo "attempt=$attempt expected=$EXPECTED_RELEASE_SHA actual=${actual:-unavailable}"
+            sleep 5
+          done
+          echo 'Production did not converge to the expected pagination release.' >&2
+          exit 1
+
+      - name: Verify public pagination code and styles
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          node <<'NODE'
+          const baseUrl = process.env.BASE_URL
+          const expected = process.env.EXPECTED_RELEASE_SHA
+          const headers = { 'Cache-Control': 'no-cache', Pragma: 'no-cache' }
+          const fetchText = async (url) => {
+            const response = await fetch(url, { headers })
+            if (!response.ok) throw new Error(`${url} returned ${response.status}`)
+            return response.text()
+          }
+
+          const releaseResponse = await fetch(`${baseUrl}/api/release?_pagination_verify=${Date.now()}`, { headers })
+          if (!releaseResponse.ok) throw new Error(`release endpoint returned ${releaseResponse.status}`)
+          const release = await releaseResponse.json()
+          const actual = String(release?.data?.releaseSha || release?.releaseSha || '')
+          if (actual !== expected) throw new Error(`release SHA mismatch: expected ${expected}, got ${actual}`)
+
+          const html = await fetchText(`${baseUrl}/?_pagination_verify=${Date.now()}`)
+          const cssUrls = [...html.matchAll(/href=["']([^"']+\.css(?:\?[^"']*)?)["']/gu)]
+            .map((match) => new URL(match[1], baseUrl).href)
+          if (!cssUrls.length) throw new Error('No production CSS assets were discovered')
+          const cssBodies = await Promise.all(cssUrls.map(fetchText))
+          const css = cssBodies.join('\n')
+          for (const marker of ['.pagination__ellipsis', '.table-footer>span strong']) {
+            if (!css.includes(marker)) throw new Error(`Production CSS is missing pagination marker ${marker}`)
+          }
+
+          const queue = [...html.matchAll(/(?:src|href)=["']([^"']+\.js(?:\?[^"']*)?)["']/gu)]
+            .map((match) => new URL(match[1], baseUrl).href)
+          const visited = new Set()
+          const javascriptBodies = []
+          while (queue.length && visited.size < 350) {
+            const url = queue.shift()
+            if (!url || visited.has(url)) continue
+            visited.add(url)
+            const body = await fetchText(url)
+            javascriptBodies.push(body)
+            for (const match of body.matchAll(/(?:\.\/|\/)?assets\/[A-Za-z0-9_.-]+\.js/gu)) {
+              const referenced = new URL(match[0].replace(/^\.\//u, '/'), baseUrl).href
+              if (!visited.has(referenced)) queue.push(referenced)
+            }
+          }
+          const javascript = javascriptBodies.join('\n')
+          for (const marker of ['Phân trang bảng dữ liệu', 'Trang trước', 'Trang sau']) {
+            if (!javascript.includes(marker)) throw new Error(`Production JavaScript is missing pagination marker: ${marker}`)
+          }
+
+          console.log(JSON.stringify({
+            ok: true,
+            releaseSha: actual,
+            cssAssetsChecked: cssUrls.length,
+            javascriptAssetsChecked: visited.size,
+            markers: ['pagination__ellipsis', 'Phân trang bảng dữ liệu', 'Trang trước', 'Trang sau'],
+          }))
+          NODE
