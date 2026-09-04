@@ -44,6 +44,14 @@ jobs:
           test "$(sha256sum /tmp/idosi-pagination.patch | awk '{print $1}')" = "24ad3f5d67deb00d69085cb3fac15cab4b4aa2105c230b174e3c6a6d9cb779ec"
           git apply --check /tmp/idosi-pagination.patch
           git apply /tmp/idosi-pagination.patch
+
+          test "$(sha256sum .github/pagination-fix/test-fix.patch.gz.b64 | awk '{print $1}')" = "f5f7b6ab6d809817aa7547faf7c5da1c50b9465f44fa4e63149dc41c85472c55"
+          base64 -d .github/pagination-fix/test-fix.patch.gz.b64 > /tmp/idosi-pagination-test-fix.patch.gz
+          test "$(sha256sum /tmp/idosi-pagination-test-fix.patch.gz | awk '{print $1}')" = "c36026513417fa0193010208fc3a779a6a10f325c0d5801adb1dee702e5b1c61"
+          gzip -dc /tmp/idosi-pagination-test-fix.patch.gz > /tmp/idosi-pagination-test-fix.patch
+          test "$(sha256sum /tmp/idosi-pagination-test-fix.patch | awk '{print $1}')" = "f84e13e6ad0ef456a6a2b00391bb859c54b2da35c1139b1590bdcb89a341e252"
+          git apply --check /tmp/idosi-pagination-test-fix.patch
+          git apply /tmp/idosi-pagination-test-fix.patch
           git diff --check
 
           expected="$(printf '%s\n' \
