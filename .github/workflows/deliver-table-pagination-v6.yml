@@ -1,0 +1,818 @@
+name: Deliver and deploy verified table pagination v6
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-v6
+    paths:
+      - .github/workflows/deliver-table-pagination-v6.yml
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: idosi-deliver-table-pagination-v6
+  cancel-in-progress: false
+
+jobs:
+  deliver:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH_NAME: perf/paginate-data-tables-v6
+      PUBLIC_ORIGIN: https://idosi.io.vn
+    steps:
+      - name: Checkout delivery branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-v6
+          fetch-depth: 0
+
+      - name: Cancel and close every superseded pagination delivery
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for branch in \
+            perf/paginate-data-tables-20260903 \
+            perf/paginate-data-tables-v2 \
+            perf/paginate-data-tables-v3 \
+            perf/paginate-data-tables-v4 \
+            perf/paginate-data-tables-v5; do
+            encoded="$(node -p "encodeURIComponent(process.argv[1])" "$branch")"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?branch=$encoded&per_page=100" \
+              --jq '.workflow_runs[] | select(.status == "queued" or .status == "in_progress") | .id' \
+              | while read -r run_id; do
+                  [[ -z "$run_id" || "$run_id" == "$GITHUB_RUN_ID" ]] && continue
+                  gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
+                done
+            gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq '.[].number' \
+              | while read -r number; do
+                  [[ -n "$number" ]] && gh pr close "$number" --repo "$GITHUB_REPOSITORY" \
+                    --comment 'Đã được thay thế bởi bản phân trang v6 đồng bộ và kiểm thử từ main mới nhất.' || true
+                done
+          done
+
+      - name: Synchronize with latest main
+        id: base
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Apply idempotent source-level pagination
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src/components
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          shell = Path('src/layout/AppShell.jsx')
+          if shell.exists():
+              value = shell.read_text(encoding='utf-8')
+              value = re.sub(r"^import TablePaginationController from ['\"][^'\"]+['\"]\n", '', value, flags=re.MULTILINE)
+              value = re.sub(r'^\s*<TablePaginationController\s*/>\s*\n', '', value, flags=re.MULTILINE)
+              shell.write_text(value, encoding='utf-8')
+
+          styles = Path('src/styles.css')
+          if styles.exists():
+              lines = styles.read_text(encoding='utf-8').splitlines()
+              cleaned = []
+              skipping = False
+              for line in lines:
+                  if 'Shared data-table pagination controller' in line:
+                      skipping = True
+                      continue
+                  if skipping:
+                      known = (
+                          line.lstrip().startswith('.workspace-content-region table:not([data-pagination-ready])')
+                          or line.lstrip().startswith('.table-pagination--managed')
+                          or line.lstrip().startswith('.table-pagination')
+                          or line.lstrip().startswith('@media(max-width:640px)')
+                      )
+                      if known or not line.strip():
+                          continue
+                      skipping = False
+                  cleaned.append(line)
+              styles.write_text('\n'.join(cleaned).rstrip() + '\n', encoding='utf-8')
+          PY
+          rm -f src/components/TablePaginationController.jsx src/components/TablePaginationController.test.jsx
+
+          cat > src/components/PaginatedTbody.jsx <<'EOF'
+          import { Children, Fragment, cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from 'react'
+
+          export const DEFAULT_TABLE_PAGE_SIZE = 20
+
+          const VIETNAM_TIME_ZONE = 'Asia/Ho_Chi_Minh'
+          const PAGE_WINDOW = 2
+
+          const vietnamDateKey = (date = new Date()) => {
+            const parts = new Intl.DateTimeFormat('en-US', {
+              timeZone: VIETNAM_TIME_ZONE,
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            }).formatToParts(date)
+            const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]))
+            return `${values.year}-${values.month}-${values.day}`
+          }
+
+          const previousDateKey = (dateKey) => {
+            const [year, month, day] = String(dateKey || '').split('-').map(Number)
+            const date = new Date(Date.UTC(year, month - 1, day - 1, 12))
+            return [
+              date.getUTCFullYear(),
+              String(date.getUTCMonth() + 1).padStart(2, '0'),
+              String(date.getUTCDate()).padStart(2, '0'),
+            ].join('-')
+          }
+
+          const flattenChildren = (children) => Children.toArray(children).flatMap((child) => {
+            if (typeof child === 'string' && !child.trim()) return []
+            if (child === null || child === undefined || typeof child === 'boolean') return []
+            if (isValidElement(child) && child.type === Fragment) return flattenChildren(child.props.children)
+            return [child]
+          })
+
+          const textFromNode = (node) => {
+            if (node === null || node === undefined || typeof node === 'boolean') return ''
+            if (typeof node === 'string' || typeof node === 'number') return String(node)
+            if (Array.isArray(node)) return node.map(textFromNode).join(' ')
+            if (!isValidElement(node)) return ''
+            const candidates = [
+              node.props?.date,
+              node.props?.value,
+              node.props?.businessDate,
+              node.props?.workDate,
+              node.props?.createdAt,
+              node.props?.updatedAt,
+              node.props?.checkInAt,
+              node.props?.checkOutAt,
+              node.props?.timestamp,
+              textFromNode(node.props?.children),
+            ].filter(Boolean)
+            return candidates.join(' ')
+          }
+
+          const normalizeDateKey = (value) => {
+            const text = String(value || '').trim()
+            let match = text.match(/\b(20\d{2})[-/.](0[1-9]|1[0-2])[-/.]([0-2]\d|3[01])\b/u)
+            if (match) return `${match[1]}-${match[2]}-${match[3]}`
+            match = text.match(/\b([0-2]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](20\d{2})\b/u)
+            if (match) return `${match[3]}-${match[2]}-${match[1]}`
+            return ''
+          }
+
+          const rowDateKey = (row) => {
+            if (!isValidElement(row)) return ''
+            const explicit = row.props?.['data-business-date']
+              || row.props?.['data-work-date']
+              || row.props?.['data-date']
+            return normalizeDateKey(explicit) || normalizeDateKey(textFromNode(row))
+          }
+
+          const chunkRows = (rows, pageSize) => {
+            const pages = []
+            for (let index = 0; index < rows.length; index += pageSize) pages.push(rows.slice(index, index + pageSize))
+            return pages
+          }
+
+          const buildPages = (rows, mode, pageSize, todayKey) => {
+            if (!rows.length) return [[]]
+            if (!['today-first', 'today-yesterday-first'].includes(mode)) return chunkRows(rows, pageSize)
+
+            const preferredDates = new Set([todayKey])
+            if (mode === 'today-yesterday-first') preferredDates.add(previousDateKey(todayKey))
+            const preferred = []
+            const historical = []
+            rows.forEach((row) => {
+              const dateKey = rowDateKey(row)
+              if (dateKey && preferredDates.has(dateKey)) preferred.push(row)
+              else historical.push(row)
+            })
+            const pages = chunkRows(preferred, pageSize)
+            if (!pages.length) pages.push([])
+            pages.push(...chunkRows(historical, pageSize))
+            return pages
+          }
+
+          const visiblePageNumbers = (currentPage, pageCount) => {
+            if (pageCount <= 7) return Array.from({ length: pageCount }, (_, index) => index + 1)
+            const values = new Set([1, pageCount])
+            for (let page = currentPage - PAGE_WINDOW; page <= currentPage + PAGE_WINDOW; page += 1) {
+              if (page > 1 && page < pageCount) values.add(page)
+            }
+            const sorted = [...values].sort((left, right) => left - right)
+            const result = []
+            sorted.forEach((page, index) => {
+              if (index && page - sorted[index - 1] > 1) result.push(`ellipsis-${page}`)
+              result.push(page)
+            })
+            return result
+          }
+
+          const modeForCurrentRoute = (requestedMode) => {
+            if (requestedMode) return requestedMode
+            if (typeof window === 'undefined') return 'default'
+            const route = `${window.location.pathname || ''}${window.location.hash || ''}`.toLocaleLowerCase('en-US')
+            if (route.includes('/admin/assignments')) return 'today-yesterday-first'
+            if (
+              route.includes('/store/orders')
+              || route.includes('/store/attendance')
+              || route.includes('/store/tasks')
+              || route.includes('/store/reward')
+              || route.includes('/store/violation')
+              || route.includes('/store/work')
+            ) return 'today-first'
+            return 'default'
+          }
+
+          const rowIdentity = (row, index) => {
+            if (!isValidElement(row)) return `${index}:${String(row)}`
+            return `${String(row.key ?? index)}:${rowDateKey(row)}`
+          }
+
+          export default function PaginatedTbody({
+            children,
+            paginationMode = '',
+            pageSize = DEFAULT_TABLE_PAGE_SIZE,
+            emptyMessage = '',
+            ...tbodyProps
+          }) {
+            const rows = useMemo(() => flattenChildren(children), [children])
+            const normalizedPageSize = Math.max(1, Number(pageSize) || DEFAULT_TABLE_PAGE_SIZE)
+            const mode = modeForCurrentRoute(paginationMode)
+            const todayKey = vietnamDateKey()
+            const rowsSignature = rows.map(rowIdentity).join('|')
+            const pages = useMemo(
+              () => buildPages(rows, mode, normalizedPageSize, todayKey),
+              [mode, normalizedPageSize, rows, rowsSignature, todayKey],
+            )
+            const [page, setPage] = useState(1)
+            const bodyRef = useRef(null)
+            const pageCount = Math.max(1, pages.length)
+
+            useEffect(() => setPage(1), [mode, normalizedPageSize, rowsSignature])
+            useEffect(() => {
+              setPage((current) => Math.min(Math.max(1, current), pageCount))
+            }, [pageCount])
+
+            const selectedRows = pages[Math.min(page, pageCount) - 1] || []
+            const specialEmpty = !selectedRows.length && rows.length && mode !== 'default'
+            const defaultEmptyMessage = mode === 'today-yesterday-first'
+              ? 'Không có dữ liệu trong hôm nay và hôm qua.'
+              : 'Không có dữ liệu trong ngày hiện tại.'
+            const navigate = (nextPage) => {
+              setPage(Math.min(pageCount, Math.max(1, nextPage)))
+              if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(() => {
+                  bodyRef.current?.closest('table')?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+                })
+              }
+            }
+            const controls = visiblePageNumbers(page, pageCount)
+
+            return (
+              <tbody {...tbodyProps} ref={bodyRef} data-source-paginated="true" data-pagination-mode={mode}>
+                {selectedRows.map((row, index) => (
+                  isValidElement(row) ? cloneElement(row, { key: row.key ?? `page-row-${page}-${index}` }) : row
+                ))}
+                {specialEmpty ? (
+                  <tr className="table-pagination__empty-row"><td colSpan={100}>{emptyMessage || defaultEmptyMessage}</td></tr>
+                ) : null}
+                {pageCount > 1 ? (
+                  <tr className="table-pagination__row">
+                    <td colSpan={100}>
+                      <nav className="table-pagination" aria-label="Phân trang bảng dữ liệu">
+                        <button type="button" onClick={() => navigate(page - 1)} disabled={page === 1} aria-label="Trang trước">‹</button>
+                        {controls.map((value) => (
+                          typeof value === 'string'
+                            ? <span key={value} className="table-pagination__ellipsis" aria-hidden="true">…</span>
+                            : (
+                              <button
+                                type="button"
+                                key={value}
+                                className={value === page ? 'active' : ''}
+                                aria-current={value === page ? 'page' : undefined}
+                                aria-label={`Trang ${value}`}
+                                onClick={() => navigate(value)}
+                              >{value}</button>
+                            )
+                        ))}
+                        <button type="button" onClick={() => navigate(page + 1)} disabled={page === pageCount} aria-label="Trang sau">›</button>
+                        <small>Trang {page}/{pageCount} • tối đa {normalizedPageSize} dòng</small>
+                      </nav>
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            )
+          }
+
+          export const paginationTestHelpers = {
+            buildPages,
+            flattenChildren,
+            modeForCurrentRoute,
+            normalizeDateKey,
+            previousDateKey,
+            rowDateKey,
+            vietnamDateKey,
+          }
+          EOF
+
+          cat > src/components/PaginatedTbody.test.jsx <<'EOF'
+          import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+          import { afterEach, describe, expect, it, vi } from 'vitest'
+          import PaginatedTbody from './PaginatedTbody'
+
+          const Table = ({ count = 45, mode = '', dates = [] }) => (
+            <table>
+              <PaginatedTbody paginationMode={mode}>
+                {Array.from({ length: count }, (_, index) => (
+                  <tr key={index}><td>Dòng {index + 1}</td><td>{dates[index] || '01/01/2026'}</td></tr>
+                ))}
+              </PaginatedTbody>
+            </table>
+          )
+
+          describe('PaginatedTbody', () => {
+            afterEach(() => {
+              cleanup()
+              vi.useRealTimers()
+              vi.restoreAllMocks()
+              window.history.replaceState({}, '', '/')
+              window.location.hash = ''
+            })
+
+            it('mounts at most 20 rows and changes numbered pages', () => {
+              render(<Table />)
+              const table = screen.getByRole('table')
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(20)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(20)
+              expect(within(table).getByText('Dòng 21')).toBeTruthy()
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 3' }))
+              expect(within(table).getAllByText(/^Dòng /u)).toHaveLength(5)
+            })
+
+            it('keeps today and yesterday on the first assignment-history page', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00.000Z'))
+              const dates = [
+                ...Array.from({ length: 8 }, () => '04/09/2026'),
+                ...Array.from({ length: 8 }, () => '03/09/2026'),
+                ...Array.from({ length: 8 }, () => '02/09/2026'),
+              ]
+              render(<Table count={24} mode="today-yesterday-first" dates={dates} />)
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(16)
+              expect(screen.queryByText('Dòng 17')).toBeNull()
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(8)
+            })
+
+            it('keeps the current date on the first store page', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00.000Z'))
+              const dates = [
+                ...Array.from({ length: 5 }, () => '04/09/2026'),
+                ...Array.from({ length: 20 }, () => '03/09/2026'),
+              ]
+              render(<Table count={25} mode="today-first" dates={dates} />)
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(5)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(20)
+            })
+
+            it('infers today-first for the store orders hash route', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00.000Z'))
+              window.location.hash = '#/store/orders'
+              render(<Table count={21} dates={['04/09/2026', ...Array.from({ length: 20 }, () => '03/09/2026')]} />)
+              expect(screen.getAllByText(/^Dòng /u)).toHaveLength(1)
+              expect(screen.getByText('Dòng 1')).toBeTruthy()
+            })
+          })
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import unicodedata
+
+          root = Path('src')
+          component = root / 'components' / 'PaginatedTbody.jsx'
+
+          def normalized(value):
+              text = unicodedata.normalize('NFD', value.casefold())
+              return ''.join(char for char in text if unicodedata.category(char) != 'Mn').replace('đ', 'd')
+
+          labels = [
+              ('lich su giao viec va tien do hoan thanh', 'today-yesterday-first'),
+              ('lich su cham cong cua nhan vien', 'today-first'),
+              ('lich su cham cong nhan vien', 'today-first'),
+              ('cong viec tinh thuong & vi pham', 'today-first'),
+              ('cong viec tinh thuong va vi pham', 'today-first'),
+          ]
+          files = 0
+          bodies = 0
+          explicit = {}
+
+          for path in sorted(root.rglob('*')):
+              if not path.is_file() or path.suffix not in {'.jsx', '.tsx'}:
+                  continue
+              if path == component or '.test.' in path.name or '.spec.' in path.name:
+                  continue
+              source = path.read_text(encoding='utf-8')
+              openings = list(re.finditer(r'<tbody(?=[\s>])', source))
+              closings = len(re.findall(r'</tbody\s*>', source))
+              if len(openings) != closings:
+                  raise SystemExit(f'Unbalanced tbody tags in {path}: {len(openings)} open / {closings} close')
+              updated = source
+              if openings:
+                  source_normalized = normalized(source)
+                  replacements = []
+                  for match in openings:
+                      start = match.start()
+                      nearby = source_normalized[max(0, start - 9000):min(len(source_normalized), start + 9000)]
+                      mode = next((candidate for label, candidate in labels if label in nearby), '')
+                      replacement = '<PaginatedTbody'
+                      if mode:
+                          replacement += f' paginationMode="{mode}"'
+                          explicit[mode] = explicit.get(mode, 0) + 1
+                      replacements.append((match.start(), match.end(), replacement))
+                  for start, end, replacement in reversed(replacements):
+                      updated = updated[:start] + replacement + updated[end:]
+                  updated = re.sub(r'</tbody\s*>', '</PaginatedTbody>', updated)
+              if '<PaginatedTbody' not in updated:
+                  continue
+
+              relative_import = os.path.relpath(component.with_suffix(''), path.parent).replace(os.sep, '/')
+              if not relative_import.startswith('.'):
+                  relative_import = f'./{relative_import}'
+              expected_import = f"import PaginatedTbody from '{relative_import}'"
+              existing = re.search(r"^import PaginatedTbody from ['\"][^'\"]+['\"]\s*$", updated, flags=re.MULTILINE)
+              if existing:
+                  updated = updated[:existing.start()] + expected_import + updated[existing.end():]
+              elif expected_import not in updated:
+                  first_import = re.search(r'^import\s', updated, flags=re.MULTILINE)
+                  if first_import:
+                      updated = updated[:first_import.start()] + expected_import + '\n' + updated[first_import.start():]
+                  else:
+                      updated = expected_import + '\n' + updated
+
+              if updated != source:
+                  path.write_text(updated, encoding='utf-8')
+              files += 1
+              bodies += updated.count('<PaginatedTbody')
+
+          if files < 8 or bodies < 12:
+              raise SystemExit(f'Pagination coverage unexpectedly low: {files} files / {bodies} bodies')
+          print({'files': files, 'bodies': bodies, 'explicit_modes': explicit})
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/styles.css')
+          source = path.read_text(encoding='utf-8')
+          if '/* Shared source-level data-table pagination */' not in source:
+              source = source.rstrip() + '''
+
+          /* Shared source-level data-table pagination */
+          .table-pagination__row>td{padding:14px 10px!important;background:#fbfdfb!important;border-top:1px solid #dbe8df!important;text-align:center!important}
+          .table-pagination{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;width:100%}
+          .table-pagination button{min-width:34px;height:34px;padding:0 9px;border:1px solid #cadbd0;border-radius:8px;background:#fff;color:#155d38;font-size:12px;font-weight:750;cursor:pointer;transition:background .16s,border-color .16s,color .16s,transform .16s}
+          .table-pagination button:hover:not(:disabled){border-color:#4ba873;background:#edf8f1;transform:translateY(-1px)}
+          .table-pagination button.active{border-color:#078443;background:#078443;color:#fff;box-shadow:0 5px 14px rgba(7,132,67,.2)}
+          .table-pagination button:disabled{cursor:not-allowed;opacity:.4}
+          .table-pagination small{margin-left:8px;color:#65736b;font-size:10px;font-weight:600}
+          .table-pagination__ellipsis{display:inline-grid;place-items:center;min-width:24px;color:#718078;font-weight:800}
+          .table-pagination__empty-row>td{padding:22px!important;color:#738078!important;text-align:center!important;background:#fbfdfb!important;font-size:12px!important}
+          @media(max-width:640px){.table-pagination{gap:4px}.table-pagination button{min-width:31px;height:31px;padding:0 7px}.table-pagination small{flex-basis:100%;margin:4px 0 0}}
+          '''.strip('\n') + '\n'
+              path.write_text(source, encoding='utf-8')
+          PY
+
+      - name: Verify pagination coverage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --check
+          python3 - <<'PY'
+          from pathlib import Path
+          raw = []
+          files = []
+          bodies = 0
+          for path in Path('src').rglob('*'):
+              if not path.is_file() or path.suffix not in {'.jsx', '.tsx'} or '.test.' in path.name or '.spec.' in path.name:
+                  continue
+              text = path.read_text(encoding='utf-8')
+              if path.name != 'PaginatedTbody.jsx' and '<tbody' in text:
+                  raw.append(str(path))
+              if path.name != 'PaginatedTbody.jsx' and '<PaginatedTbody' in text:
+                  files.append(str(path))
+                  bodies += text.count('<PaginatedTbody')
+          if raw:
+              raise SystemExit(f'Unconverted tbody tags: {raw}')
+          if len(files) < 8 or bodies < 12:
+              raise SystemExit(f'Insufficient coverage: {len(files)} files / {bodies} bodies')
+          print({'paginated_files': len(files), 'paginated_bodies': bodies})
+          PY
+
+      - name: Targeted pagination tests
+        run: npx vitest run src/components/PaginatedTbody.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit tested candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -f .github/workflows/deliver-table-pagination-v6.yml
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m 'perf(tables): paginate all data lists at 20 rows'
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rebase and retest if main advanced during the first verification
+        id: synchronized
+        shell: bash
+        env:
+          CHANGED: ${{ steps.candidate.outputs.changed }}
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          latest="$(git rev-parse origin/main)"
+          base="$(git merge-base HEAD origin/main)"
+          if [[ "$latest" != "$base" && "$CHANGED" == 'true' ]]; then
+            git rebase origin/main
+            npx vitest run src/components/PaginatedTbody.test.jsx
+            npm run lint
+            npm test
+            npm run build
+            npm run sites:verify
+          elif [[ "$CHANGED" != 'true' ]]; then
+            git reset --hard origin/main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Push exact tested branch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git push --force-with-lease origin HEAD:"$BRANCH_NAME"
+
+      - name: Create traceable pull request when source changed
+        if: steps.candidate.outputs.changed == 'true'
+        id: pull_request
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH_NAME" \
+            --title 'perf: phân trang toàn bộ bảng dữ liệu tối đa 20 dòng' \
+            --body '## Phạm vi
+          - Admin/Giao việc: trang đầu ưu tiên hôm nay và hôm qua.
+          - Cửa hàng/Đơn hàng: trang đầu ưu tiên ngày hiện tại.
+          - Cửa hàng/Công việc tính thưởng & vi phạm: trang đầu ưu tiên ngày hiện tại.
+          - Cửa hàng/Chấm công: trang đầu ưu tiên ngày hiện tại.
+          - Tất cả bảng còn lại: tối đa 20 dòng mỗi trang, có 1,2,3… và trước/sau.
+
+          ## Hiệu năng
+          Mỗi tbody chỉ mount tối đa 20 dòng tại một thời điểm, giảm DOM/render khi lịch sử tăng.
+
+          ## Kiểm thử
+          Targeted tests, lint, full test suite, production build và Sites verification đã đạt trước PR.
+
+          ## An toàn
+          Không migration, không xóa dữ liệu, không thay đổi tổng hợp hoặc công thức tài chính.')"
+          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Merge the already-tested pull request
+        if: steps.candidate.outputs.changed == 'true'
+        id: merge
+        shell: bash
+        env:
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+          HEAD_SHA: ${{ steps.synchronized.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          test "$(git merge-base HEAD origin/main)" = "$(git rev-parse origin/main)" || {
+            echo 'main advanced after final verification; refusing an untested merge.' >&2
+            exit 75
+          }
+          gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA" \
+            --subject 'perf(tables): paginate data lists at 20 rows' \
+            --body 'Mount at most 20 rows per table and prioritize current business dates on the requested high-volume history screens.'
+          merge_sha="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json mergeCommit --jq '.mergeCommit.oid')"
+          test -n "$merge_sha"
+          echo "sha=$merge_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve release commit
+        id: release
+        shell: bash
+        env:
+          CHANGED: ${{ steps.candidate.outputs.changed }}
+          MERGE_SHA: ${{ steps.merge.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$CHANGED" == 'true' ]]; then
+            release="$MERGE_SHA"
+          else
+            git fetch origin main
+            release="$(git rev-parse origin/main)"
+          fi
+          echo "sha=$release" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether production already runs the exact release
+        id: production_state
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          payload="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "$PUBLIC_ORIGIN/api/release?_pagination_preflight=$GITHUB_RUN_ID" 2>/dev/null || true)"
+          actual="$(node -e "try{const v=JSON.parse(process.argv[1]);process.stdout.write(v.data?.releaseSha||v.releaseSha||'')}catch{}" "$payload")"
+          if [[ "$actual" == "$RELEASE_SHA" ]] \
+            && curl -fsS --max-time 20 "$PUBLIC_ORIGIN/api/health?_pagination_preflight=$GITHUB_RUN_ID" >/dev/null; then
+            echo 'deploy=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'deploy=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure production SSH
+        if: steps.production_state.outputs.deploy == 'true'
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST}"
+          : "${VPS_USER:?Missing IDOSI_VPS_USER}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY}"
+          : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Upload exact durable deployment helpers
+        if: steps.production_state.outputs.deploy == 'true'
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          echo "REMOTE_DEPLOY_SCRIPT=/tmp/idosi-deploy-$RELEASE_SHA.sh" >> "$GITHUB_ENV"
+          echo "REMOTE_RUNNER_SCRIPT=/tmp/idosi-run-job-$RELEASE_SHA.sh" >> "$GITHUB_ENV"
+          echo "REMOTE_FINALIZER_SCRIPT=/tmp/idosi-finalize-$RELEASE_SHA.sh" >> "$GITHUB_ENV"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            deploy/vps/deploy-release.sh "$VPS_USER@$VPS_HOST:/tmp/idosi-deploy-$RELEASE_SHA.sh"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            deploy/vps/run-release-job.sh "$VPS_USER@$VPS_HOST:/tmp/idosi-run-job-$RELEASE_SHA.sh"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            deploy/vps/finalize-release.sh "$VPS_USER@$VPS_HOST:/tmp/idosi-finalize-$RELEASE_SHA.sh"
+
+      - name: Start durable deployment
+        if: steps.production_state.outputs.deploy == 'true'
+        id: remote_job
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          operation_id="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RELEASE_SHA:0:12}"
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "chmod 700 '$REMOTE_DEPLOY_SCRIPT' '$REMOTE_RUNNER_SCRIPT' '$REMOTE_FINALIZER_SCRIPT' && bash '$REMOTE_RUNNER_SCRIPT' '$RELEASE_SHA' '$operation_id' '$REMOTE_DEPLOY_SCRIPT'"
+          echo "operation_id=$operation_id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for durable deployment completion
+        if: steps.production_state.outputs.deploy == 'true'
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          OPERATION_ID: ${{ steps.remote_job.outputs.operation_id }}
+        run: |
+          set -Eeuo pipefail
+          status_file="/opt/idosi/deploy/vps/backups/jobs/$OPERATION_ID.status"
+          ssh_args=(-i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes)
+          for attempt in $(seq 1 360); do
+            status="$(ssh "${ssh_args[@]}" "$VPS_USER@$VPS_HOST" "if [ -f '$status_file' ]; then cat '$status_file'; fi" 2>/dev/null || true)"
+            state="$(sed -n 's/^STATE=//p' <<<"$status" | head -n 1)"
+            if [[ "$state" == 'COMPLETED' ]]; then
+              exit_code="$(sed -n 's/^EXIT_CODE=//p' <<<"$status" | head -n 1)"
+              log_file="$(sed -n 's/^LOG_FILE=//p' <<<"$status" | head -n 1)"
+              [[ "$exit_code" =~ ^[0-9]+$ ]]
+              if [[ "$exit_code" != '0' ]]; then
+                [[ -n "$log_file" ]] && ssh "${ssh_args[@]}" "$VPS_USER@$VPS_HOST" "tail -n 300 '$log_file'" >&2 || true
+                exit "$exit_code"
+              fi
+              [[ -n "$log_file" ]] && ssh "${ssh_args[@]}" "$VPS_USER@$VPS_HOST" "tail -n 120 '$log_file'" || true
+              exit 0
+            fi
+            sleep 15
+          done
+          exit 1
+
+      - name: Verify exact public release
+        id: public_verify
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 90); do
+            if node server/vps/verify-public-release.mjs "$PUBLIC_ORIGIN" "$RELEASE_SHA"; then
+              echo "verified_at=$(date -u +%Y%m%dT%H%M%SZ)" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Finalize direct deployment report
+        if: steps.production_state.outputs.deploy == 'true'
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          VERIFIED_AT: ${{ steps.public_verify.outputs.verified_at }}
+        run: |
+          set -Eeuo pipefail
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "bash '$REMOTE_FINALIZER_SCRIPT' '$RELEASE_SHA' '$VERIFIED_AT' '$PUBLIC_ORIGIN' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$RELEASE_SHA' && rm -f '$REMOTE_DEPLOY_SCRIPT' '$REMOTE_RUNNER_SCRIPT' '$REMOTE_FINALIZER_SCRIPT'"
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
+
+      - name: Publish completion marker on delivery branch
+        if: success()
+        env:
+          RELEASE_SHA: ${{ steps.release.outputs.sha }}
+          CHANGED: ${{ steps.candidate.outputs.changed }}
+          PR_NUMBER: ${{ steps.pull_request.outputs.number }}
+        run: |
+          set -Eeuo pipefail
+          git fetch origin "$BRANCH_NAME"
+          git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+          cat > PAGINATION_PRODUCTION_PASS.json <<JSON
+          {
+            "status": "PASS",
+            "releaseSha": "$RELEASE_SHA",
+            "sourceChanged": "$CHANGED",
+            "pullRequest": "${PR_NUMBER:-already-on-main}",
+            "verifiedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "production": "$PUBLIC_ORIGIN"
+          }
+          JSON
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add PAGINATION_PRODUCTION_PASS.json
+          git commit -m 'ops: record pagination production verification'
+          git push origin HEAD:"$BRANCH_NAME"
