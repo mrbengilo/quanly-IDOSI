@@ -1,28 +1,12 @@
 import { cp, mkdir, readdir, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { build } from 'vite'
 
 const root = process.cwd()
 const dist = resolve(root, 'dist')
 const client = resolve(dist, 'client')
 const server = resolve(dist, 'server')
 const workerSource = resolve(root, 'server', 'worker.js')
-// Keep transitive Worker domain imports explicit after each main-branch sync so
-// automatic revenue projections never depend on source-only runtime files.
-const workerDomainSources = [
-  'storeShiftChecklist.js',
-  'taskProgress.js',
-  'compensationPolicies.js',
-  'compensationAllocation.js',
-  'automaticRevenueBonus.js',
-  'supportTransferTime.js',
-  'compensationSettlement.js',
-  'payrollPeriodLifecycle.js',
-  'storeTieredPayroll.js',
-  'managerRevenueBonus.js',
-  'revenueBonusEligibility.js',
-  'workCatalog.js',
-  'supportWorkSchedule.js',
-]
 const migrationsSource = resolve(root, 'drizzle')
 const hostingSource = resolve(root, '.openai', 'hosting.json')
 const hostingTarget = resolve(dist, '.openai', 'hosting.json')
@@ -30,6 +14,7 @@ const migrationsTarget = resolve(dist, '.openai', 'drizzle')
 
 await rm(client, { recursive: true, force: true })
 await rm(server, { recursive: true, force: true })
+await rm(resolve(dist, 'src'), { recursive: true, force: true })
 await rm(resolve(dist, '.openai'), { recursive: true, force: true })
 await mkdir(client, { recursive: true })
 
@@ -38,13 +23,26 @@ for (const entry of await readdir(dist, { withFileTypes: true })) {
   await cp(resolve(dist, entry.name), resolve(client, entry.name), { recursive: true })
 }
 
-await mkdir(server, { recursive: true })
-await cp(workerSource, resolve(server, 'index.js'))
-const workerDomainTarget = resolve(dist, 'src', 'domain')
-await mkdir(workerDomainTarget, { recursive: true })
-for (const fileName of workerDomainSources) {
-  await cp(resolve(root, 'src', 'domain', fileName), resolve(workerDomainTarget, fileName))
-}
+await build({
+  root,
+  configFile: false,
+  publicDir: false,
+  logLevel: 'warn',
+  ssr: {
+    target: 'webworker',
+    noExternal: true,
+  },
+  build: {
+    ssr: workerSource,
+    outDir: server,
+    emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'index.js',
+      },
+    },
+  },
+})
 
 await mkdir(resolve(dist, '.openai'), { recursive: true })
 await cp(hostingSource, hostingTarget)
