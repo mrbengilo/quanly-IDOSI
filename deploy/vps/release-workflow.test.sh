@@ -244,18 +244,18 @@ grep -Fq "actual_image_id" "$SCRIPT_DIR/deploy-release.sh" \
 grep -Fq 'validate_caddy_static_mount "$container_id" "$image" "$release_sha" "$allow_legacy" || return 1' \
   "$SCRIPT_DIR/deploy-release.sh" \
   || fail 'deploy script can mask a failed Caddy topology validation'
-grep -Fq 'compose create --force-recreate caddy || return 1' \
+grep -Fq 'compose up --no-deps --no-start --force-recreate caddy || return 1' \
   "$SCRIPT_DIR/deploy-release.sh" \
-  || fail 'deploy script does not recreate Caddy with Compose-compatible flags'
-grep -Fq 'compose create --force-recreate caddy || return 1' \
+  || fail 'deploy script does not recreate only Caddy without restarting app'
+grep -Fq 'compose up --no-deps --no-start --force-recreate caddy || return 1' \
   "$SCRIPT_DIR/rollback-release.sh" \
-  || fail 'rollback script does not recreate Caddy with Compose-compatible flags'
+  || fail 'rollback script does not recreate only Caddy without restarting app'
 grep -Fq 'CADDY_CONTAINER_ID="$(compose ps -q --all caddy)"' \
   "$SCRIPT_DIR/deploy-release.sh" \
   || fail 'deploy script cannot recover when the existing Caddy container is stopped'
 if grep -Fq 'compose create --force-recreate --no-deps caddy' \
   "$SCRIPT_DIR/deploy-release.sh" "$SCRIPT_DIR/rollback-release.sh"; then
-  fail 'Caddy recreation uses --no-deps, which docker compose create does not support'
+  fail 'Caddy recreation uses --no-deps with docker compose create, which is unsupported'
 fi
 grep -Fq 'verify_static_volume "$image" "$release_sha" || return 1' \
   "$SCRIPT_DIR/rollback-release.sh" \
