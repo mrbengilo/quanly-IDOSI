@@ -15701,6 +15701,162 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 60_000)
 
+  it('lets Admin preserve one duplicate revenue day and supersedes only its redundant financial records', async () => {
+    const transfer = {
+      id: 'TR-REVENUE-COLLISION', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+      startAt: '2026-09-03T01:00:00.000Z', endAt: '2026-09-03T05:00:00.000Z', status: 'Hoàn tất',
+    }
+    const { env, adminAuthorization, supportAuthorization } = await setupSupportTransferRuntime({
+      token: 'bootstrap-revenue-collision-repair', transfer,
+    })
+    const dailyRecords = [{
+      id: 'RBD-KEEP', storeId: 'S02', businessDate: '2026-09-03', period: '2026-09',
+      status: 'FINALIZED', revenueVnd: 2_000_000, totalPoolVnd: 150_000, allocatedVnd: 150_000,
+      createdAt: '2026-09-04T01:01:00.000Z', version: 1,
+    }, {
+      id: 'RBD-DISCARD', storeId: 's02', businessDate: '2026-09-03', period: '2026-09',
+      status: 'APPROVED', revenueVnd: 9_000_000, totalPoolVnd: 900_000, allocatedVnd: 900_000,
+      createdAt: '2026-09-04T01:02:00.000Z', version: 1,
+    }]
+    const allocations = [{
+      id: 'RBA-KEEP', revenueBonusDailyId: 'RBD-KEEP', storeId: 'S02', businessDate: '2026-09-03',
+      employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', workedSeconds: 3_600,
+      amountVnd: 100_000, status: 'APPROVED', version: 1,
+    }, {
+      id: 'RBA-DISCARD', revenueBonusDailyId: 'RBD-DISCARD', storeId: 'S02', businessDate: '2026-09-03',
+      employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', workedSeconds: 3_600,
+      amountVnd: 900_000, status: 'APPROVED', version: 1,
+    }, {
+      id: 'RBA-LEGACY-UNLINKED', storeId: 's02', businessDate: '2026-09-03',
+      employeeId: 'E02', employeeName: 'Nhân viên cũ', workedSeconds: 1_800,
+      amountVnd: 50_000, status: 'APPROVED', version: 1,
+    }]
+    replaceStateCollection(env.DB.database, 'revenueBonusDaily', dailyRecords)
+    replaceStateCollection(env.DB.database, 'revenueBonusAllocations', allocations)
+    replaceStateCollection(env.DB.database, 'teamRewardClaims', [{
+      id: 'CLAIM-DISCARD', revenueBonusDailyId: 'RBD-DISCARD', storeId: 'S02',
+      businessDate: '2026-09-03', period: '2026-09', status: 'PENDING', version: 1,
+    }])
+    replaceStateCollection(env.DB.database, 'teamRewardParticipants', [{
+      id: 'PARTICIPANT-DISCARD', claimId: 'CLAIM-DISCARD', revenueBonusDailyId: 'RBD-DISCARD',
+      storeId: 'S02', businessDate: '2026-09-03', employeeId: 'E01', status: 'PENDING', version: 1,
+    }])
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+      id: 'PAYROLL-REVENUE-COLLISION', storeId: 'S02', period: '2026-09', status: 'Đã chốt', rows: [],
+    }])
+
+    const command = {
+      type: 'revenue_bonus.resolve_daily_collision', expectedVersion: 1,
+      payload: {
+        storeId: 's02', businessDate: '2026-09-03', keepDailyId: 'RBD-KEEP',
+        reason: 'Giữ bản đã đối soát và vô hiệu hóa kết quả tạo dư',
+      },
+    }
+    const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, {
+      ...supportAuthorization, 'idempotency-key': 'revenue-collision-repair-denied-0001',
+    }), env)
+    expect(denied.status).toBe(403)
+    expect(await denied.json()).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })
+
+    const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, {
+      ...adminAuthorization, 'idempotency-key': 'revenue-collision-repair-0001',
+    }), env)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      version: 2,
+      keptDailyId: 'RBD-KEEP',
+      supersededDailyIds: ['RBD-DISCARD'],
+      daily: [
+        { id: 'RBD-KEEP', status: 'FINALIZED' },
+        { id: 'RBD-DISCARD', status: 'SUPERSEDED', supersededByRevenueBonusDailyId: 'RBD-KEEP' },
+      ],
+    })
+
+    const repaired = readHydratedState(env.DB.database)
+    expect(repaired.revenueBonusDaily).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'RBD-KEEP', status: 'FINALIZED' }),
+      expect.objectContaining({
+        id: 'RBD-DISCARD', status: 'SUPERSEDED', supersededAt: expect.any(String),
+        supersededByRevenueBonusDailyId: 'RBD-KEEP', collisionResolutionReason: expect.any(String),
+      }),
+    ]))
+    expect(repaired.revenueBonusAllocations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'RBA-KEEP', status: 'APPROVED' }),
+      expect.objectContaining({ id: 'RBA-DISCARD', status: 'SUPERSEDED', supersededByRevenueBonusDailyId: 'RBD-KEEP' }),
+      expect.objectContaining({ id: 'RBA-LEGACY-UNLINKED', revenueBonusDailyId: 'RBD-KEEP', status: 'APPROVED' }),
+    ]))
+    expect(repaired.teamRewardClaims).toEqual([
+      expect.objectContaining({ id: 'CLAIM-DISCARD', status: 'SUPERSEDED' }),
+    ])
+    expect(repaired.teamRewardParticipants).toEqual([
+      expect.objectContaining({ id: 'PARTICIPANT-DISCARD', status: 'SUPERSEDED' }),
+    ])
+    expect(repaired.payrollPeriods).toEqual([
+      expect.objectContaining({
+        id: 'PAYROLL-REVENUE-COLLISION', status: 'Đã chốt', needsReclose: true,
+        invalidatedAt: expect.any(String), invalidationReason: 'revenue_bonus.resolve_daily_collision',
+      }),
+    ])
+
+    const live = await worker.fetch(new Request(
+      'https://idosi.example/api/revenue-bonus/live?storeId=S02&businessDate=2026-09-03',
+      { headers: adminAuthorization },
+    ), env)
+    expect(live.status).toBe(200)
+    expect((await live.json()).snapshot.allocations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'RBA-KEEP', amountVnd: 100_000 }),
+      expect.objectContaining({ id: 'RBA-LEGACY-UNLINKED', amountVnd: 50_000 }),
+    ]))
+    expect((await finalizeAutomaticRevenueBonuses(env, {
+      now: '2026-09-03T16:00:00.000Z', storeId: 'S02', businessDate: '2026-09-03', trigger: 'test-repair',
+    }))).toMatchObject({ finalized: 0, alreadyFinalized: 1, duplicates: 0 })
+
+    const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, {
+      ...adminAuthorization, 'idempotency-key': 'revenue-collision-repair-0001',
+    }), env)
+    expect(replay.status).toBe(200)
+    expect(await replay.json()).toMatchObject({ version: 2, keptDailyId: 'RBD-KEEP' })
+    expect(env.DB.database.prepare(
+      "SELECT action, entity_id FROM audit_log WHERE action = 'revenue_bonus.resolve_daily_collision'",
+    ).get()).toEqual({
+      action: 'revenue_bonus.resolve_daily_collision', entity_id: 'S02:2026-09-03',
+    })
+  }, 30_000)
+
+  it('refuses to repair duplicate revenue results after the payroll period was paid', async () => {
+    const transfer = {
+      id: 'TR-REVENUE-COLLISION-PAID', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+      startAt: '2026-09-03T01:00:00.000Z', endAt: '2026-09-03T05:00:00.000Z', status: 'Hoàn tất',
+    }
+    const { env, adminAuthorization } = await setupSupportTransferRuntime({
+      token: 'bootstrap-revenue-collision-repair-paid', transfer,
+    })
+    const dailyRecords = [{
+      id: 'RBD-PAID-KEEP', storeId: 'S02', businessDate: '2026-09-03', status: 'FINALIZED', allocatedVnd: 1,
+    }, {
+      id: 'RBD-PAID-DISCARD', storeId: 'S02', businessDate: '2026-09-03', status: 'FINALIZED', allocatedVnd: 1,
+    }]
+    replaceStateCollection(env.DB.database, 'revenueBonusDaily', dailyRecords)
+    replaceStateCollection(env.DB.database, 'payrollPeriods', [{
+      id: 'PAYROLL-REVENUE-PAID', storeId: 'S02', period: '2026-09', status: 'Đã chi',
+      confirmedAt: '2026-10-01T01:00:00.000Z', rows: [],
+    }])
+
+    const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'revenue_bonus.resolve_daily_collision', expectedVersion: 1,
+      payload: {
+        storeId: 'S02', businessDate: '2026-09-03', keepDailyId: 'RBD-PAID-KEEP',
+        reason: 'Không được thay đổi dữ liệu của kỳ đã chi',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'revenue-collision-repair-paid-0001' }), env)
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
+    expect(readHydratedState(env.DB.database).revenueBonusDaily).toEqual(dailyRecords)
+    expect(env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get())
+      .toEqual({ version: 1 })
+  }, 30_000)
+
   it('finalizes a store day after the last checkout past 22:00 without polling', async () => {
     vi.useFakeTimers()
     try {

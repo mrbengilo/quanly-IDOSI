@@ -21248,7 +21248,12 @@ const activeMaterializedRevenueRecord = (record) => {
   return !['void', 'deleted', 'rejected', 'superseded'].includes(normalizeTextKey(record.status))
 }
 
-const materializedRevenueBusinessDate = (record) => dateFromRecord(record)
+const materializedRevenueBusinessDate = (record) => {
+  const explicitBusinessDate = String(record?.businessDate || '').trim()
+  return /^\d{4}-\d{2}-\d{2}$/u.test(explicitBusinessDate)
+    ? explicitBusinessDate
+    : dateFromRecord(record)
+}
 
 const materializedRevenueDailyMatches = (state, storeId, businessDate) => (
   Array.isArray(state?.revenueBonusDaily) ? state.revenueBonusDaily : []
@@ -21726,6 +21731,186 @@ const revenueBonusMilestoneDecision = async (db, actor, body, commandContext, cu
       allocations: dailyAllocations,
       teamParticipants: decidedParticipants,
       reconciliation,
+    },
+  }, commandContext)
+}
+
+const revenueBonusDailyCollisionRepairCommand = async (db, actor, body, commandContext) => {
+  assertAdmin(actor, 'Chỉ Admin được xử lý kết quả thưởng doanh thu ngày bị trùng.')
+  const payload = isPlainRecord(body.payload) ? body.payload : {}
+  const { current, state } = await loadGlobalCommandState(db, body, actor)
+  const requestedStoreId = String(payload.storeId || '').trim()
+  const store = requireActivePhysicalStore(state, requestedStoreId)
+  const storeId = String(store.id || requestedStoreId).trim()
+  const businessDate = compensationDate(payload.businessDate, 'Ngày thưởng doanh thu')
+  const period = businessDate.slice(0, 7)
+  assertPayrollNotPaidOrLocked(state, storeId, period)
+
+  const reason = String(payload.reason || '').trim()
+  if (reason.length < 3 || reason.length > 500) {
+    throw new ApiError(400, 'REVENUE_BONUS_COLLISION_REASON_REQUIRED', 'Lý do xử lý dữ liệu trùng phải từ 3 đến 500 ký tự.')
+  }
+  const dailyRecords = Array.isArray(state.revenueBonusDaily) ? state.revenueBonusDaily : []
+  const candidates = materializedRevenueDailyMatches(state, storeId, businessDate)
+  if (candidates.length < 2) {
+    throw new ApiError(409, 'REVENUE_BONUS_DAILY_COLLISION_NOT_FOUND', 'Không còn nhiều kết quả thưởng doanh thu trong ngày đã chọn.')
+  }
+  const keepDailyId = String(payload.keepDailyId || '').trim()
+  const keepMatch = uniqueIdentifierRecordMatch({
+    records: candidates,
+    identifier: keepDailyId,
+    collisionCode: 'KEEP_REVENUE_BONUS_DAILY_AMBIGUOUS',
+    collisionMessage: 'Mã kết quả thưởng cần giữ đang trùng; không thể chọn bản ghi an toàn.',
+  })
+  const keep = keepMatch?.record || null
+  if (!keep) {
+    throw new ApiError(400, 'KEEP_REVENUE_BONUS_DAILY_INVALID', 'Cần chọn chính xác một kết quả thưởng doanh thu trong nhóm trùng để giữ lại.')
+  }
+  const canonicalKeepDailyId = String(keep.id || '').trim()
+  const discarded = candidates.filter((record) => record !== keep)
+  const actorSnapshot = serverActorSnapshot(actor)
+  const supersede = (record, extra = {}) => ({
+    ...record,
+    ...extra,
+    status: 'SUPERSEDED',
+    supersededAt: commandContext.now,
+    supersededByRevenueBonusDailyId: canonicalKeepDailyId,
+    supersededBy: actorSnapshot,
+    supersededStatus: String(record.status || ''),
+    collisionResolutionReason: reason,
+    updatedAt: commandContext.now,
+    updatedBy: actorSnapshot,
+    version: Number(record.version || 1) + 1,
+  })
+  const resolveCandidateReference = (reference, code, message) => {
+    if (!String(reference || '').trim()) return null
+    return uniqueIdentifierRecordMatch({
+      records: candidates,
+      identifier: reference,
+      collisionCode: code,
+      collisionMessage: message,
+    })?.record || null
+  }
+
+  const repairedDaily = candidates.map((record) => record === keep ? record : supersede(record))
+  const repairedDailyByOriginal = new Map(candidates.map((record, index) => [record, repairedDaily[index]]))
+  const allocations = Array.isArray(state.revenueBonusAllocations) ? state.revenueBonusAllocations : []
+  const repairedAllocationByOriginal = new Map()
+  for (const allocation of allocations) {
+    if (!activeMaterializedRevenueRecord(allocation)) continue
+    const allocationDailyId = String(allocation.revenueBonusDailyId || '').trim()
+    if (allocationDailyId) {
+      const referencedDaily = resolveCandidateReference(
+        allocationDailyId,
+        'REVENUE_BONUS_COLLISION_ALLOCATION_REFERENCE_AMBIGUOUS',
+        'Phân bổ thưởng đang tham chiếu mơ hồ tới nhiều kết quả ngày; không thể xử lý tự động.',
+      )
+      if (referencedDaily && referencedDaily !== keep) {
+        repairedAllocationByOriginal.set(allocation, supersede(allocation))
+      }
+      continue
+    }
+    if (sameIdentifier(allocation.storeId, storeId)
+      && materializedRevenueBusinessDate(allocation) === businessDate) {
+      repairedAllocationByOriginal.set(allocation, {
+        ...allocation,
+        revenueBonusDailyId: canonicalKeepDailyId,
+        storeId,
+        businessDate,
+        collisionResolvedAt: commandContext.now,
+        collisionResolvedBy: actorSnapshot,
+        collisionResolutionReason: reason,
+        updatedAt: commandContext.now,
+        updatedBy: actorSnapshot,
+        version: Number(allocation.version || 1) + 1,
+      })
+    }
+  }
+  const repairedAllocations = allocations.map((record) => repairedAllocationByOriginal.get(record) || record)
+  const provisionalState = {
+    ...state,
+    revenueBonusDaily: dailyRecords.map((record) => repairedDailyByOriginal.get(record) || record),
+    revenueBonusAllocations: repairedAllocations,
+  }
+  if (Number(keep.allocatedVnd || 0) > 0 && !materializedRevenueAllocationRows(provisionalState, keep).length) {
+    throw new ApiError(
+      409,
+      'REVENUE_BONUS_COLLISION_REPAIR_UNSAFE',
+      'Kết quả được chọn có tiền đã phân bổ nhưng không còn chi tiết nhân viên; không thể giữ bản ghi này an toàn.',
+      { keepDailyId: canonicalKeepDailyId },
+    )
+  }
+
+  const claims = Array.isArray(state.teamRewardClaims) ? state.teamRewardClaims : []
+  const repairedClaimByOriginal = new Map()
+  for (const claim of claims) {
+    if (!activeMaterializedRevenueRecord(claim) || !claim.revenueBonusDailyId) continue
+    const referencedDaily = resolveCandidateReference(
+      claim.revenueBonusDailyId,
+      'REVENUE_BONUS_COLLISION_CLAIM_REFERENCE_AMBIGUOUS',
+      'Đề nghị thưởng team đang tham chiếu mơ hồ tới nhiều kết quả ngày; không thể xử lý tự động.',
+    )
+    if (referencedDaily && referencedDaily !== keep) repairedClaimByOriginal.set(claim, supersede(claim))
+  }
+  const repairedClaims = claims.map((record) => repairedClaimByOriginal.get(record) || record)
+  const discardedClaims = [...repairedClaimByOriginal.keys()]
+  const participants = Array.isArray(state.teamRewardParticipants) ? state.teamRewardParticipants : []
+  const repairedParticipantByOriginal = new Map()
+  for (const participant of participants) {
+    if (!activeMaterializedRevenueRecord(participant)) continue
+    const referencedDaily = resolveCandidateReference(
+      participant.revenueBonusDailyId,
+      'REVENUE_BONUS_COLLISION_PARTICIPANT_REFERENCE_AMBIGUOUS',
+      'Người tham gia thưởng team đang tham chiếu mơ hồ tới nhiều kết quả ngày; không thể xử lý tự động.',
+    )
+    const referencedDiscardedClaim = participant.claimId
+      ? uniqueIdentifierRecordMatch({
+          records: discardedClaims,
+          identifier: participant.claimId,
+          collisionCode: 'REVENUE_BONUS_COLLISION_PARTICIPANT_CLAIM_AMBIGUOUS',
+          collisionMessage: 'Người tham gia đang tham chiếu mơ hồ tới đề nghị thưởng team bị thay thế.',
+        })?.record || null
+      : null
+    if ((referencedDaily && referencedDaily !== keep) || referencedDiscardedClaim) {
+      repairedParticipantByOriginal.set(participant, supersede(participant))
+    }
+  }
+  const repairedParticipants = participants.map((record) => repairedParticipantByOriginal.get(record) || record)
+  const nextState = {
+    ...provisionalState,
+    teamRewardClaims: repairedClaims,
+    teamRewardParticipants: repairedParticipants,
+    payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
+    stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+  }
+  const changedAllocations = [...repairedAllocationByOriginal.values()]
+  const changedClaims = [...repairedClaimByOriginal.values()]
+  const changedParticipants = [...repairedParticipantByOriginal.values()]
+  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    action: body.type,
+    entityType: 'revenue-bonus-day-collision',
+    entityId: `${storeId}:${businessDate}`,
+    before: candidates,
+    after: repairedDaily,
+    metadata: {
+      storeId,
+      businessDate,
+      period,
+      keepDailyId: canonicalKeepDailyId,
+      supersededDailyIds: discarded.map((record) => String(record.id || '')).filter(Boolean),
+      changedAllocationIds: changedAllocations.map((record) => String(record.id || '')).filter(Boolean),
+      changedClaimIds: changedClaims.map((record) => String(record.id || '')).filter(Boolean),
+      changedParticipantIds: changedParticipants.map((record) => String(record.id || '')).filter(Boolean),
+      reason,
+    },
+    response: {
+      command: body.type,
+      daily: repairedDaily,
+      allocations: changedAllocations,
+      teamClaims: changedClaims,
+      teamParticipants: changedParticipants,
+      keptDailyId: canonicalKeepDailyId,
+      supersededDailyIds: discarded.map((record) => String(record.id || '')).filter(Boolean),
     },
   }, commandContext)
 }
@@ -23791,6 +23976,9 @@ const executeCommand = async (request, env, context) => {
       return await violationCommand(db, user, body, commandContext)
     }
     if (String(body.type || '').startsWith('revenue_bonus.')) {
+      if (body.type === 'revenue_bonus.resolve_daily_collision') {
+        return await revenueBonusDailyCollisionRepairCommand(db, user, body, commandContext)
+      }
       return await revenueBonusCommand(db, user, body, commandContext)
     }
     if (String(body.type || '').startsWith('payroll.')) {
