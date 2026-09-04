@@ -24,6 +24,7 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { financeSummaryFromState } from '../../domain'
+import { cashflowSourceDates, cashflowSourceRowsForDate } from './cashflowSourceGroups'
 import { apiGetFinanceOverview } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { businessDate, downloadCsv, money, shortDate, today } from '../../utils'
@@ -218,14 +219,24 @@ export function AdminOverviewV2() {
 export function AdminCashflowV2() {
   const app = useApp()
   const [dailyFilter, setDailyFilter] = useState(createFinanceFilter)
-  const [sourceFilter, setSourceFilter] = useState(createFinanceFilter)
+  const [sourceStoreId, setSourceStoreId] = useState('all')
+  const [sourceDatePage, setSourceDatePage] = useState(0)
   const dailyStoreRows = useMemo(() => summariesForFilter(app, dailyFilter), [app, dailyFilter])
   const visibleStoreRows = dailyFilter.storeId === 'all'
     ? dailyStoreRows
     : dailyStoreRows.filter((row) => row.store.id === dailyFilter.storeId)
   const dailySummary = useMemo(() => financeSummaryForFilter(app, dailyFilter), [app, dailyFilter])
-  const sourceSummary = useMemo(() => financeSummaryForFilter(app, sourceFilter), [app, sourceFilter])
+  const sourceSummary = useMemo(() => financeSummaryFromState(app, {
+    storeId: sourceStoreId === 'all' ? undefined : sourceStoreId,
+  }), [app, sourceStoreId])
   const storeNames = useMemo(() => new Map(app.stores.map((store) => [store.id, store.name])), [app.stores])
+  const currentDate = today()
+  const sourceDates = useMemo(() => cashflowSourceDates(sourceSummary.transactions, currentDate), [currentDate, sourceSummary.transactions])
+  const sourceDate = sourceDates[sourceDatePage] || currentDate
+  const sourceRows = useMemo(() => cashflowSourceRowsForDate(
+    sourceSummary.transactions,
+    sourceDate,
+  ), [sourceDate, sourceSummary.transactions])
   const dailyRows = useMemo(() => {
     const grouped = new Map()
     dailySummary.transactions.forEach((transaction) => {
@@ -239,6 +250,10 @@ export function AdminCashflowV2() {
     return [...grouped.values()].map((row) => ({ ...row, profit: row.revenue - row.expense })).sort((left, right) => right.date.localeCompare(left.date))
   }, [dailySummary.transactions])
 
+  useEffect(() => {
+    setSourceDatePage((current) => Math.min(current, sourceDates.length - 1))
+  }, [sourceDates.length])
+
   return (
     <div className="page">
       <PageHeader title="DÒNG TIỀN HỆ THỐNG" subtitle="Đơn hàng là nguồn doanh thu duy nhất; chi phí chỉ xuất hiện sau khi được ghi nhận." icon={Wallet} />
@@ -251,9 +266,36 @@ export function AdminCashflowV2() {
       </Card>
       <Card
         title="Nguồn giao dịch"
-        action={<FinanceTableFilters filter={sourceFilter} onChange={setSourceFilter} stores={app.stores} scope="nguồn giao dịch" />}
+        action={<div className="toolbar-wrap cashflow-source-toolbar">
+          <Select
+            aria-label="Lọc cửa hàng nguồn giao dịch"
+            value={sourceStoreId}
+            onChange={(event) => {
+              setSourceStoreId(event.target.value)
+              setSourceDatePage(0)
+            }}
+          >
+            <option value="all">Tất cả cửa hàng</option>
+            {app.stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+          </Select>
+          <Button
+            type="button"
+            variant="outline"
+            aria-label="Ngày giao dịch mới hơn"
+            disabled={sourceDatePage === 0}
+            onClick={() => setSourceDatePage((current) => Math.max(0, current - 1))}
+          >NGÀY MỚI HƠN</Button>
+          <Badge tone="blue">Ngày {shortDate(sourceDate)} · {sourceRows.length} nguồn</Badge>
+          <Button
+            type="button"
+            variant="outline"
+            aria-label="Ngày giao dịch cũ hơn"
+            disabled={sourceDatePage >= sourceDates.length - 1}
+            onClick={() => setSourceDatePage((current) => Math.min(sourceDates.length - 1, current + 1))}
+          >NGÀY CŨ HƠN</Button>
+        </div>}
       >
-        <TableWrap><thead><tr><th>Thời gian</th><th>Cửa hàng</th><th>Loại</th><th>Nguồn</th><th>Thu / Chi</th><th>Số tiền</th></tr></thead><tbody>{sourceSummary.transactions.map((transaction) => <tr key={transaction.id}><td>{shortDate(transactionDate(transaction))}</td><td>{storeNames.get(transaction.storeId) || transaction.storeId}</td><td>{transaction.type}</td><td>{transaction.sourceType === 'order' ? 'Đơn hàng' : 'Chi phí'}</td><td><Badge tone={transaction.direction === 'in' ? 'green' : 'orange'}>{transaction.direction === 'in' ? 'Thu' : 'Chi'}</Badge></td><td><strong>{money(transaction.amount)}</strong></td></tr>)}{!sourceSummary.transactions.length && <tr><td colSpan="6">Chưa có giao dịch trong kỳ đã chọn.</td></tr>}</tbody></TableWrap>
+        <TableWrap><thead><tr><th>Ngày</th><th>Cửa hàng</th><th>Thu / Chi</th><th>Nguồn giao dịch</th><th>Chi tiết</th><th>Số tiền</th></tr></thead><tbody>{sourceRows.map((row) => <tr key={row.id}><td>{shortDate(row.date)}</td><td>{storeNames.get(row.storeId) || row.storeId}</td><td><Badge tone={row.direction === 'in' ? 'green' : 'orange'}>{row.direction === 'in' ? 'Thu' : 'Chi'}</Badge></td><td><strong>{row.source}</strong></td><td>{row.detail}</td><td><strong>{money(row.amount)}</strong></td></tr>)}{!sourceRows.length && <tr><td colSpan="6">Chưa có giao dịch trong ngày {shortDate(sourceDate)}.</td></tr>}</tbody></TableWrap>
       </Card>
     </div>
   )

@@ -44,28 +44,35 @@ describe('AdminCashflowV2 filters', () => {
     expect(within(card).queryByText('21/08/26')).toBeNull()
   })
 
-  it('filters each table independently by month and store', () => {
-    render(<AdminCashflowV2 />)
-    const dailyCard = cardFor('Dòng tiền theo ngày')
-    const sourceCard = cardFor('Nguồn giao dịch')
+  it('shows current-day sources first, groups order revenue, and pages older dates', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-02T03:00:00.000Z'))
+    try {
+      render(<AdminCashflowV2 />)
+      const dailyCard = cardFor('Dòng tiền theo ngày')
+      const sourceCard = cardFor('Nguồn giao dịch')
+      const sourceRows = sourceCard.querySelector('tbody')
 
-    fireEvent.change(within(dailyCard).getByLabelText('Chọn tháng dòng tiền theo ngày'), { target: { value: '2026-09' } })
-    expect(within(dailyCard).getByText('01/09/26')).toBeTruthy()
-    expect(within(dailyCard).getAllByText('400,000 đ')).toHaveLength(2)
+      expect(within(sourceRows).getByText('02/09/26')).toBeTruthy()
+      expect(within(sourceRows).getByText('Tổng doanh thu đơn hàng')).toBeTruthy()
+      expect(within(sourceRows).getByText('1 đơn hàng')).toBeTruthy()
+      expect(within(sourceRows).getByText('500,000 đ')).toBeTruthy()
+      expect(within(sourceRows).queryByText('01/09/26')).toBeNull()
 
-    fireEvent.change(within(sourceCard).getByLabelText('Chọn tháng nguồn giao dịch'), { target: { value: '2026-08' } })
-    fireEvent.change(within(sourceCard).getByLabelText('Chọn cửa hàng nguồn giao dịch'), { target: { value: 'S02' } })
-    const sourceRows = sourceCard.querySelector('tbody')
-    expect(within(sourceRows).getAllByText('Dosii TNV')).toHaveLength(2)
-    expect(within(sourceRows).queryByText('Dosii KVC')).toBeNull()
-    expect(within(sourceRows).getByText('300,000 đ')).toBeTruthy()
-    expect(within(sourceRows).getByText('20,000 đ')).toBeTruthy()
+      fireEvent.click(within(sourceCard).getByRole('button', { name: 'Ngày giao dịch cũ hơn' }))
+      expect(within(sourceRows).getByText('01/09/26')).toBeTruthy()
+      expect(within(sourceRows).getByText('400,000 đ')).toBeTruthy()
+      expect(within(sourceRows).queryByText('02/09/26')).toBeNull()
 
-    fireEvent.change(within(sourceCard).getByLabelText('Chế độ lọc nguồn giao dịch'), { target: { value: 'day' } })
-    fireEvent.change(within(sourceCard).getByLabelText('Chọn ngày nguồn giao dịch'), { target: { value: '2026-08-21' } })
-    expect(within(sourceRows).getByText('Chưa có giao dịch trong kỳ đã chọn.')).toBeTruthy()
+      fireEvent.change(within(sourceCard).getByLabelText('Lọc cửa hàng nguồn giao dịch'), { target: { value: 'S02' } })
+      expect(within(sourceRows).getByText('500,000 đ')).toBeTruthy()
+      expect(within(sourceRows).queryByText('400,000 đ')).toBeNull()
 
-    expect(within(dailyCard).getByText('01/09/26')).toBeTruthy()
+      fireEvent.change(within(dailyCard).getByLabelText('Chọn tháng dòng tiền theo ngày'), { target: { value: '2026-09' } })
+      expect(within(dailyCard).getByText('01/09/26')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('groups UTC timestamps by the Vietnam business date used by the finance filter', () => {
