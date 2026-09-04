@@ -189,6 +189,30 @@ describe('automatic daily revenue bonus', () => {
     })
   })
 
+  it('preserves the historical calculation before 1 September 2026', () => {
+  const historical = calculateAutomaticRevenueBonusDay(base({
+    businessDate: '2026-08-31',
+    orders: [{
+      id: 'O-HISTORY', storeId: 'S01', amount: 2_000_000, status: 'Hoàn tất',
+      createdAt: '2026-08-31T10:00:00+07:00',
+    }],
+    attendance: [{
+      id: 'A-HISTORY', storeId: 'S01', employeeId: 'E01', workDate: '2026-08-31',
+      checkInAt: '2026-08-31T08:00:00+07:00', checkOutAt: null, workedSeconds: 3_600,
+    }],
+    nowMs: Date.parse('2026-09-01T08:00:00+07:00'),
+  }))
+
+  expect(historical).toMatchObject({
+    status: 'LIVE', revenueVnd: 2_000_000, totalWorkedSeconds: 3_600,
+    openAttendanceCount: 1, allocatedVnd: 20_000,
+  })
+  expect(historical).not.toHaveProperty('finalizedAt')
+  expect(allocation(historical, 'E01')).toMatchObject({
+    workedSeconds: 3_600, amountVnd: 20_000, status: 'LIVE',
+  })
+})
+
   it('waits after 22:00 while any attendance remains open and finalizes only closed stored hours', () => {
     const waiting = calculateAutomaticRevenueBonusDay(base({
       attendance: [{

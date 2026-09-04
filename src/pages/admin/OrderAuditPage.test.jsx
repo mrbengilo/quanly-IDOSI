@@ -74,4 +74,39 @@ describe('OrderAuditPage', () => {
     expect(screen.getByText('120,000 đ')).toBeTruthy()
     expect(screen.getByText('150,000 đ')).toBeTruthy()
   })
+
+  it('normalizes production audit rows with editor, timestamp, scope and changed values', () => {
+    mocked.app = {
+      stores: [{ id: 'S01', name: 'Dosii Dĩ An' }],
+      orderAudit: [{
+        id: 77,
+        actorId: 'usr-admin-01',
+        actorRole: 'admin',
+        action: 'order.update',
+        entityType: 'order',
+        entityId: 'ORD-001',
+        before: {
+          id: 'ORD-001', code: 'DIAN-0003', storeId: 'S01',
+          amount: 120_000, customerName: 'Lan',
+        },
+        after: {
+          id: 'ORD-001', code: 'DIAN-0003', storeId: 'S01',
+          amount: 150_000, customerName: 'Linh',
+        },
+        metadata: { changedFields: ['amount', 'customerName'], reason: 'Đối soát' },
+        serverTimestamp: '2026-09-04T10:15:00+07:00',
+      }],
+    }
+
+    render(<OrderAuditPage />)
+
+    expect(screen.getByText('DIAN-0003')).toBeTruthy()
+    expect(screen.getByText('Dosii Dĩ An')).toBeTruthy()
+    expect(screen.getByText('Sửa')).toBeTruthy()
+    expect(screen.getByText('usr-admin-01 · Admin')).toBeTruthy()
+    expect(screen.getByText('Lan')).toBeTruthy()
+    expect(screen.getByText('Linh')).toBeTruthy()
+    expect(screen.getByText('120,000 đ')).toBeTruthy()
+    expect(screen.getByText('150,000 đ')).toBeTruthy()
+  })
 })

@@ -30,7 +30,14 @@ import {
 import { formatVietnamTransferDateTime, isVietnamDateTimeLocal, supportTransferBounds } from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
 import { businessDate, formatMoneyInput, money, parseMoneyInput, shortDate, shortDateTime24, today } from '../../utils'
-import { orderAuditChanges } from './orderAuditUtils'
+import {
+  orderAuditAction,
+  orderAuditActor,
+  orderAuditChanges,
+  orderAuditOrderCode,
+  orderAuditStoreId,
+  orderAuditTimestamp,
+} from './orderAuditUtils'
 
 const displayDateTime = shortDateTime24
 const emptySupportTransferForm = () => ({
@@ -185,7 +192,7 @@ export function OrderAuditPage() {
   const currentDate = today()
   const auditDates = useMemo(() => {
     const historicalDates = [...new Set(orderAudit.map((item) => businessDate(
-      item.createdAt || item.updatedAt || item.recordedAt || item.occurredAt || item.date || '',
+      orderAuditTimestamp(item),
     )).filter((date) => date && date <= currentDate && date !== currentDate))]
       .sort((left, right) => right.localeCompare(left))
     return [currentDate, ...historicalDates]
@@ -194,12 +201,16 @@ export function OrderAuditPage() {
   const selectedDate = auditDates[displayedDatePage] || currentDate
   const normalizedQuery = query.trim().toLocaleLowerCase('vi-VN')
   const rows = orderAudit
-    .filter((item) => businessDate(
-      item.createdAt || item.updatedAt || item.recordedAt || item.occurredAt || item.date || '',
-    ) === selectedDate)
-    .filter((item) => !normalizedQuery || JSON.stringify(item).toLocaleLowerCase('vi-VN').includes(normalizedQuery))
-    .sort((left, right) => String(right.createdAt || right.updatedAt || '').localeCompare(String(left.createdAt || left.updatedAt || '')))
-  const storeName = (id) => stores.find((store) => store.id === id)?.name || id
+    .filter((item) => businessDate(orderAuditTimestamp(item)) === selectedDate)
+    .filter((item) => !normalizedQuery || [
+      JSON.stringify(item),
+      orderAuditOrderCode(item),
+      orderAuditStoreId(item),
+      orderAuditAction(item),
+      orderAuditActor(item),
+    ].some((value) => String(value).toLocaleLowerCase('vi-VN').includes(normalizedQuery)))
+    .sort((left, right) => orderAuditTimestamp(right).localeCompare(orderAuditTimestamp(left)))
+  const storeName = (id) => stores.find((store) => store.id === id)?.name || id || '—'
 
   return <div className="page">
     <PageHeader title="LỊCH SỬ CHỈNH SỬA ĐƠN HÀNG" subtitle="Trang đầu tiên chỉ hiển thị thay đổi của ngày hiện tại; dùng phân trang để xem từng ngày trước đó." icon={History} />
@@ -225,7 +236,12 @@ export function OrderAuditPage() {
     >
       <SearchInput value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm theo mã đơn, người chỉnh sửa, cửa hàng..." />
       <TableWrap><thead><tr><th>Thời gian</th><th>Đơn hàng</th><th>Cửa hàng</th><th>Thao tác</th><th>Người thực hiện</th><th>Thay đổi</th></tr></thead><tbody>
-        {rows.map((item) => <tr key={item.id}><td>{shortDateTime24(item.createdAt || item.updatedAt)}</td><td><strong>{item.orderCode || item.orderId}</strong></td><td>{storeName(item.storeId)}</td><td><Badge tone={item.action === 'Xóa' ? 'red' : item.action === 'Sửa' ? 'orange' : 'blue'}>{item.action || 'Cập nhật'}</Badge></td><td>{item.actor?.name || item.actorName || item.updatedBy || 'Hệ thống'}</td><td><OrderAuditChangeList record={item} /></td></tr>)}
+        {rows.map((item, index) => {
+          const timestamp = orderAuditTimestamp(item)
+          const action = orderAuditAction(item)
+          const storeId = orderAuditStoreId(item)
+          return <tr key={item.id || `${orderAuditOrderCode(item)}:${timestamp}:${index}`}><td>{shortDateTime24(timestamp)}</td><td><strong>{orderAuditOrderCode(item)}</strong></td><td>{storeName(storeId)}</td><td><Badge tone={action === 'Xóa' ? 'red' : action === 'Sửa' ? 'orange' : 'blue'}>{action}</Badge></td><td>{orderAuditActor(item)}</td><td><OrderAuditChangeList record={item} /></td></tr>
+        })}
         {!rows.length && <tr><td colSpan="6">Không có chỉnh sửa đơn hàng trong ngày {shortDate(selectedDate)} phù hợp bộ lọc.</td></tr>}
       </tbody></TableWrap>
     </Card>

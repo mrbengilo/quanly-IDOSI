@@ -21207,7 +21207,7 @@ const revenueBonusCommand = async (db, actor, body, commandContext) => {
     throw new ApiError(
       410,
       'REVENUE_BONUS_CALCULATION_AUTOMATED',
-      'Thưởng doanh thu ngày đã được hệ thống tự động tính theo thời gian thực; không còn thao tác tính thủ công.',
+      'Thưởng doanh thu ngày được hệ thống tự động chốt sau 22:00 khi toàn bộ nhân viên đã kết ca; không còn thao tác tính thủ công.',
     )
   }
   const period = businessDate.slice(0, 7)
