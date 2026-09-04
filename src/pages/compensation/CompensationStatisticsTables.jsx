@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Badge, Field, Input, Select, TableWrap } from '../../components/UI'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
-import { money } from '../../utils'
+import { money, today } from '../../utils'
 
 const employeeName = (employees = [], employeeId = '', fallback = '') => employees.find((employee) => (
   [employee.id, employee.code, employee.employeeId].map(String).includes(String(employeeId))
@@ -117,10 +117,14 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
         </Select>
       </Field>}
     </div>}
-    <TableWrap className="compensation-table reward-history-table">
+    <TableWrap
+      className="compensation-table reward-history-table"
+      firstPageDates={filterable ? [today()] : []}
+      paginationKey={`${dateFilter}:${shiftFilter}:${employeeFilter}`}
+    >
       <thead><tr>{showEmployee && <th>Nhân viên</th>}<th>Ngày</th><th>Ca làm</th><th>Công việc</th><th>Tiền thưởng{hasFilters && <small className="compensation-subline">Tổng: <strong className="compensation-credit">+{money(filteredTotal)}</strong></small>}</th><th>Ghi nhận lúc</th><th>Trạng thái</th></tr></thead>
       <tbody>
-        {filteredRows.map((row) => <tr key={row.id}>
+        {filteredRows.map((row) => <tr key={row.id} data-page-date={row.workDate}>
           {showEmployee && <td><strong>{employeeName(employees, row.employeeId, row.employeeName)}</strong><SupportEmployeeTag context={supportTagContextForRow?.(row)} className="compensation-subline" /><small className="compensation-subline">{row.employeeId}</small></td>}
           <td><strong>{displayDate(row.workDate)}</strong></td>
           <td><strong>{row.shiftName || 'Chưa gắn ca'}</strong>{row.shiftTime && <small className="compensation-subline">{row.shiftTime}</small>}</td>

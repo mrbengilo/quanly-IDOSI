@@ -28,6 +28,7 @@ import {
 } from '../../components/UI'
 import { useApp } from '../../state/AppContext'
 import {
+  businessDate,
   money,
   operationalIdentifierRecordMatch,
   sameOperationalIdentifier,
@@ -40,6 +41,7 @@ import { isFinalSupportWorkStatus, supportWorkEvaluation, supportWorkProgress, s
 import { rewardStatistics, workRewardRows } from '../compensation/compensationStatistics'
 import { CompensationStatisticsGrid, RewardHistoryTable } from '../compensation/CompensationStatisticsTables'
 import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
+import { shiftBusinessDate } from '../../components/tablePagination'
 import '../task-assignment.css'
 import '../compensation/compensation-page.css'
 
@@ -133,12 +135,14 @@ function AssignmentHistoryEntry({ entry }) {
 
 function SupportAssignmentHistoryTable({ assignments = [], profiles = [], requestedId = '' }) {
   const requestedAssignment = matchedRecord(assignments, requestedId, (assignment) => [assignment.id])
+  const currentDate = today()
+  const recentDates = [currentDate, shiftBusinessDate(currentDate, -1)]
   return <Card title="Lịch sử giao việc và tiến độ hoàn thành">
-    <TableWrap><thead><tr><th>Ngày giao</th><th>Nhân viên</th><th>Danh sách công việc</th><th>Tiến độ</th><th>Trạng thái</th><th>Ghi chú kết quả</th><th>Lịch sử thời gian</th></tr></thead>
+    <TableWrap firstPageDates={recentDates} paginationKey={`${requestedId}:${assignments.length}`}><thead><tr><th>Ngày giao</th><th>Nhân viên</th><th>Danh sách công việc</th><th>Tiến độ</th><th>Trạng thái</th><th>Ghi chú kết quả</th><th>Lịch sử thời gian</th></tr></thead>
       <tbody>{assignments.map((assignment) => {
         const progress = supportWorkProgress(assignment)
         const status = supportWorkStatus(assignment.status)
-        return <tr key={assignment.id} className={requestedAssignment === assignment ? 'assignment-row--highlight' : ''}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || matchedProfile(profiles, assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => {
+        return <tr key={assignment.id} data-page-date={businessDate(assignment.date || assignment.assignedAt)} className={requestedAssignment === assignment ? 'assignment-row--highlight' : ''}><td><strong>{shortDate(assignment.date)}</strong><small className="table-note">Gửi: {formatDateTime24(assignment.assignedAt)}</small></td><td><strong>{assignment.employeeName || matchedProfile(profiles, assignment.employeeId)?.name || assignment.employeeId}</strong><small className="table-note">{assignment.targetUnit === 'office' ? 'Khối văn phòng' : 'Hỗ trợ KD'} • {assignment.employeeId}</small></td><td><ol className="compact-task-list">{assignment.tasks?.map((task) => {
           const completed = Boolean(task.completed)
           return <li key={task.id} className={completed ? 'is-complete' : 'is-incomplete'}>
             <span className="compact-task-list__title" aria-label={`${completed ? 'Đã hoàn thành' : 'Chưa hoàn thành'}: ${task.name}`}>

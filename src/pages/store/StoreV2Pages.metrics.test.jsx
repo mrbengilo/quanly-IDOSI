@@ -373,6 +373,37 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.getByRole('columnheader', { name: 'Đánh giá tăng trưởng' })).toBeTruthy()
   })
 
+  it('shows current-day attendance first and opens older attendance dates through numbered pages', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-04T03:00:00.000Z'))
+    mocked.app = {
+      ...baseApp(),
+      attendance: [{
+        id: 'ATT-TODAY', storeId: store.id, employeeId: employee.id, employeeName: employee.name,
+        date: '2026-09-04', workDate: '2026-09-04', shiftId: 'morning', shiftName: 'Ca sáng',
+        shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:00', checkOut: '12:00', hours: 4, status: 'Đi đúng giờ',
+      }, {
+        id: 'ATT-YESTERDAY', storeId: store.id, employeeId: employee.id, employeeName: employee.name,
+        date: '2026-09-03', workDate: '2026-09-03', shiftId: 'morning', shiftName: 'Ca sáng',
+        shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:00', checkOut: '12:00', hours: 4, status: 'Đi đúng giờ',
+      }, {
+        id: 'ATT-OLDER', storeId: store.id, employeeId: employee.id, employeeName: employee.name,
+        date: '2026-09-02', workDate: '2026-09-02', shiftId: 'morning', shiftName: 'Ca sáng',
+        shiftStart: '08:00', shiftEnd: '12:00', checkIn: '08:00', checkOut: '12:00', hours: 4, status: 'Đi đúng giờ',
+      }],
+    }
+
+    renderPage(StoreAttendanceV2)
+
+    const attendanceTable = screen.getByRole('columnheader', { name: 'Nhân viên / Cửa hàng' }).closest('table')
+    expect(within(attendanceTable).getByText('04/09/26')).toBeTruthy()
+    expect(within(attendanceTable).queryByText('03/09/26')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+    expect(within(attendanceTable).getByText('03/09/26')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Trang 3' }))
+    expect(within(attendanceTable).getByText('02/09/26')).toBeTruthy()
+  })
+
   it.each(['admin', 'business_support', 'store_manager'])('lets %s open a safe attendance map link and shows early/late minute totals', (role) => {
     const onTimeEmployee = { ...employee, id: 'S01-002', name: 'Trần Bình' }
     mocked.app = {

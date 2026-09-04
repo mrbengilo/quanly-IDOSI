@@ -55,7 +55,10 @@ const renderPage = () => render(
   </MemoryRouter>,
 )
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 describe('StoreOrdersPage order information editing', () => {
   it('preserves an unchanged inactive occupation and exposes only two payment methods', async () => {
@@ -159,6 +162,34 @@ describe('StoreOrdersPage order information editing', () => {
     expect(screen.getByText(/Chế độ chỉ xem/u)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Sửa' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
+  })
+})
+
+describe('StoreOrdersPage history pagination', () => {
+  it('shows current-day orders first and opens older dates through numbered pages', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-04T03:00:00.000Z'))
+    mocked.app = {
+      ...makeApp(),
+      orders: [
+        order({ id: 'ORDER-TODAY', code: 'S01-TODAY', createdAt: '2026-09-04T09:00:00+07:00' }),
+        order({ id: 'ORDER-YESTERDAY', code: 'S01-YESTERDAY', createdAt: '2026-09-03T09:00:00+07:00' }),
+        order({ id: 'ORDER-OLDER', code: 'S01-OLDER', createdAt: '2026-09-02T09:00:00+07:00' }),
+      ],
+    }
+
+    renderPage()
+
+    expect(screen.getByText('S01-TODAY')).toBeTruthy()
+    expect(screen.queryByText('S01-YESTERDAY')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Trang 2' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Trang 3' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+    expect(screen.getByText('S01-YESTERDAY')).toBeTruthy()
+    expect(screen.queryByText('S01-TODAY')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Trang 3' }))
+    expect(screen.getByText('S01-OLDER')).toBeTruthy()
   })
 })
 

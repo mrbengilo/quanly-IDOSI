@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { CalendarClock, ChevronLeft, ChevronRight, History } from 'lucide-react'
-import { Avatar, Badge, Button, Card, InfoNote, Input, PageHeader, Select } from '../../components/UI'
+import { Avatar, Badge, Button, Card, InfoNote, Input, PageHeader, Select, TableWrap } from '../../components/UI'
 import {
   shiftSupportScheduleAnchor,
   supportScheduleDays,
@@ -52,8 +52,13 @@ function RegistrationGroup({ days, employees, group, records }) {
     title={group.label}
     action={<Badge tone={group.value === 'business_support' ? 'green' : 'blue'}>{employees.length} nhân viên</Badge>}
   >
-    <div className="my-work-schedule-scroll work-registration-scroll" data-testid={`work-registration-${group.value}`}>
-      <table className="my-work-schedule-grid work-registration-grid" aria-label={`Lịch đăng ký làm việc của ${group.label}`}>
+    <TableWrap
+      className="my-work-schedule-scroll work-registration-scroll"
+      tableClassName="my-work-schedule-grid work-registration-grid"
+      tableLabel={`Lịch đăng ký làm việc của ${group.label}`}
+      paginationKey={`${group.value}:${employees.map(employeeId).join('|')}`}
+      data-testid={`work-registration-${group.value}`}
+    >
         <thead><tr><th className="my-work-schedule-grid__employee">Nhân viên</th>{days.map((date) => <th key={date}>{calendarDayLabel(date)}</th>)}</tr></thead>
         <tbody>
           {employees.map((employee) => {
@@ -86,8 +91,7 @@ function RegistrationGroup({ days, employees, group, records }) {
           })}
           {!employees.length && <tr><td colSpan={days.length + 1}><span className="my-work-schedule-empty">Chưa có nhân viên hoặc lịch đăng ký trong nhóm này.</span></td></tr>}
         </tbody>
-      </table>
-    </div>
+    </TableWrap>
   </Card>
 }
 

@@ -257,6 +257,51 @@ describe('compensation pages', () => {
     expect(screen.queryByLabelText('Nhân viên nhận thưởng')).toBeNull()
   })
 
+  it('shows the current store reward date first and paginates older reward dates', () => {
+    const rewardRows = [{
+      id: 'R-CURRENT', employeeId: 'NV-01', employeeName: 'Nhân viên Một', workDate: '2026-08-26',
+      shiftId: 'ca1', shiftName: 'Ca 1', title: 'Thưởng ngày hiện tại', amountVnd: 3_000,
+      completed: true, payoutStatus: 'approved', completedAt: '2026-08-26T06:00:00.000Z',
+    }, {
+      id: 'R-OLDER', employeeId: 'NV-01', employeeName: 'Nhân viên Một', workDate: '2026-08-25',
+      shiftId: 'ca1', shiftName: 'Ca 1', title: 'Thưởng ngày cũ', amountVnd: 2_000,
+      completed: true, payoutStatus: 'approved', completedAt: '2026-08-25T06:00:00.000Z',
+    }]
+    render(<UnitCompensationStatistics
+      targetUnit="store"
+      storeId="CH001"
+      employees={employees.filter((employee) => employee.storeId === 'CH001')}
+      sections="reward"
+      rewardRows={rewardRows}
+    />)
+
+    const historyCard = screen.getByRole('heading', { name: 'Lịch sử nhận thưởng — cửa hàng' }).closest('section')
+    expect(within(historyCard).getByText('Thưởng ngày hiện tại')).toBeTruthy()
+    expect(within(historyCard).queryByText('Thưởng ngày cũ')).toBeNull()
+    fireEvent.click(within(historyCard).getByRole('button', { name: 'Trang 2' }))
+    expect(within(historyCard).getByText('Thưởng ngày cũ')).toBeTruthy()
+  })
+
+  it('shows current-day store violations first and paginates older violations', () => {
+    mocked.app = {
+      ...baseApp(),
+      violations: [{
+        id: 'V-CURRENT', employeeId: 'NV-01', employeeName: 'Nhân viên Một', targetUnit: 'store', storeId: 'CH001',
+        occurredOn: '2026-08-26', shiftId: 'ca1', shiftName: 'Ca 1', title: 'Vi phạm ngày hiện tại', amountVnd: 2_000, status: 'ACTIVE',
+      }, {
+        id: 'V-OLDER', employeeId: 'NV-01', employeeName: 'Nhân viên Một', targetUnit: 'store', storeId: 'CH001',
+        occurredOn: '2026-08-25', shiftId: 'ca1', shiftName: 'Ca 1', title: 'Vi phạm ngày cũ', amountVnd: 3_000, status: 'ACTIVE',
+      }],
+    }
+    render(<ViolationManagementPage targetUnit="store" storeId="CH001" embedded />)
+
+    const historyCard = screen.getByRole('heading', { name: 'Lịch sử vi phạm' }).closest('section')
+    expect(within(historyCard).getByText('Vi phạm ngày hiện tại')).toBeTruthy()
+    expect(within(historyCard).queryByText('Vi phạm ngày cũ')).toBeNull()
+    fireEvent.click(within(historyCard).getByRole('button', { name: 'Trang 2' }))
+    expect(within(historyCard).getByText('Vi phạm ngày cũ')).toBeTruthy()
+  })
+
   it('shows the signed-in employee violation date, shift and negative deduction clearly', () => {
     mocked.app = {
       ...baseApp('employee'),
