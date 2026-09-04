@@ -355,6 +355,81 @@ describe('SQLite state snapshots', () => {
     }
   })
 
+  it('bounds employee home orders to the signed-in employee open attendance', async () => {
+    const { database } = await createSnapshotDatabase()
+    const vietnamNow = new Date(Date.now() + (7 * 60 * 60 * 1_000))
+    const currentPeriod = vietnamNow.toISOString().slice(0, 7)
+    const previousMonth = new Date(`${currentPeriod}-01T00:00:00.000Z`)
+    previousMonth.setUTCMonth(previousMonth.getUTCMonth() - 1)
+    const previousPeriod = previousMonth.toISOString().slice(0, 7)
+    const insert = (collectionKey, entityKey, order, value, {
+      periodKey = null,
+      openFlag = null,
+    } = {}) => {
+      const valueJson = JSON.stringify(value)
+      return database.prepare(`
+        INSERT INTO state_entities (
+          scope_key, collection_key, entity_key, entity_order,
+          value_json, value_bytes, created_at, updated_at,
+          store_id, employee_id, occurred_on, period_key, record_id, open_flag
+        ) VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        collectionKey, entityKey, order, valueJson, Buffer.byteLength(valueJson), timestamp, timestamp,
+        value.storeId || null, value.employeeId || null, String(value.date || value.createdAt || '').slice(0, 10) || null,
+        periodKey, value.id || null, openFlag,
+      )
+    }
+    try {
+      await database.batch([
+        ...['stores', 'employees', 'orders', 'attendance'].map((collectionKey) => database.prepare(`
+          INSERT OR IGNORE INTO state_collections (scope_key, collection_key, created_at, updated_at)
+          VALUES ('global', ?, ?, ?)
+        `).bind(collectionKey, timestamp, timestamp)),
+        insert('stores', 'store-s01-employee-home', 10, { id: 'S01', name: 'Dosii Tây Hòa' }),
+        insert('employees', 'employee-e01-employee-home', 10, { id: 'E01', storeId: 'S01', unit: 'store' }),
+        insert('employees', 'employee-e02-employee-home', 20, { id: 'E02', storeId: 'S01', unit: 'store' }),
+        insert('attendance', 'attendance-open-employee-home', 10, {
+          id: 'ATT-OPEN', storeId: 'S01', employeeId: 'E01', date: `${previousPeriod}-28`, checkOutAt: null,
+        }, { periodKey: previousPeriod, openFlag: 1 }),
+        insert('attendance', 'attendance-closed-employee-home', 20, {
+          id: 'ATT-CLOSED', storeId: 'S01', employeeId: 'E01', date: `${currentPeriod}-03`,
+          checkOutAt: `${currentPeriod}-03T10:00:00.000Z`,
+        }, { periodKey: currentPeriod, openFlag: 0 }),
+        insert('orders', 'order-own-current', 10, {
+          id: 'ORDER-OWN-CURRENT', storeId: 'S01', employeeId: 'E01', attendanceId: 'ATT-OPEN',
+          createdAt: `${currentPeriod}-04T02:00:00.000Z`,
+        }, { periodKey: currentPeriod }),
+        insert('orders', 'order-own-open-attendance', 20, {
+          id: 'ORDER-OWN-OPEN', storeId: 'S01', employeeId: 'E01', attendanceId: 'ATT-OPEN',
+          createdAt: `${previousPeriod}-28T02:00:00.000Z`,
+        }, { periodKey: previousPeriod }),
+        insert('orders', 'order-own-old-closed', 30, {
+          id: 'ORDER-OWN-OLD', storeId: 'S01', employeeId: 'E01', createdAt: `${previousPeriod}-01T02:00:00.000Z`,
+        }, { periodKey: previousPeriod }),
+        insert('orders', 'order-own-current-unlinked', 35, {
+          id: 'ORDER-OWN-CURRENT-UNLINKED', storeId: 'S01', employeeId: 'E01',
+          createdAt: `${currentPeriod}-04T03:00:00.000Z`,
+        }, { periodKey: currentPeriod }),
+        insert('orders', 'order-own-closed-attendance', 37, {
+          id: 'ORDER-OWN-CLOSED', storeId: 'S01', employeeId: 'E01', attendanceId: 'ATT-CLOSED',
+          createdAt: `${currentPeriod}-03T03:00:00.000Z`,
+        }, { periodKey: currentPeriod }),
+        insert('orders', 'order-coworker-current', 40, {
+          id: 'ORDER-COWORKER-CURRENT', storeId: 'S01', employeeId: 'E02', createdAt: `${currentPeriod}-04T02:00:00.000Z`,
+        }, { periodKey: currentPeriod }),
+      ])
+
+      const snapshot = database.readStoreStateSnapshot('global', 'S01', 'E01', 'employee-home')
+      const orderIds = snapshot.entities
+        .filter(({ collection_key: collectionKey }) => collectionKey === 'orders')
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)
+
+      expect(orderIds).toEqual(['ORDER-OWN-CURRENT', 'ORDER-OWN-OPEN'])
+    } finally {
+      database.close()
+    }
+  })
+
   it('reads one indexed cursor page of store history', async () => {
     const { database } = await createSnapshotDatabase()
     const insert = (entityKey, order, value) => {

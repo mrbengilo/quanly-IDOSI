@@ -370,6 +370,43 @@ describe('store employee current-shift orders', () => {
     expect(screen.queryByLabelText(/Lý do/u)).toBeNull()
   })
 
+  it('allows checkout after current attendance tasks are saved even if an older attendance has incomplete work', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime('2026-08-20T09:00:00.000Z')
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E01', storeId: 'S01', homeStoreId: 'S01' },
+      currentEmployee: { id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' },
+      employees: [{ id: 'E01', name: 'Nhân viên 01', storeId: 'S01', employmentType: 'Full-Time' }],
+      stores: [{ id: 'S01', name: 'Dosii TNV' }],
+      attendance: [{
+        id: 'ATT-CURRENT', employeeId: 'E01', storeId: 'S01', date: '2026-08-20',
+        shiftId: 'CA-SAME', shiftName: 'Ca chung', shiftStart: '08:00', shiftEnd: '17:00',
+        checkIn: '08:00', checkInAt: '2026-08-20T01:00:00.000Z',
+      }],
+      orders: [], schedule: [], taskAssignmentHistory: [], shiftDefinitions: [], supportTransfers: [], policies: {},
+      tasks: [{
+        id: 'TASK-CURRENT', checklistAttendanceId: 'ATT-CURRENT', storeId: 'S01',
+        date: '2026-08-20', shiftId: 'CA-SAME', employeeIds: ['E01'],
+        title: 'Kiểm tra quầy', catalogKind: 'FIXED_TASK', required: true,
+        completedBy: { E01: true },
+      }, {
+        id: 'TASK-OLD', checklistAttendanceId: 'ATT-OLD', storeId: 'S01',
+        date: '2026-08-20', shiftId: 'CA-SAME', employeeIds: ['E01'],
+        title: 'Công việc thuộc ca cũ', catalogKind: 'FIXED_TASK', required: true,
+        completedBy: {},
+      }],
+      checkIn: vi.fn(), checkOut: vi.fn(), setTaskDone: vi.fn(), notify: vi.fn(),
+    }
+
+    render(createElement(MemoryRouter, null, createElement(EmployeeDashboardV2)))
+    fireEvent.click(screen.getByRole('button', { name: 'KẾT CA' }))
+    fireEvent.change(screen.getByLabelText(/^Tiền mặt/u), { target: { value: '0' } })
+    fireEvent.change(screen.getByLabelText(/^Chuyển khoản/u), { target: { value: '0' } })
+
+    expect(screen.queryByText(/công việc bắt buộc chưa hoàn thành/u)).toBeNull()
+    expect(screen.getByRole('button', { name: 'XÁC NHẬN KẾT CA' }).disabled).toBe(false)
+  })
+
   it('allows checkout after the exact incomplete checklist and note were saved', async () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-08-20T11:00:00.000Z')

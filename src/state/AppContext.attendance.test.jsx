@@ -163,6 +163,71 @@ describe('local attendance canonical working time', () => {
     expect(api.apiCommand).toHaveBeenCalledWith('support_work.update', expect.objectContaining({ assignmentId: 'ASSIGN-CASE' }), expect.any(Object))
   })
 
+  it('applies saved remote task progress to tasks and attendance without waiting for reconciliation', async () => {
+    const remoteUser = {
+      id: 'USER-E01', username: 'employee.progress', displayName: 'Nhân viên cửa hàng',
+      role: 'employee', employeeId: 'E01', storeId: 'S01', status: 'active', version: 1,
+    }
+    const openAttendance = {
+      id: 'ATT-PROGRESS', employeeId: 'E01', storeId: 'S01', date: '2026-09-04',
+      shiftId: 'CA-SANG', checkIn: '08:00', checkInAt: '2026-09-04T01:00:00.000Z',
+    }
+    const task = {
+      id: 'TASK-PROGRESS', checklistAttendanceId: 'ATT-PROGRESS', employeeIds: ['E01'],
+      storeId: 'S01', date: '2026-09-04', shiftId: 'CA-SANG', title: 'Kiểm tra quầy',
+      required: true, completedBy: {},
+    }
+    const remoteState = {
+      ...createInitialState(),
+      session: null,
+      activeStoreId: 'S01',
+      stores: [{ id: 'S01', name: 'Dosii Tây Hòa', status: 'Đang hoạt động' }],
+      employees: [{ id: 'E01', name: 'Nhân viên cửa hàng', unit: 'store', storeId: 'S01', status: 'Đang làm việc' }],
+      attendance: [openAttendance],
+      tasks: [task],
+    }
+    const updatedAttendance = {
+      ...openAttendance,
+      taskProgress: {
+        attendanceId: 'ATT-PROGRESS', employeeId: 'E01', completedTasks: 1, totalTasks: 1,
+        completionRate: 100, incompleteTaskIds: [], incompleteReason: '', submittedAt: '2026-09-04T02:00:00.000Z',
+      },
+    }
+    const updatedTask = { ...task, completedBy: { E01: true } }
+    api.apiLogin.mockResolvedValueOnce({ user: remoteUser })
+    api.apiBootstrapState.mockResolvedValueOnce({
+      user: remoteUser, state: remoteState, policies: [], version: 1,
+    })
+    api.apiCommand.mockResolvedValueOnce({
+      version: 2,
+      attendance: updatedAttendance,
+      tasks: [updatedTask],
+      completionRate: 100,
+      completedTasks: 1,
+      totalTasks: 1,
+    })
+    render(<AppProvider><AppProbe ref={appRef} /></AppProvider>)
+
+    await act(async () => {
+      expect(await appRef.current.login('employee.progress', 'Employee-Progress-Password'))
+        .toMatchObject({ ok: true })
+    })
+    await act(async () => {
+      expect(await appRef.current.saveStoreTaskProgress({
+        attendanceId: 'ATT-PROGRESS',
+        tasks: [{ id: 'TASK-PROGRESS', completed: true }],
+      })).toMatchObject({ ok: true, completionRate: 100 })
+    })
+
+    expect(appRef.current.tasks).toEqual([expect.objectContaining({
+      id: 'TASK-PROGRESS', completedBy: { E01: true },
+    })])
+    expect(appRef.current.attendance).toEqual([expect.objectContaining({
+      id: 'ATT-PROGRESS', taskProgress: expect.objectContaining({ completionRate: 100, incompleteTaskIds: [] }),
+    })])
+    expect(api.apiGetState).not.toHaveBeenCalled()
+  })
+
   it('persists incomplete local task progress and uses its note to finish the open attendance', async () => {
     const initial = createInitialState()
     const employee = {

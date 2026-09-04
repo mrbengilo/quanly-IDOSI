@@ -3532,7 +3532,8 @@ describe('IDOSI Worker security primitives', () => {
       },
     }, { ...employeeAuthorization, 'idempotency-key': 'attendance-out-0001' }), env)
     expect(checkedOut.status).toBe(200)
-    expect(await checkedOut.json()).toMatchObject({
+    const checkedOutBody = await checkedOut.json()
+    expect(checkedOutBody).toMatchObject({
       version: 5,
       attendance: {
         id: attendanceId,
@@ -3549,7 +3550,9 @@ describe('IDOSI Worker security primitives', () => {
     ), env)
     expect(employeeState.status).toBe(200)
     const employeeStateBody = await employeeState.json()
-    expect(employeeStateBody.version).toBe(5)
+    // The post-checkout daily revenue finalizer can commit another version when
+    // this test runs after the 22:00 Vietnam cutoff.
+    expect(employeeStateBody.version).toBeGreaterThanOrEqual(checkedOutBody.version)
     expect(employeeStateBody.state.orders).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'SM234-00008', employeeId: 'NV001', attendanceId }),
       expect.objectContaining({ code: 'SM234-00007', employeeId: 'NV001' }),
@@ -15142,13 +15145,22 @@ describe('IDOSI Worker security primitives', () => {
         },
       }, { ...employeeAuthorization, 'idempotency-key': 'dynamic-checklist-progress-0001' }), env)
       expect(progressSaved.status).toBe(200)
-      expect(await progressSaved.json()).toMatchObject({
+      const progressSavedBody = await progressSaved.json()
+      expect(progressSavedBody).toMatchObject({
         version: 5,
         requiredTasks: 68,
         completedRequiredTasks: 68,
         rewardTasks: expectedRewardCount,
         completedRewardTasks: 0,
+        attendance: {
+          id: attendanceId,
+          taskProgress: { completedTasks: 68, totalTasks: 68, incompleteTaskIds: [] },
+        },
       })
+      expect(progressSavedBody.tasks).toHaveLength(scopedEmployeeTasks.length)
+      expect(progressSavedBody.tasks
+        .filter((task) => task.required !== false)
+        .every((task) => task.completedBy?.E01 === true)).toBe(true)
       const persistedState = readHydratedState(env.DB.database)
       const persisted = persistedState.tasks.filter((task) => (
         String(task.checklistAttendanceId || '') === attendanceId
@@ -15201,6 +15213,25 @@ describe('IDOSI Worker security primitives', () => {
       expect(immutableAttendance.checklistSnapshot.tasks.some(({ catalogItemId }) => catalogItemId === addedAfterCheckIn.id)).toBe(false)
       expect(immutableTasks.filter((task) => task.catalogKind === 'FIXED_TASK')).toHaveLength(19)
       expect(immutableTasks.some(({ catalogItemId }) => catalogItemId === addedAfterCheckIn.id)).toBe(false)
+
+      const staleTaskTemplate = immutableTasks.find((task) => task.catalogKind === 'FIXED_TASK')
+      replaceStateCollection(env.DB.database, 'tasks', [
+        ...afterCatalogEdit.tasks,
+        {
+          ...staleTaskTemplate,
+          id: 'TASK-STALE-OTHER-ATTENDANCE',
+          checklistAttendanceId: 'ATT-PREVIOUS',
+          completedBy: {},
+          completionHistory: [],
+        },
+        {
+          ...staleTaskTemplate,
+          id: 'TASK-DELETED-CURRENT-ATTENDANCE',
+          completedBy: {},
+          completionHistory: [],
+          deletedAt: '2026-08-30T07:10:00.000Z',
+        },
+      ])
 
       const checkedOut = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_out', expectedVersion: 6,

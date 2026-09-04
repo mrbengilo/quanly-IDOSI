@@ -15717,8 +15717,11 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
   }
   const incompleteTasks = storeEmployee
       ? (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
+        if (task.deletedAt) return false
         if (!workTaskIsRequired(task)) return false
         if (!taskAppliesToEmployee(task, employeeId, attendanceStoreId)) return false
+        const checklistAttendanceId = String(task.checklistAttendanceId || '').trim()
+        if (checklistAttendanceId && !attendanceReferenceMatches(checklistAttendanceId)) return false
         if (String(task.date || task.workDate || '') !== attendanceDate) return false
         const taskShiftId = String(task.shiftId || task.shift || '')
         if (taskShiftId && !sameIdentifier(taskShiftId, attendanceShiftId)) return false
@@ -17559,6 +17562,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
   const date = String(openAttendance.date || openAttendance.workDate || '').slice(0, 10)
   const shiftId = String(openAttendance.shiftId || openAttendance.shift || '')
   const scopedTasks = (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => {
+    if (task.deletedAt) return false
     if (!taskAppliesToEmployee(task, employeeId, storeId)) return false
     if (String(task.date || task.workDate || '').slice(0, 10) !== date) return false
     const checklistAttendanceId = String(task.checklistAttendanceId || '').trim()
@@ -17699,14 +17703,15 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
       employeeId,
       incompleteTaskIds,
     }) && incompleteTaskIds.length) {
+      const restoredAttendance = {
+        ...openAttendance,
+        taskProgress: restoredProgress,
+        updatedAt: commandContext.now,
+        updatedBy: serverActorSnapshot(actor),
+      }
       const restoredState = {
         ...state,
-        attendance: attendance.map((record) => record === openAttendance ? {
-          ...record,
-          taskProgress: restoredProgress,
-          updatedAt: commandContext.now,
-          updatedBy: serverActorSnapshot(actor),
-        } : record),
+        attendance: attendance.map((record) => record === openAttendance ? restoredAttendance : record),
         stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
       }
       return commitGlobalStateDomainCommand(db, actor, current, restoredState, {
@@ -17716,13 +17721,22 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
         before: openAttendance.taskProgress || null,
         after: restoredProgress,
         metadata: { attendanceId: openAttendance.id, restoredFromHistory: true },
-        response: { command: body.type, ...existingResult, existing: true, restored: true },
+        response: {
+          command: body.type,
+          ...existingResult,
+          attendance: restoredAttendance,
+          tasks: scopedTasks,
+          existing: true,
+          restored: true,
+        },
       }, commandContext)
     }
     return recordNoopCommand(db, actor, {
       command: body.type,
       version: Number(current.version),
       ...existingResult,
+      attendance: openAttendance,
+      tasks: scopedTasks,
       existing: true,
     }, 200, commandContext)
   }
@@ -17850,6 +17864,12 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     fingerprint: submissionFingerprint,
     submittedAt: commandContext.now,
   })
+  const updatedAttendance = {
+    ...openAttendance,
+    taskProgress,
+    updatedAt: commandContext.now,
+    updatedBy: serverActorSnapshot(actor),
+  }
   const notifications = (assignmentIds.length ? assignmentResults : [{ assignmentId: '', totalTasks, completedTasks, completionRate }])
     .map((result) => ({
       id: `ntf_${crypto.randomUUID()}`,
@@ -17867,12 +17887,7 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     }))
   const nextState = {
     ...state,
-    attendance: attendance.map((record) => record === openAttendance ? {
-      ...record,
-      taskProgress,
-      updatedAt: commandContext.now,
-      updatedBy: serverActorSnapshot(actor),
-    } : record),
+    attendance: attendance.map((record) => record === openAttendance ? updatedAttendance : record),
     tasks: nextTasks,
     taskAssignmentHistory: nextHistories,
     notifications: [...notifications, ...(Array.isArray(state.notifications) ? state.notifications : [])],
@@ -17899,7 +17914,13 @@ const taskProgressCommand = async (db, actor, body, commandContext) => {
     before: scopedTasks.map((task) => ({ id: task.id, completed: Boolean(completedByEmployeeValue(task.completedBy, employeeId)) })),
     after: normalizedStatuses.map(([id, completed]) => ({ id: String(scopedById.get(id)?.id || id), completed })),
     metadata: { storeId, date, shiftId, attendanceId: openAttendance.id, completionRate, incompleteTaskIds },
-    response: { command: body.type, ...result, notifications },
+    response: {
+      command: body.type,
+      ...result,
+      attendance: updatedAttendance,
+      tasks: nextTasks.filter((_, index) => scopedTaskRecords.has(state.tasks[index])),
+      notifications,
+    },
   }, commandContext)
 }
 
