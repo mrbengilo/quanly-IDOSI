@@ -501,7 +501,7 @@ describe('compensation pages', () => {
     expect(within(historyCard).getByText('Tổng thưởng: 5,000 đ')).toBeTruthy()
   })
 
-  it('tags a transferred employee in revenue history and employee statistics', () => {
+  it('tags a legacy external-store employee in revenue history and employee statistics', () => {
     vi.setSystemTime(new Date('2026-09-02T05:00:00.000Z'))
     const supportEmployee = {
       id: 'NV-SUPPORT', name: 'Nhân viên Điều Chuyển', unit: 'store', storeId: 'CH002',
@@ -509,17 +509,12 @@ describe('compensation pages', () => {
     mocked.app = {
       ...baseApp('store_manager'),
       employees: [...employees, supportEmployee],
-      supportTransfers: [{
-        id: 'TR-REVENUE', employeeId: supportEmployee.id, fromStoreId: 'CH002', toStoreId: 'CH001',
-        startAt: '2026-09-01T00:00:00+07:00', endAt: '2026-09-03T23:59:59+07:00', status: 'Hoàn tất',
-      }],
+      supportTransfers: [],
       revenueBonuses: [{
         id: 'RB-SUPPORT', storeId: 'CH001', businessDate: '2026-09-02', period: '2026-09', status: 'APPROVED',
         allocations: [{
           id: 'A-SUPPORT', employeeId: supportEmployee.id, employeeName: supportEmployee.name,
-          allocatedVnd: 0, approvedSalesHours: 4, weightPercent: 100, status: 'SUPPORT_EXCLUDED',
-          supportTransferred: true, supportTransferIds: ['TR-REVENUE'],
-          supportHomeStoreId: 'CH002', supportStoreId: 'CH001',
+          allocatedVnd: 178_707, approvedSalesHours: 4, weightPercent: 100, status: 'APPROVED',
         }],
       }],
     }

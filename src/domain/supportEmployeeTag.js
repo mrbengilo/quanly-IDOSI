@@ -308,10 +308,21 @@ export function resolveSupportEmployeeTagContext({
   const supportStoreId = recordStoreId(sourceRecord)
     || transferSupportStoreId(transfer)
     || operationalStoreId
+  // Legacy store records can predate the immutable support snapshot and may
+  // no longer have a transfer whose exact date window can be reconstructed.
+  // The canonical employee directory still gives us unambiguous evidence:
+  // this employee belongs to one store while the record belongs to another.
+  // Keep explicit invalid/ambiguous transfer references fail-closed above,
+  // then use the directory mismatch only as a presentation fallback.
+  const directoryConfirmsExternalStore = Boolean(
+    employeeIdentifiers(resolvedEmployeeRecord).length
+    && homeStoreId
+    && supportStoreId
+    && !sameIdentifier(homeStoreId, supportStoreId),
+  )
   const supportEvidence = recordExplicitlyMarksSupport(sourceRecord)
     || Boolean(transfer)
-    || Boolean(homeStoreId && supportStoreId && !sameIdentifier(homeStoreId, supportStoreId)
-      && inferredTransfers.length === 1)
+    || directoryConfirmsExternalStore
 
   if (!supportEvidence || !homeStoreId || !supportStoreId || sameIdentifier(homeStoreId, supportStoreId)) return null
   if (!sameIdentifier(supportStoreId, operationalStoreId)) return null
@@ -339,10 +350,10 @@ export function resolveSupportEmployeeTagContext({
 }
 
 /**
- * Resolves one support tag for an aggregate row without inventing a transfer.
- * Callers may pass mixed historical records; records belonging to another
- * employee are ignored and every candidate still goes through the canonical
- * fail-closed resolver above.
+ * Resolves one support tag for an aggregate row from canonical transfer,
+ * snapshot or employee-directory evidence. Callers may pass mixed historical
+ * records; records belonging to another employee are ignored and every
+ * candidate still goes through the canonical resolver above.
  */
 export function resolveSupportEmployeeTagContextFromRecords({
   records = [],
