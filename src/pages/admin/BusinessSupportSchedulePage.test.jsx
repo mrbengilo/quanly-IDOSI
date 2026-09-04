@@ -237,3 +237,58 @@ describe('BusinessSupportSchedulePage', () => {
     expect(screen.queryByRole('button', { name: 'TẠO LỊCH LÀM VIỆC' })).toBeNull()
   })
 })
+
+describe('BusinessSupportSchedulePage assigned schedule table', () => {
+  afterEach(cleanup)
+
+  it('filters by employee type and employee while paging every 20 rows', () => {
+    const businessSchedules = Array.from({ length: 25 }, (_, index) => ({
+      id: `BS-${index + 1}`,
+      employeeId: index % 2 ? 'HTKD-001' : 'HTKD-002',
+      employeeName: index % 2 ? 'Hỗ trợ Một' : 'Hỗ trợ Hai',
+      targetUnit: 'business_support',
+      date: `2026-09-${String(30 - index).padStart(2, '0')}`,
+      shiftName: 'Giờ hành chính', start: '08:30', end: '17:30',
+    }))
+    const officeSchedules = Array.from({ length: 20 }, (_, index) => ({
+      id: `VP-${index + 1}`,
+      employeeId: index % 2 ? 'VP001' : 'VP002',
+      employeeName: index % 2 ? 'Văn phòng Một' : 'Văn phòng Hai',
+      targetUnit: 'office',
+      date: `2026-08-${String(31 - index).padStart(2, '0')}`,
+      shiftName: 'Giờ hành chính', start: '08:30', end: '17:30',
+    }))
+    mocked.app = {
+      ...mocked.app,
+      session: { role: 'admin' },
+      employees: [
+        { id: 'HTKD-001', name: 'Hỗ trợ Một', unit: 'business_support' },
+        { id: 'HTKD-002', name: 'Hỗ trợ Hai', unit: 'business_support' },
+        { id: 'VP001', name: 'Văn phòng Một', unit: 'office' },
+        { id: 'VP002', name: 'Văn phòng Hai', unit: 'office' },
+      ],
+      supportWorkSchedules: [...businessSchedules, ...officeSchedules],
+      supportWorkScheduleHistory: [],
+    }
+
+    render(<BusinessSupportSchedulePage />)
+
+    const card = screen.getByRole('heading', { name: 'Lịch làm việc đã phân' }).closest('.card')
+    expect(card.querySelectorAll('tbody tr')).toHaveLength(20)
+    expect(screen.getByText('Trang 1/3 · 45 lịch')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Trang lịch đã phân sau' }))
+    expect(card.querySelectorAll('tbody tr')).toHaveLength(20)
+    expect(screen.getByText('Trang 2/3 · 45 lịch')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('Lọc loại nhân viên lịch đã phân'), { target: { value: 'office' } })
+    expect(card.querySelectorAll('tbody tr')).toHaveLength(20)
+    expect(screen.queryByText(/Trang 1\/1/)).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('Lọc nhân viên lịch đã phân'), { target: { value: 'VP001' } })
+    expect(card.querySelectorAll('tbody tr')).toHaveLength(10)
+    const scheduleBody = card.querySelector('tbody')
+    expect(scheduleBody.textContent).toContain('Văn phòng Một')
+    expect(scheduleBody.textContent).not.toContain('Văn phòng Hai')
+  })
+})

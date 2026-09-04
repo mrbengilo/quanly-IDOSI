@@ -19,6 +19,7 @@ const SCHEDULE_GROUPS = [
   { value: 'business_support', label: 'Nhân viên hỗ trợ KD' },
   { value: 'office', label: 'Khối văn phòng' },
 ]
+const ASSIGNED_SCHEDULE_PAGE_SIZE = 20
 
 const employeeUnit = (employee = {}) => String(employee.unit || employee.unitType || '').toLowerCase()
 const scheduleEmployees = (employees = [], targetUnit = 'business_support') => employees.filter((employee) => (
@@ -157,13 +158,44 @@ export function BusinessSupportSchedulePage() {
   const app = useApp()
   const [form, setForm] = useState(emptyScheduleForm)
   const [saving, setSaving] = useState(false)
+  const [assignedTargetUnit, setAssignedTargetUnit] = useState('all')
+  const [assignedEmployeeId, setAssignedEmployeeId] = useState('')
+  const [assignedPage, setAssignedPage] = useState(0)
   const employees = scheduleEmployees(app.employees || [], form.targetUnit)
   const selectedEmployee = employees.find((employee) => String(employee.id || employee.code) === form.employeeId)
   const shiftMode = supportScheduleEmploymentMode(selectedEmployee) === 'shift'
   const histories = Array.isArray(app.supportWorkScheduleHistory) ? app.supportWorkScheduleHistory : []
-  const schedules = (Array.isArray(app.supportWorkSchedules) ? app.supportWorkSchedules : [])
+  const scheduleDirectory = useMemo(() => new Map(
+    (Array.isArray(app.employees) ? app.employees : []).flatMap((employee) => {
+      const identifiers = [employee.id, employee.code, employee.employeeId]
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+      return identifiers.map((identifier) => [identifier.toLocaleLowerCase('vi-VN'), employee])
+    }),
+  ), [app.employees])
+  const schedules = useMemo(() => (Array.isArray(app.supportWorkSchedules) ? app.supportWorkSchedules : [])
     .filter((record) => !record.deletedAt)
-    .sort((left, right) => String(right.date || '').localeCompare(String(left.date || '')))
+    .sort((left, right) => (
+      String(right.date || '').localeCompare(String(left.date || ''))
+      || String(right.updatedAt || right.createdAt || '').localeCompare(String(left.updatedAt || left.createdAt || ''))
+      || String(right.id || '').localeCompare(String(left.id || ''), 'vi-VN')
+    )), [app.supportWorkSchedules])
+  const assignedEmployees = useMemo(() => scheduleEmployees(
+    app.employees || [],
+    assignedTargetUnit === 'all' ? '' : assignedTargetUnit,
+  ).filter((employee) => ['business_support', 'office'].includes(employeeUnit(employee))), [app.employees, assignedTargetUnit])
+  const filteredSchedules = useMemo(() => schedules.filter((record) => {
+    const employee = scheduleDirectory.get(String(record.employeeId || '').trim().toLocaleLowerCase('vi-VN'))
+    const targetUnit = employeeUnit(record) || employeeUnit(employee)
+    if (assignedTargetUnit !== 'all' && targetUnit !== assignedTargetUnit) return false
+    return !assignedEmployeeId || String(record.employeeId || '') === assignedEmployeeId
+  }), [assignedEmployeeId, assignedTargetUnit, scheduleDirectory, schedules])
+  const assignedPageCount = Math.max(1, Math.ceil(filteredSchedules.length / ASSIGNED_SCHEDULE_PAGE_SIZE))
+  const displayedAssignedPage = Math.min(assignedPage, assignedPageCount - 1)
+  const pagedSchedules = filteredSchedules.slice(
+    displayedAssignedPage * ASSIGNED_SCHEDULE_PAGE_SIZE,
+    (displayedAssignedPage + 1) * ASSIGNED_SCHEDULE_PAGE_SIZE,
+  )
   const canDelete = ['admin', 'business_support', 'manager'].includes(app.session?.role)
 
   const set = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }))
@@ -213,11 +245,61 @@ export function BusinessSupportSchedulePage() {
         <div className="card-actions">{form.scheduleId && <Button type="button" variant="outline" onClick={() => setForm(emptyScheduleForm())}>HỦY SỬA</Button>}<Button type="submit" icon={Save} loading={saving}>LƯU</Button></div>
       </form>
     </Card>
-    <Card title="Lịch làm việc đã phân">
+    <Card
+      title="Lịch làm việc đã phân"
+      action={<div className="support-schedule-assigned-filters">
+        <Select
+          aria-label="Lọc loại nhân viên lịch đã phân"
+          value={assignedTargetUnit}
+          onChange={(event) => {
+            setAssignedTargetUnit(event.target.value)
+            setAssignedEmployeeId('')
+            setAssignedPage(0)
+          }}
+        >
+          <option value="all">Tất cả loại nhân viên</option>
+          {SCHEDULE_GROUPS.map((group) => <option key={group.value} value={group.value}>{group.label}</option>)}
+        </Select>
+        <Select
+          aria-label="Lọc nhân viên lịch đã phân"
+          value={assignedEmployeeId}
+          onChange={(event) => {
+            setAssignedEmployeeId(event.target.value)
+            setAssignedPage(0)
+          }}
+        >
+          <option value="">Tất cả nhân viên</option>
+          {assignedEmployees.map((employee) => <option key={employee.id || employee.code} value={employee.id || employee.code}>{employee.name} — {employee.id || employee.code}</option>)}
+        </Select>
+      </div>}
+    >
       <TableWrap><thead><tr><th>Nhóm</th><th>Nhân viên</th><th>Ngày</th><th>Ca / Thời gian</th><th>Ghi chú</th><th>Thao tác</th></tr></thead><tbody>
-        {schedules.map((record) => <tr key={record.id}><td>{scheduleGroupLabel(record.targetUnit)}</td><td><strong>{record.employeeName}</strong><small className="table-sub">{record.employeeId}</small></td><td>{shortDate(record.date)}</td><td><strong>{record.shiftName}</strong><small className="table-sub">{record.start}–{record.end}</small></td><td>{record.note || '—'}</td><td><div className="row-actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch của ${record.employeeName}`}><Edit3 /></button>{canDelete && <button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch của ${record.employeeName}`}><Trash2 /></button>}</div></td></tr>)}
-        {!schedules.length && <tr><td colSpan="6">Chưa có lịch làm việc.</td></tr>}
+        {pagedSchedules.map((record) => {
+          const employee = scheduleDirectory.get(String(record.employeeId || '').trim().toLocaleLowerCase('vi-VN'))
+          const targetUnit = employeeUnit(record) || employeeUnit(employee)
+          return <tr key={record.id}><td>{scheduleGroupLabel(targetUnit)}</td><td><strong>{record.employeeName}</strong><small className="table-sub">{record.employeeId}</small></td><td>{shortDate(record.date)}</td><td><strong>{record.shiftName}</strong><small className="table-sub">{record.start}–{record.end}</small></td><td>{record.note || '—'}</td><td><div className="row-actions"><button type="button" onClick={() => editSchedule(record)} aria-label={`Sửa lịch của ${record.employeeName}`}><Edit3 /></button>{canDelete && <button type="button" className="danger" onClick={() => deleteSchedule(record)} aria-label={`Xóa lịch của ${record.employeeName}`}><Trash2 /></button>}</div></td></tr>
+        })}
+        {!filteredSchedules.length && <tr><td colSpan="6">Không có lịch làm việc phù hợp bộ lọc.</td></tr>}
       </tbody></TableWrap>
+      {filteredSchedules.length > ASSIGNED_SCHEDULE_PAGE_SIZE && <div className="table-pagination support-schedule-assigned-pagination">
+        <Button
+          type="button"
+          variant="outline"
+          icon={ChevronLeft}
+          aria-label="Trang lịch đã phân trước"
+          disabled={displayedAssignedPage === 0}
+          onClick={() => setAssignedPage((current) => Math.max(0, current - 1))}
+        >TRƯỚC</Button>
+        <span>Trang {displayedAssignedPage + 1}/{assignedPageCount} · {filteredSchedules.length} lịch</span>
+        <Button
+          type="button"
+          variant="outline"
+          icon={ChevronRight}
+          aria-label="Trang lịch đã phân sau"
+          disabled={displayedAssignedPage >= assignedPageCount - 1}
+          onClick={() => setAssignedPage((current) => Math.min(assignedPageCount - 1, current + 1))}
+        >SAU</Button>
+      </div>}
     </Card>
     <Card title="Lịch sử phân lịch" className="support-schedule-history">
       <TableWrap><thead><tr><th>Thời gian tạo</th><th>Nhóm nhân viên</th><th>Nhân viên</th><th>Ngày làm</th><th>Loại</th><th>Ca / Thời gian</th><th>Ghi chú</th><th>Người tạo</th><th>Thao tác</th></tr></thead><tbody>
