@@ -339,6 +339,24 @@ const storeStateSnapshotSql = (screen = '') => {
         )
       ))`
     : ''
+  const employeeHomeOrderFilterSql = normalizedScreen === 'employee-home'
+    ? `AND (
+        entity.collection_key <> 'orders'
+        OR (
+          entity.employee_id = params.actor_employee_key COLLATE NOCASE
+          AND EXISTS (
+            SELECT 1
+            FROM state_entities AS open_attendance
+            WHERE open_attendance.scope_key = params.scope_key
+              AND open_attendance.collection_key = 'attendance'
+              AND open_attendance.employee_id = params.actor_employee_key COLLATE NOCASE
+              AND open_attendance.open_flag = 1
+              AND lower(trim(CAST(json_extract(entity.value_json, '$.attendanceId') AS TEXT)))
+                = lower(trim(CAST(json_extract(open_attendance.value_json, '$.id') AS TEXT)))
+          )
+        )
+      )`
+    : ''
   const sql = `
   WITH
   params AS (
@@ -483,6 +501,7 @@ const storeStateSnapshotSql = (screen = '') => {
   WHERE entity.collection_key IN (${storeWorkspaceCollectionsSql})
     ${periodFilterSql}
     ${sessionFilterSql}
+    ${employeeHomeOrderFilterSql}
     AND (
       entity.collection_key = 'stores'
       OR entity.store_id = params.store_key COLLATE NOCASE
