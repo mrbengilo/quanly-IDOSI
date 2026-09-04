@@ -33,7 +33,7 @@ import {
 import { useApp } from '../state/AppContext'
 import { Avatar, Brand, Toast } from '../components/UI'
 import { isOfficeProfile } from '../domain/officeProfile'
-import { resolveOrderNotificationTarget, resolveOrderRouteScope } from '../domain/orderStoreScope'
+import { resolveOrderRouteScope } from '../domain/orderStoreScope'
 import { playTaskNotificationSound, unlockNotificationSound } from '../domain/notificationSound'
 
 const systemOperations = [
@@ -168,7 +168,12 @@ const notificationKey = (item) => notificationId(item) || [
   item?.orderId || item?.orderCode || item?.data?.orderId || item?.data?.orderCode || '',
   item?.createdAt || item?.time || item?.updatedAt || '',
 ].join(':')
-const isAssignedTaskNotification = (item) => ['support-work-assigned', 'store-task-assigned'].includes(String(item?.type || ''))
+const ASSIGNED_TASK_NOTIFICATION_TYPES = new Set(['support-work-assigned', 'store-task-assigned'])
+const COMPLETED_TASK_NOTIFICATION_TYPES = new Set(['support-work-submitted', 'store-task-progress-submitted'])
+const isAssignedTaskNotification = (item) => ASSIGNED_TASK_NOTIFICATION_TYPES.has(String(item?.type || ''))
+const isWorkLifecycleNotification = (item) => (
+  isAssignedTaskNotification(item) || COMPLETED_TASK_NOTIFICATION_TYPES.has(String(item?.type || ''))
+)
 
 function WorkspaceRouteLoading({ message = 'Đang mở danh mục...' }) {
   return (
@@ -255,11 +260,9 @@ export default function AppShell({ workspaceStatus = null }) {
         ? assignedStoreId
         : stores[0]?.id || ''
   const activeStore = stores.find((store) => store.id === selectedStoreId) || (!isStoreBoundRole ? stores[0] : null)
-  const notificationItems = useMemo(() => (Array.isArray(app.notifications)
-    ? app.notifications
-    : Array.isArray(app.orderNotifications)
-      ? app.orderNotifications
-      : []), [app.notifications, app.orderNotifications])
+  const notificationItems = useMemo(() => (
+    Array.isArray(app.notifications) ? app.notifications.filter(isWorkLifecycleNotification) : []
+  ), [app.notifications])
   const scopedNotificationStoreId = isStoreWorkspace
     ? selectedStoreId
     : isEmployee
@@ -380,38 +383,18 @@ export default function AppShell({ workspaceStatus = null }) {
       })
     }
     app.onNotificationOpen?.(item)
-    const target = resolveOrderNotificationTarget({
-      notification: item,
-      orders: app.orders,
-      stores,
-    })
-    const orderId = target.orderId
-    const targetStoreId = target.storeId
-    if (isSystemOperator
-      && targetStoreId
-      && stores.some((store) => String(store.id) === targetStoreId)) {
-      const changeActiveStore = app.setActiveStoreId || app.setActiveStore
-      changeActiveStore?.(targetStoreId)
-    }
-    const ordersPath = isEmployee ? '/employee/orders' : '/store/orders'
     const assignmentId = item?.assignmentId || item?.data?.assignmentId
     const requestedDestination = item?.route || item?.path || item?.href || item?.url || ''
     const explicitDestination = requestedDestination === '/admin/support-employees'
       ? '/admin/business-support'
       : requestedDestination
-    const orderDestination = orderId
-      ? `${ordersPath}?${new URLSearchParams({
-          ...(targetStoreId ? { store: targetStoreId } : {}),
-          order: String(orderId),
-        }).toString()}`
-      : ''
     const destination = item?.type === 'store-task-assigned'
       ? `/employee/tasks?assignment=${encodeURIComponent(assignmentId || '')}`
       : item?.type === 'support-work-assigned' && assignmentId && (item?.targetUnit === 'office' || item?.data?.targetUnit === 'office')
       ? `/employee/assigned-work?assignment=${encodeURIComponent(assignmentId)}`
       : item?.type === 'support-work-assigned' && assignmentId
       ? `/support/assigned-work?assignment=${encodeURIComponent(assignmentId)}`
-      : orderDestination || explicitDestination || ordersPath
+      : explicitDestination || (isEmployee ? '/employee/tasks' : '/admin/assignments')
     setNotificationOpen(false)
     navigate(destination)
   }
@@ -516,16 +499,16 @@ export default function AppShell({ workspaceStatus = null }) {
                         key={item?.id || item?.notificationId || `${item?.orderId || 'notification'}-${index}`}
                         onClick={() => openNotification(item)}
                       >
-                        <span className="notification-item__icon">{isAssignedTaskNotification(item) ? <ClipboardCheck size={17} /> : <ShoppingCart size={17} />}</span>
+                        <span className="notification-item__icon"><ClipboardCheck size={17} /></span>
                         <span className="notification-item__body">
                           <strong>{item?.title || item?.message || 'Thông báo mới'}</strong>
-                          <small>{item?.description || item?.content || item?.message || item?.orderCode || item?.data?.orderCode || 'Mở để xem chi tiết'}</small>
+                          <small>{item?.description || item?.content || item?.message || 'Mở để xem chi tiết công việc'}</small>
                           {(item?.createdAt || item?.time || item?.updatedAt) && <time>{notificationTime24(item.createdAt || item.time || item.updatedAt)}</time>}
                         </span>
                       </button>
                     ))}
                     {!unreadNotifications.length && (
-                      <div className="notification-empty"><Bell size={24} /><strong>Không có thông báo mới</strong><span>Công việc và đơn hàng mới sẽ hiển thị tại đây.</span></div>
+                      <div className="notification-empty"><Bell size={24} /><strong>Không có thông báo mới</strong><span>Công việc được giao và hoàn thành sẽ hiển thị tại đây.</span></div>
                     )}
                   </div>
                 </section>

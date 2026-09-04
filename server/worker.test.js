@@ -12959,9 +12959,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(historicalManagerState.employees.some(({ id }) => id === 'E01')).toBe(false)
       expect(historicalManagerState.attendance.find(({ id }) => id === attendanceId)).toMatchObject({ storeId: 'S02' })
       expect(historicalManagerState.orders.find(({ id }) => id === orderBody.order.id)).toMatchObject({ storeId: 'S02' })
-      expect(historicalManagerState.notifications.find(({ orderId }) => orderId === orderBody.order.id)).toMatchObject({
-        type: 'order.created', storeId: 'S02', employeeId: 'E01',
-      })
+      expect(historicalManagerState.notifications.some(({ orderId }) => orderId === orderBody.order.id)).toBe(false)
 
       const augustPayroll = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'payroll.close', expectedVersion: 4, payload: { storeId: 'S02', period: '2026-08' },
