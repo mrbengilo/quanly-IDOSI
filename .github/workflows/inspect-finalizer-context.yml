@@ -1,0 +1,36 @@
+name: Inspect finalizer implementation context
+
+on:
+  push:
+    branches: [feat/ops-pages-cached-daily-automation]
+    paths: [.github/workflows/inspect-finalizer-context.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/ops-pages-cached-daily-automation
+          fetch-depth: 0
+      - name: Print worker state and revenue context
+        run: |
+          set -Eeuo pipefail
+          echo '===== WORKER STATE 3400-4150 ====='
+          sed -n '3400,4150p' server/worker.js
+          echo '===== WORKER REVENUE 20650-21650 ====='
+          sed -n '20650,21650p' server/worker.js
+          echo '===== WORKER ROUTER/EXPORT 23500-24050 ====='
+          sed -n '23500,24050p' server/worker.js
+          echo '===== CHECKOUT SYMBOLS ====='
+          grep -nE 'attendance.*(checkout|check.?out)|check.?out.*attendance|close.*shift|employee.*checkout' server/worker.js | head -160 || true
+          echo '===== APP CONTEXT CHECKOUT ====='
+          grep -nE 'check.?out|close.*shift|end.*shift' src/state/AppContext.jsx | head -160 || true
+          echo '===== SQLITE TRANSACTION/API ====='
+          grep -nE 'class Sqlite|batch\(|transaction|BEGIN|COMMIT|ROLLBACK|readStateSnapshot|writeState' server/vps/sqlite-d1.mjs | head -220 || true
+          echo '===== VPS RUNTIME ====='
+          sed -n '1,260p' server/vps/server.mjs
