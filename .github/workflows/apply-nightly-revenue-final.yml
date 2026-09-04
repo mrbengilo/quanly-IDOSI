@@ -51,3 +51,5 @@ jobs:
             echo '===== nightly revenue failure tail ====='
             tail -n 360 /tmp/nightly-revenue.log
           fi
+
+# gate-rerun: 2
