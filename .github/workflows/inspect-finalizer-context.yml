@@ -16,19 +16,15 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: feat/ops-pages-cached-daily-automation
-      - name: Print exact implementation context
+      - name: Print remaining implementation locations
         shell: bash
         run: |
           set -Eeuo pipefail
-          for range in \
-            'server/worker.js:5290:5385' \
-            'server/worker.js:20820:21320' \
-            'server/worker.js:13370:13680' \
-            'server/worker.js:16170:16270' \
-            'server/worker.js:23620:23685' \
-            'src/state/AppContext.jsx:5740:5865' \
-            'src/pages/admin/GovernancePages.jsx:60:245'; do
-            IFS=: read -r file start end <<< "$range"
-            echo "===== ${file}:${start}-${end} ====="
-            sed -n "${start},${end}p" "$file"
-          done
+          echo '=== SERVER ORDER AUDIT ==='
+          grep -nE 'orderAudit|order_audit' server/worker.js | head -n 120 || true
+          echo '=== SERVER AUTOMATIC/SCHEDULED REVENUE ==='
+          grep -nE 'scheduled\(|cron|automatic.*revenue|revenue.*automatic|FINALIZED|WAITING_SHIFT_CLOSE' server/worker.js wrangler.toml package.json | head -n 180 || true
+          echo '=== ORDER MUTATION TAIL ==='
+          sed -n '16240,16440p' server/worker.js
+          echo '=== SERVER PROJECTION AREAS ==='
+          grep -nE "order-audit|audit-history|orderAudit" src/App.jsx server/worker.js | head -n 160 || true
