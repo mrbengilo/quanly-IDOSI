@@ -1545,7 +1545,10 @@ const remoteCommandResultPatches = (type, result) => {
     add('supportSchedulePresetHistory', result.history)
   } else if (type.startsWith('support_schedule.')) add('supportWorkSchedules', result.schedule || result.schedules)
   if (type === 'task.done' || type === 'task.set_done') add('tasks', result.task)
-  if (type === 'task.progress.save') add('tasks', result.tasks)
+  if (type === 'task.progress.save') {
+    add('tasks', result.tasks)
+    add('attendance', result.attendance)
+  }
   return { patches, replacements }
 }
 

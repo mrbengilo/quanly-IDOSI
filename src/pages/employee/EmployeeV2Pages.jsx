@@ -334,6 +334,11 @@ export function EmployeeDashboardV2() {
   const activeShiftId = String(activeRecord?.shiftId || activeRecord?.shift || '')
   const activeScheduledShift = resolveTarget(shifts, activeShiftId, shiftAliases)
   const activeShiftTasks = todayTasks.filter((task) => {
+    if (task.checklistAttendanceId && !operationalIdentifierReferenceMatchesRecord(
+      attendance,
+      activeRecord,
+      task.checklistAttendanceId,
+    )) return false
     const taskShiftId = String(task.shiftId || task.shift || '')
     const activeShift = resolveTarget(app.shiftDefinitions, activeShiftId, shiftAliases, { id: activeShiftId })
     return activeRecord && (!taskShiftId || referenceMatchesTarget(app.shiftDefinitions, activeShift, taskShiftId, shiftAliases))
