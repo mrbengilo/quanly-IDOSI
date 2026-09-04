@@ -72,9 +72,15 @@ jobs:
           if (!support.includes('Lịch sử giao việc và tiến độ hoàn thành')) {
             throw new Error('Production support-work chunk does not match the expected paginated screen')
           }
-          const attendanceAndOrders = chunks.find((chunk) => chunk.path.includes('StoreV2Pages'))?.body || ''
-          for (const marker of ['Lịch sử chấm công của nhân viên', 'LỊCH SỬ ĐƠN HÀNG']) {
-            if (!attendanceAndOrders.includes(marker)) throw new Error(`Production store chunk is missing screen marker: ${marker}`)
+
+          const violation = chunks.find((chunk) => chunk.path.includes('ViolationManagementPage'))?.body || ''
+          if (!violation.includes('Lịch sử vi phạm')) {
+            throw new Error('Production violation chunk does not match the expected paginated screen')
+          }
+
+          const store = chunks.find((chunk) => chunk.path.includes('StoreV2Pages'))?.body || ''
+          for (const marker of ['Lịch sử chấm công của nhân viên', 'ĐƠN HÀNG']) {
+            if (!store.includes(marker)) throw new Error(`Production store chunk is missing screen marker: ${marker}`)
           }
 
           console.log(JSON.stringify({
@@ -82,6 +88,7 @@ jobs:
             releaseSha: actual,
             cssAssetsChecked: cssPaths.length,
             javascriptAssetsChecked: expectedChunks,
-            markers: ['pagination__ellipsis', 'Phân trang bảng dữ liệu', 'Trang trước', 'Trang sau'],
+            paginationMarkers: ['pagination__ellipsis', 'Phân trang bảng dữ liệu', 'Trang trước', 'Trang sau'],
+            screenMarkers: ['Lịch sử giao việc và tiến độ hoàn thành', 'Lịch sử vi phạm', 'Lịch sử chấm công của nhân viên', 'ĐƠN HÀNG'],
           }))
           NODE
