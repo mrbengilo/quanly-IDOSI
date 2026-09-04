@@ -15664,6 +15664,104 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 60_000)
 
+  it('finalizes a store day after the last checkout past 22:00 without polling', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-03T14:59:00.000Z'))
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-revenue-checkout-finalizer' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'revenue-checkout-admin-password',
+        initialState: {
+          stores: [{ id: 'S01', name: 'SM TNV', status: 'Đang hoạt động' }],
+          employees: [{
+            id: 'QL-S01', name: 'Quản lý S01', unit: 'store_manager', storeId: 'S01', status: 'Đang làm việc',
+          }],
+          attendance: [{
+            id: 'ATT-CLOSE-BEFORE-CUTOFF', storeId: 'S01', employeeId: 'QL-S01', date: '2026-09-03',
+            shiftId: 'shift-day', shiftName: 'Ca ngày', shiftStart: '08:00', shiftEnd: '22:00',
+            checkIn: '08:00', checkInAt: '2026-09-03T01:00:00.000Z', checkOut: null, checkOutAt: null,
+          }, {
+            id: 'ATT-CLOSE-AFTER-CUTOFF', storeId: 'S01', employeeId: 'QL-S01', date: '2026-09-03',
+            shiftId: 'shift-late', shiftName: 'Ca muộn', shiftStart: '09:00', shiftEnd: '22:00',
+            checkIn: '09:00', checkInAt: '2026-09-03T02:00:00.000Z', checkOut: null, checkOutAt: null,
+          }, {
+            id: 'ATT-CLOSE-LAST-AFTER-CUTOFF', storeId: 'S01', employeeId: 'QL-S01', date: '2026-09-03',
+            shiftId: 'shift-last', shiftName: 'Ca cuối', shiftStart: '10:00', shiftEnd: '22:00',
+            checkIn: '10:00', checkInAt: '2026-09-03T03:00:00.000Z', checkOut: null, checkOutAt: null,
+          }],
+          orders: [], revenueBonusDaily: [], revenueBonusAllocations: [],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+      const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'revenue-checkout-admin-password',
+      }), env)
+      const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+      const managerCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create', payload: {
+          role: 'store_manager', employeeId: 'QL-S01', storeId: 'S01', username: 'manager.revenue.checkout',
+          password: 'manager-revenue-checkout-password', displayName: 'Quản lý S01',
+        },
+      }, { ...adminAuthorization, 'idempotency-key': 'revenue-checkout-manager-create' }), env)
+      expect(managerCreated.status).toBe(201)
+      const managerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'manager.revenue.checkout', password: 'manager-revenue-checkout-password',
+      }), env)
+      const managerAuthorization = { authorization: `Bearer ${(await managerLogin.json()).token}` }
+
+      const beforeCutoff = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 1,
+        payload: {
+          attendanceId: 'ATT-CLOSE-BEFORE-CUTOFF',
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
+        },
+      }, { ...managerAuthorization, 'idempotency-key': 'revenue-checkout-before-cutoff' }), env)
+      expect(beforeCutoff.status).toBe(200)
+      expect(readHydratedState(env.DB.database).revenueBonusDaily).toEqual([])
+
+      vi.setSystemTime(new Date('2026-09-03T15:01:00.000Z'))
+      const afterCutoff = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 2,
+        payload: {
+          attendanceId: 'ATT-CLOSE-AFTER-CUTOFF',
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
+        },
+      }, { ...managerAuthorization, 'idempotency-key': 'revenue-checkout-after-cutoff' }), env)
+      expect(afterCutoff.status).toBe(200)
+      expect(await afterCutoff.json()).toMatchObject({
+        version: 3,
+        attendance: { id: 'ATT-CLOSE-AFTER-CUTOFF', checkOutAt: '2026-09-03T15:01:00.000Z' },
+      })
+      expect(readHydratedState(env.DB.database).revenueBonusDaily).toEqual([])
+
+      vi.setSystemTime(new Date('2026-09-03T17:02:00.000Z'))
+      const lastCheckout = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'attendance.check_out', expectedVersion: 3,
+        payload: {
+          attendanceId: 'ATT-CLOSE-LAST-AFTER-CUTOFF',
+          location: { latitude: 10.8, longitude: 106.7, accuracy: 5 },
+        },
+      }, { ...managerAuthorization, 'idempotency-key': 'revenue-checkout-last-after-cutoff' }), env)
+      expect(lastCheckout.status).toBe(200)
+      expect(await lastCheckout.json()).toMatchObject({
+        version: 4,
+        attendance: { id: 'ATT-CLOSE-LAST-AFTER-CUTOFF', checkOutAt: '2026-09-03T17:02:00.000Z' },
+      })
+
+      const finalState = readHydratedState(env.DB.database)
+      expect(finalState.revenueBonusDaily).toEqual([
+        expect.objectContaining({
+          storeId: 'S01', businessDate: '2026-09-03', status: 'FINALIZED', attendanceCount: 3,
+        }),
+      ])
+      expect(finalState.jobRuns).toEqual([
+        expect.objectContaining({ trigger: 'attendance-check-out', status: 'COMPLETED' }),
+      ])
+    } finally {
+      vi.useRealTimers()
+    }
+  }, 30_000)
+
   it('charges a support-transfer work reward only to the destination payroll and keeps retries immutable', async () => {
     vi.useFakeTimers()
     try {

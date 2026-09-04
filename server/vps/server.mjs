@@ -82,7 +82,6 @@ export const createIdosiServer = (options = {}) => {
     env: runtime.env,
     finalize: options.finalizeAutomaticRevenueBonuses || finalizeAutomaticRevenueBonuses,
     enabled: options.automaticRevenueBonusEnabled ?? (process.env.NODE_ENV !== 'test'),
-    intervalMs: options.automaticRevenueBonusIntervalMs,
     logger: options.automaticRevenueBonusLogger,
   })
   const releaseSha = options.releaseSha ?? process.env.IDOSI_RELEASE_SHA ?? ''
