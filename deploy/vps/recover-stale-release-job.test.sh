@@ -13,6 +13,8 @@ printf '%s\n' \
   '#12 RUN npm ci' >"$safe_log"
 bash "$RECOVERY_SCRIPT" --validate-log "$safe_log" >/dev/null
 
+grep -Fq 'IDOSI_STALE_DEPLOY_MIN_AGE_SECONDS:-900' "$RECOVERY_SCRIPT"
+
 if grep -Fq 'https://idosi.io.vn' "$RECOVERY_SCRIPT"; then
   printf 'Remote recovery must not depend on VPS hairpin access to the public hostname.\n' >&2
   exit 1
