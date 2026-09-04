@@ -45,6 +45,15 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })))
 })
 
+describe('IDOSI VPS automatic revenue finalizer wiring', () => {
+  it('keeps the background finalizer disabled by default in tests', () => {
+    const runtime = createIdosiServer({ automaticRevenueBonusLogger: null })
+    expect(runtime.automaticRevenueBonusRunner).toBeTruthy()
+    expect(runtime.automaticRevenueBonusRunner.running).toBe(false)
+    runtime.server.close()
+  })
+})
+
 describe('IDOSI VPS runtime', () => {
   it('packages the shared domain modules imported by the Worker into the runtime image', async () => {
     const dockerfile = await readFile(resolve('deploy', 'vps', 'Dockerfile'), 'utf8')
