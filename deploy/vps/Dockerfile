@@ -3,6 +3,7 @@
 FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
+ENV NODE_OPTIONS=--dns-result-order=ipv4first
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,id=idosi-npm-cache,target=/root/.npm,sharing=locked \
     npm ci --prefer-offline --no-audit --no-fund \

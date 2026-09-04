@@ -10,6 +10,7 @@ services:
     build:
       context: ../..
       dockerfile: deploy/vps/Dockerfile
+      network: host
       args:
         IDOSI_RELEASE_SHA: "${IDOSI_RELEASE_SHA:-unknown}"
     restart: unless-stopped
