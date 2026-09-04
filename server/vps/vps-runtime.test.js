@@ -495,7 +495,11 @@ describe('IDOSI VPS runtime', () => {
             startAt: '2020-01-01T00:00:00.000Z', endAt: '2099-01-01T00:00:00.000Z', status: 'Đang hỗ trợ',
           }],
           attendance: [
-            { id: 'ATT-S01', storeId: 'S01', employeeId: 'E01', checkOutAt: '2026-09-01T09:00:00.000Z' },
+            {
+              id: 'ATT-S01', storeId: 'S01', employeeId: 'E01', date: '2026-09-01',
+              checkInAt: '2026-09-01T01:00:00.000Z',
+              checklistSnapshot: { source: 'work-catalog', storeChecklistRepairVersion: 1, tasks: [] },
+            },
             { id: 'ATT-INBOUND', employeeId: 'E-INBOUND', checkOutAt: '2026-09-01T09:00:00.000Z' },
             {
               id: 'ATT-SNAPSHOT', storeId: 'S01', employeeId: 'E-SNAPSHOT', date: '2026-09-02',
@@ -508,7 +512,10 @@ describe('IDOSI VPS runtime', () => {
             { id: 'ATT-S02', storeId: 'S02', employeeId: 'E02', checkOutAt: '2026-09-01T09:00:00.000Z', note: foreignSecret },
           ],
           orders: [
-            { id: 'ORDER-S01', storeId: 'S01', employeeId: 'E01', amount: 100_000 },
+            {
+              id: 'ORDER-S01', storeId: 'S01', employeeId: 'E01', attendanceId: 'ATT-S01',
+              amount: 100_000,
+            },
             { id: 'ORDER-S02', storeId: 'S02', employeeId: 'E02', amount: 99_000_000, note: foreignSecret },
           ],
           notifications: [
@@ -584,7 +591,7 @@ describe('IDOSI VPS runtime', () => {
       expect(payrollPayload.state.employees.map(({ id }) => id)).toEqual([
         'E01', 'E-INBOUND', 'E-SNAPSHOT',
       ])
-      expect(payrollPayload.state.attendance.map(({ id }) => id)).toEqual(['ATT-SNAPSHOT'])
+      expect(payrollPayload.state.attendance.map(({ id }) => id)).toEqual(['ATT-S01', 'ATT-SNAPSHOT'])
       expect(JSON.stringify(payrollPayload)).not.toContain('FOREIGN_STORE_SECRET')
       expect(storeSnapshotReads).toBe(2)
       expect(globalSnapshotReads).toBe(0)
@@ -606,7 +613,8 @@ describe('IDOSI VPS runtime', () => {
       expect(employeeHomePayload).toMatchObject({ projection: 'global', screen: 'employee-home' })
       expect(employeeHomePayload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
       expect(JSON.stringify(employeeHomePayload)).not.toContain('FOREIGN_STORE_SECRET')
-      // Checkout must receive the employee's own store orders without materializing global state.
+      // Employee home must receive only orders tied to the employee's open attendance
+      // without materializing global state.
       expect(storeSnapshotReads).toBe(4)
       expect(globalSnapshotReads).toBe(0)
 
