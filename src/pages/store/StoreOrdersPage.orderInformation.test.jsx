@@ -166,6 +166,39 @@ describe('StoreOrdersPage order information editing', () => {
 })
 
 describe('StoreOrdersPage history pagination', () => {
+  it('shows all current-day orders on the first page even above the normal 20-row limit', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-04T03:00:00.000Z'))
+    mocked.app = {
+      ...makeApp(),
+      orders: [
+        ...Array.from({ length: 22 }, (_, index) => order({
+          id: `ORDER-MORNING-${index + 1}`,
+          code: `S01-MORNING-${index + 1}`,
+          shiftId: 'morning',
+          shiftName: 'Ca sáng',
+          shiftStart: '08:00',
+          shiftEnd: '12:00',
+          createdAt: `2026-09-04T${String(8 + Math.floor(index / 12)).padStart(2, '0')}:${String(index % 12).padStart(2, '0')}:00+07:00`,
+        })),
+        order({ id: 'ORDER-AFTERNOON-1', code: 'S01-AFTERNOON-1', shiftId: 'afternoon', shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '17:00', createdAt: '2026-09-04T14:00:00+07:00' }),
+        order({ id: 'ORDER-AFTERNOON-2', code: 'S01-AFTERNOON-2', shiftId: 'afternoon', shiftName: 'Ca chiều', shiftStart: '13:00', shiftEnd: '17:00', createdAt: '2026-09-04T15:00:00+07:00' }),
+        order({ id: 'ORDER-NIGHT-1', code: 'S01-NIGHT-1', shiftId: 'night', shiftName: 'Ca tối', shiftStart: '17:00', shiftEnd: '21:00', createdAt: '2026-09-04T18:00:00+07:00' }),
+        order({ id: 'ORDER-NIGHT-2', code: 'S01-NIGHT-2', shiftId: 'night', shiftName: 'Ca tối', shiftStart: '17:00', shiftEnd: '21:00', createdAt: '2026-09-04T19:00:00+07:00' }),
+      ],
+    }
+
+    const { container } = renderPage()
+
+    expect(screen.getByText('S01-MORNING-1')).toBeTruthy()
+    expect(screen.getByText('S01-MORNING-22')).toBeTruthy()
+    expect(screen.getByText('S01-NIGHT-2')).toBeTruthy()
+    expect([...container.querySelectorAll('.order-group__shift-title strong')].map((node) => node.textContent)).toEqual([
+      'Ca tối', 'Ca chiều', 'Ca sáng',
+    ])
+    expect(screen.queryByRole('button', { name: 'Trang 2' })).toBeNull()
+  })
+
   it('shows current-day orders first and opens older dates through numbered pages', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-09-04T03:00:00.000Z'))
