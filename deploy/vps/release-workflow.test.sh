@@ -217,6 +217,10 @@ grep -Fq 'id=idosi-npm-cache,target=/root/.npm,sharing=locked' "$SCRIPT_DIR/Dock
   || fail 'production image build does not persist a concurrency-safe npm download cache'
 grep -Fq 'npm ci --prefer-offline --no-audit --no-fund' "$SCRIPT_DIR/Dockerfile" \
   || fail 'production image build does not prefer the persistent npm download cache'
+grep -Fq -- '--fetch-retries=2' "$SCRIPT_DIR/Dockerfile" \
+  || fail 'production npm install does not bound registry retries'
+grep -Fq -- '--fetch-timeout=120000' "$SCRIPT_DIR/Dockerfile" \
+  || fail 'production npm install has no bounded fetch timeout'
 grep -Fq 'attempt<=PUBLIC_VERIFY_ATTEMPTS' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
   || fail 'production workflow does not retry public verification during bounded cutover convergence'
 grep -Fq 'sleep "$PUBLIC_VERIFY_DELAY_SECONDS"' "$SCRIPT_DIR/../../.github/workflows/deploy-vps.yml" \
