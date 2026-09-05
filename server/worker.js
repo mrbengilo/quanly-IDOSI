@@ -5056,7 +5056,7 @@ const getSystemScreen = async (request, env, context, screen) => {
   if (collections.includes('attendance')) {
     if (useEmployeeStoreProjection) {
       row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen)
-    } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
+    } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db, { checkEligibility: true })) {
       await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
       row = await readScreen()
     }
@@ -14534,6 +14534,35 @@ function checklistSnapshotForAttendance({
   }
 }
 
+export const openStoreChecklistRepairContext = (record, employees) => {
+  if (!isPlainRecord(record) || record.deletedAt || record.checkOutAt || record.checkOut) return null
+  const employeeId = String(record.employeeId || record.employee_id || '').trim()
+  const employee = employees.find((candidate) => (
+    employeeIdentifierValues(candidate).some((value) => sameIdentifier(value, employeeId))
+  ))
+  if (!employeeId || !employee || employeeUnit(employee) !== 'store') return null
+  const existingSnapshot = isPlainRecord(record.checklistSnapshot) ? record.checklistSnapshot : null
+  if (existingSnapshot
+    && normalizeIdentifierKey(existingSnapshot.source) !== 'work-catalog'
+    && normalizeIdentifierKey(existingSnapshot.templateId) !== 'work-catalog') return null
+  const attendanceId = String(record.id || '').trim()
+  // Do not invent scope/date from the current profile or timestamp: progress
+  // mutations require the store and business date actually saved on attendance.
+  const storeId = String(record.storeId || '').trim()
+  const explicitBusinessDate = String(record.date || record.workDate || '').trim()
+  const date = /^\d{4}-\d{2}-\d{2}(?:$|T)/u.test(explicitBusinessDate) ? explicitBusinessDate.slice(0, 10) : ''
+  const shiftId = String(record.shiftId || record.shift || '').trim()
+  if (!attendanceId || !storeId || !date || !shiftId) return null
+  const storedCheckInTime = parseShiftTime(record.checkInTime || record.checkIn)?.label || null
+  const checkInAtEpoch = Date.parse(String(record.checkInAt || ''))
+  const checkInTime = storedCheckInTime || (Number.isFinite(checkInAtEpoch) ? localDateTimeParts(record.checkInAt).time : null)
+  const snapshotAlreadySealed = Number(existingSnapshot?.storeChecklistRepairVersion || 0) >= STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION
+  // Shift metadata alone is not proof of check-in. A sealed snapshot remains
+  // authoritative even when the legacy check-in time is absent.
+  if (!checkInTime && !snapshotAlreadySealed) return null
+  return { employeeId, existingSnapshot, attendanceId, storeId, date, shiftId, checkInTime, snapshotAlreadySealed }
+}
+
 export function reconcileOpenStoreAttendanceChecklists(state) {
   if (!Array.isArray(state.attendance) || !Array.isArray(state.workCatalogItems)) {
     return state
@@ -14584,45 +14613,14 @@ export function reconcileOpenStoreAttendanceChecklists(state) {
   const newHistories = []
   let changed = false
   const attendance = state.attendance.map((record) => {
-    if (!isPlainRecord(record) || record.deletedAt || record.checkOutAt || record.checkOut) return record
-    const employeeId = String(record.employeeId || record.employee_id || '').trim()
-    const employee = employees.find((candidate) => (
-      employeeIdentifierValues(candidate).some((value) => sameIdentifier(value, employeeId))
-    ))
-    if (!employeeId || !employee || employeeUnit(employee) !== 'store') return record
-    const existingSnapshot = isPlainRecord(record.checklistSnapshot) ? record.checklistSnapshot : null
-    if (existingSnapshot
-      && normalizeIdentifierKey(existingSnapshot.source) !== 'work-catalog'
-      && normalizeIdentifierKey(existingSnapshot.templateId) !== 'work-catalog') return record
-    const attendanceId = String(record.id || '').trim()
-    // Progress mutations are scoped by the store and business date persisted on
-    // the attendance row. Never invent either value from the current employee or
-    // timestamp: doing so creates checklist tasks that the same attendance cannot
-    // subsequently read or update.
-    const storeId = String(record.storeId || '').trim()
-    const explicitBusinessDate = String(record.date || record.workDate || '').trim()
-    const date = /^\d{4}-\d{2}-\d{2}(?:$|T)/u.test(explicitBusinessDate)
-      ? explicitBusinessDate.slice(0, 10)
-      : ''
-    const shiftId = String(record.shiftId || record.shift || '').trim()
-    if (!attendanceId || !storeId || !date || !shiftId) return record
-    const storedCheckInTime = parseShiftTime(record.checkInTime || record.checkIn)?.label || null
-    const checkInAtEpoch = Date.parse(String(record.checkInAt || ''))
-    const checkInTime = storedCheckInTime || (Number.isFinite(checkInAtEpoch)
-      ? localDateTimeParts(record.checkInAt).time
-      : null)
+    const repairContext = openStoreChecklistRepairContext(record, employees)
+    if (!repairContext) return record
+    const { employeeId, existingSnapshot, attendanceId, storeId, date, shiftId, checkInTime, snapshotAlreadySealed } = repairContext
     const capturedAt = existingSnapshot?.capturedAt || record.checkInAt || record.createdAt || `${date}T00:00:00.000Z`
     const assignmentId = String(existingSnapshot?.assignmentId || `catalog_checklist_${attendanceId}`)
     const capturedSnapshotTasks = Array.isArray(existingSnapshot?.tasks)
       ? existingSnapshot.tasks.filter(isPlainRecord)
       : []
-    const snapshotAlreadySealed = Number(
-      existingSnapshot?.storeChecklistRepairVersion || 0,
-    ) >= STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION
-    // A legacy shift id/name is schedule metadata, not proof of an actual
-    // check-in. Only a stored check-in time (or valid timestamp) may choose the
-    // canonical mandatory-work bucket before the repair is sealed.
-    if (!checkInTime && !snapshotAlreadySealed) return record
     const snapshotTaskKind = (task) => String(
       task?.kind || task?.catalogKind || task?.catalogSnapshot?.kind || '',
     ).trim().toUpperCase()
@@ -15243,9 +15241,9 @@ async function persistOpenStoreAttendanceChecklistRepairs(db, actor, context, cu
   return repairedRow
 }
 
-const hasPendingOpenStoreAttendanceChecklistRepair = async (db) => {
-  const pending = await first(db, `
-    SELECT 1
+const hasPendingOpenStoreAttendanceChecklistRepair = async (db, { checkEligibility = false } = {}) => {
+  const pending = await all(db, `
+    SELECT ${checkEligibility ? 'value_json' : '1'}
     FROM state_entities
     WHERE scope_key = 'global'
       AND collection_key = 'attendance'
@@ -15255,13 +15253,8 @@ const hasPendingOpenStoreAttendanceChecklistRepair = async (db) => {
           < ?
         OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL
       )
-    LIMIT 1
-  `, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION)
-  if (pending) return true
-  // Rows inserted by pre-migration maintenance scripts may not have query
-  // dimensions yet. The NULL branch is indexed and normally empty after 0012.
-  return Boolean(await first(db, `
-    SELECT 1
+    UNION ALL
+    SELECT ${checkEligibility ? 'value_json' : '1'}
     FROM state_entities
     WHERE scope_key = 'global'
       AND collection_key = 'attendance'
@@ -15274,8 +15267,19 @@ const hasPendingOpenStoreAttendanceChecklistRepair = async (db) => {
           < ?
         OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL
       )
-    LIMIT 1
-  `, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION))
+    ${checkEligibility ? '' : 'LIMIT 1'}
+  `, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION)
+  if (!pending.length) return false
+  // Commands retain their existing global preload: connected money mutations
+  // can require records outside a screen projection even when repair is a no-op.
+  if (!checkEligibility) return true
+  // The indexed NULL branch retains pre-migration compatibility. Use the same
+  // eligibility rules as reconciliation: office/support/manager attendance,
+  // other snapshot types and incomplete records must not trigger global loads.
+  const employeesRow = await loadStateCollections(db, 'global', ['employees'])
+  const state = parseStoredJson(employeesRow?.value_json, {})
+  const employees = Array.isArray(state.employees) ? state.employees : []
+  return pending.some((row) => openStoreChecklistRepairContext(parseStoredJson(row.value_json, null), employees))
 }
 
 const attendanceCommand = async (db, actor, body, commandContext, env) => {
