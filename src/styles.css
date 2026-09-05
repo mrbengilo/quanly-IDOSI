@@ -1330,6 +1330,8 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
 
 .support-employee-tag[data-support-employee-tag="true"] {
   display: flex;
+  align-items: center;
+  justify-content: center;
   max-width: 100%;
   margin-top: 4px;
   vertical-align: middle;
@@ -1338,13 +1340,17 @@ textarea:focus { border-color: #52a675; box-shadow: 0 0 0 3px rgba(8, 121, 61, .
 .support-employee-tag[data-support-employee-tag="true"] .badge {
   max-width: 100%;
   line-height: 1.35;
-  text-align: left;
+  text-align: center;
   white-space: normal;
+}
+
+td .support-employee-tag[data-support-employee-tag="true"] {
+  min-width: 132px;
 }
 
 .person-cell .support-employee-tag,
 .employee-picker .support-employee-tag {
-  align-self: flex-start;
+  align-self: center;
 }
 
 .employee-picker .support-employee-tag {
