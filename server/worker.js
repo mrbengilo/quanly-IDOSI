@@ -3974,6 +3974,32 @@ const repairScopedStoreStateIfNeeded = async (db, actor, context, row, storeId, 
   return loadStoreState(db, 'global', storeId, actor.employee_id, screen, period)
 }
 
+const repairEmployeeScreenStateIfNeeded = async (db, actor, context, row, screen) => {
+  if (!row) return row
+  const state = parseStoredJson(row.value_json, {})
+  const employee = (Array.isArray(state.employees) ? state.employees : []).find((record) => (
+    employeeIdentifierValues(record).some((id) => sameIdentifier(id, actor.employee_id))
+  ))
+  if (!employee || employeeUnit(employee) !== 'store') return row
+  const pending = (Array.isArray(state.attendance) ? state.attendance : []).some((record) => (
+    record && !record.deletedAt && !record.checkOut && !record.checkOutAt
+    && employeeIdentifierValues(employee).some((id) => sameIdentifier(id, record.employeeId || record.employee_id))
+    && (Number(record.checklistSnapshot?.storeChecklistRepairVersion || 0) < STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION
+      || record.checklistRepairError != null)
+  ))
+  if (!pending) return row
+  // Home/orders omit checklist tasks and immutable assignment history. Use a
+  // complete repair projection for the preflight so omitted rows are never
+  // mistaken for missing data. Unrepairable legacy rows need no global read.
+  const repairRow = await loadStoreState(db, 'global', actor.store_id, actor.employee_id, 'checklist-repair')
+  const normalized = normalizeSharedStateForStorage(parseStoredJson(repairRow?.value_json, {}))
+  if (reconcileOpenStoreAttendanceChecklists(normalized) === normalized) return row
+  // Persistence still reconciles the complete canonical state under its
+  // existing optimistic-concurrency and audit guards; never save a projection.
+  await persistOpenStoreAttendanceChecklistRepairs(db, actor, context)
+  return loadStoreState(db, 'global', actor.store_id, actor.employee_id, screen)
+}
+
 const assignStateEntityOrders = (descriptors) => {
   const anchors = descriptors
     .map((descriptor, index) => descriptor.match ? { index, order: descriptor.match.entityOrder } : null)
@@ -5027,9 +5053,13 @@ const getSystemScreen = async (request, env, context, screen) => {
     ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
     : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
   let row = await readScreen()
-  if (collections.includes('attendance') && await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
-    await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
-    row = await readScreen()
+  if (collections.includes('attendance')) {
+    if (useEmployeeStoreProjection) {
+      row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen)
+    } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
+      await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
+      row = await readScreen()
+    }
   }
   const [policies, users] = await Promise.all([
     listPolicies(db),

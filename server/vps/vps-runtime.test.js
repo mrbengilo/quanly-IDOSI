@@ -509,7 +509,9 @@ describe('IDOSI VPS runtime', () => {
                 hourlyRate: 29_000, basePay: 116_000, allowance: 0, totalPay: 116_000,
               },
             },
-            { id: 'ATT-S02', storeId: 'S02', employeeId: 'E02', checkOutAt: '2026-09-01T09:00:00.000Z', note: foreignSecret },
+            // An unrepairable open legacy row in another store must not make
+            // every employee screen load and reconcile the global history.
+            { id: 'ATT-S02', storeId: 'S02', employeeId: 'E02', checkInAt: '2026-09-01T01:00:00.000Z', note: foreignSecret },
           ],
           orders: [
             {
