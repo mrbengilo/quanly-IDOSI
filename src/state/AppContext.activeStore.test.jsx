@@ -265,8 +265,11 @@ describe('remote command active-store preservation', () => {
     })
   })
 
-  it('hydrates a direct employee route with its own screen API instead of global state', async () => {
-    window.location.hash = '#/employee/orders'
+  it.each([
+    ['#/employee/orders', 'employee-orders'],
+    ['#/login', 'employee-home'],
+  ])('hydrates employee navigation from %s with its screen API instead of global state', async (path, expectedScreen) => {
+    window.location.hash = path
     const employeeState = {
       ...makeRemoteState('STORE-A'),
       employees: [{ id: 'E01', name: 'Nhân viên 01', unit: 'store', storeId: 'STORE-A' }],
@@ -285,7 +288,7 @@ describe('remote command active-store preservation', () => {
     api.apiGetSystemScreenState.mockResolvedValue({
       user: employeeHomeUser,
       projection: 'global',
-      screen: 'employee-orders',
+      screen: expectedScreen,
       state: employeeState,
       policies: [],
       version: 1,
@@ -297,11 +300,11 @@ describe('remote command active-store preservation', () => {
       await Promise.resolve()
     })
 
-    expect(api.apiGetSystemScreenState).toHaveBeenCalledWith('employee-orders')
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledWith(expectedScreen)
     expect(api.apiBootstrapState).not.toHaveBeenCalled()
     expect(api.apiGetState).not.toHaveBeenCalled()
     expect(appRef.current.remoteProjection).toEqual({
-      kind: 'global', storeId: '', screen: 'employee-orders', period: '',
+      kind: 'global', storeId: '', screen: expectedScreen, period: '',
     })
     expect(appRef.current.orders.map(({ id }) => id)).toEqual(['ORDER-E01'])
   })

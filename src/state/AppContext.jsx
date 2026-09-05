@@ -1944,7 +1944,7 @@ export function AppProvider({ children }) {
       || activeStoreIdRef.current
       || readRememberedActiveStore(expectedUser)
     const role = normalizeAuthRole(expectedUser?.role)
-    const systemScreen = browserSystemWorkspaceScreen()
+    const systemScreen = browserSystemWorkspaceScreen() || (role === 'employee' ? 'employee-home' : '')
     const useStoreProjection = Boolean(preferredStoreId) && (
       role === 'store_manager'
       || (isSystemRole(role) && browserUsesStoreWorkspace())
