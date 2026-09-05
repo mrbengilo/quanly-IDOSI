@@ -37,6 +37,7 @@ import { createDomainState, defaultPolicies, migrateDomainState } from './initia
 import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
 import { clearWorkspaceCache, readWorkspaceCache, writeWorkspaceCache } from '../services/workspaceCache'
+import { invalidateEmployeeAvatarCache } from '../services/employeeAvatarCache'
 import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
 import { employeeScreen, systemScreenForPath } from '../domain/workspaceScreens'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../domain/storeTieredPayroll'
@@ -1735,6 +1736,7 @@ export function AppProvider({ children }) {
       remote.pendingProjectionKey = ''
       remote.pendingProjectionPromise = null
       remote.projectionCache.clear()
+      invalidateEmployeeAvatarCache()
       void clearWorkspaceCache()
     }
     const policyVersions = Array.isArray(payload.policies)
@@ -1742,6 +1744,7 @@ export function AppProvider({ children }) {
       : remote.policyVersions
     if (!samePolicyVersions(policyVersions, remote.policyVersions)) {
       remote.projectionCache.clear()
+      invalidateEmployeeAvatarCache()
       void clearWorkspaceCache()
     }
     remote.policyVersions = policyVersions
@@ -2154,6 +2157,7 @@ export function AppProvider({ children }) {
           activateCachedProjection(cached, metadata.user)
           return
         }
+        invalidateEmployeeAvatarCache()
         await clearWorkspaceCache()
       }
       const payload = await apiBootstrapState('global', { profile: 'initial' })
@@ -2173,6 +2177,7 @@ export function AppProvider({ children }) {
     }
     restore().catch(() => {
       clearApiSession()
+      invalidateEmployeeAvatarCache()
       void clearWorkspaceCache()
       if (active) setApiStatus('local')
     }).finally(() => {
@@ -2414,6 +2419,7 @@ export function AppProvider({ children }) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       apiRef.current.projectionCache.clear()
+      invalidateEmployeeAvatarCache()
       void clearWorkspaceCache()
       const session = activateRemotePayload(bootstrap, authenticated.user)
       if (bootstrap.partial
@@ -2504,6 +2510,7 @@ export function AppProvider({ children }) {
           payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
         }
         apiRef.current.projectionCache.clear()
+        invalidateEmployeeAvatarCache()
         void clearWorkspaceCache()
         const session = activateRemotePayload(payload, response.user, selected.storeId)
         if (payload.partial && shouldHydrateInitialProjection(response.user)) {
@@ -2552,6 +2559,7 @@ export function AppProvider({ children }) {
     apiRef.current.pendingProjectionKey = ''
     apiRef.current.pendingProjectionPromise = null
     apiRef.current.projectionCache.clear()
+    invalidateEmployeeAvatarCache()
     void clearWorkspaceCache()
     apiRef.current.projectionWriteVersion = null
     apiRef.current.domainReconciliations = 0

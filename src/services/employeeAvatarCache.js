@@ -15,17 +15,19 @@ export const loadEmployeeAvatarUrl = (employeeId) => {
   if (cached?.url) return Promise.resolve(cached.url)
   if (cached?.promise) return cached.promise
 
+  const entry = {}
   const promise = apiGetEmployeeAvatar(id).then((blob) => {
+    // A response from an old account/context must never repopulate its cache.
+    if (employeeAvatarCache.get(id) !== entry) return ''
     const url = URL.createObjectURL(blob)
-    const previous = employeeAvatarCache.get(id)
-    if (previous?.url && previous.url !== url) revokeEntry(previous)
-    employeeAvatarCache.set(id, { url })
+    entry.url = url
     return url
   }).catch((error) => {
-    employeeAvatarCache.delete(id)
+    if (employeeAvatarCache.get(id) === entry) employeeAvatarCache.delete(id)
     throw error
   })
-  employeeAvatarCache.set(id, { promise })
+  entry.promise = promise
+  employeeAvatarCache.set(id, entry)
   return promise
 }
 
