@@ -178,6 +178,8 @@ jobs:
           compose exec -T app node <<'NODE'
           import { statSync } from 'node:fs'
           import { DatabaseSync } from 'node:sqlite'
+          import { SqliteD1 } from './server/vps/sqlite-d1.mjs'
+          import { projectSharedState } from './server/worker.js'
           const path = process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
           const db = new DatabaseSync(path, { readOnly: true })
           db.exec('PRAGMA query_only=ON')
@@ -197,6 +199,34 @@ jobs:
           }
           console.log('state_entity_indexes=' + JSON.stringify(db.prepare("PRAGMA index_list('state_entities')").all()))
           console.log('global_state=' + JSON.stringify(db.prepare("SELECT version,length(value_json) AS inline_bytes,updated_at FROM app_state WHERE scope_key='global'").get()))
+          // Profile one existing employee on the read-only connection. No token,
+          // account identifier, profile value or business record is printed.
+          const actor = db.prepare(`SELECT id AS user_id, role, store_id, employee_id
+            FROM users WHERE role='employee' AND status='active'
+              AND trim(COALESCE(store_id,'')) <> '' AND trim(COALESCE(employee_id,'')) <> ''
+            ORDER BY updated_at DESC LIMIT 1`).get()
+          if (actor) {
+            const adapter = { database: db }
+            const prepare = db.prepare.bind(db)
+            for (const screen of ['session', 'employee-home', 'employee-orders', 'employee-reward-tasks']) {
+              let snapshotSql = ''
+              db.prepare = (sql) => { snapshotSql = sql; return prepare(sql) }
+              const started = performance.now()
+              const snapshot = SqliteD1.prototype.readStoreStateSnapshot.call(adapter, 'global', actor.store_id, actor.employee_id, screen)
+              db.prepare = prepare
+              const readMs = performance.now() - started
+              const state = JSON.parse(snapshot.row?.value_json || '{}')
+              for (const manifest of snapshot.manifests) state[manifest.collection_key] = []
+              for (const entity of snapshot.entities) state[entity.collection_key].push(JSON.parse(entity.value_json))
+              const hydrateMs = performance.now() - started - readMs
+              const projected = projectSharedState(state, actor)
+              const projectMs = performance.now() - started - readMs - hydrateMs
+              console.log('screen_profile=' + JSON.stringify({ screen, readMs, hydrateMs, projectMs,
+                rows: snapshot.entities.length, projectedBytes: Buffer.byteLength(JSON.stringify(projected)) }))
+              const plan = prepare(`EXPLAIN QUERY PLAN ${snapshotSql}`).all('global', actor.store_id, actor.employee_id, '')
+              console.log('screen_query_plan=' + JSON.stringify({ screen, steps: plan.map(({ detail }) => detail) }))
+            }
+          }
           db.close()
           NODE
 
