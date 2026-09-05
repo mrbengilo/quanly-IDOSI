@@ -179,7 +179,7 @@ jobs:
           import { statSync } from 'node:fs'
           import { DatabaseSync } from 'node:sqlite'
           import { SqliteD1 } from './server/vps/sqlite-d1.mjs'
-          import { projectSharedState } from './server/worker.js'
+          import { projectSharedState, reconcileOpenStoreAttendanceChecklists } from './server/worker.js'
           const path = process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
           const db = new DatabaseSync(path, { readOnly: true })
           db.exec('PRAGMA query_only=ON')
@@ -199,6 +199,27 @@ jobs:
           }
           console.log('state_entity_indexes=' + JSON.stringify(db.prepare("PRAGMA index_list('state_entities')").all()))
           console.log('global_state=' + JSON.stringify(db.prepare("SELECT version,length(value_json) AS inline_bytes,updated_at FROM app_state WHERE scope_key='global'").get()))
+          console.log('pending_checklist_repairs=' + JSON.stringify(db.prepare(`
+            SELECT COUNT(*) AS rows,
+              SUM(CASE WHEN trim(COALESCE(json_extract(value_json,'$.shiftId'),json_extract(value_json,'$.shift'),''))='' THEN 1 ELSE 0 END) AS missing_shift,
+              SUM(CASE WHEN json_extract(value_json,'$.checklistRepairError') IS NOT NULL THEN 1 ELSE 0 END) AS error_rows
+            FROM state_entities WHERE scope_key='global' AND collection_key='attendance'
+              AND (open_flag=1 OR (open_flag IS NULL
+                AND json_extract(value_json,'$.deletedAt') IS NULL
+                AND trim(COALESCE(json_extract(value_json,'$.checkOut'),''))=''
+                AND trim(COALESCE(json_extract(value_json,'$.checkOutAt'),''))=''))
+              AND (COALESCE(CAST(json_extract(value_json,'$.checklistSnapshot.storeChecklistRepairVersion') AS INTEGER),0)<1
+                OR json_extract(value_json,'$.checklistRepairError') IS NOT NULL)
+          `).get()))
+          const repairStarted = performance.now()
+          const repairSnapshot = SqliteD1.prototype.readStateSnapshot.call({ database: db }, 'global')
+          const repairState = JSON.parse(repairSnapshot.row?.value_json || '{}')
+          for (const manifest of repairSnapshot.manifests) repairState[manifest.collection_key] = []
+          for (const entity of repairSnapshot.entities) repairState[entity.collection_key].push(JSON.parse(entity.value_json))
+          const repairReadMs = performance.now() - repairStarted
+          const reconciled = reconcileOpenStoreAttendanceChecklists(repairState)
+          console.log('global_repair_preflight=' + JSON.stringify({ readHydrateMs: repairReadMs,
+            reconcileMs: performance.now() - repairStarted - repairReadMs, changed: reconciled !== repairState }))
           // Profile one existing employee on the read-only connection. No token,
           // account identifier, profile value or business record is printed.
           const actor = db.prepare(`SELECT id AS user_id, role, store_id, employee_id

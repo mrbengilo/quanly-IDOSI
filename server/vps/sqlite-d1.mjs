@@ -145,6 +145,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   // Only an open attendance row is needed to preserve an employee's effective
   // support-transfer store after the scheduled transfer window has ended.
   session: ['attendance'],
+  'checklist-repair': ['attendance', 'tasks', 'taskAssignmentHistory', 'workCatalogItems', 'shiftDefinitions'],
   initial: ['attendance', 'supportWorkSchedules', 'schedule'],
   'initial-support': [
     'attendance', 'supportWorkSchedules', 'officeAdjustments', 'salaryAdjustments', 'payrollPeriods',
