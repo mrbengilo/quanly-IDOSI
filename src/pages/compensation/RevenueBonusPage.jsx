@@ -438,20 +438,21 @@ export function RevenueBonusPage({ storeScoped = false }) {
     serverBacked,
   ])
 
-  const scheduledSnapshotStatus = automaticMode && remoteLiveSnapshot
-    && sameOperationalIdentifier(remoteLiveSnapshot.storeId, selectedStoreId)
-    && String(remoteLiveSnapshot.businessDate || '') === businessDate
-    ? String(remoteLiveSnapshot.status || '')
-    : ''
+  useEffect(() => {
+    if (!selectedStoreId || !serverBacked || !automaticMode || businessDate !== vietnamToday()) return undefined
+    const cutoffMs = Date.parse(`${businessDate}T22:00:00+07:00`)
+    if (!Number.isFinite(cutoffMs) || Date.now() >= cutoffMs) return undefined
+    const timer = window.setTimeout(() => {
+      setRemoteRefreshVersion((version) => version + 1)
+    }, cutoffMs - Date.now() + 1_000)
+    return () => window.clearTimeout(timer)
+  }, [automaticMode, businessDate, selectedStoreId, serverBacked])
+
   useEffect(() => {
     if (!selectedStoreId || !serverBacked || !automaticMode) return undefined
     let active = true
-    let busy = false
-    let timer = null
     const scope = `${identifierKey(selectedStoreId)}:${businessDate}`
     const refresh = async () => {
-      if (busy || (typeof document !== 'undefined' && document.hidden)) return
-      busy = true
       try {
         const response = await apiGetRevenueBonusLive({ storeId: selectedStoreId, businessDate })
         if (active) {
@@ -461,36 +462,18 @@ export function RevenueBonusPage({ storeScoped = false }) {
         }
       } catch {
         if (active) setRemotePollError({ scope })
-      } finally {
-        busy = false
       }
     }
     void refresh()
-    const cutoffMs = Date.parse(`${businessDate}T22:00:00+07:00`)
-    if (businessDate === vietnamToday() && Number.isFinite(cutoffMs) && Date.now() < cutoffMs) {
-      timer = window.setTimeout(refresh, Math.min(cutoffMs - Date.now() + 1_000, 2_147_000_000))
-    } else if (scheduledSnapshotStatus === 'WAITING_SHIFT_CLOSE') {
-      timer = window.setInterval(refresh, 30_000)
-    }
-    return () => {
-      active = false
-      if (timer != null) {
-        window.clearTimeout(timer)
-        window.clearInterval(timer)
-      }
-    }
-  }, [automaticMode, businessDate, remoteRefreshVersion, scheduledSnapshotStatus, selectedStoreId, serverBacked])
-
+    return () => { active = false }
+  }, [automaticMode, businessDate, remoteRefreshVersion, selectedStoreId, serverBacked])
 
   useEffect(() => {
     const automaticHistoryMonth = historyMonth >= AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE.slice(0, 7)
     if (!selectedStoreId || !serverBacked || !automaticHistoryMonth) return undefined
     let active = true
-    let busy = false
     const scope = `${identifierKey(selectedStoreId)}:${historyMonth}`
     const refresh = async () => {
-      if (busy || (typeof document !== 'undefined' && document.hidden)) return
-      busy = true
       try {
         const response = await apiGetRevenueBonusPeriod({ storeId: selectedStoreId, period: historyMonth })
         if (active) {
@@ -499,13 +482,11 @@ export function RevenueBonusPage({ storeScoped = false }) {
         }
       } catch {
         if (active) setRemoteHistoryError({ scope })
-      } finally {
-        busy = false
       }
     }
     void refresh()
     return () => { active = false }
-  }, [historyMonth, remoteRefreshVersion, scheduledSnapshotStatus, selectedStoreId, serverBacked])
+  }, [historyMonth, remoteRefreshVersion, selectedStoreId, serverBacked])
 
   const liveScope = `${identifierKey(selectedStoreId)}:${businessDate}`
   const matchingRemoteSnapshot = automaticMode && serverBacked && remoteLiveSnapshot
