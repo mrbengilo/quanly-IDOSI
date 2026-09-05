@@ -431,6 +431,11 @@ describe('SQLite state snapshots', () => {
       // Resolve the actor's open shifts once, rather than scanning attendance
       // again for every order. This also protects the no-open-shift path.
       expect(plan.map(({ detail }) => detail).join('\n')).toContain('MATERIALIZE open_actor_attendance_ids')
+      const identityLookups = plan.map(({ detail }) => detail)
+        .filter((detail) => /^SEARCH (employee|transfer) /u.test(detail))
+      expect(identityLookups.length).toBeGreaterThanOrEqual(2)
+      expect(identityLookups.every((detail) => detail.includes('USING PRIMARY KEY (scope_key=? AND collection_key=?)')))
+        .toBe(true)
       const orderIds = snapshot.entities
         .filter(({ collection_key: collectionKey }) => collectionKey === 'orders')
         .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)
