@@ -5,7 +5,7 @@ import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import worker, { finalizeAutomaticRevenueBonuses } from '../worker.js'
 import { createAutomaticRevenueBonusRunner } from './automatic-revenue-bonus-runner.mjs'
-import { FileR2 } from './file-r2.mjs'
+import { ImageFileR2 } from './image-file-r2.mjs'
 import { createReleaseInfoResponse } from './release-info.mjs'
 import { createSqliteD1, runWithSqliteMetrics } from './sqlite-d1.mjs'
 import { createStaticAssets } from './static-assets.mjs'
@@ -67,7 +67,7 @@ export const createVpsRuntime = ({
   const database = createSqliteD1({ databasePath, migrationsDirectory })
   const env = {
     DB: database,
-    IDENTITY_IMAGES: new FileR2(imagesDirectory),
+    IDENTITY_IMAGES: new ImageFileR2(imagesDirectory),
     ASSETS: createStaticAssets(staticDirectory),
     BOOTSTRAP_TOKEN: bootstrapToken,
     GOOGLE_MAPS_API_KEY: googleMapsApiKey,

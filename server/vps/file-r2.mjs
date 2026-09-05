@@ -142,6 +142,16 @@ export class FileR2 {
     }
   }
 
+  async version(key) {
+    try {
+      const details = await stat(safePath(this.root, key), { bigint: true })
+      return `${details.ino}:${details.size}:${details.mtimeNs}:${details.ctimeNs}`
+    } catch (error) {
+      if (error?.code === 'ENOENT') return null
+      throw error
+    }
+  }
+
   async list({ prefix = '', cursor = '', limit = 1000 } = {}) {
     const normalizedPrefix = String(prefix || '').replaceAll('\\', '/').replace(/^\/+?/u, '')
     const keys = (await listFiles(this.root, this.root))

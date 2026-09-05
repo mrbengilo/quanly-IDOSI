@@ -14,6 +14,9 @@ RUN --mount=type=cache,id=idosi-npm-cache,target=/root/.npm,sharing=locked \
 COPY . .
 RUN npm run build
 
+FROM build AS production-dependencies
+RUN npm prune --omit=dev --ignore-scripts --no-audit --no-fund
+
 FROM node:24-bookworm-slim AS runtime
 
 ARG IDOSI_RELEASE_SHA=unknown
@@ -29,6 +32,8 @@ ENV NODE_ENV=production \
     IDOSI_STATIC_DIR=/app/dist/client
 
 WORKDIR /app
+COPY --from=production-dependencies /app/node_modules ./node_modules
+COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/dist/client ./dist/client
 COPY --from=build /app/server ./server
 COPY --from=build /app/src/domain ./src/domain
