@@ -53,6 +53,7 @@ import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { activeOccupationLabels, findOccupationOption, occupationValueAllowed, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { resolveOrderRouteScope } from '../../domain/orderStoreScope'
 import { apiGetHistory } from '../../services/idosiApi'
+import { importPeriodChange, importVoucherAmounts, previousImportPeriod, selectImportHistory, validImportPeriod } from '../../domain/importHistory'
 import { useApp } from '../../state/AppContext'
 import {
   entryDate,
@@ -1754,9 +1755,30 @@ export function StoreImportsV2() {
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState(newImportForm)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const mode = searchParams.get('importView') === 'day' ? 'day' : 'month'
+  const currentPeriod = today().slice(0, mode === 'month' ? 7 : 10)
+  const period = validImportPeriod(searchParams.get('importPeriod'), mode) ? searchParams.get('importPeriod') : currentPeriod
+  const comparisonPeriod = validImportPeriod(searchParams.get('importCompare'), mode)
+    ? searchParams.get('importCompare') : previousImportPeriod(period, mode)
   const canManageStore = canManageStoreOperations(app.session?.role)
-  const vouchers = importVouchers.filter((item) => item.storeId === storeId && !item.deletedAt && item.status !== 'Đã xóa')
-  const totals = vouchers.reduce((value, item) => ({ goods: value.goods + Number(item.goodsAmount || 0), shipping: value.shipping + Number(item.shippingAmount || 0), total: value.total + Number(item.totalAmount ?? (Number(item.goodsAmount || 0) + Number(item.shippingAmount || 0))) }), { goods: 0, shipping: 0, total: 0 })
+  const { rows: vouchers, totals } = useMemo(() => selectImportHistory(importVouchers, { storeId, period, mode }), [importVouchers, storeId, period, mode])
+  const comparison = useMemo(() => selectImportHistory(importVouchers, { storeId, period: comparisonPeriod, mode }), [importVouchers, storeId, comparisonPeriod, mode])
+  const updateFilter = (key, value) => {
+    const next = new URLSearchParams(searchParams)
+    if (key === 'importView') {
+      next.set('importPeriod', value === 'month' ? period.slice(0, 7) : period === today().slice(0, 7) ? today() : `${period}-01`)
+      next.delete('importCompare')
+    }
+    next.set(key, value)
+    setSearchParams(next, { replace: true })
+  }
+  const showCurrentMonth = () => {
+    const next = new URLSearchParams(searchParams)
+    for (const key of ['importView', 'importPeriod', 'importCompare']) next.delete(key)
+    setSearchParams(next, { replace: true })
+  }
+  const periodLabel = (value) => mode === 'month' ? `${value.slice(5, 7)}/${value.slice(0, 4)}` : shortDate(value)
   const closeModal = () => { setOpen(false); setEditing(null); setForm(newImportForm()) }
   const openCreate = () => {
     if (!canManageStore) return
@@ -1814,22 +1836,41 @@ export function StoreImportsV2() {
     <div className="page">
       <PageHeader title="NHẬP HÀNG" subtitle="Mỗi phiếu nhập được lưu theo ngày và giữ đầy đủ thời gian ghi nhận." icon={PackageCheck} actions={canManageStore ? <Button icon={Plus} onClick={openCreate}>THÊM PHIẾU NHẬP</Button> : null} />
       {!canManageStore && <InfoNote>Chế độ chỉ xem. Nhân viên hỗ trợ KD không thể thêm, sửa hoặc xóa phiếu nhập.</InfoNote>}
-      <div className="metrics-grid metrics-grid--3">
+      <Card title="Bộ lọc lịch sử phiếu nhập">
+        <div className="filter-grid filter-grid--four">
+          <Field label="Hiển thị theo"><Select value={mode} onChange={(event) => updateFilter('importView', event.target.value)}><option value="month">Theo tháng</option><option value="day">Theo ngày</option></Select></Field>
+          <Field label={mode === 'month' ? 'Tháng xem' : 'Ngày xem'}><Input type={mode === 'month' ? 'month' : 'date'} value={period} onChange={(event) => updateFilter('importPeriod', event.target.value)} /></Field>
+          <Field label="Kỳ so sánh"><Input type={mode === 'month' ? 'month' : 'date'} value={comparisonPeriod} onChange={(event) => updateFilter('importCompare', event.target.value)} /></Field>
+          <Button variant="outline" onClick={showCurrentMonth}>Tháng hiện tại</Button>
+        </div>
+      </Card>
+      <div className="metrics-grid metrics-grid--4">
+        <MetricCard label="SỐ PHIẾU NHẬP" value={totals.count} helper={periodLabel(period)} icon={FileText} tone="blue" />
         <MetricCard label="TỔNG TIỀN NHẬP HÀNG" value={money(totals.goods)} icon={PackageCheck} tone="blue" />
         <MetricCard label="CHI PHÍ VẬN CHUYỂN" value={money(totals.shipping)} icon={TrendingDown} tone="orange" />
         <MetricCard label="TỔNG TIỀN PHIẾU NHẬP" value={money(totals.total)} icon={Banknote} tone="green" />
       </div>
-      <Card title="Lịch sử nhập hàng">
+      <Card title="Lịch sử phiếu nhập hàng" action={<Badge>{periodLabel(period)} · {totals.count} phiếu</Badge>}>
         <TableWrap>
           <thead><tr><th>Mã phiếu</th><th>Thời gian ghi nhận</th><th>Tên hàng hóa</th><th>Số lượng (bao)</th><th>Cân nặng (kg)</th><th>Đơn giá (/kg)</th><th>Vận chuyển</th><th>Tổng tiền</th><th>Người tạo</th>{canManageStore && <th>Thao tác</th>}</tr></thead>
           <tbody>{vouchers.map((voucher) => {
             const item = voucher.items?.[0] || {}
             const weight = Number(item.weight ?? item.quantity ?? 0)
             const quantity = Number(item.packageQuantity ?? item.bagQuantity ?? item.quantity ?? 0)
-            const total = Number(voucher.totalAmount ?? (weight * Number(item.price || 0) + Number(voucher.shippingAmount || 0)))
+            const total = importVoucherAmounts(voucher).total
             return <tr key={voucher.id}><td><strong>{importVoucherCode(voucher.code)}</strong></td><td>{timestamp(voucher.createdAt)}</td><td>{item.name || '—'}</td><td>{quantity}</td><td>{weight}</td><td>{money(item.price)}/kg</td><td>{money(voucher.shippingAmount)}</td><td><strong>{money(total)}</strong></td><td>{voucher.createdBy?.name || voucher.createdBy || '—'}</td>{canManageStore && <td><div className="row-actions"><button onClick={() => openEdit(voucher)} aria-label={`Sửa ${voucher.code}`}><Edit3 /></button><button className="danger" onClick={() => remove(voucher)} aria-label={`Xóa ${voucher.code}`}><Trash2 /></button></div></td>}</tr>
-          })}{!vouchers.length && <tr><td colSpan={canManageStore ? 10 : 9}>Chưa có phiếu nhập hàng.</td></tr>}</tbody>
+          })}{!vouchers.length && <tr><td colSpan={canManageStore ? 10 : 9}>Không có phiếu nhập hàng trong kỳ {periodLabel(period)}.</td></tr>}</tbody>
         </TableWrap>
+      </Card>
+      <Card title="So sánh các kỳ">
+        <TableWrap paginate={false}><thead><tr><th>Chỉ tiêu</th><th>Kỳ đang xem · {periodLabel(period)}</th><th>Kỳ so sánh · {periodLabel(comparisonPeriod)}</th><th>Chênh lệch</th></tr></thead><tbody>
+          {[['count', 'Số phiếu'], ['goods', 'Tiền hàng'], ['shipping', 'Vận chuyển'], ['total', 'Tổng tiền phiếu nhập']].map(([key, label]) => {
+            const change = importPeriodChange(totals[key], comparison.totals[key])
+            const format = key === 'count' ? (value) => Number(value).toLocaleString('vi-VN') : money
+            return <tr key={key}><td>{label}</td><td>{format(totals[key])}</td><td>{format(comparison.totals[key])}</td><td>{change.amount > 0 ? '+' : ''}{format(change.amount)}<small className="table-note">{change.percent == null ? 'Kỳ so sánh chưa phát sinh' : `${change.percent > 0 ? '+' : ''}${change.percent.toLocaleString('vi-VN', { maximumFractionDigits: 1 })}%`}</small></td></tr>
+          })}
+        </tbody></TableWrap>
+        {period === currentPeriod && <InfoNote>Kỳ hiện tại chưa kết thúc. Số liệu đến thời điểm này đang được so sánh với toàn bộ kỳ đã chọn.</InfoNote>}
       </Card>
       {canManageStore && <Modal open={open} onClose={closeModal} title={editing ? `Sửa phiếu ${editing.code}` : 'Tạo phiếu nhập hàng'} footer={<><Button variant="outline" onClick={closeModal}>Hủy</Button><Button icon={Save} onClick={save}>{editing ? 'CẬP NHẬT' : 'LƯU PHIẾU'}</Button></>}>
         <div className="form-grid">
