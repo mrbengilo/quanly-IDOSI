@@ -4975,7 +4975,10 @@ const getState = async (request, env, context, url) => {
 
 const getStateMetadata = async (request, env, context, url) => {
   const db = getDatabase(env)
-  const user = await requireSession(request, db, context, { resolveOperationalContext: false })
+  const restore = url.searchParams.get('restore') === '1'
+  const user = restore
+    ? await requireStateReadSession(request, db, context)
+    : await requireSession(request, db, context, { resolveOperationalContext: false })
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
   const row = await first(db, `
@@ -4994,6 +4997,7 @@ const getStateMetadata = async (request, env, context, url) => {
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,
     userVersion: Number(user.version || 0),
+    ...(restore ? { user: publicUser(user) } : {}),
     policyVersions: Object.fromEntries(policyRows.map((policy) => [
       policy.policy_key,
       Number(policy.version || 0),

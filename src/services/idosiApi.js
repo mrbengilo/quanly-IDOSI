@@ -163,7 +163,9 @@ export const apiGetSystemScreenState = (screen, options = {}) => stateReadReques
   `/api/system-screens/${encodeURIComponent(String(screen || ''))}`,
   options,
 )
-export const apiGetStateMetadata = (scope = 'global') => request(`/api/state-metadata?scope=${encodeURIComponent(scope)}`)
+export const apiGetStateMetadata = (scope = 'global', { restore = false } = {}) => request(
+  `/api/state-metadata?scope=${encodeURIComponent(scope)}${restore ? '&restore=1' : ''}`,
+)
 export const apiGetFinanceOverview = (period) => stateReadRequest(
   `/api/finance-overview?period=${encodeURIComponent(String(period || ''))}`,
 )

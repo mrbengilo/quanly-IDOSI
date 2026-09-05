@@ -1,4 +1,4 @@
-import { cloneElement, lazy, useEffect, useState } from 'react'
+import { cloneElement, lazy, useLayoutEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { isOfficeProfile } from './domain/officeProfile'
 import { employeeScreen, storeScreenForPath, systemScreenForPath } from './domain/workspaceScreens'
@@ -167,12 +167,12 @@ function RoleGuard({ roles, children, preserveShell = false }) {
       ? `system:${routeSystemScreen}`
       : ''
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!authReady || !session || !remoteSession) return
     let active = true
     const load = (request) => {
       setProjectionFailure(null)
-      Promise.resolve().then(request).catch(() => {
+      Promise.resolve(request()).catch(() => {
         if (active) setProjectionFailure({ key: projectionKey })
       })
     }

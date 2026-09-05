@@ -36,6 +36,7 @@ import {
 import { createDomainState, defaultPolicies, migrateDomainState } from './initialDomainState'
 import { applyNotificationCommandResult } from './notificationState'
 import { hashPassword, verifyPassword } from '../security/passwords'
+import { clearWorkspaceCache, readWorkspaceCache, writeWorkspaceCache } from '../services/workspaceCache'
 import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
 import { employeeScreen, systemScreenForPath } from '../domain/workspaceScreens'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../domain/storeTieredPayroll'
@@ -1588,6 +1589,8 @@ const employeePrefixForStore = (store = {}) => {
 }
 
 const MAX_VISITED_PROJECTION_CACHE_ENTRIES = 40
+const samePolicyVersions = (left = {}, right = {}) => [...new Set([...Object.keys(left), ...Object.keys(right)])]
+  .every((key) => Number(left[key] || 0) === Number(right[key] || 0))
 
 const remoteProjectionDescriptor = ({ kind = 'global', storeId = '', screen = '', period = '' } = {}) => ({
   kind: kind === 'store' ? 'store' : 'global',
@@ -1603,20 +1606,34 @@ const remoteProjectionCacheKey = (projection = {}) => {
     : `global:${descriptor.screen || 'workspace'}`
 }
 
-const remoteProjectionUserKey = (user = {}) => String(
-  user.id || user.userId || user.username || user.employeeId || '',
-).trim()
+const remoteProjectionUserKey = (user = {}) => JSON.stringify([
+  String(user.id || user.userId || user.username || '').trim(),
+  normalizeAuthRole(user.role),
+  String(user.employeeId ?? user.employee_id ?? ''),
+  String(user.storeId ?? user.store_id ?? ''),
+  String(user.homeStoreId ?? user.home_store_id ?? ''),
+  String(user.activeTransferId ?? user.active_transfer_id ?? ''),
+  Number(user.version || 0),
+])
 
 const cacheVisitedProjection = (remote, projection, state, version = remote.version) => {
   if (!(remote.projectionCache instanceof Map) || !state) return
   const descriptor = remoteProjectionDescriptor(projection)
   const key = remoteProjectionCacheKey(descriptor)
   remote.projectionCache.delete(key)
-  remote.projectionCache.set(key, {
+  const entry = {
     projection: descriptor,
     state,
     version: Number(version || 0),
     userKey: remoteProjectionUserKey(remote.user),
+    user: remote.user,
+    policyVersions: { ...remote.policyVersions },
+  }
+  remote.projectionCache.set(key, entry)
+  // Blob URLs belong to this document and cannot be reused after a reload.
+  void writeWorkspaceCache(key, {
+    ...entry,
+    state: { ...state, settings: { ...state.settings, avatar: '', avatarLoading: false } },
   })
   while (remote.projectionCache.size > MAX_VISITED_PROJECTION_CACHE_ENTRIES) {
     remote.projectionCache.delete(remote.projectionCache.keys().next().value)
@@ -1663,6 +1680,7 @@ export function AppProvider({ children }) {
     user: null,
     version: 0,
     hydratedVersion: 0,
+    projectionWriteVersion: null,
     policyVersions: {},
     suppressNext: false,
     syncing: false,
@@ -1712,11 +1730,27 @@ export function AppProvider({ children }) {
       }
     }
     const remote = apiRef.current
+    if (remote.user && remoteProjectionUserKey(remote.user) !== remoteProjectionUserKey(remoteUser)) {
+      remote.projectionRequestId += 1
+      remote.pendingProjectionKey = ''
+      remote.pendingProjectionPromise = null
+      remote.projectionCache.clear()
+      void clearWorkspaceCache()
+    }
+    const policyVersions = Array.isArray(payload.policies)
+      ? Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
+      : remote.policyVersions
+    if (!samePolicyVersions(policyVersions, remote.policyVersions)) {
+      remote.projectionCache.clear()
+      void clearWorkspaceCache()
+    }
+    remote.policyVersions = policyVersions
     remote.enabled = true
     remote.role = normalizeAuthRole(remoteUser.role)
     remote.user = { ...remoteUser, role: normalizeAuthRole(remoteUser.role) }
     remote.version = Number(payload.version || 0)
     remote.hydratedVersion = Number(payload.version || 0)
+    remote.projectionWriteVersion = Number(payload.version || 0)
     remote.fullStateReady = payload.partial !== true
     remote.projection = payload.projection === 'store' ? 'store' : 'global'
     remote.projectionStoreId = remote.projection === 'store'
@@ -1731,9 +1765,6 @@ export function AppProvider({ children }) {
         screen: remote.projectionScreen,
         period: remote.projectionPeriod,
       }, hydrated, remote.version)
-    }
-    if (Array.isArray(payload.policies)) {
-      remote.policyVersions = Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
     }
     remote.suppressNext = true
     remote.lastStateReferences = sharedStateReferences(hydrated)
@@ -1759,6 +1790,11 @@ export function AppProvider({ children }) {
     const remote = apiRef.current
     const expectedUserKey = remoteProjectionUserKey(expectedUser || remote.user)
     if (!cached?.state || !remote.enabled || cached.userKey !== expectedUserKey) return false
+    // A download started on another route must not replace this cached screen
+    // when it eventually completes.
+    remote.projectionRequestId += 1
+    remote.pendingProjectionKey = ''
+    remote.pendingProjectionPromise = null
     const projection = remoteProjectionDescriptor(cached.projection)
     remote.projection = projection.kind
     remote.projectionStoreId = projection.storeId
@@ -1766,6 +1802,7 @@ export function AppProvider({ children }) {
     remote.projectionPeriod = projection.period
     remote.fullStateReady = true
     remote.hydratedVersion = Number(cached.version || 0)
+    remote.projectionWriteVersion = Number(cached.version || 0)
     remote.suppressNext = true
     remote.lastStateReferences = sharedStateReferences(cached.state)
     setApiStatus('connected')
@@ -1774,6 +1811,7 @@ export function AppProvider({ children }) {
     activeStoreIdRef.current = cached.state.activeStoreId
     rememberActiveStore(remote.user, cached.state.activeStoreId)
     setState(cached.state)
+    cacheVisitedProjection(remote, projection, cached.state, cached.version)
     return true
   }, [])
 
@@ -1810,21 +1848,30 @@ export function AppProvider({ children }) {
         sameIdentifier(remote.projectionStoreId, normalizedStoreId)
         && String(remote.projectionPeriod || '') === normalizedPeriod
       ))) {
+      if (remote.pendingProjectionKey && remote.pendingProjectionKey !== projectionKey) {
+        remote.projectionRequestId += 1
+        remote.pendingProjectionKey = ''
+        remote.pendingProjectionPromise = null
+      }
       return Promise.resolve(null)
     }
+    let restoredFromCache = false
     if (!force) {
       const cached = remote.projectionCache.get(projectionKey)
       if (cached && activateCachedProjection(cached, expectedUser)) {
         remote.projectionCache.delete(projectionKey)
         remote.projectionCache.set(projectionKey, cached)
-        return Promise.resolve({ cached: true, state: cached.state, projection: cached.projection })
+        if (Number(cached.version) >= Number(remote.version)) {
+          return Promise.resolve({ cached: true, state: cached.state, projection: cached.projection })
+        }
+        restoredFromCache = true
       }
     }
     if (remote.pendingProjectionKey === projectionKey && remote.pendingProjectionPromise) {
       return remote.pendingProjectionPromise
     }
     const requestId = ++remote.projectionRequestId
-    if (blocking) {
+    if (blocking && !restoredFromCache) {
       remote.fullStateReady = false
       setRemoteDataReady(false)
     }
@@ -1837,6 +1884,16 @@ export function AppProvider({ children }) {
         ? apiGetSystemScreenState(normalizedScreen)
         : apiGetState('global')
     const request = (async () => {
+      if (!force && !restoredFromCache) {
+        const saved = await readWorkspaceCache(projectionKey)
+        if (!remote.enabled || requestId !== remote.projectionRequestId) return null
+        if (saved?.userKey === remoteProjectionUserKey(remote.user)
+          && samePolicyVersions(saved.policyVersions, remote.policyVersions)
+          && Number(saved.version) === Number(remote.version)) {
+          activateCachedProjection(saved, expectedUser)
+          return { cached: true }
+        }
+      }
       let payload = normalizedKind === 'global' && bootstrap
         ? await apiBootstrapState('global')
         : await readProjection()
@@ -1887,7 +1944,7 @@ export function AppProvider({ children }) {
       || activeStoreIdRef.current
       || readRememberedActiveStore(expectedUser)
     const role = normalizeAuthRole(expectedUser?.role)
-    const systemScreen = browserSystemWorkspaceScreen()
+    const systemScreen = browserSystemWorkspaceScreen() || (role === 'employee' ? 'employee-home' : '')
     const useStoreProjection = Boolean(preferredStoreId) && (
       role === 'store_manager'
       || (isSystemRole(role) && browserUsesStoreWorkspace())
@@ -1945,10 +2002,11 @@ export function AppProvider({ children }) {
     })
     try {
       const result = await apiCommand(type, payload, {
-        expectedVersion: remote.version,
+        expectedVersion: remote.projectionWriteVersion ?? remote.version,
         idempotencyKey,
       })
       remote.version = Number(result.version)
+      remote.projectionWriteVersion = Number(result.version)
       const { patches, replacements } = remoteCommandResultPatches(type, result)
       if (patches.size || replacements.size || type === 'employee.delete' || type === 'store.delete') {
         setState((current) => {
@@ -2077,7 +2135,28 @@ export function AppProvider({ children }) {
   useEffect(() => {
     if (!hasApiSession()) return undefined
     let active = true
-    apiBootstrapState('global', { profile: 'initial' }).then(async (payload) => {
+    const restore = async () => {
+      const cached = await readWorkspaceCache()
+      if (!active) return
+      if (cached?.state && cached.user) {
+        const metadata = await apiGetStateMetadata('global', { restore: true })
+        if (!active) return
+        if (metadata.user && !metadata.user.needsRoleSelection
+          && cached.userKey === remoteProjectionUserKey(metadata.user)
+          && Number(cached.version) === Number(metadata.version)
+          && samePolicyVersions(cached.policyVersions, metadata.policyVersions)) {
+          const remote = apiRef.current
+          remote.enabled = true
+          remote.user = metadata.user
+          remote.role = normalizeAuthRole(metadata.user.role)
+          remote.version = Number(metadata.version)
+          remote.policyVersions = metadata.policyVersions || {}
+          activateCachedProjection(cached, metadata.user)
+          return
+        }
+        await clearWorkspaceCache()
+      }
+      const payload = await apiBootstrapState('global', { profile: 'initial' })
       if (!payload.partial && canListAccounts(payload.user?.role)) {
         const users = await apiListUsers()
         payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
@@ -2091,14 +2170,16 @@ export function AppProvider({ children }) {
           if (active && apiRef.current.enabled) setApiStatus('error')
         })
       }
-    }).catch(() => {
+    }
+    restore().catch(() => {
       clearApiSession()
+      void clearWorkspaceCache()
       if (active) setApiStatus('local')
     }).finally(() => {
       if (active) setSessionRestoreReady(true)
     })
     return () => { active = false }
-  }, [activateRemotePayload, hydrateCompleteRemoteState])
+  }, [activateCachedProjection, activateRemotePayload, hydrateCompleteRemoteState])
 
   useEffect(() => {
     const remote = apiRef.current
@@ -2261,11 +2342,12 @@ export function AppProvider({ children }) {
           remote.pending = null
           try {
             const result = await apiCommand('state.merge', { patch: pending.patch }, {
-              expectedVersion: remote.version,
+              expectedVersion: remote.projectionWriteVersion ?? remote.version,
               idempotencyKey: `state-patch:${crypto.randomUUID()}`,
               includeState: false,
             })
             remote.version = Number(result.version)
+            remote.projectionWriteVersion = Number(result.version)
             remote.hydratedVersion = Number(result.version)
             remote.lastStateReferences = pending.references
           } catch (error) {
@@ -2278,6 +2360,7 @@ export function AppProvider({ children }) {
               includeState: false,
             })
             remote.version = Number(result.version)
+            remote.projectionWriteVersion = Number(result.version)
             remote.hydratedVersion = Number(result.version)
             remote.suppressNext = true
             setState((current) => {
@@ -2331,6 +2414,7 @@ export function AppProvider({ children }) {
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       apiRef.current.projectionCache.clear()
+      void clearWorkspaceCache()
       const session = activateRemotePayload(bootstrap, authenticated.user)
       if (bootstrap.partial
         && !authenticated.user?.needsRoleSelection
@@ -2420,6 +2504,7 @@ export function AppProvider({ children }) {
           payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
         }
         apiRef.current.projectionCache.clear()
+        void clearWorkspaceCache()
         const session = activateRemotePayload(payload, response.user, selected.storeId)
         if (payload.partial && shouldHydrateInitialProjection(response.user)) {
           void hydrateCompleteRemoteState(response.user, selected.storeId).catch(() => {
@@ -2467,6 +2552,8 @@ export function AppProvider({ children }) {
     apiRef.current.pendingProjectionKey = ''
     apiRef.current.pendingProjectionPromise = null
     apiRef.current.projectionCache.clear()
+    void clearWorkspaceCache()
+    apiRef.current.projectionWriteVersion = null
     apiRef.current.domainReconciliations = 0
     window.clearTimeout(apiRef.current.reconcileTimer)
     apiRef.current.reconcileTimer = null
