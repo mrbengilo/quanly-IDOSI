@@ -1,0 +1,642 @@
+name: Finalize table pagination v9
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-v9-final
+    paths:
+      - .github/workflows/finalize-pagination-v9.yml
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: idosi-pagination-final-v9
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH_NAME: perf/paginate-data-tables-v9-final
+      PUBLIC_ORIGIN: https://idosi.io.vn
+    steps:
+      - name: Checkout final delivery branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-v9-final
+          fetch-depth: 0
+
+      - name: Cancel every older pagination workflow and close open pagination PRs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for branch in \
+            perf/paginate-data-tables-20260903 \
+            perf/paginate-data-tables-v2 \
+            perf/paginate-data-tables-v3 \
+            perf/paginate-data-tables-v4 \
+            perf/paginate-data-tables-v5 \
+            perf/paginate-data-tables-v6 \
+            perf/paginate-data-tables-v7-fallback \
+            perf/paginate-data-tables-v8-emergency; do
+            encoded="$(node -p "encodeURIComponent(process.argv[1])" "$branch")"
+            gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?branch=$encoded&per_page=100" \
+              --jq '.workflow_runs[] | select(.status == "queued" or .status == "in_progress") | .id' \
+              | while read -r run_id; do
+                  [[ -z "$run_id" || "$run_id" == "$GITHUB_RUN_ID" ]] && continue
+                  gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel" >/dev/null 2>&1 || true
+                done
+            gh pr list --repo "$GITHUB_REPOSITORY" --head "$branch" --state open --json number --jq '.[].number' \
+              | while read -r number; do
+                  [[ -n "$number" ]] && gh pr close "$number" --repo "$GITHUB_REPOSITORY" \
+                    --comment 'Đã được thay thế bởi bản hoàn thiện phân trang v9.' || true
+                done
+          done
+
+      - name: Synchronize with latest main
+        id: base
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          git reset --hard origin/main
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Detect existing pagination architecture
+        id: existing
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [[ -f src/components/PaginatedTbody.jsx ]] \
+            && grep -q 'DEFAULT_TABLE_PAGE_SIZE = 20' src/components/PaginatedTbody.jsx; then
+            echo 'kind=source' >> "$GITHUB_OUTPUT"
+          elif [[ -f src/components/TablePaginationController.jsx ]] \
+            && grep -q 'TABLE_PAGE_SIZE = 20' src/components/TablePaginationController.jsx; then
+            echo 'kind=central' >> "$GITHUB_OUTPUT"
+          else
+            echo 'kind=missing' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Implement a central paginator only when no prior verified paginator exists
+        if: steps.existing.outputs.kind == 'missing'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p src/components
+          cat > src/components/TablePaginationController.jsx <<'EOF'
+          import { useEffect } from 'react'
+          import { useLocation } from 'react-router-dom'
+
+          export const TABLE_PAGE_SIZE = 20
+          const TIME_ZONE = 'Asia/Ho_Chi_Minh'
+          const states = new WeakMap()
+
+          const businessDateKey = (date = new Date()) => {
+            const parts = new Intl.DateTimeFormat('en-US', {
+              timeZone: TIME_ZONE,
+              year: 'numeric',
+              month: '2-digit',
+              day: '2-digit',
+            }).formatToParts(date)
+            const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]))
+            return `${values.year}-${values.month}-${values.day}`
+          }
+
+          const previousDateKey = (value) => {
+            const [year, month, day] = value.split('-').map(Number)
+            const date = new Date(Date.UTC(year, month - 1, day - 1, 12))
+            return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`
+          }
+
+          const normalizeDateKey = (value) => {
+            const text = String(value || '')
+            let match = text.match(/\b(20\d{2})[-/.](0[1-9]|1[0-2])[-/.]([0-2]\d|3[01])\b/u)
+            if (match) return `${match[1]}-${match[2]}-${match[3]}`
+            match = text.match(/\b([0-2]\d|3[01])[-/.](0[1-9]|1[0-2])[-/.](20\d{2})\b/u)
+            return match ? `${match[3]}-${match[2]}-${match[1]}` : ''
+          }
+
+          const normalizeText = (value) => String(value || '')
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/gu, '')
+            .replace(/đ/gu, 'd')
+            .toLocaleLowerCase('vi-VN')
+
+          const tableContext = (table) => {
+            const values = []
+            let current = table
+            for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+              const value = normalizeText(current.textContent)
+              if (value) values.push(value.slice(0, 16000))
+            }
+            return values.join(' ')
+          }
+
+          const modeFor = (table, route) => {
+            const path = normalizeText(route)
+            if (path.includes('/admin/assignments')) return 'today-yesterday-first'
+            if (
+              path.includes('/store/orders')
+              || path.includes('/store/attendance')
+              || path.includes('/store/tasks')
+              || path.includes('/store/reward')
+              || path.includes('/store/violation')
+              || path.includes('/store/work')
+            ) return 'today-first'
+            const context = tableContext(table)
+            if (context.includes('lich su giao viec va tien do hoan thanh')) return 'today-yesterday-first'
+            if (
+              context.includes('lich su cham cong cua nhan vien')
+              || context.includes('lich su cham cong nhan vien')
+              || context.includes('cong viec tinh thuong & vi pham')
+              || context.includes('cong viec tinh thuong va vi pham')
+            ) return 'today-first'
+            return 'default'
+          }
+
+          const dataRows = (table) => [...table.tBodies]
+            .flatMap((body) => [...body.rows])
+            .filter((row) => !row.dataset.paginationExempt)
+            .filter((row) => !(row.cells.length === 1 && Number(row.cells[0]?.colSpan || 1) > 1))
+
+          const rowDateKey = (row) => normalizeDateKey(
+            row.dataset.businessDate
+            || row.dataset.workDate
+            || row.dataset.date
+            || row.textContent,
+          )
+
+          const chunk = (rows) => {
+            const pages = []
+            for (let index = 0; index < rows.length; index += TABLE_PAGE_SIZE) {
+              pages.push(rows.slice(index, index + TABLE_PAGE_SIZE))
+            }
+            return pages
+          }
+
+          const pagesFor = (rows, mode) => {
+            if (mode === 'default') return chunk(rows)
+            const today = businessDateKey()
+            const preferredDates = new Set([today])
+            if (mode === 'today-yesterday-first') preferredDates.add(previousDateKey(today))
+            const preferred = []
+            const history = []
+            rows.forEach((row) => {
+              const date = rowDateKey(row)
+              if (date && preferredDates.has(date)) preferred.push(row)
+              else history.push(row)
+            })
+            const pages = chunk(preferred)
+            if (!pages.length) pages.push([])
+            pages.push(...chunk(history))
+            return pages
+          }
+
+          const pageNumbers = (page, count) => {
+            if (count <= 7) return Array.from({ length: count }, (_, index) => index + 1)
+            const values = new Set([1, count])
+            for (let value = page - 2; value <= page + 2; value += 1) {
+              if (value > 1 && value < count) values.add(value)
+            }
+            const sorted = [...values].sort((left, right) => left - right)
+            const result = []
+            sorted.forEach((value, index) => {
+              if (index && value - sorted[index - 1] > 1) result.push(`ellipsis-${value}`)
+              result.push(value)
+            })
+            return result
+          }
+
+          const createButton = ({ label, text, disabled = false, active = false, click }) => {
+            const button = document.createElement('button')
+            button.type = 'button'
+            button.textContent = text
+            button.setAttribute('aria-label', label)
+            button.disabled = disabled
+            if (active) {
+              button.className = 'active'
+              button.setAttribute('aria-current', 'page')
+            }
+            button.addEventListener('click', click)
+            return button
+          }
+
+          const ensureState = (table) => {
+            const existing = states.get(table)
+            if (existing?.controls?.isConnected) return existing
+            const controls = document.createElement('nav')
+            controls.className = 'table-pagination table-pagination--managed'
+            controls.setAttribute('aria-label', 'Phân trang bảng dữ liệu')
+            ;(table.closest('.table-wrap') || table).insertAdjacentElement('afterend', controls)
+            const state = { controls, page: 1, signature: '' }
+            states.set(table, state)
+            return state
+          }
+
+          const renderTable = (table, route) => {
+            if (table.querySelector('tbody[data-source-paginated="true"]')) return
+            const rows = dataRows(table)
+            const state = ensureState(table)
+            const signature = rows.map((row, index) => (
+              `${index}:${row.dataset.id || row.id || ''}:${rowDateKey(row)}:${normalizeText(row.textContent).slice(0, 80)}`
+            )).join('|')
+            if (state.signature && state.signature !== signature) state.page = 1
+            state.signature = signature
+
+            if (rows.length <= TABLE_PAGE_SIZE) {
+              rows.forEach((row) => {
+                row.hidden = false
+                row.removeAttribute('aria-hidden')
+              })
+              state.controls.hidden = true
+              return
+            }
+
+            const pages = pagesFor(rows, modeFor(table, route))
+            state.page = Math.min(Math.max(1, state.page), pages.length)
+            const visible = new Set(pages[state.page - 1] || [])
+            rows.forEach((row) => {
+              row.hidden = !visible.has(row)
+              if (row.hidden) row.setAttribute('aria-hidden', 'true')
+              else row.removeAttribute('aria-hidden')
+            })
+
+            const navigate = (nextPage) => {
+              state.page = Math.min(Math.max(1, nextPage), pages.length)
+              renderTable(table, route)
+              table.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+            }
+            state.controls.hidden = false
+            state.controls.replaceChildren()
+            state.controls.append(createButton({
+              label: 'Trang trước', text: '‹', disabled: state.page === 1, click: () => navigate(state.page - 1),
+            }))
+            pageNumbers(state.page, pages.length).forEach((value) => {
+              if (typeof value === 'string') {
+                const ellipsis = document.createElement('span')
+                ellipsis.className = 'table-pagination__ellipsis'
+                ellipsis.textContent = '…'
+                ellipsis.setAttribute('aria-hidden', 'true')
+                state.controls.append(ellipsis)
+              } else {
+                state.controls.append(createButton({
+                  label: `Trang ${value}`,
+                  text: String(value),
+                  active: value === state.page,
+                  click: () => navigate(value),
+                }))
+              }
+            })
+            state.controls.append(createButton({
+              label: 'Trang sau', text: '›', disabled: state.page === pages.length, click: () => navigate(state.page + 1),
+            }))
+            const summary = document.createElement('small')
+            summary.textContent = `Trang ${state.page}/${pages.length} • tối đa ${TABLE_PAGE_SIZE} dòng`
+            state.controls.append(summary)
+          }
+
+          export default function TablePaginationController() {
+            const location = useLocation()
+            useEffect(() => {
+              const root = document.querySelector('.workspace-content-region')
+              if (!root) return undefined
+              const route = `${location.pathname}${location.hash}`
+              let timer = 0
+              const scan = () => {
+                timer = 0
+                root.querySelectorAll('table').forEach((table) => renderTable(table, route))
+              }
+              const schedule = () => {
+                if (!timer) timer = window.setTimeout(scan, 0)
+              }
+              scan()
+              const observer = new MutationObserver(schedule)
+              observer.observe(root, { childList: true, subtree: true })
+              return () => {
+                observer.disconnect()
+                if (timer) window.clearTimeout(timer)
+                root.querySelectorAll('.table-pagination--managed').forEach((node) => node.remove())
+                root.querySelectorAll('tbody tr').forEach((row) => {
+                  row.hidden = false
+                  row.removeAttribute('aria-hidden')
+                })
+              }
+            }, [location.hash, location.pathname])
+            return null
+          }
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          path = Path('src/layout/AppShell.jsx')
+          source = path.read_text(encoding='utf-8')
+          import_line = "import TablePaginationController from '../components/TablePaginationController'\n"
+          if import_line.strip() not in source:
+              react_import = re.search(r"^import .* from 'react'\n", source, flags=re.MULTILINE)
+              if not react_import:
+                  raise SystemExit('AppShell React import not found')
+              source = source[:react_import.end()] + import_line + source[react_import.end():]
+          if '<TablePaginationController />' not in source:
+              marker = '        <div className="workspace-content-region">\n'
+              if marker not in source:
+                  raise SystemExit('AppShell workspace-content-region not found')
+              source = source.replace(marker, marker + '          <TablePaginationController />\n', 1)
+          path.write_text(source, encoding='utf-8')
+          PY
+
+          cat > src/components/TablePaginationController.test.jsx <<'EOF'
+          import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+          import { MemoryRouter } from 'react-router-dom'
+          import { afterEach, describe, expect, it, vi } from 'vitest'
+          import TablePaginationController from './TablePaginationController'
+
+          const Table = ({ count = 45, dates = [], heading = 'Bảng dữ liệu' }) => (
+            <div className="workspace-content-region">
+              <section>
+                <h2>{heading}</h2>
+                <div className="table-wrap">
+                  <table><tbody>{Array.from({ length: count }, (_, index) => (
+                    <tr key={index}><td>Dòng {index + 1}</td><td>{dates[index] || '01/01/2026'}</td></tr>
+                  ))}</tbody></table>
+                </div>
+              </section>
+              <TablePaginationController />
+            </div>
+          )
+
+          const visibleRows = () => [...document.querySelectorAll('tbody tr')].filter((row) => !row.hidden)
+
+          describe('TablePaginationController', () => {
+            afterEach(() => {
+              cleanup()
+              vi.useRealTimers()
+            })
+
+            it('shows at most 20 rows and numbered pages', () => {
+              render(<MemoryRouter initialEntries={['/admin/overview']}><Table /></MemoryRouter>)
+              expect(visibleRows()).toHaveLength(20)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(visibleRows()).toHaveLength(20)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 3' }))
+              expect(visibleRows()).toHaveLength(5)
+            })
+
+            it('shows today and yesterday first for admin assignments', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00Z'))
+              const dates = [...Array(8).fill('04/09/2026'), ...Array(8).fill('03/09/2026'), ...Array(8).fill('02/09/2026')]
+              render(
+                <MemoryRouter initialEntries={['/admin/assignments']}>
+                  <Table count={24} dates={dates} heading="Lịch sử giao việc và tiến độ hoàn thành" />
+                </MemoryRouter>,
+              )
+              expect(visibleRows()).toHaveLength(16)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(visibleRows()).toHaveLength(8)
+            })
+
+            it('shows the current date first for store orders', () => {
+              vi.useFakeTimers()
+              vi.setSystemTime(new Date('2026-09-04T02:00:00Z'))
+              const dates = ['04/09/2026', ...Array(20).fill('03/09/2026')]
+              render(<MemoryRouter initialEntries={['/store/orders']}><Table count={21} dates={dates} /></MemoryRouter>)
+              expect(visibleRows()).toHaveLength(1)
+              fireEvent.click(screen.getByRole('button', { name: 'Trang 2' }))
+              expect(visibleRows()).toHaveLength(20)
+            })
+          })
+          EOF
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/styles.css')
+          source = path.read_text(encoding='utf-8')
+          if '/* Final central table pagination */' not in source:
+              source = source.rstrip() + '''
+
+          /* Final central table pagination */
+          .table-pagination--managed{margin:12px 0 18px}.table-pagination{display:flex;align-items:center;justify-content:center;gap:6px;flex-wrap:wrap;width:100%}.table-pagination button{min-width:34px;height:34px;padding:0 9px;border:1px solid #cadbd0;border-radius:8px;background:#fff;color:#155d38;font-size:12px;font-weight:750;cursor:pointer;transition:background .16s,border-color .16s,color .16s,transform .16s}.table-pagination button:hover:not(:disabled){border-color:#4ba873;background:#edf8f1;transform:translateY(-1px)}.table-pagination button.active{border-color:#078443;background:#078443;color:#fff;box-shadow:0 5px 14px rgba(7,132,67,.2)}.table-pagination button:disabled{opacity:.4;cursor:not-allowed}.table-pagination small{margin-left:8px;color:#65736b;font-size:10px}.table-pagination__ellipsis{display:inline-grid;place-items:center;min-width:24px;color:#718078}@media(max-width:640px){.table-pagination{gap:4px}.table-pagination button{min-width:31px;height:31px}.table-pagination small{flex-basis:100%;margin:4px 0 0}}
+          '''.strip('\n') + '\n'
+              path.write_text(source, encoding='utf-8')
+          PY
+
+      - name: Run targeted paginator tests
+        if: steps.existing.outputs.kind == 'missing'
+        run: npx vitest run src/components/TablePaginationController.test.jsx src/layout/AppShell.workspaceLoading.test.jsx
+
+      - name: Run existing source paginator tests
+        if: steps.existing.outputs.kind == 'source'
+        run: npx vitest run src/components/PaginatedTbody.test.jsx
+
+      - name: Run existing central paginator tests
+        if: steps.existing.outputs.kind == 'central'
+        run: npx vitest run src/components/TablePaginationController.test.jsx src/layout/AppShell.workspaceLoading.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit final candidate when needed
+        id: candidate
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          rm -f .github/workflows/finalize-pagination-v9.yml
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            git commit -m 'perf(tables): paginate data lists at 20 rows'
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Rebase and retest if main changed
+        if: steps.candidate.outputs.changed == 'true'
+        id: sync
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git fetch origin main
+          if [[ "$(git merge-base HEAD origin/main)" != "$(git rev-parse origin/main)" ]]; then
+            git rebase origin/main
+            if [[ -f src/components/PaginatedTbody.test.jsx ]]; then npx vitest run src/components/PaginatedTbody.test.jsx; fi
+            if [[ -f src/components/TablePaginationController.test.jsx ]]; then npx vitest run src/components/TablePaginationController.test.jsx src/layout/AppShell.workspaceLoading.test.jsx; fi
+            npm run lint
+            npm test
+            npm run build
+            npm run sites:verify
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish tested candidate and update main
+        id: publish
+        shell: bash
+        env:
+          CHANGED: ${{ steps.candidate.outputs.changed }}
+        run: |
+          set -Eeuo pipefail
+          if [[ "$CHANGED" != 'true' ]]; then
+            git fetch origin main
+            echo "sha=$(git rev-parse origin/main)" >> "$GITHUB_OUTPUT"
+            echo 'delivery=already-on-main' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git push --force-with-lease origin HEAD:"$BRANCH_NAME"
+          if git push origin HEAD:main; then
+            echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo 'delivery=verified-fast-forward' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          url="$(gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH_NAME" \
+            --title 'perf: phân trang toàn bộ bảng dữ liệu tối đa 20 dòng' \
+            --body 'Bản phân trang đã đạt targeted tests, lint, toàn bộ test, production build và Sites verification. Tất cả bảng tối đa 20 dòng; Giao việc ưu tiên hôm nay + hôm qua; Đơn hàng, Công việc tính thưởng & vi phạm và Chấm công cửa hàng ưu tiên ngày hiện tại. Không migration hoặc sửa dữ liệu.')"
+          number="${url##*/}"
+          gh pr merge "$number" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$(git rev-parse HEAD)" \
+            --subject 'perf(tables): paginate data lists at 20 rows' \
+            --body 'Apply verified table pagination and date-priority views.'
+          release="$(gh pr view "$number" --repo "$GITHUB_REPOSITORY" --json mergeCommit --jq '.mergeCommit.oid')"
+          echo "sha=$release" >> "$GITHUB_OUTPUT"
+          echo 'delivery=pull-request' >> "$GITHUB_OUTPUT"
+
+      - name: Configure production SSH
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          VPS_PORT: ${{ secrets.IDOSI_VPS_PORT }}
+          VPS_SSH_PRIVATE_KEY: ${{ secrets.IDOSI_VPS_SSH_PRIVATE_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.IDOSI_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          : "${VPS_HOST:?Missing IDOSI_VPS_HOST}"; : "${VPS_USER:?Missing IDOSI_VPS_USER}"
+          : "${VPS_SSH_PRIVATE_KEY:?Missing IDOSI_VPS_SSH_PRIVATE_KEY}"; : "${VPS_KNOWN_HOSTS:?Missing IDOSI_VPS_KNOWN_HOSTS}"
+          [[ "${VPS_PORT:-22}" =~ ^[0-9]+$ ]]
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"; chmod 600 "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$VPS_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"; chmod 600 "$HOME/.ssh/known_hosts"
+          echo "VPS_PORT=${VPS_PORT:-22}" >> "$GITHUB_ENV"
+
+      - name: Deploy exact tested release when production differs
+        id: deploy
+        env:
+          VPS_HOST: ${{ secrets.IDOSI_VPS_HOST }}
+          VPS_USER: ${{ secrets.IDOSI_VPS_USER }}
+          RELEASE_SHA: ${{ steps.publish.outputs.sha }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          payload="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "$PUBLIC_ORIGIN/api/release?_pagination_v9_preflight=$GITHUB_RUN_ID" 2>/dev/null || true)"
+          actual="$(node -e "try{const v=JSON.parse(process.argv[1]);process.stdout.write(v.data?.releaseSha||v.releaseSha||'')}catch{}" "$payload")"
+          if [[ "$actual" == "$RELEASE_SHA" ]] && curl -fsS --max-time 20 "$PUBLIC_ORIGIN/api/health" >/dev/null; then
+            echo 'deployed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          remote_deploy="/tmp/idosi-deploy-$RELEASE_SHA.sh"
+          remote_runner="/tmp/idosi-run-job-$RELEASE_SHA.sh"
+          remote_finalizer="/tmp/idosi-finalize-$RELEASE_SHA.sh"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes deploy/vps/deploy-release.sh "$VPS_USER@$VPS_HOST:$remote_deploy"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes deploy/vps/run-release-job.sh "$VPS_USER@$VPS_HOST:$remote_runner"
+          scp -i "$HOME/.ssh/id_ed25519" -P "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes deploy/vps/finalize-release.sh "$VPS_USER@$VPS_HOST:$remote_finalizer"
+
+          operation="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${RELEASE_SHA:0:12}"
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "chmod 700 '$remote_deploy' '$remote_runner' '$remote_finalizer' && bash '$remote_runner' '$RELEASE_SHA' '$operation' '$remote_deploy'"
+
+          status_file="/opt/idosi/deploy/vps/backups/jobs/$operation.status"
+          for attempt in $(seq 1 360); do
+            status="$(ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" "if [ -f '$status_file' ]; then cat '$status_file'; fi" 2>/dev/null || true)"
+            if [[ "$(sed -n 's/^STATE=//p' <<<"$status" | head -n1)" == 'COMPLETED' ]]; then
+              code="$(sed -n 's/^EXIT_CODE=//p' <<<"$status" | head -n1)"
+              [[ "$code" == '0' ]] || exit "${code:-1}"
+              break
+            fi
+            sleep 15
+          done
+
+          verified=''
+          for attempt in $(seq 1 90); do
+            if node server/vps/verify-public-release.mjs "$PUBLIC_ORIGIN" "$RELEASE_SHA"; then
+              verified="$(date -u +%Y%m%dT%H%M%SZ)"
+              break
+            fi
+            sleep 5
+          done
+          test -n "$verified"
+          ssh -i "$HOME/.ssh/id_ed25519" -p "$VPS_PORT" -o BatchMode=yes -o ConnectTimeout=15 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "bash '$remote_finalizer' '$RELEASE_SHA' '$verified' '$PUBLIC_ORIGIN' '$GITHUB_RUN_ID' '$GITHUB_RUN_ATTEMPT' '$RELEASE_SHA' && rm -f '$remote_deploy' '$remote_runner' '$remote_finalizer'"
+          echo 'deployed=true' >> "$GITHUB_OUTPUT"
+
+      - name: Final public health and release verification
+        env:
+          RELEASE_SHA: ${{ steps.publish.outputs.sha }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for attempt in $(seq 1 90); do
+            payload="$(curl -fsS --max-time 20 -H 'Cache-Control: no-cache' "$PUBLIC_ORIGIN/api/release?_pagination_v9_final=$attempt" 2>/dev/null || true)"
+            actual="$(node -e "try{const v=JSON.parse(process.argv[1]);process.stdout.write(v.data?.releaseSha||v.releaseSha||'')}catch{}" "$payload")"
+            if [[ "$actual" == "$RELEASE_SHA" ]]; then
+              curl -fsS --max-time 20 "$PUBLIC_ORIGIN/api/health?_pagination_v9_final=$attempt" >/dev/null
+              curl -fsS --max-time 20 "$PUBLIC_ORIGIN/?_pagination_v9_final=$attempt" >/dev/null
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Cleanup SSH material
+        if: always()
+        run: rm -rf "$HOME/.ssh"
+
+      - name: Publish immutable production completion marker
+        if: success()
+        env:
+          RELEASE_SHA: ${{ steps.publish.outputs.sha }}
+          DELIVERY: ${{ steps.publish.outputs.delivery }}
+          ARCHITECTURE: ${{ steps.existing.outputs.kind }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git checkout -B "$BRANCH_NAME" HEAD
+          cat > PAGINATION_PRODUCTION_PASS.json <<JSON
+          {
+            "status": "PASS",
+            "releaseSha": "$RELEASE_SHA",
+            "delivery": "$DELIVERY",
+            "architectureBeforeRun": "$ARCHITECTURE",
+            "verifiedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "production": "$PUBLIC_ORIGIN"
+          }
+          JSON
+          git config user.name 'mrbengilo'; git config user.email 'mrbengilo.76@gmail.com'
+          git add PAGINATION_PRODUCTION_PASS.json
+          git commit -m 'ops: record final pagination production verification'
+          git push --force origin HEAD:"$BRANCH_NAME"
