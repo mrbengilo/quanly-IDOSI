@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RevenueBonusPage } from './RevenueBonusPage'
 
@@ -142,6 +142,45 @@ describe('RevenueBonusPage automatic mode', () => {
     expect(screen.queryByText('Nhân viên Hai')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Sửa' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
+  })
+
+  it.each(['FINALIZED', 'WAITING_SHIFT_CLOSE'])('loads %s once without status-triggered or interval requests', async (status) => {
+    vi.useFakeTimers()
+    mocked.app = appFor('store_manager', { apiStatus: 'connected' })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: { ...snapshot(), status } })
+    await act(async () => { render(<RevenueBonusPage storeScoped />) })
+    expect(mocked.liveRevenue).toHaveBeenCalledTimes(1)
+    expect(mocked.periodRevenue).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000) })
+    expect(mocked.liveRevenue).toHaveBeenCalledTimes(1)
+    expect(mocked.periodRevenue).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes day and history exactly once after 22:00 without polling', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-03T14:59:00.000Z'))
+    mocked.app = appFor('store_manager', { apiStatus: 'connected' })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: { ...snapshot(), status: 'WAITING_CUTOFF' } })
+    await act(async () => { render(<RevenueBonusPage storeScoped />) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    expect(mocked.liveRevenue).toHaveBeenCalledTimes(1)
+    mocked.liveRevenue.mockResolvedValue({ snapshot: snapshot() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(mocked.liveRevenue).toHaveBeenCalledTimes(2)
+    expect(mocked.periodRevenue).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(60 * 60_000) })
+    expect(mocked.liveRevenue).toHaveBeenCalledTimes(2)
+    expect(mocked.periodRevenue).toHaveBeenCalledTimes(2)
+  })
+
+  it('loads a mounted hidden page instead of leaving it synchronizing indefinitely', async () => {
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(true)
+    mocked.app = appFor('store_manager', { apiStatus: 'connected' })
+    mocked.liveRevenue.mockResolvedValue({ snapshot: snapshot() })
+    render(<RevenueBonusPage storeScoped />)
+    await waitFor(() => expect(screen.queryAllByText('Đang đồng bộ…')).toHaveLength(0))
+    expect(mocked.liveRevenue).toHaveBeenCalledTimes(1)
+    expect(mocked.periodRevenue).toHaveBeenCalledTimes(1)
   })
 
   it('allows only Admin to edit one employee bonus with a mandatory audit reason', async () => {

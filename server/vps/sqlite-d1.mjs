@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { DatabaseSync } from 'node:sqlite'
 import { applyVpsDataFixes } from './data-fixes.mjs'
+import { REVENUE_BONUS_SNAPSHOT_SQL } from '../revenue-bonus-read.mjs'
 
 const MIGRATION_TABLE = '_vps_migrations'
 const requestMetrics = new AsyncLocalStorage()
@@ -792,6 +793,13 @@ export class SqliteD1 {
   readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '') {
     const records = measuredStatement('reads', () => (
       this.database.prepare(storeStateSnapshotSql(screen)).all(scope, storeId, actorEmployeeId, period)
+    ))
+    return decodeStateSnapshotRecords(records)
+  }
+
+  readRevenueBonusStateSnapshot(scope, storeId, dateKey) {
+    const records = measuredStatement('reads', () => (
+      this.database.prepare(REVENUE_BONUS_SNAPSHOT_SQL).all(scope, storeId, dateKey)
     ))
     return decodeStateSnapshotRecords(records)
   }
