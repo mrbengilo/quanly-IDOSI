@@ -1603,9 +1603,15 @@ const remoteProjectionCacheKey = (projection = {}) => {
     : `global:${descriptor.screen || 'workspace'}`
 }
 
-const remoteProjectionUserKey = (user = {}) => String(
-  user.id || user.userId || user.username || user.employeeId || '',
-).trim()
+const remoteProjectionUserKey = (user = {}) => JSON.stringify([
+  String(user.id || user.userId || user.username || '').trim(),
+  normalizeAuthRole(user.role),
+  String(user.employeeId ?? user.employee_id ?? ''),
+  String(user.storeId ?? user.store_id ?? ''),
+  String(user.homeStoreId ?? user.home_store_id ?? ''),
+  String(user.activeTransferId ?? user.active_transfer_id ?? ''),
+  Number(user.version || 0),
+])
 
 const cacheVisitedProjection = (remote, projection, state, version = remote.version) => {
   if (!(remote.projectionCache instanceof Map) || !state) return
@@ -1712,6 +1718,9 @@ export function AppProvider({ children }) {
       }
     }
     const remote = apiRef.current
+    if (remote.user && remoteProjectionUserKey(remote.user) !== remoteProjectionUserKey(remoteUser)) {
+      remote.projectionCache.clear()
+    }
     remote.enabled = true
     remote.role = normalizeAuthRole(remoteUser.role)
     remote.user = { ...remoteUser, role: normalizeAuthRole(remoteUser.role) }
@@ -1759,6 +1768,11 @@ export function AppProvider({ children }) {
     const remote = apiRef.current
     const expectedUserKey = remoteProjectionUserKey(expectedUser || remote.user)
     if (!cached?.state || !remote.enabled || cached.userKey !== expectedUserKey) return false
+    // A download started on another route must not replace this cached screen
+    // when it eventually completes.
+    remote.projectionRequestId += 1
+    remote.pendingProjectionKey = ''
+    remote.pendingProjectionPromise = null
     const projection = remoteProjectionDescriptor(cached.projection)
     remote.projection = projection.kind
     remote.projectionStoreId = projection.storeId
@@ -1810,6 +1824,11 @@ export function AppProvider({ children }) {
         sameIdentifier(remote.projectionStoreId, normalizedStoreId)
         && String(remote.projectionPeriod || '') === normalizedPeriod
       ))) {
+      if (remote.pendingProjectionKey && remote.pendingProjectionKey !== projectionKey) {
+        remote.projectionRequestId += 1
+        remote.pendingProjectionKey = ''
+        remote.pendingProjectionPromise = null
+      }
       return Promise.resolve(null)
     }
     if (!force) {
