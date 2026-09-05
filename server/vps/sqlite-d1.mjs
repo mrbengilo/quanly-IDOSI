@@ -352,6 +352,9 @@ const storeStateSnapshotSql = (screen = '') => {
     : ''
   // Reused identity sets must be evaluated once per snapshot; flattening them
   // into per-entity JSON scans stalls the Node event loop under concurrent reads.
+  // Keep the single params row outside the two identity lookups (CROSS JOIN).
+  // Otherwise SQLite may build transient covering indexes over large JSON
+  // history instead of using the existing (scope_key, collection_key) key.
   const sql = `
   WITH
   params AS (
@@ -371,9 +374,9 @@ const storeStateSnapshotSql = (screen = '') => {
   ),
   inbound_employee_ids AS MATERIALIZED (
     SELECT DISTINCT lower(trim(CAST(json_extract(transfer.value_json, '$.employeeId') AS TEXT))) AS employee_key
-    FROM state_entities AS transfer
-    JOIN params ON transfer.scope_key = params.scope_key
-    WHERE transfer.collection_key = 'supportTransfers'
+    FROM params CROSS JOIN state_entities AS transfer
+    WHERE transfer.scope_key = params.scope_key
+      AND transfer.collection_key = 'supportTransfers'
       AND lower(trim(CAST(json_extract(transfer.value_json, '$.toStoreId') AS TEXT))) = params.store_key
       AND json_extract(transfer.value_json, '$.employeeId') IS NOT NULL
   ),
@@ -385,9 +388,9 @@ const storeStateSnapshotSql = (screen = '') => {
   ),
   relevant_employee_rows AS MATERIALIZED (
     SELECT employee.entity_key
-    FROM state_entities AS employee
-    JOIN params ON employee.scope_key = params.scope_key
-    WHERE employee.collection_key = 'employees'
+    FROM params CROSS JOIN state_entities AS employee
+    WHERE employee.scope_key = params.scope_key
+      AND employee.collection_key = 'employees'
       AND (
         employee.store_id = params.store_key COLLATE NOCASE
         OR employee.employee_id IN (

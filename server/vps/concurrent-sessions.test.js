@@ -40,6 +40,19 @@ it('serves 20 distinct employee sessions without full snapshots or cross-account
           attendanceId: `A-${employee.id}`, businessDate: '2026-09-05', amount: 100_000,
           note: `private-${employee.id}`,
         }))),
+        tasks: employees.flatMap((employee) => Array.from({ length: 400 }, (_, index) => ({
+          id: `T-${employee.id}-${index}`, storeId: employee.storeId, employeeId: employee.id,
+          employeeIds: [employee.id], title: `Private task ${employee.id}`, status: 'completed',
+          description: 'x'.repeat(500), workDate: '2026-09-05',
+        }))),
+        taskAssignmentHistory: employees.flatMap((employee) => Array.from({ length: 10 }, (_, index) => ({
+          id: `H-${employee.id}-${index}`, storeId: employee.storeId, employeeId: employee.id,
+          before: { items: Array.from({ length: 20 }, (_, item) => ({ id: `item-${item}`, note: 'x'.repeat(1000) })) },
+        }))),
+        notifications: employees.flatMap((employee) => Array.from({ length: 200 }, (_, index) => ({
+          id: `N-${employee.id}-${index}`, title: 'Synthetic order notification',
+          metadata: { orderId: `O-${employee.id}-${index}` }, createdAt: '2026-09-05T01:00:00Z',
+        }))),
       },
     }, { 'x-idosi-bootstrap-token': 'concurrent-fixture-bootstrap' })
     expect(bootstrap.status).toBe(201)
@@ -68,12 +81,16 @@ it('serves 20 distinct employee sessions without full snapshots or cross-account
     const readStarted = performance.now()
     await Promise.all(logins.map(async (login, i) => {
       const headers = { authorization: `Bearer ${login.body.token}` }
-      for (const path of ['/api/bootstrap', '/api/system-screens/employee-home']) {
+      for (const path of ['/api/bootstrap', '/api/system-screens/employee-home', '/api/system-screens/employee-tasks']) {
         const response = await fetch(`${base}${path}`, { headers })
         const payload = await response.json()
         expect(response.status).toBe(200)
-        expect(payload.state.orders).toHaveLength(200)
+        expect(payload.state.orders).toHaveLength(path.endsWith('employee-tasks') ? 0 : 200)
         expect(payload.state.orders.every((order) => order.employeeId === employees[i].id)).toBe(true)
+        if (!path.endsWith('employee-home')) {
+          expect(payload.state.tasks).toHaveLength(400)
+          expect(payload.state.tasks.every((task) => task.employeeId === employees[i].id)).toBe(true)
+        }
         expect(payload.state.employees.map((employee) => employee.id)).toEqual([employees[i].id])
       }
     }))
@@ -86,7 +103,7 @@ it('serves 20 distinct employee sessions without full snapshots or cross-account
     })))
     expect(logouts.every((logout) => logout.status === 200 && logout.body.loggedOut)).toBe(true)
     expect(fullReads).toBe(0)
-    console.info(JSON.stringify({ fixture: '20-employees-4000-orders', loginBatchMs: loginMs, readBatchMs: readMs }))
+    console.info(JSON.stringify({ fixture: '20-employees-4000-orders-8000-tasks-4000-notifications', loginBatchMs: loginMs, readBatchMs: readMs }))
   } finally {
     await new Promise((done) => server.close(done))
     await rm(directory, { recursive: true, force: true })
