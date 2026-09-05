@@ -933,9 +933,8 @@ describe('visited workspace projection cache', () => {
       version: 1,
       projection: 'global',
     })
-    let version = 1
+    const version = 2
     api.apiGetStoreWorkspaceState.mockImplementation(async (_storeId, { screen } = {}) => {
-      version += 1
       return {
         user: storeManagerUser,
         state: {
@@ -995,6 +994,33 @@ describe('visited workspace projection cache', () => {
     expect(appRef.current.remoteProjection.screen).toBe('orders')
     expect(appRef.current.orders[0].id).toBe('ORDER-CACHED')
     expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps a stale visited view visible while refreshing it in the background', async () => {
+    renderProvider()
+    await act(async () => { await appRef.current.login('store-manager-one', 'secret') })
+    await act(async () => { await appRef.current.ensureStoreWorkspaceData('STORE-A', { screen: 'orders' }) })
+    api.apiGetStoreWorkspaceState.mockResolvedValueOnce({
+      user: storeManagerUser, state: makeRemoteState(), version: 3,
+      projection: 'store', storeId: 'STORE-A', screen: 'payroll',
+    })
+    await act(async () => { await appRef.current.ensureStoreWorkspaceData('STORE-A', { screen: 'payroll' }) })
+    let resolveRefresh
+    api.apiGetStoreWorkspaceState.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve }))
+    let refresh
+    await act(async () => { refresh = appRef.current.ensureStoreWorkspaceData('STORE-A', { screen: 'orders' }) })
+    expect(appRef.current.remoteDataReady).toBe(true)
+    expect(appRef.current.orders[0].id).toBe('ORDER-CACHED')
+    api.apiCommand.mockRejectedValueOnce(new Error('Synthetic rejected command'))
+    await act(async () => {
+      await appRef.current.createImportVoucher({ storeId: 'STORE-A', items: [{ name: 'Fixture', weight: 1, price: 100_000 }] })
+    })
+    expect(api.apiCommand).toHaveBeenLastCalledWith('import.create', expect.any(Object), expect.objectContaining({ expectedVersion: 2 }))
+    await act(async () => {
+      resolveRefresh({ user: storeManagerUser, state: makeRemoteState(), version: 3, projection: 'store', storeId: 'STORE-A', screen: 'orders' })
+      await refresh
+    })
+    expect(appRef.current.orders).not.toContainEqual(expect.objectContaining({ id: 'ORDER-CACHED' }))
   })
 
   it('discards visited screens when the same account changes its effective store', async () => {

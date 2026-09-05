@@ -289,6 +289,9 @@ describe('IDOSI lightweight state synchronization', () => {
       method: 'GET',
       headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
     }))
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ version: 12, user: { id: 'admin' } }) })
+    await apiGetStateMetadata('global', { restore: true })
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/state-metadata?scope=global&restore=1')
   })
 })
 

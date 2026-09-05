@@ -640,6 +640,13 @@ describe('IDOSI VPS runtime', () => {
       expect(employeeBootstrap.status).toBe(200)
       expect(employeeBootstrapPayload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
       expect(JSON.stringify(employeeBootstrapPayload)).not.toContain('FOREIGN_STORE_SECRET')
+      const metadataResponse = await fetch(`${baseUrl}/api/state-metadata?scope=global&restore=1`, { headers: employeeHeaders })
+      const metadata = await metadataResponse.json()
+      expect(metadataResponse.status).toBe(200)
+      expect(metadata.user).toMatchObject({ role: 'employee', employeeId: employeeBootstrapPayload.user.employeeId, storeId: 'S01' })
+      expect(metadata.version).toBe(employeeBootstrapPayload.version)
+      expect(metadata).not.toHaveProperty('state')
+      expect(JSON.stringify(metadata)).not.toContain('FOREIGN_STORE_SECRET')
       expect(globalSnapshotReads).toBe(0)
 
       const employeeLogout = await postJson(baseUrl, '/api/logout', {}, employeeHeaders)
