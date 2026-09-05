@@ -15,6 +15,7 @@ import {
   calculateTeamMilestoneReward,
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
+import { REVENUE_BONUS_READ_COLLECTIONS } from './revenue-bonus-read.mjs'
 import {
   AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR,
   AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE,
@@ -5639,9 +5640,21 @@ export const finalizeAutomaticRevenueBonuses = async (env, {
   return summary
 }
 
+const loadRevenueBonusReadState = async (db, storeId, dateKey) => {
+  if (typeof db?.readRevenueBonusStateSnapshot !== 'function') {
+    return loadStateCollections(db, 'global', REVENUE_BONUS_READ_COLLECTIONS)
+  }
+  const snapshot = await db.readRevenueBonusStateSnapshot('global', storeId, dateKey)
+  if (snapshot?.unchanged !== false
+    || !Array.isArray(snapshot.manifests) || !Array.isArray(snapshot.entities)) {
+    throw new ApiError(500, 'STATE_SNAPSHOT_INVALID', 'Snapshot thưởng doanh thu không hợp lệ.')
+  }
+  return hydrateStateSnapshot(snapshot.row, snapshot.manifests, snapshot.entities)
+}
+
 const getRevenueBonusLive = async (request, env, context, url) => {
   const db = getDatabase(env)
-  const user = await requireSession(request, db, context)
+  const user = await requireSession(request, db, context, { stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS })
   if (!['admin', 'business_support', 'store_manager', 'employee'].includes(user.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem thưởng doanh thu cửa hàng.')
   }
@@ -5652,7 +5665,7 @@ const getRevenueBonusLive = async (request, env, context, url) => {
   }
   assertOperationalStoreAccess(user, storeId)
   const businessDate = compensationDate(url.searchParams.get('businessDate'), 'Ngày kinh doanh')
-  const row = user._globalStateRow || await loadState(db, 'global')
+  const row = await loadRevenueBonusReadState(db, storeId, businessDate)
   const state = normalizeSharedStateForStorage(row ? parseStoredJson(row.value_json, {}) : {})
   const store = requireActivePhysicalStore(state, storeId)
   const live = revenueBonusLiveSnapshot({ state, store, businessDate, now: context.now })
@@ -5672,7 +5685,7 @@ const getRevenueBonusLive = async (request, env, context, url) => {
 
 const getRevenueBonusPeriod = async (request, env, context, url) => {
   const db = getDatabase(env)
-  const user = await requireSession(request, db, context)
+  const user = await requireSession(request, db, context, { stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS })
   if (!['admin', 'business_support', 'store_manager', 'employee'].includes(user.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem lịch sử thưởng doanh thu cửa hàng.')
   }
@@ -5686,7 +5699,7 @@ const getRevenueBonusPeriod = async (request, env, context, url) => {
   if (!/^\d{4}-(?:0[1-9]|1[0-2])$/u.test(period)) {
     throw new ApiError(400, 'REVENUE_BONUS_PERIOD_INVALID', 'Tháng thưởng doanh thu phải có định dạng YYYY-MM.')
   }
-  const row = user._globalStateRow || await loadState(db, 'global')
+  const row = await loadRevenueBonusReadState(db, storeId, period)
   const state = normalizeSharedStateForStorage(row ? parseStoredJson(row.value_json, {}) : {})
   const store = requireActivePhysicalStore(state, storeId)
   const canViewAllAllocations = ['admin', 'business_support', 'store_manager'].includes(user.role)
