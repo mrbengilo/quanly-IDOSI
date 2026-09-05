@@ -179,7 +179,8 @@ jobs:
           import { statSync } from 'node:fs'
           import { DatabaseSync } from 'node:sqlite'
           import { SqliteD1 } from './server/vps/sqlite-d1.mjs'
-          import { projectSharedState, reconcileOpenStoreAttendanceChecklists } from './server/worker.js'
+          import * as worker from './server/worker.js'
+          const { projectSharedState, reconcileOpenStoreAttendanceChecklists } = worker
           const path = process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
           const db = new DatabaseSync(path, { readOnly: true })
           db.exec('PRAGMA query_only=ON')
@@ -220,6 +221,13 @@ jobs:
           const reconciled = reconcileOpenStoreAttendanceChecklists(repairState)
           console.log('global_repair_preflight=' + JSON.stringify({ readHydrateMs: repairReadMs,
             reconcileMs: performance.now() - repairStarted - repairReadMs, changed: reconciled !== repairState }))
+          if (typeof worker.openStoreChecklistRepairContext === 'function') {
+            const eligible = (repairState.attendance || []).filter((record) => (
+              (Number(record?.checklistSnapshot?.storeChecklistRepairVersion || 0)<1 || record?.checklistRepairError != null)
+              && worker.openStoreChecklistRepairContext(record, repairState.employees || [])
+            )).length
+            console.log('eligible_pending_store_checklists=' + eligible)
+          }
           // Profile one existing employee on the read-only connection. No token,
           // account identifier, profile value or business record is printed.
           const actor = db.prepare(`SELECT id AS user_id, role, store_id, employee_id
