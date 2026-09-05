@@ -634,6 +634,18 @@ describe('IDOSI VPS runtime', () => {
         headers: employeeHeaders,
       })
       expect(forbiddenSystemScreen.status).toBe(403)
+
+      const employeeBootstrap = await fetch(`${baseUrl}/api/bootstrap`, { headers: employeeHeaders })
+      const employeeBootstrapPayload = await employeeBootstrap.json()
+      expect(employeeBootstrap.status).toBe(200)
+      expect(employeeBootstrapPayload.state.orders.map(({ id }) => id)).toEqual(['ORDER-S01'])
+      expect(JSON.stringify(employeeBootstrapPayload)).not.toContain('FOREIGN_STORE_SECRET')
+      expect(globalSnapshotReads).toBe(0)
+
+      const employeeLogout = await postJson(baseUrl, '/api/logout', {}, employeeHeaders)
+      expect(employeeLogout.body.loggedOut).toBe(true)
+      expect(globalSnapshotReads).toBe(0)
+      expect((await fetch(`${baseUrl}/api/bootstrap`, { headers: employeeHeaders })).status).toBe(401)
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose))
     }

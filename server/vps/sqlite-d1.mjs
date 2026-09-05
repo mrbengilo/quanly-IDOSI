@@ -345,19 +345,13 @@ const storeStateSnapshotSql = (screen = '') => {
         entity.collection_key <> 'orders'
         OR (
           entity.employee_id = params.actor_employee_key COLLATE NOCASE
-          AND EXISTS (
-            SELECT 1
-            FROM state_entities AS open_attendance
-            WHERE open_attendance.scope_key = params.scope_key
-              AND open_attendance.collection_key = 'attendance'
-              AND open_attendance.employee_id = params.actor_employee_key COLLATE NOCASE
-              AND open_attendance.open_flag = 1
-              AND lower(trim(CAST(json_extract(entity.value_json, '$.attendanceId') AS TEXT)))
-                = lower(trim(CAST(json_extract(open_attendance.value_json, '$.id') AS TEXT)))
-          )
+          AND lower(trim(CAST(json_extract(entity.value_json, '$.attendanceId') AS TEXT)))
+            IN (SELECT attendance_key FROM open_actor_attendance_ids)
         )
       )`
     : ''
+  // Reused identity sets must be evaluated once per snapshot; flattening them
+  // into per-entity JSON scans stalls the Node event loop under concurrent reads.
   const sql = `
   WITH
   params AS (
@@ -367,7 +361,15 @@ const storeStateSnapshotSql = (screen = '') => {
       lower(trim(?)) AS actor_employee_key,
       trim(?) AS period_key
   ),
-  inbound_employee_ids AS (
+  open_actor_attendance_ids AS MATERIALIZED (
+    SELECT lower(trim(CAST(json_extract(attendance.value_json, '$.id') AS TEXT))) AS attendance_key
+    FROM state_entities AS attendance
+    JOIN params ON attendance.scope_key = params.scope_key
+    WHERE attendance.collection_key = 'attendance'
+      AND attendance.employee_id = params.actor_employee_key COLLATE NOCASE
+      AND attendance.open_flag = 1
+  ),
+  inbound_employee_ids AS MATERIALIZED (
     SELECT DISTINCT lower(trim(CAST(json_extract(transfer.value_json, '$.employeeId') AS TEXT))) AS employee_key
     FROM state_entities AS transfer
     JOIN params ON transfer.scope_key = params.scope_key
@@ -375,13 +377,13 @@ const storeStateSnapshotSql = (screen = '') => {
       AND lower(trim(CAST(json_extract(transfer.value_json, '$.toStoreId') AS TEXT))) = params.store_key
       AND json_extract(transfer.value_json, '$.employeeId') IS NOT NULL
   ),
-  seed_employee_ids AS (
+  seed_employee_ids AS MATERIALIZED (
     SELECT actor_employee_key AS employee_key FROM params WHERE actor_employee_key <> ''
     UNION
     SELECT employee_key FROM inbound_employee_ids WHERE employee_key <> ''
     ${payrollAttendanceEmployeeSeedSql}
   ),
-  relevant_employee_rows AS (
+  relevant_employee_rows AS MATERIALIZED (
     SELECT employee.entity_key
     FROM state_entities AS employee
     JOIN params ON employee.scope_key = params.scope_key
@@ -406,7 +408,7 @@ const storeStateSnapshotSql = (screen = '') => {
         )
       )
   ),
-  selected_employee_ids AS (
+  selected_employee_ids AS MATERIALIZED (
     SELECT employee_key FROM seed_employee_ids
     UNION
     SELECT DISTINCT lower(trim(CAST(identifier.value AS TEXT))) AS employee_key
@@ -423,7 +425,7 @@ const storeStateSnapshotSql = (screen = '') => {
       AND identifier.value IS NOT NULL
       AND trim(CAST(identifier.value AS TEXT)) <> ''
   ),
-  relevant_order_ids AS (
+  relevant_order_ids AS MATERIALIZED (
     SELECT DISTINCT lower(trim(CAST(json_extract(entity.value_json, '$.id') AS TEXT))) AS order_key
     FROM state_entities AS entity
     JOIN params ON entity.scope_key = params.scope_key

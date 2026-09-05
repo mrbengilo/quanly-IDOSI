@@ -4870,26 +4870,37 @@ const getBootstrap = async (request, env, context, url) => {
   const db = getDatabase(env)
   const initialProfileRequested = url.searchParams.get('profile') === 'initial'
   const storeWorkspaceRequested = url.searchParams.get('view') === 'store'
-  const user = await requireSession(request, db, context, initialProfileRequested || storeWorkspaceRequested
-    ? { stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS }
-    : {})
+  const user = await requireStateReadSession(request, db, context)
   const scope = url.searchParams.get('scope') || defaultScope(user)
   assertScope(user, scope)
   const requestedStoreId = requestedStoreWorkspaceReference(url, user, scope)
   const requestedScreen = requestedStoreId ? requestedStoreWorkspaceScreen(url) : ''
   const requestedPeriod = requestedScreen ? requestedStoreWorkspacePeriod(url, requestedScreen) : ''
   const partialBootstrap = scope === 'global' && initialProfileRequested && !storeWorkspaceRequested
+  const actorStoreId = scope === 'global' && !requestedStoreId && ['store_manager', 'employee'].includes(user.role)
+    ? String(user.store_id || '').trim()
+    : ''
+  const scopedStoreId = requestedStoreId || actorStoreId
   const loadedCollections = partialBootstrap
     ? initialStateCollectionsForUser(user, user._globalState || {})
     : []
   let stateRow = partialBootstrap
     ? await loadInitialStateCollections(db, user, loadedCollections)
-    : requestedStoreId
-      ? await loadStoreState(db, scope, requestedStoreId, user.employee_id, requestedScreen, requestedPeriod)
-      : scope === 'global' && user._globalStateRow
-      ? user._globalStateRow
+    : scopedStoreId
+      ? await loadStoreState(db, scope, scopedStoreId, user.employee_id, requestedScreen, requestedPeriod)
       : await loadState(db, scope)
-  if (scope === 'global' && !partialBootstrap && !requestedStoreId) {
+  if (scope === 'global' && !partialBootstrap && scopedStoreId) {
+    const avatarMigrationComplete = await first(db,
+      'SELECT meta_key FROM system_metadata WHERE meta_key = ? LIMIT 1',
+      ACCOUNT_AVATAR_MIGRATION_METADATA_KEY)
+    if (!avatarMigrationComplete) {
+      // Legacy cleanup changes global history, so it must use a complete
+      // snapshot. Normal sessions only read the small completion marker.
+      await migrateLegacyAccountAvatars(db, env, user, context)
+      stateRow = await loadStoreState(db, scope, scopedStoreId, user.employee_id, requestedScreen, requestedPeriod)
+    }
+    stateRow = await repairScopedStoreStateIfNeeded(db, user, context, stateRow, scopedStoreId, requestedScreen, requestedPeriod)
+  } else if (scope === 'global' && !partialBootstrap) {
     stateRow = await migrateLegacyAccountAvatars(db, env, user, context, stateRow)
     stateRow = await persistOpenStoreAttendanceChecklistRepairs(db, user, context, stateRow)
   }
@@ -24016,7 +24027,7 @@ const executeCommand = async (request, env, context) => {
 
 const logout = async (request, env, context) => {
   const db = getDatabase(env)
-  const user = await requireSession(request, db, context)
+  const user = await requireStateReadSession(request, db, context)
   if (await loadPendingSystemResetAll(db)) {
     throw new ApiError(503, 'RESET_CLEANUP_PENDING', 'Không thể đăng xuất phiên Admin đang dùng để hoàn tất Reset toàn bộ dữ liệu.')
   }
@@ -24066,14 +24077,14 @@ const listUsers = async (request, env, context) => {
 
 const getAccountAvatar = async (request, env, context) => {
   const db = getDatabase(env)
-  const actor = await requireSession(request, db, context)
+  const actor = await requireStateReadSession(request, db, context)
   const shell = await first(db, `
     SELECT value_json FROM app_state WHERE scope_key = 'global' LIMIT 1
   `)
   const shellState = parseStoredJson(shell?.value_json, {})
   let metadata = normalizeAccountAvatarMetadata(ownAccountSettings(shellState, actor).avatar)
   if (!metadata) {
-    let current = actor._globalStateRow || await loadState(db, 'global')
+    let current = await loadState(db, 'global')
     current = await migrateLegacyAccountAvatars(db, env, actor, context, current)
     const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
     metadata = normalizeAccountAvatarMetadata(ownAccountSettings(state, actor).avatar)

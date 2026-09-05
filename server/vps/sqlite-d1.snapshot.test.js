@@ -419,12 +419,26 @@ describe('SQLite state snapshots', () => {
         }, { periodKey: currentPeriod }),
       ])
 
+      let snapshotSql
+      const prepare = database.database.prepare.bind(database.database)
+      database.database.prepare = (sql) => {
+        snapshotSql = sql
+        return prepare(sql)
+      }
       const snapshot = database.readStoreStateSnapshot('global', 'S01', 'E01', 'employee-home')
+      database.database.prepare = prepare
+      const plan = prepare(`EXPLAIN QUERY PLAN ${snapshotSql}`).all('global', 'S01', 'E01', '')
+      // Resolve the actor's open shifts once, rather than scanning attendance
+      // again for every order. This also protects the no-open-shift path.
+      expect(plan.map(({ detail }) => detail).join('\n')).toContain('MATERIALIZE open_actor_attendance_ids')
       const orderIds = snapshot.entities
         .filter(({ collection_key: collectionKey }) => collectionKey === 'orders')
         .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)
 
       expect(orderIds).toEqual(['ORDER-OWN-CURRENT', 'ORDER-OWN-OPEN'])
+      await database.prepare("UPDATE state_entities SET open_flag = 0 WHERE collection_key = 'attendance'").run()
+      expect(database.readStoreStateSnapshot('global', 'S01', 'E01', 'employee-home').entities
+        .filter(({ collection_key: key }) => key === 'orders')).toEqual([])
     } finally {
       database.close()
     }
