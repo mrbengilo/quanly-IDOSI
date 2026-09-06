@@ -100,7 +100,7 @@ describe('work reward batch client command', () => {
           { catalogItemId: 'CAT-02', checked: true, expectedEntityVersion: 2 },
         ],
       },
-      { expectedVersion: 1, idempotencyKey: 'reward-batch-client-0001' },
+      { expectedVersion: 1, idempotencyKey: 'reward-batch-client-0001', includeState: false },
     )
     expect(screen.getByLabelText('Số bản ghi thưởng').textContent).toBe('2:1:1')
   })

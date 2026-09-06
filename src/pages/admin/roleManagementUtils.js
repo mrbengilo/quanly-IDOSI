@@ -1,4 +1,6 @@
 import { today } from '../../utils'
+import { profileMatchesRole } from '../../domain/roleProfiles'
+export { profileMatchesRole } from '../../domain/roleProfiles'
 import {
   normalizeWorkingTimeForm,
   validateWorkingTime,
@@ -29,18 +31,6 @@ export const roleEmploymentTypes = (roleKey = ROLE_KEYS.businessSupport) => (
 
 const normalize = (value = '') => String(value).trim().toLocaleLowerCase('vi-VN').replaceAll('-', '_').replaceAll(' ', '_')
 const profileCode = (profile = {}) => String(profile.code || profile.employeeCode || profile.id || '')
-const profileRoleValues = (profile = {}) => [
-  profile.unit,
-  profile.unitType,
-  profile.department,
-  profile.employeeGroup,
-  profile.accessRole,
-  profile.accountRole,
-  profile.systemRole,
-  profile.roleType,
-  profile.profileType,
-  profile.role,
-].map(normalize)
 
 export const roleEmploymentType = (profile = {}) => {
   const raw = String(profile.employmentType || profile.employeeType || profile.officeEmployeeType || profile.officeEmploymentType || profile.contractType || '')
@@ -116,20 +106,6 @@ const profileAddressParts = (profile = {}) => {
 }
 
 export const roleProfileCode = profileCode
-
-export const profileMatchesRole = (profile = {}, roleKey = '') => {
-  const target = normalize(roleKey)
-  if (profileRoleValues(profile).includes(target)) return true
-  if (target === ROLE_KEYS.businessSupport) {
-    return Boolean(profile.isBusinessSupport)
-      || ['business_support', 'sales_support', 'nhan_vien_ho_tro_kd', 'hỗ_trợ_kinh_doanh'].includes(normalize(profile.employeeGroup || profile.department))
-  }
-  if (target === ROLE_KEYS.storeManager) {
-    return Boolean(profile.isStoreManager)
-      || ['store_manager', 'quan_ly_cua_hang', 'quản_lý_cửa_hàng'].includes(normalize(profile.employeeGroup || profile.department))
-  }
-  return false
-}
 
 export const roleProfilesFromApp = (app = {}, roleKey = '') => {
   const dedicatedKey = roleKey === ROLE_KEYS.businessSupport ? 'businessSupportEmployees' : 'storeManagers'

@@ -148,7 +148,7 @@ function RoleGuard({ roles, children, preserveShell = false }) {
     : routeSearch.get('store') || activeStoreId || ''
   const routeStoreScreen = storeScreenForPath(location.pathname)
   const routeSystemScreen = systemScreenForPath(location.pathname)
-  const routeStorePeriod = routeStoreScreen === 'payroll'
+  const routeStorePeriod = ['overview', 'payroll'].includes(routeStoreScreen)
     ? routeSearch.get('period') || currentVietnamMonth()
     : ''
   const initialRoleHome = location.pathname === homeFor(session)
@@ -198,6 +198,7 @@ function RoleGuard({ roles, children, preserveShell = false }) {
     initialRoleHome,
     remoteDataReady,
     remoteProjection.kind,
+    remoteProjection.period,
     remoteProjection.screen,
     routeStoreId,
     routeStoreScreen,

@@ -298,6 +298,7 @@ describe('SQLite state snapshots', () => {
 
   it('filters session attendance to open rows and payroll entities to one period', async () => {
     const { database } = await createSnapshotDatabase()
+    const currentDate = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
     const insert = (collectionKey, entityKey, order, value, periodKey = null) => {
       const valueJson = JSON.stringify(value)
       return database.prepare(`
@@ -314,7 +315,7 @@ describe('SQLite state snapshots', () => {
     }
     try {
       await database.batch([
-        ...['stores', 'employees', 'attendance', 'compensationEntries', 'storeEmployeeSalaryConfigs'].map((collectionKey) => database.prepare(`
+        ...['stores', 'employees', 'attendance', 'orders', 'schedule', 'compensationEntries', 'storeEmployeeSalaryConfigs'].map((collectionKey) => database.prepare(`
           INSERT OR IGNORE INTO state_collections (scope_key, collection_key, created_at, updated_at)
           VALUES ('global', ?, ?, ?)
         `).bind(collectionKey, timestamp, timestamp)),
@@ -333,6 +334,18 @@ describe('SQLite state snapshots', () => {
         insert('compensationEntries', 'compensation-august', 40, {
           id: 'COMP-AUG', storeId: 'S01', employeeId: 'E01', effectiveDate: '2026-08-02',
         }, '2026-08'),
+        insert('orders', 'overview-order-september', 30, {
+          id: 'ORDER-SEP', storeId: 'S01', employeeId: 'E01', date: '2026-09-02',
+        }, '2026-09'),
+        insert('orders', 'overview-order-august', 40, {
+          id: 'ORDER-AUG', storeId: 'S01', employeeId: 'E01', date: '2026-08-02',
+        }, '2026-08'),
+        insert('orders', 'overview-order-today', 50, {
+          id: 'ORDER-TODAY', storeId: 'S01', employeeId: 'E01', date: currentDate,
+        }, currentDate.slice(0, 7)),
+        insert('schedule', 'overview-recurring-schedule', 50, {
+          id: 'SCHEDULE-RECURRING', storeId: 'S01', employeeId: 'E01',
+        }),
         insert('storeEmployeeSalaryConfigs', 'salary-config-august', 30, {
           id: 'CONFIG-AUG', storeId: 'S01', employeeId: 'E01', effectiveFrom: '2026-08',
         }, '2026-08'),
@@ -350,6 +363,83 @@ describe('SQLite state snapshots', () => {
       expect(payroll.entities
         .filter(({ collection_key: collectionKey }) => collectionKey === 'storeEmployeeSalaryConfigs')
         .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual(['CONFIG-AUG'])
+
+      const overview = database.readStoreStateSnapshot('global', 'S01', 'E01', 'overview', '2026-09')
+      expect(overview.entities
+        .filter(({ collection_key: collectionKey }) => collectionKey === 'orders')
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual(['ORDER-SEP', 'ORDER-TODAY'])
+      const historicalOverview = database.readStoreStateSnapshot('global', 'S01', 'E01', 'overview', '1999-01')
+      expect(historicalOverview.entities
+        .filter(({ collection_key: key }) => ['orders', 'schedule'].includes(key))
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual(['ORDER-TODAY', 'SCHEDULE-RECURRING'])
+    } finally {
+      database.close()
+    }
+  })
+
+  it('bounds support task screens to selected employees while preserving history and identity collision checks', async () => {
+    const { database } = await createSnapshotDatabase()
+    const insert = (collectionKey, entityKey, order, value, {
+      employeeId = value.employeeId || null,
+      occurredOn = value.date || null,
+      periodKey = occurredOn?.slice(0, 7) || null,
+    } = {}) => {
+      const valueJson = JSON.stringify(value)
+      return database.prepare(`
+        INSERT INTO state_entities (
+          scope_key, collection_key, entity_key, entity_order,
+          value_json, value_bytes, created_at, updated_at,
+          store_id, employee_id, occurred_on, period_key, record_id
+        ) VALUES ('global', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        collectionKey, entityKey, order, valueJson, Buffer.byteLength(valueJson), timestamp, timestamp,
+        value.storeId || null, employeeId, occurredOn, periodKey, value.id || null,
+      )
+    }
+    try {
+      await database.batch([
+        ...['stores', 'employees', 'tasks', 'workCatalogItems'].map((collectionKey) => database.prepare(`
+          INSERT OR IGNORE INTO state_collections (scope_key, collection_key, created_at, updated_at)
+          VALUES ('global', ?, ?, ?)
+        `).bind(collectionKey, timestamp, timestamp)),
+        insert('stores', 'system-store-s01', 10, { id: 'S01', name: 'Cửa hàng 01' }),
+        insert('employees', 'system-employee-e01', 10, { id: 'E01', unit: 'business_support' }, { employeeId: 'E01' }),
+        insert('employees', 'system-employee-e02', 20, { id: 'E02', unit: 'business_support' }, { employeeId: 'E02' }),
+        insert('tasks', 'system-task-today', 10, {
+          id: 'TASK-TODAY', storeId: 'S01', employeeIds: ['E01'], date: '2026-09-06',
+        }, { employeeId: null }),
+        insert('tasks', 'system-task-old', 20, {
+          id: 'TASK-OLD', storeId: 'S01', employeeIds: ['E01'], date: '2026-09-05',
+        }, { employeeId: null }),
+        insert('tasks', 'system-task-other', 30, {
+          id: 'TASK-OTHER', storeId: 'S01', employeeIds: ['E02'], date: '2026-09-06',
+        }, { employeeId: null }),
+        insert('workCatalogItems', 'system-catalog-shared', 10, { id: 'CATALOG-01', title: 'Việc chung' }),
+      ])
+
+      const adminSnapshot = database.readSystemStateSnapshot(
+        'global', ['stores', 'tasks'], 'tasks', ['E01', 'E02'],
+      )
+      expect(adminSnapshot.entities
+        .filter(({ collection_key: key }) => key === 'tasks')
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual([
+          'TASK-TODAY', 'TASK-OLD', 'TASK-OTHER',
+        ])
+
+      const supportSnapshot = database.readSystemStateSnapshot(
+        'global', ['employees', 'tasks', 'workCatalogItems'], 'support-tasks', ['E01'],
+      )
+      expect(supportSnapshot.entities
+        .filter(({ collection_key: key }) => key === 'tasks')
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual([
+          'TASK-TODAY', 'TASK-OLD',
+        ])
+      expect(supportSnapshot.entities
+        .filter(({ collection_key: key }) => key === 'employees')
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual(['E01', 'E02'])
+      expect(supportSnapshot.entities
+        .filter(({ collection_key: key }) => key === 'workCatalogItems')
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual(['CATALOG-01'])
     } finally {
       database.close()
     }
