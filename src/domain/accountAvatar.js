@@ -2,6 +2,13 @@ export const ACCOUNT_AVATAR_MAX_SOURCE_BYTES = 5 * 1024 * 1024
 export const ACCOUNT_AVATAR_MAX_BYTES = 300 * 1024
 export const ACCOUNT_AVATAR_MIME_TYPES = Object.freeze(['image/jpeg', 'image/png', 'image/webp'])
 
+// Display only downloaded thumbnail blobs or locally prepared upload previews.
+// A legacy URL can point at the full source and must not become an <img> request.
+export const localAccountAvatarSource = (value) => {
+  const source = typeof value === 'string' ? value.trim() : ''
+  return /^(?:blob:|data:image\/)/u.test(source) ? source : ''
+}
+
 const AVATAR_DATA_URL = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]*(?:={0,2}))$/u
 // Keep the number of expensive canvas encodes small on mobile. Two WebP
 // attempts preserve the preferred output; JPEG is a compatibility fallback.

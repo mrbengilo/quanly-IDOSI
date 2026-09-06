@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { Children, cloneElement, Fragment, isValidElement, useEffect, useRef, useState } from 'react'
 import { loadEmployeeAvatarUrl, subscribeEmployeeAvatarUpdates } from '../services/employeeAvatarCache'
+import { localAccountAvatarSource } from '../domain/accountAvatar'
 import { buildPaginatedPages, DEFAULT_TABLE_PAGE_SIZE, normalizeTableDate, paginationSequence } from './tablePagination'
 
 const TEMPORAL_INPUT_TYPES = new Set(['date', 'time', 'month', 'datetime-local'])
@@ -32,7 +33,7 @@ export function Brand({ compact = false, blue = false, subtitle = 'hệ thống 
 }
 
 export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38, src = '', employeeId = '' }) {
-  const directSrc = typeof src === 'string' ? src.trim() : ''
+  const directSrc = localAccountAvatarSource(src)
   const normalizedEmployeeId = String(employeeId || '').trim()
   const [remoteAvatar, setRemoteAvatar] = useState({ employeeId: '', url: '' })
   const [reloadVersion, setReloadVersion] = useState(0)
@@ -44,7 +45,7 @@ export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38, src = '',
     .toUpperCase()
 
   useEffect(() => {
-    if (directSrc || !normalizedEmployeeId) return undefined
+    if (!normalizedEmployeeId) return undefined
     let active = true
     loadEmployeeAvatarUrl(normalizedEmployeeId)
       .then((url) => {
@@ -54,7 +55,7 @@ export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38, src = '',
         if (active) setRemoteAvatar({ employeeId: normalizedEmployeeId, url: '' })
       })
     return () => { active = false }
-  }, [directSrc, normalizedEmployeeId, reloadVersion])
+  }, [normalizedEmployeeId, reloadVersion])
 
   useEffect(() => {
     if (!normalizedEmployeeId) return undefined
@@ -65,7 +66,9 @@ export function Avatar({ name = 'IDOSI', color = '#dfece5', size = 38, src = '',
     })
   }, [normalizedEmployeeId])
 
-  const imageSrc = directSrc || (remoteAvatar.employeeId === normalizedEmployeeId ? remoteAvatar.url : '')
+  const imageSrc = normalizedEmployeeId
+    ? (remoteAvatar.employeeId === normalizedEmployeeId ? remoteAvatar.url : '')
+    : directSrc
   return (
     <span className="avatar" style={{ '--avatar-color': color, width: size, height: size }}>
       {imageSrc ? <img src={imageSrc} alt={`Ảnh đại diện ${name}`} /> : initials}

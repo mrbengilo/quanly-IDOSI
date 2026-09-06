@@ -48,7 +48,7 @@ import {
 import { DonutChart, FinancialChart } from '../../components/Charts'
 import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
-import { mergeAccountPersonnelProfile, optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
+import { localAccountAvatarSource, mergeAccountPersonnelProfile, optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
 import { invalidateEmployeeAvatarCache } from '../../services/employeeAvatarCache'
 import { apiGetFinanceOverview } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
@@ -629,7 +629,9 @@ export function AdminSettings() {
       : session?.role === 'store_manager'
         ? 'Quản lý cửa hàng'
         : 'Nhân viên'
-  const displayedAvatar = avatarUpdate === undefined ? (settings?.avatar || form.avatar || '') : form.avatar
+  const displayedAvatar = localAccountAvatarSource(
+    avatarUpdate === undefined ? (settings?.avatar || form.avatar || '') : form.avatar,
+  )
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
   const togglePassword = (key) => setVisiblePasswords((current) => ({ ...current, [key]: !current[key] }))
 

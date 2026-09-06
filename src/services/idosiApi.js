@@ -249,7 +249,7 @@ const apiGetAvatarBlob = async (path, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) =
     const token = memoryToken || readToken()
     const response = await fetch(path, {
       method: 'GET',
-      cache: 'no-store',
+      cache: 'no-cache',
       credentials: 'same-origin',
       signal: controller.signal,
       headers: {
@@ -280,7 +280,7 @@ const apiGetAvatarBlob = async (path, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) =
   }
 }
 
-export const apiGetAccountAvatar = (options = {}) => apiGetAvatarBlob('/api/account-avatar', options)
+export const apiGetAccountAvatar = (options = {}) => apiGetAvatarBlob('/api/account-avatar/thumbnail', options)
 
 // All signed-in accounts may see each other's display avatar across roles,
 // units and stores. The backend still resolves the canonical image owner;
@@ -294,7 +294,7 @@ export const apiGetEmployeeAvatar = (employeeId, options = {}) => {
       code: 'EMPLOYEE_AVATAR_ID_REQUIRED',
     }))
   }
-  return apiGetAvatarBlob(`/api/account-avatars/${encodeURIComponent(normalizedEmployeeId)}`, options)
+  return apiGetAvatarBlob(`/api/account-avatars/${encodeURIComponent(normalizedEmployeeId)}/thumbnail`, options)
 }
 
 export const apiGetIdentityImage = async (employeeId, side, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) => {
