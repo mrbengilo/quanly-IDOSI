@@ -2175,11 +2175,15 @@ export function AppProvider({ children }) {
         })
       }
     }
-    restore().catch(() => {
-      clearApiSession()
-      invalidateEmployeeAvatarCache()
-      void clearWorkspaceCache()
-      if (active) setApiStatus('local')
+    restore().catch((error) => {
+      const sessionInvalid = Number(error?.status) === 401
+        || ['SESSION_INVALID', 'SESSION_REQUIRED', 'AUTH_REQUIRED'].includes(String(error?.code || ''))
+      if (sessionInvalid) {
+        clearApiSession()
+        invalidateEmployeeAvatarCache()
+        void clearWorkspaceCache()
+      }
+      if (active) setApiStatus(sessionInvalid ? 'local' : 'error')
     }).finally(() => {
       if (active) setSessionRestoreReady(true)
     })

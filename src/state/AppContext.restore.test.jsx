@@ -78,3 +78,17 @@ it('discards private cached data when the session has been revoked', async () =>
   expect(mocks.clear).toHaveBeenCalled()
   expect(mocks.bootstrap).not.toHaveBeenCalled()
 })
+
+it.each([
+  ['timeout', { code: 'TIMEOUT', status: 0 }],
+  ['network failure', { code: 'NETWORK_ERROR', status: 0 }],
+  ['temporary server failure', { code: 'HTTP_503', status: 503 }],
+])('keeps the stored session and cache after a transient %s during restore', async (_label, details) => {
+  mocks.metadata.mockRejectedValue(Object.assign(new Error('Temporary failure'), details))
+  render(<AppProvider><Probe /></AppProvider>)
+
+  expect(await screen.findByText('signed-out')).toBeTruthy()
+  expect(mocks.clearSession).not.toHaveBeenCalled()
+  expect(mocks.clear).not.toHaveBeenCalled()
+  expect(mocks.bootstrap).not.toHaveBeenCalled()
+})
