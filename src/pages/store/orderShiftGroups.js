@@ -1,4 +1,4 @@
-import { businessDate } from '../../utils'
+import { orderBusinessDate, orderGroupKey } from '../../domain/orderSummary'
 
 const timeToMinutes = (value) => {
   const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})/u)
@@ -28,9 +28,7 @@ const orderTimestamp = (order = {}) => {
   return Number.isFinite(parsed) ? parsed : 0
 }
 
-const orderDay = (order = {}) => businessDate(
-  order.createdAt || order.updatedAt || order.businessDate || order.date || '',
-)
+const orderDay = orderBusinessDate
 
 const groupShiftStart = (orders = []) => orders.reduce((latest, order) => {
   const explicit = timeToMinutes(order.shiftStart || order.start || order.startTime)
@@ -63,24 +61,10 @@ const compareGroups = (view) => ([, left], [, right]) => {
   )
 }
 
-const shiftGroupKey = (order = {}) => {
-  const explicitId = String(order.shiftId || '').trim()
-  if (explicitId) return explicitId
-  const name = String(order.shiftName || 'Chưa gắn ca').trim().toLocaleLowerCase('vi-VN')
-  const start = String(order.shiftStart || order.start || order.startTime || '').trim()
-  const end = String(order.shiftEnd || order.end || order.endTime || '').trim()
-  return `${name}:${start}:${end}`
-}
-
 export const groupOrdersForDisplay = (orders = [], view = 'shift') => {
-  const keyOf = view === 'employee'
-    ? (order) => order.employeeId || 'system'
-    : view === 'day'
-      ? (order) => orderDay(order)
-      : (order) => `${orderDay(order)}:${shiftGroupKey(order)}`
   const grouped = new Map()
   for (const order of Array.isArray(orders) ? orders : []) {
-    const key = keyOf(order)
+    const key = orderGroupKey(order, view)
     if (!grouped.has(key)) grouped.set(key, [])
     grouped.get(key).push(order)
   }

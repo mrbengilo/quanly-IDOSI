@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { StoreOrdersPage } from './StoreV2Pages'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
@@ -54,6 +54,11 @@ const renderPage = () => render(
     <StoreOrdersPage />
   </MemoryRouter>,
 )
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-08-25T03:00:00Z'))
+})
 
 afterEach(() => {
   cleanup()

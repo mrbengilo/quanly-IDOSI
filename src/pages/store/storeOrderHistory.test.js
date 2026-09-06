@@ -63,4 +63,16 @@ describe('store order history', () => {
 
     expect(fetchPage).toHaveBeenCalledTimes(1)
   })
+
+  it('follows the selected month cursor to reveal a requested older order', async () => {
+    const fetchPage = vi.fn()
+      .mockResolvedValueOnce({ records: [order('NEWER', '2026-09-03')], page: { hasMore: true, nextCursor: 'older' } })
+      .mockResolvedValueOnce({ records: [order('TARGET', '2026-09-02')], page: { hasMore: true, nextCursor: 'more' } })
+    const result = await loadInitialStoreOrderHistory({
+      fetchPage, query: { storeId: 'S01', period: '2026-09' }, currentDay: '2026-09-04', requestedOrderId: 'TARGET',
+    })
+    expect(fetchPage).toHaveBeenCalledTimes(2)
+    expect(result.records.map(({ id }) => id)).toEqual(['NEWER', 'TARGET'])
+    expect(result.page.nextCursor).toBe('more')
+  })
 })

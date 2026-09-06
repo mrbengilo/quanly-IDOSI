@@ -3,6 +3,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { EmployeeOrdersPage } from '../employee/EmployeeV2Pages'
 import { StoreOrdersPage } from './StoreV2Pages'
+import { today } from '../../utils'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 
@@ -174,7 +175,7 @@ describe('order notification deep links', () => {
       session: { role: 'business_support' },
       activeStoreId: 'S01',
       stores: [{ id: 'S01', name: 'Cửa hàng 01' }],
-      orders: [targetOrder],
+      orders: [{ ...targetOrder, createdAt: `${today()}T08:30:00+07:00` }],
       employees: [{ id: 'E01', storeId: 'S01', name: 'Nhân viên 01' }],
       updateOrder: vi.fn(),
       deleteOrder: vi.fn(),

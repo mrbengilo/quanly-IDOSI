@@ -169,9 +169,17 @@ export const apiGetStateMetadata = (scope = 'global', { restore = false } = {}) 
 export const apiGetFinanceOverview = (period) => stateReadRequest(
   `/api/finance-overview?period=${encodeURIComponent(String(period || ''))}`,
 )
+export const apiGetOrderSummary = ({ storeId, period } = {}) => {
+  const query = new URLSearchParams({
+    storeId: String(storeId || ''),
+    period: String(period || ''),
+  })
+  return stateReadRequest(`/api/order-summary?${query.toString()}`)
+}
 export const apiGetHistory = (kind, {
   storeId,
   employeeId = '',
+  orderId = '',
   period = '',
   cursor = '',
   limit = 50,
@@ -181,6 +189,7 @@ export const apiGetHistory = (kind, {
     limit: String(limit),
   })
   if (employeeId) query.set('employeeId', String(employeeId))
+  if (orderId) query.set('orderId', String(orderId))
   if (period) query.set('period', String(period))
   if (cursor) query.set('cursor', String(cursor))
   return stateReadRequest(`/api/history/${encodeURIComponent(String(kind || ''))}?${query.toString()}`)

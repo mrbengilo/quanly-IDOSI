@@ -1,5 +1,5 @@
 import { buildPaginatedPages } from '../../components/tablePagination'
-import { businessDate } from '../../utils'
+import { orderBusinessDate } from '../../domain/orderSummary'
 
 export const STORE_ORDER_HISTORY_PAGE_SIZE = 100
 
@@ -11,9 +11,7 @@ export const mergeStoreOrderHistoryRecords = (current = [], additions = []) => {
   return [...byId.values()]
 }
 
-const orderDate = (record = {}) => businessDate(
-  record.createdAt || record.date || record.businessDate || record.updatedAt || '',
-)
+const orderDate = orderBusinessDate
 
 export const buildStoreOrderPages = (orders = [], {
   currentDay,
@@ -47,6 +45,7 @@ export const loadInitialStoreOrderHistory = async ({
   fetchPage,
   query,
   currentDay,
+  requestedOrderId = '',
   pageSize = STORE_ORDER_HISTORY_PAGE_SIZE,
 }) => {
   let records = []
@@ -63,11 +62,14 @@ export const loadInitialStoreOrderHistory = async ({
 
     const nextCursor = String(page?.nextCursor || '')
     const lastRecordDay = orderDate(additions.at(-1))
+    const seekingRequestedOrder = requestedOrderId && !records.some((record) => (
+      [record.id, record.code].some((value) => String(value || '') === String(requestedOrderId))
+    ))
     shouldContinue = Boolean(
       page?.hasMore
       && nextCursor
       && additions.length
-      && lastRecordDay === currentDay
+      && (lastRecordDay === currentDay || seekingRequestedOrder)
       && !visitedCursors.has(nextCursor),
     )
     if (shouldContinue) {
