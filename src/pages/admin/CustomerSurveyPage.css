@@ -1,10 +1,10 @@
 .customer-survey-page .metric {
-  min-height: 94px;
+  min-height: 0;
   border-width: 2px;
 }
 
 .customer-survey-page .metrics-grid { gap: 0.75rem; }
-.customer-survey-page .metric--compact { padding: 0.85rem; }
+.customer-survey-page .metric--compact { padding: var(--metric-padding); }
 .survey-brand-icon { display:grid;place-items:center;width:28px;height:28px;font-weight:900;line-height:1;font-family:Arial,sans-serif; }
 .survey-brand-icon--tiktok { color:#111;text-shadow:-1.5px 0 #25f4ee,1.5px 0 #fe2c55;font-size:25px; }
 .survey-brand-icon--facebook { border-radius:50%;background:#1877f2;color:#fff;font-size:22px; }
