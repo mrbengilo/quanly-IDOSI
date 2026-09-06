@@ -480,10 +480,11 @@ export function UnifiedSchedule() {
             return (
               <article key={shift.id} className="schedule-shift-card" style={{ '--shift-color': shift.color }}>
                 <i className="schedule-shift-card__accent" aria-hidden="true" />
-                <div className="schedule-shift-card__clock"><Clock3 /></div>
                 <div className="schedule-shift-card__content">
-                  <strong>{shift.name}</strong>
-                  <b>{scheduleShiftTimeLabel(shift)}</b>
+                  <div className="schedule-shift-card__heading">
+                    <strong>{shift.name}</strong>
+                    <b>{scheduleShiftTimeLabel(shift)}</b>
+                  </div>
                   <span>{scheduleShiftDurationLabel(shift)} · {assignedCount} nhân viên</span>
                   <small>Cập nhật: {displayDateTime(shift.updatedAt || shift.createdAt)}</small>
                 </div>
