@@ -282,12 +282,10 @@ const apiGetAvatarBlob = async (path, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) =
 
 export const apiGetAccountAvatar = (options = {}) => apiGetAvatarBlob('/api/account-avatar', options)
 
-// Authorized personnel-avatar contract. The backend resolves the canonical
-// employee profile and enforces actor scope before returning any bytes:
-// Admin/HTKD may read every active store, Store Manager only their store, and
-// an Employee only their own profile. Keeping this separate from the current
-// account endpoint prevents list rows from accidentally reusing the session
-// avatar.
+// All signed-in accounts may see each other's display avatar across roles,
+// units and stores. The backend still resolves the canonical image owner;
+// private profile/identity-image permissions are separate. Request the row's
+// employee ID so list rows never reuse the current account's avatar.
 export const apiGetEmployeeAvatar = (employeeId, options = {}) => {
   const normalizedEmployeeId = String(employeeId || '').trim()
   if (!normalizedEmployeeId) {

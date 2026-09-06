@@ -94,18 +94,22 @@ describe('private image previews', () => {
     try {
       const bytes = await noisyImage()
       const avatarKey = 'account-avatars/legacy-profile-E01/avatar-v1.jpg'
+      const peerAvatarKey = 'account-avatars/legacy-profile-E02/avatar-v1.jpg'
       const identityKey = 'identity-images/E01/front/original.jpg'
       const metadata = (key) => ({ key, size: bytes.byteLength, contentType: 'image/jpeg', version: 1, updatedAt: new Date().toISOString() })
       const bootstrap = await post('/api/bootstrap', { username: 'preview.admin', password: 'preview-fixture-password', initialState: {
         stores: [{ id: 'S01', status: 'Đang hoạt động' }, { id: 'S02', status: 'Đang hoạt động' }],
         employees: [
           { id: 'E01', storeId: 'S01', unit: 'store', status: 'Đang làm việc', avatarImage: metadata(avatarKey), identityImages: { front: metadata(identityKey) } },
-          { id: 'E02', storeId: 'S02', unit: 'store', status: 'Đang làm việc' },
+          { id: 'E02', storeId: 'S02', unit: 'store', status: 'Đang làm việc', avatarImage: metadata(peerAvatarKey) },
+          { id: 'M01', storeId: 'S01', unit: 'store_manager', status: 'Đang làm việc' },
+          { id: 'H01', storeId: 'BUSINESS_SUPPORT', unit: 'business_support', status: 'Đang làm việc' },
+          { id: 'O01', storeId: 'OFFICE', unit: 'office', status: 'Đang làm việc' },
         ],
         orders: [{ id: 'UNRELATED', storeId: 'S02', note: 'unrelated history' }],
       } }, { 'x-idosi-bootstrap-token': 'preview-fixture' })
       expect(bootstrap.status).toBe(201)
-      for (const key of [avatarKey, identityKey]) await runtime.env.IDENTITY_IMAGES.put(key, bytes, { httpMetadata: { contentType: 'image/jpeg' } })
+      for (const key of [avatarKey, peerAvatarKey, identityKey]) await runtime.env.IDENTITY_IMAGES.put(key, bytes, { httpMetadata: { contentType: 'image/jpeg' } })
       runtime.database.database.prepare(`INSERT INTO users(id,username,username_normalized,display_name,password_hash,password_salt,password_iterations,password_algorithm,role,status,store_id,employee_id,password_updated_at,created_at,updated_at)
         SELECT 'PREVIEW-E1','preview.employee','preview.employee','Preview employee',password_hash,password_salt,password_iterations,password_algorithm,'employee','active','S01','E01',password_updated_at,created_at,updated_at FROM users WHERE username='preview.admin'`).run()
       const login = await (await post('/api/login', { username: 'preview.employee', password: 'preview-fixture-password' })).json()
@@ -124,9 +128,32 @@ describe('private image previews', () => {
       expect(globalRead).not.toHaveBeenCalled()
       expect(encode).toHaveBeenCalledTimes(2)
       expect((await fetch(`${baseUrl}/api/identity-images/E02/front`, { headers })).status).toBe(403)
-      expect((await fetch(`${baseUrl}/api/account-avatars/E02`, { headers })).status).toBe(404)
+      const operationalRead = vi.spyOn(runtime.database, 'readStoreStateSnapshot')
+      for (const [username, role, store, employee] of [
+        ['preview.manager', 'store_manager', 'S01', 'M01'],
+        ['preview.support', 'business_support', 'BUSINESS_SUPPORT', 'H01'],
+        ['preview.office', 'employee', 'OFFICE', 'O01'],
+      ]) {
+        runtime.database.database.prepare(`INSERT INTO users(id,username,username_normalized,display_name,password_hash,password_salt,password_iterations,password_algorithm,role,status,store_id,employee_id,password_updated_at,created_at,updated_at)
+          SELECT ?,?,?,?,password_hash,password_salt,password_iterations,password_algorithm,?,'active',?,?,password_updated_at,created_at,updated_at FROM users WHERE username='preview.admin'`)
+          .run(username, username, username, username, role, store, employee)
+      }
+      for (const username of ['preview.admin', 'preview.employee', 'preview.manager', 'preview.support', 'preview.office']) {
+        const response = await post('/api/login', { username, password: 'preview-fixture-password' })
+        expect(response.status, username).toBe(200)
+        const viewer = { authorization: `Bearer ${(await response.json()).token}` }
+        globalRead.mockClear()
+        operationalRead.mockClear()
+        const avatar = await fetch(`${baseUrl}/api/account-avatars/E02`, { headers: viewer })
+        expect(avatar.status, username).toBe(200)
+        expect(avatar.headers.get('content-type')).toBe('image/webp')
+        expect((await avatar.arrayBuffer()).byteLength).toBeLessThanOrEqual(20 * 1024)
+        expect(globalRead).not.toHaveBeenCalled()
+        expect(operationalRead).not.toHaveBeenCalled()
+      }
+      expect((await fetch(`${baseUrl}/api/account-avatars/E02`)).status).toBe(401)
       expect((await fetch(`${baseUrl}/api/identity-images/E01/front`)).status).toBe(401)
-      expect(encode).toHaveBeenCalledTimes(2)
+      expect(encode).toHaveBeenCalledTimes(3)
     } finally {
       await new Promise((resolveClose) => server.close(resolveClose))
     }

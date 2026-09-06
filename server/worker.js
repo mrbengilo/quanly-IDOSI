@@ -24220,13 +24220,6 @@ const employeeAvatarNotFound = () => new ApiError(
   'Không tìm thấy ảnh đại diện nhân viên.',
 )
 
-const activeEmployeeAvatarProfile = (profile) => {
-  if (!isPlainRecord(profile) || profile.deletedAt || profile.active === false) return false
-  return ![
-    'da nghi viec', 'nghi viec', 'tam ngung', 'inactive', 'locked', 'da xoa', 'deleted',
-  ].includes(normalizeTextKey(profile.status))
-}
-
 const activePhysicalStoreByIdentifier = (state, storeId) => {
   const requestedStoreId = String(storeId || '').trim()
   if (!requestedStoreId || isReservedPhysicalStoreIdentifier(requestedStoreId)) return null
@@ -24317,25 +24310,6 @@ const employeeAvatarIsActorIdentity = (state, actor, profile) => {
   return [...targetIds].some((value) => actorIds.has(value))
 }
 
-const employeeAvatarAuthorized = (state, actor, profile) => {
-  if (!activeEmployeeAvatarProfile(profile)) return false
-  const unit = employeeUnit(profile)
-  const physicalStore = activePhysicalStoreForAvatarProfile(state, profile)
-  if (actor.role === 'admin') {
-    return ['office', 'business_support'].includes(unit) || Boolean(physicalStore)
-  }
-  if (actor.role === 'business_support') {
-    return !['office', 'business_support'].includes(unit) && Boolean(physicalStore)
-  }
-  if (actor.role === 'store_manager') {
-    const actorStore = activePhysicalStoreByIdentifier(state, actor.store_id)
-    return !['office', 'business_support'].includes(unit)
-      && Boolean(physicalStore)
-      && physicalStore === actorStore
-  }
-  return actor.role === 'employee' && employeeAvatarIsActorIdentity(state, actor, profile)
-}
-
 const employeeAvatarMetadata = (state, actor, profile) => {
   const canonical = canonicalEmployeeAvatarProfile(state, profile)
   const profiles = [profile, canonical].filter((candidate, index, records) => (
@@ -24366,13 +24340,16 @@ const employeeAvatarMetadata = (state, actor, profile) => {
 
 const getEmployeeAccountAvatar = async (request, env, context, employeeId) => {
   const db = getDatabase(env)
-  const actor = await requireStateReadSession(request, db, context)
+  // Avatars are shared display images for every signed-in account. Reading
+  // them does not depend on the viewer's role, store or current attendance;
+  // private personnel data and identity images keep their separate policy.
+  const actor = await requireSession(request, db, context, { resolveOperationalContext: false })
   const normalizedEmployeeId = String(employeeId || '').trim()
   if (!/^[A-Za-z0-9_-]{2,80}$/u.test(normalizedEmployeeId)) {
     throw employeeAvatarNotFound()
   }
   await ensureAvatarMigration(db, env, actor, context)
-  const current = await loadStateCollections(db, 'global', ['stores', 'employees', 'deletedEmployees'])
+  const current = await loadStateCollections(db, 'global', ['employees'])
   const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json, {}))
   let profile
   try {
@@ -24389,7 +24366,7 @@ const getEmployeeAccountAvatar = async (request, env, context, employeeId) => {
     }
     throw error
   }
-  if (!profile || !employeeAvatarAuthorized(state, actor, profile)) throw employeeAvatarNotFound()
+  if (!profile) throw employeeAvatarNotFound()
   const metadata = employeeAvatarMetadata(state, actor, profile)
   if (!metadata) throw employeeAvatarNotFound()
   const bucket = env?.IDENTITY_IMAGES
