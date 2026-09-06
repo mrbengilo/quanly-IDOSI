@@ -1,10 +1,10 @@
 .unified-schedule-page {
   --schedule-border: #cfe0d5;
   --schedule-muted: #667085;
+  --schedule-person-width: 180px;
   gap: var(--card-gap);
   min-width: 0;
   max-width: 100%;
-  overflow-x: clip;
 }
 
 .schedule-page-hero {
@@ -33,21 +33,17 @@
 }
 
 .schedule-page-hero__store strong {
-  overflow: hidden;
   color: #08753c;
   font-size: 12px;
   letter-spacing: 1px;
-  text-overflow: ellipsis;
   text-transform: uppercase;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .schedule-page-hero__store span {
-  overflow: hidden;
   color: #58697d;
   font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .schedule-page-hero__status {
@@ -267,8 +263,10 @@
 }
 
 .schedule-stat-strip strong {
+  min-width: 0;
   color: #101828;
   font-size: 20px;
+  overflow-wrap: anywhere;
 }
 
 .schedule-stat-strip span {
@@ -285,7 +283,7 @@
   width: 100%;
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .unified-schedule-page .schedule-board > .card__subheader {
@@ -314,9 +312,11 @@
 }
 
 .unified-schedule-page .schedule-board > .card__subheader .row-actions > strong {
+  min-width: 0;
   color: #101828;
   text-align: center;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .unified-schedule-page .schedule-board > .card__subheader .row-actions > .button:not(.schedule-today-button) {
@@ -338,6 +338,27 @@
 
 .unified-schedule-page .schedule-matrix table {
   min-width: 100%;
+}
+
+.unified-schedule-page .schedule-matrix th {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.unified-schedule-page .schedule-matrix .person-cell {
+  width: var(--schedule-person-width);
+  min-width: 0;
+  max-width: 100%;
+  align-items: flex-start;
+  overflow-wrap: anywhere;
+}
+
+.unified-schedule-page .schedule-matrix .person-cell > span:not(.avatar) {
+  flex: 1;
+}
+
+.unified-schedule-page .schedule-matrix .support-employee-tag {
+  min-width: 0;
 }
 
 .unified-schedule-page .schedule-matrix--day th:not(:first-child),
@@ -408,6 +429,7 @@
   padding: 0;
   min-width: 0;
   max-width: 100%;
+  overflow: visible;
 }
 
 .unified-schedule-page .created-schedule-row {
@@ -423,12 +445,96 @@
   gap: 10px;
 }
 
+/* History headers and tabs must shrink inside the mobile card. */
+.unified-schedule-page .created-schedule-card__header > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.unified-schedule-page .created-schedule-card__header .tabs {
+  flex-wrap: wrap;
+}
+
+.unified-schedule-page .created-schedule-card__header .tabs button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px;
+  white-space: normal;
+}
+
 .unified-schedule-page .created-schedule-row__icon {
   width: 32px;
   height: 32px;
 }
 
 .unified-schedule-page .created-schedule-row__content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.unified-schedule-page .created-schedule-row__employees {
+  gap: 4px 12px;
+}
+
+.unified-schedule-page .schedule-assignment-flow {
+  gap: var(--card-gap);
+}
+
+.unified-schedule-page .schedule-assignment-flow > .field,
+.unified-schedule-page .schedule-assignment-employees {
+  min-width: 0;
+  padding: var(--card-padding);
+}
+
+.unified-schedule-page .schedule-assignment-shifts {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+  align-items: start;
+}
+
+.unified-schedule-page .schedule-assignment-shifts button {
+  min-width: 0;
+  min-height: 44px;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.unified-schedule-page .schedule-assignment-shifts button > span {
+  min-width: 0;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
+
+.unified-schedule-page .schedule-assignment-shifts button > svg {
+  position: static;
+  flex: none;
+}
+
+.unified-schedule-page .employee-picker label {
+  grid-template-columns: 22px 30px minmax(0, 1fr);
+  gap: 3px 7px;
+  min-width: 0;
+}
+
+.unified-schedule-page .employee-picker label > strong,
+.unified-schedule-page .employee-picker label > small,
+.unified-schedule-page .employee-picker .support-employee-tag {
+  grid-column: 3;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.unified-schedule-page .schedule-edit-summary {
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: var(--card-gap);
+}
+
+.unified-schedule-page .schedule-edit-summary > svg {
+  flex: none;
+}
+
+.unified-schedule-page .schedule-edit-summary > span {
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -506,7 +612,7 @@
   }
 
   .unified-schedule-page .schedule-board > .card__subheader .row-actions {
-    grid-template-columns: 44px 1fr 44px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
   }
 
   .schedule-today-button {
@@ -516,6 +622,7 @@
 
 @media (max-width: 560px) {
   .unified-schedule-page {
+    --schedule-person-width: 140px;
     gap: 10px;
   }
 
@@ -523,14 +630,16 @@
     font-size: 24px;
   }
 
-  .schedule-page-hero__store span,
-  .schedule-page-hero__status {
-    display: none;
-  }
-
   .schedule-page-hero__store {
     grid-column: 1 / -1;
     text-align: center;
+  }
+
+  .schedule-page-hero__status {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: center;
+    padding: 5px 9px;
   }
 
   .schedule-toolbar-card__actions {

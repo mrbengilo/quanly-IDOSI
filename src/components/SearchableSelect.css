@@ -22,7 +22,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 0 12px;
+  padding: 9px 12px;
   border: 1px solid #b9cfc1;
   border-radius: 8px;
   background: #fff;
@@ -42,9 +42,9 @@
 
 .searchable-select__value {
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 .searchable-select__value--placeholder {

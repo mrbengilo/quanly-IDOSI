@@ -7,6 +7,7 @@
 
 .compensation-page {
   display: grid;
+  align-content: start;
   gap: var(--card-gap);
 }
 
@@ -95,6 +96,13 @@
 .compensation-fixed-scope span {
   color: var(--compensation-muted);
   font-size: 12px;
+}
+
+.compensation-fixed-scope > *,
+.revenue-milestone > span:nth-child(2) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .compensation-metrics {
@@ -197,7 +205,8 @@
 .revenue-milestone b {
   color: #1b6fd5;
   font-size: 13px;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .compensation-summary-strip {
@@ -310,6 +319,7 @@
 
 .compensation-unit-statistics {
   display: grid;
+  align-content: start;
   gap: var(--card-gap);
 }
 
@@ -334,7 +344,7 @@
   background: #f8fcf9;
   border: 1px solid var(--compensation-border);
   border-radius: 14px;
-  overflow: hidden;
+  min-width: 0;
 }
 
 .reward-shift-card__head {
@@ -367,6 +377,11 @@
   align-items: center;
   color: var(--compensation-muted);
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+.reward-shift-card__head small > svg {
+  flex: none;
 }
 
 .reward-task-checklist {
@@ -456,9 +471,17 @@
 .reward-shift-card__actions {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 14px;
   padding: 0 12px 12px;
+}
+
+.reward-shift-card__actions > *,
+.revenue-collision-item > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .reward-shift-card__actions > span {
@@ -653,6 +676,7 @@
   border: 1px solid #fecaca;
   border-radius: 12px;
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   justify-content: space-between;
   padding: 12px 14px;

@@ -10,10 +10,10 @@
 
 .working-time-fields__row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.4fr) minmax(150px, 1fr) minmax(150px, 1fr) auto;
+  grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(150px, 1fr)) auto;
   gap: 12px;
   align-items: end;
-  padding: 14px;
+  padding: var(--card-padding);
   border: 1px solid var(--border, #d9e5dc);
   border-radius: 14px;
   background: var(--surface-soft, #f8fbf9);
@@ -45,10 +45,20 @@
 
 @media (max-width: 720px) {
   .working-time-fields__row {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .working-time-fields__row > :first-child {
     grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 480px) {
+  .working-time-fields__row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .working-time-fields__remove {
+    justify-self: end;
   }
 }
