@@ -174,7 +174,7 @@ describe('AdminSettings password visibility', () => {
     mocked.saveSettings.mockResolvedValue({ ok: true, settings: { avatar: '' } })
     render(<AdminSettings />)
 
-    expect(screen.getByText(/Đang tải ảnh đại diện riêng tư…/)).toBeTruthy()
+    expect(screen.getByText(/Đang tải ảnh đại diện…/)).toBeTruthy()
     expect(screen.getByRole('alert').textContent).toContain('Không thể tải ảnh đại diện.')
     fireEvent.click(screen.getByRole('button', { name: 'Xóa ảnh' }))
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))

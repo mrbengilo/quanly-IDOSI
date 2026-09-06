@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BusinessSupportSchedulePage, MyBusinessSupportSchedulePage } from './BusinessSupportSchedulePage'
 
@@ -10,6 +10,11 @@ const mocked = vi.hoisted(() => ({
 }))
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
+
+vi.mock('../../services/employeeAvatarCache', () => ({
+  loadEmployeeAvatarUrl: async (id) => `blob:thumbnail-${id}`,
+  subscribeEmployeeAvatarUpdates: () => () => {},
+}))
 
 describe('BusinessSupportSchedulePage', () => {
   afterEach(() => {
@@ -137,7 +142,7 @@ describe('BusinessSupportSchedulePage', () => {
     confirm.mockRestore()
   })
 
-  it('renders the personal weekly schedule horizontally with avatar and empty days', () => {
+  it('renders the personal weekly schedule horizontally with avatar and empty days', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-21T08:00:00+07:00'))
     mocked.app = {
@@ -149,7 +154,7 @@ describe('BusinessSupportSchedulePage', () => {
         { id: 'S2', employeeId: 'VP-01', targetUnit: 'office', date: '2026-08-22', shiftName: 'Ca sáng', start: '08:00', end: '12:00', note: 'Họp đầu ca' },
       ],
     }
-    render(<MyBusinessSupportSchedulePage />)
+    await act(async () => { render(<MyBusinessSupportSchedulePage />) })
 
     expect(document.querySelector('.my-work-schedule-grid thead tr')?.children).toHaveLength(8)
     expect(document.querySelector('.my-work-schedule-grid')?.textContent).toContain('21/08')
@@ -157,7 +162,7 @@ describe('BusinessSupportSchedulePage', () => {
     expect(screen.getByText('Ca sáng')).toBeTruthy()
     expect(screen.getByText('Họp đầu ca')).toBeTruthy()
     expect(screen.getAllByText('Không có lịch')).toHaveLength(5)
-    expect(screen.getByAltText('Ảnh đại diện Kế toán văn phòng').getAttribute('src')).toBe('/avatar-office.jpg')
+    expect(screen.getByAltText('Ảnh đại diện Kế toán văn phòng').getAttribute('src')).toBe('blob:thumbnail-VP-01')
     vi.useRealTimers()
   })
 

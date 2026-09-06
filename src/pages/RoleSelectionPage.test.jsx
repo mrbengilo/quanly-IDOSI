@@ -6,7 +6,7 @@ import RoleSelectionPage from './RoleSelectionPage'
 const mocked = vi.hoisted(() => ({
   selectSessionRole: vi.fn(),
   session: null,
-  settings: { avatar: '/avatar-user.jpg' },
+  settings: { avatar: 'blob:account-thumbnail' },
 }))
 
 vi.mock('../state/AppContext', () => ({
@@ -34,7 +34,7 @@ describe('RoleSelectionPage', () => {
       <Route path="/store/overview" element={<h1>Không gian quản lý</h1>} />
     </Routes></MemoryRouter>)
 
-    expect(screen.getByRole('img', { name: 'Ảnh đại diện Nguyễn Minh Khôi' }).getAttribute('src')).toBe('/avatar-user.jpg')
+    expect(screen.getByRole('img', { name: 'Ảnh đại diện Nguyễn Minh Khôi' }).getAttribute('src')).toBe('blob:account-thumbnail')
     const roleGroup = screen.getByRole('group', { name: 'Vai trò có thể chọn' })
     expect(roleGroup.style.getPropertyValue('--role-option-count')).toBe('2')
     const managerButton = screen.getByRole('button', { name: /^Quản lý CH Quản lý cửa hàng/u })
