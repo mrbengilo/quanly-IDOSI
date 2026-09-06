@@ -3,7 +3,7 @@ import sharp from 'sharp'
 import { FileR2 } from './file-r2.mjs'
 
 const VARIANTS = Object.freeze({
-  avatar: { bytes: 20 * 1024, edge: 256, minimumEdge: 96 },
+  avatar: { bytes: 15 * 1024, edge: 256, minimumEdge: 96 },
   identity: { bytes: 100 * 1024, edge: 1400, minimumEdge: 320 },
 })
 const pendingEncodes = []
@@ -68,7 +68,9 @@ export class ImageFileR2 extends FileR2 {
     const sourceVersion = await this.version(key)
     if (!sourceVersion) return null
     const cached = await this.get(displayKey)
-    if (cached?.customMetadata?.sourceVersion === sourceVersion) return cached
+    // Re-encode older cached avatars that exceed the current thumbnail budget.
+    if (cached?.customMetadata?.sourceVersion === sourceVersion
+      && cached.size <= VARIANTS[variant].bytes) return cached
     const source = await this.get(key)
     if (!source) return null
     const body = await this.encodePreview(source.body, variant)

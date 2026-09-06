@@ -8216,6 +8216,15 @@ const uploadAccountAvatarObject = async (bucket, source, userId, timestamp, vers
         uploadedAt: timestamp,
       },
     })
+    // On the VPS this writes a separate persistent WebP thumbnail before the
+    // account update can commit. A failed encode/save keeps the old avatar and
+    // lets the existing durable mutation cleanup remove both new files.
+    if (typeof bucket.getPreview === 'function') {
+      const thumbnail = await bucket.getPreview(key, 'avatar')
+      if (!thumbnail?.body || thumbnail.size > 15 * 1024) {
+        throw new ApiError(503, 'ACCOUNT_AVATAR_THUMBNAIL_FAILED', 'Không thể tạo ảnh đại diện thu nhỏ. Vui lòng thử lại.')
+      }
+    }
     if (typeof lifecycle.afterPut === 'function') await lifecycle.afterPut(key)
   } catch (error) {
     if (error instanceof ApiError) throw error
@@ -24176,6 +24185,34 @@ const privateDisplayImage = async (bucket, key, variant) => {
   }
 }
 
+const accountAvatarResponse = (request, metadata, object) => {
+  const contentType = object.httpMetadata?.contentType || metadata.contentType
+  const extension = contentType === 'image/jpeg' ? 'jpg' : contentType.split('/')[1]
+  const headers = new Headers({
+    // Keep thumbnail bytes in the browser cache, but revalidate before reuse
+    // so replacing/deleting an avatar takes effect immediately on the next GET.
+    'Cache-Control': 'private, no-cache',
+    'Vary': 'Authorization',
+    'Content-Disposition': `inline; filename="avatar-thumbnail.${extension}"`,
+    'Content-Security-Policy': "default-src 'none'",
+    'Content-Type': contentType,
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Avatar-Version': String(metadata.version),
+  })
+  if (object.etag) {
+    const etag = `"${String(object.etag).replaceAll('"', '')}"`
+    headers.set('ETag', etag)
+    const validators = String(request.headers.get('if-none-match') || '').split(',').map((value) => value.trim())
+    if (validators.some((value) => value === '*' || value.replace(/^W\//u, '') === etag)) {
+      return new Response(null, { status: 304, headers })
+    }
+  }
+  if (Number.isSafeInteger(object.size)) headers.set('Content-Length', String(object.size))
+  return new Response(object.body, { status: 200, headers })
+}
+
 const getAccountAvatar = async (request, env, context) => {
   const db = getDatabase(env)
   const actor = await requireStateReadSession(request, db, context)
@@ -24197,21 +24234,7 @@ const getAccountAvatar = async (request, env, context) => {
   }
   const object = await privateDisplayImage(bucket, metadata.key, 'avatar')
   if (!object?.body) throw new ApiError(404, 'ACCOUNT_AVATAR_NOT_FOUND', 'Không tìm thấy ảnh đại diện trong kho riêng tư.')
-  const contentType = object.httpMetadata?.contentType || metadata.contentType
-  const extension = contentType === 'image/jpeg' ? 'jpg' : contentType.split('/')[1]
-  const headers = new Headers({
-    'Cache-Control': 'private, no-store',
-    'Content-Disposition': `inline; filename="avatar.${extension}"`,
-    'Content-Security-Policy': "default-src 'none'",
-    'Content-Type': contentType,
-    'Cross-Origin-Resource-Policy': 'same-origin',
-    'Referrer-Policy': 'no-referrer',
-    'X-Content-Type-Options': 'nosniff',
-    'X-Avatar-Version': String(metadata.version),
-  })
-  if (Number.isSafeInteger(object.size)) headers.set('Content-Length', String(object.size))
-  if (object.etag) headers.set('ETag', String(object.etag))
-  return new Response(object.body, { status: 200, headers })
+  return accountAvatarResponse(request, metadata, object)
 }
 
 const employeeAvatarNotFound = () => new ApiError(
@@ -24375,21 +24398,7 @@ const getEmployeeAccountAvatar = async (request, env, context, employeeId) => {
   }
   const object = await privateDisplayImage(bucket, metadata.key, 'avatar')
   if (!object?.body) throw employeeAvatarNotFound()
-  const contentType = object.httpMetadata?.contentType || metadata.contentType
-  const extension = contentType === 'image/jpeg' ? 'jpg' : contentType.split('/')[1]
-  const headers = new Headers({
-    'Cache-Control': 'private, no-store',
-    'Content-Disposition': `inline; filename="avatar.${extension}"`,
-    'Content-Security-Policy': "default-src 'none'",
-    'Content-Type': contentType,
-    'Cross-Origin-Resource-Policy': 'same-origin',
-    'Referrer-Policy': 'no-referrer',
-    'X-Content-Type-Options': 'nosniff',
-    'X-Avatar-Version': String(metadata.version),
-  })
-  if (Number.isSafeInteger(object.size)) headers.set('Content-Length', String(object.size))
-  if (object.etag) headers.set('ETag', String(object.etag))
-  return new Response(object.body, { status: 200, headers })
+  return accountAvatarResponse(request, metadata, object)
 }
 
 const getIdentityImage = async (request, env, context, employeeId, side) => {
@@ -24732,11 +24741,11 @@ const handleApi = async (request, env, context, url) => {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getAddressSuggestions(request, env, context, url)
   }
-  if (path === '/api/account-avatar') {
+  if (path === '/api/account-avatar' || path === '/api/account-avatar/thumbnail') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getAccountAvatar(request, env, context)
   }
-  const accountAvatarMatch = path.match(/^\/api\/account-avatars\/([^/]+)$/u)
+  const accountAvatarMatch = path.match(/^\/api\/account-avatars\/([^/]+)(?:\/thumbnail)?$/u)
   if (accountAvatarMatch) {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     let employeeId

@@ -19,7 +19,7 @@ const roundedMs = (value) => Math.round(Number(value || 0) * 10) / 10
 
 const observablePath = (url = '/') => {
   const pathname = new URL(url, 'http://localhost').pathname
-  if (/^\/api\/account-avatars\/[^/]+$/u.test(pathname)) return '/api/account-avatars/:employeeId'
+  if (/^\/api\/account-avatars\/[^/]+(?:\/thumbnail)?$/u.test(pathname)) return '/api/account-avatars/:employeeId'
   const identityImage = pathname.match(/^\/api\/identity-images\/[^/]+\/(front|back)$/u)
   if (identityImage) return `/api/identity-images/:employeeId/${identityImage[1]}`
   return pathname

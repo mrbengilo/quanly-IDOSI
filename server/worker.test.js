@@ -5371,13 +5371,14 @@ describe('IDOSI Worker security primitives', () => {
       }), env)
       expect(identity.status).toBe(403)
     }
-    expect(adminStoreAvatar.headers.get('cache-control')).toBe('private, no-store')
+    expect(adminStoreAvatar.headers.get('cache-control')).toBe('private, no-cache')
+    expect(adminStoreAvatar.headers.get('vary')).toBe('Authorization')
     expect(adminStoreAvatar.headers.get('content-security-policy')).toBe("default-src 'none'")
     expect(adminStoreAvatar.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     expect(adminStoreAvatar.headers.get('referrer-policy')).toBe('no-referrer')
     expect(adminStoreAvatar.headers.get('x-content-type-options')).toBe('nosniff')
     expect(adminStoreAvatar.headers.get('x-avatar-version')).toBe('1')
-    expect(adminStoreAvatar.headers.get('content-disposition')).toBe('inline; filename="avatar.png"')
+    expect(adminStoreAvatar.headers.get('content-disposition')).toBe('inline; filename="avatar-thumbnail.png"')
     expect(adminStoreAvatar.headers.get('etag')).toContain('owner-E-A')
     expect(Buffer.from(await adminStoreAvatar.arrayBuffer())).toEqual(bytes)
 
