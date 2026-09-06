@@ -48,7 +48,7 @@ import {
 import { DonutChart, FinancialChart } from '../../components/Charts'
 import { adminSeries } from '../../data'
 import { financeSummaryFromState } from '../../domain'
-import { mergeAccountPersonnelProfile, optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
+import { localAccountAvatarSource, mergeAccountPersonnelProfile, optimizeAccountAvatar, validateAccountAvatarSource } from '../../domain/accountAvatar'
 import { invalidateEmployeeAvatarCache } from '../../services/employeeAvatarCache'
 import { apiGetFinanceOverview } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
@@ -629,7 +629,9 @@ export function AdminSettings() {
       : session?.role === 'store_manager'
         ? 'Quản lý cửa hàng'
         : 'Nhân viên'
-  const displayedAvatar = avatarUpdate === undefined ? (settings?.avatar || form.avatar || '') : form.avatar
+  const displayedAvatar = localAccountAvatarSource(
+    avatarUpdate === undefined ? (settings?.avatar || form.avatar || '') : form.avatar,
+  )
   const set = (key) => (event) => setForm((current) => ({ ...current, [key]: event.target.value }))
   const togglePassword = (key) => setVisiblePasswords((current) => ({ ...current, [key]: !current[key] }))
 
@@ -759,7 +761,7 @@ export function AdminSettings() {
           <Card className="settings-content">
             <h2>Thông tin cá nhân</h2><p>{personnelProfile ? 'Thông tin được lấy từ hồ sơ nhân sự liên kết với tài khoản hiện tại.' : 'Cập nhật thông tin tài khoản của bạn.'}</p>
             <div className="profile-form">
-              <div className="profile-photo"><div>{displayedAvatar ? <img src={displayedAvatar} alt="Ảnh đại diện tài khoản" /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing || profileSaving} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button>{(displayedAvatar || settings?.avatarMetadata) && <Button variant="outline" icon={Trash2} disabled={photoProcessing || profileSaving} onClick={clearPhoto}>Xóa ảnh</Button>}<small>{settings?.avatarLoading ? 'Đang tải ảnh đại diện riêng tư…' : 'Ảnh gốc JPG, PNG, WebP tối đa 5 MB'}<br />Cắt vuông, xem trước dạng tròn và tối ưu còn tối đa 300 KB{preparedAvatarBytes > 0 && <><br /><strong>Ảnh sẵn sàng: {Math.ceil(preparedAvatarBytes / 1024)} KB</strong></>}</small>{settings?.avatarError && <small role="alert">{settings.avatarError}</small>}</div>
+              <div className="profile-photo"><div>{displayedAvatar ? <img src={displayedAvatar} alt="Ảnh đại diện tài khoản" /> : 'TK'}</div><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={choosePhoto} /><Button variant="outline" disabled={photoProcessing || profileSaving} onClick={() => photoInput.current?.click()}>{photoProcessing ? 'Đang tối ưu...' : 'Đổi ảnh'}</Button>{(displayedAvatar || settings?.avatarMetadata) && <Button variant="outline" icon={Trash2} disabled={photoProcessing || profileSaving} onClick={clearPhoto}>Xóa ảnh</Button>}<small>{settings?.avatarLoading ? 'Đang tải ảnh đại diện…' : 'Ảnh gốc JPG, PNG, WebP tối đa 5 MB'}<br />Ảnh tải lên được tối ưu; bản hiển thị tối đa 15 KB{preparedAvatarBytes > 0 && <><br /><strong>Ảnh sẵn sàng: {Math.ceil(preparedAvatarBytes / 1024)} KB</strong></>}</small>{settings?.avatarError && <small role="alert">{settings.avatarError}</small>}</div>
               <div className="form-grid">
                 {personnelProfile && <Field label="Mã nhân viên"><Input value={personnelProfile.code} readOnly /></Field>}
                 <Field label="Họ và tên"><Input value={personnelProfile?.name || form.name || ''} onChange={personnelProfile ? undefined : set('name')} readOnly={Boolean(personnelProfile)} /></Field>

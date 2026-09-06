@@ -14,7 +14,7 @@ const mocked = vi.hoisted(() => ({
   notifications: [],
   orders: [],
   currentEmployee: undefined,
-  settings: { avatar: '/avatar-shell.jpg' },
+  settings: { avatar: 'blob:account-thumbnail' },
 }))
 
 const baseNotifications = [
@@ -235,7 +235,7 @@ describe('AppShell notifications', () => {
     </Routes></MemoryRouter>)
 
     expect(document.querySelector('.sidebar__brand + .role-switcher-button')).toBeTruthy()
-    expect(document.querySelector('.sidebar__profile img')?.getAttribute('src')).toBe('/avatar-shell.jpg')
+    expect(document.querySelector('.sidebar__profile img')?.getAttribute('src')).toBe('blob:account-thumbnail')
     fireEvent.click(screen.getByRole('button', { name: 'Đổi vai trò' }))
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/select-role'))
   })

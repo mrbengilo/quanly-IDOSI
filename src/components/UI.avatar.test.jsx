@@ -42,10 +42,33 @@ describe('personnel Avatar', () => {
     expect(mocked.getEmployeeAvatar).toHaveBeenCalledOnce()
   })
 
-  it('uses an explicit legacy/profile source without an additional request', () => {
-    render(<Avatar name="Nhân viên" employeeId="VP-001" src="/legacy-avatar.webp" />)
+  it('requests the thumbnail instead of loading a legacy original URL', async () => {
+    mocked.getEmployeeAvatar.mockResolvedValue(new Blob(['thumbnail'], { type: 'image/webp' }))
+    render(<Avatar name="Nhân viên" employeeId="VP-001" src="https://images.example/original.jpg" />)
 
-    expect(screen.getByAltText('Ảnh đại diện Nhân viên').getAttribute('src')).toBe('/legacy-avatar.webp')
+    expect(screen.queryByAltText('Ảnh đại diện Nhân viên')).toBeNull()
+    await waitFor(() => expect(screen.getByAltText('Ảnh đại diện Nhân viên').getAttribute('src')).toBe('blob:employee-avatar'))
+    expect(mocked.getEmployeeAvatar).toHaveBeenCalledWith('VP-001')
+  })
+
+  it('does not fall back to downloading an original when the thumbnail is unavailable', async () => {
+    mocked.getEmployeeAvatar.mockRejectedValue(new Error('thumbnail unavailable'))
+    render(<Avatar name="Nhân viên" employeeId="VP-001" src="/original-avatar.jpg" />)
+    await waitFor(() => expect(mocked.getEmployeeAvatar).toHaveBeenCalledWith('VP-001'))
+    expect(screen.queryByAltText('Ảnh đại diện Nhân viên')).toBeNull()
+  })
+
+  it.each(['blob:account-thumbnail', 'data:image/webp;base64,UklGRkFBQUFXRUJQ'])(
+    'keeps a local account preview without downloading the original: %s', (src) => {
+      render(<Avatar name="Tài khoản" src={src} />)
+      expect(screen.getByAltText('Ảnh đại diện Tài khoản').getAttribute('src')).toBe(src)
+      expect(mocked.getEmployeeAvatar).not.toHaveBeenCalled()
+    },
+  )
+
+  it('never renders an unprocessed account image URL', () => {
+    render(<Avatar name="Tài khoản" src="/original-avatar.jpg" />)
+    expect(screen.queryByAltText('Ảnh đại diện Tài khoản')).toBeNull()
     expect(mocked.getEmployeeAvatar).not.toHaveBeenCalled()
   })
 })

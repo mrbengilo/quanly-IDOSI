@@ -152,6 +152,13 @@ describe('AdminSettings password visibility', () => {
     await waitFor(() => expect(mocked.saveSettings).toHaveBeenCalledWith(expect.objectContaining({ avatar })))
   }, 15_000)
 
+  it('does not download a legacy original on the account settings screen', () => {
+    mocked.settings = { avatar: 'https://images.example/account-original.jpg' }
+    render(<AdminSettings />)
+    expect(screen.queryByAltText('Ảnh đại diện tài khoản')).toBeNull()
+    expect(mocked.saveSettings).not.toHaveBeenCalled()
+  })
+
   it('shows private-avatar loading errors and sends an explicit clear operation', async () => {
     mocked.settings = {
       avatar: 'blob:private-account-avatar',
@@ -167,7 +174,7 @@ describe('AdminSettings password visibility', () => {
     mocked.saveSettings.mockResolvedValue({ ok: true, settings: { avatar: '' } })
     render(<AdminSettings />)
 
-    expect(screen.getByText(/Đang tải ảnh đại diện riêng tư…/)).toBeTruthy()
+    expect(screen.getByText(/Đang tải ảnh đại diện…/)).toBeTruthy()
     expect(screen.getByRole('alert').textContent).toContain('Không thể tải ảnh đại diện.')
     fireEvent.click(screen.getByRole('button', { name: 'Xóa ảnh' }))
     fireEvent.click(screen.getByRole('button', { name: 'Lưu thay đổi' }))

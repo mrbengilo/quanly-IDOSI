@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createElement } from 'react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -34,6 +34,12 @@ function CurrentRoute() {
 
 vi.mock('../../state/AppContext', () => ({
   useApp: () => mocked.app,
+}))
+
+vi.mock('../../services/employeeAvatarCache', () => ({
+  loadEmployeeAvatarUrl: async (id) => `blob:thumbnail-${id}`,
+  subscribeEmployeeAvatarUpdates: () => () => {},
+  invalidateEmployeeAvatarCache: vi.fn(),
 }))
 
 vi.mock('../../services/idosiApi', async (importOriginal) => ({
@@ -257,7 +263,7 @@ describe('admin role management helpers', () => {
 })
 
 describe('role management permissions and form', () => {
-  it('lets Business Support inspect the list but hides every account mutation control', () => {
+  it('lets Business Support inspect the list but hides every account mutation control', async () => {
     mocked.app = {
       ...baseApp('business_support'),
       businessSupportEmployees: [{
@@ -281,7 +287,7 @@ describe('role management permissions and form', () => {
     render(createElement(BusinessSupportManagement))
 
     expect(screen.getByText('Nguyễn An')).toBeTruthy()
-    expect(screen.getByAltText('Ảnh đại diện Nguyễn An').getAttribute('src')).toBe('/avatar-nguyen-an.webp')
+    await waitFor(() => expect(screen.getByAltText('Ảnh đại diện Nguyễn An').getAttribute('src')).toBe('blob:thumbnail-HTKD-001'))
     expect(screen.getByText('Chỉ Admin được quản lý tài khoản; Hỗ trợ KD được xem danh sách và lịch sử liên quan.')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /Thêm tài khoản/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /Sửa Nguyễn An/i })).toBeNull()
@@ -379,7 +385,7 @@ describe('role management permissions and form', () => {
     expect(labels).not.toContain('Ngày sinh')
   })
 
-  it('shows a linked store manager the CCCD and avatar stored on the original employee profile', () => {
+  it('shows a linked store manager the CCCD and avatar stored on the original employee profile', async () => {
     const source = {
       id: 'ST-001', unit: 'store', storeId: 'CH001', name: 'Nhân viên gốc', username: 'employee.source',
       avatar: '/avatar-source.webp',
@@ -399,7 +405,7 @@ describe('role management permissions and form', () => {
 
     render(createElement(StoreManagerManagement))
 
-    expect(screen.getByAltText('Ảnh đại diện Quản lý liên kết').getAttribute('src')).toBe('/avatar-source.webp')
+    await waitFor(() => expect(screen.getByAltText('Ảnh đại diện Quản lý liên kết').getAttribute('src')).toBe('blob:thumbnail-ST-001'))
     fireEvent.click(screen.getByRole('button', { name: 'Xem mặt trước CCCD Quản lý liên kết' }))
     expect(screen.getByRole('img', { name: /Quản lý liên kết · Mặt trước CCCD/i })).toBeTruthy()
   })

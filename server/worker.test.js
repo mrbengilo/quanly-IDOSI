@@ -5219,7 +5219,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(bytes)
   })
 
-  it('serves employee avatars only within active role scope without exposing profile existence', async () => {
+  it('shares account avatars across roles and stores without sharing private personnel data', async () => {
     const bucket = new MemoryR2()
     const env = {
       DB: new MemoryD1(), IDENTITY_IMAGES: bucket, BOOTSTRAP_TOKEN: 'bootstrap-employee-avatar-rbac',
@@ -5280,11 +5280,15 @@ describe('IDOSI Worker security primitives', () => {
         username: 'avatar.employee', password: 'avatar-employee-password', displayName: 'Nhân viên',
         role: 'employee', storeId: 'S01', employeeId: 'E-PROXY',
       },
+      {
+        username: 'avatar.office', password: 'avatar-office-password', displayName: 'Văn phòng',
+        role: 'employee', storeId: 'OFFICE', employeeId: 'OFFICE-A',
+      },
     ]
     for (const account of accounts) {
       const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'user.create', payload: account,
-      }, { ...adminAuthorization, 'idempotency-key': `employee-avatar-user-${account.role}` }), env)
+      }, { ...adminAuthorization, 'idempotency-key': `employee-avatar-user-${account.username}` }), env)
       expect(created.status, account.role).toBe(201)
     }
 
@@ -5293,12 +5297,13 @@ describe('IDOSI Worker security primitives', () => {
       'E-A', 'E-B', 'E-INACTIVE', 'M-A', 'HTKD-A', 'OFFICE-A', 'E-ROOT', 'E-COW', 'E-MISSING',
       'E-CASE-STORE',
     ]
+    const avatarBytes = new Map(avatarIds.map((id, index) => [id, validPngBytes(128 + index * 16)]))
     const withAvatars = profiles.map((profile) => {
       if (!avatarIds.includes(profile.id)) return profile
       const key = profile.id === 'E-A'
         ? 'account-avatars/owner-E-A/avatar-v1.png'
         : `account-avatars/legacy-profile-${profile.id}/avatar-v1.png`
-      return { ...profile, avatarImage: { key, contentType: 'image/png', size: bytes.byteLength, version: 1 } }
+      return { ...profile, avatarImage: { key, contentType: 'image/png', size: avatarBytes.get(profile.id).byteLength, version: 1 } }
     }).map((profile) => profile.id === 'E-WRONG'
       ? {
           ...profile,
@@ -5312,7 +5317,7 @@ describe('IDOSI Worker security primitives', () => {
       const key = profileId === 'E-A'
         ? 'account-avatars/owner-E-A/avatar-v1.png'
         : `account-avatars/legacy-profile-${profileId}/avatar-v1.png`
-      await bucket.put(key, bytes)
+      await bucket.put(key, avatarBytes.get(profileId))
     }
     await bucket.put('account-avatars/another-owner/avatar-v1.png', bytes)
     replaceStateCollection(env.DB.database, 'employees', withAvatars)
@@ -5325,6 +5330,7 @@ describe('IDOSI Worker security primitives', () => {
     const supportAuthorization = await loginAs('avatar.support', 'avatar-support-password')
     const managerAuthorization = await loginAs('avatar.manager', 'avatar-manager-password')
     const employeeAuthorization = await loginAs('avatar.employee', 'avatar-employee-password')
+    const officeAuthorization = await loginAs('avatar.office', 'avatar-office-password')
     const getAvatar = (id, authorization) => worker.fetch(new Request(
       `https://idosi.example/api/account-avatars/${id}`,
       { headers: authorization },
@@ -5337,27 +5343,42 @@ describe('IDOSI Worker security primitives', () => {
 
     const adminStoreAvatar = await getAvatar('E-A', adminAuthorization)
     expect(adminStoreAvatar.status).toBe(200)
-    expect((await getAvatar('OFFICE-A', adminAuthorization)).status).toBe(200)
-    expect((await getAvatar('E-B', supportAuthorization)).status).toBe(200)
-    await expectHidden('HTKD-A', supportAuthorization)
-    await expectHidden('OFFICE-A', supportAuthorization)
-    await expectHidden('E-INACTIVE', supportAuthorization)
-    expect((await getAvatar('E-A', managerAuthorization)).status).toBe(200)
-    expect((await getAvatar('E-CASE-STORE', managerAuthorization)).status).toBe(200)
-    await expectHidden('E-B', managerAuthorization)
-    expect((await getAvatar('E-ROOT', employeeAuthorization)).status).toBe(200)
-    await expectHidden('E-COW', employeeAuthorization)
-
-    for (const id of ['UNKNOWN', 'E-NONE', 'E-MISSING', 'E-WRONG', '%2Fetc', '%E0%A4%A']) {
-      await expectHidden(id, adminAuthorization)
+    const viewers = [adminAuthorization, supportAuthorization, managerAuthorization, employeeAuthorization, officeAuthorization]
+    for (const authorization of viewers) {
+      for (const id of [...avatarIds.filter((id) => id !== 'E-MISSING'), 'E-PROXY']) {
+        const response = await getAvatar(id, authorization)
+        expect(response.status, id).toBe(200)
+        expect(Buffer.from(await response.arrayBuffer()), id).toEqual(avatarBytes.get(id === 'E-PROXY' ? 'E-ROOT' : id))
+      }
+      for (const id of ['UNKNOWN', 'E-NONE', 'E-MISSING', 'E-WRONG', '%2Fetc', '%E0%A4%A']) {
+        await expectHidden(id, authorization)
+      }
     }
-    expect(adminStoreAvatar.headers.get('cache-control')).toBe('private, no-store')
+    expect((await getAvatar('E-A', {})).status).toBe(401)
+    // Seeing an avatar does not grant access to the person's private state or CCCD.
+    const employeeBootstrap = await worker.fetch(new Request('https://idosi.example/api/bootstrap', {
+      headers: employeeAuthorization,
+    }), env)
+    expect(employeeBootstrap.status).toBe(200)
+    const employeeState = (await employeeBootstrap.json()).state
+    for (const id of ['E-B', 'OFFICE-A']) {
+      expect(employeeState.employees.map((profile) => profile.id)).not.toContain(id)
+    }
+    expect(employeeState.accountSettings).toBeUndefined()
+    for (const authorization of [managerAuthorization, employeeAuthorization, officeAuthorization]) {
+      const identity = await worker.fetch(new Request('https://idosi.example/api/identity-images/E-B/front', {
+        headers: authorization,
+      }), env)
+      expect(identity.status).toBe(403)
+    }
+    expect(adminStoreAvatar.headers.get('cache-control')).toBe('private, no-cache')
+    expect(adminStoreAvatar.headers.get('vary')).toBe('Authorization')
     expect(adminStoreAvatar.headers.get('content-security-policy')).toBe("default-src 'none'")
     expect(adminStoreAvatar.headers.get('cross-origin-resource-policy')).toBe('same-origin')
     expect(adminStoreAvatar.headers.get('referrer-policy')).toBe('no-referrer')
     expect(adminStoreAvatar.headers.get('x-content-type-options')).toBe('nosniff')
     expect(adminStoreAvatar.headers.get('x-avatar-version')).toBe('1')
-    expect(adminStoreAvatar.headers.get('content-disposition')).toBe('inline; filename="avatar.png"')
+    expect(adminStoreAvatar.headers.get('content-disposition')).toBe('inline; filename="avatar-thumbnail.png"')
     expect(adminStoreAvatar.headers.get('etag')).toContain('owner-E-A')
     expect(Buffer.from(await adminStoreAvatar.arrayBuffer())).toEqual(bytes)
 

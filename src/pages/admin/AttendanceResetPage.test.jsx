@@ -11,6 +11,11 @@ const mocked = vi.hoisted(() => ({
 
 vi.mock('../../state/AppContext', () => ({ useApp: () => mocked.app }))
 
+vi.mock('../../services/employeeAvatarCache', () => ({
+  loadEmployeeAvatarUrl: async (id) => `blob:thumbnail-${id}`,
+  subscribeEmployeeAvatarUpdates: () => () => {},
+}))
+
 describe('AttendanceResetPage', () => {
   afterEach(cleanup)
 
@@ -65,7 +70,7 @@ describe('AttendanceResetPage', () => {
     fireEvent.change(screen.getByLabelText(/Nhóm nhân viên/u), { target: { value: 'office' } })
     fireEvent.change(screen.getByLabelText(/^Nhân viên/u), { target: { value: 'VP-01' } })
     expect(screen.getByText('Nhân viên VP')).toBeTruthy()
-    expect(screen.getByAltText('Ảnh đại diện Nhân viên VP').getAttribute('src')).toBe('/avatar-vp.png')
+    await waitFor(() => expect(screen.getByAltText('Ảnh đại diện Nhân viên VP').getAttribute('src')).toBe('blob:thumbnail-VP-01'))
 
     fireEvent.click(screen.getByRole('button', { name: 'Chỉnh sửa' }))
     fireEvent.change(screen.getByLabelText(/Giờ vào/u), { target: { value: '08:00' } })

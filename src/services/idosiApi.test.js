@@ -152,9 +152,9 @@ describe('IDOSI private account avatar', () => {
     await apiLogin('admin', 'secret')
     await expect(apiGetAccountAvatar()).resolves.toBe(image)
 
-    expect(fetchMock).toHaveBeenLastCalledWith('/api/account-avatar', expect.objectContaining({
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/account-avatar/thumbnail', expect.objectContaining({
       method: 'GET',
-      cache: 'no-store',
+      cache: 'no-cache',
       headers: expect.objectContaining({
         Accept: expect.stringContaining('image/gif'),
         Authorization: 'Bearer session-token',
@@ -172,9 +172,9 @@ describe('IDOSI private account avatar', () => {
     await apiLogin('htkd', 'secret')
     await expect(apiGetEmployeeAvatar('NV KVC/001')).resolves.toBe(image)
 
-    expect(fetchMock).toHaveBeenLastCalledWith('/api/account-avatars/NV%20KVC%2F001', expect.objectContaining({
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/account-avatars/NV%20KVC%2F001/thumbnail', expect.objectContaining({
       method: 'GET',
-      cache: 'no-store',
+      cache: 'no-cache',
       headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
     }))
   })
