@@ -21,7 +21,7 @@
 
 .support-task-reuse {
   display: grid;
-  grid-template-columns: minmax(210px, .7fr) minmax(260px, 1.3fr) auto;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   align-items: center;
   gap: 14px;
   margin: 12px 0;
@@ -30,6 +30,12 @@
   background: #f1f9f4;
   border: 1px solid #bfdcc9;
   border-radius: 11px;
+}
+
+.support-task-reuse > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .support-task-reuse > div,

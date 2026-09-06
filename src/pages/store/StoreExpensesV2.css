@@ -37,7 +37,7 @@
 
 .store-expense-form__header {
   position: sticky;
-  top: -20px;
+  top: 0;
   z-index: 2;
   padding: 0.2rem 0 0.9rem;
   background: #fff;
@@ -45,13 +45,21 @@
 
 .store-expense-line {
   display: grid;
-  grid-template-columns: auto minmax(9rem, 0.8fr) minmax(11rem, 1.2fr) minmax(9rem, 0.7fr) minmax(12rem, 1.2fr) auto;
+  grid-template-columns: auto repeat(2, minmax(0, 1fr)) auto;
   align-items: end;
   gap: 0.75rem;
-  padding: 1rem;
+  padding: var(--card-padding);
   border: 1px solid #d7e6dc;
   border-radius: 0.9rem;
   background: #fbfefc;
+}
+
+.store-expense-line .field {
+  grid-column: 2;
+}
+
+.store-expense-line .field:nth-of-type(even) {
+  grid-column: 3;
 }
 
 .store-expense-line__index {
@@ -68,6 +76,8 @@
 
 .store-expense-line__remove {
   display: grid;
+  grid-column: 4;
+  grid-row: 1;
   width: 2.75rem;
   height: 2.75rem;
   margin-bottom: 0.15rem;
@@ -86,6 +96,7 @@
 
 .store-expense-form__summary {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -93,9 +104,13 @@
 
 .store-expense-form__summary p {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 0.75rem;
   margin: 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .store-expense-form__summary strong {
@@ -103,29 +118,20 @@
   font-size: 1.25rem;
 }
 
-@media (max-width: 900px) {
-  .store-expense-line {
-    grid-template-columns: auto 1fr 1fr auto;
-  }
-
-  .store-expense-line .field:nth-of-type(3),
-  .store-expense-line .field:nth-of-type(4) {
-    grid-column: 2 / span 2;
-  }
-}
-
 @media (max-width: 640px) {
   .store-expense-line {
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .store-expense-line .field {
-    grid-column: 2;
+  .store-expense-line .field,
+  .store-expense-line .field:nth-of-type(even) {
+    grid-column: 1 / -1;
   }
 
   .store-expense-line__remove {
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1;
+    justify-self: end;
   }
 
   .store-expense-form__summary {
