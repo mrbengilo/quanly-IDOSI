@@ -462,7 +462,6 @@ export function UnifiedSchedule() {
 
       <Card className="schedule-toolbar-card">
         <div className="schedule-toolbar-card__copy">
-          <h2>Lịch phân ca</h2>
           <p>Tạo ca dùng chung, sau đó phân nhiều ca cho nhiều nhân viên.</p>
         </div>
         <div className="schedule-toolbar-card__actions">
