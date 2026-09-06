@@ -16,6 +16,7 @@ import {
 } from '../src/domain/compensationPolicies.js'
 import { allocateByLargestRemainder } from '../src/domain/compensationAllocation.js'
 import { REVENUE_BONUS_READ_COLLECTIONS } from './revenue-bonus-read.mjs'
+import { profileMatchesRole } from '../src/domain/roleProfiles.js'
 import {
   AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR,
   AUTOMATIC_REVENUE_BONUS_EFFECTIVE_DATE,
@@ -187,8 +188,8 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'revenueBonusDaily', 'revenueBonusAllocations', 'revenueBonusOverrides', 'salaryAdjustments', 'periodReconciliations',
   ],
   tasks: [
-    'employees', 'supportWorkAssignments', 'notifications', 'workCatalogItems',
-    'workCatalogProgress', 'attendance', 'compensationEntries', 'tasks',
+    'stores', 'employees', 'workCatalogItems', 'workCatalogProgress', 'attendance',
+    'compensationEntries', 'tasks', 'violations', 'supportWorkSchedules', 'shiftDefinitions',
   ],
   assignments: ['employees', 'supportWorkAssignments', 'notifications', 'workCatalogItems'],
   reset: [
@@ -210,9 +211,10 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'compensationEntries', 'violations', 'salaryAdjustments', 'officeAdjustments', 'payrollPeriods',
   ],
   'support-tasks': [
-    'employees', 'supportWorkAssignments', 'notifications', 'workCatalogItems',
-    'workCatalogProgress', 'attendance', 'compensationEntries', 'tasks',
+    'employees', 'workCatalogItems', 'workCatalogProgress', 'attendance',
+    'compensationEntries', 'tasks',
   ],
+  'support-assigned-work': ['employees', 'supportWorkAssignments'],
   'support-schedule': [
     'employees', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'schedule',
   ],
@@ -2553,7 +2555,12 @@ export const projectSharedState = (
 
   if (user.role === 'business_support' && !systemOperatorStoreWorkspace) {
     const ownEmployeeId = String(user.employee_id || '')
-    const ownAttendance = filterArray(state, 'attendance', (record) => belongsToEmployee(record, ownEmployeeId))
+    const ownProfile = actorRoleEmployeeProfile(state, user)
+    const ownIdentifiers = ownProfile ? employeeIdentifierValues(ownProfile) : [ownEmployeeId]
+    const ownRecord = (record) => ownIdentifiers.some((identifier) => (
+      belongsToEmployee(record, identifier) || sameIdentifier(record?.employeeCode, identifier)
+    ))
+    const ownAttendance = filterArray(state, 'attendance', ownRecord)
     const ownOpenAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
     const ownLatestAttendance = [...ownAttendance]
       .sort((left, right) => String(right.checkInAt || right.createdAt || '').localeCompare(String(left.checkInAt || left.createdAt || '')))[0]
@@ -2562,9 +2569,7 @@ export const projectSharedState = (
     void persistedAccountProfile
     return {
       ...operationalState,
-      supportWorkAssignments: filterArray(state, 'supportWorkAssignments', (record) => (
-        belongsToEmployee(record, ownEmployeeId)
-      )),
+      supportWorkAssignments: filterArray(state, 'supportWorkAssignments', ownRecord),
       notifications: filterArray(state, 'notifications', (record) => canAccessNotification(state, user, record))
         .map((record) => projectNotificationForActor(record, user)),
       settings: ownAccountSettings(state, user),
@@ -3852,6 +3857,24 @@ const loadOptimizedStoreStateSnapshot = async (db, scope, storeId, actorEmployee
   return row
 }
 
+const loadOptimizedSystemStateSnapshot = async (db, scope, collectionKeys, screen, user) => {
+  const employeeRow = await loadStateCollections(db, scope, ['employees'])
+  const employeeState = employeeRow ? parseStoredJson(employeeRow.value_json, {}) : {}
+  const employees = Array.isArray(employeeState.employees) ? employeeState.employees : []
+  const selectedEmployees = screen === 'tasks'
+    ? employees.filter((employee) => profileMatchesRole(employee, 'business_support') || employeeUnit(employee) === 'business_support')
+    : [actorRoleEmployeeProfile(employeeState, user)].filter(Boolean)
+  const employeeIds = selectedEmployees.flatMap(employeeIdentifierValues)
+  if (screen !== 'tasks' && user.employee_id) employeeIds.push(user.employee_id)
+  const snapshot = await db.readSystemStateSnapshot(scope, collectionKeys, screen, employeeIds)
+  if (snapshot?.unchanged !== false
+    || !Array.isArray(snapshot.manifests)
+    || !Array.isArray(snapshot.entities)) {
+    throw new ApiError(500, 'STATE_SNAPSHOT_INVALID', 'SQLite không trả về snapshot màn hình hệ thống hợp lệ.')
+  }
+  return hydrateStateSnapshot(snapshot.row, snapshot.manifests, snapshot.entities)
+}
+
 const loadState = async (db, scope) => {
   if (typeof db?.readStateSnapshot === 'function') return loadOptimizedStateSnapshot(db, scope)
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -4881,7 +4904,7 @@ const requestedStoreWorkspaceScreen = (url) => {
 const requestedStoreWorkspacePeriod = (url, screen) => {
   const period = String(url.searchParams.get('period') || '').trim()
   if (!period) return ''
-  if (screen !== 'payroll') {
+  if (!['overview', 'payroll'].includes(screen)) {
     throw new ApiError(400, 'STORE_SCREEN_PERIOD_UNSUPPORTED', 'Màn hình này không hỗ trợ lọc theo kỳ.')
   }
   return asMonth(period, 'Kỳ dữ liệu màn hình')
@@ -5049,9 +5072,19 @@ const getSystemScreen = async (request, env, context, screen) => {
   const useEmployeeStoreProjection = user.role === 'employee'
     && isEmployeeScreen
     && Boolean(String(user.store_id || '').trim())
+  const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
+    && ['tasks', 'support-tasks', 'support-assigned-work'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
     ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
-    : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
+    : useOptimizedSystemProjection
+      ? loadOptimizedSystemStateSnapshot(
+          db,
+          'global',
+          collections.length ? collections : ['stores'],
+          screen,
+          user,
+        )
+      : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
   let row = await readScreen()
   if (collections.includes('attendance')) {
     if (useEmployeeStoreProjection) {
@@ -6774,6 +6807,7 @@ const commandStateProjection = (body) => {
   ) => ({
     screen,
     collections: [...new Set([...COMMAND_PROJECTION_BASE_COLLECTIONS, ...collections])],
+    period: String(payload.date || payload.workDate || payload.period || '').trim().slice(0, 7),
     directStoreId: String(payload.storeId || '').trim(),
     recordCollection,
     recordId: String(recordId || '').trim(),
@@ -7061,6 +7095,7 @@ const loadGlobalCommandState = async (db, body, actor = null) => {
           projectionStoreId,
           String(actor?.employee_id || ''),
           projection.screen,
+          projection.period,
         )
       : projection
         ? await loadStateCollections(db, 'global', projection.collections)
@@ -7547,6 +7582,17 @@ const taskAssignmentCommand = async (db, actor, body, commandContext) => {
     ? previousTasks.map((task) => normalizeIdentifierKey(task.id)).filter(Boolean)
     : [])
   const existingTaskIds = new Set(existingTasks.map((task) => normalizeIdentifierKey(task.id)).filter(Boolean))
+  // A month/store projection omits older tasks. Check caller-supplied IDs
+  // against the indexed global identity before a Save can reuse one.
+  const requestedTaskIds = [...new Set(payload.tasks.map((task) => String(task?.id || '').trim().slice(0, 160)).filter(Boolean))]
+  if (current._storeEntityProjection && requestedTaskIds.length) {
+    const existing = await all(db, `
+      SELECT record_id FROM state_entities
+      WHERE scope_key = 'global' AND collection_key = 'tasks'
+        AND record_id COLLATE NOCASE IN (${requestedTaskIds.map(() => '?').join(', ')})
+    `, ...requestedTaskIds)
+    for (const record of existing) existingTaskIds.add(normalizeIdentifierKey(record.record_id))
+  }
   const seenTaskIds = new Set()
   const seenCatalogItemIds = new Set()
   const tasks = payload.tasks.map((rawTask, index) => {

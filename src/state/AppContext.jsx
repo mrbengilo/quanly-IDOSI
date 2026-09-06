@@ -2007,6 +2007,7 @@ export function AppProvider({ children }) {
       const result = await apiCommand(type, payload, {
         expectedVersion: remote.projectionWriteVersion ?? remote.version,
         idempotencyKey,
+        includeState: false,
       })
       remote.version = Number(result.version)
       remote.projectionWriteVersion = Number(result.version)

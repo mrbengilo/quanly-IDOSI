@@ -27,7 +27,7 @@ const SYSTEM_SCREEN_BY_PATH = Object.freeze({
   '/admin/violations/business-support': 'violations-business-support',
   '/support/overview': 'support-overview',
   '/support/tasks': 'support-tasks',
-  '/support/assigned-work': 'support-tasks',
+  '/support/assigned-work': 'support-assigned-work',
   '/support/my-schedule': 'support-schedule',
   '/support/my-compensation': 'support-compensation',
   '/support/my-violations': 'support-violations',
@@ -55,4 +55,3 @@ export const storeScreenForPath = (pathname) => {
 export const systemScreenForPath = (pathname) => SYSTEM_SCREEN_BY_PATH[String(pathname || '')] || ''
 
 export const employeeScreen = (screen) => String(screen || '').startsWith('employee-')
-

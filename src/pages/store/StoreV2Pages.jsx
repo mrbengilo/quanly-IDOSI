@@ -406,9 +406,10 @@ function useStoreData(preferredStoreId = '') {
 export function StoreOverviewV2() {
   const app = useStoreData()
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
   const { storeId, store, stores = [], employees = [], supportTransfers = [], orders = [], attendance = [], schedule = [] } = app
   const [now, setNow] = useState(() => new Date())
-  const [period, setPeriod] = useState(today().slice(0, 7))
+  const period = searchParams.get('period') || today().slice(0, 7)
   const summary = financeSummaryFromState(app, { storeId, ...monthBounds(period) })
   const storeEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store' && employee.storeId === storeId && employee.status !== 'Đã nghỉ việc')
   const todayOrders = orders.filter((order) => order.storeId === storeId && !order.deletedAt && businessDate(order.createdAt) === today())
@@ -434,7 +435,13 @@ export function StoreOverviewV2() {
         stores={stores}
         supportTransfers={supportTransfers}
       />
-      <PageHeader title={store?.name || 'TỔNG QUAN CỬA HÀNG'} subtitle="Không gian vận hành dành cho Admin và quản lý cửa hàng." icon={Store} actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />} />
+      <PageHeader title={store?.name || 'TỔNG QUAN CỬA HÀNG'} subtitle="Không gian vận hành dành cho Admin và quản lý cửa hàng." icon={Store} actions={<Input type="month" value={period} onChange={(event) => {
+        const next = event.target.value
+        const updated = new URLSearchParams(searchParams)
+        if (next) updated.set('period', next)
+        else updated.delete('period')
+        setSearchParams(updated, { replace: true })
+      }} />} />
       <div className="metrics-grid metrics-grid--4">
         <MetricCard label="DOANH THU KỲ" value={money(summary.revenue)} icon={TrendingUp} tone="green" />
         <MetricCard label="CHI PHÍ KỲ" value={money(summary.expense)} icon={TrendingDown} tone="orange" />

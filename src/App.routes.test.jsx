@@ -189,6 +189,15 @@ describe('App role routes', () => {
     expect(screen.queryByText('Store payroll')).toBeNull()
   })
 
+  it('loads the selected month for the store overview projection', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteProjection = { kind: 'global', storeId: '' }
+    render(<MemoryRouter initialEntries={['/store/overview?period=2026-08']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
+    expect(mocked.ensureStoreWorkspaceData).toHaveBeenCalledWith('S01', { screen: 'overview', period: '2026-08' })
+  })
+
   it('mounts Admin store pages only when their projection matches the active store', async () => {
     mocked.session = { role: 'admin', name: 'Admin' }
     mocked.remoteProjection = { kind: 'store', storeId: 'S01', screen: 'payroll', period: '2026-09' }
@@ -205,6 +214,15 @@ describe('App role routes', () => {
     expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
     expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'cashflow' })
     expect(screen.queryByText('Admin cashflow')).toBeNull()
+  })
+
+  it('loads the Admin support reward and violation screen without truncating its history to one day', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteProjection = { kind: 'store', storeId: 'S01' }
+    render(<MemoryRouter initialEntries={['/admin/tasks?date=2026-09-05']}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'tasks' })
   })
 
   it('loads the reset projection before mounting the Admin data restore workspace', async () => {

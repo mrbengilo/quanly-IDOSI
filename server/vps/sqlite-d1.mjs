@@ -292,6 +292,8 @@ const storeWorkspaceGlobalCollectionsSql = sqlStringList(STORE_WORKSPACE_GLOBAL_
 
 const storeSnapshotSqlCache = new Map()
 const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
+  overview: ['orders', 'schedule', 'expenseEntries', 'violationRefunds'],
+  'command-task': ['tasks', 'taskAssignmentHistory', 'notifications'],
   payroll: [
     'attendance', 'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments',
     'compensationEntries', 'violations', 'violationRefunds',
@@ -299,6 +301,154 @@ const STORE_SCREEN_PERIOD_COLLECTIONS = Object.freeze({
     'periodReconciliations', 'expenseEntries',
   ],
 })
+
+const systemSnapshotSqlCache = new Map()
+const SYSTEM_ACTOR_SCOPED_SCREENS = new Set(['tasks', 'support-tasks', 'support-assigned-work'])
+const SYSTEM_ACTOR_GLOBAL_COLLECTIONS = new Set(['stores', 'employees', 'workCatalogItems', 'shiftDefinitions'])
+
+const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
+  const normalizedCollections = [...new Set(collectionKeys.map((value) => String(value || '').trim()).filter(Boolean))]
+  if (!normalizedCollections.length
+    || normalizedCollections.some((value) => !/^[A-Za-z][A-Za-z0-9-]*$/u.test(value))) {
+    throw new Error('System snapshot collections are invalid.')
+  }
+  const normalizedScreen = String(screen || '').trim()
+  const cacheKey = `${normalizedScreen}:${normalizedCollections.join(',')}`
+  if (systemSnapshotSqlCache.has(cacheKey)) return systemSnapshotSqlCache.get(cacheKey)
+  const collectionsSql = sqlStringList(normalizedCollections)
+  const actorGlobalCollections = normalizedCollections.filter((key) => SYSTEM_ACTOR_GLOBAL_COLLECTIONS.has(key))
+  const actorGlobalSql = actorGlobalCollections.length
+    ? `entity.collection_key IN (${sqlStringList(actorGlobalCollections)}) OR`
+    : ''
+  const entityFilter = SYSTEM_ACTOR_SCOPED_SCREENS.has(normalizedScreen)
+      ? `AND (
+          ${actorGlobalSql}
+          entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM selected_employee_ids)
+          ${normalizedScreen === 'tasks' ? `OR lower(trim(COALESCE(json_extract(entity.value_json, '$.targetUnit'), ''))) IN ('business_support', 'business-support', 'support', 'htkd')` : ''}
+          OR EXISTS (
+            SELECT 1
+            FROM json_each(json_array(
+              json_extract(entity.value_json, '$.attendanceId'),
+              json_extract(entity.value_json, '$.checklistAttendanceId'),
+              json_extract(entity.value_json, '$.sourceAttendanceId')
+            )) AS attendance_reference
+            WHERE lower(trim(CAST(attendance_reference.value AS TEXT)))
+              IN (SELECT attendance_key FROM selected_attendance_ids)
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM json_each(CASE
+              WHEN json_type(entity.value_json, '$.employeeIds') = 'array'
+                THEN json_extract(entity.value_json, '$.employeeIds')
+              WHEN json_type(entity.value_json, '$.recipientEmployeeIds') = 'array'
+                THEN json_extract(entity.value_json, '$.recipientEmployeeIds')
+              ELSE '[]'
+            END) AS recipient
+            WHERE lower(trim(CAST(recipient.value AS TEXT))) IN (SELECT employee_key FROM selected_employee_ids)
+          )
+          OR (entity.employee_id IS NULL AND EXISTS (
+            SELECT 1
+            FROM json_tree(entity.value_json) AS reference
+            WHERE reference.key IN (
+              'employeeId', 'employee_id', 'employeeCode', 'recipientEmployeeId',
+              'checklistEmployeeId', 'assigneeId', 'userId'
+            )
+              AND reference.type NOT IN ('object', 'array')
+              AND lower(trim(CAST(reference.value AS TEXT))) IN (SELECT employee_key FROM selected_employee_ids)
+          ))
+          OR EXISTS (
+            SELECT 1 FROM json_each(json_extract(entity.value_json, '$.completedBy')) AS completion
+            WHERE lower(trim(CAST(completion.key AS TEXT))) IN (SELECT employee_key FROM selected_employee_ids)
+          )
+        )`
+      : ''
+  const sql = `
+    WITH params AS (
+      SELECT
+        ? AS scope_key,
+        ? AS employee_ids_json
+    ),
+    selected_employee_ids AS MATERIALIZED (
+      SELECT DISTINCT lower(trim(CAST(identifier.value AS TEXT))) AS employee_key
+      FROM params, json_each(params.employee_ids_json) AS identifier
+      WHERE trim(CAST(identifier.value AS TEXT)) <> ''
+    ),
+    selected_attendance_ids AS MATERIALIZED (
+      SELECT lower(trim(CAST(json_extract(attendance.value_json, '$.id') AS TEXT))) AS attendance_key
+      FROM params CROSS JOIN state_entities AS attendance
+      WHERE attendance.scope_key = params.scope_key AND attendance.collection_key = 'attendance'
+        AND (
+          attendance.employee_id IN (SELECT employee_key COLLATE NOCASE FROM selected_employee_ids)
+          OR (attendance.employee_id IS NULL AND EXISTS (
+            SELECT 1 FROM json_each(json_array(
+              json_extract(attendance.value_json, '$.employeeId'),
+              json_extract(attendance.value_json, '$.employeeCode')
+            )) AS identifier
+            WHERE lower(trim(CAST(identifier.value AS TEXT))) IN (SELECT employee_key FROM selected_employee_ids)
+          ))
+        )
+    )
+    SELECT
+      0 AS row_kind,
+      app.scope_key,
+      NULL AS collection_key,
+      NULL AS entity_key,
+      NULL AS entity_order,
+      app.value_json,
+      NULL AS value_bytes,
+      NULL AS created_at,
+      app.updated_at,
+      app.updated_by,
+      app.last_request_id,
+      app.version
+    FROM app_state AS app
+    JOIN params ON app.scope_key = params.scope_key
+
+    UNION ALL
+
+    SELECT
+      1,
+      collection.scope_key,
+      collection.collection_key,
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+      collection.created_at,
+      collection.updated_at,
+      NULL,
+      NULL,
+      NULL
+    FROM state_collections AS collection
+    JOIN params ON collection.scope_key = params.scope_key
+    WHERE collection.collection_key IN (${collectionsSql})
+
+    UNION ALL
+
+    SELECT
+      2,
+      entity.scope_key,
+      entity.collection_key,
+      entity.entity_key,
+      entity.entity_order,
+      entity.value_json,
+      entity.value_bytes,
+      entity.created_at,
+      entity.updated_at,
+      NULL,
+      NULL,
+      NULL
+    FROM state_entities AS entity
+    JOIN params ON entity.scope_key = params.scope_key
+    WHERE entity.collection_key IN (${collectionsSql})
+      ${entityFilter}
+
+    ORDER BY row_kind, collection_key, entity_order, entity_key
+  `
+  systemSnapshotSqlCache.set(cacheKey, sql)
+  return sql
+}
+
 const storeStateSnapshotSql = (screen = '') => {
   const normalizedScreen = String(screen || '').trim()
   const screenCollections = STORE_SCREEN_COLLECTIONS[normalizedScreen]
@@ -309,8 +459,17 @@ const storeStateSnapshotSql = (screen = '') => {
   if (storeSnapshotSqlCache.has(cacheKey)) return storeSnapshotSqlCache.get(cacheKey)
   const storeWorkspaceCollectionsSql = sqlStringList(selectedCollections)
   const periodCollections = STORE_SCREEN_PERIOD_COLLECTIONS[normalizedScreen] || []
+  // The overview combines the selected financial month with today's live
+  // operations. Keep undated recurring schedules and today's orders as well.
+  const overviewTodaySql = normalizedScreen === 'overview'
+    ? `OR (entity.collection_key IN ('orders', 'schedule') AND entity.occurred_on = date('now', '+7 hours'))
+       OR (entity.collection_key = 'schedule' AND (entity.occurred_on IS NULL OR entity.occurred_on = ''))`
+    : ''
+  const legacyTaskPeriodSql = normalizedScreen === 'command-task'
+    ? `OR entity.period_key IS NULL OR entity.period_key = ''`
+    : ''
   const periodFilterSql = periodCollections.length
-    ? `AND (params.period_key = '' OR entity.collection_key NOT IN (${sqlStringList(periodCollections)}) OR entity.period_key = params.period_key)`
+    ? `AND (params.period_key = '' OR entity.collection_key NOT IN (${sqlStringList(periodCollections)}) OR entity.period_key = params.period_key ${overviewTodaySql} ${legacyTaskPeriodSql})`
     : ''
   const payrollAttendanceEmployeeSeedSql = normalizedScreen === 'payroll'
     ? `
@@ -799,6 +958,15 @@ export class SqliteD1 {
   readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '') {
     const records = measuredStatement('reads', () => (
       this.database.prepare(storeStateSnapshotSql(screen)).all(scope, storeId, actorEmployeeId, period)
+    ))
+    return decodeStateSnapshotRecords(records)
+  }
+
+  readSystemStateSnapshot(scope, collectionKeys, screen = '', employeeIds = []) {
+    const identifiers = Array.isArray(employeeIds) ? employeeIds : [employeeIds]
+    const records = measuredStatement('reads', () => (
+      this.database.prepare(systemStateSnapshotSql(collectionKeys, screen))
+        .all(scope, JSON.stringify(identifiers))
     ))
     return decodeStateSnapshotRecords(records)
   }
