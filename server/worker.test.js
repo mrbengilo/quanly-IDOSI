@@ -1053,6 +1053,7 @@ describe('IDOSI Worker security primitives', () => {
         stores: [{ id: 'S01', name: 'Cửa hàng 01' }, { id: 'S02', name: 'Cửa hàng 02' }],
         orders: [
           ...s01Orders,
+          { id: 'ORDER-S01-OLD', code: 'S01-OLD-CODE', storeId: 'S01', amount: 12_000, createdAt: '2026-08-15' },
           { id: 'ORDER-S02-SECRET', storeId: 'S02', amount: 9_999_999, note: 'FOREIGN_HISTORY_SECRET', createdAt: '2026-09-30' },
         ],
       },
@@ -1086,6 +1087,159 @@ describe('IDOSI Worker security primitives', () => {
     expect(new Set([...firstBody.records, ...secondBody.records].map(({ id }) => id)).size).toBe(20)
     expect(JSON.stringify([firstBody, secondBody])).not.toContain('FOREIGN_HISTORY_SECRET')
     expect([...firstBody.records, ...secondBody.records].some(({ deletedAt }) => deletedAt)).toBe(true)
+
+    const priorMonthById = await worker.fetch(new Request(
+      'https://idosi.example/api/history/orders?storeId=S01&period=2026-09&orderId=ORDER-S01-OLD',
+      { headers: authorization },
+    ), env)
+    expect(await priorMonthById.json()).toMatchObject({
+      records: [{ id: 'ORDER-S01-OLD', code: 'S01-OLD-CODE', createdAt: '2026-08-15' }],
+    })
+    const priorMonthByCode = await worker.fetch(new Request(
+      'https://idosi.example/api/history/orders?storeId=S01&period=2026-09&orderId=S01-OLD-CODE',
+      { headers: authorization },
+    ), env)
+    expect(await priorMonthByCode.json()).toMatchObject({ records: [{ id: 'ORDER-S01-OLD' }] })
+    const foreignLookup = await worker.fetch(new Request(
+      'https://idosi.example/api/history/orders?storeId=S01&period=2026-09&orderId=ORDER-S02-SECRET',
+      { headers: authorization },
+    ), env)
+    expect(await foreignLookup.json()).toMatchObject({ records: [] })
+  })
+
+  it('summarizes every eligible order in the Vietnam month with store and employee isolation', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-order-summary' }
+    const bulkOrders = Array.from({ length: 120 }, (_, index) => ({
+      id: `ORDER-BULK-${index}`,
+      storeId: 'S01',
+      employeeId: index % 2 ? 'E01' : 'E02',
+      shiftId: index < 110 ? 'morning' : 'late-history-shift',
+      shiftName: index < 110 ? 'Ca sáng' : 'Ca chỉ có cuối lịch sử',
+      amount: 1_000,
+      paymentMethod: index % 2 ? 'Tiền mặt' : 'Chuyển khoản',
+      createdAt: index < 110
+        ? `2026-09-${String((index % 28) + 1).padStart(2, '0')}T01:00:00.000Z`
+        : '2026-09-28T12:00:00.000Z',
+    }))
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.summary', password: 'admin-summary-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng 01' }, { id: 'S02', name: 'Cửa hàng 02' }],
+        employees: [
+          { id: 'E01', name: 'Nhân viên Một', storeId: 'S01', unit: 'store', status: 'Đang làm việc' },
+          { id: 'E02', name: 'Nhân viên Hai', storeId: 'S01', unit: 'store', status: 'Đang làm việc' },
+        ],
+        orders: [
+          ...bulkOrders,
+          { id: 'UTC-BOUNDARY', storeId: 'S01', employeeId: 'E01', shiftId: 'night', amount: 5_000, paymentMethod: 'Tiền mặt', createdAt: '2026-08-31T18:30:00.000Z' },
+          { id: 'DELETED', storeId: 'S01', employeeId: 'E01', amount: 90_000, paymentMethod: 'Tiền mặt', status: 'Đã xóa', createdAt: '2026-09-03' },
+          { id: 'OPENING', storeId: 'S01', employeeId: 'E01', amount: 80_000, paymentMethod: 'Tiền mặt', source: 'legacy-opening-balance', createdAt: '2026-09-04' },
+          { id: 'FOREIGN', storeId: 'S02', employeeId: 'E01', amount: 7_000_000, paymentMethod: 'Tiền mặt', createdAt: '2026-09-05' },
+        ],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    env.DB.database.prepare(`
+      UPDATE state_entities
+      SET occurred_on = '2026-06-01', period_key = '2026-06'
+      WHERE collection_key = 'orders'
+        AND json_extract(value_json, '$.id') = 'ORDER-BULK-1'
+    `).run()
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.summary', password: 'admin-summary-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const summary = await worker.fetch(new Request(
+      'https://idosi.example/api/order-summary?storeId=S01&period=2026-09',
+      { headers: adminAuthorization },
+    ), env)
+    expect(summary.status).toBe(200)
+    expect(await summary.json()).toMatchObject({
+      storeId: 'S01',
+      period: '2026-09',
+      totals: { orders: 121, cash: 65_000, transfer: 60_000, revenue: 125_000 },
+      groups: {
+        shift: expect.arrayContaining([
+          expect.objectContaining({ key: expect.stringContaining('late-history-shift'), orders: 10, revenue: 10_000 }),
+        ]),
+        employee: expect.arrayContaining([
+          expect.objectContaining({ key: 'E01', orders: 61, revenue: 65_000 }),
+          expect.objectContaining({ key: 'E02', orders: 60, revenue: 60_000 }),
+        ]),
+      },
+    })
+
+    const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 1,
+      payload: { orderId: 'ORDER-BULK-0', amount: 3_000, reason: 'Kiểm tra làm mới tổng hợp' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-summary-update' }), env)
+    expect(updated.status).toBe(200)
+    const updatedSummary = await worker.fetch(new Request(
+      'https://idosi.example/api/order-summary?storeId=S01&period=2026-09',
+      { headers: adminAuthorization },
+    ), env)
+    expect(await updatedSummary.json()).toMatchObject({
+      totals: { orders: 121, cash: 65_000, transfer: 62_000, revenue: 127_000 },
+    })
+    const deleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.delete', expectedVersion: 2,
+      payload: { orderId: 'ORDER-BULK-0', reason: 'Kiểm tra loại đơn đã xóa' },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-summary-delete' }), env)
+    expect(deleted.status).toBe(200)
+    const deletedSummary = await worker.fetch(new Request(
+      'https://idosi.example/api/order-summary?storeId=S01&period=2026-09',
+      { headers: adminAuthorization },
+    ), env)
+    expect(await deletedSummary.json()).toMatchObject({
+      totals: { orders: 120, cash: 65_000, transfer: 59_000, revenue: 124_000 },
+    })
+
+    const history = await worker.fetch(new Request(
+      'https://idosi.example/api/history/orders?storeId=S01&period=2026-09&limit=100',
+      { headers: adminAuthorization },
+    ), env)
+    const historyBody = await history.json()
+    expect(historyBody.records).toHaveLength(100)
+    expect(historyBody.page.hasMore).toBe(true)
+    const remainingHistory = await worker.fetch(new Request(
+      `https://idosi.example/api/history/orders?storeId=S01&period=2026-09&limit=100&cursor=${encodeURIComponent(historyBody.page.nextCursor)}`,
+      { headers: adminAuthorization },
+    ), env)
+    expect(JSON.stringify([historyBody, await remainingHistory.json()])).toContain('UTC-BOUNDARY')
+
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create',
+      payload: {
+        username: 'employee.summary', password: 'employee-summary-password',
+        displayName: 'Nhân viên Một', storeId: 'S01', employeeId: 'E01', role: 'employee',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'order-summary-employee-user' }), env)
+    expect(created.status).toBe(201)
+    const employeeLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'employee.summary', password: 'employee-summary-password',
+    }), env)
+    const employeeAuthorization = { authorization: `Bearer ${(await employeeLogin.json()).token}` }
+    const employeeSummary = await worker.fetch(new Request(
+      'https://idosi.example/api/order-summary?storeId=S01&period=2026-09',
+      { headers: employeeAuthorization },
+    ), env)
+    expect(await employeeSummary.json()).toMatchObject({
+      totals: { orders: 61, cash: 65_000, transfer: 0, revenue: 65_000 },
+      groups: { employee: [{ key: 'E01', orders: 61, revenue: 65_000 }] },
+    })
+    const forbiddenEmployee = await worker.fetch(new Request(
+      'https://idosi.example/api/order-summary?storeId=S01&period=2026-09&employeeId=E02',
+      { headers: employeeAuthorization },
+    ), env)
+    expect(forbiddenEmployee.status).toBe(403)
+    expect(await forbiddenEmployee.json()).toMatchObject({ error: { code: 'EMPLOYEE_SCOPE_FORBIDDEN' } })
+    const forbiddenStore = await worker.fetch(new Request(
+      'https://idosi.example/api/order-summary?storeId=S02&period=2026-09',
+      { headers: employeeAuthorization },
+    ), env)
+    expect(forbiddenStore.status).toBe(403)
+    expect(await forbiddenStore.json()).toMatchObject({ error: { code: 'STORE_SCOPE_FORBIDDEN' } })
   })
 
   it('returns a role-safe compact login bootstrap for every non-Admin account', async () => {
