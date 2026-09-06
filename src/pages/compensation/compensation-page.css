@@ -7,7 +7,7 @@
 
 .compensation-page {
   display: grid;
-  gap: 18px;
+  gap: var(--card-gap);
 }
 
 .compensation-page .card {
@@ -52,7 +52,7 @@
 
 .compensation-empty {
   color: var(--compensation-muted);
-  padding: 28px 16px !important;
+  padding: var(--card-padding) !important;
   text-align: center;
 }
 
@@ -65,7 +65,7 @@
 }
 
 .compensation-filter-card {
-  padding-block: 16px;
+  padding-block: var(--card-padding);
 }
 
 .compensation-filter-grid {
@@ -119,9 +119,11 @@
   border: 1px solid #b9d8e8;
   border-radius: 12px;
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--card-gap);
   justify-content: space-between;
   margin-bottom: 12px;
-  padding: 14px 16px;
+  padding: var(--card-padding);
 }
 
 .revenue-milestones-summary span {
@@ -147,8 +149,7 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 10px;
-  min-height: 54px;
-  padding: 10px 14px;
+  padding: 8px 10px;
 }
 
 .revenue-milestone.is-reached {
@@ -205,8 +206,17 @@
   border: 1px solid #fed7aa;
   border-radius: 14px;
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--card-gap);
   justify-content: space-between;
-  padding: 16px 20px;
+  padding: var(--card-padding);
+}
+
+.revenue-milestones-summary > *,
+.compensation-summary-strip > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .compensation-summary-strip span {
@@ -229,11 +239,18 @@
   align-items: center;
   border-bottom: 1px solid #e1ebe5;
   display: flex;
-  gap: 18px;
+  flex-wrap: wrap;
+  gap: 4px var(--card-gap);
   justify-content: space-between;
   margin: 0;
   min-width: 0;
-  padding: 13px 16px;
+  padding: 8px var(--card-padding);
+}
+
+.compensation-statement-grid p > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .compensation-statement-grid p:nth-child(odd) {
@@ -245,6 +262,7 @@
 }
 
 .compensation-statement-grid strong {
+  margin-inline-start: auto;
   text-align: right;
 }
 
@@ -270,8 +288,9 @@
 .compensation-statistics-grid,
 .violation-statistics-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
+  align-items: start;
+  gap: var(--card-gap);
 }
 
 .compensation-statistics-grid h3,
@@ -291,7 +310,7 @@
 
 .compensation-unit-statistics {
   display: grid;
-  gap: 18px;
+  gap: var(--card-gap);
 }
 
 .reward-work-toolbar {
@@ -308,7 +327,7 @@
 
 .reward-shift-list {
   display: grid;
-  gap: 14px;
+  gap: var(--card-gap);
 }
 
 .reward-shift-card {
@@ -323,8 +342,15 @@
   border-bottom: 1px solid var(--compensation-border);
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
+  flex-wrap: wrap;
+  gap: 6px var(--card-gap);
+  padding: var(--card-padding);
+}
+
+.reward-shift-card__head > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .reward-shift-card__head span,
@@ -358,13 +384,26 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 8px 12px;
-  min-height: 60px;
-  padding: 11px 13px;
+  min-height: 44px;
+  padding: 8px 10px;
   transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
 }
 
 .reward-task-checklist > label:hover {
   border-color: #69ae82;
+}
+
+.reward-task-checklist > label > *,
+.compensation-catalog-checklist > label > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.reward-task-checklist > label > .badge {
+  grid-column: 2 / -1;
+  justify-self: start;
+  white-space: normal;
 }
 
 .reward-task-checklist > label.is-complete {
@@ -406,7 +445,7 @@
 
 .reward-task-amount {
   color: #057a3a;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .reward-task-saving {
@@ -451,8 +490,8 @@
   cursor: pointer;
   display: flex;
   gap: 11px;
-  min-height: 58px;
-  padding: 11px 13px;
+  min-height: 44px;
+  padding: 8px 10px;
 }
 
 .compensation-catalog-checklist > label.selected {
@@ -490,10 +529,6 @@
 }
 
 @media (max-width: 720px) {
-  .compensation-page {
-    gap: 12px;
-  }
-
   .compensation-page .page-header__actions,
   .compensation-page .page-header__actions > * {
     width: 100%;
@@ -522,13 +557,6 @@
 
   .compensation-statement-grid p:nth-child(odd) {
     border-right: 0;
-  }
-
-  .compensation-summary-strip {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 8px;
-    padding: 14px 16px;
   }
 
   .compensation-row-actions {
@@ -649,13 +677,19 @@
   border: 1px solid var(--compensation-border);
   border-radius: 12px;
   display: grid;
-  gap: 8px 14px;
+  gap: 6px var(--card-gap);
   grid-template-columns: minmax(140px, auto) minmax(0, 1fr);
-  padding: 14px 16px;
+  padding: var(--card-padding);
 }
 
 .revenue-bonus-admin-summary span {
   color: var(--compensation-muted);
+}
+
+.revenue-bonus-admin-summary > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .revenue-bonus-admin-form textarea {
@@ -684,4 +718,3 @@
     flex-direction: column;
   }
 }
-
