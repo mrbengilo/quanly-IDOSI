@@ -541,7 +541,10 @@ describe('SQLite state snapshots', () => {
 
   it('reads one indexed cursor page of store history', async () => {
     const { database } = await createSnapshotDatabase()
-    const insert = (entityKey, order, value) => {
+    const insert = (entityKey, order, value, {
+      occurredOn = value.createdAt?.slice(0, 10) || value.date,
+      periodKey = occurredOn?.slice(0, 7),
+    } = {}) => {
       const valueJson = JSON.stringify(value)
       return database.prepare(`
         INSERT INTO state_entities (
@@ -551,11 +554,24 @@ describe('SQLite state snapshots', () => {
         ) VALUES (?, 'orders', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         'global', entityKey, order, valueJson, Buffer.byteLength(valueJson), timestamp, timestamp,
-        value.storeId, value.employeeId || null, value.createdAt.slice(0, 10), value.createdAt.slice(0, 7),
+        value.storeId, value.employeeId || null, occurredOn, periodKey,
       )
     }
     try {
       await database.batch([
+        insert('history-s01-stale-period-index', 15, {
+          id: 'HISTORY-S01-STALE-PERIOD', storeId: 'S01', employeeId: 'E04', amount: 9_000,
+          period: '2026-06', createdAt: '2026-09-01T01:00:00.000Z',
+        }, { occurredOn: '2026-06-01', periodKey: '2026-06' }),
+        insert('history-s01-legacy-edited', 25, {
+          id: 'HISTORY-S01-LEGACY-EDITED', code: 'S01-LEGACY-CODE',
+          storeId: 'S01', employeeId: 'E03', amount: 7_000,
+          date: '2026-09-10', updatedAt: '2026-12-20T01:00:00.000Z',
+        }),
+        insert('history-s01-utc-boundary', 50, {
+          id: 'HISTORY-S01-UTC-BOUNDARY', storeId: 'S01', employeeId: 'E01',
+          amount: 5_000, createdAt: '2026-08-31T18:30:00.000Z',
+        }),
         insert('history-s01-1', 100, { id: 'HISTORY-S01-1', storeId: 'S01', createdAt: '2026-09-01' }),
         insert('history-s01-2', 200, { id: 'HISTORY-S01-2', storeId: 'S01', createdAt: '2026-09-02' }),
         insert('history-s01-3', 300, { id: 'HISTORY-S01-3', storeId: 'S01', createdAt: '2026-09-03' }),
@@ -566,7 +582,7 @@ describe('SQLite state snapshots', () => {
         collectionKey: 'orders', storeId: 'S01', period: '2026-09', limit: 2,
       }))
       expect(first.map(({ entity_key: entityKey }) => entityKey)).toEqual([
-        'history-s01-3', 'history-s01-2',
+        'history-s01-legacy-edited', 'history-s01-3',
       ])
       const second = database.readEntityHistory({
         collectionKey: 'orders', storeId: 'S01', period: '2026-09',
@@ -575,8 +591,33 @@ describe('SQLite state snapshots', () => {
         beforeKey: first[1].entity_key,
         limit: 2,
       })
-      expect(second.map(({ entity_key: entityKey }) => entityKey)).toEqual(['history-s01-1'])
-      expect(JSON.stringify([...first, ...second])).not.toContain('SECRET')
+      expect(second.map(({ entity_key: entityKey }) => entityKey)).toEqual(['history-s01-2', 'history-s01-1'])
+      const third = database.readEntityHistory({
+        collectionKey: 'orders', storeId: 'S01', period: '2026-09',
+        beforeOccurredOn: second[1].occurred_on,
+        beforeOrder: Number(second[1].entity_order),
+        beforeKey: second[1].entity_key,
+        limit: 2,
+      })
+      expect(third.map(({ entity_key: entityKey }) => entityKey)).toEqual([
+        'history-s01-utc-boundary', 'history-s01-stale-period-index',
+      ])
+      expect(third[0].occurred_on).toBe('2026-09-01')
+      expect(database.readEntityHistory({
+        collectionKey: 'orders', storeId: 'S01', employeeId: 'E03', period: '2026-12', limit: 2,
+      })).toEqual([])
+      expect(database.readEntityHistory({
+        collectionKey: 'orders', storeId: 'S01', employeeId: 'E04', period: '2026-09', limit: 2,
+      }).map(({ entity_key: entityKey }) => entityKey)).toEqual(['history-s01-stale-period-index'])
+      expect(database.readEntityHistory({
+        collectionKey: 'orders', storeId: 'S01', period: '2026-12',
+        orderId: 'S01-LEGACY-CODE', limit: 2,
+      }).map(({ entity_key: entityKey }) => entityKey)).toEqual(['history-s01-legacy-edited'])
+      expect(database.readEntityHistory({
+        collectionKey: 'orders', storeId: 'S01', period: '2026-09',
+        orderId: 'HISTORY-S02', limit: 2,
+      })).toEqual([])
+      expect(JSON.stringify([...first, ...second, ...third])).not.toContain('SECRET')
       expect(metrics).toMatchObject({ statements: 1, reads: 1, writes: 0, batches: 0 })
       const queryPlan = (await database.prepare(`
         EXPLAIN QUERY PLAN
@@ -588,6 +629,16 @@ describe('SQLite state snapshots', () => {
         ORDER BY entity_order DESC
       `).all()).results.map(({ detail }) => detail).join(' ')
       expect(queryPlan).toContain('idx_state_entities_store_period')
+
+      expect(database.readOrderSummaryRows({ storeId: 'S01', period: '2026-09' })
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual([
+        'HISTORY-S01-3', 'HISTORY-S01-2', 'HISTORY-S01-1', 'HISTORY-S01-UTC-BOUNDARY',
+        'HISTORY-S01-LEGACY-EDITED', 'HISTORY-S01-STALE-PERIOD',
+      ])
+      expect(database.readOrderSummaryRows({ storeId: 'S01', employeeId: 'E01', period: '2026-09' })
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual([
+        'HISTORY-S01-UTC-BOUNDARY',
+      ])
     } finally {
       database.close()
     }

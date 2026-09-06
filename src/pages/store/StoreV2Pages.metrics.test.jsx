@@ -335,7 +335,7 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('summarizes the current store and active filters by payment method', () => {
+  it('keeps the full monthly store totals when filtering the displayed orders', () => {
     mocked.app = {
       ...baseApp(),
       orders: [
@@ -355,9 +355,11 @@ describe('store order, attendance, and payroll summaries', () => {
 
     fireEvent.change(screen.getByPlaceholderText('Tìm mã đơn, khách hàng...'), { target: { value: 'O-BANK' } })
 
-    expect(within(metrics).getByText('1')).toBeTruthy()
-    expect(within(metrics).getAllByText('270,000 đ')).toHaveLength(2)
-    expect(within(metrics).getByText('0 đ')).toBeTruthy()
+    expect(screen.queryByText('O-CASH')).toBeNull()
+    expect(within(metrics).getByText('2')).toBeTruthy()
+    expect(within(metrics).getByText('270,000 đ')).toBeTruthy()
+    expect(within(metrics).getByText('130,000 đ')).toBeTruthy()
+    expect(within(metrics).getByText('400,000 đ')).toBeTruthy()
   })
 
   it('tags a support employee in both order rows and employee grouping headings', () => {

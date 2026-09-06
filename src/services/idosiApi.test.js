@@ -7,6 +7,7 @@ import {
   apiGetEmployeeAvatar,
   apiGetIdentityImage,
   apiGetHistory,
+  apiGetOrderSummary,
   apiGetStoreScreenState,
   apiGetStoreWorkspaceState,
   apiGetSystemScreenState,
@@ -261,6 +262,14 @@ describe('IDOSI lightweight state synchronization', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/system-screens/employees')
   })
 
+  it('requests full-period order totals independently of history pagination', async () => {
+    const payload = { totals: { orders: 125, cash: 200_000, transfer: 300_000, revenue: 500_000 }, groups: {} }
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => payload })
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(apiGetOrderSummary({ storeId: 'CH 01', period: '2026-09' })).resolves.toEqual(payload)
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/order-summary?storeId=CH+01&period=2026-09')
+  })
+
   it('requests a cursor-paginated store history page', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -273,6 +282,13 @@ describe('IDOSI lightweight state synchronization', () => {
     })
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/history/orders?storeId=CH+01&limit=25&period=2026-09&cursor=next-page')
+  })
+
+  it('looks up a linked order across months inside the selected store', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ records: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+    await apiGetHistory('orders', { storeId: 'S01', orderId: 'OLD/ORDER', limit: 10 })
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/history/orders?storeId=S01&limit=10&orderId=OLD%2FORDER')
   })
 
   it('loads only state metadata with the active bearer session', async () => {

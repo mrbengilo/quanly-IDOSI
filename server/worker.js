@@ -62,6 +62,7 @@ import {
   supportSchedulePresetsEqual,
   validateSupportSchedulePresets,
 } from '../src/domain/supportWorkSchedule.js'
+import { orderBusinessDate, summarizeOrders } from '../src/domain/orderSummary.js'
 
 const API_PREFIX = '/api/'
 const MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -4152,11 +4153,12 @@ const stateEntityQueryDimensions = (collectionKey, value) => {
     value.createdAt,
     value.updatedAt,
   )
+  const canonicalOrderDate = collectionKey === 'orders' ? orderBusinessDate(value) : ''
   return {
     storeId,
     employeeId,
-    occurredOn: occurredValue?.slice(0, 10) || null,
-    periodKey: periodValue?.slice(0, 7) || null,
+    occurredOn: canonicalOrderDate || occurredValue?.slice(0, 10) || null,
+    periodKey: canonicalOrderDate.slice(0, 7) || periodValue?.slice(0, 7) || null,
     recordId: firstText(value.id, value.code, value.key, value.periodId),
     openFlag: collectionKey === 'attendance'
       ? Number(value.deletedAt == null
@@ -5193,6 +5195,7 @@ const fallbackEntityHistory = async ({
   storeId,
   employeeId,
   period,
+  orderId,
   beforeOccurredOn,
   beforeOrder,
   beforeKey,
@@ -5200,18 +5203,24 @@ const fallbackEntityHistory = async ({
 }) => {
   const row = await loadStateCollections(db, 'global', [collectionKey])
   const state = row ? parseStoredJson(row.value_json, {}) : {}
+  const recordPeriod = (value) => collectionKey === 'orders'
+    ? orderBusinessDate(value).slice(0, 7)
+    : historyRecordPeriod(value)
   const records = (Array.isArray(state[collectionKey]) ? state[collectionKey] : [])
     .map((value, index) => ({
       entity_key: String(value?.id || value?.code || `legacy:${index}`),
       entity_order: (index + 1) * STATE_ENTITY_ORDER_STEP,
-      occurred_on: historyRecordPeriod(value) || '',
+      occurred_on: collectionKey === 'orders' ? orderBusinessDate(value) : historyRecordPeriod(value) || '',
       value_json: JSON.stringify(value),
       value_bytes: jsonByteLength(JSON.stringify(value)),
       value,
     }))
     .filter(({ value }) => sameIdentifier(value?.storeId || value?.supportStoreId, storeId))
     .filter(({ value }) => !employeeId || sameIdentifier(value?.employeeId, employeeId))
-    .filter(({ value }) => !period || historyRecordPeriod(value) === period)
+    .filter(({ value }) => !orderId
+      || sameIdentifier(value?.id, orderId)
+      || sameIdentifier(value?.code, orderId))
+    .filter(({ value }) => orderId || !period || recordPeriod(value) === period)
     .sort((left, right) => String(right.occurred_on).localeCompare(String(left.occurred_on))
       || right.entity_order - left.entity_order
       || right.entity_key.localeCompare(left.entity_key))
@@ -5224,10 +5233,7 @@ const fallbackEntityHistory = async ({
   return records
 }
 
-const getEntityHistory = async (request, env, context, url, historyKind) => {
-  const collectionKey = HISTORY_COLLECTIONS[historyKind]
-  if (!collectionKey) throw new ApiError(404, 'HISTORY_KIND_NOT_FOUND', 'Không tìm thấy loại lịch sử.')
-  const db = getDatabase(env)
+const resolveHistoryReadScope = async (request, db, context, url) => {
   const user = await requireStateReadSession(request, db, context)
   if (!['admin', 'business_support', 'store_manager', 'employee'].includes(user.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem lịch sử này.')
@@ -5245,13 +5251,30 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
   const employeeId = user.role === 'employee'
     ? String(user.employee_id || '').trim()
     : requestedEmployeeId
+  if (user.role === 'employee' && !employeeId) {
+    throw new ApiError(403, 'EMPLOYEE_SCOPE_FORBIDDEN', 'Tài khoản nhân viên chưa được liên kết hồ sơ hợp lệ.')
+  }
   if (user.role === 'employee' && requestedEmployeeId
     && !sameIdentifier(requestedEmployeeId, employeeId)) {
     throw new ApiError(403, 'EMPLOYEE_SCOPE_FORBIDDEN', 'Nhân viên chỉ được xem lịch sử của chính mình.')
   }
+  return { user, storeId, employeeId }
+}
+
+const getEntityHistory = async (request, env, context, url, historyKind) => {
+  const collectionKey = HISTORY_COLLECTIONS[historyKind]
+  if (!collectionKey) throw new ApiError(404, 'HISTORY_KIND_NOT_FOUND', 'Không tìm thấy loại lịch sử.')
+  const db = getDatabase(env)
+  const { storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
   const period = String(url.searchParams.get('period') || '').trim()
   if (period && !/^\d{4}-\d{2}$/u.test(period)) {
     throw new ApiError(400, 'HISTORY_PERIOD_INVALID', 'Kỳ lịch sử phải có định dạng YYYY-MM.')
+  }
+  const orderId = historyKind === 'orders'
+    ? String(url.searchParams.get('orderId') || '').trim()
+    : ''
+  if (orderId.length > 200) {
+    throw new ApiError(400, 'HISTORY_ORDER_ID_INVALID', 'Mã đơn hàng cần tra cứu không hợp lệ.')
   }
   const limit = Math.min(100, Math.max(10, Number(url.searchParams.get('limit')) || 50))
   const cursor = decodeHistoryCursor(url.searchParams.get('cursor'))
@@ -5262,6 +5285,7 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
         storeId,
         employeeId,
         period,
+        orderId,
         ...cursor,
         limit: limit + 1,
       })
@@ -5271,6 +5295,7 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
         storeId,
         employeeId,
         period,
+        orderId,
         ...cursor,
         limit: limit + 1,
       })
@@ -5296,6 +5321,66 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
       nextCursor: hasMore ? encodeHistoryCursor(page.at(-1)) : null,
     },
   }))
+}
+
+const ORDER_SUMMARY_ROWS_SQL = `
+  SELECT value_json, value_bytes
+  FROM state_entities
+  WHERE scope_key = 'global'
+    AND collection_key = 'orders'
+    AND store_id = ? COLLATE NOCASE
+    AND (? = '' OR employee_id = ? COLLATE NOCASE)
+    AND (
+      period_key IN (?, ?, ?)
+      OR period_key IS NULL
+      OR period_key = ''
+      OR substr(COALESCE(
+        NULLIF(trim(CAST(json_extract(value_json, '$.createdAt') AS TEXT)), ''),
+        NULLIF(trim(CAST(json_extract(value_json, '$.date') AS TEXT)), ''),
+        NULLIF(trim(CAST(json_extract(value_json, '$.businessDate') AS TEXT)), ''),
+        NULLIF(trim(CAST(json_extract(value_json, '$.updatedAt') AS TEXT)), '')
+      ), 1, 7) IN (?, ?, ?)
+    )
+  ORDER BY entity_order DESC, entity_key DESC
+`
+
+const adjacentPeriods = (period) => {
+  const [year, month] = String(period).split('-').map(Number)
+  return [-1, 0, 1].map((offset) => {
+    const date = new Date(Date.UTC(year, month - 1 + offset, 1))
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+  })
+}
+
+const readOrderSummaryRows = async (db, storeId, employeeId, period) => {
+  if (typeof db?.readOrderSummaryRows === 'function') {
+    return db.readOrderSummaryRows({ scope: 'global', storeId, employeeId, period })
+  }
+  const periods = adjacentPeriods(period)
+  return all(db, ORDER_SUMMARY_ROWS_SQL, storeId, employeeId, employeeId, ...periods, ...periods)
+}
+
+const getOrderSummary = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const { storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
+  const period = asMonth(url.searchParams.get('period'), 'Kỳ tổng hợp đơn hàng')
+  const rows = await readOrderSummaryRows(db, storeId, employeeId, period)
+  const orders = rows.map((row) => {
+    const serialized = String(row.value_json)
+    if (jsonByteLength(serialized) !== Number(row.value_bytes)
+      || Number(row.value_bytes) > MAX_STATE_ENTITY_BYTES) {
+      throw new ApiError(500, 'STATE_ENTITY_CORRUPT', 'Bản ghi lịch sử không hợp lệ.')
+    }
+    return parseStoredJson(serialized, null)
+  })
+  let summary
+  try {
+    summary = summarizeOrders(orders, { storeId, period, employeeId })
+  } catch (error) {
+    if (!(error instanceof TypeError || error instanceof RangeError)) throw error
+    throw new ApiError(500, 'ORDER_SUMMARY_INVALID', 'Dữ liệu tổng hợp đơn hàng không hợp lệ.')
+  }
+  return jsonResponse(apiPayload(context, { storeId, period, ...summary }))
 }
 
 const revenueBonusViewerEmployeeIds = (state, user) => {
@@ -24705,6 +24790,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/finance-overview') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getFinanceOverview(request, env, context, url)
+  }
+  if (path === '/api/order-summary') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getOrderSummary(request, env, context, url)
   }
   const historyMatch = path.match(/^\/api\/history\/([^/]+)$/u)
   if (historyMatch) {

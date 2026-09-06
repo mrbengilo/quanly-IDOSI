@@ -785,6 +785,86 @@ const FINANCE_OVERVIEW_SQL = `
   ORDER BY store_id
 `
 
+const ORDER_HISTORY_ROWS_SQL = `
+  WITH history_rows AS MATERIALIZED (
+    SELECT
+      entity_key, entity_order, value_json, value_bytes,
+      store_id, employee_id, period_key, created_at, updated_at,
+      COALESCE(
+        NULLIF(trim(CAST(json_extract(value_json, '$.createdAt') AS TEXT)), ''),
+        NULLIF(trim(CAST(json_extract(value_json, '$.date') AS TEXT)), ''),
+        NULLIF(trim(CAST(json_extract(value_json, '$.businessDate') AS TEXT)), ''),
+        NULLIF(trim(CAST(json_extract(value_json, '$.updatedAt') AS TEXT)), ''),
+        ''
+      ) AS date_source
+    FROM state_entities
+    WHERE scope_key = ?
+      AND collection_key = 'orders'
+      AND store_id = ? COLLATE NOCASE
+      AND (? = '' OR employee_id = ? COLLATE NOCASE)
+      AND (
+        ? <> ''
+        OR ? = ''
+        OR period_key IN (?, ?, ?)
+        OR period_key IS NULL
+        OR period_key = ''
+        OR substr(COALESCE(
+          NULLIF(trim(CAST(json_extract(value_json, '$.createdAt') AS TEXT)), ''),
+          NULLIF(trim(CAST(json_extract(value_json, '$.date') AS TEXT)), ''),
+          NULLIF(trim(CAST(json_extract(value_json, '$.businessDate') AS TEXT)), ''),
+          NULLIF(trim(CAST(json_extract(value_json, '$.updatedAt') AS TEXT)), '')
+        ), 1, 7) IN (?, ?, ?)
+      )
+      AND (
+        ? = ''
+        OR record_id = ? COLLATE NOCASE
+        OR CAST(json_extract(value_json, '$.id') AS TEXT) = ? COLLATE NOCASE
+        OR CAST(json_extract(value_json, '$.code') AS TEXT) = ? COLLATE NOCASE
+      )
+  ), dated_rows AS (
+    SELECT *,
+      CASE
+        WHEN length(date_source) = 10
+          AND date_source GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+          THEN date_source
+        WHEN length(date_source) > 10
+          AND substr(date_source, 1, 10) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+          AND lower(substr(date_source, 11, 1)) = 't'
+          AND (
+            lower(substr(date_source, -1)) = 'z'
+            OR substr(date_source, -6) GLOB '[+-][0-9][0-9]:[0-9][0-9]'
+            OR substr(date_source, -5) GLOB '[+-][0-9][0-9][0-9][0-9]'
+          )
+          THEN COALESCE(strftime(
+            '%Y-%m-%d',
+            CASE WHEN substr(date_source, -5) GLOB '[+-][0-9][0-9][0-9][0-9]'
+              THEN substr(date_source, 1, length(date_source) - 5)
+                || substr(date_source, -5, 3) || ':' || substr(date_source, -2)
+              ELSE date_source
+            END,
+            '+7 hours'
+          ), '')
+        WHEN substr(date_source, 1, 10) GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+          THEN substr(date_source, 1, 10)
+        ELSE ''
+      END AS business_date
+    FROM history_rows
+  )
+  SELECT
+    entity_key, entity_order, value_json, value_bytes,
+    store_id, employee_id, business_date AS occurred_on, period_key, created_at, updated_at
+  FROM dated_rows
+  WHERE (? <> '' OR ? = '' OR substr(business_date, 1, 7) = ?)
+    AND (
+      ? IS NULL
+      OR business_date < ?
+      OR (business_date = ? AND entity_order < ?)
+      OR (business_date = ? AND entity_order = ? AND entity_key < ?)
+    )
+  ORDER BY business_date DESC, entity_order DESC, entity_key DESC
+  LIMIT ?
+`
+
 const measuredStatement = (kind, operation) => {
   const metrics = requestMetrics.getStore()
   if (!metrics) return operation()
@@ -990,12 +1070,47 @@ export class SqliteD1 {
     storeId,
     employeeId = '',
     period = '',
+    orderId = '',
     beforeOccurredOn = null,
     beforeOrder = null,
     beforeKey = '',
     limit = 50,
   }) {
     const cursorOrder = Number.isSafeInteger(beforeOrder) ? beforeOrder : null
+    if (collectionKey === 'orders') {
+      const [year, month] = String(period).split('-').map(Number)
+      const scopedPeriods = period
+        ? [-1, 0, 1].map((offset) => {
+            const date = new Date(Date.UTC(year, month - 1 + offset, 1))
+            return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+          })
+        : ['', '', '']
+      return measuredStatement('reads', () => this.database.prepare(ORDER_HISTORY_ROWS_SQL).all(
+        scope,
+        storeId,
+        employeeId,
+        employeeId,
+        orderId,
+        period,
+        ...scopedPeriods,
+        ...scopedPeriods,
+        orderId,
+        orderId,
+        orderId,
+        orderId,
+        orderId,
+        period,
+        period,
+        beforeOccurredOn,
+        beforeOccurredOn,
+        beforeOccurredOn,
+        cursorOrder,
+        beforeOccurredOn,
+        cursorOrder,
+        beforeKey,
+        limit,
+      ))
+    }
     return measuredStatement('reads', () => this.database.prepare(`
       SELECT
         entity_key, entity_order, value_json, value_bytes,
@@ -1031,6 +1146,34 @@ export class SqliteD1 {
       beforeKey,
       limit,
     ))
+  }
+
+  readOrderSummaryRows({ scope = 'global', storeId, employeeId = '', period }) {
+    const [year, month] = String(period).split('-').map(Number)
+    const periods = [-1, 0, 1].map((offset) => {
+      const date = new Date(Date.UTC(year, month - 1 + offset, 1))
+      return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+    })
+    return measuredStatement('reads', () => this.database.prepare(`
+      SELECT value_json, value_bytes
+      FROM state_entities
+      WHERE scope_key = ?
+        AND collection_key = 'orders'
+        AND store_id = ? COLLATE NOCASE
+        AND (? = '' OR employee_id = ? COLLATE NOCASE)
+        AND (
+          period_key IN (?, ?, ?)
+          OR period_key IS NULL
+          OR period_key = ''
+          OR substr(COALESCE(
+            NULLIF(trim(CAST(json_extract(value_json, '$.createdAt') AS TEXT)), ''),
+            NULLIF(trim(CAST(json_extract(value_json, '$.date') AS TEXT)), ''),
+            NULLIF(trim(CAST(json_extract(value_json, '$.businessDate') AS TEXT)), ''),
+            NULLIF(trim(CAST(json_extract(value_json, '$.updatedAt') AS TEXT)), '')
+          ), 1, 7) IN (?, ?, ?)
+        )
+      ORDER BY entity_order DESC, entity_key DESC
+    `).all(scope, storeId, employeeId, employeeId, ...periods, ...periods))
   }
 
   async batch(statements) {

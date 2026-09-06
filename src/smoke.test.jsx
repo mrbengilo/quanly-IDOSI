@@ -234,6 +234,7 @@ describe('IDOSI page smoke tests', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Mở cửa hàng SecondMall SM234$/i }))
     fireEvent.click(await screen.findByRole('link', { name: /^Đơn hàng$/i }))
     expect(await screen.findByRole('heading', { name: 'ĐƠN HÀNG' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Kỳ đang xem'), { target: { value: '2026-08' } })
     expect(screen.queryByText(/Chế độ chỉ xem/i)).toBeNull()
     expect(screen.getAllByRole('button', { name: /^Sửa$/i }).length).toBeGreaterThan(0)
     expect(screen.queryByRole('button', { name: /^Xóa$/i })).toBeNull()

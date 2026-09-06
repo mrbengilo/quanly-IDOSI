@@ -1,4 +1,58 @@
 /* Store order groups: keep the newest shift easy to scan and separate key totals by color. */
+.store-orders-page .order-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 76px;
+}
+
+.store-orders-page .order-row-actions > .button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  min-width: 72px;
+  min-height: 40px;
+  padding: 8px 10px;
+  gap: 6px;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.store-orders-page .order-row-actions > .button > svg {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.store-order-period {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.store-order-period > .field {
+  flex: 0 1 190px;
+  min-width: 0;
+}
+
+.store-order-period > p {
+  flex: 1 1 220px;
+  margin: 0;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .store-orders-page .order-row-actions > .button {
+    min-height: 44px;
+  }
+}
+
 .page .order-group > .card__header h2 .order-group__shift-title {
   display: grid;
   gap: 3px;
