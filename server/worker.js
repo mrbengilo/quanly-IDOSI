@@ -1,3 +1,4 @@
+import { attendanceMatchesWindow, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
   validateStoreChecklistCheckout,
 } from '../src/domain/storeShiftChecklist.js'
@@ -109,7 +110,7 @@ const SESSION_CONTEXT_STATE_COLLECTIONS = Object.freeze([
 ])
 const EMPLOYEE_SESSION_CONTEXT_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
-  'attendance',
+  'attendance', 'schedule', 'shiftDefinitions',
 ])
 const INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
@@ -3330,15 +3331,6 @@ const requireSession = async (request, db, context, {
   return effective
 }
 
-const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state.supportTransfers)
-  ? state.supportTransfers
-  : [])
-  .filter((record) => (
-    sameIdentifier(record.employeeId, employeeId)
-    && supportTransferMatchesTime(record, at)
-  ))
-  .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
-
 const openEmployeeAttendanceContextFor = (state, employeeId) => {
   const identifier = String(employeeId || '').trim()
   if (!identifier) {
@@ -3397,6 +3389,7 @@ const supportTransferToStoreOnDate = (state, employeeId, storeId, at) => (Array.
   .filter((record) => (
     sameIdentifier(record.employeeId, employeeId)
     && sameIdentifier(record.toStoreId, storeId)
+    && supportAllowsScheduling(record)
     && supportTransferMatchesTime(record, at)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
@@ -3417,10 +3410,8 @@ const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = nul
     ? parseStoredJson((await loadState(db, 'global'))?.value_json, {})
     : preloadedState
 
-  // Operational precedence is intentionally strict:
-  //   open attendance > active support-transfer window > home assignment.
-  // This prevents a scheduled transfer from moving the UI or authorization
-  // context away from a shift that the employee has not checked out yet.
+  // A persisted open shift owns the store until checkout. Otherwise only a
+  // real scheduled shift may select a support store; a grant is not attendance.
   const openAttendanceContext = openEmployeeAttendanceContextFor(state, user.employee_id)
   if (openAttendanceContext.hasOpenAttendance) {
     const openAttendance = openAttendanceContext.attendance
@@ -3463,19 +3454,18 @@ const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = nul
     }
   }
 
-  const transfer = activeSupportTransferFor(state, user.employee_id, now)
-  if (!transfer?.toStoreId) return user
-  const homeStoreId = String(
-    transfer.fromStoreId
-    || user.home_store_id
-    || user.store_id
-    || '',
-  ).trim()
+  const earlyLimit = Math.trunc(await policyNumber(db, 'early_check_in_limit_minutes', 120))
+  const choices = scheduledCheckInChoices(state, user.employee_id, now, earlyLimit)
+  const inProgress = choices.filter((choice) => choice.startMs <= Date.parse(now))
+  const candidates = inProgress.length ? inProgress : choices
+  if (candidates.length !== 1) return { ...user, active_transfer_id: null }
+  const scheduled = candidates[0]
+  const transfer = supportForScheduledWindow(state, scheduled)
   return {
     ...user,
-    home_store_id: homeStoreId || null,
-    store_id: String(transfer.toStoreId),
-    active_transfer_id: String(transfer.id || ''),
+    home_store_id: user.home_store_id || user.store_id || null,
+    store_id: scheduled.storeId,
+    active_transfer_id: transfer?.id || null,
   }
 }
 
@@ -7062,10 +7052,11 @@ export const commandStateProjection = (body) => {
   if (type.startsWith('schedule.')) {
     return projection(
       'command-schedule',
-      ['schedule', 'shiftDefinitions'],
+      ['schedule', 'shiftDefinitions', 'attendance', 'notifications'],
       'schedule',
       payload.scheduleId || payload.id,
       payload.employeeId,
+      false,
     )
   }
   if (type.startsWith('account_settings.')) {
@@ -7134,6 +7125,7 @@ export const commandStateProjection = (body) => {
       'supportWorkSchedules',
       payload.scheduleId || payload.id,
       payload.employeeId,
+      false,
     )
   }
   if (type.startsWith('task.')) {
@@ -10142,6 +10134,11 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
         durationHours: Number(shift.durationHours || 0),
         date: shift.date || null,
         version: Number(shift.version || 1),
+        ...(supportForScheduledWindow(state, {
+          employeeId, storeId, ...shiftWindow(date, shift),
+        }) ? { supportTransferId: supportForScheduledWindow(state, {
+          employeeId, storeId, ...shiftWindow(date, shift),
+        }).id } : {}),
       }
     })
     return {
@@ -10173,9 +10170,34 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       )),
     ]
   }
+  const proposedSchedule = [...nextDay, ...outsideDay]
+  const proposedState = { ...state, schedule: proposedSchedule }
+  const problem = scheduleConflict(proposedState, assignments)
+  if (problem) {
+    const other = problem.conflict
+    throw new ApiError(409, problem.code, other
+      ? `Nhân viên đã có ca tại ${storeNameForId(state, other.storeId)} (${other.date}, ${other.start || '?'}–${other.end || '?'}). Vui lòng chọn thời gian không chồng.`
+      : problem.code === 'SUPPORT_SCHEDULE_OUTSIDE_WINDOW'
+        ? 'Ca hỗ trợ phải nằm hoàn toàn trong thời gian điều chuyển còn được phép phân ca.'
+        : 'Lịch phân ca thiếu thời gian hợp lệ; cần kiểm tra ca trước khi lưu.', {
+      employeeId: problem.window.employeeId,
+      ...(other ? { storeId: other.storeId, date: other.date, start: other.start, end: other.end } : {}),
+    })
+  }
+  const previousWindows = scheduleWindows(state, { storeId })
+    .filter((window) => window.date === date)
+  const nextWindows = scheduleWindows(proposedState, { storeId })
+  for (const window of previousWindows) {
+    if (!(state.attendance || []).some((record) => attendanceMatchesWindow(record, window))) continue
+    const retained = nextWindows.find((candidate) => sameIdentifier(candidate.employeeId, window.employeeId)
+      && sameIdentifier(candidate.shiftId, window.shiftId) && candidate.date === window.date)
+    if (!retained || retained.startMs !== window.startMs || retained.endMs !== window.endMs) {
+      throw new ApiError(409, 'SCHEDULE_STARTED_IMMUTABLE', 'Ca đã phát sinh điểm danh; không thể xóa hoặc đổi lịch của ca này.')
+    }
+  }
   const nextState = {
     ...state,
-    schedule: [...nextDay, ...outsideDay],
+    schedule: proposedSchedule,
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -15555,10 +15577,10 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
   const { current, state } = await loadGlobalCommandState(db, body, actor)
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const employeeId = String(actor.employee_id || actor.user_id || '')
-  const storeId = String(actor.store_id || '')
+  let storeId = String(actor.store_id || '')
   const employee = (Array.isArray(state.employees) ? state.employees : [])
     .find((record) => sameIdentifier(record.id || record.code, employeeId) && !record.deletedAt)
-  const activeTransfer = actor.active_transfer_id
+  let activeTransfer = actor.active_transfer_id
     ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
         sameIdentifier(record.id, actor.active_transfer_id)
         && sameIdentifier(record.employeeId, employeeId)
@@ -15567,6 +15589,25 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
         && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
       ))
     : null
+  const earlyLimit = Math.trunc(await policyNumber(db, 'early_check_in_limit_minutes', 120))
+  let scheduledWindow = null
+  const requiresAssignedShift = employeeUnit(employee) === 'store'
+    && (state.supportTransfers || []).some((transfer) => belongsToEmployee(transfer, employeeId))
+  if (body.type === 'attendance.check_in' && requiresAssignedShift) {
+    const open = openEmployeeAttendanceContextFor(state, employeeId)
+    if (open.hasOpenAttendance) {
+      throw new ApiError(409, 'ATTENDANCE_ALREADY_OPEN', 'Bạn phải kết ca đang làm thành công trước khi vào ca khác.')
+    }
+    const choices = scheduledCheckInChoices(state, employeeId, commandContext.now, earlyLimit)
+      .filter((choice) => sameIdentifier(choice.shiftId, payload.shiftId || payload.workShiftId)
+        && (!payload.scheduleId || sameIdentifier(choice.assignmentId, payload.scheduleId)))
+    if (choices.length !== 1) {
+      throw new ApiError(409, 'SUPPORT_SHIFT_NOT_ASSIGNED', 'Chưa có ca được phân phù hợp thời gian hiện tại, hoặc ca đã hoàn thành. Vui lòng kiểm tra lịch phân ca.')
+    }
+    scheduledWindow = choices[0]
+    storeId = String(scheduledWindow.storeId)
+    activeTransfer = supportForScheduledWindow(state, scheduledWindow)
+  }
   if (!employee || (!sameIdentifier(employee.storeId, storeId) && !activeTransfer)) {
     throw new ApiError(409, 'EMPLOYEE_PROFILE_MISSING', 'Tài khoản chưa được liên kết với hồ sơ nhân viên hợp lệ.')
   }
@@ -15592,7 +15633,8 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     assertPayrollNotPaidOrLocked(state, storeId, localNow.date.slice(0, 7))
     const dayAssignments = (Array.isArray(state.schedule) ? state.schedule : []).filter((record) => (
       belongsToEmployee(record, employeeId)
-      && String(record.date || record.workDate || '') === localNow.date
+      && String(record.date || record.workDate || '') === (scheduledWindow?.date || localNow.date)
+      && sameIdentifier(record.storeId, storeId)
       && !record.deletedAt
     ))
     const assignedShiftIds = new Set(dayAssignments.flatMap((record) => [
@@ -15632,29 +15674,14 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       && dayAssignments.length && !assignedShiftIds.has(normalizeIdentifierKey(shiftId))) {
       throw new ApiError(403, 'SHIFT_NOT_ASSIGNED', 'Ca này không nằm trong lịch làm việc hôm nay của bạn.')
     }
-    // A support transfer is itself the attendance window. Even if a stale or
-    // destination schedule is submitted, punctuality must use the exact
-    // configured transfer start/end rather than unrelated shift hours.
+    if (scheduledWindow) {
+      shiftId = String(scheduledWindow.shiftId)
+      shift = { ...scheduledWindow.shift, id: shiftId, source: 'store-schedule' }
+    }
     if (activeTransfer) {
       activeTransferBounds = supportTransferTimeBounds(activeTransfer)
-      const transferStart = activeTransferBounds
-        ? parseShiftTime(localDateTimeParts(activeTransferBounds.startAt).time)
-        : null
-      const transferEnd = activeTransferBounds
-        ? parseShiftTime(localDateTimeParts(activeTransferBounds.endAt).time)
-        : null
-      if (!transferStart || !transferEnd) {
-        throw new ApiError(409, 'SUPPORT_TRANSFER_TIME_INVALID', 'Phiếu điều chuyển thiếu thời gian làm việc hợp lệ.')
-      }
-      shiftId = `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80)
-      shift = {
-        id: shiftId,
-        name: 'Ca hỗ trợ cửa hàng',
-        storeId,
-        start: transferStart.label,
-        end: transferEnd.label,
-        version: 1,
-        source: 'support-transfer',
+      if (!scheduledWindow || !activeTransferBounds) {
+        throw new ApiError(409, 'SUPPORT_SHIFT_NOT_ASSIGNED', 'Cần phân ca trong thời gian hỗ trợ trước khi điểm danh.')
       }
     }
     if (!shift && officeEmployee && !canonicalProfileScheduleEmployee && !shiftId) {
@@ -15683,10 +15710,9 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       throw new ApiError(409, 'OFFICE_ATTENDANCE_ALREADY_RECORDED', 'Bạn đã chấm công trong ngày hôm nay.')
     }
     const currentEpochMs = Date.parse(commandContext.now)
-    const minutesFromStart = activeTransferBounds && Number.isFinite(currentEpochMs)
-      ? Math.floor((currentEpochMs - activeTransferBounds.startMs) / 60_000)
+    const minutesFromStart = scheduledWindow && Number.isFinite(currentEpochMs)
+      ? Math.floor((currentEpochMs - scheduledWindow.startMs) / 60_000)
       : localNow.minuteOfDay - times.start.minuteOfDay
-    const earlyLimit = Math.trunc(await policyNumber(db, 'early_check_in_limit_minutes', 120))
     if (minutesFromStart < -earlyLimit) {
       throw new ApiError(409, 'CHECK_IN_TOO_EARLY', `Chỉ được điểm danh sớm tối đa ${earlyLimit} phút.`, {
         minutesUntilStart: Math.abs(minutesFromStart),
@@ -15725,6 +15751,7 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       workDate: localNow.date,
       attendanceDate: localNow.date,
       employeeId,
+      ...(scheduledWindow ? { scheduleId: scheduledWindow.assignmentId, scheduledWorkDate: scheduledWindow.date, scheduledStartAt: scheduledWindow.startAt, scheduledEndAt: scheduledWindow.endAt } : {}),
       employeeName: employee.name || actor.display_name,
       storeId,
       homeStoreId: activeTransfer?.fromStoreId || employee.storeId || storeId,
@@ -15847,9 +15874,8 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
     collisionMessage: 'Mã chấm công tham chiếu trong dữ liệu ca đang mơ hồ; cần xử lý dữ liệu trùng trước khi kết ca.',
   })
-  // An exact transfer end immediately restores the account's home-store scope.
-  // The employee must still be able to settle the already-open destination shift,
-  // without regaining any permission to create new destination activity.
+  // The open attendance remains the operational authority after the grant ends.
+  // Settlement preserves the existing payable-hours and allowance formulas.
   const attendanceStoreId = String(openRecord.storeId || storeId)
   const attendanceTransfer = openRecord.supportTransferId
     ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
@@ -16208,9 +16234,10 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
           String(record.id || '') === String(attendanceTransfer.id)
             ? {
                 ...record,
-                status: 'Hoàn tất',
-                completedAt: commandContext.now,
-                completedAttendanceId: openRecord.id,
+                ...(record.schedulingClosedAt || (attendanceTransferBounds && checkOutTime >= attendanceTransferBounds.endMs) ? {
+                  status: 'Hoàn tất', completedAt: commandContext.now, completedAttendanceId: openRecord.id,
+                } : {}),
+                lastCheckoutAt: commandContext.now,
                 updatedAt: commandContext.now,
               }
             : record

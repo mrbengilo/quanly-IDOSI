@@ -145,7 +145,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   // names but prevent auth from materializing the full operational history.
   // Only an open attendance row is needed to preserve an employee's effective
   // support-transfer store after the scheduled transfer window has ended.
-  session: ['attendance'],
+  session: ['attendance', 'schedule', 'shiftDefinitions'],
   'checklist-repair': ['attendance', 'tasks', 'taskAssignmentHistory', 'workCatalogItems', 'shiftDefinitions'],
   initial: ['attendance', 'supportWorkSchedules', 'schedule'],
   'initial-support': [
@@ -507,9 +507,13 @@ const storeStateSnapshotSql = (screen = '') => {
       )
       AND (params.period_key = '' OR attendance.period_key = params.period_key)`
     : ''
+  const sessionOwnHistorySql = normalizedScreen === 'session'
+    ? `OR entity.employee_id = params.actor_employee_key COLLATE NOCASE`
+    : ''
   const sessionFilterSql = normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
     ? `AND (entity.collection_key <> 'attendance' OR (
         entity.open_flag = 1
+        ${sessionOwnHistorySql}
         OR (
           entity.open_flag IS NULL
           AND json_extract(entity.value_json, '$.deletedAt') IS NULL
@@ -688,6 +692,7 @@ const storeStateSnapshotSql = (screen = '') => {
     ${employeeHomeOrderFilterSql}
     AND (
       entity.collection_key = 'stores'
+      ${['session', 'schedule', 'employee-home', 'employee-attendance', 'employee-schedule'].includes(normalizedScreen) ? "OR entity.collection_key = 'shiftDefinitions'" : ''}
       OR entity.store_id = params.store_key COLLATE NOCASE
       OR entity.employee_id IN (
         SELECT employee_key COLLATE NOCASE FROM selected_employee_ids

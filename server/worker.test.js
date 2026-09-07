@@ -18800,3 +18800,95 @@ describe('Shared support schedule preset configuration', () => {
       .toEqual({ count: 3 })
   }, 30_000)
 })
+
+describe('shared support workflow', () => {
+  const transfer = {
+    id: 'TR-WORKFLOW', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+    startAt: '2026-09-07T01:00:00.000Z', endAt: '2026-09-08T10:00:00.000Z',
+    hourlySupportRate: 45_000, allowance: 180_000, status: 'Đã duyệt',
+  }
+  const shift = (id, storeId, start, end) => ({ id, storeId, name: id, start, end, active: true })
+  const shifts = [shift('HOME-AM', 'S01', '08:00', '12:00'), shift('HOST-PM', 'S02', '12:00', '16:00'), shift('HOST-OVERLAP', 'S02', '10:00', '14:00')]
+  const setup = async (extra = {}) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-07T05:10:00.000Z'))
+    onTestFinished(() => vi.useRealTimers())
+    return setupSupportTransferRuntime({ token: `workflow-${crypto.randomUUID()}`, transfer, shiftDefinitions: shifts, ...extra })
+  }
+  const command = async (runtime, auth, type, payload, expectedVersion, idempotencyKey = crypto.randomUUID()) => {
+    const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type, payload, expectedVersion: expectedVersion ?? runtime.env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get().version,
+    }, { ...auth, 'idempotency-key': idempotencyKey }), runtime.env)
+    return { status: response.status, body: await response.json() }
+  }
+  const assigned = (id, storeId, shiftId, date = '2026-09-07') => ({ id, employeeId: 'E01', storeId, date, shiftIds: [shiftId], shiftSnapshots: [shifts.find((s) => s.id === shiftId)] })
+
+  it('reserves time across stores and rejects both partial overlap and out-of-grant shifts', async () => {
+    const runtime = await setup()
+    expect((await command(runtime, runtime.adminAuthorization, 'schedule.assign', { storeId: 'S01', date: '2026-09-07', employeeIds: ['E01'], shiftIds: ['HOME-AM'] })).status).toBe(200)
+    const overlap = await command(runtime, runtime.managerAuthorization, 'schedule.assign', { storeId: 'S02', date: '2026-09-07', employeeIds: ['e01'], shiftIds: ['HOST-OVERLAP'] })
+    expect(overlap.status).toBe(409)
+    expect(overlap.body.error.code).toBe('SCHEDULE_TIME_OVERLAP')
+    expect((await command(runtime, runtime.managerAuthorization, 'schedule.assign', { storeId: 'S02', date: '2026-09-07', employeeIds: ['E01'], shiftIds: ['HOST-PM'] })).status).toBe(200)
+    const stored = readHydratedState(runtime.env.DB.database)
+    expect(stored.schedule).toHaveLength(2)
+    expect(stored.schedule.find((s) => s.storeId === 'S02').shiftSnapshots[0].supportTransferId).toBe(transfer.id)
+    expect(stored.supportTransfers[0]).toMatchObject({ hourlySupportRate: 45_000, allowance: 180_000 })
+    const outside = await command(runtime, runtime.managerAuthorization, 'schedule.assign', { storeId: 'S02', date: '2026-09-09', employeeIds: ['E01'], shiftIds: ['HOST-PM'] })
+    expect(outside.status).toBeGreaterThanOrEqual(400)
+  })
+
+  it('does not turn a support grant into attendance or change the login store without a schedule', async () => {
+    const runtime = await setup()
+    const me = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username: 'transfer.employee', password: 'transfer-employee-password' }), runtime.env)
+    expect((await me.json()).user.storeId).toBe('S01')
+    const result = await command(runtime, runtime.employeeAuthorization, 'attendance.check_in', { shiftId: 'HOST-PM', location: { latitude: 10.8, longitude: 106.7 } })
+    expect(result.body.error.code).toBe('SUPPORT_SHIFT_NOT_ASSIGNED')
+    expect(readHydratedState(runtime.env.DB.database).attendance).toEqual([])
+  })
+
+  it('uses the assigned shift, holds its store past grant expiry and retains finance inputs', async () => {
+    const runtime = await setup({ schedule: [assigned('HOST-SCHEDULE', 'S02', 'HOST-PM')] })
+    const result = await command(runtime, runtime.employeeAuthorization, 'attendance.check_in', { shiftId: 'HOST-PM', location: { latitude: 10.8, longitude: 106.7 } })
+    expect(result.status, JSON.stringify(result.body)).toBe(201)
+    expect(result.body.attendance).toMatchObject({ storeId: 'S02', homeStoreId: 'S01', shiftId: 'HOST-PM', shiftStart: '12:00', shiftEnd: '16:00', minutesLate: 10, supportHourlyRate: 45_000, supportTransferId: transfer.id, scheduleId: 'HOST-SCHEDULE' })
+    vi.setSystemTime(new Date('2026-09-08T11:00:00.000Z'))
+    const me = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username: 'transfer.employee', password: 'transfer-employee-password' }), runtime.env)
+    const renewed = await me.json()
+    expect(renewed.user).toMatchObject({ storeId: 'S02', activeTransferId: transfer.id })
+    runtime.employeeAuthorization = { authorization: `Bearer ${renewed.token}` }
+    const second = await command(runtime, runtime.employeeAuthorization, 'attendance.check_in', { shiftId: 'HOME-AM', location: { latitude: 10.8, longitude: 106.7 } })
+    expect(second.body.error.code).toBe('ATTENDANCE_ALREADY_OPEN')
+    expect(readHydratedState(runtime.env.DB.database).attendance).toHaveLength(1)
+  })
+
+  it('keeps an unfinished home shift ahead of the destination schedule and protects the assigned row', async () => {
+    const runtime = await setup({
+      schedule: [assigned('HOME-SCHEDULE', 'S01', 'HOME-AM'), assigned('HOST-SCHEDULE', 'S02', 'HOST-PM')],
+      attendance: [{ id: 'OPEN-HOME', employeeId: 'E01', storeId: 'S01', date: '2026-09-07', shiftId: 'HOME-AM', checkIn: '08:00', checkInAt: '2026-09-07T01:00:00.000Z' }],
+    })
+    const me = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username: 'transfer.employee', password: 'transfer-employee-password' }), runtime.env)
+    expect((await me.json()).user.storeId).toBe('S01')
+    const entering = await command(runtime, runtime.employeeAuthorization, 'attendance.check_in', { shiftId: 'HOST-PM', location: { latitude: 10.8, longitude: 106.7 } })
+    expect(entering.body.error.code).toBe('ATTENDANCE_ALREADY_OPEN')
+    const remove = await command(runtime, runtime.adminAuthorization, 'schedule.replace_day', { storeId: 'S01', date: '2026-09-07', assignments: [] })
+    expect(remove.body.error.code).toBe('SCHEDULE_STARTED_IMMUTABLE')
+  })
+
+  it('allows only one simultaneous reservation and one simultaneous check-in', async () => {
+    const runtime = await setup()
+    const version = runtime.env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get().version
+    const reservations = await Promise.all([
+      command(runtime, runtime.adminAuthorization, 'schedule.assign', { storeId: 'S01', date: '2026-09-07', employeeIds: ['E01'], shiftIds: ['HOME-AM'] }, version),
+      command(runtime, runtime.managerAuthorization, 'schedule.assign', { storeId: 'S02', date: '2026-09-07', employeeIds: ['E01'], shiftIds: ['HOST-OVERLAP'] }, version),
+    ])
+    expect(reservations.map((r) => r.status).sort()).toEqual([200, 409])
+    const scheduled = readHydratedState(runtime.env.DB.database).schedule[0]
+    vi.setSystemTime(new Date('2026-09-07T04:00:00.000Z'))
+    const nextVersion = runtime.env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get().version
+    const payload = { shiftId: scheduled.shiftId, location: { latitude: 10.8, longitude: 106.7 } }
+    const entries = await Promise.all([command(runtime, runtime.employeeAuthorization, 'attendance.check_in', payload, nextVersion), command(runtime, runtime.employeeAuthorization, 'attendance.check_in', payload, nextVersion)])
+    expect(entries.map((r) => r.status).sort()).toEqual([201, 409])
+    expect(readHydratedState(runtime.env.DB.database).attendance).toHaveLength(1)
+  })
+})
