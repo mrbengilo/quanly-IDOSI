@@ -29,6 +29,8 @@ import {
   TableFooter,
   TableWrap,
 } from '../../components/UI'
+import { OrderPaymentSummary } from '../../components/OrderPaymentSummary'
+import { orderMatchesFilters, parseOrderAmountFilter, summarizeOrders } from '../../domain/orderSummary'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
 import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
@@ -62,7 +64,6 @@ import {
   employeeCreatedOrders,
   ORDER_GENDERS,
   ordersForOpenAttendance,
-  paymentChannel,
   shiftRevenueBreakdown,
   validateEmployeeOrder,
 } from './employeeShiftOrders'
@@ -594,6 +595,7 @@ export function EmployeeOrdersPage() {
   const [formErrors, setFormErrors] = useState({})
   const [form, setForm] = useState(EMPTY_ORDER_FORM)
   const [paymentFilterState, setPaymentFilterState] = useState({ key: '', value: 'all' })
+  const [amountFilterState, setAmountFilterState] = useState({ key: '', value: '' })
   const orderRequestRef = useRef({ fingerprint: '', idempotencyKey: '' })
   const employeeId = employeeKey(employee)
   // The currently open attendance is the source of truth for the employee's
@@ -611,13 +613,17 @@ export function EmployeeOrdersPage() {
     stores,
     shiftDefinitions: app.shiftDefinitions,
   })
-  const total = rows.reduce((sum, order) => sum + Number(order.amount || 0), 0)
+  const totals = summarizeOrders(rows).totals
   const requestedOrderId = String(searchParams.get('order') || '')
   const paymentFilterKey = JSON.stringify([employeeId, workingStoreId, openAttendance?.id, requestedOrderId])
   const paymentFilter = paymentFilterState.key === paymentFilterKey ? paymentFilterState.value : 'all'
-  const filteredRows = paymentFilter === 'all'
-    ? rows
-    : rows.filter((order) => paymentChannel(order.paymentMethod) === paymentChannel(paymentFilter))
+  const amountInput = amountFilterState.key === paymentFilterKey ? amountFilterState.value : ''
+  const amountFilter = parseOrderAmountFilter(amountInput)
+  const amountError = Number.isNaN(amountFilter) ? 'Nhập số tiền nguyên không âm, ví dụ 200,000.' : ''
+  const filteredRows = rows.filter((order) => orderMatchesFilters(order, {
+    paymentMethod: paymentFilter === 'all' ? '' : paymentFilter, amount: amountFilter,
+  }))
+  const filteredTotals = summarizeOrders(filteredRows).totals
   const requestedOrderMatch = operationalIdentifierRecordMatch(rows, requestedOrderId, (order) => [order.id, order.code])
   const requestedOrder = requestedOrderMatch.ambiguous ? null : requestedOrderMatch.record
   const requestedOrderKey = String(requestedOrder?.id || '')
@@ -702,7 +708,7 @@ export function EmployeeOrdersPage() {
   }
 
   return (
-    <div className="page">
+    <div className="page order-list-page">
       <PageHeader
         title="ĐƠN HÀNG CỦA TÔI"
         subtitle={openAttendance
@@ -712,31 +718,38 @@ export function EmployeeOrdersPage() {
         actions={<Button icon={Plus} onClick={openCreate} disabled={!openAttendance}>TẠO ĐƠN HÀNG</Button>}
       />
       {!openAttendance && <InfoNote tone="orange">Bạn chưa có ca đang mở. Hãy điểm danh vào ca trước khi tạo đơn hàng.</InfoNote>}
-      <div className="metric-grid metric-grid--four">
+      <p className="order-shift-context"><strong>CA HIỆN TẠI: {openAttendance?.shiftName || 'Chưa vào ca'}</strong>{openAttendance && <span>{openAttendance.shiftStart || '—'} – {openAttendance.shiftEnd || '—'} · {String(openAttendance.date || '').split('-').reverse().join('/')}</span>}</p>
+      <div className="order-payment-metrics" aria-label="Tổng quan đơn hàng trong ca">
         <MetricCard label="ĐƠN TRONG CA" value={rows.length} helper="Toàn bộ ca đang mở" icon={ShoppingCart} tone="blue" />
-        <MetricCard label="DOANH THU TRONG CA" value={money(total)} helper="Toàn bộ đơn hàng trong ca" icon={Banknote} tone="green" />
-        <MetricCard label="CA HIỆN TẠI" value={openAttendance?.shiftName || 'Chưa vào ca'} helper={openAttendance ? `${openAttendance.shiftStart || '—'} – ${openAttendance.shiftEnd || '—'}` : 'Điểm danh trước khi tạo đơn để gắn đúng ca'} icon={Clock3} tone="orange" />
+        <MetricCard label="DOANH THU TRONG CA" value={money(totals.revenue)} helper="Toàn bộ đơn hàng trong ca" icon={Banknote} tone="green" />
+        <MetricCard label="TỔNG TIỀN CHUYỂN KHOẢN" value={money(totals.transfer)} helper={`${totals.transferOrders} đơn chuyển khoản`} icon={Banknote} tone="blue" />
+        <MetricCard label="TỔNG TIỀN MẶT" value={money(totals.cash)} helper={`${totals.cashOrders} đơn tiền mặt`} icon={Wallet} tone="orange" />
       </div>
-      <Card title="Đơn hàng trong ca đang làm" action={<div className="toolbar-wrap">
+      {totals.orders > totals.cashOrders + totals.transferOrders && <p className="order-filter-feedback">Chưa phân loại thanh toán: {totals.orders - totals.cashOrders - totals.transferOrders} đơn · {money(totals.revenue - totals.cash - totals.transfer)}</p>}
+      <Card title="Đơn hàng trong ca đang làm"><div className="order-filters">
         <Field label="Lọc thanh toán"><Select
           aria-label="Lọc đơn hàng theo thanh toán"
           value={paymentFilter}
           disabled={!openAttendance}
           onChange={(event) => setPaymentFilterState({ key: paymentFilterKey, value: event.target.value })}
         ><option value="all">Tất cả</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
-        <Badge tone="blue">{filteredRows.length} / {rows.length} đơn trong ca</Badge>
-      </div>}>
+        <Field label="Số tiền chính xác" error={amountError}><Input aria-label="Lọc đơn hàng theo số tiền" inputMode="numeric" value={amountInput} disabled={!openAttendance} placeholder="Ví dụ: 200,000" onChange={(event) => setAmountFilterState({ key: paymentFilterKey, value: event.target.value })} /></Field>
+        <Button variant="outline" onClick={() => { setPaymentFilterState({ key: paymentFilterKey, value: 'all' }); setAmountFilterState({ key: paymentFilterKey, value: '' }) }}>Đặt lại bộ lọc</Button>
+      </div>
+      <p className="order-filter-feedback" role="status">{filteredRows.length} / {rows.length} đơn trong ca{amountFilter !== null && !amountError ? ` · Số tiền ${money(amountFilter)}: ${filteredRows.length} đơn` : ''}</p>
+      {(paymentFilter !== 'all' || amountFilter !== null) && !amountError && <OrderPaymentSummary totals={filteredTotals} />}
+
         {filteredRows.length ? (
           <>
-            <TableWrap paginationKey={`${paymentFilterKey}:${paymentFilter}`}>
+            <TableWrap tableClassName="order-table" paginationKey={`${paymentFilterKey}:${paymentFilter}:${amountInput}`}>
               <thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Giới tính</th><th>Nghề nghiệp</th><th>Biết qua kênh</th><th>Ca làm việc</th><th>Thanh toán</th><th>Số tiền</th></tr></thead>
-              <tbody>{filteredRows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td><strong>{order.code}</strong></td><td>{timestamp(order.createdAt)}</td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || '—'} • {order.customerAge ?? '—'} tuổi</small></td><td>{order.gender || '—'}</td><td>{order.occupation || '—'}</td><td><Badge tone="green">{order.acquisitionChannel || '—'}</Badge></td><td>{order.shiftName || 'Chưa gắn ca'}</td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
+              <tbody>{filteredRows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Thời gian">{timestamp(order.createdAt)}</td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || '—'} • {order.customerAge ?? '—'} tuổi</small></td><td data-label="Giới tính">{order.gender || '—'}</td><td data-label="Nghề nghiệp">{order.occupation || '—'}</td><td data-label="Biết qua kênh"><Badge tone="green">{order.acquisitionChannel || '—'}</Badge></td><td data-label="Ca làm việc">{order.shiftName || 'Chưa gắn ca'}</td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
             </TableWrap>
           </>
         ) : <EmptyState
           title={!openAttendance ? 'Chưa có ca đang mở' : rows.length ? 'Không có đơn hàng phù hợp' : 'Chưa có đơn hàng trong ca'}
           description={openAttendance
-            ? rows.length ? `Ca đang mở chưa có đơn thanh toán bằng ${paymentFilter.toLocaleLowerCase('vi-VN')}. Chọn Tất cả để xem toàn bộ đơn trong ca.` : 'Đơn hàng bạn tạo trong ca sẽ tự động hiển thị tại đây.'
+            ? rows.length ? 'Không có đơn khớp đồng thời các bộ lọc. Chọn Tất cả và xóa số tiền để xem toàn bộ đơn trong ca.' : 'Đơn hàng bạn tạo trong ca sẽ tự động hiển thị tại đây.'
             : 'Hãy điểm danh vào ca trước khi xem và tạo đơn hàng.'}
         />}
       </Card>
