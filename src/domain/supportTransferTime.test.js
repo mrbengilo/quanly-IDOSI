@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  formatVietnamTransferDateRange,
   formatVietnamTransferDateTime,
+  formatVietnamTransferPeriod,
   isSupportTransferActiveAt,
   isVietnamDateTimeLocal,
   supportTransferBounds,
+  supportTransferDateRange,
   supportTransferMatchesMoment,
+  supportTransferIsCancelled,
+  supportTransferUsesWholeCalendarDates,
   toVietnamDateTimeInput,
   vietnamDateTimeLocalToIso,
 } from './supportTransferTime'
@@ -33,6 +38,9 @@ describe('support transfer Vietnam datetime contract', () => {
     expect(isSupportTransferActiveAt(exact, '2026-08-20T14:00:00.000Z')).toBe(false)
     expect(isSupportTransferActiveAt(exact, '2026-08-20T14:00:00.001Z')).toBe(false)
     expect(isSupportTransferActiveAt({ ...exact, status: 'Hoàn tất' }, '2026-08-20T10:30:00.000Z')).toBe(false)
+    expect(isSupportTransferActiveAt({ ...exact, status: 'COMPLETED' }, '2026-08-20T10:30:00.000Z')).toBe(false)
+    expect(supportTransferIsCancelled({ ...exact, status: 'đã HỦY' })).toBe(true)
+    expect(supportTransferIsCancelled({ ...exact, status: 'cancelled' })).toBe(true)
   })
 
   it('keeps legacy date-only records active for their complete inclusive calendar dates', () => {
@@ -47,5 +55,17 @@ describe('support transfer Vietnam datetime contract', () => {
     expect(isSupportTransferActiveAt(legacy, '2026-08-21T16:59:59.999Z')).toBe(true)
     expect(isSupportTransferActiveAt(legacy, '2026-08-21T17:00:00.000Z')).toBe(false)
     expect(supportTransferMatchesMoment(legacy, '2026-08-21')).toBe(true)
+    expect(supportTransferDateRange(legacy)).toEqual({ fromDate: '2026-08-20', toDate: '2026-08-21' })
+    expect(formatVietnamTransferDateRange(legacy)).toBe('20/08/2026 – 21/08/2026')
+    expect(supportTransferUsesWholeCalendarDates(legacy)).toBe(true)
+    expect(formatVietnamTransferPeriod(legacy)).toBe('20/08/2026 – 21/08/2026')
+  })
+
+  it('keeps legacy exact-time constraints visible until they are explicitly converted', () => {
+    expect(supportTransferDateRange(exact)).toEqual({ fromDate: '2026-08-20', toDate: '2026-08-20' })
+    expect(formatVietnamTransferDateRange(exact)).toBe('20/08/2026 – 20/08/2026')
+    expect(supportTransferUsesWholeCalendarDates(exact)).toBe(false)
+    expect(formatVietnamTransferPeriod(exact)).toBe('20/08/2026 14:00 – 20/08/2026 21:00')
+    expect(supportTransferDateRange({ fromDate: '2026-08-21', toDate: '2026-08-20' })).toBeNull()
   })
 })

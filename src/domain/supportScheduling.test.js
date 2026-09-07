@@ -20,6 +20,32 @@ describe('shared support scheduling', () => {
     const b = assignment('s2', 'B', '12:00', '16:00')
     expect(scheduleConflict(stateFor([a, b]), [a, b])).toBeNull()
   })
+  it('rejects overlapping support shifts across two destination stores, including folded identifiers', () => {
+    const b = assignment('s2', 'B', '08:00', '12:00')
+    const c = { ...assignment('s3', 'C', '10:00', '14:00'), employeeId: 'e1' }
+    const state = {
+      employees: [employee],
+      supportTransfers: [
+        transfer,
+        { ...transfer, id: 'T2', toStoreId: 'C' },
+      ],
+      schedule: [b, c],
+    }
+    expect(scheduleConflict(state, [c])?.code).toBe('SCHEDULE_TIME_OVERLAP')
+  })
+  it('uses the whole inclusive Vietnam calendar day for date-only transfer grants', () => {
+    const late = assignment('s2', 'B', '20:00', '23:30')
+    const state = {
+      employees: [employee],
+      supportTransfers: [{
+        id: 'T-DATE', employeeId: 'E1', fromStoreId: 'A', toStoreId: 'B',
+        fromDate: '2026-09-07', toDate: '2026-09-07', status: 'Đã duyệt',
+      }],
+      schedule: [late],
+    }
+    expect(scheduleConflict(state, [late])).toBeNull()
+    expect(scheduledCheckInChoices(state, 'E1', '2026-09-07T13:00:00Z', 0)).toHaveLength(1)
+  })
   it('rejects partial support-window coverage and operationally stopped support', () => {
     const b = assignment('s2', 'B', '16:00', '18:00')
     expect(scheduleConflict(stateFor([b]), [b])?.code).toBe('SUPPORT_SCHEDULE_OUTSIDE_WINDOW')
@@ -45,6 +71,60 @@ describe('shared support scheduling', () => {
     expect(scheduledCheckInChoices(state, 'E1', '2026-09-07T05:00:00Z', 120)).toHaveLength(1)
     state.attendance = [{ employeeId: 'e1', storeId: 'B', shiftId: 's2', date: b.date, checkOut: '13:00' }]
     expect(scheduledCheckInChoices(state, 'E1', '2026-09-07T06:00:00Z', 120)).toEqual([])
+  })
+  it('canonicalizes a unique employee id/code alias for legacy support schedules and attendance', () => {
+    const legacyAssignment = {
+      id: 'legacy-support', employee_code: 'DT-003', storeId: 'B', date: '2026-09-08',
+      shiftIds: ['support-am'], shiftSnapshots: [{ id: 'support-am', start: '08:00', end: '12:00' }],
+    }
+    const aliasState = {
+      employees: [{ id: 'emp-uuid', code: 'DT-003', storeId: 'A' }],
+      supportTransfers: [{
+        id: 'alias-transfer', employeeId: 'emp-uuid', fromStoreId: 'A', toStoreId: 'B',
+        fromDate: '2026-09-08', toDate: '2026-09-08', status: 'Đã duyệt',
+      }],
+      schedule: [legacyAssignment],
+      attendance: [],
+    }
+
+    expect(scheduleConflict(aliasState, [legacyAssignment])).toBeNull()
+    expect(scheduledCheckInChoices(aliasState, 'emp-uuid', '2026-09-08T02:00:00.000Z', 120)).toHaveLength(1)
+
+    aliasState.attendance = [{
+      id: 'canonical-attendance', employeeId: 'emp-uuid', storeId: 'B',
+      shiftId: 'support-am', date: '2026-09-08', checkOut: '12:00',
+    }]
+    expect(scheduledCheckInChoices(aliasState, 'emp-uuid', '2026-09-08T02:00:00.000Z', 120)).toEqual([])
+  })
+  it('detects overlap when one schedule uses the employee id and another uses its legacy code', () => {
+    const home = {
+      id: 'home-by-id', employeeId: 'emp-uuid', storeId: 'A', date: '2026-09-08',
+      shiftIds: ['home-am'], shiftSnapshots: [{ id: 'home-am', start: '08:00', end: '12:00' }],
+    }
+    const host = {
+      id: 'host-by-code', employeeId: 'DT-003', storeId: 'B', date: '2026-09-08',
+      shiftIds: ['host-am'], shiftSnapshots: [{ id: 'host-am', start: '10:00', end: '14:00' }],
+    }
+    const aliasState = {
+      employees: [{ id: 'emp-uuid', code: 'DT-003', storeId: 'A' }],
+      supportTransfers: [{
+        id: 'alias-transfer', employeeId: 'emp-uuid', fromStoreId: 'A', toStoreId: 'B',
+        fromDate: '2026-09-08', toDate: '2026-09-08', status: 'Đã duyệt',
+      }],
+      schedule: [home, host],
+    }
+
+    expect(scheduleConflict(aliasState, [host])?.code).toBe('SCHEDULE_TIME_OVERLAP')
+  })
+  it.each([
+    { status: 'ĐÃ HỦY' },
+    { status: ' cancelled ' },
+    { status: 'VoIdEd' },
+    { canceledAt: '2026-09-07T00:00:00.000Z' },
+  ])('excludes cancelled schedule variants from every derived window: %j', (cancelled) => {
+    const record = { ...assignment('cancelled', 'A', '08:00', '12:00'), ...cancelled }
+    expect(scheduleWindows(stateFor([record]))).toEqual([])
+    expect(scheduledCheckInChoices(stateFor([record]), 'E1', '2026-09-07T01:00:00Z')).toEqual([])
   })
   it('resolves a legacy name-only snapshot using the unique store definition', () => {
     const state = stateFor([{ ...assignment('s1', 'A', '08:00', '12:00'), shiftSnapshots: [{ id: 's1', name: 'Ca cũ' }] }])

@@ -13271,6 +13271,44 @@ describe('IDOSI Worker security primitives', () => {
     })
   }, 30_000)
 
+  it('uses the assigned shift for punctuality when correcting attendance under a date-only support grant', async () => {
+    const transfer = {
+      id: 'TR-DATE-ONLY-CORRECTION', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+      fromDate: '2026-08-20', toDate: '2026-08-20', hourlySupportRate: 45_000, allowance: 20_000,
+      status: 'Hoàn tất', completedAt: '2026-08-20T05:00:00.000Z',
+    }
+    const attendance = [{
+      id: 'ATT-DATE-ONLY-CORRECTION', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ',
+      storeId: 'S02', homeStoreId: 'S01', supportTransferId: transfer.id,
+      date: '2026-08-20', workDate: '2026-08-20', attendanceDate: '2026-08-20',
+      shiftId: 'SUPPORT-DATE-ONLY', shiftStart: '08:00', shiftEnd: '12:00',
+      checkIn: '08:10', checkInAt: '2026-08-20T01:10:00.000Z',
+      checkOut: '11:50', checkOutAt: '2026-08-20T04:50:00.000Z', workedSeconds: 13_200, hours: 11 / 3,
+      deletedAt: null,
+    }]
+    const { env, supportAuthorization } = await setupSupportTransferRuntime({
+      token: 'bootstrap-date-only-transfer-correction', transfer, attendance,
+    })
+
+    const corrected = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'attendance.update', expectedVersion: 1,
+      payload: {
+        attendanceId: attendance[0].id, date: '2026-08-20', checkIn: '08:00', checkOut: '12:00',
+        reason: 'Đối soát theo giờ ca đã phân',
+      },
+    }, { ...supportAuthorization, 'idempotency-key': 'date-only-transfer-correction-0001' }), env)
+
+    expect(corrected.status).toBe(200)
+    expect(await corrected.json()).toMatchObject({
+      version: 2,
+      attendance: {
+        checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z',
+        workedSeconds: 14_400, hours: 4, arrivalTag: 'Đi đúng giờ', minutesLate: 0,
+        departureTag: 'Đã ra về', supportActualPay: 200_000,
+      },
+    })
+  }, 30_000)
+
   it('corrects an overnight transferred attendance using absolute next-day checkout time', async () => {
     const transfer = {
       id: 'TR-OVERNIGHT-CORRECTION', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
@@ -18908,14 +18946,204 @@ describe('shared support workflow', () => {
     expect(entries.map((r) => r.status).sort()).toEqual([201, 409])
     expect(readHydratedState(runtime.env.DB.database).attendance).toHaveLength(1)
   })
-  it('shows future support planning separately from payroll employees even while home attendance stays open', async () => {
-    const runtime = await setup({ transfer: { ...transfer, startAt: '2026-09-08T01:00:00.000Z' },
-      attendance: [{ id: 'HOME-OPEN', employeeId: 'E01', storeId: 'S01', date: '2026-09-07', checkIn: '08:00', checkInAt: '2026-09-07T01:00:00.000Z' }] })
-    const state = readHydratedState(runtime.env.DB.database)
-    const projected = projectSharedState(state, { role: 'store_manager', store_id: 'S02', employee_id: 'QL02' }, { screen: 'schedule' })
-    expect(projected.supportRoster).toEqual([expect.objectContaining({ id: 'E01', storeId: 'S01', supportStoreId: 'S02' })])
-    expect(projected.supportRoster[0]).not.toHaveProperty('hourlyRate')
-    expect(projected.employees.some((employee) => employee.id === 'E01')).toBe(false)
+  it('projects a future support schedule to its host, home and employee without leaking it to another store', async () => {
+    const futureTransfer = {
+      ...transfer,
+      startAt: undefined,
+      endAt: undefined,
+      fromDate: '2026-09-08',
+      toDate: '2026-09-08',
+    }
+    const futureAssignment = {
+      ...assigned('HOST-FUTURE', 'S02', 'HOST-PM', '2026-09-08'),
+      createdBy: { id: 'PRIVATE-HOST-ACTOR', employeeId: 'QL02', name: 'PRIVATE HOST ACTOR' },
+    }
+    const cancelledCodeOnlyAssignment = {
+      ...futureAssignment,
+      id: 'HOST-CANCELLED-CODE-DIMENSION',
+      employeeId: undefined,
+      employeeCode: 'E01',
+      status: ' cancelled ',
+    }
+    const runtime = await setup({
+      transfer: futureTransfer,
+      schedule: [futureAssignment, cancelledCodeOnlyAssignment],
+      attendance: [{ id: 'HOME-OPEN', employeeId: 'E01', storeId: 'S01', date: '2026-09-07', checkIn: '08:00', checkInAt: '2026-09-07T01:00:00.000Z' }],
+    })
+    expect(runtime.env.DB.database.prepare(`
+      SELECT employee_id
+      FROM state_entities
+      WHERE collection_key = 'schedule'
+        AND json_extract(value_json, '$.id') = 'HOST-CANCELLED-CODE-DIMENSION'
+    `).get()).toEqual({ employee_id: 'E01' })
+    const storedState = readHydratedState(runtime.env.DB.database)
+    const completedAssignment = assigned('HOST-COMPLETED', 'S02', 'HOST-PM', '2026-09-06')
+    const cancelledAssignment = assigned('HOST-CANCELLED', 'S02', 'HOST-PM', '2026-09-05')
+    const state = {
+      ...storedState,
+      supportTransfers: [
+        ...storedState.supportTransfers,
+        { ...futureTransfer, id: 'TR-COMPLETED', fromDate: '2026-09-06', toDate: '2026-09-06', status: 'Hoàn tất' },
+        { ...futureTransfer, id: 'TR-CANCELLED', fromDate: '2026-09-05', toDate: '2026-09-05', status: 'Đã hủy' },
+      ],
+      schedule: [...storedState.schedule, completedAssignment, cancelledAssignment],
+    }
+    const host = projectSharedState(state, { role: 'store_manager', store_id: 'S02', employee_id: 'QL02' }, { screen: 'schedule' })
+    const home = projectSharedState(state, { role: 'store_manager', store_id: 'S01', employee_id: 'QL01' }, { screen: 'schedule' })
+    const employee = projectSharedState(state, { role: 'employee', store_id: 'S01', employee_id: 'E01' })
+    const unrelated = projectSharedState(state, { role: 'store_manager', store_id: 'S99', employee_id: 'QL99' }, { screen: 'schedule' })
+
+    expect(host.supportRoster).toEqual([expect.objectContaining({ id: 'E01', storeId: 'S01', supportStoreId: 'S02' })])
+    expect(host.supportRoster[0]).not.toHaveProperty('hourlyRate')
+    expect(host.employees.some((record) => record.id === 'E01')).toBe(false)
+    expect(host.schedule.map((record) => record.id).sort()).toEqual(['HOST-COMPLETED', 'HOST-FUTURE'])
+    expect(host.schedule.find((record) => record.id === futureAssignment.id)).toMatchObject({
+      id: futureAssignment.id, storeId: 'S02',
+    })
+    expect(host.schedule.find((record) => record.id === futureAssignment.id)).not.toHaveProperty('projectionReadOnly')
+
+    expect(home.schedule).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: futureAssignment.id,
+      storeId: 'S02',
+      storeName: 'IDOSI Destination',
+      projectionReadOnly: true,
+      projectionMirror: 'support',
+    }), expect.objectContaining({
+      id: completedAssignment.id,
+      projectionReadOnly: true,
+      projectionMirror: 'support',
+    })]))
+    expect(employee.schedule).toEqual(expect.arrayContaining([expect.objectContaining({
+      id: futureAssignment.id,
+      projectionReadOnly: true,
+      projectionMirror: 'support',
+    }), expect.objectContaining({
+      id: completedAssignment.id,
+      projectionReadOnly: true,
+      projectionMirror: 'support',
+    })]))
+    expect(home.shiftDefinitions).toContainEqual(expect.objectContaining({
+      id: 'HOST-PM', storeId: 'S02', projectionReadOnly: true,
+    }))
+    expect(employee.shiftDefinitions).toContainEqual(expect.objectContaining({
+      id: 'HOST-PM', storeId: 'S02', projectionReadOnly: true,
+    }))
+    expect(JSON.stringify(home)).not.toContain('PRIVATE HOST ACTOR')
+    expect(JSON.stringify(employee)).not.toContain('PRIVATE HOST ACTOR')
+    expect(host.schedule.some((record) => record.id === cancelledAssignment.id)).toBe(false)
+    expect(home.schedule.some((record) => record.id === cancelledAssignment.id)).toBe(false)
+    expect(employee.schedule.some((record) => record.id === cancelledAssignment.id)).toBe(false)
+    expect(unrelated.schedule).toEqual([])
+    const historicalHost = projectSharedState({
+      ...state,
+      supportTransfers: state.supportTransfers.filter((record) => ['TR-COMPLETED', 'TR-CANCELLED'].includes(record.id)),
+      schedule: [completedAssignment, cancelledAssignment],
+    }, { role: 'store_manager', store_id: 'S02', employee_id: 'QL02' }, { screen: 'schedule' })
+    expect(historicalHost.schedule.map((record) => record.id)).toEqual([completedAssignment.id])
+    expect(historicalHost.supportRoster).toEqual([
+      expect.objectContaining({ id: 'E01', homeStoreId: 'S01', supportStoreId: 'S02' }),
+    ])
+
+    const loginBeforeWindow = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'transfer.employee', password: 'transfer-employee-password',
+    }), runtime.env)
+    expect(loginBeforeWindow.status).toBe(200)
+    expect(await loginBeforeWindow.json()).toMatchObject({ user: { storeId: 'S01' } })
+    const employeeScreen = await worker.fetch(new Request('https://idosi.example/api/system-screens/employee-schedule', {
+      headers: runtime.employeeAuthorization,
+    }), runtime.env)
+    expect(employeeScreen.status).toBe(200)
+    const employeeScreenState = (await employeeScreen.json()).state
+    expect(employeeScreenState.supportTransfers).toEqual([
+      expect.objectContaining({ id: futureTransfer.id }),
+    ])
+    expect(employeeScreenState.schedule).toEqual([
+      expect.objectContaining({ id: futureAssignment.id, projectionReadOnly: true, projectionMirror: 'support' }),
+    ])
+  })
+
+  it('projects legacy employee-code schedules across all three views with an explicit safe shape', () => {
+    const employee = {
+      id: 'EMPLOYEE-UUID', code: 'DT-003', name: 'Phương', storeId: 'S01',
+      unit: 'store', status: 'Đang làm việc', hourlyRate: 30_000,
+    }
+    const hostShift = {
+      id: 'HOST-AM', storeId: 'S02', name: 'Ca sáng', start: '08:00', end: '12:00',
+      time: '08:00 - 12:00', color: '#16a34a', active: true,
+      internalCostCode: 'PRIVATE SHIFT COST',
+      created_by: { id: 'PRIVATE SHIFT ACTOR' },
+    }
+    const supportAssignment = {
+      id: 'HOST-BY-CODE', employeeCode: 'DT-003', storeId: 'S02', date: '2026-09-08',
+      shiftId: hostShift.id, shiftIds: [hostShift.id],
+      shiftSnapshots: [{ ...hostShift, privateSnapshot: 'PRIVATE SNAPSHOT' }],
+      note: 'Hỗ trợ buổi sáng', createdAt: '2026-09-07T01:00:00.000Z',
+      approvedBy: 'PRIVATE APPROVER',
+      internal: { updated_by: 'PRIVATE INTERNAL ACTOR' },
+      privatePayrollSnapshot: { hourlyRate: 99_999_999 },
+    }
+    const state = {
+      schemaVersion: 2,
+      stateVersion: 1,
+      stores: [
+        { id: 'S01', name: 'DS TNV' },
+        { id: 'S02', name: 'SM TNV' },
+      ],
+      employees: [employee],
+      supportTransfers: [{
+        id: 'TRANSFER-BY-ID', employeeId: employee.id, fromStoreId: 'S01', toStoreId: 'S02',
+        fromDate: '2026-09-08', toDate: '2026-09-08', status: 'Hoàn tất',
+      }],
+      shiftDefinitions: [hostShift],
+      schedule: [
+        supportAssignment,
+        { ...supportAssignment, id: 'CANCELLED-EN', status: ' CANCELLED ' },
+        { ...supportAssignment, id: 'CANCELLED-VI', status: 'ĐÃ HỦY' },
+      ],
+    }
+
+    const host = projectSharedState(
+      state,
+      { role: 'store_manager', store_id: 'S02', employee_id: 'QL02' },
+      { screen: 'schedule' },
+    )
+    const home = projectSharedState(
+      state,
+      { role: 'store_manager', store_id: 'S01', employee_id: 'QL01' },
+      { screen: 'schedule' },
+    )
+    const own = projectSharedState(state, {
+      role: 'employee', store_id: 'S01', employee_id: employee.id,
+    })
+
+    for (const projection of [host, home, own]) {
+      expect(projection.schedule.map((record) => record.id)).toEqual(['HOST-BY-CODE'])
+    }
+    expect(host.supportRoster).toEqual([
+      expect.objectContaining({ id: employee.id, code: employee.code, supportStoreId: 'S02' }),
+    ])
+    expect(home.schedule[0]).toMatchObject({
+      employeeCode: employee.code, storeId: 'S02', storeName: 'SM TNV',
+      projectionReadOnly: true, projectionMirror: 'support',
+    })
+    expect(own.schedule[0]).toMatchObject({
+      employeeCode: employee.code, storeId: 'S02', projectionReadOnly: true,
+    })
+    expect(own.supportTransfers).toEqual([
+      expect.objectContaining({ id: 'TRANSFER-BY-ID', employeeId: employee.id }),
+    ])
+    expect(home.shiftDefinitions).toContainEqual(expect.objectContaining({
+      id: hostShift.id, storeId: 'S02', projectionReadOnly: true,
+    }))
+    for (const projection of [home, own]) {
+      const serialized = JSON.stringify(projection)
+      expect(serialized).not.toContain('PRIVATE APPROVER')
+      expect(serialized).not.toContain('PRIVATE INTERNAL ACTOR')
+      expect(serialized).not.toContain('PRIVATE SNAPSHOT')
+      expect(serialized).not.toContain('PRIVATE SHIFT COST')
+      expect(serialized).not.toContain('PRIVATE SHIFT ACTOR')
+      expect(serialized).not.toContain('99999999')
+    }
   })
 
   it('notifies both stores and the employee before support starts with independent read receipts', async () => {

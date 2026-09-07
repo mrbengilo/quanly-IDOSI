@@ -36,6 +36,8 @@ it('persists support schedules, notifications and checkout precedence through th
   }
   const transfer = { id: 'TR-SQLITE', employeeId: 'E1', fromStoreId: 'S1', toStoreId: 'S2',
     startAt: '2026-09-07T01:00:00Z', endAt: '2026-09-09T10:00:00Z', hourlySupportRate: 45000, allowance: 180000, status: 'Đã duyệt' }
+  const futureTransfer = { id: 'TR-SQLITE-FUTURE', employeeId: 'E2', fromStoreId: 'S1', toStoreId: 'S2',
+    fromDate: '2026-09-10', toDate: '2026-09-10', hourlySupportRate: 47000, allowance: 90000, status: 'Đã duyệt' }
   const home = { id: 'HOME-AM', storeId: 'S1', name: 'Ca chính', start: '08:00', end: '12:00', active: true }
   const host = { id: 'HOST-PM', storeId: 'S2', name: 'Ca hỗ trợ', start: '12:00', end: '16:00', active: true }
   try {
@@ -43,8 +45,10 @@ it('persists support schedules, notifications and checkout precedence through th
       staffWorkCatalogSeedVersion: STAFF_WORK_CATALOG_SEED_VERSION,
       stores: ['S1', 'S2', 'S3'].map((id) => ({ id, name: `Cửa hàng ${id}` })),
       employees: [{ id: 'E1', storeId: 'S1', name: 'Nhân viên hỗ trợ', unit: 'store', status: 'Đang làm việc', employmentType: 'Part-Time', hourlyRate: 30000 },
+        { id: 'E2', storeId: 'S1', name: 'Nhân viên hỗ trợ tương lai', unit: 'store', status: 'Đang làm việc',
+          employmentType: 'Part-Time', hourlyRate: 31000, phone: 'PRIVATE-E2-PHONE', cccd: 'PRIVATE-E2-CCCD' },
         ...['S1', 'S2', 'S3'].map((storeId) => ({ id: `M-${storeId}`, storeId, unit: 'store_manager', name: `Quản lý ${storeId}` }))],
-      supportTransfers: [transfer], shiftDefinitions: [home, host, { ...host, id: 'OVERLAP', start: '10:00', end: '14:00' }],
+      supportTransfers: [transfer, futureTransfer], shiftDefinitions: [home, host, { ...host, id: 'OVERLAP', start: '10:00', end: '14:00' }],
       schedule: [{ id: 'HOME-ASSIGNED', employeeId: 'E1', storeId: 'S1', date: '2026-09-07', shiftIds: [home.id], shiftSnapshots: [home] }],
       attendance: [], notifications: [], orders: [], workCatalogItems: [],
       expenseEntries: [{ id: 'UNCHANGED', storeId: 'S1', amount: 765432, sourceType: 'manual' }],
@@ -55,6 +59,7 @@ it('persists support schedules, notifications and checkout precedence through th
       SELECT ?, ?, ?, ?, password_hash, password_salt, password_iterations, password_algorithm, ?, 'active', ?, ?,
       password_updated_at, created_at, updated_at FROM users WHERE username='fixture.admin'`)
     insert.run('U-E1', 'fixture.employee', 'fixture.employee', 'Nhân viên hỗ trợ', 'employee', 'S1', 'E1')
+    insert.run('U-E2', 'fixture.future.employee', 'fixture.future.employee', 'Nhân viên hỗ trợ tương lai', 'employee', 'S1', 'E2')
     for (const id of ['S1', 'S2', 'S3']) insert.run(`U-${id}`, `fixture.${id}`, `fixture.${id}`.toLowerCase(), id, 'store_manager', id, `M-${id}`)
     const admin = await login('fixture.admin')
     const homeManager = await login('fixture.S1')
@@ -62,7 +67,45 @@ it('persists support schedules, notifications and checkout precedence through th
     const otherManager = await login('fixture.S3')
     const employeeBefore = await login('fixture.employee')
     expect(employeeBefore.user.storeId).toBe('S1')
+    const futureEmployeeBefore = await login('fixture.future.employee')
+    expect(futureEmployeeBefore.user).toMatchObject({ storeId: 'S1' })
     const beforeMoney = db.prepare("SELECT value_json FROM state_entities WHERE collection_key='expenseEntries'").all()
+    const futureSaved = await command(hostManager.token, 'schedule.assign', {
+      storeId: 'S2', date: '2026-09-10', employeeIds: ['E2'], shiftIds: [host.id],
+    })
+    expect(futureSaved.status, JSON.stringify(futureSaved.body)).toBe(200)
+    const futureAssignmentId = futureSaved.body.assignments[0].id
+    const futureEmployee = await login('fixture.future.employee')
+    expect(futureEmployee.user).toMatchObject({ storeId: 'S1' })
+
+    const hostSchedule = await read(hostManager.token, '/api/store-screens/schedule?storeId=S2')
+    const hostAssignment = hostSchedule.schedule.find((row) => row.id === futureAssignmentId)
+    expect(hostAssignment).toMatchObject({ id: futureAssignmentId, storeId: 'S2', employeeId: 'E2', date: '2026-09-10' })
+    expect(hostAssignment).not.toHaveProperty('projectionReadOnly')
+    expect(hostSchedule.employees.some((row) => row.id === 'E2')).toBe(false)
+    expect(hostSchedule.supportRoster.find((row) => row.id === 'E2')).toMatchObject({
+      id: 'E2', name: 'Nhân viên hỗ trợ tương lai', homeStoreId: 'S1', supportStoreId: 'S2',
+    })
+    expect(JSON.stringify(hostSchedule.supportRoster)).not.toMatch(/PRIVATE-E2-PHONE|PRIVATE-E2-CCCD|31000/u)
+
+    const homeSchedule = await read(homeManager.token, '/api/store-screens/schedule?storeId=S1')
+    expect(homeSchedule.schedule.find((row) => row.id === futureAssignmentId)).toMatchObject({
+      id: futureAssignmentId, storeId: 'S2', storeName: 'Cửa hàng S2', employeeId: 'E2',
+      projectionReadOnly: true, projectionMirror: 'support',
+    })
+    expect(homeSchedule.schedule.find((row) => row.id === futureAssignmentId)).not.toHaveProperty('createdBy')
+    expect(homeSchedule.shiftDefinitions).toContainEqual(expect.objectContaining({
+      id: host.id, storeId: 'S2', projectionReadOnly: true,
+    }))
+
+    const employeeSchedule = await read(futureEmployee.token, '/api/system-screens/employee-schedule')
+    expect(employeeSchedule.schedule.find((row) => row.id === futureAssignmentId)).toMatchObject({
+      id: futureAssignmentId, storeId: 'S2', employeeId: 'E2', projectionReadOnly: true, projectionMirror: 'support',
+    })
+    expect(employeeSchedule.shiftDefinitions).toContainEqual(expect.objectContaining({ id: host.id, storeId: 'S2' }))
+    expect((await read(otherManager.token, '/api/store-screens/schedule?storeId=S3')).schedule
+      .some((row) => row.id === futureAssignmentId)).toBe(false)
+
     const overlap = await command(hostManager.token, 'schedule.assign', { storeId: 'S2', date: '2026-09-07', employeeIds: ['E1'], shiftIds: ['OVERLAP'] })
     expect(overlap.body.error.code).toBe('SCHEDULE_TIME_OVERLAP')
     for (const date of ['2026-09-07', '2026-09-08']) {

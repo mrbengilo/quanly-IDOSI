@@ -95,6 +95,11 @@ export const formatVietnamTransferDateTime = (value) => {
   return `${day}/${month}/${year} ${time}`
 }
 
+const formatDateOnly = (value) => {
+  const parts = dateOnlyParts(value)
+  return parts ? `${String(parts.day).padStart(2, '0')}/${String(parts.month).padStart(2, '0')}/${parts.year}` : '—'
+}
+
 export const legacyTransferStartAt = (record = {}) => {
   const date = dateOnlyParts(record.fromDate || record.startDate || record.date)?.date
   return date ? `${date}T00:00` : ''
@@ -122,9 +127,69 @@ export const supportTransferBounds = (record = {}) => {
   }
 }
 
+// A transfer authorizes scheduling for complete Vietnam calendar dates. Older
+// records may still contain exact instants, so derive their inclusive dates
+// from the canonical [startAt, endAt) interval when opening or displaying them.
+export const supportTransferDateRange = (record = {}) => {
+  const bounds = supportTransferBounds(record)
+  if (!bounds) return null
+  const fromDate = localInputFromEpoch(bounds.startMs).slice(0, 10)
+  const toDate = localInputFromEpoch(bounds.endMs - 1).slice(0, 10)
+  return dateOnlyParts(fromDate) && dateOnlyParts(toDate) && fromDate <= toDate
+    ? { fromDate, toDate }
+    : null
+}
+
+export const formatVietnamTransferDateRange = (record = {}) => {
+  const range = supportTransferDateRange(record)
+  return range ? `${formatDateOnly(range.fromDate)} – ${formatDateOnly(range.toDate)}` : '—'
+}
+
+export const supportTransferUsesWholeCalendarDates = (record = {}) => {
+  const bounds = supportTransferBounds(record)
+  const range = supportTransferDateRange(record)
+  const calendarBounds = range ? supportTransferBounds(range) : null
+  return Boolean(
+    bounds
+    && calendarBounds
+    && bounds.startMs === calendarBounds.startMs
+    && bounds.endMs === calendarBounds.endMs,
+  )
+}
+
+// New transfers cover complete Vietnam calendar dates. Keep the exact hours
+// visible for older records until an operator explicitly converts them through
+// the date-only editor, otherwise the UI would hide a still-active constraint.
+export const formatVietnamTransferPeriod = (record = {}) => {
+  const bounds = supportTransferBounds(record)
+  if (!bounds) return '—'
+  return supportTransferUsesWholeCalendarDates(record)
+    ? formatVietnamTransferDateRange(record)
+    : `${formatVietnamTransferDateTime(bounds.startAt)} – ${formatVietnamTransferDateTime(bounds.endAt)}`
+}
+
+const transferStatusKey = (value) => String(value || '')
+  .trim()
+  .toLocaleLowerCase('vi-VN')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/gu, '')
+  .replaceAll('đ', 'd')
+
+const CANCELLED_TRANSFER_STATUSES = new Set([
+  'da xoa', 'xoa', 'da huy', 'huy', 'cancelled', 'canceled', 'void', 'voided', 'deleted',
+])
+const COMPLETED_TRANSFER_STATUSES = new Set(['hoan tat', 'completed', 'complete', 'finished'])
+
+export const supportTransferIsCancelled = (record = {}) => Boolean(
+  record.deletedAt
+  || record.cancelledAt
+  || record.canceledAt
+  || CANCELLED_TRANSFER_STATUSES.has(transferStatusKey(record.status)),
+)
+
 export const supportTransferIsUsable = (record = {}) => (
-  !record.deletedAt
-  && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+  !supportTransferIsCancelled(record)
+  && !COMPLETED_TRANSFER_STATUSES.has(transferStatusKey(record.status))
 )
 
 export const isSupportTransferActiveAt = (record, at = new Date()) => {
