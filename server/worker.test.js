@@ -10094,6 +10094,335 @@ describe('IDOSI Worker security primitives', () => {
     expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
   })
 
+  it('updates credentials for legacy primary-manager accounts through their canonical source profiles', async () => {
+    const identityImagesFor = (employeeId) => ({
+      front: { key: `identity-images/${employeeId}/front/bootstrap.png` },
+      back: { key: `identity-images/${employeeId}/back/bootstrap.png` },
+    })
+    const env = {
+      DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-legacy-manager-credentials',
+    }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'legacy-manager-credentials-admin-password',
+      initialState: {
+        stores: [
+          { id: 'S01', name: 'IDOSI Tô Ngọc Vân', short: 'TNV', status: 'Đang hoạt động' },
+          { id: 'S02', name: 'IDOSI Nguyễn Trãi', short: 'NT', status: 'Đang hoạt động' },
+        ],
+        employees: [
+          {
+            id: 'E-LEGACY', code: 'E-LEGACY', unit: 'store', storeId: 'S01', status: 'Đang làm việc',
+            name: 'Nhân viên nguồn', phone: '0908111001', cccd: '079811100001',
+            address: 'TP. Hồ Chí Minh', startDate: '2026-08-01', employmentType: 'Part-Time',
+            hourlyRate: 30_000, identityImages: identityImagesFor('E-LEGACY'),
+          },
+          {
+            id: 'QL-LEGACY', code: 'QL-LEGACY', unit: 'store_manager', storeId: 'S01', status: 'Đang làm việc',
+            name: 'Nhân viên nguồn', linkedEmployeeId: 'E-LEGACY',
+          },
+          {
+            id: 'HTKD-LEGACY', code: 'HTKD-LEGACY', unit: 'business_support',
+            storeId: 'BUSINESS_SUPPORT', status: 'Đang làm việc', name: 'Hỗ trợ nguồn',
+            phone: '0908111002', cccd: '079811100002', address: 'TP. Hồ Chí Minh',
+            startDate: '2026-08-01', employmentType: 'Part-Time', position: 'NV hỗ trợ KD',
+            identityImages: identityImagesFor('HTKD-LEGACY'),
+          },
+          {
+            id: 'QL-SUPPORT', code: 'QL-SUPPORT', unit: 'store_manager', storeId: 'S01', status: 'Đang làm việc',
+            name: 'Hỗ trợ nguồn', linkedEmployeeId: 'HTKD-LEGACY',
+          },
+          {
+            id: 'STORE-SUPPORT-FOREIGN', code: 'STORE-SUPPORT-FOREIGN', unit: 'store', storeId: 'S01',
+            status: 'Đang làm việc', name: 'Vai trò do tài khoản khác sở hữu', linkedEmployeeId: 'HTKD-LEGACY',
+            authUserId: 'usr-contradictory-owner', username: 'contradictory.owner', authVersion: 77,
+          },
+          {
+            id: 'E-UNLINKED', code: 'E-UNLINKED', unit: 'store', storeId: 'S01', status: 'Đang làm việc',
+            name: 'Nhân viên chưa liên kết', phone: '0908111003', cccd: '079811100003',
+            address: 'TP. Hồ Chí Minh', startDate: '2026-08-01', employmentType: 'Part-Time',
+            hourlyRate: 30_000, identityImages: identityImagesFor('E-UNLINKED'),
+          },
+          {
+            id: 'QL-FOREIGN', code: 'QL-FOREIGN', unit: 'store_manager', storeId: 'S02', status: 'Đang làm việc',
+            name: 'Quản lý ngoài cửa hàng',
+          },
+        ],
+        attendance: [], payrollPeriods: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const adminLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'legacy-manager-credentials-admin-password',
+    }), env)
+    const adminAuthorization = { authorization: `Bearer ${(await adminLogin.json()).token}` }
+
+    const accounts = [
+      {
+        username: 'legacy.dual', password: 'legacy-dual-password', displayName: 'Nhân viên nguồn',
+        role: 'employee', storeId: 'S01', employeeId: 'E-LEGACY',
+      },
+      {
+        username: 'legacy.support', password: 'legacy-support-password', displayName: 'Hỗ trợ nguồn',
+        role: 'business_support', storeId: 'BUSINESS_SUPPORT', employeeId: 'HTKD-LEGACY',
+      },
+      {
+        username: 'legacy.unlinked', password: 'legacy-unlinked-password', displayName: 'Nhân viên chưa liên kết',
+        role: 'employee', storeId: 'S01', employeeId: 'E-UNLINKED',
+      },
+      {
+        username: 'manager.foreign', password: 'manager-foreign-password', displayName: 'Quản lý ngoài cửa hàng',
+        role: 'store_manager', storeId: 'S02', employeeId: 'QL-FOREIGN',
+      },
+    ]
+    for (const [index, account] of accounts.entries()) {
+      const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'user.create', payload: account,
+      }, { ...adminAuthorization, 'idempotency-key': `legacy-manager-account-create-${index}` }), env)
+      expect(created.status, account.username).toBe(201)
+    }
+    const accountIds = Object.fromEntries(env.DB.database.prepare(`
+      SELECT username, id FROM users WHERE username LIKE 'legacy.%' OR username = 'manager.foreign'
+    `).all().map(({ username, id }) => [username, id]))
+    replaceStateCollection(env.DB.database, 'employees', readHydratedState(env.DB.database).employees.map((profile) => {
+      if (profile.id === 'E-LEGACY') return { ...profile, authUserId: accountIds['legacy.dual'] }
+      if (profile.id === 'QL-LEGACY') return { ...profile, authUserId: accountIds['legacy.dual'] }
+      if (profile.id === 'HTKD-LEGACY') return { ...profile, authUserId: accountIds['legacy.support'] }
+      if (profile.id === 'QL-SUPPORT') return { ...profile, authUserId: accountIds['legacy.support'] }
+      if (profile.id === 'E-UNLINKED') return { ...profile, authUserId: accountIds['legacy.unlinked'] }
+      if (profile.id === 'QL-FOREIGN') return { ...profile, authUserId: accountIds['manager.foreign'] }
+      return profile
+    }))
+    env.DB.database.prepare(`
+      UPDATE users SET role = 'store_manager', store_id = 'S01'
+      WHERE employee_id IN ('E-LEGACY', 'HTKD-LEGACY', 'E-UNLINKED')
+    `).run()
+
+    const legacyLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'legacy.dual', password: 'legacy-dual-password',
+    }), env)
+    expect(legacyLogin.status).toBe(200)
+    const legacyLoginBody = await legacyLogin.json()
+    expect(legacyLoginBody.user).toMatchObject({
+      role: 'store_manager', needsRoleSelection: true,
+      availableRoles: expect.arrayContaining([
+        expect.objectContaining({ role: 'employee', employeeId: 'E-LEGACY', storeId: 'S01' }),
+        expect.objectContaining({ role: 'store_manager', employeeId: 'QL-LEGACY', storeId: 'S01' }),
+      ]),
+    })
+
+    const nameOnlyUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 1,
+      payload: { employeeId: 'E-LEGACY', name: 'Nhân viên nguồn cập nhật' },
+    }, { ...adminAuthorization, 'idempotency-key': 'legacy-manager-name-update-0001' }), env)
+    expect(nameOnlyUpdate.status).toBe(200)
+    expect(await nameOnlyUpdate.json()).toMatchObject({
+      version: 2,
+      employee: { id: 'E-LEGACY', name: 'Nhân viên nguồn cập nhật', authVersion: 2 },
+      user: { role: 'store_manager', displayName: 'Nhân viên nguồn cập nhật', version: 2 },
+    })
+    const nameOnlySession = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: { authorization: `Bearer ${legacyLoginBody.token}` },
+    }), env)
+    expect(nameOnlySession.status).toBe(200)
+    expect(readHydratedState(env.DB.database).employees.find(({ id }) => id === 'QL-LEGACY')).toMatchObject({
+      username: 'legacy.dual', authUserId: accountIds['legacy.dual'], authVersion: 2,
+    })
+
+    const duplicateUsername = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 2,
+      payload: { employeeId: 'E-LEGACY', username: 'admin' },
+    }, { ...adminAuthorization, 'idempotency-key': 'legacy-manager-duplicate-username-0001' }), env)
+    expect(duplicateUsername.status).toBe(409)
+    expect(await duplicateUsername.json()).toMatchObject({ error: { code: 'USER_EXISTS' } })
+
+    const credentialsUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 2,
+      payload: {
+        employeeId: 'E-LEGACY', username: 'legacy.dual.updated', password: 'legacy-dual-updated-password',
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'legacy-manager-credentials-update-0001' }), env)
+    expect(credentialsUpdate.status).toBe(200)
+    expect(await credentialsUpdate.json()).toMatchObject({
+      version: 3,
+      employee: { id: 'E-LEGACY', username: 'legacy.dual.updated', authVersion: 3 },
+      user: { role: 'store_manager', username: 'legacy.dual.updated', version: 3 },
+    })
+    expect(readHydratedState(env.DB.database).employees.find(({ id }) => id === 'QL-LEGACY')).toMatchObject({
+      username: 'legacy.dual.updated', authUserId: accountIds['legacy.dual'], authVersion: 3,
+    })
+    const revokedLegacySession = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: { authorization: `Bearer ${legacyLoginBody.token}` },
+    }), env)
+    expect(revokedLegacySession.status).toBe(401)
+    const previousCredentials = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'legacy.dual', password: 'legacy-dual-password',
+    }), env)
+    expect(previousCredentials.status).toBe(401)
+    const updatedLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'legacy.dual.updated', password: 'legacy-dual-updated-password',
+    }), env)
+    expect(updatedLogin.status).toBe(200)
+    const updatedLoginBody = await updatedLogin.json()
+    expect(updatedLoginBody.user.availableRoles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'employee', employeeId: 'E-LEGACY', storeId: 'S01' }),
+      expect.objectContaining({ role: 'store_manager', employeeId: 'QL-LEGACY', storeId: 'S01' }),
+    ]))
+    for (const role of [
+      { role: 'employee', employeeId: 'E-LEGACY', storeId: 'S01' },
+      { role: 'store_manager', employeeId: 'QL-LEGACY', storeId: 'S01' },
+    ]) {
+      const selected = await worker.fetch(jsonRequest('https://idosi.example/api/session/role', role, {
+        authorization: `Bearer ${updatedLoginBody.token}`,
+      }), env)
+      expect(selected.status, role.role).toBe(200)
+      expect(await selected.json()).toMatchObject({ user: role })
+    }
+
+    const supportUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 3,
+      payload: { employeeId: 'HTKD-LEGACY', name: 'Hỗ trợ nguồn cập nhật' },
+    }, { ...adminAuthorization, 'idempotency-key': 'legacy-support-name-update-0001' }), env)
+    expect(supportUpdate.status).toBe(200)
+    expect(await supportUpdate.json()).toMatchObject({
+      version: 4,
+      employee: { id: 'HTKD-LEGACY', name: 'Hỗ trợ nguồn cập nhật', authVersion: 2 },
+      user: { role: 'store_manager', storeId: 'S01', displayName: 'Hỗ trợ nguồn cập nhật', version: 2 },
+    })
+    const supportLinkedProfiles = readHydratedState(env.DB.database).employees
+    expect(supportLinkedProfiles.find(({ id }) => id === 'QL-SUPPORT')).toMatchObject({
+      username: 'legacy.support', authUserId: accountIds['legacy.support'], authVersion: 2,
+    })
+    expect(supportLinkedProfiles.find(({ id }) => id === 'STORE-SUPPORT-FOREIGN')).toMatchObject({
+      username: 'contradictory.owner', authUserId: 'usr-contradictory-owner', authVersion: 77,
+    })
+    const supportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'legacy.support', password: 'legacy-support-password',
+    }), env)
+    expect(supportLogin.status).toBe(200)
+    const supportLoginBody = await supportLogin.json()
+    expect(supportLoginBody.user.availableRoles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'business_support', employeeId: 'HTKD-LEGACY' }),
+      expect.objectContaining({ role: 'store_manager', employeeId: 'QL-SUPPORT', storeId: 'S01' }),
+    ]))
+    const secondSupportUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 4,
+      payload: { employeeId: 'HTKD-LEGACY', name: 'Hỗ trợ nguồn cập nhật lần hai' },
+    }, { ...adminAuthorization, 'idempotency-key': 'legacy-support-second-name-update-0001' }), env)
+    expect(secondSupportUpdate.status).toBe(200)
+    expect(await secondSupportUpdate.json()).toMatchObject({
+      version: 5,
+      employee: { id: 'HTKD-LEGACY', name: 'Hỗ trợ nguồn cập nhật lần hai', authVersion: 3 },
+      user: { role: 'store_manager', storeId: 'S01', displayName: 'Hỗ trợ nguồn cập nhật lần hai', version: 3 },
+    })
+    const repeatedSupportLinkedProfiles = readHydratedState(env.DB.database).employees
+    expect(repeatedSupportLinkedProfiles.find(({ id }) => id === 'QL-SUPPORT')).toMatchObject({
+      username: 'legacy.support', authUserId: accountIds['legacy.support'], authVersion: 3,
+    })
+    expect(repeatedSupportLinkedProfiles.find(({ id }) => id === 'STORE-SUPPORT-FOREIGN')).toMatchObject({
+      username: 'contradictory.owner', authUserId: 'usr-contradictory-owner', authVersion: 77,
+    })
+    expect(env.DB.database.prepare(`
+      SELECT role, store_id FROM users WHERE id = ?
+    `).get(accountIds['legacy.support'])).toEqual({ role: 'store_manager', store_id: 'S01' })
+    const repeatedSupportLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'legacy.support', password: 'legacy-support-password',
+    }), env)
+    expect(repeatedSupportLogin.status).toBe(200)
+    expect((await repeatedSupportLogin.json()).user.availableRoles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'business_support', employeeId: 'HTKD-LEGACY' }),
+      expect.objectContaining({ role: 'store_manager', employeeId: 'QL-SUPPORT', storeId: 'S01' }),
+    ]))
+    const supportSessionAfterNameUpdate = await worker.fetch(new Request('https://idosi.example/api/state', {
+      headers: { authorization: `Bearer ${supportLoginBody.token}` },
+    }), env)
+    expect(supportSessionAfterNameUpdate.status).toBe(200)
+
+    const foreignManagerLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'manager.foreign', password: 'manager-foreign-password',
+    }), env)
+    const foreignManagerUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 5,
+      payload: { employeeId: 'E-LEGACY', name: 'Không được cập nhật' },
+    }, {
+      authorization: `Bearer ${(await foreignManagerLogin.json()).token}`,
+      'idempotency-key': 'foreign-manager-source-update-0001',
+    }), env)
+    expect(foreignManagerUpdate.status).toBe(403)
+    expect(await foreignManagerUpdate.json()).toMatchObject({ error: { code: 'STORE_SCOPE_FORBIDDEN' } })
+
+    const unlinkedMismatch = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 5,
+      payload: { employeeId: 'E-UNLINKED', name: 'Không được cập nhật' },
+    }, { ...adminAuthorization, 'idempotency-key': 'unlinked-manager-source-update-0001' }), env)
+    expect(unlinkedMismatch.status).toBe(409)
+    expect(await unlinkedMismatch.json()).toMatchObject({ error: { code: 'EMPLOYEE_ROLE_MISMATCH' } })
+    expect(readHydratedState(env.DB.database).employees.find(({ id }) => id === 'E-UNLINKED')).toMatchObject({
+      name: 'Nhân viên chưa liên kết',
+    })
+    const employeesWithoutUnlinkedManager = readHydratedState(env.DB.database).employees
+    const unlinkedManagerProfile = {
+      id: 'QL-UNLINKED', code: 'QL-UNLINKED', unit: 'store_manager', storeId: 'S01',
+      status: 'Đang làm việc', name: 'Vai trò quản lý không hợp lệ', linkedEmployeeId: 'E-UNLINKED',
+      authUserId: accountIds['legacy.unlinked'],
+    }
+    const sourceOwnerMismatch = employeesWithoutUnlinkedManager.map((profile) => (
+      profile.id === 'E-UNLINKED' ? { ...profile, authUserId: 'usr-contradictory-source-owner' } : profile
+    ))
+    replaceStateCollection(env.DB.database, 'employees', [unlinkedManagerProfile, ...sourceOwnerMismatch])
+    const sourceOwnerDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.update', expectedVersion: 5,
+      payload: { employeeId: 'E-UNLINKED', name: 'Không được ghi đè chủ hồ sơ nguồn' },
+    }, { ...adminAuthorization, 'idempotency-key': 'invalid-manager-source-owner-0001' }), env)
+    expect(sourceOwnerDenied.status).toBe(409)
+    expect(await sourceOwnerDenied.json()).toMatchObject({ error: { code: 'EMPLOYEE_ROLE_MISMATCH' } })
+
+    for (const [scenario, invalidManagerProfiles] of [
+      ['removed', [{ ...unlinkedManagerProfile, deletedAt: '2026-08-20T00:00:00.000Z' }]],
+      ['inactive', [{ ...unlinkedManagerProfile, status: 'Đã nghỉ việc' }]],
+      ['locked', [{ ...unlinkedManagerProfile, status: 'Tạm ngưng' }]],
+      ['cross-store', [{ ...unlinkedManagerProfile, storeId: 'S02' }]],
+      ['valid-plus-cross-store', [
+        unlinkedManagerProfile,
+        { ...unlinkedManagerProfile, id: 'QL-UNLINKED-S02', code: 'QL-UNLINKED-S02', storeId: 'S02' },
+      ]],
+      ['valid-plus-contradictory-owner', [
+        unlinkedManagerProfile,
+        {
+          ...unlinkedManagerProfile,
+          id: 'QL-UNLINKED-OTHER', code: 'QL-UNLINKED-OTHER', authUserId: 'usr-contradictory-manager-owner',
+        },
+      ]],
+    ]) {
+      env.DB.database.prepare('UPDATE users SET store_id = ? WHERE id = ?').run(
+        scenario === 'cross-store' ? 'S02' : 'S01',
+        accountIds['legacy.unlinked'],
+      )
+      replaceStateCollection(env.DB.database, 'employees', [...invalidManagerProfiles, ...employeesWithoutUnlinkedManager])
+      const denied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.update', expectedVersion: 5,
+        payload: { employeeId: 'E-UNLINKED', name: `Không được cập nhật ${scenario}` },
+      }, {
+        ...(scenario === 'cross-store'
+          ? { authorization: `Bearer ${updatedLoginBody.token}` }
+          : adminAuthorization),
+        'idempotency-key': `invalid-manager-entitlement-${scenario}-0001`,
+      }), env)
+      expect(denied.status, scenario).toBe(409)
+      expect(await denied.json()).toMatchObject({ error: { code: 'EMPLOYEE_ROLE_MISMATCH' } })
+    }
+    env.DB.database.prepare('UPDATE users SET store_id = ? WHERE id = ?').run('S01', accountIds['legacy.unlinked'])
+    replaceStateCollection(env.DB.database, 'employees', employeesWithoutUnlinkedManager)
+    expect(env.DB.database.prepare(`
+      SELECT action, entity_id FROM audit_log WHERE action = 'employee.update' ORDER BY id
+    `).all()).toEqual([
+      { action: 'employee.update', entity_id: 'E-LEGACY' },
+      { action: 'employee.update', entity_id: 'E-LEGACY' },
+      { action: 'employee.update', entity_id: 'HTKD-LEGACY' },
+      { action: 'employee.update', entity_id: 'HTKD-LEGACY' },
+    ])
+    expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  }, 30_000)
+
   it('promotes an existing store employee to a dual store-manager role without manager salary', async () => {
     const env = {
       DB: new MemoryD1(), IDENTITY_IMAGES: new MemoryR2(), BOOTSTRAP_TOKEN: 'bootstrap-store-manager-promotion',
