@@ -6910,7 +6910,7 @@ const PAYROLL_COMMAND_COLLECTIONS = Object.freeze([
   'orders', 'expenseEntries', 'fixedExpenses', 'cashTransactions', 'workCatalogProgress',
 ])
 
-const commandStateProjection = (body) => {
+export const commandStateProjection = (body) => {
   const type = String(body?.type || '')
   const payload = isPlainRecord(body?.payload) ? body.payload : {}
   const projection = (
@@ -7041,7 +7041,7 @@ const commandStateProjection = (body) => {
   if (type.startsWith('support_transfer.')) {
     return projection(
       'command-support-transfer',
-      ['attendance', 'deletedEmployees', 'supportTransfers', 'payrollPeriods', 'payrollPayments'],
+      ['attendance', 'deletedEmployees', 'supportTransfers', 'expenseEntries', 'payrollPeriods', 'payrollPayments'],
       'supportTransfers',
       payload.transferId || payload.id,
       payload.employeeId,
@@ -7112,7 +7112,7 @@ const commandStateProjection = (body) => {
   if (type === 'shift_expense.create') {
     return projection(
       'command-shift-expense',
-      ['attendance', 'expenseEntries', 'cashTransactions'],
+      ['attendance', 'expenseEntries', 'cashTransactions', 'payrollPeriods'],
       '', '', payload.employeeId,
     )
   }
@@ -7141,7 +7141,10 @@ const commandStateProjection = (body) => {
   if (type.startsWith('work_reward.')) {
     return projection(
       'command-work-reward',
-      ['attendance', 'schedule', 'shiftDefinitions'],
+      [
+        'attendance', 'schedule', 'shiftDefinitions', 'workCatalogProgress',
+        'compensationEntries', 'teamRewardClaims', 'payrollPeriods',
+      ],
       'attendance',
       payload.attendanceId || payload.id,
       payload.employeeId,

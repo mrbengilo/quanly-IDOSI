@@ -13289,6 +13289,7 @@ describe('IDOSI Worker security primitives', () => {
     }]
     const expenseEntries = [{
       id: 'exp_support_ATT-ACTIVE-EDIT-CLOSED', storeId: 'S02', employeeId: 'E01',
+      reconciliationNote: 'Preserve existing expense metadata',
       attendanceId: attendance[0].id, supportTransferId: transfer.id,
       type: 'Lương ca hỗ trợ', category: 'payroll-support', amount: 195_000,
       sourceType: 'support-attendance-compensation', sourceId: attendance[0].id,
@@ -13340,6 +13341,9 @@ describe('IDOSI Worker security primitives', () => {
       supportHourlyRate: 50_000, supportActualPay: 250_000,
     })
     expect(state.expenseEntries.find(({ id }) => id === expenseEntries[0].id)).toMatchObject({ amount: 250_000 })
+    expect(state.expenseEntries.filter(({ sourceId }) => sourceId === attendance[0].id)).toEqual([
+      expect.objectContaining({ amount: 250_000, reconciliationNote: 'Preserve existing expense metadata' }),
+    ])
 
     const deleteDenied = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'support_transfer.delete', expectedVersion: 2,

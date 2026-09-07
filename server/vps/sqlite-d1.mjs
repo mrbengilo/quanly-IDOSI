@@ -133,7 +133,7 @@ const STORE_PAYROLL_COMMAND_COLLECTIONS = Object.freeze([
   'deletedEmployees', 'attendance', 'schedule', 'officeAdjustments', 'salaryAdjustments', 'salaryAdvances',
   'payrollPeriods', 'payrollPayments', 'storeEmployeeSalaryConfigs', 'compensationEntries',
   'violations', 'violationRefunds', 'revenueBonusDaily', 'revenueBonusAllocations',
-  'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
+  'revenueBonusOverrides', 'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
   'orders', 'expenseEntries', 'fixedExpenses', 'cashTransactions', 'workCatalogProgress',
 ])
 
@@ -159,7 +159,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   // public screen route; they let a Save read only the target store/domain.
   'command-order': [
     'attendance', 'orders', 'notifications', 'payrollPeriods', 'orderAudit',
-    'auditLogs', 'orderInformationOptions',
+    'auditLogs', 'orderInformationOptions', 'shiftDefinitions',
   ],
   'command-expense': ['expenseEntries', 'fixedExpenses', 'payrollPeriods'],
   'command-import': ['importVouchers', 'expenseEntries', 'payrollPeriods'],
@@ -190,7 +190,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   'command-task-progress': [
     'attendance', 'tasks', 'taskAssignmentHistory', 'notifications', 'workCatalogItems',
   ],
-  'command-shift-expense': ['attendance', 'expenseEntries', 'cashTransactions'],
+  'command-shift-expense': ['attendance', 'expenseEntries', 'cashTransactions', 'payrollPeriods'],
   'command-salary-advance': [
     ...STORE_PAYROLL_COMMAND_COLLECTIONS,
   ],
@@ -199,7 +199,10 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
     'tasks', 'taskAssignmentHistory', 'schedule', 'shiftDefinitions',
     'compensationEntries', 'teamRewardClaims',
   ],
-  'command-work-reward': ['attendance', 'schedule', 'shiftDefinitions'],
+  'command-work-reward': [
+    'attendance', 'schedule', 'shiftDefinitions', 'workCatalogProgress',
+    'compensationEntries', 'teamRewardClaims', 'payrollPeriods',
+  ],
   'command-violation': [
     ...STORE_PAYROLL_COMMAND_COLLECTIONS, 'shiftDefinitions', 'workCatalogItems',
   ],

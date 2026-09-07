@@ -4,7 +4,178 @@ import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { expect, it } from 'vitest'
 import { createIdosiServer } from './server.mjs'
-import { DEFAULT_STORE_WORK_CATALOG_ITEMS } from '../../src/domain/compensationPolicies.js'
+import { STORE_SCREEN_COLLECTIONS } from './sqlite-d1.mjs'
+import { commandStateProjection } from '../worker.js'
+import { DEFAULT_STORE_WORK_CATALOG_ITEMS, TEAM_MILESTONE_PROGRAM_IDS } from '../../src/domain/compensationPolicies.js'
+
+it('loads every Worker command input in the corresponding VPS command projection', () => {
+  const commands = [
+    'order.create', 'fixed_expense.create', 'expense.create', 'import.create', 'import_voucher.create',
+    'compensation_entry.create', 'salary_adjustment.create', 'store_salary_config.create',
+    'store.create', 'tasks.assign', 'tasks.replace_scope', 'employee.create', 'shift_definition.create',
+    'schedule.create', 'account_settings.update', 'notification.read', 'support_transfer.update',
+    'operational_reset.create', 'attendance.update', 'order_information.update', 'support_work.create',
+    'support_schedule.presets.update', 'support_schedule.create', 'task.done', 'shift_expense.create',
+    'salary_advance.create', 'work_catalog.create', 'work_reward.set', 'work_reward.set_batch',
+    'violation.create', 'revenue_bonus.create', 'payroll.close',
+  ]
+  for (const type of commands) {
+    const projection = commandStateProjection({ type })
+    expect(projection, type).not.toBeNull()
+    if (!projection.scoped) continue
+    const collections = STORE_SCREEN_COLLECTIONS[projection.screen]
+    expect(collections, type).toBeDefined()
+    const actual = new Set(['stores', 'employees', 'supportTransfers', ...collections])
+    expect(projection.collections.filter((key) => !actual.has(key)), type).toEqual([])
+  }
+})
+
+it('preserves reward, expense and payroll safeguards without a global command preload', async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'idosi-command-inputs-'))
+  const { server, runtime } = createIdosiServer({
+    databasePath: resolve(directory, 'state.sqlite'), imagesDirectory: resolve(directory, 'images'),
+    bootstrapToken: 'command-inputs-fixture', automaticRevenueBonusEnabled: false,
+  })
+  await new Promise((done) => server.listen(0, '127.0.0.1', done))
+  const base = `http://127.0.0.1:${server.address().port}`
+  const request = async (path, body, token, extraHeaders = {}) => {
+    const response = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}), ...extraHeaders },
+      body: JSON.stringify(body),
+    })
+    return { status: response.status, payload: await response.json() }
+  }
+  try {
+    const progressId = 'work-catalog-progress:v1:OFFICE-E:2026-08-28:OFFICE-ATT:REWARD-VOID'
+    const bootstrap = await request('/api/bootstrap', {
+      username: 'inputs.admin', password: 'synthetic-command-inputs-password',
+      initialState: {
+        stores: [{ id: 'S1', name: 'Store 1' }, { id: 'S2', name: 'Store 2' }],
+        employees: [
+          { id: 'OFFICE-E', name: 'Office employee', storeId: 'OFFICE', unit: 'office' },
+          { id: 'STORE-E', name: 'Store employee', storeId: 'S1', unit: 'store' },
+        ],
+        attendance: [{
+          id: 'OFFICE-ATT', employeeId: 'OFFICE-E', storeId: 'OFFICE', unit: 'office',
+          date: '2026-08-28', shiftId: 'office_am', checkInAt: '2026-08-28T01:00:00Z',
+          checklistSnapshot: { source: 'work-catalog', targetGroup: 'office', tasks: [
+            { catalogItemId: 'REWARD-ONE', kind: 'REWARD_TASK', name: 'Captured reward', amountVnd: 2_000 },
+            { catalogItemId: 'REWARD-VOID', kind: 'REWARD_TASK', name: 'Previously voided reward', amountVnd: 3_000 },
+            { catalogItemId: 'REWARD-TEAM', kind: 'REWARD_TASK', name: 'Team reward', amountVnd: 350_000,
+              rewardScope: 'team', milestoneProgramId: TEAM_MILESTONE_PROGRAM_IDS.OFFICE_VIDEO_VIEWS,
+              milestoneId: 'office.video.over_100_000_views' },
+          ] },
+        }, {
+          // Missing shift means this legacy row cannot trigger checklist repair.
+          id: 'STORE-OPEN', employeeId: 'STORE-E', storeId: 'S1', date: '2026-08-28', checkInAt: '2026-08-28T01:00:00Z',
+        }, {
+          id: 'SUPPORT-CLOSED', employeeId: 'STORE-E', storeId: 'S2', homeStoreId: 'S1',
+          supportTransferId: 'TRANSFER-ONE', date: '2026-08-20', workDate: '2026-08-20',
+          checkInAt: '2026-08-20T01:00:00Z', checkOutAt: '2026-08-20T02:00:00Z', workedSeconds: 3600, hours: 1,
+        }],
+        supportTransfers: [{
+          id: 'TRANSFER-ONE', employeeId: 'STORE-E', fromStoreId: 'S1', toStoreId: 'S2',
+          startAt: '2026-08-20T00:00:00Z', endAt: '2026-08-20T03:00:00Z',
+          hourlySupportRate: 45_000, allowance: 150_000, status: 'Đã duyệt',
+        }],
+        expenseEntries: [{
+          id: 'LEGACY-SUPPORT-EXPENSE', sourceType: 'support-attendance-compensation', sourceId: 'SUPPORT-CLOSED',
+          storeId: 'S2', amount: 195_000, recognized: true, reconciliationNote: 'Preserve metadata',
+        }, { id: 'FOREIGN-EXPENSE', storeId: 'S2', amount: 777_000, recognized: true }],
+        workCatalogProgress: [{ id: progressId, employeeId: 'OFFICE-E', storeId: 'OFFICE', status: 'VOID', checked: false }],
+        compensationEntries: [{ id: 'FOREIGN-COMPENSATION', employeeId: 'OTHER', storeId: 'S2', amountVnd: 888_000 }],
+        payrollPeriods: [
+          { id: 'PAY-OFFICE', storeId: 'OFFICE', period: '2026-08', status: 'Đã chốt' },
+          { id: 'PAY-S1', storeId: 'S1', period: '2026-08', status: 'Đang tính' },
+          { id: 'PAY-S2', storeId: 'S2', period: '2026-08', status: 'Đã chốt' },
+        ],
+      },
+    }, null, { 'x-idosi-bootstrap-token': 'command-inputs-fixture' })
+    expect(bootstrap.status).toBe(201)
+    const database = runtime.database.database
+    const insertUser = database.prepare(`
+      INSERT INTO users (id, username, username_normalized, display_name, password_hash, password_salt,
+        password_iterations, password_algorithm, role, status, store_id, employee_id, password_updated_at, created_at, updated_at)
+      SELECT ?, ?, ?, ?, password_hash, password_salt, password_iterations, password_algorithm,
+        'employee', 'active', ?, ?, password_updated_at, created_at, updated_at FROM users WHERE username='inputs.admin'
+    `)
+    insertUser.run('USER-OFFICE', 'inputs.office', 'inputs.office', 'Office employee', 'OFFICE', 'OFFICE-E')
+    insertUser.run('USER-STORE', 'inputs.store', 'inputs.store', 'Store employee', 'S1', 'STORE-E')
+    const tokens = {}
+    for (const role of ['admin', 'office', 'store']) {
+      const login = await request('/api/login', { username: `inputs.${role}`, password: 'synthetic-command-inputs-password' })
+      expect(login.status).toBe(200)
+      tokens[role] = login.payload.token
+    }
+    let globalReads = 0
+    const readSnapshot = runtime.database.readStateSnapshot.bind(runtime.database)
+    runtime.database.readStateSnapshot = (...args) => { globalReads += 1; return readSnapshot(...args) }
+    const readRows = (collection) => database.prepare('SELECT value_json FROM state_entities WHERE collection_key=? ORDER BY entity_order, entity_key')
+      .all(collection).map(({ value_json: json }) => JSON.parse(json))
+    const mutationCounts = () => database.prepare(`SELECT
+      (SELECT version FROM app_state WHERE scope_key='global') AS version,
+      (SELECT count(*) FROM audit_log) AS audits,
+      (SELECT count(*) FROM command_receipts) AS receipts,
+      (SELECT count(*) FROM state_entities) AS entities`).get()
+    const command = (type, payload, version, role, key) => request('/api/command', {
+      type, payload, expectedVersion: version, includeState: false,
+    }, tokens[role], { 'idempotency-key': key })
+    const beforeRejected = mutationCounts()
+    const rejectedBatch = await command('work_reward.set_batch', {
+      attendanceId: 'OFFICE-ATT', items: [
+        { catalogItemId: 'REWARD-ONE', checked: true }, { catalogItemId: 'REWARD-VOID', checked: true },
+      ],
+    }, 1, 'office', 'inputs-rejected-batch')
+    expect(rejectedBatch.status, JSON.stringify(rejectedBatch.payload)).toBe(409)
+    expect(rejectedBatch.payload.error.code).toBe('WORK_REWARD_ALREADY_RECORDED')
+    expect(mutationCounts()).toEqual(beforeRejected)
+    const rewardPayload = { attendanceId: 'office-att', catalogItemId: 'reward-one', checked: true }
+    const claimed = await command('work_reward.set', rewardPayload, 1, 'office', 'inputs-claim-one')
+    expect(claimed.status, JSON.stringify(claimed.payload)).toBe(201)
+    expect(claimed.payload.entry).toMatchObject({ amountVnd: 2_000, status: 'APPROVED' })
+    expect(readRows('payrollPeriods').find(({ id }) => id === 'PAY-OFFICE')).toMatchObject({ needsReclose: true, invalidationReason: 'work_reward.set' })
+    const replay = await command('work_reward.set', rewardPayload, 1, 'office', 'inputs-claim-one')
+    expect(replay.payload.version).toBe(2)
+    const duplicate = await command('work_reward.set', rewardPayload, 2, 'office', 'inputs-logical-duplicate')
+    expect(duplicate.status).toBe(200)
+    expect(duplicate.payload).toMatchObject({ existing: true, version: 2 })
+    expect(readRows('compensationEntries')).toHaveLength(2)
+    expect(readRows('compensationEntries').find(({ id }) => id === 'FOREIGN-COMPENSATION')).toMatchObject({ amountVnd: 888_000 })
+    const teamPayload = { attendanceId: 'OFFICE-ATT', catalogItemId: 'REWARD-TEAM', checked: true }
+    expect((await command('work_reward.set', teamPayload, 2, 'office', 'inputs-team-claim')).status).toBe(201)
+    expect((await command('work_reward.set', teamPayload, 3, 'office', 'inputs-team-duplicate')).payload).toMatchObject({ existing: true, version: 3 })
+    expect(readRows('teamRewardClaims')).toHaveLength(1)
+    const transfer = await command('support_transfer.update', {
+      transferId: 'TRANSFER-ONE', hourlySupportRate: 50_000, allowance: 200_000,
+    }, 3, 'admin', 'inputs-transfer-update')
+    expect(transfer.status, JSON.stringify(transfer.payload)).toBe(200)
+    const expenseRows = readRows('expenseEntries')
+    expect(expenseRows.filter(({ sourceId }) => sourceId === 'SUPPORT-CLOSED')).toEqual([
+      expect.objectContaining({ id: 'LEGACY-SUPPORT-EXPENSE', amount: 250_000, reconciliationNote: 'Preserve metadata' }),
+    ])
+    expect(expenseRows.find(({ id }) => id === 'FOREIGN-EXPENSE')).toMatchObject({ amount: 777_000 })
+    expect(readRows('payrollPeriods').find(({ id }) => id === 'PAY-S2')).toMatchObject({ needsReclose: true })
+    // Lock only the source period after transfer reconciliation, then ensure
+    // the employee's shift expense cannot bypass the canonical payroll guard.
+    database.prepare(`UPDATE state_entities SET
+      value_json=json_set(value_json, '$.status', 'Đã khóa'),
+      value_bytes=length(CAST(json_set(value_json, '$.status', 'Đã khóa') AS BLOB))
+      WHERE collection_key='payrollPeriods' AND record_id='PAY-S1'`).run()
+    const beforeLocked = mutationCounts()
+    const locked = await command('shift_expense.create', {
+      attendanceId: 'STORE-OPEN', name: 'Cannot enter locked expense', amount: 10_000,
+    }, 4, 'store', 'inputs-locked-expense')
+    expect(locked.status, JSON.stringify(locked.payload)).toBe(409)
+    expect(locked.payload.error.code).toBe('PAYROLL_PERIOD_LOCKED')
+    expect(mutationCounts()).toEqual(beforeLocked)
+    expect(readRows('expenseEntries')).toEqual(expenseRows)
+    expect(globalReads).toBe(0)
+  } finally {
+    await new Promise((done) => server.close(done))
+    await rm(directory, { recursive: true, force: true })
+  }
+}, 30_000)
 
 it('loads screen collections atomically and sends the account directory only to personnel screens', async () => {
   const directory = await mkdtemp(resolve(tmpdir(), 'idosi-demand-screen-'))
