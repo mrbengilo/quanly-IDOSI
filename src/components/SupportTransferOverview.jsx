@@ -53,16 +53,20 @@ export function SupportTransferOverview() {
           const toName = storeName(transfer.toStoreId, transfer.toStoreName)
           return <article key={transfer.id} className="support-transfer-overview__item">
             <div className="support-transfer-overview__details">
-              <strong>{employee?.name || transfer.employeeName || transfer.employeeId}</strong>
-              <SupportEmployeeTag context={{ homeStoreId: transfer.fromStoreId, homeStoreName: fromName,
-                supportStoreId: transfer.toStoreId, supportStoreName: toName }} />
-              <span>{fromName} → {toName}</span>
-              <span>{formatVietnamTransferDateTime(bounds?.startAt)} – {formatVietnamTransferDateTime(bounds?.endAt)}</span>
-              {supportingOpen ? <span>Ca {supportingOpen.shiftName || supportingOpen.shiftId}: {supportingOpen.shiftStart}–{supportingOpen.shiftEnd}</span>
-                : <span>{planned.length ? `Đã xếp ${planned.length} ca. Xem lịch để kiểm tra ngày giờ.` : 'Cửa hàng nhận có thể phân ca trong thời gian hỗ trợ.'}</span>}
-              <Badge tone={supportingOpen || blocked ? 'orange' : 'blue'}>{status}</Badge>
-              {blocked && <small>Phải kết ca đang làm thành công trước khi vào ca hỗ trợ.</small>}
-              {transfer.note && <small>{transfer.note}</small>}
+              <div className="support-transfer-overview__person">
+                <strong>{employee?.name || transfer.employeeName || transfer.employeeId}</strong>
+                <SupportEmployeeTag context={{ homeStoreId: transfer.fromStoreId, homeStoreName: fromName,
+                  supportStoreId: transfer.toStoreId, supportStoreName: toName }} />
+                <span>{fromName} → {toName}</span>
+              </div>
+              <div className="support-transfer-overview__timing">
+                <strong>{formatVietnamTransferDateTime(bounds?.startAt)} – {formatVietnamTransferDateTime(bounds?.endAt)}</strong>
+                <Badge tone={supportingOpen || blocked ? 'orange' : 'blue'}>{status}</Badge>
+                {supportingOpen ? <small>Ca {supportingOpen.shiftName || supportingOpen.shiftId}: {supportingOpen.shiftStart}–{supportingOpen.shiftEnd}</small>
+                  : <small>{planned.length ? `Đã xếp ${planned.length} ca. Xem lịch để kiểm tra ngày giờ.` : 'Cửa hàng nhận có thể phân ca trong thời gian hỗ trợ.'}</small>}
+                {blocked && <small>Phải kết ca đang làm thành công trước khi vào ca hỗ trợ.</small>}
+                {transfer.note && <small>{transfer.note}</small>}
+              </div>
             </div>
             <Button variant="outline" onClick={() => navigate(isEmployee
               ? supportingOpen ? '/employee/attendance' : `/employee/schedule?date=${bounds.startLocal.slice(0, 10)}`
