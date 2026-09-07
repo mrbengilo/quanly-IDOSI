@@ -65,7 +65,7 @@ export function SupportTransferOverview() {
               {transfer.note && <small>{transfer.note}</small>}
             </div>
             <Button variant="outline" onClick={() => navigate(isEmployee
-              ? supportingOpen ? '/employee/attendance' : '/employee/schedule'
+              ? supportingOpen ? '/employee/attendance' : `/employee/schedule?date=${bounds.startLocal.slice(0, 10)}`
               : '/store/schedule')}>
               {isEmployee ? supportingOpen ? 'Xem ca đang làm' : 'Xem lịch' : 'Xem / phân ca'}
             </Button>
