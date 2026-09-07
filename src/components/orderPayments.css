@@ -20,6 +20,8 @@
 .order-list-page .order-group > .card__header { align-items: start; flex-wrap: wrap; gap: 8px; }
 .order-list-page .order-group > .card__header > div { flex: 1 1 440px; }
 @media (max-width: 640px) {
+  .order-list-page .order-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .store-orders-page .order-filters > .field:first-child { grid-column: 1 / -1; }
   .order-list-page .order-payment-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .order-list-page .order-group__totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; gap: 6px; }
   .order-payment-summary__item { flex-basis: 130px; }
