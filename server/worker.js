@@ -62,7 +62,7 @@ import {
   supportSchedulePresetsEqual,
   validateSupportSchedulePresets,
 } from '../src/domain/supportWorkSchedule.js'
-import { orderBusinessDate, summarizeOrders } from '../src/domain/orderSummary.js'
+import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
 
 const API_PREFIX = '/api/'
 const MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -5233,6 +5233,23 @@ const historyRecordPeriod = (record) => financeOverviewDate(record, [
   'occurredAt', 'date', 'workDate', 'createdAt', 'updatedAt',
 ])
 
+const orderReadFilters = (url) => {
+  const value = (key) => String(url.searchParams.get(key) || '').trim()
+  const amount = parseOrderAmountFilter(value('amount'))
+  const paymentMethod = value('paymentMethod')
+  const date = value('date')
+  const shiftId = value('shiftId')
+  const query = value('query')
+  if (Number.isNaN(amount) || (paymentMethod && paymentChannel(paymentMethod) === 'unknown')
+    || (date && (!/^\d{4}-\d{2}-\d{2}$/u.test(date) || !Number.isFinite(Date.parse(date))
+      || new Date(date).toISOString().slice(0, 10) !== date))
+    || shiftId.length > 200 || query.length > 200) {
+    throw new ApiError(400, 'ORDER_FILTER_INVALID', 'Bộ lọc đơn hàng không hợp lệ. Số tiền phải là số nguyên không âm.')
+  }
+  return Object.fromEntries(Object.entries({ amount, paymentMethod, date, shiftId, query })
+    .filter(([, entry]) => entry !== null && entry !== ''))
+}
+
 const fallbackEntityHistory = async ({
   db,
   collectionKey,
@@ -5240,6 +5257,7 @@ const fallbackEntityHistory = async ({
   employeeId,
   period,
   orderId,
+  filters = {},
   beforeOccurredOn,
   beforeOrder,
   beforeKey,
@@ -5265,6 +5283,7 @@ const fallbackEntityHistory = async ({
       || sameIdentifier(value?.id, orderId)
       || sameIdentifier(value?.code, orderId))
     .filter(({ value }) => orderId || !period || recordPeriod(value) === period)
+    .filter(({ value }) => collectionKey !== 'orders' || !Object.keys(filters).length || orderMatchesFilters(value, filters))
     .sort((left, right) => String(right.occurred_on).localeCompare(String(left.occurred_on))
       || right.entity_order - left.entity_order
       || right.entity_key.localeCompare(left.entity_key))
@@ -5320,6 +5339,7 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
   if (orderId.length > 200) {
     throw new ApiError(400, 'HISTORY_ORDER_ID_INVALID', 'Mã đơn hàng cần tra cứu không hợp lệ.')
   }
+  const filters = historyKind === 'orders' ? orderReadFilters(url) : {}
   const limit = Math.min(100, Math.max(10, Number(url.searchParams.get('limit')) || 50))
   const cursor = decodeHistoryCursor(url.searchParams.get('cursor'))
   const rows = typeof db?.readEntityHistory === 'function'
@@ -5330,6 +5350,7 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
         employeeId,
         period,
         orderId,
+        filters,
         ...cursor,
         limit: limit + 1,
       })
@@ -5340,6 +5361,7 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
         employeeId,
         period,
         orderId,
+        filters,
         ...cursor,
         limit: limit + 1,
       })
@@ -5408,6 +5430,7 @@ const getOrderSummary = async (request, env, context, url) => {
   const db = getDatabase(env)
   const { storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
   const period = asMonth(url.searchParams.get('period'), 'Kỳ tổng hợp đơn hàng')
+  const filters = orderReadFilters(url)
   const rows = await readOrderSummaryRows(db, storeId, employeeId, period)
   const orders = rows.map((row) => {
     const serialized = String(row.value_json)
@@ -5419,7 +5442,7 @@ const getOrderSummary = async (request, env, context, url) => {
   })
   let summary
   try {
-    summary = summarizeOrders(orders, { storeId, period, employeeId })
+    summary = summarizeOrders(orders, { storeId, period, employeeId, ...filters })
   } catch (error) {
     if (!(error instanceof TypeError || error instanceof RangeError)) throw error
     throw new ApiError(500, 'ORDER_SUMMARY_INVALID', 'Dữ liệu tổng hợp đơn hàng không hợp lệ.')

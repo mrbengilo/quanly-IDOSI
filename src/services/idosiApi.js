@@ -200,30 +200,25 @@ export const apiGetStateMetadata = (scope = 'global', { restore = false } = {}) 
 export const apiGetFinanceOverview = (period) => stateReadRequest(
   `/api/finance-overview?period=${encodeURIComponent(String(period || ''))}`,
 )
-export const apiGetOrderSummary = ({ storeId, period } = {}) => {
-  const query = new URLSearchParams({
-    storeId: String(storeId || ''),
-    period: String(period || ''),
-  })
-  return stateReadRequest(`/api/order-summary?${query.toString()}`)
+const appendOrderFilters = (params, filters) => {
+  for (const key of ['employeeId', 'date', 'shiftId', 'paymentMethod', 'amount', 'query']) {
+    if (filters[key] !== undefined && filters[key] !== null && filters[key] !== '') params.set(key, String(filters[key]))
+  }
+}
+export const apiGetOrderSummary = ({ storeId, period, signal, ...filters } = {}) => {
+  const query = new URLSearchParams({ storeId: String(storeId || ''), period: String(period || '') })
+  appendOrderFilters(query, filters)
+  return stateReadRequest(`/api/order-summary?${query.toString()}`, { signal })
 }
 export const apiGetHistory = (kind, {
-  storeId,
-  employeeId = '',
-  orderId = '',
-  period = '',
-  cursor = '',
-  limit = 50,
+  storeId, orderId = '', period = '', cursor = '', limit = 50, signal, ...filters
 } = {}) => {
-  const query = new URLSearchParams({
-    storeId: String(storeId || ''),
-    limit: String(limit),
-  })
-  if (employeeId) query.set('employeeId', String(employeeId))
+  const query = new URLSearchParams({ storeId: String(storeId || ''), limit: String(limit) })
+  appendOrderFilters(query, filters)
   if (orderId) query.set('orderId', String(orderId))
   if (period) query.set('period', String(period))
   if (cursor) query.set('cursor', String(cursor))
-  return stateReadRequest(`/api/history/${encodeURIComponent(String(kind || ''))}?${query.toString()}`)
+  return stateReadRequest(`/api/history/${encodeURIComponent(String(kind || ''))}?${query.toString()}`, { signal })
 }
 export const apiGetRevenueBonusLive = ({ storeId, businessDate }) => {
   const query = new URLSearchParams({

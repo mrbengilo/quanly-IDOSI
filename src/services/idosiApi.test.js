@@ -504,4 +504,19 @@ describe('IDOSI address suggestions', () => {
 
     expect(fetchMock.mock.calls[0][0]).toBe('/api/address-suggestions?type=ward&query=hi%E1%BB%87p&province=H%E1%BB%93+Ch%C3%AD+Minh')
   })
+  it('sends the same exact-money filters to history and summaries, preserving zero and cancellation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const filters = { storeId: 'S01', period: '2026-09', employeeId: 'E01', amount: 0, paymentMethod: 'Tiền mặt', date: '2026-09-01', shiftId: 'night', query: 'Nguyễn Ánh', signal: controller.signal }
+    await apiGetHistory('orders', { ...filters, cursor: 'next' })
+    await apiGetOrderSummary(filters)
+    for (const [path, options] of fetchMock.mock.calls) {
+      const url = new URL(path, 'https://idosi.example')
+      for (const [key, value] of Object.entries(filters).filter(([key]) => key !== 'signal')) expect(url.searchParams.get(key)).toBe(String(value))
+      expect(url.searchParams.has('signal')).toBe(false)
+      expect(options.signal).toBeInstanceOf(AbortSignal)
+    }
+  })
+
 })
