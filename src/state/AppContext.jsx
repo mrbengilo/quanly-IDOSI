@@ -39,7 +39,7 @@ import { hashPassword, verifyPassword } from '../security/passwords'
 import { clearWorkspaceCache, readWorkspaceCache, writeWorkspaceCache } from '../services/workspaceCache'
 import { invalidateEmployeeAvatarCache } from '../services/employeeAvatarCache'
 import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
-import { employeeScreen, systemScreenForPath } from '../domain/workspaceScreens'
+import { employeeScreen, storeScreenForPath, systemScreenForPath } from '../domain/workspaceScreens'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../domain/storeTieredPayroll'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { employeeProfileKey, employeeProfilesShareAccount } from '../domain/employeeAccountIdentity'
@@ -75,6 +75,7 @@ import {
   apiLogin,
   apiSelectSessionRole,
   apiListUsers,
+  hasPendingApiRequests,
   apiLogout,
   apiPolicyEntries,
   apiPolicyMap,
@@ -1604,6 +1605,21 @@ const employeePrefixForStore = (store = {}) => {
 }
 
 const MAX_VISITED_PROJECTION_CACHE_ENTRIES = 40
+const ACCOUNT_DIRECTORY_SCREENS = new Set(['employees', 'business-support', 'store-managers', 'office'])
+const needsAccountDirectory = (screen) => !screen || ACCOUNT_DIRECTORY_SCREENS.has(screen)
+// A disposable browser cache must never hold the server read hostage (private
+// mode, blocked IndexedDB upgrades, or a busy storage thread).
+const readWorkspaceCacheBriefly = (key = '') => {
+  let timer
+  return Promise.race([
+    readWorkspaceCache(key),
+    new Promise((resolve) => { timer = window.setTimeout(() => resolve(null), 50) }),
+  ]).finally(() => window.clearTimeout(timer))
+}
+const cancelPrefetch = (remote) => {
+  remote.prefetchRequest?.controller.abort()
+  remote.prefetchRequest = null
+}
 const samePolicyVersions = (left = {}, right = {}) => [...new Set([...Object.keys(left), ...Object.keys(right)])]
   .every((key) => Number(left[key] || 0) === Number(right[key] || 0))
 
@@ -1631,7 +1647,7 @@ const remoteProjectionUserKey = (user = {}) => JSON.stringify([
   Number(user.version || 0),
 ])
 
-const cacheVisitedProjection = (remote, projection, state, version = remote.version) => {
+const cacheVisitedProjection = (remote, projection, state, version = remote.version, { persist = true } = {}) => {
   if (!(remote.projectionCache instanceof Map) || !state) return
   const descriptor = remoteProjectionDescriptor(projection)
   const key = remoteProjectionCacheKey(descriptor)
@@ -1646,7 +1662,7 @@ const cacheVisitedProjection = (remote, projection, state, version = remote.vers
   }
   remote.projectionCache.set(key, entry)
   // Blob URLs belong to this document and cannot be reused after a reload.
-  void writeWorkspaceCache(key, {
+  if (persist) void writeWorkspaceCache(key, {
     ...entry,
     state: { ...state, settings: { ...state.settings, avatar: '', avatarLoading: false } },
   })
@@ -1711,6 +1727,7 @@ export function AppProvider({ children }) {
     pendingProjectionKey: '',
     pendingProjectionPromise: null,
     projectionCache: new Map(),
+    prefetchRequest: null,
     domainReconciliations: 0,
     reconcileTimer: null,
     systemResetIdempotencyKey: null,
@@ -1746,6 +1763,7 @@ export function AppProvider({ children }) {
     }
     const remote = apiRef.current
     if (remote.user && remoteProjectionUserKey(remote.user) !== remoteProjectionUserKey(remoteUser)) {
+      cancelPrefetch(remote)
       remote.projectionRequestId += 1
       remote.pendingProjectionKey = ''
       remote.pendingProjectionPromise = null
@@ -1757,6 +1775,7 @@ export function AppProvider({ children }) {
       ? Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
       : remote.policyVersions
     if (!samePolicyVersions(policyVersions, remote.policyVersions)) {
+      cancelPrefetch(remote)
       remote.projectionCache.clear()
       invalidateEmployeeAvatarCache()
       void clearWorkspaceCache()
@@ -1806,13 +1825,26 @@ export function AppProvider({ children }) {
   const activateCachedProjection = useCallback((cached, expectedUser) => {
     const remote = apiRef.current
     const expectedUserKey = remoteProjectionUserKey(expectedUser || remote.user)
-    if (!cached?.state || !remote.enabled || cached.userKey !== expectedUserKey) return false
+    if (!cached?.state || !remote.enabled || cached.userKey !== expectedUserKey
+      || !samePolicyVersions(cached.policyVersions, remote.policyVersions)) return false
+    const projection = remoteProjectionDescriptor(cached.projection)
+    let cachedState = cached.state
+    if (projection.kind === 'global' && isSystemRole(remote.role)
+      && cachedState.stores?.some((store) => sameIdentifier(store.id, activeStoreIdRef.current))) {
+      cachedState = { ...cachedState, activeStoreId: activeStoreIdRef.current }
+    }
+    const avatarSignature = accountAvatarMetadataSignature(cachedState.settings?.avatarMetadata)
+    if (avatarSignature && avatarObjectUrlRef.current.signature === avatarSignature) {
+      cachedState = {
+        ...cachedState,
+        settings: { ...cachedState.settings, avatar: avatarObjectUrlRef.current.url, avatarLoading: false },
+      }
+    }
     // A download started on another route must not replace this cached screen
     // when it eventually completes.
     remote.projectionRequestId += 1
     remote.pendingProjectionKey = ''
     remote.pendingProjectionPromise = null
-    const projection = remoteProjectionDescriptor(cached.projection)
     remote.projection = projection.kind
     remote.projectionStoreId = projection.storeId
     remote.projectionScreen = projection.screen
@@ -1821,14 +1853,14 @@ export function AppProvider({ children }) {
     remote.hydratedVersion = Number(cached.version || 0)
     remote.projectionWriteVersion = Number(cached.version || 0)
     remote.suppressNext = true
-    remote.lastStateReferences = sharedStateReferences(cached.state)
+    remote.lastStateReferences = sharedStateReferences(cachedState)
     setApiStatus('connected')
     setRemoteDataReady(true)
     setRemoteProjection(projection)
-    activeStoreIdRef.current = cached.state.activeStoreId
-    rememberActiveStore(remote.user, cached.state.activeStoreId)
-    setState(cached.state)
-    cacheVisitedProjection(remote, projection, cached.state, cached.version)
+    activeStoreIdRef.current = cachedState.activeStoreId
+    rememberActiveStore(remote.user, cachedState.activeStoreId)
+    setState(cachedState)
+    cacheVisitedProjection(remote, projection, cachedState, cached.version)
     return true
   }, [])
 
@@ -1858,7 +1890,15 @@ export function AppProvider({ children }) {
     if (!remote.enabled || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) {
       return Promise.resolve(null)
     }
-    if (!force && remote.fullStateReady
+    let prefetched = remote.prefetchRequest
+    if (prefetched && (force || prefetched.key !== projectionKey || prefetched.controller.signal.aborted)) {
+      cancelPrefetch(remote)
+      prefetched = null
+    }
+    if (remote.pendingProjectionKey === projectionKey && remote.pendingProjectionPromise) {
+      return remote.pendingProjectionPromise
+    }
+    if (!force && remote.fullStateReady && Number(remote.hydratedVersion) >= Number(remote.version)
       && remote.projection === normalizedKind
       && String(remote.projectionScreen || '') === normalizedScreen
       && (normalizedKind !== 'store' || (
@@ -1884,9 +1924,9 @@ export function AppProvider({ children }) {
         restoredFromCache = true
       }
     }
-    if (remote.pendingProjectionKey === projectionKey && remote.pendingProjectionPromise) {
-      return remote.pendingProjectionPromise
-    }
+    // Navigation takes ownership of the matching idle download. Its menu
+    // cleanup must not abort it or launch an identical second request.
+    if (prefetched) prefetched.promoted = true
     const requestId = ++remote.projectionRequestId
     if (blocking && !restoredFromCache) {
       remote.fullStateReady = false
@@ -1902,7 +1942,7 @@ export function AppProvider({ children }) {
         : apiGetState('global')
     const request = (async () => {
       if (!force && !restoredFromCache) {
-        const saved = await readWorkspaceCache(projectionKey)
+        const saved = prefetched ? null : await readWorkspaceCacheBriefly(projectionKey)
         if (!remote.enabled || requestId !== remote.projectionRequestId) return null
         if (saved?.userKey === remoteProjectionUserKey(remote.user)
           && samePolicyVersions(saved.policyVersions, remote.policyVersions)
@@ -1911,9 +1951,11 @@ export function AppProvider({ children }) {
           return { cached: true }
         }
       }
-      let payload = normalizedKind === 'global' && bootstrap
-        ? await apiBootstrapState('global')
-        : await readProjection()
+      let payload = prefetched
+        ? await prefetched.payloadPromise
+        : normalizedKind === 'global' && bootstrap
+          ? await apiBootstrapState('global')
+          : await readProjection()
       remote = apiRef.current
       if (!remote.enabled
         || requestId !== remote.projectionRequestId
@@ -1927,7 +1969,7 @@ export function AppProvider({ children }) {
           || requestId !== remote.projectionRequestId
           || (expectedUserId && String(remote.user?.id || '') !== expectedUserId)) return null
       }
-      if (normalizedKind === 'global' && canListAccounts(payload.user?.role)) {
+      if (normalizedKind === 'global' && needsAccountDirectory(normalizedScreen) && canListAccounts(payload.user?.role)) {
         const users = Array.isArray(payload.users) ? { users: payload.users } : await apiListUsers()
         payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
       }
@@ -2006,8 +2048,83 @@ export function AppProvider({ children }) {
     })
   }, [loadCompleteRemoteProjection])
 
+  const prefetchWorkspaceData = useCallback((pathname, { signal } = {}) => {
+    const remote = apiRef.current
+    if (!remote.enabled || !remote.user || remote.user.needsRoleSelection || signal?.aborted
+      || remote.pendingProjectionPromise || remote.syncing || remote.pending
+      || remote.domainReconciliations > 0 || remote.reconcileTimer) return Promise.resolve(null)
+    const path = String(pathname || '').split(/[?#]/u)[0]
+    const storeView = path.startsWith('/store/')
+    const screen = storeView ? storeScreenForPath(path) : systemScreenForPath(path)
+    // No fallback to a complete workspace for speculative reads.
+    if (!screen || (storeView ? !isStoreWorkspaceRole(remote.role)
+      : !isSystemRole(remote.role) && !employeeScreen(screen) && screen !== 'account-settings')) {
+      return Promise.resolve(null)
+    }
+    const storeId = storeView ? String(activeStoreIdRef.current || '') : ''
+    const assignedStoreId = String(remote.user.storeId || remote.user.store_id || '')
+    if (storeView && (!storeId || (remote.role === 'store_manager' && !sameIdentifier(storeId, assignedStoreId)))) {
+      return Promise.resolve(null)
+    }
+    const projection = remoteProjectionDescriptor({
+      kind: storeView ? 'store' : 'global', storeId, screen,
+      period: storeView && ['overview', 'payroll'].includes(screen) ? monthKey() : '',
+    })
+    const key = remoteProjectionCacheKey(projection)
+    const userKey = remoteProjectionUserKey(remote.user)
+    const version = Number(remote.version)
+    const cached = remote.projectionCache.get(key)
+    if (cached?.userKey === userKey && Number(cached.version) === version
+      && samePolicyVersions(cached.policyVersions, remote.policyVersions)) return Promise.resolve({ cached: true })
+    if (remote.prefetchRequest?.key === key && !remote.prefetchRequest.controller.signal.aborted) {
+      return remote.prefetchRequest.promise
+    }
+    if (hasPendingApiRequests()) return Promise.resolve(null)
+    cancelPrefetch(remote)
+    const controller = new AbortController()
+    const pending = { key, controller, promoted: false, payloadPromise: null, promise: null }
+    const abort = () => { if (!pending.promoted) controller.abort() }
+    signal?.addEventListener('abort', abort, { once: true })
+    const options = { signal: controller.signal, retries: 0 }
+    pending.payloadPromise = storeView
+      ? apiGetStoreWorkspaceState(storeId, { screen, ...(projection.period ? { period: projection.period } : {}), ...options })
+      : apiGetSystemScreenState(screen, options)
+    remote.prefetchRequest = pending
+    pending.promise = pending.payloadPromise.then((payload) => {
+      const current = apiRef.current
+      const policyVersions = Array.isArray(payload.policies)
+        ? Object.fromEntries(payload.policies.map((policy) => [policy.key, Number(policy.version || 0)]))
+        : current.policyVersions
+      // Never let a speculative response change the active view, authority,
+      // write version, role or effective-store assignment. A foreground read
+      // handles changes that happened while this request was downloading.
+      if (controller.signal.aborted || pending.promoted || !current.enabled
+        || current.prefetchRequest !== pending || remoteProjectionUserKey(current.user) !== userKey
+        || remoteProjectionUserKey(payload.user || current.user) !== userKey
+        || Number(current.version) !== version || Number(payload.version) !== version
+        || !samePolicyVersions(policyVersions, current.policyVersions) || payload.partial) return null
+      // Older servers may omit directory enrichment. Leave that page uncached
+      // so its foreground compatibility read still supplies account fields.
+      if (!storeView && ACCOUNT_DIRECTORY_SCREENS.has(screen) && !Array.isArray(payload.users)) return null
+      const hydrated = hydrateRemoteState(payload.state, current.user, payload.policies, storeId || activeStoreIdRef.current)
+      if (!Array.isArray(payload.policies)) hydrated.policies = policiesRef.current
+      if (!storeView && Array.isArray(payload.users)) {
+        hydrated.employees = mergeEmployeeAuthUsers(hydrated.employees, payload.users)
+      }
+      // Prefetched pages are memory-only: reloading must restore the page the
+      // person actually visited, and must verify the session first.
+      cacheVisitedProjection(current, projection, hydrated, version, { persist: false })
+      return { cached: true }
+    }).catch(() => null).finally(() => {
+      signal?.removeEventListener('abort', abort)
+      if (apiRef.current.prefetchRequest === pending) apiRef.current.prefetchRequest = null
+    })
+    return pending.promise
+  }, [])
+
   const runRemoteDomainCommand = async (type, payload, idempotencyKey = `${type}:${crypto.randomUUID()}`) => {
     const remote = apiRef.current
+    cancelPrefetch(remote)
     const reconcileProjection = ({ blocking = false } = {}) => loadCompleteRemoteProjection(remote.user, {
       kind: remote.projection === 'store' ? 'store' : 'global',
       storeId: remote.projectionStoreId,
@@ -2141,6 +2258,7 @@ export function AppProvider({ children }) {
   }, [remoteAvatarSessionKey, remoteAvatarSignature])
 
   useEffect(() => () => {
+    cancelPrefetch(apiRef.current)
     avatarLoadRequestRef.current += 1
     if (avatarObjectUrlRef.current.url
       && typeof URL !== 'undefined'
@@ -2154,7 +2272,7 @@ export function AppProvider({ children }) {
     if (!hasApiSession()) return undefined
     let active = true
     const restore = async () => {
-      const cached = await readWorkspaceCache()
+      const cached = await readWorkspaceCacheBriefly()
       if (!active) return
       if (cached?.state && cached.user) {
         const metadata = await apiGetStateMetadata('global', { restore: true })
@@ -2176,7 +2294,7 @@ export function AppProvider({ children }) {
         await clearWorkspaceCache()
       }
       const payload = await apiBootstrapState('global', { profile: 'initial' })
-      if (!payload.partial && canListAccounts(payload.user?.role)) {
+      if (!payload.partial && needsAccountDirectory(payload.screen) && canListAccounts(payload.user?.role)) {
         const users = await apiListUsers()
         payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
       }
@@ -2265,7 +2383,7 @@ export function AppProvider({ children }) {
           ))) return
         const effectiveUserChanged = remoteEffectiveUserChanged(remote.user, latest.user)
         if (!forceRefresh && !metadataChanged && !effectiveUserChanged) return
-        if (requestedProjection === 'global' && metadataChanged && canListAccounts(role)) {
+        if (requestedProjection === 'global' && needsAccountDirectory(requestedScreen) && metadataChanged && canListAccounts(role)) {
           const users = Array.isArray(latest.users) ? { users: latest.users } : await apiListUsers()
           latest.state.employees = mergeEmployeeAuthUsers(latest.state.employees, users.users)
         }
@@ -2424,17 +2542,14 @@ export function AppProvider({ children }) {
 
   const login = async (username, password) => {
     try {
+      cancelPrefetch(apiRef.current)
       setApiStatus('connecting')
       const authenticated = await apiLogin(username, password)
       const isSystemOperator = canListAccounts(authenticated.user.role)
       const embeddedUsers = Array.isArray(authenticated.users) ? { users: authenticated.users } : null
-      const [bootstrap, users] = await Promise.all([
-        authenticated.bootstrap
-          ? Promise.resolve(authenticated.bootstrap)
-          : apiBootstrapState('global', { profile: 'initial' }),
-        isSystemOperator ? (embeddedUsers || apiListUsers()) : Promise.resolve(null),
-      ])
-      if (users && !bootstrap.partial) {
+      const bootstrap = authenticated.bootstrap || await apiBootstrapState('global', { profile: 'initial' })
+      if (!bootstrap.partial && isSystemOperator && needsAccountDirectory(bootstrap.screen)) {
+        const users = embeddedUsers || (Array.isArray(bootstrap.users) ? { users: bootstrap.users } : await apiListUsers())
         bootstrap.state.employees = mergeEmployeeAuthUsers(bootstrap.state.employees, users.users)
       }
       apiRef.current.projectionCache.clear()
@@ -2518,13 +2633,14 @@ export function AppProvider({ children }) {
     if (!selected) return { ok: false, message: 'Vai trò được chọn không còn hợp lệ. Vui lòng đăng nhập lại.' }
     if (apiRef.current.enabled) {
       try {
+        cancelPrefetch(apiRef.current)
         const response = await apiSelectSessionRole(selected)
         // Newer servers return the compact first-screen projection together
         // with the role update. Keep the fallback for a safe rolling deploy
         // against an older API release.
         const payload = response.bootstrap
           || await apiBootstrapState('global', { profile: 'initial' })
-        if (!payload.partial && canListAccounts(response.user?.role)) {
+        if (!payload.partial && needsAccountDirectory(payload.screen) && canListAccounts(response.user?.role)) {
           const users = await apiListUsers()
           payload.state.employees = mergeEmployeeAuthUsers(payload.state.employees, users.users)
         }
@@ -2563,6 +2679,7 @@ export function AppProvider({ children }) {
 
   const logout = () => {
     const wasRemote = apiRef.current.enabled
+    cancelPrefetch(apiRef.current)
     if (wasRemote) apiLogout().catch(() => clearApiSession())
     apiRef.current.enabled = false
     apiRef.current.role = null
@@ -2610,6 +2727,7 @@ export function AppProvider({ children }) {
   const setActiveStoreId = (id) => {
     if (state.session?.role === 'store_manager' && String(id) !== String(state.session.storeId)) return false
     if (!state.stores.some((store) => store.id === id)) return false
+    cancelPrefetch(apiRef.current)
     rememberActiveStore(apiRef.current.user || state.session, id)
     activeStoreIdRef.current = id
     setState((current) => ({ ...current, activeStoreId: id }))
@@ -6613,6 +6731,7 @@ export function AppProvider({ children }) {
     setActiveStore: setActiveStoreId,
     ensureStoreWorkspaceData,
     ensureSystemWorkspaceData,
+    prefetchWorkspaceData,
     addStore,
     updateStore,
     deleteStore,
