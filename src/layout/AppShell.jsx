@@ -30,6 +30,7 @@ import {
   WalletCards,
   X,
 } from 'lucide-react'
+import { SupportTransferOverview } from '../components/SupportTransferOverview'
 import { useApp } from '../state/AppContext'
 import { preloadRouteModule } from '../routeModules'
 import { useWorkspacePrefetch } from './workspacePrefetch'
@@ -175,6 +176,7 @@ const COMPLETED_TASK_NOTIFICATION_TYPES = new Set(['support-work-submitted', 'st
 const isAssignedTaskNotification = (item) => ASSIGNED_TASK_NOTIFICATION_TYPES.has(String(item?.type || ''))
 const isWorkLifecycleNotification = (item) => (
   isAssignedTaskNotification(item) || COMPLETED_TASK_NOTIFICATION_TYPES.has(String(item?.type || ''))
+  || String(item?.type || '').startsWith('support-transfer.')
 )
 
 function WorkspaceRouteLoading({ message = 'Đang mở danh mục...' }) {
@@ -291,21 +293,25 @@ export default function AppShell({ workspaceStatus = null }) {
       : null
   const sessionEmployeeId = String(session?.employeeId || session?.code || '')
   const unreadNotifications = useMemo(() => notificationItems.filter((item) => {
+    const supportNotice = String(item?.type || '').startsWith('support-transfer.')
     const targetEmployeeId = String(item?.targetEmployeeId || item?.target?.employeeId || item?.data?.employeeId || (['support-work-assigned', 'store-task-assigned'].includes(item?.type) ? item?.employeeId : '') || '')
     const targetRole = String(item?.targetRole || item?.target?.role || '')
     const audienceRoles = Array.isArray(item?.audienceRoles) ? item.audienceRoles.map((role) => String(role)) : []
-    const belongsToAccount = targetEmployeeId
+    const belongsToAccount = supportNotice && isEmployee
+      ? String(item.employeeId) === sessionEmployeeId
+      : targetEmployeeId
       ? (!isAdmin && targetEmployeeId === sessionEmployeeId)
       : true
     return (!targetRole || targetRole === canonicalRole)
     && (!audienceRoles.length || audienceRoles.includes(canonicalRole))
     && belongsToAccount
-    && (!scopedNotificationStoreId || !item?.storeId || String(item.storeId) === String(scopedNotificationStoreId))
+    && (!scopedNotificationStoreId || !item?.storeId || String(item.storeId) === String(scopedNotificationStoreId)
+      || (supportNotice && (isEmployee || [item.fromStoreId, item.toStoreId].some((id) => String(id) === String(scopedNotificationStoreId)))))
     && !item?.read
     && !item?.isRead
     && !item?.readAt
     && !locallyReadNotificationIds.has(notificationKey(item))
-  }), [canonicalRole, isAdmin, locallyReadNotificationIds, notificationItems, scopedNotificationStoreId, sessionEmployeeId])
+  }), [canonicalRole, isAdmin, isEmployee, locallyReadNotificationIds, notificationItems, scopedNotificationStoreId, sessionEmployeeId])
   const readNotification = app.readNotification || app.markNotificationRead || app.dismissNotification
   const clearNotifications = app.clearNotifications || app.clearAllNotifications || app.deleteAllNotifications
 
@@ -404,6 +410,11 @@ export default function AppShell({ workspaceStatus = null }) {
       })
     }
     app.onNotificationOpen?.(item)
+    if (isSystemOperator && String(item?.type || '').startsWith('support-transfer.')
+      && stores.some((store) => String(store.id) === String(item.storeId))) {
+      const changeActiveStore = app.setActiveStoreId || app.setActiveStore
+      changeActiveStore?.(item.storeId)
+    }
     const assignmentId = item?.assignmentId || item?.data?.assignmentId
     const requestedDestination = item?.route || item?.path || item?.href || item?.url || ''
     const explicitDestination = requestedDestination === '/admin/support-employees'
@@ -563,6 +574,7 @@ export default function AppShell({ workspaceStatus = null }) {
             />
           ) : (
             <Suspense fallback={<WorkspaceRouteLoading />}>
+              {['/store/overview', '/employee/home'].includes(location.pathname) && <SupportTransferOverview />}
               <Outlet context={{ openMenu: () => setMobileOpen(true), activeStore }} />
               <WorkspaceContentReady routeKey={workspaceRouteKey} onReady={setDisplayedRouteKey} />
             </Suspense>

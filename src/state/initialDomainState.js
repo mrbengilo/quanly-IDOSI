@@ -117,6 +117,8 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   supportSchedulePresets: SUPPORT_SCHEDULE_PRESETS.map((preset) => ({ ...preset })),
   supportSchedulePresetHistory: [],
   supportTransfers: [],
+  supportRoster: [],
+  scheduleBusy: [],
   idempotencyKeys: [],
 })
 
@@ -183,6 +185,8 @@ export const migrateDomainState = (stored, context) => {
     supportSchedulePresets: normalizeSupportSchedulePresets(mergeArray(stored, defaults, 'supportSchedulePresets')),
     supportSchedulePresetHistory: mergeArray(stored, defaults, 'supportSchedulePresetHistory'),
     supportTransfers: mergeArray(stored, defaults, 'supportTransfers'),
+    supportRoster: mergeArray(stored, defaults, 'supportRoster'),
+    scheduleBusy: mergeArray(stored, defaults, 'scheduleBusy'),
     idempotencyKeys: mergeArray(stored, defaults, 'idempotencyKeys'),
     policies: {
       ...defaultPolicies,

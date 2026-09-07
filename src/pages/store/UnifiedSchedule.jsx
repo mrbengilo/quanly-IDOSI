@@ -29,6 +29,7 @@ import {
 import { useApp } from '../../state/AppContext'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
 import { resolveSupportEmployeeTagContext } from '../../domain/supportEmployeeTag'
+import { shiftWindow, scheduleWindows, supportForScheduledWindow, supportAllowsScheduling, windowsOverlap, sameScheduleIdentifier as same } from '../../domain/supportScheduling'
 import { supportTransferOverlapsDate } from '../../domain/supportTransferTime'
 import { downloadCsv } from '../../utils'
 import { removeShiftAssignments, replaceShiftAssignees } from './scheduleAssignments'
@@ -102,7 +103,7 @@ export function UnifiedSchedule() {
   } = app
   const shiftDefinitions = Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : []
   const schedule = Array.isArray(app.schedule) ? app.schedule : []
-  const allEmployees = Array.isArray(app.employees) ? app.employees : []
+  const allEmployees = [...new Map([...(app.employees || []), ...(app.supportRoster || [])].map((employee) => [String(employee.id || employee.code).toLowerCase(), employee])).values()]
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const storeId = session?.role === 'store_manager'
@@ -130,20 +131,14 @@ export function UnifiedSchedule() {
   const employeeSupportsStoreInView = (employee) => supportTransfers.some((record) => (
     String(record.employeeId || '') === String(employee.id || employee.code || '')
     && String(record.toStoreId || '') === String(storeId)
+    && supportAllowsScheduling(record)
     && mainViewRange.dates.some((targetDate) => supportTransferOverlapsDate(record, targetDate))
-  ))
-  const employeeSupportsAnotherStoreOnDate = (employee) => supportTransfers.some((record) => (
-    String(record.employeeId || '') === String(employee.id || employee.code || '')
-    && String(record.fromStoreId || '') === String(storeId)
-    && String(record.toStoreId || '') !== String(storeId)
-    && supportTransferOverlapsDate(record, date)
   ))
   const employees = allEmployees
     .filter((employee) => (
       String(employee.unit || 'store') === 'store'
       && employee.status !== 'Đã nghỉ việc'
       && (!storeId || String(employee.storeId) === String(storeId) || employeeSupportsStoreInView(employee))
-      && !(viewMode === 'day' && String(employee.storeId) === String(storeId) && employeeSupportsAnotherStoreOnDate(employee))
     ))
     .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'vi'))
 
@@ -325,6 +320,27 @@ export function UnifiedSchedule() {
     setSelectedShiftIds((current) => current.filter((id) => id !== shift.id))
   }
 
+  const availabilityMessage = (employee, ids = selectedShiftIds, editing = false) => {
+    const selectedWindows = ids.map((id) => {
+      const shift = dayShifts.find((item) => same(item.id, id)) || editingAssignment?.shift
+      const bounds = shiftWindow(date, shift)
+      return { ...bounds, invalid: !bounds, employeeId: employee.id || employee.code, storeId, shiftId: id, date }
+    })
+    const busy = Array.isArray(app.scheduleBusy) ? app.scheduleBusy : scheduleWindows(app)
+    for (const window of selectedWindows) {
+      if (window.invalid) return 'Ca thiếu thời gian hợp lệ.'
+      if (!same(employee.storeId, storeId) && !supportForScheduledWindow(app, window)) return 'Ca nằm ngoài thời gian hỗ trợ được phép.'
+      if (selectedWindows.some((other) => other !== window && windowsOverlap(window, other))) return 'Các ca đang chọn bị chồng giờ.'
+      const conflict = busy.find((other) => same(other.employeeId, window.employeeId)
+        && !(same(other.storeId, storeId) && other.date === date && same(other.shiftId, window.shiftId))
+        && (other.invalid || windowsOverlap(window, other)))
+      if (conflict) return `Bận tại ${conflict.storeName || conflict.storeId}: ${conflict.date}, ${conflict.start || '?'}–${conflict.end || '?'}.`
+      if (!editing && (app.attendance || []).some((record) => same(record.employeeId, employee.id)
+        && same(record.storeId, storeId) && record.date === date && same(record.shiftId, window.shiftId))) return 'Ca đã phát sinh điểm danh.'
+    }
+    return ''
+  }
+
   const toggleShift = (id) => {
     setSelectedShiftIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
   }
@@ -334,7 +350,7 @@ export function UnifiedSchedule() {
   }
 
   const toggleAllEmployees = () => {
-    const visibleIds = visibleEmployees.map((employee) => employee.id)
+    const visibleIds = visibleEmployees.filter((employee) => !availabilityMessage(employee)).map((employee) => employee.id)
     const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedEmployeeIds.includes(id))
     setSelectedEmployeeIds((current) => allSelected
       ? current.filter((id) => !visibleIds.includes(id))
@@ -343,6 +359,8 @@ export function UnifiedSchedule() {
 
   const saveAssignments = async () => {
     if (!canManageStore || savingNewAssignment) return
+    const unavailable = employees.find((employee) => selectedEmployeeIds.includes(employee.id) && availabilityMessage(employee))
+    if (unavailable) return notify?.(availabilityMessage(unavailable), 'info')
     setSavingNewAssignment(true)
     const result = await saveScheduleMultiple?.(selectedEmployeeIds, selectedShiftIds, { date, note, storeId })
     setSavingNewAssignment(false)
@@ -397,6 +415,10 @@ export function UnifiedSchedule() {
 
   const saveEditedAssignment = async () => {
     if (!editingAssignment || !assignmentEmployeeIds.length || savingAssignment) return
+    const unavailable = employees.find((employee) => assignmentEmployeeIds.includes(String(employee.id))
+      && !editingAssignment.records.some((record) => same(record.employeeId, employee.id))
+      && availabilityMessage(employee, [editingAssignment.shift.id], true))
+    if (unavailable) return notify?.(availabilityMessage(unavailable, [editingAssignment.shift.id], true), 'info')
     setSavingAssignment(true)
     const assignments = replaceShiftAssignees(
       daySchedule,
@@ -631,6 +653,7 @@ export function UnifiedSchedule() {
                 <label key={employee.id} className={selectedEmployeeIds.includes(employee.id) ? 'selected' : ''}>
                   <input
                     type="checkbox"
+                    disabled={Boolean(availabilityMessage(employee))}
                     checked={selectedEmployeeIds.includes(employee.id)}
                     onChange={() => toggleEmployee(employee.id)}
                     aria-label={`Chọn nhân viên ${employee.name}`}
@@ -639,6 +662,7 @@ export function UnifiedSchedule() {
                   <strong>{employee.name}</strong>
                   <SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} />
                   <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
+                  {availabilityMessage(employee) && <small className="schedule-availability-note">{availabilityMessage(employee)}</small>}
                 </label>
               ))}
               {!visibleEmployees.length && <EmptyState title="Không tìm thấy nhân viên" description="Thử một từ khóa khác." />}
@@ -672,6 +696,7 @@ export function UnifiedSchedule() {
               <label key={employee.id} className={assignmentEmployeeIds.includes(String(employee.id)) ? 'selected' : ''}>
                 <input
                   type="checkbox"
+                  disabled={!assignmentEmployeeIds.includes(String(employee.id)) && Boolean(availabilityMessage(employee, [editingAssignment?.shift?.id], true))}
                   checked={assignmentEmployeeIds.includes(String(employee.id))}
                   onChange={() => toggleAssignmentEmployee(String(employee.id))}
                   aria-label={`Chọn ${employee.name} cho ${editingAssignment?.shift?.name || 'ca'}`}
@@ -680,6 +705,7 @@ export function UnifiedSchedule() {
                 <strong>{employee.name}</strong>
                 <SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} />
                 <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
+                {availabilityMessage(employee, [editingAssignment?.shift?.id], true) && <small className="schedule-availability-note">{availabilityMessage(employee, [editingAssignment?.shift?.id], true)}</small>}
               </label>
             ))}
           </div>

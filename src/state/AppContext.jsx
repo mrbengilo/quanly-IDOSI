@@ -1,3 +1,4 @@
+import { scheduleWindows } from '../domain/supportScheduling'
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
@@ -258,6 +259,7 @@ const revenueBonusView = (dailyRecords = [], allocationRecords = []) => {
 }
 
 const REMOTE_ARRAY_KEYS = [
+  'supportRoster', 'scheduleBusy',
   'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'officeAdjustments',
   'orders', 'orderInformationOptions', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
@@ -509,15 +511,17 @@ export const remoteEffectiveUserChanged = (current = {}, latest = {}) => {
 }
 export const canManageSupportTransfers = (role) => ['admin', 'business_support'].includes(normalizeAuthRole(role))
 export const canDeleteSupportTransfers = (role) => normalizeAuthRole(role) === 'admin'
-export const nextSupportTransferBoundaryDelay = (transfers = [], at = Date.now()) => {
+export const nextSupportTransferBoundaryDelay = (transfers = [], at = Date.now(), scheduleState = {}, employeeId = '') => {
   const nowMs = at instanceof Date ? at.getTime() : Number(at)
   if (!Number.isFinite(nowMs)) return null
-  const nextBoundary = transfers
+  const scheduleBoundaries = scheduleWindows(scheduleState, { employeeId }).filter((window) => !window.invalid)
+    .flatMap((window) => [window.startMs - Number(scheduleState.policies?.earlyCheckInLimitMinutes ?? 120) * 60_000, window.startMs, window.endMs])
+  const nextBoundary = [...scheduleBoundaries, ...transfers
     .filter((record) => !record?.deletedAt && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record?.status || '')))
     .flatMap((record) => {
       const bounds = supportTransferBounds(record)
       return bounds ? [bounds.startMs, bounds.endMs] : []
-    })
+    })]
     .filter((epochMs) => epochMs > nowMs)
     .sort((left, right) => left - right)[0]
   return Number.isFinite(nextBoundary) ? Math.max(0, nextBoundary - nowMs) : null
@@ -1551,7 +1555,11 @@ const remoteCommandResultPatches = (type, result) => {
     add('tasks', result.tasks)
   }
   if (type.startsWith('shift_definition.')) add('shiftDefinitions', result.shift)
-  if (type.startsWith('support_transfer.')) add('supportTransfers', result.transfer)
+  if (type.startsWith('support_transfer.')) {
+    add('supportTransfers', result.transfer)
+    add('schedule', result.schedule)
+  }
+  if (Array.isArray(result.notifications)) add('notifications', result.notifications)
   if (type === 'order_information.reorder' && Array.isArray(result.options)) {
     replacements.set('orderInformationOptions', result.options)
   } else if (type.startsWith('order_information.')) {
@@ -2395,9 +2403,10 @@ export function AppProvider({ children }) {
         if (active && pendingForce && (typeof document === 'undefined' || !document.hidden)) void refresh()
       }
     }
-    const timer = window.setInterval(refresh, 30_000)
+    const supportScreen = ['overview', 'employee-home', 'employee-attendance', 'employee-schedule', 'schedule', 'support-transfers'].includes(remote.projectionScreen)
+    const timer = window.setInterval(refresh, supportScreen ? 5_000 : 30_000)
     const boundaryDelay = ['store_manager', 'employee'].includes(role)
-      ? nextSupportTransferBoundaryDelay(state.supportTransfers, Date.now())
+      ? nextSupportTransferBoundaryDelay(state.supportTransfers, Date.now(), { schedule: state.schedule, shiftDefinitions: state.shiftDefinitions, policies: state.policies }, state.session?.employeeId || state.session?.code)
       : null
     const boundaryTimer = boundaryDelay == null
       ? null
@@ -2412,7 +2421,7 @@ export function AppProvider({ children }) {
       if (boundaryTimer != null) window.clearTimeout(boundaryTimer)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [activateRemotePayload, credentialsReady, remoteProjection, state.activeStoreId, state.session, state.supportTransfers])
+  }, [activateRemotePayload, credentialsReady, remoteProjection, state.activeStoreId, state.session, state.supportTransfers, state.schedule, state.shiftDefinitions, state.policies])
 
   useEffect(() => {
     if (credentialsReady) return undefined
@@ -5859,6 +5868,7 @@ export function AppProvider({ children }) {
     if (hourlySupportRate <= 0) return { ok: false, message: 'Lương hỗ trợ theo giờ phải lớn hơn 0.' }
     const commandPayload = {
       transferId: previous.id,
+      transferVersion: Number(previous.version || 1),
       employeeId,
       fromStoreId,
       toStoreId,
@@ -5969,6 +5979,24 @@ export function AppProvider({ children }) {
     updateCollection('supportTransfers', (items) => items.map((item) => item.id === transfer.id ? transfer : item))
     notify('Đã xóa điều chuyển hỗ trợ.', 'info')
     return { ok: true, transfer }
+  }
+
+  const stopSupportTransfer = async (transferId, reasonValue = '') => {
+    if (!canManageSupportTransfers(state.session?.role)) return { ok: false, message: 'Bạn không có quyền dừng hỗ trợ.' }
+    const previous = state.supportTransfers.find((item) => sameIdentifier(item.id, transferId))
+    const reason = String(reasonValue || '').trim()
+    if (!previous || !reason) return { ok: false, message: 'Cần chọn phiếu và nhập lý do dừng hỗ trợ.' }
+    if (!apiRef.current.enabled) return { ok: false, message: 'Cần kết nối máy chủ để xử lý ca và lịch hỗ trợ an toàn.' }
+    try {
+      const result = await runRemoteDomainCommand('support_transfer.stop', {
+        transferId: previous.id, transferVersion: Number(previous.version || 1), reason,
+      })
+      notify('Đã dừng phân ca hỗ trợ mới. Ca đang làm được giữ đến khi kết ca.')
+      return { ok: true, transfer: result.transfer }
+    } catch (error) {
+      notify(error.message || 'Không thể dừng hỗ trợ.', 'info')
+      return { ok: false, message: error.message }
+    }
   }
 
   const restoreOperationalData = async (payload = {}) => {
@@ -6333,6 +6361,7 @@ export function AppProvider({ children }) {
       try {
         const result = await runRemoteDomainCommand('attendance.check_in', {
           shiftId: payload.shiftId || payload.shift,
+          ...(payload.scheduleId ? { scheduleId: payload.scheduleId } : {}),
           location: payload.location || payload.coords || payload,
         }, idempotencyKey)
         notify(`Điểm danh thành công lúc ${result.attendance.checkIn}.`)
@@ -6816,6 +6845,7 @@ export function AppProvider({ children }) {
     saveSupportTransfer,
     updateSupportTransfer,
     deleteSupportTransfer,
+    stopSupportTransfer,
     restoreOperationalData,
     addAttendanceRecord,
     updateAttendance,

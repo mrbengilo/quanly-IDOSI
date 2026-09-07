@@ -1,3 +1,5 @@
+import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
+import { attendanceMatchesWindow, scheduleWindows, supportForScheduledWindow } from '../../domain/supportScheduling'
 import { useMemo, useState } from 'react'
 import {
   CalendarClock,
@@ -368,10 +370,13 @@ export function SupportTransfersPage() {
     stores = [],
     employees = [],
     attendance = [],
+    schedule = [],
+    shiftDefinitions = [],
     supportTransfers = [],
     saveSupportTransfer,
     updateSupportTransfer,
     deleteSupportTransfer,
+    stopSupportTransfer,
     notify,
     session,
   } = useApp()
@@ -381,6 +386,12 @@ export function SupportTransfersPage() {
   const [editingId, setEditingId] = useState('')
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [deleteReason, setDeleteReason] = useState('')
+  const [stopTarget, setStopTarget] = useState(null)
+  const [stopReason, setStopReason] = useState('')
+  const [busy, setBusy] = useState('')
+  const stopWindows = stopTarget ? scheduleWindows({ schedule, shiftDefinitions }, { employeeId: stopTarget.employeeId, storeId: stopTarget.toStoreId })
+    .filter((window) => (window.supportTransferId === stopTarget.id || supportForScheduledWindow({ supportTransfers }, window)?.id === stopTarget.id)
+      && window.endMs > stopTarget.previewAt && !attendance.some((record) => attendanceMatchesWindow(record, window))) : []
   const employee = useMemo(() => employees.find((item) => item.id === form.employeeId), [employees, form.employeeId])
   const editingHasAttendance = useMemo(() => {
     if (!editingId) return false
@@ -407,7 +418,7 @@ export function SupportTransfersPage() {
     })
   }
   const save = async () => {
-    if (!canManageTransfers) return
+    if (!canManageTransfers || busy) return
     if (!form.fromStoreId || !form.employeeId || !form.toStoreId || form.toStoreId === form.fromStoreId || String(employee?.storeId) !== String(form.fromStoreId)) return notify('Vui lòng chọn cửa hàng đi, nhân viên và cửa hàng nhận hỗ trợ phù hợp.', 'info')
     const bounds = supportTransferBounds(form)
     if (!isVietnamDateTimeLocal(form.startAt) || !isVietnamDateTimeLocal(form.endAt) || !bounds) return notify('Khoảng thời gian điều chuyển chưa hợp lệ.', 'info')
@@ -417,9 +428,12 @@ export function SupportTransfersPage() {
     const command = editingId ? updateSupportTransfer : saveSupportTransfer
     if (typeof command !== 'function') return notify('Chức năng điều chuyển chưa sẵn sàng.', 'info')
     const payload = { employeeId: form.employeeId, fromStoreId: form.fromStoreId, toStoreId: form.toStoreId, startAt: form.startAt, endAt: form.endAt, hourlySupportRate, allowance, note: form.note }
-    const result = editingId ? await command(editingId, payload) : await command(payload)
-    if (!result?.ok) return notify(result?.message || 'Không thể lưu điều chuyển hỗ trợ.', 'info')
-    resetEditor()
+    setBusy('save')
+    try {
+      const result = editingId ? await command(editingId, payload) : await command(payload)
+      if (!result?.ok) return notify(result?.message || 'Không thể lưu điều chuyển hỗ trợ.', 'info')
+      resetEditor()
+    } finally { setBusy('') }
   }
   const confirmDelete = async () => {
     if (!canDeleteTransfers || !deleteTarget || typeof deleteSupportTransfer !== 'function') return
@@ -428,6 +442,16 @@ export function SupportTransfersPage() {
     if (editingId === deleteTarget.id) resetEditor()
     setDeleteTarget(null)
     setDeleteReason('')
+  }
+  const confirmStop = async () => {
+    if (!canManageTransfers || !stopTarget || !stopReason.trim() || busy) return
+    setBusy('stop')
+    try {
+      const result = await stopSupportTransfer?.(stopTarget.id, stopReason)
+      if (!result?.ok) return notify(result?.message || 'Không thể dừng hỗ trợ.', 'info')
+      setStopTarget(null)
+      setStopReason('')
+    } finally { setBusy('') }
   }
   if (!canManageTransfers) return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Điều chuyển nhân sự thuộc quyền Admin và Nhân viên Hỗ trợ KD." icon={LockKeyhole} /></div>
   return <div className="page governance-page"><PageHeader title="ĐIỀU CHUYỂN NHÂN SỰ" subtitle="Phân bổ nhân viên hỗ trợ giữa các cửa hàng mà không thay đổi hồ sơ gốc." icon={CalendarClock} />
@@ -440,8 +464,16 @@ export function SupportTransfersPage() {
       <Field label="Lương hỗ trợ (theo giờ)" required><MoneyInput value={form.hourlySupportRate} onChange={(event) => setForm((current) => ({ ...current, hourlySupportRate: event.target.value }))} placeholder="Nhập số tiền" /></Field>
       <Field label="Phụ cấp"><MoneyInput value={form.allowance} onChange={(event) => setForm((current) => ({ ...current, allowance: event.target.value }))} placeholder="Nhập số tiền" /></Field>
       <Field label="Ghi chú" className="span-2"><textarea maxLength={500} value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} placeholder="Nội dung hỗ trợ hoặc lưu ý cho cửa hàng nhận" /></Field>
-    </div><div className="card-actions card-actions--below">{editingId ? <Button variant="outline" onClick={resetEditor}>HỦY CHỈNH SỬA</Button> : null}<Button icon={Save} onClick={save}>{editingId ? 'CẬP NHẬT ĐIỀU CHUYỂN' : 'LƯU ĐIỀU CHUYỂN'}</Button></div></Card>
-    <Card title="Lịch sử điều chuyển"><TableWrap><thead><tr><th>Nhân viên</th><th>Từ cửa hàng</th><th>Đến cửa hàng</th><th>Thời gian</th><th>Lương hỗ trợ/giờ</th><th>Phụ cấp</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{supportTransfers.map((item) => <tr key={item.id}><td><strong>{employees.find((employeeItem) => employeeItem.id === item.employeeId)?.name || item.employeeId}</strong><small className="table-note">{item.employeeId}</small></td><td>{stores.find((store) => store.id === item.fromStoreId)?.name || item.fromStoreId}</td><td>{stores.find((store) => store.id === item.toStoreId)?.name || item.toStoreId}</td><td>{supportTransferTimeLabel(item)}<small className="table-note">Tạo lúc {displayDateTime(item.createdAt)}</small></td><td>{money(item.hourlySupportRate)}</td><td>{money(item.allowance)}</td><td>{item.note || '—'}</td><td><Badge tone={['Đã hủy', 'Đã xóa'].includes(item.status) ? 'red' : item.status === 'Hoàn tất' ? 'blue' : 'green'}>{item.status || 'Đã lưu'}</Badge></td><td>{item.deletedAt || item.status === 'Đã xóa' ? <span className="table-note">Chỉ xem</span> : <div className="table-actions"><Button variant="outline" icon={Settings2} onClick={() => openEdit(item)}>Sửa</Button>{canDeleteTransfers ? <Button variant="danger" icon={Trash2} onClick={() => { setDeleteTarget(item); setDeleteReason('') }}>Xóa</Button> : null}</div>}</td></tr>)}{!supportTransfers.length && <tr><td colSpan="9">Chưa có lịch sử điều chuyển.</td></tr>}</tbody></TableWrap></Card>
+    </div><div className="card-actions card-actions--below">{editingId ? <Button variant="outline" onClick={resetEditor}>HỦY CHỈNH SỬA</Button> : null}<Button icon={Save} onClick={save} loading={busy === 'save'}>{editingId ? 'CẬP NHẬT ĐIỀU CHUYỂN' : 'LƯU ĐIỀU CHUYỂN'}</Button></div></Card>
+    <Card title="Lịch sử điều chuyển"><TableWrap><thead><tr><th>Nhân viên</th><th>Từ cửa hàng</th><th>Đến cửa hàng</th><th>Thời gian</th><th>Lương hỗ trợ/giờ</th><th>Phụ cấp</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody>{supportTransfers.map((item) => <tr key={item.id}><td><strong>{employees.find((employeeItem) => employeeItem.id === item.employeeId)?.name || item.employeeId}</strong><SupportEmployeeTag context={{ homeStoreId: item.fromStoreId, homeStoreName: stores.find((store) => store.id === item.fromStoreId)?.name, supportStoreId: item.toStoreId, supportStoreName: stores.find((store) => store.id === item.toStoreId)?.name }} /><small className="table-note">{item.employeeId}</small></td><td>{stores.find((store) => store.id === item.fromStoreId)?.name || item.fromStoreId}</td><td>{stores.find((store) => store.id === item.toStoreId)?.name || item.toStoreId}</td><td>{supportTransferTimeLabel(item)}<small className="table-note">Tạo lúc {displayDateTime(item.createdAt)}</small></td><td>{money(item.hourlySupportRate)}</td><td>{money(item.allowance)}</td><td>{item.note || '—'}</td><td><Badge tone={['Đã hủy', 'Đã xóa'].includes(item.status) ? 'red' : item.status === 'Hoàn tất' ? 'blue' : 'green'}>{item.schedulingClosedAt ? 'Đã dừng phân ca' : item.status || 'Đã lưu'}</Badge></td><td>{item.deletedAt || item.status === 'Đã xóa' ? <span className="table-note">Chỉ xem</span> : <div className="table-actions"><Button variant="outline" icon={Settings2} onClick={() => openEdit(item)}>Sửa</Button>{!item.schedulingClosedAt && item.status !== 'Hoàn tất' ? <Button variant="outline" onClick={() => { setStopTarget({ ...item, previewAt: Date.now() }); setStopReason('') }}>Dừng hỗ trợ</Button> : null}{canDeleteTransfers ? <Button variant="danger" icon={Trash2} onClick={() => { setDeleteTarget(item); setDeleteReason('') }}>Xóa</Button> : null}</div>}</td></tr>)}{!supportTransfers.length && <tr><td colSpan="9">Chưa có lịch sử điều chuyển.</td></tr>}</tbody></TableWrap></Card>
+    <Modal open={Boolean(stopTarget)} onClose={() => { if (!busy) setStopTarget(null) }} title="Dừng hỗ trợ và xử lý lịch chưa bắt đầu" footer={<><Button variant="outline" disabled={Boolean(busy)} onClick={() => setStopTarget(null)}>Quay lại</Button><Button onClick={confirmStop} loading={busy === 'stop'} disabled={!stopReason.trim()}>XÁC NHẬN DỪNG HỖ TRỢ</Button></>}>
+      <div className="form-stack">
+        <InfoNote tone="orange">Ca đang làm được giữ đến khi kết ca thành công. Lương, thưởng, phụ cấp và chi phí đã ghi nhận được giữ nguyên.</InfoNote>
+        <strong>{stopWindows.length} ca chưa bắt đầu sẽ được hủy:</strong>
+        {stopWindows.length ? <ul>{stopWindows.map((window) => <li key={`${window.assignmentId}:${window.shiftId}`}>{window.date} · {window.shift?.name || window.shiftId} · {window.start}–{window.end}</li>)}</ul> : <span>Không có ca chưa bắt đầu cần hủy.</span>}
+        <Field label="Lý do dừng hỗ trợ" required><textarea value={stopReason} maxLength={500} onChange={(event) => setStopReason(event.target.value)} /></Field>
+      </div>
+    </Modal>
     {canDeleteTransfers ? <Modal open={Boolean(deleteTarget)} onClose={() => { setDeleteTarget(null); setDeleteReason('') }} title="Xóa điều chuyển" footer={<><Button variant="outline" onClick={() => { setDeleteTarget(null); setDeleteReason('') }}>Hủy</Button><Button variant="danger" icon={Trash2} disabled={!deleteReason.trim()} onClick={confirmDelete}>XÓA ĐIỀU CHUYỂN</Button></>}><div className="form-stack"><InfoNote tone="orange">Không thể xóa hoặc hủy phiếu đã phát sinh chấm công. Máy chủ sẽ giữ nguyên lịch sử lương và phụ cấp.</InfoNote><Field label="Lý do xóa" required><textarea maxLength={500} value={deleteReason} onChange={(event) => setDeleteReason(event.target.value)} placeholder="Nhập lý do để lưu nhật ký kiểm toán" /></Field></div></Modal> : null}
   </div>
 }
