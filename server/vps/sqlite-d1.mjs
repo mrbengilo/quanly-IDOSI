@@ -320,7 +320,21 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
   const actorGlobalSql = actorGlobalCollections.length
     ? `entity.collection_key IN (${sqlStringList(actorGlobalCollections)}) OR`
     : ''
-  const entityFilter = SYSTEM_ACTOR_SCOPED_SCREENS.has(normalizedScreen)
+  const entityFilter = normalizedScreen === 'support-overview'
+    ? `AND (
+        entity.collection_key = 'employees'
+        OR entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM selected_employee_ids)
+        OR EXISTS (
+          SELECT 1 FROM json_each(json_array(
+            json_extract(entity.value_json, '$.employeeId'),
+            json_extract(entity.value_json, '$.employeeCode'),
+            json_extract(entity.value_json, '$.staffId'),
+            json_extract(entity.value_json, '$.userId')
+          )) AS identifier
+          WHERE lower(trim(CAST(identifier.value AS TEXT))) IN (SELECT employee_key FROM selected_employee_ids)
+        )
+      )`
+    : SYSTEM_ACTOR_SCOPED_SCREENS.has(normalizedScreen)
       ? `AND (
           ${actorGlobalSql}
           entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM selected_employee_ids)

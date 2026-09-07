@@ -162,7 +162,7 @@ it.each([false, true])('checks canonical repair eligibility before command prelo
     const employees = [
       { id: 'E1', code: 'CODE-1', name: 'Store employee', unit: 'store', storeId: 'S1' },
       { id: 'E2', name: 'Office employee', unit: 'office', storeId: 'OFFICE' },
-      { id: 'E3', name: 'Support employee', unit: 'business_support', storeId: 'BUSINESS_SUPPORT' },
+      { id: 'E3', code: 'SUPPORT3', name: 'Support employee', unit: 'business_support', storeId: 'BUSINESS_SUPPORT' },
       { id: 'E4', name: 'Store manager', unit: 'store_manager', storeId: 'S1' },
       { id: 'E9', name: 'Foreign employee', unit: 'store', storeId: 'S2' },
     ]
@@ -178,6 +178,13 @@ it.each([false, true])('checks canonical repair eligibility before command prelo
       { ...legacyAttendance, id: 'A6', employeeId: 'E1', checklistSnapshot: { source: 'foreign-template', tasks: [] } },
       { ...legacyAttendance, id: 'A7', employeeId: 'E1', date: '' },
       { ...legacyAttendance, id: 'A8', employeeId: 'E1', checkInAt: '' },
+      ...['employeeCode', 'staffId', 'userId'].map((field, index) => ({
+        id: `SUPPORT-HISTORY-${index}`, [field]: 'support3', date: '2026-09-04',
+        checkInAt: '2026-09-04T01:00:00Z', checkOutAt: '2026-09-04T09:00:00Z',
+        checklistSnapshot: { tasks: [{ id: 'HISTORICAL', amount: 12000 }] },
+      })),
+      { id: 'FOREIGN-BULK', employeeId: 'E9', checkOutAt: '2026-09-04T09:00:00Z',
+        checklistSnapshot: { description: 'FOREIGN-HISTORY'.repeat(20_000) } },
     ]
     const bootstrap = await request('/api/bootstrap', {
       username: 'repair.admin', password: 'synthetic-command-password',
@@ -190,6 +197,10 @@ it.each([false, true])('checks canonical repair eligibility before command prelo
         compensationEntries: [{ id: 'UNRELATED-REWARD', employeeId: 'E9', detail: 'REWARD-MUST-NOT-LOAD' }],
         teamRewardClaims: [{ id: 'UNRELATED-CLAIM', storeId: 'S2', detail: 'CLAIM-MUST-NOT-LOAD' }],
         shiftDefinitions: [{ id: 'SHIFT-1', storeId: 'S1', name: 'Fixture shift', start: '08:00', end: '17:00' }],
+        supportWorkSchedules: [
+          { id: 'OWN-SCHEDULE', employeeId: 'support3', date: '2026-09-05', start: '08:00', end: '17:00' },
+          { id: 'PEER-SCHEDULE', employeeId: 'E9', date: '2026-09-05', start: '09:00', end: '18:00' },
+        ],
         orders: [{ id: 'FOREIGN-ORDER', storeId: 'S2', amount: 999_000 }],
       },
     }, null, { 'x-idosi-bootstrap-token': 'command-repair-fixture' })
@@ -232,9 +243,28 @@ it.each([false, true])('checks canonical repair eligibility before command prelo
       for (const key of ['attendance', 'tasks', 'taskAssignmentHistory', 'workCatalogProgress', 'compensationEntries', 'teamRewardClaims']) {
         expect(catalog.payload.state[key] || []).toEqual([])
       }
-      if (role === 'support') expect(catalog.payload.state.accountProfile).toMatchObject({ code: 'E3', name: 'Support employee' })
+      if (role === 'support') expect(catalog.payload.state.accountProfile).toMatchObject({ code: 'SUPPORT3', name: 'Support employee' })
       expect(JSON.stringify(catalog.payload)).not.toContain('MUST-NOT-LOAD')
     }
+    expect(globalReads).toBe(0)
+    const optimizedRead = runtime.database.readSystemStateSnapshot
+    const overview = await request('/api/system-screens/support-overview', null, logins.support)
+    expect(overview.status).toBe(200)
+    runtime.database.readSystemStateSnapshot = undefined
+    const fallbackOverview = await request('/api/system-screens/support-overview', null, logins.support)
+    runtime.database.readSystemStateSnapshot = optimizedRead
+    expect(fallbackOverview.status).toBe(200)
+    expect(overview.payload.state).toEqual(fallbackOverview.payload.state)
+    expect(overview.payload.state.attendance.map(({ id }) => id).sort()).toEqual([
+      'A3', 'SUPPORT-HISTORY-0', 'SUPPORT-HISTORY-1', 'SUPPORT-HISTORY-2',
+    ])
+    expect(overview.payload.state.attendance.find(({ id }) => id === 'SUPPORT-HISTORY-0').checklistSnapshot)
+      .toEqual({ tasks: [{ id: 'HISTORICAL', amount: 12000 }] })
+    expect(overview.payload.state.supportWorkSchedules.map(({ id }) => id)).toEqual(['OWN-SCHEDULE'])
+    expect(overview.payload.state.activeAttendanceId).toBe('A3')
+    expect(overview.payload.state.employees).toHaveLength(employees.length)
+    expect(overview.payload.state.compensationEntries || []).toEqual([])
+    expect(JSON.stringify(overview.payload)).not.toContain('FOREIGN-HISTORY')
     expect(globalReads).toBe(0)
     const ownUsers = await request('/api/users', null, logins.manager)
     expect(ownUsers.status).toBe(200)

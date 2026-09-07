@@ -207,8 +207,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'employees', 'violations', 'compensationEntries', 'attendance', 'payrollPeriods', 'workCatalogItems',
   ],
   'support-overview': [
-    'employees', 'attendance', 'supportWorkAssignments', 'supportWorkSchedules',
-    'compensationEntries', 'violations', 'salaryAdjustments', 'officeAdjustments', 'payrollPeriods',
+    'employees', 'attendance', 'supportWorkSchedules',
   ],
   'support-tasks': [
     'employees', 'workCatalogItems', 'workCatalogProgress', 'attendance',
@@ -5089,7 +5088,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     && isEmployeeScreen
     && Boolean(String(user.store_id || '').trim())
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
-    && ['tasks', 'support-tasks', 'support-assigned-work'].includes(screen)
+    && ['tasks', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
     ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
     : useOptimizedSystemProjection
@@ -5102,7 +5101,7 @@ const getSystemScreen = async (request, env, context, screen) => {
         )
       : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
   let row = await readScreen()
-  if (collections.includes('attendance')) {
+  if (collections.includes('attendance') && screen !== 'support-overview') {
     if (useEmployeeStoreProjection) {
       row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen)
     } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
@@ -5116,7 +5115,23 @@ const getSystemScreen = async (request, env, context, screen) => {
       ? visibleUserRowsForActor(db, user)
       : Promise.resolve(null),
   ])
-  const rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  let rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  if (screen === 'support-overview') {
+    // The personal support dashboard only renders the actor's attendance and
+    // working-time overrides. Keep complete own records, including historical
+    // snapshots, and all profiles for collision-safe identity resolution.
+    const profile = actorRoleEmployeeProfile(rawState, user)
+    const identifiers = profile ? employeeIdentifierValues(profile) : [user.employee_id]
+    const ownRecord = (record) => identifiers.some((id) => (
+      id && [record?.employeeId, record?.employeeCode, record?.staffId, record?.userId]
+        .some((reference) => sameIdentifier(id, reference))
+    ))
+    rawState = {
+      ...rawState,
+      attendance: filterArray(rawState, 'attendance', ownRecord),
+      supportWorkSchedules: filterArray(rawState, 'supportWorkSchedules', ownRecord),
+    }
+  }
   return jsonResponse(apiPayload(context, {
     user: publicUser(user),
     scope: 'global',
