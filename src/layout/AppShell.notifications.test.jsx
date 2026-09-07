@@ -72,6 +72,24 @@ describe('AppShell notifications', () => {
     mocked.deleteOrder.mockReset()
   })
 
+  it('shows upcoming host-store notifications to an employee still at home', () => {
+    mocked.session = { role: 'employee', employeeId: 'E01', storeId: 'CH001' }
+    mocked.notifications = [{ id: 'TRANSFER', type: 'support-transfer.create', employeeId: 'E01',
+      storeId: 'CH002', fromStoreId: 'CH001', toStoreId: 'CH002', title: 'Lịch hỗ trợ ngày mai', route: '/employee/schedule' }]
+    render(<MemoryRouter initialEntries={['/employee/home']}><AppShell /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    expect(screen.getByText('Lịch hỗ trợ ngày mai')).toBeTruthy()
+  })
+
+  it('opens the notified destination schedule for a system operator', () => {
+    mocked.notifications = [{ id: 'TRANSFER', type: 'support-transfer.create', employeeId: 'E01',
+      storeId: 'CH002', fromStoreId: 'CH001', toStoreId: 'CH002', title: 'Lịch hỗ trợ ngày mai', route: '/store/schedule' }]
+    render(<MemoryRouter initialEntries={['/admin/overview']}><AppShell /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /Xem thông báo/i }))
+    fireEvent.click(screen.getByText('Lịch hỗ trợ ngày mai'))
+    expect(mocked.setActiveStoreId).toHaveBeenCalledWith('CH002')
+  })
+
   it('marks all notifications in one scoped command instead of one request per item', async () => {
     render(<MemoryRouter initialEntries={['/store/overview']}><AppShell /></MemoryRouter>)
 

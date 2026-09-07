@@ -153,6 +153,35 @@ describe('store schedule visual flow', () => {
     expect(screen.getAllByText('Nhân viên hỗ trợ • Từ Dosii KVC')).toHaveLength(2)
   })
 
+  it('shows a future support roster employee and disables a conflicting home-store time', () => {
+    const supportEmployee = { ...employee, id: 'GUEST', storeId: 'HOME', name: 'Khách hỗ trợ' }
+    mocked.app.employees = []
+    mocked.app.supportRoster = [supportEmployee]
+    mocked.app.schedule = [{ id: 'HOME-BUSY', storeId: 'HOME', employeeId: 'GUEST', date: localDate(),
+      shiftIds: ['HOME-AM'], shiftSnapshots: [{ id: 'HOME-AM', start: '09:00', end: '13:00' }] }]
+    mocked.app.supportTransfers = [{ id: 'GRANT', employeeId: 'GUEST', fromStoreId: 'HOME', toStoreId: store.id,
+      fromDate: localDate(), toDate: localDate() }]
+    renderSchedule()
+    fireEvent.click(screen.getByRole('button', { name: 'PHÂN CA' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /Chọn Ca sáng/ }))
+    expect(within(dialog).getByRole('checkbox', { name: 'Chọn nhân viên Khách hỗ trợ' }).disabled).toBe(true)
+    expect(within(dialog).getByText(/Bận tại HOME/)).toBeTruthy()
+    expect(within(dialog).getByText(/Nhân viên hỗ trợ/)).toBeTruthy()
+  })
+
+  it('keeps the home employee selectable for time outside an assigned support shift', () => {
+    mocked.app.schedule = [{ id: 'HOST-BUSY', storeId: 'HOST', employeeId: employee.id, date: localDate(),
+      shiftIds: ['HOST-PM'], shiftSnapshots: [{ id: 'HOST-PM', start: '12:00', end: '16:00' }] }]
+    mocked.app.supportTransfers = [{ id: 'GRANT', employeeId: employee.id, fromStoreId: store.id, toStoreId: 'HOST',
+      fromDate: localDate(), toDate: localDate() }]
+    renderSchedule()
+    fireEvent.click(screen.getByRole('button', { name: 'PHÂN CA' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /Chọn Ca sáng/ }))
+    expect(within(dialog).getByRole('checkbox', { name: `Chọn nhân viên ${employee.name}` }).disabled).toBe(false)
+  })
+
   it('creates a reusable shift without reintroducing a required date', async () => {
     renderSchedule()
     fireEvent.click(screen.getByRole('button', { name: 'Tạo ca làm việc' }))

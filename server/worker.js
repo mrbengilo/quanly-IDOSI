@@ -1,3 +1,4 @@
+import { attendanceMatchesWindow, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
   validateStoreChecklistCheckout,
 } from '../src/domain/storeShiftChecklist.js'
@@ -109,7 +110,7 @@ const SESSION_CONTEXT_STATE_COLLECTIONS = Object.freeze([
 ])
 const EMPLOYEE_SESSION_CONTEXT_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
-  'attendance',
+  'attendance', 'schedule', 'shiftDefinitions',
 ])
 const INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS = Object.freeze([
   ...SESSION_CONTEXT_STATE_COLLECTIONS,
@@ -177,7 +178,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   policies: [],
   'order-audit': ['stores', 'orderAudit'],
   'customer-survey': ['stores', 'orders', 'orderInformationOptions'],
-  'support-transfers': ['stores', 'employees', 'supportTransfers', 'attendance'],
+  'support-transfers': ['stores', 'employees', 'supportTransfers', 'attendance', 'schedule', 'shiftDefinitions', 'notifications'],
   'order-information-settings': ['orderInformationOptions'],
   // Catalog editing sends explicit commands; attendance/checklist repair stays
   // in the command profile instead of loading every historical shift here.
@@ -224,7 +225,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'support-violations': ['employees', 'violations', 'violationRefunds'],
   'employee-home': [
     'stores', 'employees', 'orders', 'attendance', 'schedule', 'supportWorkSchedules',
-    'officeAdjustments', 'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions',
+    'officeAdjustments', 'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions', 'notifications',
   ],
   'employee-tasks': [
     'stores', 'employees', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments',
@@ -910,6 +911,7 @@ const BUSINESS_SUPPORT_DOMAIN_COMMANDS = new Set([
   'policies.set',
   'support_transfer.create',
   'support_transfer.update',
+  'support_transfer.stop',
   'support_work.update',
   'support_schedule.assign',
   'support_schedule.delete',
@@ -2174,6 +2176,12 @@ const referencedOrderForNotification = (state, record) => {
 
 const canAccessNotification = (state, actor, record) => {
   if (!isPlainRecord(record)) return false
+  if (String(record.type || '').startsWith('support-transfer.')) {
+    if (['admin', 'business_support'].includes(actor.role)) return true
+    if (actor.role === 'employee') return belongsToEmployee(record, actor.employee_id)
+    return actor.role === 'store_manager'
+      && [record.fromStoreId, record.toStoreId].some((storeId) => sameIdentifier(storeId, actor.store_id))
+  }
   if (actor.role === 'admin') return true
   if (actor.role === 'business_support') {
     if (String(record.type || '') === 'support-work-submitted') return false
@@ -2238,7 +2246,7 @@ const projectNotificationForActor = (record, actor) => {
   const { readAtByUserId, readByUserIds, ...projected } = safeRecord
   void readAtByUserId
   void readByUserIds
-  return { ...projected, readAt: notificationReadAtForActor(record, actor) }
+  return { ...projected, ...(String(record.type || '').startsWith('support-transfer.') ? { route: actor.role === 'employee' ? '/employee/schedule' : '/store/schedule', storeId: actor.role === 'store_manager' ? actor.store_id : record.toStoreId } : {}), readAt: notificationReadAtForActor(record, actor) }
 }
 
 const accountAvatarOwnerSegment = (value) => String(value || '')
@@ -2495,6 +2503,9 @@ const storeDirectoryRecord = (record = {}, selectedStoreId = '') => {
 }
 
 const notificationBelongsToStoreWorkspace = (state, record, storeId, visibleEmployeeIds) => {
+  if (String(record?.type || '').startsWith('support-transfer.')) {
+    return [record.fromStoreId, record.toStoreId].some((id) => sameIdentifier(id, storeId))
+  }
   const explicitStoreIds = [
     record?.storeId,
     record?.data?.storeId,
@@ -2656,6 +2667,33 @@ export const projectSharedState = (
         },
       }
     })
+    const planningTransfers = filterArray(state, 'supportTransfers', (transfer) => (
+      sameIdentifier(transfer.toStoreId, storeId)
+      && ((supportAllowsScheduling(transfer) && (supportTransferTimeBounds(transfer)?.endMs || 0) > Date.parse(projectionTimestamp))
+        || filterArray(state, 'attendance', (record) => sameIdentifier(record.supportTransferId, transfer.id)
+          && !record.deletedAt && !record.checkOut && !record.checkOutAt).length > 0)
+    ))
+    const supportRoster = filterArray(state, 'employees', (employee) => employeeUnit(employee) === 'store'
+      && !employee.deletedAt && planningTransfers.some((transfer) => belongsToEmployee(transfer, employee.id || employee.code)))
+      .map((employee) => ({
+        id: employee.id || employee.code, code: employee.code, name: employee.name,
+        storeId: employee.storeId, homeStoreId: employee.storeId, unit: 'store', status: employee.status,
+        avatar: employee.avatarThumbnailUrl || employee.avatar, position: employee.position,
+        supportStoreId: storeId,
+      }))
+    const planningEmployeeIds = new Set([...homeEmployees, ...supportRoster]
+      .flatMap((employee) => employeeIdentifierValues(employee).map(normalizeIdentifierKey)))
+    const scheduleBusy = scheduleWindows(state).filter((window) => planningEmployeeIds.has(normalizeIdentifierKey(window.employeeId))
+      && (homeEmployees.some((employee) => belongsToEmployee(window, employee.id || employee.code))
+        || planningTransfers.some((transfer) => {
+          const bounds = supportTransferTimeBounds(transfer)
+          return belongsToEmployee(window, transfer.employeeId) && bounds
+            && (window.invalid || (window.startMs < bounds.endMs && bounds.startMs < window.endMs))
+        })))
+      .map(({ assignmentId, employeeId, storeId: busyStoreId, date, shiftId, start, end, startMs, endMs, invalid }) => ({
+        assignmentId, employeeId, storeId: busyStoreId, storeName: storeNameForId(state, busyStoreId),
+        date, shiftId, start, end, startMs, endMs, invalid,
+      }))
     const historicalInboundEmployeeIds = filterArray(state, 'supportTransfers', (record) => (
       sameIdentifier(record.toStoreId, storeId)
       && !record.deletedAt
@@ -2800,6 +2838,8 @@ export const projectSharedState = (
       employees,
       attendance: historicalVisibleScoped('attendance'),
       schedule: employeeScoped('schedule'),
+      supportRoster,
+      scheduleBusy,
       supportWorkSchedules: filterArray(state, 'supportWorkSchedules', (record) => (
         belongsToEmployee(record, ownEmployeeId)
       )),
@@ -2859,7 +2899,7 @@ export const projectSharedState = (
       deletedEmployees,
       supportTransfers: filterArray(state, 'supportTransfers', (record) => (
         sameIdentifier(record.fromStoreId, storeId) || sameIdentifier(record.toStoreId, storeId)
-      )),
+      )).map((record) => ({ ...record, fromStoreName: storeNameForId(state, record.fromStoreId), toStoreName: storeNameForId(state, record.toStoreId) })),
       settings: ownAccountSettings(state, user),
       session: null,
     }
@@ -2896,7 +2936,9 @@ export const projectSharedState = (
       String(user.home_store_id || ''),
       String(openAttendance?.storeId || ''),
     ].map(normalizeIdentifierKey).filter(Boolean))
-    const stores = filterArray(state, 'stores', (record) => visibleStoreIds.has(normalizeIdentifierKey(record.id)))
+    const planningStoreIds = new Set(ownSupportTransfers.flatMap((transfer) => [transfer.fromStoreId, transfer.toStoreId]).map(normalizeIdentifierKey))
+    const stores = filterArray(state, 'stores', (record) => visibleStoreIds.has(normalizeIdentifierKey(record.id)) || planningStoreIds.has(normalizeIdentifierKey(record.id)))
+      .map((record) => visibleStoreIds.has(normalizeIdentifierKey(record.id)) ? record : storeDirectoryRecord(record, ''))
       .map((record) => Object.fromEntries(Object.entries(record).filter(([key]) => (
         !['revenue', 'expense', 'profit', 'cash', 'balance', 'costs'].includes(key)
       ))))
@@ -3330,15 +3372,6 @@ const requireSession = async (request, db, context, {
   return effective
 }
 
-const activeSupportTransferFor = (state, employeeId, at) => (Array.isArray(state.supportTransfers)
-  ? state.supportTransfers
-  : [])
-  .filter((record) => (
-    sameIdentifier(record.employeeId, employeeId)
-    && supportTransferMatchesTime(record, at)
-  ))
-  .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
-
 const openEmployeeAttendanceContextFor = (state, employeeId) => {
   const identifier = String(employeeId || '').trim()
   if (!identifier) {
@@ -3373,7 +3406,7 @@ const openSupportTransferContextFor = (state, employeeId) => {
       identifier: transferId,
       identifierOf: (record) => record?.id,
       predicate: (record) => (
-        supportTransferUsable(record)
+        !record.deletedAt
         && supportTransferMatchesEmployeeStore(record, employeeId, attendance.storeId)
       ),
       collisionCode: 'OPEN_SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
@@ -3397,6 +3430,7 @@ const supportTransferToStoreOnDate = (state, employeeId, storeId, at) => (Array.
   .filter((record) => (
     sameIdentifier(record.employeeId, employeeId)
     && sameIdentifier(record.toStoreId, storeId)
+    && supportAllowsScheduling(record)
     && supportTransferMatchesTime(record, at)
   ))
   .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0] || null
@@ -3417,10 +3451,8 @@ const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = nul
     ? parseStoredJson((await loadState(db, 'global'))?.value_json, {})
     : preloadedState
 
-  // Operational precedence is intentionally strict:
-  //   open attendance > active support-transfer window > home assignment.
-  // This prevents a scheduled transfer from moving the UI or authorization
-  // context away from a shift that the employee has not checked out yet.
+  // A persisted open shift owns the store until checkout. Otherwise only a
+  // real scheduled shift may select a support store; a grant is not attendance.
   const openAttendanceContext = openEmployeeAttendanceContextFor(state, user.employee_id)
   if (openAttendanceContext.hasOpenAttendance) {
     const openAttendance = openAttendanceContext.attendance
@@ -3463,19 +3495,18 @@ const resolveEffectiveEmployeeStore = async (db, user, now, preloadedState = nul
     }
   }
 
-  const transfer = activeSupportTransferFor(state, user.employee_id, now)
-  if (!transfer?.toStoreId) return user
-  const homeStoreId = String(
-    transfer.fromStoreId
-    || user.home_store_id
-    || user.store_id
-    || '',
-  ).trim()
+  const earlyLimit = Math.trunc(await policyNumber(db, 'early_check_in_limit_minutes', 120))
+  const choices = scheduledCheckInChoices(state, user.employee_id, now, earlyLimit)
+  const inProgress = choices.filter((choice) => choice.startMs <= Date.parse(now))
+  const candidates = inProgress.length ? inProgress : choices
+  if (candidates.length !== 1) return { ...user, active_transfer_id: null }
+  const scheduled = candidates[0]
+  const transfer = supportForScheduledWindow(state, scheduled)
   return {
     ...user,
-    home_store_id: homeStoreId || null,
-    store_id: String(transfer.toStoreId),
-    active_transfer_id: String(transfer.id || ''),
+    home_store_id: user.home_store_id || user.store_id || null,
+    store_id: scheduled.storeId,
+    active_transfer_id: transfer?.id || null,
   }
 }
 
@@ -7062,10 +7093,11 @@ export const commandStateProjection = (body) => {
   if (type.startsWith('schedule.')) {
     return projection(
       'command-schedule',
-      ['schedule', 'shiftDefinitions'],
+      ['schedule', 'shiftDefinitions', 'attendance', 'notifications'],
       'schedule',
       payload.scheduleId || payload.id,
       payload.employeeId,
+      false,
     )
   }
   if (type.startsWith('account_settings.')) {
@@ -7077,7 +7109,7 @@ export const commandStateProjection = (body) => {
   if (type.startsWith('support_transfer.')) {
     return projection(
       'command-support-transfer',
-      ['attendance', 'deletedEmployees', 'supportTransfers', 'expenseEntries', 'payrollPeriods', 'payrollPayments'],
+      ['attendance', 'deletedEmployees', 'supportTransfers', 'schedule', 'shiftDefinitions', 'notifications', 'expenseEntries', 'payrollPeriods', 'payrollPayments'],
       'supportTransfers',
       payload.transferId || payload.id,
       payload.employeeId,
@@ -7097,7 +7129,7 @@ export const commandStateProjection = (body) => {
       [
         'attendance', 'deletedEmployees', 'schedule', 'supportWorkSchedules', 'payrollPeriods', 'tasks',
         'taskAssignmentHistory', 'workCatalogItems', 'workCatalogProgress', 'shiftDefinitions',
-        'orders', 'expenseEntries', 'cashTransactions', 'compensationEntries', 'violations',
+        'orders', 'expenseEntries', 'cashTransactions', 'compensationEntries', 'violations', 'notifications',
       ],
       'attendance',
       payload.attendanceId || payload.id,
@@ -10142,6 +10174,11 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
         durationHours: Number(shift.durationHours || 0),
         date: shift.date || null,
         version: Number(shift.version || 1),
+        ...(supportForScheduledWindow(state, {
+          employeeId, storeId, ...shiftWindow(date, shift),
+        }) ? { supportTransferId: supportForScheduledWindow(state, {
+          employeeId, storeId, ...shiftWindow(date, shift),
+        }).id } : {}),
       }
     })
     return {
@@ -10152,6 +10189,7 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       shiftIds,
       shiftId: shiftIds[0],
       shiftSnapshots,
+      ...(previousAssignment?.cancelledShifts ? { cancelledShifts: previousAssignment.cancelledShifts } : {}),
       note: String(assignment.note || '').trim().slice(0, 500),
       createdAt: previousAssignment?.createdAt || commandContext.now,
       createdBy: previousAssignment?.createdBy || serverActorSnapshot(actor),
@@ -10173,9 +10211,41 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       )),
     ]
   }
+  const proposedSchedule = [...nextDay, ...outsideDay]
+  const proposedState = { ...state, schedule: proposedSchedule }
+  const problem = scheduleConflict(proposedState, assignments)
+  if (problem) {
+    const other = problem.conflict
+    throw new ApiError(409, problem.code, other
+      ? `Nhân viên đã có ca tại ${storeNameForId(state, other.storeId)} (${other.date}, ${other.start || '?'}–${other.end || '?'}). Vui lòng chọn thời gian không chồng.`
+      : problem.code === 'SUPPORT_SCHEDULE_OUTSIDE_WINDOW'
+        ? 'Ca hỗ trợ phải nằm hoàn toàn trong thời gian điều chuyển còn được phép phân ca.'
+        : 'Lịch phân ca thiếu thời gian hợp lệ; cần kiểm tra ca trước khi lưu.', {
+      employeeId: problem.window.employeeId,
+      ...(other ? { storeId: other.storeId, date: other.date, start: other.start, end: other.end } : {}),
+    })
+  }
+  const previousWindows = scheduleWindows(state, { storeId })
+    .filter((window) => window.date === date)
+  const nextWindows = scheduleWindows(proposedState, { storeId })
+  for (const window of previousWindows) {
+    if (!(state.attendance || []).some((record) => attendanceMatchesWindow(record, window))) continue
+    const retained = nextWindows.find((candidate) => sameIdentifier(candidate.employeeId, window.employeeId)
+      && sameIdentifier(candidate.shiftId, window.shiftId) && candidate.date === window.date)
+    if (!retained || retained.startMs !== window.startMs || retained.endMs !== window.endMs) {
+      throw new ApiError(409, 'SCHEDULE_STARTED_IMMUTABLE', 'Ca đã phát sinh điểm danh; không thể xóa hoặc đổi lịch của ca này.')
+    }
+  }
+  const affectedEmployeeIds = new Set([...nextDay, ...schedule.filter((entry) => sameIdentifier(entry.storeId, storeId) && String(entry.date || entry.workDate) === date)]
+    .map((entry) => normalizeIdentifierKey(employeeReference(entry))))
+  const scheduleNotifications = (state.supportTransfers || []).filter((transfer) => affectedEmployeeIds.has(normalizeIdentifierKey(transfer.employeeId))
+    && [transfer.fromStoreId, transfer.toStoreId].some((id) => sameIdentifier(id, storeId))
+    && supportTransferOverlapsDate(transfer, date))
+    .map((transfer) => supportNotification(state, transfer, 'schedule', actor, commandContext, `Lịch ngày ${date} tại ${store.name} đã cập nhật. Vui lòng xem lịch mới nhất.`))
   const nextState = {
     ...state,
-    schedule: [...nextDay, ...outsideDay],
+    notifications: [...scheduleNotifications, ...(state.notifications || [])],
+    schedule: proposedSchedule,
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
   return commitGlobalStateDomainCommand(db, actor, current, nextState, {
@@ -10539,7 +10609,9 @@ const notificationCommand = async (db, actor, body, commandContext) => {
   const targets = notifications.filter((record) => (
     notificationUnread(record, actor)
     && canAccessNotification(state, actor, record)
-    && (!storeId || sameIdentifier(record.storeId, storeId))
+    && (!storeId || sameIdentifier(record.storeId, storeId)
+      || (String(record.type || '').startsWith('support-transfer.')
+        && (actor.role === 'employee' || [record.fromStoreId, record.toStoreId].some((id) => sameIdentifier(id, storeId)))))
   ))
   if (!targets.length) {
     return recordNoopCommand(db, actor, {
@@ -10601,12 +10673,29 @@ const monthsInDateRange = (fromDate, toDate) => {
   return months
 }
 
+const supportNotification = (state, transfer, action, actor, context, detail = '') => ({
+  id: `ntf_support_${context.requestId}_${transfer.id}_${action}`,
+  type: `support-transfer.${action}`,
+  employeeId: transfer.employeeId, supportTransferId: transfer.id,
+  fromStoreId: transfer.fromStoreId, toStoreId: transfer.toStoreId,
+  title: ({ create: 'Có điều chuyển hỗ trợ mới', update: 'Điều chuyển hỗ trợ đã thay đổi',
+    delete: 'Đã xóa điều chuyển hỗ trợ', stop: 'Đã dừng phân ca hỗ trợ',
+    schedule: 'Lịch hỗ trợ đã thay đổi', check_in: 'Nhân viên đã vào ca hỗ trợ',
+    check_out: 'Nhân viên đã kết ca hỗ trợ' })[action] || 'Cập nhật hỗ trợ',
+  message: `${transfer.employeeName || transfer.employeeId}: ${storeNameForId(state, transfer.fromStoreId)} → ${storeNameForId(state, transfer.toStoreId)}. ${detail || `${transfer.startAt || transfer.fromDate} – ${transfer.endAt || transfer.toDate}`}`,
+  createdAt: context.now, createdBy: serverActorSnapshot(actor), readAtByUserId: {},
+})
+
+const transferScheduledWindows = (state, transfer) => scheduleWindows(state, { employeeId: transfer.employeeId, storeId: transfer.toStoreId })
+  .filter((window) => sameIdentifier(window.supportTransferId, transfer.id)
+    || sameIdentifier(supportForScheduledWindow(state, window)?.id, transfer.id))
+
 const supportTransferCommand = async (db, actor, body, commandContext) => {
   if (!['admin', 'business_support'].includes(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý điều chuyển nhân sự.')
   }
   const operation = body.type.split('.').at(-1)
-  if (!['create', 'update', 'delete'].includes(operation)) {
+  if (!['create', 'update', 'delete', 'stop'].includes(operation)) {
     throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh điều chuyển hỗ trợ không được hỗ trợ.')
   }
   if (operation === 'delete' && actor.role !== 'admin') {
@@ -10649,6 +10738,55 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   }
   const canonicalTransferId = String(previous?.id || transferId).trim()
   const linkedAttendance = previous ? linkedAttendanceForSupportTransfer(state, previous) : []
+  if (previous && payload.transferVersion !== undefined && Number(payload.transferVersion) !== Number(previous.version || 1)) {
+    throw new ApiError(409, 'SUPPORT_TRANSFER_VERSION_CONFLICT', 'Phiếu điều chuyển đã thay đổi. Vui lòng tải lại trước khi lưu.')
+  }
+  if (operation === 'stop') {
+    assertOperationalStoreAccess(actor, previous.fromStoreId)
+    assertOperationalStoreAccess(actor, previous.toStoreId)
+    const reason = String(payload.reason || '').trim()
+    if (!reason || reason.length > 500) throw new ApiError(400, 'REASON_REQUIRED', 'Cần nhập lý do dừng hỗ trợ từ 1 đến 500 ký tự.')
+    if (previous.schedulingClosedAt) return recordNoopCommand(db, actor, {
+      command: body.type, version: current.version, transfer: previous, existing: true,
+    }, 200, commandContext)
+    const removed = transferScheduledWindows(state, previous).filter((window) => (
+      window.endMs > Date.parse(commandContext.now)
+      && !linkedAttendance.some((record) => attendanceMatchesWindow(record, window))
+    ))
+    const changedSchedule = []
+    const nextSchedule = (state.schedule || []).map((assignment) => {
+      const cancelled = removed.filter((window) => String(window.assignmentId) === String(assignment.id))
+      if (!cancelled.length) return assignment
+      const shiftIds = (assignment.shiftIds || [assignment.shiftId]).filter((id) => !cancelled.some((window) => sameIdentifier(id, window.shiftId)))
+      const updated = {
+        ...assignment, shiftIds, shiftId: shiftIds[0] || '',
+        shiftSnapshots: (assignment.shiftSnapshots || []).filter((snapshot) => shiftIds.some((id) => sameIdentifier(id, snapshot.id))),
+        cancelledShifts: [...(assignment.cancelledShifts || []), ...cancelled.map((window) => ({ shiftId: window.shiftId, snapshot: window.shift, reason, cancelledAt: commandContext.now }))],
+        ...(!shiftIds.length ? { cancelledAt: commandContext.now } : {}),
+        updatedAt: commandContext.now,
+      }
+      changedSchedule.push(updated)
+      return updated
+    })
+    const transfer = { ...previous, schedulingClosedAt: commandContext.now, schedulingCloseReason: reason,
+      updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor), version: Number(previous.version || 1) + 1 }
+    const notification = supportNotification(state, transfer, 'stop', actor, commandContext,
+      `${reason}. Đã hủy ${removed.length} ca chưa bắt đầu. Ca đang làm được giữ đến khi kết ca.`)
+    return commitGlobalStateDomainCommand(db, actor, current, {
+      ...state, supportTransfers: transfers.map((record, index) => index === previousMatch.index ? transfer : record),
+      schedule: nextSchedule, notifications: [notification, ...(state.notifications || [])],
+      stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
+    }, {
+      action: body.type, entityType: 'support-transfer', entityId: canonicalTransferId,
+      before: previous, after: transfer, metadata: { reason, cancelledSchedule: removed },
+      response: { command: body.type, transfer, schedule: changedSchedule, notifications: [projectNotificationForActor(notification, actor)] },
+    }, commandContext)
+  }
+  const scheduledWindows = previous ? transferScheduledWindows(state, previous) : []
+  if (operation === 'delete' && !linkedAttendance.length && scheduledWindows.some((window) => window.endMs > Date.parse(commandContext.now))) {
+    throw new ApiError(409, 'SUPPORT_TRANSFER_SCHEDULE_EXISTS', 'Phiếu còn ca đã phân. Dùng Dừng hỗ trợ để xem và hủy các ca chưa bắt đầu.')
+  }
+
   if (linkedAttendance.length && (
     operation === 'delete'
     || actor.role !== 'admin'
@@ -10775,6 +10913,7 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     }
     const nextState = {
       ...state,
+      notifications: [supportNotification(state, deleted, 'delete', actor, commandContext, reason), ...(state.notifications || [])],
       supportTransfers: transfers.map((record, index) => index === previousMatch.index ? deleted : record),
       payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
@@ -10806,7 +10945,7 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   const overlap = transfers.find((record) => (
     !sameIdentifier(record.id, canonicalTransferId)
     && sameIdentifier(record.employeeId, employeeId)
-    && supportTransferUsable(record)
+    && supportAllowsScheduling(record)
     && (() => {
       const existingBounds = supportTransferTimeBounds(record)
       return existingBounds
@@ -10832,10 +10971,20 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
     allowance,
     note,
     status,
+    version: operation === 'create' ? 1 : Number(previous.version || 1) + 1,
     ...(operation === 'create'
       ? { createdAt: commandContext.now, createdBy: serverActorSnapshot(actor) }
       : { updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor) }),
   }
+  const outsideSchedules = scheduledWindows.filter((window) => window.endMs > Date.parse(commandContext.now)
+    && !linkedAttendance.some((record) => attendanceMatchesWindow(record, window))
+    && (!supportAllowsScheduling(transfer) || !sameIdentifier(window.employeeId, transfer.employeeId)
+      || !sameIdentifier(window.storeId, transfer.toStoreId)
+      || window.startMs < timeBounds.startMs || window.endMs > timeBounds.endMs))
+  if (outsideSchedules.length) throw new ApiError(409, 'SUPPORT_TRANSFER_SCHEDULE_CONFLICT',
+    'Thay đổi này làm ca đã phân nằm ngoài thời gian hỗ trợ. Cần sửa lịch hoặc dừng hỗ trợ trước.', {
+      schedules: outsideSchedules.map(({ assignmentId, storeId, date, start, end }) => ({ assignmentId, storeId, date, start, end })),
+    })
   const linkedAttendanceIds = new Set(linkedAttendance.map((record) => String(record.id || '')))
   const transferState = {
     ...state,
@@ -10935,6 +11084,7 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   }
   const nextState = {
     ...transferState,
+    notifications: [supportNotification(state, transfer, operation, actor, commandContext), ...(state.notifications || [])],
     attendance: nextAttendance,
     expenseEntries: nextExpenseEntries,
     payrollPeriods: invalidateClosedPayrollPeriods(state, payrollTargets, commandContext.now, body.type),
@@ -15555,18 +15705,39 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
   const { current, state } = await loadGlobalCommandState(db, body, actor)
   const payload = isPlainRecord(body.payload) ? body.payload : {}
   const employeeId = String(actor.employee_id || actor.user_id || '')
-  const storeId = String(actor.store_id || '')
+  let storeId = String(actor.store_id || '')
   const employee = (Array.isArray(state.employees) ? state.employees : [])
     .find((record) => sameIdentifier(record.id || record.code, employeeId) && !record.deletedAt)
-  const activeTransfer = actor.active_transfer_id
+  let activeTransfer = actor.active_transfer_id
     ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
         sameIdentifier(record.id, actor.active_transfer_id)
         && sameIdentifier(record.employeeId, employeeId)
         && sameIdentifier(record.toStoreId, storeId)
         && !record.deletedAt
-        && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+        && (body.type !== 'attendance.check_in' || supportAllowsScheduling(record))
       ))
     : null
+  const earlyLimit = Math.trunc(await policyNumber(db, 'early_check_in_limit_minutes', 120))
+  let scheduledWindow = null
+  const requiresAssignedShift = employeeUnit(employee) === 'store'
+    && (state.supportTransfers || []).some((transfer) => belongsToEmployee(transfer, employeeId))
+  if (body.type === 'attendance.check_in' && requiresAssignedShift) {
+    const open = openEmployeeAttendanceContextFor(state, employeeId)
+    if (open.hasOpenAttendance) {
+      throw new ApiError(409, 'ATTENDANCE_ALREADY_OPEN', 'Bạn phải kết ca đang làm thành công trước khi vào ca khác.')
+    }
+    assertUniqueShiftDefinitionIdentifiers((state.shiftDefinitions || []).filter((record) => record.active !== false
+      && (!record.storeId || sameIdentifier(record.storeId, storeId))))
+    const choices = scheduledCheckInChoices(state, employeeId, commandContext.now, earlyLimit)
+      .filter((choice) => (!(payload.shiftId || payload.workShiftId) || sameIdentifier(choice.shiftId, payload.shiftId || payload.workShiftId))
+        && (!payload.scheduleId || sameIdentifier(choice.assignmentId, payload.scheduleId)))
+    if (choices.length !== 1) {
+      throw new ApiError(409, 'SUPPORT_SHIFT_NOT_ASSIGNED', 'Chưa có ca được phân phù hợp thời gian hiện tại, hoặc ca đã hoàn thành. Vui lòng kiểm tra lịch phân ca.')
+    }
+    scheduledWindow = choices[0]
+    storeId = String(scheduledWindow.storeId)
+    activeTransfer = supportForScheduledWindow(state, scheduledWindow)
+  }
   if (!employee || (!sameIdentifier(employee.storeId, storeId) && !activeTransfer)) {
     throw new ApiError(409, 'EMPLOYEE_PROFILE_MISSING', 'Tài khoản chưa được liên kết với hồ sơ nhân viên hợp lệ.')
   }
@@ -15592,7 +15763,8 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     assertPayrollNotPaidOrLocked(state, storeId, localNow.date.slice(0, 7))
     const dayAssignments = (Array.isArray(state.schedule) ? state.schedule : []).filter((record) => (
       belongsToEmployee(record, employeeId)
-      && String(record.date || record.workDate || '') === localNow.date
+      && String(record.date || record.workDate || '') === (scheduledWindow?.date || localNow.date)
+      && sameIdentifier(record.storeId, storeId)
       && !record.deletedAt
     ))
     const assignedShiftIds = new Set(dayAssignments.flatMap((record) => [
@@ -15632,29 +15804,14 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       && dayAssignments.length && !assignedShiftIds.has(normalizeIdentifierKey(shiftId))) {
       throw new ApiError(403, 'SHIFT_NOT_ASSIGNED', 'Ca này không nằm trong lịch làm việc hôm nay của bạn.')
     }
-    // A support transfer is itself the attendance window. Even if a stale or
-    // destination schedule is submitted, punctuality must use the exact
-    // configured transfer start/end rather than unrelated shift hours.
+    if (scheduledWindow) {
+      shiftId = String(scheduledWindow.shiftId)
+      shift = { ...scheduledWindow.shift, id: shiftId, source: 'store-schedule' }
+    }
     if (activeTransfer) {
       activeTransferBounds = supportTransferTimeBounds(activeTransfer)
-      const transferStart = activeTransferBounds
-        ? parseShiftTime(localDateTimeParts(activeTransferBounds.startAt).time)
-        : null
-      const transferEnd = activeTransferBounds
-        ? parseShiftTime(localDateTimeParts(activeTransferBounds.endAt).time)
-        : null
-      if (!transferStart || !transferEnd) {
-        throw new ApiError(409, 'SUPPORT_TRANSFER_TIME_INVALID', 'Phiếu điều chuyển thiếu thời gian làm việc hợp lệ.')
-      }
-      shiftId = `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80)
-      shift = {
-        id: shiftId,
-        name: 'Ca hỗ trợ cửa hàng',
-        storeId,
-        start: transferStart.label,
-        end: transferEnd.label,
-        version: 1,
-        source: 'support-transfer',
+      if (!scheduledWindow || !activeTransferBounds) {
+        throw new ApiError(409, 'SUPPORT_SHIFT_NOT_ASSIGNED', 'Cần phân ca trong thời gian hỗ trợ trước khi điểm danh.')
       }
     }
     if (!shift && officeEmployee && !canonicalProfileScheduleEmployee && !shiftId) {
@@ -15683,10 +15840,9 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       throw new ApiError(409, 'OFFICE_ATTENDANCE_ALREADY_RECORDED', 'Bạn đã chấm công trong ngày hôm nay.')
     }
     const currentEpochMs = Date.parse(commandContext.now)
-    const minutesFromStart = activeTransferBounds && Number.isFinite(currentEpochMs)
-      ? Math.floor((currentEpochMs - activeTransferBounds.startMs) / 60_000)
+    const minutesFromStart = scheduledWindow && Number.isFinite(currentEpochMs)
+      ? Math.floor((currentEpochMs - scheduledWindow.startMs) / 60_000)
       : localNow.minuteOfDay - times.start.minuteOfDay
-    const earlyLimit = Math.trunc(await policyNumber(db, 'early_check_in_limit_minutes', 120))
     if (minutesFromStart < -earlyLimit) {
       throw new ApiError(409, 'CHECK_IN_TOO_EARLY', `Chỉ được điểm danh sớm tối đa ${earlyLimit} phút.`, {
         minutesUntilStart: Math.abs(minutesFromStart),
@@ -15725,6 +15881,7 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
       workDate: localNow.date,
       attendanceDate: localNow.date,
       employeeId,
+      ...(scheduledWindow ? { scheduleId: scheduledWindow.assignmentId, scheduledWorkDate: scheduledWindow.date, scheduledStartAt: scheduledWindow.startAt, scheduledEndAt: scheduledWindow.endAt } : {}),
       employeeName: employee.name || actor.display_name,
       storeId,
       homeStoreId: activeTransfer?.fromStoreId || employee.storeId || storeId,
@@ -15805,6 +15962,8 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     } : null
     const nextState = {
       ...state,
+      notifications: activeTransfer ? [supportNotification(state, activeTransfer, 'check_in', actor, commandContext,
+        `Ca ${shift.name || shiftId}, ${times.start.label}–${times.end.label}; điểm danh lúc ${localNow.time}.`), ...(state.notifications || [])] : state.notifications,
       attendance: [record, ...attendance],
       tasks: checklist ? [...checklist.tasks, ...(Array.isArray(state.tasks) ? state.tasks : [])] : state.tasks,
       taskAssignmentHistory: checklistAssignment
@@ -15847,9 +16006,8 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     collisionCode: 'ATTENDANCE_REFERENCE_COLLISION',
     collisionMessage: 'Mã chấm công tham chiếu trong dữ liệu ca đang mơ hồ; cần xử lý dữ liệu trùng trước khi kết ca.',
   })
-  // An exact transfer end immediately restores the account's home-store scope.
-  // The employee must still be able to settle the already-open destination shift,
-  // without regaining any permission to create new destination activity.
+  // The open attendance remains the operational authority after the grant ends.
+  // Settlement preserves the existing payable-hours and allowance formulas.
   const attendanceStoreId = String(openRecord.storeId || storeId)
   const attendanceTransfer = openRecord.supportTransferId
     ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).find((record) => (
@@ -16203,14 +16361,16 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     attendance: attendance.map((record) => String(record.id || '') === String(openRecord.id) ? updatedRecord : record),
     expenseEntries: [supportExpenseEntry, shiftExpenseEntry, ...expenseEntries].filter(Boolean),
     cashTransactions: cashTransaction ? [cashTransaction, ...cashTransactions] : cashTransactions,
+    notifications: attendanceTransfer ? [supportNotification(state, attendanceTransfer, 'check_out', actor, commandContext, `Đã kết ca ${openRecord.shiftName || openRecord.shiftId} lúc ${localNow.time}.`), ...(state.notifications || [])] : state.notifications,
     supportTransfers: attendanceTransfer
       ? (Array.isArray(state.supportTransfers) ? state.supportTransfers : []).map((record) => (
           String(record.id || '') === String(attendanceTransfer.id)
             ? {
                 ...record,
-                status: 'Hoàn tất',
-                completedAt: commandContext.now,
-                completedAttendanceId: openRecord.id,
+                ...(record.schedulingClosedAt || (attendanceTransferBounds && checkOutTime >= attendanceTransferBounds.endMs) ? {
+                  status: 'Hoàn tất', completedAt: commandContext.now, completedAttendanceId: openRecord.id,
+                } : {}),
+                lastCheckoutAt: commandContext.now,
                 updatedAt: commandContext.now,
               }
             : record
@@ -16786,7 +16946,6 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
         && sameIdentifier(record.employeeId, employeeId)
         && sameIdentifier(record.toStoreId, storeId)
         && !record.deletedAt
-        && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
       ))
     : null
   if (employee && !sameIdentifier(employee.storeId, storeId) && !activeTransfer) {

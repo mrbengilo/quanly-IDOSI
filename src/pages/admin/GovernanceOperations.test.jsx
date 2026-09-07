@@ -107,7 +107,7 @@ describe('Hỗ trợ KD operations', () => {
     render(<SupportTransfersPage />)
 
     fireEvent.change(screen.getByLabelText(/Cửa hàng điều chuyển/i), { target: { value: 'CH001' } })
-    fireEvent.change(screen.getByLabelText(/^Nhân viên/i), { target: { value: 'SM234-001' } })
+    fireEvent.change(screen.getByRole('combobox', { name: /^Nhân viên/i }), { target: { value: 'SM234-001' } })
     fireEvent.change(screen.getByLabelText(/Cửa hàng nhận hỗ trợ/i), { target: { value: 'CH002' } })
     fireEvent.change(screen.getByLabelText(/Lương hỗ trợ/i), { target: { value: '35' } })
     fireEvent.change(screen.getByLabelText(/Phụ cấp/i), { target: { value: '200' } })
@@ -202,7 +202,7 @@ describe('Hỗ trợ KD operations', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sửa' }))
 
     expect(screen.getByLabelText(/Cửa hàng điều chuyển/i).disabled).toBe(true)
-    expect(screen.getByLabelText(/^Nhân viên/i).disabled).toBe(true)
+    expect(screen.getByRole('combobox', { name: /^Nhân viên/i }).disabled).toBe(true)
     expect(screen.getByLabelText(/Cửa hàng nhận hỗ trợ/i).disabled).toBe(true)
     expect(screen.getByLabelText(/Thời gian bắt đầu/i).disabled).toBe(false)
     expect(screen.getByLabelText(/Thời gian kết thúc/i).disabled).toBe(false)

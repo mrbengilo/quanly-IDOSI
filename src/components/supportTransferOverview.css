@@ -1,0 +1,14 @@
+.support-transfer-overview { padding: 12px 20px 0; min-width: 0; }
+.support-transfer-overview__list { display: grid; gap: 8px; }
+.support-transfer-overview__item { display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid #e6eaf0; padding: 8px 0; min-width: 0; }
+.support-transfer-overview__item:last-child { border-bottom: 0; }
+.support-transfer-overview__details { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.support-transfer-overview__details > span, .support-transfer-overview__details > small { max-width: 100%; white-space: normal; }
+.support-transfer-overview__details .badge { white-space: normal; }
+.support-transfer-overview__item > button { flex-shrink: 0; }
+.schedule-availability-note { color: #a44212; white-space: normal; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .support-transfer-overview { padding: 8px 10px 0; }
+  .support-transfer-overview__item { align-items: stretch; flex-direction: column; gap: 8px; }
+  .support-transfer-overview__item > button { align-self: flex-start; }
+}

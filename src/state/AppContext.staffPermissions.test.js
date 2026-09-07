@@ -1,3 +1,4 @@
+import { nextSupportTransferBoundaryDelay } from '../domain/supportScheduling'
 import { describe, expect, it } from 'vitest'
 import { Buffer } from 'node:buffer'
 import {
@@ -12,7 +13,6 @@ import {
   createLocalSystemResetState,
   generateBusinessSupportStoreCredentials,
   hydrateState,
-  nextSupportTransferBoundaryDelay,
   remoteEffectiveUserChanged,
   resolveRemoteActiveStoreId,
 } from './AppContext'

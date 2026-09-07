@@ -296,7 +296,7 @@ describe('SQLite state snapshots', () => {
     }
   })
 
-  it('filters session attendance to open rows and payroll entities to one period', async () => {
+  it('keeps own completed shifts for session resolution and filters payroll to one period', async () => {
     const { database } = await createSnapshotDatabase()
     const currentDate = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10)
     const insert = (collectionKey, entityKey, order, value, periodKey = null) => {
@@ -354,7 +354,7 @@ describe('SQLite state snapshots', () => {
       const session = database.readStoreStateSnapshot('global', 'S01', 'E01', 'session')
       expect(session.entities
         .filter(({ collection_key: collectionKey }) => collectionKey === 'attendance')
-        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual(['ATT-OPEN'])
+        .map(({ value_json: valueJson }) => JSON.parse(valueJson).id)).toEqual(['ATT-OPEN', 'ATT-CLOSED'])
 
       const payroll = database.readStoreStateSnapshot('global', 'S01', 'E01', 'payroll', '2026-09')
       expect(payroll.entities

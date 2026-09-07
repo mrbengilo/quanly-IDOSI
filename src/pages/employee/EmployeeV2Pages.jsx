@@ -1,3 +1,4 @@
+import { attendanceMatchesWindow, scheduleWindows, supportForScheduledWindow } from '../../domain/supportScheduling'
 import { useEffect, useRef, useState } from 'react'
 import {
   Banknote,
@@ -39,7 +40,7 @@ import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { savedTaskProgressCoversIncompleteTasks } from '../../domain/taskProgress'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../../domain/storeTieredPayroll'
 import { activeOccupationLabels, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
-import { formatVietnamTransferDateTime, isSupportTransferActiveAt, supportTransferBounds } from '../../domain/supportTransferTime'
+import { formatVietnamTransferDateTime, isSupportTransferActiveAt } from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
 import {
   businessDate,
@@ -174,21 +175,15 @@ const employeeAttendance = (attendance, employee, { employees = [], stores = [],
 
 const findScheduledShifts = (app, employee, workDate) => {
   const targetEmployee = resolveTarget(app.employees, employeeKey(employee), employeeAliases, employee)
-  const targetStore = resolveTarget(app.stores, employee.storeId, storeAliases, { id: String(employee.storeId || '') })
-  if (!targetEmployee || !targetStore) return []
-  const assignment = (app.schedule || []).find((record) => (
-    employeeReferenceMatches(app.employees, targetEmployee, record.employeeId)
-    && referenceMatchesTarget(app.stores, targetStore, record.storeId || employee.storeId, storeAliases)
-    && (!record.date || record.date === workDate)
-  ))
-  const ids = assignment?.shiftIds || []
-  const snapshots = Array.isArray(assignment?.shiftSnapshots) ? assignment.shiftSnapshots : []
-  const definitions = Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : []
-  const selected = ids.map((id) => (
-    resolveTarget(snapshots, id, shiftAliases)
-    || resolveTarget(definitions.filter((shift) => shift.active !== false), id, shiftAliases)
-  )).filter(Boolean)
-  return selected.map((shift) => ({ ...shift, date: workDate }))
+  if (!targetEmployee) return []
+  const ownSchedule = (app.schedule || []).filter((record) => employeeReferenceMatches(app.employees, targetEmployee, record.employeeId))
+  return scheduleWindows({ ...app, schedule: ownSchedule }).filter((window) => !window.invalid
+    && window.startMs < Date.parse(`${workDate}T00:00:00+07:00`) + 86_400_000
+    && window.endMs > Date.parse(`${workDate}T00:00:00+07:00`)
+    && !(app.attendance || []).some((record) => (record.checkOut || record.checkOutAt) && attendanceMatchesWindow(record, window))
+    && (String(window.storeId).toLowerCase() === String(targetEmployee.storeId).toLowerCase() || supportForScheduledWindow(app, window)))
+    .map((window) => ({ ...window.shift, id: window.shiftId, date: window.date, storeId: window.storeId,
+      scheduleId: window.assignmentId, name: `${window.shift.name || window.shiftId} • ${app.stores?.find((store) => String(store.id).toLowerCase() === String(window.storeId).toLowerCase())?.name || window.storeId}` }))
 }
 
 const activeSupportTransfer = ({
@@ -319,15 +314,7 @@ export function EmployeeDashboardV2() {
   })
   const completedTasks = todayTasks.filter((task) => taskCompletedByEmployee(task, employeeId, app.employees)).length
   const scheduledShifts = findScheduledShifts(app, dashboardEmployee, operationalDate)
-  const transferBounds = supportTransferBounds(activeTransfer || {})
-  const shifts = isSupporting ? [{
-    id: `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80),
-    name: 'Ca hỗ trợ cửa hàng',
-    start: transferBounds?.startLocal?.slice(11, 16) || '--:--',
-    end: transferBounds?.endLocal?.slice(11, 16) || '--:--',
-    date: operationalDate,
-    source: 'support-transfer',
-  }] : scheduledShifts
+  const shifts = scheduledShifts
   const activeShiftOrders = ordersForOpenAttendance(ownOrders, employeeId, activeRecord, app.attendance, {
     employees: app.employees,
     stores,
@@ -388,6 +375,7 @@ export function EmployeeDashboardV2() {
         employeeId,
         date: operationalDate,
         shiftId: shift.id,
+        scheduleId: shift.scheduleId,
         shiftName: shift.name,
         shiftStart: shift.start,
         shiftEnd: shift.end,
@@ -471,7 +459,7 @@ export function EmployeeDashboardV2() {
       <PageHeader
         title={`XIN CHÀO, ${employee?.name || 'NHÂN VIÊN'}`}
         subtitle={isSupporting
-          ? `NV hỗ trợ từ ${homeStore?.name || homeStoreId} · đang làm việc tại ${store?.name || workingStoreId}.`
+          ? `NV hỗ trợ từ ${homeStore?.name || homeStoreId} · ${activeRecord ? 'đang làm việc' : 'được phân ca'} tại ${store?.name || workingStoreId}.`
           : 'Điểm danh, theo dõi ca, đơn hàng và công việc đúng cửa hàng trực thuộc.'}
         icon={Fingerprint}
         actions={isSupporting ? <SupportEmployeeTag record={{ employeeId, storeId: workingStoreId, businessDate: operationalDate, supportTransferId: activeTransfer?.id, employeeHomeStoreId: homeStoreId, supportStoreId: workingStoreId }} employee={employee} employeeId={employeeId} storeId={workingStoreId} businessDate={operationalDate} employees={app.employees} stores={stores} supportTransfers={supportTransfers} /> : null}
@@ -491,7 +479,7 @@ export function EmployeeDashboardV2() {
           <dl>
             <div><dt>Mã nhân viên</dt><dd>{employeeId || '—'}</dd></div>
             <div><dt>Họ và tên</dt><dd>{employee?.name || '—'}</dd></div>
-            <div><dt>Cửa hàng đang làm việc</dt><dd>{store?.name || '—'}</dd></div>
+            <div><dt>{activeRecord ? 'Cửa hàng đang làm việc' : 'Cửa hàng theo lịch hiện tại'}</dt><dd>{store?.name || '—'}</dd></div>
             <div><dt>Cửa hàng chính trực thuộc</dt><dd>{homeStore?.name || '—'}</dd></div>
             {isSupporting && <>
               <div><dt>Lương hỗ trợ</dt><dd>{money(activeTransfer.hourlySupportRate || 0)}/giờ</dd></div>
@@ -835,15 +823,7 @@ export function EmployeeAttendancePage() {
     { ...(employee || {}), storeId: workingStoreId },
     operationalDate,
   )
-  const transferBounds = supportTransferBounds(activeTransfer || {})
-  const availableShifts = isSupporting ? [{
-    id: `SUPPORT_TRANSFER_${activeTransfer.id}`.replace(/[^A-Za-z0-9_-]/gu, '_').slice(0, 80),
-    name: 'Ca hỗ trợ cửa hàng',
-    start: transferBounds?.startLocal?.slice(11, 16) || '--:--',
-    end: transferBounds?.endLocal?.slice(11, 16) || '--:--',
-    date: operationalDate,
-    source: 'support-transfer',
-  }] : scheduledShifts
+  const availableShifts = scheduledShifts
   const currentShiftOrders = ordersForOpenAttendance(orders, employeeId, openRecord, app.attendance, {
     employees: app.employees,
     stores,
@@ -859,6 +839,7 @@ export function EmployeeAttendancePage() {
         employeeId,
         date: operationalDate,
         shiftId: shift.id,
+        scheduleId: shift.scheduleId,
         shiftName: shift.name,
         shiftStart: shift.start,
         shiftEnd: shift.end,
@@ -911,7 +892,7 @@ export function EmployeeAttendancePage() {
 
   return (
     <div className="page">
-      <PageHeader title="CHẤM CÔNG" subtitle="Chọn đúng ca, xác nhận vị trí khi vào và ra. Hệ thống không tự động chấm công." icon={Fingerprint} />
+      <PageHeader title="CHẤM CÔNG" subtitle="Chọn đúng ca, xác nhận vị trí khi vào và ra. Hệ thống không tự động chấm công." icon={Fingerprint} actions={isSupporting ? <SupportEmployeeTag context={{ homeStoreId: activeTransfer.fromStoreId, homeStoreName: homeStore?.name, supportStoreId: activeTransfer.toStoreId, supportStoreName: workingStore?.name }} /> : null} />
       <div className="attendance-actions-grid">
         <Card className="attendance-action-card" title="Vào ca">
           <Clock3 size={32} />
