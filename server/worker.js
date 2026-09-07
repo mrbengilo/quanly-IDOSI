@@ -278,6 +278,11 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'employee-cashflow': ['stores', 'employees', 'orders', 'expenseEntries', 'attendance'],
 })
 const SYSTEM_SCREEN_NAMES = new Set(Object.keys(SYSTEM_SCREEN_COLLECTIONS))
+// Account rows are only needed where personnel logins can be viewed or edited.
+// Other screens already receive the signed-in user in the response envelope.
+const SYSTEM_ACCOUNT_DIRECTORY_SCREENS = new Set([
+  'employees', 'business-support', 'store-managers', 'office',
+])
 const HISTORY_COLLECTIONS = Object.freeze({
   orders: 'orders',
   attendance: 'attendance',
@@ -3918,6 +3923,20 @@ const retainStateCollections = (row, collectionKeys) => {
 const loadStateCollections = async (db, scope, collectionKeys) => {
   const collectionFilter = stateCollectionFilter(collectionKeys)
   if (!collectionFilter.keys.length) throw new ApiError(500, 'STATE_COLLECTIONS_INVALID', 'Thiếu danh mục trạng thái cần tải.')
+  if (typeof db?.readSystemStateSnapshot === 'function') {
+    // VPS SQLite can read the shell, manifests and selected entities in one
+    // atomic statement. Keep the paged, version-checked D1 fallback below.
+    const snapshot = await db.readSystemStateSnapshot(scope, collectionFilter.keys)
+    if (snapshot?.unchanged !== false
+      || !Array.isArray(snapshot.manifests)
+      || !Array.isArray(snapshot.entities)) {
+      throw new ApiError(500, 'STATE_SNAPSHOT_INVALID', 'SQLite không trả về snapshot danh mục hợp lệ.')
+    }
+    return retainStateCollections(
+      hydrateStateSnapshot(snapshot.row, snapshot.manifests, snapshot.entities),
+      collectionFilter.keys,
+    )
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const row = await first(db, `
       SELECT scope_key, value_json, version, updated_at, updated_by, last_request_id
@@ -4792,9 +4811,6 @@ const login = async (request, env, context) => {
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
   const effectiveUser = await resolveEffectiveEmployeeStore(db, selectedUser, context.now, bootstrapState)
   const publicEffectiveUser = publicUser(effectiveUser)
-  const visibleUsers = OPERATIONS_ROLES.has(effectiveUser.role)
-    ? (await visibleUserRowsForActor(db, effectiveUser)).map(publicUser)
-    : null
   return jsonResponse(apiPayload(context, {
     token: rawToken,
     tokenType: 'Bearer',
@@ -4814,7 +4830,6 @@ const login = async (request, env, context) => {
       partial: true,
       loadedCollections,
     },
-    ...(visibleUsers ? { users: visibleUsers } : {}),
   }))
 }
 
@@ -5098,7 +5113,9 @@ const getSystemScreen = async (request, env, context, screen) => {
   }
   const [policies, users] = await Promise.all([
     listPolicies(db),
-    systemOperator ? visibleUserRowsForActor(db, user) : Promise.resolve([]),
+    systemOperator && SYSTEM_ACCOUNT_DIRECTORY_SCREENS.has(screen)
+      ? visibleUserRowsForActor(db, user)
+      : Promise.resolve(null),
   ])
   const rawState = row ? parseStoredJson(row.value_json, {}) : {}
   return jsonResponse(apiPayload(context, {
@@ -5110,7 +5127,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,
     policies,
-    ...(systemOperator ? { users: users.map(publicUser) } : {}),
+    ...(users ? { users: users.map(publicUser) } : {}),
   }))
 }
 
