@@ -133,7 +133,7 @@ const STORE_PAYROLL_COMMAND_COLLECTIONS = Object.freeze([
   'deletedEmployees', 'attendance', 'schedule', 'officeAdjustments', 'salaryAdjustments', 'salaryAdvances',
   'payrollPeriods', 'payrollPayments', 'storeEmployeeSalaryConfigs', 'compensationEntries',
   'violations', 'violationRefunds', 'revenueBonusDaily', 'revenueBonusAllocations',
-  'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
+  'revenueBonusOverrides', 'teamRewardClaims', 'teamRewardParticipants', 'periodReconciliations', 'jobRuns',
   'orders', 'expenseEntries', 'fixedExpenses', 'cashTransactions', 'workCatalogProgress',
 ])
 
@@ -159,7 +159,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   // public screen route; they let a Save read only the target store/domain.
   'command-order': [
     'attendance', 'orders', 'notifications', 'payrollPeriods', 'orderAudit',
-    'auditLogs', 'orderInformationOptions',
+    'auditLogs', 'orderInformationOptions', 'shiftDefinitions',
   ],
   'command-expense': ['expenseEntries', 'fixedExpenses', 'payrollPeriods'],
   'command-import': ['importVouchers', 'expenseEntries', 'payrollPeriods'],
@@ -178,7 +178,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   'command-schedule': ['schedule', 'shiftDefinitions'],
   'command-notification': ['notifications'],
   'command-attendance': [
-    'attendance', 'schedule', 'supportWorkSchedules', 'payrollPeriods',
+    'attendance', 'deletedEmployees', 'schedule', 'supportWorkSchedules', 'payrollPeriods',
     'tasks', 'taskAssignmentHistory', 'workCatalogItems', 'workCatalogProgress',
     'shiftDefinitions', 'orders', 'expenseEntries', 'cashTransactions',
     'compensationEntries', 'violations',
@@ -190,7 +190,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   'command-task-progress': [
     'attendance', 'tasks', 'taskAssignmentHistory', 'notifications', 'workCatalogItems',
   ],
-  'command-shift-expense': ['attendance', 'expenseEntries', 'cashTransactions'],
+  'command-shift-expense': ['attendance', 'expenseEntries', 'cashTransactions', 'payrollPeriods'],
   'command-salary-advance': [
     ...STORE_PAYROLL_COMMAND_COLLECTIONS,
   ],
@@ -199,7 +199,10 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
     'tasks', 'taskAssignmentHistory', 'schedule', 'shiftDefinitions',
     'compensationEntries', 'teamRewardClaims',
   ],
-  'command-work-reward': ['attendance', 'schedule', 'shiftDefinitions'],
+  'command-work-reward': [
+    'attendance', 'schedule', 'shiftDefinitions', 'workCatalogProgress',
+    'compensationEntries', 'teamRewardClaims', 'payrollPeriods',
+  ],
   'command-violation': [
     ...STORE_PAYROLL_COMMAND_COLLECTIONS, 'shiftDefinitions', 'workCatalogItems',
   ],
@@ -320,7 +323,21 @@ const systemStateSnapshotSql = (collectionKeys = [], screen = '') => {
   const actorGlobalSql = actorGlobalCollections.length
     ? `entity.collection_key IN (${sqlStringList(actorGlobalCollections)}) OR`
     : ''
-  const entityFilter = SYSTEM_ACTOR_SCOPED_SCREENS.has(normalizedScreen)
+  const entityFilter = normalizedScreen === 'support-overview'
+    ? `AND (
+        entity.collection_key = 'employees'
+        OR entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM selected_employee_ids)
+        OR EXISTS (
+          SELECT 1 FROM json_each(json_array(
+            json_extract(entity.value_json, '$.employeeId'),
+            json_extract(entity.value_json, '$.employeeCode'),
+            json_extract(entity.value_json, '$.staffId'),
+            json_extract(entity.value_json, '$.userId')
+          )) AS identifier
+          WHERE lower(trim(CAST(identifier.value AS TEXT))) IN (SELECT employee_key FROM selected_employee_ids)
+        )
+      )`
+    : SYSTEM_ACTOR_SCOPED_SCREENS.has(normalizedScreen)
       ? `AND (
           ${actorGlobalSql}
           entity.employee_id IN (SELECT employee_key COLLATE NOCASE FROM selected_employee_ids)
@@ -489,7 +506,7 @@ const storeStateSnapshotSql = (screen = '') => {
       )
       AND (params.period_key = '' OR attendance.period_key = params.period_key)`
     : ''
-  const sessionFilterSql = normalizedScreen === 'session'
+  const sessionFilterSql = normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
     ? `AND (entity.collection_key <> 'attendance' OR (
         entity.open_flag = 1
         OR (

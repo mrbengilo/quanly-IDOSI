@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -31,6 +31,8 @@ import {
   X,
 } from 'lucide-react'
 import { useApp } from '../state/AppContext'
+import { preloadRouteModule } from '../routeModules'
+import { useWorkspacePrefetch } from './workspacePrefetch'
 import { Avatar, Brand, Toast } from '../components/UI'
 import { isOfficeProfile } from '../domain/officeProfile'
 import { resolveOrderRouteScope } from '../domain/orderStoreScope'
@@ -207,10 +209,16 @@ function WorkspaceRouteFailure({ message, detail, onRetry }) {
   )
 }
 
+function WorkspaceContentReady({ routeKey, onReady }) {
+  useEffect(() => { onReady(routeKey) }, [onReady, routeKey])
+  return null
+}
+
 export default function AppShell({ workspaceStatus = null }) {
   const app = useApp()
   const { session, logout, toast, notify, stores = [], activeStoreId } = app
   const [mobileOpen, setMobileOpen] = useState(false)
+  const [displayedRouteKey, setDisplayedRouteKey] = useState('')
   const [notificationOpen, setNotificationOpen] = useState(false)
   const [notificationBusy, setNotificationBusy] = useState(false)
   const [locallyReadNotificationIds, setLocallyReadNotificationIds] = useState(() => new Set())
@@ -260,6 +268,19 @@ export default function AppShell({ workspaceStatus = null }) {
         ? assignedStoreId
         : stores[0]?.id || ''
   const activeStore = stores.find((store) => store.id === selectedStoreId) || (!isStoreBoundRole ? stores[0] : null)
+  const workspaceRouteKey = `${location.key}:${location.pathname}:${location.search}:${session?.id || session?.employeeId || session?.code || ''}:${canonicalRole}:${selectedStoreId}`
+  const preloadModule = useCallback((path) => preloadRouteModule(path, {
+    session, currentEmployee: app.currentEmployee,
+  }), [session, app.currentEmployee])
+  const prefetchOnIntent = useWorkspacePrefetch({
+    ready: !workspaceStatus && displayedRouteKey === workspaceRouteKey
+      && !['connecting', 'syncing', 'error'].includes(app.apiStatus),
+    contextKey: workspaceRouteKey,
+    pathname: location.pathname,
+    paths: roleMenus.map((item) => item.path),
+    preloadModule,
+    prefetchData: app.prefetchWorkspaceData,
+  })
   const notificationItems = useMemo(() => (
     Array.isArray(app.notifications) ? app.notifications.filter(isWorkLifecycleNotification) : []
   ), [app.notifications])
@@ -448,7 +469,7 @@ export default function AppShell({ workspaceStatus = null }) {
         )}
         <nav>
           {roleMenus.map(({ label, path, icon: Icon, badge }) => (
-            <NavLink key={path} to={path} onClick={() => { setMobileOpen(false); setNotificationOpen(false) }} className={({ isActive }) => isActive ? 'active' : ''}>
+            <NavLink key={path} to={path} onPointerEnter={() => prefetchOnIntent(path)} onFocus={() => prefetchOnIntent(path)} onClick={() => { setMobileOpen(false); setNotificationOpen(false) }} className={({ isActive }) => isActive ? 'active' : ''}>
               <Icon size={20} />
               <span>{label}</span>
               {badge && <em>{badge}</em>}
@@ -543,6 +564,7 @@ export default function AppShell({ workspaceStatus = null }) {
           ) : (
             <Suspense fallback={<WorkspaceRouteLoading />}>
               <Outlet context={{ openMenu: () => setMobileOpen(true), activeStore }} />
+              <WorkspaceContentReady routeKey={workspaceRouteKey} onReady={setDisplayedRouteKey} />
             </Suspense>
           )}
         </div>

@@ -179,10 +179,9 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'customer-survey': ['stores', 'orders', 'orderInformationOptions'],
   'support-transfers': ['stores', 'employees', 'supportTransfers', 'attendance'],
   'order-information-settings': ['orderInformationOptions'],
-  'work-catalog': [
-    'stores', 'employees', 'workCatalogItems', 'workCatalogProgress', 'storeShiftTaskTemplates',
-    'attendance', 'compensationEntries', 'teamRewardClaims', 'shiftDefinitions',
-  ],
+  // Catalog editing sends explicit commands; attendance/checklist repair stays
+  // in the command profile instead of loading every historical shift here.
+  'work-catalog': ['stores', 'employees', 'workCatalogItems', 'shiftDefinitions'],
   'compensation-managers': ['stores', 'employees', 'compensationEntries', 'payrollPeriods'],
   'compensation-revenue': [
     'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions', 'supportTransfers',
@@ -208,8 +207,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
     'employees', 'violations', 'compensationEntries', 'attendance', 'payrollPeriods', 'workCatalogItems',
   ],
   'support-overview': [
-    'employees', 'attendance', 'supportWorkAssignments', 'supportWorkSchedules',
-    'compensationEntries', 'violations', 'salaryAdjustments', 'officeAdjustments', 'payrollPeriods',
+    'employees', 'attendance', 'supportWorkSchedules',
   ],
   'support-tasks': [
     'employees', 'workCatalogItems', 'workCatalogProgress', 'attendance',
@@ -278,6 +276,11 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'employee-cashflow': ['stores', 'employees', 'orders', 'expenseEntries', 'attendance'],
 })
 const SYSTEM_SCREEN_NAMES = new Set(Object.keys(SYSTEM_SCREEN_COLLECTIONS))
+// Account rows are only needed where personnel logins can be viewed or edited.
+// Other screens already receive the signed-in user in the response envelope.
+const SYSTEM_ACCOUNT_DIRECTORY_SCREENS = new Set([
+  'employees', 'business-support', 'store-managers', 'office',
+])
 const HISTORY_COLLECTIONS = Object.freeze({
   orders: 'orders',
   attendance: 'attendance',
@@ -3918,6 +3921,20 @@ const retainStateCollections = (row, collectionKeys) => {
 const loadStateCollections = async (db, scope, collectionKeys) => {
   const collectionFilter = stateCollectionFilter(collectionKeys)
   if (!collectionFilter.keys.length) throw new ApiError(500, 'STATE_COLLECTIONS_INVALID', 'Thiếu danh mục trạng thái cần tải.')
+  if (typeof db?.readSystemStateSnapshot === 'function') {
+    // VPS SQLite can read the shell, manifests and selected entities in one
+    // atomic statement. Keep the paged, version-checked D1 fallback below.
+    const snapshot = await db.readSystemStateSnapshot(scope, collectionFilter.keys)
+    if (snapshot?.unchanged !== false
+      || !Array.isArray(snapshot.manifests)
+      || !Array.isArray(snapshot.entities)) {
+      throw new ApiError(500, 'STATE_SNAPSHOT_INVALID', 'SQLite không trả về snapshot danh mục hợp lệ.')
+    }
+    return retainStateCollections(
+      hydrateStateSnapshot(snapshot.row, snapshot.manifests, snapshot.entities),
+      collectionFilter.keys,
+    )
+  }
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const row = await first(db, `
       SELECT scope_key, value_json, version, updated_at, updated_by, last_request_id
@@ -3953,7 +3970,6 @@ const loadInitialStateCollections = async (db, user, collectionKeys) => {
   const canUseScopedSnapshot = typeof db?.readStoreStateSnapshot === 'function'
     && ['business_support', 'store_manager', 'employee'].includes(user?.role)
     && Boolean(actorStoreId)
-  if (!canUseScopedSnapshot) return loadStateCollections(db, 'global', collectionKeys)
   const initialScreen = collectionKeys === INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS
     ? 'initial-support'
     : collectionKeys === INITIAL_STORE_MANAGER_STATE_COLLECTIONS
@@ -3963,8 +3979,22 @@ const loadInitialStateCollections = async (db, user, collectionKeys) => {
         : collectionKeys === INITIAL_STORE_EMPLOYEE_STATE_COLLECTIONS
           ? 'initial-store-employee'
           : 'initial'
-  const scoped = await loadStoreState(db, 'global', actorStoreId, actorEmployeeId, initialScreen)
-  return retainStateCollections(scoped, collectionKeys)
+  const scoped = canUseScopedSnapshot
+    ? await loadStoreState(db, 'global', actorStoreId, actorEmployeeId, initialScreen)
+    : await loadStateCollections(db, 'global', collectionKeys)
+  const row = retainStateCollections(scoped, collectionKeys)
+  if (!row || !collectionKeys.includes('attendance')) return row
+  // Authentication only needs ongoing shifts to establish operational context.
+  // The partial bootstrap cannot satisfy a screen read: its destination loads
+  // the required history separately before rendering attendance/payroll data.
+  const state = parseStoredJson(row.value_json, {})
+  row.value_json = JSON.stringify({
+    ...state,
+    attendance: filterArray(state, 'attendance', (record) => (
+      record && !record.deletedAt && !record.checkOut && !record.checkOutAt
+    )),
+  })
+  return row
 }
 
 const requireStateReadSession = async (request, db, context) => {
@@ -4792,9 +4822,6 @@ const login = async (request, env, context) => {
   const bootstrapState = bootstrapRow ? parseStoredJson(bootstrapRow.value_json, {}) : {}
   const effectiveUser = await resolveEffectiveEmployeeStore(db, selectedUser, context.now, bootstrapState)
   const publicEffectiveUser = publicUser(effectiveUser)
-  const visibleUsers = OPERATIONS_ROLES.has(effectiveUser.role)
-    ? (await visibleUserRowsForActor(db, effectiveUser)).map(publicUser)
-    : null
   return jsonResponse(apiPayload(context, {
     token: rawToken,
     tokenType: 'Bearer',
@@ -4814,7 +4841,6 @@ const login = async (request, env, context) => {
       partial: true,
       loadedCollections,
     },
-    ...(visibleUsers ? { users: visibleUsers } : {}),
   }))
 }
 
@@ -5075,7 +5101,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     && isEmployeeScreen
     && Boolean(String(user.store_id || '').trim())
   const useOptimizedSystemProjection = typeof db?.readSystemStateSnapshot === 'function'
-    && ['tasks', 'support-tasks', 'support-assigned-work'].includes(screen)
+    && ['tasks', 'support-tasks', 'support-assigned-work', 'support-overview'].includes(screen)
   const readScreen = () => useEmployeeStoreProjection
     ? loadStoreState(db, 'global', user.store_id, user.employee_id, screen)
     : useOptimizedSystemProjection
@@ -5088,19 +5114,37 @@ const getSystemScreen = async (request, env, context, screen) => {
         )
       : loadStateCollections(db, 'global', collections.length ? collections : ['stores'])
   let row = await readScreen()
-  if (collections.includes('attendance')) {
+  if (collections.includes('attendance') && screen !== 'support-overview') {
     if (useEmployeeStoreProjection) {
       row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen)
-    } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db, { checkEligibility: true })) {
+    } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
       await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
       row = await readScreen()
     }
   }
   const [policies, users] = await Promise.all([
     listPolicies(db),
-    systemOperator ? visibleUserRowsForActor(db, user) : Promise.resolve([]),
+    systemOperator && SYSTEM_ACCOUNT_DIRECTORY_SCREENS.has(screen)
+      ? visibleUserRowsForActor(db, user)
+      : Promise.resolve(null),
   ])
-  const rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  let rawState = row ? parseStoredJson(row.value_json, {}) : {}
+  if (screen === 'support-overview') {
+    // The personal support dashboard only renders the actor's attendance and
+    // working-time overrides. Keep complete own records, including historical
+    // snapshots, and all profiles for collision-safe identity resolution.
+    const profile = actorRoleEmployeeProfile(rawState, user)
+    const identifiers = profile ? employeeIdentifierValues(profile) : [user.employee_id]
+    const ownRecord = (record) => identifiers.some((id) => (
+      id && [record?.employeeId, record?.employeeCode, record?.staffId, record?.userId]
+        .some((reference) => sameIdentifier(id, reference))
+    ))
+    rawState = {
+      ...rawState,
+      attendance: filterArray(rawState, 'attendance', ownRecord),
+      supportWorkSchedules: filterArray(rawState, 'supportWorkSchedules', ownRecord),
+    }
+  }
   return jsonResponse(apiPayload(context, {
     user: publicUser(user),
     scope: 'global',
@@ -5110,7 +5154,7 @@ const getSystemScreen = async (request, env, context, screen) => {
     version: Number(row?.version || 0),
     updatedAt: row?.updated_at || null,
     policies,
-    ...(systemOperator ? { users: users.map(publicUser) } : {}),
+    ...(users ? { users: users.map(publicUser) } : {}),
   }))
 }
 
@@ -6879,7 +6923,7 @@ const PAYROLL_COMMAND_COLLECTIONS = Object.freeze([
   'orders', 'expenseEntries', 'fixedExpenses', 'cashTransactions', 'workCatalogProgress',
 ])
 
-const commandStateProjection = (body) => {
+export const commandStateProjection = (body) => {
   const type = String(body?.type || '')
   const payload = isPlainRecord(body?.payload) ? body.payload : {}
   const projection = (
@@ -7010,7 +7054,7 @@ const commandStateProjection = (body) => {
   if (type.startsWith('support_transfer.')) {
     return projection(
       'command-support-transfer',
-      ['attendance', 'deletedEmployees', 'supportTransfers', 'payrollPeriods', 'payrollPayments'],
+      ['attendance', 'deletedEmployees', 'supportTransfers', 'expenseEntries', 'payrollPeriods', 'payrollPayments'],
       'supportTransfers',
       payload.transferId || payload.id,
       payload.employeeId,
@@ -7028,7 +7072,7 @@ const commandStateProjection = (body) => {
     return projection(
       'command-attendance',
       [
-        'attendance', 'schedule', 'supportWorkSchedules', 'payrollPeriods', 'tasks',
+        'attendance', 'deletedEmployees', 'schedule', 'supportWorkSchedules', 'payrollPeriods', 'tasks',
         'taskAssignmentHistory', 'workCatalogItems', 'workCatalogProgress', 'shiftDefinitions',
         'orders', 'expenseEntries', 'cashTransactions', 'compensationEntries', 'violations',
       ],
@@ -7081,7 +7125,7 @@ const commandStateProjection = (body) => {
   if (type === 'shift_expense.create') {
     return projection(
       'command-shift-expense',
-      ['attendance', 'expenseEntries', 'cashTransactions'],
+      ['attendance', 'expenseEntries', 'cashTransactions', 'payrollPeriods'],
       '', '', payload.employeeId,
     )
   }
@@ -7110,7 +7154,10 @@ const commandStateProjection = (body) => {
   if (type.startsWith('work_reward.')) {
     return projection(
       'command-work-reward',
-      ['attendance', 'schedule', 'shiftDefinitions'],
+      [
+        'attendance', 'schedule', 'shiftDefinitions', 'workCatalogProgress',
+        'compensationEntries', 'teamRewardClaims', 'payrollPeriods',
+      ],
       'attendance',
       payload.attendanceId || payload.id,
       payload.employeeId,
@@ -15440,9 +15487,9 @@ async function persistOpenStoreAttendanceChecklistRepairs(db, actor, context, cu
   return repairedRow
 }
 
-const hasPendingOpenStoreAttendanceChecklistRepair = async (db, { checkEligibility = false } = {}) => {
+const hasPendingOpenStoreAttendanceChecklistRepair = async (db) => {
   const pending = await all(db, `
-    SELECT ${checkEligibility ? 'value_json' : '1'}
+    SELECT value_json
     FROM state_entities
     WHERE scope_key = 'global'
       AND collection_key = 'attendance'
@@ -15453,7 +15500,7 @@ const hasPendingOpenStoreAttendanceChecklistRepair = async (db, { checkEligibili
         OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL
       )
     UNION ALL
-    SELECT ${checkEligibility ? 'value_json' : '1'}
+    SELECT value_json
     FROM state_entities
     WHERE scope_key = 'global'
       AND collection_key = 'attendance'
@@ -15466,15 +15513,12 @@ const hasPendingOpenStoreAttendanceChecklistRepair = async (db, { checkEligibili
           < ?
         OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL
       )
-    ${checkEligibility ? '' : 'LIMIT 1'}
   `, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION)
   if (!pending.length) return false
-  // Commands retain their existing global preload: connected money mutations
-  // can require records outside a screen projection even when repair is a no-op.
-  if (!checkEligibility) return true
   // The indexed NULL branch retains pre-migration compatibility. Use the same
   // eligibility rules as reconciliation: office/support/manager attendance,
-  // other snapshot types and incomplete records must not trigger global loads.
+  // other snapshot types and incomplete records must not trigger global loads,
+  // including command preflights. Each command loads its own canonical inputs.
   const employeesRow = await loadStateCollections(db, 'global', ['employees'])
   const state = parseStoredJson(employeesRow?.value_json, {})
   const employees = Array.isArray(state.employees) ? state.employees : []
@@ -24304,7 +24348,9 @@ const visibleUserRowsForActor = async (db, actor) => ['admin', 'business_support
 
 const listUsers = async (request, env, context) => {
   const db = getDatabase(env)
-  const actor = await requireSession(request, db, context)
+  const actor = await requireSession(request, db, context, {
+    stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+  })
   if (!OPERATIONS_ROLES.has(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem danh sách tài khoản nhân sự.')
   }

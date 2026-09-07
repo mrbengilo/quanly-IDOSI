@@ -1,12 +1,14 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { lazy } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AppShell from './AppShell'
+import { preloadRouteModule } from '../routeModules'
 
 const app = vi.hoisted(() => ({
   session: { id: 'USER-ADMIN', role: 'admin', name: 'Admin' },
   logout: vi.fn(),
+  prefetchWorkspaceData: vi.fn(() => Promise.resolve()),
   toast: null,
   notify: vi.fn(),
   stores: [{ id: 'STORE-A', name: 'IDOSI Store A', short: 'Store A' }],
@@ -16,6 +18,12 @@ const app = vi.hoisted(() => ({
   orderNotifications: [],
   orders: [],
   currentEmployee: null,
+}))
+
+vi.mock('../services/idosiApi', () => ({ hasPendingApiRequests: () => false }))
+
+vi.mock('../routeModules', () => ({
+  preloadRouteModule: vi.fn(() => Promise.resolve()),
 }))
 
 vi.mock('../state/AppContext', () => ({
@@ -40,6 +48,7 @@ const renderShell = ({ workspaceStatus = null, element = <div>Dữ liệu trang<
 describe('AppShell workspace loading states', () => {
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     vi.clearAllMocks()
   })
 
@@ -50,6 +59,32 @@ describe('AppShell workspace loading states', () => {
     expect(screen.getByRole('button', { name: 'Mở trang tài khoản' })).toBeTruthy()
     expect(screen.getByRole('status').textContent).toContain('Đang tải dữ liệu chi tiết...')
     expect(screen.queryByText('Dữ liệu trang')).toBeNull()
+  })
+
+  it('waits for projection data and the lazy page commit before any speculative requests', async () => {
+    vi.useFakeTimers()
+    const loading = renderShell({ workspaceStatus: { kind: 'loading' } })
+    await act(() => vi.advanceTimersByTimeAsync(10000))
+    expect(app.prefetchWorkspaceData).not.toHaveBeenCalled()
+    loading.unmount()
+    const PendingPage = lazy(() => new Promise(() => {}))
+    renderShell({ element: <PendingPage /> })
+    await act(() => vi.advanceTimersByTimeAsync(10000))
+    fireEvent.focus(screen.getByText('Danh sách cửa hàng').closest('a'))
+    expect(app.prefetchWorkspaceData).not.toHaveBeenCalled()
+  })
+
+  it('warms two adjacent menu modules and only lightweight data after the current page is displayed', async () => {
+    vi.useFakeTimers()
+    renderShell()
+    expect(screen.getByText('Dữ liệu trang')).toBeTruthy()
+    await act(() => vi.advanceTimersByTimeAsync(1499))
+    expect(app.prefetchWorkspaceData).not.toHaveBeenCalled()
+    await act(() => vi.advanceTimersByTimeAsync(1))
+    expect(preloadRouteModule.mock.calls.map(([path]) => path)).toEqual([
+      '/admin/reports', '/admin/order-information-settings',
+    ])
+    expect(app.prefetchWorkspaceData.mock.calls.map(([path]) => path)).toEqual(['/admin/order-information-settings'])
   })
 
   it('contains a lazy page fallback inside the shell instead of replacing the application', async () => {

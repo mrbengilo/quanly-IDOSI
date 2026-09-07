@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import App, { RouteErrorBoundary } from './App'
 
 const mocked = vi.hoisted(() => ({
@@ -111,7 +111,20 @@ const renderRoute = (path, role) => {
   return render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
 }
 
+const projectedHomes = [
+  ['business_support', '/support/overview', 'Role home', 'business_support', { kind: 'global', screen: 'support-overview' }],
+  ['employee', '/employee/home', 'Role home', 'office', { kind: 'global', screen: 'employee-home' }],
+  ['employee', '/employee/home', 'Store employee home', 'store', { kind: 'global', screen: 'employee-home' }],
+  ['store_manager', '/store/overview?period=2026-09', 'Store management overview', 'store', { kind: 'store', storeId: 'S01', screen: 'overview', period: '2026-09' }],
+]
+
 describe('App role routes', () => {
+  beforeAll(async () => {
+    // Route behavior must not depend on Vitest's cold transform duration.
+    // Module-start ordering is covered separately in AppRoutes.preload.test.
+    await import('./AppRoutes')
+  })
+
   afterEach(() => {
     cleanup()
     mocked.remoteDataReady = true
@@ -147,19 +160,54 @@ describe('App role routes', () => {
     expect(screen.queryByText('Cài đặt thông tin đơn hàng route')).toBeNull()
   })
 
-  it.each([
-    ['admin', '/admin/overview', 'Admin overview'],
-    ['business_support', '/support/overview', 'Role home'],
-    ['store_manager', '/store/overview', 'Store management overview'],
-    ['employee', '/employee/home', 'Store employee home'],
-  ])('shows the %s home while the remaining shared state hydrates', async (role, path, expectedText) => {
-    mocked.session = { role, name: role, ...(role === 'employee' ? { employeeId: 'E01', storeId: 'S01' } : {}) }
-    mocked.currentEmployee = role === 'employee' ? { id: 'E01', unit: 'store', storeId: 'S01' } : undefined
+  it.each(projectedHomes)('keeps the %s %s shell visible until its complete home projection matches', async (role, path, expectedText, unit, projection) => {
+    mocked.session = { role, name: role, employeeId: 'E01', storeId: unit === 'office' ? 'OFFICE' : 'S01' }
+    mocked.currentEmployee = { id: 'E01', unit, storeId: mocked.session.storeId }
     mocked.remoteDataReady = false
-    render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
+    mocked.remoteProjection = { kind: 'global', screen: '' }
+    const view = render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
 
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
+    expect(screen.getByText('Khung ứng dụng')).toBeTruthy()
+    expect(screen.queryByText(expectedText)).toBeNull()
+    if (role === 'store_manager') {
+      expect(mocked.ensureStoreWorkspaceData).toHaveBeenCalledWith('S01', { screen: 'overview', period: '2026-09' })
+    } else expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: projection.screen })
+
+    mocked.remoteDataReady = true
+    mocked.remoteProjection = { kind: 'global', screen: 'stores' }
+    view.rerender(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
+    expect(screen.queryByText(expectedText)).toBeNull()
+    expect(screen.getByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
+
+    mocked.remoteProjection = projection
+    view.rerender(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
     expect(await screen.findByText(expectedText)).toBeTruthy()
-    expect(screen.getByTestId('current-route').textContent).toBe(path)
+    expect(screen.getByTestId('current-route').textContent).toBe(path.split('?')[0])
+  })
+
+  it.each(projectedHomes)('shows and retries a failed %s %s home projection instead of displaying partial data', async (role, path, expectedText, unit, projection) => {
+    mocked.session = { role, name: role, employeeId: 'E01', storeId: unit === 'office' ? 'OFFICE' : 'S01' }
+    mocked.currentEmployee = { id: 'E01', unit, storeId: mocked.session.storeId }
+    mocked.remoteDataReady = false
+    mocked.remoteProjection = { kind: 'global', screen: '' }
+    const ensure = role === 'store_manager' ? mocked.ensureStoreWorkspaceData : mocked.ensureSystemWorkspaceData
+    ensure.mockRejectedValueOnce(new Error('Home projection unavailable'))
+    const view = render(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Không thể tải dữ liệu màn hình')
+    expect(screen.getByText('Khung ứng dụng')).toBeTruthy()
+    expect(screen.queryByText(expectedText)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Thử lại' }))
+    await waitFor(() => expect(ensure).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
+    expect(screen.queryByText(expectedText)).toBeNull()
+
+    mocked.remoteDataReady = true
+    mocked.remoteProjection = projection
+    view.rerender(<MemoryRouter initialEntries={[path]}><CurrentRoute /><App /></MemoryRouter>)
+    expect(await screen.findByText(expectedText)).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it.each([
@@ -259,6 +307,30 @@ describe('App role routes', () => {
     expect(mocked.ensureSystemWorkspaceData).toHaveBeenLastCalledWith({ screen: 'stores' })
   })
 
+  it('observes and retries a failed refresh while the matching cached system screen is displayed', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteDataReady = false
+    mocked.remoteProjection = { kind: 'global', screen: 'overview' }
+    let rejectRefresh
+    const refresh = new Promise((_, reject) => { rejectRefresh = reject })
+    mocked.ensureSystemWorkspaceData.mockReturnValueOnce(refresh).mockReturnValueOnce(refresh)
+    const view = render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
+
+    mocked.remoteDataReady = true
+    mocked.remoteProjection = { kind: 'global', screen: 'cashflow' }
+    view.rerender(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+    expect(await screen.findByText('Admin cashflow')).toBeTruthy()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledTimes(2)
+    await act(async () => rejectRefresh(new Error('Refresh unavailable')))
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Thử lại' }))
+
+    await waitFor(() => expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledTimes(3))
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenLastCalledWith({ screen: 'cashflow' })
+    expect(await screen.findByText('Admin cashflow')).toBeTruthy()
+  })
+
   it('loads only the requested employee screen projection after compact login', async () => {
     mocked.session = { role: 'employee', name: 'Nhân viên', employeeId: 'E01', storeId: 'S01' }
     mocked.currentEmployee = { id: 'E01', unit: 'store', storeId: 'S01' }
@@ -270,7 +342,7 @@ describe('App role routes', () => {
     expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'employee-orders' })
   })
 
-  it('does not load the global projection behind the compact Admin home', async () => {
+  it('mounts the Admin overview from a partial bootstrap so its own data loader can run without a shared projection request', async () => {
     mocked.session = { role: 'admin', name: 'Admin' }
     mocked.remoteDataReady = false
     mocked.remoteProjection = { kind: 'global', storeId: '' }
@@ -286,7 +358,25 @@ describe('App role routes', () => {
     render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
 
     expect(await screen.findByText('Admin cashflow')).toBeTruthy()
-    expect(mocked.ensureSystemWorkspaceData).not.toHaveBeenCalled()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'cashflow' })
+  })
+
+  it('does not request a denied Admin screen before redirecting a support employee', async () => {
+    mocked.session = { role: 'business_support', name: 'Hỗ trợ KD' }
+    mocked.remoteProjection = { kind: 'global', screen: 'support-overview' }
+    render(<MemoryRouter initialEntries={['/admin/reset']}><CurrentRoute /><App /></MemoryRouter>)
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
+    expect(mocked.ensureSystemWorkspaceData.mock.calls.map(([options]) => options.screen)).toEqual(['support-overview'])
+  })
+
+  it('does not request salary settings before redirecting a store manager', async () => {
+    mocked.session = { role: 'store_manager', name: 'Quản lý', storeId: 'S01' }
+    mocked.remoteProjection = { kind: 'global', screen: '' }
+    render(<MemoryRouter initialEntries={['/store/salary-settings']}><CurrentRoute /><App /></MemoryRouter>)
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
+    expect(mocked.ensureStoreWorkspaceData.mock.calls.some(([, options]) => options.screen === 'salary-settings')).toBe(false)
   })
 
   it('allows Admin to open the aggregate work-registration schedule', async () => {
