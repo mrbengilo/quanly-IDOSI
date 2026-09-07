@@ -225,7 +225,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'support-violations': ['employees', 'violations', 'violationRefunds'],
   'employee-home': [
     'stores', 'employees', 'orders', 'attendance', 'schedule', 'supportWorkSchedules',
-    'officeAdjustments', 'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions',
+    'officeAdjustments', 'salaryAdjustments', 'payrollPeriods', 'shiftDefinitions', 'notifications',
   ],
   'employee-tasks': [
     'stores', 'employees', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments',
@@ -2503,6 +2503,9 @@ const storeDirectoryRecord = (record = {}, selectedStoreId = '') => {
 }
 
 const notificationBelongsToStoreWorkspace = (state, record, storeId, visibleEmployeeIds) => {
+  if (String(record?.type || '').startsWith('support-transfer.')) {
+    return [record.fromStoreId, record.toStoreId].some((id) => sameIdentifier(id, storeId))
+  }
   const explicitStoreIds = [
     record?.storeId,
     record?.data?.storeId,
@@ -2896,7 +2899,7 @@ export const projectSharedState = (
       deletedEmployees,
       supportTransfers: filterArray(state, 'supportTransfers', (record) => (
         sameIdentifier(record.fromStoreId, storeId) || sameIdentifier(record.toStoreId, storeId)
-      )),
+      )).map((record) => ({ ...record, fromStoreName: storeNameForId(state, record.fromStoreId), toStoreName: storeNameForId(state, record.toStoreId) })),
       settings: ownAccountSettings(state, user),
       session: null,
     }
@@ -3403,7 +3406,7 @@ const openSupportTransferContextFor = (state, employeeId) => {
       identifier: transferId,
       identifierOf: (record) => record?.id,
       predicate: (record) => (
-        supportTransferUsable(record)
+        !record.deletedAt
         && supportTransferMatchesEmployeeStore(record, employeeId, attendance.storeId)
       ),
       collisionCode: 'OPEN_SUPPORT_TRANSFER_IDENTIFIER_COLLISION',
@@ -10187,6 +10190,7 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       shiftIds,
       shiftId: shiftIds[0],
       shiftSnapshots,
+      ...(previousAssignment?.cancelledShifts ? { cancelledShifts: previousAssignment.cancelledShifts } : {}),
       note: String(assignment.note || '').trim().slice(0, 500),
       createdAt: previousAssignment?.createdAt || commandContext.now,
       createdBy: previousAssignment?.createdBy || serverActorSnapshot(actor),
@@ -10606,7 +10610,9 @@ const notificationCommand = async (db, actor, body, commandContext) => {
   const targets = notifications.filter((record) => (
     notificationUnread(record, actor)
     && canAccessNotification(state, actor, record)
-    && (!storeId || sameIdentifier(record.storeId, storeId))
+    && (!storeId || sameIdentifier(record.storeId, storeId)
+      || (String(record.type || '').startsWith('support-transfer.')
+        && (actor.role === 'employee' || [record.fromStoreId, record.toStoreId].some((id) => sameIdentifier(id, storeId)))))
   ))
   if (!targets.length) {
     return recordNoopCommand(db, actor, {
@@ -10940,7 +10946,7 @@ const supportTransferCommand = async (db, actor, body, commandContext) => {
   const overlap = transfers.find((record) => (
     !sameIdentifier(record.id, canonicalTransferId)
     && sameIdentifier(record.employeeId, employeeId)
-    && supportTransferUsable(record)
+    && supportAllowsScheduling(record)
     && (() => {
       const existingBounds = supportTransferTimeBounds(record)
       return existingBounds
@@ -15709,7 +15715,7 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
         && sameIdentifier(record.employeeId, employeeId)
         && sameIdentifier(record.toStoreId, storeId)
         && !record.deletedAt
-        && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
+        && (body.type !== 'attendance.check_in' || supportAllowsScheduling(record))
       ))
     : null
   const earlyLimit = Math.trunc(await policyNumber(db, 'early_check_in_limit_minutes', 120))
@@ -15721,8 +15727,10 @@ const attendanceCommand = async (db, actor, body, commandContext, env) => {
     if (open.hasOpenAttendance) {
       throw new ApiError(409, 'ATTENDANCE_ALREADY_OPEN', 'Bạn phải kết ca đang làm thành công trước khi vào ca khác.')
     }
+    assertUniqueShiftDefinitionIdentifiers((state.shiftDefinitions || []).filter((record) => record.active !== false
+      && (!record.storeId || sameIdentifier(record.storeId, storeId))))
     const choices = scheduledCheckInChoices(state, employeeId, commandContext.now, earlyLimit)
-      .filter((choice) => sameIdentifier(choice.shiftId, payload.shiftId || payload.workShiftId)
+      .filter((choice) => (!(payload.shiftId || payload.workShiftId) || sameIdentifier(choice.shiftId, payload.shiftId || payload.workShiftId))
         && (!payload.scheduleId || sameIdentifier(choice.assignmentId, payload.scheduleId)))
     if (choices.length !== 1) {
       throw new ApiError(409, 'SUPPORT_SHIFT_NOT_ASSIGNED', 'Chưa có ca được phân phù hợp thời gian hiện tại, hoặc ca đã hoàn thành. Vui lòng kiểm tra lịch phân ca.')
@@ -16939,7 +16947,6 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
         && sameIdentifier(record.employeeId, employeeId)
         && sameIdentifier(record.toStoreId, storeId)
         && !record.deletedAt
-        && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record.status || ''))
       ))
     : null
   if (employee && !sameIdentifier(employee.storeId, storeId) && !activeTransfer) {

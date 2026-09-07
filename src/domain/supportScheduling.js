@@ -17,6 +17,7 @@ export const shiftWindow = (date, shift = {}) => {
   const startMs = Date.parse(`${date}T${start}:00+07:00`)
   let endMs = Date.parse(`${date}T${end}:00+07:00`)
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null
+  if (new Date(startMs + 7 * 3_600_000).toISOString().slice(0, 10) !== date) return null
   if (endMs < startMs) endMs += 86_400_000
   return { startMs, endMs, start, end, startAt: new Date(startMs).toISOString(), endAt: new Date(endMs).toISOString() }
 }
@@ -33,7 +34,11 @@ export const scheduleWindows = (state = {}, { employeeId = '', storeId = '' } = 
     const definitions = list(state.shiftDefinitions).filter((shift) => key(shift.id) === key(id)
       && (!shift.storeId || key(shift.storeId) === key(assignment.storeId)))
     const matches = snapshots.length ? snapshots : definitions
-    const shift = matches.length === 1 ? matches[0] : null
+    const snapshot = snapshots.length === 1 ? snapshots[0] : null
+    const definition = definitions.length === 1 ? definitions[0] : null
+    const shift = matches.length !== 1 ? null : snapshot && !shiftWindow(date, snapshot) && definition
+      ? { ...definition, ...snapshot, start: snapshot.start || definition.start, end: snapshot.end || definition.end }
+      : matches[0]
     const bounds = shift && shiftWindow(date, shift)
     return [{
       assignmentId: assignment.id, employeeId: assignment.employeeId || assignment.employeeCode,

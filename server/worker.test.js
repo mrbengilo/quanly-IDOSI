@@ -677,6 +677,12 @@ const jsonRequest = (url, body, headers = {}) => new Request(url, {
   body: JSON.stringify(body),
 })
 
+const assignedSupportTestState = (date, start = '08:00', end = '12:00') => {
+  const shift = { id: 'SUPPORT-ASSIGNED', storeId: 'S02', name: 'Ca hỗ trợ cửa hàng', start, end, active: true }
+  return { shiftDefinitions: [shift], schedule: [{ id: `SUPPORT-SCHEDULE-${date}`, employeeId: 'E01', storeId: 'S02',
+    date, shiftIds: [shift.id], shiftSnapshots: [shift] }] }
+}
+
 const setupSupportTransferRuntime = async ({
   token,
   transfer,
@@ -2569,7 +2575,7 @@ describe('IDOSI Worker security primitives', () => {
       store_id: 's01',
     })
 
-    expect(projection.stores).toEqual([{ id: 'S01', name: 'Cửa hàng 1' }])
+    expect(projection.stores).toEqual([{ id: 'S01', name: 'Cửa hàng 1' }, { id: 'S02' }])
     expect(projection.employees).toEqual([{ id: 'E01', storeId: 'S01', name: 'Nhân viên 1' }])
     expect(projection.orders).toEqual([{
       id: 'O01', employeeId: 'E01', createdByEmployeeId: 'E01', storeId: 'S01', shiftId: 'CA-SAME', attendanceId: 'A01',
@@ -11131,6 +11137,10 @@ describe('IDOSI Worker security primitives', () => {
         },
       })
 
+      const plannedSupport = assignedSupportTestState('2026-08-21')
+      const beforePlanning = readHydratedState(env.DB.database)
+      replaceStateCollection(env.DB.database, 'shiftDefinitions', [...beforePlanning.shiftDefinitions, ...plannedSupport.shiftDefinitions])
+      replaceStateCollection(env.DB.database, 'schedule', [...beforePlanning.schedule, ...plannedSupport.schedule])
       vi.setSystemTime(new Date('2026-08-21T00:59:59.999Z'))
       const beforeTransferLogin = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
         username: 'employee.one', password: 'employee-one-password',
@@ -11180,7 +11190,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(destinationCheckInBody).toMatchObject({
         version: 13,
         attendance: {
-          shiftName: 'Ca hỗ trợ cửa hàng', shiftSource: 'support-transfer',
+          shiftName: 'Ca hỗ trợ cửa hàng', shiftSource: 'store-schedule',
           shiftStart: '08:00', shiftEnd: '12:00', arrivalTag: 'Đi đúng giờ', minutesLate: 0,
         },
       })
@@ -12545,6 +12555,7 @@ describe('IDOSI Worker security primitives', () => {
       }
       const { env, employeeAuthorization } = await setupSupportTransferRuntime({
         token: `bootstrap-transfer-check-in-${label}`, transfer, payrollPeriods: [period],
+        ...assignedSupportTestState('2026-08-20'),
       })
       const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_in', expectedVersion: 1,
@@ -12572,6 +12583,7 @@ describe('IDOSI Worker security primitives', () => {
       }
       const { env, employeeAuthorization } = await setupSupportTransferRuntime({
         token: 'bootstrap-work-catalog-case-collision', transfer,
+        ...assignedSupportTestState('2026-08-20'),
       })
       const rewardItem = DEFAULT_STORE_WORK_CATALOG_ITEMS.find(({ kind }) => kind === 'REWARD_TASK')
       replaceStateCollection(env.DB.database, 'workCatalogItems', [
@@ -13103,6 +13115,7 @@ describe('IDOSI Worker security primitives', () => {
       }
       const { env, adminAuthorization, employeeAuthorization } = await setupSupportTransferRuntime({
         token: 'bootstrap-open-payroll-guard', transfer,
+        ...assignedSupportTestState('2026-08-20'),
       })
       const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_in', expectedVersion: 1,
@@ -13606,6 +13619,7 @@ describe('IDOSI Worker security primitives', () => {
       const { env, employeeAuthorization, managerAuthorization } = await setupSupportTransferRuntime({
         token: 'bootstrap-transfer-home-open',
         transfer,
+        ...assignedSupportTestState('2026-08-20', '17:00', '21:00'),
         attendance: [{
           id: 'ATT-HOME-OPEN', employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', storeId: 'S01',
           date: '2026-08-20', workDate: '2026-08-20', shiftId: 'HOME-SHIFT', shiftName: 'Ca cửa hàng chính',
@@ -13652,6 +13666,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(unchangedTransfer).toMatchObject({ status: 'Đã duyệt' })
       expect(unchangedTransfer).not.toHaveProperty('completedAt')
 
+      vi.setSystemTime(new Date('2026-08-20T10:00:00.000Z'))
       const stateAfterHomeCheckoutResponse = await worker.fetch(new Request('https://idosi.example/api/state', {
         headers: employeeAuthorization,
       }), env)
@@ -13674,7 +13689,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(destinationCheckIn.status).toBe(201)
       expect(await destinationCheckIn.json()).toMatchObject({
         version: 3,
-        attendance: { storeId: 'S02', supportTransferId: transfer.id, shiftSource: 'support-transfer' },
+        attendance: { storeId: 'S02', supportTransferId: transfer.id, shiftSource: 'store-schedule' },
       })
     } finally {
       vi.useRealTimers()
@@ -18945,6 +18960,44 @@ describe('shared support workflow', () => {
     const retry = await command(runtime, runtime.supportAuthorization, 'support_transfer.stop', args, version, 'stop-support-workflow-key')
     expect(retry.status).toBe(200)
     expect(readHydratedState(runtime.env.DB.database).notifications.filter((item) => item.type === 'support-transfer.stop')).toHaveLength(1)
+  })
+
+  it('keeps multi-day support schedulable after checkout and never reopens a completed shift', async () => {
+    const runtime = await setup({ schedule: [assigned('HOST-NOW', 'S02', 'HOST-PM'), assigned('HOST-NEXT', 'S02', 'HOST-PM', '2026-09-08')] })
+    const checkedIn = await command(runtime, runtime.employeeAuthorization, 'attendance.check_in', { shiftId: 'HOST-PM', location: { latitude: 10.8, longitude: 106.7 } })
+    expect(checkedIn.status).toBe(201)
+    const failed = await command(runtime, runtime.employeeAuthorization, 'attendance.check_out', {
+      attendanceId: checkedIn.body.attendance.id, cashRevenue: 1, transferRevenue: 0, location: { latitude: 10.8, longitude: 106.7 },
+    })
+    expect(failed.body.error.code).toBe('SHIFT_REVENUE_MISMATCH')
+    expect(readHydratedState(runtime.env.DB.database).attendance[0].checkOutAt).toBeNull()
+    vi.setSystemTime(new Date('2026-09-07T09:00:00.000Z'))
+    const checkedOut = await command(runtime, runtime.employeeAuthorization, 'attendance.check_out', {
+      attendanceId: checkedIn.body.attendance.id, cashRevenue: 0, transferRevenue: 0, location: { latitude: 10.8, longitude: 106.7 },
+    })
+    expect(checkedOut.status, JSON.stringify(checkedOut.body)).toBe(200)
+    expect(readHydratedState(runtime.env.DB.database).supportTransfers[0].status).toBe('Đã duyệt')
+    vi.setSystemTime(new Date('2026-09-08T05:10:00.000Z'))
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username: 'transfer.employee', password: 'transfer-employee-password' }), runtime.env)
+    const renewed = await login.json()
+    expect(renewed.user.storeId).toBe('S02')
+    const next = await command(runtime, { authorization: `Bearer ${renewed.token}` }, 'attendance.check_in', { shiftId: 'HOST-PM', scheduleId: 'HOST-NEXT', location: { latitude: 10.8, longitude: 106.7 } })
+    expect(next.status, JSON.stringify(next.body)).toBe(201)
+    expect(next.body.attendance.scheduledWorkDate).toBe('2026-09-08')
+  })
+
+  it('keeps an already-open support shift operable even if a legacy transfer is completed', async () => {
+    const runtime = await setup({ transfer: { ...transfer, status: 'Hoàn tất' },
+      attendance: [{ id: 'LEGACY-OPEN', employeeId: 'E01', storeId: 'S02', homeStoreId: 'S01', supportTransferId: transfer.id,
+        date: '2026-09-07', shiftId: 'HOST-PM', shiftStart: '12:00', shiftEnd: '16:00', checkIn: '12:00', checkInAt: '2026-09-07T05:00:00.000Z',
+        checklistSnapshot: { source: 'work-catalog', storeChecklistRepairVersion: 1, tasks: [] }, supportHourlyRate: 45_000 }],
+    })
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username: 'transfer.employee', password: 'transfer-employee-password' }), runtime.env)
+    expect((await login.json()).user).toMatchObject({ storeId: 'S02', activeTransferId: transfer.id })
+    const checkedOut = await command(runtime, runtime.employeeAuthorization, 'attendance.check_out', {
+      attendanceId: 'LEGACY-OPEN', cashRevenue: 0, transferRevenue: 0, location: { latitude: 10.8, longitude: 106.7 },
+    })
+    expect(checkedOut.status, JSON.stringify(checkedOut.body)).toBe(200)
   })
 
   it('rejects shrinking a grant over planned shifts and refuses a stale transfer edit', async () => {

@@ -27,6 +27,10 @@ describe('shared support scheduling', () => {
     state.supportTransfers = [{ ...transfer, schedulingClosedAt: '2026-09-07T01:00:00Z' }]
     expect(supportForScheduledWindow(state, scheduleWindows(state)[0])).toBeNull()
   })
+  it('rejects impossible calendar dates while accepting leap days', () => {
+    expect(shiftWindow('2026-02-30', { start: '08:00', end: '12:00' })).toBeNull()
+    expect(shiftWindow('2028-02-29', { start: '08:00', end: '12:00' })).not.toBeNull()
+  })
   it('uses snapshots and checks overnight boundaries', () => {
     const a = assignment('s1', 'A', '22:00', '02:00')
     const b = assignment('s2', 'A', '01:00', '05:00', '2026-09-08')
@@ -41,6 +45,11 @@ describe('shared support scheduling', () => {
     expect(scheduledCheckInChoices(state, 'E1', '2026-09-07T05:00:00Z', 120)).toHaveLength(1)
     state.attendance = [{ employeeId: 'e1', storeId: 'B', shiftId: 's2', date: b.date, checkOut: '13:00' }]
     expect(scheduledCheckInChoices(state, 'E1', '2026-09-07T06:00:00Z', 120)).toEqual([])
+  })
+  it('resolves a legacy name-only snapshot using the unique store definition', () => {
+    const state = stateFor([{ ...assignment('s1', 'A', '08:00', '12:00'), shiftSnapshots: [{ id: 's1', name: 'Ca cũ' }] }])
+    state.shiftDefinitions = [{ id: 's1', storeId: 'A', start: '08:00', end: '12:00' }]
+    expect(scheduleWindows(state)[0]).toMatchObject({ invalid: false, start: '08:00', end: '12:00', shift: { name: 'Ca cũ' } })
   })
   it('honors the configured early allowance but never starts support outside its grant', () => {
     const state = stateFor([assignment('s2', 'B', '08:00', '12:00')])
