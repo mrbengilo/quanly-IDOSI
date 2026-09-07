@@ -42,6 +42,7 @@ import { calculateAvailableSalary, financeSummaryFromState } from '../domain'
 import { employeeScreen, systemScreenForPath } from '../domain/workspaceScreens'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../domain/storeTieredPayroll'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
+import { employeeProfileKey, employeeProfilesShareAccount } from '../domain/employeeAccountIdentity'
 import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
   normalizeOrderInformationOptions,
@@ -461,6 +462,19 @@ export const mergeEmployeeAuthUsers = (employees = [], users = []) => {
       status: statuses[user.status] || employee.status,
     } : employee
   })
+}
+
+export const hasDuplicateAccountUsername = (payload = {}, records = [], ignoredKey = '', ignoredProfile = null) => {
+  const username = normalizeText(payload.username)
+  if (!username) return false
+
+  const persistedIgnoredProfile = ignoredProfile
+    || records.find((account) => employeeProfileKey(account) === String(ignoredKey || ''))
+  return records.some((account) => (
+    employeeProfileKey(account) !== String(ignoredKey || '')
+    && !(persistedIgnoredProfile && employeeProfilesShareAccount(account, persistedIgnoredProfile))
+    && normalizeText(account.username) === username
+  ))
 }
 
 const stripLocalProfileCredentials = (profiles = []) => profiles.map((profile) => Object.fromEntries(
@@ -2706,11 +2720,12 @@ export function AppProvider({ children }) {
     return { ok: true, store }
   }
 
-  const hasDuplicateAccount = (payload, ignoredKey = '') => {
-    const records = [...state.adminAccounts, ...state.managerAccounts, ...state.employees].filter((account) => accountKey(account) !== String(ignoredKey))
-    const username = normalizeText(payload.username)
-    return records.some((account) => username && normalizeText(account.username) === username)
-  }
+  const hasDuplicateAccount = (payload, ignoredKey = '', ignoredProfile = null) => hasDuplicateAccountUsername(
+    payload,
+    [...state.adminAccounts, ...state.managerAccounts, ...state.employees],
+    ignoredKey,
+    ignoredProfile,
+  )
 
   const addEmployee = async (payload) => {
     const actorRole = normalizeAuthRole(state.session?.role)
@@ -2829,7 +2844,7 @@ export function AppProvider({ children }) {
     if (actorRole === 'business_support' && !canBusinessSupportUpdateEmployee(previous, payload)) {
       return { ok: false, message: 'Hỗ trợ KD không được sửa hồ sơ Nhân viên hỗ trợ KD.' }
     }
-    if (hasDuplicateAccount(payload, id)) {
+    if (hasDuplicateAccount(payload, id, previous)) {
       notify('Tên đăng nhập đã tồn tại.', 'info')
       return { ok: false }
     }

@@ -137,6 +137,64 @@ describe('business-support store workspace permissions', () => {
     expect(screen.getByLabelText('Mặt sau CCCD')).toBeTruthy()
   })
 
+  it.each([
+    { role: 'business_support', username: employee.username, password: 'New-shared-login-password' },
+    { role: 'admin', username: 'shared.employee.renamed', password: '' },
+  ])('submits shared-account credentials from the employee modal as $role', async ({ role, username, password }) => {
+    const source = {
+      ...employee, authUserId: 'usr_shared_employee', authVersion: 3, age: 24,
+      startDate: '2026-08-18',
+      addressDetails: { province: 'Hồ Chí Minh', ward: 'Hiệp Bình', street: '12 Đường Mẫu' },
+    }
+    mocked.app.session = { role }
+    mocked.app.employees = [source, {
+      ...source, id: 'QLCH-SHARED', code: 'QLCH-SHARED', unit: 'store_manager',
+      linkedEmployeeId: source.id,
+    }]
+    mocked.app.updateEmployee.mockResolvedValue({ ok: true })
+    renderPage(StoreEmployees)
+
+    fireEvent.click(screen.getByRole('button', { name: `Sửa ${source.name}` }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.change(within(dialog).getByDisplayValue(source.username), { target: { value: username } })
+    fireEvent.change(within(dialog).getByPlaceholderText('Nhập mật khẩu mới nếu cần'), { target: { value: password } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lưu thay đổi' }))
+
+    await waitFor(() => expect(mocked.app.updateEmployee).toHaveBeenCalledWith(source.id, expect.objectContaining({
+      username, ...(password ? { password } : {}), unit: 'store', storeId: store.id,
+    })))
+    if (!password) expect(mocked.app.updateEmployee.mock.calls[0][1]).not.toHaveProperty('password')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('directs linked-profile credential edits to the source while allowing profile updates', async () => {
+    const linked = {
+      ...employee, linkedEmployeeId: 'VP-SOURCE', username: '', age: 24,
+      startDate: '2026-08-18',
+      addressDetails: { province: 'Hồ Chí Minh', ward: 'Hiệp Bình', street: '12 Đường Mẫu' },
+    }
+    mocked.app.employees = [linked, {
+      id: 'VP-SOURCE', unit: 'office', storeId: 'OFFICE', name: 'Hồ sơ văn phòng nguồn',
+      username: 'shared.office.account',
+    }]
+    mocked.app.updateEmployee.mockResolvedValue({ ok: true })
+    renderPage(StoreEmployees)
+
+    fireEvent.click(screen.getByRole('button', { name: `Sửa ${linked.name}` }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText('Hồ sơ văn phòng nguồn')).toBeTruthy()
+    expect(within(dialog).getByText('VP-SOURCE')).toBeTruthy()
+    expect(within(dialog).queryByPlaceholderText('Ví dụ: nguyenvana')).toBeNull()
+    expect(within(dialog).queryByPlaceholderText('Nhập mật khẩu mới nếu cần')).toBeNull()
+    fireEvent.change(within(dialog).getByDisplayValue(linked.name), { target: { value: 'Tên hồ sơ cập nhật' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lưu thay đổi' }))
+
+    await waitFor(() => expect(mocked.app.updateEmployee).toHaveBeenCalledWith(linked.id, expect.objectContaining({ name: 'Tên hồ sơ cập nhật' })))
+    expect(mocked.app.updateEmployee.mock.calls[0][1]).not.toHaveProperty('username')
+    expect(mocked.app.updateEmployee.mock.calls[0][1]).not.toHaveProperty('password')
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('opens saved store-employee CCCD images in the stable document frame', () => {
     renderPage(StoreEmployees)
 

@@ -7906,6 +7906,46 @@ const employeeStatusValues = (value) => {
   throw new ApiError(400, 'STATUS_INVALID', 'Trạng thái nhân viên không hợp lệ.')
 }
 
+const legacyPrimaryManagerSupportsSourceProfile = (state, authTarget, sourceProfile) => {
+  if (authTarget?.role !== 'store_manager') return false
+  const sourceUnit = employeeUnit(sourceProfile)
+  if (!['store', 'business_support'].includes(sourceUnit)) return false
+  const sourceEmployeeId = employeeProfileIdentifier(sourceProfile)
+  const authUserId = String(authTarget.id || authTarget.user_id || '').trim()
+  const authStoreId = String(authTarget.store_id || authTarget.storeId || '').trim()
+  if (!sourceEmployeeId || !sameIdentifier(authTarget.employee_id, sourceEmployeeId) || !authStoreId) return false
+  const sourceAuthUserId = String(sourceProfile.authUserId || '').trim()
+  if (sourceAuthUserId && sourceAuthUserId !== authUserId) return false
+
+  const stores = Array.isArray(state?.stores) ? state.stores : []
+  const employees = Array.isArray(state?.employees) ? state.employees : []
+  const relatedManagers = employees.filter((profile) => (
+    !profile.deletedAt
+    && employeeUnit(profile) === 'store_manager'
+    && (sameIdentifier(profile.linkedEmployeeId, sourceEmployeeId)
+      || String(profile.authUserId || '').trim() === authUserId)
+  ))
+  if (relatedManagers.length !== 1) return false
+  const managerProfile = relatedManagers[0]
+  if (!sameIdentifier(managerProfile.linkedEmployeeId, sourceEmployeeId)) return false
+  const managerAuthUserId = String(managerProfile.authUserId || '').trim()
+  if (managerAuthUserId && managerAuthUserId !== authUserId) return false
+  const managerStoreId = String(managerProfile.storeId || '').trim()
+  if (!sameIdentifier(managerStoreId, authStoreId)
+    || (sourceUnit === 'store' && !sameIdentifier(managerStoreId, sourceProfile.storeId))) return false
+  const managerStore = uniqueIdentifierRecordMatch({
+    records: stores,
+    identifier: managerStoreId,
+    predicate: (record) => !record?.deletedAt,
+    collisionCode: 'SESSION_STORE_IDENTIFIER_COLLISION',
+    collisionMessage: 'Mã cửa hàng của vai trò quản lý đang trùng.',
+  })?.record || null
+  if (!managerStore || managerStore.active === false || managerStore.isOperational === false
+    || ['da dong', 'ngung hoat dong', 'tam ngung', 'inactive', 'closed']
+      .includes(normalizeTextKey(managerStore.status))) return false
+  return resolveExactlyOneActiveStoreManager({ storeId: managerStoreId, managers: [managerProfile] }).ok
+}
+
 const normalizeEmployeeUnitRequest = (payload, previous = null) => {
   if (previous) return employeeUnit(previous)
   const raw = String(payload.unit || payload.unitType || payload.department || payload.role || '').trim().toLowerCase()
@@ -9555,7 +9595,10 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
     const authEmployeeId = saved.id
     const authTarget = await uniqueUserByEmployeeIdentifier(db, authEmployeeId)
     if (authTarget) {
-      if (authTarget.role !== expectedAuthRole) {
+      const legacyPrimaryManagerSource = authTarget.role !== expectedAuthRole
+        && legacyPrimaryManagerSupportsSourceProfile(state, authTarget, previous)
+      const supportedRoleProfile = authTarget.role === expectedAuthRole || legacyPrimaryManagerSource
+      if (!supportedRoleProfile) {
         throw new ApiError(409, 'EMPLOYEE_ROLE_MISMATCH', 'Vai trò tài khoản không khớp nhóm hồ sơ nhân viên.')
       }
       if (actor.role !== 'admin' && authTarget.status === 'inactive') {
@@ -9573,11 +9616,12 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       const password = requestedPassword ? await hashPassword(requestedPassword) : null
       const currentAuthVersion = Number(authTarget.version || 1)
       const nextAuthVersion = currentAuthVersion + 1
+      const authStoreId = legacyPrimaryManagerSource ? String(authTarget.store_id || '') : storeId
       responseUser = {
         ...publicUser(authTarget),
         username,
         displayName: saved.name,
-        storeId,
+        storeId: authStoreId,
         status: requestedStatus?.account || authTarget.status,
         version: nextAuthVersion,
       }
@@ -9602,7 +9646,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         username,
         normalizedUsername,
         saved.name,
-        storeId,
+        authStoreId,
         requestedStatus?.account || authTarget.status,
         password?.hash || authTarget.password_hash,
         password?.salt || authTarget.password_salt,
@@ -9617,7 +9661,7 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
         commandContext.requestId,
       ))
       if (requestedPassword
-        || String(authTarget.store_id || '') !== storeId
+        || String(authTarget.store_id || '') !== authStoreId
         || (requestedStatus && requestedStatus.account !== 'active')) {
         additionalStatements.push(db.prepare(`
           UPDATE sessions
@@ -9705,9 +9749,24 @@ const employeeProfileCommand = async (db, actor, body, commandContext, env) => {
       }
     }
   }
+  const linkedAuthMetadata = operation === 'update' && !previous?.linkedEmployeeId && responseUser
+    ? {
+        username: responseUser.username,
+        authUserId: responseUser.id,
+        authVersion: responseUser.version,
+      }
+    : null
   const nextEmployees = operation === 'create'
     ? [saved, ...employees]
-    : employees.map((employee) => sameIdentifier(employee.id || employee.code, employeeId) ? saved : employee)
+    : employees.map((employee) => {
+        if (sameIdentifier(employee.id || employee.code, employeeId)) return saved
+        if (!linkedAuthMetadata || employee.deletedAt
+          || !['store_manager', 'store'].includes(employeeUnit(employee))
+          || !sameIdentifier(employee.linkedEmployeeId, employeeId)) return employee
+        const linkedAuthUserId = String(employee.authUserId || '').trim()
+        if (linkedAuthUserId && linkedAuthUserId !== linkedAuthMetadata.authUserId) return employee
+        return { ...employee, ...linkedAuthMetadata }
+      })
   const payrollTargets = []
   if (operation === 'update') {
     const targetPeriod = String(profilePayload.standardWorkDaysPeriod || '')
