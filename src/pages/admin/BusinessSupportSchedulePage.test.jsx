@@ -167,6 +167,8 @@ describe('BusinessSupportSchedulePage', () => {
   })
 
   it('lets an Office employee create, edit and delete only their own configured shift', async () => {
+    let completeCreate
+    mocked.saveBusinessSupportSchedule.mockImplementationOnce(() => new Promise((resolve) => { completeCreate = resolve }))
     const prompt = vi.spyOn(window, 'prompt').mockReturnValue('Đổi lịch cá nhân')
     mocked.app = {
       ...mocked.app,
@@ -189,12 +191,17 @@ describe('BusinessSupportSchedulePage', () => {
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
       employeeId: 'VP-02', targetUnit: 'office', date: '2026-08-24', shiftName: 'Ca chiều', start: '13:00', end: '17:30',
     })))
+    expect(screen.getByRole('button', { name: 'LƯU' }).disabled).toBe(true)
+    await act(async () => { completeCreate({ ok: true }) })
+    // The date filter must be used only after the asynchronous save closes the editor.
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Tạo lịch làm việc của tôi' })).toBeNull())
 
     fireEvent.change(screen.getByDisplayValue('2026-08-24'), { target: { value: '2026-08-21' } })
     fireEvent.click(screen.getByRole('button', { name: 'Sửa lịch ngày 21/08/26' }))
     fireEvent.change(screen.getByLabelText(/Giờ kết thúc/u), { target: { value: '18:00' } })
     fireEvent.click(screen.getByRole('button', { name: 'LƯU' }))
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({ scheduleId: 'SELF-01', employeeId: 'VP-02', end: '18:00' })))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Sửa lịch làm việc của tôi' })).toBeNull())
 
     fireEvent.click(screen.getByRole('button', { name: 'Xóa lịch ngày 21/08/26' }))
     await waitFor(() => expect(mocked.deleteBusinessSupportSchedule).toHaveBeenCalledWith('SELF-01', 'Đổi lịch cá nhân'))
@@ -220,6 +227,7 @@ describe('BusinessSupportSchedulePage', () => {
     await waitFor(() => expect(mocked.saveBusinessSupportSchedule).toHaveBeenCalledWith(expect.objectContaining({
       scheduleId: 'CUSTOM-01', shiftName: 'Khung giờ cũ', start: '09:15', end: '16:45',
     })))
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Sửa lịch làm việc của tôi' })).toBeNull())
 
     fireEvent.click(screen.getByRole('button', { name: 'TẠO LỊCH LÀM VIỆC' }))
     fireEvent.click(screen.getByRole('button', { name: /Chọn nhanh Ca chiều/u }))
