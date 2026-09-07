@@ -18,6 +18,7 @@ import {
   apiPolicyMap,
   clearApiSession,
   hasApiSession,
+  hasPendingApiRequests,
 } from './idosiApi'
 
 afterEach(() => {
@@ -98,6 +99,7 @@ describe('IDOSI login resilience', () => {
 
     await expect(apiBootstrapState()).rejects.toMatchObject({ code: 'SESSION_INVALID', status: 401 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(hasPendingApiRequests()).toBe(false)
   })
 
   it('directs static-only responses back to the canonical production login URL', async () => {
@@ -107,6 +109,34 @@ describe('IDOSI login resilience', () => {
       code: 'API_UNAVAILABLE',
       message: expect.stringContaining('https://idosi.io.vn/#/login'),
     })
+  })
+})
+
+describe('IDOSI pending API requests', () => {
+  it('stays busy until all concurrent requests finish reading their response bodies', async () => {
+    let resolveFirst
+    let resolveSecondBody
+    const secondBody = new Promise((resolve) => { resolveSecondBody = resolve })
+    const readSecondBody = vi.fn(() => secondBody)
+    const payload = { ok: true, state: {} }
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({ ok: true, json: readSecondBody })
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(hasPendingApiRequests()).toBe(false)
+    const first = apiGetSystemScreenState('employees')
+    const second = apiGetStoreWorkspaceState('S01')
+    expect(hasPendingApiRequests()).toBe(true)
+
+    resolveFirst({ ok: true, json: async () => payload })
+    await expect(first).resolves.toBe(payload)
+    expect(readSecondBody).toHaveBeenCalledOnce()
+    expect(hasPendingApiRequests()).toBe(true)
+
+    resolveSecondBody(payload)
+    await expect(second).resolves.toBe(payload)
+    expect(hasPendingApiRequests()).toBe(false)
   })
 })
 
@@ -132,6 +162,7 @@ describe('IDOSI scoped request cancellation', () => {
 
     expect(fetchMock).not.toHaveBeenCalled()
     expect(vi.getTimerCount()).toBe(0)
+    expect(hasPendingApiRequests()).toBe(false)
   })
 
   it('cancels an in-flight screen request without retrying or clearing the active session', async () => {
@@ -146,6 +177,7 @@ describe('IDOSI scoped request cancellation', () => {
     await apiLogin('admin', 'secret')
 
     const pending = apiGetSystemScreenState('employees', { signal: controller.signal })
+    expect(hasPendingApiRequests()).toBe(true)
     const rejected = expect(pending).rejects.toMatchObject({ code: 'REQUEST_ABORTED', status: 0 })
     const requestSignal = fetchMock.mock.calls[1][1].signal
     controller.abort()
@@ -156,6 +188,7 @@ describe('IDOSI scoped request cancellation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function))
     expect(vi.getTimerCount()).toBe(0)
+    expect(hasPendingApiRequests()).toBe(false)
     expect(hasApiSession()).toBe(true)
     await apiGetSystemScreenState('stores')
     expect(fetchMock).toHaveBeenLastCalledWith('/api/system-screens/stores', expect.objectContaining({
@@ -182,6 +215,7 @@ describe('IDOSI scoped request cancellation', () => {
 
     expect(fetchMock).toHaveBeenCalledOnce()
     expect(vi.getTimerCount()).toBe(0)
+    expect(hasPendingApiRequests()).toBe(false)
   })
 
   it('cancels immediately during the retry delay and removes the pending retry', async () => {
@@ -196,6 +230,7 @@ describe('IDOSI scoped request cancellation', () => {
     const rejected = expect(pending).rejects.toMatchObject({ code: 'REQUEST_ABORTED' })
     await vi.advanceTimersByTimeAsync(100)
     expect(fetchMock).toHaveBeenCalledOnce()
+    expect(hasPendingApiRequests()).toBe(false)
     controller.abort()
     await rejected
 
@@ -227,6 +262,7 @@ describe('IDOSI scoped request cancellation', () => {
     expect(fetchMock.mock.calls[1][1].signal.aborted).toBe(false)
     expect(controller.signal.aborted).toBe(false)
     expect(vi.getTimerCount()).toBe(0)
+    expect(hasPendingApiRequests()).toBe(false)
   })
 
   it.each(['success', 'network error'])('cleans up the caller listener and timeout after %s', async (outcome) => {
@@ -241,10 +277,12 @@ describe('IDOSI scoped request cancellation', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     const pending = apiGetSystemScreenState('employees', { signal: controller.signal, retries: 0 })
+    expect(hasPendingApiRequests()).toBe(true)
     if (outcome === 'success') await expect(pending).resolves.toBe(payload)
     else await expect(pending).rejects.toMatchObject({ code: 'NETWORK_ERROR', details: 'connection reset' })
 
     expect(vi.getTimerCount()).toBe(0)
+    expect(hasPendingApiRequests()).toBe(false)
     for (const [event, listener] of addListener.mock.calls) {
       expect(removeListener).toHaveBeenCalledWith(event, listener)
     }

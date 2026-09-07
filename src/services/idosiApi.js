@@ -36,8 +36,10 @@ const writeToken = (token) => {
 }
 
 let memoryToken = readToken()
+let pendingApiRequests = 0
 
 export const hasApiSession = () => Boolean(memoryToken || readToken())
+export const hasPendingApiRequests = () => pendingApiRequests > 0
 export const clearApiSession = () => {
   memoryToken = ''
   writeToken('')
@@ -59,6 +61,7 @@ const requestOnce = async (path, {
   const abortRequest = () => controller.abort()
   signal?.addEventListener('abort', abortRequest, { once: true })
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+  pendingApiRequests += 1
   try {
     const response = await fetch(path, {
       method,
@@ -91,6 +94,7 @@ const requestOnce = async (path, {
     if (error?.name === 'AbortError') throw new IdosiApiError(timeoutMessage, { code: 'TIMEOUT' })
     throw new IdosiApiError('Không thể kết nối máy chủ IDOSI.', { code: 'NETWORK_ERROR', details: error?.message })
   } finally {
+    pendingApiRequests -= 1
     window.clearTimeout(timeout)
     signal?.removeEventListener('abort', abortRequest)
   }
