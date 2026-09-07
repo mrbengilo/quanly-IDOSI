@@ -3970,7 +3970,6 @@ const loadInitialStateCollections = async (db, user, collectionKeys) => {
   const canUseScopedSnapshot = typeof db?.readStoreStateSnapshot === 'function'
     && ['business_support', 'store_manager', 'employee'].includes(user?.role)
     && Boolean(actorStoreId)
-  if (!canUseScopedSnapshot) return loadStateCollections(db, 'global', collectionKeys)
   const initialScreen = collectionKeys === INITIAL_BUSINESS_SUPPORT_STATE_COLLECTIONS
     ? 'initial-support'
     : collectionKeys === INITIAL_STORE_MANAGER_STATE_COLLECTIONS
@@ -3980,8 +3979,22 @@ const loadInitialStateCollections = async (db, user, collectionKeys) => {
         : collectionKeys === INITIAL_STORE_EMPLOYEE_STATE_COLLECTIONS
           ? 'initial-store-employee'
           : 'initial'
-  const scoped = await loadStoreState(db, 'global', actorStoreId, actorEmployeeId, initialScreen)
-  return retainStateCollections(scoped, collectionKeys)
+  const scoped = canUseScopedSnapshot
+    ? await loadStoreState(db, 'global', actorStoreId, actorEmployeeId, initialScreen)
+    : await loadStateCollections(db, 'global', collectionKeys)
+  const row = retainStateCollections(scoped, collectionKeys)
+  if (!row || !collectionKeys.includes('attendance')) return row
+  // Authentication only needs ongoing shifts to establish operational context.
+  // The partial bootstrap cannot satisfy a screen read: its destination loads
+  // the required history separately before rendering attendance/payroll data.
+  const state = parseStoredJson(row.value_json, {})
+  row.value_json = JSON.stringify({
+    ...state,
+    attendance: filterArray(state, 'attendance', (record) => (
+      record && !record.deletedAt && !record.checkOut && !record.checkOutAt
+    )),
+  })
+  return row
 }
 
 const requireStateReadSession = async (request, db, context) => {
@@ -7059,7 +7072,7 @@ export const commandStateProjection = (body) => {
     return projection(
       'command-attendance',
       [
-        'attendance', 'schedule', 'supportWorkSchedules', 'payrollPeriods', 'tasks',
+        'attendance', 'deletedEmployees', 'schedule', 'supportWorkSchedules', 'payrollPeriods', 'tasks',
         'taskAssignmentHistory', 'workCatalogItems', 'workCatalogProgress', 'shiftDefinitions',
         'orders', 'expenseEntries', 'cashTransactions', 'compensationEntries', 'violations',
       ],

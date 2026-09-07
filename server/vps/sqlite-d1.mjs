@@ -178,7 +178,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   'command-schedule': ['schedule', 'shiftDefinitions'],
   'command-notification': ['notifications'],
   'command-attendance': [
-    'attendance', 'schedule', 'supportWorkSchedules', 'payrollPeriods',
+    'attendance', 'deletedEmployees', 'schedule', 'supportWorkSchedules', 'payrollPeriods',
     'tasks', 'taskAssignmentHistory', 'workCatalogItems', 'workCatalogProgress',
     'shiftDefinitions', 'orders', 'expenseEntries', 'cashTransactions',
     'compensationEntries', 'violations',
@@ -506,7 +506,7 @@ const storeStateSnapshotSql = (screen = '') => {
       )
       AND (params.period_key = '' OR attendance.period_key = params.period_key)`
     : ''
-  const sessionFilterSql = normalizedScreen === 'session'
+  const sessionFilterSql = normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
     ? `AND (entity.collection_key <> 'attendance' OR (
         entity.open_flag = 1
         OR (

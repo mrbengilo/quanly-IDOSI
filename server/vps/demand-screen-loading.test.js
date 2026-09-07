@@ -394,6 +394,9 @@ it.each([false, true])('checks canonical repair eligibility before command prelo
     for (const role of ['admin', 'support', 'manager', 'employee']) {
       const login = await request('/api/login', { username: `repair.${role}`, password: 'synthetic-command-password' })
       expect(login.status).toBe(200)
+      expect(login.payload.bootstrap.partial).toBe(true)
+      expect((login.payload.bootstrap.state.attendance || []).every((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)).toBe(true)
+      expect(JSON.stringify(login.payload.bootstrap)).not.toContain('FOREIGN-HISTORY')
       logins[role] = login.payload.token
     }
     let globalReads = 0
