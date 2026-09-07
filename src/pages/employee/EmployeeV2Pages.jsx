@@ -718,7 +718,7 @@ export function EmployeeOrdersPage() {
         actions={<Button icon={Plus} onClick={openCreate} disabled={!openAttendance}>TẠO ĐƠN HÀNG</Button>}
       />
       {!openAttendance && <InfoNote tone="orange">Bạn chưa có ca đang mở. Hãy điểm danh vào ca trước khi tạo đơn hàng.</InfoNote>}
-      <p className="order-shift-context"><strong>CA HIỆN TẠI: {openAttendance?.shiftName || 'Chưa vào ca'}</strong>{openAttendance && <span>{openAttendance.shiftStart || '—'} – {openAttendance.shiftEnd || '—'} · {String(openAttendance.date || '').split('-').reverse().join('/')}</span>}</p>
+      <p className="order-shift-context"><span>CA HIỆN TẠI:</span><strong>{openAttendance?.shiftName || 'Chưa vào ca'}</strong>{openAttendance && <span>{openAttendance.shiftStart || '—'} – {openAttendance.shiftEnd || '—'} · {String(openAttendance.date || '').split('-').reverse().join('/')}</span>}</p>
       <div className="order-payment-metrics" aria-label="Tổng quan đơn hàng trong ca">
         <MetricCard label="ĐƠN TRONG CA" value={rows.length} helper="Toàn bộ ca đang mở" icon={ShoppingCart} tone="blue" />
         <MetricCard label="DOANH THU TRONG CA" value={money(totals.revenue)} helper="Toàn bộ đơn hàng trong ca" icon={Banknote} tone="green" />
@@ -733,7 +733,7 @@ export function EmployeeOrdersPage() {
           disabled={!openAttendance}
           onChange={(event) => setPaymentFilterState({ key: paymentFilterKey, value: event.target.value })}
         ><option value="all">Tất cả</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
-        <Field label="Số tiền chính xác" error={amountError}><Input aria-label="Lọc đơn hàng theo số tiền" inputMode="numeric" value={amountInput} disabled={!openAttendance} placeholder="Ví dụ: 200,000" onChange={(event) => setAmountFilterState({ key: paymentFilterKey, value: event.target.value })} /></Field>
+        <Field label="Lọc số tiền chính xác" error={amountError}><Input aria-label="Lọc đơn hàng theo số tiền" inputMode="numeric" value={amountInput} disabled={!openAttendance} placeholder="Ví dụ: 200,000" onChange={(event) => setAmountFilterState({ key: paymentFilterKey, value: event.target.value })} /></Field>
         <Button variant="outline" onClick={() => { setPaymentFilterState({ key: paymentFilterKey, value: 'all' }); setAmountFilterState({ key: paymentFilterKey, value: '' }) }}>Đặt lại bộ lọc</Button>
       </div>
       <p className="order-filter-feedback" role="status">{filteredRows.length} / {rows.length} đơn trong ca{amountFilter !== null && !amountError ? ` · Số tiền ${money(amountFilter)}: ${filteredRows.length} đơn` : ''}</p>

@@ -183,7 +183,7 @@ describe('store employee current-shift orders', () => {
     expect(screen.getByText('Khách của tôi')).toBeTruthy()
     expect(screen.queryByText('S01-COWORKER')).toBeNull()
     expect(screen.queryByText('Khách bí mật')).toBeNull()
-    expect(screen.getAllByText('120,000 đ')).toHaveLength(2)
+    expect(screen.getAllByText('120,000 đ')).toHaveLength(3)
     expect(screen.queryByText('980,000 đ')).toBeNull()
   })
 
