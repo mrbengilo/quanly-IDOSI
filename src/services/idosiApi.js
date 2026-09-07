@@ -43,6 +43,8 @@ export const clearApiSession = () => {
   writeToken('')
 }
 
+const requestAbortedError = () => new IdosiApiError('Yêu cầu đã được hủy.', { code: 'REQUEST_ABORTED' })
+
 const requestOnce = async (path, {
   method = 'GET',
   body,
@@ -50,8 +52,12 @@ const requestOnce = async (path, {
   headers = {},
   timeoutMs = DEFAULT_TIMEOUT_MS,
   timeoutMessage = 'Máy chủ phản hồi quá chậm. Vui lòng thử lại.',
+  signal,
 } = {}) => {
+  if (signal?.aborted) throw requestAbortedError()
   const controller = new AbortController()
+  const abortRequest = () => controller.abort()
+  signal?.addEventListener('abort', abortRequest, { once: true })
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
   try {
     const response = await fetch(path, {
@@ -68,6 +74,8 @@ const requestOnce = async (path, {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     })
     const payload = await response.json().catch(() => null)
+    if (signal?.aborted) throw requestAbortedError()
+    if (controller.signal.aborted) throw new IdosiApiError(timeoutMessage, { code: 'TIMEOUT' })
     if (!response.ok || payload?.ok === false) {
       const error = payload?.error || {}
       throw new IdosiApiError(error.message || `Máy chủ trả về lỗi ${response.status}.`, {
@@ -78,15 +86,34 @@ const requestOnce = async (path, {
     }
     return payload
   } catch (error) {
+    if (signal?.aborted) throw requestAbortedError()
     if (error instanceof IdosiApiError) throw error
     if (error?.name === 'AbortError') throw new IdosiApiError(timeoutMessage, { code: 'TIMEOUT' })
     throw new IdosiApiError('Không thể kết nối máy chủ IDOSI.', { code: 'NETWORK_ERROR', details: error?.message })
   } finally {
     window.clearTimeout(timeout)
+    signal?.removeEventListener('abort', abortRequest)
   }
 }
 
 const retryableReadError = (error) => ['NETWORK_ERROR', 'TIMEOUT'].includes(error?.code)
+
+const waitForRetry = (delayMs, signal) => new Promise((resolveRetry, rejectRetry) => {
+  if (signal?.aborted) {
+    rejectRetry(requestAbortedError())
+    return
+  }
+  const abortRetry = () => {
+    window.clearTimeout(timeout)
+    signal.removeEventListener('abort', abortRetry)
+    rejectRetry(requestAbortedError())
+  }
+  const timeout = window.setTimeout(() => {
+    signal?.removeEventListener('abort', abortRetry)
+    resolveRetry()
+  }, delayMs)
+  signal?.addEventListener('abort', abortRetry, { once: true })
+})
 
 const request = async (path, options = {}) => {
   const { retries = 0, retryDelayMs = RETRY_DELAY_MS, ...requestOptions } = options
@@ -97,7 +124,7 @@ const request = async (path, options = {}) => {
       return await requestOnce(path, requestOptions)
     } catch (error) {
       if (attempt >= allowedRetries || !retryableReadError(error)) throw error
-      await new Promise((resolveRetry) => window.setTimeout(resolveRetry, retryDelayMs))
+      await waitForRetry(retryDelayMs, requestOptions.signal)
     }
   }
 }

@@ -17,6 +17,7 @@ import {
   apiPolicyEntries,
   apiPolicyMap,
   clearApiSession,
+  hasApiSession,
 } from './idosiApi'
 
 afterEach(() => {
@@ -106,6 +107,149 @@ describe('IDOSI login resilience', () => {
       code: 'API_UNAVAILABLE',
       message: expect.stringContaining('https://idosi.io.vn/#/login'),
     })
+  })
+})
+
+describe('IDOSI scoped request cancellation', () => {
+  const fetchUntilAbort = (_path, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => {
+      reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+    }, { once: true })
+  })
+
+  it.each([
+    ['system screen', (signal) => apiGetSystemScreenState('employees', { signal })],
+    ['store workspace', (signal) => apiGetStoreWorkspaceState('S01', { signal })],
+    ['store screen', (signal) => apiGetStoreWorkspaceState('S01', { screen: 'orders', signal })],
+  ])('does not fetch an already cancelled %s request', async (_name, read) => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    controller.abort()
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(read(controller.signal)).rejects.toMatchObject({ code: 'REQUEST_ABORTED' })
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('cancels an in-flight screen request without retrying or clearing the active session', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener')
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ token: 'session-token', user: { id: 'admin' } }) })
+      .mockImplementationOnce(fetchUntilAbort)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, state: {} }) })
+    vi.stubGlobal('fetch', fetchMock)
+    await apiLogin('admin', 'secret')
+
+    const pending = apiGetSystemScreenState('employees', { signal: controller.signal })
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'REQUEST_ABORTED', status: 0 })
+    const requestSignal = fetchMock.mock.calls[1][1].signal
+    controller.abort()
+    await rejected
+    await vi.advanceTimersByTimeAsync(30_250)
+
+    expect(requestSignal.aborted).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(vi.getTimerCount()).toBe(0)
+    expect(hasApiSession()).toBe(true)
+    await apiGetSystemScreenState('stores')
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/system-screens/stores', expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer session-token' }),
+    }))
+  })
+
+  it('rejects cancellation while parsing the response body instead of returning an empty payload', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const json = vi.fn()
+    const fetchMock = vi.fn((_path, options) => {
+      json.mockImplementation(() => fetchUntilAbort(_path, options))
+      return Promise.resolve({ ok: true, json })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = apiGetStoreWorkspaceState('S01', { signal: controller.signal })
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'REQUEST_ABORTED' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(json).toHaveBeenCalledOnce()
+    controller.abort()
+    await rejected
+
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('cancels immediately during the retry delay and removes the pending retry', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const addListener = vi.spyOn(controller.signal, 'addEventListener')
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener')
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('connection reset'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = apiGetSystemScreenState('employees', { signal: controller.signal })
+    const rejected = expect(pending).rejects.toMatchObject({ code: 'REQUEST_ABORTED' })
+    await vi.advanceTimersByTimeAsync(100)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    controller.abort()
+    await rejected
+
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(fetchMock).toHaveBeenCalledOnce()
+    for (const [event, listener] of addListener.mock.calls) {
+      expect(removeListener).toHaveBeenCalledWith(event, listener)
+    }
+  })
+
+  it.each(['fetch', 'response body'])('still retries a timeout during %s with a fresh signal', async (phase) => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const payload = { ok: true, state: {} }
+    const fetchMock = vi.fn()
+      .mockImplementationOnce((path, options) => phase === 'fetch'
+        ? fetchUntilAbort(path, options)
+        : Promise.resolve({ ok: true, json: () => fetchUntilAbort(path, options) }))
+      .mockResolvedValueOnce({ ok: true, json: async () => payload })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = apiGetSystemScreenState('employees', { signal: controller.signal })
+    await vi.advanceTimersByTimeAsync(30_250)
+    await expect(pending).resolves.toBe(payload)
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true)
+    expect(fetchMock.mock.calls[1][1].signal.aborted).toBe(false)
+    expect(controller.signal.aborted).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['success', 'network error'])('cleans up the caller listener and timeout after %s', async (outcome) => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const addListener = vi.spyOn(controller.signal, 'addEventListener')
+    const removeListener = vi.spyOn(controller.signal, 'removeEventListener')
+    const payload = { ok: true, state: {} }
+    const fetchMock = outcome === 'success'
+      ? vi.fn().mockResolvedValue({ ok: true, json: async () => payload })
+      : vi.fn().mockRejectedValue(new TypeError('connection reset'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const pending = apiGetSystemScreenState('employees', { signal: controller.signal, retries: 0 })
+    if (outcome === 'success') await expect(pending).resolves.toBe(payload)
+    else await expect(pending).rejects.toMatchObject({ code: 'NETWORK_ERROR', details: 'connection reset' })
+
+    expect(vi.getTimerCount()).toBe(0)
+    for (const [event, listener] of addListener.mock.calls) {
+      expect(removeListener).toHaveBeenCalledWith(event, listener)
+    }
+    controller.abort()
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false)
   })
 })
 
