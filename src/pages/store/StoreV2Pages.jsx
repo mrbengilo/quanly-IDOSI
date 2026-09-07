@@ -38,6 +38,7 @@ import {
   TablePagination,
   TableWrap,
 } from '../../components/UI'
+import { OrderPaymentSummary } from '../../components/OrderPaymentSummary'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
 import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
@@ -52,7 +53,7 @@ import {
 import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { activeOccupationLabels, findOccupationOption, occupationValueAllowed, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
 import { findOrderByReference, resolveOrderRouteScope } from '../../domain/orderStoreScope'
-import { orderBusinessDate, summarizeOrders } from '../../domain/orderSummary'
+import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, summarizeOrders } from '../../domain/orderSummary'
 import { apiGetHistory, apiGetOrderSummary } from '../../services/idosiApi'
 import { importPeriodChange, importVoucherAmounts, previousImportPeriod, selectImportHistory, validImportPeriod } from '../../domain/importHistory'
 import { useApp } from '../../state/AppContext'
@@ -544,6 +545,9 @@ export function StoreOrdersPage() {
   const canDeleteOrders = orderActorRole === 'admin'
   const [view, setView] = useState('shift')
   const [query, setQuery] = useState('')
+  const [amountInput, setAmountInput] = useState('')
+  const [paymentMethod, setPaymentMethod] = useState('all')
+  const [settledSearch, setSettledSearch] = useState({ query: '', amountInput: '' })
   const [date, setDate] = useState('')
   const requestedPeriod = orderBusinessDate(routeScope.order || {}).slice(0, 7)
   const [month, setMonth] = useState(() => requestedPeriod || today().slice(0, 7))
@@ -557,21 +561,41 @@ export function StoreOrdersPage() {
   const [historyRevision, setHistoryRevision] = useState(0)
   const historyPeriod = month
   const historyEmployeeId = employeeId === 'all' ? '' : employeeId
-  const historyKey = `${storeId}:${historyPeriod}:${historyEmployeeId}:${stateVersion}:${historyRevision}:${requestedOrderParam}`
+  const remoteHistory = ['connected', 'connecting', 'syncing', 'error'].includes(apiStatus)
+  const amount = parseOrderAmountFilter(amountInput)
+  const amountError = Number.isNaN(amount) ? 'Nhập số tiền nguyên không âm, ví dụ 200,000.' : ''
+  const searchSettled = !remoteHistory || (query === settledSearch.query && amountInput === settledSearch.amountInput)
+  const readFilters = useMemo(() => ({
+    employeeId: historyEmployeeId, date, shiftId: shiftId === 'all' ? '' : shiftId,
+    paymentMethod: paymentMethod === 'all' ? '' : paymentMethod,
+    query: remoteHistory ? settledSearch.query : query,
+    amount: parseOrderAmountFilter(remoteHistory ? settledSearch.amountInput : amountInput),
+  }), [amountInput, date, historyEmployeeId, paymentMethod, query, remoteHistory, settledSearch, shiftId])
+  const filterKey = JSON.stringify(readFilters)
+  const hasFilters = Boolean(historyEmployeeId || date || shiftId !== 'all' || paymentMethod !== 'all' || query || amountInput)
+  const historyKey = `${storeId}:${historyPeriod}:${stateVersion}:${historyRevision}:${requestedOrderParam}:${filterKey}`
   const summaryKey = `${storeId}:${month}:${stateVersion}:${historyRevision}`
   const [history, setHistory] = useState({ key: '', records: [], page: null, error: '' })
   const [summary, setSummary] = useState({ key: '', value: null, error: '' })
+  const [filteredSummary, setFilteredSummary] = useState({ key: '', value: null, error: '' })
+  const filteredSummaryKey = `${summaryKey}:${filterKey}`
   const [targetHistory, setTargetHistory] = useState({ key: '', order: null, error: '' })
   const [loadingMoreHistory, setLoadingMoreHistory] = useState(false)
-  const remoteHistory = ['connected', 'connecting', 'syncing', 'error'].includes(apiStatus)
+
   const targetHistoryKey = `${storeId}:${requestedOrderParam}`
   const targetLookupPending = Boolean(remoteHistory && storeId && requestedOrderParam && !requestedPeriod && targetHistory.key !== targetHistoryKey)
   const resolvedRequestedPeriod = requestedPeriod || (targetHistory.key === targetHistoryKey ? orderBusinessDate(targetHistory.order).slice(0, 7) : '')
   const resolvingRequestedOrder = targetLookupPending || Boolean(requestedOrderParam && resolvedRequestedPeriod && month !== resolvedRequestedPeriod)
-  const historyReady = remoteHistory && history.key === historyKey
+  const historyReady = remoteHistory && !amountError && history.key === historyKey
   // Connected history is authoritative. A short-lived screen projection must
   // never replace newer history records or resurrect a deleted order.
   const orders = remoteHistory ? (historyReady ? history.records : EMPTY_LIST) : projectionOrders
+
+  useEffect(() => {
+    if (!remoteHistory) return undefined
+    const timer = window.setTimeout(() => setSettledSearch({ query, amountInput }), 300)
+    return () => window.clearTimeout(timer)
+  }, [query, amountInput, remoteHistory])
 
   useEffect(() => {
     if (!targetLookupPending) return undefined
@@ -607,26 +631,34 @@ export function StoreOrdersPage() {
   }, [month, remoteHistory, resolvingRequestedOrder, storeId, summaryKey])
 
   useEffect(() => {
-    if (!remoteHistory || !storeId || resolvingRequestedOrder) return undefined
+    if (!remoteHistory || !storeId || resolvingRequestedOrder || !hasFilters || !searchSettled || amountError) return undefined
     let active = true
+    const controller = new AbortController()
+    apiGetOrderSummary({ storeId, period: month, ...readFilters, signal: controller.signal }).then((payload) => {
+      if (active) setFilteredSummary({ key: filteredSummaryKey, value: payload, error: '' })
+    }).catch((error) => {
+      if (active) setFilteredSummary({ key: filteredSummaryKey, value: null, error: error?.message || 'Không thể tải tổng kết quả lọc.' })
+    })
+    return () => { active = false; controller.abort() }
+  }, [amountError, filteredSummaryKey, hasFilters, month, readFilters, remoteHistory, resolvingRequestedOrder, searchSettled, storeId])
+
+  useEffect(() => {
+    if (!remoteHistory || !storeId || resolvingRequestedOrder || !searchSettled || amountError) return undefined
+    let active = true
+    const controller = new AbortController()
     loadInitialStoreOrderHistory({
-      fetchPage: (options) => apiGetHistory('orders', options),
-      query: {
-        storeId,
-        employeeId: historyEmployeeId,
-        period: historyPeriod,
-      },
+      fetchPage: (options) => apiGetHistory('orders', { ...options, signal: controller.signal }),
+      query: { storeId, period: historyPeriod, ...readFilters },
       currentDay: today(),
       requestedOrderId: requestedOrderParam,
     }).then((payload) => {
       if (!active) return
       setHistory({ key: historyKey, records: payload.records || [], page: payload.page || null, error: '' })
     }).catch((error) => {
-      if (!active) return
-      setHistory({ key: historyKey, records: [], page: null, error: error?.message || 'Không thể tải lịch sử đơn hàng.' })
+      if (active) setHistory({ key: historyKey, records: [], page: null, error: error?.message || 'Không thể tải lịch sử đơn hàng.' })
     })
-    return () => { active = false }
-  }, [historyEmployeeId, historyKey, historyPeriod, remoteHistory, requestedOrderParam, resolvingRequestedOrder, storeId])
+    return () => { active = false; controller.abort() }
+  }, [amountError, historyKey, historyPeriod, readFilters, remoteHistory, requestedOrderParam, resolvingRequestedOrder, searchSettled, storeId])
 
   const loadMoreHistory = async () => {
     if (!history.page?.nextCursor || loadingMoreHistory) return
@@ -634,7 +666,7 @@ export function StoreOrdersPage() {
     try {
       const payload = await apiGetHistory('orders', {
         storeId,
-        employeeId: historyEmployeeId,
+        ...readFilters,
         period: historyPeriod,
         cursor: history.page.nextCursor,
         limit: STORE_ORDER_HISTORY_PAGE_SIZE,
@@ -666,11 +698,13 @@ export function StoreOrdersPage() {
   const requestedOrderId = String(requestedOrderParam)
   const requestedOrder = storeOrders.find((order) => [order.id, order.code].map(String).includes(requestedOrderId))
   const requestedOrderKey = String(requestedOrder?.id || '')
-  const orderEmployeeIds = new Set(storeOrders
+  const orderEmployeeIds = new Set([...storeOrders
     .flatMap((order) => [order.employeeId, order.employeeCode])
     .map(compactIdentifier)
     .filter(Boolean)
-    .map((identifier) => identifier.toLocaleLowerCase('en-US')))
+    .map((identifier) => identifier.toLocaleLowerCase('en-US')),
+    ...(periodSummary?.groups?.employee || []).map((group) => compactIdentifier(group.key).toLocaleLowerCase('en-US')),
+  ])
   const employeeOptions = employees.filter((employee) => String(employee.unit || 'store') === 'store'
     && (sameOperationalIdentifier(employee.storeId, storeId)
       || employeeIdentifierValues(employee).some((identifier) => (
@@ -695,15 +729,16 @@ export function StoreOrdersPage() {
       .filter((occupation) => !preserveCurrentOccupation || occupation !== configuredCurrentOccupation?.label)
       .map((occupation) => ({ value: occupation, label: occupation })),
   ]
+  const currentFilters = { ...readFilters, query, amount }
   const filtered = periodOrders.filter((order) => {
-    if (requestedOrderKey && String(order.id) === requestedOrderKey) return true
-    const orderDate = orderBusinessDate(order)
-    if (date && orderDate !== date) return false
-    if (employeeId !== 'all' && !sameOperationalIdentifier(order.employeeId, employeeId)) return false
-    if (shiftId !== 'all' && String(order.shiftId) !== shiftId) return false
-    const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName].join(' ').toLowerCase()
-    return !query || haystack.includes(query.toLowerCase())
+    if (requestedOrderKey && String(order.id) === requestedOrderKey && !hasFilters) return true
+    return (!historyEmployeeId || sameOperationalIdentifier(order.employeeId, historyEmployeeId))
+      && orderMatchesFilters(order, currentFilters)
   })
+  const resultSummary = !hasFilters ? periodSummary
+    : remoteHistory ? (searchSettled && !amountError && filteredSummary.key === filteredSummaryKey ? filteredSummary.value : null)
+      : summarizeOrders(projectionOrders, { storeId, period: month, ...currentFilters })
+  const resultSummaryError = hasFilters && filteredSummary.key === filteredSummaryKey ? filteredSummary.error : ''
   const orderPages = buildStoreOrderPages(filtered, { currentDay: today(), pageSize: 20 })
   const orderPageCount = Math.max(1, orderPages.length)
   const activeOrderPage = Math.min(orderPage, orderPageCount)
@@ -726,7 +761,7 @@ export function StoreOrdersPage() {
 
   useEffect(() => {
     setOrderPage(1)
-  }, [date, employeeId, month, query, shiftId, storeId, view])
+  }, [amountInput, date, employeeId, month, paymentMethod, query, shiftId, storeId, view])
 
   useEffect(() => {
     setOrderPage((current) => Math.min(Math.max(1, current), orderPageCount))
@@ -827,22 +862,35 @@ export function StoreOrdersPage() {
   }
 
   return (
-    <div className="page store-orders-page">
+    <div className="page store-orders-page order-list-page">
       <PageHeader title="ĐƠN HÀNG" subtitle={`Danh sách đơn do nhân viên nhập tại ${store?.name || 'cửa hàng'}, thống kê theo ca, nhân viên và ngày tháng.`} icon={ReceiptText} />
       <div className="store-order-period">
         <Field label="Kỳ đang xem"><Input type="month" value={month} onChange={(event) => changePeriod(event.target.value)} aria-label="Kỳ đang xem" /></Field>
-        <p>Tổng quan toàn tháng {month.slice(5, 7)}/{month.slice(0, 4)}. Bộ lọc và phân trang bên dưới chỉ thay đổi danh sách đơn hàng.</p>
+        <p>Tổng quan toàn tháng {month.slice(5, 7)}/{month.slice(0, 4)}. Tổng tháng và tổng cả ca được giữ nguyên; kết quả lọc được thống kê riêng.</p>
       </div>
-      <div className="metrics-grid metrics-grid--4 store-order-metrics" aria-label="Tổng quan đơn hàng">
+      <div className="order-payment-metrics store-order-metrics" aria-label="Tổng quan đơn hàng">
         <MetricCard label="TỔNG SỐ ĐƠN HÀNG" value={orderMetrics?.orders ?? '—'} suffix="đơn" icon={ReceiptText} tone="blue" />
-        <MetricCard label="TỔNG TIỀN CHUYỂN KHOẢN" value={orderMetrics ? money(orderMetrics.transfer) : '—'} icon={Banknote} tone="blue" />
-        <MetricCard label="TỔNG TIỀN MẶT" value={orderMetrics ? money(orderMetrics.cash) : '—'} icon={Wallet} tone="orange" />
+        <MetricCard label="TỔNG TIỀN CHUYỂN KHOẢN" value={orderMetrics ? money(orderMetrics.transfer) : '—'} helper={orderMetrics ? `${orderMetrics.transferOrders} đơn chuyển khoản` : 'Đang tải'} icon={Banknote} tone="blue" />
+        <MetricCard label="TỔNG TIỀN MẶT" value={orderMetrics ? money(orderMetrics.cash) : '—'} helper={orderMetrics ? `${orderMetrics.cashOrders} đơn tiền mặt` : 'Đang tải'} icon={Wallet} tone="orange" />
         <MetricCard label="TỔNG DOANH THU" value={orderMetrics ? money(orderMetrics.revenue) : '—'} icon={TrendingUp} tone="green" />
       </div>
       {remoteHistory && !orderMetrics && !summaryError && <InfoNote>Đang tải tổng đơn hàng của kỳ...</InfoNote>}
       {summaryError && <InfoNote tone="red">{summaryError} <Button variant="outline" onClick={() => setHistoryRevision((current) => current + 1)}>Thử lại</Button></InfoNote>}
       {requestedOrderParam && targetHistory.key === targetHistoryKey && targetHistory.error && <InfoNote tone="red">{targetHistory.error}</InfoNote>}
-      <Card title="Bộ lọc đơn hàng" className="filter-card"><div className="toolbar-wrap"><SearchInput value={query} onChange={setQuery} placeholder="Tìm mã đơn, khách hàng..." /><Input type="date" value={date} onChange={(event) => { const value = event.target.value; setDate(value); if (value) setMonth(value.slice(0, 7)); clearRequestedOrder() }} aria-label="Lọc theo ngày" /><Select aria-label="Lọc theo ca" value={shiftId} onChange={(event) => setShiftId(event.target.value)}><option value="all">Tất cả ca</option>{shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name}</option>)}</Select><Select aria-label="Lọc theo nhân viên" value={employeeId} onChange={(event) => setEmployeeId(event.target.value)}><option value="all">Tất cả nhân viên</option>{employeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select><Button variant="outline" onClick={() => { setQuery(''); setEmployeeId('all'); changePeriod(today().slice(0, 7)) }}>Đặt lại</Button></div></Card>
+      <Card title="Bộ lọc đơn hàng" className="filter-card"><div className="order-filters">
+        <Field label="Tìm đơn hàng"><SearchInput value={query} onChange={(value) => { setQuery(value); clearRequestedOrder() }} placeholder="Tìm mã đơn, khách hàng..." /></Field>
+        <Field label="Ngày"><Input type="date" value={date} onChange={(event) => { const value = event.target.value; setDate(value); if (value) setMonth(value.slice(0, 7)); clearRequestedOrder() }} aria-label="Lọc theo ngày" /></Field>
+        <Field label="Ca làm việc"><Select aria-label="Lọc theo ca" value={shiftId} onChange={(event) => { setShiftId(event.target.value); clearRequestedOrder() }}><option value="all">Tất cả ca</option>{shiftOptions.map((shift) => <option key={shift.id} value={shift.id}>{shift.name}</option>)}</Select></Field>
+        <Field label="Nhân viên"><Select aria-label="Lọc theo nhân viên" value={employeeId} onChange={(event) => { setEmployeeId(event.target.value); clearRequestedOrder() }}><option value="all">Tất cả nhân viên</option>{employeeOptions.map((employee) => <option key={employee.id} value={employee.id}>{employee.name}</option>)}</Select></Field>
+        <Field label="Thanh toán"><Select aria-label="Lọc đơn hàng theo thanh toán" value={paymentMethod} onChange={(event) => { setPaymentMethod(event.target.value); clearRequestedOrder() }}><option value="all">Tất cả</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
+        <Field label="Số tiền chính xác" error={amountError}><Input aria-label="Lọc đơn hàng theo số tiền" inputMode="numeric" value={amountInput} placeholder="Ví dụ: 200,000" onChange={(event) => { setAmountInput(event.target.value); clearRequestedOrder() }} /></Field>
+        <Button variant="outline" onClick={() => { setQuery(''); setAmountInput(''); setPaymentMethod('all'); setEmployeeId('all'); changePeriod(today().slice(0, 7)) }}>Đặt lại</Button>
+      </div></Card>
+      {hasFilters && !amountError && <>
+        <p className="order-filter-feedback" role="status">{resultSummary ? `${resultSummary.totals.orders} đơn phù hợp${amount !== null ? ` số tiền ${money(amount)}` : ''}` : 'Đang tìm đơn hàng phù hợp...'}</p>
+        {resultSummary && <OrderPaymentSummary totals={resultSummary.totals} />}
+        {resultSummaryError && <InfoNote tone="red">{resultSummaryError} <Button variant="outline" onClick={() => setHistoryRevision((current) => current + 1)}>Thử lại</Button></InfoNote>}
+      </>}
       {orderActorRole === 'business_support'
         ? <InfoNote>HTKD được sửa thông tin và hình thức thanh toán; chỉ Admin được sửa số tiền hoặc xóa đơn hàng.</InfoNote>
         : !canEditOrders && <InfoNote>Chế độ chỉ xem: tài khoản hiện tại không thể chỉnh sửa hoặc xóa đơn hàng.</InfoNote>}
@@ -860,12 +908,13 @@ export function StoreOrdersPage() {
             ? `Ngày ${shortDate(orderBusinessDate(first))}`
             : <span className="order-group__shift-title">
                 <strong>{first.shiftName || 'Chưa gắn ca'}</strong>
-                <small>{first.shiftStart || '--:--'}–{first.shiftEnd || '--:--'} · {shortDate(orderBusinessDate(first))}</small>
+                <small>{first.shiftStart || '--:--'}–{first.shiftEnd || '--:--'} · {orderBusinessDate(first).split('-').reverse().join('/')}</small>
               </span>
         return <Card key={key} className="order-group" title={title} action={<div className="order-group__totals">
           <span className="order-group__total-amount"><small>{view === 'shift' ? 'Tổng tiền cả ca' : view === 'day' ? 'Tổng tiền cả ngày' : 'Tổng tiền trong kỳ'}</small><strong>{groupTotal ? money(groupTotal.revenue) : '—'}</strong></span>
           <span className="order-group__order-count"><small>{view === 'shift' ? 'Tổng đơn cả ca' : view === 'day' ? 'Tổng đơn cả ngày' : 'Tổng đơn trong kỳ'}</small><strong>{groupTotal?.orders ?? '—'}</strong><em>đơn</em></span>
-        </div>}><TableWrap paginate={false}><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td>{timestamp(order.updatedAt || order.createdAt)}</td><td><strong>{order.code}</strong></td><td>{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td>{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td><strong>{money(order.amount)}</strong></td><td><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td><strong>{order.employeeName || operationalIdentifierRecordMatch(employees, order.employeeId || order.employeeCode, employeeIdentifierValues).record?.name || order.employeeId || order.employeeCode || '—'}</strong><SupportEmployeeTag record={order} employeeId={order.employeeId || order.employeeCode} storeId={storeId} businessDate={businessDate(order.createdAt || order.date)} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{order.employeeId || order.employeeCode || '—'}</small></td><td><Badge>{order.status}</Badge></td>{canEditOrders && <td><div className="order-row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
+          <OrderPaymentSummary totals={groupTotal} label={view === 'shift' ? 'Thanh toán cả ca' : view === 'day' ? 'Thanh toán cả ngày' : 'Thanh toán trong kỳ'} showTotal={false} />
+        </div>}><TableWrap tableClassName="order-table" paginate={false}><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Thời gian">{timestamp(order.updatedAt || order.createdAt)}</td><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td data-label="Khảo sát">{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong></td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Nhân viên"><strong>{order.employeeName || operationalIdentifierRecordMatch(employees, order.employeeId || order.employeeCode, employeeIdentifierValues).record?.name || order.employeeId || order.employeeCode || '—'}</strong><SupportEmployeeTag record={order} employeeId={order.employeeId || order.employeeCode} storeId={storeId} businessDate={businessDate(order.createdAt || order.date)} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{order.employeeId || order.employeeCode || '—'}</small></td><td data-label="Trạng thái"><Badge>{order.status}</Badge></td>{canEditOrders && <td data-label="Thao tác" data-wide><div className="order-row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
       })}
       <TablePagination
         page={activeOrderPage}
@@ -876,16 +925,16 @@ export function StoreOrdersPage() {
         label={orderPageDates.length === 1 ? `Ngày ${shortDate(orderPageDates[0])}` : ''}
         onPageChange={setOrderPage}
       />
-      {remoteHistory && !historyReady && <InfoNote>Đang tải trang lịch sử đơn hàng...</InfoNote>}
+      {remoteHistory && !amountError && (!historyReady || !searchSettled) && <InfoNote>Đang tải trang lịch sử đơn hàng...</InfoNote>}
       {historyReady && history.error && <InfoNote tone="red">{history.error}</InfoNote>}
-      {historyReady && history.page?.hasMore && (
+      {historyReady && history.page?.hasMore && searchSettled && (
         <div className="period-actions">
           <Button variant="outline" loading={loadingMoreHistory} disabled={loadingMoreHistory} onClick={loadMoreHistory}>
             TẢI THÊM LỊCH SỬ
           </Button>
         </div>
       )}
-      {!groups.length && <InfoNote>Chưa có đơn hàng phù hợp bộ lọc.</InfoNote>}
+      {!groups.length && !amountError && (!remoteHistory || (historyReady && searchSettled)) && <InfoNote>Chưa có đơn hàng phù hợp bộ lọc.</InfoNote>}
       {canEditOrders && <Modal open={Boolean(editing)} onClose={closeEditor} title={`Sửa đơn hàng ${editing?.code || ''}`} footer={<><Button variant="outline" onClick={closeEditor} disabled={saving}>Hủy</Button><Button icon={Save} loading={saving} disabled={saving} onClick={save}>LƯU THAY ĐỔI</Button></>}>
         <div className="form-grid">
           <Field label="Tên khách hàng"><Input value={form.customerName} onChange={(event) => updateForm('customerName', event.target.value)} /></Field>

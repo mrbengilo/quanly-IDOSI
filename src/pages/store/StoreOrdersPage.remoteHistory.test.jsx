@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { money, today } from '../../utils'
-import { orderBusinessDate, summarizeOrders } from '../../domain/orderSummary'
+import { orderBusinessDate, orderMatchesFilters, summarizeOrders } from '../../domain/orderSummary'
 import { StoreOrdersPage } from './StoreV2Pages'
 
 const mocked = vi.hoisted(() => ({
@@ -255,7 +255,7 @@ describe('StoreOrdersPage remote order completeness', () => {
     await screen.findByText('DOSIINTL-00001')
     expectPendingMetrics()
     const header = screen.getByText('Tổng tiền cả ca').closest('.order-group__totals')
-    expect(within(header).getAllByText('—')).toHaveLength(2)
+    expect(within(header).getAllByText('—')).toHaveLength(4)
 
     await act(async () => summaryRequest.reject(new Error('Không thể tải tổng kỳ kiểm tra.')))
     expect(screen.getByText('Không thể tải tổng kỳ kiểm tra.')).toBeTruthy()
@@ -279,7 +279,7 @@ describe('StoreOrdersPage remote order completeness', () => {
     expect(mocked.apiGetOrderSummary).toHaveBeenCalledWith({ storeId: store.id, period: '2026-09' })
     expect(within(screen.getByLabelText('Tổng quan đơn hàng')).queryByText('30,000 đ')).toBeNull()
     const header = screen.getByText('Tổng tiền cả ca').closest('.order-group__totals')
-    expect(within(header).getAllByText('—')).toHaveLength(2)
+    expect(within(header).getAllByText('—')).toHaveLength(4)
   })
 
   it('refreshes edit and delete results with unchanged stateVersion and never restores a stale projection', async () => {
@@ -358,4 +358,69 @@ describe('StoreOrdersPage remote order completeness', () => {
     expect(screen.queryByRole('button', { name: 'TẢI THÊM LỊCH SỬ' })).toBeNull()
     expectMetrics({ orders: 1, cash: 90_000, transfer: 0, revenue: 90_000 })
   })
+  it('finds exact amounts beyond the first history page and combines payment without downloading unrelated pages', async () => {
+    mocked.remoteOrders = Array.from({ length: 125 }, (_, index) => historyOrder(125 - index, index < 113 ? 10_000 : 20_000, '2026-09-14', {
+      paymentMethod: index % 2 ? 'bank_transfer' : 'TIỀN MẶT',
+      customerName: 'Nguyễn Thị Ánh với tên khách hàng rất dài để đọc đầy đủ trên điện thoại',
+    }))
+    mocked.remoteOrders.push(historyOrder(126, 0, '2026-09-14'))
+    mocked.apiGetHistory.mockImplementation(async (_kind, options) => {
+      const matches = mocked.remoteOrders.filter((order) => orderMatchesFilters(order, options))
+      return matches.length > 100 ? morePage(matches.slice(0, 100)) : page(matches)
+    })
+    renderPage()
+    await screen.findByText('DOSIINTL-00125')
+    expect(screen.queryByText('DOSIINTL-00001')).toBeNull()
+    const amountInput = screen.getByRole('textbox', { name: 'Lọc đơn hàng theo số tiền' })
+    fireEvent.change(amountInput, { target: { value: '20,000' } })
+    await screen.findByText('12 đơn phù hợp số tiền 20,000 đ')
+    await screen.findByText('DOSIINTL-00001')
+    expect(screen.queryByText('DOSIINTL-00125')).toBeNull()
+    expect(mocked.apiGetHistory).toHaveBeenCalledTimes(2)
+    expect(mocked.apiGetHistory).toHaveBeenLastCalledWith('orders', expect.objectContaining({ amount: 20_000, limit: 100 }))
+    expect(mocked.apiGetOrderSummary).toHaveBeenCalledTimes(2)
+    const header = screen.getByText('Tổng tiền cả ca').closest('.order-group__totals')
+    expect(within(header).getByText('126')).toBeTruthy()
+    expect(within(header).getByText('1,370,000 đ')).toBeTruthy()
+    expect(within(header).getByText('64 đơn')).toBeTruthy()
+    expect(within(header).getByText('62 đơn')).toBeTruthy()
+    fireEvent.change(screen.getByRole('combobox', { name: 'Lọc đơn hàng theo thanh toán' }), { target: { value: 'Chuyển khoản' } })
+    await screen.findByText('6 đơn phù hợp số tiền 20,000 đ')
+    expect(screen.queryByText('DOSIINTL-00001')).toBeNull()
+    const result = within(screen.getByRole('group', { name: 'Kết quả lọc' }))
+    expect(result.getAllByText('120,000 đ')).toHaveLength(2)
+    fireEvent.change(amountInput, { target: { value: '0' } })
+    await screen.findByText('0 đơn phù hợp số tiền 0 đ')
+    fireEvent.change(screen.getByRole('combobox', { name: 'Lọc đơn hàng theo thanh toán' }), { target: { value: 'Tiền mặt' } })
+    await screen.findByText('1 đơn phù hợp số tiền 0 đ')
+    await screen.findByText('DOSIINTL-00126')
+    expect(screen.queryByRole('button', { name: 'TẢI THÊM LỊCH SỬ' })).toBeNull()
+    expectMetrics({ orders: 126, revenue: 1_370_000, cash: 690_000, transfer: 680_000 })
+  })
+
+  it('discards late filtered responses and refreshes counts after an order changes payment method', async () => {
+    mocked.remoteOrders = [historyOrder(1, 20_000), historyOrder(2, 20_000, today(), { paymentMethod: 'Chuyển khoản' })]
+    const stale = deferred()
+    mocked.apiGetHistory.mockImplementation(async (_kind, options) => {
+      if (options.paymentMethod === 'Tiền mặt') return stale.promise
+      return page(mocked.remoteOrders.filter((order) => orderMatchesFilters(order, options)))
+    })
+    const view = renderPage()
+    await screen.findByText('DOSIINTL-00001')
+    const payment = screen.getByRole('combobox', { name: 'Lọc đơn hàng theo thanh toán' })
+    fireEvent.change(payment, { target: { value: 'Tiền mặt' } })
+    await waitFor(() => expect(mocked.apiGetHistory).toHaveBeenCalledTimes(2))
+    fireEvent.change(payment, { target: { value: 'Chuyển khoản' } })
+    await screen.findByText('DOSIINTL-00002')
+    await act(async () => stale.resolve(page([mocked.remoteOrders[0]])))
+    expect(screen.queryByText('DOSIINTL-00001')).toBeNull()
+    expect(screen.getByText('1 đơn phù hợp')).toBeTruthy()
+    mocked.remoteOrders = mocked.remoteOrders.map((order) => ({ ...order, paymentMethod: 'Chuyển khoản' }))
+    mocked.app = { ...mocked.app, stateVersion: 11 }
+    view.rerender(viewElement())
+    await screen.findByText('2 đơn phù hợp')
+    await screen.findByText('DOSIINTL-00001')
+    expect(within(screen.getByRole('group', { name: 'Kết quả lọc' })).getAllByText('40,000 đ')).toHaveLength(2)
+  })
+
 })
