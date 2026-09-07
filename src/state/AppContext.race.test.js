@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   isCurrentLocalCache,
   isRestorableOperationalAuditAction,
+  hasDuplicateAccountUsername,
   mergeEmployeeAuthUsers,
   mergeLegacyCredentialMigration,
   purgeLegacyLocalCredentials,
@@ -72,6 +73,42 @@ describe('legacy credential migration race guard', () => {
     ])
     expect(ambiguous[0].authUserId).toBeUndefined()
     expect(ambiguous[1].authUserId).toBe('USER-LOWER')
+  })
+
+  it('ignores the same persisted auth account when checking an edited username', () => {
+    const records = [
+      { id: 'STORE-001', username: 'shared.login', authUserId: 'user-shared' },
+      { id: 'MANAGER-001', username: 'shared.login', authUserId: 'user-shared', linkedEmployeeId: 'STORE-001' },
+    ]
+
+    expect(hasDuplicateAccountUsername({ username: 'shared.login' }, records, 'STORE-001')).toBe(false)
+  })
+
+  it('uses the canonical linked profile chain when older profiles lack auth metadata', () => {
+    const records = [
+      { id: 'STORE-001', username: 'shared.login' },
+      { id: 'MANAGER-001', username: 'shared.login', linkedEmployeeId: 'store-001' },
+    ]
+
+    expect(hasDuplicateAccountUsername({ username: 'shared.login' }, records, 'STORE-001')).toBe(false)
+  })
+
+  it('fails closed when linked profiles name different persisted auth accounts', () => {
+    const records = [
+      { id: 'STORE-001', username: 'current.login', authUserId: 'user-current' },
+      { id: 'MANAGER-001', username: 'taken.login', authUserId: 'user-other', linkedEmployeeId: 'STORE-001' },
+    ]
+
+    expect(hasDuplicateAccountUsername({ username: 'taken.login' }, records, 'STORE-001')).toBe(true)
+  })
+
+  it('still rejects the username of a distinct persisted account', () => {
+    const records = [
+      { id: 'STORE-001', username: 'current.login', authUserId: 'user-current' },
+      { id: 'STORE-002', username: 'taken.login', authUserId: 'user-other' },
+    ]
+
+    expect(hasDuplicateAccountUsername({ username: 'taken.login' }, records, 'STORE-001')).toBe(true)
   })
 
   it('purges every legacy local non-Admin credential while preserving employee profiles', () => {

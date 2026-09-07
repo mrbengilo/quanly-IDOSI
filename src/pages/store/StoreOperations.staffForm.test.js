@@ -92,6 +92,36 @@ describe('Business Support store employee form', () => {
       .toContain('Tên đăng nhập đã tồn tại.')
   })
 
+  it('does not treat a linked manager profile as a second username owner while editing', () => {
+    const current = validForm({ id: 'STORE-001', username: 'shared.login', password: '' })
+    const employees = [
+      { id: 'STORE-001', username: 'shared.login', authUserId: 'user-shared' },
+      { id: 'MANAGER-001', username: 'shared.login', authUserId: 'user-shared', linkedEmployeeId: 'STORE-001' },
+    ]
+
+    expect(validateStoreEmployee(current, employees, 'STORE-001', false)).toEqual([])
+  })
+
+  it('uses linked employee metadata to ignore the same account in legacy profile data', () => {
+    const current = validForm({ id: 'STORE-001', username: 'shared.login', password: '' })
+    const employees = [
+      { id: 'STORE-001', username: 'shared.login' },
+      { id: 'MANAGER-001', username: 'shared.login', linkedEmployeeId: 'store-001' },
+    ]
+
+    expect(validateStoreEmployee(current, employees, 'STORE-001', false)).toEqual([])
+  })
+
+  it('still checks employee-code uniqueness against profiles sharing the login account', () => {
+    const current = validForm({ id: 'MANAGER-001', username: 'shared.login', password: '' })
+    const employees = [
+      { id: 'STORE-001', username: 'shared.login', authUserId: 'user-shared' },
+      { id: 'MANAGER-001', username: 'shared.login', authUserId: 'user-shared', linkedEmployeeId: 'STORE-001' },
+    ]
+
+    expect(validateStoreEmployee(current, employees, 'STORE-001', false)).toContain('Mã nhân viên đã tồn tại.')
+  })
+
   it('links an Office or Business Support profile using only its hourly store rate', () => {
     const linkedForm = validForm({
       linkedEmployeeId: 'VP-001',

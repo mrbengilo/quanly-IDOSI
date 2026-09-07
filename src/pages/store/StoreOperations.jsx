@@ -519,7 +519,9 @@ export function StoreEmployees() {
   const isBusinessSupport = ['business_support', 'manager'].includes(session?.role)
   const canDeleteEmployee = session?.role === 'admin'
   const linkingExistingProfile = !editing && ['business_support', 'office'].includes(form.employeeSource)
-  const editingRequiresPassword = Boolean(editing) && !(
+  const editingSharedLogin = Boolean(editing?.linkedEmployeeId)
+  const sharedLoginOwner = editingSharedLogin ? employeeFor(employees, editing.linkedEmployeeId) : null
+  const editingRequiresPassword = Boolean(editing) && !editingSharedLogin && !(
     editing.authUserId || editing.authVersion || editing.passwordHash || editing.legacyPassword
   )
 
@@ -686,7 +688,7 @@ export function StoreEmployees() {
       employees,
       editingId,
       !editing || editingRequiresPassword,
-      { requireIdentityImages: !editing, linkedEmployeeId: form.linkedEmployeeId },
+      { requireIdentityImages: !editing, linkedEmployeeId: form.linkedEmployeeId, credentialsReadOnly: editingSharedLogin },
     )
     if (validationErrors.length) {
       setErrors(validationErrors)
@@ -698,6 +700,10 @@ export function StoreEmployees() {
       storeId: scopedStoreId,
       store: scopedStore,
     })
+    if (editingSharedLogin) {
+      delete payload.username
+      delete payload.password
+    }
 
     if (editing) {
       if (typeof updateEmployee !== 'function') return notify?.('Chức năng cập nhật nhân viên đang được kết nối.', 'info')
@@ -825,7 +831,7 @@ export function StoreEmployees() {
           </div>
           {imageBusy && <InfoNote>Đang tối ưu ảnh {imageBusy === 'front' ? 'mặt trước' : 'mặt sau'} CCCD…</InfoNote>}
           <h3>Tài khoản đăng nhập</h3>
-          <div className="form-grid">
+          {editingSharedLogin ? <InfoNote>Tài khoản dùng chung với hồ sơ <strong>{sharedLoginOwner?.name || editing.linkedEmployeeId}</strong>. Đổi tên đăng nhập hoặc mật khẩu tại hồ sơ gốc <strong>{editing.linkedEmployeeId}</strong>.</InfoNote> : <div className="form-grid">
              <Field label="Tên đăng nhập" required><Input autoComplete="username" value={form.username} onChange={updateField('username')} placeholder="Ví dụ: nguyenvana" /></Field>
              <Field label="Mật khẩu" required={!editing || editingRequiresPassword} hint={editing && !editingRequiresPassword ? 'Để trống nếu không muốn đổi mật khẩu' : 'Người tạo tự nhập mật khẩu để cấp tài khoản đăng nhập'}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -836,6 +842,7 @@ export function StoreEmployees() {
               </div>
             </Field>
           </div>
+          }
           <InfoNote>Ảnh CCCD được lưu trong vùng riêng tư. Hệ thống không lưu hoặc hiển thị lại mật khẩu sau khi đóng thông báo cấp tài khoản.</InfoNote>
           </>}
         </form>

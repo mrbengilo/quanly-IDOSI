@@ -1,3 +1,5 @@
+import { employeeProfileKey, employeeProfilesShareAccount } from '../../domain/employeeAccountIdentity'
+
 const PHONE_PATTERN = /^0\d{9}$/
 const CCCD_PATTERN = /^\d{12}$/
 
@@ -93,6 +95,7 @@ export const nextStoreEmployeeCode = (store, employees = []) => {
 export function validateStoreEmployee(form, employees, editingId, requiresPassword = !editingId, options = {}) {
   const requireIdentityImages = Boolean(options.requireIdentityImages)
   const linkedEmployeeId = String(options.linkedEmployeeId || form.linkedEmployeeId || '').trim()
+  const credentialsReadOnly = Boolean(options.credentialsReadOnly)
   const errors = []
   const hourlyEmployee = Boolean(linkedEmployeeId) || isHourlyStoreEmployee(form.employmentType)
   const required = linkedEmployeeId
@@ -112,7 +115,7 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
     ['Tỉnh/Thành phố', form.province],
     ['Phường/Xã', form.ward],
     ['Đường, số nhà', form.street],
-    ['Tên đăng nhập', form.username],
+    ...(!credentialsReadOnly ? [['Tên đăng nhập', form.username]] : []),
   )
 
   required.forEach(([label, value]) => {
@@ -129,13 +132,17 @@ export function validateStoreEmployee(form, employees, editingId, requiresPasswo
   if (!linkedEmployeeId && (!Number.isInteger(Number(form.age)) || Number(form.age) < 16 || Number(form.age) > 100)) {
     errors.push('Tuổi phải là số nguyên từ 16 đến 100.')
   }
-  if (!linkedEmployeeId && requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
+  if (!linkedEmployeeId && !credentialsReadOnly && requiresPassword && !form.password) errors.push('Mật khẩu là trường bắt buộc để cấp tài khoản đăng nhập.')
 
-  const others = employees.filter((employee) => String(employee.id || employee.code || '') !== String(editingId || ''))
+  const editingProfile = employees.find((employee) => employeeProfileKey(employee) === String(editingId || ''))
+  const others = employees.filter((employee) => employeeProfileKey(employee) !== String(editingId || ''))
   if (others.some((employee) => normalizeText(employee.id || employee.code || employee.employeeCode) === normalizeText(form.id))) {
     errors.push('Mã nhân viên đã tồn tại.')
   }
-  if (!linkedEmployeeId && others.some((employee) => normalizeText(employee.username) === normalizeText(form.username))) {
+  const otherAccounts = others.filter((employee) => (
+    !(editingProfile && employeeProfilesShareAccount(employee, editingProfile))
+  ))
+  if (!linkedEmployeeId && !credentialsReadOnly && otherAccounts.some((employee) => normalizeText(employee.username) === normalizeText(form.username))) {
     errors.push('Tên đăng nhập đã tồn tại.')
   }
   return [...new Set(errors)]
