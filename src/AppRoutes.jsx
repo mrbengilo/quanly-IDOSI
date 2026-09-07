@@ -1,101 +1,69 @@
-import { cloneElement, lazy, useLayoutEffect, useState } from 'react'
+import { cloneElement, Suspense, useLayoutEffect, useState } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { isOfficeProfile } from './domain/officeProfile'
 import { employeeScreen, storeScreenForPath, systemScreenForPath } from './domain/workspaceScreens'
 import Login from './pages/Login'
 import { useApp } from './state/AppContext'
 
-const lazyNamed = (loadModule, exportName) => lazy(() => (
-  loadModule().then((module) => ({ default: module[exportName] }))
-))
-
-const AppShell = lazy(() => import('./layout/AppShell'))
-const RoleSelectionPage = lazy(() => import('./pages/RoleSelectionPage'))
-
-const loadAdminPages = () => import('./pages/admin/AdminPages')
-const AdminSettings = lazyNamed(loadAdminPages, 'AdminSettings')
-const AdminStores = lazyNamed(loadAdminPages, 'AdminStores')
-
-const loadRoleManagement = () => import('./pages/admin/RoleManagement')
-const BusinessSupportManagement = lazyNamed(loadRoleManagement, 'BusinessSupportManagement')
-const StoreManagerManagement = lazyNamed(loadRoleManagement, 'StoreManagerManagement')
-
-const CustomerSurveyPage = lazyNamed(() => import('./pages/admin/CustomerSurveyPage'), 'CustomerSurveyPage')
-const AttendanceResetPage = lazyNamed(() => import('./pages/admin/AttendanceResetPage'), 'AttendanceResetPage')
-const DataRestorePage = lazyNamed(() => import('./pages/admin/DataRestorePage'), 'DataRestorePage')
-const AdminWorkRegistrationSchedulePage = lazyNamed(() => import('./pages/admin/AdminWorkRegistrationSchedulePage'), 'AdminWorkRegistrationSchedulePage')
-const OrderInformationSettingsPage = lazyNamed(() => import('./pages/admin/OrderInformationSettingsPage'), 'OrderInformationSettingsPage')
-const WorkCatalogSettingsPage = lazyNamed(() => import('./pages/admin/WorkCatalogSettingsPage'), 'WorkCatalogSettingsPage')
-
-const loadSupportWorkPages = () => import('./pages/admin/SupportWorkPages')
-const AdminSupportAssignmentPage = lazyNamed(loadSupportWorkPages, 'AdminSupportAssignmentPage')
-const AdminSupportWorkPage = lazyNamed(loadSupportWorkPages, 'AdminSupportWorkPage')
-const SupportAssignedWorkPage = lazyNamed(loadSupportWorkPages, 'SupportAssignedWorkPage')
-const SupportWorkInboxPage = lazyNamed(loadSupportWorkPages, 'SupportWorkInboxPage')
-
-const loadBusinessSupportSchedule = () => import('./pages/admin/BusinessSupportSchedulePage')
-const BusinessSupportSchedulePage = lazyNamed(loadBusinessSupportSchedule, 'BusinessSupportSchedulePage')
-const MyBusinessSupportSchedulePage = lazyNamed(loadBusinessSupportSchedule, 'MyBusinessSupportSchedulePage')
-
-const loadSystemFinance = () => import('./pages/admin/SystemFinanceV2')
-const AdminCashflowV2 = lazyNamed(loadSystemFinance, 'AdminCashflowV2')
-const AdminOverviewV2 = lazyNamed(loadSystemFinance, 'AdminOverviewV2')
-const AdminReportsV2 = lazyNamed(loadSystemFinance, 'AdminReportsV2')
-
-const loadGovernancePages = () => import('./pages/admin/GovernancePages')
-const OrderAuditPage = lazyNamed(loadGovernancePages, 'OrderAuditPage')
-const PolicySettings = lazyNamed(loadGovernancePages, 'PolicySettings')
-const SupportTransfersPage = lazyNamed(loadGovernancePages, 'SupportTransfersPage')
-const SystemEmployees = lazyNamed(loadGovernancePages, 'SystemEmployees')
-
-const OfficeManagement = lazyNamed(() => import('./pages/office/OfficeManagement'), 'OfficeManagement')
-
-const loadEmployeePages = () => import('./pages/employee/EmployeePages')
-const EmployeeCashflow = lazyNamed(loadEmployeePages, 'EmployeeCashflow')
-const EmployeeShiftHistory = lazyNamed(loadEmployeePages, 'EmployeeShiftHistory')
-
-const EmployeeSchedulePage = lazyNamed(() => import('./pages/employee/EmployeeSchedulePage'), 'EmployeeSchedulePage')
-
-const loadEmployeeShiftOperations = () => import('./pages/employee/EmployeeShiftOperations')
-const EmployeeAssignedTasksPage = lazyNamed(loadEmployeeShiftOperations, 'EmployeeAssignedTasksPage')
-const EmployeeShiftExpensePage = lazyNamed(loadEmployeeShiftOperations, 'EmployeeShiftExpensePage')
-
-const loadEmployeeV2Pages = () => import('./pages/employee/EmployeeV2Pages')
-const EmployeeAttendancePage = lazyNamed(loadEmployeeV2Pages, 'EmployeeAttendancePage')
-const EmployeeDashboardV2 = lazyNamed(loadEmployeeV2Pages, 'EmployeeDashboardV2')
-const EmployeeOrdersPage = lazyNamed(loadEmployeeV2Pages, 'EmployeeOrdersPage')
-const EmployeePayrollDetails = lazyNamed(loadEmployeeV2Pages, 'EmployeePayrollDetails')
-
-const loadOfficeEmployeeDashboard = () => import('./pages/employee/OfficeEmployeeDashboard')
-const OfficeEmployeeDashboard = lazyNamed(loadOfficeEmployeeDashboard, 'OfficeEmployeeDashboard')
-const OfficeEmployeePayrollPage = lazyNamed(loadOfficeEmployeeDashboard, 'OfficeEmployeePayrollPage')
-
-const loadStoreOperations = () => import('./pages/store/StoreOperations')
-const StoreEmployees = lazyNamed(loadStoreOperations, 'StoreEmployees')
-const StoreTasks = lazyNamed(loadStoreOperations, 'StoreTasks')
-
-const StoreSettings = lazyNamed(() => import('./pages/store/StoreFinance'), 'StoreSettings')
-const StoreExpensesV2 = lazyNamed(() => import('./pages/store/StoreExpensesV2'), 'StoreExpensesV2')
-const StoreSalarySettings = lazyNamed(() => import('./pages/store/StoreSalarySettings'), 'StoreSalarySettings')
-
-const loadStoreV2Pages = () => import('./pages/store/StoreV2Pages')
-const StoreAttendanceV2 = lazyNamed(loadStoreV2Pages, 'StoreAttendanceV2')
-const StoreCashflowV2 = lazyNamed(loadStoreV2Pages, 'StoreCashflowV2')
-const StoreImportsV2 = lazyNamed(loadStoreV2Pages, 'StoreImportsV2')
-const StoreOverviewV2 = lazyNamed(loadStoreV2Pages, 'StoreOverviewV2')
-const StoreOrdersPage = lazyNamed(loadStoreV2Pages, 'StoreOrdersPage')
-const StorePayrollV2 = lazyNamed(loadStoreV2Pages, 'StorePayrollV2')
-const StoreReportsV2 = lazyNamed(loadStoreV2Pages, 'StoreReportsV2')
-
-const UnifiedSchedule = lazy(() => import('./pages/store/UnifiedSchedule'))
-
-const loadCompensationPages = () => import('./pages/compensation')
-const ManagerCompensationPage = lazyNamed(loadCompensationPages, 'ManagerCompensationPage')
-const MyCompensationPage = lazyNamed(loadCompensationPages, 'MyCompensationPage')
-const MyViolationsPage = lazyNamed(loadCompensationPages, 'MyViolationsPage')
-const RevenueBonusPage = lazyNamed(loadCompensationPages, 'RevenueBonusPage')
-const ViolationRefundPage = lazyNamed(loadCompensationPages, 'ViolationRefundPage')
-const ViolationManagementPage = lazyNamed(loadCompensationPages, 'ViolationManagementPage')
+import {
+  AppShell,
+  RoleSelectionPage,
+  AdminSettings,
+  AdminStores,
+  BusinessSupportManagement,
+  StoreManagerManagement,
+  CustomerSurveyPage,
+  AttendanceResetPage,
+  DataRestorePage,
+  AdminWorkRegistrationSchedulePage,
+  OrderInformationSettingsPage,
+  WorkCatalogSettingsPage,
+  AdminSupportAssignmentPage,
+  AdminSupportWorkPage,
+  SupportAssignedWorkPage,
+  SupportWorkInboxPage,
+  BusinessSupportSchedulePage,
+  MyBusinessSupportSchedulePage,
+  AdminCashflowV2,
+  AdminOverviewV2,
+  AdminReportsV2,
+  OrderAuditPage,
+  PolicySettings,
+  SupportTransfersPage,
+  SystemEmployees,
+  OfficeManagement,
+  EmployeeCashflow,
+  EmployeeShiftHistory,
+  EmployeeSchedulePage,
+  EmployeeAssignedTasksPage,
+  EmployeeShiftExpensePage,
+  EmployeeAttendancePage,
+  EmployeeDashboardV2,
+  EmployeeOrdersPage,
+  EmployeePayrollDetails,
+  OfficeEmployeeDashboard,
+  OfficeEmployeePayrollPage,
+  StoreEmployees,
+  StoreTasks,
+  StoreSettings,
+  StoreExpensesV2,
+  StoreSalarySettings,
+  StoreAttendanceV2,
+  StoreCashflowV2,
+  StoreImportsV2,
+  StoreOverviewV2,
+  StoreOrdersPage,
+  StorePayrollV2,
+  StoreReportsV2,
+  UnifiedSchedule,
+  ManagerCompensationPage,
+  MyCompensationPage,
+  MyViolationsPage,
+  RevenueBonusPage,
+  ViolationRefundPage,
+  ViolationManagementPage,
+  preloadRouteModule,
+} from './routeModules'
 
 const canonicalRole = (role) => role === 'manager' ? 'business_support' : role
 
@@ -127,6 +95,7 @@ function ProjectionLoadFailure({ onRetry }) {
 function RoleGuard({ roles, children, preserveShell = false }) {
   const {
     session,
+    currentEmployee,
     activeStoreId,
     authReady = true,
     remoteDataReady = true,
@@ -138,6 +107,9 @@ function RoleGuard({ roles, children, preserveShell = false }) {
   const [projectionRetry, setProjectionRetry] = useState(0)
   const location = useLocation()
   const role = canonicalRole(session?.role)
+  const allowedRoles = Array.isArray(roles) ? roles : [roles]
+  const roleAllowed = allowedRoles.includes(role)
+    && !(location.pathname === '/store/salary-settings' && role === 'store_manager')
   const systemOperator = ['admin', 'business_support'].includes(role)
   const remoteSession = remoteProjection.kind !== 'local'
   const storeWorkspace = location.pathname === '/store' || location.pathname.startsWith('/store/')
@@ -168,7 +140,9 @@ function RoleGuard({ roles, children, preserveShell = false }) {
       : ''
 
   useLayoutEffect(() => {
-    if (!authReady || !session || !remoteSession) return
+    if (!authReady || !session || session.needsRoleSelection || !roleAllowed) return
+    void preloadRouteModule(location.pathname, { session, currentEmployee })
+    if (!remoteSession) return
     let active = true
     const load = (request) => {
       setProjectionFailure(null)
@@ -183,16 +157,17 @@ function RoleGuard({ roles, children, preserveShell = false }) {
       }))
       return () => { active = false }
     }
-    if (systemProjectionRequired && (
-      !remoteDataReady
-      || remoteProjection.kind === 'store'
-      || String(remoteProjection.screen || '') !== routeSystemScreen
-    )) {
+    // The provider owns freshness and deduplication. Even a matching cached
+    // screen may need a refresh, and this guard must observe its failure/retry.
+    if (systemProjectionRequired) {
       load(() => ensureSystemWorkspaceData?.({ screen: routeSystemScreen }))
     }
     return () => { active = false }
   }, [
     authReady,
+    currentEmployee,
+    location.pathname,
+    roleAllowed,
     ensureStoreWorkspaceData,
     ensureSystemWorkspaceData,
     initialRoleHome,
@@ -215,8 +190,7 @@ function RoleGuard({ roles, children, preserveShell = false }) {
   if (!authReady) return <RouteLoading message="Đang khôi phục màn hình..." />
   if (!session) return <Navigate to="/login" replace />
   if (session.needsRoleSelection) return <Navigate to="/select-role" replace />
-  const allowedRoles = Array.isArray(roles) ? roles : [roles]
-  if (!allowedRoles.includes(role)) return <Navigate to={homeFor(session)} replace />
+  if (!roleAllowed) return <Navigate to={homeFor(session)} replace />
   const selectedStoreProjectionReady = !storeProjectionRequired || (
     remoteProjection.kind === 'store'
     && String(remoteProjection.storeId || '').toLocaleLowerCase('en-US') === String(routeStoreId).toLocaleLowerCase('en-US')
@@ -306,10 +280,14 @@ function StoreOverviewRoute() {
   return <StoreOverviewV2 />
 }
 
+function WorkspaceShellContent({ workspaceStatus }) {
+  return <Suspense fallback={<RouteLoading />}><AppShell workspaceStatus={workspaceStatus} /></Suspense>
+}
+
 function WorkspaceShell({ roles }) {
   return (
     <RoleGuard roles={roles} preserveShell>
-      <AppShell />
+      <WorkspaceShellContent />
     </RoleGuard>
   )
 }

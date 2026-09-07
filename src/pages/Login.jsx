@@ -7,8 +7,8 @@ import { useApp } from '../state/AppContext'
 
 const destinations = {
   admin: '/admin/overview',
-  business_support: '/admin/overview',
-  manager: '/admin/overview',
+  business_support: '/support/overview',
+  manager: '/support/overview',
   store_manager: '/store/overview',
   employee: '/employee/home',
 }

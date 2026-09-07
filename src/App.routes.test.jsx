@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App, { RouteErrorBoundary } from './App'
@@ -259,6 +259,30 @@ describe('App role routes', () => {
     expect(mocked.ensureSystemWorkspaceData).toHaveBeenLastCalledWith({ screen: 'stores' })
   })
 
+  it('observes and retries a failed refresh while the matching cached system screen is displayed', async () => {
+    mocked.session = { role: 'admin', name: 'Admin' }
+    mocked.remoteDataReady = false
+    mocked.remoteProjection = { kind: 'global', screen: 'overview' }
+    let rejectRefresh
+    const refresh = new Promise((_, reject) => { rejectRefresh = reject })
+    mocked.ensureSystemWorkspaceData.mockReturnValueOnce(refresh).mockReturnValueOnce(refresh)
+    const view = render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+    expect(await screen.findByText('Đang tải dữ liệu chi tiết...')).toBeTruthy()
+
+    mocked.remoteDataReady = true
+    mocked.remoteProjection = { kind: 'global', screen: 'cashflow' }
+    view.rerender(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
+    expect(await screen.findByText('Admin cashflow')).toBeTruthy()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledTimes(2)
+    await act(async () => rejectRefresh(new Error('Refresh unavailable')))
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Thử lại' }))
+
+    await waitFor(() => expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledTimes(3))
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenLastCalledWith({ screen: 'cashflow' })
+    expect(await screen.findByText('Admin cashflow')).toBeTruthy()
+  })
+
   it('loads only the requested employee screen projection after compact login', async () => {
     mocked.session = { role: 'employee', name: 'Nhân viên', employeeId: 'E01', storeId: 'S01' }
     mocked.currentEmployee = { id: 'E01', unit: 'store', storeId: 'S01' }
@@ -286,7 +310,25 @@ describe('App role routes', () => {
     render(<MemoryRouter initialEntries={['/admin/cashflow']}><CurrentRoute /><App /></MemoryRouter>)
 
     expect(await screen.findByText('Admin cashflow')).toBeTruthy()
-    expect(mocked.ensureSystemWorkspaceData).not.toHaveBeenCalled()
+    expect(mocked.ensureSystemWorkspaceData).toHaveBeenCalledWith({ screen: 'cashflow' })
+  })
+
+  it('does not request a denied Admin screen before redirecting a support employee', async () => {
+    mocked.session = { role: 'business_support', name: 'Hỗ trợ KD' }
+    mocked.remoteProjection = { kind: 'global', screen: 'support-overview' }
+    render(<MemoryRouter initialEntries={['/admin/reset']}><CurrentRoute /><App /></MemoryRouter>)
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/support/overview'))
+    expect(mocked.ensureSystemWorkspaceData.mock.calls.map(([options]) => options.screen)).toEqual(['support-overview'])
+  })
+
+  it('does not request salary settings before redirecting a store manager', async () => {
+    mocked.session = { role: 'store_manager', name: 'Quản lý', storeId: 'S01' }
+    mocked.remoteProjection = { kind: 'global', screen: '' }
+    render(<MemoryRouter initialEntries={['/store/salary-settings']}><CurrentRoute /><App /></MemoryRouter>)
+
+    await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
+    expect(mocked.ensureStoreWorkspaceData.mock.calls.some(([, options]) => options.screen === 'salary-settings')).toBe(false)
   })
 
   it('allows Admin to open the aggregate work-registration schedule', async () => {
