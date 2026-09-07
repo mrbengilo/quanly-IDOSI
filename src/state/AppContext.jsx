@@ -1,4 +1,3 @@
-import { scheduleWindows } from '../domain/supportScheduling'
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
@@ -44,7 +43,6 @@ import { employeeScreen, storeScreenForPath, systemScreenForPath } from '../doma
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../domain/storeTieredPayroll'
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { employeeProfileKey, employeeProfilesShareAccount } from '../domain/employeeAccountIdentity'
-import { isVietnamDateTimeLocal, supportTransferBounds } from '../domain/supportTransferTime'
 import {
   normalizeOrderInformationOptions,
   occupationValueAllowed,
@@ -511,21 +509,6 @@ export const remoteEffectiveUserChanged = (current = {}, latest = {}) => {
 }
 export const canManageSupportTransfers = (role) => ['admin', 'business_support'].includes(normalizeAuthRole(role))
 export const canDeleteSupportTransfers = (role) => normalizeAuthRole(role) === 'admin'
-export const nextSupportTransferBoundaryDelay = (transfers = [], at = Date.now(), scheduleState = {}, employeeId = '') => {
-  const nowMs = at instanceof Date ? at.getTime() : Number(at)
-  if (!Number.isFinite(nowMs)) return null
-  const scheduleBoundaries = scheduleWindows(scheduleState, { employeeId }).filter((window) => !window.invalid)
-    .flatMap((window) => [window.startMs - Number(scheduleState.policies?.earlyCheckInLimitMinutes ?? 120) * 60_000, window.startMs, window.endMs])
-  const nextBoundary = [...scheduleBoundaries, ...transfers
-    .filter((record) => !record?.deletedAt && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record?.status || '')))
-    .flatMap((record) => {
-      const bounds = supportTransferBounds(record)
-      return bounds ? [bounds.startMs, bounds.endMs] : []
-    })]
-    .filter((epochMs) => epochMs > nowMs)
-    .sort((left, right) => left - right)[0]
-  return Number.isFinite(nextBoundary) ? Math.max(0, nextBoundary - nowMs) : null
-}
 export const canCreateEmployeeUnit = (role, unit) => {
   const normalizedRole = normalizeAuthRole(role)
   if (normalizedRole === 'admin') return true
@@ -2405,12 +2388,20 @@ export function AppProvider({ children }) {
     }
     const supportScreen = ['overview', 'employee-home', 'employee-attendance', 'employee-schedule', 'schedule', 'support-transfers'].includes(remote.projectionScreen)
     const timer = window.setInterval(refresh, supportScreen ? 5_000 : 30_000)
-    const boundaryDelay = ['store_manager', 'employee'].includes(role)
-      ? nextSupportTransferBoundaryDelay(state.supportTransfers, Date.now(), { schedule: state.schedule, shiftDefinitions: state.shiftDefinitions, policies: state.policies }, state.session?.employeeId || state.session?.code)
-      : null
-    const boundaryTimer = boundaryDelay == null
-      ? null
-      : window.setTimeout(() => refresh({ force: true }), Math.min(boundaryDelay + 25, 2_147_000_000))
+    let boundaryTimer = null
+    if (['store_manager', 'employee'].includes(role)) {
+      // Load scheduling rules only inside the authenticated workspace.
+      void import('../domain/supportScheduling').then(({ scheduleWindows, nextSupportTransferBoundaryDelay }) => {
+        if (!active) return
+        const windows = scheduleWindows({ schedule: state.schedule, shiftDefinitions: state.shiftDefinitions },
+          { employeeId: state.session?.employeeId || state.session?.code })
+        const boundaries = windows.filter((item) => !item.invalid).flatMap((item) => [
+          item.startMs - Number(state.policies?.earlyCheckInLimitMinutes ?? 120) * 60_000, item.startMs, item.endMs,
+        ])
+        const delay = nextSupportTransferBoundaryDelay(state.supportTransfers, Date.now(), boundaries)
+        boundaryTimer = delay == null ? null : window.setTimeout(() => refresh({ force: true }), Math.min(delay + 25, 2_147_000_000))
+      }).catch(() => { /* Regular polling and server validation remain active. */ })
+    }
     const refreshWhenVisible = () => {
       if (!document.hidden) refresh({ force: pendingForce || ['store_manager', 'employee'].includes(role) })
     }
@@ -5785,6 +5776,7 @@ export function AppProvider({ children }) {
     if (!employee || !fromStore || !toStore || employeeHomeStore !== fromStore || fromStore === toStore) {
       return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
     }
+    const { isVietnamDateTimeLocal, supportTransferBounds } = await import('../domain/supportTransferTime')
     const exactDateTimes = isVietnamDateTimeLocal(payload.startAt) && isVietnamDateTimeLocal(payload.endAt)
     const timeBounds = exactDateTimes ? supportTransferBounds(payload) : supportTransferBounds({
       fromDate: payload.fromDate,
@@ -5859,6 +5851,7 @@ export function AppProvider({ children }) {
       || destinationStore.ambiguous || !destinationStore.record || sameIdentifier(fromStoreId, toStoreId)) {
       return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
     }
+    const { isVietnamDateTimeLocal, supportTransferBounds } = await import('../domain/supportTransferTime')
     const startAt = payload.startAt ?? previous.startAt
     const endAt = payload.endAt ?? previous.endAt
     const timeBounds = supportTransferBounds({ ...previous, startAt, endAt })

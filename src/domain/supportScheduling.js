@@ -99,3 +99,17 @@ export const scheduleConflict = (state, assignments = []) => {
   }
   return null
 }
+
+export const nextSupportTransferBoundaryDelay = (transfers = [], at = Date.now(), scheduleBoundaries = []) => {
+  const nowMs = at instanceof Date ? at.getTime() : Number(at)
+  if (!Number.isFinite(nowMs)) return null
+  const nextBoundary = [...scheduleBoundaries, ...transfers
+    .filter((record) => !record?.deletedAt && !['Đã xóa', 'Đã hủy', 'Hoàn tất'].includes(String(record?.status || '')))
+    .flatMap((record) => {
+      const bounds = supportTransferBounds(record)
+      return bounds ? [bounds.startMs, bounds.endMs] : []
+    })]
+    .filter((epochMs) => epochMs > nowMs)
+    .sort((left, right) => left - right)[0]
+  return Number.isFinite(nextBoundary) ? Math.max(0, nextBoundary - nowMs) : null
+}

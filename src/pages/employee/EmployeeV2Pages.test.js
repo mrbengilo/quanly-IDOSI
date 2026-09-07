@@ -618,7 +618,7 @@ describe('store employee current-shift orders', () => {
     expect(mocked.app.setTaskDone).not.toHaveBeenCalled()
   })
 
-  it('shows the effective support store, home store and transfer compensation without requiring a schedule', () => {
+  it('shows the assigned support store, home store and unchanged transfer compensation', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-08-20T07:00:00.000Z')
     mocked.app = {
@@ -632,10 +632,10 @@ describe('store employee current-shift orders', () => {
       }],
       attendance: [],
       orders: [],
-      schedule: [{ id: 'HOME-SCHEDULE', employeeId: 'E01', storeId: 'S01', date: '2026-08-20', shiftId: 'HOME-SHIFT' }],
+      schedule: [{ id: 'HOST-SCHEDULE', employeeId: 'E01', storeId: 'S02', date: '2026-08-20', shiftId: 'HOST-SHIFT' }],
       tasks: [],
       taskAssignmentHistory: [],
-      shiftDefinitions: [{ id: 'HOME-SHIFT', storeId: 'S01', name: 'Ca cửa hàng chính', start: '08:00', end: '17:00' }],
+      shiftDefinitions: [{ id: 'HOST-SHIFT', storeId: 'S02', name: 'Ca hỗ trợ cửa hàng', start: '12:00', end: '17:00' }],
       policies: {},
       checkIn: vi.fn(),
       checkOut: vi.fn(),
@@ -649,12 +649,12 @@ describe('store employee current-shift orders', () => {
     expect(screen.getByText(/NV hỗ trợ từ Dosii TNV/i)).toBeTruthy()
     expect(screen.getByText('45,000 đ/giờ')).toBeTruthy()
     expect(screen.getByText('180,000 đ')).toBeTruthy()
-    expect(screen.getAllByText('Ca hỗ trợ cửa hàng').length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Ca hỗ trợ cửa hàng • Dosii KVC/).length).toBeGreaterThan(0)
     expect(screen.queryByText('Ca cửa hàng chính')).toBeNull()
     expect(screen.getByRole('button', { name: 'ĐIỂM DANH' })).toBeTruthy()
   })
 
-  it('allows attendance-route check-in for an active transfer without a schedule', () => {
+  it('requires a real assigned shift before attendance-route support check-in', () => {
     vi.useFakeTimers()
     vi.setSystemTime('2026-08-20T07:00:00.000Z')
     mocked.app = {
@@ -673,11 +673,11 @@ describe('store employee current-shift orders', () => {
     }
 
     render(createElement(MemoryRouter, null, createElement(EmployeeAttendancePage)))
-    expect(screen.getByText('1 ca có thể điểm danh')).toBeTruthy()
+    expect(screen.getByText('0 ca có thể điểm danh')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'ĐIỂM DANH' }))
-    expect(screen.getByRole('dialog')).toBeTruthy()
-    expect(screen.getByText('Ca hỗ trợ cửa hàng')).toBeTruthy()
-    expect(mocked.app.notify).not.toHaveBeenCalled()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(mocked.app.checkIn).not.toHaveBeenCalled()
+    expect(mocked.app.notify).toHaveBeenCalledWith('Bạn chưa được xếp ca cho ngày hôm nay.', 'info')
   })
 
   it('keeps an expired destination attendance visible only for checkout settlement', () => {

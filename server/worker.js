@@ -7166,7 +7166,6 @@ export const commandStateProjection = (body) => {
       'supportWorkSchedules',
       payload.scheduleId || payload.id,
       payload.employeeId,
-      false,
     )
   }
   if (type.startsWith('task.')) {
