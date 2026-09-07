@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { CalendarCheck, CalendarDays, Clock3, Store } from 'lucide-react'
 import { Badge, Card, Field, Input, PageHeader, TableWrap } from '../../components/UI'
-import { formatVietnamTransferDateTime } from '../../domain/supportTransferTime'
+import { formatVietnamTransferDateTime, isVietnamDateTimeLocal } from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
 import { money, shortDate, today } from '../../utils'
 import { employeeScheduleDate, employeeScheduleRange, employeeScheduleRows } from './employeeSchedule'
@@ -17,7 +18,14 @@ export function EmployeeSchedulePage() {
   const app = useApp()
   const employee = currentEmployeeOf(app)
   const [mode, setMode] = useState('day')
-  const [anchorDate, setAnchorDate] = useState(today())
+  const [searchParams, setSearchParams] = useSearchParams()
+  const requestedDate = searchParams.get('date') || ''
+  const anchorDate = isVietnamDateTimeLocal(`${requestedDate}T00:00`) ? requestedDate : today()
+  const setAnchorDate = (date) => setSearchParams((current) => {
+    const next = new URLSearchParams(current)
+    next.set('date', date)
+    return next
+  }, { replace: true })
   const range = useMemo(() => employeeScheduleRange(anchorDate, mode), [anchorDate, mode])
   const rows = useMemo(() => employeeScheduleRows({
     schedule: app.schedule,

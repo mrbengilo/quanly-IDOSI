@@ -1,7 +1,8 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SupportTransferOverview } from './SupportTransferOverview'
+import { EmployeeSchedulePage } from '../pages/employee/EmployeeSchedulePage'
 
 const mocked = vi.hoisted(() => ({ app: {} }))
 vi.mock('../state/AppContext', () => ({ useApp: () => mocked.app }))
@@ -32,6 +33,20 @@ describe('support transfer home notice', () => {
     show()
     expect(screen.getByText('Đã dừng phân ca — Chưa kết ca')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Xem ca đang làm' })).toBeTruthy()
+  })
+  it.each([
+    [{}, '2026-09-08'],
+    [{ startAt: '2026-09-08T18:00:00Z', endAt: '2026-09-08T22:00:00Z' }, '2026-09-09'],
+    [{ startAt: '', endAt: '', fromDate: '2026-09-10', toDate: '2026-09-11' }, '2026-09-10'],
+  ])('opens the actual schedule on the Vietnam start date of the clicked transfer', (dates, expectedDate) => {
+    mocked.app.supportTransfers = [{ ...transfer, ...dates }]
+    render(<MemoryRouter initialEntries={['/employee/home']}><Routes>
+      <Route path="/employee/home" element={<SupportTransferOverview />} />
+      <Route path="/employee/schedule" element={<EmployeeSchedulePage />} />
+    </Routes></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: 'Xem lịch' }))
+    expect(screen.getByLabelText('Chọn ngày').value).toBe(expectedDate)
+    expect(screen.getByText('Ca hỗ trợ')).toBeTruthy()
   })
   it('does not show another employee or an unrelated store', () => {
     mocked.app.session.employeeId = 'OTHER'
