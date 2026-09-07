@@ -182,7 +182,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
     'attendance', 'deletedEmployees', 'schedule', 'supportWorkSchedules', 'payrollPeriods',
     'tasks', 'taskAssignmentHistory', 'workCatalogItems', 'workCatalogProgress',
     'shiftDefinitions', 'orders', 'expenseEntries', 'cashTransactions',
-    'compensationEntries', 'violations',
+    'compensationEntries', 'violations', 'notifications',
   ],
   'command-support-work': ['supportWorkAssignments', 'notifications', 'workCatalogItems'],
   'command-support-schedule': [
@@ -214,7 +214,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
     ...STORE_PAYROLL_COMMAND_COLLECTIONS,
   ],
   overview: [
-    'orders', 'attendance', 'schedule', 'expenseEntries', 'violationRefunds',
+    'orders', 'attendance', 'schedule', 'expenseEntries', 'violationRefunds', 'notifications',
   ],
   schedule: ['schedule', 'attendance', 'shiftDefinitions'],
   employees: ['deletedEmployees', 'storeEmployeeSalaryConfigs'],

@@ -13393,10 +13393,11 @@ describe('IDOSI Worker security primitives', () => {
       }
       const { env, employeeAuthorization } = await setupSupportTransferRuntime({
         token: 'bootstrap-transfer-overnight', transfer,
+        schedule: [{ id: 'SCHEDULE-NIGHT', employeeId: 'E01', storeId: 'S02', date: '2026-08-31', shiftIds: ['NIGHT-ASSIGNED'], shiftSnapshots: [{ id: 'NIGHT-ASSIGNED', name: 'Ca đêm', start: '22:00', end: '02:00' }] }],
       })
       const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_in', expectedVersion: 1,
-        payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+        payload: { shiftId: 'NIGHT-ASSIGNED', location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
       }, { ...employeeAuthorization, 'idempotency-key': 'overnight-transfer-check-in-0001' }), env)
       expect(checkedIn.status).toBe(201)
       expect(await checkedIn.json()).toMatchObject({
@@ -13424,6 +13425,7 @@ describe('IDOSI Worker security primitives', () => {
       const { env, adminAuthorization, employeeAuthorization, managerAuthorization } = await setupSupportTransferRuntime({
         token: 'bootstrap-transfer-cross-month',
         transfer,
+        schedule: [{ id: 'SCHEDULE-NIGHT', employeeId: 'E01', storeId: 'S02', date: '2026-08-31', shiftIds: ['NIGHT-ASSIGNED'], shiftSnapshots: [{ id: 'NIGHT-ASSIGNED', name: 'Ca đêm', start: '22:00', end: '02:00' }] }],
         payrollPeriods: [{
           id: 'PAY-S02-AUG', storeId: 'S02', period: '2026-08', status: 'Đã chốt', rows: [],
           confirmedAt: null, lockedAt: null, needsReclose: false,
@@ -13431,7 +13433,7 @@ describe('IDOSI Worker security primitives', () => {
       })
       const checkedIn = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'attendance.check_in', expectedVersion: 1,
-        payload: { location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
+        payload: { shiftId: 'NIGHT-ASSIGNED', location: { latitude: 10.8, longitude: 106.7, accuracy: 8 } },
       }, { ...employeeAuthorization, 'idempotency-key': 'cross-month-transfer-check-in-0001' }), env)
       expect(checkedIn.status).toBe(201)
       const checkedInBody = await checkedIn.json()
@@ -13766,7 +13768,7 @@ describe('IDOSI Worker security primitives', () => {
     const employeeProjection = projectSharedState(state, {
       role: 'employee', employee_id: 'E-SUPPORT', user_id: 'U-SUPPORT', store_id: 'S-HOME', home_store_id: 'S-HOME',
     })
-    expect(employeeProjection.stores).toEqual([{ id: 'S-HOME', name: 'Dosii Home' }])
+    expect(employeeProjection.stores).toEqual([{ id: 'S-HOME', name: 'Dosii Home' }, { id: 'S-RECEIVE', name: 'Dosii Receive' }])
     expect(employeeProjection.attendance).toEqual([
       expect.objectContaining({ supportActualPay: 137_000, supportCompensation: expect.objectContaining({ supportStoreName: 'Dosii Receive' }) }),
       expect.objectContaining({ supportActualPay: 58_000, supportAllowanceApplied: false }),
@@ -18891,4 +18893,66 @@ describe('shared support workflow', () => {
     expect(entries.map((r) => r.status).sort()).toEqual([201, 409])
     expect(readHydratedState(runtime.env.DB.database).attendance).toHaveLength(1)
   })
+  it('shows future support planning separately from payroll employees even while home attendance stays open', async () => {
+    const runtime = await setup({ transfer: { ...transfer, startAt: '2026-09-08T01:00:00.000Z' },
+      attendance: [{ id: 'HOME-OPEN', employeeId: 'E01', storeId: 'S01', date: '2026-09-07', checkIn: '08:00', checkInAt: '2026-09-07T01:00:00.000Z' }] })
+    const state = readHydratedState(runtime.env.DB.database)
+    const projected = projectSharedState(state, { role: 'store_manager', store_id: 'S02', employee_id: 'QL02' }, { screen: 'schedule' })
+    expect(projected.supportRoster).toEqual([expect.objectContaining({ id: 'E01', storeId: 'S01', supportStoreId: 'S02' })])
+    expect(projected.supportRoster[0]).not.toHaveProperty('hourlyRate')
+    expect(projected.employees.some((employee) => employee.id === 'E01')).toBe(false)
+  })
+
+  it('notifies both stores and the employee before support starts with independent read receipts', async () => {
+    const runtime = await setup({ transfer: { ...transfer, startAt: '2026-09-08T01:00:00.000Z' } })
+    const updated = await command(runtime, runtime.adminAuthorization, 'support_transfer.update', { transferId: transfer.id, note: 'Chuẩn bị hỗ trợ ngày mai' })
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200)
+    let state = readHydratedState(runtime.env.DB.database)
+    const event = state.notifications.find((item) => item.type === 'support-transfer.update')
+    expect(event).toBeTruthy()
+    const viewers = [
+      { role: 'store_manager', store_id: 'S01', employee_id: 'QL01', user_id: 'M1' },
+      { role: 'store_manager', store_id: 'S02', employee_id: 'QL02', user_id: 'M2' },
+      { role: 'employee', store_id: 'S01', employee_id: 'E01', user_id: 'E1' },
+    ]
+    for (const viewer of viewers) expect(projectSharedState(state, viewer).notifications.filter((item) => item.id === event.id)).toHaveLength(1)
+    expect(projectSharedState(state, { role: 'store_manager', store_id: 'S99', employee_id: 'QL99' }).notifications).toEqual([])
+    expect(projectSharedState(state, { role: 'employee', store_id: 'S01', employee_id: 'OTHER' }).notifications).toEqual([])
+    expect((await command(runtime, runtime.managerAuthorization, 'notification.mark_read', { notificationId: event.id })).status).toBe(200)
+    state = readHydratedState(runtime.env.DB.database)
+    expect(projectSharedState(state, viewers[2]).notifications.find((item) => item.id === event.id).readAt).toBeNull()
+  })
+
+  it('stops future scheduling atomically while preserving an open session and every money field', async () => {
+    const runtime = await setup({ schedule: [assigned('HOST-NOW', 'S02', 'HOST-PM'), assigned('HOST-NEXT', 'S02', 'HOST-PM', '2026-09-08')],
+      attendance: [{ id: 'HOST-OPEN', employeeId: 'E01', storeId: 'S02', homeStoreId: 'S01', supportTransferId: transfer.id,
+        date: '2026-09-07', shiftId: 'HOST-PM', checkIn: '12:00', checkInAt: '2026-09-07T05:00:00.000Z', supportHourlyRate: 45_000 }],
+      expenseEntries: [{ id: 'OLD-COST', amount: 999, storeId: 'S02' }],
+    })
+    const before = readHydratedState(runtime.env.DB.database)
+    const version = runtime.env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get().version
+    const args = { transferId: transfer.id, reason: 'Thay đổi kế hoạch hỗ trợ', transferVersion: 1 }
+    const stopped = await command(runtime, runtime.supportAuthorization, 'support_transfer.stop', args, version, 'stop-support-workflow-key')
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200)
+    const after = readHydratedState(runtime.env.DB.database)
+    expect(after.attendance).toEqual(before.attendance)
+    expect(after.expenseEntries).toEqual(before.expenseEntries)
+    expect(after.supportTransfers[0]).toMatchObject({ hourlySupportRate: 45_000, allowance: 180_000, status: 'Đã duyệt' })
+    expect(after.schedule.find((item) => item.id === 'HOST-NOW').shiftIds).toEqual(['HOST-PM'])
+    expect(after.schedule.find((item) => item.id === 'HOST-NEXT')).toMatchObject({ shiftIds: [], cancelledAt: expect.any(String) })
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username: 'transfer.employee', password: 'transfer-employee-password' }), runtime.env)
+    expect((await login.json()).user).toMatchObject({ storeId: 'S02', activeTransferId: transfer.id })
+    const retry = await command(runtime, runtime.supportAuthorization, 'support_transfer.stop', args, version, 'stop-support-workflow-key')
+    expect(retry.status).toBe(200)
+    expect(readHydratedState(runtime.env.DB.database).notifications.filter((item) => item.type === 'support-transfer.stop')).toHaveLength(1)
+  })
+
+  it('rejects shrinking a grant over planned shifts and refuses a stale transfer edit', async () => {
+    const runtime = await setup({ schedule: [assigned('HOST-NEXT', 'S02', 'HOST-PM', '2026-09-08')] })
+    const result = await command(runtime, runtime.adminAuthorization, 'support_transfer.update', { transferId: transfer.id, endAt: '2026-09-08T06:00:00.000Z' })
+    expect(result.body.error.code).toBe('SUPPORT_TRANSFER_SCHEDULE_CONFLICT')
+    const stale = await command(runtime, runtime.adminAuthorization, 'support_transfer.update', { transferId: transfer.id, transferVersion: 99, note: 'stale' })
+    expect(stale.body.error.code).toBe('SUPPORT_TRANSFER_VERSION_CONFLICT')
+  })
+
 })
