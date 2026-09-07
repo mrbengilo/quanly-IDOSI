@@ -179,10 +179,9 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'customer-survey': ['stores', 'orders', 'orderInformationOptions'],
   'support-transfers': ['stores', 'employees', 'supportTransfers', 'attendance'],
   'order-information-settings': ['orderInformationOptions'],
-  'work-catalog': [
-    'stores', 'employees', 'workCatalogItems', 'workCatalogProgress', 'storeShiftTaskTemplates',
-    'attendance', 'compensationEntries', 'teamRewardClaims', 'shiftDefinitions',
-  ],
+  // Catalog editing sends explicit commands; attendance/checklist repair stays
+  // in the command profile instead of loading every historical shift here.
+  'work-catalog': ['stores', 'employees', 'workCatalogItems', 'shiftDefinitions'],
   'compensation-managers': ['stores', 'employees', 'compensationEntries', 'payrollPeriods'],
   'compensation-revenue': [
     'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions', 'supportTransfers',
@@ -5106,7 +5105,7 @@ const getSystemScreen = async (request, env, context, screen) => {
   if (collections.includes('attendance')) {
     if (useEmployeeStoreProjection) {
       row = await repairEmployeeScreenStateIfNeeded(db, user, context, row, screen)
-    } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db, { checkEligibility: true })) {
+    } else if (await hasPendingOpenStoreAttendanceChecklistRepair(db)) {
       await persistOpenStoreAttendanceChecklistRepairs(db, user, context)
       row = await readScreen()
     }
@@ -15457,9 +15456,9 @@ async function persistOpenStoreAttendanceChecklistRepairs(db, actor, context, cu
   return repairedRow
 }
 
-const hasPendingOpenStoreAttendanceChecklistRepair = async (db, { checkEligibility = false } = {}) => {
+const hasPendingOpenStoreAttendanceChecklistRepair = async (db) => {
   const pending = await all(db, `
-    SELECT ${checkEligibility ? 'value_json' : '1'}
+    SELECT value_json
     FROM state_entities
     WHERE scope_key = 'global'
       AND collection_key = 'attendance'
@@ -15470,7 +15469,7 @@ const hasPendingOpenStoreAttendanceChecklistRepair = async (db, { checkEligibili
         OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL
       )
     UNION ALL
-    SELECT ${checkEligibility ? 'value_json' : '1'}
+    SELECT value_json
     FROM state_entities
     WHERE scope_key = 'global'
       AND collection_key = 'attendance'
@@ -15483,15 +15482,12 @@ const hasPendingOpenStoreAttendanceChecklistRepair = async (db, { checkEligibili
           < ?
         OR json_extract(value_json, '$.checklistRepairError') IS NOT NULL
       )
-    ${checkEligibility ? '' : 'LIMIT 1'}
   `, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION, STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION)
   if (!pending.length) return false
-  // Commands retain their existing global preload: connected money mutations
-  // can require records outside a screen projection even when repair is a no-op.
-  if (!checkEligibility) return true
   // The indexed NULL branch retains pre-migration compatibility. Use the same
   // eligibility rules as reconciliation: office/support/manager attendance,
-  // other snapshot types and incomplete records must not trigger global loads.
+  // other snapshot types and incomplete records must not trigger global loads,
+  // including command preflights. Each command loads its own canonical inputs.
   const employeesRow = await loadStateCollections(db, 'global', ['employees'])
   const state = parseStoredJson(employeesRow?.value_json, {})
   const employees = Array.isArray(state.employees) ? state.employees : []
@@ -24321,7 +24317,9 @@ const visibleUserRowsForActor = async (db, actor) => ['admin', 'business_support
 
 const listUsers = async (request, env, context) => {
   const db = getDatabase(env)
-  const actor = await requireSession(request, db, context)
+  const actor = await requireSession(request, db, context, {
+    stateCollections: SESSION_CONTEXT_STATE_COLLECTIONS,
+  })
   if (!OPERATIONS_ROLES.has(actor.role)) {
     throw new ApiError(403, 'ROLE_FORBIDDEN', 'Tài khoản không có quyền xem danh sách tài khoản nhân sự.')
   }
