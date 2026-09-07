@@ -123,7 +123,6 @@ function RoleGuard({ roles, children, preserveShell = false }) {
   const routeStorePeriod = ['overview', 'payroll'].includes(routeStoreScreen)
     ? routeSearch.get('period') || currentVietnamMonth()
     : ''
-  const initialRoleHome = location.pathname === homeFor(session)
   const storeProjectionRequired = remoteSession
     && storeWorkspace
     && ['admin', 'business_support', 'store_manager'].includes(role)
@@ -170,7 +169,6 @@ function RoleGuard({ roles, children, preserveShell = false }) {
     roleAllowed,
     ensureStoreWorkspaceData,
     ensureSystemWorkspaceData,
-    initialRoleHome,
     remoteDataReady,
     remoteProjection.kind,
     remoteProjection.period,
@@ -201,8 +199,7 @@ function RoleGuard({ roles, children, preserveShell = false }) {
     remoteProjection.kind !== 'store'
     && String(remoteProjection.screen || '') === routeSystemScreen
   )
-  const compactHomeReady = initialRoleHome && remoteProjection.kind !== 'store'
-  if (projectionFailure?.key === projectionKey && !compactHomeReady) {
+  if (projectionFailure?.key === projectionKey) {
     const onRetry = () => setProjectionRetry((current) => current + 1)
     return preserveShell
       ? cloneElement(children, {
@@ -215,7 +212,10 @@ function RoleGuard({ roles, children, preserveShell = false }) {
         })
       : <ProjectionLoadFailure onRetry={onRetry} />
   }
-  if ((!remoteDataReady || !selectedStoreProjectionReady || !systemProjectionReady) && !compactHomeReady) {
+  // Routes such as Admin overview fetch their own data after mounting. Every
+  // route with a shared projection must wait for that screen's complete data.
+  const routeDataReady = remoteDataReady || (remoteSession && !storeProjectionRequired && !systemProjectionRequired)
+  if (!routeDataReady || !selectedStoreProjectionReady || !systemProjectionReady) {
     return preserveShell
       ? cloneElement(children, {
           workspaceStatus: {
