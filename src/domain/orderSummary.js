@@ -37,7 +37,33 @@ export const orderGroupKey = (order = {}, view = 'shift') => {
   return `${date}:${shiftGroupKey(order)}`
 }
 
-const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0 })
+export const paymentChannel = (value) => {
+  const normalized = String(value || '').trim().toLocaleLowerCase('vi-VN').replace(/[\s_-]+/gu, '')
+  if (['tiềnmặt', 'cash'].includes(normalized)) return 'cash'
+  if (['chuyểnkhoản', 'banktransfer', 'transfer', 'bank'].includes(normalized)) return 'transfer'
+  return 'unknown'
+}
+
+// Blank means no filter; zero is a valid exact amount. Never round money.
+export const parseOrderAmountFilter = (value) => {
+  const text = String(value ?? '').trim()
+  if (!text) return null
+  if (!/^(?:\d+|\d{1,3}(?:,\d{3})+|\d{1,3}(?:\.\d{3})+|\d{1,3}(?: \d{3})+)$/u.test(text)) return Number.NaN
+  const amount = Number(text.replace(/[,. ]/gu, ''))
+  return Number.isSafeInteger(amount) && amount >= 0 ? amount : Number.NaN
+}
+
+export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMethod = '', amount = null, query = '' } = {}) => {
+  if (!order || order.deletedAt || order.status === 'Đã xóa' || order.source === 'legacy-opening-balance') return false
+  if (date && orderBusinessDate(order) !== date) return false
+  if (shiftId && String(order.shiftId || '') !== shiftId) return false
+  if (paymentMethod && paymentChannel(order.paymentMethod) !== paymentChannel(paymentMethod)) return false
+  if (amount !== null && amount !== '' && (!['number', 'string'].includes(typeof order.amount) || String(order.amount).trim() === '' || Number(order.amount) !== Number(amount))) return false
+  const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName].join(' ').toLocaleLowerCase('vi-VN')
+  return !query || haystack.includes(query.trim().toLocaleLowerCase('vi-VN'))
+}
+
+const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0 })
 
 const checkedAmount = (order) => {
   const rawAmount = order?.amount
@@ -56,8 +82,11 @@ const addOrder = (target, order, amount) => {
   if (!Number.isSafeInteger(revenue)) throw new RangeError('Order summary exceeds the safe integer range.')
   target.orders += 1
   target.revenue = revenue
-  if (order.paymentMethod === 'Tiền mặt') target.cash += amount
-  if (order.paymentMethod === 'Chuyển khoản') target.transfer += amount
+  const channel = paymentChannel(order.paymentMethod)
+  if (channel === 'cash' || channel === 'transfer') {
+    target[channel] += amount
+    target[`${channel}Orders`] += 1
+  }
 }
 
 const sortedGroups = (groups) => [...groups.entries()]
@@ -77,7 +106,7 @@ const shiftMetadata = (order) => {
   }
 }
 
-export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '' } = {}) => {
+export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', ...filters } = {}) => {
   const totals = emptyTotals()
   const groups = {
     shift: new Map(),
@@ -88,8 +117,7 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
   const employeeKey = identifierKey(employeeId)
 
   for (const order of Array.isArray(orders) ? orders : []) {
-    if (!order || order.deletedAt || order.status === 'Đã xóa'
-      || order.source === 'legacy-opening-balance') continue
+    if (!orderMatchesFilters(order, filters)) continue
     if (storeKey && identifierKey(order.storeId) !== storeKey) continue
     if (employeeKey && identifierKey(order.employeeId) !== employeeKey) continue
     if (period && orderBusinessDate(order).slice(0, 7) !== period) continue

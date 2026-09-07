@@ -1,3 +1,5 @@
+import { paymentChannel } from '../../domain/orderSummary'
+export { paymentChannel } from '../../domain/orderSummary'
 import {
   businessDate,
   operationalIdentifierRecordMatch,
@@ -124,18 +126,6 @@ export const ordersForOpenAttendance = (
       return sameLegacyShift && businessDate(order.createdAt) === attendanceDate(canonicalOpenRecord)
     })
     .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))
-}
-
-const normalizedPaymentMethod = (value) => String(value || '')
-  .trim()
-  .toLocaleLowerCase('vi-VN')
-  .replace(/[\s_-]+/gu, '')
-
-export const paymentChannel = (value) => {
-  const normalized = normalizedPaymentMethod(value)
-  if (['tiềnmặt', 'cash'].includes(normalized)) return 'cash'
-  if (['chuyểnkhoản', 'banktransfer', 'transfer', 'bank'].includes(normalized)) return 'transfer'
-  return 'unknown'
 }
 
 export const shiftRevenueBreakdown = (orders = []) => orders.reduce((summary, order) => {
