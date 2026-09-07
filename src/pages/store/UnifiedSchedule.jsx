@@ -88,6 +88,51 @@ const blankShift = (color = BRIGHT_SHIFT_COLORS[0]) => ({
 
 const employeeRole = (employee = {}) => employee.position || employee.shortRole || employee.role || 'Nhân viên'
 
+const identifier = (value) => String(value || '').trim()
+const identifierKey = (value) => identifier(value).toLocaleLowerCase('vi-VN')
+const uniqueIdentifiers = (values = []) => {
+  const byKey = new Map()
+  values.map(identifier).filter(Boolean).forEach((value) => {
+    const key = identifierKey(value)
+    if (!byKey.has(key)) byKey.set(key, value)
+  })
+  return [...byKey.values()]
+}
+const employeeIdentifiers = (employee = {}) => uniqueIdentifiers([
+  employee.id,
+  employee.code,
+  employee.employeeId,
+  employee.employeeCode,
+  ...(Array.isArray(employee.identifierAliases) ? employee.identifierAliases : []),
+])
+const employeeIdentifier = (employee = {}) => employeeIdentifiers(employee)[0] || ''
+const employeeMatches = (employee, reference) => employeeIdentifiers(employee).some((value) => same(value, reference))
+const uniqueEmployees = (records = []) => records.reduce((result, employee) => {
+  const duplicateIndex = result.findIndex((existing) => (
+    employeeIdentifiers(employee).some((alias) => employeeMatches(existing, alias))
+  ))
+  if (duplicateIndex < 0) return [...result, employee]
+  const existing = result[duplicateIndex]
+  const merged = {
+    ...existing,
+    ...employee,
+    id: existing.id || employee.id,
+    code: existing.code || employee.code,
+    employeeId: existing.employeeId || employee.employeeId,
+    employeeCode: existing.employeeCode || employee.employeeCode,
+    identifierAliases: uniqueIdentifiers([
+      ...employeeIdentifiers(existing),
+      ...employeeIdentifiers(employee),
+    ]),
+  }
+  return result.map((item, index) => index === duplicateIndex ? merged : item)
+}, [])
+const scheduleRecordDate = (record = {}) => String(record.date || record.workDate || '')
+const scheduleRecordEmployeeId = (record = {}) => identifier(
+  record.employeeId || record.employee_id || record.employeeCode || record.employee_code,
+)
+const isLinkedScheduleMirror = (record = {}) => record.projectionReadOnly === true
+
 export function UnifiedSchedule() {
   const app = useApp()
   const {
@@ -103,7 +148,7 @@ export function UnifiedSchedule() {
   } = app
   const shiftDefinitions = Array.isArray(app.shiftDefinitions) ? app.shiftDefinitions : []
   const schedule = Array.isArray(app.schedule) ? app.schedule : []
-  const allEmployees = [...new Map([...(app.employees || []), ...(app.supportRoster || [])].map((employee) => [String(employee.id || employee.code).toLowerCase(), employee])).values()]
+  const allEmployees = uniqueEmployees([...(app.employees || []), ...(app.supportRoster || [])])
   const supportTransfers = Array.isArray(app.supportTransfers) ? app.supportTransfers : []
   const canManageStore = ['admin', 'business_support', 'manager', 'store_manager'].includes(session?.role)
   const storeId = session?.role === 'store_manager'
@@ -127,54 +172,77 @@ export function UnifiedSchedule() {
   const [assignmentNote, setAssignmentNote] = useState('')
   const [savingAssignment, setSavingAssignment] = useState(false)
 
+  const ownedSchedule = schedule.filter((record) => (
+    !isLinkedScheduleMirror(record) && storeScheduleRecordMatches(record, storeId)
+  ))
+  const visibleSchedule = schedule.filter((record) => (
+    isLinkedScheduleMirror(record) || storeScheduleRecordMatches(record, storeId)
+  ))
   const mainViewRange = storeScheduleRange(date, viewMode)
   const employeeSupportsStoreInView = (employee) => supportTransfers.some((record) => (
-    String(record.employeeId || '') === String(employee.id || employee.code || '')
-    && String(record.toStoreId || '') === String(storeId)
+    employeeMatches(employee, scheduleRecordEmployeeId(record))
+    && same(record.toStoreId, storeId)
     && supportAllowsScheduling(record)
     && mainViewRange.dates.some((targetDate) => supportTransferOverlapsDate(record, targetDate))
+  ))
+  const employeeHasVisibleScheduleInView = (employee) => visibleSchedule.some((record) => (
+    employeeMatches(employee, scheduleRecordEmployeeId(record))
+    && mainViewRange.dates.includes(scheduleRecordDate(record))
   ))
   const employees = allEmployees
     .filter((employee) => (
       String(employee.unit || 'store') === 'store'
       && employee.status !== 'Đã nghỉ việc'
-      && (!storeId || String(employee.storeId) === String(storeId) || employeeSupportsStoreInView(employee))
+      && (!storeId
+        || same(employee.storeId, storeId)
+        || employeeSupportsStoreInView(employee)
+        || employeeHasVisibleScheduleInView(employee))
     ))
     .sort((left, right) => String(left.name || '').localeCompare(String(right.name || ''), 'vi'))
 
   const dayShifts = activeStoreShiftDefinitions(shiftDefinitions, { storeId, date })
-  const employeeIds = new Set(employees.map((employee) => String(employee.id || employee.code || '')))
-  const daySchedule = schedule.filter((record) => (
-    String(record.date || record.workDate || '') === date
-    && employeeIds.has(String(record.employeeId))
-    && storeScheduleRecordMatches(record, storeId)
+  const employeeById = new Map(employees.flatMap((employee) => (
+    employeeIdentifiers(employee).map((alias) => [identifierKey(alias), employee])
+  )))
+  const canonicalEmployeeId = (reference) => employeeIdentifier(employeeById.get(identifierKey(reference))) || identifier(reference)
+  const canonicalEmployeeKey = (reference) => identifierKey(canonicalEmployeeId(reference))
+  const employeeIds = new Set(employeeById.keys())
+  const daySchedule = ownedSchedule.filter((record) => (
+    scheduleRecordDate(record) === date
+    && employeeIds.has(identifierKey(scheduleRecordEmployeeId(record)))
   ))
-  const dayViewShifts = storeScheduleShiftColumns({ date, records: daySchedule, shiftDefinitions, storeId })
-  const employeeById = new Map(employees.map((employee) => [String(employee.id || employee.code || ''), employee]))
-  const scheduleByEmployeeDate = new Map()
-  schedule.filter((record) => storeScheduleRecordMatches(record, storeId)).forEach((record) => {
-    const key = `${String(record.employeeId || '')}:${String(record.date || record.workDate || '')}`
-    if (!scheduleByEmployeeDate.has(key)) scheduleByEmployeeDate.set(key, record)
+  const visibleDaySchedule = visibleSchedule.filter((record) => (
+    scheduleRecordDate(record) === date
+    && employeeIds.has(identifierKey(scheduleRecordEmployeeId(record)))
+  ))
+  const scheduleRecordsByEmployeeDate = new Map()
+  visibleSchedule.forEach((record) => {
+    const key = `${canonicalEmployeeKey(scheduleRecordEmployeeId(record))}:${scheduleRecordDate(record)}`
+    const records = scheduleRecordsByEmployeeDate.get(key) || []
+    records.push(record)
+    scheduleRecordsByEmployeeDate.set(key, records)
   })
-  const scheduledEmployeeIds = new Set(daySchedule.map((record) => String(record.employeeId)))
+  const scheduledEmployeeIds = new Set(visibleDaySchedule.map((record) => canonicalEmployeeKey(scheduleRecordEmployeeId(record))).filter(Boolean))
   const assignedEmployeeCountByShift = new Map()
   daySchedule.forEach((record) => {
     scheduleShiftIds(record).forEach((shiftId) => {
-      const key = String(shiftId)
+      const key = identifierKey(shiftId)
       assignedEmployeeCountByShift.set(key, (assignedEmployeeCountByShift.get(key) || 0) + 1)
     })
   })
   const visibleEmployees = employees.filter((employee) => (
-    `${employee.id || ''} ${employee.code || ''} ${employee.name || ''} ${employeeRole(employee)}`
+    `${employeeIdentifiers(employee).join(' ')} ${employee.name || ''} ${employeeRole(employee)}`
       .toLocaleLowerCase('vi')
       .includes(employeeQuery.trim().toLocaleLowerCase('vi'))
   ))
   const datesOfWeek = storeScheduleRange(date, 'week').dates
   const datesOfMonth = storeScheduleRange(date, 'month').dates
-  const scheduleForEmployeeDate = (employeeId, targetDate) => scheduleByEmployeeDate.get(`${String(employeeId || '')}:${targetDate}`)
+  const scheduleForEmployeeDate = (employeeId, targetDate) => (
+    scheduleRecordsByEmployeeDate.get(`${canonicalEmployeeKey(employeeId)}:${targetDate}`) || []
+  )
   const supportContextForEmployeeDate = (employee, targetDate) => resolveSupportEmployeeTagContext({
     record: {
-      employeeId: employee.id || employee.code,
+      employeeId: employeeIdentifier(employee),
       storeId,
       businessDate: targetDate,
       supportAssignment: employee.supportAssignment,
@@ -183,7 +251,7 @@ export function UnifiedSchedule() {
       isSupportEmployee: Boolean(employee.supportAssignment || employee.supportStoreId),
     },
     employee,
-    employeeId: employee.id || employee.code,
+    employeeId: employeeIdentifier(employee),
     storeId,
     businessDate: targetDate,
     employees: allEmployees,
@@ -195,19 +263,108 @@ export function UnifiedSchedule() {
   )
 
   const resolveScheduledShift = (record, shiftId) => resolveStoreScheduleShift({
-    record, shiftId, shiftDefinitions, storeId,
+    record, shiftId, shiftDefinitions, storeId: record?.storeId || storeId,
   }) || {
     id: String(shiftId || ''),
     name: `Ca ${String(shiftId || '')}`,
-    color: stableScheduleShiftColor(storeId, shiftId),
+    color: stableScheduleShiftColor(record?.storeId || storeId, shiftId),
   }
 
-  const createdScheduleRows = [...new Set(daySchedule.flatMap(scheduleShiftIds))].map((shiftId) => {
-    const records = daySchedule.filter((record) => scheduleShiftIds(record).includes(String(shiftId)))
+  const scheduleMirrorStoreName = (record) => {
+    const projectedName = String(record?.storeName || '').trim()
+    if (projectedName) return projectedName
+    const recordDate = scheduleRecordDate(record)
+    const transfer = supportTransfers.find((item) => (
+      canonicalEmployeeKey(scheduleRecordEmployeeId(item)) === canonicalEmployeeKey(scheduleRecordEmployeeId(record))
+      && same(item.toStoreId, record?.storeId)
+      && (!recordDate || supportTransferOverlapsDate(item, recordDate))
+    ))
+    const transferName = String(transfer?.toStoreName || '').trim()
+    if (transferName) return transferName
+    return app.stores?.find((item) => same(item.id, record?.storeId))?.name || record?.storeId || 'cửa hàng hỗ trợ'
+  }
+
+  const scheduleColumnKey = (record, shiftId) => (
+    `${identifierKey(record?.storeId || storeId)}:${identifierKey(shiftId)}`
+  )
+  const scheduleEntriesForRecords = (records = []) => records.flatMap((record, recordIndex) => (
+    resolveStoreScheduleRecordShifts({
+      record,
+      shiftDefinitions,
+      storeId: record.storeId || storeId,
+    }).map((shift, shiftIndex) => ({
+      record,
+      shift,
+      columnKey: scheduleColumnKey(record, shift.id),
+      key: `${record.id || `${scheduleRecordEmployeeId(record)}-${scheduleRecordDate(record)}-${record.storeId || storeId}-${recordIndex}`}:${shift.id}:${shiftIndex}`,
+    }))
+  ))
+
+  const renderScheduleShiftChip = (entry, { checked = false } = {}) => {
+    const mirror = isLinkedScheduleMirror(entry.record)
+    return <span
+      key={entry.key}
+      className={`schedule-shift-chip${mirror ? ' schedule-shift-chip--mirror' : ''}`}
+      style={{ '--shift-color': entry.shift.color }}
+    >
+      {checked && <Check />}
+      <strong>{entry.shift.name}</strong>
+      <small>{scheduleShiftTimeLabel(entry.shift)}</small>
+      {mirror && <small className="schedule-shift-chip__mirror">Hỗ trợ tại {scheduleMirrorStoreName(entry.record)}</small>}
+      {mirror && <small className="schedule-shift-chip__read-only">Chỉ xem</small>}
+    </span>
+  }
+
+  const dayViewShifts = (() => {
+    const byKey = new Map(storeScheduleShiftColumns({
+      date,
+      records: daySchedule,
+      shiftDefinitions,
+      storeId,
+    }).map((item) => [scheduleColumnKey({ storeId }, item.id), {
+      ...item,
+      columnKey: scheduleColumnKey({ storeId }, item.id),
+      projectionReadOnly: false,
+    }]))
+    scheduleEntriesForRecords(visibleDaySchedule).forEach(({ record, shift, columnKey }) => {
+      if (!byKey.has(columnKey)) byKey.set(columnKey, {
+        ...shift,
+        columnKey,
+        projectionReadOnly: isLinkedScheduleMirror(record),
+        mirrorStoreName: isLinkedScheduleMirror(record) ? scheduleMirrorStoreName(record) : '',
+      })
+    })
+    return [...byKey.values()].toSorted((left, right) => (
+      String(left.start || '').localeCompare(String(right.start || ''))
+      || String(left.name || '').localeCompare(String(right.name || ''), 'vi')
+      || left.columnKey.localeCompare(right.columnKey)
+    ))
+  })()
+
+  const scheduleRecordCanBeManaged = (record, scheduledShift) => {
+    if (isLinkedScheduleMirror(record)) return false
+    const employee = employeeById.get(identifierKey(scheduleRecordEmployeeId(record)))
+    if (!employee) return false
+    if (same(employee.storeId, storeId)) return true
+    const bounds = shiftWindow(date, scheduledShift)
+    return Boolean(bounds && supportForScheduledWindow(app, {
+      ...bounds,
+      employeeId: scheduleRecordEmployeeId(record),
+      storeId,
+      shiftId: scheduledShift.id,
+      supportTransferId: scheduledShift.supportTransferId || record.supportTransferId || '',
+      date,
+    }))
+  }
+
+  const createdScheduleRows = [...new Map(daySchedule.flatMap(scheduleShiftIds)
+    .map((shiftId) => [identifierKey(shiftId), shiftId])).values()].map((shiftId) => {
+    const records = daySchedule.filter((record) => scheduleShiftIds(record).some((recordShiftId) => same(recordShiftId, shiftId)))
     const shift = resolveScheduledShift(records[0] || {}, shiftId)
     const employeeDetails = records.map((record) => {
-      const employee = employeeById.get(String(record.employeeId))
-      return { record, employee, name: employee?.name || record.employeeName || record.employeeId }
+      const recordEmployeeId = scheduleRecordEmployeeId(record)
+      const employee = employeeById.get(identifierKey(recordEmployeeId))
+      return { record, employee, name: employee?.name || record.employeeName || recordEmployeeId }
     })
     const timestamps = records.map((record) => record.updatedAt || record.createdAt).filter(Boolean)
     return {
@@ -217,20 +374,21 @@ export function UnifiedSchedule() {
       employeeDetails,
       note: records.find((record) => record.note)?.note || '',
       updatedAt: timestamps.toSorted().at(-1) || '',
+      readOnly: records.some((record) => !scheduleRecordCanBeManaged(record, shift)),
     }
   }).toSorted((left, right) => String(right.shift.start || '').localeCompare(String(left.shift.start || '')))
   const historyDates = new Set(storeScheduleRange(date, historyMode).dates)
-  const focusedEmployee = employeeById.get(String(focusedEmployeeId || employees[0]?.id || ''))
-  const scheduleHistoryRows = schedule
+  const focusedEmployeeReference = focusedEmployeeId || employeeIdentifier(employees[0])
+  const focusedEmployee = employeeById.get(identifierKey(focusedEmployeeReference))
+  const scheduleHistoryRows = ownedSchedule
     .filter((record) => (
       historyDates.has(String(record.date || record.workDate || ''))
-      && storeScheduleRecordMatches(record, storeId)
     ))
     .flatMap((record) => scheduleShiftIds(record).map((shiftId) => ({
-      id: `${record.id || record.employeeId}-${shiftId}`,
+      id: `${record.id || scheduleRecordEmployeeId(record)}-${shiftId}`,
       date: String(record.date || record.workDate || ''),
-      employeeName: employeeById.get(String(record.employeeId))?.name || record.employeeName || record.employeeId,
-      employeeId: record.employeeId,
+      employeeName: employeeById.get(identifierKey(scheduleRecordEmployeeId(record)))?.name || record.employeeName || scheduleRecordEmployeeId(record),
+      employeeId: scheduleRecordEmployeeId(record),
       shift: resolveScheduledShift(record, shiftId),
       note: record.note || '',
       updatedAt: record.updatedAt || record.createdAt || '',
@@ -238,10 +396,9 @@ export function UnifiedSchedule() {
     .toSorted((left, right) => `${right.date}:${right.updatedAt}`.localeCompare(`${left.date}:${left.updatedAt}`))
 
   const renderScheduleCell = (employeeId, targetDate) => {
-    const record = scheduleForEmployeeDate(employeeId, targetDate)
-    const shifts = record ? resolveStoreScheduleRecordShifts({ record, shiftDefinitions, storeId }) : []
-    return shifts.length
-      ? <div className="schedule-view-shifts">{shifts.map((shift) => <span key={shift.id} className="schedule-shift-chip" style={{ '--shift-color': shift.color }}><strong>{shift.name}</strong><small>{scheduleShiftTimeLabel(shift)}</small></span>)}</div>
+    const entries = scheduleEntriesForRecords(scheduleForEmployeeDate(employeeId, targetDate))
+    return entries.length
+      ? <div className="schedule-view-shifts">{entries.map((entry) => renderScheduleShiftChip(entry))}</div>
       : <span className="schedule-empty-cell">—</span>
   }
   const mainRangeLabel = ['week', 'month'].includes(viewMode)
@@ -249,9 +406,9 @@ export function UnifiedSchedule() {
     : displayDate(date)
   const renderPeriodSchedule = (dates, period) => <TableWrap className={`schedule-matrix schedule-matrix--period schedule-matrix--${period}`}>
     <thead><tr><th>Nhân viên</th>{dates.map((item) => <th key={item}>{displayDate(item)}</th>)}</tr></thead>
-    <tbody>{employees.map((employee) => <tr key={employee.id || employee.code}>
-      <td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><SupportEmployeeTag context={supportContextForEmployeeRange(employee, dates)} /><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>
-      {dates.map((item) => <td key={item}>{renderScheduleCell(employee.id || employee.code, item)}</td>)}
+    <tbody>{employees.map((employee) => <tr key={employeeIdentifier(employee)}>
+      <td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employeeIdentifier(employee)} color={employee.color} /><span><strong>{employee.name}</strong><SupportEmployeeTag context={supportContextForEmployeeRange(employee, dates)} /><small>{employee.code || employee.id || employee.employeeCode} · {employeeRole(employee)}</small></span></div></td>
+      {dates.map((item) => <td key={item}>{renderScheduleCell(employeeIdentifier(employee), item)}</td>)}
     </tr>)}</tbody>
   </TableWrap>
 
@@ -264,7 +421,7 @@ export function UnifiedSchedule() {
   const openCreateShift = () => {
     if (!canManageStore) return
     setEditingShift(null)
-    setShiftForm(blankShift(nextShiftColor(shiftDefinitions.filter((shift) => !storeId || !shift.storeId || String(shift.storeId) === String(storeId)))))
+    setShiftForm(blankShift(nextShiftColor(shiftDefinitions.filter((shift) => !storeId || !shift.storeId || same(shift.storeId, storeId)))))
     setShiftModalOpen(true)
   }
 
@@ -324,18 +481,18 @@ export function UnifiedSchedule() {
     const selectedWindows = ids.map((id) => {
       const shift = dayShifts.find((item) => same(item.id, id)) || editingAssignment?.shift
       const bounds = shiftWindow(date, shift)
-      return { ...bounds, invalid: !bounds, employeeId: employee.id || employee.code, storeId, shiftId: id, date }
+      return { ...bounds, invalid: !bounds, employeeId: employeeIdentifier(employee), storeId, shiftId: id, date }
     })
     const busy = Array.isArray(app.scheduleBusy) ? app.scheduleBusy : scheduleWindows(app)
     for (const window of selectedWindows) {
       if (window.invalid) return 'Ca thiếu thời gian hợp lệ.'
       if (!same(employee.storeId, storeId) && !supportForScheduledWindow(app, window)) return 'Ca nằm ngoài thời gian hỗ trợ được phép.'
       if (selectedWindows.some((other) => other !== window && windowsOverlap(window, other))) return 'Các ca đang chọn bị chồng giờ.'
-      const conflict = busy.find((other) => same(other.employeeId, window.employeeId)
+      const conflict = busy.find((other) => canonicalEmployeeKey(other.employeeId) === canonicalEmployeeKey(window.employeeId)
         && !(same(other.storeId, storeId) && other.date === date && same(other.shiftId, window.shiftId))
         && (other.invalid || windowsOverlap(window, other)))
       if (conflict) return `Bận tại ${conflict.storeName || conflict.storeId}: ${conflict.date}, ${conflict.start || '?'}–${conflict.end || '?'}.`
-      if (!editing && (app.attendance || []).some((record) => same(record.employeeId, employee.id)
+      if (!editing && (app.attendance || []).some((record) => employeeMatches(employee, scheduleRecordEmployeeId(record))
         && same(record.storeId, storeId) && record.date === date && same(record.shiftId, window.shiftId))) return 'Ca đã phát sinh điểm danh.'
     }
     return ''
@@ -350,7 +507,7 @@ export function UnifiedSchedule() {
   }
 
   const toggleAllEmployees = () => {
-    const visibleIds = visibleEmployees.filter((employee) => !availabilityMessage(employee)).map((employee) => employee.id)
+    const visibleIds = visibleEmployees.filter((employee) => !availabilityMessage(employee)).map(employeeIdentifier)
     const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedEmployeeIds.includes(id))
     setSelectedEmployeeIds((current) => allSelected
       ? current.filter((id) => !visibleIds.includes(id))
@@ -359,7 +516,7 @@ export function UnifiedSchedule() {
 
   const saveAssignments = async () => {
     if (!canManageStore || savingNewAssignment) return
-    const unavailable = employees.find((employee) => selectedEmployeeIds.includes(employee.id) && availabilityMessage(employee))
+    const unavailable = employees.find((employee) => selectedEmployeeIds.includes(employeeIdentifier(employee)) && availabilityMessage(employee))
     if (unavailable) return notify?.(availabilityMessage(unavailable), 'info')
     setSavingNewAssignment(true)
     const result = await saveScheduleMultiple?.(selectedEmployeeIds, selectedShiftIds, { date, note, storeId })
@@ -396,7 +553,9 @@ export function UnifiedSchedule() {
   const openAssignmentEditor = (row) => {
     if (!canManageStore) return
     setEditingAssignment(row)
-    setAssignmentEmployeeIds(row.records.map((record) => String(record.employeeId)))
+    setAssignmentEmployeeIds([...new Set(row.records
+      .map((record) => canonicalEmployeeId(scheduleRecordEmployeeId(record)))
+      .filter(Boolean))])
     setAssignmentNote(row.note)
   }
 
@@ -413,15 +572,21 @@ export function UnifiedSchedule() {
       : [...current, employeeId])
   }
 
+  const editableDaySchedule = (targetShiftId) => daySchedule.map((record) => ({
+    ...record,
+    employeeId: canonicalEmployeeId(scheduleRecordEmployeeId(record)),
+    shiftIds: scheduleShiftIds(record).map((shiftId) => same(shiftId, targetShiftId) ? targetShiftId : shiftId),
+  }))
+
   const saveEditedAssignment = async () => {
     if (!editingAssignment || !assignmentEmployeeIds.length || savingAssignment) return
-    const unavailable = employees.find((employee) => assignmentEmployeeIds.includes(String(employee.id))
-      && !editingAssignment.records.some((record) => same(record.employeeId, employee.id))
+    const unavailable = employees.find((employee) => assignmentEmployeeIds.includes(employeeIdentifier(employee))
+      && !editingAssignment.records.some((record) => employeeMatches(employee, scheduleRecordEmployeeId(record)))
       && availabilityMessage(employee, [editingAssignment.shift.id], true))
     if (unavailable) return notify?.(availabilityMessage(unavailable, [editingAssignment.shift.id], true), 'info')
     setSavingAssignment(true)
     const assignments = replaceShiftAssignees(
-      daySchedule,
+      editableDaySchedule(editingAssignment.shift.id),
       editingAssignment.shift.id,
       assignmentEmployeeIds,
       assignmentNote,
@@ -441,21 +606,22 @@ export function UnifiedSchedule() {
     if (!canManageStore) return
     const employeeText = row.employeeNames.length === 1 ? row.employeeNames[0] : `${row.employeeNames.length} nhân viên`
     if (!window.confirm(`Xóa lịch ${row.shift.name} của ${employeeText} ngày ${displayDate(date)}?`)) return
-    const assignments = removeShiftAssignments(daySchedule, row.shift.id)
+    const assignments = removeShiftAssignments(editableDaySchedule(row.shift.id), row.shift.id)
     const result = await replaceScheduleDay?.(assignments, { storeId, date })
     if (!result?.ok) notify?.(result?.message || 'Chưa thể xóa lịch phân ca.', 'info')
   }
 
   const exportDailySchedule = () => {
     const rows = daySchedule.flatMap((record) => {
-      const employee = employeeById.get(String(record.employeeId))
+      const recordEmployeeId = scheduleRecordEmployeeId(record)
+      const employee = employeeById.get(identifierKey(recordEmployeeId))
       const ids = scheduleShiftIds(record)
       return ids.map((shiftId) => {
         const shift = resolveScheduledShift(record, shiftId)
         return {
           Ngày: displayDate(date),
-          'Mã nhân viên': employee?.code || employee?.id || record.employeeId,
-          'Tên nhân viên': employee?.name || record.employeeName || record.employeeId,
+          'Mã nhân viên': employee?.code || employee?.id || employee?.employeeCode || recordEmployeeId,
+          'Tên nhân viên': employee?.name || record.employeeName || recordEmployeeId,
           'Vị trí': employeeRole(employee),
           Ca: shift.name,
           'Giờ bắt đầu': shift.start || '',
@@ -498,7 +664,7 @@ export function UnifiedSchedule() {
       {dayShifts.length ? (
         <section className="schedule-shift-card-grid" aria-label="Ca làm việc dùng chung">
           {dayShifts.map((shift) => {
-            const assignedCount = assignedEmployeeCountByShift.get(String(shift.id)) || 0
+            const assignedCount = assignedEmployeeCountByShift.get(identifierKey(shift.id)) || 0
             return (
               <article key={shift.id} className="schedule-shift-card" style={{ '--shift-color': shift.color }}>
                 <i className="schedule-shift-card__accent" aria-hidden="true" />
@@ -545,23 +711,35 @@ export function UnifiedSchedule() {
           </div>
         </div>
         {viewMode === 'day' && (dayViewShifts.length ? <TableWrap className="schedule-matrix schedule-matrix--day">
-          <thead><tr><th>Nhân viên</th>{dayViewShifts.map((shift) => <th key={shift.id}>{shift.name}<small className="table-note">{scheduleShiftTimeLabel(shift)}</small></th>)}</tr></thead>
+          <thead><tr><th>Nhân viên</th>{dayViewShifts.map((shift) => <th key={shift.columnKey}>{shift.name}<small className="table-note">{scheduleShiftTimeLabel(shift)}</small>{shift.projectionReadOnly && <small className="schedule-column-support">Hỗ trợ tại {shift.mirrorStoreName}</small>}</th>)}</tr></thead>
           <tbody>{employees.map((employee) => {
-            const record = scheduleForEmployeeDate(employee.id || employee.code, date)
-            const assigned = new Set(scheduleShiftIds(record))
-            return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} /><small>{employee.code || employee.id} · {employeeRole(employee)}</small></span></div></td>{dayViewShifts.map((column) => {
-              const shift = assigned.has(String(column.id)) ? resolveScheduledShift(record, column.id) : column
-              return <td key={column.id}>{assigned.has(String(column.id)) ? <span className="schedule-shift-chip" style={{ '--shift-color': shift.color }}><Check /> <strong>{shift.name}</strong><small>{scheduleShiftTimeLabel(shift)}</small></span> : <span className="schedule-empty-cell">—</span>}</td>
+            const assignedByColumn = new Map()
+            scheduleEntriesForRecords(scheduleForEmployeeDate(employeeIdentifier(employee), date)).forEach((entry) => {
+              const entries = assignedByColumn.get(entry.columnKey) || []
+              entries.push(entry)
+              assignedByColumn.set(entry.columnKey, entries)
+            })
+            return <tr key={employeeIdentifier(employee)}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employeeIdentifier(employee)} color={employee.color} /><span><strong>{employee.name}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} /><small>{employee.code || employee.id || employee.employeeCode} · {employeeRole(employee)}</small></span></div></td>{dayViewShifts.map((column) => {
+              const entries = assignedByColumn.get(column.columnKey) || []
+              return <td key={column.columnKey}>{entries.length ? <div className="schedule-view-shifts">{entries.map((entry) => renderScheduleShiftChip(entry, { checked: true }))}</div> : <span className="schedule-empty-cell">—</span>}</td>
             })}</tr>
           })}</tbody>
         </TableWrap> : <EmptyState title="Chưa có ca trong ngày" description="Tạo ca làm việc hoặc chọn ngày có lịch đã lưu." />)}
         {viewMode === 'week' && renderPeriodSchedule(datesOfWeek, 'week')}
         {viewMode === 'month' && renderPeriodSchedule(datesOfMonth, 'month')}
         {viewMode === 'employee' && <>
-          <Field label="Nhân viên"><Select value={focusedEmployeeId || employees[0]?.id || ''} onChange={(event) => setFocusedEmployeeId(event.target.value)}>{employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.name} — {employee.id}</option>)}</Select>{focusedEmployee && <SupportEmployeeTag context={supportContextForEmployeeRange(focusedEmployee, mainViewRange.dates)} />}</Field>
-          <TableWrap className="schedule-matrix schedule-matrix--employee"><thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ</th><th>Ghi chú</th></tr></thead><tbody>{schedule.filter((record) => String(record.employeeId) === String(focusedEmployeeId || employees[0]?.id || '') && storeScheduleRecordMatches(record, storeId)).toSorted((left, right) => String(right.date).localeCompare(String(left.date))).map((record) => {
-            const assigned = resolveStoreScheduleRecordShifts({ record, shiftDefinitions, storeId })
-            return <tr key={record.id || `${record.employeeId}-${record.date}`}><td>{displayDate(record.date)}</td><td>{assigned.map((shift) => shift.name).join(', ') || '—'}</td><td>{assigned.map(scheduleShiftTimeLabel).join(', ') || '—'}</td><td>{record.note || '—'}</td></tr>
+          <Field label="Nhân viên"><Select value={focusedEmployeeReference} onChange={(event) => setFocusedEmployeeId(event.target.value)}>{employees.map((employee) => <option key={employeeIdentifier(employee)} value={employeeIdentifier(employee)}>{employee.name} — {employee.code || employee.employeeCode || employeeIdentifier(employee)}</option>)}</Select>{focusedEmployee && <SupportEmployeeTag context={supportContextForEmployeeRange(focusedEmployee, mainViewRange.dates)} />}</Field>
+          <TableWrap className="schedule-matrix schedule-matrix--employee"><thead><tr><th>Ngày</th><th>Ca làm việc</th><th>Giờ</th><th>Ghi chú</th></tr></thead><tbody>{[...visibleSchedule.reduce((byDate, record) => {
+            if (canonicalEmployeeKey(scheduleRecordEmployeeId(record)) !== canonicalEmployeeKey(focusedEmployeeReference)) return byDate
+            const recordDate = scheduleRecordDate(record)
+            const records = byDate.get(recordDate) || []
+            records.push(record)
+            byDate.set(recordDate, records)
+            return byDate
+          }, new Map()).entries()].toSorted(([left], [right]) => right.localeCompare(left)).map(([recordDate, records]) => {
+            const entries = scheduleEntriesForRecords(records)
+            const notes = records.map((record) => record.note).filter(Boolean)
+            return <tr key={`${focusedEmployeeReference}-${recordDate}`}><td>{displayDate(recordDate)}</td><td>{entries.length ? <div className="schedule-view-shifts">{entries.map((entry) => renderScheduleShiftChip(entry))}</div> : '—'}</td><td>{entries.map(({ shift: assignedShift }) => scheduleShiftTimeLabel(assignedShift)).join(', ') || '—'}</td><td>{notes.join(' · ') || '—'}</td></tr>
           })}</tbody></TableWrap>
         </>}
       </Card>
@@ -582,11 +760,15 @@ export function UnifiedSchedule() {
                 <div className="created-schedule-row__content">
                   <strong>{row.shift.name}</strong>
                   <b>{scheduleShiftTimeLabel(row.shift)}</b>
-                  <div className="created-schedule-row__employees">{row.employeeDetails.map(({ record, employee, name }) => <span key={record.id || record.employeeId}><strong>{name}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employee || { id: record.employeeId, name }, date)} /></span>)}</div>
+                  <div className="created-schedule-row__employees">{row.employeeDetails.map(({ record, employee, name }) => {
+                    const recordEmployeeId = scheduleRecordEmployeeId(record)
+                    return <span key={record.id || recordEmployeeId}><strong>{name}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employee || { employeeId: recordEmployeeId, name }, date)} /></span>
+                  })}</div>
                   {row.note && <small>Ghi chú: {row.note}</small>}
+                  {row.readOnly && <small>Chỉ xem · Thời gian hỗ trợ đã kết thúc.</small>}
                   <small>Cập nhật: {displayDateTime(row.updatedAt)}</small>
                 </div>
-                {canManageStore && <div className="created-schedule-row__actions">
+                {canManageStore && !row.readOnly && <div className="created-schedule-row__actions">
                   <button type="button" onClick={() => openAssignmentEditor(row)} aria-label={`Sửa lịch ${row.shift.name}`}><Edit3 /></button>
                   <button type="button" className="danger" onClick={() => deleteAssignment(row)} aria-label={`Xóa lịch ${row.shift.name}`}><Trash2 /></button>
                 </div>}
@@ -595,7 +777,7 @@ export function UnifiedSchedule() {
           </div>
         ) : historyMode === 'day' ? (
           <EmptyState title="Chưa có lịch phân ca" description="Chọn ca và nhân viên ở trên để tạo lịch mới." />
-        ) : scheduleHistoryRows.length ? <TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca</th><th>Thời gian</th><th>Ghi chú</th><th>Cập nhật</th></tr></thead><tbody>{scheduleHistoryRows.map((row) => <tr key={row.id}><td><strong>{displayDate(row.date)}</strong></td><td><strong>{row.employeeName}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employeeById.get(String(row.employeeId)) || { id: row.employeeId, name: row.employeeName }, row.date)} /><small className="table-note">{row.employeeId}</small></td><td>{row.shift.name}</td><td>{scheduleShiftTimeLabel(row.shift)}</td><td>{row.note || '—'}</td><td>{displayDateTime(row.updatedAt)}</td></tr>)}</tbody></TableWrap> : <EmptyState title="Chưa có lịch sử phân ca" description="Không có lịch trong phạm vi đang chọn." />}
+        ) : scheduleHistoryRows.length ? <TableWrap><thead><tr><th>Ngày</th><th>Nhân viên</th><th>Ca</th><th>Thời gian</th><th>Ghi chú</th><th>Cập nhật</th></tr></thead><tbody>{scheduleHistoryRows.map((row) => <tr key={row.id}><td><strong>{displayDate(row.date)}</strong></td><td><strong>{row.employeeName}</strong><SupportEmployeeTag context={supportContextForEmployeeDate(employeeById.get(identifierKey(row.employeeId)) || { employeeId: row.employeeId, name: row.employeeName }, row.date)} /><small className="table-note">{row.employeeId}</small></td><td>{row.shift.name}</td><td>{scheduleShiftTimeLabel(row.shift)}</td><td>{row.note || '—'}</td><td>{displayDateTime(row.updatedAt)}</td></tr>)}</tbody></TableWrap> : <EmptyState title="Chưa có lịch sử phân ca" description="Không có lịch trong phạm vi đang chọn." />}
         {historyMode === 'day' && createdScheduleRows.length > 0 && <TableFooter shown={createdScheduleRows.length} total={createdScheduleRows.length} />}
       </Card>
 
@@ -644,27 +826,28 @@ export function UnifiedSchedule() {
             <div className="card__subheader">
               <strong>3. Chọn nhân viên (có thể chọn nhiều) · Đã chọn {selectedEmployeeIds.length}</strong>
               <Button variant="ghost" onClick={toggleAllEmployees} disabled={!visibleEmployees.length}>
-                {visibleEmployees.length && visibleEmployees.every((employee) => selectedEmployeeIds.includes(employee.id)) ? 'Bỏ chọn hiển thị' : 'Chọn tất cả hiển thị'}
+                {visibleEmployees.length && visibleEmployees.every((employee) => selectedEmployeeIds.includes(employeeIdentifier(employee))) ? 'Bỏ chọn hiển thị' : 'Chọn tất cả hiển thị'}
               </Button>
             </div>
             <SearchInput value={employeeQuery} onChange={setEmployeeQuery} placeholder="Tìm tên hoặc mã nhân viên..." />
             <div className="employee-picker">
-              {visibleEmployees.map((employee) => (
-                <label key={employee.id} className={selectedEmployeeIds.includes(employee.id) ? 'selected' : ''}>
+              {visibleEmployees.map((employee) => {
+                const employeeId = employeeIdentifier(employee)
+                return <label key={employeeId} className={selectedEmployeeIds.includes(employeeId) ? 'selected' : ''}>
                   <input
                     type="checkbox"
                     disabled={Boolean(availabilityMessage(employee))}
-                    checked={selectedEmployeeIds.includes(employee.id)}
-                    onChange={() => toggleEmployee(employee.id)}
+                    checked={selectedEmployeeIds.includes(employeeId)}
+                    onChange={() => toggleEmployee(employeeId)}
                     aria-label={`Chọn nhân viên ${employee.name}`}
                   />
-                  <Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} />
+                  <Avatar name={employee.name} src={employee.avatar} employeeId={employeeId} color={employee.color} size={30} />
                   <strong>{employee.name}</strong>
                   <SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} />
-                  <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
+                  <small>{employee.code || employee.id || employee.employeeCode} · {employeeRole(employee)}</small>
                   {availabilityMessage(employee) && <small className="schedule-availability-note">{availabilityMessage(employee)}</small>}
                 </label>
-              ))}
+              })}
               {!visibleEmployees.length && <EmptyState title="Không tìm thấy nhân viên" description="Thử một từ khóa khác." />}
             </div>
           </div>
@@ -692,22 +875,23 @@ export function UnifiedSchedule() {
         </div>
         <Field label={`Nhân viên được phân ca · Đã chọn ${assignmentEmployeeIds.length}`} required>
           <div className="employee-picker schedule-edit-employees">
-            {employees.map((employee) => (
-              <label key={employee.id} className={assignmentEmployeeIds.includes(String(employee.id)) ? 'selected' : ''}>
+            {employees.map((employee) => {
+              const employeeId = employeeIdentifier(employee)
+              return <label key={employeeId} className={assignmentEmployeeIds.includes(employeeId) ? 'selected' : ''}>
                 <input
                   type="checkbox"
-                  disabled={!assignmentEmployeeIds.includes(String(employee.id)) && Boolean(availabilityMessage(employee, [editingAssignment?.shift?.id], true))}
-                  checked={assignmentEmployeeIds.includes(String(employee.id))}
-                  onChange={() => toggleAssignmentEmployee(String(employee.id))}
+                  disabled={!assignmentEmployeeIds.includes(employeeId) && Boolean(availabilityMessage(employee, [editingAssignment?.shift?.id], true))}
+                  checked={assignmentEmployeeIds.includes(employeeId)}
+                  onChange={() => toggleAssignmentEmployee(employeeId)}
                   aria-label={`Chọn ${employee.name} cho ${editingAssignment?.shift?.name || 'ca'}`}
                 />
-                <Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} />
+                <Avatar name={employee.name} src={employee.avatar} employeeId={employeeId} color={employee.color} size={30} />
                 <strong>{employee.name}</strong>
                 <SupportEmployeeTag context={supportContextForEmployeeDate(employee, date)} />
-                <small>{employee.code || employee.id} · {employeeRole(employee)}</small>
+                <small>{employee.code || employee.id || employee.employeeCode} · {employeeRole(employee)}</small>
                 {availabilityMessage(employee, [editingAssignment?.shift?.id], true) && <small className="schedule-availability-note">{availabilityMessage(employee, [editingAssignment?.shift?.id], true)}</small>}
               </label>
-            ))}
+            })}
           </div>
         </Field>
         <Field label="Ghi chú (tùy chọn)">

@@ -238,6 +238,74 @@ describe('SQLite state snapshots', () => {
     }
   })
 
+  it('hydrates employee-code support schedules for host, home and employee screens', async () => {
+    const { database } = await createSnapshotDatabase()
+    const entity = (collectionKey, entityKey, order, value, storeId = null, employeeId = null) => {
+      const valueJson = JSON.stringify(value)
+      return database.prepare(`
+        INSERT INTO state_entities (
+          scope_key, collection_key, entity_key, entity_order,
+          value_json, value_bytes, created_at, updated_at, store_id, employee_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        'global', collectionKey, entityKey, order,
+        valueJson, Buffer.byteLength(valueJson), timestamp, timestamp, storeId, employeeId,
+      )
+    }
+    const collectionValues = (snapshot, collectionKey) => snapshot.entities
+      .filter((record) => record.collection_key === collectionKey)
+      .map((record) => JSON.parse(record.value_json))
+    try {
+      await database.batch([
+        ...['stores', 'employees', 'supportTransfers', 'schedule', 'shiftDefinitions'].map((collectionKey) => (
+          database.prepare(`
+            INSERT OR IGNORE INTO state_collections (scope_key, collection_key, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+          `).bind('global', collectionKey, timestamp, timestamp)
+        )),
+        entity('stores', 'alias-store-home', 100, { id: 'S01', name: 'DS TNV' }, 'S01'),
+        entity('stores', 'alias-store-host', 110, { id: 'S02', name: 'SM TNV' }, 'S02'),
+        entity('employees', 'alias-employee', 100, {
+          id: 'EMPLOYEE-UUID', code: 'DT-003', storeId: 'S01', unit: 'store',
+        }, 'S01', 'EMPLOYEE-UUID'),
+        // These dimensions model legacy rows written before employeeCode was indexed.
+        entity('supportTransfers', 'alias-transfer', 100, {
+          id: 'TRANSFER-ALIAS', employeeCode: 'DT-003', fromStoreId: 'S01', toStoreId: 'S02',
+          fromDate: '2026-09-08', toDate: '2026-09-08', status: 'Hoàn tất',
+        }, 'S02', null),
+        entity('schedule', 'alias-schedule', 100, {
+          id: 'SCHEDULE-ALIAS', employeeCode: 'DT-003', storeId: 'S02', date: '2026-09-08',
+          shiftId: 'HOST-AM', shiftIds: ['HOST-AM'],
+          shiftSnapshots: [{ id: 'HOST-AM', start: '08:00', end: '12:00' }],
+        }, 'S02', null),
+        entity('shiftDefinitions', 'alias-shift', 100, {
+          id: 'HOST-AM', storeId: 'S02', name: 'Ca sáng', start: '08:00', end: '12:00',
+        }, 'S02'),
+      ])
+
+      const host = database.readStoreStateSnapshot('global', 'S02', 'QL02', 'schedule')
+      const home = database.readStoreStateSnapshot('global', 'S01', 'QL01', 'schedule')
+      const own = database.readStoreStateSnapshot('global', 'S01', 'EMPLOYEE-UUID', 'employee-schedule')
+      const unrelated = database.readStoreStateSnapshot('global', 'S03', 'QL03', 'schedule')
+
+      for (const snapshot of [host, home, own]) {
+        expect(collectionValues(snapshot, 'employees')).toContainEqual(expect.objectContaining({
+          id: 'EMPLOYEE-UUID', code: 'DT-003',
+        }))
+        expect(collectionValues(snapshot, 'supportTransfers')).toContainEqual(expect.objectContaining({
+          id: 'TRANSFER-ALIAS', employeeCode: 'DT-003',
+        }))
+        expect(collectionValues(snapshot, 'schedule')).toContainEqual(expect.objectContaining({
+          id: 'SCHEDULE-ALIAS', employeeCode: 'DT-003', storeId: 'S02',
+        }))
+      }
+      expect(collectionValues(unrelated, 'schedule')).toEqual([])
+      expect(collectionValues(unrelated, 'supportTransfers')).toEqual([])
+    } finally {
+      database.close()
+    }
+  })
+
   it('aggregates one finance period without returning operational rows', async () => {
     const { database } = await createSnapshotDatabase()
     const entity = (collectionKey, entityKey, order, value) => {

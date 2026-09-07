@@ -1,4 +1,4 @@
-import { formatVietnamTransferDateTime, supportTransferBounds } from '../../domain/supportTransferTime'
+import { formatVietnamTransferPeriod, supportTransferBounds } from '../../domain/supportTransferTime'
 import {
   operationalIdentifierRecordMatch,
   operationalIdentifierReferenceKey,
@@ -129,8 +129,8 @@ const isAllowanceAttributed = (record = {}) => {
 
 const transferTimeLabel = (transfer = {}) => {
   const bounds = supportTransferBounds(transfer)
-  if (!bounds) return 'Chưa ghi thời gian hỗ trợ'
-  return `${formatVietnamTransferDateTime(bounds.startAt)} – ${formatVietnamTransferDateTime(bounds.endAt)}`
+  if (!bounds) return 'Chưa ghi ngày hỗ trợ'
+  return formatVietnamTransferPeriod(bounds)
 }
 
 const storeNameFor = (storeId, stores, fallback) => {

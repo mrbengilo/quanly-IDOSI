@@ -8,6 +8,7 @@ import {
   scheduleShiftTimeLabel,
   stableScheduleShiftColor,
   storeScheduleRange,
+  storeScheduleRecordMatches,
   storeScheduleShiftColumns,
 } from './scheduleView'
 
@@ -83,5 +84,29 @@ describe('store schedule read model', () => {
     expect(columns.map(({ id }) => id)).toEqual(['NEW', 'OLD'])
     expect(columns[0].name).toBe('Ca mới')
     expect(columns[1]).toMatchObject({ name: 'Ca cũ', time: '21:00 - 05:00 (+1 ngày)', snapshot: true })
+  })
+
+  it('matches projected store and shift aliases without depending on letter case', () => {
+    const record = {
+      id: 'R-MIXED',
+      storeId: ' ch-host ',
+      employeeCode: 'nv-01',
+      date: '2026-09-08',
+      shiftIds: [' ca-sang ', 'CA-SANG'],
+      shiftSnapshots: [{ id: 'CA-SANG', name: 'Ca hỗ trợ', start: '08:00', end: '12:00' }],
+    }
+
+    expect(storeScheduleRecordMatches(record, 'CH-HOST')).toBe(true)
+    expect(scheduleShiftIds(record)).toEqual(['ca-sang'])
+    expect(resolveStoreScheduleRecordShifts({
+      record,
+      storeId: 'CH-HOST',
+      shiftDefinitions: [{
+        id: 'Ca-Sang', storeId: 'CH-HOST', name: 'Ca hiện tại', start: '09:00', end: '13:00', active: true,
+      }],
+    })).toEqual([expect.objectContaining({
+      id: 'ca-sang', storeId: 'ch-host', name: 'Ca hỗ trợ', start: '08:00', end: '12:00',
+    })])
+    expect(stableScheduleShiftColor('CH-HOST', 'CA-SANG')).toBe(stableScheduleShiftColor('ch-host', 'ca-sang'))
   })
 })

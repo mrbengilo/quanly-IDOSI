@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useApp } from '../state/AppContext'
 import { Badge, Button, Card } from './UI'
 import { SupportEmployeeTag } from './SupportEmployeeTag'
-import { formatVietnamTransferDateTime, supportTransferBounds } from '../domain/supportTransferTime'
+import { formatVietnamTransferPeriod, supportTransferBounds } from '../domain/supportTransferTime'
 import { sameScheduleIdentifier as same, scheduleWindows, supportAllowsScheduling } from '../domain/supportScheduling'
 import './supportTransferOverview.css'
 
@@ -60,10 +60,10 @@ export function SupportTransferOverview() {
                 <span>{fromName} → {toName}</span>
               </div>
               <div className="support-transfer-overview__timing">
-                <strong>{formatVietnamTransferDateTime(bounds?.startAt)} – {formatVietnamTransferDateTime(bounds?.endAt)}</strong>
+                <strong>{formatVietnamTransferPeriod(transfer)}</strong>
                 <Badge tone={supportingOpen || blocked ? 'orange' : 'blue'}>{status}</Badge>
                 {supportingOpen ? <small>Ca {supportingOpen.shiftName || supportingOpen.shiftId}: {supportingOpen.shiftStart}–{supportingOpen.shiftEnd}</small>
-                  : <small>{planned.length ? `Đã xếp ${planned.length} ca. Xem lịch để kiểm tra ngày giờ.` : 'Cửa hàng nhận có thể phân ca trong thời gian hỗ trợ.'}</small>}
+                  : <small>{planned.length ? `Đã xếp ${planned.length} ca. Xem lịch để kiểm tra ngày giờ.` : 'Cửa hàng nhận có thể phân ca trong khoảng ngày điều chuyển.'}</small>}
                 {blocked && <small>Phải kết ca đang làm thành công trước khi vào ca hỗ trợ.</small>}
                 {transfer.note && <small>{transfer.note}</small>}
               </div>

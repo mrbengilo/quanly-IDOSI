@@ -29,7 +29,12 @@ import {
   Select,
   TableWrap,
 } from '../../components/UI'
-import { formatVietnamTransferDateTime, isVietnamDateTimeLocal, supportTransferBounds } from '../../domain/supportTransferTime'
+import {
+  formatVietnamTransferPeriod,
+  supportTransferBounds,
+  supportTransferDateRange,
+  supportTransferUsesWholeCalendarDates,
+} from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
 import './SupportTransfers.css'
 import { businessDate, formatMoneyInput, money, parseMoneyInput, shortDate, shortDateTime24, today } from '../../utils'
@@ -47,18 +52,14 @@ const emptySupportTransferForm = () => ({
   employeeId: '',
   fromStoreId: '',
   toStoreId: '',
-  startAt: `${today()}T08:00`,
-  endAt: `${today()}T17:00`,
+  fromDate: today(),
+  toDate: today(),
   hourlySupportRate: '',
   allowance: '',
   note: '',
 })
 
-const supportTransferTimeLabel = (item) => {
-  if (!item.startAt || !item.endAt) return `${shortDate(item.fromDate)} – ${shortDate(item.toDate)}`
-  const bounds = supportTransferBounds(item)
-  return bounds ? `${formatVietnamTransferDateTime(bounds.startAt)} – ${formatVietnamTransferDateTime(bounds.endAt)}` : '—'
-}
+const supportTransferPeriodLabel = (item) => formatVietnamTransferPeriod(item)
 
 const AUDIT_FIELD_LABELS = Object.freeze({
   checkIn: 'Giờ vào', checkInAt: 'Thời gian vào', checkOut: 'Giờ kết', checkOutAt: 'Thời gian kết',
@@ -399,20 +400,25 @@ export function SupportTransfersPage() {
     const key = String(editingId).trim().toLocaleLowerCase('vi-VN')
     return attendance.some((record) => !record.deletedAt && String(record.supportTransferId || '').trim().toLocaleLowerCase('vi-VN') === key)
   }, [attendance, editingId])
+  const editingLegacyTimedTransfer = useMemo(() => {
+    if (!editingId) return null
+    const record = supportTransfers.find((item) => String(item.id || '') === String(editingId))
+    return record && !supportTransferUsesWholeCalendarDates(record) ? record : null
+  }, [editingId, supportTransfers])
   const availableEmployees = employees.filter((item) => String(item.unit || 'store') === 'store' && !item.deletedAt && (!form.fromStoreId || String(item.storeId) === String(form.fromStoreId)))
   const resetEditor = () => {
     setEditingId('')
     setForm(emptySupportTransferForm())
   }
   const openEdit = (item) => {
-    const bounds = supportTransferBounds(item)
+    const dateRange = supportTransferDateRange(item)
     setEditingId(item.id)
     setForm({
       employeeId: item.employeeId || '',
       fromStoreId: item.fromStoreId || '',
       toStoreId: item.toStoreId || '',
-      startAt: bounds?.startLocal || '',
-      endAt: bounds?.endLocal || '',
+      fromDate: dateRange?.fromDate || '',
+      toDate: dateRange?.toDate || '',
       hourlySupportRate: formatMoneyInput(item.hourlySupportRate || 0),
       allowance: formatMoneyInput(item.allowance || 0),
       note: item.note || '',
@@ -422,13 +428,13 @@ export function SupportTransfersPage() {
     if (!canManageTransfers || busy) return
     if (!form.fromStoreId || !form.employeeId || !form.toStoreId || form.toStoreId === form.fromStoreId || String(employee?.storeId) !== String(form.fromStoreId)) return notify('Vui lòng chọn cửa hàng đi, nhân viên và cửa hàng nhận hỗ trợ phù hợp.', 'info')
     const bounds = supportTransferBounds(form)
-    if (!isVietnamDateTimeLocal(form.startAt) || !isVietnamDateTimeLocal(form.endAt) || !bounds) return notify('Khoảng thời gian điều chuyển chưa hợp lệ.', 'info')
+    if (!form.fromDate || !form.toDate || !bounds) return notify('Khoảng ngày điều chuyển chưa hợp lệ.', 'info')
     const hourlySupportRate = parseMoneyInput(form.hourlySupportRate)
     const allowance = parseMoneyInput(form.allowance)
     if (hourlySupportRate <= 0) return notify('Lương hỗ trợ theo giờ phải lớn hơn 0.', 'info')
     const command = editingId ? updateSupportTransfer : saveSupportTransfer
     if (typeof command !== 'function') return notify('Chức năng điều chuyển chưa sẵn sàng.', 'info')
-    const payload = { employeeId: form.employeeId, fromStoreId: form.fromStoreId, toStoreId: form.toStoreId, startAt: form.startAt, endAt: form.endAt, hourlySupportRate, allowance, note: form.note }
+    const payload = { employeeId: form.employeeId, fromStoreId: form.fromStoreId, toStoreId: form.toStoreId, fromDate: form.fromDate, toDate: form.toDate, hourlySupportRate, allowance, note: form.note }
     setBusy('save')
     try {
       const result = editingId ? await command(editingId, payload) : await command(payload)
@@ -457,18 +463,18 @@ export function SupportTransfersPage() {
   if (!canManageTransfers) return <div className="page"><PageHeader title="KHÔNG CÓ QUYỀN TRUY CẬP" subtitle="Điều chuyển nhân sự thuộc quyền Admin và Nhân viên Hỗ trợ KD." icon={LockKeyhole} /></div>
   return <div className="page governance-page support-transfers-page"><PageHeader title="ĐIỀU CHUYỂN NHÂN SỰ" subtitle="Phân bổ nhân viên hỗ trợ giữa các cửa hàng mà không thay đổi hồ sơ gốc." icon={CalendarClock} />
     <Card title={editingId ? 'Chỉnh sửa điều chuyển' : 'Tạo điều chuyển'} className="support-transfer-card"><div className="form-grid form-grid--3">
-      <Field label="Thời gian bắt đầu" required hint="Ngày/tháng/năm và giờ 24 giờ"><Input type="datetime-local" lang="vi" step="60" value={form.startAt} onChange={(event) => setForm((current) => ({ ...current, startAt: event.target.value }))} /></Field>
-      <Field label="Thời gian kết thúc" required hint="Mốc kết thúc không còn thuộc thời gian hỗ trợ"><Input type="datetime-local" lang="vi" step="60" min={form.startAt} value={form.endAt} onChange={(event) => setForm((current) => ({ ...current, endAt: event.target.value }))} /></Field>
+      <Field label="Ngày bắt đầu" required hint="Ngày đầu tiên cửa hàng nhận có thể phân ca"><Input type="date" value={form.fromDate} max={form.toDate} onChange={(event) => setForm((current) => ({ ...current, fromDate: event.target.value }))} /></Field>
+      <Field label="Ngày kết thúc" required hint="Tính cả ngày kết thúc"><Input type="date" value={form.toDate} min={form.fromDate} onChange={(event) => setForm((current) => ({ ...current, toDate: event.target.value }))} /></Field>
       <Field label="Cửa hàng điều chuyển" required><Select value={form.fromStoreId} onChange={(event) => setForm((current) => ({ ...current, fromStoreId: event.target.value, employeeId: '', toStoreId: current.toStoreId === event.target.value ? '' : current.toStoreId }))} disabled={Boolean(editingId)}><option value="">Chọn cửa hàng đi</option>{stores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
       <Field label="Nhân viên" required><Select value={form.employeeId} onChange={(event) => setForm((current) => ({ ...current, employeeId: event.target.value }))} disabled={!form.fromStoreId || Boolean(editingId)}><option value="">Chọn nhân viên</option>{availableEmployees.map((item) => <option key={item.id} value={item.id}>{item.name} — {item.id}</option>)}</Select></Field>
-      <Field label="Cửa hàng nhận hỗ trợ" required hint={editingHasAttendance ? 'Đã phát sinh chấm công; chỉ Admin được sửa thời gian, lương, phụ cấp và ghi chú.' : ''}><Select value={form.toStoreId} onChange={(event) => setForm((current) => ({ ...current, toStoreId: event.target.value }))} disabled={editingHasAttendance}><option value="">Chọn cửa hàng nhận</option>{stores.filter((store) => String(store.id) !== String(form.fromStoreId)).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
+      <Field label="Cửa hàng nhận hỗ trợ" required hint={editingHasAttendance ? 'Đã phát sinh chấm công; chỉ Admin được sửa ngày, lương, phụ cấp và ghi chú.' : ''}><Select value={form.toStoreId} onChange={(event) => setForm((current) => ({ ...current, toStoreId: event.target.value }))} disabled={editingHasAttendance}><option value="">Chọn cửa hàng nhận</option>{stores.filter((store) => String(store.id) !== String(form.fromStoreId)).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</Select></Field>
       <Field label="Lương hỗ trợ (theo giờ)" required><MoneyInput value={form.hourlySupportRate} onChange={(event) => setForm((current) => ({ ...current, hourlySupportRate: event.target.value }))} placeholder="Nhập số tiền" /></Field>
       <Field label="Phụ cấp"><MoneyInput value={form.allowance} onChange={(event) => setForm((current) => ({ ...current, allowance: event.target.value }))} placeholder="Nhập số tiền" /></Field>
       <Field label="Ghi chú" className="span-2"><textarea maxLength={500} value={form.note} onChange={(event) => setForm((current) => ({ ...current, note: event.target.value }))} placeholder="Nội dung hỗ trợ hoặc lưu ý cho cửa hàng nhận" /></Field>
-    </div><div className="card-actions card-actions--below">{editingId ? <Button variant="outline" onClick={resetEditor}>HỦY CHỈNH SỬA</Button> : null}<Button icon={Save} onClick={save} loading={busy === 'save'}>{editingId ? 'CẬP NHẬT ĐIỀU CHUYỂN' : 'LƯU ĐIỀU CHUYỂN'}</Button></div></Card>
+    </div>{editingLegacyTimedTransfer ? <InfoNote tone="orange">Phiếu cũ đang giới hạn chính xác theo giờ: {formatVietnamTransferPeriod(editingLegacyTimedTransfer)}. Khi cập nhật, phiếu sẽ áp dụng trọn các ngày đã chọn.</InfoNote> : null}<div className="card-actions card-actions--below">{editingId ? <Button variant="outline" onClick={resetEditor}>HỦY CHỈNH SỬA</Button> : null}<Button icon={Save} onClick={save} loading={busy === 'save'}>{editingId ? 'CẬP NHẬT ĐIỀU CHUYỂN' : 'ĐIỀU CHUYỂN'}</Button></div></Card>
     <Card title="Lịch sử điều chuyển" className="support-transfer-history">
       <TableWrap className="support-transfer-history__table" tableLabel="Lịch sử điều chuyển">
-        <thead><tr><th>Nhân viên</th><th>Từ cửa hàng</th><th>Đến cửa hàng</th><th>Thời gian</th><th>Lương hỗ trợ/giờ</th><th>Phụ cấp</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+        <thead><tr><th>Nhân viên</th><th>Từ cửa hàng</th><th>Đến cửa hàng</th><th>Phạm vi hỗ trợ</th><th>Lương hỗ trợ/giờ</th><th>Phụ cấp</th><th>Ghi chú</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
         <tbody>{supportTransfers.map((item) => {
           const employeeName = employees.find((employeeItem) => employeeItem.id === item.employeeId)?.name || item.employeeId
           return <tr key={item.id}>
@@ -479,7 +485,7 @@ export function SupportTransfersPage() {
             </td>
             <td data-label="Từ cửa hàng">{stores.find((store) => store.id === item.fromStoreId)?.name || item.fromStoreId}</td>
             <td data-label="Đến cửa hàng">{stores.find((store) => store.id === item.toStoreId)?.name || item.toStoreId}</td>
-            <td data-label="Thời gian">{supportTransferTimeLabel(item)}<small className="table-note">Tạo lúc {displayDateTime(item.createdAt)}</small></td>
+            <td data-label="Phạm vi hỗ trợ">{supportTransferPeriodLabel(item)}<small className="table-note">Tạo lúc {displayDateTime(item.createdAt)}</small></td>
             <td data-label="Lương hỗ trợ/giờ">{money(item.hourlySupportRate)}</td>
             <td data-label="Phụ cấp">{money(item.allowance)}</td>
             <td data-label="Ghi chú">{item.note || '—'}</td>

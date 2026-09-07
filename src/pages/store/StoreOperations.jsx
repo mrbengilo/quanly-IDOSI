@@ -55,7 +55,7 @@ import { nextSupportTransferBoundaryDelay } from '../../domain/supportScheduling
 import { UnitCompensationStatistics } from '../compensation/UnitCompensationStatistics'
 import { ViolationManagementPage } from '../compensation/ViolationManagementPage'
 import { workRewardRows } from '../compensation/compensationStatistics'
-import { formatVietnamTransferDateTime, supportTransferBounds, supportTransferMatchesMoment } from '../../domain/supportTransferTime'
+import { formatVietnamTransferPeriod, supportTransferMatchesMoment } from '../../domain/supportTransferTime'
 import {
   downloadCsv,
   getEmployeeType,
@@ -185,13 +185,7 @@ export const storeEmployeesForDate = (employees = [], transfers = [], stores = [
   })
 }
 
-const transferTimeLabel = (record = {}) => {
-  const bounds = supportTransferBounds(record)
-  if (record.startAt && record.endAt && bounds) {
-    return `${formatVietnamTransferDateTime(bounds.startAt)} – ${formatVietnamTransferDateTime(bounds.endAt)}`
-  }
-  return `${formatTaskDate(record.fromDate)} – ${formatTaskDate(record.toDate)}`
-}
+const transferTimeLabel = (record = {}) => formatVietnamTransferPeriod(record)
 
 const useTransferClock = (transfers = []) => {
   const [moment, setMoment] = useState(() => new Date())

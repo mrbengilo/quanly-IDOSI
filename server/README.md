@@ -198,11 +198,14 @@ Các lệnh chính:
   có lịch active trùng ngày cho cùng nhân viên. Update nhận `transferId`
   cùng các trường cần đổi; delete nhận `transferId`, `reason` và xóa mềm.
   Kỳ lương đã chi/khóa ở cửa hàng đi hoặc nhận chặn thay đổi; kỳ đã
-  chốt được invalidation để chốt lại. Trong khoảng điều chuyển, session nhân
-  viên tự chuyển sang cửa hàng nhận; cửa hàng nhận thấy hồ sơ cùng thời gian,
-  lương giờ hỗ trợ, phụ cấp và có thể xếp ca/giao việc. Chấm công, đơn hàng,
+  chốt được invalidation để chốt lại. Khoảng ngày điều chuyển chỉ cấp quyền
+  cho cửa hàng nhận xếp ca/giao việc; phiếu không tự tạo ca và không tự đổi
+  cửa hàng trong session. Session nhân viên chỉ chuyển sang cửa hàng nhận theo
+  ca hỗ trợ đã phân; nếu ca đó còn chấm công mở thì tiếp tục giữ session tại
+  cửa hàng nhận đến khi kết ca. Cửa hàng nhận thấy hồ sơ cùng khoảng ngày,
+  lương giờ hỗ trợ và phụ cấp. Chấm công, đơn hàng,
   doanh thu và chi phí lương hỗ trợ được ghi vào cửa hàng nhận. Lương hỗ trợ =
-  giờ làm thực tế × `hourlySupportRate`, cộng `allowance`. Nếu thời gian điều chuyển
+  giờ làm thực tế × `hourlySupportRate`, cộng `allowance`. Nếu khoảng ngày điều chuyển
   đã hết nhưng ca hỗ trợ còn mở, session vẫn giữ tại cửa hàng nhận để nhập đơn và
   kết ca; chỉ sau khi kết ca hỗ trợ mới tự trở về cửa hàng gốc. Mọi lệnh commit state + audit +
   receipt idempotency nguyên tử.
@@ -269,12 +272,11 @@ Các lệnh chính:
   chuẩn của tháng, `minutesEarly`, `minutesLate` và chỉ cho một lượt/ngày.
   Role `business_support` và `store_manager` cũng được chấm công khi tài khoản
   đã liên kết profile; server dùng ca mặc định `08:00-17:00` cho hai vai trò.
-  Nhân viên cửa hàng đang trong thời gian điều chuyển có thể điểm danh trực tiếp
-  tại cửa hàng nhận mà không cần lịch phân ca; server tạo snapshot ca hỗ trợ từ
-  giờ hoạt động cửa hàng. Nếu nhân viên vẫn còn một ca đang mở tại cửa hàng hiện
-  tại, ca đó tiếp tục khóa session và lịch điều chuyển không được chuyển giao diện
-  hoặc quyền thao tác sang cửa hàng nhận. Chỉ sau khi kết ca, nếu phiếu điều chuyển
-  vẫn còn hiệu lực, session mới chuyển sang cửa hàng nhận để nhân viên điểm danh.
+  Phiếu điều chuyển chỉ cấp quyền phân ca theo khoảng ngày, không cho phép điểm
+  danh trực tiếp và không tạo snapshot từ giờ hoạt động cửa hàng. Nhân viên chỉ
+  chuyển session sang cửa hàng nhận khi có đúng một ca hỗ trợ thực tế đã phân và
+  đang trong cửa sổ điểm danh của ca đó. Nếu nhân viên vẫn còn một ca đang mở tại
+  cửa hàng hiện tại, ca đó tiếp tục khóa session; ca mới trùng thời gian bị từ chối.
   Ca hỗ trợ đã mở tiếp tục giữ session tại cửa hàng nhận dù phiếu đã hết giờ; sau
   khi kết ca hỗ trợ, session tự trở lại cửa hàng gốc.
 - `attendance.check_out`: payload `attendanceId?`, `location`, `expense?`,

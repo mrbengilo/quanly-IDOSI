@@ -1,4 +1,4 @@
-import { attendanceMatchesWindow, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
+import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
   validateStoreChecklistCheckout,
 } from '../src/domain/storeShiftChecklist.js'
@@ -254,6 +254,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   ],
   'employee-schedule': [
     'stores', 'employees', 'schedule', 'supportWorkSchedules', 'supportSchedulePresets', 'shiftDefinitions',
+    'supportTransfers',
   ],
   'employee-payroll': [
     'stores', 'employees', 'attendance', 'officeAdjustments', 'salaryAdjustments',
@@ -1252,7 +1253,9 @@ const employeeIdentifierValues = (record) => [
   record?.id,
   record?.code,
   record?.employeeId,
+  record?.employee_id,
   record?.employeeCode,
+  record?.employee_code,
 ].map((value) => String(value || '').trim()).filter(Boolean)
 
 const uniqueEmployeeIdentifierRecordMatch = ({
@@ -1926,7 +1929,13 @@ const normalizeSharedStateForStorage = (value) => {
 }
 
 const employeeReference = (record) => String(
-  record?.employeeId || record?.employee_id || record?.assigneeId || record?.userId || '',
+  record?.employeeId
+    || record?.employee_id
+    || record?.employeeCode
+    || record?.employee_code
+    || record?.assigneeId
+    || record?.userId
+    || '',
 )
 
 const employeeReferences = (record) => {
@@ -1958,7 +1967,7 @@ const employeeReferences = (record) => {
       add(value.employeeId || value.employee_id || value.employeeCode || value.id || value.code)
     }
     for (const [key, nested] of Object.entries(value)) {
-      if (['employeeId', 'employee_id', 'assigneeId', 'userId'].includes(key)) add(nested)
+      if (['employeeId', 'employee_id', 'employeeCode', 'employee_code', 'assigneeId', 'userId'].includes(key)) add(nested)
       if (key === 'completedBy' && isPlainRecord(nested)) Object.keys(nested).forEach(add)
       collect(nested, key, depth + 1)
     }
@@ -1986,7 +1995,13 @@ const redactEmployeeReferences = (value, allowedEmployeeIds, parentKey = '', dep
   }
   if (!isPlainRecord(value)) return value
   const directReference = String(
-    value.employeeId || value.employee_id || value.assigneeId || value.userId || '',
+    value.employeeId
+      || value.employee_id
+      || value.employeeCode
+      || value.employee_code
+      || value.assigneeId
+      || value.userId
+      || '',
   ).trim()
   const contextualReference = ['before', 'after', 'assignees', 'participants'].includes(parentKey)
     ? String(value.employeeCode || value.id || value.code || '').trim()
@@ -1996,7 +2011,7 @@ const redactEmployeeReferences = (value, allowedEmployeeIds, parentKey = '', dep
       || (contextualReference && !allowedKeys.has(normalizeIdentifierKey(contextualReference))))) return undefined
   const projected = {}
   for (const [key, nested] of Object.entries(value)) {
-    if (['employeeId', 'employee_id', 'assigneeId', 'userId'].includes(key)) {
+    if (['employeeId', 'employee_id', 'employeeCode', 'employee_code', 'assigneeId', 'userId'].includes(key)) {
       if (allowedKeys.has(normalizeIdentifierKey(nested))) projected[key] = nested
       continue
     }
@@ -2520,6 +2535,210 @@ const notificationBelongsToStoreWorkspace = (state, record, storeId, visibleEmpl
   ))
 }
 
+const SCHEDULE_MIRROR_SCALAR_FIELDS = Object.freeze([
+  'id',
+  'storeId',
+  'employeeId',
+  'employee_id',
+  'employeeCode',
+  'employee_code',
+  'employeeName',
+  'date',
+  'workDate',
+  'shiftId',
+  'supportTransferId',
+  'shiftName',
+  'name',
+  'shiftStart',
+  'start',
+  'shiftEnd',
+  'end',
+  'shiftTime',
+  'time',
+  'shiftColor',
+  'color',
+  'note',
+  'status',
+  'version',
+  'createdAt',
+  'updatedAt',
+])
+
+const SHIFT_MIRROR_SCALAR_FIELDS = Object.freeze([
+  'id',
+  'storeId',
+  'name',
+  'date',
+  'effectiveDate',
+  'effectiveFrom',
+  'start',
+  'end',
+  'time',
+  'color',
+  'tint',
+  'shiftStart',
+  'shiftEnd',
+  'shiftTime',
+  'shiftColor',
+  'durationMinutes',
+  'durationHours',
+  'version',
+  'active',
+  'status',
+  'deletedAt',
+  'supportTransferId',
+  'createdAt',
+  'updatedAt',
+])
+
+const scheduleProjectionScalar = (value) => value == null
+  || ['string', 'number', 'boolean'].includes(typeof value)
+
+const pickScheduleProjectionScalars = (record, fields) => Object.fromEntries(
+  fields.flatMap((field) => (
+    Object.hasOwn(record, field) && scheduleProjectionScalar(record[field])
+      ? [[field, record[field]]]
+      : []
+  )),
+)
+
+const safeProjectedShift = (shift) => isPlainRecord(shift)
+  ? pickScheduleProjectionScalars(shift, SHIFT_MIRROR_SCALAR_FIELDS)
+  : null
+
+const safeProjectedSchedule = (assignment) => {
+  const projected = pickScheduleProjectionScalars(assignment, SCHEDULE_MIRROR_SCALAR_FIELDS)
+  const shiftIds = Array.isArray(assignment.shiftIds)
+    ? assignment.shiftIds.filter((shiftId) => ['string', 'number'].includes(typeof shiftId))
+    : null
+  const shiftSnapshots = Array.isArray(assignment.shiftSnapshots)
+    ? assignment.shiftSnapshots.map(safeProjectedShift).filter(Boolean)
+    : null
+  return {
+    ...projected,
+    ...(shiftIds ? { shiftIds } : {}),
+    ...(shiftSnapshots ? { shiftSnapshots } : {}),
+  }
+}
+
+const scheduleProjectionStatusKey = (value) => String(value || '')
+  .trim()
+  .toLocaleLowerCase('vi-VN')
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/gu, '')
+  .replaceAll('đ', 'd')
+
+const supportTransferCancelledForProjection = (transfer) => (
+  transfer?.deletedAt
+  || transfer?.cancelledAt
+  || transfer?.canceledAt
+  || ['da xoa', 'xoa', 'da huy', 'huy', 'cancelled', 'canceled', 'void', 'voided', 'deleted']
+    .includes(scheduleProjectionStatusKey(transfer?.status))
+)
+
+const employeeForScheduleAssignment = (state, assignment) => {
+  const employeeId = employeeReference(assignment)
+  if (!employeeId) return null
+  return filterArray(state, 'employees', (employee) => (
+    employeeUnit(employee) === 'store'
+    && !employee.deletedAt
+    && employeeIdentifierValues(employee).some((identifier) => sameIdentifier(identifier, employeeId))
+  ))[0] || null
+}
+
+const supportTransfersForScheduleAssignment = (state, assignment, employee) => {
+  if (!employee) return []
+  const employeeIdentifiers = employeeIdentifierValues(employee)
+  const windows = scheduleWindows({
+    ...state,
+    schedule: [assignment],
+  })
+  if (!windows.length || windows.some((window) => window.invalid)) return []
+  const transfers = windows.map((window) => {
+    const candidates = filterArray(state, 'supportTransfers', (transfer) => {
+      const transferEmployeeId = employeeReference(transfer)
+      if (supportTransferCancelledForProjection(transfer)
+        || !employeeIdentifiers.some((identifier) => sameIdentifier(identifier, transferEmployeeId))
+        || !sameIdentifier(transfer.fromStoreId, employee.storeId)
+        || !sameIdentifier(transfer.toStoreId, assignment.storeId)
+        || (window.supportTransferId && !sameIdentifier(window.supportTransferId, transfer.id))) return false
+      const bounds = supportTransferTimeBounds(transfer)
+      return Boolean(bounds && bounds.startMs <= window.startMs && window.endMs <= bounds.endMs)
+    })
+    return candidates.length === 1 ? candidates[0] : null
+  })
+  if (transfers.some((transfer) => !transfer)) return []
+  return transfers
+}
+
+const supportScheduleMirror = (state, assignment) => ({
+  ...safeProjectedSchedule(assignment),
+  projectionReadOnly: true,
+  projectionMirror: 'support',
+  storeName: storeNameForId(state, assignment.storeId),
+})
+
+const projectSupportRosterEmployee = (employee, supportStoreId) => ({
+  id: employee.id || employee.code,
+  code: employee.code,
+  name: employee.name,
+  storeId: employee.storeId,
+  homeStoreId: employee.storeId,
+  unit: 'store',
+  status: employee.status,
+  avatar: employee.avatarThumbnailUrl || employee.avatar,
+  position: employee.position,
+  supportStoreId,
+})
+
+const projectStoreSchedule = (state, storeId, homeEmployees) => {
+  const homeEmployeeIds = new Set(homeEmployees
+    .filter((employee) => employeeUnit(employee) === 'store' && !employee.deletedAt)
+    .flatMap((employee) => employeeIdentifierValues(employee).map(normalizeIdentifierKey).filter(Boolean)))
+  return filterArray(state, 'schedule', (assignment) => (
+    isPlainRecord(assignment) && scheduleAssignmentIsUsable(assignment)
+  )).flatMap((assignment) => {
+    const employee = employeeForScheduleAssignment(state, assignment)
+    if (!employee) return []
+    const homeEmployee = employeeIdentifierValues(employee)
+      .some((identifier) => homeEmployeeIds.has(normalizeIdentifierKey(identifier)))
+    if (sameIdentifier(assignment.storeId, storeId)) {
+      if (homeEmployee) return [assignment]
+      return supportTransfersForScheduleAssignment(state, assignment, employee).length ? [assignment] : []
+    }
+    if (!homeEmployee) return []
+    return supportTransfersForScheduleAssignment(state, assignment, employee).length
+      ? [supportScheduleMirror(state, assignment)]
+      : []
+  })
+}
+
+const shiftDefinitionsForProjectedSchedule = (state, schedule, localStoreId) => {
+  const referenced = new Set(schedule.flatMap((assignment) => {
+    const assignmentStoreId = normalizeIdentifierKey(assignment.storeId)
+    return [
+      ...(Array.isArray(assignment.shiftIds) ? assignment.shiftIds : []),
+      assignment.shiftId,
+      ...(Array.isArray(assignment.shiftSnapshots) ? assignment.shiftSnapshots.map((shift) => shift?.id) : []),
+    ].filter(Boolean).map((shiftId) => `${assignmentStoreId}:${normalizeIdentifierKey(shiftId)}`)
+  }))
+  return filterArray(state, 'shiftDefinitions', (shift) => {
+    if (sameIdentifier(shift.storeId, localStoreId)) return true
+    const shiftKey = normalizeIdentifierKey(shift.id)
+    if (!shiftKey) return false
+    const storeKey = normalizeIdentifierKey(shift.storeId)
+    return referenced.has(`${storeKey}:${shiftKey}`)
+      || (!storeKey && [...referenced].some((reference) => reference.endsWith(`:${shiftKey}`)))
+  }).map((shift) => sameIdentifier(shift.storeId, localStoreId) || !shift.storeId
+    ? shift
+    : {
+        ...safeProjectedShift(shift),
+        projectionReadOnly: true,
+        projectionMirror: 'support',
+        storeName: storeNameForId(state, shift.storeId),
+      })
+}
+
 export const projectSharedState = (
   rawState,
   user,
@@ -2641,7 +2860,7 @@ export const projectSharedState = (
         && isSupportTransferActiveAt(record, projectionTimestamp)
     })
     const inboundTransferByEmployee = new Map(inboundTransfers.map((record) => [normalizeIdentifierKey(record.employeeId), record]))
-    const transferredEmployees = filterArray(state, 'employees', (record) => (
+    const transferredEmployees = requestedWorkspaceScreen === 'schedule' ? [] : filterArray(state, 'employees', (record) => (
       employeeUnit(record) === 'store'
       && !record.deletedAt
       && employeeIdentifierValues(record).some((identifier) => inboundTransferByEmployee.has(normalizeIdentifierKey(identifier)))
@@ -2674,13 +2893,13 @@ export const projectSharedState = (
           && !record.deletedAt && !record.checkOut && !record.checkOutAt).length > 0)
     ))
     const supportRoster = filterArray(state, 'employees', (employee) => employeeUnit(employee) === 'store'
-      && !employee.deletedAt && planningTransfers.some((transfer) => belongsToEmployee(transfer, employee.id || employee.code)))
-      .map((employee) => ({
-        id: employee.id || employee.code, code: employee.code, name: employee.name,
-        storeId: employee.storeId, homeStoreId: employee.storeId, unit: 'store', status: employee.status,
-        avatar: employee.avatarThumbnailUrl || employee.avatar, position: employee.position,
-        supportStoreId: storeId,
-      }))
+      && !employee.deletedAt && planningTransfers.some((transfer) => (
+        sameIdentifier(transfer.fromStoreId, employee.storeId)
+        && employeeIdentifierValues(employee).some((identifier) => (
+          sameIdentifier(identifier, employeeReference(transfer))
+        ))
+      )))
+      .map((employee) => projectSupportRosterEmployee(employee, storeId))
     const planningEmployeeIds = new Set([...homeEmployees, ...supportRoster]
       .flatMap((employee) => employeeIdentifierValues(employee).map(normalizeIdentifierKey)))
     const scheduleBusy = scheduleWindows(state).filter((window) => planningEmployeeIds.has(normalizeIdentifierKey(window.employeeId))
@@ -2698,7 +2917,7 @@ export const projectSharedState = (
       sameIdentifier(record.toStoreId, storeId)
       && !record.deletedAt
       && String(record.status || '') !== 'Đã xóa'
-    )).map((record) => normalizeIdentifierKey(record.employeeId)).filter(Boolean)
+    )).map((record) => normalizeIdentifierKey(employeeReference(record))).filter(Boolean)
     const payrollSnapshotEmployeeIds = requestedWorkspaceScreen === 'payroll'
       ? filterArray(state, 'attendance', (record) => {
           if (record.deletedAt || !sameIdentifier(record.storeId, storeId)) return false
@@ -2772,6 +2991,23 @@ export const projectSharedState = (
       key,
       (record) => belongsToAllowedStoreEmployees(record, historicalStoreEmployeeIds),
     )
+    const projectedSchedule = requestedWorkspaceScreen === 'schedule'
+      ? projectStoreSchedule(state, storeId, homeEmployees)
+      : employeeScoped('schedule')
+    const historicalScheduleRoster = requestedWorkspaceScreen === 'schedule'
+      ? projectedSchedule.flatMap((assignment) => {
+          if (!sameIdentifier(assignment.storeId, storeId)) return []
+          const employee = employeeForScheduleAssignment(state, assignment)
+          return employee && !sameIdentifier(employee.storeId, storeId)
+            ? [projectSupportRosterEmployee(employee, storeId)]
+            : []
+        })
+      : []
+    const projectedSupportRoster = [...new Map([...supportRoster, ...historicalScheduleRoster]
+      .map((employee) => [normalizeIdentifierKey(employee.id || employee.code), employee])).values()]
+    const projectedShiftDefinitions = requestedWorkspaceScreen === 'schedule'
+      ? shiftDefinitionsForProjectedSchedule(state, projectedSchedule, storeId)
+      : employeeScoped('shiftDefinitions')
     const storeCompensationEntries = historicalVisibleScoped('compensationEntries')
       .filter((record) => {
         const employee = (Array.isArray(state.employees) ? state.employees : [])
@@ -2837,8 +3073,8 @@ export const projectSharedState = (
         : filterArray(state, 'stores', (record) => sameIdentifier(record.id, storeId)),
       employees,
       attendance: historicalVisibleScoped('attendance'),
-      schedule: employeeScoped('schedule'),
-      supportRoster,
+      schedule: projectedSchedule,
+      supportRoster: projectedSupportRoster,
       scheduleBusy,
       supportWorkSchedules: filterArray(state, 'supportWorkSchedules', (record) => (
         belongsToEmployee(record, ownEmployeeId)
@@ -2889,7 +3125,7 @@ export const projectSharedState = (
       )),
       periodReconciliations: filterArray(state, 'periodReconciliations', (record) => sameIdentifier(record.storeId, storeId)),
       jobRuns: filterArray(state, 'jobRuns', (record) => sameIdentifier(record.storeId, storeId)),
-      shiftDefinitions: employeeScoped('shiftDefinitions'),
+      shiftDefinitions: projectedShiftDefinitions,
       orders: historicalEmployeeScoped('orders'),
       expenseEntries: historicalEmployeeScoped('expenseEntries'),
       fixedExpenses: historicalEmployeeScoped('fixedExpenses'),
@@ -2914,6 +3150,11 @@ export const projectSharedState = (
     const employeeId = String(
       ownEmployee?.id || ownEmployee?.code || ownEmployee?.employeeId || requestedEmployeeId,
     )
+    const ownEmployeeIdentifiers = [...new Set([
+      requestedEmployeeId,
+      employeeId,
+      ...employeeIdentifierValues(ownEmployee),
+    ].map((identifier) => String(identifier || '').trim()).filter(Boolean))]
     const storeId = String(
       (Array.isArray(state.stores) ? state.stores : []).find((record) => (
         sameIdentifier(record.id, requestedStoreId || ownEmployee?.storeId)
@@ -2925,7 +3166,9 @@ export const projectSharedState = (
     const ownCatalogTarget = ownUnit === 'office'
       ? WORK_CATALOG_TARGET.OFFICE
       : WORK_CATALOG_TARGET.STORE
-    const own = (key) => filterArray(state, key, (record) => belongsToEmployee(record, employeeId))
+    const own = (key) => filterArray(state, key, (record) => (
+      ownEmployeeIdentifiers.some((identifier) => belongsToEmployee(record, identifier))
+    ))
     const ownAttendance = own('attendance')
     const ownSupportTransfers = own('supportTransfers')
     const openAttendance = ownAttendance.find((record) => !record.deletedAt && !record.checkOut && !record.checkOutAt)
@@ -2946,6 +3189,20 @@ export const projectSharedState = (
     const tasks = filterArray(state, 'tasks', (record) => (
       [...taskStoreIds].some((taskStoreId) => taskAppliesToEmployee(record, employeeId, taskStoreId))
     )).map((record) => redactEmployeeReferences(record, new Set([employeeId])))
+    const ownSchedule = filterArray(state, 'schedule', (record) => (
+      scheduleAssignmentIsUsable(record)
+      && ownEmployeeIdentifiers.some((identifier) => sameIdentifier(employeeReference(record), identifier))
+    )).flatMap((record) => {
+      if (sameIdentifier(record.storeId, ownEmployee?.storeId || storeId)) return [record]
+      return supportTransfersForScheduleAssignment(state, record, ownEmployee).length
+        ? [supportScheduleMirror(state, record)]
+        : []
+    })
+    const ownShiftDefinitions = shiftDefinitionsForProjectedSchedule(
+      state,
+      ownSchedule,
+      ownEmployee?.storeId || storeId,
+    )
     const payrollPeriods = (Array.isArray(state.payrollPeriods) ? state.payrollPeriods : []).flatMap((period) => {
       if (period.supersededAt) return []
       const rows = Array.isArray(period.rows)
@@ -2963,10 +3220,12 @@ export const projectSharedState = (
       activeStoreId: storeId || null,
       stores,
       employees: filterArray(state, 'employees', (record) => (
-        employeeIdentifierValues(record).some((identifier) => sameIdentifier(identifier, employeeId))
+        employeeIdentifierValues(record).some((identifier) => (
+          ownEmployeeIdentifiers.some((ownIdentifier) => sameIdentifier(identifier, ownIdentifier))
+        ))
       )),
       attendance: ownAttendance,
-      schedule: own('schedule'),
+      schedule: ownSchedule,
       tasks,
       taskAssignmentHistory: own('taskAssignmentHistory')
         .map((record) => redactEmployeeReferences(record, new Set([employeeId]))),
@@ -3008,7 +3267,7 @@ export const projectSharedState = (
         visibleStoreIds.has(normalizeIdentifierKey(record.storeId))
       )),
       teamRewardParticipants: own('teamRewardParticipants'),
-      shiftDefinitions: filterArray(state, 'shiftDefinitions', (record) => !record.storeId || sameIdentifier(record.storeId, storeId)),
+      shiftDefinitions: ownShiftDefinitions,
       settings: ownAccountSettings(state, user),
       activeAttendanceId: openAttendance?.id || null,
       checkedInAt: openAttendance?.checkInAt || openAttendance?.checkIn || null,
@@ -4187,6 +4446,8 @@ const stateEntityQueryDimensions = (collectionKey, value) => {
   const employeeId = firstText(
     value.employeeId,
     value.employee_id,
+    value.employeeCode,
+    value.employee_code,
     value.staffId,
     ['employees', 'deletedEmployees'].includes(collectionKey) ? value.id : null,
   )
@@ -13764,8 +14025,11 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
   const shiftStart = parseShiftTime(previous.shiftStart) || shiftTimes(linkedShift).start
   const shiftEnd = parseShiftTime(previous.shiftEnd) || shiftTimes(linkedShift).end
   if (!shiftStart) throw new ApiError(409, 'ATTENDANCE_SHIFT_INVALID', 'Bản ghi chấm công thiếu giờ bắt đầu ca.')
-  const minutesFromStart = linkedTransferBounds
-    ? Math.floor((checkInMs - linkedTransferBounds.startMs) / 60_000)
+  const scheduledShiftBounds = shiftEnd
+    ? shiftWindow(date, { start: shiftStart.label, end: shiftEnd.label })
+    : null
+  const minutesFromStart = scheduledShiftBounds
+    ? Math.floor((checkInMs - scheduledShiftBounds.startMs) / 60_000)
     : checkIn.minuteOfDay - shiftStart.minuteOfDay
   const lateTolerance = Math.trunc(await policyNumber(db, 'late_tolerance_minutes', 10))
   const officeAttendance = officeLikeEmployee(previous) || previous.attendanceMode === 'office'
@@ -13777,9 +14041,10 @@ const attendanceUpdateCommand = async (db, actor, body, commandContext) => {
     : (minutesFromStart <= lateTolerance ? 'Đi đúng giờ' : 'Đi trễ')
   const departureTag = !checkOut
     ? 'Chưa ra về'
-    : (linkedTransferBounds
-        ? (checkOutMs < linkedTransferBounds.endMs ? 'Về sớm' : 'Đã ra về')
-        : (shiftEnd && checkOut.minuteOfDay < shiftEnd.minuteOfDay ? 'Về sớm' : 'Đã ra về'))
+    : ((scheduledShiftBounds?.endMs || linkedTransferBounds?.endMs)
+        && checkOutMs < (scheduledShiftBounds?.endMs || linkedTransferBounds?.endMs)
+      ? 'Về sớm'
+      : 'Đã ra về')
   const nextBase = {
     ...previous,
     ...(linkedCollections.length ? {

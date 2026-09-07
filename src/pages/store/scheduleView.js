@@ -3,7 +3,10 @@ export const STORE_SHIFT_COLOR_PALETTE = Object.freeze([
   '#e84393', '#3a86ff', '#8ac926', '#ff595e', '#00c2d1',
 ])
 
-const identity = (value) => String(value || '')
+const identity = (value) => String(value || '').trim()
+const identifierKey = (value) => identity(value).toLocaleLowerCase('vi-VN')
+const sameIdentifier = (left, right) => Boolean(identifierKey(left))
+  && identifierKey(left) === identifierKey(right)
 const rawDate = (value) => String(value || '').slice(0, 10)
 
 const parseCalendarDate = (value) => {
@@ -103,7 +106,7 @@ export const scheduleShiftDurationLabel = (shift = {}) => {
 }
 
 export const stableScheduleShiftColor = (storeId, shiftId) => {
-  const key = `${identity(storeId)}:${identity(shiftId)}`
+  const key = `${identifierKey(storeId)}:${identifierKey(shiftId)}`
   let hash = 2166136261
   for (let index = 0; index < key.length; index += 1) {
     hash ^= key.charCodeAt(index)
@@ -116,28 +119,33 @@ export const scheduleShiftIds = (record = {}) => {
   const values = Array.isArray(record.shiftIds) && record.shiftIds.length
     ? record.shiftIds
     : record.shiftId ? [record.shiftId] : []
-  return [...new Set(values.map(identity).filter(Boolean))]
+  const byId = new Map()
+  values.map(identity).filter(Boolean).forEach((value) => {
+    const key = identifierKey(value)
+    if (!byId.has(key)) byId.set(key, value)
+  })
+  return [...byId.values()]
 }
 
 export const storeScheduleRecordMatches = (record = {}, storeId = '') => {
   const requestedStoreId = identity(storeId)
   const recordStoreId = identity(record.storeId)
-  return !requestedStoreId || !recordStoreId || recordStoreId === requestedStoreId
+  return !requestedStoreId || !recordStoreId || sameIdentifier(recordStoreId, requestedStoreId)
 }
 
 const definitionMatchesStore = (definition = {}, storeId = '') => {
   const requestedStoreId = identity(storeId)
   const definitionStoreId = identity(definition.storeId)
-  return !requestedStoreId || !definitionStoreId || definitionStoreId === requestedStoreId
+  return !requestedStoreId || !definitionStoreId || sameIdentifier(definitionStoreId, requestedStoreId)
 }
 
 const nonEmpty = (...values) => values.find((value) => value !== undefined && value !== null && String(value).trim() !== '')
 
 const definitionForShift = (definitions, shiftId, storeId) => {
   const candidates = (Array.isArray(definitions) ? definitions : []).filter((definition) => (
-    identity(definition.id) === identity(shiftId) && definitionMatchesStore(definition, storeId)
+    sameIdentifier(definition.id, shiftId) && definitionMatchesStore(definition, storeId)
   ))
-  return candidates.find((definition) => identity(definition.storeId) === identity(storeId)) || candidates[0] || null
+  return candidates.find((definition) => sameIdentifier(definition.storeId, storeId)) || candidates[0] || null
 }
 
 export const resolveStoreScheduleShift = ({ record = {}, shiftId, shiftDefinitions = [], storeId = '' } = {}) => {
@@ -145,10 +153,10 @@ export const resolveStoreScheduleShift = ({ record = {}, shiftId, shiftDefinitio
   if (!id || !storeScheduleRecordMatches(record, storeId)) return null
   const effectiveStoreId = identity(record.storeId || storeId)
   const snapshot = (Array.isArray(record.shiftSnapshots) ? record.shiftSnapshots : [])
-    .find((item) => identity(item?.id) === id) || null
+    .find((item) => sameIdentifier(item?.id, id)) || null
   const definition = definitionForShift(shiftDefinitions, id, effectiveStoreId)
   const ids = scheduleShiftIds(record)
-  const legacyApplies = ids.length <= 1 || identity(record.shiftId) === id
+  const legacyApplies = ids.length <= 1 || sameIdentifier(record.shiftId, id)
   const legacyName = legacyApplies ? nonEmpty(record.shiftName, record.name) : undefined
   const legacyStart = legacyApplies ? nonEmpty(record.shiftStart, record.start) : undefined
   const legacyEnd = legacyApplies ? nonEmpty(record.shiftEnd, record.end) : undefined
@@ -191,10 +199,11 @@ export const activeStoreShiftDefinitions = (shiftDefinitions = [], { storeId = '
   ))
   candidates.forEach((shift) => {
     const id = identity(shift.id)
-    const previous = byId.get(id)
-    const exactStore = identity(shift.storeId) === identity(storeId)
-    const previousExactStore = identity(previous?.storeId) === identity(storeId)
-    if (id && (!previous || (exactStore && !previousExactStore))) byId.set(id, shift)
+    const key = identifierKey(id)
+    const previous = byId.get(key)
+    const exactStore = sameIdentifier(shift.storeId, storeId)
+    const previousExactStore = sameIdentifier(previous?.storeId, storeId)
+    if (key && (!previous || (exactStore && !previousExactStore))) byId.set(key, shift)
   })
   return [...byId.values()].map((shift) => ({
       ...shift,
@@ -216,13 +225,14 @@ export const storeScheduleShiftColumns = ({
   storeId = '',
 } = {}) => {
   const byId = new Map(activeStoreShiftDefinitions(shiftDefinitions, { storeId, date })
-    .map((shift) => [identity(shift.id), shift]))
+    .map((shift) => [identifierKey(shift.id), shift]))
   records.filter((record) => (
     storeScheduleRecordMatches(record, storeId)
     && identity(record.date || record.workDate) === identity(date)
   )).forEach((record) => {
     resolveStoreScheduleRecordShifts({ record, shiftDefinitions, storeId }).forEach((shift) => {
-      if (!byId.has(identity(shift.id))) byId.set(identity(shift.id), shift)
+      const key = identifierKey(shift.id)
+      if (key && !byId.has(key)) byId.set(key, shift)
     })
   })
   return [...byId.values()].sort((left, right) => (

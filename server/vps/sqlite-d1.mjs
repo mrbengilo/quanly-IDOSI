@@ -555,12 +555,19 @@ const storeStateSnapshotSql = (screen = '') => {
       AND attendance.open_flag = 1
   ),
   inbound_employee_ids AS MATERIALIZED (
-    SELECT DISTINCT lower(trim(CAST(json_extract(transfer.value_json, '$.employeeId') AS TEXT))) AS employee_key
+    SELECT DISTINCT lower(trim(CAST(identifier.value AS TEXT))) AS employee_key
     FROM params CROSS JOIN state_entities AS transfer
+    CROSS JOIN json_each(json_array(
+      json_extract(transfer.value_json, '$.employeeId'),
+      json_extract(transfer.value_json, '$.employee_id'),
+      json_extract(transfer.value_json, '$.employeeCode'),
+      json_extract(transfer.value_json, '$.employee_code')
+    )) AS identifier
     WHERE transfer.scope_key = params.scope_key
       AND transfer.collection_key = 'supportTransfers'
       AND lower(trim(CAST(json_extract(transfer.value_json, '$.toStoreId') AS TEXT))) = params.store_key
-      AND json_extract(transfer.value_json, '$.employeeId') IS NOT NULL
+      AND identifier.value IS NOT NULL
+      AND trim(CAST(identifier.value AS TEXT)) <> ''
   ),
   seed_employee_ids AS MATERIALIZED (
     SELECT actor_employee_key AS employee_key FROM params WHERE actor_employee_key <> ''
@@ -584,12 +591,12 @@ const storeStateSnapshotSql = (screen = '') => {
             json_extract(employee.value_json, '$.id'),
             json_extract(employee.value_json, '$.code'),
             json_extract(employee.value_json, '$.employeeId'),
-            json_extract(employee.value_json, '$.employeeCode')
+            json_extract(employee.value_json, '$.employee_id'),
+            json_extract(employee.value_json, '$.employeeCode'),
+            json_extract(employee.value_json, '$.employee_code')
           )) AS identifier
           JOIN seed_employee_ids AS seed
             ON lower(trim(CAST(identifier.value AS TEXT))) = seed.employee_key
-          WHERE employee.store_id IS NULL
-            AND employee.employee_id IS NULL
         )
       )
   ),
@@ -604,7 +611,9 @@ const storeStateSnapshotSql = (screen = '') => {
       json_extract(employee.value_json, '$.id'),
       json_extract(employee.value_json, '$.code'),
       json_extract(employee.value_json, '$.employeeId'),
-      json_extract(employee.value_json, '$.employeeCode')
+      json_extract(employee.value_json, '$.employee_id'),
+      json_extract(employee.value_json, '$.employeeCode'),
+      json_extract(employee.value_json, '$.employee_code')
     )) AS identifier
     WHERE employee.collection_key = 'employees'
       AND identifier.value IS NOT NULL
@@ -696,6 +705,22 @@ const storeStateSnapshotSql = (screen = '') => {
       OR entity.store_id = params.store_key COLLATE NOCASE
       OR entity.employee_id IN (
         SELECT employee_key COLLATE NOCASE FROM selected_employee_ids
+      )
+      OR (
+        entity.collection_key IN ('schedule', 'supportTransfers')
+        AND EXISTS (
+          SELECT 1
+          FROM json_each(json_array(
+            json_extract(entity.value_json, '$.employeeId'),
+            json_extract(entity.value_json, '$.employee_id'),
+            json_extract(entity.value_json, '$.employeeCode'),
+            json_extract(entity.value_json, '$.employee_code')
+          )) AS employee_reference
+          JOIN selected_employee_ids AS selected
+            ON lower(trim(CAST(employee_reference.value AS TEXT))) = selected.employee_key
+          WHERE employee_reference.value IS NOT NULL
+            AND trim(CAST(employee_reference.value AS TEXT)) <> ''
+        )
       )
       OR (
         entity.collection_key IN (${storeWorkspaceGlobalCollectionsSql})
