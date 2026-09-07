@@ -325,6 +325,15 @@
   padding-inline: 0;
 }
 
+.unified-schedule-page .schedule-board > .card__subheader .row-actions > .schedule-today-button {
+  width: auto;
+  min-width: max-content;
+  height: auto;
+  min-height: 44px;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+
 .unified-schedule-page .schedule-matrix {
   width: calc(100% - 32px);
   max-width: calc(100% - 32px);
@@ -379,6 +388,28 @@
 
 .unified-schedule-page .schedule-shift-chip small {
   font-size: 11px;
+}
+
+.unified-schedule-page .schedule-shift-chip--mirror {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--shift-color) 4%, white);
+}
+
+.unified-schedule-page .schedule-shift-chip .schedule-shift-chip__mirror,
+.unified-schedule-page .schedule-column-support {
+  display: block;
+  color: #9a5a00;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.unified-schedule-page .schedule-shift-chip .schedule-shift-chip__read-only {
+  color: #667085;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .25px;
+  text-transform: uppercase;
 }
 
 .unified-schedule-page .schedule-matrix--period table {

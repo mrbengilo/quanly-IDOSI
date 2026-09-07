@@ -40,7 +40,7 @@ import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { savedTaskProgressCoversIncompleteTasks } from '../../domain/taskProgress'
 import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../../domain/storeTieredPayroll'
 import { activeOccupationLabels, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
-import { formatVietnamTransferDateTime, isSupportTransferActiveAt } from '../../domain/supportTransferTime'
+import { formatVietnamTransferPeriod, isSupportTransferActiveAt } from '../../domain/supportTransferTime'
 import { useApp } from '../../state/AppContext'
 import {
   businessDate,
@@ -484,7 +484,7 @@ export function EmployeeDashboardV2() {
             {isSupporting && <>
               <div><dt>Lương hỗ trợ</dt><dd>{money(activeTransfer.hourlySupportRate || 0)}/giờ</dd></div>
               <div><dt>Phụ cấp hỗ trợ</dt><dd>{money(activeTransfer.allowance || 0)}</dd></div>
-              <div><dt>Thời gian hỗ trợ</dt><dd>{activeTransfer.startAt && activeTransfer.endAt ? `${formatVietnamTransferDateTime(activeTransfer.startAt)} – ${formatVietnamTransferDateTime(activeTransfer.endAt)}` : `${shortDate(activeTransfer.fromDate)} – ${shortDate(activeTransfer.toDate)}`}</dd></div>
+              <div><dt>Phạm vi hỗ trợ</dt><dd>{formatVietnamTransferPeriod(activeTransfer)}</dd></div>
             </>}
             <div><dt>Loại nhân viên</dt><dd>{employee?.employmentType || employee?.type || '—'}</dd></div>
             <div><dt>Số điện thoại</dt><dd>{employee?.phone || '—'}</dd></div>

@@ -104,22 +104,30 @@ describe('Hỗ trợ KD operations', () => {
   })
 
   it('creates a transfer with the canonical stores, dates and compensation payload', async () => {
-    render(<SupportTransfersPage />)
+    const view = render(<SupportTransfersPage />)
 
+    fireEvent.change(screen.getByLabelText(/Ngày bắt đầu/i), { target: { value: '2026-08-20' } })
+    fireEvent.change(screen.getByLabelText(/Ngày kết thúc/i), { target: { value: '2026-08-21' } })
     fireEvent.change(screen.getByLabelText(/Cửa hàng điều chuyển/i), { target: { value: 'CH001' } })
     fireEvent.change(screen.getByRole('combobox', { name: /^Nhân viên/i }), { target: { value: 'SM234-001' } })
     fireEvent.change(screen.getByLabelText(/Cửa hàng nhận hỗ trợ/i), { target: { value: 'CH002' } })
     fireEvent.change(screen.getByLabelText(/Lương hỗ trợ/i), { target: { value: '35' } })
     fireEvent.change(screen.getByLabelText(/Phụ cấp/i), { target: { value: '200' } })
-    fireEvent.click(screen.getByRole('button', { name: /Lưu điều chuyển/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Điều chuyển$/i }))
 
     await waitFor(() => expect(mocked.saveSupportTransfer).toHaveBeenCalledWith(expect.objectContaining({
       employeeId: 'SM234-001',
       fromStoreId: 'CH001',
       toStoreId: 'CH002',
+      fromDate: '2026-08-20',
+      toDate: '2026-08-21',
       hourlySupportRate: 35,
       allowance: 200,
     })))
+    const payload = mocked.saveSupportTransfer.mock.calls[0][0]
+    expect(payload).not.toHaveProperty('startAt')
+    expect(payload).not.toHaveProperty('endAt')
+    expect(view.container.querySelector('input[type="datetime-local"]')).toBeNull()
   })
 
   it('lets business support update the same policy form as Admin', async () => {
@@ -148,13 +156,20 @@ describe('Hỗ trợ KD operations', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Sửa' }))
     expect(screen.getByText('Chỉnh sửa điều chuyển')).toBeTruthy()
+    expect(screen.getByLabelText(/Ngày bắt đầu/i).value).toBe('2026-08-20')
+    expect(screen.getByLabelText(/Ngày kết thúc/i).value).toBe('2026-08-20')
+    expect(screen.getByText(/Phiếu cũ đang giới hạn chính xác theo giờ: 20\/08\/2026 08:00 – 20\/08\/2026 12:00/u)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText(/Ngày kết thúc/i), { target: { value: '2026-08-22' } })
     fireEvent.change(screen.getByLabelText(/Ghi chú/i), { target: { value: 'Cập nhật lịch hỗ trợ' } })
     fireEvent.click(screen.getByRole('button', { name: /Cập nhật điều chuyển/i }))
     await waitFor(() => expect(mocked.updateSupportTransfer).toHaveBeenCalledWith('TR-001', expect.objectContaining({
       employeeId: 'SM234-001', fromStoreId: 'CH001', toStoreId: 'CH002',
-      startAt: '2026-08-20T08:00', endAt: '2026-08-20T12:00',
+      fromDate: '2026-08-20', toDate: '2026-08-22',
       hourlySupportRate: 30_000, allowance: 200_000, note: 'Cập nhật lịch hỗ trợ',
     })))
+    const payload = mocked.updateSupportTransfer.mock.calls[0][1]
+    expect(payload).not.toHaveProperty('startAt')
+    expect(payload).not.toHaveProperty('endAt')
 
     expect(screen.queryByRole('button', { name: 'Xóa' })).toBeNull()
     expect(mocked.deleteSupportTransfer).not.toHaveBeenCalled()
@@ -186,7 +201,7 @@ describe('Hỗ trợ KD operations', () => {
     ))
   })
 
-  it('keeps transfer scope fixed while Admin edits time and compensation after attendance exists', () => {
+  it('keeps transfer scope fixed while Admin edits dates and compensation after attendance exists', () => {
     mocked.session = { role: 'admin', name: 'Admin' }
     mocked.supportTransfers = [{
       id: 'TR-ACTIVE', employeeId: 'SM234-001', fromStoreId: 'CH001', toStoreId: 'CH002',
@@ -204,8 +219,8 @@ describe('Hỗ trợ KD operations', () => {
     expect(screen.getByLabelText(/Cửa hàng điều chuyển/i).disabled).toBe(true)
     expect(screen.getByRole('combobox', { name: /^Nhân viên/i }).disabled).toBe(true)
     expect(screen.getByLabelText(/Cửa hàng nhận hỗ trợ/i).disabled).toBe(true)
-    expect(screen.getByLabelText(/Thời gian bắt đầu/i).disabled).toBe(false)
-    expect(screen.getByLabelText(/Thời gian kết thúc/i).disabled).toBe(false)
+    expect(screen.getByLabelText(/Ngày bắt đầu/i).disabled).toBe(false)
+    expect(screen.getByLabelText(/Ngày kết thúc/i).disabled).toBe(false)
     expect(screen.getByLabelText(/Lương hỗ trợ/i).disabled).toBe(false)
     expect(screen.getByLabelText(/^Phụ cấp/i).disabled).toBe(false)
   })
@@ -284,6 +299,6 @@ describe('Hỗ trợ KD operations', () => {
     render(<SupportTransfersPage />)
 
     expect(screen.getByRole('heading', { name: /Điều chuyển nhân sự/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Lưu điều chuyển/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Điều chuyển$/i })).toBeTruthy()
   })
 })

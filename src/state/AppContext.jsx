@@ -381,12 +381,15 @@ const recordTimestamp = (record) => String(record?.updatedAt || record?.createdA
 const mergeArrayRecordKey = (record, index, origin, collection) => {
   const direct = record?.id || record?.code
   if (direct) return String(direct)
-  if (collection === 'schedule' && record?.employeeId) {
-    return `schedule:${record.employeeId}:${record.date || record.workDate || 'template'}`
+  if (collection === 'schedule') {
+    const employeeId = record?.employeeId || record?.employee_id || record?.employeeCode || record?.employee_code
+    if (employeeId) {
+      return `schedule:${normalizedIdentifier(record.storeId || record.store_id || 'unknown-store')}:${normalizedIdentifier(employeeId)}:${record.date || record.workDate || 'template'}`
+    }
   }
   return `${origin}-${index}`
 }
-const mergeRecordArrays = (remoteRows = [], localRows = [], collection = '') => {
+export const mergeRecordArrays = (remoteRows = [], localRows = [], collection = '') => {
   const records = new Map()
   remoteRows.forEach((record, index) => records.set(mergeArrayRecordKey(record, index, 'remote', collection), record))
   localRows.forEach((record, index) => {
@@ -5562,11 +5565,12 @@ export function AppProvider({ children }) {
 
   const saveScheduleMultiple = async (employeeIds = [], shiftIds = [], details = {}) => {
     const date = details.date || today()
-    if (!employeeIds.length || !shiftIds.length) return { ok: false, message: 'Vui lòng chọn ca và nhân viên.' }
+    const storeId = details.storeId || state.activeStoreId || state.session?.storeId
+    if (!storeId || !employeeIds.length || !shiftIds.length) return { ok: false, message: 'Vui lòng chọn cửa hàng, ca và nhân viên.' }
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('schedule.assign', {
-          storeId: details.storeId || state.activeStoreId,
+          storeId,
           date,
           employeeIds,
           shiftIds,
@@ -5579,25 +5583,28 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    updateCollection('schedule', (items) => {
-      const next = [...items]
-      employeeIds.forEach((employeeId) => {
-        const employee = state.employees.find((item) => item.id === employeeId)
-        const keyIndex = next.findIndex((item) => item.employeeId === employeeId && (item.date || date) === date)
-        const current = keyIndex >= 0 ? next[keyIndex] : { employeeId, storeId: employee?.storeId || state.activeStoreId, date, shiftIds: [] }
-        const merged = [...new Set([...(current.shiftIds || []), ...shiftIds])]
-        const snapshots = merged.map((shiftId) => {
-          const shift = state.shiftDefinitions.find((item) => item.id === shiftId)
-          return shift ? { id: shift.id, name: shift.name, start: shift.start, end: shift.end, version: shift.version } : { id: shiftId }
-        })
-        const value = { ...current, date, shiftIds: merged, shiftSnapshots: snapshots, note: details.note || current.note || '' }
-        if (keyIndex >= 0) next[keyIndex] = value
-        else next.unshift(value)
-      })
-      return next
+    const { buildLocalScheduleAssignments } = await import('../domain/supportScheduling')
+    const { schedule: next, assignments: proposedAssignments, conflict } = buildLocalScheduleAssignments(state, {
+      employeeIds,
+      shiftIds,
+      storeId,
+      date,
+      note: details.note,
+      actor: actorSnapshot(state.session),
+      createId: () => uid('SCH'),
     })
+    if (conflict) {
+      const message = conflict.code === 'SCHEDULE_TIME_OVERLAP'
+        ? 'Nhân viên đã có ca trùng thời gian trong lịch hiện có.'
+        : conflict.code === 'SUPPORT_SCHEDULE_OUTSIDE_WINDOW'
+          ? 'Ca hỗ trợ nằm ngoài khoảng ngày điều chuyển đã duyệt.'
+          : 'Khung giờ ca làm việc không hợp lệ.'
+      notify(message, 'info')
+      return { ok: false, code: conflict.code, message }
+    }
+    updateCollection('schedule', () => next)
     notify('Đã lưu lịch phân ca.')
-    return { ok: true }
+    return { ok: true, assignments: proposedAssignments }
   }
 
   const replaceScheduleDay = async (assignments = [], details = {}) => {
@@ -5625,43 +5632,26 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    updateCollection('schedule', (items) => {
-      const now = new Date().toISOString()
-      const nextDay = assignments.map((item) => {
-        const previous = items.find((record) => (
-          String(record.storeId || '') === String(storeId)
-          && String(record.date || record.workDate || '') === String(date)
-          && String(record.employeeId || '') === String(item.employeeId || '')
-        ))
-        const previousSnapshots = new Map((previous?.shiftSnapshots || []).map((snapshot) => [String(snapshot.id), snapshot]))
-        const shiftSnapshots = (item.shiftIds || []).map((shiftId) => {
-          if (previousSnapshots.has(String(shiftId))) return previousSnapshots.get(String(shiftId))
-          const shift = state.shiftDefinitions.find((definition) => String(definition.id) === String(shiftId))
-          return shift ? { id: shift.id, name: shift.name, start: shift.start, end: shift.end, color: shift.color, version: shift.version } : { id: shiftId }
-        })
-        return {
-          ...previous,
-          ...item,
-          storeId,
-          date,
-          shiftId: item.shiftIds?.[0],
-          shiftSnapshots,
-          createdAt: previous?.createdAt || now,
-          createdBy: previous?.createdBy || actorSnapshot(state.session),
-          updatedAt: now,
-          updatedBy: actorSnapshot(state.session),
-        }
-      })
-      return [
-        ...nextDay,
-        ...items.filter((item) => !(
-        String(item.storeId || '') === String(storeId)
-        && String(item.date || item.workDate || '') === String(date)
-        )),
-      ]
+    const { buildLocalScheduleDayReplacement } = await import('../domain/supportScheduling')
+    const { schedule: next, assignments: nextDay, conflict } = buildLocalScheduleDayReplacement(state, {
+      assignments,
+      storeId,
+      date,
+      actor: actorSnapshot(state.session),
+      createId: () => uid('SCH'),
     })
+    if (conflict) {
+      const message = conflict.code === 'SCHEDULE_TIME_OVERLAP'
+        ? 'Nhân viên đã có ca trùng thời gian trong lịch hiện có.'
+        : conflict.code === 'SUPPORT_SCHEDULE_OUTSIDE_WINDOW'
+          ? 'Ca hỗ trợ nằm ngoài khoảng ngày điều chuyển đã duyệt.'
+          : 'Khung giờ ca làm việc không hợp lệ.'
+      notify(message, 'info')
+      return { ok: false, code: conflict.code, message }
+    }
+    updateCollection('schedule', () => next)
     notify('Đã cập nhật lịch phân ca.')
-    return { ok: true, assignments }
+    return { ok: true, assignments: nextDay }
   }
 
   const createImportVoucher = async (payload = {}) => {
@@ -5776,14 +5766,14 @@ export function AppProvider({ children }) {
     if (!employee || !fromStore || !toStore || employeeHomeStore !== fromStore || fromStore === toStore) {
       return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
     }
-    const { isVietnamDateTimeLocal, supportTransferBounds } = await import('../domain/supportTransferTime')
-    const exactDateTimes = isVietnamDateTimeLocal(payload.startAt) && isVietnamDateTimeLocal(payload.endAt)
-    const timeBounds = exactDateTimes ? supportTransferBounds(payload) : supportTransferBounds({
-      fromDate: payload.fromDate,
-      toDate: payload.toDate,
-    })
-    if (!timeBounds) {
-      return { ok: false, message: 'Khoảng thời gian điều chuyển chưa hợp lệ.' }
+    const { supportTransferBounds, supportTransferDateRange } = await import('../domain/supportTransferTime')
+    const hasDatePayload = payload.fromDate !== undefined || payload.toDate !== undefined
+    const requestedBounds = hasDatePayload
+      ? supportTransferBounds({ fromDate: payload.fromDate, toDate: payload.toDate })
+      : supportTransferBounds({ startAt: payload.startAt, endAt: payload.endAt })
+    const dateRange = requestedBounds && supportTransferDateRange(requestedBounds)
+    if (!requestedBounds || !dateRange) {
+      return { ok: false, message: 'Khoảng ngày điều chuyển chưa hợp lệ.' }
     }
     const hourlySupportRate = nonNegativeInteger(payload.hourlySupportRate)
     const allowance = nonNegativeInteger(payload.allowance)
@@ -5792,8 +5782,9 @@ export function AppProvider({ children }) {
       employeeId: employee.id || employee.code,
       fromStoreId: fromStore.id,
       toStoreId: toStore.id,
-      startAt: exactDateTimes ? payload.startAt : timeBounds.startAt,
-      endAt: exactDateTimes ? payload.endAt : timeBounds.endAt,
+      ...(hasDatePayload
+        ? { fromDate: dateRange.fromDate, toDate: dateRange.toDate }
+        : { startAt: requestedBounds.startAt, endAt: requestedBounds.endAt }),
       hourlySupportRate,
       allowance,
       note: String(payload.note || '').trim(),
@@ -5819,10 +5810,10 @@ export function AppProvider({ children }) {
     const transfer = {
       id: uid('SUP'),
       ...commandPayload,
-      startAt: timeBounds.startAt,
-      endAt: timeBounds.endAt,
-      fromDate: businessDate(timeBounds.startAt),
-      toDate: businessDate(new Date(timeBounds.endMs - 1)),
+      startAt: requestedBounds.startAt,
+      endAt: requestedBounds.endAt,
+      fromDate: dateRange.fromDate,
+      toDate: dateRange.toDate,
       status: 'Đã lưu',
       createdAt: new Date().toISOString(),
       createdBy: actorSnapshot(state.session),
@@ -5851,11 +5842,23 @@ export function AppProvider({ children }) {
       || destinationStore.ambiguous || !destinationStore.record || sameIdentifier(fromStoreId, toStoreId)) {
       return { ok: false, message: 'Nhân viên hoặc cửa hàng điều chuyển chưa hợp lệ.' }
     }
-    const { isVietnamDateTimeLocal, supportTransferBounds } = await import('../domain/supportTransferTime')
-    const startAt = payload.startAt ?? previous.startAt
-    const endAt = payload.endAt ?? previous.endAt
-    const timeBounds = supportTransferBounds({ ...previous, startAt, endAt })
-    if (!timeBounds) return { ok: false, message: 'Khoảng thời gian điều chuyển chưa hợp lệ.' }
+    const { supportTransferBounds, supportTransferDateRange } = await import('../domain/supportTransferTime')
+    const previousDateRange = supportTransferDateRange(previous)
+    const hasDatePayload = payload.fromDate !== undefined || payload.toDate !== undefined
+    const hasLegacyTimePayload = payload.startAt !== undefined || payload.endAt !== undefined
+    const requestedBounds = hasDatePayload
+      ? supportTransferBounds({
+          fromDate: payload.fromDate ?? previousDateRange?.fromDate,
+          toDate: payload.toDate ?? previousDateRange?.toDate,
+        })
+      : hasLegacyTimePayload
+        ? supportTransferBounds({
+            startAt: payload.startAt ?? previous.startAt,
+            endAt: payload.endAt ?? previous.endAt,
+          })
+        : supportTransferBounds(previous)
+    const dateRange = requestedBounds && supportTransferDateRange(requestedBounds)
+    if (!requestedBounds || !dateRange) return { ok: false, message: 'Khoảng ngày điều chuyển chưa hợp lệ.' }
     const hourlySupportRate = nonNegativeInteger(payload.hourlySupportRate ?? previous.hourlySupportRate)
     const allowance = nonNegativeInteger(payload.allowance ?? previous.allowance)
     if (hourlySupportRate <= 0) return { ok: false, message: 'Lương hỗ trợ theo giờ phải lớn hơn 0.' }
@@ -5865,8 +5868,9 @@ export function AppProvider({ children }) {
       employeeId,
       fromStoreId,
       toStoreId,
-      startAt: isVietnamDateTimeLocal(startAt) ? startAt : timeBounds.startAt,
-      endAt: isVietnamDateTimeLocal(endAt) ? endAt : timeBounds.endAt,
+      ...(hasDatePayload
+        ? { fromDate: dateRange.fromDate, toDate: dateRange.toDate }
+        : { startAt: requestedBounds.startAt, endAt: requestedBounds.endAt }),
       hourlySupportRate,
       allowance,
       note: String(payload.note ?? previous.note ?? '').trim(),
@@ -5902,10 +5906,10 @@ export function AppProvider({ children }) {
     const transfer = {
       ...previous,
       ...commandPayload,
-      startAt: timeBounds.startAt,
-      endAt: timeBounds.endAt,
-      fromDate: businessDate(timeBounds.startAt),
-      toDate: businessDate(new Date(timeBounds.endMs - 1)),
+      startAt: requestedBounds.startAt,
+      endAt: requestedBounds.endAt,
+      fromDate: dateRange.fromDate,
+      toDate: dateRange.toDate,
       updatedAt: new Date().toISOString(),
       updatedBy: actorSnapshot(state.session),
     }
