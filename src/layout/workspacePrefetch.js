@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { storeScreenForPath, systemScreenForPath } from '../domain/workspaceScreens'
 import { hasPendingApiRequests } from '../services/idosiApi'
+
+// These directory/configuration profiles omit order, attendance and payroll history in
+// SYSTEM_SCREEN_COLLECTIONS and STORE_SCREEN_COLLECTIONS. Store order history
+// is cursor-paginated separately. Keep history/attendance screens demand-loaded:
+// aborting a browser fetch cannot interrupt synchronous server snapshot work.
+const DATA_PREFETCH_SYSTEM_SCREENS = new Set([
+  'stores', 'employees', 'settings', 'account-settings', 'policies',
+  'order-information-settings', 'work-catalog',
+])
+const DATA_PREFETCH_STORE_SCREENS = new Set(['orders', 'employees', 'salary-settings', 'settings'])
+const canPrefetchData = (pathname) => {
+  const path = String(pathname || '').split(/[?#]/u)[0]
+  return path.startsWith('/store/')
+    ? DATA_PREFETCH_STORE_SCREENS.has(storeScreenForPath(path))
+    : DATA_PREFETCH_SYSTEM_SCREENS.has(systemScreenForPath(path))
+}
 
 export const canPrefetchWorkspace = () => {
   const connection = navigator.connection
@@ -45,7 +62,8 @@ export const createWorkspacePrefetch = ({ pathname, paths, preloadModule, prefet
       current = { controller, intent }
       await Promise.allSettled([
         Promise.resolve().then(() => !controller.signal.aborted && preloadModule(path)),
-        Promise.resolve().then(() => !controller.signal.aborted && prefetchData?.(path, { signal: controller.signal })),
+        Promise.resolve().then(() => !controller.signal.aborted && canPrefetchData(path)
+          && prefetchData?.(path, { signal: controller.signal })),
       ])
       current = null
     }

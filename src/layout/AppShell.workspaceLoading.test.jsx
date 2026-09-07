@@ -3,6 +3,7 @@ import { lazy } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AppShell from './AppShell'
+import { preloadRouteModule } from '../routeModules'
 
 const app = vi.hoisted(() => ({
   session: { id: 'USER-ADMIN', role: 'admin', name: 'Admin' },
@@ -73,15 +74,17 @@ describe('AppShell workspace loading states', () => {
     expect(app.prefetchWorkspaceData).not.toHaveBeenCalled()
   })
 
-  it('warms only two permitted adjacent menus after the current page is displayed', async () => {
+  it('warms two adjacent menu modules and only lightweight data after the current page is displayed', async () => {
     vi.useFakeTimers()
     renderShell()
     expect(screen.getByText('Dữ liệu trang')).toBeTruthy()
     await act(() => vi.advanceTimersByTimeAsync(1499))
     expect(app.prefetchWorkspaceData).not.toHaveBeenCalled()
     await act(() => vi.advanceTimersByTimeAsync(1))
-    expect(app.prefetchWorkspaceData).toHaveBeenCalledTimes(2)
-    expect(app.prefetchWorkspaceData.mock.calls.every(([path]) => path !== '/admin/cashflow')).toBe(true)
+    expect(preloadRouteModule.mock.calls.map(([path]) => path)).toEqual([
+      '/admin/reports', '/admin/order-information-settings',
+    ])
+    expect(app.prefetchWorkspaceData.mock.calls.map(([path]) => path)).toEqual(['/admin/order-information-settings'])
   })
 
   it('contains a lazy page fallback inside the shell instead of replacing the application', async () => {

@@ -63,7 +63,8 @@ describe('workspace prefetch scheduling', () => {
     expect(preloadModule).not.toHaveBeenCalled()
     api.pending = false
     await vi.advanceTimersByTimeAsync(1500)
-    expect(prefetchData.mock.calls.map(([path]) => path)).toEqual(['/admin/reports', '/admin/stores', '/admin/employees'])
+    expect(preloadModule.mock.calls.map(([path]) => path)).toEqual(['/admin/reports', '/admin/stores', '/admin/employees'])
+    expect(prefetchData.mock.calls.map(([path]) => path)).toEqual(['/admin/stores', '/admin/employees'])
   })
 
   it('rechecks visible-page API activity when an idle callback finally fires', async () => {
@@ -98,13 +99,50 @@ describe('workspace prefetch scheduling', () => {
 
   it('deduplicates hover/focus intent and ignores current and unpermitted paths', async () => {
     const { scheduler, preloadModule, prefetchData } = setup()
-    scheduler.intent('/admin/reports')
-    scheduler.intent('/admin/reports')
+    scheduler.intent('/admin/employees')
+    scheduler.intent('/admin/employees')
     scheduler.intent('/admin/overview')
     scheduler.intent('/admin/reset')
     await vi.advanceTimersByTimeAsync(0)
-    expect(prefetchData.mock.calls.map(([path]) => path)).toEqual(['/admin/reports'])
+    expect(prefetchData.mock.calls.map(([path]) => path)).toEqual(['/admin/employees'])
     expect(preloadModule).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    '/office', '/admin/business-support', '/admin/store-managers', '/admin/cashflow',
+    '/admin/reports', '/admin/tasks', '/admin/order-audit', '/admin/data-restore',
+    '/admin/business-support-schedule', '/admin/customer-survey',
+    '/store/tasks', '/store/schedule', '/store/imports', '/store/expenses',
+    '/store/attendance', '/store/payroll', '/store/revenue-bonus', '/store/cashflow',
+    '/employee/home', '/employee/orders', '/employee/attendance', '/employee/payroll',
+    '/support/overview', '/support/tasks', '/support/my-schedule',
+  ])('preloads the %s module on intent without requesting its history data', async (path) => {
+    const { scheduler, preloadModule, prefetchData } = setup({ paths: ['/admin/overview', path] })
+    scheduler.intent(path)
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(preloadModule).toHaveBeenCalledExactlyOnceWith(path)
+    expect(prefetchData).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    '/admin/stores', '/admin/employees', '/admin/settings', '/account/settings',
+    '/admin/policies', '/admin/order-information-settings', '/admin/work-catalog',
+    '/store/orders', '/store/employees', '/store/salary-settings', '/store/settings',
+  ])('warms the lightweight %s data profile in idle time', async (path) => {
+    const { preloadModule, prefetchData } = setup({ paths: ['/admin/overview', path] })
+    await vi.advanceTimersByTimeAsync(1500)
+    expect(preloadModule).toHaveBeenCalledExactlyOnceWith(path)
+    expect(prefetchData).toHaveBeenCalledExactlyOnceWith(path, { signal: expect.any(AbortSignal) })
+  })
+
+  it('warms only two adjacent modules when both have heavy data profiles, without scanning ahead', async () => {
+    const { preloadModule, prefetchData } = setup({
+      pathname: '/admin/store-managers',
+      paths: ['/admin/store-managers', '/office', '/admin/customer-survey', '/admin/stores'],
+    })
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(preloadModule.mock.calls.map(([path]) => path)).toEqual(['/office', '/admin/customer-survey'])
+    expect(prefetchData).not.toHaveBeenCalled()
   })
 
   it.each(['hidden', 'offline', 'saveData', '2g', 'slow-2g'])('skips idle and intent work for %s', async (condition) => {
