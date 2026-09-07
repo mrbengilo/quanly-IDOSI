@@ -643,4 +643,31 @@ describe('SQLite state snapshots', () => {
       database.close()
     }
   })
+  it('filters before the cursor limit and agrees with summaries for Unicode payment methods and month boundaries', async () => {
+    const { database } = await createSnapshotDatabase()
+    try {
+      const rows = Array.from({ length: 125 }, (_, index) => ({
+        id: `FILTER-${index}`, code: `CK-${index}`, storeId: 'S01', employeeId: 'E01', shiftId: 'night',
+        createdAt: '2026-08-31T18:00:00Z', customerName: 'Nguyễn Ánh',
+        amount: index < 24 ? 20_000 : 30_000, paymentMethod: index % 2 ? 'TIỀN MẶT' : 'bank_transfer',
+      }))
+      rows.push({ ...rows[0], id: 'FOREIGN', storeId: 'S02' }, { ...rows[0], id: 'COWORKER', employeeId: 'E02' },
+        { ...rows[0], id: 'DELETED', status: 'Đã xóa' })
+      await database.batch(rows.map((row, index) => {
+        const value = JSON.stringify(row)
+        return database.prepare(`INSERT INTO state_entities (scope_key, collection_key, entity_key, entity_order, value_json, value_bytes, created_at, updated_at, store_id, employee_id, occurred_on, period_key)
+          VALUES ('global', 'orders', ?, ?, ?, ?, ?, ?, ?, ?, '2026-08-31', '2026-08')`)
+          .bind(row.id, index + 100, value, Buffer.byteLength(value), timestamp, timestamp, row.storeId, row.employeeId)
+      }))
+      const options = { collectionKey: 'orders', storeId: 's01', employeeId: 'e01', period: '2026-09', limit: 10,
+        filters: { amount: 20000, paymentMethod: 'Tiền mặt', date: '2026-09-01', shiftId: 'night', query: 'ÁNH' } }
+      const first = database.readEntityHistory(options)
+      expect(first.map((row) => row.entity_key)).toEqual([23,21,19,17,15,13,11,9,7,5].map((n) => `FILTER-${n}`))
+      const last = first.at(-1)
+      const second = database.readEntityHistory({ ...options, beforeOccurredOn: last.occurred_on, beforeOrder: last.entity_order, beforeKey: last.entity_key })
+      expect(second.map((row) => row.entity_key)).toEqual(['FILTER-3', 'FILTER-1'])
+      expect(database.readEntityHistory({ ...options, filters: { ...options.filters, amount: 0 } })).toEqual([])
+    } finally { database.close() }
+  })
+
 })

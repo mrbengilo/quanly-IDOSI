@@ -1,3 +1,4 @@
+import { orderMatchesFilters } from '../../src/domain/orderSummary.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { mkdirSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -871,7 +872,8 @@ const ORDER_HISTORY_ROWS_SQL = `
     entity_key, entity_order, value_json, value_bytes,
     store_id, employee_id, business_date AS occurred_on, period_key, created_at, updated_at
   FROM dated_rows
-  WHERE (? <> '' OR ? = '' OR substr(business_date, 1, 7) = ?)
+  WHERE idosi_order_matches(value_json, ?) = 1
+    AND (? <> '' OR ? = '' OR substr(business_date, 1, 7) = ?)
     AND (
       ? IS NULL
       OR business_date < ?
@@ -1018,6 +1020,11 @@ export class SqliteD1 {
     if (!databasePath) throw new Error('Thiếu đường dẫn IDOSI_DB_PATH.')
     mkdirSync(dirname(databasePath), { recursive: true })
     this.database = new DatabaseSync(databasePath)
+    // Share exact payment/Unicode/money semantics with the API summary. Filter
+    // scoped rows before LIMIT so matching orders beyond a page are not lost.
+    this.database.function('idosi_order_matches', { deterministic: true }, (value, filters) => (
+      Number(filters === '{}' || orderMatchesFilters(JSON.parse(value), JSON.parse(filters)))
+    ))
     this.database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
     applyMigrations(this.database, migrationsDirectory)
     this.dataFixResult = applyVpsDataFixes(this.database)
@@ -1088,6 +1095,7 @@ export class SqliteD1 {
     employeeId = '',
     period = '',
     orderId = '',
+    filters = {},
     beforeOccurredOn = null,
     beforeOrder = null,
     beforeKey = '',
@@ -1115,6 +1123,7 @@ export class SqliteD1 {
         orderId,
         orderId,
         orderId,
+        JSON.stringify(filters),
         orderId,
         period,
         period,

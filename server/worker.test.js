@@ -1170,6 +1170,21 @@ describe('IDOSI Worker security primitives', () => {
       },
     })
 
+    for (const endpoint of ['order-summary', 'history/orders']) {
+      const response = await worker.fetch(new Request(
+        `https://idosi.example/api/${endpoint}?storeId=S01&period=2026-09&amount=5000&paymentMethod=cash&date=2026-09-01&shiftId=night`,
+        { headers: adminAuthorization },
+      ), env)
+      expect(response.status).toBe(200)
+      expect(await response.json()).toMatchObject(endpoint === 'order-summary'
+        ? { totals: { orders: 1, cashOrders: 1, transferOrders: 0, revenue: 5000 } }
+        : { records: [{ id: 'UTC-BOUNDARY' }], page: { hasMore: false } })
+      for (const invalid of ['amount=-1', 'amount=1.5', 'amount=9007199254740992', 'paymentMethod=Other', 'date=2026-02-30']) {
+        const rejected = await worker.fetch(new Request(`https://idosi.example/api/${endpoint}?storeId=S01&period=2026-09&${invalid}`, { headers: adminAuthorization }), env)
+        expect(rejected.status).toBe(400)
+      }
+    }
+
     const updated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
       type: 'order.update', expectedVersion: 1,
       payload: { orderId: 'ORDER-BULK-0', amount: 3_000, reason: 'Kiểm tra làm mới tổng hợp' },
@@ -1228,6 +1243,11 @@ describe('IDOSI Worker security primitives', () => {
       totals: { orders: 61, cash: 65_000, transfer: 0, revenue: 65_000 },
       groups: { employee: [{ key: 'E01', orders: 61, revenue: 65_000 }] },
     })
+    const employeeFiltered = await worker.fetch(new Request(
+      'https://idosi.example/api/history/orders?storeId=S01&period=2026-09&amount=1000&paymentMethod=transfer',
+      { headers: employeeAuthorization },
+    ), env)
+    expect(await employeeFiltered.json()).toMatchObject({ records: [], page: { hasMore: false } })
     const forbiddenEmployee = await worker.fetch(new Request(
       'https://idosi.example/api/order-summary?storeId=S01&period=2026-09&employeeId=E02',
       { headers: employeeAuthorization },
