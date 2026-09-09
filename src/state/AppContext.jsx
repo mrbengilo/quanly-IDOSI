@@ -257,7 +257,7 @@ const revenueBonusView = (dailyRecords = [], allocationRecords = []) => {
 }
 
 const REMOTE_ARRAY_KEYS = [
-  'supportRoster', 'scheduleBusy',
+  'supportRoster', 'scheduleBusy', 'violationPointSummaries',
   'stores', 'employees', 'imports', 'attendance', 'schedule', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'supportWorkSchedules', 'supportWorkScheduleHistory', 'supportSchedulePresets', 'supportSchedulePresetHistory', 'officeAdjustments',
   'orders', 'orderInformationOptions', 'orderAudit', 'notifications', 'expenseEntries', 'fixedExpenses', 'cashTransactions',
   'salaryAdjustments', 'salaryAdvances', 'payrollPeriods', 'payrollPayments', 'shiftDefinitions',
@@ -344,7 +344,7 @@ const SERVER_EXCLUDED_FIELDS = new Set([
   'password', 'passwordHash', 'password_hash', 'passwordSalt', 'password_salt', 'passwordIterations',
   'legacyPassword', 'token', 'tokenHash', 'adminAccounts', 'managerAccounts', 'managerPayroll',
   'profitShares', 'policies', 'orderCounters', 'importCounter', 'idempotencyKeys',
-  'session', 'activeAttendanceId', 'checkedInAt', 'finishedShift', 'accountProfile',
+  'session', 'activeAttendanceId', 'checkedInAt', 'finishedShift', 'accountProfile', 'violationPointSummaries',
 ])
 
 const sharedStateSnapshot = (state) => {
@@ -1521,6 +1521,7 @@ const remoteCommandResultPatches = (type, result) => {
   }
   if (type.startsWith('violation.')) {
     add('violations', result.violation || result.violations)
+    add('violationPointSummaries', (result.pointAssessments || []).map((assessment) => ({ ...assessment, id: `${assessment.employeeId}:${assessment.period}` })))
     add('compensationEntries', result.entry || result.entries)
   }
   if (type.startsWith('revenue_bonus.')) {

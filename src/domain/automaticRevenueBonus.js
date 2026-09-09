@@ -1,3 +1,4 @@
+import { applyRevenueSnapshotPointPolicy } from './violationPoints.js'
 import { allocateByLargestRemainder } from './compensationAllocation.js'
 import {
   calculateRevenueBonus,
@@ -313,6 +314,7 @@ export function calculateAutomaticRevenueBonusDay({
   employees = [],
   supportTransfers = [],
   overrides = [],
+  violations = [],
   nowMs = Date.now(),
 } = {}) {
   const normalizedStoreId = String(storeId || '').trim()
@@ -561,7 +563,7 @@ export function calculateAutomaticRevenueBonusDay({
   const automaticAllocatedVnd = allocations.reduce((sum, record) => sum + record.automaticAmountVnd, 0)
   const allocatedVnd = allocations.reduce((sum, record) => sum + record.amountVnd, 0)
   const unallocatedVnd = formulaAllocation.unallocatedVnd + excludedSupportShareVnd
-  return {
+  return applyRevenueSnapshotPointPolicy({
     id: `automatic-revenue-day:${normalizedStoreId}:${businessDate}`,
     sourceType: 'automatic-revenue-bonus',
     automatic: true,
@@ -608,7 +610,7 @@ export function calculateAutomaticRevenueBonusDay({
       },
     } : {}),
     allocations,
-  }
+  }, violations, employees)
 }
 
 const dateCandidatesForPeriod = ({ storeId, period, orders, attendance, overrides }) => {
@@ -638,6 +640,7 @@ export function calculateAutomaticRevenueBonusPeriod({
   employees = [],
   supportTransfers = [],
   overrides = [],
+  violations = [],
   nowMs = Date.now(),
 } = {}) {
   if (!/^\d{4}-\d{2}$/u.test(String(period || ''))) throw new TypeError('period must use YYYY-MM.')
@@ -652,6 +655,7 @@ export function calculateAutomaticRevenueBonusPeriod({
       employees,
       supportTransfers,
       overrides,
+      violations,
       nowMs,
     })
   ))

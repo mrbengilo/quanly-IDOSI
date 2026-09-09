@@ -94,6 +94,14 @@ describe('compensation view models', () => {
     expect(statusTone({ status: 'REJECTED' })).toBe('red')
   })
 
+  it('zeros revenue and work only at five monthly store points, including legacy salary preview callers', () => {
+    const compensationEntries = ['WORK', 'REVENUE', 'MANUAL', 'ALLOWANCE'].map((type) => ({ type, employeeId: 'E1', period: '2026-09', amountVnd: 10000, status: 'APPROVED' }))
+    const violations = [{ id: 'V1', employeeId: 'E1', targetUnit: 'store', period: '2026-09', violationPoints: 5, amountVnd: 0, status: 'ACTIVE' }]
+    expect(payrollCompensationTotalsForEmployee({ employeeId: 'E1', period: '2026-09', compensationEntries, violations }))
+      .toEqual({ work: 0, revenue: 0, manual: 10000, allowance: 10000, violations: 0 })
+    expect(payrollCompensationTotalsForEmployee({ employeeId: 'E1', period: '2026-09', compensationEntries, violations: [{ ...violations[0], violationPoints: 4.5 }] }).work).toBe(10000)
+  })
+
   it('groups only active canonical payroll records without dropping revenue allocations', () => {
     expect(payrollCompensationTotalsForEmployee({
       employeeId: 'NV-01',

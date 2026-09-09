@@ -1,3 +1,4 @@
+import { storeViolationPointAssessment } from '../../domain/violationPoints'
 import {
   operationalIdentifierRecordMatch,
   operationalIdentifierReferenceMatchesRecord,
@@ -172,7 +173,7 @@ export const revenueAllocations = (records = []) => records.flatMap((record) => 
   return entryEmployeeId(record) ? [record] : []
 })
 
-export const samePeriod = (entry, period) => !period || entryDate(entry).startsWith(period)
+export const samePeriod = (entry, period) => !period || String(entry?.period || entryDate(entry)).startsWith(period)
 
 const payrollActiveStatuses = new Set([
   'active',
@@ -230,6 +231,9 @@ export const payrollCompensationTotalsForEmployee = ({
     totals.violations += safePayrollAmount(entry)
   })
 
+  const assessment = storeViolationPointAssessment(violations, { employeeId, employeeIdentifiers, period })
+  if (assessment.revenueBonusBlocked) totals.revenue = 0
+  if (assessment.workBonusBlocked) totals.work = 0
   return totals
 }
 
