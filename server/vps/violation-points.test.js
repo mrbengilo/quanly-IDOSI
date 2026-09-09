@@ -83,6 +83,31 @@ const fixture = async (initial = {}) => {
 }
 
 describe('violation point policy through VPS commands and projections', () => {
+  it('requires valid configured points for new store violations without changing historical amounts', async () => {
+    const catalog = { id: 'LEGACY', code: 'store.violation.custom_legacy', kind: 'VIOLATION', targetGroup: 'store', storeId: 'S1', name: 'Nội dung cũ', amountVnd: 2000, active: true, version: 1 }
+    const f = await fixture({ workCatalogItems: [catalog] })
+    for (const violationPoints of [0, -1, 10.5, '0,55', 'không hợp lệ']) {
+      const invalid = await f.command('admin', 'work_catalog.update', { itemId: 'LEGACY', violationPoints })
+      expect(invalid.status, JSON.stringify(invalid.body)).toBe(400)
+    }
+    const batch = { ...f.batch(), catalogItemIds: ['LEGACY'] }
+    const missing = await f.command('M1', 'violation.create_batch', batch)
+    expect(missing.status).toBe(400)
+    expect(missing.body.error.code).toBe('VIOLATION_POINTS_REQUIRED')
+    const legacyClient = await f.command('M1', 'violation.create', { ...batch, catalogItemId: 'LEGACY' })
+    expect(legacyClient.status).toBe(400)
+    expect(legacyClient.body.error.code).toBe('VIOLATION_POINTS_REQUIRED')
+    expect(f.rows('violations')).toEqual([])
+    expect(f.rows('workCatalogItems')[0]).toMatchObject({ amountVnd: 2000, version: 1 })
+    const configured = await f.command('H', 'work_catalog.update', { itemId: 'LEGACY', violationPoints: '0,5' })
+    expect(configured.status, JSON.stringify(configured.body)).toBe(200)
+    expect(f.rows('workCatalogItems')[0]).toMatchObject({ amountVnd: 0, violationPoints: 0.5 })
+    const created = await f.command('M1', 'violation.create_batch', batch)
+    expect(created.status, JSON.stringify(created.body)).toBe(201)
+    expect(created.body.violations[0]).toMatchObject({ amountVnd: 0, violationPoints: 0.5 })
+    expect(f.rows('violationRefunds')).toEqual([])
+  }, 30000)
+
   it('persists decimal points, emits thresholds once, zeros both bonuses and restores them after a valid void', async () => {
     const f = await fixture({ violations: [point('PREVIOUS', 2.5)] })
     const input = f.batch()

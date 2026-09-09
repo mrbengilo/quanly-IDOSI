@@ -20251,6 +20251,12 @@ const assertWorkCatalogScopeAccess = (state, actor, item) => {
   }
 }
 
+const assertStoreViolationPointsConfigured = (item) => {
+  if (item.targetGroup === 'store' && item.kind === 'VIOLATION' && item.violationPoints == null) {
+    throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Vi phạm cửa hàng phải được cài điểm lớn hơn 0 và không quá 10.')
+  }
+}
+
 const workCatalogCommand = async (db, actor, body, commandContext) => {
   assertPayrollOperator(actor, 'Chỉ Admin hoặc Nhân viên hỗ trợ KD được quản lý danh mục công việc và vi phạm.')
   const operation = String(body.type || '').split('.').at(-1)
@@ -20266,6 +20272,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
     assertNoCaseCollidingActiveWorkCatalogIdentifiers(state)
     const item = normalizeWorkCatalogPayload(payload, null, actorSnapshot, commandContext.now)
     assertWorkCatalogScopeAccess(state, actor, item)
+    assertStoreViolationPointsConfigured(item)
     if (records.some((record) => sameIdentifier(record.id, item.id)
       || (String(record.targetGroup || '') === item.targetGroup
         && String(record.kind || '') === item.kind
@@ -20396,6 +20403,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
   }
 
   assertWorkCatalogScopeAccess(state, actor, next)
+  if (operation === 'update') assertStoreViolationPointsConfigured(next)
 
   const nextState = {
     ...state,
@@ -21680,6 +21688,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
         } else selected.push(existing)
         continue
       }
+      if (targetUnit === 'store' && catalogItem.violationPoints == null) {
+        throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm cửa hàng trước khi ghi nhận.')
+      }
       const catalogSnapshot = {
         id: catalogItem.id,
         code: catalogItem.code,
@@ -21924,6 +21935,9 @@ const violationCommand = async (db, actor, body, commandContext) => {
         violation: existing,
         existing: true,
       }, 200, commandContext)
+    }
+    if (targetUnit === 'store' && catalogItem?.violationPoints == null) {
+      throw new ApiError(400, 'VIOLATION_POINTS_REQUIRED', 'Admin/HTKD cần cài điểm cho nội dung vi phạm cửa hàng trước khi ghi nhận.')
     }
     const note = String(payload.note || '').trim()
     if (note.length > 1_000) throw new ApiError(400, 'NOTE_INVALID', 'Ghi chú không được vượt quá 1.000 ký tự.')
