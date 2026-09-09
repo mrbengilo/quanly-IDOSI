@@ -130,9 +130,9 @@ export function RewardHistoryTable({ rows = [], employees = [], showEmployee = f
           <td><strong>{displayDate(row.workDate)}</strong></td>
           <td><strong>{row.shiftName || 'Chưa gắn ca'}</strong>{row.shiftTime && <small className="compensation-subline">{row.shiftTime}</small>}</td>
           <td>{row.title}</td>
-          <td><strong className="compensation-credit">+{money(row.amountVnd)}</strong></td>
+          <td><strong className="compensation-credit">+{money(row.amountVnd)}</strong>{row.workBonusBlocked && <small className="compensation-subline">Trước áp dụng điểm: {money(row.preViolationAmountVnd)}</small>}</td>
           <td>{displayTime(row.completedAt)}</td>
-          <td><Badge tone={row.payoutStatus === 'pending' ? 'orange' : 'green'}>{row.payoutStatus === 'pending' ? 'Chờ duyệt team' : 'Đã ghi nhận'}</Badge></td>
+          <td><Badge tone={row.workBonusBlocked ? 'red' : row.payoutStatus === 'pending' ? 'orange' : 'green'}>{row.workBonusBlocked ? 'Không nhận thưởng (vi phạm ≥ 5 điểm)' : row.payoutStatus === 'pending' ? 'Chờ duyệt team' : 'Đã ghi nhận'}</Badge></td>
         </tr>)}
         {!filteredRows.length && <tr><td colSpan={showEmployee ? 7 : 6} className="compensation-empty">{completedRows.length ? 'Không có lịch sử phù hợp bộ lọc.' : 'Chưa có lịch sử nhận thưởng.'}</td></tr>}
       </tbody>

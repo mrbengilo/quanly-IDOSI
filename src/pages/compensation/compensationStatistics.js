@@ -1,5 +1,6 @@
 import {
   employeeUnit,
+  employeePointAssessment,
   entryAmount,
   entryDate,
   entryEmployeeId,
@@ -203,7 +204,10 @@ export const workRewardRows = ({
   employeeId = '',
   targetUnit = '',
   storeId = '',
+  violations = [],
+  violationPointSummaries = [],
 } = {}) => {
+  const assessments = new Map()
   const attendanceRecords = (Array.isArray(attendance) ? attendance : []).filter((record) => !record.deletedAt)
   const employeeRecords = Array.isArray(employees) ? employees : []
   const employeeIndex = operationalReferenceIndex(employeeRecords, employeeIdentifiers)
@@ -283,6 +287,11 @@ export const workRewardRows = ({
         const shiftStart = String(record.shiftStart || '').trim()
         const shiftEnd = String(record.shiftEnd || '').trim()
         const employee = employeeFor(recordEmployeeId)
+        const pointKey = `${employee?.id || recordEmployeeId}:${workDate.slice(0, 7)}`
+        if (!assessments.has(pointKey)) assessments.set(pointKey, employeePointAssessment({ violations, violationPointSummaries, employees: employeeRecords }, recordEmployeeId, workDate.slice(0, 7)))
+        const assessment = assessments.get(pointKey)
+        const workBonusBlocked = assessment.workBonusBlocked
+        const originalAmountVnd = Math.max(0, Number(task.amountVnd || 0) || 0)
         return {
           id: `${sourceAttendanceId}:${sourceCatalogItemId || index}`,
           attendanceId: sourceAttendanceId,
@@ -301,7 +310,8 @@ export const workRewardRows = ({
           catalogVersion: Number(task.catalogVersion || task.version || 1),
           title: String(task.name || task.title || task.description || 'Công việc tính thưởng').trim(),
           description: String(task.description || task.detail || '').trim(),
-          amountVnd: Math.max(0, Number(task.amountVnd || 0) || 0),
+          amountVnd: workBonusBlocked ? 0 : originalAmountVnd,
+          ...(workBonusBlocked ? { workBonusBlocked, preViolationAmountVnd: originalAmountVnd, violationPoints: assessment.points } : {}),
           completed,
           paid: completed && payoutStatus === 'approved',
           payoutStatus,
