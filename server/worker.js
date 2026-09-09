@@ -1,3 +1,4 @@
+import { applyRevenueSnapshotPointPolicy, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
   validateStoreChecklistCheckout,
@@ -186,7 +187,7 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   'compensation-managers': ['stores', 'employees', 'compensationEntries', 'payrollPeriods'],
   'compensation-revenue': [
     'stores', 'employees', 'orders', 'attendance', 'schedule', 'shiftDefinitions', 'supportTransfers',
-    'revenueBonusDaily', 'revenueBonusAllocations', 'revenueBonusOverrides', 'salaryAdjustments', 'periodReconciliations',
+    'revenueBonusDaily', 'revenueBonusAllocations', 'revenueBonusOverrides', 'salaryAdjustments', 'periodReconciliations', 'violations',
   ],
   tasks: [
     'stores', 'employees', 'workCatalogItems', 'workCatalogProgress', 'attendance',
@@ -229,12 +230,12 @@ const SYSTEM_SCREEN_COLLECTIONS = Object.freeze({
   ],
   'employee-tasks': [
     'stores', 'employees', 'tasks', 'taskAssignmentHistory', 'supportWorkAssignments',
-    'workCatalogItems', 'workCatalogProgress', 'compensationEntries', 'attendance', 'notifications',
+    'workCatalogItems', 'workCatalogProgress', 'compensationEntries', 'attendance', 'notifications', 'violations',
   ],
   'employee-assigned-work': ['employees', 'supportWorkAssignments', 'notifications'],
   'employee-reward-tasks': [
     'stores', 'employees', 'attendance', 'tasks', 'workCatalogItems',
-    'workCatalogProgress', 'compensationEntries',
+    'workCatalogProgress', 'compensationEntries', 'violations',
   ],
   'employee-shift-expenses': [
     'stores', 'employees', 'attendance', 'expenseEntries', 'tasks',
@@ -1848,6 +1849,7 @@ const normalizeSharedStateForStorage = (value) => {
     'activeAttendanceId',
     'checkedInAt',
     'finishedShift',
+    'violationPointSummaries',
   ]) delete state[key]
   if (Array.isArray(state.stores)) {
     state.stores = state.stores.map((store) => {
@@ -2739,12 +2741,47 @@ const shiftDefinitionsForProjectedSchedule = (state, schedule, localStoreId) => 
       })
 }
 
+const violationPointSummariesForState = (state) => {
+  const scopes = new Map()
+  for (const record of state.violations || []) {
+    if (violationPointsOf(record) === null) continue
+    const employee = (state.employees || []).find((candidate) => belongsToEmployee(record, candidate.id || candidate.code))
+    const employeeId = String(employee?.id || employee?.code || record.employeeId || '')
+    const period = violationPointPeriod(record)
+    if (!employeeId || !period) continue
+    const id = `${employeeId}:${period}`
+    if (!scopes.has(id)) scopes.set(id, {
+      id,
+      employeeName: employee?.name || record.employeeName || employeeId,
+      ...storeViolationPointAssessment(state.violations || [], {
+        employeeId, employeeIdentifiers: employee ? employeeIdentifierValues(employee) : [employeeId], period,
+      }),
+    })
+  }
+  return [...scopes.values()]
+}
+
+const projectPointRevenueState = (state) => {
+  if (!(state.violations || []).some(isActivePointViolation)) return state
+  const project = (allocations) => applyRevenueSnapshotPointPolicy({ allocations }, state.violations, state.employees || []).allocations
+  return {
+    ...state,
+    ...(Array.isArray(state.revenueBonusAllocations) ? { revenueBonusAllocations: project(state.revenueBonusAllocations) } : {}),
+    ...(Array.isArray(state.revenueBonusDaily) ? {
+      revenueBonusDaily: state.revenueBonusDaily.map((day) => applyRevenueSnapshotPointPolicy(day, state.violations, state.employees || [])),
+    } : {}),
+    ...(Array.isArray(state.compensationEntries) ? { compensationEntries: state.compensationEntries.map((record) => (
+      ['REVENUE', 'WORK'].includes(String(record.type || record.kind).toUpperCase()) ? project([record])[0] : record
+    )) } : {}),
+  }
+}
+
 export const projectSharedState = (
   rawState,
   user,
   { storeId: requestedWorkspaceStoreId = '', screen: requestedWorkspaceScreen = '' } = {},
 ) => {
-  const normalizedState = normalizeSharedStateForStorage(rawState)
+  const normalizedState = projectPointRevenueState(normalizeSharedStateForStorage(rawState))
   const supportCompensationContext = createSupportCompensationProjectionContext(normalizedState)
   const systemOperatorStoreWorkspace = ['admin', 'business_support'].includes(user.role)
     && Boolean(String(requestedWorkspaceStoreId || '').trim())
@@ -2754,6 +2791,7 @@ export const projectSharedState = (
   if (user.role !== 'admin' || systemOperatorStoreWorkspace) assertNoCaseCollidingOperationalIdentifiers(normalizedState)
   let state = {
     ...normalizedState,
+    violationPointSummaries: violationPointSummariesForState(normalizedState),
     orderInformationOptions: orderInformationOptionsFromState(normalizedState),
     ...(Object.hasOwn(normalizedState, 'employees') ? {
       employees: (Array.isArray(normalizedState.employees) ? normalizedState.employees : [])
@@ -3107,6 +3145,7 @@ export const projectSharedState = (
       )),
       compensationEntries: systemOperatorStoreWorkspace ? storeCompensationEntries : ownCompensationEntries,
       violations: systemOperatorStoreWorkspace ? storeViolations : ownViolations,
+      violationPointSummaries: state.violationPointSummaries.filter((record) => historicalVisibleEmployeeIds.has(normalizeIdentifierKey(record.employeeId))),
       violationRefunds: filterArray(state, 'violationRefunds', (record) => (
         sameIdentifier(record.storeId, storeId)
       )),
@@ -3258,6 +3297,7 @@ export const projectSharedState = (
       storeShiftTaskTemplates: state.storeShiftTaskTemplates,
       compensationEntries: own('compensationEntries'),
       violations: own('violations'),
+      violationPointSummaries: own('violationPointSummaries'),
       revenueBonusDaily: filterArray(state, 'revenueBonusDaily', (record) => (
         visibleStoreIds.has(normalizeIdentifierKey(record.storeId))
       )).map(redactRevenueBonusDaily),
@@ -5801,6 +5841,7 @@ export const revenueBonusPeriodSnapshot = ({
     employees: Array.isArray(state?.employees) ? state.employees : [],
     supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
     overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
+    violations: Array.isArray(state?.violations) ? state.violations : [],
     nowMs,
   })
   const daysByDate = new Map(calculated.days.map((day) => [day.businessDate, day]))
@@ -5902,11 +5943,14 @@ const automaticRevenueCandidateScopes = (state, {
 }
 
 const baselineAutomaticRevenueRecords = ({ snapshot, finalizedAt, trigger }) => {
+  snapshot = restorePointRevenueSnapshot(snapshot)
   const dailyId = `rbd_auto_${crypto.randomUUID()}`
   const allocations = (Array.isArray(snapshot.allocations) ? snapshot.allocations : []).map((record) => {
     const amountVnd = Number(record.automaticAmountVnd ?? record.amountVnd ?? 0)
+    const baseline = { ...record }
+    for (const field of ['preViolationAmountVnd', 'violationExcludedVnd', 'violationPoints', 'revenueBonusBlocked', 'workBonusBlocked', 'statusBeforeViolation']) delete baseline[field]
     return {
-      ...record,
+      ...baseline,
       id: `rba_auto_${crypto.randomUUID()}`,
       revenueBonusDailyId: dailyId,
       sourceType: 'automatic-revenue-bonus',
@@ -6275,6 +6319,8 @@ const SUPPORT_ATTENDANCE_PROJECTION_FIELDS = new Set([
 ])
 
 const protectedCollectionComparable = (key, value) => {
+  if (key === 'revenueBonusDaily' && Array.isArray(value)) return value.map(restorePointRevenueSnapshot)
+  if (['compensationEntries', 'revenueBonusAllocations'].includes(key) && Array.isArray(value)) return value.map(restorePointBonusRecord)
   if (key === 'orderInformationOptions') {
     return orderInformationOptionsFromState(Array.isArray(value) ? { orderInformationOptions: value } : {})
   }
@@ -7482,7 +7528,7 @@ export const commandStateProjection = (body) => {
   if (type.startsWith('violation.')) {
     return projection(
       'command-violation',
-      [...PAYROLL_COMMAND_COLLECTIONS, 'workCatalogItems', 'shiftDefinitions'],
+      [...PAYROLL_COMMAND_COLLECTIONS, 'workCatalogItems', 'shiftDefinitions', 'notifications'],
       'violations',
       payload.violationId || payload.id,
       payload.employeeId,
@@ -13277,6 +13323,7 @@ const automaticRevenueBonusPeriodFor = (state, storeId, period) => {
     employees: Array.isArray(state.employees) ? state.employees : [],
     supportTransfers: Array.isArray(state.supportTransfers) ? state.supportTransfers : [],
     overrides: Array.isArray(state.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
+    violations: Array.isArray(state.violations) ? state.violations : [],
     nowMs: Date.now(),
   })
   cache.set(key, result)
@@ -13624,8 +13671,11 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
     const legacyBonus = Math.max(0, adjustment)
     const legacyDeduction = Math.max(0, -adjustment)
     const manualBonusVnd = safeMoneySum(compensation.manual, legacyBonus, 'Tổng thưởng thủ công')
-    const workBonusVnd = compensation.work
-    const revenueBonusVnd = compensation.revenue
+    const pointAssessment = storeViolationPointAssessment(state.violations || [], {
+      employeeId, employeeIdentifiers: employeeIdentifierValues(employee), period,
+    })
+    const workBonusVnd = pointAssessment.workBonusBlocked ? 0 : compensation.work
+    const revenueBonusVnd = pointAssessment.revenueBonusBlocked ? 0 : compensation.revenue
     const bonusVnd = [manualBonusVnd, workBonusVnd, revenueBonusVnd]
       .reduce((sum, value) => safeMoneySum(sum, value, 'Tổng thưởng'), 0)
     const allowanceVnd = safeMoneySum(baseAllowance, compensation.allowance, 'Tổng phụ cấp')
@@ -13681,6 +13731,11 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
       manualBonusVnd,
       workBonusVnd,
       revenueBonusVnd,
+      violationPoints: pointAssessment.points,
+      revenueBonusBlocked: pointAssessment.revenueBonusBlocked,
+      workBonusBlocked: pointAssessment.workBonusBlocked,
+      excludedWorkBonusVnd: pointAssessment.workBonusBlocked ? compensation.work : 0,
+      excludedRevenueBonusVnd: pointAssessment.revenueBonusBlocked ? compensation.revenue : 0,
       bonusVnd,
       allowanceVnd,
       violationVnd,
@@ -20329,6 +20384,7 @@ const workCatalogCommand = async (db, actor, body, commandContext) => {
     next = normalizeWorkCatalogPayload({
       name: payload.name ?? previous.name,
       amountVnd: payload.amountVnd ?? previous.amountVnd,
+      violationPoints: payload.violationPoints ?? previous.violationPoints,
       active: payload.active ?? previous.active,
       sortOrder: payload.sortOrder ?? previous.sortOrder,
       storeId: payload.storeId ?? previous.storeId,
@@ -21173,7 +21229,7 @@ const upsertPendingViolationRefunds = (refunds, violations, actorSnapshot, times
   const next = [...(Array.isArray(refunds) ? refunds : [])]
   const selected = []
   for (const violation of violations) {
-    if (!violation?.supportTransferId) continue
+    if (!violation?.supportTransferId || violationPointsOf(violation) !== null) continue
     const previousMatch = exactViolationRefundMatch(next, violation.id)
     const refund = pendingViolationRefund(violation, previousMatch?.record || null, actorSnapshot, timestamp)
     if (previousMatch) next[previousMatch.index] = refund
@@ -21440,6 +21496,59 @@ const violationMatchesOccurrence = (record, occurrenceKey, identity) => (
   )
 )
 
+const commitViolationStateChange = async (db, actor, current, previousState, nextState, change, context) => {
+  const changed = (Array.isArray(change.after) ? change.after : [change.after]).filter(Boolean)
+  const scopes = new Map()
+  for (const record of changed) {
+    if (violationPointsOf(record) !== null) scopes.set(`${record.employeeId}:${record.period}`, record)
+  }
+  const assessments = []
+  const notifications = []
+  const payrollTargets = []
+  for (const record of scopes.values()) {
+    const employee = compensationEmployee(nextState, record.employeeId)
+    const options = { employeeId: record.employeeId, employeeIdentifiers: employeeIdentifierValues(employee), period: record.period }
+    const before = storeViolationPointAssessment(previousState.violations || [], options)
+    const after = storeViolationPointAssessment(nextState.violations || [], options)
+    assessments.push(after)
+    // A support-store event can change the home-store reward for the same month.
+    // Paid/locked payroll is immutable everywhere the employee participates.
+    const storeIds = new Set([record.storeId, employee.storeId])
+    for (const payroll of previousState.payrollPeriods || []) {
+      if (payroll.period === record.period && (payroll.rows || []).some((row) => belongsToEmployee(row, record.employeeId))) storeIds.add(payroll.storeId)
+    }
+    for (const storeId of storeIds) {
+      if (!storeId) continue
+      assertPayrollNotPaidOrLocked(previousState, storeId, record.period)
+      payrollTargets.push({ storeId, period: record.period })
+    }
+    if (after.threshold > before.threshold) notifications.push({
+      id: `ntf_${crypto.randomUUID()}`,
+      type: 'violation-point-threshold',
+      employeeId: record.employeeId,
+      storeId: employee.storeId || record.storeId,
+      period: record.period,
+      threshold: after.threshold,
+      violationPoints: after.points,
+      title: after.label,
+      message: `Kỳ ${record.period}: bạn có ${formatViolationPoints(after.points)} vi phạm. ${after.label}.${after.revenueBonusBlocked ? ' Thưởng doanh thu và thưởng công việc trong kỳ đều bằng 0.' : ''}`,
+      route: employeeUnit(employee) === 'store_manager' ? '/store/my-violations' : '/employee/violations',
+      createdAt: context.now,
+      readAt: null,
+    })
+  }
+  const committedState = {
+    ...nextState,
+    ...(payrollTargets.length ? { payrollPeriods: invalidateClosedPayrollPeriods(nextState, payrollTargets, context.now, change.action) } : {}),
+    ...(notifications.length ? { notifications: [...notifications, ...(nextState.notifications || [])] } : {}),
+  }
+  return commitGlobalStateDomainCommand(db, actor, current, committedState, {
+    ...change,
+    metadata: { ...change.metadata, pointAssessments: assessments },
+    response: { ...change.response, pointAssessments: assessments, notifications },
+  }, context)
+}
+
 const violationCommand = async (db, actor, body, commandContext) => {
   const operation = body.type.split('.').at(-1)
   if (!['create', 'create_batch', 'void'].includes(operation)) throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh vi phạm không được hỗ trợ.')
@@ -21576,6 +21685,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
         code: catalogItem.code,
         name: catalogItem.name,
         amountVnd: catalogItem.amountVnd,
+        ...(catalogItem.violationPoints != null ? { violationPoints: catalogItem.violationPoints } : {}),
         targetGroup: catalogItem.targetGroup,
         kind: catalogItem.kind,
         version: catalogItem.version,
@@ -21596,6 +21706,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
         policyCode: catalogItem.code,
         title: catalogItem.name,
         amountVnd: catalogItem.amountVnd,
+        ...(catalogItem.violationPoints != null ? { violationPoints: catalogItem.violationPoints } : {}),
         catalogItemId: catalogItem.id,
         catalogCode: catalogItem.code,
         catalogVersion: catalogItem.version,
@@ -21652,7 +21763,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
-    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    return commitViolationStateChange(db, actor, current, state, nextState, {
       action: body.type,
       entityType: 'violation-batch',
       entityId: `violation-batch:${employeeId}:${occurredOn}:${shiftSnapshot.shiftId}`,
@@ -21747,7 +21858,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       }
       policyCode = catalogItem.code
       title = catalogItem.name
-      amountVnd = asVnd(payload.amountVnd ?? catalogItem.amountVnd, 'Số tiền vi phạm', { positive: true })
+      amountVnd = asVnd(payload.amountVnd ?? catalogItem.amountVnd, 'Số tiền vi phạm', { positive: catalogItem.violationPoints == null })
       if (amountVnd !== catalogItem.amountVnd) {
         throw new ApiError(400, 'VIOLATION_AMOUNT_INVALID', 'Số tiền vi phạm phải đúng danh mục hiện hành.')
       }
@@ -21796,7 +21907,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
           payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
           stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
         }
-        return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+        return commitViolationStateChange(db, actor, current, state, nextState, {
           action: body.type,
           entityType: 'violation',
           entityId: revived.id,
@@ -21832,6 +21943,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       policyCode,
       title,
       amountVnd,
+      ...(catalogItem?.violationPoints != null ? { violationPoints: catalogItem.violationPoints } : {}),
       ...(catalogItem ? {
         catalogItemId: catalogItem.id,
         catalogCode: catalogItem.code,
@@ -21841,6 +21953,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
           code: catalogItem.code,
           name: catalogItem.name,
           amountVnd: catalogItem.amountVnd,
+          ...(catalogItem.violationPoints != null ? { violationPoints: catalogItem.violationPoints } : {}),
           targetGroup: catalogItem.targetGroup,
           kind: catalogItem.kind,
           version: catalogItem.version,
@@ -21882,7 +21995,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
       payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId, period }, commandContext.now, body.type),
       stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
     }
-    return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+    return commitViolationStateChange(db, actor, current, state, nextState, {
       action: body.type,
       entityType: 'violation',
       entityId: violation.id,
@@ -21938,7 +22051,7 @@ const violationCommand = async (db, actor, body, commandContext) => {
     payrollPeriods: invalidateClosedPayrollPeriods(state, { storeId: previous.storeId, period }, commandContext.now, body.type),
     stateVersion: Math.max(1, Number(state.stateVersion) || 1) + 1,
   }
-  return commitGlobalStateDomainCommand(db, actor, current, nextState, {
+  return commitViolationStateChange(db, actor, current, state, nextState, {
     action: body.type,
     entityType: 'violation',
     entityId: violationId,
@@ -22110,7 +22223,7 @@ const materializedRevenueBonusDaySnapshot = ({ state, storeId, businessDate, now
   const automaticAllocatedVnd = allocations.reduce((sum, record) => sum + Number(record.automaticAmountVnd || 0), 0)
   const allocatedVnd = allocations.reduce((sum, record) => sum + Number(record.amountVnd || 0), 0)
   const projectedAt = String(now || new Date().toISOString())
-  return {
+  return applyRevenueSnapshotPointPolicy({
     ...daily,
     projectedAt,
     finalizedAt: daily.finalizedAt || daily.calculatedAt || daily.approvedAt || daily.createdAt || projectedAt,
@@ -22131,7 +22244,7 @@ const materializedRevenueBonusDaySnapshot = ({ state, storeId, businessDate, now
       openAttendanceCount: 0,
     },
     allocations,
-  }
+  }, state.violations || [], state.employees || [])
 }
 
 export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new Date().toISOString() } = {}) => {
@@ -22154,6 +22267,7 @@ export const revenueBonusLiveSnapshot = ({ state, store, businessDate, now = new
       employees: Array.isArray(state?.employees) ? state.employees : [],
       supportTransfers: Array.isArray(state?.supportTransfers) ? state.supportTransfers : [],
       overrides: Array.isArray(state?.revenueBonusOverrides) ? state.revenueBonusOverrides : [],
+      violations: Array.isArray(state?.violations) ? state.violations : [],
       nowMs: Date.parse(now),
     }),
     calculationMode: 'AUTOMATIC',

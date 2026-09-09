@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyRevenueSnapshotPointPolicy, assessViolationPoints, normalizeViolationPoints, storeViolationPointAssessment, violationPointsOf } from './violationPoints'
+import { applyBonusAllocationPointPolicy, applyRevenueSnapshotPointPolicy, restorePointRevenueSnapshot, assessViolationPoints, normalizeViolationPoints, storeViolationPointAssessment, violationPointsOf } from './violationPoints'
 import { normalizeWorkCatalogItem } from './workCatalog'
 
 const violation = (overrides = {}) => ({ id: 'V1', employeeId: 'E1', targetUnit: 'store', status: 'ACTIVE', period: '2026-09', violationPoints: 0.5, amountVnd: 0, ...overrides })
@@ -36,6 +36,13 @@ describe('store violation point contract', () => {
   it.each([[2.5, 0], [3, 3], [4.9, 3], [5, 5], [5.5, 5], [6, 6], [11, 6]])('evaluates %s points at threshold %s', (points, threshold) => {
     expect(assessViolationPoints(points).threshold).toBe(threshold)
   })
+  it('excludes work rewards without losing the original award or changing void records', () => {
+    const source = { employeeId: 'E1', amountVnd: 10000, status: 'APPROVED', type: 'WORK' }
+    const blocked = applyBonusAllocationPointPolicy(source, assessViolationPoints(5), 'WORK')
+    expect(blocked).toMatchObject({ amountVnd: 0, preViolationAmountVnd: 10000, workBonusBlocked: true })
+    expect(applyBonusAllocationPointPolicy(blocked, assessViolationPoints(4.5), 'WORK')).toEqual(source)
+    expect(applyBonusAllocationPointPolicy({ ...source, status: 'VOID' }, assessViolationPoints(6), 'WORK').status).toBe('VOID')
+  })
   it('zeros all monthly revenue after overrides without reallocating or mutating audit shares', () => {
     const source = { allocatedVnd: 3000, unallocatedVnd: 0, allocations: [
       { employeeId: 'E1', period: '2026-09', amountVnd: 1000, automaticAmountVnd: 500, status: 'ADMIN_ADJUSTED' },
@@ -49,6 +56,8 @@ describe('store violation point contract', () => {
     expect(result.allocations[0]).toMatchObject({ automaticAmountVnd: 500, preViolationAmountVnd: 1000, status: 'VIOLATION_EXCLUDED' })
     expect(applyRevenueSnapshotPointPolicy(result, entries)).toEqual(result)
     expect(source.allocations[0].amountVnd).toBe(1000)
+    expect(restorePointRevenueSnapshot(result)).toEqual(source)
+    expect(applyRevenueSnapshotPointPolicy(result, [])).toEqual(source)
     expect(applyRevenueSnapshotPointPolicy(source, [violation({ violationPoints: 5, status: 'VOID' })])).toBe(source)
   })
 })

@@ -6,7 +6,7 @@ const activeStatuses = new Set(['ACTIVE', 'APPROVED', 'CONFIRMED', 'ĐÃ DUYỆT
 
 export const VIOLATION_POINT_MILESTONES = Object.freeze([
   Object.freeze({ points: 3, level: 'reminder', label: 'Nhắc nhở', description: 'Từ 3 điểm: thông báo nhắc nhở.', tone: 'orange' }),
-  Object.freeze({ points: 5, level: 'bonus_blocked', label: 'Không nhận thưởng doanh thu', description: 'Từ 5 điểm: toàn bộ thưởng doanh thu trong kỳ bằng 0.', tone: 'red' }),
+  Object.freeze({ points: 5, level: 'bonus_blocked', label: 'Không nhận thưởng', description: 'Từ 5 điểm: thưởng doanh thu và thưởng công việc trong kỳ đều bằng 0.', tone: 'red' }),
   Object.freeze({ points: 6, level: 'suspended', label: 'Đình chỉ làm việc', description: 'Từ 6 điểm: cảnh báo “Đình chỉ làm việc”.', tone: 'red' }),
 ])
 
@@ -55,6 +55,7 @@ export function assessViolationPoints(points = 0) {
     label: milestone?.label || 'Chưa đến mốc nhắc nhở',
     tone: milestone?.tone || 'green',
     revenueBonusBlocked: units >= 50,
+    workBonusBlocked: units >= 50,
   }
 }
 
@@ -76,28 +77,54 @@ export function storeViolationPointAssessment(entries = [], { employeeId = '', e
   return { employeeId, period, count, ...assessViolationPoints(units / 10) }
 }
 
-export function applyRevenueAllocationPointPolicy(record, assessment) {
-  if (!assessment.revenueBonusBlocked) return record
-  const original = Number(record.preViolationAmountVnd ?? record.amountVnd ?? record.amount ?? 0)
-  if (!Number.isSafeInteger(original) || original < 0) throw new TypeError('Thưởng doanh thu không hợp lệ.')
+export function restorePointBonusRecord(record) {
+  if (!record.revenueBonusBlocked && !record.workBonusBlocked) return record
+  const restored = { ...record, amountVnd: record.preViolationAmountVnd, status: record.statusBeforeViolation }
+  if (Object.hasOwn(record, 'amount')) restored.amount = record.preViolationAmountVnd
+  if (Object.hasOwn(record, 'allocatedVnd')) restored.allocatedVnd = record.preViolationAmountVnd
+  for (const field of ['preViolationAmountVnd', 'violationExcludedVnd', 'violationPoints', 'revenueBonusBlocked', 'workBonusBlocked', 'statusBeforeViolation']) delete restored[field]
+  return restored
+}
+
+export function applyBonusAllocationPointPolicy(record, assessment, kind = 'REVENUE') {
+  const originalRecord = restorePointBonusRecord(record)
+  const status = text(originalRecord.status).toLocaleUpperCase('vi-VN')
+  if (!assessment.revenueBonusBlocked || originalRecord.deletedAt || originalRecord.voidedAt || originalRecord.rejectedAt || originalRecord.supersededAt
+    || ['VOID', 'VOIDED', 'REJECTED', 'PENDING', 'SUBMITTED', 'ADMIN_DELETED', 'ĐÃ HỦY', 'TỪ CHỐI'].includes(status)) return originalRecord
+  const original = Number(originalRecord.amountVnd ?? originalRecord.amount ?? 0)
+  if (!Number.isSafeInteger(original) || original < 0) throw new TypeError('Số tiền thưởng không hợp lệ.')
   return {
-    ...record,
+    ...originalRecord,
     preViolationAmountVnd: original,
     amountVnd: 0,
-    ...(Object.hasOwn(record, 'amount') ? { amount: 0 } : {}),
-    allocatedVnd: 0,
+    ...(Object.hasOwn(originalRecord, 'amount') ? { amount: 0 } : {}),
+    ...(Object.hasOwn(originalRecord, 'allocatedVnd') ? { allocatedVnd: 0 } : {}),
     violationExcludedVnd: original,
     violationPoints: assessment.points,
-    revenueBonusBlocked: true,
-    statusBeforeViolation: record.statusBeforeViolation || record.status,
+    [kind === 'WORK' ? 'workBonusBlocked' : 'revenueBonusBlocked']: true,
+    statusBeforeViolation: originalRecord.status,
     status: 'VIOLATION_EXCLUDED',
   }
+}
+
+// A read projection is reversible and must never replace the persisted award.
+export function restorePointRevenueSnapshot(snapshot) {
+  if (!snapshot?.pointPolicySnapshot) return snapshot
+  const restored = { ...snapshot, allocations: snapshot.allocations.map(restorePointBonusRecord) }
+  for (const field of ['allocatedVnd', 'unallocatedVnd', 'violationExcludedVnd', 'violationExcludedCount']) {
+    if (Object.hasOwn(snapshot.pointPolicySnapshot, field)) restored[field] = snapshot.pointPolicySnapshot[field]
+    else delete restored[field]
+  }
+  delete restored.pointPolicySnapshot
+  return restored
 }
 
 // Apply the month-wide consequence after normal allocation and admin overrides.
 // Formula shares stay intact for audit and are never redistributed to colleagues.
 export function applyRevenueSnapshotPointPolicy(snapshot, entries = [], employees = []) {
-  if (!snapshot?.allocations?.length || !entries.some(isActivePointViolation)) return snapshot
+  snapshot = restorePointRevenueSnapshot(snapshot)
+  if (!snapshot?.allocations?.length) return snapshot
+  if (!entries.some(isActivePointViolation)) return snapshot
   const cache = new Map()
   const allocations = snapshot.allocations.map((record) => {
     const period = record.period || violationPointPeriod(record)
@@ -110,12 +137,14 @@ export function applyRevenueSnapshotPointPolicy(snapshot, entries = [], employee
         period,
       }))
     }
-    return applyRevenueAllocationPointPolicy(record, cache.get(cacheKey))
+    return applyBonusAllocationPointPolicy(record, cache.get(cacheKey), record.type === 'WORK' ? 'WORK' : 'REVENUE')
   })
+  if (allocations.every((row, index) => row === snapshot.allocations[index])) return snapshot
   const excludedVnd = allocations.reduce((sum, row) => sum + Number(row.violationExcludedVnd || 0), 0)
   return {
     ...snapshot,
     allocations,
+    pointPolicySnapshot: Object.fromEntries(['allocatedVnd', 'unallocatedVnd', 'violationExcludedVnd', 'violationExcludedCount'].filter((field) => Object.hasOwn(snapshot, field)).map((field) => [field, snapshot[field]])),
     allocatedVnd: allocations.reduce((sum, row) => sum + Number(row.amountVnd || 0), 0),
     violationExcludedVnd: excludedVnd,
     unallocatedVnd: Number(snapshot.unallocatedVnd || 0) - Number(snapshot.violationExcludedVnd || 0) + excludedVnd,

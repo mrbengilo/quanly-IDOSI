@@ -205,7 +205,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
     'compensationEntries', 'teamRewardClaims', 'payrollPeriods',
   ],
   'command-violation': [
-    ...STORE_PAYROLL_COMMAND_COLLECTIONS, 'shiftDefinitions', 'workCatalogItems',
+    ...STORE_PAYROLL_COMMAND_COLLECTIONS, 'shiftDefinitions', 'workCatalogItems', 'notifications',
   ],
   'command-revenue-bonus': [
     ...STORE_PAYROLL_COMMAND_COLLECTIONS, 'shiftDefinitions', 'workCatalogItems',
@@ -222,7 +222,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   orders: ['orderInformationOptions'],
   tasks: [
     'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'workCatalogProgress',
-    'compensationEntries', 'attendance', 'notifications', 'workCatalogItems',
+    'compensationEntries', 'attendance', 'notifications', 'workCatalogItems', 'violations',
   ],
   imports: ['importVouchers', 'imports'],
   expenses: ['fixedExpenses', 'expenseEntries', 'cashTransactions', 'attendance'],
@@ -236,7 +236,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   'salary-settings': ['storeEmployeeSalaryConfigs'],
   'revenue-bonus': [
     'orders', 'attendance', 'schedule', 'revenueBonusDaily', 'revenueBonusAllocations',
-    'salaryAdjustments', 'teamRewardClaims', 'teamRewardParticipants', 'shiftDefinitions',
+    'salaryAdjustments', 'teamRewardClaims', 'teamRewardParticipants', 'shiftDefinitions', 'violations',
   ],
   'violation-refunds': ['violations', 'violationRefunds', 'compensationEntries'],
   'my-compensation': [
@@ -253,11 +253,11 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   ],
   'employee-tasks': [
     'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'workCatalogProgress',
-    'compensationEntries', 'attendance', 'notifications', 'workCatalogItems',
+    'compensationEntries', 'attendance', 'notifications', 'workCatalogItems', 'violations',
   ],
   'employee-assigned-work': ['supportWorkAssignments', 'notifications'],
   'employee-reward-tasks': [
-    'attendance', 'tasks', 'workCatalogProgress', 'compensationEntries',
+    'attendance', 'tasks', 'workCatalogProgress', 'compensationEntries', 'violations',
   ],
   'employee-shift-expenses': ['attendance', 'expenseEntries', 'tasks', 'taskAssignmentHistory'],
   'employee-orders': [
@@ -286,7 +286,7 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   ],
   'employee-revenue-bonus': [
     'orders', 'attendance', 'schedule', 'revenueBonusDaily', 'revenueBonusAllocations',
-    'salaryAdjustments', 'teamRewardClaims', 'teamRewardParticipants', 'shiftDefinitions',
+    'salaryAdjustments', 'teamRewardClaims', 'teamRewardParticipants', 'shiftDefinitions', 'violations',
   ],
   'employee-cashflow': ['orders', 'expenseEntries', 'attendance'],
 })
@@ -510,6 +510,19 @@ const storeStateSnapshotSql = (screen = '') => {
   const sessionOwnHistorySql = normalizedScreen === 'session'
     ? `OR entity.employee_id = params.actor_employee_key COLLATE NOCASE`
     : ''
+  // Historical support-store violations still affect an employee's home-store
+  // payroll even when the original transfer is no longer in the active roster.
+  const violationEmployeeSeedSql = normalizedScreen === 'command-violation'
+    ? `
+    UNION
+    SELECT DISTINCT lower(trim(violation.employee_id)) AS employee_key
+    FROM state_entities AS violation
+    JOIN params ON violation.scope_key = params.scope_key
+    WHERE violation.collection_key = 'violations'
+      AND violation.store_id = params.store_key COLLATE NOCASE
+      AND violation.employee_id IS NOT NULL
+      AND trim(violation.employee_id) <> ''`
+    : ''
   const sessionFilterSql = normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
     ? `AND (entity.collection_key <> 'attendance' OR (
         entity.open_flag = 1
@@ -574,6 +587,7 @@ const storeStateSnapshotSql = (screen = '') => {
     UNION
     SELECT employee_key FROM inbound_employee_ids WHERE employee_key <> ''
     ${payrollAttendanceEmployeeSeedSql}
+    ${violationEmployeeSeedSql}
   ),
   relevant_employee_rows AS MATERIALIZED (
     SELECT employee.entity_key
@@ -701,6 +715,7 @@ const storeStateSnapshotSql = (screen = '') => {
     ${employeeHomeOrderFilterSql}
     AND (
       entity.collection_key = 'stores'
+      ${normalizedScreen === 'command-violation' ? "OR entity.collection_key = 'payrollPeriods'" : ''}
       ${['session', 'schedule', 'employee-home', 'employee-attendance', 'employee-schedule'].includes(normalizedScreen) ? "OR entity.collection_key = 'shiftDefinitions'" : ''}
       OR entity.store_id = params.store_key COLLATE NOCASE
       OR entity.employee_id IN (

@@ -6,7 +6,7 @@ export const REVENUE_BONUS_CONTEXT_COLLECTIONS = Object.freeze([
 
 export const REVENUE_BONUS_READ_COLLECTIONS = Object.freeze([
   ...REVENUE_BONUS_CONTEXT_COLLECTIONS,
-  'orders', 'attendance', 'revenueBonusDaily', 'revenueBonusAllocations', 'revenueBonusOverrides',
+  'orders', 'attendance', 'violations', 'revenueBonusDaily', 'revenueBonusAllocations', 'revenueBonusOverrides',
 ])
 
 const sqlList = (values) => values.map((value) => `'${value}'`).join(', ')
@@ -38,10 +38,13 @@ export const REVENUE_BONUS_SNAPSHOT_SQL = `
       entity.collection_key IN (${sqlList(REVENUE_BONUS_CONTEXT_COLLECTIONS)})
       -- Old allocation rows can identify their day only by revenueBonusDailyId.
       OR entity.collection_key = 'revenueBonusAllocations'
+      -- Monthly point totals include support work at other stores. Only aggregates
+      -- and authorized allocations leave the server. Never load other months here.
+      OR (entity.collection_key = 'violations' AND entity.period_key = substr(params.date_key, 1, 7))
       OR (
         (trim(entity.store_id) = params.store_key COLLATE NOCASE OR entity.store_id IS NULL)
         AND (
-          entity.collection_key NOT IN ('orders', 'attendance')
+          entity.collection_key NOT IN ('orders', 'attendance', 'violations')
           OR ${bonusDateSql} = params.date_key
         )
       )
