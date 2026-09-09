@@ -1,0 +1,522 @@
+name: Apply navigation server performance phase 2
+
+on:
+  push:
+    branches:
+      - perf/navigation-latency-phase2
+    paths:
+      - .github/workflows/apply-navigation-server-phase2.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-test-clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: perf/navigation-latency-phase2
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Apply server-side screen projection and concurrency optimizations
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one anchor, found {count}: {old[:80]!r}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          # Phase 1 must already be on main before Phase 2 is allowed to proceed.
+          worker_path = Path('server/worker.js')
+          worker = worker_path.read_text(encoding='utf-8')
+          sqlite_path = Path('server/vps/sqlite-d1.mjs')
+          sqlite = sqlite_path.read_text(encoding='utf-8')
+          if 'const personnelImageStateCaches = new WeakMap()' not in worker:
+              raise SystemExit('Phase 1 worker optimization is missing from the branch base.')
+          if 'PRAGMA mmap_size = 67108864;' not in sqlite:
+              raise SystemExit('Phase 1 SQLite optimization is missing from the branch base.')
+
+          # Add one-statement collection snapshots and bounded version-keyed caches.
+          insertion_marker = '// Store workspaces intentionally exclude system-wide history.'
+          if sqlite.count(insertion_marker) != 1:
+              raise SystemExit('sqlite-d1.mjs: snapshot insertion marker changed')
+          sqlite_helpers = r'''
+          const STATE_COLLECTION_SNAPSHOT_SQL_CACHE = new Map()
+          const SNAPSHOT_CACHE_LIMIT = 64
+          const versionedSnapshotCaches = new WeakMap()
+
+          const sqlTextLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`
+
+          const stateCollectionsSnapshotSql = (collectionKeys = []) => {
+            const keys = [...new Set((Array.isArray(collectionKeys) ? collectionKeys : [])
+              .map((value) => String(value || '').trim())
+              .filter(Boolean))].sort()
+            if (!keys.length) throw new Error('At least one state collection is required.')
+            const cacheKey = keys.join('\u0000')
+            if (STATE_COLLECTION_SNAPSHOT_SQL_CACHE.has(cacheKey)) {
+              return STATE_COLLECTION_SNAPSHOT_SQL_CACHE.get(cacheKey)
+            }
+            const list = keys.map(sqlTextLiteral).join(', ')
+            const sql = `
+              SELECT
+                0 AS row_kind,
+                scope_key,
+                NULL AS collection_key,
+                NULL AS entity_key,
+                NULL AS entity_order,
+                value_json,
+                NULL AS value_bytes,
+                NULL AS created_at,
+                updated_at,
+                updated_by,
+                last_request_id,
+                version
+              FROM app_state
+              WHERE scope_key = ?
+
+              UNION ALL
+
+              SELECT
+                1,
+                scope_key,
+                collection_key,
+                NULL,
+                NULL,
+                NULL,
+                NULL,
+                created_at,
+                updated_at,
+                NULL,
+                NULL,
+                NULL
+              FROM state_collections
+              WHERE scope_key = ?
+                AND collection_key IN (${list})
+
+              UNION ALL
+
+              SELECT
+                2,
+                scope_key,
+                collection_key,
+                entity_key,
+                entity_order,
+                value_json,
+                value_bytes,
+                created_at,
+                updated_at,
+                NULL,
+                NULL,
+                NULL
+              FROM state_entities
+              WHERE scope_key = ?
+                AND collection_key IN (${list})
+
+              ORDER BY row_kind, collection_key, entity_order, entity_key
+            `
+            STATE_COLLECTION_SNAPSHOT_SQL_CACHE.set(cacheKey, sql)
+            return sql
+          }
+
+          const snapshotCacheFor = (adapter) => {
+            let cache = versionedSnapshotCaches.get(adapter)
+            if (!cache) {
+              cache = new Map()
+              versionedSnapshotCaches.set(adapter, cache)
+            }
+            return cache
+          }
+
+          const readVersionedSnapshot = (adapter, scope, identity, loader) => {
+            const head = measuredStatement('reads', () => (
+              adapter.database.prepare(STATE_SNAPSHOT_HEAD_SQL).get(scope)
+            ))
+            if (!head) return null
+            const cachingEnabled = process.env.NODE_ENV !== 'test'
+            const cache = cachingEnabled ? snapshotCacheFor(adapter) : null
+            const key = [
+              scope,
+              Number(head.version || 0),
+              String(head.last_request_id || ''),
+              identity,
+            ].join('|')
+            if (cache?.has(key)) {
+              const cached = cache.get(key)
+              cache.delete(key)
+              cache.set(key, cached)
+              return cached
+            }
+            const snapshot = loader()
+            if (!snapshot) return null
+            if (cache) {
+              cache.set(key, snapshot)
+              while (cache.size > SNAPSHOT_CACHE_LIMIT) cache.delete(cache.keys().next().value)
+            }
+            return snapshot
+          }
+
+          '''.replace('\n          ', '\n').lstrip()
+          sqlite = sqlite.replace(insertion_marker, sqlite_helpers + insertion_marker, 1)
+
+          old_methods = r'''  readStateSnapshot(scope) {
+            const records = measuredStatement('reads', () => (
+              this.database.prepare(STATE_SNAPSHOT_SQL).all(scope, scope, scope)
+            ))
+            return decodeStateSnapshotRecords(records)
+          }
+
+          readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '') {
+            const records = measuredStatement('reads', () => (
+              this.database.prepare(storeStateSnapshotSql(screen)).all(scope, storeId, actorEmployeeId, period)
+            ))
+            return decodeStateSnapshotRecords(records)
+          }
+          '''.replace('\n          ', '\n')
+          new_methods = r'''  readStateSnapshot(scope) {
+            return readVersionedSnapshot(this, scope, 'all', () => {
+              const records = measuredStatement('reads', () => (
+                this.database.prepare(STATE_SNAPSHOT_SQL).all(scope, scope, scope)
+              ))
+              return decodeStateSnapshotRecords(records)
+            })
+          }
+
+          readStateCollectionsSnapshot(scope, collectionKeys = []) {
+            const keys = [...new Set((Array.isArray(collectionKeys) ? collectionKeys : [])
+              .map((value) => String(value || '').trim())
+              .filter(Boolean))].sort()
+            return readVersionedSnapshot(this, scope, `collections:${keys.join(',')}`, () => {
+              const records = measuredStatement('reads', () => (
+                this.database.prepare(stateCollectionsSnapshotSql(keys)).all(scope, scope, scope)
+              ))
+              return decodeStateSnapshotRecords(records)
+            })
+          }
+
+          readStoreStateSnapshot(scope, storeId, actorEmployeeId = '', screen = '', period = '') {
+            const identity = [
+              'store',
+              String(storeId || '').trim().toLocaleLowerCase('en-US'),
+              String(actorEmployeeId || '').trim().toLocaleLowerCase('en-US'),
+              String(screen || '').trim(),
+              String(period || '').trim(),
+            ].join(':')
+            return readVersionedSnapshot(this, scope, identity, () => {
+              const records = measuredStatement('reads', () => (
+                this.database.prepare(storeStateSnapshotSql(screen)).all(scope, storeId, actorEmployeeId, period)
+              ))
+              return decodeStateSnapshotRecords(records)
+            })
+          }
+          '''.replace('\n          ', '\n')
+          if sqlite.count(old_methods) != 1:
+              raise SystemExit('sqlite-d1.mjs: read snapshot methods changed')
+          sqlite = sqlite.replace(old_methods, new_methods, 1)
+          sqlite_path.write_text(sqlite, encoding='utf-8')
+
+          # Use the optimized one-statement snapshot path in production.
+          worker = worker_path.read_text(encoding='utf-8')
+          cache_anchor = 'const accountAvatarMigrationPromises = new WeakMap()\n'
+          if worker.count(cache_anchor) != 1:
+              raise SystemExit('server/worker.js: Phase 1 cache anchor changed')
+          worker = worker.replace(cache_anchor, cache_anchor + 'const screenProjectionCaches = new WeakMap()\n', 1)
+
+          load_anchor = """const loadStateCollections = async (db, scope, collectionKeys) => {
+            const collectionFilter = stateCollectionFilter(collectionKeys)
+            if (!collectionFilter.keys.length) throw new ApiError(500, 'STATE_COLLECTIONS_INVALID', 'Thiếu danh mục trạng thái cần tải.')
+          """.replace('\n          ', '\n')
+          load_replacement = load_anchor + """  if (typeof db?.readStateCollectionsSnapshot === 'function') {
+              const optimized = await db.readStateCollectionsSnapshot(scope, collectionFilter.keys)
+              return optimized ? retainStateCollections(optimized, collectionFilter.keys) : null
+            }
+          """.replace('\n          ', '\n')
+          if worker.count(load_anchor) != 1:
+              raise SystemExit('server/worker.js: loadStateCollections anchor changed')
+          worker = worker.replace(load_anchor, load_replacement, 1)
+
+          system_marker = 'const getSystemScreen = async (request, env, context, screen) => {'
+          if worker.count(system_marker) != 1:
+              raise SystemExit('server/worker.js: getSystemScreen marker changed')
+          projection_helpers = r'''
+          const SCREEN_PROJECTION_CACHE_LIMIT = 64
+
+          const screenProjectionCacheFor = (db) => {
+            let cache = screenProjectionCaches.get(db)
+            if (!cache) {
+              cache = new Map()
+              screenProjectionCaches.set(db, cache)
+            }
+            return cache
+          }
+
+          const cachedProjectSharedState = (db, row, rawState, user, options = {}) => {
+            if (typeof db?.readStateCollectionsSnapshot !== 'function' || !row) {
+              return projectSharedState(rawState, user, options)
+            }
+            const key = [
+              Number(row.version || 0),
+              String(row.last_request_id || ''),
+              String(user?.user_id || user?.id || ''),
+              String(user?.role || ''),
+              String(user?.store_id || ''),
+              String(user?.employee_id || ''),
+              String(options.storeId || ''),
+              String(options.screen || ''),
+            ].join('|')
+            const cache = screenProjectionCacheFor(db)
+            if (cache.has(key)) {
+              const cached = cache.get(key)
+              cache.delete(key)
+              cache.set(key, cached)
+              return cached
+            }
+            const projected = projectSharedState(rawState, user, options)
+            cache.set(key, projected)
+            while (cache.size > SCREEN_PROJECTION_CACHE_LIMIT) cache.delete(cache.keys().next().value)
+            return projected
+          }
+
+          '''.replace('\n          ', '\n').lstrip()
+          worker = worker.replace(system_marker, projection_helpers + system_marker, 1)
+
+          # Patch only the getSystemScreen function body.
+          start = worker.index(system_marker)
+          next_marker = '\nconst getFinanceOverview = async'
+          end = worker.index(next_marker, start)
+          block = worker[start:end]
+          old_state = '    state: projectSharedState(rawState, user),\n'
+          new_state = '    state: cachedProjectSharedState(db, row, rawState, user, { screen }),\n'
+          if block.count(old_state) != 1:
+              raise SystemExit('server/worker.js: system screen projection call changed')
+          block = block.replace(old_state, new_state, 1)
+          worker = worker[:start] + block + worker[end:]
+
+          # Patch the generic/store state endpoint while preserving its existing options.
+          get_state_marker = 'const getState = async (request, env, context, url) => {'
+          if worker.count(get_state_marker) != 1:
+              raise SystemExit('server/worker.js: getState marker changed')
+          start = worker.index(get_state_marker)
+          end_candidates = [
+              worker.find('\nconst getStateMetadata = async', start),
+              worker.find('\nconst getStoreScreen = async', start),
+              worker.find('\nconst getSystemScreen = async', start),
+          ]
+          end = min(value for value in end_candidates if value > start)
+          block = worker[start:end]
+          call_anchor = 'state: projectSharedState(rawState, user, {'
+          if block.count(call_anchor) != 1:
+              raise SystemExit(f'server/worker.js: getState projection count={block.count(call_anchor)}')
+          block = block.replace(call_anchor, 'state: cachedProjectSharedState(db, row, rawState, user, {', 1)
+          worker = worker[:start] + block + worker[end:]
+          worker_path.write_text(worker, encoding='utf-8')
+
+          # Use two Node workers by default so one synchronous SQLite projection cannot freeze every request.
+          server_path = Path('server/vps/server.mjs')
+          server = server_path.read_text(encoding='utf-8')
+          import_anchor = "import { randomUUID } from 'node:crypto'\n"
+          if server.count(import_anchor) != 1:
+              raise SystemExit('server.mjs: import anchor changed')
+          server = server.replace(
+              import_anchor,
+              "import cluster from 'node:cluster'\n" + import_anchor + "import { availableParallelism } from 'node:os'\n",
+              1,
+          )
+          main_marker = "const isMainModule = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))\n\n"
+          if server.count(main_marker) != 1:
+              raise SystemExit('server.mjs: main marker changed')
+          concurrency_helper = r'''export const resolveWebConcurrency = (
+            value = process.env.WEB_CONCURRENCY,
+            availableCpuCount = availableParallelism(),
+          ) => {
+            const available = Math.max(1, Number(availableCpuCount) || 1)
+            const requested = Number.parseInt(String(value || ''), 10)
+            const desired = Number.isInteger(requested) && requested > 0 ? requested : Math.min(2, available)
+            return Math.max(1, Math.min(4, available, desired))
+          }
+
+          const startIdosiListener = () => {
+            const host = process.env.HOST || '0.0.0.0'
+            const port = Number(process.env.PORT || 3000)
+            const { server } = createIdosiServer()
+            server.listen(port, host, () => {
+              console.log(`IDOSI VPS worker ${process.pid} listening on http://${host}:${port}`)
+            })
+            const shutdown = () => server.close(() => process.exit(0))
+            process.once('SIGINT', shutdown)
+            process.once('SIGTERM', shutdown)
+          }
+
+          '''.replace('\n          ', '\n').lstrip()
+          server = server.replace(main_marker, main_marker + concurrency_helper, 1)
+
+          old_main = r'''if (isMainModule) {
+            const host = process.env.HOST || '0.0.0.0'
+            const port = Number(process.env.PORT || 3000)
+            const { server } = createIdosiServer()
+            server.listen(port, host, () => console.log(`IDOSI VPS listening on http://${host}:${port}`))
+            const shutdown = () => server.close(() => process.exit(0))
+            process.once('SIGINT', shutdown)
+            process.once('SIGTERM', shutdown)
+          }
+          '''.replace('\n          ', '\n')
+          new_main = r'''if (isMainModule) {
+            const workerCount = resolveWebConcurrency()
+            if (cluster.isPrimary && workerCount > 1) {
+              let shuttingDown = false
+              console.log(`IDOSI VPS primary ${process.pid} starting ${workerCount} workers`)
+              for (let index = 0; index < workerCount; index += 1) cluster.fork()
+              cluster.on('exit', (worker, code, signal) => {
+                console.error(`IDOSI VPS worker ${worker.process.pid} exited`, { code, signal })
+                if (!shuttingDown) cluster.fork()
+              })
+              const shutdown = () => {
+                if (shuttingDown) return
+                shuttingDown = true
+                const workers = Object.values(cluster.workers || {}).filter(Boolean)
+                workers.forEach((worker) => worker.kill('SIGTERM'))
+                const deadline = setTimeout(() => process.exit(0), 15_000)
+                deadline.unref()
+                Promise.all(workers.map((worker) => new Promise((resolveWorker) => {
+                  if (worker.isDead()) resolveWorker()
+                  else worker.once('exit', resolveWorker)
+                }))).finally(() => process.exit(0))
+              }
+              process.once('SIGINT', shutdown)
+              process.once('SIGTERM', shutdown)
+            } else {
+              startIdosiListener()
+            }
+          }
+          '''.replace('\n          ', '\n')
+          if server.count(old_main) != 1:
+              raise SystemExit('server.mjs: startup block changed')
+          server = server.replace(old_main, new_main, 1)
+          server_path.write_text(server, encoding='utf-8')
+
+          Path('server/vps/server.concurrency.test.js').write_text(r'''// @vitest-environment node
+
+          import { describe, expect, it } from 'vitest'
+          import { resolveWebConcurrency } from './server.mjs'
+
+          describe('VPS web concurrency', () => {
+            it('uses two workers by default when the VPS has enough CPUs', () => {
+              expect(resolveWebConcurrency('', 5)).toBe(2)
+              expect(resolveWebConcurrency(undefined, 1)).toBe(1)
+            })
+
+            it('bounds explicit worker counts by CPU and a safe process cap', () => {
+              expect(resolveWebConcurrency('3', 5)).toBe(3)
+              expect(resolveWebConcurrency('12', 8)).toBe(4)
+              expect(resolveWebConcurrency('4', 2)).toBe(2)
+              expect(resolveWebConcurrency('invalid', 6)).toBe(2)
+            })
+          })
+          '''.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+
+          Path('server/vps/sqlite-d1.collections.test.js').write_text(r'''// @vitest-environment node
+
+          import { mkdtemp, rm } from 'node:fs/promises'
+          import { tmpdir } from 'node:os'
+          import { resolve } from 'node:path'
+          import { afterEach, describe, expect, it } from 'vitest'
+          import { createSqliteD1 } from './sqlite-d1.mjs'
+
+          const directories = []
+
+          afterEach(async () => {
+            await Promise.all(directories.splice(0).map((directory) => (
+              rm(directory, { recursive: true, force: true })
+            )))
+          })
+
+          describe('SQLite collection snapshots', () => {
+            it('loads requested external collections in one decoded snapshot and excludes peers', async () => {
+              const directory = await mkdtemp(resolve(tmpdir(), 'idosi-collection-snapshot-'))
+              directories.push(directory)
+              const adapter = createSqliteD1({ databasePath: resolve(directory, 'idosi.sqlite') })
+              try {
+                const now = '2026-09-03T00:00:00.000Z'
+                adapter.database.prepare(`
+                  INSERT INTO app_state (scope_key, value_json, version, updated_at, last_request_id)
+                  VALUES ('global', '{"schemaVersion":1,"stateVersion":1}', 1, ?, 'seed')
+                `).run(now)
+                for (const collection of ['orders', 'attendance']) {
+                  adapter.database.prepare(`
+                    INSERT INTO state_collections (scope_key, collection_key, created_at, updated_at)
+                    VALUES ('global', ?, ?, ?)
+                  `).run(collection, now, now)
+                }
+                const insert = adapter.database.prepare(`
+                  INSERT INTO state_entities (
+                    scope_key, collection_key, entity_key, entity_order,
+                    value_json, value_bytes, created_at, updated_at
+                  ) VALUES ('global', ?, ?, ?, ?, ?, ?, ?)
+                `)
+                const orderJson = '{"id":"ORDER-1","amount":100000}'
+                const attendanceJson = '{"id":"ATT-1","employeeId":"NV-1"}'
+                insert.run('orders', 'ORDER-1', 1000000, orderJson, Buffer.byteLength(orderJson), now, now)
+                insert.run('attendance', 'ATT-1', 1000000, attendanceJson, Buffer.byteLength(attendanceJson), now, now)
+
+                const row = adapter.readStateCollectionsSnapshot('global', ['orders'])
+                const state = JSON.parse(row.value_json)
+                expect(state.orders).toEqual([{ id: 'ORDER-1', amount: 100000 }])
+                expect(state).not.toHaveProperty('attendance')
+                expect(row.version).toBe(1)
+              } finally {
+                adapter.close()
+              }
+            })
+          })
+          '''.replace('\n          ', '\n').lstrip(), encoding='utf-8')
+          PY
+
+          git rm .github/workflows/apply-navigation-server-phase2.yml
+
+      - name: Validate generated diff
+        run: |
+          set -Eeuo pipefail
+          git diff --check
+          ! git diff --name-only | grep -F '.github/workflows/apply-navigation-server-phase2.yml'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Targeted server performance regressions
+        run: npx vitest run server/vps/sqlite-d1.collections.test.js server/vps/sqlite-d1.pragmas.test.js server/vps/sqlite-d1.snapshot.test.js server/vps/server.concurrency.test.js server/worker.test.js
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit verified Phase 2
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git add server/worker.js server/vps/sqlite-d1.mjs server/vps/server.mjs \
+            server/vps/sqlite-d1.collections.test.js server/vps/server.concurrency.test.js
+          git commit -m 'perf(server): cache screen projections and use two workers'
+          git push origin HEAD:perf/navigation-latency-phase2
