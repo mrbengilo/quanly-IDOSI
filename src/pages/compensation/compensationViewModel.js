@@ -51,11 +51,19 @@ export const typeLabel = (type) => ({
 export const statusLabel = (entry) => {
   if (isVoided(entry)) return 'Đã hủy'
   if (isRejected(entry)) return 'Đã từ chối'
+  if (entry?.workBonusBlocked || entry?.revenueBonusBlocked) return 'Không nhận thưởng (vi phạm ≥ 5 điểm)'
   if (isApproved(entry)) return 'Đã duyệt'
   return normalize(entry?.status) === 'pending' ? 'Chờ duyệt' : String(entry?.status || 'Chờ duyệt')
 }
 
-export const statusTone = (entry) => isVoided(entry) || isRejected(entry) ? 'red' : isApproved(entry) ? 'green' : 'orange'
+export const statusTone = (entry) => isVoided(entry) || isRejected(entry) || entry?.workBonusBlocked || entry?.revenueBonusBlocked ? 'red' : isApproved(entry) ? 'green' : 'orange'
+
+export const employeePointAssessment = ({ violations = [], violationPointSummaries = [], employees = [] }, employeeId, period) => {
+  const employee = operationalIdentifierRecordMatch(employees, employeeId, (record) => [record.id, record.code, record.employeeId]).record
+  const identifiers = employee ? [employee.id, employee.code, employee.employeeId].filter(Boolean) : [employeeId]
+  return violationPointSummaries.find((row) => row.period === period && identifiers.some((id) => sameOperationalIdentifier(id, row.employeeId)))
+    || storeViolationPointAssessment(violations, { employeeId, employeeIdentifiers: identifiers, period })
+}
 
 const INTERNAL_STORE_IDS = new Set(['OFFICE', 'BUSINESS_SUPPORT', 'ADMIN', 'SYSTEM'])
 const INACTIVE_STORE_STATUSES = new Set([

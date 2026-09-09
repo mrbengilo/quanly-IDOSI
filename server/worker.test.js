@@ -859,6 +859,19 @@ const supportViolationFixture = ({ suffix, assessedAmountVnd }) => {
   return { transfer, attendance, workCatalogItems, extraEmployees, transferId, attendanceId, catalogItemId, shiftId }
 }
 
+// Persisted pre-points records must keep their monetary refund lifecycle.
+const historicalSupportViolation = (fixture, catalog = fixture.workCatalogItems[0]) => ({
+  id: `legacy:${catalog.id}`, occurrenceKey: `legacy:${catalog.id}`, targetUnit: 'store',
+  employeeId: 'E01', employeeName: 'Nhân viên hỗ trợ', employeeHomeStoreId: 'S01',
+  storeId: 'S02', supportStoreId: 'S02', supportTransferId: fixture.transferId,
+  attendanceId: fixture.attendanceId, shiftId: fixture.shiftId,
+  occurredOn: '2026-08-31', workDate: '2026-08-31', period: '2026-08',
+  catalogItemId: catalog.id, policyCode: catalog.code, title: catalog.name,
+  catalogSnapshot: { ...catalog }, amountVnd: catalog.amountVnd,
+  status: 'VOID', version: 1, createdAt: '2026-08-31T16:00:00.000Z',
+  voidedAt: '2026-08-31T17:00:00.000Z', deletedAt: null,
+})
+
 describe('IDOSI Worker security primitives', () => {
   it('hashes passwords with salted PBKDF2 and verifies without storing plaintext', async () => {
     const record = await hashPassword('idosi-test-password', { iterations: 100_000 })
@@ -16763,7 +16776,7 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 30_000)
 
-  it('recognizes a support violation refund once at the destination without double-counting payroll profit', async () => {
+  it('recognizes a historical support violation refund once at the destination without double-counting payroll profit', async () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(new Date('2026-09-01T02:00:00.000Z'))
@@ -16832,12 +16845,13 @@ describe('IDOSI Worker security primitives', () => {
       expect(await employeeDenied.json()).toMatchObject({ error: { code: 'ROLE_FORBIDDEN' } })
       expect(readHydratedState(env.DB.database)).toMatchObject({ violations: [], violationRefunds: [] })
 
+      replaceStateCollection(env.DB.database, 'violations', [historicalSupportViolation(fixture)])
       const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', createCommand, {
         ...managerAuthorization, 'idempotency-key': 'support-violation-create-0001',
       }), env)
-      expect(created.status).toBe(201)
+      expect(created.status).toBe(200)
       const createdBody = await created.json()
-      expect(createdBody).toMatchObject({ version: 2, createdCount: 1, existingCount: 0 })
+      expect(createdBody).toMatchObject({ version: 2, createdCount: 0, reactivatedCount: 1, existingCount: 0 })
 
       const createdState = readHydratedState(env.DB.database)
       expect(createdState.violations).toHaveLength(1)
@@ -16886,7 +16900,7 @@ describe('IDOSI Worker security primitives', () => {
       const protocolReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', createCommand, {
         ...managerAuthorization, 'idempotency-key': 'support-violation-create-0001',
       }), env)
-      expect(protocolReplay.status).toBe(201)
+      expect(protocolReplay.status).toBe(200)
       expect(protocolReplay.headers.get('idempotency-replayed')).toBe('true')
       expect(await protocolReplay.json()).toEqual(createdBody)
       const logicalReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
@@ -16937,6 +16951,7 @@ describe('IDOSI Worker security primitives', () => {
       ])
       expect(employeeProjection.violationRefunds || []).toEqual([])
 
+      replaceStateCollection(env.DB.database, 'violations', [violation, historicalSupportViolation(fixture, zeroAppliedCatalogItem)])
       const overflowCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'violation.create_batch',
         expectedVersion: 2,
@@ -16946,8 +16961,8 @@ describe('IDOSI Worker security primitives', () => {
           note: 'Khoản vi phạm không còn lương để khấu trừ',
         },
       }, { ...managerAuthorization, 'idempotency-key': 'support-violation-overflow-create-0001' }), env)
-      expect(overflowCreated.status).toBe(201)
-      expect(await overflowCreated.json()).toMatchObject({ version: 3, createdCount: 1 })
+      expect(overflowCreated.status).toBe(200)
+      expect(await overflowCreated.json()).toMatchObject({ version: 3, createdCount: 0, reactivatedCount: 1 })
       const overflowCreatedState = readHydratedState(env.DB.database)
       const overflowViolation = overflowCreatedState.violations
         .find(({ catalogItemId }) => catalogItemId === zeroAppliedCatalogItem.id)
@@ -17060,7 +17075,7 @@ describe('IDOSI Worker security primitives', () => {
     }
   }, 30_000)
 
-  it('keeps a support violation refund auditable through void, reclose, payment, and lock lifecycle', async () => {
+  it('keeps a historical support violation refund auditable through void, reclose, payment, and lock lifecycle', async () => {
     vi.useFakeTimers()
     try {
       vi.setSystemTime(new Date('2026-09-01T02:00:00.000Z'))
@@ -17080,10 +17095,11 @@ describe('IDOSI Worker security primitives', () => {
         shiftId: fixture.shiftId,
         catalogItemIds: [fixture.catalogItemId],
       }
+      replaceStateCollection(env.DB.database, 'violations', [historicalSupportViolation(fixture)])
       const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'violation.create_batch', expectedVersion: 1, payload: createPayload,
       }, { ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-create-0001' }), env)
-      expect(created.status).toBe(201)
+      expect(created.status).toBe(200)
       const createdState = readHydratedState(env.DB.database)
       const violationId = createdState.violations[0].id
       const refundId = `violation-refund:v1:${violationId}`
@@ -17115,7 +17131,7 @@ describe('IDOSI Worker security primitives', () => {
       const voidCommand = {
         type: 'violation.void',
         expectedVersion: 3,
-        payload: { id: violationId, expectedVersion: 1, reason: 'Hủy do ghi nhận nhầm' },
+        payload: { id: violationId, expectedVersion: 2, reason: 'Hủy do ghi nhận nhầm' },
       }
       const voided = await worker.fetch(jsonRequest('https://idosi.example/api/command', voidCommand, {
         ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-void-0001',
@@ -17123,7 +17139,7 @@ describe('IDOSI Worker security primitives', () => {
       expect(voided.status).toBe(200)
       expect(await voided.json()).toMatchObject({
         version: 4,
-        violation: { id: violationId, status: 'VOID', version: 2 },
+        violation: { id: violationId, status: 'VOID', version: 3 },
       })
       const voidedState = readHydratedState(env.DB.database)
       expect(voidedState.payrollPeriods.find(({ storeId, period }) => storeId === 'S02' && period === '2026-08'))
@@ -17149,7 +17165,7 @@ describe('IDOSI Worker security primitives', () => {
       const logicalVoidReplay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         ...voidCommand,
         expectedVersion: 4,
-        payload: { ...voidCommand.payload, expectedVersion: 2 },
+        payload: { ...voidCommand.payload, expectedVersion: 3 },
       }, { ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-void-logical-0001' }), env)
       expect(logicalVoidReplay.status).toBe(200)
       expect(await logicalVoidReplay.json()).toMatchObject({ version: 4, existing: true })
@@ -17163,7 +17179,7 @@ describe('IDOSI Worker security primitives', () => {
         version: 5,
         createdCount: 0,
         reactivatedCount: 1,
-        violations: [{ id: violationId, status: 'ACTIVE', version: 3 }],
+        violations: [{ id: violationId, status: 'ACTIVE', version: 4 }],
       })
       expect(readHydratedState(env.DB.database).violationRefunds).toEqual([
         expect.objectContaining({
@@ -17219,7 +17235,7 @@ describe('IDOSI Worker security primitives', () => {
 
       const voidAfterPay = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'violation.void', expectedVersion: 7,
-        payload: { id: violationId, expectedVersion: 3, reason: 'Không được hủy sau khi chi' },
+        payload: { id: violationId, expectedVersion: 4, reason: 'Không được hủy sau khi chi' },
       }, { ...managerAuthorization, 'idempotency-key': 'support-violation-lifecycle-paid-void-0001' }), env)
       expect(voidAfterPay.status).toBe(409)
       expect(await voidAfterPay.json()).toMatchObject({ error: { code: 'PAYROLL_PERIOD_PAID' } })
@@ -17646,7 +17662,8 @@ describe('IDOSI Worker security primitives', () => {
   it('creates violation batches atomically with shift snapshots, duplicate protection, and target-unit authorization', async () => {
     const catalog = (id, code, targetGroup, name, amountVnd, storeId = null) => ({
       id, code, kind: 'VIOLATION', targetGroup, storeId, shiftId: null, shiftName: null,
-      name, amountVnd, active: true, sortOrder: 1, effectiveFrom: null, effectiveTo: null, version: 1,
+      name, amountVnd: targetGroup === 'store' ? 0 : amountVnd,
+      ...(targetGroup === 'store' ? { violationPoints: 0.5 } : {}), active: true, sortOrder: 1, effectiveFrom: null, effectiveTo: null, version: 1,
     })
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-violation-batch' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
@@ -17822,7 +17839,7 @@ describe('IDOSI Worker security primitives', () => {
       violations: [{
         employeeId: 'STORE-VIO-01', attendanceId: null, storeId: 'S01', shiftId: 'STORE-AM',
         shiftName: 'Ca sáng đã phân', shiftStart: '09:00', shiftEnd: '13:00', shiftVersion: 4,
-        shiftSource: 'store-schedule-snapshot', employmentTypeSnapshot: 'Part-Time', amountVnd: 7_000,
+        shiftSource: 'store-schedule-snapshot', employmentTypeSnapshot: 'Part-Time', amountVnd: 0, violationPoints: 0.5,
       }],
     })
     const supportVoidsHtkd = await worker.fetch(jsonRequest('https://idosi.example/api/command', {

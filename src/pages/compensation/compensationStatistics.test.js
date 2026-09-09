@@ -434,3 +434,27 @@ describe('work reward statistics', () => {
     expect(elapsedMs).toBeLessThan(1_000)
   })
 })
+
+
+describe('work reward point exclusion', () => {
+  it('keeps completion and original reward visible, zeroes payable amount across stores, and restores below five points', () => {
+    const input = {
+      employees: [{ id: 'E1', code: 'NV01', storeId: 'S1', unit: 'store' }],
+      attendance: [{ id: 'A1', employeeId: 'E1', storeId: 'S1', workDate: '2026-09-02', checklistSnapshot: { tasks: [{ id: 'T1', kind: 'REWARD_TASK', name: 'Sắp xếp hàng', amountVnd: 5000 }] } }],
+      workCatalogProgress: [{ attendanceId: 'A1', catalogItemId: 'T1', completed: true }],
+      violations: [{ id: 'V1', employeeId: 'NV01', storeId: 'S2', targetUnit: 'store', period: '2026-09', violationPoints: 5, amountVnd: 0, status: 'ACTIVE' }],
+    }
+    const rows = workRewardRows(input)
+    expect(rows[0]).toMatchObject({ completed: true, amountVnd: 0, preViolationAmountVnd: 5000, workBonusBlocked: true })
+    expect(rewardStatistics(rows).byMonth[0]).toMatchObject({ count: 1, amountVnd: 0 })
+    expect(workRewardRows({ ...input, violations: [{ ...input.violations[0], status: 'VOID' }] })[0].amountVnd).toBe(5000)
+    const summary = [{ employeeId: 'E1', period: '2026-09', points: 5, workBonusBlocked: true }]
+    expect(workRewardRows({ ...input, violations: [], violationPointSummaries: summary })[0].amountVnd).toBe(0)
+    expect(workRewardRows({ ...input,
+      workCatalogProgress: [{ ...input.workCatalogProgress[0], compensationEntryId: 'PAY' }],
+      compensationEntries: [{ id: 'PAY', workBonusBlocked: true, amountVnd: 0, preViolationAmountVnd: 5000 }],
+      violationPointSummaries: [{ ...summary[0], points: 0, workBonusBlocked: false }],
+    })[0].amountVnd).toBe(5000)
+    expect(input.attendance[0].checklistSnapshot.tasks[0].amountVnd).toBe(5000)
+  })
+})

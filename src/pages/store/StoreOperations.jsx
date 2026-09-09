@@ -859,6 +859,8 @@ export function StoreTasks() {
     supportTransfers = [],
     attendance = [],
     workCatalogProgress = [],
+    violations = [],
+    violationPointSummaries = [],
     compensationEntries = [],
     tasks = [],
     workCatalogItems = [],
@@ -872,12 +874,14 @@ export function StoreTasks() {
   const rewardRows = useMemo(() => workRewardRows({
     attendance,
     workCatalogProgress,
+    violations,
+    violationPointSummaries,
     compensationEntries,
     tasks,
     employees: storeEmployees,
     targetUnit: 'store',
     storeId,
-  }), [attendance, workCatalogProgress, compensationEntries, tasks, storeEmployees, storeId])
+  }), [attendance, workCatalogProgress, violations, violationPointSummaries, compensationEntries, tasks, storeEmployees, storeId])
   const rewardCount = useMemo(() => rewardRows.filter((row) => (
     row.completed && row.payoutStatus !== 'void'
   )).length, [rewardRows])

@@ -146,6 +146,7 @@ const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, milesto
     employees: Array.isArray(app.employees) ? app.employees : [],
     supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
     overrides: Array.isArray(app.revenueBonusOverrides) ? app.revenueBonusOverrides : [],
+      violations: Array.isArray(app.violations) ? app.violations : [],
     nowMs,
   })
 )
@@ -153,6 +154,7 @@ const buildLocalLiveSnapshot = ({ app, storeId, selectedDate, programId, milesto
 const revenueStatusLabel = (record = {}) => {
   const status = String(record.status || '').trim().toUpperCase()
   if (status === 'LIVE') return 'Tự động trực tiếp'
+  if (status === 'VIOLATION_EXCLUDED') return 'Không nhận thưởng (vi phạm ≥ 5 điểm)'
   if (status === 'FINALIZED') return 'Đã chốt tự động'
   if (status === 'WAITING_CUTOFF') return 'Chờ sau 22:00'
   if (status === 'WAITING_SHIFT_CLOSE') return 'Chờ kết ca'
@@ -165,6 +167,7 @@ const revenueStatusLabel = (record = {}) => {
 const revenueStatusTone = (record = {}) => {
   const status = String(record.status || '').trim().toUpperCase()
   if (status === 'LIVE') return 'blue'
+  if (status === 'VIOLATION_EXCLUDED') return 'red'
   if (status === 'FINALIZED') return 'green'
   if (status === 'WAITING_CUTOFF' || status === 'WAITING_SHIFT_CLOSE') return 'orange'
   if (status === 'ADMIN_ADJUSTED') return 'orange'
@@ -415,6 +418,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
             employees: app.employees,
             supportTransfers: app.supportTransfers,
             revenueBonusOverrides: app.revenueBonusOverrides,
+            violations: app.violations,
           },
           storeId: selectedStoreId,
           selectedDate: businessDate,
@@ -428,6 +432,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
     app.employees,
     app.orders,
     app.revenueBonusOverrides,
+    app.violations,
     app.supportTransfers,
     automaticMode,
     businessDate,
@@ -599,6 +604,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
       employees: Array.isArray(app.employees) ? app.employees : [],
       supportTransfers: Array.isArray(app.supportTransfers) ? app.supportTransfers : [],
       overrides: Array.isArray(app.revenueBonusOverrides) ? app.revenueBonusOverrides : [],
+      violations: Array.isArray(app.violations) ? app.violations : [],
       nowMs,
     })
   }, [
@@ -606,6 +612,7 @@ export function RevenueBonusPage({ storeScoped = false }) {
     app.employees,
     app.orders,
     app.revenueBonusOverrides,
+    app.violations,
     app.supportTransfers,
     historyMonth,
     matchingRemoteHistoryPeriod,

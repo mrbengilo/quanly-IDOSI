@@ -33,11 +33,13 @@ export function UnitCompensationStatistics({ targetUnit, storeId = '', employees
     attendance: app.attendance,
     workCatalogProgress: app.workCatalogProgress,
     compensationEntries: app.compensationEntries,
+    violations: app.violations,
+    violationPointSummaries: app.violationPointSummaries,
     tasks: app.tasks,
     employees: scopedEmployees,
     targetUnit,
     storeId,
-  }), [app.attendance, app.workCatalogProgress, app.compensationEntries, app.tasks, scopedEmployees, targetUnit, storeId])
+  }), [app.attendance, app.workCatalogProgress, app.compensationEntries, app.violations, app.violationPointSummaries, app.tasks, scopedEmployees, targetUnit, storeId])
   const rewardRows = Array.isArray(providedRewardRows) ? providedRewardRows : computedRewardRows
   const violationRows = useMemo(() => (Array.isArray(app.violations) ? app.violations : [])
     .filter((entry) => targetUnitOfViolation(entry) === targetUnit)
