@@ -52,12 +52,12 @@ const baseApp = (role = 'admin') => ({
   workCatalogItems: [{
     id: 'violation-store-late', code: 'store.violation.late', kind: 'violation',
     targetGroup: 'store', storeId: 'CH001', shiftId: null, shiftName: null,
-    name: 'Đi trễ', amountVnd: 2_000, sortOrder: 10, active: true,
+    name: 'Đi trễ', amountVnd: 0, violationPoints: 0.5, sortOrder: 10, active: true,
     version: 1, effectiveFrom: '2026-08-01', effectiveTo: null,
   }, {
     id: 'violation-store-uniform', code: 'store.violation.uniform', kind: 'violation',
     targetGroup: 'store', storeId: 'CH001', shiftId: null, shiftName: null,
-    name: 'Sai đồng phục', amountVnd: 3_000, sortOrder: 20, active: true,
+    name: 'Sai đồng phục', amountVnd: 0, violationPoints: 1, sortOrder: 20, active: true,
     version: 1, effectiveFrom: '2026-08-01', effectiveTo: null,
   }],
   notify: vi.fn(),
@@ -121,7 +121,7 @@ describe('compensation pages', () => {
     render(<ViolationManagementPage targetUnit="store" />)
     fireEvent.click(screen.getByRole('checkbox', { name: /Đi trễ/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /Sai đồng phục/i }))
-    expect(screen.getByLabelText('Tổng số tiền bị trừ').value).toBe('−5,000 đ')
+    expect(screen.getByLabelText('Tổng điểm đã chọn').value).toBe('1,5 điểm')
     fireEvent.click(screen.getByRole('button', { name: 'LƯU VI PHẠM' }))
 
     await waitFor(() => expect(mocked.app.createViolationBatch).toHaveBeenCalledWith({
@@ -347,7 +347,7 @@ describe('compensation pages', () => {
     expect(screen.getByText('Ca 2')).toBeTruthy()
     expect(screen.getByText('12:00–17:00')).toBeTruthy()
     expect(screen.getAllByText('−2,000 đ').length).toBeGreaterThan(0)
-    expect(screen.getByText('Tổng số tiền bị trừ đang hiệu lực')).toBeTruthy()
+    expect(screen.getByText('Tiền vi phạm lịch sử đang hiệu lực')).toBeTruthy()
   })
 
   it('keeps legacy employee revenue bonus data private before the automatic cutover', () => {

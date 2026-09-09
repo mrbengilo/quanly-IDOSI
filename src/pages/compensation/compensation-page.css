@@ -742,3 +742,18 @@
     flex-direction: column;
   }
 }
+/* Content-sized point panels: wrap long labels without clipping on phones. */
+.violation-point-assessment{min-width:0;display:grid;gap:8px}
+.violation-point-total{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px 16px}
+.violation-point-total>strong{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:18px}
+.violation-milestones{width:100%;min-width:0;table-layout:fixed;border-collapse:collapse;font-size:13px}
+.violation-milestones caption{text-align:left;font-weight:700;padding:4px 0 8px}
+.violation-milestones th,.violation-milestones td{padding:9px 10px;text-align:left;white-space:normal;overflow-wrap:anywhere;vertical-align:top;border:1px solid #d4e5db}
+.violation-milestones th:first-child,.violation-milestones td:first-child{width:68px;text-align:center}
+.violation-milestones td>span{display:block;margin-top:3px}
+.violation-milestones tr[data-reached="true"]{background:#fff4d7}
+.violation-milestones tr[aria-current="step"]{background:#ffe0b5;box-shadow:inset 4px 0 #c65f05}
+.violation-current-label{display:inline-block;color:#8b3100;margin-top:4px;font-size:12px}
+.violation-point-help{font-size:12px;color:#52675a;margin:0;line-height:1.5}
+.violation-point-period{max-width:200px;min-width:0}
+@media(max-width:640px){.violation-point-total{align-items:flex-start}.violation-point-total>strong{font-size:16px}.violation-milestones th,.violation-milestones td{padding:8px}.violation-milestones th:first-child,.violation-milestones td:first-child{width:56px}}

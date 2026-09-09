@@ -1,3 +1,4 @@
+import { formatViolationPoints, normalizeViolationPoints } from '../../domain/violationPoints'
 import { useMemo, useState } from 'react'
 import { ClipboardList, Edit3, Plus, RefreshCcw, Save, Search, Trash2 } from 'lucide-react'
 import {
@@ -42,6 +43,7 @@ const EMPTY_FORM = Object.freeze({
   shiftId: '',
   name: '',
   amountVnd: '',
+  violationPoints: '',
   sortOrder: '0',
   effectiveFrom: '',
   effectiveTo: '',
@@ -109,6 +111,7 @@ export function WorkCatalogSettingsPage() {
       shiftId: item.shiftId || '',
       name: item.name,
       amountVnd: String(item.amountVnd || ''),
+      violationPoints: item.violationPoints == null ? '' : String(item.violationPoints).replace('.', ','),
       sortOrder: String(item.sortOrder || 0),
       effectiveFrom: item.effectiveFrom || '',
       effectiveTo: item.effectiveTo || '',
@@ -128,11 +131,17 @@ export function WorkCatalogSettingsPage() {
   const update = (field) => (event) => setForm((current) => ({ ...current, [field]: event.target.value }))
   const applicableShifts = shifts.filter((shift) => !form.storeId || String(shift.storeId || '') === form.storeId)
 
+  const pointViolation = form.targetGroup === WORK_CATALOG_TARGET.STORE && form.kind === WORK_CATALOG_KIND.VIOLATION
   const save = async () => {
-    const amountVnd = Number(form.amountVnd || 0)
+    let violationPoints
+    if (pointViolation) {
+      try { violationPoints = normalizeViolationPoints(form.violationPoints) }
+      catch (error) { return app.notify?.(error.message, 'info') }
+    }
+    const amountVnd = pointViolation ? 0 : Number(form.amountVnd || 0)
     if (!form.name.trim()) return app.notify?.('Vui lòng nhập tên công việc hoặc vi phạm.', 'info')
     if (!Number.isSafeInteger(amountVnd) || amountVnd < 0) return app.notify?.('Số tiền phải là số nguyên không âm theo đơn vị đồng.', 'info')
-    if (form.kind !== WORK_CATALOG_KIND.FIXED_TASK && amountVnd <= 0) {
+    if (!pointViolation && form.kind !== WORK_CATALOG_KIND.FIXED_TASK && amountVnd <= 0) {
       return app.notify?.('Công việc nhận thưởng và vi phạm phải có số tiền lớn hơn 0 đồng.', 'info')
     }
     if (form.effectiveFrom && form.effectiveTo && form.effectiveFrom > form.effectiveTo) {
@@ -149,6 +158,7 @@ export function WorkCatalogSettingsPage() {
         shiftName: selectedShift?.name || null,
         name: form.name.trim(),
         amountVnd,
+        ...(pointViolation ? { violationPoints } : {}),
         sortOrder: Number(form.sortOrder || 0),
         effectiveFrom: form.effectiveFrom || null,
         effectiveTo: form.effectiveTo || null,
@@ -211,16 +221,16 @@ export function WorkCatalogSettingsPage() {
     <Card title="Danh sách cấu hình" action={<Badge tone="blue">{filtered.length} mục</Badge>}>
       <InfoNote>Danh sách đang hoạt động được chụp vào từng ca. Việc sửa hoặc ngừng sử dụng không làm thay đổi công việc, thưởng hoặc vi phạm đã phát sinh trước đó.</InfoNote>
       {filtered.length ? <TableWrap>
-        <thead><tr><th>Nhóm / Cửa hàng</th><th>Loại</th><th>Tên</th><th>Số tiền</th><th>Ca áp dụng</th><th>Hiệu lực</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+        <thead><tr><th>Nhóm / Cửa hàng</th><th>Loại</th><th>Tên</th><th>Điểm / Số tiền</th><th>Ca áp dụng</th><th>Hiệu lực</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
         <tbody>{filtered.map((item) => <tr key={itemKey(item)}>
           <td><strong>{TARGET_LABELS[item.targetGroup]}</strong><small className="table-note">{item.storeId ? stores.find((store) => storeKey(store) === item.storeId)?.name || item.storeId : 'Toàn bộ nhóm'}</small></td>
           <td><Badge tone={item.kind === WORK_CATALOG_KIND.VIOLATION ? 'red' : item.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'orange' : 'blue'}>{KIND_LABELS[item.kind]}</Badge></td>
           <td><strong>{item.name}</strong><small className="table-note">Thứ tự {item.sortOrder}</small></td>
-          <td><strong className={item.kind === WORK_CATALOG_KIND.VIOLATION ? 'red-text' : item.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'green-text' : ''}>{item.amountVnd ? money(item.amountVnd) : 'Không áp dụng'}</strong></td>
+          <td><strong className={item.kind === WORK_CATALOG_KIND.VIOLATION ? 'red-text' : item.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'green-text' : ''}>{item.targetGroup === 'store' && item.kind === 'VIOLATION' ? (item.violationPoints != null ? formatViolationPoints(item.violationPoints) : 'Chưa cài điểm') : item.amountVnd ? money(item.amountVnd) : 'Không áp dụng'}</strong></td>
           <td>{item.shiftName || item.shiftId || 'Tất cả ca'}</td>
           <td>{item.effectiveFrom || item.effectiveTo ? `${item.effectiveFrom || 'Từ đầu'} → ${item.effectiveTo || 'Không giới hạn'}` : 'Không giới hạn'}</td>
           <td><Badge tone={itemIsActive(item) ? 'green' : 'orange'}>{itemIsActive(item) ? 'Đang sử dụng' : 'Đã ngừng'}</Badge><small className="table-note">{shortDateTime24(item.updatedAt || item.createdAt)}</small></td>
-          <td><div className="row-actions"><Button variant="outline" icon={Edit3} disabled={!itemIsActive(item)} onClick={() => openEdit(item)}>Sửa</Button><Button variant={itemIsActive(item) ? 'danger' : 'outline'} icon={itemIsActive(item) ? Trash2 : RefreshCcw} onClick={() => setConfirming(item)}>{itemIsActive(item) ? 'Ngừng dùng' : 'Khôi phục'}</Button></div></td>
+          <td><div className="row-actions"><Button className="catalog-icon-action" aria-label={`Sửa ${item.name}`} title="Sửa" variant="outline" icon={Edit3} disabled={!itemIsActive(item)} onClick={() => openEdit(item)} /><Button className="catalog-icon-action" aria-label={`${itemIsActive(item) ? 'Ngừng sử dụng' : 'Khôi phục'} ${item.name}`} title={itemIsActive(item) ? 'Ngừng sử dụng' : 'Khôi phục'} variant={itemIsActive(item) ? 'danger' : 'outline'} icon={itemIsActive(item) ? Trash2 : RefreshCcw} onClick={() => setConfirming(item)} /></div></td>
         </tr>)}</tbody>
       </TableWrap> : <EmptyState icon={ClipboardList} title="Chưa có danh mục phù hợp" description="Thêm danh mục mới hoặc thay đổi bộ lọc." />}
     </Card>
@@ -234,7 +244,7 @@ export function WorkCatalogSettingsPage() {
           <Field label="Ca làm việc" hint="Để trống nếu áp dụng cho mọi ca"><Select value={form.shiftId} onChange={update('shiftId')}><option value="">Mọi ca</option>{applicableShifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} · {shift.start || shift.startTime || '--:--'}–{shift.end || shift.endTime || '--:--'}</option>)}</Select></Field>
         </>}
         <Field label="Tên hiển thị" required className="span-2"><Input value={form.name} maxLength="300" onChange={update('name')} placeholder="Nhập tên công việc hoặc vi phạm" /></Field>
-        <Field label="Số tiền" required={form.kind !== WORK_CATALOG_KIND.FIXED_TASK} hint={form.kind === WORK_CATALOG_KIND.FIXED_TASK ? 'Có thể để 0 đồng' : form.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'Tiền thưởng khi hoàn thành' : 'Tiền vi phạm'}><MoneyInput value={form.amountVnd} onChange={update('amountVnd')} placeholder="Nhập đúng số tiền bằng đồng" /></Field>
+        {pointViolation ? <Field label="Điểm vi phạm" required hint="Trên 0 đến 10 điểm; ví dụ 0,5 hoặc 1 điểm"><Input aria-label="Điểm vi phạm" inputMode="decimal" value={form.violationPoints} onChange={update('violationPoints')} placeholder="Ví dụ: 0,5" /></Field> : <Field label="Số tiền" required={form.kind !== WORK_CATALOG_KIND.FIXED_TASK} hint={form.kind === WORK_CATALOG_KIND.FIXED_TASK ? 'Có thể để 0 đồng' : form.kind === WORK_CATALOG_KIND.REWARD_TASK ? 'Tiền thưởng khi hoàn thành' : 'Tiền vi phạm'}><MoneyInput value={form.amountVnd} onChange={update('amountVnd')} placeholder="Nhập đúng số tiền bằng đồng" /></Field>}
         <Field label="Thứ tự"><Input type="number" min="0" step="1" value={form.sortOrder} onChange={update('sortOrder')} /></Field>
         <Field label="Hiệu lực từ"><Input type="date" value={form.effectiveFrom} onChange={update('effectiveFrom')} /></Field>
         <Field label="Hiệu lực đến"><Input type="date" value={form.effectiveTo} min={form.effectiveFrom || today()} onChange={update('effectiveTo')} /></Field>

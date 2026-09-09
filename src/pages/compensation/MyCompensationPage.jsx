@@ -1,3 +1,4 @@
+import { applyBonusAllocationPointPolicy, formatViolationPoints, violationPointsOf } from '../../domain/violationPoints'
 import { useState } from 'react'
 import { Banknote, CircleDollarSign, Gift, ShieldAlert, WalletCards } from 'lucide-react'
 import { useApp } from '../../state/AppContext'
@@ -5,6 +6,7 @@ import { Badge, Card, InfoNote, MetricCard, PageHeader, Select, TableWrap } from
 import { money } from '../../utils'
 import {
   entityId,
+  employeePointAssessment,
   entryAmount,
   entryDate,
   entryEmployeeId,
@@ -35,6 +37,7 @@ const payrollRowsFor = (periods, employeeId, period) => periods
     payrollStoreId: item.storeId,
     payrollStoreName: item.storeName,
     periodStatus: item.status,
+    needsReclose: item.needsReclose,
     lockedAt: item.lockedAt,
   })) : []))
   .filter((row) => entryEmployeeId(row) === employeeId)
@@ -65,18 +68,21 @@ export function MyCompensationPage() {
   const currentPeriod = `${currentPeriodMap.year}-${currentPeriodMap.month}`
   const [periodSelection, setPeriodSelection] = useState('')
   const period = periodSelection || periods[0] || currentPeriod
+  const pointAssessment = employeePointAssessment(app, employeeId, period)
   const ownEntries = compensationEntries.filter((entry) => entryEmployeeId(entry) === employeeId && samePeriod(entry, period))
+    .map((entry) => ['WORK', 'REVENUE'].includes(entryType(entry)) ? applyBonusAllocationPointPolicy(entry, pointAssessment, entryType(entry)) : entry)
   const activeApprovedEntries = ownEntries.filter((entry) => !isVoided(entry) && isApproved(entry))
   const ownViolations = violations.filter((entry) => entryEmployeeId(entry) === employeeId && samePeriod(entry, period))
   const activeViolations = ownViolations.filter((entry) => !isVoided(entry))
   const ownAllocations = allocations.filter((entry) => entryEmployeeId(entry) === employeeId && samePeriod(entry, period))
+    .map((entry) => applyBonusAllocationPointPolicy(entry, pointAssessment))
   const payrollRows = payrollRowsFor(payrollPeriods, employeeId, period)
   const recorded = (type) => activeApprovedEntries.filter((entry) => entryType(entry) === type).reduce((sum, entry) => sum + entryAmount(entry), 0)
   const manualVnd = recorded('MANUAL')
-  const workVnd = recorded('WORK')
+  const workVnd = pointAssessment.workBonusBlocked ? 0 : recorded('WORK')
   const allowanceVnd = recorded('ALLOWANCE')
   const revenueEntryVnd = recorded('REVENUE')
-  const revenueVnd = revenueEntryVnd || ownAllocations.reduce((sum, entry) => sum + Number(entry.allocatedVnd ?? entry.amountVnd ?? entry.amount ?? 0), 0)
+  const revenueVnd = pointAssessment.revenueBonusBlocked ? 0 : revenueEntryVnd || ownAllocations.reduce((sum, entry) => sum + Number(entry.allocatedVnd ?? entry.amountVnd ?? entry.amount ?? 0), 0)
   const supplementaryVnd = manualVnd + workVnd + allowanceVnd + revenueVnd
   const recordedViolationVnd = activeViolations.reduce((sum, entry) => sum + Math.abs(entryAmount(entry)), 0)
   const salaryVnd = aggregateRowValue(payrollRows, 'salaryVnd', 'baseSalaryVnd', 'baseSalary', 'base')
@@ -101,6 +107,8 @@ export function MyCompensationPage() {
         icon={WalletCards}
         actions={<Select aria-label="Kỳ đối soát" value={period} onChange={(event) => setPeriodSelection(event.target.value)}>{periods.length ? periods.map((item) => <option key={item} value={item}>Tháng {item.split('-').reverse().join('/')}</option>) : <option value={period}>Tháng {period.split('-').reverse().join('/')}</option>}</Select>}
       />
+      {pointAssessment.workBonusBlocked && <InfoNote tone="red">{formatViolationPoints(pointAssessment.points)} trong kỳ: thưởng doanh thu và thưởng công việc đều bằng 0.</InfoNote>}
+      {payrollRows.some((row) => row.needsReclose) && <InfoNote tone="orange">Kỳ lương cần chốt lại sau thay đổi. Số quyết toán bên dưới là bản chụp trước thay đổi.</InfoNote>}
       <div className="metric-grid compensation-metrics compensation-metrics--statement">
         <MetricCard compact label="LƯƠNG TRONG KỲ" value={salaryVnd == null ? 'Chưa tổng hợp' : money(salaryVnd)} icon={Banknote} tone="blue" />
         <MetricCard compact label="THƯỞNG + PHỤ CẤP" value={money(supplementaryVnd)} helper="Khoản đã duyệt" icon={Gift} tone="green" />
@@ -138,8 +146,8 @@ export function MyCompensationPage() {
       </Card>}
       <Card title="Lịch sử khoản ghi nhận" action={<Badge tone="blue">{transactionRows.length} dòng</Badge>}>
         <TableWrap className="compensation-table">
-          <thead><tr><th>Ngày</th><th>Loại</th><th>Nội dung</th><th>Số tiền</th><th>Trạng thái</th></tr></thead>
-          <tbody>{transactionRows.map((entry, index) => <tr key={entry.id || `${entry.rowKind}-${index}`}><td>{displayDate(entryDate(entry))}</td><td><Badge tone={entry.rowKind === 'violation' ? 'red' : entry.rowKind === 'revenue' ? 'blue' : 'green'}>{entry.rowType}</Badge></td><td>{entry.note || entry.title || entry.reason || entry.programLabel || '—'}</td><td><strong className={entry.rowKind === 'violation' ? 'compensation-debit' : ''}>{entry.rowKind === 'violation' ? '- ' : ''}{money(entry.rowAmount)}</strong></td><td><Badge tone={statusTone(entry)}>{statusLabel(entry)}</Badge></td></tr>)}{!transactionRows.length && <tr><td colSpan="5" className="compensation-empty">Chưa có khoản ghi nhận trong kỳ này.</td></tr>}</tbody>
+          <thead><tr><th>Ngày</th><th>Loại</th><th>Nội dung</th><th>Số tiền / Điểm</th><th>Trạng thái</th></tr></thead>
+          <tbody>{transactionRows.map((entry, index) => <tr key={entry.id || `${entry.rowKind}-${index}`}><td>{displayDate(entryDate(entry))}</td><td><Badge tone={entry.rowKind === 'violation' ? 'red' : entry.rowKind === 'revenue' ? 'blue' : 'green'}>{entry.rowType}</Badge></td><td>{entry.note || entry.title || entry.reason || entry.programLabel || '—'}</td><td><strong className={entry.rowKind === 'violation' ? 'compensation-debit' : ''}>{entry.rowKind === 'violation' && violationPointsOf(entry) != null ? formatViolationPoints(violationPointsOf(entry)) : <>{entry.rowKind === 'violation' ? '- ' : ''}{money(entry.rowAmount)}</>}</strong>{(entry.workBonusBlocked || entry.revenueBonusBlocked) && <small className="compensation-subline">Trước áp dụng điểm: {money(entry.preViolationAmountVnd)}</small>}</td><td><Badge tone={statusTone(entry)}>{statusLabel(entry)}</Badge></td></tr>)}{!transactionRows.length && <tr><td colSpan="5" className="compensation-empty">Chưa có khoản ghi nhận trong kỳ này.</td></tr>}</tbody>
         </TableWrap>
       </Card>
     </div>
