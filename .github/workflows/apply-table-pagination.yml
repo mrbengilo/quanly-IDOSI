@@ -1,0 +1,118 @@
+name: Apply and verify table pagination
+
+on:
+  push:
+    branches:
+      - perf/paginate-data-tables-final-20260904
+    paths:
+      - .github/workflows/apply-table-pagination.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: idosi-table-pagination
+  cancel-in-progress: false
+
+jobs:
+  apply-test-commit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout pagination branch
+        uses: actions/checkout@v6
+        with:
+          ref: perf/paginate-data-tables-final-20260904
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Integrate pagination into the workspace shell
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          app_shell = Path('src/layout/AppShell.jsx')
+          text = app_shell.read_text(encoding='utf-8')
+          import_line = "import AutoTablePagination from '../components/AutoTablePagination'\n"
+          if import_line not in text:
+              lines = text.splitlines(keepends=True)
+              insert_at = 0
+              while insert_at < len(lines) and lines[insert_at].startswith('import '):
+                  insert_at += 1
+              lines.insert(insert_at, import_line)
+              text = ''.join(lines)
+
+          expected = "        </div>\n      </main>\n      <Toast toast={toast} />"
+          replacement = "        </div>\n        <AutoTablePagination />\n      </main>\n      <Toast toast={toast} />"
+          if replacement not in text:
+              if expected not in text:
+                  raise SystemExit('AppShell pagination insertion point changed')
+              text = text.replace(expected, replacement, 1)
+          app_shell.write_text(text, encoding='utf-8')
+
+          styles = Path('src/styles.css')
+          css = styles.read_text(encoding='utf-8')
+          marker = '/* Automatic pagination for IDOSI data tables. */'
+          if marker not in css:
+              css += r'''
+
+/* Automatic pagination for IDOSI data tables. */
+.auto-table-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:12px 0 4px;padding:9px 12px;border:1px solid #dce7df;border-radius:11px;background:#fff;color:#425047;box-shadow:0 4px 14px rgba(8,76,42,.04)}
+.auto-table-pagination__summary{font-size:11px;font-weight:700;white-space:nowrap}
+.auto-table-pagination__buttons{display:flex;align-items:center;justify-content:flex-end;gap:5px;flex-wrap:wrap}
+.auto-table-pagination__button{min-width:32px;height:32px;display:inline-grid;place-items:center;border:1px solid #d4e1d9;border-radius:8px;background:#fff;color:#185b39;padding:0 8px;font-size:11px;font-weight:800;cursor:pointer;transition:background .16s,border-color .16s,transform .16s}
+.auto-table-pagination__button:hover:not(:disabled){background:#edf8f1;border-color:#8fc7a1;transform:translateY(-1px)}
+.auto-table-pagination__button.is-active{background:#08783d;border-color:#08783d;color:#fff;box-shadow:0 4px 10px rgba(8,120,61,.18)}
+.auto-table-pagination__button:disabled{opacity:.38;cursor:not-allowed}
+.auto-table-pagination__button:focus-visible{outline:3px solid rgba(20,111,242,.24);outline-offset:2px}
+.auto-table-pagination__ellipsis{min-width:20px;text-align:center;color:#7b887f;font-weight:800}
+tbody>tr[hidden]{display:none!important}
+@media(max-width:640px){.auto-table-pagination{align-items:flex-start;flex-direction:column}.auto-table-pagination__buttons{justify-content:flex-start}.auto-table-pagination__summary{white-space:normal}}
+'''
+          styles.write_text(css, encoding='utf-8')
+          PY
+          git diff --check
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Targeted pagination tests
+        run: npx vitest run src/components/AutoTablePagination.test.jsx
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Verify Sites bundle
+        run: npm run sites:verify
+
+      - name: Commit verified implementation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'mrbengilo'
+          git config user.email 'mrbengilo.76@gmail.com'
+          git fetch origin main
+          rm -f .github/workflows/apply-table-pagination.yml
+          git reset --mixed origin/main
+          git diff --check
+          git add \
+            src/components/AutoTablePagination.jsx \
+            src/components/AutoTablePagination.test.jsx \
+            src/layout/AppShell.jsx \
+            src/styles.css
+          git commit -m 'perf(ui): paginate IDOSI data tables'
+          test -z "$(git status --porcelain)"
+          git push --force-with-lease origin HEAD:perf/paginate-data-tables-final-20260904
