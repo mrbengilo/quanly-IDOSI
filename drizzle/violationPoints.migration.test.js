@@ -51,3 +51,4 @@ describe('store violation points catalog migration', () => {
     } finally { db.close() }
   })
 })
+import { Buffer } from 'node:buffer'

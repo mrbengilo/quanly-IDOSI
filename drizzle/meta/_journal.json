@@ -92,6 +92,13 @@
       "when": 1787961600000,
       "tag": "0012_state_entity_query_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1788912000000,
+      "tag": "0013_store_violation_points",
+      "breakpoints": true
     }
   ]
 }
