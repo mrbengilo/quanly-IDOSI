@@ -1,4 +1,5 @@
 import { resolveStoreChecklistCatalogShift } from './storeShiftChecklist.js'
+import { normalizeViolationPoints } from './violationPoints.js'
 
 export const WORK_CATALOG_KIND = Object.freeze({
   FIXED_TASK: 'FIXED_TASK',
@@ -133,6 +134,10 @@ export const normalizeWorkCatalogItem = (item = {}) => {
   }
   const kind = normalizeKind(item.kind)
   const targetGroup = normalizeTargetGroup(item.targetGroup)
+  const pointViolation = item.violationPoints != null
+  if (pointViolation && (kind !== WORK_CATALOG_KIND.VIOLATION || targetGroup !== WORK_CATALOG_TARGET.STORE)) {
+    throw new TypeError('Điểm vi phạm chỉ áp dụng cho vi phạm của nhân viên cửa hàng.')
+  }
   const code = normalizeCode(item.code)
   const id = stableToken(item.id || createWorkCatalogItemId({ targetGroup, kind, code }), 'id')
   const { effectiveFrom, effectiveTo } = effectiveRange(item)
@@ -150,7 +155,8 @@ export const normalizeWorkCatalogItem = (item = {}) => {
     shiftId: optionalStableToken(item.shiftId, 'shiftId'),
     shiftName: text(item.shiftName) || null,
     name: normalizedName(item.name),
-    amountVnd: normalizeAmount(item.amountVnd, kind),
+    amountVnd: pointViolation ? 0 : normalizeAmount(item.amountVnd, kind),
+    ...(pointViolation ? { violationPoints: normalizeViolationPoints(item.violationPoints) } : {}),
     required: kind === WORK_CATALOG_KIND.FIXED_TASK,
     active: item.active !== false && !item.deletedAt,
     sortOrder: safeInteger(item.sortOrder ?? 0, 'sortOrder'),
