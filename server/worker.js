@@ -13665,15 +13665,33 @@ const allocateAppliedViolationRefunds = (records, appliedViolationVnd) => {
   })
 }
 
+const employeeHasHomePayrollAttendance = (state, employee, storeId, period) => (
+  (Array.isArray(state.attendance) ? state.attendance : []).some((record) => (
+    !record.deletedAt
+    && sameIdentifier(record.storeId, storeId)
+    && monthFromRecord(record) === period
+    && employeeIdentifierValues(employee).some((identifier) => belongsToEmployee(record, identifier))
+  ))
+)
+
 const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => {
   const payrollUnit = requirePayrollUnit(state, requestedStoreId)
   const storeId = String(payrollUnit.id || requestedStoreId).trim()
-  const employees = (Array.isArray(state.employees) ? state.employees : []).filter((employee) => (
+  const activeEmployees = (Array.isArray(state.employees) ? state.employees : []).filter((employee) => (
     sameIdentifier(employee.storeId, storeId)
     && employeeUnit(employee) === String(payrollUnit.unit || 'store')
     && !employee.deletedAt
     && normalizeTextKey(employee.status) !== 'da nghi viec'
   ))
+  // Departure status must not erase a period already worked. Requiring home-store
+  // attendance keeps the final payroll bounded to verifiable participation.
+  const historicalEmployees = (Array.isArray(state.employees) ? state.employees : []).filter((employee) => (
+    sameIdentifier(employee.storeId, storeId)
+    && employeeUnit(employee) === String(payrollUnit.unit || 'store')
+    && (Boolean(employee.deletedAt) || normalizeTextKey(employee.status) === 'da nghi viec')
+    && employeeHasHomePayrollAttendance(state, employee, storeId, period)
+  ))
+  const employees = [...activeEmployees, ...historicalEmployees]
   const participantIds = new Set()
   const participants = employees.map((employee) => {
     const employeeId = String(employee.id || employee.code || '').trim()

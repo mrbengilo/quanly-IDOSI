@@ -126,6 +126,8 @@ const employeeIdentifierValues = (employee = {}) => [
   employee.employeeCode,
 ].map(compactIdentifier).filter(Boolean)
 const employeePrimaryIdentifier = (employee = {}) => employeeIdentifierValues(employee)[0] || ''
+const isDepartedEmployee = (employee = {}) => Boolean(employee.deletedAt)
+  || normalizedAdjustmentType(employee.status) === 'da nghi viec'
 const createOperationalIdentifierResolver = (records = [], identifierValuesOf = (record) => [record?.id]) => {
   const exactIndex = new Map()
   const foldedIndex = new Map()
@@ -1318,9 +1320,9 @@ export function StorePayrollV2() {
   const matchAttendance = createOperationalIdentifierResolver(attendance, (record) => [record?.id])
   const matchSupportTransfer = createOperationalIdentifierResolver(supportTransfers, (record) => [record?.id])
   const scopedEmployees = employees.filter((employee) => String(employee.unit || 'store') === 'store'
-    && !employee.deletedAt
+    && !isDepartedEmployee(employee)
     && storeReferenceMatches(employee.storeId)
-    && employee.status !== 'Đã nghỉ việc')
+  )
   const scopedAttendance = attendance.filter((record) => (
     !record.deletedAt && storeReferenceMatches(record.storeId) && recordInMonth(record, period)
   ))
@@ -1368,8 +1370,18 @@ export function StorePayrollV2() {
       && !storeReferenceMatches(employee.storeId)
       && attendancePayDetails(record, employee, supportTransfers).kind === 'support')
     .map(({ employee }) => employee))
+  // A profile can be marked as departed before its final payroll is closed.
+  // Require attendance at this store in the selected period so earned pay stays
+  // visible without reviving an unrelated historical profile.
+  const historicalHomeEmployees = employees.filter((employee) => (
+    String(employee.unit || 'store') === 'store'
+    && isDepartedEmployee(employee)
+    && storeReferenceMatches(employee.storeId)
+    && attendanceByEmployee.has(employee)
+  ))
   const liveParticipants = [
     ...scopedEmployees,
+    ...historicalHomeEmployees.filter((employee) => !scopedEmployees.includes(employee)),
     ...employees.filter((employee) => inboundSupportEmployees.has(employee) && !scopedEmployees.includes(employee)),
   ]
   const liveParticipantSet = new Set(liveParticipants)
@@ -1870,7 +1882,7 @@ export function StorePayrollV2() {
       </div>
       <Card title="Chi tiết lương thưởng">
         <TableWrap><thead><tr><th>Nhân viên</th><th>Giờ làm</th><th>Lương cứng</th><th>Thưởng doanh thu</th><th>Thưởng công việc</th><th>Thưởng thủ công</th><th>Phụ cấp TikTok</th><th>Phụ cấp khác</th><th>Vi phạm</th><th>Đã ứng</th><th>Thực nhận</th></tr></thead><tbody>
-          {rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong><SupportEmployeeTag record={{ employeeId: row.employee.id, isSupportEmployee: row.isSupportEmployee, supportHomeStoreId: row.supportOriginStoreId, supportHomeStoreName: row.supportOriginStoreName, supportStoreId: storeId, supportStoreName: store?.name, supportTransferIds: row.supportTransferIds }} employee={row.employee} employeeId={row.employee.id} storeId={storeId} businessDate={`${period}-01`} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{row.employee.id} • {row.employee.employmentType}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}{row.supportWorkBonus > 0 && <small className="table-note">Thưởng hỗ trợ ghi nhận tại {store?.name || storeId}{row.supportTransferIds.length ? ` • ${row.supportTransferIds.join(', ')}` : ''}</small>}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
+          {rows.map((row) => <tr key={row.rowKey}><td><strong>{row.employee.name}</strong><SupportEmployeeTag record={{ employeeId: row.employee.id, isSupportEmployee: row.isSupportEmployee, supportHomeStoreId: row.supportOriginStoreId, supportHomeStoreName: row.supportOriginStoreName, supportStoreId: storeId, supportStoreName: store?.name, supportTransferIds: row.supportTransferIds }} employee={row.employee} employeeId={row.employee.id} storeId={storeId} businessDate={`${period}-01`} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{row.employee.id} • {row.employee.employmentType}{isDepartedEmployee(row.employee) ? ' • Đã nghỉ việc' : ''}</small></td><td>{row.hours.toFixed(2)}</td><td><strong className="payroll-hourly-rate">{money(row.hourlyRate)}/giờ</strong></td><td>{money(row.revenueBonus)}</td><td>{money(row.workBonus)}{row.supportWorkBonus > 0 && <small className="table-note">Thưởng hỗ trợ ghi nhận tại {store?.name || storeId}{row.supportTransferIds.length ? ` • ${row.supportTransferIds.join(', ')}` : ''}</small>}</td><td>{money(row.manualBonus)}</td><td>{money(row.tiktokAllowance)}</td><td>{money(row.otherAllowance)}</td><td>{money(row.violations)}</td><td>{money(row.advances)}</td><td><strong>{money(row.net)}</strong></td></tr>)}
           {payrollPreviewError
             ? <tr><td colSpan="11">Số liệu đang được khóa cho đến khi Admin xử lý dữ liệu trùng.</td></tr>
             : <tr className="total-row"><td colSpan="10">TỔNG CÒN PHẢI CHI</td><td>{money(totals.net)}</td></tr>}
