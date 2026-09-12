@@ -32,6 +32,35 @@ describe('OrderInformationSettingsPage', () => {
     expect(screen.getByText('Nhân viên VP')).toBeTruthy()
   })
 
+  it('shows and creates configurable products separately from occupations', async () => {
+    render(<OrderInformationSettingsPage />)
+    fireEvent.change(screen.getByLabelText('Loại danh mục'), { target: { value: 'product' } })
+    expect(screen.getByText('Đồ nam')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'THÊM MẶT HÀNG' }))
+    const dialog = screen.getByRole('dialog', { name: 'Thêm mặt hàng' })
+    fireEvent.change(within(dialog).getByLabelText(/Tên hiển thị/u), { target: { value: 'Phụ kiện' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(createOrderInformationOption).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'product', label: 'Phụ kiện', code: 'PRD-006',
+    })))
+  })
+
+  it('creates a required select attribute with Admin-managed choices', async () => {
+    render(<OrderInformationSettingsPage />)
+    fireEvent.change(screen.getByLabelText('Loại danh mục'), { target: { value: 'custom_field' } })
+    fireEvent.click(screen.getByRole('button', { name: 'THÊM THUỘC TÍNH' }))
+    const dialog = screen.getByRole('dialog', { name: 'Thêm thuộc tính' })
+    fireEvent.change(within(dialog).getByLabelText(/Tên hiển thị/u), { target: { value: 'Kích cỡ' } })
+    fireEvent.change(within(dialog).getByLabelText(/Kiểu dữ liệu/u), { target: { value: 'select' } })
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: /Bắt buộc nhập/u }))
+    fireEvent.change(within(dialog).getByLabelText(/Các lựa chọn/u), { target: { value: 'S, M, L, XL' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(createOrderInformationOption).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'custom_field', label: 'Kích cỡ', code: 'ATTR-001', fieldType: 'select',
+      required: true, choices: ['S', 'M', 'L', 'XL'],
+    })))
+  })
+
   it('creates an occupation and confirms soft deletion', async () => {
     render(<OrderInformationSettingsPage />)
     fireEvent.click(screen.getByRole('button', { name: 'THÊM NGHỀ NGHIỆP' }))

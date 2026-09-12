@@ -220,6 +220,8 @@ export const STORE_SCREEN_COLLECTIONS = Object.freeze({
   employees: ['deletedEmployees', 'storeEmployeeSalaryConfigs'],
   // Order history is loaded through /api/history/orders with a cursor.
   orders: ['orderInformationOptions'],
+  // Statistics uses /api/order-summary and only needs shift labels locally.
+  statistics: ['shiftDefinitions'],
   tasks: [
     'tasks', 'taskAssignmentHistory', 'supportWorkAssignments', 'workCatalogProgress',
     'compensationEntries', 'attendance', 'notifications', 'workCatalogItems', 'violations',

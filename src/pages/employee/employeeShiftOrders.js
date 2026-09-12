@@ -8,6 +8,8 @@ import {
   occupationValueAllowed,
   ORDER_PAYMENT_METHODS,
 } from '../../domain/orderInformationSettings'
+import { resolveOrderItems } from '../../domain/orderItems'
+import { resolveOrderCustomFields } from '../../domain/orderCustomFields'
 import { referenceMatchesAttendanceShift } from './employeeShiftScope'
 
 const attendanceDate = (record) => String(record?.date || record?.workDate || record?.checkInAt || record?.createdAt || '').slice(0, 10)
@@ -167,5 +169,9 @@ export const validateEmployeeOrder = (form = {}, { occupationOptions } = {}) => 
   }
   if (!ACQUISITION_CHANNELS.includes(form.acquisitionChannel)) errors.acquisitionChannel = 'Vui lòng chọn kênh khách hàng biết đến.'
   if (!ORDER_PAYMENT_METHODS.includes(form.paymentMethod)) errors.paymentMethod = 'Vui lòng chọn hình thức thanh toán.'
+  const resolvedItems = resolveOrderItems({ items: form.items, options: occupationOptions })
+  if (resolvedItems.error) errors.items = resolvedItems.error
+  const resolvedCustomFields = resolveOrderCustomFields({ values: form.customFields, options: occupationOptions })
+  if (resolvedCustomFields.error) errors.customFields = resolvedCustomFields.error
   return errors
 }

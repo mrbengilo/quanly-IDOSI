@@ -12,8 +12,9 @@ vi.mock('../../state/AppContext', () => ({
 const store = { id: 'S01', name: 'Dosii KVC' }
 const employee = { id: 'E01', name: 'Nguyễn An', unit: 'store', storeId: store.id }
 const configuredOccupations = [
-  { id: 'OCC-OLD', code: 'OCC-001', label: 'Kỹ sư', active: false, sortOrder: 100 },
-  { id: 'OCC-ACTIVE', code: 'OCC-002', label: 'Bác sĩ', active: true, sortOrder: 200 },
+  { id: 'OCC-OLD', kind: 'occupation', code: 'OCC-001', label: 'Kỹ sư', active: false, sortOrder: 100 },
+  { id: 'OCC-ACTIVE', kind: 'occupation', code: 'OCC-002', label: 'Bác sĩ', active: true, sortOrder: 200 },
+  { id: 'PRD-ONE', kind: 'product', code: 'PRD-001', label: 'Đồ nam', active: true, sortOrder: 2000 },
 ]
 
 const order = (overrides = {}) => ({
@@ -30,6 +31,7 @@ const order = (overrides = {}) => ({
   acquisitionChannel: 'Facebook',
   amount: 250_000,
   paymentMethod: 'Tiền mặt',
+  items: [{ productId: 'PRD-ONE', productCode: 'PRD-001', productName: 'Đồ nam', quantity: 2 }],
   status: 'Hoàn tất',
   createdAt: '2026-08-25T09:00:00+07:00',
   ...overrides,

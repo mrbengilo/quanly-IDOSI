@@ -10,7 +10,7 @@ const DATA_PREFETCH_SYSTEM_SCREENS = new Set([
   'stores', 'employees', 'settings', 'account-settings', 'policies',
   'order-information-settings', 'work-catalog',
 ])
-const DATA_PREFETCH_STORE_SCREENS = new Set(['orders', 'employees', 'salary-settings', 'settings'])
+const DATA_PREFETCH_STORE_SCREENS = new Set(['orders', 'statistics', 'employees', 'salary-settings', 'settings'])
 const canPrefetchData = (pathname) => {
   const path = String(pathname || '').split(/[?#]/u)[0]
   return path.startsWith('/store/')

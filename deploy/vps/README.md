@@ -117,6 +117,25 @@ unset ADMIN_PASSWORD BOOTSTRAP_TOKEN
 
 Bootstrap chỉ hoạt động khi bảng tài khoản đang trống.
 
+### API số liệu cho website kho
+
+API chỉ đọc `GET /api/integrations/warehouse/order-statistics` dùng chung phép
+tổng hợp với màn hình **Cửa hàng → Số liệu thống kê**. Tạo khóa ngẫu nhiên tối
+thiểu 32 ký tự và lưu trong `.env` trên VPS:
+
+```bash
+openssl rand -hex 32
+```
+
+Gán kết quả vào `WAREHOUSE_API_KEY`. Nếu website kho gọi từ trình duyệt, thêm
+origin HTTPS chính xác vào `WAREHOUSE_API_ALLOWED_ORIGINS` (nhiều origin phân
+tách bằng dấu phẩy). Không nhúng khóa dài hạn vào JavaScript phía trình duyệt;
+ưu tiên gọi API từ backend website kho. Khi khóa để trống hoặc quá ngắn, endpoint
+tự khóa và `/api/health` trả `warehouseStatisticsApiConfigured: false`.
+
+Hợp đồng request, response và ví dụ tích hợp nằm tại
+[`docs/WAREHOUSE_STATISTICS_API.md`](../../docs/WAREHOUSE_STATISTICS_API.md).
+
 ## 3. Cấu hình GitHub một lần
 
 ### Bảo vệ `main`

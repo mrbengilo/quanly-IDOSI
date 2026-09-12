@@ -1,3 +1,6 @@
+import { normalizeOrderItems } from './orderItems.js'
+import { normalizeOrderCustomFields, orderCustomFieldDisplayValue } from './orderCustomFields.js'
+
 const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1_000
 const EXPLICIT_ZONE_DATE_TIME = /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/iu
 
@@ -59,7 +62,11 @@ export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMet
   if (shiftId && String(order.shiftId || '') !== shiftId) return false
   if (paymentMethod && paymentChannel(order.paymentMethod) !== paymentChannel(paymentMethod)) return false
   if (amount !== null && amount !== '' && (!['number', 'string'].includes(typeof order.amount) || String(order.amount).trim() === '' || Number(order.amount) !== Number(amount))) return false
-  const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName].join(' ').toLocaleLowerCase('vi-VN')
+  const productNames = normalizeOrderItems(order.items).map((item) => item.productName || item.productCode).join(' ')
+  const customValues = normalizeOrderCustomFields(order.customFields)
+    .map((entry) => `${entry.fieldLabel} ${orderCustomFieldDisplayValue(entry)}`)
+    .join(' ')
+  const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName, productNames, customValues].join(' ').toLocaleLowerCase('vi-VN')
   return !query || haystack.includes(query.trim().toLocaleLowerCase('vi-VN'))
 }
 
@@ -106,6 +113,46 @@ const shiftMetadata = (order) => {
   }
 }
 
+const productKey = (item) => String(
+  item.productId || item.productCode || item.productName,
+).trim().toLocaleLowerCase('vi-VN')
+
+const emptyProductSummary = () => ({
+  totalQuantity: 0,
+  productTypes: 0,
+  ordersWithItems: 0,
+  unclassifiedOrders: 0,
+  items: [],
+})
+
+const addOrderProducts = (summary, itemMap, order) => {
+  const items = normalizeOrderItems(order.items)
+  if (!items.length) {
+    summary.unclassifiedOrders += 1
+    return
+  }
+  summary.ordersWithItems += 1
+  const countedOrderKeys = new Set()
+  items.forEach((item) => {
+    const key = productKey(item)
+    if (!key) return
+    const existing = itemMap.get(key) || {
+      productId: item.productId,
+      productCode: item.productCode,
+      productName: item.productName || item.productCode || 'Mặt hàng',
+      quantity: 0,
+      orders: 0,
+    }
+    existing.quantity += item.quantity
+    if (!Number.isSafeInteger(existing.quantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+    if (!countedOrderKeys.has(key)) existing.orders += 1
+    countedOrderKeys.add(key)
+    itemMap.set(key, existing)
+    summary.totalQuantity += item.quantity
+    if (!Number.isSafeInteger(summary.totalQuantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+  })
+}
+
 export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', ...filters } = {}) => {
   const totals = emptyTotals()
   const groups = {
@@ -113,6 +160,8 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
     day: new Map(),
     employee: new Map(),
   }
+  const products = emptyProductSummary()
+  const productItems = new Map()
   const storeKey = identifierKey(storeId)
   const employeeKey = identifierKey(employeeId)
 
@@ -124,6 +173,7 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
 
     const amount = checkedAmount(order)
     addOrder(totals, order, amount)
+    addOrderProducts(products, productItems, order)
     for (const view of Object.keys(groups)) {
       const key = String(orderGroupKey(order, view))
       const groupTotals = groups[view].get(key) || {
@@ -135,8 +185,15 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
     }
   }
 
+  products.items = [...productItems.values()].sort((left, right) => (
+    right.quantity - left.quantity
+    || left.productName.localeCompare(right.productName, 'vi-VN')
+  ))
+  products.productTypes = products.items.length
+
   return {
     totals,
+    products,
     groups: {
       shift: sortedGroups(groups.shift),
       day: sortedGroups(groups.day),

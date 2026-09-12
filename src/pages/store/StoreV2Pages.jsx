@@ -39,6 +39,8 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { OrderPaymentSummary } from '../../components/OrderPaymentSummary'
+import { OrderItemSelector, OrderItemsSummary } from '../../components/OrderItemSelector'
+import { OrderCustomFieldsEditor, OrderCustomFieldsSummary } from '../../components/OrderCustomFields'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
 import { OverdueAttendanceModal } from '../../components/OverdueAttendanceModal'
@@ -52,6 +54,8 @@ import {
 } from '../../domain'
 import { overdueOpenAttendance } from '../../domain/overdueAttendance'
 import { activeOccupationLabels, findOccupationOption, occupationValueAllowed, ORDER_PAYMENT_METHODS } from '../../domain/orderInformationSettings'
+import { resolveOrderItems } from '../../domain/orderItems'
+import { resolveOrderCustomFields } from '../../domain/orderCustomFields'
 import { findOrderByReference, resolveOrderRouteScope } from '../../domain/orderStoreScope'
 import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, summarizeOrders } from '../../domain/orderSummary'
 import { formatVietnamTransferPeriod } from '../../domain/supportTransferTime'
@@ -555,7 +559,7 @@ export function StoreOrdersPage() {
   const [employeeId, setEmployeeId] = useState('all')
   const [shiftId, setShiftId] = useState('all')
   const [editing, setEditing] = useState(null)
-  const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAge: '', gender: 'Khác', occupation: '', acquisitionChannel: 'Khác', amount: '', paymentMethod: '', reason: '' })
+  const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAge: '', gender: 'Khác', occupation: '', acquisitionChannel: 'Khác', amount: '', paymentMethod: '', items: [], customFields: [], reason: '' })
   const [formErrors, setFormErrors] = useState({})
   const [saving, setSaving] = useState(false)
   const [orderPage, setOrderPage] = useState(1)
@@ -794,7 +798,7 @@ export function StoreOrdersPage() {
 
   const openEdit = (order) => {
     setEditing(order)
-    setForm({ customerName: order.customerName || '', customerPhone: order.customerPhone || '', customerAge: order.customerAge ?? '', gender: order.gender || 'Khác', occupation: order.occupation || '', acquisitionChannel: order.acquisitionChannel || 'Khác', amount: moneyInput(order.amount), paymentMethod: order.paymentMethod || '', reason: '' })
+    setForm({ customerName: order.customerName || '', customerPhone: order.customerPhone || '', customerAge: order.customerAge ?? '', gender: order.gender || 'Khác', occupation: order.occupation || '', acquisitionChannel: order.acquisitionChannel || 'Khác', amount: moneyInput(order.amount), paymentMethod: order.paymentMethod || '', items: Array.isArray(order.items) ? order.items : [], customFields: Array.isArray(order.customFields) ? order.customFields : [], reason: '' })
     setFormErrors({})
   }
   const closeEditor = () => {
@@ -823,6 +827,20 @@ export function StoreOrdersPage() {
       allowUnchangedInactive: true,
     })) nextErrors.occupation = 'Vui lòng chọn nghề nghiệp trong danh sách.'
     if (!ORDER_PAYMENT_METHODS.includes(form.paymentMethod)) nextErrors.paymentMethod = 'Vui lòng chọn hình thức thanh toán.'
+    const resolvedItems = resolveOrderItems({
+      items: form.items,
+      options: orderInformationOptions,
+      previousItems: editing.items,
+      allowHistorical: true,
+    })
+    if (resolvedItems.error) nextErrors.items = resolvedItems.error
+    const resolvedCustomFields = resolveOrderCustomFields({
+      values: form.customFields,
+      options: orderInformationOptions,
+      previousValues: editing.customFields,
+      allowHistorical: true,
+    })
+    if (resolvedCustomFields.error) nextErrors.customFields = resolvedCustomFields.error
     if (!String(form.reason || '').trim()) nextErrors.reason = 'Cần nhập lý do chỉnh sửa.'
     setFormErrors(nextErrors)
     if (Object.keys(nextErrors).length) return
@@ -837,6 +855,8 @@ export function StoreOrdersPage() {
         occupation: form.occupation,
         acquisitionChannel: form.acquisitionChannel,
         paymentMethod: form.paymentMethod,
+        items: resolvedItems.items,
+        customFields: resolvedCustomFields.values,
         ...(canEditOrderAmount ? { amount } : {}),
         reason: String(form.reason).trim(),
       })
@@ -915,7 +935,7 @@ export function StoreOrdersPage() {
           <span className="order-group__total-amount"><small>{view === 'shift' ? 'Tổng tiền cả ca' : view === 'day' ? 'Tổng tiền cả ngày' : 'Tổng tiền trong kỳ'}</small><strong>{groupTotal ? money(groupTotal.revenue) : '—'}</strong></span>
           <span className="order-group__order-count"><small>{view === 'shift' ? 'Tổng đơn cả ca' : view === 'day' ? 'Tổng đơn cả ngày' : 'Tổng đơn trong kỳ'}</small><strong>{groupTotal?.orders ?? '—'}</strong><em>đơn</em></span>
           <OrderPaymentSummary totals={groupTotal} label={view === 'shift' ? 'Thanh toán cả ca' : view === 'day' ? 'Thanh toán cả ngày' : 'Thanh toán trong kỳ'} showTotal={false} />
-        </div>}><TableWrap tableClassName="order-table" paginate={false}><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Thời gian">{timestamp(order.updatedAt || order.createdAt)}</td><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td data-label="Khảo sát">{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong></td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Nhân viên"><strong>{order.employeeName || operationalIdentifierRecordMatch(employees, order.employeeId || order.employeeCode, employeeIdentifierValues).record?.name || order.employeeId || order.employeeCode || '—'}</strong><SupportEmployeeTag record={order} employeeId={order.employeeId || order.employeeCode} storeId={storeId} businessDate={businessDate(order.createdAt || order.date)} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{order.employeeId || order.employeeCode || '—'}</small></td><td data-label="Trạng thái"><Badge>{order.status}</Badge></td>{canEditOrders && <td data-label="Thao tác" data-wide><div className="order-row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
+        </div>}><TableWrap tableClassName="order-table" paginate={false}><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Mặt hàng</th><th>Thuộc tính</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Thời gian">{timestamp(order.updatedAt || order.createdAt)}</td><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td data-label="Mặt hàng" data-wide><OrderItemsSummary items={order.items} /></td><td data-label="Thuộc tính" data-wide><OrderCustomFieldsSummary values={order.customFields} /></td><td data-label="Khảo sát">{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong></td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Nhân viên"><strong>{order.employeeName || operationalIdentifierRecordMatch(employees, order.employeeId || order.employeeCode, employeeIdentifierValues).record?.name || order.employeeId || order.employeeCode || '—'}</strong><SupportEmployeeTag record={order} employeeId={order.employeeId || order.employeeCode} storeId={storeId} businessDate={businessDate(order.createdAt || order.date)} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{order.employeeId || order.employeeCode || '—'}</small></td><td data-label="Trạng thái"><Badge>{order.status}</Badge></td>{canEditOrders && <td data-label="Thao tác" data-wide><div className="order-row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
       })}
       <TablePagination
         page={activeOrderPage}
@@ -955,6 +975,8 @@ export function StoreOrdersPage() {
             />
           </Field>
           <Field label="Biết qua kênh nào"><Select value={form.acquisitionChannel} onChange={(event) => updateForm('acquisitionChannel', event.target.value)}><option>Facebook</option><option>Tiktok</option><option>Zalo</option><option>Bạn Bè</option><option>Người thân</option><option>Khác</option></Select></Field>
+          <div className="span-2"><OrderItemSelector options={orderInformationOptions} value={form.items} error={formErrors.items} disabled={saving} onChange={(items) => updateForm('items', items)} /></div>
+          <div className="span-2"><OrderCustomFieldsEditor options={orderInformationOptions} value={form.customFields} error={formErrors.customFields} disabled={saving} onChange={(customFields) => updateForm('customFields', customFields)} /></div>
           <Field label="Số tiền" required={canEditOrderAmount} hint={!canEditOrderAmount ? 'Chỉ Admin được thay đổi số tiền.' : undefined} error={formErrors.amount}><MoneyInput value={form.amount} disabled={!canEditOrderAmount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
           <Field label="Hình thức thanh toán" required error={formErrors.paymentMethod}><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option value="">Chọn</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
           <Field label="Lý do chỉnh sửa" required error={formErrors.reason} className="span-2"><Input value={form.reason} onChange={(event) => updateForm('reason', event.target.value)} /></Field>

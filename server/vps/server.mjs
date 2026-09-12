@@ -63,6 +63,8 @@ export const createVpsRuntime = ({
   bootstrapToken = process.env.BOOTSTRAP_TOKEN || '',
   googleMapsApiKey = process.env.GOOGLE_MAPS_API_KEY || '',
   sessionTtlSeconds = process.env.SESSION_TTL_SECONDS || '',
+  warehouseApiKey = process.env.WAREHOUSE_API_KEY || '',
+  warehouseApiAllowedOrigins = process.env.WAREHOUSE_API_ALLOWED_ORIGINS || '',
 } = {}) => {
   const database = createSqliteD1({ databasePath, migrationsDirectory })
   const env = {
@@ -72,6 +74,8 @@ export const createVpsRuntime = ({
     BOOTSTRAP_TOKEN: bootstrapToken,
     GOOGLE_MAPS_API_KEY: googleMapsApiKey,
     SESSION_TTL_SECONDS: sessionTtlSeconds,
+    WAREHOUSE_API_KEY: warehouseApiKey,
+    WAREHOUSE_API_ALLOWED_ORIGINS: warehouseApiAllowedOrigins,
   }
   return { database, env }
 }

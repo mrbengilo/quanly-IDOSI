@@ -41,6 +41,10 @@ const choosePaymentMethod = (value = 'Tiền mặt') => {
   fireEvent.change(screen.getByLabelText(/^Hình thức thanh toán/u), { target: { value } })
 }
 
+const chooseProduct = (label = 'Đồ nam') => {
+  fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(label, 'u') }))
+}
+
 describe('store employee current-shift orders', () => {
   it('keeps only the signed-in employee orders from the open shift', () => {
     const openRecord = { id: 'ATT-01', date: '2026-08-18', shiftId: 'CA-01' }
@@ -271,6 +275,7 @@ describe('store employee current-shift orders', () => {
     await chooseOccupation('Nhân viên VP')
     fireEvent.change(screen.getByLabelText(/^Biết qua kênh nào/u), { target: { value: 'Facebook' } })
     fireEvent.change(screen.getByLabelText(/^Số tiền/u), { target: { value: '35' } })
+    chooseProduct()
     choosePaymentMethod()
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
 
@@ -525,6 +530,7 @@ describe('store employee current-shift orders', () => {
       occupation: 'Nhân viên VP',
       acquisitionChannel: 'Tiktok',
       paymentMethod: 'Tiền mặt',
+      items: [{ productId: 'order-product-001', quantity: 1 }],
     })).toEqual({})
 
     expect(validateEmployeeOrder({
@@ -534,6 +540,7 @@ describe('store employee current-shift orders', () => {
       occupation: 'Kế toán',
       acquisitionChannel: 'Tiktok',
       paymentMethod: 'Tiền mặt',
+      items: [{ productId: 'order-product-001', quantity: 1 }],
     }).occupation).toBe('Vui lòng chọn nghề nghiệp trong danh sách.')
 
     expect(Object.keys(validateEmployeeOrder({ customerName: 'Khách A', amount: 159_000 }))).toEqual([
@@ -541,6 +548,7 @@ describe('store employee current-shift orders', () => {
       'occupation',
       'acquisitionChannel',
       'paymentMethod',
+      'items',
     ])
   })
 
@@ -563,6 +571,7 @@ describe('store employee current-shift orders', () => {
     await chooseOccupation('Nhân viên VP')
     fireEvent.change(screen.getByLabelText(/^Biết qua kênh nào/), { target: { value: 'Facebook' } })
     fireEvent.change(screen.getByLabelText(/^Số tiền/), { target: { value: '159' } })
+    chooseProduct()
     choosePaymentMethod()
 
     fireEvent.click(screen.getByRole('button', { name: 'LƯU ĐƠN' }))
