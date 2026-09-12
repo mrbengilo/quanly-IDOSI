@@ -13,6 +13,10 @@ grep -Fq 'flock -n 9' "$RECOVERY_SCRIPT"
 grep -Fq 'App đang chạy không khớp release được xác nhận.' "$RECOVERY_SCRIPT"
 grep -Fq 'Caddy container không khớp release được xác nhận.' "$RECOVERY_SCRIPT"
 grep -Fq 'Caddy không mount static volume của release được xác nhận.' "$RECOVERY_SCRIPT"
-grep -Fq 'compose start caddy' "$RECOVERY_SCRIPT"
+grep -Fq 'docker start "$caddy_container"' "$RECOVERY_SCRIPT"
+if grep -Fq 'compose start caddy' "$RECOVERY_SCRIPT"; then
+  printf 'restore-healthy-proxy must not re-evaluate Compose dependency health\n' >&2
+  exit 1
+fi
 
 printf 'restore-healthy-proxy tests passed\n'

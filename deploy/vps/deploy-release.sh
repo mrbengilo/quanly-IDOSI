@@ -183,7 +183,11 @@ start_caddy_for_release() {
     return 1
   }
   validate_caddy_static_mount "$container_id" "$image" "$release_sha" "$allow_legacy" || return 1
-  compose start caddy || return 1
+  # Starting Caddy through Compose re-evaluates depends_on: service_healthy and
+  # can reject it after the exact in-container health/release probe above has
+  # already passed. Start the already-created, already-validated container
+  # directly; the caller still proves HTTPS health and the exact release SHA.
+  docker start "$container_id" >/dev/null || return 1
   sleep 1 || return 1
   running="$(docker inspect --format '{{.State.Running}}' "$container_id")" || return 1
   [[ "$running" == 'true' ]] || {
