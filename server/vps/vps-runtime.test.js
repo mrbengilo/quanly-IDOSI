@@ -1,10 +1,12 @@
 // @vitest-environment node
 
 import { Buffer } from 'node:buffer'
+import { spawnSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { request as nodeHttpRequest } from 'node:http'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import process from 'node:process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FileR2 } from './file-r2.mjs'
 import { createSqliteD1 } from './sqlite-d1.mjs'
@@ -55,6 +57,16 @@ describe('IDOSI VPS automatic revenue finalizer wiring', () => {
 })
 
 describe('IDOSI VPS runtime', () => {
+  it('loads the Worker through native Node ESM resolution', () => {
+    const result = spawnSync(
+      process.execPath,
+      ['--input-type=module', '--eval', "await import('./server/worker.js')"],
+      { cwd: resolve('.'), encoding: 'utf8', env: { ...process.env, NODE_ENV: 'test' } },
+    )
+
+    expect(result.status).toBe(0)
+  })
+
   it('packages the shared domain modules imported by the Worker into the runtime image', async () => {
     const dockerfile = await readFile(resolve('deploy', 'vps', 'Dockerfile'), 'utf8')
     expect(dockerfile).toContain('COPY --from=build /app/src/domain ./src/domain')

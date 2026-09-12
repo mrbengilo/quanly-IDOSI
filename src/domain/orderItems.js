@@ -1,7 +1,7 @@
 import {
   findProductOption,
   normalizeOrderInformationLabel,
-} from './orderInformationSettings'
+} from './orderInformationSettings.js'
 
 export const MAX_ORDER_ITEM_TYPES = 100
 export const MAX_ORDER_ITEM_QUANTITY = 1_000_000

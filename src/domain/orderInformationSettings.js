@@ -3,7 +3,7 @@ import {
   ORDER_CUSTOM_FIELD_TYPE,
   ORDER_CUSTOM_FIELD_TYPES,
   ORDER_INFORMATION_KIND,
-} from './orderInformationDefaults'
+} from './orderInformationDefaults.js'
 
 export {
   DEFAULT_OCCUPATION_LABELS,
@@ -13,7 +13,7 @@ export {
   ORDER_CUSTOM_FIELD_TYPES,
   ORDER_INFORMATION_KIND,
   ORDER_PAYMENT_METHODS,
-} from './orderInformationDefaults'
+} from './orderInformationDefaults.js'
 
 const normalizeText = (value = '') => String(value)
   .normalize('NFC')

@@ -1,5 +1,5 @@
-import { normalizeOrderItems } from './orderItems'
-import { normalizeOrderCustomFields, orderCustomFieldDisplayValue } from './orderCustomFields'
+import { normalizeOrderItems } from './orderItems.js'
+import { normalizeOrderCustomFields, orderCustomFieldDisplayValue } from './orderCustomFields.js'
 
 const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1_000
 const EXPLICIT_ZONE_DATE_TIME = /^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/iu

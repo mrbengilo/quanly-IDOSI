@@ -1,7 +1,7 @@
 import {
   customFieldOptions,
   ORDER_CUSTOM_FIELD_TYPE,
-} from './orderInformationSettings'
+} from './orderInformationSettings.js'
 
 export const MAX_ORDER_CUSTOM_FIELDS = 100
 export const MAX_ORDER_CUSTOM_FIELD_TEXT = 2_000
