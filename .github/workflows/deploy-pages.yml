@@ -137,9 +137,6 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment:
-      name: production
-      url: https://idosi.io.vn
     steps:
       - name: Checkout read-only inspector
         uses: actions/checkout@v6
