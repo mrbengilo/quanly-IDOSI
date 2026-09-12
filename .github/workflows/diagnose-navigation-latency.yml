@@ -179,6 +179,10 @@ jobs:
           import { statSync } from 'node:fs'
           import { DatabaseSync } from 'node:sqlite'
           import { SqliteD1 } from './server/vps/sqlite-d1.mjs'
+          import {
+            effectiveStoreSalaryConfig,
+            STORE_SALARY_CONFIG_IDENTIFIER_COLLISION,
+          } from './src/domain/storeTieredPayroll.js'
           import * as worker from './server/worker.js'
           const { projectSharedState, reconcileOpenStoreAttendanceChecklists } = worker
           const path = process.env.IDOSI_DB_PATH || '/app/data/idosi.sqlite'
@@ -255,6 +259,211 @@ jobs:
               const plan = prepare(`EXPLAIN QUERY PLAN ${snapshotSql}`).all('global', actor.store_id, actor.employee_id, '')
               console.log('screen_query_plan=' + JSON.stringify({ screen, steps: plan.map(({ detail }) => detail) }))
             }
+          }
+
+          // Reproduce the payroll preview's integrity checks for the reported
+          // store/month, but publish aggregate categories only. Employee,
+          // account, record and financial values must never enter the log.
+          const normalizeLabel = (value) => String(value || '')
+            .trim()
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/gu, '')
+            .replace(/[đĐ]/gu, 'd')
+            .replace(/[^a-z0-9]+/giu, ' ')
+            .trim()
+            .toLocaleLowerCase('en-US')
+          const identifierKey = (value) => String(value || '').trim().toLocaleLowerCase('en-US')
+          const sameIdentifier = (left, right) => Boolean(identifierKey(left)) && identifierKey(left) === identifierKey(right)
+          const employeeIdentifiers = (record = {}) => [
+            record.id, record.code, record.employeeId, record.employeeCode,
+          ].map((value) => String(value || '').trim()).filter(Boolean)
+          const employeeUnit = (record = {}) => {
+            const unit = identifierKey(record.unit || record.unitType || record.department)
+            if (['business_support', 'business-support', 'support'].includes(unit)) return 'business_support'
+            if (['store_manager', 'store-manager', 'manager'].includes(unit)) return 'store_manager'
+            if (unit === 'office') return 'office'
+            return 'store'
+          }
+          const buildResolver = (records = []) => {
+            const exact = new Map()
+            const folded = new Map()
+            for (const record of records) {
+              for (const value of employeeIdentifiers(record)) {
+                if (!exact.has(value)) exact.set(value, new Set())
+                if (!folded.has(identifierKey(value))) folded.set(identifierKey(value), new Set())
+                exact.get(value).add(record)
+                folded.get(identifierKey(value)).add(record)
+              }
+            }
+            return (reference) => {
+              const value = String(reference || '').trim()
+              const exactMatches = [...(exact.get(value) || [])]
+              const foldedMatches = [...(folded.get(identifierKey(value)) || [])]
+              if (exactMatches.length === 1) return { record: exactMatches[0], ambiguous: false }
+              if (exactMatches.length > 1 || foldedMatches.length > 1) return { record: null, ambiguous: true }
+              return { record: foldedMatches[0] || null, ambiguous: false }
+            }
+          }
+          const collisionCount = (records = [], identifiersOf = employeeIdentifiers) => {
+            const owners = new Map()
+            for (const record of records) {
+              for (const identifier of identifiersOf(record).map(identifierKey).filter(Boolean)) {
+                if (!owners.has(identifier)) owners.set(identifier, new Set())
+                owners.get(identifier).add(record)
+              }
+            }
+            return [...owners.values()].filter((matches) => matches.size > 1).length
+          }
+          const entryPeriod = (record = {}) => String(
+            record.period || record.effectiveDate || record.occurredOn || record.businessDate
+              || record.date || record.workDate || record.createdAt || '',
+          ).slice(0, 7)
+          const entryEmployeeReference = (record = {}) => String(
+            record.employeeId || record.employeeCode || record.targetEmployeeId
+              || record.employee?.id || record.employee?.code || '',
+          ).trim()
+          const targetPeriod = '2026-09'
+          const targetLabel = normalizeLabel('SM TNV')
+          const targetStores = (repairState.stores || []).filter((record) => (
+            !record.deletedAt && [record.id, record.code, record.name, record.shortName]
+              .some((value) => normalizeLabel(value) === targetLabel)
+          ))
+          console.log('payroll_integrity_scope=' + JSON.stringify({
+            period: targetPeriod,
+            storeMatches: targetStores.length,
+          }))
+          if (targetStores.length === 1) {
+            const targetStore = targetStores[0]
+            const storeId = String(targetStore.id || targetStore.code || '').trim()
+            const snapshot = SqliteD1.prototype.readStoreStateSnapshot.call(
+              { database: db }, 'global', storeId, '', 'payroll', targetPeriod,
+            )
+            const snapshotState = JSON.parse(snapshot.row?.value_json || '{}')
+            for (const manifest of snapshot.manifests) snapshotState[manifest.collection_key] = []
+            for (const entity of snapshot.entities) snapshotState[entity.collection_key].push(JSON.parse(entity.value_json))
+            let projectedState = null
+            let projectionError = ''
+            try {
+              projectedState = projectSharedState(snapshotState, {
+                role: 'admin', user_id: 'aggregate-payroll-diagnostic', employee_id: '', store_id: '',
+              }, { storeId, screen: 'payroll' })
+            } catch (error) {
+              projectionError = String(error?.code || error?.message || 'PROJECTION_ERROR')
+            }
+            console.log('payroll_projection=' + JSON.stringify({
+              error: projectionError || null,
+              sourceRows: snapshot.entities.length,
+              projected: Boolean(projectedState),
+            }))
+
+            const inspect = (state, label) => {
+              const employees = Array.isArray(state?.employees) ? state.employees : []
+              const deletedEmployees = Array.isArray(state?.deletedEmployees) ? state.deletedEmployees : []
+              const resolver = buildResolver(employees)
+              const deletedResolver = buildResolver(deletedEmployees)
+              const activeEmployees = employees.filter((record) => (
+                employeeUnit(record) === 'store'
+                && !record.deletedAt
+                && sameIdentifier(record.storeId, storeId)
+                && String(record.status || '') !== 'Đã nghỉ việc'
+              ))
+              const periodCandidates = (state.payrollPeriods || []).filter((record) => (
+                !record.supersededAt && sameIdentifier(record.storeId, storeId)
+                  && String(record.period || '') === targetPeriod
+              ))
+              const immutableRows = periodCandidates.length === 1
+                && !periodCandidates[0].needsReclose && Array.isArray(periodCandidates[0].rows)
+                ? periodCandidates[0].rows
+                : null
+              const salaryCollisionEmployees = activeEmployees.filter((employee) => {
+                try {
+                  effectiveStoreSalaryConfig(state.storeEmployeeSalaryConfigs || [], {
+                    employeeId: employeeIdentifiers(employee)[0],
+                    storeId,
+                    period: targetPeriod,
+                    store: targetStore,
+                    canonicalOwnerAliases: true,
+                  })
+                  return false
+                } catch (error) {
+                  return error?.code === STORE_SALARY_CONFIG_IDENTIFIER_COLLISION
+                }
+              }).length
+
+              const activeSet = new Set(activeEmployees)
+              const sourceRules = {
+                salaryAdjustments: (record) => entryPeriod(record) === targetPeriod
+                  && record.status !== 'Đã hủy' && !record.deletedAt,
+                salaryAdvances: (record) => entryPeriod(record) === targetPeriod
+                  && record.status === 'Đã chi' && !record.deletedAt,
+                compensationEntries: (record) => entryPeriod(record) === targetPeriod,
+                revenueBonusAllocations: (record) => entryPeriod(record) === targetPeriod,
+                violations: (record) => entryPeriod(record) === targetPeriod,
+              }
+              const sourceIssues = []
+              for (const [collection, relevant] of Object.entries(sourceRules)) {
+                const counters = {
+                  relevant: 0, missingReference: 0, ambiguousReference: 0,
+                  missingProfile: 0, archivedProfile: 0, outOfActivePayroll: 0,
+                }
+                for (const record of Array.isArray(state[collection]) ? state[collection] : []) {
+                  if (!relevant(record) || (record.storeId && !sameIdentifier(record.storeId, storeId))) continue
+                  counters.relevant += 1
+                  const reference = entryEmployeeReference(record)
+                  if (!reference) {
+                    counters.missingReference += 1
+                    continue
+                  }
+                  const match = resolver(reference)
+                  if (match.ambiguous) counters.ambiguousReference += 1
+                  else if (!match.record) {
+                    const archivedMatch = deletedResolver(reference)
+                    if (archivedMatch.record && !archivedMatch.ambiguous) counters.archivedProfile += 1
+                    else counters.missingProfile += 1
+                  } else if (!activeSet.has(match.record) && employeeUnit(match.record) !== 'store_manager') {
+                    counters.outOfActivePayroll += 1
+                  }
+                }
+                sourceIssues.push({ collection, ...counters })
+              }
+              const attendanceIssues = {
+                relevant: 0, missingReference: 0, ambiguousReference: 0,
+                missingProfile: 0, archivedProfile: 0, outOfActivePayroll: 0,
+              }
+              for (const record of Array.isArray(state.attendance) ? state.attendance : []) {
+                if (record.deletedAt || !sameIdentifier(record.storeId, storeId) || entryPeriod(record) !== targetPeriod) continue
+                attendanceIssues.relevant += 1
+                const reference = entryEmployeeReference(record)
+                if (!reference) attendanceIssues.missingReference += 1
+                else {
+                  const match = resolver(reference)
+                  if (match.ambiguous) attendanceIssues.ambiguousReference += 1
+                  else if (!match.record) {
+                    const archivedMatch = deletedResolver(reference)
+                    if (archivedMatch.record && !archivedMatch.ambiguous) attendanceIssues.archivedProfile += 1
+                    else attendanceIssues.missingProfile += 1
+                  } else if (!activeSet.has(match.record) && employeeUnit(match.record) !== 'store_manager') {
+                    attendanceIssues.outOfActivePayroll += 1
+                  }
+                }
+              }
+              console.log('payroll_integrity=' + JSON.stringify({
+                view: label,
+                activeEmployeeCount: activeEmployees.length,
+                archivedEmployeeCount: deletedEmployees.filter((record) => sameIdentifier(record.storeId, storeId)).length,
+                activeEmployeeIdentifierCollisions: collisionCount(activeEmployees),
+                currentPeriodCandidates: periodCandidates.length,
+                immutableSnapshot: Boolean(immutableRows),
+                snapshotRowIdentifierCollisions: collisionCount(
+                  immutableRows || [], (record) => [record.employeeId, record.employeeCode].filter(Boolean),
+                ),
+                salaryCollisionEmployees,
+                attendance: attendanceIssues,
+                sources: sourceIssues,
+              }))
+            }
+            inspect(repairState, 'raw')
+            if (projectedState) inspect(projectedState, 'projected')
           }
           db.close()
           NODE
