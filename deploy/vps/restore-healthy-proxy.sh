@@ -60,7 +60,10 @@ actual_static_volume="$(docker inspect --format '{{range .Mounts}}{{if eq .Desti
 [[ "$actual_static_volume" == "$expected_static_volume" ]] \
   || die 'Caddy không mount static volume của release được xác nhận.'
 
-compose start caddy
+# The app and Caddy topology were verified above. Starting the existing Caddy
+# container directly avoids Compose re-evaluating its service_healthy
+# dependency and refusing a proxy recovery even when the app is reachable.
+docker start "$caddy_container" >/dev/null
 for _ in $(seq 1 12); do
   [[ "$(docker inspect --format '{{.State.Running}}' "$caddy_container")" == 'true' ]] && break
   sleep 1

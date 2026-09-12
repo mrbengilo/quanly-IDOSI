@@ -198,6 +198,14 @@ assert_before "$ROLLBACK_CUTOVER_BLOCK" \
 assert_before "$SCRIPT_DIR/deploy-release.sh" \
   'checkout --detach "$PREVIOUS_GIT_SHA"' \
   'start_caddy_for_release "$PREVIOUS_IMAGE_TAG"'
+grep -Fq 'docker start "$container_id"' "$SCRIPT_DIR/deploy-release.sh" \
+  || fail 'deploy cutover does not start the already-validated Caddy container directly'
+grep -Fq 'docker start "$container_id"' "$SCRIPT_DIR/rollback-release.sh" \
+  || fail 'rollback cutover does not start the already-validated Caddy container directly'
+if grep -Fq 'compose start caddy' "$SCRIPT_DIR/deploy-release.sh" \
+  || grep -Fq 'compose start caddy' "$SCRIPT_DIR/rollback-release.sh"; then
+  fail 'cutover must not re-evaluate Compose dependency health after the exact app probe passes'
+fi
 TARGET_ROLLBACK_BLOCK="$TEMP_ROOT/target-rollback-block.sh"
 sed -n '/export IDOSI_IMAGE="\$TARGET_IMAGE_TAG"/,$p' "$SCRIPT_DIR/rollback-release.sh" >"$TARGET_ROLLBACK_BLOCK"
 assert_before "$TARGET_ROLLBACK_BLOCK" \

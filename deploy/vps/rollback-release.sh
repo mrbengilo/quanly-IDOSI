@@ -184,7 +184,10 @@ start_caddy_for_release() {
     return 1
   }
   validate_caddy_static_mount "$container_id" "$image" "$release_sha" "$allow_legacy" || return 1
-  compose start caddy || return 1
+  # The app was verified directly above. Avoid re-evaluating Compose's
+  # depends_on health gate while restoring the public proxy; the rollback flow
+  # still verifies the exact release through local HTTPS before succeeding.
+  docker start "$container_id" >/dev/null || return 1
   sleep 1 || return 1
   running="$(docker inspect --format '{{.State.Running}}' "$container_id")" || return 1
   [[ "$running" == 'true' ]] || {
