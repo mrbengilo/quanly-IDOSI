@@ -984,6 +984,63 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(screen.queryByText('9,000,000 đ')).toBeNull()
   })
 
+  it('keeps a departed employee with current-period attendance in the live payroll preview', () => {
+    const departedEmployee = {
+      ...employee,
+      status: 'Đã nghỉ việc',
+    }
+    mocked.app = {
+      ...baseApp(),
+      employees: [departedEmployee],
+      attendance: [{
+        id: 'ATT-DEPARTED-CURRENT-PERIOD',
+        storeId: store.id,
+        employeeId: departedEmployee.id,
+        date: today(),
+        hours: 4,
+        status: 'Đi đúng giờ',
+      }],
+      salaryAdjustments: [{
+        id: 'ADJ-DEPARTED-CURRENT-PERIOD',
+        storeId: store.id,
+        employeeId: departedEmployee.id,
+        period: today().slice(0, 7),
+        type: 'Thưởng khác',
+        amount: 10_000,
+        status: 'Đã duyệt',
+      }],
+      revenueBonusAllocations: [{
+        id: 'REVENUE-DEPARTED-CURRENT-PERIOD',
+        storeId: store.id,
+        employeeId: departedEmployee.id,
+        businessDate: today(),
+        amountVnd: 20_000,
+        status: 'APPROVED',
+      }],
+      violations: [{
+        id: 'VIOLATION-DEPARTED-CURRENT-PERIOD',
+        storeId: store.id,
+        employeeId: departedEmployee.id,
+        effectiveDate: today(),
+        violationPoints: 0.5,
+        amountVnd: 0,
+        status: 'ACTIVE',
+      }],
+    }
+
+    renderPage(StorePayrollV2)
+
+    expect(screen.queryByText(/Không thể tính lương kỳ này/u)).toBeNull()
+    const table = screen.getByRole('columnheader', { name: 'Lương cứng' }).closest('table')
+    const row = within(table).getByText(departedEmployee.name).closest('tr')
+    expect(within(row).getByText(/Đã nghỉ việc/u)).toBeTruthy()
+    expect(within(row).getAllByRole('cell')[2].textContent).toBe('20,000 đ/giờ')
+    expect(within(row).getAllByRole('cell')[3].textContent).toBe('20,000 đ')
+    expect(within(row).getAllByRole('cell')[5].textContent).toBe('10,000 đ')
+    expect(within(row).getAllByRole('cell')[10].textContent).toBe('110,000 đ')
+    expect(screen.getAllByText('110,000 đ').length).toBeGreaterThan(0)
+  })
+
   it('still locks payroll for an explicitly scoped source linked to an out-of-scope employee', () => {
     const otherStoreEmployee = {
       ...employee,

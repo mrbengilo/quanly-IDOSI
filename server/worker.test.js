@@ -6685,6 +6685,54 @@ describe('IDOSI Worker security primitives', () => {
     })
   })
 
+  it('closes payroll for a departed store employee who worked during the requested period', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z'))
+    try {
+      const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-departed-store-payroll' }
+      const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+        username: 'admin', password: 'departed-store-payroll-password',
+        initialState: {
+          stores: [{ id: 'S01', short: 'Dosii KVC', name: 'Dosii KVC', status: 'Đang hoạt động' }],
+          employees: [{
+            id: 'TNV-DEPARTED', name: 'Nhân viên đã nghỉ trong kỳ', storeId: 'S01', unit: 'store',
+            employmentType: 'Part-Time', payBasis: 'hourly', hourlyRate: 20_000,
+            status: 'Đã nghỉ việc',
+          }],
+          attendance: [{
+            id: 'ATT-DEPARTED', employeeId: 'TNV-DEPARTED', storeId: 'S01', workDate: '2026-08-20',
+            checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T05:00:00.000Z', hours: 4,
+          }],
+          salaryAdjustments: [{
+            id: 'ADJ-DEPARTED', employeeId: 'TNV-DEPARTED', storeId: 'S01', period: '2026-08',
+            type: 'Thưởng khác', amount: 50_000, status: 'Đã duyệt',
+          }],
+          payrollPeriods: [], payrollPayments: [], salaryAdvances: [], expenseEntries: [],
+          cashTransactions: [], orders: [], storeEmployeeSalaryConfigs: [],
+        },
+      }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+      expect(bootstrap.status).toBe(201)
+      const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+        username: 'admin', password: 'departed-store-payroll-password',
+      }), env)
+      const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+      const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'S01', period: '2026-08' },
+      }, { ...authorization, 'idempotency-key': 'departed-store-payroll-close-0001' }), env)
+
+      expect(closed.status).toBe(201)
+      expect(await closed.json()).toMatchObject({
+        period: { rows: [expect.objectContaining({
+          employeeId: 'TNV-DEPARTED', hours: 4, baseSalary: 80_000,
+          manualBonusVnd: 50_000, gross: 130_000, remaining: 130_000,
+        })] },
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('closes payroll with canonical case-only salary configuration history', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-canonical-config-history' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
