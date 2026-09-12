@@ -2,18 +2,21 @@ import { describe, expect, it } from 'vitest'
 import {
   activeOccupationLabels,
   DEFAULT_ORDER_INFORMATION_OPTIONS,
+  DEFAULT_PRODUCT_LABELS,
   findOccupationOption,
   normalizeOrderInformationOptions,
   occupationValueAllowed,
   ORDER_PAYMENT_METHODS,
+  productOptions,
   validateOrderInformationOptionInput,
 } from './orderInformationSettings'
 
 describe('order information settings', () => {
   it('provides stable production defaults and exactly two payment methods', () => {
-    expect(DEFAULT_ORDER_INFORMATION_OPTIONS).toHaveLength(15)
+    expect(DEFAULT_ORDER_INFORMATION_OPTIONS).toHaveLength(20)
     expect(ORDER_PAYMENT_METHODS).toEqual(['Tiền mặt', 'Chuyển khoản'])
     expect(activeOccupationLabels(undefined)).toContain('Nhân viên VP')
+    expect(productOptions(undefined).map((option) => option.label)).toEqual(DEFAULT_PRODUCT_LABELS)
   })
 
   it('hides inactive occupations for new orders while preserving legacy reads', () => {
@@ -38,5 +41,6 @@ describe('order information settings', () => {
     expect(validateOrderInformationOptionInput({ label: '  kỹ sư ', code: 'OCC-C' }, options)).toMatch(/tồn tại/u)
     expect(validateOrderInformationOptionInput({ label: 'Giáo viên', code: 'OCC-A' }, options)).toMatch(/tồn tại/u)
     expect(validateOrderInformationOptionInput({ label: 'Giáo viên', code: 'OCC-C' }, options)).toBe('')
+    expect(validateOrderInformationOptionInput({ kind: 'product', label: 'Kỹ sư', code: 'PRD-001' }, options)).toBe('')
   })
 })

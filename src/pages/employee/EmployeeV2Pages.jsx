@@ -31,6 +31,8 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { OrderPaymentSummary } from '../../components/OrderPaymentSummary'
+import { OrderItemSelector, OrderItemsSummary } from '../../components/OrderItemSelector'
+import { OrderCustomFieldsEditor, OrderCustomFieldsSummary } from '../../components/OrderCustomFields'
 import { orderMatchesFilters, parseOrderAmountFilter, summarizeOrders } from '../../domain/orderSummary'
 import { SearchableSelect } from '../../components/SearchableSelect'
 import { SupportEmployeeTag } from '../../components/SupportEmployeeTag'
@@ -90,7 +92,7 @@ const shiftAliases = (shift = {}) => [shift?.id, shift?.code]
   .filter(Boolean)
 const timestamp = shortDateTime24
 const periodLabel = (value) => value ? value.split('-').reverse().join('/') : '—'
-const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: '' })
+const EMPTY_ORDER_FORM = Object.freeze({ customerName: '', customerPhone: '', customerAge: '', gender: '', occupation: '', acquisitionChannel: '', amount: '', paymentMethod: '', items: [], customFields: [] })
 const statusLabel = (value) => {
   const normalized = String(value || '').toLocaleLowerCase('vi-VN')
   if (normalized.includes('trễ')) return 'Đi trễ'
@@ -630,7 +632,7 @@ export function EmployeeOrdersPage() {
 
   const closeCreate = () => {
     orderRequestRef.current = { fingerprint: '', idempotencyKey: '' }
-    setForm(EMPTY_ORDER_FORM)
+    setForm({ ...EMPTY_ORDER_FORM, items: [], customFields: [] })
     setFormErrors({})
     setOpen(false)
   }
@@ -730,8 +732,8 @@ export function EmployeeOrdersPage() {
         {filteredRows.length ? (
           <>
             <TableWrap tableClassName="order-table" paginationKey={`${paymentFilterKey}:${paymentFilter}:${amountInput}`}>
-              <thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Giới tính</th><th>Nghề nghiệp</th><th>Biết qua kênh</th><th>Ca làm việc</th><th>Thanh toán</th><th>Số tiền</th></tr></thead>
-              <tbody>{filteredRows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Thời gian">{timestamp(order.createdAt)}</td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || '—'} • {order.customerAge ?? '—'} tuổi</small></td><td data-label="Giới tính">{order.gender || '—'}</td><td data-label="Nghề nghiệp">{order.occupation || '—'}</td><td data-label="Biết qua kênh"><Badge tone="green">{order.acquisitionChannel || '—'}</Badge></td><td data-label="Ca làm việc">{order.shiftName || 'Chưa gắn ca'}</td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
+              <thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Mặt hàng</th><th>Thuộc tính</th><th>Giới tính</th><th>Nghề nghiệp</th><th>Biết qua kênh</th><th>Ca làm việc</th><th>Thanh toán</th><th>Số tiền</th></tr></thead>
+              <tbody>{filteredRows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Thời gian">{timestamp(order.createdAt)}</td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || '—'} • {order.customerAge ?? '—'} tuổi</small></td><td data-label="Mặt hàng" data-wide><OrderItemsSummary items={order.items} /></td><td data-label="Thuộc tính" data-wide><OrderCustomFieldsSummary values={order.customFields} /></td><td data-label="Giới tính">{order.gender || '—'}</td><td data-label="Nghề nghiệp">{order.occupation || '—'}</td><td data-label="Biết qua kênh"><Badge tone="green">{order.acquisitionChannel || '—'}</Badge></td><td data-label="Ca làm việc">{order.shiftName || 'Chưa gắn ca'}</td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
             </TableWrap>
           </>
         ) : <EmptyState
@@ -749,6 +751,8 @@ export function EmployeeOrdersPage() {
           <Field label="Giới tính" required hint="Hỏi khách hoặc đoán." error={formErrors.gender}><Select value={form.gender} onChange={(event) => updateForm('gender', event.target.value)}><option value="">Chọn giới tính</option>{ORDER_GENDERS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
           <Field label="Nghề nghiệp" required hint="Hỏi khách hoặc đoán; dùng ô tìm kiếm trong danh sách." error={formErrors.occupation}><SearchableSelect aria-label="Nghề nghiệp" value={form.occupation} onChange={(event) => updateForm('occupation', event.target.value)} options={occupations} placeholder="Chọn" loading={['connecting', 'syncing'].includes(apiStatus)} error={apiStatus === 'error' ? 'Không thể tải danh sách nghề nghiệp.' : ''} /></Field>
           <Field label="Biết qua kênh nào" required error={formErrors.acquisitionChannel}><Select value={form.acquisitionChannel} onChange={(event) => updateForm('acquisitionChannel', event.target.value)}><option value="">Chọn kênh</option>{ACQUISITION_CHANNELS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
+          <div className="span-2"><OrderItemSelector options={orderInformationOptions} value={form.items} error={formErrors.items} disabled={saving} onChange={(items) => updateForm('items', items)} /></div>
+          <div className="span-2"><OrderCustomFieldsEditor options={orderInformationOptions} value={form.customFields} error={formErrors.customFields} disabled={saving} onChange={(customFields) => updateForm('customFields', customFields)} /></div>
           <Field label="Số tiền" required error={formErrors.amount}><MoneyInput value={form.amount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
           <Field label="Hình thức thanh toán" required error={formErrors.paymentMethod}><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option value="">Chọn</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
           <InfoNote>Đơn sẽ tự gắn với {openAttendance?.shiftName || openAttendance?.shift}, {store?.name || 'cửa hàng trực thuộc'} và thời gian tạo thực tế.</InfoNote>

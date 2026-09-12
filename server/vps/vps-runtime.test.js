@@ -277,13 +277,24 @@ describe('IDOSI VPS runtime', () => {
       imagesDirectory: resolve(directory, 'images'),
       staticDirectory,
       bootstrapToken: 'bootstrap-test-token',
+      warehouseApiKey: 'warehouse-runtime-test-key-2026-09-12',
+      warehouseApiAllowedOrigins: 'https://warehouse.idosi.example',
     })
     await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
     const address = server.address()
     const baseUrl = `http://127.0.0.1:${address.port}`
     try {
       const health = await fetch(`${baseUrl}/api/health`).then((response) => response.json())
-      expect(health).toMatchObject({ ok: true, databaseConfigured: true, identityImageStorageConfigured: true })
+      expect(health).toMatchObject({
+        ok: true,
+        databaseConfigured: true,
+        identityImageStorageConfigured: true,
+        warehouseStatisticsApiConfigured: true,
+      })
+      expect(runtime.env).toMatchObject({
+        WAREHOUSE_API_KEY: 'warehouse-runtime-test-key-2026-09-12',
+        WAREHOUSE_API_ALLOWED_ORIGINS: 'https://warehouse.idosi.example',
+      })
 
       const bootstrapResponse = await fetch(`${baseUrl}/api/bootstrap`, {
         method: 'POST',
@@ -301,17 +312,18 @@ describe('IDOSI VPS runtime', () => {
         WHERE scope_key = 'global' AND collection_key = 'orderInformationOptions'
         ORDER BY entity_order, entity_key
       `).all()).results.map(({ value_json: valueJson }) => JSON.parse(valueJson))
-      expect(persistedDefaults).toHaveLength(17)
+      expect(persistedDefaults).toHaveLength(22)
       expect(persistedDefaults.filter(({ kind }) => kind === 'occupation')).toHaveLength(15)
       expect(persistedDefaults.filter(({ kind }) => kind === 'payment_method')).toEqual([
         expect.objectContaining({ id: 'order-payment-001', label: 'Tiền mặt', system: true }),
         expect.objectContaining({ id: 'order-payment-002', label: 'Chuyển khoản', system: true }),
       ])
+      expect(persistedDefaults.filter(({ kind }) => kind === 'product')).toHaveLength(5)
       const bootstrapAudit = await runtime.database.prepare(`
         SELECT metadata_json FROM audit_log WHERE action = 'system.bootstrap'
       `).first()
       expect(JSON.parse(bootstrapAudit.metadata_json)).toMatchObject({
-        orderInformationDefaults: { persisted: true, canonicalSeedCount: 17 },
+        orderInformationDefaults: { persisted: true, canonicalSeedCount: 22 },
       })
 
       const loginResponse = await fetch(`${baseUrl}/api/login`, {

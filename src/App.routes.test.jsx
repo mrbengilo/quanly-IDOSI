@@ -89,6 +89,10 @@ vi.mock('./pages/store/StoreV2Pages', () => ({
   StoreReportsV2: () => <div>Store reports</div>,
 }))
 
+vi.mock('./pages/store/StoreStatisticsPage', () => ({
+  StoreStatisticsPage: () => <div>Số liệu thống kê route</div>,
+}))
+
 vi.mock('./pages/compensation', () => ({
   ManagerCompensationPage: () => <div>Quản lý thưởng phụ cấp</div>,
   MyCompensationPage: () => <div>Thu nhập của tôi</div>,
@@ -158,6 +162,12 @@ describe('App role routes', () => {
 
     await waitFor(() => expect(screen.getByTestId('current-route').textContent).toBe('/store/overview'))
     expect(screen.queryByText('Cài đặt thông tin đơn hàng route')).toBeNull()
+  })
+
+  it('opens the store statistics page inside the selected store workspace', async () => {
+    renderRoute('/store/statistics', 'store_manager')
+    expect(await screen.findByText('Số liệu thống kê route')).toBeTruthy()
+    expect(screen.getByTestId('current-route').textContent).toBe('/store/statistics')
   })
 
   it.each(projectedHomes)('keeps the %s %s shell visible until its complete home projection matches', async (role, path, expectedText, unit, projection) => {

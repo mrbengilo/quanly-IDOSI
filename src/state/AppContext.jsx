@@ -44,13 +44,6 @@ import { STORE_SALARY_CONFIG_IDENTIFIER_COLLISION } from '../domain/storeTieredP
 import { validateAccountAvatarDataUrl } from '../domain/accountAvatar'
 import { employeeProfileKey, employeeProfilesShareAccount } from '../domain/employeeAccountIdentity'
 import {
-  normalizeOrderInformationOptions,
-  occupationValueAllowed,
-  ORDER_INFORMATION_KIND,
-  ORDER_PAYMENT_METHODS,
-  validateOrderInformationOptionInput,
-} from '../domain/orderInformationSettings'
-import {
   resolveAttendanceShiftSelection,
   resolveAttendanceWorkingTime,
 } from '../domain/attendanceWorkingTime'
@@ -84,6 +77,34 @@ import {
 } from '../services/idosiApi'
 
 const AppContext = createContext(null)
+const ORDER_INFORMATION_KIND = Object.freeze({
+  OCCUPATION: 'occupation',
+  PRODUCT: 'product',
+  CUSTOM_FIELD: 'custom_field',
+})
+const ORDER_PAYMENT_METHODS = Object.freeze(['Tiền mặt', 'Chuyển khoản'])
+let orderInformationResolversPromise
+const loadOrderInformationResolvers = () => {
+  if (!orderInformationResolversPromise) {
+    orderInformationResolversPromise = import('../domain/orderInformationSettings')
+  }
+  return orderInformationResolversPromise
+}
+
+let orderPayloadResolversPromise
+const loadOrderPayloadResolvers = () => {
+  if (!orderPayloadResolversPromise) {
+    orderPayloadResolversPromise = Promise.all([
+      import('../domain/orderItems'),
+      import('../domain/orderCustomFields'),
+    ]).then(([orderItems, orderCustomFields]) => ({
+      resolveOrderItems: orderItems.resolveOrderItems,
+      resolveOrderCustomFields: orderCustomFields.resolveOrderCustomFields,
+    }))
+  }
+  return orderPayloadResolversPromise
+}
+
 export const STORAGE_KEY = 'idosi-state-v2'
 export const SYSTEM_RESET_IDEMPOTENCY_STORAGE_KEY = 'idosi-system-reset-all-idempotency-key'
 export const ACTIVE_STORE_STORAGE_PREFIX = 'idosi-active-store:'
@@ -139,7 +160,7 @@ export const createAccountSettingsPayload = (settings = {}) => {
 }
 
 const ORDER_OPERATIONAL_MUTABLE_FIELDS = [
-  'customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod',
+  'customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod', 'items', 'customFields',
   'status', 'deletedAt', 'deletedBy', 'deleteReason',
 ]
 const ATTENDANCE_CORRECTION_FIELDS = [
@@ -564,9 +585,19 @@ const isValidEmployeePhone = (value) => /^0\d{9}$/.test(normalizePhone(value))
 const ORDER_GENDERS = new Set(['Nam', 'Nữ', 'Khác'])
 const ORDER_ACQUISITION_CHANNELS = new Set(['Facebook', 'Tiktok', 'Zalo', 'Bạn Bè', 'Người thân', 'Khác'])
 const normalizeOrderInformationFields = (payload = {}) => ({
+  kind: String(payload.kind || ORDER_INFORMATION_KIND.OCCUPATION).trim(),
   label: String(payload.label || '').normalize('NFC').trim().replace(/\s+/gu, ' '),
   code: String(payload.code || '').trim().toUpperCase(),
+  ...(String(payload.kind) === ORDER_INFORMATION_KIND.CUSTOM_FIELD ? {
+    fieldType: String(payload.fieldType || 'text').trim(),
+    required: payload.required === true,
+    choices: Array.isArray(payload.choices) ? payload.choices.map((choice) => String(choice).normalize('NFC').trim()).filter(Boolean) : [],
+  } : {}),
 })
+
+const orderInformationCategoryName = (kind) => kind === ORDER_INFORMATION_KIND.PRODUCT
+  ? 'mặt hàng'
+  : kind === ORDER_INFORMATION_KIND.CUSTOM_FIELD ? 'thuộc tính' : 'nghề nghiệp'
 
 const normalizeCredentialToken = (value = '') => String(value)
   .normalize('NFD')
@@ -4158,28 +4189,30 @@ export function AppProvider({ children }) {
     if (!canManageOrderInformationOptions()) {
       return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
     }
+    const { normalizeOrderInformationOptions, validateOrderInformationOptionInput } = await loadOrderInformationResolvers()
     const options = normalizeOrderInformationOptions(state.orderInformationOptions)
     const input = normalizeOrderInformationFields(payload)
     const validationMessage = validateOrderInformationOptionInput(input, options)
     if (validationMessage) return { ok: false, message: validationMessage }
+    const categoryName = orderInformationCategoryName(input.kind)
 
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('order_information.create', input)
-        notify('Đã thêm nghề nghiệp dùng cho đơn hàng.')
+        notify(`Đã thêm ${categoryName} dùng cho đơn hàng.`)
         return { ok: true, option: result.option }
       } catch (error) {
-        notify(error.message || 'Không thể thêm nghề nghiệp.', 'info')
+        notify(error.message || `Không thể thêm ${categoryName}.`, 'info')
         return { ok: false, message: error.message }
       }
     }
 
     const timestamp = new Date().toISOString()
     const actor = actorSnapshot(state.session)
-    const sortOrder = options.reduce((maximum, option) => Math.max(maximum, Number(option.sortOrder) || 0), 0) + 100
+    const sameKindOptions = options.filter((option) => option.kind === input.kind)
+    const sortOrder = sameKindOptions.reduce((maximum, option) => Math.max(maximum, Number(option.sortOrder) || 0), 0) + 100
     const [option] = normalizeOrderInformationOptions([{
-      id: uid('OCC'),
-      kind: ORDER_INFORMATION_KIND.OCCUPATION,
+      id: uid(input.kind === ORDER_INFORMATION_KIND.PRODUCT ? 'PRD' : input.kind === ORDER_INFORMATION_KIND.CUSTOM_FIELD ? 'ATTR' : 'OCC'),
       ...input,
       active: true,
       sortOrder,
@@ -4211,7 +4244,7 @@ export function AppProvider({ children }) {
       auditLogs: [audit, ...(current.auditLogs || [])],
       stateVersion: current.stateVersion + 1,
     }))
-    notify('Đã thêm nghề nghiệp dùng cho đơn hàng.')
+    notify(`Đã thêm ${categoryName} dùng cho đơn hàng.`)
     return { ok: true, option }
   }
 
@@ -4219,23 +4252,29 @@ export function AppProvider({ children }) {
     if (!canManageOrderInformationOptions()) {
       return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
     }
+    const { normalizeOrderInformationOptions, validateOrderInformationOptionInput } = await loadOrderInformationResolvers()
     const options = normalizeOrderInformationOptions(state.orderInformationOptions)
     const previous = options.find((option) => String(option.id) === String(id))
-    if (!previous) return { ok: false, message: 'Không tìm thấy nghề nghiệp.' }
-    const input = normalizeOrderInformationFields(payload)
+    if (!previous) return { ok: false, message: 'Không tìm thấy lựa chọn.' }
+    const input = normalizeOrderInformationFields({ ...payload, kind: previous.kind })
+    const categoryName = orderInformationCategoryName(previous.kind)
     const validationMessage = validateOrderInformationOptionInput(input, options, { currentId: previous.id })
     if (validationMessage) return { ok: false, message: validationMessage }
-    if (previous.label === input.label && previous.code === input.code) {
+    if (previous.label === input.label
+      && previous.code === input.code
+      && previous.fieldType === input.fieldType
+      && previous.required === input.required
+      && JSON.stringify(previous.choices || []) === JSON.stringify(input.choices || [])) {
       return { ok: true, option: previous, existing: true }
     }
 
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('order_information.update', { optionId: previous.id, ...input })
-        notify('Đã cập nhật nghề nghiệp.')
+        notify(`Đã cập nhật ${categoryName}.`)
         return { ok: true, option: result.option }
       } catch (error) {
-        notify(error.message || 'Không thể cập nhật nghề nghiệp.', 'info')
+        notify(error.message || `Không thể cập nhật ${categoryName}.`, 'info')
         return { ok: false, message: error.message }
       }
     }
@@ -4267,7 +4306,7 @@ export function AppProvider({ children }) {
       auditLogs: [audit, ...(current.auditLogs || [])],
       stateVersion: current.stateVersion + 1,
     }))
-    notify('Đã cập nhật nghề nghiệp.')
+    notify(`Đã cập nhật ${categoryName}.`)
     return { ok: true, option }
   }
 
@@ -4275,23 +4314,26 @@ export function AppProvider({ children }) {
     if (!canManageOrderInformationOptions()) {
       return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
     }
+    const { normalizeOrderInformationOptions } = await loadOrderInformationResolvers()
     const options = normalizeOrderInformationOptions(state.orderInformationOptions)
     const previous = options.find((option) => String(option.id) === String(id))
-    if (!previous) return { ok: false, message: 'Không tìm thấy nghề nghiệp.' }
+    if (!previous) return { ok: false, message: 'Không tìm thấy lựa chọn.' }
     if (!previous.active) return { ok: true, option: previous, existing: true }
     const normalizedReason = String(reason || '').trim()
-    if (!normalizedReason) return { ok: false, message: 'Cần nhập lý do vô hiệu hóa nghề nghiệp.' }
+    const categoryName = orderInformationCategoryName(previous.kind)
+    if (!normalizedReason) return { ok: false, message: `Cần nhập lý do vô hiệu hóa ${categoryName}.` }
 
     if (apiRef.current.enabled) {
       try {
         const result = await runRemoteDomainCommand('order_information.disable', {
           optionId: previous.id,
+          kind: previous.kind,
           reason: normalizedReason,
         })
-        notify('Đã vô hiệu hóa nghề nghiệp.', 'info')
+        notify(`Đã vô hiệu hóa ${categoryName}.`, 'info')
         return { ok: true, option: result.option }
       } catch (error) {
-        notify(error.message || 'Không thể vô hiệu hóa nghề nghiệp.', 'info')
+        notify(error.message || `Không thể vô hiệu hóa ${categoryName}.`, 'info')
         return { ok: false, message: error.message }
       }
     }
@@ -4325,7 +4367,7 @@ export function AppProvider({ children }) {
       auditLogs: [audit, ...(current.auditLogs || [])],
       stateVersion: current.stateVersion + 1,
     }))
-    notify('Đã vô hiệu hóa nghề nghiệp.', 'info')
+    notify(`Đã vô hiệu hóa ${categoryName}.`, 'info')
     return { ok: true, option }
   }
 
@@ -4333,18 +4375,20 @@ export function AppProvider({ children }) {
     if (!canManageOrderInformationOptions()) {
       return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
     }
+    const { normalizeOrderInformationOptions } = await loadOrderInformationResolvers()
     const options = normalizeOrderInformationOptions(state.orderInformationOptions)
     const previous = options.find((option) => String(option.id) === String(id))
-    if (!previous) return { ok: false, message: 'Không tìm thấy nghề nghiệp.' }
+    if (!previous) return { ok: false, message: 'Không tìm thấy lựa chọn.' }
     if (previous.active) return { ok: true, option: previous, existing: true }
+    const categoryName = orderInformationCategoryName(previous.kind)
 
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('order_information.restore', { optionId: previous.id })
-        notify('Đã khôi phục nghề nghiệp.')
+        const result = await runRemoteDomainCommand('order_information.restore', { optionId: previous.id, kind: previous.kind })
+        notify(`Đã khôi phục ${categoryName}.`)
         return { ok: true, option: result.option }
       } catch (error) {
-        notify(error.message || 'Không thể khôi phục nghề nghiệp.', 'info')
+        notify(error.message || `Không thể khôi phục ${categoryName}.`, 'info')
         return { ok: false, message: error.message }
       }
     }
@@ -4377,40 +4421,44 @@ export function AppProvider({ children }) {
       auditLogs: [audit, ...(current.auditLogs || [])],
       stateVersion: current.stateVersion + 1,
     }))
-    notify('Đã khôi phục nghề nghiệp.')
+    notify(`Đã khôi phục ${categoryName}.`)
     return { ok: true, option }
   }
 
-  const reorderOrderInformationOptions = async (orderedIds = []) => {
+  const reorderOrderInformationOptions = async (orderedIds = [], kind = ORDER_INFORMATION_KIND.OCCUPATION) => {
     if (!canManageOrderInformationOptions()) {
       return { ok: false, message: 'Tài khoản không có quyền quản lý thông tin đơn hàng.' }
     }
+    const { normalizeOrderInformationOptions } = await loadOrderInformationResolvers()
     const options = normalizeOrderInformationOptions(state.orderInformationOptions)
+    const requestedKind = String(kind || ORDER_INFORMATION_KIND.OCCUPATION)
+    const categoryOptions = options.filter((option) => option.kind === requestedKind)
+    const categoryName = orderInformationCategoryName(requestedKind)
     const normalizedIds = Array.isArray(orderedIds) ? orderedIds.map(String) : []
-    const knownIds = new Set(options.map((option) => String(option.id)))
-    if (normalizedIds.length !== options.length
+    const knownIds = new Set(categoryOptions.map((option) => String(option.id)))
+    if (normalizedIds.length !== categoryOptions.length
       || new Set(normalizedIds).size !== normalizedIds.length
       || normalizedIds.some((id) => !knownIds.has(id))) {
-      return { ok: false, message: 'Thứ tự nghề nghiệp không hợp lệ.' }
+      return { ok: false, message: `Thứ tự ${categoryName} không hợp lệ.` }
     }
-    if (normalizedIds.every((id, index) => id === String(options[index].id))) {
-      return { ok: true, options, existing: true }
+    if (normalizedIds.every((id, index) => id === String(categoryOptions[index].id))) {
+      return { ok: true, options: categoryOptions, existing: true }
     }
 
     if (apiRef.current.enabled) {
       try {
-        const result = await runRemoteDomainCommand('order_information.reorder', { orderedIds: normalizedIds })
-        notify('Đã cập nhật thứ tự nghề nghiệp.')
+        const result = await runRemoteDomainCommand('order_information.reorder', { kind: requestedKind, orderedIds: normalizedIds })
+        notify(`Đã cập nhật thứ tự ${categoryName}.`)
         return { ok: true, options: result.options }
       } catch (error) {
-        notify(error.message || 'Không thể cập nhật thứ tự nghề nghiệp.', 'info')
+        notify(error.message || `Không thể cập nhật thứ tự ${categoryName}.`, 'info')
         return { ok: false, message: error.message }
       }
     }
 
     const timestamp = new Date().toISOString()
     const actor = actorSnapshot(state.session)
-    const optionsById = new Map(options.map((option) => [String(option.id), option]))
+    const optionsById = new Map(categoryOptions.map((option) => [String(option.id), option]))
     const reordered = normalizedIds.map((id, index) => ({
       ...optionsById.get(id),
       sortOrder: (index + 1) * 100,
@@ -4422,18 +4470,23 @@ export function AppProvider({ children }) {
       entity: 'order_information_option',
       entityId: 'order-information-options',
       action: 'reorder',
-      before: options.map((option) => option.id),
+      before: categoryOptions.map((option) => option.id),
       after: reordered.map((option) => option.id),
       actor,
       createdAt: timestamp,
     }
     setState((current) => ({
       ...current,
-      orderInformationOptions: reordered,
+      orderInformationOptions: (() => {
+        let requestedIndex = 0
+        return normalizeOrderInformationOptions(current.orderInformationOptions).map((option) => (
+          optionsById.has(String(option.id)) ? reordered[requestedIndex++] : option
+        ))
+      })(),
       auditLogs: [audit, ...(current.auditLogs || [])],
       stateVersion: current.stateVersion + 1,
     }))
-    notify('Đã cập nhật thứ tự nghề nghiệp.')
+    notify(`Đã cập nhật thứ tự ${categoryName}.`)
     return { ok: true, options: reordered }
   }
 
@@ -4448,11 +4501,23 @@ export function AppProvider({ children }) {
     const acquisitionChannel = String(payload.acquisitionChannel || '').trim()
     const paymentMethod = String(payload.paymentMethod || '').trim()
     if (!ORDER_GENDERS.has(gender)) return { ok: false, message: 'Vui lòng chọn giới tính khách hàng.' }
+    const { occupationValueAllowed } = await loadOrderInformationResolvers()
     if (!occupationValueAllowed({ options: state.orderInformationOptions, value: occupation })) {
       return { ok: false, message: 'Vui lòng chọn nghề nghiệp đang hoạt động trong danh sách của hệ thống.' }
     }
     if (!ORDER_ACQUISITION_CHANNELS.has(acquisitionChannel)) return { ok: false, message: 'Vui lòng chọn kênh khách hàng biết đến cửa hàng.' }
     if (!ORDER_PAYMENT_METHODS.includes(paymentMethod)) return { ok: false, message: 'Vui lòng chọn hình thức thanh toán.' }
+    const hasItems = Object.hasOwn(payload, 'items')
+    const hasCustomFields = Object.hasOwn(payload, 'customFields')
+    const resolvers = hasItems || hasCustomFields ? await loadOrderPayloadResolvers() : null
+    const resolvedItems = hasItems
+      ? resolvers.resolveOrderItems({ items: payload.items, options: state.orderInformationOptions })
+      : { items: [], error: '' }
+    if (resolvedItems.error) return { ok: false, message: resolvedItems.error }
+    const resolvedCustomFields = hasCustomFields
+      ? resolvers.resolveOrderCustomFields({ values: payload.customFields, options: state.orderInformationOptions })
+      : { values: [], error: '' }
+    if (resolvedCustomFields.error) return { ok: false, message: resolvedCustomFields.error }
     const idempotencyKey = String(payload.idempotencyKey || '').trim()
     if (idempotencyKey && state.idempotencyKeys.includes(idempotencyKey)) {
       const existing = state.orders.find((item) => item.idempotencyKey === idempotencyKey)
@@ -4463,7 +4528,18 @@ export function AppProvider({ children }) {
       try {
         const result = await runRemoteDomainCommand(
           'order.create',
-          { ...payload, gender, occupation, acquisitionChannel, paymentMethod, amount, storeId, idempotencyKey: undefined },
+          {
+            ...payload,
+            gender,
+            occupation,
+            acquisitionChannel,
+            paymentMethod,
+            amount,
+            storeId,
+            ...(hasItems ? { items: resolvedItems.items } : {}),
+            ...(hasCustomFields ? { customFields: resolvedCustomFields.values } : {}),
+            idempotencyKey: undefined,
+          },
           idempotencyKey || `order:${crypto.randomUUID()}`,
         )
         notify(`Đã tạo đơn hàng ${result.order.code}.`)
@@ -4491,6 +4567,8 @@ export function AppProvider({ children }) {
       acquisitionChannel,
       amount,
       paymentMethod,
+      items: resolvedItems.items,
+      customFields: resolvedCustomFields.values,
       employeeId,
       employeeName: employee?.name || state.session?.name || 'Admin IDOSI',
       shiftId: openAttendance?.shift || payload.shiftId || null,
@@ -4545,6 +4623,8 @@ export function AppProvider({ children }) {
           ...(payload.acquisitionChannel != null ? { acquisitionChannel: String(payload.acquisitionChannel).trim() } : {}),
           ...(payload.paymentMethod != null ? { paymentMethod: String(payload.paymentMethod).trim() } : {}),
           ...(payload.amount != null ? { amount: nonNegativeInteger(payload.amount) } : {}),
+          ...(payload.items !== undefined ? { items: payload.items } : {}),
+          ...(payload.customFields !== undefined ? { customFields: payload.customFields } : {}),
           reason,
         })
         notify(`Đã cập nhật đơn hàng ${result.order.code}.`)
@@ -4554,6 +4634,27 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
+    const resolvers = payload.items !== undefined || payload.customFields !== undefined
+      ? await loadOrderPayloadResolvers()
+      : null
+    const resolvedItems = payload.items === undefined
+      ? { items: previous.items, error: '' }
+      : resolvers.resolveOrderItems({
+          items: payload.items,
+          options: state.orderInformationOptions,
+          previousItems: previous.items,
+          allowHistorical: true,
+        })
+    if (resolvedItems.error) return { ok: false, message: resolvedItems.error }
+    const resolvedCustomFields = payload.customFields === undefined
+      ? { values: previous.customFields || [], error: '' }
+      : resolvers.resolveOrderCustomFields({
+          values: payload.customFields,
+          options: state.orderInformationOptions,
+          previousValues: previous.customFields,
+          allowHistorical: true,
+        })
+    if (resolvedCustomFields.error) return { ok: false, message: resolvedCustomFields.error }
     const candidate = {
       ...previous,
       customerName: payload.customerName == null ? previous.customerName : String(payload.customerName).trim(),
@@ -4564,20 +4665,25 @@ export function AppProvider({ children }) {
       acquisitionChannel: payload.acquisitionChannel == null ? previous.acquisitionChannel : String(payload.acquisitionChannel).trim(),
       amount: payload.amount == null ? previous.amount : nonNegativeInteger(payload.amount),
       paymentMethod: payload.paymentMethod == null ? previous.paymentMethod : String(payload.paymentMethod).trim(),
+      items: resolvedItems.items,
+      customFields: resolvedCustomFields.values,
     }
     if (candidate.amount <= 0) return { ok: false, message: 'Số tiền đơn hàng phải lớn hơn 0.' }
-    if (payload.occupation != null && !occupationValueAllowed({
-      options: state.orderInformationOptions,
-      value: candidate.occupation,
-      previousValue: previous.occupation,
-      allowUnchangedInactive: true,
-    })) {
-      return { ok: false, message: 'Chỉ được giữ nguyên nghề nghiệp đã vô hiệu hóa; hãy chọn giá trị đang hoạt động nếu thay đổi.' }
+    if (payload.occupation != null) {
+      const { occupationValueAllowed } = await loadOrderInformationResolvers()
+      if (!occupationValueAllowed({
+        options: state.orderInformationOptions,
+        value: candidate.occupation,
+        previousValue: previous.occupation,
+        allowUnchangedInactive: true,
+      })) {
+        return { ok: false, message: 'Chỉ được giữ nguyên nghề nghiệp đã vô hiệu hóa; hãy chọn giá trị đang hoạt động nếu thay đổi.' }
+      }
     }
     if (!ORDER_PAYMENT_METHODS.includes(candidate.paymentMethod)) {
       return { ok: false, message: 'Vui lòng chọn hình thức thanh toán.' }
     }
-    const changedFields = ['customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod']
+    const changedFields = ['customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod', 'items', 'customFields']
       .filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(candidate[key]))
     if (actorRole === 'business_support' && changedFields.includes('amount')) {
       return { ok: false, message: 'Chỉ Admin được thay đổi số tiền của đơn hàng.' }
@@ -4591,6 +4697,8 @@ export function AppProvider({ children }) {
           ...(payload.occupation != null ? { occupation: candidate.occupation } : {}),
           ...(payload.paymentMethod != null ? { paymentMethod: candidate.paymentMethod } : {}),
           ...(payload.amount != null ? { amount: candidate.amount } : {}),
+          ...(payload.items !== undefined ? { items: resolvedItems.items } : {}),
+          ...(payload.customFields !== undefined ? { customFields: resolvedCustomFields.values } : {}),
           reason,
         })
         notify(`Đã cập nhật đơn hàng ${result.order.code}.`)

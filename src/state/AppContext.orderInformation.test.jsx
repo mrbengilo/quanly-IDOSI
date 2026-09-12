@@ -1,6 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { createRef, forwardRef, useImperativeHandle } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationDefaults'
 import { AppProvider, canonicalizeRemoteOperationalIdentifiers, createInitialState, useApp } from './AppContext'
 
 const api = vi.hoisted(() => ({
@@ -49,7 +50,10 @@ const users = {
 }
 
 const createRemoteFixture = () => {
-  const state = createInitialState()
+  const state = {
+    ...createInitialState(),
+    orderInformationOptions: DEFAULT_ORDER_INFORMATION_OPTIONS.map((option) => ({ ...option })),
+  }
   const [first, second, third, fourth] = state.orderInformationOptions
   const inactive = (option, reason) => ({
     ...option,
@@ -354,13 +358,13 @@ describe('AppContext order information options', () => {
       expect((await appRef.current.reorderOrderInformationOptions(reversedIds)).ok).toBe(true)
     })
 
-    expect(commandPayload('order_information.create')).toEqual({ label: 'Kiến trúc sư', code: 'OCC-901' })
+    expect(commandPayload('order_information.create')).toEqual({ kind: 'occupation', label: 'Kiến trúc sư', code: 'OCC-901' })
     expect(commandPayload('order_information.update')).toEqual({
-      optionId: fourth.id, label: 'Kỹ sư phần mềm', code: 'OCC-004',
+      optionId: fourth.id, kind: 'occupation', label: 'Kỹ sư phần mềm', code: 'OCC-004',
     })
-    expect(commandPayload('order_information.disable')).toEqual({ optionId: third.id, reason: 'Ngừng dùng' })
-    expect(commandPayload('order_information.restore')).toEqual({ optionId: first.id })
-    expect(commandPayload('order_information.reorder')).toEqual({ orderedIds: reversedIds })
+    expect(commandPayload('order_information.disable')).toEqual({ optionId: third.id, kind: 'occupation', reason: 'Ngừng dùng' })
+    expect(commandPayload('order_information.restore')).toEqual({ optionId: first.id, kind: 'occupation' })
+    expect(commandPayload('order_information.reorder')).toEqual({ kind: 'occupation', orderedIds: reversedIds })
     expect(second.active).toBe(false)
   })
 
@@ -395,11 +399,12 @@ describe('AppContext order information options', () => {
       active: true, deletedAt: null, deletedBy: null,
     })
 
-    const reversedIds = [...appRef.current.orderInformationOptions].reverse().map((option) => option.id)
+    const occupations = appRef.current.orderInformationOptions.filter((option) => option.kind === 'occupation')
+    const reversedIds = [...occupations].reverse().map((option) => option.id)
     await act(async () => {
       expect((await appRef.current.reorderOrderInformationOptions(reversedIds)).ok).toBe(true)
     })
-    expect(appRef.current.orderInformationOptions.map((option) => option.id)).toEqual(reversedIds)
+    expect(appRef.current.orderInformationOptions.filter((option) => option.kind === 'occupation').map((option) => option.id)).toEqual(reversedIds)
     expect(appRef.current.auditLogs.slice(0, 5).map((entry) => entry.action)).toEqual([
       'reorder', 'restore', 'disable', 'update', 'create',
     ])

@@ -28,8 +28,8 @@ describe('orderSummary', () => {
 
   it('summarizes the full eligible scoped period by payment method and group', () => {
     const result = summarizeOrders([
-      { id: 'CASH', storeId: 'S01', employeeId: 'E01', shiftId: 'morning', amount: 100_000, paymentMethod: 'Tiền mặt', createdAt: '2026-08-31T18:00:00Z' },
-      { id: 'TRANSFER', storeId: 's01', employeeId: 'E02', shiftId: 'night', amount: 250_000, paymentMethod: 'Chuyển khoản', createdAt: '2026-09-01T20:00:00+07:00' },
+      { id: 'CASH', storeId: 'S01', employeeId: 'E01', shiftId: 'morning', amount: 100_000, paymentMethod: 'Tiền mặt', createdAt: '2026-08-31T18:00:00Z', items: [{ productId: 'P1', productName: 'Đồ nam', quantity: 2 }] },
+      { id: 'TRANSFER', storeId: 's01', employeeId: 'E02', shiftId: 'night', amount: 250_000, paymentMethod: 'Chuyển khoản', createdAt: '2026-09-01T20:00:00+07:00', items: [{ productId: 'P1', productName: 'Đồ nam', quantity: 3 }, { productId: 'P2', productName: 'Đầm', quantity: 1 }] },
       { id: 'OTHER', storeId: 'S01', amount: 50_000, paymentMethod: 'Khác', createdAt: '2026-09-02' },
       { id: 'DELETED', storeId: 'S01', amount: 900_000, deletedAt: '2026-09-03', createdAt: '2026-09-03' },
       { id: 'OPENING', storeId: 'S01', amount: 800_000, source: 'legacy-opening-balance', createdAt: '2026-09-04' },
@@ -45,6 +45,16 @@ describe('orderSummary', () => {
     expect(result.groups.employee.map(({ key, revenue }) => [key, revenue])).toEqual([
       ['E01', 100_000], ['E02', 250_000], ['system', 50_000],
     ])
+    expect(result.products).toEqual({
+      totalQuantity: 6,
+      productTypes: 2,
+      ordersWithItems: 2,
+      unclassifiedOrders: 1,
+      items: [
+        expect.objectContaining({ productId: 'P1', productName: 'Đồ nam', quantity: 5, orders: 2 }),
+        expect.objectContaining({ productId: 'P2', productName: 'Đầm', quantity: 1, orders: 1 }),
+      ],
+    })
   })
 
   it('fails closed on invalid eligible VND amounts', () => {
@@ -92,6 +102,25 @@ describe('orderSummary', () => {
     expect(parseOrderAmountFilter('0')).toBe(0)
     for (const input of ['20000', '20,000', '20.000', '20 000']) expect(parseOrderAmountFilter(input)).toBe(20_000)
     for (const input of ['-1', '1.5', '1e3', '20abc', '9007199254740992', '1,20']) expect(parseOrderAmountFilter(input)).toBeNaN()
+  })
+
+  it('finds orders by product snapshot name', () => {
+    const result = summarizeOrders([{
+      id: 'PRODUCT-SEARCH', storeId: 'S01', amount: 50_000, createdAt: '2026-09-12',
+      items: [{ productId: 'P1', productName: 'Áo nữ', quantity: 4 }],
+    }], { storeId: 'S01', period: '2026-09', query: 'áo nữ' })
+    expect(result.totals.orders).toBe(1)
+    expect(result.products.totalQuantity).toBe(4)
+  })
+
+  it('finds orders by configured custom attribute labels and values', () => {
+    const order = {
+      id: 'CUSTOM-SEARCH', storeId: 'S01', amount: 50_000, createdAt: '2026-09-12',
+      customFields: [{ fieldId: 'ATTR-1', fieldCode: 'SIZE', fieldLabel: 'Kích cỡ', fieldType: 'select', value: 'XL' }],
+    }
+    expect(summarizeOrders([order], { storeId: 'S01', period: '2026-09', query: 'kích cỡ' }).totals.orders).toBe(1)
+    expect(summarizeOrders([order], { storeId: 'S01', period: '2026-09', query: 'xl' }).totals.orders).toBe(1)
+    expect(summarizeOrders([order], { storeId: 'S01', period: '2026-09', query: 'không có' }).totals.orders).toBe(0)
   })
 
 })

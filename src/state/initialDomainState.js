@@ -3,7 +3,6 @@ import {
   DEFAULT_WORK_CATALOG_ITEMS,
   STAFF_WORK_CATALOG_SEED_VERSION,
 } from '../domain/compensationPolicies'
-import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../domain/orderInformationSettings'
 import { SUPPORT_SCHEDULE_PRESETS, normalizeSupportSchedulePresets } from '../domain/supportWorkSchedule'
 
 export const DOMAIN_SCHEMA_VERSION = 8
@@ -63,7 +62,9 @@ export const createDomainState = ({ stores = [], imports = [] } = {}) => ({
   schemaVersion: DOMAIN_SCHEMA_VERSION,
   stateVersion: 1,
   orders: stores.map(openingOrder),
-  orderInformationOptions: DEFAULT_ORDER_INFORMATION_OPTIONS.map((option) => ({ ...option })),
+  // Views and mutations materialize the canonical catalog lazily. Keeping the
+  // initial state empty avoids shipping catalog-management code on first load.
+  orderInformationOptions: [],
   orderCounters: Object.fromEntries(stores.map((store) => [store.id, 1])),
   orderAudit: [],
   notifications: [],

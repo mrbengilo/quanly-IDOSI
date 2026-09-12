@@ -1281,6 +1281,116 @@ describe('IDOSI Worker security primitives', () => {
     expect(await forbiddenStore.json()).toMatchObject({ error: { code: 'STORE_SCOPE_FORBIDDEN' } })
   })
 
+  it('exposes only aggregate warehouse statistics behind an API key and exact CORS allowlist', async () => {
+    const warehouseApiKey = 'warehouse-statistics-test-key-2026-09-12'
+    const allowedOrigin = 'https://warehouse.idosi.example'
+    const env = {
+      DB: new MemoryD1(),
+      BOOTSTRAP_TOKEN: 'bootstrap-warehouse-statistics',
+      WAREHOUSE_API_KEY: warehouseApiKey,
+      WAREHOUSE_API_ALLOWED_ORIGINS: `${allowedOrigin}, https://secondary.idosi.example/path`,
+    }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.warehouse', password: 'admin-warehouse-password',
+      initialState: {
+        stores: [{ id: 'S01', name: 'Cửa hàng Quận 1', status: 'Đang hoạt động' }],
+        employees: [{ id: 'E01', name: 'Tên nhân viên không được lộ', storeId: 'S01', unit: 'store' }],
+        orders: [
+          {
+            id: 'WAREHOUSE-ORDER-1', storeId: 'S01', employeeId: 'E01', employeeName: 'Tên nhân viên không được lộ',
+            shiftId: 'SHIFT-AM', shiftName: 'Ca sáng', amount: 1_200_000, paymentMethod: 'Tiền mặt', createdAt: '2026-09-12',
+            items: [
+              { productId: 'PRODUCT-MEN', productCode: 'DO-NAM', productName: 'Đồ nam', quantity: 2 },
+              { productId: 'PRODUCT-DRESS', productCode: 'DAM', productName: 'Đầm', quantity: 1 },
+            ],
+          },
+          {
+            id: 'WAREHOUSE-ORDER-2', storeId: 'S01', employeeId: 'E01', employeeName: 'Tên nhân viên không được lộ',
+            shiftId: 'SHIFT-PM', shiftName: 'Ca chiều', amount: 800_000, paymentMethod: 'Chuyển khoản', createdAt: '2026-09-13',
+            items: [{ productId: 'PRODUCT-MEN', productCode: 'DO-NAM', productName: 'Đồ nam', quantity: 3 }],
+          },
+        ],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+
+    const endpoint = 'https://idosi.example/api/integrations/warehouse/order-statistics?storeId=S01&period=2026-09'
+    const unauthorized = await worker.fetch(new Request(endpoint), env)
+    expect(unauthorized.status).toBe(401)
+    expect(await unauthorized.json()).toMatchObject({ error: { code: 'WAREHOUSE_API_UNAUTHORIZED' } })
+
+    const preflight = await worker.fetch(new Request(endpoint, {
+      method: 'OPTIONS',
+      headers: {
+        origin: allowedOrigin,
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization',
+      },
+    }), env)
+    expect(preflight.status).toBe(204)
+    expect(preflight.headers.get('access-control-allow-origin')).toBe(allowedOrigin)
+    expect(preflight.headers.get('access-control-allow-methods')).toContain('GET')
+
+    const forbiddenOrigin = await worker.fetch(new Request(endpoint, {
+      headers: { authorization: `Bearer ${warehouseApiKey}`, origin: 'https://attacker.example' },
+    }), env)
+    expect(forbiddenOrigin.status).toBe(403)
+    expect(forbiddenOrigin.headers.get('access-control-allow-origin')).toBeNull()
+    expect(await forbiddenOrigin.json()).toMatchObject({ error: { code: 'WAREHOUSE_ORIGIN_FORBIDDEN' } })
+
+    const authorized = await worker.fetch(new Request(endpoint, {
+      headers: { authorization: `Bearer ${warehouseApiKey}`, origin: allowedOrigin },
+    }), env)
+    const authorizedBody = await authorized.json()
+    expect(authorized.status).toBe(200)
+    expect(authorized.headers.get('access-control-allow-origin')).toBe(allowedOrigin)
+    expect(authorizedBody).toMatchObject({
+      apiVersion: 1,
+      store: { id: 'S01', name: 'Cửa hàng Quận 1' },
+      filters: { period: '2026-09', date: null, shiftId: null, paymentMethod: null },
+      totals: { orders: 2, cash: 1_200_000, transfer: 800_000, revenue: 2_000_000 },
+      products: {
+        totalQuantity: 6,
+        productTypes: 2,
+        items: expect.arrayContaining([
+          expect.objectContaining({ productName: 'Đồ nam', quantity: 5, orders: 2 }),
+          expect.objectContaining({ productName: 'Đầm', quantity: 1, orders: 1 }),
+        ]),
+      },
+      groups: { shift: expect.any(Array), day: expect.any(Array) },
+    })
+    expect(authorizedBody.groups).not.toHaveProperty('employee')
+    expect(JSON.stringify(authorizedBody)).not.toContain('WAREHOUSE-ORDER')
+    expect(JSON.stringify(authorizedBody)).not.toContain('Tên nhân viên không được lộ')
+
+    const daily = await worker.fetch(new Request(`${endpoint}&date=2026-09-12&paymentMethod=cash`, {
+      headers: { 'x-idosi-warehouse-key': warehouseApiKey },
+    }), env)
+    expect(await daily.json()).toMatchObject({
+      totals: { orders: 1, cash: 1_200_000, transfer: 0, revenue: 1_200_000 },
+      products: { totalQuantity: 3 },
+    })
+
+    for (const invalidQuery of [
+      'employeeId=E01',
+      'query=secret',
+      'date=2026-08-31',
+      'storeId=S01',
+    ]) {
+      const rejected = await worker.fetch(new Request(`${endpoint}&${invalidQuery}`, {
+        headers: { authorization: `Bearer ${warehouseApiKey}` },
+      }), env)
+      expect(rejected.status).toBe(400)
+      expect(await rejected.json()).toMatchObject({ error: { code: 'WAREHOUSE_FILTER_INVALID' } })
+    }
+
+    const disabled = await worker.fetch(new Request(endpoint, {
+      headers: { authorization: 'Bearer short-key' },
+    }), { ...env, WAREHOUSE_API_KEY: 'short-key' })
+    expect(disabled.status).toBe(503)
+    expect(await disabled.json()).toMatchObject({ error: { code: 'WAREHOUSE_API_NOT_CONFIGURED' } })
+  })
+
   it('returns a role-safe compact login bootstrap for every non-Admin account', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-all-role-initial-profiles' }
     const historicalDetail = 'x'.repeat(120_000)
@@ -1734,7 +1844,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(canUseCounter(employee, 'store:store-02:orders')).toBe(false)
   })
 
-  it('atomically persists occupation and payment defaults during an empty bootstrap', async () => {
+  it('atomically persists occupation, payment, and product defaults during an empty bootstrap', async () => {
     const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-order-defaults' }
     const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
       username: 'admin.defaults', password: 'order-defaults-password', initialState: {},
@@ -1748,12 +1858,13 @@ describe('IDOSI Worker security primitives', () => {
       ORDER BY entity_order, entity_key
     `).all()
     const options = rows.map(({ value_json: valueJson }) => JSON.parse(valueJson))
-    expect(options).toHaveLength(17)
+    expect(options).toHaveLength(22)
     expect(options.filter(({ kind }) => kind === 'occupation')).toHaveLength(15)
     expect(options.filter(({ kind }) => kind === 'payment_method')).toEqual([
       expect.objectContaining({ id: 'order-payment-001', code: 'PAY-001', label: 'Tiền mặt', active: true, system: true }),
       expect.objectContaining({ id: 'order-payment-002', code: 'PAY-002', label: 'Chuyển khoản', active: true, system: true }),
     ])
+    expect(options.filter(({ kind }) => kind === 'product')).toHaveLength(5)
     expect(rows.every(({ value_json: valueJson, value_bytes: valueBytes }) => Buffer.byteLength(valueJson) === valueBytes)).toBe(true)
     expect(JSON.parse(env.DB.database.prepare("SELECT value_json FROM app_state WHERE scope_key = 'global'").get().value_json))
       .not.toHaveProperty('orderInformationOptions')
@@ -1763,11 +1874,11 @@ describe('IDOSI Worker security primitives', () => {
     `).get()
     expect(JSON.parse(bootstrapAudit.after_json)).toMatchObject({
       initialized: true,
-      orderInformationDefaults: { persisted: true, canonicalSeedCount: 17, occupationSeedCount: 15, paymentMethodSeedCount: 2 },
+      orderInformationDefaults: { persisted: true, canonicalSeedCount: 22, occupationSeedCount: 15, paymentMethodSeedCount: 2, productSeedCount: 5 },
     })
     expect(JSON.parse(bootstrapAudit.metadata_json)).toMatchObject({
       source: 'bootstrap-api',
-      orderInformationDefaults: { persisted: true, canonicalSeedCount: 17 },
+      orderInformationDefaults: { persisted: true, canonicalSeedCount: 22 },
     })
 
     const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
@@ -10068,12 +10179,12 @@ describe('IDOSI Worker security primitives', () => {
       { actor_id: adminId, idempotency_key: 'reset-all-runtime-0001' },
     ])
     expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM command_receipt_chunks').get()).toEqual({ count: 0 })
-    expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM state_entities').get()).toEqual({ count: 17 })
+    expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM state_entities').get()).toEqual({ count: 22 })
     expect(env.DB.database.prepare(`
       SELECT collection_key, COUNT(*) AS count
       FROM state_entities
       GROUP BY collection_key
-    `).all()).toEqual([{ collection_key: 'orderInformationOptions', count: 17 }])
+    `).all()).toEqual([{ collection_key: 'orderInformationOptions', count: 22 }])
     expect(env.DB.database.prepare('SELECT scope_key FROM app_state ORDER BY scope_key').all()).toEqual([{ scope_key: 'global' }])
     expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM counters').get()).toEqual({ count: 0 })
     expect(env.DB.database.prepare('SELECT policy_key, version FROM policies ORDER BY policy_key').all()).toEqual(
@@ -10090,7 +10201,7 @@ describe('IDOSI Worker security primitives', () => {
       'stores', 'employees', 'attendance', 'orders', 'orderAudit', 'notifications',
       'expenseEntries', 'payrollPeriods', 'supportTransfers', 'supportWorkAssignments',
     ]) expect(resetState[key]).toEqual([])
-    expect(resetState.orderInformationOptions).toHaveLength(17)
+    expect(resetState.orderInformationOptions).toHaveLength(22)
     expect(resetState.accountSettings[adminId]).toMatchObject({
       name: 'Admin được giữ lại', email: 'admin@idosi.vn',
       avatar: { key: preservedAdminAvatarKey, contentType: 'image/png', version: 1 },
@@ -11793,6 +11904,168 @@ describe('IDOSI Worker security primitives', () => {
     expect(JSON.parse(optionAudits.find(({ action }) => action === 'order_information.disable').metadata_json)).toMatchObject({
       deletionMode: 'soft-disable', usedByOrderCount: 1,
     })
+  }, 30_000)
+
+  it('manages products and custom attributes while preserving immutable order snapshots and summaries', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-order-products-custom-fields' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.products', password: 'admin-products-password',
+      initialState: {
+        stores: [{ id: 'S01', short: 'S01', name: 'IDOSI S01', status: 'Đang hoạt động' }],
+        employees: [],
+        orders: [{
+          id: 'ORDER-LEGACY-NO-PRODUCT', code: 'S01-LEGACY', storeId: 'S01',
+          customerName: 'Khách dữ liệu cũ', gender: 'Khác', occupation: 'Kỹ sư',
+          acquisitionChannel: 'Khác', amount: 50_000, paymentMethod: 'Tiền mặt',
+          status: 'Hoàn tất', source: 'order', createdAt: '2026-08-31T10:00:00+07:00',
+        }],
+        attendance: [], payrollPeriods: [], orderAudit: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.products', password: 'admin-products-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const invalidSelect = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.create', expectedVersion: 1,
+      payload: { kind: 'custom_field', label: 'Màu sắc lỗi', code: 'ATTR-BAD', fieldType: 'select', choices: [] },
+    }, { ...authorization, 'idempotency-key': 'custom-field-invalid-select' }), env)
+    expect(invalidSelect.status).toBe(400)
+    expect(await invalidSelect.json()).toMatchObject({ error: { code: 'ORDER_CUSTOM_FIELD_CHOICES_REQUIRED' } })
+
+    const customCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.create', expectedVersion: 1,
+      payload: {
+        kind: 'custom_field', label: 'Màu sắc', code: 'ATTR-COLOR',
+        fieldType: 'select', required: true, choices: ['Đỏ', 'Xanh'],
+      },
+    }, { ...authorization, 'idempotency-key': 'custom-field-create-color' }), env)
+    expect(customCreated.status).toBe(201)
+    const customField = (await customCreated.json()).option
+    expect(customField).toMatchObject({
+      kind: 'custom_field', label: 'Màu sắc', code: 'ATTR-COLOR',
+      fieldType: 'select', required: true, choices: ['Đỏ', 'Xanh'], active: true,
+    })
+
+    const productCreated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.create', expectedVersion: 2,
+      payload: { kind: 'product', label: 'Phụ kiện', code: 'PRD-ACCESSORY' },
+    }, { ...authorization, 'idempotency-key': 'product-create-accessory' }), env)
+    expect(productCreated.status).toBe(201)
+    const product = (await productCreated.json()).option
+    expect(product).toMatchObject({ kind: 'product', label: 'Phụ kiện', code: 'PRD-ACCESSORY', active: true })
+
+    const createdOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.create', expectedVersion: 3,
+      payload: {
+        storeId: 'S01', customerName: 'Khách thử mặt hàng', gender: 'Nữ', occupation: 'Kỹ sư',
+        acquisitionChannel: 'Facebook', amount: 500_000, paymentMethod: 'Chuyển khoản',
+        items: [
+          { productId: 'order-product-001', quantity: 2 },
+          { productId: product.id, quantity: 3 },
+        ],
+        customFields: [{ fieldId: customField.id, value: 'Đỏ' }],
+      },
+    }, { ...authorization, 'idempotency-key': 'order-create-with-products-custom-fields' }), env)
+    expect(createdOrder.status).toBe(201)
+    const order = (await createdOrder.json()).order
+    expect(order).toMatchObject({
+      amount: 500_000,
+      items: [
+        { productId: 'order-product-001', productCode: 'PRD-001', productName: 'Đồ nam', quantity: 2 },
+        { productId: product.id, productCode: 'PRD-ACCESSORY', productName: 'Phụ kiện', quantity: 3 },
+      ],
+      customFields: [{
+        fieldId: customField.id, fieldCode: 'ATTR-COLOR', fieldLabel: 'Màu sắc', fieldType: 'select', value: 'Đỏ',
+      }],
+    })
+
+    const missingRequiredField = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.create', expectedVersion: 4,
+      payload: {
+        storeId: 'S01', customerName: 'Thiếu màu', gender: 'Nam', occupation: 'Kỹ sư',
+        acquisitionChannel: 'Zalo', amount: 100_000, paymentMethod: 'Tiền mặt',
+        items: [{ productId: 'order-product-001', quantity: 1 }], customFields: [],
+      },
+    }, { ...authorization, 'idempotency-key': 'order-create-missing-required-custom-field' }), env)
+    expect(missingRequiredField.status).toBe(400)
+    expect(await missingRequiredField.json()).toMatchObject({ error: { code: 'ORDER_CUSTOM_FIELDS_INVALID' } })
+
+    const productDisabled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.disable', expectedVersion: 4,
+      payload: { kind: 'product', optionId: product.id, reason: 'Ngừng bán phụ kiện' },
+    }, { ...authorization, 'idempotency-key': 'product-disable-used-accessory' }), env)
+    expect(productDisabled.status).toBe(200)
+    const customDisabled = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order_information.disable', expectedVersion: 5,
+      payload: { kind: 'custom_field', optionId: customField.id, reason: 'Ngừng hỏi màu sắc' },
+    }, { ...authorization, 'idempotency-key': 'custom-field-disable-used-color' }), env)
+    expect(customDisabled.status).toBe(200)
+
+    const editedHistoricalOrder = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 6,
+      payload: {
+        orderId: order.id, amount: 550_000, reason: 'Điều chỉnh tiền, giữ snapshot mặt hàng và thuộc tính',
+        items: order.items, customFields: order.customFields,
+      },
+    }, { ...authorization, 'idempotency-key': 'order-update-preserve-product-snapshot' }), env)
+    expect(editedHistoricalOrder.status).toBe(200)
+    expect(await editedHistoricalOrder.json()).toMatchObject({
+      version: 7,
+      order: { amount: 550_000, items: order.items, customFields: order.customFields },
+    })
+
+    const cannotReuseDisabledProduct = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.create', expectedVersion: 7,
+      payload: {
+        storeId: 'S01', customerName: 'Không dùng hàng đã ngừng', gender: 'Nam', occupation: 'Kỹ sư',
+        acquisitionChannel: 'Tiktok', amount: 100_000, paymentMethod: 'Tiền mặt',
+        items: [{ productId: product.id, quantity: 1 }], customFields: [],
+      },
+    }, { ...authorization, 'idempotency-key': 'order-create-disabled-product' }), env)
+    expect(cannotReuseDisabledProduct.status).toBe(400)
+    expect(await cannotReuseDisabledProduct.json()).toMatchObject({ error: { code: 'ORDER_PRODUCT_INACTIVE' } })
+
+    const summary = await worker.fetch(new Request(
+      'https://idosi.example/api/order-summary?storeId=S01&period=2026-09',
+      { headers: authorization },
+    ), env)
+    expect(await summary.json()).toMatchObject({
+      totals: { orders: 1, revenue: 550_000 },
+      products: {
+        totalQuantity: 5,
+        productTypes: 2,
+        items: expect.arrayContaining([
+          expect.objectContaining({ productName: 'Đồ nam', quantity: 2 }),
+          expect.objectContaining({ productName: 'Phụ kiện', quantity: 3 }),
+        ]),
+      },
+    })
+
+    const legacyUpdate = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: 7,
+      payload: {
+        orderId: 'ORDER-LEGACY-NO-PRODUCT', amount: 55_000,
+        items: [], customFields: [], reason: 'Sửa dữ liệu cũ chưa phân loại mặt hàng',
+      },
+    }, { ...authorization, 'idempotency-key': 'legacy-order-update-without-products' }), env)
+    expect(legacyUpdate.status).toBe(200)
+    expect(await legacyUpdate.json()).toMatchObject({
+      version: 8,
+      order: { id: 'ORDER-LEGACY-NO-PRODUCT', amount: 55_000, items: [], customFields: [] },
+    })
+
+    const audits = env.DB.database.prepare(`
+      SELECT action, metadata_json FROM audit_log
+      WHERE entity_type = 'order-information-option' AND action = 'order_information.disable'
+      ORDER BY id
+    `).all().map((row) => ({ action: row.action, metadata: JSON.parse(row.metadata_json) }))
+    expect(audits).toEqual(expect.arrayContaining([
+      expect.objectContaining({ metadata: expect.objectContaining({ kind: 'product', usedByOrderCount: 1, deletionMode: 'soft-disable' }) }),
+      expect.objectContaining({ metadata: expect.objectContaining({ kind: 'custom_field', usedByOrderCount: 1, deletionMode: 'soft-disable' }) }),
+    ]))
   }, 30_000)
 
   it('blocks retired working-time configuration while preserving profile shifts and daily schedule operations', async () => {
