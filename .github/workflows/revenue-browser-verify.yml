@@ -9,6 +9,8 @@ on:
       - '.github/workflows/revenue-browser-verify.yml'
       - 'src/domain/order*'
       - 'src/components/Order*'
+      - 'src/components/SearchableSelect*'
+      - 'src/components/UI.jsx'
       - 'src/components/orderRevenue.css'
       - 'src/pages/employee/EmployeeV2Pages.jsx'
       - 'src/pages/store/StoreV2Pages.jsx'
