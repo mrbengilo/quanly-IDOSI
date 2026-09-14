@@ -39,16 +39,18 @@ with sync_playwright() as p:
   dialog.get_by_role('checkbox',name=re.compile('Đồ nam')).check()
   dialog.get_by_label('Khối lượng Đồ nam',exact=True).fill('2.5')
   dialog.get_by_label('Đơn giá Đồ nam',exact=True).fill('20000')
-  page.screenshot(path=str(out/'create-order-sale-kg-desktop.png'),full_page=True)
+  page.screenshot(path=str(out/'create-order-sale-kg-desktop.png'),full_page=True,animations='disabled')
   dialog.get_by_role('tab',name=re.compile('Sale theo cái')).click()
   dialog.get_by_role('checkbox',name=re.compile('Đồ nam')).check()
   dialog.get_by_label('Số lượng Đồ nam',exact=True).fill('3')
   dialog.get_by_label('Đơn giá Đồ nam',exact=True).fill('10000')
   preview=dialog.get_by_role('region',name='Tổng tiền đơn đang nhập')
   expect(preview).to_contain_text('180,000 đ')
-  page.screenshot(path=str(out/'create-order-mixed-desktop.png'),full_page=True)
+  page.screenshot(path=str(out/'create-order-mixed-desktop.png'),full_page=True,animations='disabled')
   page.set_viewport_size({'width':390,'height':844})
-  page.screenshot(path=str(out/'create-order-mixed-mobile.png'),full_page=True)
+  page.screenshot(path=str(out/'create-order-mixed-mobile.png'),full_page=True,animations='disabled')
+  preview.scroll_into_view_if_needed()
+  page.screenshot(path=str(out/'create-order-summary-mobile.png'),full_page=True,animations='disabled')
   assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Mobile create page overflow'
   with page.expect_response(lambda response: '/api/command' in response.url and response.request.method=='POST') as saved:
    dialog.get_by_role('button',name='LƯU ĐƠN',exact=True).click()
@@ -60,9 +62,9 @@ with sync_playwright() as p:
   assert 'Không được hiển thị cho E1' not in page.locator('body').inner_text()
   assert '700,000 đ' not in page.locator('body').inner_text()
   assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Mobile employee page overflow'
-  page.screenshot(path=str(out/'employee-revenue-mobile.png'),full_page=True)
+  page.screenshot(path=str(out/'employee-revenue-mobile.png'),full_page=True,animations='disabled')
   page.set_viewport_size({'width':1440,'height':1080})
-  page.screenshot(path=str(out/'employee-revenue-desktop.png'),full_page=True)
+  page.screenshot(path=str(out/'employee-revenue-desktop.png'),full_page=True,animations='disabled')
   report.append('PASS: real UI -> create command -> SQLite -> reload; own revenue 100000/50000/30000/180000; no colleague data')
   page=login('test.store')
   page.on('pageerror',lambda error:errors.append(str(error)))
@@ -71,11 +73,11 @@ with sync_playwright() as p:
   expect(summary).to_contain_text('880,000 đ')
   page.get_by_label('Xem thống kê theo',exact=True).select_option('month')
   expect(summary).to_contain_text('880,000 đ')
-  page.screenshot(path=str(out/'store-revenue-month-desktop.png'),full_page=True)
+  page.screenshot(path=str(out/'store-revenue-month-desktop.png'),full_page=True,animations='disabled')
   page.get_by_role('button',name='Xem ngày',exact=True).first.click()
   expect(page.get_by_label('Xem thống kê theo',exact=True)).to_have_value('day')
   expect(summary).to_contain_text('880,000 đ')
-  page.screenshot(path=str(out/'store-revenue-day-desktop.png'),full_page=True)
+  page.screenshot(path=str(out/'store-revenue-day-desktop.png'),full_page=True,animations='disabled')
   page.get_by_role('row').filter(has_text='Ca sáng').get_by_role('button',name='Xem ca',exact=True).click()
   expect(page.get_by_label('Xem thống kê theo',exact=True)).to_have_value('shift')
   expect(summary).to_contain_text('180,000 đ')
@@ -83,7 +85,7 @@ with sync_playwright() as p:
   expect(summary).to_contain_text('180,000 đ')
   page.set_viewport_size({'width':390,'height':844})
   assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Mobile statistics page overflow'
-  page.screenshot(path=str(out/'store-revenue-shift-mobile.png'),full_page=True)
+  page.screenshot(path=str(out/'store-revenue-shift-mobile.png'),full_page=True,animations='disabled')
   now=datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7)))
   response=page.request.get(root+'/api/integrations/warehouse/v1/order-statistics',params={'storeId':'S1','period':now.strftime('%Y-%m'),'date':now.strftime('%Y-%m-%d'),'shiftId':'AM'},headers={'X-IDOSI-Warehouse-Key':'synthetic-warehouse-browser-testing-key'})
   assert response.ok, response.status
@@ -96,12 +98,12 @@ with sync_playwright() as p:
   page.set_viewport_size({'width':1440,'height':1080})
   page.get_by_role('link',name='Đơn hàng',exact=True).click()
   expect(page.locator('.order-revenue-summary').first).to_contain_text('880,000 đ')
-  page.screenshot(path=str(out/'store-orders-desktop.png'),full_page=True)
+  page.screenshot(path=str(out/'store-orders-desktop.png'),full_page=True,animations='disabled')
   assert not errors, errors
   report.append('PASS: store Orders revenue cards; no browser runtime exceptions')
  except Exception:
   if page:
-   page.screenshot(path=str(out/'browser-failure.png'),full_page=True)
+   page.screenshot(path=str(out/'browser-failure.png'),full_page=True,animations='disabled')
    (out/'browser-failure-text.txt').write_text(page.locator('body').inner_text())
   report.append(traceback.format_exc())
   raise
