@@ -351,7 +351,7 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(within(metrics).getByText('2')).toBeTruthy()
     expect(within(metrics).getByText('270,000 đ')).toBeTruthy()
     expect(within(metrics).getByText('130,000 đ')).toBeTruthy()
-    expect(within(metrics).getByText('400,000 đ')).toBeTruthy()
+    expect(within(screen.getByLabelText('Doanh thu tháng của cửa hàng')).getAllByText('400,000 đ')).toHaveLength(2)
 
     fireEvent.change(screen.getByPlaceholderText('Tìm mã đơn, khách hàng...'), { target: { value: 'O-BANK' } })
 
@@ -359,7 +359,7 @@ describe('store order, attendance, and payroll summaries', () => {
     expect(within(metrics).getByText('2')).toBeTruthy()
     expect(within(metrics).getByText('270,000 đ')).toBeTruthy()
     expect(within(metrics).getByText('130,000 đ')).toBeTruthy()
-    expect(within(metrics).getByText('400,000 đ')).toBeTruthy()
+    expect(within(screen.getByLabelText('Doanh thu tháng của cửa hàng')).getAllByText('400,000 đ')).toHaveLength(2)
   })
 
   it('tags a support employee in both order rows and employee grouping headings', () => {
