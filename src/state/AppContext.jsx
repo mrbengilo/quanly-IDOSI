@@ -97,8 +97,11 @@ const loadOrderPayloadResolvers = () => {
     orderPayloadResolversPromise = Promise.all([
       import('../domain/orderItems'),
       import('../domain/orderCustomFields'),
-    ]).then(([orderItems, orderCustomFields]) => ({
+      import('../domain/orderRevenue'),
+    ]).then(([orderItems, orderCustomFields, orderRevenue]) => ({
       resolveOrderItems: orderItems.resolveOrderItems,
+      validateOrderRevenue: orderRevenue.validateOrderRevenue,
+      orderRevenueByType: orderRevenue.orderRevenueByType,
       resolveOrderCustomFields: orderCustomFields.resolveOrderCustomFields,
     }))
   }
@@ -4491,7 +4494,7 @@ export function AppProvider({ children }) {
   }
 
   const createOrder = async (payload = {}) => {
-    const amount = nonNegativeInteger(payload.amount)
+    const amount = Number(payload.amount)
     const requestedStoreId = payload.storeId || state.session?.storeId || state.activeStoreId
     const storeId = state.session?.role === 'employee' ? state.session.storeId : requestedStoreId
     const store = state.stores.find((item) => item.id === storeId)
@@ -4509,11 +4512,13 @@ export function AppProvider({ children }) {
     if (!ORDER_PAYMENT_METHODS.includes(paymentMethod)) return { ok: false, message: 'Vui lòng chọn hình thức thanh toán.' }
     const hasItems = Object.hasOwn(payload, 'items')
     const hasCustomFields = Object.hasOwn(payload, 'customFields')
-    const resolvers = hasItems || hasCustomFields ? await loadOrderPayloadResolvers() : null
+    const resolvers = await loadOrderPayloadResolvers()
     const resolvedItems = hasItems
       ? resolvers.resolveOrderItems({ items: payload.items, options: state.orderInformationOptions })
       : { items: [], error: '' }
     if (resolvedItems.error) return { ok: false, message: resolvedItems.error }
+    try { resolvers.validateOrderRevenue({ amount, normalAmount: payload.normalAmount, items: resolvedItems.items }) }
+    catch (error) { return { ok: false, message: error.message } }
     const resolvedCustomFields = hasCustomFields
       ? resolvers.resolveOrderCustomFields({ values: payload.customFields, options: state.orderInformationOptions })
       : { values: [], error: '' }
@@ -4624,6 +4629,7 @@ export function AppProvider({ children }) {
           ...(payload.paymentMethod != null ? { paymentMethod: String(payload.paymentMethod).trim() } : {}),
           ...(payload.amount != null ? { amount: nonNegativeInteger(payload.amount) } : {}),
           ...(payload.items !== undefined ? { items: payload.items } : {}),
+          ...(payload.normalAmount !== undefined ? { normalAmount: payload.normalAmount } : {}),
           ...(payload.customFields !== undefined ? { customFields: payload.customFields } : {}),
           reason,
         })
@@ -4634,9 +4640,7 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const resolvers = payload.items !== undefined || payload.customFields !== undefined
-      ? await loadOrderPayloadResolvers()
-      : null
+    const resolvers = await loadOrderPayloadResolvers()
     const resolvedItems = payload.items === undefined
       ? { items: previous.items, error: '' }
       : resolvers.resolveOrderItems({
@@ -4663,12 +4667,18 @@ export function AppProvider({ children }) {
       gender: payload.gender == null ? previous.gender : String(payload.gender).trim(),
       occupation: payload.occupation == null ? previous.occupation : String(payload.occupation).trim(),
       acquisitionChannel: payload.acquisitionChannel == null ? previous.acquisitionChannel : String(payload.acquisitionChannel).trim(),
-      amount: payload.amount == null ? previous.amount : nonNegativeInteger(payload.amount),
+      amount: payload.amount == null ? previous.amount : Number(payload.amount),
       paymentMethod: payload.paymentMethod == null ? previous.paymentMethod : String(payload.paymentMethod).trim(),
       items: resolvedItems.items,
       customFields: resolvedCustomFields.values,
     }
     if (candidate.amount <= 0) return { ok: false, message: 'Số tiền đơn hàng phải lớn hơn 0.' }
+    try {
+      const breakdown = resolvers.validateOrderRevenue({ ...candidate, normalAmount: payload.normalAmount })
+      if (actorRole === 'business_support' && JSON.stringify(breakdown) !== JSON.stringify(resolvers.orderRevenueByType(previous))) {
+        return { ok: false, message: 'Chỉ Admin được thay đổi số tiền hoặc phân loại doanh thu.' }
+      }
+    } catch (error) { return { ok: false, message: error.message } }
     if (payload.occupation != null) {
       const { occupationValueAllowed } = await loadOrderInformationResolvers()
       if (!occupationValueAllowed({

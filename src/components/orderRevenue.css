@@ -1,0 +1,35 @@
+.order-revenue-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; min-width: 0; margin: 12px 0; }
+.order-revenue-summary .metric { min-width: 0; padding: 14px; }
+.order-revenue-summary .metric__body { min-width: 0; }
+.order-revenue-summary .metric__body > strong { font-size: clamp(16px, 1.7vw, 24px); overflow-wrap: anywhere; white-space: normal; font-variant-numeric: tabular-nums; }
+.order-revenue-summary .metric__label { white-space: normal; line-height: 1.4; }
+.order-revenue-summary.is-compact { gap: 8px; }
+.order-revenue-summary.is-compact .metric { padding: 10px; }
+.order-revenue-summary.is-compact .metric__icon { display: none; }
+.order-revenue-summary.is-compact .metric__body > strong { font-size: 16px; }
+.order-revenue-editor { display: grid; gap: 12px; min-width: 0; }
+.order-revenue-editor__heading { display: grid; gap: 4px; }
+.order-revenue-editor small { color: #526273; line-height: 1.5; }
+.order-revenue-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.order-revenue-tabs button { border: 1px solid #b7d9c5; border-radius: 9px; padding: 10px 6px; background: #fff; color: #195c3a; font: inherit; cursor: pointer; min-width: 0; white-space: normal; overflow-wrap: anywhere; transition: background .15s, box-shadow .15s; }
+.order-revenue-tabs button.active { background: #07833f; color: #fff; border-color: #07833f; box-shadow: 0 2px 6px #07833f25; }
+.order-revenue-tabs button small { display: block; color: inherit; font-size: 10px; }
+.order-revenue-tabs button:focus-visible { outline: 3px solid #81c79e; outline-offset: 2px; }
+.order-revenue-tabs button:disabled { cursor: not-allowed; opacity: .6; }
+.order-revenue-editor__panel { display: grid; gap: 12px; border: 1px solid #dce5df; border-radius: 10px; padding: 12px; min-width: 0; }
+.order-item-selector__price { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px; align-items: center; font-size: 11px; }
+.order-item-selector__price .input-wrap { min-width: 0; }
+.order-item-selector__amount { text-align: right; }
+.order-revenue-details { display: grid; gap: 3px; margin: 6px 0 0; font-size: 10px; min-width: 140px; }
+.order-revenue-details > div { display: flex; gap: 7px; justify-content: space-between; }
+.order-revenue-details dt { color: #667085; }
+.order-revenue-details dd { margin: 0; font-variant-numeric: tabular-nums; }
+.order-revenue-editor .field__error { color: #b42318; }
+@media(max-width: 760px) {
+  .order-revenue-summary, .order-revenue-summary.is-compact { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .order-revenue-summary .metric__icon { display: none; }
+  .order-revenue-summary .metric { padding: 12px; }
+  .order-revenue-tabs { gap: 5px; }
+  .order-revenue-tabs button { font-size: 12px; }
+  .order-revenue-editor__panel { padding: 9px; }
+}

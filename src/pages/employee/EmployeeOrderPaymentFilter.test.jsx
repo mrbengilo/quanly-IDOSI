@@ -60,7 +60,7 @@ describe('employee order payment filter', () => {
     expect(within(filter()).getAllByRole('option').map((option) => option.textContent))
       .toEqual(['Tất cả', 'Tiền mặt', 'Chuyển khoản'])
     expect(screen.getByText('5 / 5 đơn trong ca')).toBeTruthy()
-    expect(screen.getByText(/thuộc ca đang làm tại Cửa hàng hỗ trợ/u)).toBeTruthy()
+    expect(screen.getByText(/của tôi trong ca đang làm tại Cửa hàng hỗ trợ/u)).toBeTruthy()
     for (const excluded of ['COWORKER', 'HOME', 'CLOSED', 'DELETED']) {
       expect(screen.queryByText(excluded)).toBeNull()
     }
@@ -80,7 +80,7 @@ describe('employee order payment filter', () => {
     expect(screen.getByText('2 / 5 đơn trong ca')).toBeTruthy()
     expect(metric('ĐƠN TRONG CA').getByText('5')).toBeTruthy()
     expect(metric('DOANH THU TRONG CA').getByText('420 đ')).toBeTruthy()
-    expect(metric('DOANH THU TRONG CA').getByText('Toàn bộ đơn hàng trong ca')).toBeTruthy()
+    expect(metric('DOANH THU TRONG CA').getByText('Bán thường + 2 loại sale')).toBeTruthy()
 
     selectPayment('all')
     expect(screen.getByText('UNKNOWN')).toBeTruthy()

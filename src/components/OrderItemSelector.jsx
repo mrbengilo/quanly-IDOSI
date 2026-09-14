@@ -1,11 +1,16 @@
 import { useId } from 'react'
 import { PackageOpen } from 'lucide-react'
 import { normalizeOrderItems, orderItemsLabel } from '../domain/orderItems'
+import { normalizeRevenueItem, ORDER_REVENUE_LABELS, revenueTypeOf } from '../domain/orderRevenue'
+import { MoneyInput } from './UI'
+import { money } from '../utils'
 import { productOptions } from '../domain/orderInformationSettings'
 import './orderItems.css'
 
-export function OrderItemSelector({ options = [], value = [], onChange, error = '', disabled = false }) {
+export function OrderItemSelector({ options = [], value = [], onChange, error = '', disabled = false, revenueType = 'NORMAL' }) {
   const labelId = useId()
+  const isSale = revenueType !== 'NORMAL'
+  const isKg = revenueType === 'SALE_KG'
   const selectedItems = (Array.isArray(value) ? value : []).map((item) => ({
     ...item,
     productId: String(item?.productId || item?.id || '').trim(),
@@ -28,16 +33,23 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
 
   const toggle = (option, checked) => {
     if (checked) {
-      onChange?.([...selectedItems, { productId: String(option.id), quantity: 1 }])
+      onChange?.([...selectedItems, { productId: String(option.id), quantity: 1, ...(isSale ? { revenueType, unit: isKg ? 'KG' : 'PIECE', unitPrice: '' } : {}) }])
     } else {
       onChange?.(selectedItems.filter((item) => item.productId !== String(option.id)))
     }
   }
 
-  const changeQuantity = (productId, nextQuantity) => {
-    onChange?.(selectedItems.map((item) => item.productId === productId
-      ? { ...item, quantity: nextQuantity === '' ? '' : Number(nextQuantity) }
-      : item))
+  const changeValue = (productId, field, value) => {
+    onChange?.(selectedItems.map((item) => {
+      if (item.productId !== productId) return item
+      const next = { ...item, [field]: value }
+      // Never submit a stale derived line amount after quantity or price changes.
+      delete next.lineAmount
+      return next
+    }))
+  }
+  const amountLabel = (item) => {
+    try { return money(normalizeRevenueItem(item).lineAmount) } catch { return 'Chưa đủ số liệu' }
   }
 
   return (
@@ -59,20 +71,27 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
               <span><strong>{option.label}</strong><small>{option.code || '—'}{option.active === false ? ' • Đã ngừng sử dụng' : ''}</small></span>
             </label>
             {selected && <label className="order-item-selector__quantity">
-              <span>Số lượng</span>
+              <span>{isKg ? 'Khối lượng' : 'Số lượng'}</span>
               <input
-                aria-label={`Số lượng ${option.label}`}
+                aria-label={`${isKg ? 'Khối lượng' : 'Số lượng'} ${option.label}`}
                 type="number"
-                inputMode="numeric"
-                min="1"
+                inputMode={isKg ? 'decimal' : 'numeric'}
+                min={isKg ? '0.001' : '1'}
                 max="1000000"
-                step="1"
+                step={isKg ? '0.001' : '1'}
                 value={selected.quantity}
                 disabled={disabled}
-                onChange={(event) => changeQuantity(productId, event.target.value)}
+                onChange={(event) => changeValue(productId, 'quantity', event.target.value === '' ? '' : Number(event.target.value))}
               />
-              <em>cái</em>
+              <em>{isKg ? 'kg' : 'cái'}</em>
             </label>}
+            {selected && isSale && <>
+              <label className="order-item-selector__price"><span>Đơn giá/{isKg ? 'kg' : 'cái'}</span>
+                <MoneyInput aria-label={`Đơn giá ${option.label}`} value={selected.unitPrice} disabled={disabled}
+                  onChange={(event) => changeValue(productId, 'unitPrice', event.target.value)} placeholder="Nhập đơn giá" />
+              </label>
+              <small className="order-item-selector__amount">Thành tiền: <strong>{amountLabel(selected)}</strong></small>
+            </>}
           </div>
         })}
       </div> : <div className="order-item-selector__empty"><PackageOpen size={20} /> Chưa có mặt hàng đang hoạt động. Vui lòng báo Admin/HTKD cấu hình.</div>}
@@ -86,7 +105,7 @@ export function OrderItemsSummary({ items = [] }) {
   if (!normalized.length) return <span className="order-items-summary order-items-summary--empty">Chưa ghi nhận</span>
   return <ul className="order-items-summary" aria-label={orderItemsLabel(normalized)}>
     {normalized.map((item, index) => <li key={`${item.productId || item.productCode || item.productName}-${index}`}>
-      <span>{item.productName || item.productCode || 'Mặt hàng'}</span><strong>{item.quantity} cái</strong>
+      <span>{item.productName || item.productCode || 'Mặt hàng'}{revenueTypeOf(item) !== 'NORMAL' && <small className="table-note">{ORDER_REVENUE_LABELS[revenueTypeOf(item)]}</small>}</span><strong>{item.quantity} {item.unit === 'KG' ? 'kg' : 'cái'}</strong>
     </li>)}
   </ul>
 }

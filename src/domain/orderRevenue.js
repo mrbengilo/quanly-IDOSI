@@ -16,6 +16,7 @@ const numberText = (value) => typeof value === 'number' || typeof value === 'str
 const moneyValue = (value, positive = false) => {
   const text = numberText(value)
   const amount = /^\d+$/u.test(text) ? Number(text) : Number.NaN
+  if (positive && amount === 0) throw invalid('Số tiền đơn hàng phải lớn hơn 0.', 'ORDER_AMOUNT_INVALID')
   if (!Number.isSafeInteger(amount) || amount < (positive ? 1 : 0) || amount > MAX_ORDER_MONEY_VND) {
     throw invalid('Số tiền phải là số nguyên đồng hợp lệ.', 'ORDER_AMOUNT_INVALID')
   }
