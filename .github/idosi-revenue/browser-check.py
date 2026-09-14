@@ -29,7 +29,7 @@ with sync_playwright() as p:
   dialog.get_by_label(re.compile('Tên khách hàng')).fill('Khách thử nghiệm ba loại')
   dialog.get_by_label(re.compile('Giới tính')).select_option(index=1)
   dialog.get_by_role('combobox',name='Nghề nghiệp',exact=True).click()
-  page.get_by_role('option').first.click()
+  dialog.get_by_role('listbox').get_by_role('option',name='Nhân viên VP',exact=True).click()
   dialog.get_by_label(re.compile('Biết qua kênh nào')).select_option(index=1)
   dialog.get_by_label(re.compile('Hình thức thanh toán')).select_option(label='Tiền mặt')
   dialog.get_by_role('checkbox',name=re.compile('Đồ nam')).check()
