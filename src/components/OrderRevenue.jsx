@@ -28,7 +28,7 @@ export function OrderRevenueDetails({ order }) {
 }
 
 export function OrderRevenueEditor({ options, items = [], amount = '', onItemsChange, onAmountChange, disabled = false, canEditRevenue = true, errors = {} }) {
-  const [type, setType] = useState('NORMAL')
+  const [type, setType] = useState(() => items.length ? revenueTypeOf(items[0]) : 'NORMAL')
   const id = useId()
   const current = items.filter((item) => revenueTypeOf(item) === type)
   const replaceCurrent = (next) => onItemsChange?.([...items.filter((item) => revenueTypeOf(item) !== type), ...next])

@@ -94,16 +94,7 @@ const loadOrderInformationResolvers = () => {
 let orderPayloadResolversPromise
 const loadOrderPayloadResolvers = () => {
   if (!orderPayloadResolversPromise) {
-    orderPayloadResolversPromise = Promise.all([
-      import('../domain/orderItems'),
-      import('../domain/orderCustomFields'),
-      import('../domain/orderRevenue'),
-    ]).then(([orderItems, orderCustomFields, orderRevenue]) => ({
-      resolveOrderItems: orderItems.resolveOrderItems,
-      validateOrderRevenue: orderRevenue.validateOrderRevenue,
-      orderRevenueByType: orderRevenue.orderRevenueByType,
-      resolveOrderCustomFields: orderCustomFields.resolveOrderCustomFields,
-    }))
+    orderPayloadResolversPromise = import('../domain/orderPayload')
   }
   return orderPayloadResolversPromise
 }
@@ -4513,16 +4504,8 @@ export function AppProvider({ children }) {
     const hasItems = Object.hasOwn(payload, 'items')
     const hasCustomFields = Object.hasOwn(payload, 'customFields')
     const resolvers = await loadOrderPayloadResolvers()
-    const resolvedItems = hasItems
-      ? resolvers.resolveOrderItems({ items: payload.items, options: state.orderInformationOptions })
-      : { items: [], error: '' }
-    if (resolvedItems.error) return { ok: false, message: resolvedItems.error }
-    try { resolvers.validateOrderRevenue({ amount, normalAmount: payload.normalAmount, items: resolvedItems.items }) }
-    catch (error) { return { ok: false, message: error.message } }
-    const resolvedCustomFields = hasCustomFields
-      ? resolvers.resolveOrderCustomFields({ values: payload.customFields, options: state.orderInformationOptions })
-      : { values: [], error: '' }
-    if (resolvedCustomFields.error) return { ok: false, message: resolvedCustomFields.error }
+    const { resolvedItems, resolvedCustomFields, error } = resolvers.resolveOrderPayload({ payload, options: state.orderInformationOptions })
+    if (error) return { ok: false, message: error }
     const idempotencyKey = String(payload.idempotencyKey || '').trim()
     if (idempotencyKey && state.idempotencyKeys.includes(idempotencyKey)) {
       const existing = state.orders.find((item) => item.idempotencyKey === idempotencyKey)
@@ -4641,24 +4624,10 @@ export function AppProvider({ children }) {
       }
     }
     const resolvers = await loadOrderPayloadResolvers()
-    const resolvedItems = payload.items === undefined
-      ? { items: previous.items, error: '' }
-      : resolvers.resolveOrderItems({
-          items: payload.items,
-          options: state.orderInformationOptions,
-          previousItems: previous.items,
-          allowHistorical: true,
-        })
-    if (resolvedItems.error) return { ok: false, message: resolvedItems.error }
-    const resolvedCustomFields = payload.customFields === undefined
-      ? { values: previous.customFields || [], error: '' }
-      : resolvers.resolveOrderCustomFields({
-          values: payload.customFields,
-          options: state.orderInformationOptions,
-          previousValues: previous.customFields,
-          allowHistorical: true,
-        })
-    if (resolvedCustomFields.error) return { ok: false, message: resolvedCustomFields.error }
+    const { resolvedItems, resolvedCustomFields, error } = resolvers.resolveOrderPayload({
+      payload, options: state.orderInformationOptions, previous, canChangeRevenue: actorRole === 'admin',
+    })
+    if (error) return { ok: false, message: error }
     const candidate = {
       ...previous,
       customerName: payload.customerName == null ? previous.customerName : String(payload.customerName).trim(),
@@ -4673,12 +4642,6 @@ export function AppProvider({ children }) {
       customFields: resolvedCustomFields.values,
     }
     if (candidate.amount <= 0) return { ok: false, message: 'Số tiền đơn hàng phải lớn hơn 0.' }
-    try {
-      const breakdown = resolvers.validateOrderRevenue({ ...candidate, normalAmount: payload.normalAmount })
-      if (actorRole === 'business_support' && JSON.stringify(breakdown) !== JSON.stringify(resolvers.orderRevenueByType(previous))) {
-        return { ok: false, message: 'Chỉ Admin được thay đổi số tiền hoặc phân loại doanh thu.' }
-      }
-    } catch (error) { return { ok: false, message: error.message } }
     if (payload.occupation != null) {
       const { occupationValueAllowed } = await loadOrderInformationResolvers()
       if (!occupationValueAllowed({
