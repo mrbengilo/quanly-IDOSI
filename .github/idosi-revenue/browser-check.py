@@ -21,7 +21,7 @@ with sync_playwright() as p:
   page=login('test.employee')
   errors=[]
   page.on('pageerror',lambda error:errors.append(str(error)))
-  page.goto(root+'/#/employee/orders',wait_until='networkidle')
+  page.get_by_role('link',name='Đơn hàng',exact=True).click()
   expect(page.get_by_role('button',name='TẠO ĐƠN HÀNG',exact=True)).to_be_enabled()
   assert 'Không được hiển thị cho E1' not in page.locator('body').inner_text()
   page.get_by_role('button',name='TẠO ĐƠN HÀNG',exact=True).click()
@@ -66,7 +66,7 @@ with sync_playwright() as p:
   report.append('PASS: real UI -> create command -> SQLite -> reload; own revenue 100000/50000/30000/180000; no colleague data')
   page=login('test.store')
   page.on('pageerror',lambda error:errors.append(str(error)))
-  page.goto(root+'/#/store/statistics',wait_until='networkidle')
+  page.get_by_role('link',name='Số liệu thống kê',exact=True).click()
   summary=page.locator('.store-statistics-page .order-revenue-summary')
   expect(summary).to_contain_text('880,000 đ')
   page.get_by_label('Xem thống kê theo',exact=True).select_option('month')
@@ -94,7 +94,7 @@ with sync_playwright() as p:
   (out/'warehouse-response.json').write_text(json.dumps(data,ensure_ascii=False,indent=2))
   report.append('PASS: store month -> day -> shift buttons and refresh; warehouse API equals UI; mobile no horizontal overflow')
   page.set_viewport_size({'width':1440,'height':1080})
-  page.goto(root+'/#/store/orders',wait_until='networkidle')
+  page.get_by_role('link',name='Đơn hàng',exact=True).click()
   expect(page.locator('.order-revenue-summary').first).to_contain_text('880,000 đ')
   page.screenshot(path=str(out/'store-orders-desktop.png'),full_page=True)
   assert not errors, errors
