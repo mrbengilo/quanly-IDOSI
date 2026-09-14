@@ -1,3 +1,4 @@
+import { emptyRevenueByType, orderRevenueByType, revenueQuantityUnits, revenueTypeOf, revenueUnitOf } from './orderRevenue.js'
 import { normalizeOrderItems } from './orderItems.js'
 import { normalizeOrderCustomFields, orderCustomFieldDisplayValue } from './orderCustomFields.js'
 
@@ -37,6 +38,7 @@ export const orderGroupKey = (order = {}, view = 'shift') => {
   if (view === 'employee') return String(order?.employeeId || 'system')
   const date = orderBusinessDate(order)
   if (view === 'day') return date
+  if (view === 'month') return date.slice(0, 7)
   return `${date}:${shiftGroupKey(order)}`
 }
 
@@ -70,7 +72,7 @@ export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMet
   return !query || haystack.includes(query.trim().toLocaleLowerCase('vi-VN'))
 }
 
-const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0 })
+const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0, revenueByType: emptyRevenueByType() })
 
 const checkedAmount = (order) => {
   const rawAmount = order?.amount
@@ -89,6 +91,11 @@ const addOrder = (target, order, amount) => {
   if (!Number.isSafeInteger(revenue)) throw new RangeError('Order summary exceeds the safe integer range.')
   target.orders += 1
   target.revenue = revenue
+  const byType = orderRevenueByType(order)
+  for (const type of Object.keys(byType)) {
+    target.revenueByType[type] += byType[type]
+    if (!Number.isSafeInteger(target.revenueByType[type])) throw new RangeError('Revenue type summary exceeds the safe integer range.')
+  }
   const channel = paymentChannel(order.paymentMethod)
   if (channel === 'cash' || channel === 'transfer') {
     target[channel] += amount
@@ -119,6 +126,7 @@ const productKey = (item) => String(
 
 const emptyProductSummary = () => ({
   totalQuantity: 0,
+  totalWeightKg: 0,
   productTypes: 0,
   ordersWithItems: 0,
   unclassifiedOrders: 0,
@@ -134,22 +142,34 @@ const addOrderProducts = (summary, itemMap, order) => {
   summary.ordersWithItems += 1
   const countedOrderKeys = new Set()
   items.forEach((item) => {
-    const key = productKey(item)
+    const type = revenueTypeOf(item)
+    const key = `${productKey(item)}:${type}`
     if (!key) return
     const existing = itemMap.get(key) || {
       productId: item.productId,
       productCode: item.productCode,
       productName: item.productName || item.productCode || 'Mặt hàng',
       quantity: 0,
+      unit: revenueUnitOf(type),
+      revenueType: type,
       orders: 0,
     }
-    existing.quantity += item.quantity
-    if (!Number.isSafeInteger(existing.quantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+    const units = revenueQuantityUnits(item.quantity, type)
+    const scale = type === 'SALE_KG' ? 1000 : 1
+    const quantityUnits = Math.round(existing.quantity * scale) + units
+    if (!Number.isSafeInteger(quantityUnits)) throw new RangeError('Order item summary exceeds the safe integer range.')
+    existing.quantity = quantityUnits / scale
     if (!countedOrderKeys.has(key)) existing.orders += 1
     countedOrderKeys.add(key)
     itemMap.set(key, existing)
-    summary.totalQuantity += item.quantity
-    if (!Number.isSafeInteger(summary.totalQuantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+    if (type === 'SALE_KG') {
+      const grams = Math.round(summary.totalWeightKg * 1000) + units
+      if (!Number.isSafeInteger(grams)) throw new RangeError('Order weight summary exceeds the safe integer range.')
+      summary.totalWeightKg = grams / 1000
+    } else {
+      summary.totalQuantity += units
+      if (!Number.isSafeInteger(summary.totalQuantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+    }
   })
 }
 
@@ -158,6 +178,7 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
   const groups = {
     shift: new Map(),
     day: new Map(),
+    month: new Map(),
     employee: new Map(),
   }
   const products = emptyProductSummary()
@@ -189,7 +210,7 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
     right.quantity - left.quantity
     || left.productName.localeCompare(right.productName, 'vi-VN')
   ))
-  products.productTypes = products.items.length
+  products.productTypes = new Set(products.items.map(productKey)).size
 
   return {
     totals,
@@ -197,6 +218,7 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
     groups: {
       shift: sortedGroups(groups.shift),
       day: sortedGroups(groups.day),
+      month: sortedGroups(groups.month),
       employee: sortedGroups(groups.employee),
     },
   }
