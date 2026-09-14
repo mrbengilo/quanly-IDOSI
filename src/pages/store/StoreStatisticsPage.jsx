@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { BarChart3, Banknote, CalendarDays, PackageCheck, ShoppingCart } from 'lucide-react'
+import { BarChart3, CalendarDays, PackageCheck, ShoppingCart } from 'lucide-react'
 import {
+  Button,
   Card,
   Field,
   InfoNote,
@@ -10,20 +11,21 @@ import {
   Select,
   TableWrap,
 } from '../../components/UI'
+import { OrderRevenueSummary } from '../../components/OrderRevenue'
+import { ORDER_REVENUE_LABELS } from '../../domain/orderRevenue'
 import { OrderPaymentSummary } from '../../components/OrderPaymentSummary'
 import { apiGetOrderSummary } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { money, sameOperationalIdentifier, today } from '../../utils'
 import './StoreStatisticsPage.css'
 
-const EMPTY_PRODUCTS = Object.freeze({ totalQuantity: 0, productTypes: 0, ordersWithItems: 0, unclassifiedOrders: 0, items: [] })
+const EMPTY_PRODUCTS = Object.freeze({ totalQuantity: 0, totalWeightKg: 0, productTypes: 0, ordersWithItems: 0, unclassifiedOrders: 0, items: [] })
 const summaryRequest = ({ mode, storeId, month, date, shiftId }) => ({
   storeId,
   period: mode === 'month' ? month : date.slice(0, 7),
   ...(mode === 'month' ? {} : { date }),
   ...(mode === 'shift' && shiftId ? { shiftId } : {}),
 })
-const requestKey = (request) => JSON.stringify(request)
 
 export function StoreStatisticsPage() {
   const app = useApp()
@@ -42,7 +44,8 @@ export function StoreStatisticsPage() {
   const [shiftId, setShiftId] = useState('')
   const effectiveShiftId = shifts.some((shift) => String(shift.id) === shiftId) ? shiftId : String(shifts[0]?.id || '')
   const query = useMemo(() => summaryRequest({ mode, storeId, month, date, shiftId: effectiveShiftId }), [date, effectiveShiftId, mode, month, storeId])
-  const key = requestKey(query)
+  const [revision, setRevision] = useState(0)
+  const key = JSON.stringify([query, app.stateVersion ?? 0, revision])
   const cacheRef = useRef(new Map())
   const [result, setResult] = useState({ key: '', status: 'idle', value: null, error: '' })
 
@@ -54,51 +57,22 @@ export function StoreStatisticsPage() {
       return undefined
     }
     const controller = new AbortController()
-    setResult((current) => ({ ...current, key, status: 'loading', error: '' }))
+    setResult({ key, status: 'loading', value: null, error: '' })
     apiGetOrderSummary({ ...query, signal: controller.signal }).then((payload) => {
+      if (controller.signal.aborted) return
+      if (cacheRef.current.size >= 24) cacheRef.current.clear()
       cacheRef.current.set(key, payload)
       setResult({ key, status: 'ready', value: payload, error: '' })
     }).catch((error) => {
-      if (error?.code !== 'REQUEST_ABORTED') {
+      if (!controller.signal.aborted && error?.code !== 'REQUEST_ABORTED') {
         setResult({ key, status: 'error', value: null, error: error?.message || 'Không thể tải số liệu thống kê.' })
       }
     })
     return () => controller.abort()
   }, [effectiveShiftId, key, mode, query, storeId])
 
-  useEffect(() => {
-    if (result.key !== key || result.status !== 'ready' || !storeId) return undefined
-    let cancelled = false
-    const controller = new AbortController()
-    const candidates = [
-      summaryRequest({ mode: 'month', storeId, month: date.slice(0, 7), date, shiftId: '' }),
-      ...shifts.slice(0, 2).map((shift) => summaryRequest({ mode: 'shift', storeId, month, date, shiftId: String(shift.id) })),
-    ].filter((candidate) => requestKey(candidate) !== key && !cacheRef.current.has(requestKey(candidate)))
-    const warm = async () => {
-      for (const candidate of candidates) {
-        if (cancelled) return
-        try {
-          const payload = await apiGetOrderSummary({ ...candidate, signal: controller.signal })
-          cacheRef.current.set(requestKey(candidate), payload)
-        } catch {
-          if (cancelled) return
-        }
-      }
-    }
-    let idleId
-    const timer = window.setTimeout(() => {
-      if (window.requestIdleCallback) idleId = window.requestIdleCallback(() => void warm(), { timeout: 2_000 })
-      else void warm()
-    }, 1_000)
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-      if (idleId !== undefined) window.cancelIdleCallback?.(idleId)
-      controller.abort()
-    }
-  }, [date, key, month, result.key, result.status, shifts, storeId])
 
-  const summary = result.key === key ? result.value : null
+  const summary = result.key === key && result.status === 'ready' ? result.value : null
   const totals = summary?.totals || { orders: 0, revenue: 0, cash: 0, transfer: 0, cashOrders: 0, transferOrders: 0 }
   const products = summary?.products || EMPTY_PRODUCTS
   const shift = shifts.find((candidate) => String(candidate.id) === effectiveShiftId)
@@ -108,11 +82,15 @@ export function StoreStatisticsPage() {
       ? `${shift?.name || 'Ca'} • ${date.split('-').reverse().join('/')}`
       : `Ngày ${date.split('-').reverse().join('/')}`
 
+  const groups = mode === 'month' ? summary?.groups?.day || [] : summary?.groups?.shift || []
+  const groupTitle = mode === 'month' ? 'Doanh thu từng ngày trong tháng' : 'Doanh thu từng ca'
+
   return <div className="page store-statistics-page">
     <PageHeader
       title="SỐ LIỆU THỐNG KÊ"
       subtitle={`Doanh thu và mặt hàng đã bán tại ${store?.name || 'cửa hàng đang chọn'}; chỉ tải dữ liệu của phạm vi đang xem.`}
       icon={BarChart3}
+      actions={<Button variant="outline" onClick={() => setRevision((value) => value + 1)} disabled={result.status === 'loading'}>Làm mới số liệu</Button>}
     />
 
     <Card title="Phạm vi thống kê">
@@ -137,21 +115,38 @@ export function StoreStatisticsPage() {
 
     {summary && <>
       <p className="store-statistics-scope"><CalendarDays size={16} /><strong>{scopeLabel}</strong></p>
+      <OrderRevenueSummary totals={totals} label={`Doanh thu ${scopeLabel}`} />
       <div className="store-statistics-metrics">
-        <MetricCard label="DOANH THU" value={money(totals.revenue)} helper={`${totals.orders} đơn hoàn tất`} icon={Banknote} tone="green" />
         <MetricCard label="TỔNG ĐƠN" value={totals.orders} helper={`${totals.cashOrders} TM • ${totals.transferOrders} CK`} icon={ShoppingCart} tone="blue" />
+        <MetricCard label="HÀNG BÁN THEO KÝ" value={`${Number(products.totalWeightKg || 0).toLocaleString('vi-VN')} kg`} helper="Không cộng kg với số cái" icon={PackageCheck} tone="green" />
         <MetricCard label="SẢN PHẨM ĐÃ BÁN" value={`${products.totalQuantity.toLocaleString('vi-VN')} cái`} helper={`${products.productTypes} mặt hàng`} icon={PackageCheck} tone="orange" />
       </div>
       <OrderPaymentSummary totals={totals} />
       {products.unclassifiedOrders > 0 && <InfoNote tone="orange">Có {products.unclassifiedOrders} đơn cũ chưa ghi nhận mặt hàng; doanh thu vẫn được tính đầy đủ.</InfoNote>}
+      <Card title={groupTitle}>
+        {groups.length ? <TableWrap tableClassName="store-statistics-revenue" paginate={false}>
+          <thead><tr><th>{mode === 'month' ? 'Ngày' : 'Ca'}</th><th>Số đơn</th><th>Bán thường</th><th>Sale theo ký</th><th>Sale theo cái</th><th>Tổng doanh thu</th>{mode !== 'shift' && <th>Chi tiết</th>}</tr></thead>
+          <tbody>{groups.map((group) => <tr key={group.key}>
+            <td data-label={mode === 'month' ? 'Ngày' : 'Ca'}>{mode === 'month' ? group.key.split('-').reverse().join('/') : group.shiftName || group.shiftId || 'Chưa gắn ca'}</td>
+            <td data-label="Số đơn">{group.orders}</td>
+            {['NORMAL', 'SALE_KG', 'SALE_PIECE'].map((type) => <td key={type} data-label={ORDER_REVENUE_LABELS[type]}>{group.revenueByType ? money(group.revenueByType[type]) : '—'}</td>)}
+            <td data-label="Tổng doanh thu"><strong>{money(group.revenue)}</strong></td>
+            {mode !== 'shift' && <td data-label="Chi tiết">{mode === 'month'
+              ? <Button variant="outline" onClick={() => { setDate(group.key); setMode('day') }}>Xem ngày</Button>
+              : group.shiftId && shifts.some((item) => String(item.id) === group.shiftId)
+                ? <Button variant="outline" onClick={() => { setShiftId(group.shiftId); setMode('shift') }}>Xem ca</Button> : '—'}</td>}
+          </tr>)}</tbody>
+        </TableWrap> : <InfoNote>Chưa có đơn hàng trong phạm vi này.</InfoNote>}
+      </Card>
       <Card title="Mặt hàng đã bán">
         {products.items.length ? <TableWrap tableClassName="store-statistics-products" paginate={false}>
-          <thead><tr><th>Mặt hàng</th><th>Mã</th><th>Số đơn có mặt hàng</th><th>Số lượng đã bán</th></tr></thead>
-          <tbody>{products.items.map((item) => <tr key={item.productId || item.productCode || item.productName}>
+          <thead><tr><th>Mặt hàng</th><th>Mã</th><th>Loại doanh thu</th><th>Số đơn có mặt hàng</th><th>Số lượng đã bán</th></tr></thead>
+          <tbody>{products.items.map((item) => <tr key={`${item.productId || item.productCode || item.productName}:${item.revenueType || 'NORMAL'}`}>
             <td data-label="Mặt hàng"><strong>{item.productName || 'Mặt hàng chưa đặt tên'}</strong></td>
             <td data-label="Mã">{item.productCode || '—'}</td>
+            <td data-label="Loại doanh thu">{ORDER_REVENUE_LABELS[item.revenueType || 'NORMAL']}</td>
             <td data-label="Số đơn">{Number(item.orders || 0).toLocaleString('vi-VN')}</td>
-            <td data-label="Số lượng"><strong>{Number(item.quantity || 0).toLocaleString('vi-VN')} cái</strong></td>
+            <td data-label="Số lượng"><strong>{Number(item.quantity || 0).toLocaleString('vi-VN')} {item.unit === 'KG' ? 'kg' : 'cái'}</strong></td>
           </tr>)}</tbody>
         </TableWrap> : <InfoNote>Chưa có mặt hàng được ghi nhận trong phạm vi này.</InfoNote>}
       </Card>
