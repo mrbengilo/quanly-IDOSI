@@ -44,14 +44,14 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
       return next
     }))
   }
-  const changeQuantity = (option, nextValue) => {
+  const changeQuantity = (option, nextValue, keepZeroDraft = false) => {
     if (disabled) return
     const productId = String(option.id)
     const quantity = nextValue === '' ? '' : Number(nextValue)
     const scale = isKg ? 1000 : 1
     if (quantity !== '' && (!Number.isFinite(quantity) || quantity < 0 || quantity > MAX_QUANTITY
       || Math.abs(quantity * scale - Math.round(quantity * scale)) > 0.000001)) return
-    if (quantity === 0) {
+    if (quantity === 0 && !(keepZeroDraft && selectedById.has(productId))) {
       onChange?.(selectedItems.filter((item) => item.productId !== productId))
     } else if (selectedById.has(productId)) {
       // Keep an empty draft editable; the existing submit validation still applies.
@@ -109,7 +109,11 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
                   value={quantity}
                   style={{ '--quantity-characters': Math.max(3, String(quantity).length) }}
                   disabled={disabled}
-                  onChange={(event) => changeQuantity(option, event.target.value)}
+                  onChange={(event) => changeQuantity(option, event.target.value, true)}
+                  onBlur={(event) => {
+                    // A typed zero may be the beginning of 0.5 kg; keep its price until editing finishes.
+                    if (event.target.value !== '' && Number(event.target.value) === 0) changeQuantity(option, 0)
+                  }}
                   onKeyDown={(event) => {
                     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
                     event.preventDefault()

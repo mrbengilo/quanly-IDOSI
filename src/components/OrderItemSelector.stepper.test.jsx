@@ -61,6 +61,7 @@ describe('OrderItemSelector quantity steppers', () => {
     fireEvent.change(input(), { target: { value: '7' } })
     expect(checkbox().checked).toBe(true)
     fireEvent.change(input(), { target: { value: '0' } })
+    fireEvent.blur(input())
     expect(checkbox().checked).toBe(false)
   })
 
@@ -96,6 +97,19 @@ describe('OrderItemSelector quantity steppers', () => {
     fireEvent.click(minus(true))
     expect(input(true).value).toBe('0')
     expect(onItems.mock.lastCall[0]).toEqual([])
+  })
+
+  it('keeps a sale price while a sub-kilogram quantity is typed through zero', () => {
+    const onItems = vi.fn()
+    render(<Harness revenueType="SALE_KG" onItems={onItems} initialItems={[
+      { productId: 'P1', revenueType: 'SALE_KG', unit: 'KG', quantity: 2.5, unitPrice: 20000 },
+    ]} />)
+    fireEvent.change(input(true), { target: { value: '0' } })
+    expect(checkbox().checked).toBe(true)
+    fireEvent.change(input(true), { target: { value: '0.5' } })
+    fireEvent.blur(input(true))
+    expect(onItems.mock.lastCall[0][0]).toMatchObject({ quantity: 0.5, unitPrice: 20000 })
+    expect(screen.getByText('10,000 đ')).toBeTruthy()
   })
 
   it('does not round over-precise manually entered weights silently', () => {
