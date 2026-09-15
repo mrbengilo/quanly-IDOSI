@@ -88,3 +88,12 @@ export const revenueTypeLabelForOrder = (order) => {
   const types = new Set((order?.items || []).map(orderItemRevenueType))
   return types.size > 1 ? 'Đơn kết hợp' : ORDER_REVENUE_LABELS[[...types][0] || 'NORMAL']
 }
+
+/** State actions use the same validation without pulling the money engine into login. */
+export const validateOrderRevenue = (items, amount) => {
+  try { calculateOrderRevenue(items, amount); return null }
+  catch (error) { return { ok: false, message: error.message } }
+}
+
+export const orderRequiresAdminEdit = (previous, candidate, fields) => fields.includes('amount')
+  || (fields.includes('items') && (hasOrderLinePricing(previous.items) || hasOrderLinePricing(candidate.items)))

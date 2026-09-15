@@ -85,7 +85,7 @@ export const resolveOrderItems = ({
       continue
     }
     if (allowHistorical && historical) {
-      resolved.push({ ...historical, ...revenueFields, productId })
+      resolved.push({ productId, productCode: historical.productCode, productName: historical.productName, ...revenueFields })
       continue
     }
     return { items: [], error: 'Mặt hàng không còn hoạt động. Vui lòng bỏ chọn hoặc chọn mặt hàng khác.' }

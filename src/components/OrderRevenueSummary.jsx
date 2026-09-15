@@ -12,7 +12,7 @@ export function OrderRevenueSummary({ totals, label = 'Phân loại doanh thu', 
     <div className="order-revenue-summary__grid">
       {cards.map((card) => <div className={`metric metric-card order-revenue-summary__card order-revenue-summary__card--${card.type.toLowerCase()}`} key={card.type} data-testid={`revenue-${card.type}`}>
         <span>{card.label}</span>
-        <strong>{card.amount == null ? '—' : money(card.amount)}</strong>
+        <strong className="metric__value">{card.amount == null ? '—' : money(card.amount)}</strong>
         <small>{card.type === 'TOTAL' ? totalHelper || 'Bằng tổng 3 loại doanh thu' : card.type === 'NORMAL' ? 'Hàng thường' : 'Hàng sale'}</small>
       </div>)}
     </div>

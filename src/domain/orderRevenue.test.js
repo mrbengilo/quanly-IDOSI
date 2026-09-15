@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculateOrderRevenue, normalizeOrderRevenueItem, orderRevenuePreview } from './orderRevenue'
+import { calculateOrderRevenue, normalizeOrderRevenueItem, orderRevenuePreview, validateOrderRevenue, orderRequiresAdminEdit } from './orderRevenue'
 import { resolveOrderItems } from './orderItems'
 import { summarizeOrders } from './orderSummary'
 
@@ -57,4 +57,18 @@ describe('three order revenue types', () => {
   it('never turns invalid pricing into a zero preview', () => {
     expect(orderRevenuePreview([{ revenueType: 'SALE_KG', quantity: 1, unitPrice: '' }])).toMatchObject({ amount: null, revenueByType: null })
   })
+  it('shares state validation and protects financial item edits without increasing the initial bundle', () => {
+    expect(validateOrderRevenue(lines, 180_000)).toBeNull()
+    expect(validateOrderRevenue(lines, 1)).toMatchObject({ ok: false })
+    expect(orderRequiresAdminEdit({ items: [] }, { items: lines }, ['items'])).toBe(true)
+    expect(orderRequiresAdminEdit({ items: [] }, { items: [{ quantity: 1 }] }, ['items'])).toBe(false)
+  })
+  it('resolves inactive historical product snapshots without retaining old financial fields', () => {
+    const previous = { ...lines[0], productCode: 'NAM', lineTotal: 100_000, discountAmount: 0 }
+    const result = resolveOrderItems({ items: [{ productId: 'p', quantity: 3 }], options: [], previousItems: [previous], allowHistorical: true })
+    expect(result.error).toBe('')
+    expect(result.items).toEqual([{ productId: 'p', productCode: 'NAM', productName: 'Đồ nam', quantity: 3 }])
+    expect(calculateOrderRevenue(result.items, 120_000).amount).toBe(120_000)
+  })
+
 })

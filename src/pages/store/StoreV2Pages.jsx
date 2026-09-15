@@ -896,7 +896,7 @@ export function StoreOrdersPage() {
         <Field label="Kỳ đang xem"><Input type="month" value={month} onChange={(event) => changePeriod(event.target.value)} aria-label="Kỳ đang xem" /></Field>
         <p>Tổng quan toàn tháng {month.slice(5, 7)}/{month.slice(0, 4)}. Tổng tháng và tổng cả ca được giữ nguyên; kết quả lọc được thống kê riêng.</p>
       </div>
-      <OrderRevenueSummary totals={orderMetrics} label="Doanh thu cửa hàng trong tháng" />
+      <OrderRevenueSummary totals={orderMetrics} label="Doanh thu cửa hàng trong tháng" totalLabel="TỔNG DOANH THU" />
       <div className="order-payment-metrics store-order-metrics" aria-label="Tổng quan đơn hàng">
         <MetricCard label="TỔNG SỐ ĐƠN HÀNG" value={orderMetrics?.orders ?? '—'} suffix="đơn" icon={ReceiptText} tone="blue" />
         <MetricCard label="TỔNG TIỀN CHUYỂN KHOẢN" value={orderMetrics ? money(orderMetrics.transfer) : '—'} helper={orderMetrics ? `${orderMetrics.transferOrders} đơn chuyển khoản` : 'Đang tải'} icon={Banknote} tone="blue" />
