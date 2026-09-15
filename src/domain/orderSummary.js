@@ -127,7 +127,12 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) =>
 
     // A product appears once across all three revenue types; an order is counted once per product.
     const combined = combinedProducts.get(identity) || {
-      productId: item.productId, productCode: item.productCode, productName: existing.productName, orders: 0,
+      productId: item.productId, productCode: item.productCode, productName: existing.productName, orders: 0, totalQuantity: 0,
+    }
+    // Count original pieces from NORMAL + SALE_PIECE only. Actual kg is already in weight.actualKg.
+    if (type !== 'SALE_KG') {
+      combined.totalQuantity += units
+      if (!Number.isSafeInteger(combined.totalQuantity)) throw new RangeError('Product piece summary exceeds the safe integer range.')
     }
     if (!countedProducts.has(identity)) combined.orders += 1
     countedProducts.add(identity)

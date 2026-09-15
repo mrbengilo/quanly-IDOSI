@@ -108,6 +108,7 @@ export function StoreStatisticsPage() {
       </div>
       <OrderPaymentSummary totals={totals} />
       {products.unclassifiedOrders > 0 && <InfoNote tone="orange">Có {products.unclassifiedOrders} đơn cũ chưa ghi nhận mặt hàng; doanh thu vẫn được tính đầy đủ.</InfoNote>}
+      <OrderProductWeightTable key={`${storeId}:${scopeLabel}`} rows={products.weightByProduct} totals={products} scopeLabel={scopeLabel} />
       <Card title={groupTitle}>
         {groups.length ? <TableWrap tableClassName="store-statistics-revenue" paginate={false}>
           <thead><tr><th>{mode === 'month' ? 'Ngày' : 'Ca'}</th><th>Số đơn</th><th>Bán thường</th><th>Sale theo ký</th><th>Sale theo cái</th><th>Tổng doanh thu</th><th>Khối lượng</th>{mode !== 'shift' && <th>Chi tiết</th>}</tr></thead>
@@ -123,8 +124,7 @@ export function StoreStatisticsPage() {
           </tr>)}</tbody>
         </TableWrap> : <InfoNote>Chưa có đơn hàng trong phạm vi này.</InfoNote>}
       </Card>
-      <OrderProductWeightTable rows={products.weightByProduct} />
-      <Card title="Mặt hàng đã bán">
+      <Card title="Chi tiết mặt hàng theo loại bán">
         {products.items.length ? <TableWrap tableClassName="store-statistics-products" paginate={false}>
           <thead><tr><th>Mặt hàng</th><th>Mã</th><th>Loại doanh thu</th><th>Số đơn có mặt hàng</th><th>Số lượng đã bán</th><th>Khối lượng</th></tr></thead>
           <tbody>{products.items.map((item) => <tr key={`${item.productId || item.productCode || item.productName}:${item.revenueType || 'NORMAL'}`}>
