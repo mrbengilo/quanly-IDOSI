@@ -17,40 +17,16 @@ import { OrderPaymentSummary } from '../../components/OrderPaymentSummary'
 import { apiGetOrderSummary } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { money, sameOperationalIdentifier, today } from '../../utils'
+import { statisticsShiftKey, statisticsShiftLabel, statisticsShiftOptions } from './statisticsShiftOptions'
 import './StoreStatisticsPage.css'
 
 const EMPTY_PRODUCTS = Object.freeze({ totalQuantity: 0, totalWeightKg: 0, productTypes: 0, ordersWithItems: 0, unclassifiedOrders: 0, items: [] })
-const summaryRequest = ({ mode, storeId, month, date, shiftId }) => ({
-  storeId,
-  period: mode === 'month' ? month : date.slice(0, 7),
-  ...(mode === 'month' ? {} : { date }),
-  ...(mode === 'shift' && shiftId ? { shiftId } : {}),
-})
 
-export function StoreStatisticsPage() {
-  const app = useApp()
-  const storeId = String(app.activeStoreId || app.session?.storeId || '')
-  const store = (app.stores || []).find((candidate) => sameOperationalIdentifier(candidate.id, storeId))
-  const [mode, setMode] = useState('day')
-  const [month, setMonth] = useState(today().slice(0, 7))
-  const [date, setDate] = useState(today())
-  const shifts = useMemo(() => (app.shiftDefinitions || [])
-    .filter((shift) => (
-      !shift.deletedAt
-      && shift.active !== false
-      && (!shift.storeId || sameOperationalIdentifier(shift.storeId, storeId))
-    ))
-    .sort((left, right) => String(left.start || left.startTime || '').localeCompare(String(right.start || right.startTime || ''))), [app.shiftDefinitions, storeId])
-  const [shiftId, setShiftId] = useState('')
-  const effectiveShiftId = shifts.some((shift) => String(shift.id) === shiftId) ? shiftId : String(shifts[0]?.id || '')
-  const query = useMemo(() => summaryRequest({ mode, storeId, month, date, shiftId: effectiveShiftId }), [date, effectiveShiftId, mode, month, storeId])
-  const [revision, setRevision] = useState(0)
-  const key = JSON.stringify([query, app.stateVersion ?? 0, revision])
-  const cacheRef = useRef(new Map())
+function useSummaryResource(query, enabled, version, revision, cacheRef) {
+  const key = JSON.stringify([query, version, revision])
   const [result, setResult] = useState({ key: '', status: 'idle', value: null, error: '' })
-
   useEffect(() => {
-    if (!storeId || (mode === 'shift' && !effectiveShiftId)) return undefined
+    if (!enabled || !query.storeId) return undefined
     const cached = cacheRef.current.get(key)
     if (cached) {
       setResult({ key, status: 'ready', value: cached, error: '' })
@@ -69,13 +45,49 @@ export function StoreStatisticsPage() {
       }
     })
     return () => controller.abort()
-  }, [effectiveShiftId, key, mode, query, storeId])
+  }, [cacheRef, enabled, key, query])
+  if (!enabled || !query.storeId) return { key, status: 'idle', value: null, error: '' }
+  return result.key === key ? result : { key, status: 'loading', value: null, error: '' }
+}
 
-
-  const summary = result.key === key && result.status === 'ready' ? result.value : null
+export function StoreStatisticsPage() {
+  const app = useApp()
+  const storeId = String(app.activeStoreId || app.session?.storeId || '')
+  const store = (app.stores || []).find((candidate) => sameOperationalIdentifier(candidate.id, storeId))
+  const [mode, setMode] = useState('day')
+  const [month, setMonth] = useState(today().slice(0, 7))
+  const [date, setDate] = useState(today())
+  const definitions = useMemo(() => (app.shiftDefinitions || [])
+    .filter((shift) => (
+      !shift.deletedAt
+      && shift.active !== false
+      && (!shift.storeId || sameOperationalIdentifier(shift.storeId, storeId))
+    ))
+    .sort((left, right) => String(left.start || left.startTime || '').localeCompare(String(right.start || right.startTime || ''))), [app.shiftDefinitions, storeId])
+  const [selection, setSelection] = useState({ context: '', id: '' })
+  const selectionContext = `${storeId}:${date}`
+  const [revision, setRevision] = useState(0)
+  const cacheRef = useRef(new Map())
+  const version = app.stateVersion ?? 0
+  const dayQuery = useMemo(() => ({ storeId, period: date.slice(0, 7), date }), [date, storeId])
+  // The day response supplies recorded shift identities only. It is never displayed as a shift total.
+  const dayResult = useSummaryResource(dayQuery, mode !== 'month', version, revision, cacheRef)
+  const shifts = useMemo(() => dayResult.status === 'ready'
+    ? statisticsShiftOptions(definitions, dayResult.value?.groups?.shift || []) : [],
+  [dayResult.status, dayResult.value, definitions])
+  const requestedShiftId = selection.context === selectionContext ? selection.id : ''
+  const effectiveShiftId = shifts.some((shift) => shift.id === requestedShiftId) ? requestedShiftId : shifts[0]?.id || ''
+  const selectedQuery = useMemo(() => mode === 'month'
+    ? { storeId, period: month }
+    : { ...dayQuery, shiftId: effectiveShiftId }, [dayQuery, effectiveShiftId, mode, month, storeId])
+  const selectedResult = useSummaryResource(selectedQuery,
+    mode === 'month' || (mode === 'shift' && dayResult.status === 'ready' && Boolean(effectiveShiftId)),
+    version, revision, cacheRef)
+  const result = mode === 'day' || (mode === 'shift' && dayResult.status !== 'ready') ? dayResult : selectedResult
+  const summary = result.status === 'ready' ? result.value : null
   const totals = summary?.totals || { orders: 0, revenue: 0, cash: 0, transfer: 0, cashOrders: 0, transferOrders: 0 }
   const products = summary?.products || EMPTY_PRODUCTS
-  const shift = shifts.find((candidate) => String(candidate.id) === effectiveShiftId)
+  const shift = shifts.find((candidate) => candidate.id === effectiveShiftId)
   const scopeLabel = mode === 'month'
     ? `Tháng ${month.split('-').reverse().join('/')}`
     : mode === 'shift'
@@ -84,6 +96,7 @@ export function StoreStatisticsPage() {
 
   const groups = mode === 'month' ? summary?.groups?.day || [] : summary?.groups?.shift || []
   const groupTitle = mode === 'month' ? 'Doanh thu từng ngày trong tháng' : 'Doanh thu từng ca'
+  const selectShift = (id) => setSelection({ context: selectionContext, id })
 
   return <div className="page store-statistics-page">
     <PageHeader
@@ -103,15 +116,16 @@ export function StoreStatisticsPage() {
         {mode === 'month'
           ? <Field label="Tháng"><Input aria-label="Tháng thống kê" type="month" value={month} onChange={(event) => setMonth(event.target.value)} /></Field>
           : <Field label="Ngày"><Input aria-label="Ngày thống kê" type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field>}
-        {mode === 'shift' && <Field label="Ca làm việc"><Select aria-label="Ca thống kê" value={effectiveShiftId} onChange={(event) => setShiftId(event.target.value)} disabled={!shifts.length}>
-          {shifts.length ? shifts.map((item) => <option key={item.id} value={item.id}>{item.name || item.id} ({item.start || item.startTime || '—'}–{item.end || item.endTime || '—'})</option>) : <option value="">Chưa cấu hình ca</option>}
+        {mode === 'shift' && <Field label="Ca làm việc"><Select aria-label="Ca thống kê" value={effectiveShiftId} onChange={(event) => selectShift(event.target.value)} disabled={!shifts.length || dayResult.status !== 'ready'}>
+          {shifts.length ? shifts.map((item) => <option key={item.id} value={item.id}>{statisticsShiftLabel(item)}</option>)
+            : <option value="">{dayResult.status === 'loading' ? 'Đang tải danh sách ca…' : 'Chưa có ca để thống kê'}</option>}
         </Select></Field>}
       </div>
     </Card>
 
-    {result.key === key && result.status === 'loading' && <InfoNote>Đang tổng hợp {scopeLabel.toLocaleLowerCase('vi-VN')}…</InfoNote>}
-    {result.key === key && result.status === 'error' && <InfoNote tone="red">{result.error}</InfoNote>}
-    {mode === 'shift' && !shifts.length && <InfoNote tone="orange">Cửa hàng chưa có ca làm việc đang hoạt động.</InfoNote>}
+    {result.status === 'loading' && <InfoNote>Đang tổng hợp {scopeLabel.toLocaleLowerCase('vi-VN')}…</InfoNote>}
+    {result.status === 'error' && <InfoNote tone="red">{result.error}</InfoNote>}
+    {mode === 'shift' && dayResult.status === 'ready' && !shifts.length && <InfoNote tone="orange">Chưa có ca được ghi nhận hoặc cấu hình trong ngày đã chọn.</InfoNote>}
 
     {summary && <>
       <p className="store-statistics-scope"><CalendarDays size={16} /><strong>{scopeLabel}</strong></p>
@@ -133,8 +147,8 @@ export function StoreStatisticsPage() {
             <td data-label="Tổng doanh thu"><strong>{money(group.revenue)}</strong></td>
             {mode !== 'shift' && <td data-label="Chi tiết">{mode === 'month'
               ? <Button variant="outline" onClick={() => { setDate(group.key); setMode('day') }}>Xem ngày</Button>
-              : group.shiftId && shifts.some((item) => String(item.id) === group.shiftId)
-                ? <Button variant="outline" onClick={() => { setShiftId(group.shiftId); setMode('shift') }}>Xem ca</Button> : '—'}</td>}
+              : statisticsShiftKey(group)
+                ? <Button variant="outline" onClick={() => { selectShift(statisticsShiftKey(group)); setMode('shift') }}>Xem ca</Button> : '—'}</td>}
           </tr>)}</tbody>
         </TableWrap> : <InfoNote>Chưa có đơn hàng trong phạm vi này.</InfoNote>}
       </Card>
