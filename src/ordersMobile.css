@@ -9,6 +9,15 @@
     line-height: 1.4;
     text-align: left;
   }
+  /* Reset both text and flex-item alignment inherited from shared metric cards. */
+  .page:is(.order-list-page, .store-statistics-page) .metric .metric__label {
+    align-self: flex-start;
+    width: 100%;
+    grid-area: auto;
+  }
+  .page.store-orders-page .order-filters > .field:nth-child(4) {
+    grid-column: 1 / -1;
+  }
 
   /* One scroll container, with non-overlapping header and footer. */
   .page.order-list-page .overlay { padding: 8px; }
@@ -117,8 +126,9 @@
     line-height: 1.35;
     text-align: left;
   }
-  .page.order-list-page .modal select { padding-right: 28px; }
-  .page.order-list-page .modal .money-input-wrap input { padding-right: 26px; }
+  /* The wrapper already reserves room for its chevron; do not reserve it twice. */
+  .page.order-list-page .modal .select-wrap select { padding: 0; }
+  .page.order-list-page .modal .money-input-wrap input { padding-right: 8px; }
   .page.order-list-page .modal .info-note { padding: 8px; margin: 0; }
   .page.order-list-page .order-revenue-editor { gap: 8px; }
   .page.order-list-page .order-revenue-editor__heading { gap: 2px; text-align: left; }
@@ -170,4 +180,12 @@
   }
   .page.order-list-page .modal .searchable-select__panel { position: static; margin-top: 4px; max-height: min(240px, 40dvh); }
   .page.order-list-page .modal .searchable-select__option { min-height: 44px; padding: 7px 8px; font-size: 14px; }
+}
+@media (max-width: 360px) {
+  /* Native select text cannot wrap. Give long customer options enough room. */
+  .page.order-list-page .modal .form-grid > .field:nth-child(4),
+  .page.order-list-page .modal .form-grid > .field:nth-child(5),
+  .page.store-orders-page .order-filters > .field:nth-child(2) {
+    grid-column: 1 / -1;
+  }
 }
