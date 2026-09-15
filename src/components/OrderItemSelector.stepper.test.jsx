@@ -83,20 +83,36 @@ describe('OrderItemSelector quantity steppers', () => {
     }
   })
 
-  it('uses the existing gram precision for kg and has no accumulated float drift', () => {
+  it('steps kg by 0.1 without accumulated float drift and removes at zero', () => {
     const onItems = vi.fn()
     render(<Harness revenueType="SALE_KG" onItems={onItems} />)
     fireEvent.click(plus(true))
-    expect(onItems.mock.lastCall[0][0]).toMatchObject({ quantity: 0.001, unit: 'KG', revenueType: 'SALE_KG' })
-    fireEvent.change(input(true), { target: { value: '2.499' } })
+    expect(onItems.mock.lastCall[0][0]).toMatchObject({ quantity: 0.1, unit: 'KG', revenueType: 'SALE_KG' })
+    fireEvent.click(plus(true))
+    fireEvent.click(plus(true))
+    expect(input(true).value).toBe('0.3')
+    fireEvent.change(input(true), { target: { value: '2.4' } })
     fireEvent.click(plus(true))
     expect(input(true).value).toBe('2.5')
     fireEvent.click(minus(true))
-    expect(input(true).value).toBe('2.499')
+    expect(input(true).value).toBe('2.4')
     fireEvent.change(input(true), { target: { value: '0.001' } })
     fireEvent.click(minus(true))
     expect(input(true).value).toBe('0')
     expect(onItems.mock.lastCall[0]).toEqual([])
+  })
+
+  it('preserves gram precision entered manually and clamps kg at the maximum', () => {
+    render(<Harness revenueType="SALE_KG" initialItems={[{ productId: 'P1', quantity: 1.125 }]} />)
+    fireEvent.click(plus(true))
+    expect(input(true).value).toBe('1.225')
+    fireEvent.keyDown(input(true), { key: 'ArrowDown' })
+    expect(input(true).value).toBe('1.125')
+    expect(input(true).step).toBe('0.001')
+    fireEvent.change(input(true), { target: { value: '999999.999' } })
+    fireEvent.click(plus(true))
+    expect(input(true).value).toBe('1000000')
+    expect(plus(true).disabled).toBe(true)
   })
 
   it('keeps a sale price while a sub-kilogram quantity is typed through zero', () => {

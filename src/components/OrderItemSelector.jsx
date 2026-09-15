@@ -63,8 +63,9 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
   const stepQuantity = (option, direction) => {
     const current = Number(selectedById.get(String(option.id))?.quantity) || 0
     const scale = isKg ? 1000 : 1
-    // Work in integers to retain the existing 0.001 kg step without float drift.
-    const next = Math.max(0, Math.min(MAX_QUANTITY, (Math.round(current * scale) + direction) / scale))
+    const increment = isKg ? 100 : 1
+    // Buttons step by 0.1 kg; integer grams preserve manually entered 0.001 kg precision.
+    const next = Math.max(0, Math.min(MAX_QUANTITY, (Math.round(current * scale) + direction * increment) / scale))
     changeQuantity(option, next)
   }
   const amountLabel = (item) => {
