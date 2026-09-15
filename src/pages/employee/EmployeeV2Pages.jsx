@@ -31,6 +31,8 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { OrderPaymentSummary } from '../../components/OrderPaymentSummary'
+import { OrderRevenueSummary } from '../../components/OrderRevenueSummary'
+import { hasOrderLinePricing, orderRevenuePreview, revenueTypeLabelForOrder } from '../../domain/orderRevenue'
 import { OrderItemSelector, OrderItemsSummary } from '../../components/OrderItemSelector'
 import { OrderCustomFieldsEditor, OrderCustomFieldsSummary } from '../../components/OrderCustomFields'
 import { orderMatchesFilters, parseOrderAmountFilter, summarizeOrders } from '../../domain/orderSummary'
@@ -631,6 +633,7 @@ export function EmployeeOrdersPage() {
   }
 
   const closeCreate = () => {
+    if (saving) return
     orderRequestRef.current = { fingerprint: '', idempotencyKey: '' }
     setForm({ ...EMPTY_ORDER_FORM, items: [], customFields: [] })
     setFormErrors({})
@@ -650,13 +653,20 @@ export function EmployeeOrdersPage() {
     return () => window.clearTimeout(scrollTimer)
   }, [requestedOrderKey])
 
+  const pricedOrder = hasOrderLinePricing(form.items)
+  const revenuePreview = orderRevenuePreview(form.items, pricedOrder ? undefined : parseMoney(form.amount))
   const save = async () => {
     if (!openAttendance) {
       notify('Ca làm việc đã kết thúc hoặc chưa được mở. Vui lòng điểm danh lại trước khi tạo đơn hàng.', 'info')
       setOpen(false)
       return
     }
-    const normalizedForm = { ...form, amount: parseMoney(form.amount), occupation: form.occupation.trim() }
+    if (saving) return
+    if (revenuePreview.error) {
+      setFormErrors((current) => ({ ...current, items: revenuePreview.error }))
+      return
+    }
+    const normalizedForm = { ...form, amount: revenuePreview.amount, occupation: form.occupation.trim() }
     const errors = validateEmployeeOrder(normalizedForm, { occupationOptions: orderInformationOptions })
     if (Object.keys(errors).length) {
       setFormErrors(errors)
@@ -691,7 +701,10 @@ export function EmployeeOrdersPage() {
         notify(result?.message || 'Không thể tạo đơn hàng.', 'info')
         return
       }
-      closeCreate()
+      orderRequestRef.current = { fingerprint: '', idempotencyKey: '' }
+      setForm({ ...EMPTY_ORDER_FORM, items: [], customFields: [] })
+      setFormErrors({})
+      setOpen(false)
     } finally {
       setSaving(false)
     }
@@ -702,16 +715,16 @@ export function EmployeeOrdersPage() {
       <PageHeader
         title="ĐƠN HÀNG CỦA TÔI"
         subtitle={openAttendance
-          ? `Chỉ hiển thị đơn hàng thuộc ca đang làm tại ${store?.name || 'cửa hàng hiện tại'}.`
+          ? `Chỉ hiển thị đơn hàng do bạn tạo trong ca đang làm tại ${store?.name || 'cửa hàng hiện tại'}.`
           : 'Chỉ hiển thị đơn hàng khi bạn đang có một ca làm việc mở.'}
         icon={ShoppingCart}
         actions={<Button icon={Plus} onClick={openCreate} disabled={!openAttendance}>TẠO ĐƠN HÀNG</Button>}
       />
       {!openAttendance && <InfoNote tone="orange">Bạn chưa có ca đang mở. Hãy điểm danh vào ca trước khi tạo đơn hàng.</InfoNote>}
       <p className="order-shift-context"><span>CA HIỆN TẠI:</span><strong>{openAttendance?.shiftName || 'Chưa vào ca'}</strong>{openAttendance && <span>{openAttendance.shiftStart || '—'} – {openAttendance.shiftEnd || '—'} · {String(openAttendance.date || '').split('-').reverse().join('/')}</span>}</p>
+      <OrderRevenueSummary totals={totals} label="Doanh thu của tôi trong ca" totalLabel="DOANH THU TRONG CA" totalHelper="Chỉ các đơn hàng của bạn trong ca" />
       <div className="order-payment-metrics" aria-label="Tổng quan đơn hàng trong ca">
-        <MetricCard label="ĐƠN TRONG CA" value={rows.length} helper="Toàn bộ ca đang mở" icon={ShoppingCart} tone="blue" />
-        <MetricCard label="DOANH THU TRONG CA" value={money(totals.revenue)} helper="Toàn bộ đơn hàng trong ca" icon={Banknote} tone="green" />
+        <MetricCard label="ĐƠN TRONG CA" value={rows.length} helper="Đơn của bạn trong ca đang mở" icon={ShoppingCart} tone="blue" />
         <MetricCard label="TỔNG TIỀN CHUYỂN KHOẢN" value={money(totals.transfer)} helper={`${totals.transferOrders} đơn chuyển khoản`} icon={Banknote} tone="blue" />
         <MetricCard label="TỔNG TIỀN MẶT" value={money(totals.cash)} helper={`${totals.cashOrders} đơn tiền mặt`} icon={Wallet} tone="orange" />
       </div>
@@ -733,7 +746,7 @@ export function EmployeeOrdersPage() {
           <>
             <TableWrap tableClassName="order-table" paginationKey={`${paymentFilterKey}:${paymentFilter}:${amountInput}`}>
               <thead><tr><th>Mã đơn</th><th>Thời gian</th><th>Khách hàng</th><th>Mặt hàng</th><th>Thuộc tính</th><th>Giới tính</th><th>Nghề nghiệp</th><th>Biết qua kênh</th><th>Ca làm việc</th><th>Thanh toán</th><th>Số tiền</th></tr></thead>
-              <tbody>{filteredRows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Thời gian">{timestamp(order.createdAt)}</td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || '—'} • {order.customerAge ?? '—'} tuổi</small></td><td data-label="Mặt hàng" data-wide><OrderItemsSummary items={order.items} /></td><td data-label="Thuộc tính" data-wide><OrderCustomFieldsSummary values={order.customFields} /></td><td data-label="Giới tính">{order.gender || '—'}</td><td data-label="Nghề nghiệp">{order.occupation || '—'}</td><td data-label="Biết qua kênh"><Badge tone="green">{order.acquisitionChannel || '—'}</Badge></td><td data-label="Ca làm việc">{order.shiftName || 'Chưa gắn ca'}</td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong></td></tr>)}</tbody>
+              <tbody>{filteredRows.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Thời gian">{timestamp(order.createdAt)}</td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || '—'} • {order.customerAge ?? '—'} tuổi</small></td><td data-label="Mặt hàng" data-wide><OrderItemsSummary items={order.items} /></td><td data-label="Thuộc tính" data-wide><OrderCustomFieldsSummary values={order.customFields} /></td><td data-label="Giới tính">{order.gender || '—'}</td><td data-label="Nghề nghiệp">{order.occupation || '—'}</td><td data-label="Biết qua kênh"><Badge tone="green">{order.acquisitionChannel || '—'}</Badge></td><td data-label="Ca làm việc">{order.shiftName || 'Chưa gắn ca'}</td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'orange' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong><small className="table-note">{revenueTypeLabelForOrder(order)}</small></td></tr>)}</tbody>
             </TableWrap>
           </>
         ) : <EmptyState
@@ -743,7 +756,7 @@ export function EmployeeOrdersPage() {
             : 'Hãy điểm danh vào ca trước khi xem và tạo đơn hàng.'}
         />}
       </Card>
-      <Modal open={open} onClose={closeCreate} title={`Tạo đơn hàng • ${store?.name || 'IDOSI'}`} footer={<><Button variant="outline" onClick={closeCreate}>Hủy</Button><Button icon={ShoppingCart} loading={saving} onClick={save}>LƯU ĐƠN</Button></>}>
+      <Modal open={open} onClose={closeCreate} title={`Tạo đơn hàng • ${store?.name || 'IDOSI'}`} footer={<><Button variant="outline" onClick={closeCreate} disabled={saving}>Hủy</Button><Button icon={ShoppingCart} loading={saving} onClick={save}>LƯU ĐƠN</Button></>}>
         <div className="form-grid">
           <Field label="Tên khách hàng" required error={formErrors.customerName}><Input value={form.customerName} onChange={(event) => updateForm('customerName', event.target.value)} /></Field>
           <Field label="Số điện thoại"><Input inputMode="tel" value={form.customerPhone} onChange={(event) => updateForm('customerPhone', event.target.value)} /></Field>
@@ -753,7 +766,8 @@ export function EmployeeOrdersPage() {
           <Field label="Biết qua kênh nào" required error={formErrors.acquisitionChannel}><Select value={form.acquisitionChannel} onChange={(event) => updateForm('acquisitionChannel', event.target.value)}><option value="">Chọn kênh</option>{ACQUISITION_CHANNELS.map((item) => <option key={item}>{item}</option>)}</Select></Field>
           <div className="span-2"><OrderItemSelector options={orderInformationOptions} value={form.items} error={formErrors.items} disabled={saving} onChange={(items) => updateForm('items', items)} /></div>
           <div className="span-2"><OrderCustomFieldsEditor options={orderInformationOptions} value={form.customFields} error={formErrors.customFields} disabled={saving} onChange={(customFields) => updateForm('customFields', customFields)} /></div>
-          <Field label="Số tiền" required error={formErrors.amount}><MoneyInput value={form.amount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
+          {pricedOrder && <div className="span-2"><OrderRevenueSummary totals={revenuePreview.error ? null : { ...revenuePreview, revenue: revenuePreview.amount }} label="Tổng tiền đơn đang tạo" totalLabel="Tổng đơn hàng" /></div>}
+          <Field label="Số tiền" required hint={pricedOrder ? 'Tự tính từ đơn giá, số lượng và giảm giá từng dòng.' : undefined} error={formErrors.amount}><MoneyInput value={pricedOrder ? revenuePreview.amount ?? '' : form.amount} readOnly={pricedOrder} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
           <Field label="Hình thức thanh toán" required error={formErrors.paymentMethod}><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option value="">Chọn</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
           <InfoNote>Đơn sẽ tự gắn với {openAttendance?.shiftName || openAttendance?.shift}, {store?.name || 'cửa hàng trực thuộc'} và thời gian tạo thực tế.</InfoNote>
         </div>

@@ -39,3 +39,29 @@
   .order-custom-fields-summary { min-width: 0; }
   .order-custom-fields-summary > div { grid-template-columns: minmax(0, 1fr); gap: 1px; }
 }
+
+.order-revenue-summary { display: grid; min-width: 0; gap: 6px; margin: 10px 0; }
+.order-revenue-summary__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; min-width: 0; }
+.order-revenue-summary__card.metric-card { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 5px; min-width: 0; padding: 14px; border: 1px solid #d5e4dd; border-radius: 12px; background: #f5faf7; box-shadow: none; }
+.order-revenue-summary__card > span { font-size: 12px; line-height: 1.4; color: #344054; overflow-wrap: anywhere; }
+.order-revenue-summary__card > strong { font-size: clamp(15px, 1.4vw, 23px); line-height: 1.35; font-variant-numeric: tabular-nums; color: #075f34; overflow-wrap: anywhere; max-width: 100%; }
+.order-revenue-summary__card > small { color: #526273; font-size: 10px; line-height: 1.4; }
+.order-revenue-summary__card--sale_kg.metric-card { background: #eef7fc; border-color: #bedbec; }
+.order-revenue-summary__card--sale_piece.metric-card { background: #fff7ec; border-color: #f2dbb6; }
+.order-revenue-summary__card--total.metric-card { background: #e6f5ed; border: 2px solid #178451; }
+.order-revenue-summary__notice { color: #875315; }
+.order-revenue-types { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin: 5px 0; }
+.order-revenue-types > button { display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 0; min-height: 52px; padding: 8px 5px; border: 1px solid #b9cec2; border-radius: 9px; background: #fff; color: #344054; font: inherit; cursor: pointer; transition: background 120ms, border-color 120ms; }
+.order-revenue-types > button strong { font-size: 12px; font-weight: 600; line-height: 1.4; text-align: center; overflow-wrap: anywhere; }
+.order-revenue-types > button small { font-size: 10px; margin-top: 2px; }
+.order-revenue-types > button[aria-pressed=true] { background: #07833f; border-color: #07833f; color: white; }
+.order-revenue-types button:focus-visible, .order-revenue-types__selection button:focus-visible { outline: 3px solid #72b8e1; outline-offset: 2px; }
+.order-revenue-types button:disabled { cursor: not-allowed; opacity: .55; }
+.order-revenue-types__selection { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 0; }
+.order-revenue-types__selection button { border: 1px solid #b9cec2; border-radius: 7px; background: #f5faf7; color: #075f34; padding: 7px; font: inherit; font-size: 11px; cursor: pointer; }
+@media (max-width: 640px) {
+  .order-revenue-summary__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .order-revenue-summary__card.metric-card { padding: 11px; min-height: 95px; }
+  .order-revenue-summary__card > strong { font-size: 17px; }
+  .order-revenue-types { gap: 5px; }
+}
