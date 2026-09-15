@@ -2,6 +2,9 @@ import { useId, useState } from 'react'
 import { Banknote, Package, Scale, ShoppingCart } from 'lucide-react'
 import { Field, InfoNote, MetricCard, MoneyInput } from './UI'
 import { OrderItemSelector } from './OrderItemSelector'
+import { OrderWeightSummary, WeightConversionTable } from './OrderWeight'
+import { summarizeItemWeights } from '../domain/orderWeight'
+import { productOptions } from '../domain/orderInformationSettings'
 import { ORDER_REVENUE_LABELS, ORDER_REVENUE_TYPES, orderRevenueByType, prepareOrderRevenueInput, revenueTypeOf } from '../domain/orderRevenue'
 import { money } from '../utils'
 import './orderRevenue.css'
@@ -11,12 +14,15 @@ import './orderMobileSummary.css'
 const presentation = { NORMAL: { icon: ShoppingCart, tone: 'blue' }, SALE_KG: { icon: Scale, tone: 'green' }, SALE_PIECE: { icon: Package, tone: 'orange' } }
 
 export function OrderRevenueSummary({ totals, label = 'Doanh thu theo loại', totalLabel = 'TỔNG DOANH THU', compact = false }) {
-  return <section className={`order-revenue-summary ${compact ? 'is-compact' : ''}`} aria-label={label}>
-    {ORDER_REVENUE_TYPES.map((type) => <MetricCard key={type} label={ORDER_REVENUE_LABELS[type].toLocaleUpperCase('vi-VN')}
-      value={totals?.revenueByType ? money(totals.revenueByType[type]) : '—'}
-      helper={type === 'NORMAL' ? 'Hàng thường' : 'Hàng sale'} compact={compact} {...presentation[type]} />)}
-    <MetricCard label={totalLabel} value={totals ? money(totals.revenue) : '—'} helper="Bán thường + 2 loại sale" icon={Banknote} tone="green" compact={compact} />
-  </section>
+  return <>
+    <section className={`order-revenue-summary ${compact ? 'is-compact' : ''}`} aria-label={label}>
+      {ORDER_REVENUE_TYPES.map((type) => <MetricCard key={type} label={ORDER_REVENUE_LABELS[type].toLocaleUpperCase('vi-VN')}
+        value={totals?.revenueByType ? money(totals.revenueByType[type]) : '—'}
+        helper={type === 'NORMAL' ? 'Hàng thường' : 'Hàng sale'} compact={compact} {...presentation[type]} />)}
+      <MetricCard label={totalLabel} value={totals ? money(totals.revenue) : '—'} helper="Bán thường + 2 loại sale" icon={Banknote} tone="green" compact={compact} />
+    </section>
+    <OrderWeightSummary weight={totals?.weight} label={`Khối lượng • ${label}`} compact={compact} />
+  </>
 }
 
 export function OrderRevenueDetails({ order }) {
@@ -34,6 +40,10 @@ export function OrderRevenueEditor({ options, items = [], amount = '', onItemsCh
   const id = useId()
   const current = items.filter((item) => revenueTypeOf(item) === type)
   const replaceCurrent = (next) => onItemsChange?.([...items.filter((item) => revenueTypeOf(item) !== type), ...next])
+  const productNames = new Map(productOptions(options).map((option) => [String(option.id), option.label]))
+  const weight = items.length ? summarizeItemWeights(items.map((item) => ({
+    ...item, productName: item.productName || productNames.get(String(item.productId)) || '',
+  }))) : null
   let preview, previewError
   try {
     const prepared = prepareOrderRevenueInput({ amount: String(amount).replaceAll(',', ''), items })
@@ -57,6 +67,8 @@ export function OrderRevenueEditor({ options, items = [], amount = '', onItemsCh
     {!canEditRevenue && <InfoNote>Chỉ Admin được thay đổi số tiền và phần hàng sale.</InfoNote>}
     {errors.amount && type !== 'NORMAL' && <small className="field__error" role="alert">{errors.amount}</small>}
     <OrderRevenueSummary totals={preview} label="Tổng tiền đơn đang nhập" totalLabel="TỔNG TIỀN ĐƠN" compact />
+    <OrderWeightSummary weight={weight} label="Khối lượng đơn đang nhập" compact />
+    <WeightConversionTable />
     {!preview && !errors.amount && !errors.items && <small className="order-revenue-editor__pending" role="status">{items.length ? previewError : 'Chọn mặt hàng và nhập tiền để tính tổng đơn.'}</small>}
   </section>
 }
