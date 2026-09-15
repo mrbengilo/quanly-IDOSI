@@ -137,6 +137,8 @@ export function SearchableSelect({
 
   const selectOption = (option, sourceEvent) => {
     if (!option || option.disabled || loading || error || disabled) return
+    // A surrounding label can reactivate the trigger after the option unmounts.
+    sourceEvent?.preventDefault()
     const changeTarget = { name, value: option.value }
     onChange?.({
       target: changeTarget,
