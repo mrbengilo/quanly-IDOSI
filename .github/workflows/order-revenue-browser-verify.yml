@@ -28,6 +28,7 @@ jobs:
           text=text.replace("page.wait_for_url('**/'+destination,timeout=30000)", "page.wait_for_function('(destination) => location.hash.includes(destination)', arg=destination, timeout=30000)\n    page.wait_for_load_state('networkidle')")
           text=text.replace("page.goto(c['base']+'/#/employee/orders',wait_until='networkidle')", "page.get_by_role('link',name='Đơn hàng',exact=True).first.click()\n        page.wait_for_load_state('networkidle')")
           text=text.replace("page.goto(c['base']+'/#/store/statistics',wait_until='networkidle')", "page.get_by_role('link',name='Số liệu thống kê',exact=True).first.click()\n        page.wait_for_load_state('networkidle')")
+          text=text.replace("dialog.get_by_role('option').first.click()", "dialog.get_by_role('listbox',name='Nghề nghiệp - danh sách',exact=True).get_by_role('option').first.click()")
           text=text.replace("capture(page,'failure')", "(out/'failure-trace.txt').write_text(traceback.format_exc()+'\\nURL: '+page.url)\n        capture(page,'failure')")
           p.write_text(text)
           PY
