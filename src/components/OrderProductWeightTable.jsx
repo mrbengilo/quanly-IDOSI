@@ -50,8 +50,8 @@ export function OrderProductWeightTable({ rows, totals, scopeLabel = '' }) {
               <thead><tr><th>Mặt hàng</th><th>Số đơn</th><th>Bán thường · kg quy đổi</th><th>Sale cái · kg quy đổi</th><th>Sale ký · kg thực bán</th><th>Tổng kg</th></tr></thead>
               <tbody>{rows.map((item) => <tr key={item.productId || item.productCode || item.productName}>
                 <td data-label="Mặt hàng">{item.productName || item.productCode || 'Mặt hàng'}</td><td data-label="Số đơn">{item.orders}</td>
-                <td data-label="Bán thường · kg quy đổi">{weightTotalText(item.weight?.byRevenueType?.NORMAL)}</td>
-                <td data-label="Sale cái · kg quy đổi">{weightTotalText(item.weight?.byRevenueType?.SALE_PIECE)}</td>
+                <td data-label="Bán thường · kg quy đổi"><EstimatedWeightValue weight={item.weight?.byRevenueType?.NORMAL} /></td>
+                <td data-label="Sale cái · kg quy đổi"><EstimatedWeightValue weight={item.weight?.byRevenueType?.SALE_PIECE} /></td>
                 <td data-label="Sale ký · kg thực bán">{formatKg(item.weight?.byRevenueType?.SALE_KG?.actualKg)}</td>
                 <td data-label="Tổng kg"><strong>{weightTotalText(item.weight)}</strong></td>
               </tr>)}</tbody>
