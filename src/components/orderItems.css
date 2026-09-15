@@ -39,3 +39,20 @@
   .order-custom-fields-summary { min-width: 0; }
   .order-custom-fields-summary > div { grid-template-columns: minmax(0, 1fr); gap: 1px; }
 }
+/* Inline quantity controls: one control for typing, tapping and keyboard arrows. */
+.order-item-selector__row--stepper { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+.order-item-selector__row--stepper .order-item-selector__name { font-weight: 400; }
+.order-item-selector__quantity.order-item-selector__quantity--stepper { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.order-item-selector__stepper { display: inline-flex; flex: 0 0 auto; align-items: center; border: 1px solid #dce5df; border-radius: 6px; background: #fff; }
+.order-item-selector__stepper button { display: grid; place-items: center; flex: 0 0 32px; width: 32px; min-width: 0; height: 36px; min-height: 36px; margin: 0; padding: 0; border: 0; border-radius: 5px; background: #f5f7f6; color: #185c39; font-size: 20px; line-height: 1; cursor: pointer; touch-action: manipulation; }
+.order-item-selector__stepper button:disabled { color: #98a2b3; cursor: not-allowed; }
+.order-item-selector__stepper button:not(:disabled):active { background: #dbefe2; }
+.order-item-selector__quantity .order-item-selector__stepper input { flex: 0 0 auto; width: max(40px, calc(var(--quantity-characters, 3) * 1ch + 8px)); min-width: 40px; height: 36px; min-height: 36px; margin: 0; padding: 4px; border: 0; border-radius: 0; background: #fff; color: #182230; font-size: 16px; font-variant-numeric: tabular-nums; line-height: 1.25; text-align: center; appearance: textfield; -moz-appearance: textfield; }
+.order-item-selector__stepper input::-webkit-inner-spin-button,
+.order-item-selector__stepper input::-webkit-outer-spin-button { margin: 0; -webkit-appearance: none; }
+.order-item-selector__stepper :is(button, input):focus-visible { position: relative; outline: 2px solid #07833f; outline-offset: 1px; }
+.order-item-selector__row--stepper :is(.order-item-selector__price, .order-item-selector__amount) { grid-column: 1 / -1; }
+@media (max-width: 760px) {
+  .page.order-list-page .order-item-selector__row.order-item-selector__row--stepper { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .page.order-list-page .modal .order-item-selector__stepper input { width: max(40px, calc(var(--quantity-characters, 3) * 1ch + 8px)); min-width: 40px; height: 36px; min-height: 36px; padding: 4px; text-align: center; }
+}

@@ -7,10 +7,13 @@ import { money } from '../utils'
 import { productOptions } from '../domain/orderInformationSettings'
 import './orderItems.css'
 
+const MAX_QUANTITY = 1000000
+
 export function OrderItemSelector({ options = [], value = [], onChange, error = '', disabled = false, revenueType = 'NORMAL' }) {
   const labelId = useId()
   const isSale = revenueType !== 'NORMAL'
   const isKg = revenueType === 'SALE_KG'
+  const quantityLabel = isKg ? 'Khối lượng' : 'Số lượng'
   const selectedItems = (Array.isArray(value) ? value : []).map((item) => ({
     ...item,
     productId: String(item?.productId || item?.id || '').trim(),
@@ -31,22 +34,38 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
     return [...active, ...historical]
   })()
 
-  const toggle = (option, checked) => {
-    if (checked) {
-      onChange?.([...selectedItems, { productId: String(option.id), quantity: 1, ...(isSale ? { revenueType, unit: isKg ? 'KG' : 'PIECE', unitPrice: '' } : {}) }])
-    } else {
-      onChange?.(selectedItems.filter((item) => item.productId !== String(option.id)))
-    }
-  }
-
-  const changeValue = (productId, field, value) => {
+  const changeValue = (productId, field, nextValue) => {
+    if (disabled) return
     onChange?.(selectedItems.map((item) => {
       if (item.productId !== productId) return item
-      const next = { ...item, [field]: value }
+      const next = { ...item, [field]: nextValue }
       // Never submit a stale derived line amount after quantity or price changes.
       delete next.lineAmount
       return next
     }))
+  }
+  const changeQuantity = (option, nextValue) => {
+    if (disabled) return
+    const productId = String(option.id)
+    const quantity = nextValue === '' ? '' : Number(nextValue)
+    const scale = isKg ? 1000 : 1
+    if (quantity !== '' && (!Number.isFinite(quantity) || quantity < 0 || quantity > MAX_QUANTITY
+      || Math.abs(quantity * scale - Math.round(quantity * scale)) > 0.000001)) return
+    if (quantity === 0) {
+      onChange?.(selectedItems.filter((item) => item.productId !== productId))
+    } else if (selectedById.has(productId)) {
+      // Keep an empty draft editable; the existing submit validation still applies.
+      changeValue(productId, 'quantity', quantity)
+    } else if (quantity !== '') {
+      onChange?.([...selectedItems, { productId, quantity, ...(isSale ? { revenueType, unit: isKg ? 'KG' : 'PIECE', unitPrice: '' } : {}) }])
+    }
+  }
+  const stepQuantity = (option, direction) => {
+    const current = Number(selectedById.get(String(option.id))?.quantity) || 0
+    const scale = isKg ? 1000 : 1
+    // Work in integers to retain the existing 0.001 kg step without float drift.
+    const next = Math.max(0, Math.min(MAX_QUANTITY, (Math.round(current * scale) + direction) / scale))
+    changeQuantity(option, next)
   }
   const amountLabel = (item) => {
     try { return money(normalizeRevenueItem(item).lineAmount) } catch { return 'Chưa đủ số liệu' }
@@ -55,40 +74,54 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
   return (
     <div className={`order-item-selector ${error ? 'order-item-selector--error' : ''}`} role="group" aria-labelledby={labelId}>
       <span className="field__label" id={labelId}>Mặt hàng <b>*</b></span>
-      <small>Chọn một hoặc nhiều mặt hàng và nhập số lượng tương ứng.</small>
+      <small>Chọn mặt hàng, bấm + / − hoặc nhập số lượng trực tiếp.</small>
       {available.length ? <div className="order-item-selector__grid">
         {available.map((option) => {
           const productId = String(option.id)
           const selected = selectedById.get(productId)
-          return <div className={`order-item-selector__row ${selected ? 'is-selected' : ''}`} key={productId}>
+          const quantity = selected ? selected.quantity : 0
+          return <div className={`order-item-selector__row order-item-selector__row--stepper ${selected ? 'is-selected' : ''}`} key={productId}>
             <label className="order-item-selector__choice">
               <input
                 type="checkbox"
                 checked={Boolean(selected)}
                 disabled={disabled}
-                onChange={(event) => toggle(option, event.target.checked)}
+                onChange={(event) => changeQuantity(option, event.target.checked ? 1 : 0)}
               />
               <span>
-                <strong className="order-item-selector__name">{option.label}</strong>
+                <span className="order-item-selector__name">{option.label}</span>
                 <small className="order-item-selector__code">{option.code || '—'}</small>
                 {option.active === false && <small className="order-item-selector__inactive">Đã ngừng sử dụng</small>}
               </span>
             </label>
-            {selected && <label className="order-item-selector__quantity">
-              <span>{isKg ? 'Khối lượng' : 'Số lượng'}</span>
-              <input
-                aria-label={`${isKg ? 'Khối lượng' : 'Số lượng'} ${option.label}`}
-                type="number"
-                inputMode={isKg ? 'decimal' : 'numeric'}
-                min={isKg ? '0.001' : '1'}
-                max="1000000"
-                step={isKg ? '0.001' : '1'}
-                value={selected.quantity}
-                disabled={disabled}
-                onChange={(event) => changeValue(productId, 'quantity', event.target.value === '' ? '' : Number(event.target.value))}
-              />
-              <em>{isKg ? 'kg' : 'cái'}</em>
-            </label>}
+            <div className="order-item-selector__quantity order-item-selector__quantity--stepper">
+              <div className="order-item-selector__stepper" role="group" aria-label={`Điều chỉnh ${quantityLabel.toLocaleLowerCase('vi-VN')} ${option.label}`}>
+                <button type="button" aria-label={`Giảm ${quantityLabel.toLocaleLowerCase('vi-VN')} ${option.label}`}
+                  disabled={disabled || Number(quantity) <= 0}
+                  onClick={() => stepQuantity(option, -1)}>−</button>
+                <input
+                  aria-label={`${quantityLabel} ${option.label}`}
+                  type="number"
+                  inputMode={isKg ? 'decimal' : 'numeric'}
+                  min="0"
+                  max={MAX_QUANTITY}
+                  step={isKg ? '0.001' : '1'}
+                  value={quantity}
+                  style={{ '--quantity-characters': Math.max(3, String(quantity).length) }}
+                  disabled={disabled}
+                  onChange={(event) => changeQuantity(option, event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+                    event.preventDefault()
+                    stepQuantity(option, event.key === 'ArrowUp' ? 1 : -1)
+                  }}
+                />
+                <button type="button" aria-label={`Tăng ${quantityLabel.toLocaleLowerCase('vi-VN')} ${option.label}`}
+                  disabled={disabled || Number(quantity) >= MAX_QUANTITY}
+                  onClick={() => stepQuantity(option, 1)}>+</button>
+              </div>
+              {isKg && <em>kg</em>}
+            </div>
             {selected && isSale && <>
               <label className="order-item-selector__price"><span>Đơn giá/{isKg ? 'kg' : 'cái'}</span>
                 <MoneyInput aria-label={`Đơn giá ${option.label}`} value={selected.unitPrice} disabled={disabled}
