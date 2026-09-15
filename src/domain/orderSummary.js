@@ -57,8 +57,19 @@ export const parseOrderAmountFilter = (value) => {
   return Number.isSafeInteger(amount) && amount >= 0 ? amount : Number.NaN
 }
 
-export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMethod = '', amount = null, query = '' } = {}) => {
+/** Creator scope is assigned by the authenticated server, never by a query parameter. */
+export const orderCreatorEmployeeId = (record = {}) => {
+  const explicit = String(record.createdByEmployeeId || record.creatorEmployeeId
+    || record.createdBy?.employeeId || record.createdBy?.employee_id || '').trim()
+  if (explicit) return explicit
+  const role = String(record.createdBy?.role || '').trim().toLowerCase()
+  if (role && role !== 'employee') return ''
+  return String(record.employeeId || record.employee_id || '').trim()
+}
+
+export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMethod = '', amount = null, query = '', creatorEmployeeId = '' } = {}) => {
   if (!order || order.deletedAt || order.status === 'Đã xóa' || order.source === 'legacy-opening-balance') return false
+  if (creatorEmployeeId && identifierKey(orderCreatorEmployeeId(order)) !== identifierKey(creatorEmployeeId)) return false
   if (date && orderBusinessDate(order) !== date) return false
   if (shiftId && String(order.shiftId || '') !== shiftId) return false
   if (paymentMethod && paymentChannel(order.paymentMethod) !== paymentChannel(paymentMethod)) return false

@@ -64,7 +64,8 @@ import {
   supportSchedulePresetsEqual,
   validateSupportSchedulePresets,
 } from '../src/domain/supportWorkSchedule.js'
-import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
+import { calculateOrderRevenue, normalizeOrderRevenueItem, orderItemRevenueType, hasOrderLinePricing } from '../src/domain/orderRevenue.js'
+import { orderCreatorEmployeeId, orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
 import { resolveOrderCustomFields as resolveConfiguredOrderCustomFields } from '../src/domain/orderCustomFields.js'
 
 const API_PREFIX = '/api/'
@@ -2036,25 +2037,6 @@ const redactEmployeeReferences = (value, allowedEmployeeIds, parentKey = '', dep
 const belongsToEmployee = (record, employeeId) => {
   if (!isPlainRecord(record)) return false
   return employeeReferences(record).some((reference) => sameIdentifier(reference, employeeId))
-}
-
-const orderCreatorEmployeeId = (record) => {
-  if (!isPlainRecord(record)) return ''
-  const explicitEmployeeId = String(
-    record.createdByEmployeeId
-      || record.creatorEmployeeId
-      || record.createdBy?.employeeId
-      || record.createdBy?.employee_id
-      || '',
-  ).trim()
-  if (explicitEmployeeId) return explicitEmployeeId
-
-  // Older employee orders predate the creator snapshot. Their direct employeeId is
-  // the only durable creator identity. An explicit non-employee actor, however,
-  // must never make an assigned order appear as if the employee created it.
-  const creatorRole = String(record.createdBy?.role || '').trim().toLowerCase()
-  if (creatorRole && creatorRole !== 'employee') return ''
-  return String(record.employeeId || record.employee_id || '').trim()
 }
 
 const orderCreatedByEmployee = (record, employeeId) => (
@@ -5665,7 +5647,7 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
   const collectionKey = HISTORY_COLLECTIONS[historyKind]
   if (!collectionKey) throw new ApiError(404, 'HISTORY_KIND_NOT_FOUND', 'Không tìm thấy loại lịch sử.')
   const db = getDatabase(env)
-  const { storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
+  const { user, storeId, employeeId: requestedEmployeeId } = await resolveHistoryReadScope(request, db, context, url)
   const period = String(url.searchParams.get('period') || '').trim()
   if (period && !/^\d{4}-\d{2}$/u.test(period)) {
     throw new ApiError(400, 'HISTORY_PERIOD_INVALID', 'Kỳ lịch sử phải có định dạng YYYY-MM.')
@@ -5676,7 +5658,11 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
   if (orderId.length > 200) {
     throw new ApiError(400, 'HISTORY_ORDER_ID_INVALID', 'Mã đơn hàng cần tra cứu không hợp lệ.')
   }
-  const filters = historyKind === 'orders' ? orderReadFilters(url) : {}
+  const ownOrdersOnly = historyKind === 'orders' && user.role === 'employee'
+  const employeeId = ownOrdersOnly ? '' : requestedEmployeeId
+  const filters = historyKind === 'orders'
+    ? { ...orderReadFilters(url), ...(ownOrdersOnly ? { creatorEmployeeId: requestedEmployeeId } : {}) }
+    : {}
   const limit = Math.min(100, Math.max(10, Number(url.searchParams.get('limit')) || 50))
   const cursor = decodeHistoryCursor(url.searchParams.get('cursor'))
   const rows = typeof db?.readEntityHistory === 'function'
@@ -5782,11 +5768,13 @@ const summarizeOrderRows = (rows, scope) => {
 
 const getOrderSummary = async (request, env, context, url) => {
   const db = getDatabase(env)
-  const { storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
+  const { user, storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
   const period = asMonth(url.searchParams.get('period'), 'Kỳ tổng hợp đơn hàng')
-  const filters = orderReadFilters(url)
-  const rows = await readOrderSummaryRows(db, storeId, employeeId, period)
-  const summary = summarizeOrderRows(rows, { storeId, period, employeeId, ...filters })
+  const ownOrdersOnly = user.role === 'employee'
+  const filters = { ...orderReadFilters(url), ...(ownOrdersOnly ? { creatorEmployeeId: employeeId } : {}) }
+  const assignedEmployeeId = ownOrdersOnly ? '' : employeeId
+  const rows = await readOrderSummaryRows(db, storeId, assignedEmployeeId, period)
+  const summary = summarizeOrderRows(rows, { storeId, period, employeeId: assignedEmployeeId, ...filters })
   return jsonResponse(apiPayload(context, { storeId, period, ...summary }))
 }
 
@@ -5896,6 +5884,10 @@ const getWarehouseOrderStatistics = async (request, env, context, url) => {
   const summary = summarizeOrderRows(rows, { storeId, period, ...filters })
   return jsonResponse(apiPayload(context, {
     apiVersion: 1,
+    revenueSchemaVersion: 1,
+    timezone: 'Asia/Ho_Chi_Minh',
+    currency: 'VND',
+    generatedAt: new Date().toISOString(),
     store: { id: storeId, name: String(store.name || store.short || storeId) },
     filters: {
       period,
@@ -17113,19 +17105,20 @@ const resolveOrderOccupation = (state, value, previousValue = '', allowUnchanged
 }
 
 const MAX_ORDER_ITEM_TYPES = 100
-const MAX_ORDER_ITEM_QUANTITY = 1_000_000
 
-const normalizedHistoricalOrderItems = (items) => (Array.isArray(items) ? items : []).map((item) => {
+const normalizedHistoricalOrderItems = (items) => (Array.isArray(items) ? items : []).flatMap((item) => {
   const productId = normalizeOrderInformationText(item?.productId || item?.id)
   const productCode = String(item?.productCode || item?.code || '').trim().toUpperCase()
   const productName = normalizeOrderInformationText(item?.productName || item?.name || item?.label)
-  const quantity = Number(item?.quantity)
-  if ((!productId && !productCode && !productName)
-    || !Number.isSafeInteger(quantity)
-    || quantity <= 0
-    || quantity > MAX_ORDER_ITEM_QUANTITY) return null
-  return { productId, productCode, productName, quantity }
-}).filter(Boolean)
+  if (!productId && !productCode && !productName) return []
+  try { return [{ productId, productCode, productName, ...normalizeOrderRevenueItem(item) }] }
+  catch { return [] }
+})
+
+const assertOrderRevenue = (items, amount) => {
+  try { return calculateOrderRevenue(items, amount) }
+  catch (error) { throw new ApiError(400, 'ORDER_REVENUE_INVALID', error.message) }
+}
 
 const resolveOrderItems = (state, items, previousItems = [], allowHistorical = false) => {
   const historicalItems = normalizedHistoricalOrderItems(previousItems)
@@ -17141,19 +17134,19 @@ const resolveOrderItems = (state, items, previousItems = [], allowHistorical = f
   }
   const historicalById = new Map(historicalItems
     .filter((item) => item.productId)
-    .map((item) => [item.productId, item]))
+    .map((item) => [`${item.productId}:${orderItemRevenueType(item)}`, item]))
   const selectedIds = new Set()
   return items.map((item) => {
     const productId = normalizeOrderInformationText(item?.productId || item?.id)
-    const quantity = Number(item?.quantity)
     if (!productId) throw new ApiError(400, 'ORDER_PRODUCT_INVALID', 'Mặt hàng đã chọn không hợp lệ.')
-    if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > MAX_ORDER_ITEM_QUANTITY) {
-      throw new ApiError(400, 'ORDER_ITEM_QUANTITY_INVALID', `Số lượng mỗi mặt hàng phải là số nguyên từ 1 đến ${MAX_ORDER_ITEM_QUANTITY}.`)
-    }
-    if (selectedIds.has(productId)) {
+    let revenueFields
+    try { revenueFields = normalizeOrderRevenueItem(item) }
+    catch (error) { throw new ApiError(400, 'ORDER_ITEM_QUANTITY_INVALID', error.message) }
+    const itemKey = `${productId}:${orderItemRevenueType(item)}`
+    if (selectedIds.has(itemKey)) {
       throw new ApiError(400, 'ORDER_PRODUCT_DUPLICATE', 'Một mặt hàng không được lặp lại trong cùng đơn hàng.')
     }
-    selectedIds.add(productId)
+    selectedIds.add(itemKey)
     const option = orderInformationOptionsFromState(state).find((candidate) => (
       isPlainRecord(candidate)
       && orderInformationOptionKind(candidate) === ORDER_PRODUCT_KIND
@@ -17164,11 +17157,13 @@ const resolveOrderItems = (state, items, previousItems = [], allowHistorical = f
         productId: String(option.id),
         productCode: String(option.code || '').trim().toUpperCase(),
         productName: normalizeOrderInformationText(option.label),
-        quantity,
+        ...revenueFields,
       }
     }
-    const historical = historicalById.get(productId)
-    if (allowHistorical && historical) return { ...historical, quantity }
+    const historical = historicalById.get(itemKey)
+    if (allowHistorical && historical) return {
+      productId, productCode: historical.productCode, productName: historical.productName, ...revenueFields,
+    }
     throw new ApiError(400, 'ORDER_PRODUCT_INACTIVE', 'Mặt hàng không còn hoạt động. Vui lòng bỏ chọn hoặc chọn mặt hàng khác.')
   })
 }
@@ -17546,6 +17541,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   const customFields = Object.hasOwn(payload, 'customFields')
     ? resolveOrderCustomFields(state, payload.customFields)
     : []
+  assertOrderRevenue(items, amount)
   const customerProfile = orderCustomerProfile(payload, state)
   const employeeId = actor.role === 'employee'
     ? String(actor.employee_id || actor.user_id)
@@ -17790,12 +17786,14 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
       }
       candidate.acquisitionChannel = acquisitionChannel
     }
+    assertOrderRevenue(candidate.items, candidate.amount)
     changedFields = [
       'customerName', 'customerPhone', 'customerAge', 'gender', 'occupation',
       'acquisitionChannel', 'amount', 'paymentMethod', 'items', 'customFields',
     ]
       .filter((key) => JSON.stringify(candidate[key]) !== JSON.stringify(previous[key]))
-    if (isBusinessSupport && changedFields.includes('amount')) {
+    if (isBusinessSupport && (changedFields.includes('amount')
+      || (changedFields.includes('items') && (hasOrderLinePricing(previous.items) || hasOrderLinePricing(candidate.items))))) {
       throw new ApiError(
         403,
         'ORDER_AMOUNT_ADMIN_ONLY',
