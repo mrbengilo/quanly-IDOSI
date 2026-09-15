@@ -1,0 +1,173 @@
+/* Order-only mobile density. Desktop and financial/API behavior stay unchanged. */
+@media (max-width: 760px) {
+  .page.order-list-page,
+  .page.store-statistics-page {
+    min-width: 0;
+    max-width: 100%;
+    gap: 12px;
+    font-size: 14px;
+    line-height: 1.4;
+    text-align: left;
+  }
+
+  /* One scroll container, with non-overlapping header and footer. */
+  .page.order-list-page .overlay { padding: 8px; }
+  .page.order-list-page .modal {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 0;
+    max-width: 640px;
+    max-height: calc(100vh - 16px);
+    max-height: calc(100dvh - 16px);
+    border-radius: 12px;
+    text-align: left;
+  }
+  .page.order-list-page .modal > header,
+  .page.order-list-page .modal > footer {
+    position: static;
+    flex: 0 0 auto;
+    min-height: 0;
+    height: auto;
+    padding: 8px 10px;
+    gap: 8px;
+  }
+  .page.order-list-page .modal > header h2 {
+    min-width: 0;
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.35;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+  .page.order-list-page .modal > header .icon-button {
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    min-height: 40px;
+  }
+  .page.order-list-page .modal__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 10px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scroll-padding-block: 12px;
+  }
+  .page.order-list-page .modal > footer {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  .page.order-list-page .modal > footer .button {
+    width: 100%;
+    min-width: 0;
+    min-height: 44px;
+    height: auto;
+    padding: 8px 10px;
+    font-size: 14px;
+    line-height: 1.35;
+  }
+  .page.order-list-page .modal .form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 8px;
+    margin: 0;
+    min-width: 0;
+  }
+  .page.order-list-page .modal .form-grid > :is(.span-2, .info-note),
+  .page.order-list-page .modal .form-grid > .field:first-child,
+  .page.order-list-page .modal .form-grid > .field:nth-child(6) {
+    grid-column: 1 / -1;
+    min-width: 0;
+  }
+  .page.order-list-page .modal .field {
+    gap: 4px;
+    min-width: 0;
+    margin: 0;
+    text-align: left;
+  }
+  .page.order-list-page .modal .field__label {
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.35;
+    text-align: left;
+  }
+  .page.order-list-page .modal :is(.field > small, .info-note, .order-custom-fields__heading small) {
+    font-size: 11px;
+    line-height: 1.4;
+    text-align: left;
+    overflow-wrap: anywhere;
+  }
+  .page.order-list-page .modal :is(.input-wrap, .select-wrap) {
+    width: 100%;
+    min-width: 0;
+    min-height: 38px;
+    height: auto;
+    border-radius: 7px;
+  }
+  .page.order-list-page .modal :is(input:not([type='checkbox']):not([type='radio']), select, textarea) {
+    min-width: 0;
+    max-width: 100%;
+    min-height: 38px;
+    height: auto;
+    padding: 7px 8px;
+    /* Preserve native mobile input legibility without focus zoom. */
+    font-size: 16px;
+    line-height: 1.35;
+    text-align: left;
+  }
+  .page.order-list-page .modal select { padding-right: 28px; }
+  .page.order-list-page .modal .money-input-wrap input { padding-right: 26px; }
+  .page.order-list-page .modal .info-note { padding: 8px; margin: 0; }
+  .page.order-list-page .order-revenue-editor { gap: 8px; }
+  .page.order-list-page .order-revenue-editor__heading { gap: 2px; text-align: left; }
+  .page.order-list-page .order-revenue-editor__heading > strong { font-size: 14px; font-weight: 600; }
+  .page.order-list-page .order-revenue-editor small { font-size: 11px; line-height: 1.4; text-align: left; }
+  .page.order-list-page .order-revenue-tabs { gap: 4px; }
+  .page.order-list-page .order-revenue-tabs button {
+    min-width: 0;
+    min-height: 44px;
+    padding: 6px;
+    font-size: 12px;
+    line-height: 1.3;
+    text-align: left;
+    border-radius: 7px;
+  }
+  .page.order-list-page .order-revenue-tabs button small { font-size: 10px; }
+  .page.order-list-page .order-revenue-editor__panel { min-width: 0; padding: 0; border: 0; gap: 8px; }
+  .page.order-list-page .order-item-selector { gap: 4px; }
+  .page.order-list-page .order-item-selector__grid { grid-template-columns: minmax(0, 1fr); gap: 4px; margin-top: 0; }
+  .page.order-list-page .order-item-selector__row { padding: 4px 8px; gap: 5px; border-radius: 7px; }
+  .page.order-list-page .order-item-selector__choice { min-height: 36px; gap: 8px; align-items: center; text-align: left; }
+  .page.order-list-page .order-item-selector__choice input { width: 16px; height: 16px; min-height: 16px; margin: 0; padding: 0; }
+  .page.order-list-page .order-item-selector__name { font-size: 14px; font-weight: 400; line-height: 1.4; text-transform: none; }
+  .page.order-list-page .order-item-selector__code { display: none; }
+  .page.order-list-page .order-item-selector__row.is-selected {
+    grid-template-columns: minmax(0, 1fr) minmax(90px, 110px);
+    align-items: center;
+  }
+  .page.order-list-page .order-item-selector__quantity { grid-template-columns: minmax(0, 1fr) auto; gap: 4px; }
+  .page.order-list-page .order-item-selector__quantity > span {
+    /* The input keeps its explicit accessible quantity/weight label. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .page.order-list-page .order-item-selector__quantity input { padding-inline: 5px; }
+  .page.order-list-page :is(.order-item-selector__price, .order-item-selector__amount) { grid-column: 1 / -1; }
+  .page.order-list-page .order-item-selector__price { grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); }
+  .page.order-list-page .order-item-selector__amount { margin: 0 0 3px; text-align: left; }
+  .page.order-list-page .order-custom-fields__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .page.order-list-page .modal .searchable-select__trigger {
+    min-height: 38px;
+    padding: 7px 8px;
+    font-size: 16px;
+    line-height: 1.35;
+    border-radius: 7px;
+  }
+  .page.order-list-page .modal .searchable-select__panel { position: static; margin-top: 4px; max-height: min(240px, 40dvh); }
+  .page.order-list-page .modal .searchable-select__option { min-height: 44px; padding: 7px 8px; font-size: 14px; }
+}

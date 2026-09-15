@@ -68,7 +68,11 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
                 disabled={disabled}
                 onChange={(event) => toggle(option, event.target.checked)}
               />
-              <span><strong>{option.label}</strong><small>{option.code || '—'}{option.active === false ? ' • Đã ngừng sử dụng' : ''}</small></span>
+              <span>
+                <strong className="order-item-selector__name">{option.label}</strong>
+                <small className="order-item-selector__code">{option.code || '—'}</small>
+                {option.active === false && <small className="order-item-selector__inactive">Đã ngừng sử dụng</small>}
+              </span>
             </label>
             {selected && <label className="order-item-selector__quantity">
               <span>{isKg ? 'Khối lượng' : 'Số lượng'}</span>
