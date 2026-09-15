@@ -1,0 +1,71 @@
+name: Verify order revenue browser integration
+on:
+  push:
+    branches: [feat/order-revenue-types-20260915]
+    paths: [.github/workflows/order-revenue-browser-verify.yml]
+permissions:
+  contents: read
+concurrency:
+  group: order-revenue-browser-only
+  cancel-in-progress: false
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select exact implementation and prepare disposable test scripts
+        run: |
+          mkdir -p /tmp/idosi-revenue-tools /tmp/idosi-revenue-browser/evidence
+          cp .github/revenue-transfer/preview.mjs .github/revenue-transfer/browser.py /tmp/idosi-revenue-tools/
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/idosi-revenue-tools/browser.py')
+          text=p.read_text()
+          text=text.replace("page.wait_for_url('**/'+destination,timeout=30000)", "page.wait_for_function('(destination) => location.hash.includes(destination)', arg=destination, timeout=30000)\n    page.wait_for_load_state('networkidle')")
+          text=text.replace("page.goto(c['base']+'/#/employee/orders',wait_until='networkidle')", "page.get_by_role('link',name='Đơn hàng',exact=True).first.click()\n        page.wait_for_load_state('networkidle')")
+          text=text.replace("page.goto(c['base']+'/#/store/statistics',wait_until='networkidle')", "page.get_by_role('link',name='Số liệu thống kê',exact=True).first.click()\n        page.wait_for_load_state('networkidle')")
+          text=text.replace("capture(page,'failure')", "(out/'failure-trace.txt').write_text(traceback.format_exc()+'\\nURL: '+page.url)\n        capture(page,'failure')")
+          p.write_text(text)
+          PY
+          git checkout --detach fe62a3775fbd7fbe356e819bd18fe3c09d22a553
+          git log -5 --format='%H %s' > /tmp/idosi-revenue-browser/evidence/commits.txt
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: npm run build
+      - name: Install isolated browser tools
+        run: |
+          python3 -m venv /tmp/idosi-playwright
+          /tmp/idosi-playwright/bin/pip install playwright==1.55.0
+          /tmp/idosi-playwright/bin/python -m playwright install --with-deps chromium
+          npm install --prefix /tmp/idosi-agent-browser --no-audit --no-fund agent-browser
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser install --with-deps
+      - name: Start isolated real backend and inspect initial page
+        run: |
+          node /tmp/idosi-revenue-tools/preview.mjs > /tmp/idosi-revenue-browser/server.log 2>&1 &
+          for i in $(seq 1 30); do
+            test -f /tmp/idosi-revenue-browser/access.json && break
+            sleep 1
+          done
+          test -f /tmp/idosi-revenue-browser/access.json
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser open http://127.0.0.1:4187
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser wait --load networkidle
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser snapshot -i > /tmp/idosi-revenue-browser/evidence/login-snapshot.txt
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser screenshot /tmp/idosi-revenue-browser/evidence/login.png
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser close
+      - name: Browser actions to SQLite persistence and warehouse reconciliation
+        run: |
+          set -o pipefail
+          /tmp/idosi-playwright/bin/python /tmp/idosi-revenue-tools/browser.py 2>&1 | tee /tmp/idosi-revenue-browser/evidence/browser-check.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: order-revenue-browser-evidence
+          path: /tmp/idosi-revenue-browser/evidence/
+          retention-days: 7
