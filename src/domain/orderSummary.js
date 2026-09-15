@@ -61,7 +61,9 @@ export const parseOrderAmountFilter = (value) => {
 export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMethod = '', amount = null, query = '' } = {}) => {
   if (!order || order.deletedAt || order.status === 'Đã xóa' || order.source === 'legacy-opening-balance') return false
   if (date && orderBusinessDate(order) !== date) return false
-  if (shiftId && String(order.shiftId || '') !== shiftId) return false
+  // A historical group without shiftId still has an exact snapshot identity.
+  // Reuse the grouping key; never infer a shift from the current configuration or the sale time.
+  if (shiftId && shiftGroupKey(order) !== String(shiftId).trim()) return false
   if (paymentMethod && paymentChannel(order.paymentMethod) !== paymentChannel(paymentMethod)) return false
   if (amount !== null && amount !== '' && (!['number', 'string'].includes(typeof order.amount) || String(order.amount).trim() === '' || Number(order.amount) !== Number(amount))) return false
   const productNames = normalizeOrderItems(order.items).map((item) => item.productName || item.productCode).join(' ')
@@ -113,6 +115,7 @@ const shiftMetadata = (order) => {
   const shiftStart = String(order?.shiftStart || order?.start || order?.startTime || '').trim()
   const shiftEnd = String(order?.shiftEnd || order?.end || order?.endTime || '').trim()
   return {
+    shiftKey: shiftGroupKey(order),
     ...(shiftId ? { shiftId } : {}),
     ...(shiftName ? { shiftName } : {}),
     ...(shiftStart ? { shiftStart } : {}),

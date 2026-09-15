@@ -19,6 +19,7 @@ on:
       - 'src/pages/employee/EmployeeV2Pages.jsx'
       - 'src/pages/store/StoreV2Pages.jsx'
       - 'src/pages/store/StoreStatisticsPage*'
+      - 'src/pages/store/statisticsShiftOptions*'
       - 'src/state/AppContext.jsx'
       - 'server/worker.js'
       - 'server/vps/server.mjs'
@@ -70,6 +71,7 @@ jobs:
           test "$ready" = 1
           "$RUNNER_TEMP/browser-env/bin/python" .github/idosi-revenue/browser-check.py
           "$RUNNER_TEMP/browser-env/bin/python" .github/idosi-revenue/browser-mobile-check.py
+          "$RUNNER_TEMP/browser-env/bin/python" .github/idosi-revenue/browser-shift-history.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

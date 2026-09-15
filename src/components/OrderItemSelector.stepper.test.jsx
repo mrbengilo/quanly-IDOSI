@@ -83,19 +83,22 @@ describe('OrderItemSelector quantity steppers', () => {
     }
   })
 
-  it('steps kg by 0.1 without accumulated float drift and removes at zero', () => {
+  it('steps kg through 0.5, 1, 1.5, 2, 2.5 and back to zero without float drift', () => {
     const onItems = vi.fn()
     render(<Harness revenueType="SALE_KG" onItems={onItems} />)
-    fireEvent.click(plus(true))
-    expect(onItems.mock.lastCall[0][0]).toMatchObject({ quantity: 0.1, unit: 'KG', revenueType: 'SALE_KG' })
-    fireEvent.click(plus(true))
-    fireEvent.click(plus(true))
-    expect(input(true).value).toBe('0.3')
-    fireEvent.change(input(true), { target: { value: '2.4' } })
-    fireEvent.click(plus(true))
-    expect(input(true).value).toBe('2.5')
-    fireEvent.click(minus(true))
-    expect(input(true).value).toBe('2.4')
+    for (const quantity of [0.5, 1, 1.5, 2, 2.5]) {
+      fireEvent.click(plus(true))
+      expect(input(true).value).toBe(String(quantity))
+      expect(checkbox().checked).toBe(true)
+      expect(onItems.mock.lastCall[0][0]).toMatchObject({ quantity, unit: 'KG', revenueType: 'SALE_KG' })
+    }
+    for (const quantity of [2, 1.5, 1, 0.5, 0]) {
+      fireEvent.click(minus(true))
+      expect(input(true).value).toBe(String(quantity))
+    }
+    expect(checkbox().checked).toBe(false)
+    expect(minus(true).disabled).toBe(true)
+    expect(onItems.mock.lastCall[0]).toEqual([])
     fireEvent.change(input(true), { target: { value: '0.001' } })
     fireEvent.click(minus(true))
     expect(input(true).value).toBe('0')
@@ -105,14 +108,30 @@ describe('OrderItemSelector quantity steppers', () => {
   it('preserves gram precision entered manually and clamps kg at the maximum', () => {
     render(<Harness revenueType="SALE_KG" initialItems={[{ productId: 'P1', quantity: 1.125 }]} />)
     fireEvent.click(plus(true))
-    expect(input(true).value).toBe('1.225')
+    expect(input(true).value).toBe('1.625')
     fireEvent.keyDown(input(true), { key: 'ArrowDown' })
     expect(input(true).value).toBe('1.125')
     expect(input(true).step).toBe('0.001')
+    fireEvent.keyDown(input(true), { key: 'ArrowUp' })
+    expect(input(true).value).toBe('1.625')
     fireEvent.change(input(true), { target: { value: '999999.999' } })
     fireEvent.click(plus(true))
     expect(input(true).value).toBe('1000000')
     expect(plus(true).disabled).toBe(true)
+  })
+
+  it('recomputes sale money after half-kg steps without changing unit price', () => {
+    const onItems = vi.fn()
+    render(<Harness revenueType="SALE_KG" onItems={onItems} initialItems={[
+      { productId: 'P1', revenueType: 'SALE_KG', unit: 'KG', quantity: 0.5, unitPrice: 20000, lineAmount: 10000 },
+    ]} />)
+    fireEvent.click(plus(true))
+    expect(onItems.mock.lastCall[0][0]).toMatchObject({ quantity: 1, unitPrice: 20000 })
+    expect(onItems.mock.lastCall[0][0]).not.toHaveProperty('lineAmount')
+    expect(screen.getByText('20,000 đ')).toBeTruthy()
+    fireEvent.click(minus(true))
+    expect(input(true).value).toBe('0.5')
+    expect(screen.getByText('10,000 đ')).toBeTruthy()
   })
 
   it('keeps a sale price while a sub-kilogram quantity is typed through zero', () => {

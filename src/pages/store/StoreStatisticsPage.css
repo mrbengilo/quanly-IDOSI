@@ -37,4 +37,15 @@
   .store-statistics-metrics {
     grid-template-columns: 1fr;
   }
+  /* Native option text cannot wrap: reserve the full row for each scope filter. */
+  .page.store-statistics-page .store-statistics-filters > .field {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
+  }
+  .page.store-statistics-page .store-statistics-filters :is(.select-wrap, .input-wrap, select) {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
 }
