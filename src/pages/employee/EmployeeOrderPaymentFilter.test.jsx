@@ -1,4 +1,5 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { DEFAULT_ORDER_INFORMATION_OPTIONS } from '../../domain/orderInformationSettings'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Link, MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { EmployeeOrdersPage } from './EmployeeV2Pages'
@@ -60,7 +61,7 @@ describe('employee order payment filter', () => {
     expect(within(filter()).getAllByRole('option').map((option) => option.textContent))
       .toEqual(['Tất cả', 'Tiền mặt', 'Chuyển khoản'])
     expect(screen.getByText('5 / 5 đơn trong ca')).toBeTruthy()
-    expect(screen.getByText(/thuộc ca đang làm tại Cửa hàng hỗ trợ/u)).toBeTruthy()
+    expect(screen.getByText(/do bạn tạo trong ca đang làm tại Cửa hàng hỗ trợ/u)).toBeTruthy()
     for (const excluded of ['COWORKER', 'HOME', 'CLOSED', 'DELETED']) {
       expect(screen.queryByText(excluded)).toBeNull()
     }
@@ -80,7 +81,7 @@ describe('employee order payment filter', () => {
     expect(screen.getByText('2 / 5 đơn trong ca')).toBeTruthy()
     expect(metric('ĐƠN TRONG CA').getByText('5')).toBeTruthy()
     expect(metric('DOANH THU TRONG CA').getByText('420 đ')).toBeTruthy()
-    expect(metric('DOANH THU TRONG CA').getByText('Toàn bộ đơn hàng trong ca')).toBeTruthy()
+    expect(metric('DOANH THU TRONG CA').getByText('Chỉ các đơn hàng của bạn trong ca')).toBeTruthy()
 
     selectPayment('all')
     expect(screen.getByText('UNKNOWN')).toBeTruthy()
@@ -176,4 +177,51 @@ describe('employee order payment filter', () => {
     expect(screen.queryByText('AMOUNT-0')).toBeNull()
   })
 
+})
+
+
+describe('employee revenue entry', () => {
+  beforeEach(() => { mocked.app = baseApp(); mocked.app.orderInformationOptions = DEFAULT_ORDER_INFORMATION_OPTIONS })
+  afterEach(cleanup)
+  it('creates a sale-kg order with automatic amount and own active attendance/store through the Save control', async () => {
+    mocked.app.createOrder.mockResolvedValue({ ok: true, order: { id: 'NEW' } })
+    renderOrders()
+    fireEvent.click(screen.getByRole('button', { name: 'TẠO ĐƠN HÀNG' }))
+    const dialog = within(screen.getByRole('dialog'))
+    fireEvent.change(dialog.getByLabelText(/Tên khách hàng/u), { target: { value: 'Khách kiểm thử' } })
+    fireEvent.change(dialog.getByLabelText(/Giới tính/u), { target: { value: 'Nữ' } })
+    fireEvent.click(dialog.getByRole('combobox', { name: 'Nghề nghiệp' }))
+    fireEvent.click(dialog.getByRole('option', { name: 'Kỹ sư' }))
+    fireEvent.change(dialog.getByLabelText(/Biết qua kênh nào/u), { target: { value: 'Facebook' } })
+    fireEvent.change(dialog.getByLabelText(/Hình thức thanh toán/u), { target: { value: 'Tiền mặt' } })
+    fireEvent.click(dialog.getByRole('button', { name: 'Sale theo ký Hàng sale' }))
+    fireEvent.click(dialog.getByRole('checkbox', { name: /Đồ nam/u }))
+    fireEvent.change(dialog.getByLabelText('Khối lượng Đồ nam'), { target: { value: '2.5' } })
+    fireEvent.change(dialog.getByLabelText('Đơn giá Đồ nam'), { target: { value: '20000' } })
+    expect(dialog.getByLabelText(/^Số tiền/u).readOnly).toBe(true)
+    expect(dialog.getByLabelText(/^Số tiền/u).value).toBe('50,000')
+    fireEvent.click(dialog.getByRole('button', { name: 'LƯU ĐƠN' }))
+    await waitFor(() => expect(mocked.app.createOrder).toHaveBeenCalledTimes(1))
+    expect(mocked.app.createOrder).toHaveBeenCalledWith(expect.objectContaining({
+      amount: 50_000, employeeId: 'E01', storeId: 'SUPPORT', attendanceId: 'ATT-SUPPORT',
+      shiftId: 'CA-SUPPORT', items: [{ productId: 'order-product-001', revenueType: 'SALE_KG', unit: 'KG', quantity: 2.5, unitPrice: 20000 }],
+    }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+  it('keeps three revenue types scoped to the current employee, unchanged by payment filters', () => {
+    const items = [
+      { productId: 'p', productName: 'Đồ nam', quantity: 2, unitPrice: 50000 },
+      { productId: 'p', productName: 'Đồ nam', revenueType: 'SALE_KG', quantity: 2.5, unitPrice: 20000 },
+      { productId: 'q', productName: 'Đồ nữ', revenueType: 'SALE_PIECE', quantity: 3, unitPrice: 10000 },
+    ]
+    mocked.app.orders = [order('OWN', 'Tiền mặt', 180000, { items }), order('COLLEAGUE-SECRET', 'Tiền mặt', 180000, { items, employeeId: 'E02', createdByEmployeeId: 'E02' })]
+    renderOrders()
+    expect(screen.getByTestId('revenue-NORMAL').textContent).toContain('100,000 đ')
+    expect(screen.getByTestId('revenue-SALE_KG').textContent).toContain('50,000 đ')
+    expect(screen.getByTestId('revenue-SALE_PIECE').textContent).toContain('30,000 đ')
+    expect(screen.getByTestId('revenue-TOTAL').textContent).toContain('180,000 đ')
+    expect(screen.queryByText('COLLEAGUE-SECRET')).toBeNull()
+    selectPayment('Chuyển khoản')
+    expect(screen.getByTestId('revenue-TOTAL').textContent).toContain('180,000 đ')
+  })
 })

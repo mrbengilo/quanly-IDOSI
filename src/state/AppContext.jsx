@@ -97,9 +97,9 @@ const loadOrderPayloadResolvers = () => {
     orderPayloadResolversPromise = Promise.all([
       import('../domain/orderItems'),
       import('../domain/orderCustomFields'),
-    ]).then(([orderItems, orderCustomFields]) => ({
-      resolveOrderItems: orderItems.resolveOrderItems,
-      resolveOrderCustomFields: orderCustomFields.resolveOrderCustomFields,
+      import('../domain/orderRevenue'),
+    ]).then(([orderItems, orderCustomFields, orderRevenue]) => ({
+      ...orderItems, ...orderCustomFields, ...orderRevenue,
     }))
   }
   return orderPayloadResolversPromise
@@ -4514,6 +4514,8 @@ export function AppProvider({ children }) {
       ? resolvers.resolveOrderItems({ items: payload.items, options: state.orderInformationOptions })
       : { items: [], error: '' }
     if (resolvedItems.error) return { ok: false, message: resolvedItems.error }
+    const revenueError = resolvers?.validateOrderRevenue(resolvedItems.items, amount)
+    if (revenueError) return revenueError
     const resolvedCustomFields = hasCustomFields
       ? resolvers.resolveOrderCustomFields({ values: payload.customFields, options: state.orderInformationOptions })
       : { values: [], error: '' }
@@ -4634,9 +4636,7 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const resolvers = payload.items !== undefined || payload.customFields !== undefined
-      ? await loadOrderPayloadResolvers()
-      : null
+    const resolvers = await loadOrderPayloadResolvers()
     const resolvedItems = payload.items === undefined
       ? { items: previous.items, error: '' }
       : resolvers.resolveOrderItems({
@@ -4669,6 +4669,8 @@ export function AppProvider({ children }) {
       customFields: resolvedCustomFields.values,
     }
     if (candidate.amount <= 0) return { ok: false, message: 'Số tiền đơn hàng phải lớn hơn 0.' }
+    const revenueError = resolvers.validateOrderRevenue(candidate.items, candidate.amount)
+    if (revenueError) return revenueError
     if (payload.occupation != null) {
       const { occupationValueAllowed } = await loadOrderInformationResolvers()
       if (!occupationValueAllowed({
@@ -4685,7 +4687,7 @@ export function AppProvider({ children }) {
     }
     const changedFields = ['customerName', 'customerPhone', 'customerAge', 'gender', 'occupation', 'acquisitionChannel', 'amount', 'paymentMethod', 'items', 'customFields']
       .filter((key) => JSON.stringify(previous[key]) !== JSON.stringify(candidate[key]))
-    if (actorRole === 'business_support' && changedFields.includes('amount')) {
+    if (actorRole === 'business_support' && resolvers.orderRequiresAdminEdit(previous, candidate, changedFields)) {
       return { ok: false, message: 'Chỉ Admin được thay đổi số tiền của đơn hàng.' }
     }
     if (!changedFields.length) return { ok: true, order: previous, existing: true }

@@ -19575,3 +19575,118 @@ describe('shared support workflow', () => {
   })
 
 })
+
+describe('three-type order revenue integration', () => {
+  const mixedItems = () => [
+    { productId: 'order-product-001', revenueType: 'NORMAL', quantity: 2, unitPrice: 50_000 },
+    { productId: 'order-product-001', revenueType: 'SALE_KG', unit: 'KG', quantity: 2.5, unitPrice: 20_000 },
+    { productId: 'order-product-002', revenueType: 'SALE_PIECE', quantity: 3, unitPrice: 10_000 },
+  ]
+  const setup = async (orders = []) => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'revenue-bootstrap-test', WAREHOUSE_API_KEY: 'warehouse-revenue-integration-test-key' }
+    const response = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin.revenue', password: 'admin-revenue-integration-password',
+      initialState: {
+        stores: [{ id: 'S01', short: 'S01', name: 'Cửa hàng 1' }, { id: 'S02', short: 'S02', name: 'Cửa hàng 2' }],
+        employees: [{ id: 'E01', name: 'Nhân viên 1', storeId: 'S01', unit: 'store', status: 'Đang làm việc' }],
+        orders, attendance: [], payrollPeriods: [], orderAudit: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(response.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin.revenue', password: 'admin-revenue-integration-password',
+    }), env)
+    return { env, authorization: { authorization: `Bearer ${(await login.json()).token}` } }
+  }
+
+  it('persists priced lines, rejects forged totals, retries once, and keeps warehouse and store totals equal after edit/delete', async () => {
+    const { env, authorization } = await setup()
+    const body = { type: 'order.create', expectedVersion: 1, payload: {
+      storeId: 'S01', customerName: 'Khách thử doanh thu', gender: 'Nữ', occupation: 'Kỹ sư',
+      acquisitionChannel: 'Facebook', paymentMethod: 'Tiền mặt', amount: 180_000, items: mixedItems(),
+    } }
+    const bad = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      ...body, payload: { ...body.payload, amount: 179_999 },
+    }, { ...authorization, 'idempotency-key': 'revenue-forged-total-test' }), env)
+    expect(bad.status).toBe(400)
+    expect(await bad.json()).toMatchObject({ error: { code: 'ORDER_REVENUE_INVALID' } })
+    const headers = { ...authorization, 'idempotency-key': 'revenue-mixed-create-test' }
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', body, headers), env)
+    const createdBody = await created.json()
+    expect(created.status, JSON.stringify(createdBody)).toBe(201)
+    const order = createdBody.order
+    expect(order.items).toEqual([
+      expect.objectContaining({ revenueType: 'NORMAL', unit: 'PIECE', lineTotal: 100_000 }),
+      expect.objectContaining({ revenueType: 'SALE_KG', unit: 'KG', quantity: 2.5, lineTotal: 50_000 }),
+      expect.objectContaining({ revenueType: 'SALE_PIECE', unit: 'PIECE', lineTotal: 30_000 }),
+    ])
+    const repeated = await worker.fetch(jsonRequest('https://idosi.example/api/command', body, headers), env)
+    expect(repeated.status).toBe(201)
+    expect((await repeated.json()).order.id).toBe(order.id)
+    const period = new Date(Date.parse(order.createdAt) + 7 * 3600_000).toISOString().slice(0, 7)
+    const readTotals = async (expected) => {
+      const store = await worker.fetch(new Request(`https://idosi.example/api/order-summary?storeId=S01&period=${period}`, { headers: authorization }), env)
+      const warehouse = await worker.fetch(new Request(`https://idosi.example/api/integrations/warehouse/order-statistics?storeId=S01&period=${period}`, {
+        headers: { authorization: `Bearer ${env.WAREHOUSE_API_KEY}` },
+      }), env)
+      expect(store.status).toBe(200)
+      expect(warehouse.status).toBe(200)
+      const storeBody = await store.json()
+      const warehouseBody = await warehouse.json()
+      expect(storeBody.totals).toMatchObject(expected)
+      expect(warehouseBody.totals).toEqual(storeBody.totals)
+      expect(warehouseBody).not.toHaveProperty('orders')
+      expect(warehouseBody.groups).not.toHaveProperty('employee')
+      return warehouseBody
+    }
+    const first = await readTotals({ orders: 1, revenue: 180_000, revenueByType: { NORMAL: 100_000, SALE_KG: 50_000, SALE_PIECE: 30_000 } })
+    expect(first.products).toMatchObject({ totalQuantity: 5, totalWeightKg: 2.5 })
+    expect(readHydratedState(env.DB.database).orders.find(({ id }) => id === order.id).items).toEqual(order.items)
+    const foreign = await worker.fetch(new Request(`https://idosi.example/api/integrations/warehouse/order-statistics?storeId=S02&period=${period}`, {
+      headers: { authorization: `Bearer ${env.WAREHOUSE_API_KEY}` },
+    }), env)
+    expect((await foreign.json()).totals.revenue).toBe(0)
+    const editedItems = order.items.map((item) => item.revenueType === 'SALE_KG' ? { ...item, quantity: 1.005 } : item)
+    const edited = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.update', expectedVersion: createdBody.version,
+      payload: { orderId: order.id, items: editedItems, amount: 150_100, reason: 'Sửa khối lượng thực bán' },
+    }, { ...authorization, 'idempotency-key': 'revenue-mixed-edit-test' }), env)
+    const editedBody = await edited.json()
+    expect(edited.status, JSON.stringify(editedBody)).toBe(200)
+    await readTotals({ orders: 1, revenue: 150_100, revenueByType: { NORMAL: 100_000, SALE_KG: 20_100, SALE_PIECE: 30_000 } })
+    const deleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'order.delete', expectedVersion: editedBody.version,
+      payload: { orderId: order.id, reason: 'Hủy giao dịch thử' },
+    }, { ...authorization, 'idempotency-key': 'revenue-mixed-delete-test' }), env)
+    expect(deleted.status).toBe(200)
+    await readTotals({ orders: 0, revenue: 0, revenueByType: { NORMAL: 0, SALE_KG: 0, SALE_PIECE: 0 } })
+  })
+
+  it('scopes employee summaries and paginated history by real creator, even if another creator assigned an order to them', async () => {
+    const base = { storeId: 'S01', employeeId: 'E01', amount: 180_000, items: mixedItems(), createdAt: '2026-09-15T01:00:00Z', paymentMethod: 'Tiền mặt', shiftId: 'MORNING' }
+    const { env, authorization } = await setup([
+      { ...base, id: 'OWN', createdByEmployeeId: 'E01' },
+      { ...base, id: 'OTHER-EMPLOYEE-SECRET', createdByEmployeeId: 'E02' },
+      { ...base, id: 'ADMIN-ASSIGNED-SECRET', createdBy: { role: 'admin' } },
+      { ...base, id: 'OTHER-STORE-SECRET', storeId: 'S02', createdByEmployeeId: 'E01' },
+    ])
+    const createdUser = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', payload: { username: 'employee.revenue', password: 'employee-revenue-password', displayName: 'Nhân viên 1', storeId: 'S01', employeeId: 'E01', role: 'employee' },
+    }, { ...authorization, 'idempotency-key': 'revenue-employee-user-test' }), env)
+    expect(createdUser.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', { username: 'employee.revenue', password: 'employee-revenue-password' }), env)
+    const headers = { authorization: `Bearer ${(await login.json()).token}` }
+    for (const endpoint of ['order-summary', 'history/orders']) {
+      const response = await worker.fetch(new Request(`https://idosi.example/api/${endpoint}?storeId=S01&period=2026-09`, { headers }), env)
+      const result = await response.json()
+      expect(response.status).toBe(200)
+      expect(JSON.stringify(result)).not.toContain('SECRET')
+      if (endpoint === 'order-summary') expect(result.totals).toMatchObject({ orders: 1, revenue: 180_000, revenueByType: { NORMAL: 100_000, SALE_KG: 50_000, SALE_PIECE: 30_000 } })
+      else expect(result).toMatchObject({ records: [{ id: 'OWN' }], page: { hasMore: false } })
+      for (const filter of ['storeId=S02', 'storeId=S01&employeeId=E02']) {
+        const denied = await worker.fetch(new Request(`https://idosi.example/api/${endpoint}?${filter}&period=2026-09`, { headers }), env)
+        expect(denied.status).toBe(403)
+      }
+    }
+  })
+})

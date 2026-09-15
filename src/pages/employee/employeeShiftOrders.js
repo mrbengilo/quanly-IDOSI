@@ -1,3 +1,4 @@
+import { calculateOrderRevenue } from '../../domain/orderRevenue'
 import { paymentChannel } from '../../domain/orderSummary'
 export { paymentChannel } from '../../domain/orderSummary'
 import {
@@ -171,6 +172,10 @@ export const validateEmployeeOrder = (form = {}, { occupationOptions } = {}) => 
   if (!ORDER_PAYMENT_METHODS.includes(form.paymentMethod)) errors.paymentMethod = 'Vui lòng chọn hình thức thanh toán.'
   const resolvedItems = resolveOrderItems({ items: form.items, options: occupationOptions })
   if (resolvedItems.error) errors.items = resolvedItems.error
+  else {
+    try { calculateOrderRevenue(resolvedItems.items, form.amount) }
+    catch (error) { errors.items = error.message }
+  }
   const resolvedCustomFields = resolveOrderCustomFields({ values: form.customFields, options: occupationOptions })
   if (resolvedCustomFields.error) errors.customFields = resolvedCustomFields.error
   return errors

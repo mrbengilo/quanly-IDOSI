@@ -1,3 +1,4 @@
+import { normalizeOrderRevenueItem, orderItemRevenueType, orderItemUnit } from './orderRevenue.js'
 import {
   findProductOption,
   normalizeOrderInformationLabel,
@@ -21,12 +22,14 @@ export const normalizeOrderItems = (items = []) => {
     const productId = itemProductId(item)
     const productCode = itemProductCode(item)
     const productName = itemProductName(item)
-    const quantity = Number(item?.quantity)
-    if ((!productId && !productCode && !productName)
-      || !Number.isSafeInteger(quantity)
-      || quantity <= 0
-      || quantity > MAX_ORDER_ITEM_QUANTITY) return null
-    return { productId, productCode, productName, quantity }
+    if (!productId && !productCode && !productName) return null
+    try {
+      return { productId, productCode, productName, ...normalizeOrderRevenueItem(item) }
+    } catch (error) {
+      // Invalid new revenue metadata must not silently disappear from financial reports.
+      if (item?.revenueType != null || Object.hasOwn(item || {}, 'unitPrice')) throw error
+      return null
+    }
   }).filter(Boolean)
 }
 
@@ -54,35 +57,35 @@ export const resolveOrderItems = ({
   }
 
   const historicalByKey = new Map(
-    historicalItems.map((item) => [historicalItemKey(item), item]),
+    historicalItems.map((item) => [`${historicalItemKey(item)}:${orderItemRevenueType(item)}`, item]),
   )
   const resolved = []
   const selectedIds = new Set()
   for (const item of items) {
     const productId = itemProductId(item)
-    const quantity = Number(item?.quantity)
     if (!productId) return { items: [], error: 'Mặt hàng đã chọn không hợp lệ.' }
-    if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > MAX_ORDER_ITEM_QUANTITY) {
-      return { items: [], error: `Số lượng mỗi mặt hàng phải là số nguyên từ 1 đến ${MAX_ORDER_ITEM_QUANTITY.toLocaleString('vi-VN')}.` }
-    }
-    if (selectedIds.has(productId)) {
+    let revenueFields
+    try { revenueFields = normalizeOrderRevenueItem(item) }
+    catch (error) { return { items: [], error: error.message } }
+    const lineKey = `${productId}:${orderItemRevenueType(item)}`
+    if (selectedIds.has(lineKey)) {
       return { items: [], error: 'Một mặt hàng không được lặp lại trong cùng đơn hàng.' }
     }
-    selectedIds.add(productId)
+    selectedIds.add(lineKey)
 
     const option = findProductOption(options, productId, { includeInactive: true })
-    const historical = historicalByKey.get(productId)
+    const historical = historicalByKey.get(lineKey)
     if (option?.active) {
       resolved.push({
         productId: String(option.id),
         productCode: String(option.code || '').trim().toUpperCase(),
         productName: cleanText(option.label),
-        quantity,
+        ...revenueFields,
       })
       continue
     }
     if (allowHistorical && historical) {
-      resolved.push({ ...historical, productId, quantity })
+      resolved.push({ productId, productCode: historical.productCode, productName: historical.productName, ...revenueFields })
       continue
     }
     return { items: [], error: 'Mặt hàng không còn hoạt động. Vui lòng bỏ chọn hoặc chọn mặt hàng khác.' }
@@ -91,10 +94,11 @@ export const resolveOrderItems = ({
 }
 
 export const totalOrderItemQuantity = (items = []) => normalizeOrderItems(items)
+  .filter((item) => orderItemUnit(item) === 'PIECE')
   .reduce((total, item) => total + item.quantity, 0)
 
 export const orderItemsLabel = (items = []) => {
   const normalized = normalizeOrderItems(items)
   if (!normalized.length) return 'Chưa ghi nhận mặt hàng'
-  return normalized.map((item) => `${item.productName || item.productCode || 'Mặt hàng'} × ${item.quantity}`).join(', ')
+  return normalized.map((item) => `${item.productName || item.productCode || 'Mặt hàng'} × ${item.quantity}${orderItemUnit(item) === 'KG' ? ' kg' : ''}`).join(', ')
 }

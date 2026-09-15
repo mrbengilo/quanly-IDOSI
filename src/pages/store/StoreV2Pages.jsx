@@ -39,6 +39,8 @@ import {
   TableWrap,
 } from '../../components/UI'
 import { OrderPaymentSummary } from '../../components/OrderPaymentSummary'
+import { OrderRevenueSummary } from '../../components/OrderRevenueSummary'
+import { hasOrderLinePricing, orderRevenuePreview, revenueTypeLabelForOrder } from '../../domain/orderRevenue'
 import { OrderItemSelector, OrderItemsSummary } from '../../components/OrderItemSelector'
 import { OrderCustomFieldsEditor, OrderCustomFieldsSummary } from '../../components/OrderCustomFields'
 import { SearchableSelect } from '../../components/SearchableSelect'
@@ -555,11 +557,11 @@ export function StoreOrdersPage() {
   const [amountInput, setAmountInput] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('all')
   const [settledSearch, setSettledSearch] = useState({ query: '', amountInput: '' })
-  const [date, setDate] = useState('')
+  const [date, setDate] = useState(() => /^\d{4}-\d{2}-\d{2}$/u.test(searchParams.get('date') || '') ? searchParams.get('date') : '')
   const requestedPeriod = orderBusinessDate(routeScope.order || {}).slice(0, 7)
-  const [month, setMonth] = useState(() => requestedPeriod || today().slice(0, 7))
+  const [month, setMonth] = useState(() => requestedPeriod || (/^\d{4}-\d{2}$/u.test(searchParams.get('period') || '') ? searchParams.get('period') : date.slice(0, 7)) || today().slice(0, 7))
   const [employeeId, setEmployeeId] = useState('all')
-  const [shiftId, setShiftId] = useState('all')
+  const [shiftId, setShiftId] = useState(() => searchParams.get('shiftId') || 'all')
   const [editing, setEditing] = useState(null)
   const [form, setForm] = useState({ customerName: '', customerPhone: '', customerAge: '', gender: 'Khác', occupation: '', acquisitionChannel: 'Khác', amount: '', paymentMethod: '', items: [], customFields: [], reason: '' })
   const [formErrors, setFormErrors] = useState({})
@@ -817,10 +819,13 @@ export function StoreOrdersPage() {
       return next
     })
   }
+  const pricedOrder = hasOrderLinePricing(form.items)
+  const revenuePreview = orderRevenuePreview(form.items, pricedOrder ? undefined : parseMoney(form.amount))
   const save = async () => {
     if (!editing || saving) return
-    const amount = String(form.amount || '').trim().startsWith('-') ? -parseMoney(form.amount) : parseMoney(form.amount)
+    const amount = pricedOrder ? revenuePreview.amount : String(form.amount || '').trim().startsWith('-') ? -parseMoney(form.amount) : parseMoney(form.amount)
     const nextErrors = {}
+    if (revenuePreview.error) nextErrors.items = revenuePreview.error
     if (canEditOrderAmount && !(amount > 0)) nextErrors.amount = 'Số tiền đơn hàng phải lớn hơn 0.'
     if (!occupationValueAllowed({
       options: orderInformationOptions,
@@ -891,11 +896,11 @@ export function StoreOrdersPage() {
         <Field label="Kỳ đang xem"><Input type="month" value={month} onChange={(event) => changePeriod(event.target.value)} aria-label="Kỳ đang xem" /></Field>
         <p>Tổng quan toàn tháng {month.slice(5, 7)}/{month.slice(0, 4)}. Tổng tháng và tổng cả ca được giữ nguyên; kết quả lọc được thống kê riêng.</p>
       </div>
+      <OrderRevenueSummary totals={orderMetrics} label="Doanh thu cửa hàng trong tháng" totalLabel="TỔNG DOANH THU" />
       <div className="order-payment-metrics store-order-metrics" aria-label="Tổng quan đơn hàng">
         <MetricCard label="TỔNG SỐ ĐƠN HÀNG" value={orderMetrics?.orders ?? '—'} suffix="đơn" icon={ReceiptText} tone="blue" />
         <MetricCard label="TỔNG TIỀN CHUYỂN KHOẢN" value={orderMetrics ? money(orderMetrics.transfer) : '—'} helper={orderMetrics ? `${orderMetrics.transferOrders} đơn chuyển khoản` : 'Đang tải'} icon={Banknote} tone="blue" />
         <MetricCard label="TỔNG TIỀN MẶT" value={orderMetrics ? money(orderMetrics.cash) : '—'} helper={orderMetrics ? `${orderMetrics.cashOrders} đơn tiền mặt` : 'Đang tải'} icon={Wallet} tone="orange" />
-        <MetricCard label="TỔNG DOANH THU" value={orderMetrics ? money(orderMetrics.revenue) : '—'} icon={TrendingUp} tone="green" />
       </div>
       {remoteHistory && !orderMetrics && !summaryError && <InfoNote>Đang tải tổng đơn hàng của kỳ...</InfoNote>}
       {summaryError && <InfoNote tone="red">{summaryError} <Button variant="outline" onClick={() => setHistoryRevision((current) => current + 1)}>Thử lại</Button></InfoNote>}
@@ -937,7 +942,7 @@ export function StoreOrdersPage() {
           <span className="order-group__total-amount"><small>{view === 'shift' ? 'Tổng tiền cả ca' : view === 'day' ? 'Tổng tiền cả ngày' : 'Tổng tiền trong kỳ'}</small><strong>{groupTotal ? money(groupTotal.revenue) : '—'}</strong></span>
           <span className="order-group__order-count"><small>{view === 'shift' ? 'Tổng đơn cả ca' : view === 'day' ? 'Tổng đơn cả ngày' : 'Tổng đơn trong kỳ'}</small><strong>{groupTotal?.orders ?? '—'}</strong><em>đơn</em></span>
           <OrderPaymentSummary totals={groupTotal} label={view === 'shift' ? 'Thanh toán cả ca' : view === 'day' ? 'Thanh toán cả ngày' : 'Thanh toán trong kỳ'} showTotal={false} />
-        </div>}><TableWrap tableClassName="order-table" paginate={false}><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Mặt hàng</th><th>Thuộc tính</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Thời gian">{timestamp(order.updatedAt || order.createdAt)}</td><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td data-label="Mặt hàng" data-wide><OrderItemsSummary items={order.items} /></td><td data-label="Thuộc tính" data-wide><OrderCustomFieldsSummary values={order.customFields} /></td><td data-label="Khảo sát">{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong></td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Nhân viên"><strong>{order.employeeName || operationalIdentifierRecordMatch(employees, order.employeeId || order.employeeCode, employeeIdentifierValues).record?.name || order.employeeId || order.employeeCode || '—'}</strong><SupportEmployeeTag record={order} employeeId={order.employeeId || order.employeeCode} storeId={storeId} businessDate={businessDate(order.createdAt || order.date)} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{order.employeeId || order.employeeCode || '—'}</small></td><td data-label="Trạng thái"><Badge>{order.status}</Badge></td>{canEditOrders && <td data-label="Thao tác" data-wide><div className="order-row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
+        </div>}><OrderRevenueSummary totals={groupTotal} label={view === 'shift' ? 'Doanh thu cả ca' : view === 'day' ? 'Doanh thu cả ngày' : 'Doanh thu trong kỳ'} /><TableWrap tableClassName="order-table" paginate={false}><thead><tr><th>Thời gian</th><th>Mã đơn</th><th>Khách hàng</th><th>Mặt hàng</th><th>Thuộc tính</th><th>Khảo sát</th><th>Số tiền</th><th>Thanh toán</th><th>Nhân viên</th><th>Trạng thái</th>{canEditOrders && <th>Thao tác</th>}</tr></thead><tbody>{group.map((order) => <tr id={`order-${order.id}`} className={String(order.id) === requestedOrderKey ? 'order-row--highlight' : ''} key={order.id}><td data-label="Thời gian">{timestamp(order.updatedAt || order.createdAt)}</td><td data-label="Mã đơn"><strong>{order.code}</strong></td><td data-label="Khách hàng">{order.customerName || 'Khách lẻ'}<small className="table-note">{order.customerPhone || 'Không có SĐT'}{order.customerAge != null ? ` • ${order.customerAge} tuổi` : ''}</small></td><td data-label="Mặt hàng" data-wide><OrderItemsSummary items={order.items} /></td><td data-label="Thuộc tính" data-wide><OrderCustomFieldsSummary values={order.customFields} /></td><td data-label="Khảo sát">{order.gender || '—'}<small className="table-note">{order.occupation || 'Chưa rõ'} • {order.acquisitionChannel || 'Chưa rõ kênh'}</small></td><td data-label="Số tiền"><strong>{money(order.amount)}</strong><small className="table-note">{revenueTypeLabelForOrder(order)}</small></td><td data-label="Thanh toán"><Badge tone={order.paymentMethod === 'Tiền mặt' ? 'green' : 'blue'}>{order.paymentMethod}</Badge></td><td data-label="Nhân viên"><strong>{order.employeeName || operationalIdentifierRecordMatch(employees, order.employeeId || order.employeeCode, employeeIdentifierValues).record?.name || order.employeeId || order.employeeCode || '—'}</strong><SupportEmployeeTag record={order} employeeId={order.employeeId || order.employeeCode} storeId={storeId} businessDate={businessDate(order.createdAt || order.date)} employees={employees} stores={stores} supportTransfers={supportTransfers} className="table-note" /><small className="table-note">{order.employeeId || order.employeeCode || '—'}</small></td><td data-label="Trạng thái"><Badge>{order.status}</Badge></td>{canEditOrders && <td data-label="Thao tác" data-wide><div className="order-row-actions"><Button variant="outline" icon={Edit3} onClick={() => openEdit(order)}>Sửa</Button>{canDeleteOrders && <Button variant="danger" icon={Trash2} onClick={() => remove(order)}>Xóa</Button>}</div></td>}</tr>)}</tbody></TableWrap></Card>
       })}
       <TablePagination
         page={activeOrderPage}
@@ -977,9 +982,10 @@ export function StoreOrdersPage() {
             />
           </Field>
           <Field label="Biết qua kênh nào"><Select value={form.acquisitionChannel} onChange={(event) => updateForm('acquisitionChannel', event.target.value)}><option>Facebook</option><option>Tiktok</option><option>Zalo</option><option>Bạn Bè</option><option>Người thân</option><option>Khác</option></Select></Field>
-          <div className="span-2"><OrderItemSelector options={orderInformationOptions} value={form.items} error={formErrors.items} disabled={saving} onChange={(items) => updateForm('items', items)} /></div>
+          <div className="span-2"><OrderItemSelector options={orderInformationOptions} value={form.items} error={formErrors.items} disabled={saving || (!canEditOrderAmount && pricedOrder)} allowSale={canEditOrderAmount} onChange={(items) => updateForm('items', items)} /></div>
           <div className="span-2"><OrderCustomFieldsEditor options={orderInformationOptions} value={form.customFields} error={formErrors.customFields} disabled={saving} onChange={(customFields) => updateForm('customFields', customFields)} /></div>
-          <Field label="Số tiền" required={canEditOrderAmount} hint={!canEditOrderAmount ? 'Chỉ Admin được thay đổi số tiền.' : undefined} error={formErrors.amount}><MoneyInput value={form.amount} disabled={!canEditOrderAmount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
+          {pricedOrder && <div className="span-2"><OrderRevenueSummary totals={revenuePreview.error ? null : { ...revenuePreview, revenue: revenuePreview.amount }} label="Tổng tiền đơn đang sửa" totalLabel="Tổng đơn hàng" /></div>}
+          <Field label="Số tiền" required={canEditOrderAmount} hint={!canEditOrderAmount ? 'Chỉ Admin được thay đổi số tiền.' : undefined} error={formErrors.amount}><MoneyInput value={pricedOrder ? revenuePreview.amount ?? '' : form.amount} readOnly={pricedOrder} disabled={!canEditOrderAmount} onChange={(event) => updateForm('amount', event.target.value)} placeholder="Nhập số tiền" /></Field>
           <Field label="Hình thức thanh toán" required error={formErrors.paymentMethod}><Select value={form.paymentMethod} onChange={(event) => updateForm('paymentMethod', event.target.value)}><option value="">Chọn</option>{ORDER_PAYMENT_METHODS.map((method) => <option key={method} value={method}>{method}</option>)}</Select></Field>
           <Field label="Lý do chỉnh sửa" required error={formErrors.reason} className="span-2"><Input value={form.reason} onChange={(event) => updateForm('reason', event.target.value)} /></Field>
         </div>

@@ -62,8 +62,9 @@ const page = (records) => ({ records, page: { limit: 100, hasMore: false, nextCu
 const morePage = (records, cursor = 'older-orders') => ({ records, page: { limit: 100, hasMore: true, nextCursor: cursor } })
 const viewElement = (route = '/store/orders') => <MemoryRouter initialEntries={[route]}><StoreOrdersPage /></MemoryRouter>
 const renderPage = (route) => render(viewElement(route))
-const metricValue = (label) => within(screen.getByLabelText('Tổng quan đơn hàng'))
-  .getByText(label).closest('.metric').querySelector('.metric__body > strong').textContent
+const metricValue = (label) => label === 'TỔNG DOANH THU'
+  ? within(screen.getByLabelText('Doanh thu cửa hàng trong tháng')).getByTestId('revenue-TOTAL').querySelector('strong').textContent
+  : within(screen.getByLabelText('Tổng quan đơn hàng')).getByText(label).closest('.metric').querySelector('.metric__body > strong').textContent
 const expectMetrics = ({ orders, revenue, cash, transfer }) => {
   expect(metricValue('TỔNG SỐ ĐƠN HÀNG')).toBe(String(orders))
   expect(metricValue('TỔNG DOANH THU')).toBe(money(revenue))
@@ -71,7 +72,8 @@ const expectMetrics = ({ orders, revenue, cash, transfer }) => {
   expect(metricValue('TỔNG TIỀN CHUYỂN KHOẢN')).toBe(money(transfer))
 }
 const expectPendingMetrics = () => {
-  expect(within(screen.getByLabelText('Tổng quan đơn hàng')).getAllByText('—')).toHaveLength(4)
+  expect(within(screen.getByLabelText('Tổng quan đơn hàng')).getAllByText('—')).toHaveLength(3)
+  expect(within(screen.getByLabelText('Doanh thu cửa hàng trong tháng')).getAllByText('—')).toHaveLength(4)
 }
 const deferred = () => {
   let resolve
@@ -119,7 +121,8 @@ describe('StoreOrdersPage remote order completeness', () => {
     await waitFor(() => expect(screen.getByText('DOSIINTL-00006')).toBeTruthy())
     const metrics = within(screen.getByLabelText('Tổng quan đơn hàng'))
     expect(metrics.getByText('6')).toBeTruthy()
-    expect(metrics.getAllByText('338,000 đ')).toHaveLength(2)
+    expect(metrics.getByText('338,000 đ')).toBeTruthy()
+    expect(metricValue('TỔNG DOANH THU')).toBe('338,000 đ')
     expect(mocked.apiGetOrderSummary).toHaveBeenCalledTimes(2)
   })
 
