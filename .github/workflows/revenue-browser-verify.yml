@@ -11,7 +11,11 @@ on:
       - 'src/components/Order*'
       - 'src/components/SearchableSelect*'
       - 'src/components/UI.jsx'
-      - 'src/components/orderRevenue.css'
+      - 'src/components/order*.css'
+      - 'src/ordersMobile.css'
+      - 'src/main.jsx'
+      - 'src/styles.css'
+      - 'src/storeOperationalEnhancements.css'
       - 'src/pages/employee/EmployeeV2Pages.jsx'
       - 'src/pages/store/StoreV2Pages.jsx'
       - 'src/pages/store/StoreStatisticsPage*'
@@ -65,6 +69,7 @@ jobs:
           done
           test "$ready" = 1
           "$RUNNER_TEMP/browser-env/bin/python" .github/idosi-revenue/browser-check.py
+          "$RUNNER_TEMP/browser-env/bin/python" .github/idosi-revenue/browser-mobile-check.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -5,6 +5,8 @@ import { OrderItemSelector } from './OrderItemSelector'
 import { ORDER_REVENUE_LABELS, ORDER_REVENUE_TYPES, orderRevenueByType, prepareOrderRevenueInput, revenueTypeOf } from '../domain/orderRevenue'
 import { money } from '../utils'
 import './orderRevenue.css'
+import '../ordersMobile.css'
+import './orderMobileSummary.css'
 
 const presentation = { NORMAL: { icon: ShoppingCart, tone: 'blue' }, SALE_KG: { icon: Scale, tone: 'green' }, SALE_PIECE: { icon: Package, tone: 'orange' } }
 
