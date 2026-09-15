@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { normalizeOrderItems, resolveOrderItems } from './orderItems.js'
 import { orderRevenueByType } from './orderRevenue.js'
 import { summarizeOrders } from './orderSummary.js'
-import { createWeightSnapshot, findWeightRule, itemWeight, summarizeItemWeights, WEIGHT_CONVERSION_RULES, WEIGHT_TABLE_VERSION } from './orderWeight.js'
+import { copyWeightSnapshot, createWeightSnapshot, findWeightRule, itemWeight, summarizeItemWeights, WEIGHT_CONVERSION_RULES, WEIGHT_TABLE_VERSION } from './orderWeight.js'
 
+const beddingName = 'Chăn, ga, bao gối, nệm gòn'
 const dress = (quantity, revenueType = 'NORMAL') => ({ productId: 'DRESS', productName: 'Đầm', quantity, ...(revenueType === 'NORMAL' ? {} : { revenueType, unitPrice: 20000 }) })
+const bedding = (quantity, revenueType = 'NORMAL') => ({ ...dress(quantity, revenueType), productId: 'BEDDING', productName: beddingName })
 const options = [{ id: 'DRESS', kind: 'product', code: 'PRD-002', label: 'Đầm', active: true }]
 const scope = { storeId: 'S1', period: '2026-09', date: '2026-09-15' }
 const base = { storeId: 'S1', employeeId: 'E1', createdAt: '2026-09-15T09:00:00+07:00', paymentMethod: 'Tiền mặt', shiftId: 'AM' }
@@ -14,26 +16,34 @@ const examples = [
   { ...base, id: 'O3', shiftId: 'PM', items: [dress(5, 'SALE_KG')], amount: 100000 },
 ]
 
-describe('user-approved pieces per kilogram table', () => {
-  it('contains exactly the 25 supplied factors, including bedding 0.3 pieces/kg', () => {
-    expect(Object.fromEntries(WEIGHT_CONVERSION_RULES.map((rule) => [rule.productName, rule.piecesPerKg]))).toEqual({
+describe('user-approved weight conversion table v2', () => {
+  it('keeps 24 original factors and represents bedding as exactly 3 kg per piece', () => {
+    expect(WEIGHT_TABLE_VERSION).toBe('IDOSI-2026-09-15-v2')
+    expect(WEIGHT_CONVERSION_RULES).toHaveLength(25)
+    expect(Object.fromEntries(WEIGHT_CONVERSION_RULES.filter((rule) => rule.id !== 'bedding').map((rule) => [rule.productName, rule.piecesPerKg]))).toEqual({
       'Đầm': 3, 'Quần Jeans': 2, 'Quần dài nữ': 3, 'Chân váy': 3, 'Quần short': 4,
       'Trẻ em': 6, 'Đồ đông': 1, 'Đồ bộ': 3, 'Đồ thể thao': 4, 'Áo khoác': 2,
       'Áo nữ': 5, 'Đồ nam': 3, 'Nam SM': 3, 'Nữ SM': 5, 'Áo vest': 1,
       'Áo dài': 2, 'Sản phẩm tiện ích': 1, 'Giày dép túi xách': 1, 'Big size': 3,
-      'Hàng thương hiệu': 3, 'Trẻ em SM': 6, 'Khăn lông': 2, 'Chăn, ga, bao gối, nệm gòn': 0.3,
-      'Đồ nội y mới': 4, 'Gấu bông': 2,
+      'Hàng thương hiệu': 3, 'Trẻ em SM': 6, 'Khăn lông': 2, 'Đồ nội y mới': 4, 'Gấu bông': 2,
     })
+    expect(findWeightRule(beddingName)).toEqual({ id: 'bedding', productName: beddingName, piecesPerKg: null, kgPerPiece: 3 })
     expect(Object.isFrozen(WEIGHT_CONVERSION_RULES)).toBe(true)
     expect(WEIGHT_CONVERSION_RULES.every(Object.isFrozen)).toBe(true)
   })
-  it.each(WEIGHT_CONVERSION_RULES)('converts $productName by division, never multiplication', (rule) => {
-    const quantity = rule.piecesPerKg < 1 ? 3 : rule.piecesPerKg
-    const expected = rule.piecesPerKg < 1 ? 10 : 1
+  it.each(WEIGHT_CONVERSION_RULES)('converts $productName by its declared unit without converting actual kg again', (rule) => {
+    const quantity = rule.kgPerPiece ? 1 : rule.piecesPerKg
+    const expected = rule.kgPerPiece || 1
     for (const revenueType of ['NORMAL', 'SALE_PIECE']) {
       expect(itemWeight({ productName: rule.productName, quantity, revenueType })).toMatchObject({ kilograms: expected, piecesPerKg: rule.piecesPerKg, basis: 'ESTIMATED_FROM_PIECES' })
     }
-    expect(itemWeight({ productName: rule.productName, quantity: 5, revenueType: 'SALE_KG' })).toMatchObject({ kilograms: 5, basis: 'ACTUAL_KG', piecesPerKg: null })
+    expect(itemWeight({ productName: rule.productName, quantity: 5, revenueType: 'SALE_KG' })).toMatchObject({ kilograms: 5, basis: 'ACTUAL_KG', piecesPerKg: null, kgPerPiece: null })
+  })
+  it.each(['NORMAL', 'SALE_PIECE'])('converts 1/2/3 bedding pieces to exactly 3/6/9 kg for %s', (type) => {
+    for (const [quantity, kilograms] of [[1, 3], [2, 6], [3, 9], [1000000, 3000000]]) {
+      expect(itemWeight(bedding(quantity, type))).toMatchObject({ kilograms, kgPerPiece: 3, piecesPerKg: null, tableVersion: WEIGHT_TABLE_VERSION })
+    }
+    expect(summarizeItemWeights([bedding(1, type), bedding(1, type), bedding(1, type)]).totalKg).toBe(9)
   })
   it('matches only normalized exact names and never guesses using a code or an approximate name', () => {
     expect(findWeightRule('  ĐẦM  '.normalize('NFD'))?.piecesPerKg).toBe(3)
@@ -43,8 +53,8 @@ describe('user-approved pieces per kilogram table', () => {
   it('does not round repeating fractions until the aggregation is complete', () => {
     expect(itemWeight(dress(1)).kilograms).toBe(0.333333)
     expect(summarizeItemWeights([dress(1), dress(1), dress(1)])).toMatchObject({ estimatedKg: 1, totalKg: 1 })
-    expect(itemWeight({ productName: 'Chăn, ga, bao gối, nệm gòn', quantity: 1 }).kilograms).toBe(3.333333)
-    expect(summarizeItemWeights(Array.from({ length: 3 }, () => ({ productName: 'Chăn, ga, bao gối, nệm gòn', quantity: 1 })))).toMatchObject({ totalKg: 10 })
+    expect(itemWeight(bedding(1)).kilograms).toBe(3)
+    expect(summarizeItemWeights([bedding(1), bedding(1), bedding(1)])).toMatchObject({ totalKg: 9 })
   })
 })
 
@@ -57,12 +67,33 @@ describe('conversion snapshots and missing data', () => {
     expect(result.items[0]).not.toHaveProperty('kilograms')
     expect(normalizeOrderItems(result.items)[0].weightConversion).toEqual(result.items[0].weightConversion)
   })
+  it('resolves bedding server-side, persists its multiplication rule and preserves it on edit', () => {
+    const catalog = [{ id: 'BEDDING', kind: 'product', label: beddingName, active: true }]
+    const forged = { version: WEIGHT_TABLE_VERSION, status: 'MAPPED', ruleId: 'bedding', piecesPerKg: 0.3, kgPerPiece: 333 }
+    const saved = resolveOrderItems({ options: catalog, items: [{ productId: 'BEDDING', quantity: 1, weightConversion: forged }] })
+    expect(saved.error).toBe('')
+    expect(saved.items[0].weightConversion).toEqual({ version: WEIGHT_TABLE_VERSION, status: 'MAPPED', ruleId: 'bedding', piecesPerKg: null, kgPerPiece: 3 })
+    expect(itemWeight(normalizeOrderItems(saved.items)[0]).kilograms).toBe(3)
+    const edited = resolveOrderItems({ options: [{ ...catalog[0], label: 'Đầm' }], allowHistorical: true, previousItems: saved.items, items: [{ productId: 'BEDDING', quantity: 2, weightConversion: forged }] })
+    expect(edited.error).toBe('')
+    expect(itemWeight(edited.items[0]).kilograms).toBe(6)
+    expect(saved.items[0].quantity).toBe(1)
+  })
+  it('preserves explicit v1 snapshots without letting the old bedding factor enter new v2 orders', () => {
+    const previous = { ...bedding(1), weightConversion: { version: 'IDOSI-2026-09-15-v1', status: 'MAPPED', ruleId: 'bedding', piecesPerKg: 0.3 } }
+    expect(itemWeight(previous)).toMatchObject({ kilograms: 3.333333, tableVersion: 'IDOSI-2026-09-15-v1', source: 'ORDER_SNAPSHOT' })
+    expect(createWeightSnapshot(beddingName, previous)).toEqual(previous.weightConversion)
+    expect(itemWeight(bedding(1))).toMatchObject({ kilograms: 3, source: 'LEGACY_TABLE_V2' })
+    for (const bad of [
+      { version: WEIGHT_TABLE_VERSION, status: 'MAPPED', ruleId: 'bedding', piecesPerKg: 0.3 },
+      { version: WEIGHT_TABLE_VERSION, status: 'MAPPED', ruleId: 'bedding', piecesPerKg: 1 / 3, kgPerPiece: 3 },
+      { version: WEIGHT_TABLE_VERSION, status: 'MAPPED', ruleId: 'dress', piecesPerKg: 3, kgPerPiece: 3 },
+    ]) expect(copyWeightSnapshot(bad).status).toBe('INVALID')
+  })
   it('preserves an existing factor on edit even after product rename or client tampering', () => {
     const previous = resolveOrderItems({ options, items: [{ productId: 'DRESS', quantity: 3 }] }).items
-    const result = resolveOrderItems({
-      options: [{ ...options[0], label: 'Áo nữ' }], allowHistorical: true, previousItems: previous,
-      items: [{ productId: 'DRESS', quantity: 6, weightConversion: createWeightSnapshot('Áo nữ') }],
-    })
+    const result = resolveOrderItems({ options: [{ ...options[0], label: 'Áo nữ' }], allowHistorical: true, previousItems: previous,
+      items: [{ productId: 'DRESS', quantity: 6, weightConversion: createWeightSnapshot('Áo nữ') }] })
     expect(result.error).toBe('')
     expect(result.items[0].weightConversion.piecesPerKg).toBe(3)
     expect(itemWeight(result.items[0]).kilograms).toBe(2)
@@ -73,7 +104,7 @@ describe('conversion snapshots and missing data', () => {
     const result = resolveOrderItems({ options: [{ ...options[0], label: 'Áo nữ' }], items: [{ productId: 'DRESS', quantity: 6 }], previousItems: previous, allowHistorical: true })
     expect(result.items[0].weightConversion.piecesPerKg).toBe(3)
     expect(previous[0]).not.toHaveProperty('weightConversion')
-    expect(itemWeight(previous[0]).source).toBe('LEGACY_TABLE_V1')
+    expect(itemWeight(previous[0]).source).toBe('LEGACY_TABLE_V2')
   })
   it('keeps unknown or unsupported factors incomplete instead of counting them as zero kg', () => {
     const missing = summarizeItemWeights([dress(3), { productName: 'Mặt hàng chưa cấu hình', quantity: 4 }, dress(5, 'SALE_KG')])
@@ -92,6 +123,7 @@ describe('conversion snapshots and missing data', () => {
       expect(itemWeight(item).kilograms).toBeNull()
       expect(summarizeItemWeights([item])).toMatchObject({ totalKg: null, isComplete: false, invalidLines: 1 })
     }
+    expect(summarizeItemWeights([dress(-1)]).byRevenueType.NORMAL).toMatchObject({ isComplete: false, invalidLines: 1 })
   })
 })
 
@@ -111,6 +143,22 @@ describe('order, shift, day, month and per-product weight statistics', () => {
     expect(report.totals.revenueByType).toEqual({ NORMAL: 100000, SALE_KG: 100000, SALE_PIECE: 120000 })
     expect(report.totals.revenue).toBe(320000)
     expect(() => JSON.stringify(report)).not.toThrow()
+  })
+  it('uses bedding 3 + 6 + 5 = 14 kg consistently per order, shift, day, month and product', () => {
+    const rows = [
+      { ...base, id: 'B1', amount: 100000, items: [bedding(1)] },
+      { ...base, id: 'B2', amount: 40000, items: [bedding(2, 'SALE_PIECE')] },
+      { ...base, id: 'B3', shiftId: 'PM', amount: 100000, items: [bedding(5, 'SALE_KG')] },
+    ]
+    expect(rows.map((order) => summarizeItemWeights(order.items).totalKg)).toEqual([3, 6, 5])
+    const result = summarizeOrders(rows, scope)
+    expect(result.totals.weight).toMatchObject({ actualKg: 5, estimatedKg: 9, totalKg: 14, isComplete: true })
+    expect(result.totals.revenue).toBe(240000)
+    for (const view of ['day', 'month', 'employee']) expect(result.groups[view][0].weight.totalKg).toBe(14)
+    expect(result.groups.shift.map((group) => group.weight.totalKg)).toEqual([9, 5])
+    expect(result.products.weightByProduct[0]).toMatchObject({ productId: 'BEDDING', weight: { totalKg: 14 } })
+    expect(result.products.totalQuantity).toBe(3)
+    expect(result.products.totalWeightKg).toBe(5)
   })
   it('counts a mixed order once per product, while retaining three distinct revenue rows', () => {
     const mixed = { ...base, id: 'MIXED', amount: 320000, items: examples.flatMap((order) => order.items) }

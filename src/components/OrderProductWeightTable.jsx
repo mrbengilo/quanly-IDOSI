@@ -1,5 +1,5 @@
 import { Card, TableWrap } from './UI'
-import { formatKg, weightTotalText } from './OrderWeight'
+import { formatKg, weightTotalText } from './orderWeightFormat'
 
 export function OrderProductWeightTable({ rows }) {
   if (!Array.isArray(rows) || !rows.length) return null
@@ -11,12 +11,11 @@ export function OrderProductWeightTable({ rows }) {
         <tbody>{rows.map((item) => <tr key={item.productId || item.productCode || item.productName}>
           <td data-label="Mặt hàng">{item.productName || item.productCode || 'Chưa rõ mặt hàng'}</td>
           <td data-label="Số đơn">{item.orders}</td>
-          <td data-label="Bán thường · kg quy đổi">{weightTotalText(item.weight?.byRevenueType.NORMAL)}</td>
-          <td data-label="Sale cái · kg quy đổi">{weightTotalText(item.weight?.byRevenueType.SALE_PIECE)}</td>
-          <td data-label="Sale ký · kg thực bán">{formatKg(item.weight?.byRevenueType.SALE_KG.actualKg)}</td>
+          <td data-label="Bán thường · kg quy đổi">{weightTotalText(item.weight?.byRevenueType?.NORMAL)}</td>
+          <td data-label="Sale cái · kg quy đổi">{weightTotalText(item.weight?.byRevenueType?.SALE_PIECE)}</td>
+          <td data-label="Sale ký · kg thực bán">{formatKg(item.weight?.byRevenueType?.SALE_KG?.actualKg)}</td>
           <td data-label="Tổng kg"><strong>{weightTotalText(item.weight)}</strong></td>
         </tr>)}</tbody>
       </TableWrap>
     </Card>
   </section>
-}

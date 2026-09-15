@@ -1,8 +1,9 @@
 import { ORDER_REVENUE_TYPES, revenueQuantityUnits, revenueTypeOf } from './orderRevenue.js'
 
-// Immutable user-approved table. Add a new version rather than editing this history.
-export const WEIGHT_TABLE_VERSION = 'IDOSI-2026-09-15-v1'
-export const WEIGHT_CONVERSION_RULES = Object.freeze([
+// Retain the earlier version for explicit stored snapshots; never rewrite history.
+const PREVIOUS_TABLE_VERSION = 'IDOSI-2026-09-15-v1'
+export const WEIGHT_TABLE_VERSION = 'IDOSI-2026-09-15-v2'
+const previousRules = Object.freeze([
   ['dress', 'Đầm', 3],
   ['jeans', 'Quần Jeans', 2],
   ['women-trousers', 'Quần dài nữ', 3],
@@ -30,35 +31,40 @@ export const WEIGHT_CONVERSION_RULES = Object.freeze([
   ['plush', 'Gấu bông', 2],
 ].map(([id, productName, piecesPerKg]) => Object.freeze({ id, productName, piecesPerKg })))
 
+// User correction: exactly 1 bedding piece = 3 kg, NOT 0.3 pieces/kg or a rounded 1/3.
+export const WEIGHT_CONVERSION_RULES = Object.freeze(previousRules.map((rule) => rule.id === 'bedding'
+  ? Object.freeze({ id: rule.id, productName: rule.productName, piecesPerKg: null, kgPerPiece: 3 }) : rule))
+const tables = new Map([
+  [PREVIOUS_TABLE_VERSION, new Map(previousRules.map((rule) => [rule.id, rule]))],
+  [WEIGHT_TABLE_VERSION, new Map(WEIGHT_CONVERSION_RULES.map((rule) => [rule.id, rule]))],
+])
 const nameKey = (value) => String(value ?? '').normalize('NFC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('vi-VN')
 const rulesByName = new Map(WEIGHT_CONVERSION_RULES.map((rule) => [nameKey(rule.productName), rule]))
-const rulesById = new Map(WEIGHT_CONVERSION_RULES.map((rule) => [rule.id, rule]))
 export const findWeightRule = (name) => rulesByName.get(nameKey(name)) || null
 const hasSnapshot = (item) => Object.prototype.hasOwnProperty.call(item || {}, 'weightConversion')
+const snapshotOf = (version, rule) => ({
+  version, status: rule ? 'MAPPED' : 'UNMAPPED', ruleId: rule?.id || null,
+  piecesPerKg: rule?.piecesPerKg ?? null,
+  ...(rule?.kgPerPiece !== undefined ? { kgPerPiece: rule.kgPerPiece } : {}),
+})
 
 // Keep unknown/corrupt historical snapshots visibly incomplete; never silently reclassify them.
 export function copyWeightSnapshot(snapshot) {
-  if (snapshot?.version === WEIGHT_TABLE_VERSION) {
-    if (snapshot.status === 'UNMAPPED') return { version: WEIGHT_TABLE_VERSION, status: 'UNMAPPED', ruleId: null, piecesPerKg: null }
-    const rule = rulesById.get(snapshot.ruleId)
-    if (snapshot.status === 'MAPPED' && rule && snapshot.piecesPerKg === rule.piecesPerKg) {
-      return { version: WEIGHT_TABLE_VERSION, status: 'MAPPED', ruleId: rule.id, piecesPerKg: rule.piecesPerKg }
-    }
+  const table = tables.get(snapshot?.version)
+  if (table) {
+    if (snapshot.status === 'UNMAPPED') return snapshotOf(snapshot.version, null)
+    const rule = table.get(snapshot.ruleId)
+    if (snapshot.status === 'MAPPED' && rule && snapshot.piecesPerKg === rule.piecesPerKg
+      && (snapshot.kgPerPiece ?? null) === (rule.kgPerPiece ?? null)) return snapshotOf(snapshot.version, rule)
   }
   return { version: String(snapshot?.version || ''), status: 'INVALID', ruleId: null, piecesPerKg: null }
 }
 
 // Call only with a server-resolved product name and the stored previous order line.
-// A submitted coefficient is deliberately not an argument to this function.
+// Client-supplied coefficients are deliberately not arguments to this function.
 export function createWeightSnapshot(productName, previousItem) {
   if (previousItem && hasSnapshot(previousItem)) return copyWeightSnapshot(previousItem.weightConversion)
-  const rule = findWeightRule(previousItem ? previousItem.productName : productName)
-  return {
-    version: WEIGHT_TABLE_VERSION,
-    status: rule ? 'MAPPED' : 'UNMAPPED',
-    ruleId: rule?.id || null,
-    piecesPerKg: rule?.piecesPerKg ?? null,
-  }
+  return snapshotOf(WEIGHT_TABLE_VERSION, findWeightRule(previousItem ? previousItem.productName : productName))
 }
 
 const gcd = (a, b) => { while (b) { const remainder = a % b; a = b; b = remainder } return a }
@@ -81,14 +87,19 @@ const kilograms = (value) => {
 function lineParts(item) {
   const type = revenueTypeOf(item)
   const units = revenueQuantityUnits(item?.quantity, type)
-  if (type === 'SALE_KG') return { type, value: fraction(BigInt(units), 1000n), basis: 'ACTUAL_KG', source: 'ORDER_QUANTITY', piecesPerKg: null, ruleId: null }
+  if (type === 'SALE_KG') return { type, value: fraction(BigInt(units), 1000n), basis: 'ACTUAL_KG', source: 'ORDER_QUANTITY', piecesPerKg: null, kgPerPiece: null, ruleId: null, tableVersion: null }
   const snapshot = hasSnapshot(item) ? copyWeightSnapshot(item.weightConversion) : createWeightSnapshot(item?.productName || item?.name || item?.label)
-  const source = hasSnapshot(item) ? 'ORDER_SNAPSHOT' : 'LEGACY_TABLE_V1'
-  if (snapshot.status !== 'MAPPED') return { type, value: null, basis: 'UNMAPPED', source, piecesPerKg: null, ruleId: null, reason: snapshot.status }
-  const coefficient = ratioOf(snapshot.piecesPerKg)
+  const source = hasSnapshot(item) ? 'ORDER_SNAPSHOT' : 'LEGACY_TABLE_V2'
+  const metadata = { source, tableVersion: snapshot.version }
+  if (snapshot.status !== 'MAPPED') return { type, value: null, basis: 'UNMAPPED', ...metadata, piecesPerKg: null, kgPerPiece: null, ruleId: null, reason: snapshot.status }
+  const multiply = snapshot.kgPerPiece !== undefined
+  const coefficient = ratioOf(multiply ? snapshot.kgPerPiece : snapshot.piecesPerKg)
   return {
-    type, value: fraction(BigInt(units) * coefficient.denominator, coefficient.numerator),
-    basis: 'ESTIMATED_FROM_PIECES', source, piecesPerKg: snapshot.piecesPerKg, ruleId: snapshot.ruleId,
+    type, value: multiply
+      ? fraction(BigInt(units) * coefficient.numerator, coefficient.denominator)
+      : fraction(BigInt(units) * coefficient.denominator, coefficient.numerator),
+    basis: 'ESTIMATED_FROM_PIECES', ...metadata, piecesPerKg: snapshot.piecesPerKg,
+    kgPerPiece: snapshot.kgPerPiece ?? null, ruleId: snapshot.ruleId,
   }
 }
 
@@ -99,6 +110,7 @@ export function addItemWeight(accumulator, item) {
   let line
   try { line = lineParts(item) } catch {
     accumulator.invalidLines += 1
+    try { accumulator.byRevenueType[revenueTypeOf(item)].invalidLines += 1 } catch { /* Unknown revenue category remains a global error. */ }
     return
   }
   const category = accumulator.byRevenueType[line.type]
@@ -144,10 +156,10 @@ export function itemWeight(item = {}) {
     const result = lineParts(item)
     return {
       kilograms: result.value ? kilograms(result.value) : null,
-      basis: result.basis, source: result.source, piecesPerKg: result.piecesPerKg,
-      ruleId: result.ruleId, tableVersion: WEIGHT_TABLE_VERSION, reason: result.reason || null,
+      basis: result.basis, source: result.source, piecesPerKg: result.piecesPerKg, kgPerPiece: result.kgPerPiece,
+      ruleId: result.ruleId, tableVersion: result.tableVersion, reason: result.reason || null,
     }
   } catch {
-    return { kilograms: null, basis: 'INVALID', source: null, piecesPerKg: null, ruleId: null, tableVersion: WEIGHT_TABLE_VERSION, reason: 'INVALID_QUANTITY' }
+    return { kilograms: null, basis: 'INVALID', source: null, piecesPerKg: null, kgPerPiece: null, ruleId: null, tableVersion: null, reason: 'INVALID_QUANTITY' }
   }
 }
