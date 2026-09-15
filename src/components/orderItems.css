@@ -53,6 +53,8 @@
 .order-item-selector__stepper :is(button, input):focus-visible { position: relative; outline: 2px solid #07833f; outline-offset: 1px; }
 .order-item-selector__row--stepper :is(.order-item-selector__price, .order-item-selector__amount) { grid-column: 1 / -1; }
 @media (max-width: 760px) {
-  .page.order-list-page .order-item-selector__row.order-item-selector__row--stepper { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
-  .page.order-list-page .modal .order-item-selector__stepper input { width: max(40px, calc(var(--quantity-characters, 3) * 1ch + 8px)); min-width: 40px; height: 36px; min-height: 36px; padding: 4px; text-align: center; }
+  /* Outrank the legacy selected-row width and generic mobile input padding,
+     even when ordersMobile.css is loaded after this component stylesheet. */
+  .page.order-list-page .modal .order-item-selector__row.order-item-selector__row--stepper { grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .page.order-list-page .modal .order-item-selector__quantity.order-item-selector__quantity--stepper .order-item-selector__stepper input { width: max(40px, calc(var(--quantity-characters, 3) * 1ch + 8px)); min-width: 40px; height: 36px; min-height: 36px; padding: 4px; text-align: center; }
 }
