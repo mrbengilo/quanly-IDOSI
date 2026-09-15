@@ -2,6 +2,8 @@ import { useId } from 'react'
 import { PackageOpen } from 'lucide-react'
 import { normalizeOrderItems, orderItemsLabel } from '../domain/orderItems'
 import { normalizeRevenueItem, ORDER_REVENUE_LABELS, revenueTypeOf } from '../domain/orderRevenue'
+import { summarizeItemWeights } from '../domain/orderWeight'
+import { OrderItemWeight, OrderWeightSummary } from './OrderWeight'
 import { MoneyInput } from './UI'
 import { money } from '../utils'
 import { productOptions } from '../domain/orderInformationSettings'
@@ -54,7 +56,6 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
     if (quantity === 0 && !(keepZeroDraft && selectedById.has(productId))) {
       onChange?.(selectedItems.filter((item) => item.productId !== productId))
     } else if (selectedById.has(productId)) {
-      // Keep an empty draft editable; the existing submit validation still applies.
       changeValue(productId, 'quantity', quantity)
     } else if (quantity !== '') {
       onChange?.([...selectedItems, { productId, quantity, ...(isSale ? { revenueType, unit: isKg ? 'KG' : 'PIECE', unitPrice: '' } : {}) }])
@@ -83,12 +84,8 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
           const quantity = selected ? selected.quantity : 0
           return <div className={`order-item-selector__row order-item-selector__row--stepper ${selected ? 'is-selected' : ''}`} key={productId}>
             <label className="order-item-selector__choice">
-              <input
-                type="checkbox"
-                checked={Boolean(selected)}
-                disabled={disabled}
-                onChange={(event) => changeQuantity(option, event.target.checked ? 1 : 0)}
-              />
+              <input type="checkbox" checked={Boolean(selected)} disabled={disabled}
+                onChange={(event) => changeQuantity(option, event.target.checked ? 1 : 0)} />
               <span>
                 <span className="order-item-selector__name">{option.label}</span>
                 <small className="order-item-selector__code">{option.code || '—'}</small>
@@ -98,35 +95,26 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
             <div className="order-item-selector__quantity order-item-selector__quantity--stepper">
               <div className="order-item-selector__stepper" role="group" aria-label={`Điều chỉnh ${quantityLabel.toLocaleLowerCase('vi-VN')} ${option.label}`}>
                 <button type="button" aria-label={`Giảm ${quantityLabel.toLocaleLowerCase('vi-VN')} ${option.label}`}
-                  disabled={disabled || Number(quantity) <= 0}
-                  onClick={() => stepQuantity(option, -1)}>−</button>
-                <input
-                  aria-label={`${quantityLabel} ${option.label}`}
-                  type="number"
-                  inputMode={isKg ? 'decimal' : 'numeric'}
-                  min="0"
-                  max={MAX_QUANTITY}
-                  step={isKg ? '0.001' : '1'}
-                  value={quantity}
-                  style={{ '--quantity-characters': Math.max(3, String(quantity).length) }}
-                  disabled={disabled}
+                  disabled={disabled || Number(quantity) <= 0} onClick={() => stepQuantity(option, -1)}>−</button>
+                <input aria-label={`${quantityLabel} ${option.label}`} type="number" inputMode={isKg ? 'decimal' : 'numeric'}
+                  min="0" max={MAX_QUANTITY} step={isKg ? '0.001' : '1'} value={quantity}
+                  style={{ '--quantity-characters': Math.max(3, String(quantity).length) }} disabled={disabled}
                   onChange={(event) => changeQuantity(option, event.target.value, true)}
                   onBlur={(event) => {
-                    // A typed zero may be the beginning of 0.5 kg; keep its price until editing finishes.
+                    // A typed zero may be the beginning of 0.5 kg; preserve price until editing finishes.
                     if (event.target.value !== '' && Number(event.target.value) === 0) changeQuantity(option, 0)
                   }}
                   onKeyDown={(event) => {
                     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
                     event.preventDefault()
                     stepQuantity(option, event.key === 'ArrowUp' ? 1 : -1)
-                  }}
-                />
+                  }} />
                 <button type="button" aria-label={`Tăng ${quantityLabel.toLocaleLowerCase('vi-VN')} ${option.label}`}
-                  disabled={disabled || Number(quantity) >= MAX_QUANTITY}
-                  onClick={() => stepQuantity(option, 1)}>+</button>
+                  disabled={disabled || Number(quantity) >= MAX_QUANTITY} onClick={() => stepQuantity(option, 1)}>+</button>
               </div>
               {isKg && <em>kg</em>}
             </div>
+            {selected && <OrderItemWeight item={{ ...selected, productName: selected.productName || option.label }} />}
             {selected && isSale && <>
               <label className="order-item-selector__price"><span>Đơn giá/{isKg ? 'kg' : 'cái'}</span>
                 <MoneyInput aria-label={`Đơn giá ${option.label}`} value={selected.unitPrice} disabled={disabled}
@@ -145,11 +133,17 @@ export function OrderItemSelector({ options = [], value = [], onChange, error = 
 export function OrderItemsSummary({ items = [] }) {
   const normalized = normalizeOrderItems(items)
   if (!normalized.length) return <span className="order-items-summary order-items-summary--empty">Chưa ghi nhận</span>
-  return <ul className="order-items-summary" aria-label={orderItemsLabel(normalized)}>
-    {normalized.map((item, index) => <li key={`${item.productId || item.productCode || item.productName}-${index}`}>
-      <span>{item.productName || item.productCode || 'Mặt hàng'}{revenueTypeOf(item) !== 'NORMAL' && <small className="table-note">{ORDER_REVENUE_LABELS[revenueTypeOf(item)]}</small>}</span><strong>{item.quantity} {item.unit === 'KG' ? 'kg' : 'cái'}</strong>
-    </li>)}
-  </ul>
+  return <div className="order-items-weight">
+    <ul className="order-items-summary" aria-label={orderItemsLabel(normalized)}>
+      {normalized.map((item, index) => <li key={`${item.productId || item.productCode || item.productName}-${index}`}>
+        <span>{item.productName || item.productCode || 'Mặt hàng'}
+          {revenueTypeOf(item) !== 'NORMAL' && <small className="table-note">{ORDER_REVENUE_LABELS[revenueTypeOf(item)]}</small>}
+          <OrderItemWeight item={item} />
+        </span><strong>{item.quantity} {item.unit === 'KG' ? 'kg' : 'cái'}</strong>
+      </li>)}
+    </ul>
+    <OrderWeightSummary weight={summarizeItemWeights(items)} label="Khối lượng đơn hàng" compact />
+  </div>
 }
 
 export default OrderItemSelector

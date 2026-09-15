@@ -1,0 +1,36 @@
+.order-weight-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); min-width: 0; max-width: 100%; gap: 8px; margin: 8px 0; padding: 10px; border: 1px solid #d5e3dc; border-radius: 9px; background: #f7fbf8; text-align: left; }
+.order-weight-summary > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.order-weight-summary span { font-size: 12px; font-weight: 400; line-height: 1.4; color: #52645a; overflow-wrap: anywhere; }
+.order-weight-summary strong { min-width: 0; color: #12673c; font-size: 16px; line-height: 1.4; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.order-weight-summary__warning { grid-column: 1 / -1; color: #856014; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.order-item-weight { display: block; min-width: 0; max-width: 100%; color: #53695d; font-size: 11px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; }
+.order-item-weight--missing { color: #8b6115; }
+.order-item-selector__row--stepper > .order-item-weight { grid-column: 1 / -1; }
+.order-items-weight { min-width: 0; max-width: 100%; }
+.order-items-weight .order-weight-summary { margin-top: 6px; padding: 6px; gap: 5px; }
+.order-items-weight .order-weight-summary span { font-size: 10px; }
+.order-items-weight .order-weight-summary strong { font-size: 12px; }
+.order-weight-conversion { min-width: 0; max-width: 100%; margin: 10px 0; border: 1px solid #d6e3da; border-radius: 9px; background: #fff; padding: 9px 11px; text-align: left; }
+.order-weight-conversion > summary { cursor: pointer; color: #176b3f; font-size: 13px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.order-weight-conversion > summary span { font-size: 11px; font-weight: 400; margin-left: 5px; }
+.order-weight-conversion > :is(p, small) { display: block; color: #59675f; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.order-weight-conversion__table { min-width: 0; max-width: 100%; margin: 8px 0; }
+.order-weight-conversion__row { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 10px; padding: 6px 3px; border-bottom: 1px solid #e9eeeb; font-size: 13px; line-height: 1.45; }
+.order-weight-conversion__row > span { min-width: 0; font-weight: 400; overflow-wrap: anywhere; text-align: left; }
+.order-weight-conversion__row.is-heading > span { font-weight: 600; }
+@media (max-width: 760px) {
+  .order-weight-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 8px; gap: 6px; }
+  .order-weight-summary__total { grid-column: 1 / -1; }
+  .order-weight-summary strong { font-size: 14px; }
+  .order-weight-conversion { padding: 8px; }
+  .order-weight-conversion__row { gap: 6px; grid-template-columns: minmax(0, 1fr) 92px; }
+  /* Keep all three sale categories and the total visible without horizontal scrolling. */
+  .page.store-statistics-page .store-statistics-product-weight { display: block; width: 100%; min-width: 0; max-width: 100%; text-align: left; }
+  .page.store-statistics-page .store-statistics-product-weight thead { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); }
+  .page.store-statistics-page .store-statistics-product-weight tbody { display: grid; min-width: 0; gap: 8px; }
+  .page.store-statistics-page .store-statistics-product-weight tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); min-width: 0; gap: 7px 8px; padding: 9px; border: 1px solid #d0dfd6; border-radius: 8px; background: #fff; }
+  .page.store-statistics-page .store-statistics-product-weight td { display: block; width: auto; min-width: 0; max-width: 100%; padding: 0; border: 0; font-size: 13px; line-height: 1.4; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  .page.store-statistics-page .store-statistics-product-weight td::before { content: attr(data-label); display: block; margin-bottom: 2px; color: #617080; font-size: 11px; font-weight: 400; line-height: 1.35; text-align: left; }
+  .page.store-statistics-page .store-statistics-product-weight td:first-child,
+  .page.store-statistics-page .store-statistics-product-weight td:last-child { grid-column: 1 / -1; }
+}

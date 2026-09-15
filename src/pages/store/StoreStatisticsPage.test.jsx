@@ -1,116 +1,94 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { summarizeOrders } from '../../domain/orderSummary'
 import { StoreStatisticsPage } from './StoreStatisticsPage'
 
 const { apiGetOrderSummary, version } = vi.hoisted(() => ({ apiGetOrderSummary: vi.fn(), version: { value: 1 } }))
-
 vi.mock('../../services/idosiApi', () => ({ apiGetOrderSummary }))
-vi.mock('../../state/AppContext', () => ({
-  useApp: () => ({
-    stateVersion: version.value,
-    activeStoreId: 'STORE-1',
-    session: { role: 'store_manager', storeId: 'STORE-1' },
-    stores: [{ id: 'STORE-1', name: 'IDOSI Quận 1' }],
-    shiftDefinitions: [{ id: 'SHIFT-AM', name: 'Ca sáng', start: '08:00', end: '16:00', active: true }],
-  }),
-}))
+vi.mock('../../state/AppContext', () => ({ useApp: () => ({
+  stateVersion: version.value, activeStoreId: 'STORE-1', session: { role: 'store_manager', storeId: 'STORE-1' },
+  stores: [{ id: 'STORE-1', name: 'IDOSI Quận 1' }],
+  shiftDefinitions: [{ id: 'SHIFT-AM', name: 'Ca sáng', start: '08:00', end: '16:00', active: true }],
+}) }))
 
-const payload = {
-  totals: { orders: 9, revenue: 2_000_000, cash: 800_000, transfer: 1_200_000, cashOrders: 4, transferOrders: 5, revenueByType: { NORMAL: 1500000, SALE_KG: 200000, SALE_PIECE: 300000 } },
-  products: {
-    totalQuantity: 5_100,
-    totalWeightKg: 10,
-    productTypes: 3,
-    ordersWithItems: 9,
-    unclassifiedOrders: 0,
-    items: [
-      { productId: 'P1', productCode: 'PRD-001', productName: 'Đồ nam', quantity: 2_000, orders: 4 },
-      { productId: 'P2', productCode: 'PRD-002', productName: 'Đồ nữ', quantity: 3_000, orders: 4 },
-      { productId: 'P3', productCode: 'PRD-003', productName: 'Đồ bộ', quantity: 100, orders: 1 },
-    ],
-  },
-}
+// A consistent nine-order response, including both piece and actual-kg rows.
+const data = [
+  ['P1', 'Đồ nam', 1000, 100000, 'Tiền mặt', 'NORMAL'],
+  ['P1', 'Đồ nam', 1000, 150000, 'Tiền mặt', 'NORMAL'],
+  ['P2', 'Đồ nữ', 1000, 400000, 'Tiền mặt', 'NORMAL'],
+  ['P2', 'Đồ nữ', 750, 250000, 'Chuyển khoản', 'NORMAL'],
+  ['P2', 'Đồ nữ', 750, 300000, 'Chuyển khoản', 'NORMAL'],
+  ['P3', 'Đồ bộ', 100, 300000, 'Chuyển khoản', 'NORMAL'],
+  ['P1', 'Đồ nam', 10, 200000, 'Chuyển khoản', 'SALE_KG'],
+  ['P2', 'Đồ nữ', 250, 150000, 'Tiền mặt', 'SALE_PIECE'],
+  ['P2', 'Đồ nữ', 250, 150000, 'Chuyển khoản', 'SALE_PIECE'],
+]
+const report = summarizeOrders(data.map(([productId, productName, quantity, amount, paymentMethod, revenueType], index) => ({
+  id: `TEST-${index}`, storeId: 'STORE-1', createdAt: '2026-09-14T09:00:00+07:00', shiftId: 'SHIFT-AM', shiftName: 'Ca sáng', amount, paymentMethod,
+  items: [{ productId, productName, quantity, revenueType, ...(revenueType !== 'NORMAL' ? { unitPrice: amount / quantity } : {}) }],
+})))
+const payload = { totals: report.totals, products: report.products }
+const productsTable = () => document.querySelector('.store-statistics-products')
+const ready = async () => waitFor(() => expect(productsTable()).not.toBeNull())
 
 describe('StoreStatisticsPage', () => {
-  afterEach(() => {
-    cleanup()
-    vi.clearAllMocks()
-    version.value = 1
-  })
-
+  afterEach(() => { cleanup(); vi.clearAllMocks(); version.value = 1 })
   it('loads only the selected aggregate scope and renders every product quantity', async () => {
     apiGetOrderSummary.mockResolvedValue(payload)
     render(<StoreStatisticsPage />)
-
-    await waitFor(() => expect(apiGetOrderSummary).toHaveBeenCalledWith(expect.objectContaining({
-      storeId: 'STORE-1',
-      date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/u),
-    })))
+    await waitFor(() => expect(apiGetOrderSummary).toHaveBeenCalledWith(expect.objectContaining({ storeId: 'STORE-1', date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/u) })))
     expect(await screen.findAllByText('2,000,000 đ')).toHaveLength(2)
-    expect(screen.getByText('Đồ nam')).toBeTruthy()
-    expect(screen.getByText('2.000 cái')).toBeTruthy()
-    expect(screen.getByText('3.000 cái')).toBeTruthy()
-    expect(screen.getByText('100 cái')).toBeTruthy()
+    await ready()
+    const table = within(productsTable())
+    expect(table.getAllByText('Đồ nam')).toHaveLength(2)
+    for (const quantity of ['2.000 cái', '2.500 cái', '500 cái', '100 cái']) expect(table.getByText(quantity)).toBeTruthy()
+    expect(screen.getByText('5.100 cái')).toBeTruthy()
+    expect(report.totals).toMatchObject({ orders: 9, cash: 800000, transfer: 1200000, cashOrders: 4, transferOrders: 5 })
   })
-
   it('applies the selected shift to the summary request', async () => {
     apiGetOrderSummary.mockResolvedValue(payload)
-    render(<StoreStatisticsPage />)
-    await screen.findByText('Đồ nam')
+    render(<StoreStatisticsPage />); await ready()
     fireEvent.change(screen.getByLabelText('Xem thống kê theo'), { target: { value: 'shift' } })
-    await waitFor(() => expect(apiGetOrderSummary).toHaveBeenCalledWith(expect.objectContaining({
-      storeId: 'STORE-1', shiftId: 'SHIFT-AM', date: expect.any(String),
-    })))
+    await waitFor(() => expect(apiGetOrderSummary).toHaveBeenCalledWith(expect.objectContaining({ storeId: 'STORE-1', shiftId: 'SHIFT-AM', date: expect.any(String) })))
     expect(screen.getAllByText(/Ca sáng/u).length).toBeGreaterThan(0)
   })
   it('drills month -> day -> shift with all revenue categories and matching request filters', async () => {
-    const totals = payload.totals
-    apiGetOrderSummary.mockResolvedValue({ ...payload, groups: {
-      day: [{ ...totals, key: '2026-09-14' }],
-      shift: [{ ...totals, key: '2026-09-14:SHIFT-AM', shiftId: 'SHIFT-AM', shiftName: 'Ca sáng' }],
-    } })
-    render(<StoreStatisticsPage />)
-    await screen.findByText('Đồ nam')
+    apiGetOrderSummary.mockResolvedValue(report)
+    render(<StoreStatisticsPage />); await ready()
     fireEvent.change(screen.getByLabelText('Xem thống kê theo'), { target: { value: 'month' } })
     fireEvent.change(screen.getByLabelText('Tháng thống kê'), { target: { value: '2026-09' } })
     fireEvent.click(await screen.findByRole('button', { name: 'Xem ngày' }))
     await waitFor(() => expect(apiGetOrderSummary).toHaveBeenCalledWith(expect.objectContaining({ period: '2026-09', date: '2026-09-14' })))
     fireEvent.click(await screen.findByRole('button', { name: 'Xem ca' }))
     await waitFor(() => expect(apiGetOrderSummary).toHaveBeenCalledWith(expect.objectContaining({ period: '2026-09', date: '2026-09-14', shiftId: 'SHIFT-AM' })))
-    expect(screen.getAllByText('1,500,000 đ').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('200,000 đ').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('300,000 đ').length).toBeGreaterThan(0)
-    expect(screen.getByText('10 kg')).toBeTruthy()
+    for (const amount of ['1,500,000 đ', '200,000 đ', '300,000 đ']) expect(screen.getAllByText(amount).length).toBeGreaterThan(0)
+    const weight = screen.getByRole('region', { name: 'Khối lượng • Doanh thu Ca sáng • 14/09/2026' })
+    expect(within(weight).getByText('10 kg')).toBeTruthy()
   })
-
   it('invalidates cached statistics after a successful state change and supports explicit retry', async () => {
     apiGetOrderSummary.mockResolvedValue(payload)
-    const view = render(<StoreStatisticsPage />)
-    await screen.findByText('Đồ nam')
+    const view = render(<StoreStatisticsPage />); await ready()
     expect(apiGetOrderSummary).toHaveBeenCalledTimes(1)
     version.value += 1
     apiGetOrderSummary.mockRejectedValueOnce(new Error('Mất kết nối thử nghiệm'))
     view.rerender(<StoreStatisticsPage />)
     await screen.findByText('Mất kết nối thử nghiệm')
     expect(screen.queryByText('0 đ')).toBeNull()
-    expect(screen.queryByText('Đồ nam')).toBeNull()
+    expect(productsTable()).toBeNull()
     apiGetOrderSummary.mockResolvedValue(payload)
-    fireEvent.click(screen.getByRole('button', { name: 'Làm mới số liệu' }))
-    await screen.findByText('Đồ nam')
+    fireEvent.click(screen.getByRole('button', { name: 'Làm mới số liệu' })); await ready()
     expect(apiGetOrderSummary).toHaveBeenCalledTimes(3)
   })
-
-  it('ignores out-of-order responses from an older date', async () => {
+  it('ignores out-of-order responses from an older date without confusing the reference table with sold products', async () => {
     let oldResolve
     apiGetOrderSummary.mockImplementationOnce(() => new Promise((resolve) => { oldResolve = resolve }))
-      .mockResolvedValue({ ...payload, products: { ...payload.products, items: [{ productId: 'NEW', productName: 'Dữ liệu ngày mới', quantity: 1 }] } })
+      .mockResolvedValue({ ...payload, products: { ...payload.products, weightByProduct: [], items: [{ productId: 'NEW', productName: 'Dữ liệu ngày mới', quantity: 1 }] } })
     render(<StoreStatisticsPage />)
     await waitFor(() => expect(apiGetOrderSummary).toHaveBeenCalledTimes(1))
     fireEvent.change(screen.getByLabelText('Ngày thống kê'), { target: { value: '2026-08-12' } })
     await screen.findByText('Dữ liệu ngày mới')
     oldResolve(payload)
-    await waitFor(() => expect(screen.queryByText('Đồ nam')).toBeNull())
-    expect(screen.getByText('Dữ liệu ngày mới')).toBeTruthy()
+    await waitFor(() => expect(within(productsTable()).queryByText('Đồ nam')).toBeNull())
+    expect(within(productsTable()).getByText('Dữ liệu ngày mới')).toBeTruthy()
   })
-
 })

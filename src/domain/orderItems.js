@@ -1,4 +1,5 @@
 import { normalizeRevenueItem, revenueTypeOf, revenueQuantityUnits } from './orderRevenue.js'
+import { copyWeightSnapshot, createWeightSnapshot } from './orderWeight.js'
 import {
   findProductOption,
   normalizeOrderInformationLabel,
@@ -24,7 +25,9 @@ export const normalizeOrderItems = (items = []) => {
     const productName = itemProductName(item)
     if (!productId && !productCode && !productName) return null
     try {
-      return { productId, productCode, productName, ...normalizeRevenueItem(item) }
+      const snapshot = Object.prototype.hasOwnProperty.call(item, 'weightConversion')
+        ? { weightConversion: copyWeightSnapshot(item.weightConversion) } : {}
+      return { productId, productCode, productName, ...normalizeRevenueItem(item), ...snapshot }
     } catch {
       return null
     }
@@ -79,16 +82,21 @@ export const resolveOrderItems = ({
     const option = findProductOption(options, productId, { includeInactive: true })
     const historical = historicalByKey.get(key)
     if (option?.active) {
+      const productName = cleanText(option.label)
       resolved.push({
         productId: String(option.id),
         productCode: String(option.code || '').trim().toUpperCase(),
-        productName: cleanText(option.label),
+        productName,
         ...fields,
+        ...(type === 'SALE_KG' ? {} : { weightConversion: createWeightSnapshot(productName, allowHistorical ? historical : undefined) }),
       })
       continue
     }
     if (allowHistorical && historical) {
-      resolved.push({ ...historical, productId, ...fields })
+      resolved.push({
+        ...historical, productId, ...fields,
+        ...(type === 'SALE_KG' ? {} : { weightConversion: createWeightSnapshot(historical.productName, historical) }),
+      })
       continue
     }
     return { items: [], error: 'Mặt hàng không còn hoạt động. Vui lòng bỏ chọn hoặc chọn mặt hàng khác.', errorCode: 'ORDER_PRODUCT_INACTIVE' }

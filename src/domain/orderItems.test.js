@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_ORDER_INFORMATION_OPTIONS, productOptions } from './orderInformationSettings'
+import { WEIGHT_TABLE_VERSION } from './orderWeight'
 import {
   normalizeOrderItems,
   orderItemsLabel,
@@ -58,7 +59,10 @@ describe('order items', () => {
       options: inactiveOptions,
       previousItems,
       allowHistorical: true,
-    }).items).toEqual([{ ...previousItems[0], quantity: 2 }])
+    }).items).toEqual([{
+      ...previousItems[0], quantity: 2,
+      weightConversion: { version: WEIGHT_TABLE_VERSION, status: 'UNMAPPED', ruleId: null, piecesPerKg: null },
+    }])
   })
 
   it('keeps a legacy unclassified order editable without allowing products to be removed from a classified order', () => {
