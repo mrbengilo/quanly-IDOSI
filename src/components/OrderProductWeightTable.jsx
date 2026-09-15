@@ -19,3 +19,4 @@ export function OrderProductWeightTable({ rows }) {
       </TableWrap>
     </Card>
   </section>
+}
