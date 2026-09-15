@@ -3,8 +3,24 @@ import { formatKg, weightTotalText } from './orderWeightFormat'
 import './orderProductQuantity.css'
 
 const pieceText = (value) => Number.isSafeInteger(value) && value >= 0 ? value.toLocaleString('vi-VN') : '—'
-const estimatedText = (weight) => !weight ? '—' : !weight.isComplete ? 'Chưa đủ dữ liệu'
-  : `${weight.estimatedKg > 0 ? '≈ ' : ''}${formatKg(weight.estimatedKg)}`
+const hasEstimate = (weight) => Number.isFinite(weight?.estimatedKg) && weight.estimatedKg >= 0
+const partialEstimate = (weight) => weight?.isComplete === false && hasEstimate(weight) && weight.estimatedKg > 0
+const estimatedText = (weight) => {
+  if (!hasEstimate(weight)) return '—'
+  if (!weight.isComplete && !partialEstimate(weight)) return 'Chưa đủ dữ liệu'
+  // estimatedKg already aggregates known piece conversions before rounding, even when
+  // unrelated legacy orders are unclassified. Never substitute actualKg/knownKg here.
+  return `${weight.estimatedKg > 0 ? '≈ ' : ''}${formatKg(weight.estimatedKg)}`
+}
+const incompleteReasons = (weight) => [
+  weight?.unclassifiedOrders > 0 ? `${weight.unclassifiedOrders} đơn chưa ghi nhận mặt hàng` : '',
+  weight?.missingFactorLines > 0 ? `${weight.missingFactorLines} dòng chưa có hệ số quy đổi phù hợp` : '',
+  weight?.invalidLines > 0 ? `${weight.invalidLines} dòng có dữ liệu không hợp lệ` : '',
+].filter(Boolean).join('; ') || 'các mục còn thiếu thông tin'
+
+function EstimatedWeightValue({ weight }) {
+  return <>{estimatedText(weight)}{partialEstimate(weight) && <small className="table-note">Phần đã quy đổi</small>}</>
+}
 
 export function OrderProductWeightTable({ rows, totals, scopeLabel = '' }) {
   const title = `Thống kê mặt hàng${scopeLabel ? ` • ${scopeLabel}` : ''}`
@@ -20,10 +36,13 @@ export function OrderProductWeightTable({ rows, totals, scopeLabel = '' }) {
             <tbody>{rows.map((item) => <tr key={item.productId || item.productCode || item.productName}>
               <td>{item.productName || item.productCode || 'Mặt hàng'}</td>
               <td>{pieceText(item.totalQuantity)}</td>
-              <td>{estimatedText(item.weight)}</td>
+              <td><EstimatedWeightValue weight={item.weight} /></td>
             </tr>)}</tbody>
-            {totals && <tfoot><tr><th scope="row">Tổng</th><td>{pieceText(totals.totalQuantity)}</td><td>{estimatedText(totals.weight)}</td></tr></tfoot>}
+            {totals && <tfoot><tr><th scope="row">Tổng</th><td>{pieceText(totals.totalQuantity)}</td><td><EstimatedWeightValue weight={totals.weight} /></td></tr></tfoot>}
           </table>
+          {totals?.weight?.isComplete === false && <InfoNote tone="orange">
+            {partialEstimate(totals.weight) ? 'Tổng khối lượng ước tính chỉ cộng phần đã quy đổi, chưa gồm ' : 'Chưa tính đủ khối lượng ước tính: '}{incompleteReasons(totals.weight)}.
+          </InfoNote>}
           {totals?.totalWeightKg > 0 && <p className="product-quantity-report__note">Bán theo ký: {formatKg(totals.totalWeightKg)} thực bán. Tổng khối lượng cả ba loại: {weightTotalText(totals.weight)}.</p>}
           <details className="product-quantity-report__details">
             <summary>Xem khối lượng chi tiết theo loại bán</summary>
