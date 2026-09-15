@@ -65,6 +65,7 @@ export const createVpsRuntime = ({
   sessionTtlSeconds = process.env.SESSION_TTL_SECONDS || '',
   warehouseApiKey = process.env.WAREHOUSE_API_KEY || '',
   warehouseApiAllowedOrigins = process.env.WAREHOUSE_API_ALLOWED_ORIGINS || '',
+  warehouseApiStoreIds = process.env.WAREHOUSE_API_STORE_IDS || '',
 } = {}) => {
   const database = createSqliteD1({ databasePath, migrationsDirectory })
   const env = {
@@ -76,6 +77,7 @@ export const createVpsRuntime = ({
     SESSION_TTL_SECONDS: sessionTtlSeconds,
     WAREHOUSE_API_KEY: warehouseApiKey,
     WAREHOUSE_API_ALLOWED_ORIGINS: warehouseApiAllowedOrigins,
+    WAREHOUSE_API_STORE_IDS: warehouseApiStoreIds,
   }
   return { database, env }
 }

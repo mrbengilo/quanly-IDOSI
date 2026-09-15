@@ -1,3 +1,5 @@
+import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
+import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
 import { applyRevenueSnapshotPointPolicy, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -69,6 +71,7 @@ import { resolveOrderCustomFields as resolveConfiguredOrderCustomFields } from '
 
 const API_PREFIX = '/api/'
 const WAREHOUSE_ORDER_STATISTICS_PATH = '/api/integrations/warehouse/order-statistics'
+const WAREHOUSE_ORDER_STATISTICS_PATHS = new Set([WAREHOUSE_ORDER_STATISTICS_PATH, '/api/integrations/warehouse/v1/order-statistics'])
 const MIN_WAREHOUSE_API_KEY_LENGTH = 32
 const WAREHOUSE_STATISTICS_QUERY_KEYS = new Set(['storeId', 'period', 'date', 'shiftId', 'paymentMethod'])
 const MAX_JSON_BYTES = 16 * 1024 * 1024
@@ -5665,7 +5668,7 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
   const collectionKey = HISTORY_COLLECTIONS[historyKind]
   if (!collectionKey) throw new ApiError(404, 'HISTORY_KIND_NOT_FOUND', 'Không tìm thấy loại lịch sử.')
   const db = getDatabase(env)
-  const { storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
+  const { user, storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
   const period = String(url.searchParams.get('period') || '').trim()
   if (period && !/^\d{4}-\d{2}$/u.test(period)) {
     throw new ApiError(400, 'HISTORY_PERIOD_INVALID', 'Kỳ lịch sử phải có định dạng YYYY-MM.')
@@ -5711,7 +5714,7 @@ const getEntityHistory = async (request, env, context, url, historyKind) => {
       throw new ApiError(500, 'STATE_ENTITY_CORRUPT', 'Bản ghi lịch sử không hợp lệ.')
     }
     return sanitizeStateValue(parseStoredJson(serialized, null))
-  })
+  }).filter((record) => historyKind !== 'orders' || user.role !== 'employee' || orderCreatedByEmployee(record, employeeId))
   return jsonResponse(apiPayload(context, {
     kind: historyKind,
     collection: collectionKey,
@@ -5773,7 +5776,7 @@ const summarizeOrderRows = (rows, scope) => {
     return parseStoredJson(serialized, null)
   })
   try {
-    return summarizeOrders(orders, scope)
+    return summarizeOrders(scope.ownOrdersOnly ? orders.filter((order) => orderCreatedByEmployee(order, scope.employeeId)) : orders, scope)
   } catch (error) {
     if (!(error instanceof TypeError || error instanceof RangeError)) throw error
     throw new ApiError(500, 'ORDER_SUMMARY_INVALID', 'Dữ liệu tổng hợp đơn hàng không hợp lệ.')
@@ -5782,11 +5785,11 @@ const summarizeOrderRows = (rows, scope) => {
 
 const getOrderSummary = async (request, env, context, url) => {
   const db = getDatabase(env)
-  const { storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
+  const { user, storeId, employeeId } = await resolveHistoryReadScope(request, db, context, url)
   const period = asMonth(url.searchParams.get('period'), 'Kỳ tổng hợp đơn hàng')
   const filters = orderReadFilters(url)
   const rows = await readOrderSummaryRows(db, storeId, employeeId, period)
-  const summary = summarizeOrderRows(rows, { storeId, period, employeeId, ...filters })
+  const summary = summarizeOrderRows(rows, { storeId, period, employeeId, ownOrdersOnly: user.role === 'employee', ...filters })
   return jsonResponse(apiPayload(context, { storeId, period, ...summary }))
 }
 
@@ -5892,10 +5895,19 @@ const getWarehouseOrderStatistics = async (request, env, context, url) => {
   const storeState = storeRow ? parseStoredJson(storeRow.value_json, {}) : {}
   const store = requireActivePhysicalStore(storeState, requestedStoreId)
   const storeId = String(store.id)
+  const allowedStores = String(env?.WAREHOUSE_API_STORE_IDS || '').split(',').map((id) => id.trim()).filter(Boolean)
+  if (allowedStores.length && !allowedStores.some((id) => sameIdentifier(id, storeId))) {
+    throw new ApiError(403, 'WAREHOUSE_STORE_FORBIDDEN', 'Khóa tích hợp không được xem cửa hàng này.')
+  }
   const rows = await readOrderSummaryRows(db, storeId, '', period)
   const summary = summarizeOrderRows(rows, { storeId, period, ...filters })
   return jsonResponse(apiPayload(context, {
     apiVersion: 1,
+    currency: 'VND',
+    timezone: 'Asia/Ho_Chi_Minh',
+    generatedAt: context.now,
+    revenueBasis: 'ACTIVE_ORDER_AMOUNT',
+    storeId,
     store: { id: storeId, name: String(store.name || store.short || storeId) },
     filters: {
       period,
@@ -5908,6 +5920,7 @@ const getWarehouseOrderStatistics = async (request, env, context, url) => {
     groups: {
       shift: summary.groups.shift,
       day: summary.groups.day,
+      month: summary.groups.month,
     },
   }), 200, warehouseApiCorsHeaders(request, env))
 }
@@ -17112,65 +17125,19 @@ const resolveOrderOccupation = (state, value, previousValue = '', allowUnchanged
   throw new ApiError(400, 'ORDER_OCCUPATION_INVALID', 'Nghề nghiệp không thuộc danh sách đang hoạt động của hệ thống.')
 }
 
-const MAX_ORDER_ITEM_TYPES = 100
-const MAX_ORDER_ITEM_QUANTITY = 1_000_000
-
-const normalizedHistoricalOrderItems = (items) => (Array.isArray(items) ? items : []).map((item) => {
-  const productId = normalizeOrderInformationText(item?.productId || item?.id)
-  const productCode = String(item?.productCode || item?.code || '').trim().toUpperCase()
-  const productName = normalizeOrderInformationText(item?.productName || item?.name || item?.label)
-  const quantity = Number(item?.quantity)
-  if ((!productId && !productCode && !productName)
-    || !Number.isSafeInteger(quantity)
-    || quantity <= 0
-    || quantity > MAX_ORDER_ITEM_QUANTITY) return null
-  return { productId, productCode, productName, quantity }
-}).filter(Boolean)
-
 const resolveOrderItems = (state, items, previousItems = [], allowHistorical = false) => {
-  const historicalItems = normalizedHistoricalOrderItems(previousItems)
-  const unchangedLegacyOrder = allowHistorical
-    && Array.isArray(items)
-    && !items.length
-    && !historicalItems.length
-  if (!Array.isArray(items) || (!items.length && !unchangedLegacyOrder)) {
-    throw new ApiError(400, 'ORDER_ITEMS_REQUIRED', 'Vui lòng chọn ít nhất một mặt hàng cho đơn hàng.')
-  }
-  if (items.length > MAX_ORDER_ITEM_TYPES) {
-    throw new ApiError(400, 'ORDER_ITEMS_LIMIT', `Mỗi đơn hàng chỉ được chọn tối đa ${MAX_ORDER_ITEM_TYPES} mặt hàng.`)
-  }
-  const historicalById = new Map(historicalItems
-    .filter((item) => item.productId)
-    .map((item) => [item.productId, item]))
-  const selectedIds = new Set()
-  return items.map((item) => {
-    const productId = normalizeOrderInformationText(item?.productId || item?.id)
-    const quantity = Number(item?.quantity)
-    if (!productId) throw new ApiError(400, 'ORDER_PRODUCT_INVALID', 'Mặt hàng đã chọn không hợp lệ.')
-    if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > MAX_ORDER_ITEM_QUANTITY) {
-      throw new ApiError(400, 'ORDER_ITEM_QUANTITY_INVALID', `Số lượng mỗi mặt hàng phải là số nguyên từ 1 đến ${MAX_ORDER_ITEM_QUANTITY}.`)
-    }
-    if (selectedIds.has(productId)) {
-      throw new ApiError(400, 'ORDER_PRODUCT_DUPLICATE', 'Một mặt hàng không được lặp lại trong cùng đơn hàng.')
-    }
-    selectedIds.add(productId)
-    const option = orderInformationOptionsFromState(state).find((candidate) => (
-      isPlainRecord(candidate)
-      && orderInformationOptionKind(candidate) === ORDER_PRODUCT_KIND
-      && String(candidate.id || '') === productId
-    ))
-    if (option && orderInformationOptionIsActive(option)) {
-      return {
-        productId: String(option.id),
-        productCode: String(option.code || '').trim().toUpperCase(),
-        productName: normalizeOrderInformationText(option.label),
-        quantity,
-      }
-    }
-    const historical = historicalById.get(productId)
-    if (allowHistorical && historical) return { ...historical, quantity }
-    throw new ApiError(400, 'ORDER_PRODUCT_INACTIVE', 'Mặt hàng không còn hoạt động. Vui lòng bỏ chọn hoặc chọn mặt hàng khác.')
+  const result = resolveConfiguredOrderItems({
+    items, options: orderInformationOptionsFromState(state), previousItems, allowHistorical,
   })
+  if (result.error) throw new ApiError(400, result.errorCode || 'ORDER_ITEMS_REQUIRED', result.error)
+  return result.items
+}
+
+const assertOrderRevenue = (order) => {
+  try { return validateOrderRevenue(order) } catch (error) {
+    if (!(error instanceof TypeError || error instanceof RangeError)) throw error
+    throw new ApiError(400, error.code || 'ORDER_REVENUE_INVALID', error.message)
+  }
 }
 
 const resolveOrderCustomFields = (state, values, previousValues = [], allowHistorical = false) => {
@@ -17543,6 +17510,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   const items = Object.hasOwn(payload, 'items')
     ? resolveOrderItems(state, payload.items)
     : []
+  assertOrderRevenue({ amount, normalAmount: payload.normalAmount, items })
   const customFields = Object.hasOwn(payload, 'customFields')
     ? resolveOrderCustomFields(state, payload.customFields)
     : []
@@ -17679,7 +17647,8 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
       counterName,
       counterValue: nextCounterValue,
       itemTypeCount: items.length,
-      itemQuantity: items.reduce((total, item) => total + item.quantity, 0),
+      itemQuantity: totalOrderItemQuantity(items),
+      itemWeightKg: totalOrderItemWeightKg(items),
       customFieldCount: customFields.length,
     },
     response: { command: body.type, order },
@@ -17789,6 +17758,10 @@ const orderMutationCommand = async (db, actor, body, commandContext) => {
         throw new ApiError(400, 'ORDER_ACQUISITION_CHANNEL_INVALID', 'Kênh biết đến không hợp lệ.')
       }
       candidate.acquisitionChannel = acquisitionChannel
+    }
+    const revenueByType = assertOrderRevenue({ ...candidate, normalAmount: payload.normalAmount })
+    if (isBusinessSupport && JSON.stringify(revenueByType) !== JSON.stringify(orderRevenueByType(previous))) {
+      throw new ApiError(403, 'ORDER_AMOUNT_ADMIN_ONLY', 'Chỉ Admin được thay đổi số tiền hoặc phân loại doanh thu của đơn hàng.')
     }
     changedFields = [
       'customerName', 'customerPhone', 'customerAge', 'gender', 'occupation',
@@ -25736,7 +25709,7 @@ const handleApi = async (request, env, context, url) => {
       warehouseStatisticsApiConfigured: Boolean(configuredWarehouseApiKey(env)),
     }))
   }
-  if (path === WAREHOUSE_ORDER_STATISTICS_PATH) {
+  if (WAREHOUSE_ORDER_STATISTICS_PATHS.has(path)) {
     if (request.method === 'OPTIONS') return warehouseStatisticsPreflight(request, env)
     if (request.method === 'GET') return getWarehouseOrderStatistics(request, env, context, url)
     return methodNotAllowed(['GET', 'OPTIONS'])
@@ -25891,7 +25864,7 @@ const worker = {
     try {
       return await handleApi(request, env, context, url)
     } catch (error) {
-      const extraHeaders = url.pathname === WAREHOUSE_ORDER_STATISTICS_PATH
+      const extraHeaders = WAREHOUSE_ORDER_STATISTICS_PATHS.has(url.pathname)
         ? warehouseApiCorsHeaders(request, env)
         : {}
       if (error instanceof ApiError) {

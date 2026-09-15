@@ -94,13 +94,7 @@ const loadOrderInformationResolvers = () => {
 let orderPayloadResolversPromise
 const loadOrderPayloadResolvers = () => {
   if (!orderPayloadResolversPromise) {
-    orderPayloadResolversPromise = Promise.all([
-      import('../domain/orderItems'),
-      import('../domain/orderCustomFields'),
-    ]).then(([orderItems, orderCustomFields]) => ({
-      resolveOrderItems: orderItems.resolveOrderItems,
-      resolveOrderCustomFields: orderCustomFields.resolveOrderCustomFields,
-    }))
+    orderPayloadResolversPromise = import('../domain/orderPayload')
   }
   return orderPayloadResolversPromise
 }
@@ -4491,7 +4485,7 @@ export function AppProvider({ children }) {
   }
 
   const createOrder = async (payload = {}) => {
-    const amount = nonNegativeInteger(payload.amount)
+    const amount = Number(payload.amount)
     const requestedStoreId = payload.storeId || state.session?.storeId || state.activeStoreId
     const storeId = state.session?.role === 'employee' ? state.session.storeId : requestedStoreId
     const store = state.stores.find((item) => item.id === storeId)
@@ -4509,15 +4503,9 @@ export function AppProvider({ children }) {
     if (!ORDER_PAYMENT_METHODS.includes(paymentMethod)) return { ok: false, message: 'Vui lòng chọn hình thức thanh toán.' }
     const hasItems = Object.hasOwn(payload, 'items')
     const hasCustomFields = Object.hasOwn(payload, 'customFields')
-    const resolvers = hasItems || hasCustomFields ? await loadOrderPayloadResolvers() : null
-    const resolvedItems = hasItems
-      ? resolvers.resolveOrderItems({ items: payload.items, options: state.orderInformationOptions })
-      : { items: [], error: '' }
-    if (resolvedItems.error) return { ok: false, message: resolvedItems.error }
-    const resolvedCustomFields = hasCustomFields
-      ? resolvers.resolveOrderCustomFields({ values: payload.customFields, options: state.orderInformationOptions })
-      : { values: [], error: '' }
-    if (resolvedCustomFields.error) return { ok: false, message: resolvedCustomFields.error }
+    const resolvers = await loadOrderPayloadResolvers()
+    const { resolvedItems, resolvedCustomFields, error } = resolvers.resolveOrderPayload({ payload, options: state.orderInformationOptions })
+    if (error) return { ok: false, message: error }
     const idempotencyKey = String(payload.idempotencyKey || '').trim()
     if (idempotencyKey && state.idempotencyKeys.includes(idempotencyKey)) {
       const existing = state.orders.find((item) => item.idempotencyKey === idempotencyKey)
@@ -4624,6 +4612,7 @@ export function AppProvider({ children }) {
           ...(payload.paymentMethod != null ? { paymentMethod: String(payload.paymentMethod).trim() } : {}),
           ...(payload.amount != null ? { amount: nonNegativeInteger(payload.amount) } : {}),
           ...(payload.items !== undefined ? { items: payload.items } : {}),
+          ...(payload.normalAmount !== undefined ? { normalAmount: payload.normalAmount } : {}),
           ...(payload.customFields !== undefined ? { customFields: payload.customFields } : {}),
           reason,
         })
@@ -4634,27 +4623,11 @@ export function AppProvider({ children }) {
         return { ok: false, message: error.message }
       }
     }
-    const resolvers = payload.items !== undefined || payload.customFields !== undefined
-      ? await loadOrderPayloadResolvers()
-      : null
-    const resolvedItems = payload.items === undefined
-      ? { items: previous.items, error: '' }
-      : resolvers.resolveOrderItems({
-          items: payload.items,
-          options: state.orderInformationOptions,
-          previousItems: previous.items,
-          allowHistorical: true,
-        })
-    if (resolvedItems.error) return { ok: false, message: resolvedItems.error }
-    const resolvedCustomFields = payload.customFields === undefined
-      ? { values: previous.customFields || [], error: '' }
-      : resolvers.resolveOrderCustomFields({
-          values: payload.customFields,
-          options: state.orderInformationOptions,
-          previousValues: previous.customFields,
-          allowHistorical: true,
-        })
-    if (resolvedCustomFields.error) return { ok: false, message: resolvedCustomFields.error }
+    const resolvers = await loadOrderPayloadResolvers()
+    const { resolvedItems, resolvedCustomFields, error } = resolvers.resolveOrderPayload({
+      payload, options: state.orderInformationOptions, previous, canChangeRevenue: actorRole === 'admin',
+    })
+    if (error) return { ok: false, message: error }
     const candidate = {
       ...previous,
       customerName: payload.customerName == null ? previous.customerName : String(payload.customerName).trim(),
@@ -4663,7 +4636,7 @@ export function AppProvider({ children }) {
       gender: payload.gender == null ? previous.gender : String(payload.gender).trim(),
       occupation: payload.occupation == null ? previous.occupation : String(payload.occupation).trim(),
       acquisitionChannel: payload.acquisitionChannel == null ? previous.acquisitionChannel : String(payload.acquisitionChannel).trim(),
-      amount: payload.amount == null ? previous.amount : nonNegativeInteger(payload.amount),
+      amount: payload.amount == null ? previous.amount : Number(payload.amount),
       paymentMethod: payload.paymentMethod == null ? previous.paymentMethod : String(payload.paymentMethod).trim(),
       items: resolvedItems.items,
       customFields: resolvedCustomFields.values,

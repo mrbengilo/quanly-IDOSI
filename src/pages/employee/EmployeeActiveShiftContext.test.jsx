@@ -89,7 +89,7 @@ describe('employee active-shift context', () => {
     expect(screen.getByText('DH-CURRENT')).toBeTruthy()
     expect(screen.queryByText('DH-OLD-SUPPORT')).toBeNull()
     expect(screen.queryByText('DH-HOME')).toBeNull()
-    expect(screen.getByText('Đơn hàng trong ca đang làm')).toBeTruthy()
+    expect(screen.getByText('Đơn hàng của tôi trong ca đang làm')).toBeTruthy()
     expect(screen.getByText('ĐƠN TRONG CA')).toBeTruthy()
     expect(screen.getByText('DOANH THU TRONG CA')).toBeTruthy()
 

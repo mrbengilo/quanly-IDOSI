@@ -187,7 +187,7 @@ describe('store employee current-shift orders', () => {
     expect(screen.getByText('Khách của tôi')).toBeTruthy()
     expect(screen.queryByText('S01-COWORKER')).toBeNull()
     expect(screen.queryByText('Khách bí mật')).toBeNull()
-    expect(screen.getAllByText('120,000 đ')).toHaveLength(3)
+    expect(screen.getAllByText('120,000 đ')).toHaveLength(4)
     expect(screen.queryByText('980,000 đ')).toBeNull()
   })
 
@@ -257,7 +257,7 @@ describe('store employee current-shift orders', () => {
     expect(screen.getByText('Khách cửa hàng hỗ trợ')).toBeTruthy()
     expect(screen.queryByText('S01-HOME')).toBeNull()
     expect(screen.queryByText('S02-COWORKER')).toBeNull()
-    expect(screen.getByText(/Chỉ hiển thị đơn hàng thuộc ca đang làm tại Dosii KVC/u)).toBeTruthy()
+    expect(screen.getByText(/Chỉ hiển thị đơn hàng của tôi trong ca đang làm tại Dosii KVC/u)).toBeTruthy()
     expect(screen.getByText('Ca hỗ trợ')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: 'TẠO ĐƠN HÀNG' }))

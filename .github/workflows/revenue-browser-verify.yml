@@ -1,0 +1,73 @@
+name: Verify revenue browser flow
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - '.github/idosi-revenue/browser-*'
+      - '.github/workflows/revenue-browser-verify.yml'
+      - 'src/domain/order*'
+      - 'src/components/Order*'
+      - 'src/components/SearchableSelect*'
+      - 'src/components/UI.jsx'
+      - 'src/components/orderRevenue.css'
+      - 'src/pages/employee/EmployeeV2Pages.jsx'
+      - 'src/pages/store/StoreV2Pages.jsx'
+      - 'src/pages/store/StoreStatisticsPage*'
+      - 'src/state/AppContext.jsx'
+      - 'server/worker.js'
+      - 'server/vps/server.mjs'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revenue-browser-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: npm run build
+      - name: Install browser verification tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/browser-env"
+          "$RUNNER_TEMP/browser-env/bin/pip" install playwright==1.55.0
+          "$RUNNER_TEMP/browser-env/bin/python" -m playwright install --with-deps chromium
+      - name: Verify synthetic orders without accessing production
+        run: |
+          mkdir -p "$RUNNER_TEMP/revenue-evidence"
+          git rev-parse HEAD > "$RUNNER_TEMP/revenue-evidence/source-sha.txt"
+          NODE_ENV=test node .github/idosi-revenue/browser-fixture.mjs > "$RUNNER_TEMP/revenue-evidence/fixture.log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          ready=0
+          for attempt in {1..40}; do
+            if grep -q BROWSER_FIXTURE_READY "$RUNNER_TEMP/revenue-evidence/fixture.log"; then ready=1; break; fi
+            if ! kill -0 "$fixture_pid" 2>/dev/null; then cat "$RUNNER_TEMP/revenue-evidence/fixture.log"; exit 1; fi
+            sleep 1
+          done
+          test "$ready" = 1
+          "$RUNNER_TEMP/browser-env/bin/python" .github/idosi-revenue/browser-check.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: revenue-browser-evidence
+          path: ${{ runner.temp }}/revenue-evidence
+          retention-days: 7

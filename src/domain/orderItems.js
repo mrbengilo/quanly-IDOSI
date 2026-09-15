@@ -1,3 +1,4 @@
+import { normalizeRevenueItem, revenueTypeOf, revenueQuantityUnits } from './orderRevenue.js'
 import {
   findProductOption,
   normalizeOrderInformationLabel,
@@ -21,12 +22,12 @@ export const normalizeOrderItems = (items = []) => {
     const productId = itemProductId(item)
     const productCode = itemProductCode(item)
     const productName = itemProductName(item)
-    const quantity = Number(item?.quantity)
-    if ((!productId && !productCode && !productName)
-      || !Number.isSafeInteger(quantity)
-      || quantity <= 0
-      || quantity > MAX_ORDER_ITEM_QUANTITY) return null
-    return { productId, productCode, productName, quantity }
+    if (!productId && !productCode && !productName) return null
+    try {
+      return { productId, productCode, productName, ...normalizeRevenueItem(item) }
+    } catch {
+      return null
+    }
   }).filter(Boolean)
 }
 
@@ -42,59 +43,69 @@ export const resolveOrderItems = ({
   required = true,
 } = {}) => {
   if (!Array.isArray(items)) {
-    return { items: [], error: required ? 'Vui lòng chọn ít nhất một mặt hàng.' : '' }
+    return { items: [], error: required ? 'Vui lòng chọn ít nhất một mặt hàng.' : '', ...(required ? { errorCode: 'ORDER_ITEMS_REQUIRED' } : {}) }
   }
   if (items.length > MAX_ORDER_ITEM_TYPES) {
-    return { items: [], error: `Mỗi đơn hàng chỉ được chọn tối đa ${MAX_ORDER_ITEM_TYPES} mặt hàng.` }
+    return { items: [], error: `Mỗi đơn hàng chỉ được chọn tối đa ${MAX_ORDER_ITEM_TYPES} mặt hàng.`, errorCode: 'ORDER_ITEMS_LIMIT' }
   }
   const historicalItems = normalizeOrderItems(previousItems)
   const unchangedLegacyOrder = allowHistorical && !items.length && !historicalItems.length
   if (required && !items.length && !unchangedLegacyOrder) {
-    return { items: [], error: 'Vui lòng chọn ít nhất một mặt hàng.' }
+    return { items: [], error: 'Vui lòng chọn ít nhất một mặt hàng.', errorCode: 'ORDER_ITEMS_REQUIRED' }
   }
 
   const historicalByKey = new Map(
-    historicalItems.map((item) => [historicalItemKey(item), item]),
+    historicalItems.map((item) => [`${historicalItemKey(item)}:${revenueTypeOf(item)}`, item]),
   )
   const resolved = []
   const selectedIds = new Set()
   for (const item of items) {
     const productId = itemProductId(item)
-    const quantity = Number(item?.quantity)
-    if (!productId) return { items: [], error: 'Mặt hàng đã chọn không hợp lệ.' }
-    if (!Number.isSafeInteger(quantity) || quantity <= 0 || quantity > MAX_ORDER_ITEM_QUANTITY) {
-      return { items: [], error: `Số lượng mỗi mặt hàng phải là số nguyên từ 1 đến ${MAX_ORDER_ITEM_QUANTITY.toLocaleString('vi-VN')}.` }
+    if (!productId) return { items: [], error: 'Mặt hàng đã chọn không hợp lệ.', errorCode: 'ORDER_PRODUCT_INVALID' }
+    let fields
+    let type
+    try {
+      fields = normalizeRevenueItem(item)
+      type = revenueTypeOf(item)
+    } catch (error) {
+      return { items: [], error: error.message, errorCode: error.code }
     }
-    if (selectedIds.has(productId)) {
-      return { items: [], error: 'Một mặt hàng không được lặp lại trong cùng đơn hàng.' }
+    const key = `${productId}:${type}`
+    if (selectedIds.has(key)) {
+      return { items: [], error: 'Một mặt hàng không được lặp lại trong cùng loại doanh thu.', errorCode: 'ORDER_PRODUCT_DUPLICATE' }
     }
-    selectedIds.add(productId)
+    selectedIds.add(key)
 
     const option = findProductOption(options, productId, { includeInactive: true })
-    const historical = historicalByKey.get(productId)
+    const historical = historicalByKey.get(key)
     if (option?.active) {
       resolved.push({
         productId: String(option.id),
         productCode: String(option.code || '').trim().toUpperCase(),
         productName: cleanText(option.label),
-        quantity,
+        ...fields,
       })
       continue
     }
     if (allowHistorical && historical) {
-      resolved.push({ ...historical, productId, quantity })
+      resolved.push({ ...historical, productId, ...fields })
       continue
     }
-    return { items: [], error: 'Mặt hàng không còn hoạt động. Vui lòng bỏ chọn hoặc chọn mặt hàng khác.' }
+    return { items: [], error: 'Mặt hàng không còn hoạt động. Vui lòng bỏ chọn hoặc chọn mặt hàng khác.', errorCode: 'ORDER_PRODUCT_INACTIVE' }
   }
   return { items: resolved, error: '' }
 }
 
 export const totalOrderItemQuantity = (items = []) => normalizeOrderItems(items)
+  .filter((item) => revenueTypeOf(item) !== 'SALE_KG')
   .reduce((total, item) => total + item.quantity, 0)
 
 export const orderItemsLabel = (items = []) => {
   const normalized = normalizeOrderItems(items)
   if (!normalized.length) return 'Chưa ghi nhận mặt hàng'
-  return normalized.map((item) => `${item.productName || item.productCode || 'Mặt hàng'} × ${item.quantity}`).join(', ')
+  return normalized.map((item) => `${item.productName || item.productCode || 'Mặt hàng'} × ${item.quantity}${revenueTypeOf(item) === 'SALE_KG' ? ' kg' : ''}`).join(', ')
 }
+
+export const totalOrderItemWeightKg = (items = []) => normalizeOrderItems(items)
+  .filter((item) => revenueTypeOf(item) === 'SALE_KG')
+  .reduce((grams, item) => grams + revenueQuantityUnits(item.quantity, 'SALE_KG'), 0) / 1000

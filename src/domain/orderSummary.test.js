@@ -36,7 +36,7 @@ describe('orderSummary', () => {
       { id: 'FOREIGN', storeId: 'S02', amount: 700_000, createdAt: '2026-09-05' },
     ], { storeId: 'S01', period: '2026-09' })
 
-    expect(result.totals).toEqual({ orders: 3, cash: 100_000, transfer: 250_000, revenue: 400_000, cashOrders: 1, transferOrders: 1 })
+    expect(result.totals).toEqual({ orders: 3, cash: 100_000, transfer: 250_000, revenue: 400_000, cashOrders: 1, transferOrders: 1, revenueByType: { NORMAL: 400_000, SALE_KG: 0, SALE_PIECE: 0 } })
     expect(result.groups.shift).toEqual(expect.arrayContaining([
       expect.objectContaining({ key: '2026-09-01:morning', shiftId: 'morning', orders: 1 }),
     ]))
@@ -47,6 +47,7 @@ describe('orderSummary', () => {
     ])
     expect(result.products).toEqual({
       totalQuantity: 6,
+      totalWeightKg: 0,
       productTypes: 2,
       ordersWithItems: 2,
       unclassifiedOrders: 1,
@@ -70,7 +71,7 @@ describe('orderSummary', () => {
     expect(summarizeOrders([
       { id: 'LEGACY', storeId: 'S01', amount: '125000', paymentMethod: 'Tiền mặt', createdAt: '2026-09-01' },
     ], { storeId: 'S01', period: '2026-09' }).totals).toEqual({
-      orders: 1, cash: 125_000, transfer: 0, revenue: 125_000, cashOrders: 1, transferOrders: 0,
+      orders: 1, cash: 125_000, transfer: 0, revenue: 125_000, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 125_000, SALE_KG: 0, SALE_PIECE: 0 },
     })
   })
 
@@ -88,9 +89,9 @@ describe('orderSummary', () => {
       createdAt: '2026-08-31T18:00:00Z', amount: index === 2 ? 20_001 : '20000', paymentMethod, customerName: 'Nguyễn Ánh',
     }))
     const scope = { storeId: 's01', employeeId: 'e01', period: '2026-09' }
-    expect(summarizeOrders(rows, scope).totals).toEqual({ orders: 4, revenue: 80_001, cash: 40_001, transfer: 20_000, cashOrders: 2, transferOrders: 1 })
+    expect(summarizeOrders(rows, scope).totals).toEqual({ orders: 4, revenue: 80_001, cash: 40_001, transfer: 20_000, cashOrders: 2, transferOrders: 1, revenueByType: { NORMAL: 80_001, SALE_KG: 0, SALE_PIECE: 0 } })
     const result = summarizeOrders(rows, { ...scope, amount: 20_000, paymentMethod: 'cash', date: '2026-09-01', shiftId: 'night', query: 'ÁNH' })
-    expect(result.totals).toEqual({ orders: 1, revenue: 20_000, cash: 20_000, transfer: 0, cashOrders: 1, transferOrders: 0 })
+    expect(result.totals).toEqual({ orders: 1, revenue: 20_000, cash: 20_000, transfer: 0, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 20_000, SALE_KG: 0, SALE_PIECE: 0 } })
     expect(result.groups.shift[0]).toMatchObject({ key: '2026-09-01:night', orders: 1, cashOrders: 1 })
     expect(summarizeOrders(rows, { ...scope, amount: 0 }).totals.orders).toBe(0)
     expect(summarizeOrders([{ ...rows[0], amount: 0 }], { ...scope, amount: 0 }).totals.orders).toBe(1)

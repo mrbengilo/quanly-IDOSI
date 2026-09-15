@@ -137,6 +137,9 @@ export function SearchableSelect({
 
   const selectOption = (option, sourceEvent) => {
     if (!option || option.disabled || loading || error || disabled) return
+    // Prevent a wrapping Field label from re-clicking the trigger after the
+    // selected option unmounts, which would reopen and overlay the order form.
+    sourceEvent?.preventDefault()
     const changeTarget = { name, value: option.value }
     onChange?.({
       target: changeTarget,
