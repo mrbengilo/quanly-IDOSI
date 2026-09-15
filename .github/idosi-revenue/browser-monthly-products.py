@@ -33,10 +33,10 @@ with sync_playwright() as p:
         expect(table.locator('thead th')).to_have_count(3)
         results.append('PASS: monthly report combines NORMAL and SALE_PIECE into 15 pieces / 5 estimated kg; 2.5 actual kg is not added to either')
 
-        def monthly_response(response):
+        def monthly_response(response, period=current):
             parsed = urlparse(response.url)
             query = parse_qs(parsed.query)
-            return parsed.path == '/api/order-summary' and query.get('period') == [current] and 'date' not in query and 'shiftId' not in query
+            return parsed.path == '/api/order-summary' and query.get('period') == [period] and 'date' not in query and 'shiftId' not in query
         with page.expect_response(monthly_response) as refreshed:
             page.get_by_role('button', name='Làm mới số liệu', exact=True).click()
         assert refreshed.value.ok, refreshed.value.status
@@ -68,12 +68,41 @@ with sync_playwright() as p:
         older = report_table(history)
         expect(older.locator('tbody tr td')).to_have_text(['Đồ nam', '5', '≈ 1,667 kg'])
         assert not page.locator('.product-quantity-report details').evaluate('node => node.open')
+        # The historical fixture has two legacy orders with no items. This used to hide
+        # the footer even though all listed product lines had a valid estimate.
+        footer = older.locator('tfoot')
+        expect(footer).to_contain_text('≈ 1,667 kg')
+        expect(footer).to_contain_text('Phần đã quy đổi')
+        expect(footer).not_to_contain_text('Chưa đủ dữ liệu')
+        report = page.locator('.product-quantity-report')
+        expect(report.get_by_text(re.compile('chưa gồm 2 đơn chưa ghi nhận mặt hàng'))).to_be_visible()
+        with page.expect_response(lambda response: monthly_response(response, history)) as history_refresh:
+            page.get_by_role('button', name='Làm mới số liệu', exact=True).click()
+        assert history_refresh.value.ok
+        partial = history_refresh.value.json()
+        weight = partial['products']['weight']
+        assert weight['estimatedKg'] == 1.666667 and weight['actualKg'] == 2.5, weight
+        assert weight['isComplete'] is False and weight['totalKg'] is None and weight['unclassifiedOrders'] == 2, weight
+        history_api = page.request.get(root + '/api/integrations/warehouse/v1/order-statistics', params={'storeId': 'S1', 'period': history}, headers={'X-IDOSI-Warehouse-Key': 'synthetic-warehouse-browser-testing-key'})
+        assert history_api.ok
+        assert history_api.json()['products'] == partial['products']
+        (out / 'monthly-products-partial-api.json').write_text(json.dumps(history_api.json(), ensure_ascii=False, indent=2))
+        for width in [320, 390, 430, 1280]:
+            page.set_viewport_size({'width': width, 'height': 900})
+            footer.scroll_into_view_if_needed()
+            expect(footer).to_contain_text('≈ 1,667 kg')
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+            assert footer.evaluate('(footer) => [...footer.querySelectorAll("th, td")].every(cell => cell.scrollWidth <= cell.clientWidth + 1)'), width
+            report.screenshot(path=str(out / f'monthly-products-partial-{width}.png'), animations='disabled')
+        results.append('PASS: incomplete historical month shows known estimated subtotal 1.666667 kg with separate warning for 2 unclassified orders; SQLite/API completeness stays false and totalKg null; mobile footer and warning remain visible')
         month.fill(empty)
         expect(page.get_by_text('Chưa có mặt hàng bán trong phạm vi đã chọn.', exact=True)).to_be_visible()
         expect(page.locator('.product-quantity-table')).to_have_count(0)
         month.fill(current)
         expect(table.locator('tbody tr td')).to_have_text(['Đồ nam', '15', '≈ 5 kg'])
-        results.append('PASS: month switching isolates previous month (5 pieces), empty month, then restores current month (15 pieces); no stale or cumulative totals')
+        expect(table.locator('tfoot')).not_to_contain_text('Phần đã quy đổi')
+        expect(page.locator('.product-quantity-report').get_by_text(re.compile('chưa gồm 2 đơn'))).to_have_count(0)
+        results.append('PASS: month switching isolates previous month (5 pieces), empty month, then restores current month (15 pieces); no stale or cumulative totals or partial warning')
         assert not errors, errors
     except Exception:
         page.screenshot(path=str(out / 'monthly-products-failure.png'), full_page=True, animations='disabled')
