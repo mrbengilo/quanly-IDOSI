@@ -52,7 +52,7 @@ describe('store historical shift selection', () => {
     expect(within(selected).queryByText('300,000 đ')).toBeNull()
     expect(apiGetOrderSummary).toHaveBeenCalledWith(expect.objectContaining({ storeId: 'S1', date, period: '2026-09', shiftId: pm }))
     expect(screen.getAllByText('Đồ nam kiểm thử').length).toBeGreaterThan(0)
-    expect(screen.getByText('2,5 kg')).toBeTruthy()
+    expect(screen.getAllByText('2,5 kg')).toHaveLength(2)
     expect([...screen.getByLabelText('Ca thống kê').options].some((option) => option.value === 'new-pm')).toBe(false)
   })
   it('enables Xem ca for historical IDs and missing IDs, and isolates the unbound group', async () => {
