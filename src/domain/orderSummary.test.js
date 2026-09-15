@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { orderBusinessDate, orderGroupKey, parseOrderAmountFilter, summarizeOrders } from './orderSummary'
 
+// Keep exact assertions on the established financial contract while asserting the additive weight separately.
+const financialTotals = ({ weight, ...totals }) => {
+  expect(weight).toMatchObject({ schemaVersion: 1, unit: 'KG', tableVersion: 'IDOSI-2026-09-15-v2' })
+  return totals
+}
+
 describe('orderSummary', () => {
   it('uses the Vietnam business date for explicit-zone timestamps only', () => {
     expect(orderBusinessDate({ createdAt: '2026-08-31T18:30:00.000Z' })).toBe('2026-09-01')
@@ -10,13 +16,7 @@ describe('orderSummary', () => {
   })
 
   it('builds the same shift, day and employee keys as the order display', () => {
-    const order = {
-      createdAt: '2026-09-01T01:00:00+07:00',
-      employeeId: 'E01',
-      shiftName: 'CA SÁNG',
-      shiftStart: '08:00',
-      shiftEnd: '12:00',
-    }
+    const order = { createdAt: '2026-09-01T01:00:00+07:00', employeeId: 'E01', shiftName: 'CA SÁNG', shiftStart: '08:00', shiftEnd: '12:00' }
     expect(orderGroupKey(order)).toBe('2026-09-01:ca sáng:08:00:12:00')
     expect(orderGroupKey(order, 'day')).toBe('2026-09-01')
     expect(orderGroupKey(order, 'employee')).toBe('E01')
@@ -35,93 +35,64 @@ describe('orderSummary', () => {
       { id: 'OPENING', storeId: 'S01', amount: 800_000, source: 'legacy-opening-balance', createdAt: '2026-09-04' },
       { id: 'FOREIGN', storeId: 'S02', amount: 700_000, createdAt: '2026-09-05' },
     ], { storeId: 'S01', period: '2026-09' })
-
-    expect(result.totals).toEqual({ orders: 3, cash: 100_000, transfer: 250_000, revenue: 400_000, cashOrders: 1, transferOrders: 1, revenueByType: { NORMAL: 400_000, SALE_KG: 0, SALE_PIECE: 0 } })
-    expect(result.groups.shift).toEqual(expect.arrayContaining([
-      expect.objectContaining({ key: '2026-09-01:morning', shiftId: 'morning', orders: 1 }),
-    ]))
+    expect(financialTotals(result.totals)).toEqual({ orders: 3, cash: 100_000, transfer: 250_000, revenue: 400_000, cashOrders: 1, transferOrders: 1, revenueByType: { NORMAL: 400_000, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(result.totals.weight).toMatchObject({ actualKg: 0, estimatedKg: 2, knownKg: 2, totalKg: null, isComplete: false, unclassifiedOrders: 1 })
+    expect(result.groups.shift).toEqual(expect.arrayContaining([expect.objectContaining({ key: '2026-09-01:morning', shiftId: 'morning', orders: 1 })]))
     expect(result.groups.shift).toHaveLength(3)
     expect(result.groups.day.map(({ key }) => key)).toEqual(['2026-09-01', '2026-09-02'])
-    expect(result.groups.employee.map(({ key, revenue }) => [key, revenue])).toEqual([
-      ['E01', 100_000], ['E02', 250_000], ['system', 50_000],
-    ])
-    expect(result.products).toEqual({
-      totalQuantity: 6,
-      totalWeightKg: 0,
-      productTypes: 2,
-      ordersWithItems: 2,
-      unclassifiedOrders: 1,
-      items: [
-        expect.objectContaining({ productId: 'P1', productName: 'Đồ nam', quantity: 5, orders: 2 }),
-        expect.objectContaining({ productId: 'P2', productName: 'Đầm', quantity: 1, orders: 1 }),
-      ],
-    })
+    expect(result.groups.employee.map(({ key, revenue }) => [key, revenue])).toEqual([['E01', 100_000], ['E02', 250_000], ['system', 50_000]])
+    const { weight, weightByProduct, ...products } = result.products
+    expect(weight).toEqual(result.totals.weight)
+    expect(weightByProduct).toHaveLength(2)
+    expect(weightByProduct.find((item) => item.productId === 'P1').weight.totalKg).toBe(1.666667)
+    expect(weightByProduct.find((item) => item.productId === 'P2').weight.totalKg).toBe(0.333333)
+    expect(products).toEqual({ totalQuantity: 6, totalWeightKg: 0, productTypes: 2, ordersWithItems: 2, unclassifiedOrders: 1,
+      items: [expect.objectContaining({ productId: 'P1', productName: 'Đồ nam', quantity: 5, orders: 2 }), expect.objectContaining({ productId: 'P2', productName: 'Đầm', quantity: 1, orders: 1 })] })
   })
 
   it('fails closed on invalid eligible VND amounts', () => {
-    expect(() => summarizeOrders([
-      { id: 'INVALID', storeId: 'S01', amount: 1.5, createdAt: '2026-09-01' },
-    ], { storeId: 'S01', period: '2026-09' })).toThrow(/Invalid order amount/u)
-    expect(() => summarizeOrders([
-      { id: 'BLANK', storeId: 'S01', amount: ' ', createdAt: '2026-09-01' },
-    ], { storeId: 'S01', period: '2026-09' })).toThrow(/Invalid order amount/u)
+    expect(() => summarizeOrders([{ id: 'INVALID', storeId: 'S01', amount: 1.5, createdAt: '2026-09-01' }], { storeId: 'S01', period: '2026-09' })).toThrow(/Invalid order amount/u)
+    expect(() => summarizeOrders([{ id: 'BLANK', storeId: 'S01', amount: ' ', createdAt: '2026-09-01' }], { storeId: 'S01', period: '2026-09' })).toThrow(/Invalid order amount/u)
   })
-
   it('preserves valid legacy numeric-string VND amounts', () => {
-    expect(summarizeOrders([
-      { id: 'LEGACY', storeId: 'S01', amount: '125000', paymentMethod: 'Tiền mặt', createdAt: '2026-09-01' },
-    ], { storeId: 'S01', period: '2026-09' }).totals).toEqual({
-      orders: 1, cash: 125_000, transfer: 0, revenue: 125_000, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 125_000, SALE_KG: 0, SALE_PIECE: 0 },
-    })
+    const result = summarizeOrders([{ id: 'LEGACY', storeId: 'S01', amount: '125000', paymentMethod: 'Tiền mặt', createdAt: '2026-09-01' }], { storeId: 'S01', period: '2026-09' })
+    expect(financialTotals(result.totals)).toEqual({ orders: 1, cash: 125_000, transfer: 0, revenue: 125_000, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 125_000, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(result.totals.weight).toMatchObject({ totalKg: null, isComplete: false, unclassifiedOrders: 1 })
   })
-
   it('keeps an edited legacy order in its original business month', () => {
-    const order = {
-      id: 'LEGACY-EDITED', storeId: 'S01', amount: 50_000,
-      date: '2026-09-10', updatedAt: '2026-12-20T01:00:00Z',
-    }
+    const order = { id: 'LEGACY-EDITED', storeId: 'S01', amount: 50_000, date: '2026-09-10', updatedAt: '2026-12-20T01:00:00Z' }
     expect(summarizeOrders([order], { storeId: 'S01', period: '2026-09' }).totals.orders).toBe(1)
     expect(summarizeOrders([order], { storeId: 'S01', period: '2026-12' }).totals.orders).toBe(0)
   })
   it('combines exact amounts, payment aliases, Vietnam dates and text without changing whole-shift totals', () => {
     const rows = ['TIỀN MẶT', 'bank_transfer', 'cash', 'Khác'].map((paymentMethod, index) => ({
-      id: String(index), code: 'ORDER', storeId: 'S01', employeeId: 'E01', shiftId: 'night',
-      createdAt: '2026-08-31T18:00:00Z', amount: index === 2 ? 20_001 : '20000', paymentMethod, customerName: 'Nguyễn Ánh',
+      id: String(index), code: 'ORDER', storeId: 'S01', employeeId: 'E01', shiftId: 'night', createdAt: '2026-08-31T18:00:00Z', amount: index === 2 ? 20_001 : '20000', paymentMethod, customerName: 'Nguyễn Ánh',
     }))
     const scope = { storeId: 's01', employeeId: 'e01', period: '2026-09' }
-    expect(summarizeOrders(rows, scope).totals).toEqual({ orders: 4, revenue: 80_001, cash: 40_001, transfer: 20_000, cashOrders: 2, transferOrders: 1, revenueByType: { NORMAL: 80_001, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(financialTotals(summarizeOrders(rows, scope).totals)).toEqual({ orders: 4, revenue: 80_001, cash: 40_001, transfer: 20_000, cashOrders: 2, transferOrders: 1, revenueByType: { NORMAL: 80_001, SALE_KG: 0, SALE_PIECE: 0 } })
     const result = summarizeOrders(rows, { ...scope, amount: 20_000, paymentMethod: 'cash', date: '2026-09-01', shiftId: 'night', query: 'ÁNH' })
-    expect(result.totals).toEqual({ orders: 1, revenue: 20_000, cash: 20_000, transfer: 0, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 20_000, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(financialTotals(result.totals)).toEqual({ orders: 1, revenue: 20_000, cash: 20_000, transfer: 0, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 20_000, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(result.totals.weight).toMatchObject({ totalKg: null, unclassifiedOrders: 1 })
     expect(result.groups.shift[0]).toMatchObject({ key: '2026-09-01:night', orders: 1, cashOrders: 1 })
     expect(summarizeOrders(rows, { ...scope, amount: 0 }).totals.orders).toBe(0)
     expect(summarizeOrders([{ ...rows[0], amount: 0 }], { ...scope, amount: 0 }).totals.orders).toBe(1)
     expect(summarizeOrders(rows, { ...scope, date: '2026-08-31' }).totals.orders).toBe(0)
   })
-
   it('keeps blank distinct from zero and rejects invalid or imprecise filter amounts', () => {
     expect(parseOrderAmountFilter('')).toBe(null)
     expect(parseOrderAmountFilter('0')).toBe(0)
     for (const input of ['20000', '20,000', '20.000', '20 000']) expect(parseOrderAmountFilter(input)).toBe(20_000)
     for (const input of ['-1', '1.5', '1e3', '20abc', '9007199254740992', '1,20']) expect(parseOrderAmountFilter(input)).toBeNaN()
   })
-
   it('finds orders by product snapshot name', () => {
-    const result = summarizeOrders([{
-      id: 'PRODUCT-SEARCH', storeId: 'S01', amount: 50_000, createdAt: '2026-09-12',
-      items: [{ productId: 'P1', productName: 'Áo nữ', quantity: 4 }],
-    }], { storeId: 'S01', period: '2026-09', query: 'áo nữ' })
+    const result = summarizeOrders([{ id: 'PRODUCT-SEARCH', storeId: 'S01', amount: 50_000, createdAt: '2026-09-12', items: [{ productId: 'P1', productName: 'Áo nữ', quantity: 4 }] }], { storeId: 'S01', period: '2026-09', query: 'áo nữ' })
     expect(result.totals.orders).toBe(1)
     expect(result.products.totalQuantity).toBe(4)
   })
-
   it('finds orders by configured custom attribute labels and values', () => {
-    const order = {
-      id: 'CUSTOM-SEARCH', storeId: 'S01', amount: 50_000, createdAt: '2026-09-12',
-      customFields: [{ fieldId: 'ATTR-1', fieldCode: 'SIZE', fieldLabel: 'Kích cỡ', fieldType: 'select', value: 'XL' }],
-    }
+    const order = { id: 'CUSTOM-SEARCH', storeId: 'S01', amount: 50_000, createdAt: '2026-09-12', customFields: [{ fieldId: 'ATTR-1', fieldCode: 'SIZE', fieldLabel: 'Kích cỡ', fieldType: 'select', value: 'XL' }] }
     expect(summarizeOrders([order], { storeId: 'S01', period: '2026-09', query: 'kích cỡ' }).totals.orders).toBe(1)
     expect(summarizeOrders([order], { storeId: 'S01', period: '2026-09', query: 'xl' }).totals.orders).toBe(1)
     expect(summarizeOrders([order], { storeId: 'S01', period: '2026-09', query: 'không có' }).totals.orders).toBe(0)
   })
-
 })

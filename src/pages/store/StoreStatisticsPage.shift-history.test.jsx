@@ -30,10 +30,8 @@ const selectMode = (value) => fireEvent.change(screen.getByLabelText('Xem thốn
 const selectDate = (value) => fireEvent.change(screen.getByLabelText('Ngày thống kê'), { target: { value } })
 const selectShift = (value) => fireEvent.change(screen.getByLabelText('Ca thống kê'), { target: { value } })
 const revenue = (name) => screen.findByRole('region', { name: `Doanh thu ${name} • 06/09/2026` })
-
 beforeEach(() => { context.storeId = 'S1'; apiGetOrderSummary.mockImplementation(response) })
 afterEach(() => { cleanup(); vi.resetAllMocks() })
-
 async function openDay() {
   const view = render(<StoreStatisticsPage />)
   selectDate(date)
@@ -43,8 +41,7 @@ async function openDay() {
 
 describe('store historical shift selection', () => {
   it('selects the recorded evening snapshot and renders its three totals and products, not the day total', async () => {
-    await openDay()
-    selectMode('shift')
+    await openDay(); selectMode('shift')
     await waitFor(() => expect(screen.getByLabelText('Ca thống kê').disabled).toBe(false))
     selectShift(pm)
     const selected = await revenue('Ca tối')
@@ -52,7 +49,10 @@ describe('store historical shift selection', () => {
     expect(within(selected).queryByText('300,000 đ')).toBeNull()
     expect(apiGetOrderSummary).toHaveBeenCalledWith(expect.objectContaining({ storeId: 'S1', date, period: '2026-09', shiftId: pm }))
     expect(screen.getAllByText('Đồ nam kiểm thử').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('2,5 kg')).toHaveLength(2)
+    const weight = screen.getByRole('region', { name: 'Khối lượng • Doanh thu Ca tối • 06/09/2026' })
+    expect(within(weight).getByText('2,5 kg')).toBeTruthy()
+    const productRow = within(document.querySelector('.store-statistics-products')).getByRole('row', { name: /Sale theo ký/u })
+    expect(productRow.querySelector('[data-label="Số lượng"]').textContent).toBe('2,5 kg')
     expect([...screen.getByLabelText('Ca thống kê').options].some((option) => option.value === 'new-pm')).toBe(false)
   })
   it('enables Xem ca for historical IDs and missing IDs, and isolates the unbound group', async () => {
