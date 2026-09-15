@@ -28,12 +28,13 @@ jobs:
           text=text.replace("page.wait_for_url('**/'+destination,timeout=30000)", "page.wait_for_function('(destination) => location.hash.includes(destination)', arg=destination, timeout=30000)\n    page.wait_for_load_state('networkidle')")
           text=text.replace("page.goto(c['base']+'/#/employee/orders',wait_until='networkidle')", "page.get_by_role('link',name='Đơn hàng',exact=True).first.click()\n        page.wait_for_load_state('networkidle')")
           text=text.replace("page.goto(c['base']+'/#/store/statistics',wait_until='networkidle')", "page.get_by_role('link',name='Số liệu thống kê',exact=True).first.click()\n        page.wait_for_load_state('networkidle')")
-          text=text.replace("dialog.get_by_role('option').first.click()", "dialog.get_by_role('listbox',name='Nghề nghiệp - danh sách',exact=True).get_by_role('option').first.click()")
+          text=text.replace("dialog.get_by_role('option').first.click()", "dialog.get_by_role('listbox',name='Nghề nghiệp - danh sách',exact=True).get_by_role('option').first.click()\n        expect(dialog.get_by_role('listbox')).to_have_count(0)")
+          text=text.replace("full_page=True)", "full_page=True,animations='disabled')")
           text=text.replace("capture(page,'failure')", "(out/'failure-trace.txt').write_text(traceback.format_exc()+'\\nURL: '+page.url)\n        capture(page,'failure')")
           p.write_text(text)
           PY
-          git checkout --detach fe62a3775fbd7fbe356e819bd18fe3c09d22a553
-          git log -5 --format='%H %s' > /tmp/idosi-revenue-browser/evidence/commits.txt
+          git checkout --detach deb44869af49fe0f144c04969aaa382e18c75d9b
+          git log -6 --format='%H %s' > /tmp/idosi-revenue-browser/evidence/commits.txt
       - uses: actions/setup-node@v6
         with:
           node-version: 22.13.0
