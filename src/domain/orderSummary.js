@@ -1,3 +1,4 @@
+import { calculateOrderRevenue, emptyRevenueByType, orderItemRevenueType, orderItemUnit } from './orderRevenue.js'
 import { normalizeOrderItems } from './orderItems.js'
 import { normalizeOrderCustomFields, orderCustomFieldDisplayValue } from './orderCustomFields.js'
 
@@ -70,7 +71,7 @@ export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMet
   return !query || haystack.includes(query.trim().toLocaleLowerCase('vi-VN'))
 }
 
-const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0 })
+const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0, revenueByType: emptyRevenueByType(), totalSaleRevenue: 0 })
 
 const checkedAmount = (order) => {
   const rawAmount = order?.amount
@@ -89,6 +90,9 @@ const addOrder = (target, order, amount) => {
   if (!Number.isSafeInteger(revenue)) throw new RangeError('Order summary exceeds the safe integer range.')
   target.orders += 1
   target.revenue = revenue
+  const breakdown = calculateOrderRevenue(order.items, amount)
+  for (const type of Object.keys(target.revenueByType)) target.revenueByType[type] += breakdown.revenueByType[type]
+  target.totalSaleRevenue += breakdown.totalSaleRevenue
   const channel = paymentChannel(order.paymentMethod)
   if (channel === 'cash' || channel === 'transfer') {
     target[channel] += amount
@@ -119,6 +123,7 @@ const productKey = (item) => String(
 
 const emptyProductSummary = () => ({
   totalQuantity: 0,
+  totalWeightKg: 0,
   productTypes: 0,
   ordersWithItems: 0,
   unclassifiedOrders: 0,
@@ -134,22 +139,29 @@ const addOrderProducts = (summary, itemMap, order) => {
   summary.ordersWithItems += 1
   const countedOrderKeys = new Set()
   items.forEach((item) => {
-    const key = productKey(item)
+    const unit = orderItemUnit(item)
+    const type = orderItemRevenueType(item)
+    const key = `${productKey(item)}:${type}:${unit}`
     if (!key) return
     const existing = itemMap.get(key) || {
       productId: item.productId,
       productCode: item.productCode,
       productName: item.productName || item.productCode || 'Mặt hàng',
       quantity: 0,
+      unit,
+      revenueType: type,
       orders: 0,
     }
-    existing.quantity += item.quantity
-    if (!Number.isSafeInteger(existing.quantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+    const scale = unit === 'KG' ? 1000 : 1
+    const quantityUnits = Math.round(existing.quantity * scale) + Math.round(item.quantity * scale)
+    existing.quantity = quantityUnits / scale
+    if (!Number.isSafeInteger(quantityUnits)) throw new RangeError('Order item summary exceeds the safe integer range.')
     if (!countedOrderKeys.has(key)) existing.orders += 1
     countedOrderKeys.add(key)
     itemMap.set(key, existing)
-    summary.totalQuantity += item.quantity
-    if (!Number.isSafeInteger(summary.totalQuantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+    if (unit === 'KG') summary.totalWeightKg = (Math.round(summary.totalWeightKg * 1000) + Math.round(item.quantity * 1000)) / 1000
+    else summary.totalQuantity += item.quantity
+    if (!Number.isSafeInteger(summary.totalQuantity) || !Number.isSafeInteger(Math.round(summary.totalWeightKg * 1000))) throw new RangeError('Order item summary exceeds the safe integer range.')
   })
 }
 
@@ -189,7 +201,7 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
     right.quantity - left.quantity
     || left.productName.localeCompare(right.productName, 'vi-VN')
   ))
-  products.productTypes = products.items.length
+  products.productTypes = new Set(products.items.map(productKey)).size
 
   return {
     totals,
