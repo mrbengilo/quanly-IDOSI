@@ -1,0 +1,21 @@
+.product-quantity-report { min-width: 0; max-width: 100%; text-align: left; }
+.product-quantity-report__note { margin: 0 0 8px; color: #59675f; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.product-quantity-report__details { min-width: 0; margin-top: 10px; }
+.product-quantity-report__details > summary { padding: 6px 0; color: #176b3f; font-size: 13px; cursor: pointer; overflow-wrap: anywhere; }
+/* Keep this short three-column report a table, including on small screens. */
+.page.store-statistics-page .product-quantity-table { display: table; width: 100%; min-width: 0; max-width: 100%; table-layout: fixed; border-collapse: collapse; margin: 8px 0; text-align: left; }
+.product-quantity-table__name { width: 40%; }
+.page.store-statistics-page .product-quantity-table thead { display: table-header-group; position: static; height: auto; width: auto; clip-path: none; }
+.page.store-statistics-page .product-quantity-table tbody { display: table-row-group; }
+.page.store-statistics-page .product-quantity-table tfoot { display: table-footer-group; }
+.page.store-statistics-page .product-quantity-table tr { display: table-row; }
+.page.store-statistics-page .product-quantity-table :is(th, td) { display: table-cell; width: auto; min-width: 0; padding: 9px 7px; border-bottom: 1px solid #dbe5df; text-align: left; vertical-align: top; font-size: 13px; line-height: 1.4; white-space: normal; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.page.store-statistics-page .product-quantity-table td { font-weight: 400; }
+.page.store-statistics-page .product-quantity-table td::before { display: none; }
+.page.store-statistics-page .product-quantity-table :is(thead, tfoot) { background: #f3f8f5; }
+.page.store-statistics-page .product-quantity-table tfoot :is(th, td) { font-weight: 600; }
+@media (max-width: 760px) {
+  .page.store-statistics-page .product-quantity-table :is(th, td) { padding: 7px 4px; font-size: 12px; }
+  .page.store-statistics-page .product-quantity-table th { font-size: 11px; }
+  .product-quantity-table__name { width: 36%; }
+}
