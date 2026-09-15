@@ -1,0 +1,178 @@
+/* Compact order/report presentation only; amounts, filters and permissions are unchanged. */
+@media (max-width: 760px) {
+  .page:is(.order-list-page, .store-statistics-page) .page-header {
+    min-height: 0;
+    gap: 8px;
+  }
+  .page:is(.order-list-page, .store-statistics-page) .page-header__title { gap: 8px; }
+  .page:is(.order-list-page, .store-statistics-page) .page-header h1 { font-size: 20px; margin: 0 0 4px; }
+  .page:is(.order-list-page, .store-statistics-page) .page-header p { font-size: 12px; line-height: 1.4; }
+  .page:is(.order-list-page, .store-statistics-page) .page-header__icon { width: 24px; height: 24px; }
+  .page:is(.order-list-page, .store-statistics-page) .page-header__actions:empty { display: none; }
+  .page:is(.order-list-page, .store-statistics-page) .card { padding: 10px; border-radius: 9px; }
+  .page:is(.order-list-page, .store-statistics-page) .card__header { margin-bottom: 8px; gap: 6px; text-align: left; }
+  .page:is(.order-list-page, .store-statistics-page) .card__header h2 { font-size: 14px; font-weight: 600; }
+  .page:is(.order-list-page, .store-statistics-page) :is(.order-revenue-summary, .order-payment-metrics, .store-statistics-metrics) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 6px;
+    margin: 0;
+  }
+  /* The shared mobile metric grid reserves an icon column. Order cards have no icons;
+     restore a real body instead of display:contents to avoid empty columns/clipping. */
+  .page:is(.order-list-page, .store-statistics-page) .metric {
+    display: block;
+    align-self: stretch;
+    min-width: 0;
+    min-height: 0;
+    padding: 8px 9px;
+    text-align: left;
+  }
+  .page:is(.order-list-page, .store-statistics-page) .metric::after { display: none; }
+  .page:is(.order-list-page, .store-statistics-page) .metric__icon { display: none; }
+  .page:is(.order-list-page, .store-statistics-page) .metric__body {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    min-width: 0;
+    gap: 3px;
+    text-align: left;
+  }
+  .page:is(.order-list-page, .store-statistics-page) .metric .metric__label {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.35;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .page:is(.order-list-page, .store-statistics-page) .metric .metric__body > strong {
+    max-width: 100%;
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
+    line-height: 1.35;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-variant-numeric: tabular-nums;
+  }
+  .page:is(.order-list-page, .store-statistics-page) .metric :is(small, em) {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.35;
+    text-align: left;
+  }
+  /* Revenue labels already identify the categories; retain payment counts elsewhere. */
+  .page:is(.order-list-page, .store-statistics-page) .order-revenue-summary .metric small { display: none; }
+  .page.order-list-page :is(.order-shift-context, .order-filter-feedback, .order-revenue-scope) {
+    margin: 0;
+    gap: 3px 6px;
+    font-size: 12px;
+    line-height: 1.4;
+    text-align: left;
+  }
+  .page.store-orders-page .store-order-period { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .page.store-orders-page .store-order-period > .field { width: 100%; }
+  .page.store-orders-page .store-order-period > p { font-size: 11px; line-height: 1.4; }
+  .page:is(.order-list-page, .store-statistics-page) :is(.order-filters, .store-statistics-filters) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .page.store-statistics-page .store-statistics-filters > .field:nth-child(2) { grid-column: 1 / -1; }
+  .page:is(.order-list-page, .store-statistics-page) .field { min-width: 0; gap: 4px; text-align: left; }
+  .page:is(.order-list-page, .store-statistics-page) .field__label { font-size: 12px; font-weight: 500; }
+  .page:is(.order-list-page, .store-statistics-page) .input-wrap { min-width: 0; min-height: 38px; padding-inline: 8px; gap: 6px; }
+  .page:is(.order-list-page, .store-statistics-page) .input-wrap :is(input, select) { min-width: 0; height: 38px; font-size: 16px; text-align: left; }
+  .page:is(.order-list-page, .store-statistics-page) .select-wrap { padding-right: 28px; }
+  .page:is(.order-list-page, .store-statistics-page) .button { min-height: 44px; padding: 7px 10px; font-size: 13px; }
+  .page:is(.order-list-page, .store-statistics-page) .button > span { min-width: 0; overflow-wrap: anywhere; }
+  .page:is(.order-list-page, .store-statistics-page) .info-note { padding: 8px; gap: 6px; font-size: 12px; }
+  .page.order-list-page > .tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    overflow: visible;
+  }
+  .page.order-list-page > .tabs button { min-width: 0; min-height: 44px; padding: 6px 4px; font-size: 12px; line-height: 1.3; white-space: normal; text-align: left; }
+  .page.order-list-page .order-group { padding: 8px; gap: 8px; margin: 0; }
+  .page.order-list-page .order-group > .card__header { display: grid; grid-template-columns: minmax(0, 1fr); gap: 7px; margin: 0; }
+  .page.order-list-page .order-group > .card__header h2 .order-group__shift-title { gap: 2px; }
+  .page.order-list-page .order-group > .card__header h2 .order-group__shift-title > strong { font-size: 15px; font-weight: 600; }
+  .page.order-list-page .order-group > .card__header h2 .order-group__shift-title > small { font-size: 11px; font-weight: 400; }
+  .page.order-list-page .order-group__totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; width: 100%; text-align: left; }
+  .page.order-list-page .order-group__totals > span,
+  .page:is(.order-list-page, .store-statistics-page) .order-payment-summary__item { padding: 7px 8px; gap: 3px; min-width: 0; text-align: left; }
+  .page.order-list-page .order-group__totals small { font-size: 10px; font-weight: 500; line-height: 1.35; }
+  .page.order-list-page .order-group__totals :is(strong, em) { font-size: 14px; font-weight: 600; line-height: 1.35; }
+  .page:is(.order-list-page, .store-statistics-page) .order-payment-summary { gap: 6px; }
+  .page:is(.order-list-page, .store-statistics-page) .order-payment-summary__item { grid-template-columns: minmax(0, 1fr); }
+  .page:is(.order-list-page, .store-statistics-page) .order-payment-summary__item > span { font-size: 11px; font-weight: 500; }
+  .page:is(.order-list-page, .store-statistics-page) .order-payment-summary__item > small { font-size: 11px; }
+  .page:is(.order-list-page, .store-statistics-page) .order-payment-summary__item > strong { font-size: 15px; }
+
+  /* Responsive detail cards preserve every labelled cell, including all revenue values. */
+  .page:is(.order-list-page, .store-statistics-page) .table-scroll { border: 0; background: transparent; }
+  .page:is(.order-list-page, .store-statistics-page) :is(.order-table, .store-statistics-revenue, .store-statistics-products) {
+    display: block;
+    width: 100%;
+    min-width: 0;
+    text-align: left;
+  }
+  .page:is(.order-list-page, .store-statistics-page) :is(.order-table, .store-statistics-revenue, .store-statistics-products) thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .page:is(.order-list-page, .store-statistics-page) :is(.order-table, .store-statistics-revenue, .store-statistics-products) tbody { display: grid; gap: 8px; }
+  .page:is(.order-list-page, .store-statistics-page) :is(.order-table, .store-statistics-revenue, .store-statistics-products) tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px 8px;
+    min-width: 0;
+    padding: 9px;
+    border: 1px solid #d0dfd6;
+    border-radius: 8px;
+    background: #fff;
+  }
+  .page:is(.order-list-page, .store-statistics-page) :is(.order-table, .store-statistics-revenue, .store-statistics-products) td {
+    display: block;
+    width: auto;
+    min-width: 0;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    font-size: 13px;
+    line-height: 1.4;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .page:is(.order-list-page, .store-statistics-page) :is(.order-table, .store-statistics-revenue, .store-statistics-products) td::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 2px;
+    color: #617080;
+    font-size: 11px;
+    line-height: 1.35;
+    font-weight: 400;
+    text-align: left;
+  }
+  .page.order-list-page .order-table td[data-wide] { grid-column: 1 / -1; }
+  .page:is(.order-list-page, .store-statistics-page) td strong { font-weight: 500; }
+  .page:is(.order-list-page, .store-statistics-page) :is(.table-note, .order-custom-fields-summary) { font-size: 11px; line-height: 1.35; text-align: left; }
+  .page.order-list-page :is(.order-items-summary, .order-custom-fields-summary, .order-revenue-details) { min-width: 0; max-width: 100%; margin: 0; gap: 3px; text-align: left; }
+  .page.order-list-page .order-revenue-details > div { flex-wrap: wrap; }
+  .page.order-list-page .order-table .badge { max-width: 100%; padding: 4px 6px; font-size: 11px; white-space: normal; }
+  .page.order-list-page .order-row-actions { min-width: 0; gap: 6px; justify-content: flex-start; }
+  .page.order-list-page .order-row-actions .button { width: auto; min-width: 64px; min-height: 44px; padding: 7px 9px; }
+  .page.order-list-page .table-footer { gap: 6px; margin-top: 0; font-size: 11px; text-align: left; }
+  .page.order-list-page .pagination { width: 100%; display: flex; flex-wrap: wrap; gap: 6px; overflow: visible; }
+  .page.order-list-page .pagination button { width: 38px; height: 40px; min-height: 40px; font-size: 12px; }
+}
