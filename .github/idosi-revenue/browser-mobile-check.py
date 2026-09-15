@@ -14,7 +14,7 @@ WIDTHS = (320, 360, 390, 430)
 results = []
 failures = []
 
-# Only checked-in presentation sources, for diagnosing CSS cascade regressions.
+# Checked-in presentation sources only, to diagnose CSS cascade regressions.
 with ZipFile(OUT / 'mobile-style-sources.zip', 'w', ZIP_DEFLATED) as archive:
     paths = list(Path('src').rglob('*.css')) + [Path(name) for name in (
         'src/components/UI.jsx', 'src/components/OrderItemSelector.jsx',
@@ -25,17 +25,21 @@ with ZipFile(OUT / 'mobile-style-sources.zip', 'w', ZIP_DEFLATED) as archive:
         if path.is_file():
             archive.write(path, str(path))
 
+
 def verify(condition, message, details=None):
     results.append({'pass': bool(condition), 'check': message, 'details': details})
     if not condition:
         failures.append(message)
 
+
 def bounds(page, label):
     verify(page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), label + ': no page overflow')
 
+
 def cards(page, selector, label):
+    expect(page.locator(selector)).to_have_count(4)
     data = page.locator(selector).evaluate_all('''elements => elements.map(el => {
-        const b = el.getBoundingClientRect(), s = getComputedStyle(el);
+        const b = el.getBoundingClientRect();
         const label = el.querySelector('.metric__label');
         const value = el.querySelector('.metric__body > strong');
         return {height:b.height, width:b.width, align:label && getComputedStyle(label).textAlign,
@@ -46,6 +50,7 @@ def cards(page, selector, label):
     verify(len(data) == 4, label + ': all four revenue cards remain', data)
     verify(all(x['height'] <= 112 and x['labelSize'] <= 13 and x['valueSize'] <= 19 for x in data), label + ': compact cards', data)
     verify(all(x['align'] in ('left', 'start') and x['fits'] for x in data), label + ': left-aligned cards without clipping', data)
+
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(headless=True)
@@ -74,21 +79,29 @@ with sync_playwright() as playwright:
                 return {labelSize:parseFloat(getComputedStyle(label).fontSize),align:getComputedStyle(label).textAlign,
                     height:control && control.getBoundingClientRect().height, fits:el.scrollWidth <= el.clientWidth + 1};
             })''')
-            verify(all(x['labelSize'] <= 14 and x['align'] in ('left','start') and x['fits'] for x in fields), f'{width}: compact form labels', fields)
+            verify(bool(fields) and all(x['labelSize'] <= 14 and x['align'] in ('left','start') and x['fits'] for x in fields), f'{width}: compact form labels', fields)
             verify(all(x['height'] is None or x['height'] <= 44 for x in fields), f'{width}: compact form controls', fields)
             selector = dialog.locator('.order-item-selector')
             selector.scroll_into_view_if_needed()
             names = selector.locator('.order-item-selector__choice').evaluate_all('''els => els.map(el => {
                 const n=el.querySelector('.order-item-selector__name, strong');
-                const code=el.querySelector('.order-item-selector__code') || el.querySelector('small');
+                const code=el.querySelector('.order-item-selector__code');
                 return {weight:parseFloat(getComputedStyle(n).fontWeight),size:parseFloat(getComputedStyle(n).fontSize),
                     codeVisible:!!code && getComputedStyle(code).display !== 'none' && code.getBoundingClientRect().height > 0,
                     rowHeight:el.closest('.order-item-selector__row').getBoundingClientRect().height};
             })''')
-            verify(all(x['weight'] == 400 and x['size'] <= 14 and not x['codeVisible'] and x['rowHeight'] <= 68 for x in names), f'{width}: compact regular product names without codes', names)
+            verify(bool(names) and all(x['weight'] == 400 and x['size'] <= 14 and not x['codeVisible'] and x['rowHeight'] <= 68 for x in names), f'{width}: compact regular product names without codes', names)
             page.screenshot(path=str(OUT / f'mobile-products-{width}.png'), full_page=True, animations='disabled')
             bounds(page, f'{width}: create')
-            verify(dialog.locator('footer').evaluate('(el) => el.getBoundingClientRect().bottom <= innerHeight + 1'), f'{width}: save footer inside viewport')
+            verify(dialog.evaluate('''el => {
+                const header=el.querySelector('header').getBoundingClientRect();
+                const footer=el.querySelector('footer').getBoundingClientRect();
+                const body=el.querySelector('.modal__body').getBoundingClientRect();
+                return footer.bottom <= innerHeight + 1 && body.bottom <= footer.top + 1 && body.top >= header.bottom - 1;
+            }'''), f'{width}: header/body/save footer do not overlap')
+        dialog.get_by_role('combobox', name='Nghề nghiệp', exact=True).click()
+        dialog.get_by_role('listbox').get_by_role('option', name='Nhân viên VP', exact=True).click()
+        expect(dialog.get_by_role('combobox', name='Nghề nghiệp', exact=True)).to_contain_text('Nhân viên VP')
         dialog.get_by_role('tab', name=re.compile('Sale theo ký')).click()
         dialog.get_by_role('checkbox', name=re.compile('Đồ nam')).check()
         dialog.get_by_label('Khối lượng Đồ nam', exact=True).fill('2.5')
@@ -107,20 +120,24 @@ with sync_playwright() as playwright:
         page.context.close()
         page = login('test.store')
         page.get_by_role('link', name='Đơn hàng', exact=True).click()
+        # Wait for the lazy route/data boundary, not the temporary loading skeleton.
+        expect(page.locator('.store-orders-page > .order-revenue-summary')).to_contain_text('880,000 đ', timeout=30000)
+        expect(page.locator('.order-table tbody tr').first).to_be_visible()
         for width in WIDTHS:
             page.set_viewport_size({'width': width, 'height': 844})
-            cards(page, '.order-list-page > .order-revenue-summary > .metric', f'{width}: store')
+            cards(page, '.store-orders-page > .order-revenue-summary > .metric', f'{width}: store')
             bounds(page, f'{width}: store')
             cells = page.locator('.order-table tbody tr').first.locator('td[data-label]').evaluate_all('''els => els.map(el => ({
                 align:getComputedStyle(el).textAlign, font:parseFloat(getComputedStyle(el).fontSize),
                 fits:el.scrollWidth <= el.clientWidth + 1
             }))''')
-            verify(all(x['align'] in ('left','start') and x['font'] <= 14 and x['fits'] for x in cells), f'{width}: compact left-aligned order details', cells)
+            verify(bool(cells) and all(x['align'] in ('left','start') and x['font'] <= 14 and x['fits'] for x in cells), f'{width}: compact left-aligned order details', cells)
             page.screenshot(path=str(OUT / f'mobile-store-orders-{width}.png'), full_page=True, animations='disabled')
         page.set_viewport_size({'width': 1440, 'height': 1080})
         page.get_by_role('link', name='Số liệu thống kê', exact=True).click()
         for mode in ('month', 'day', 'shift'):
             page.get_by_label('Xem thống kê theo', exact=True).select_option(mode)
+            expect(page.locator('.store-statistics-page .order-revenue-summary')).to_be_visible()
             for width in (320, 390):
                 page.set_viewport_size({'width': width, 'height': 844})
                 cards(page, '.store-statistics-page .order-revenue-summary > .metric', f'{width}: statistics {mode}')
