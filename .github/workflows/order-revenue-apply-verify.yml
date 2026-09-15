@@ -1,0 +1,89 @@
+name: Import and verify order revenue feature
+on:
+  push:
+    branches: [feat/order-revenue-types-20260915]
+    paths: [.github/workflows/order-revenue-apply-verify.yml]
+permissions:
+  contents: write
+concurrency:
+  group: import-order-revenue
+  cancel-in-progress: false
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/feat/order-revenue-types-20260915'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Validate transfer and import five source commits to a clean feature branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/idosi-revenue-tools /tmp/idosi-revenue-browser/evidence
+          cp .github/revenue-transfer/preview.mjs .github/revenue-transfer/browser.py /tmp/idosi-revenue-tools/
+          python3 - <<'PY'
+          import base64, hashlib, lzma
+          from pathlib import Path
+          expected=['bf34689d39fce60006a3948c64e3a36e8148b8b15c3e66fde8c06c21cfdedae6','64d8dfe822e587861dc29b75c36a8938e700454b2b1c1532626ce0d86a4d5ba7','2c3e1cbae3e177b50f487ae200fa16f088ebde8d87f73339eca12f471df28435','35a76e43bca1527b9f68808d0157437326f8f6395bfca3879cfb8b772b997c7d','1c784cef61c6ca684ab8774710b75d20bd8c055625d14fbb365f740c675e80f0','6a52c6307d3fe21097d9656e8325809b74b5fbe966a764c573d8bcb268d15d36']
+          parts=[]
+          for i, digest in enumerate(expected):
+              text=Path(f'.github/revenue-transfer/part{i}.b64').read_text().strip()
+              actual=hashlib.sha256(text.encode()).hexdigest()
+              assert actual==digest, f'Part {i} checksum mismatch: {actual}'
+              parts.append(text)
+          archive=base64.b64decode(''.join(parts),validate=True)
+          assert hashlib.sha256(archive).hexdigest()=='786ec6d697b47611b5266ef20c47cff78f4e868a090f5dab71bd030e870ef228'
+          Path('/tmp/idosi-revenue-tools/series.patch').write_bytes(lzma.decompress(archive))
+          PY
+          target=feat/order-revenue-implementation-20260915
+          if git ls-remote --exit-code --heads origin "refs/heads/$target"; then
+            echo 'Target already exists; refusing to overwrite it.' >&2
+            exit 1
+          fi
+          git config user.name 'IDOSI implementation'
+          git config user.email 'idosi-implementation@users.noreply.github.com'
+          git switch -c "$target" b651237e9cc95836214748f7777e73590256d5fe
+          git am /tmp/idosi-revenue-tools/series.patch
+          git diff --check b651237e9cc95836214748f7777e73590256d5fe HEAD
+          test "$(git rev-list --count b651237e9cc95836214748f7777e73590256d5fe..HEAD)" = 5
+          git log --format='%H %s' -5 | tee /tmp/idosi-revenue-browser/evidence/commits.txt
+          git push origin "HEAD:refs/heads/$target"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run sites:verify
+      - name: Prepare temporary browser verification tools
+        run: |
+          python3 -m venv /tmp/idosi-playwright
+          /tmp/idosi-playwright/bin/pip install playwright==1.55.0
+          /tmp/idosi-playwright/bin/python -m playwright install --with-deps chromium
+          npm install --prefix /tmp/idosi-agent-browser --no-audit --no-fund agent-browser
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser install --with-deps
+      - name: Start isolated SQLite backend and verify browser page
+        run: |
+          node /tmp/idosi-revenue-tools/preview.mjs > /tmp/idosi-revenue-browser/server.log 2>&1 &
+          for i in $(seq 1 30); do
+            test -f /tmp/idosi-revenue-browser/access.json && break
+            sleep 1
+          done
+          test -f /tmp/idosi-revenue-browser/access.json
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser open http://127.0.0.1:4187
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser wait --load networkidle
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser snapshot -i > /tmp/idosi-revenue-browser/evidence/login-snapshot.txt
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser screenshot /tmp/idosi-revenue-browser/evidence/login.png
+          /tmp/idosi-agent-browser/node_modules/.bin/agent-browser close
+      - name: Verify create order, permissions, store statistics and warehouse reconciliation
+        run: /tmp/idosi-playwright/bin/python /tmp/idosi-revenue-tools/browser.py
+      - name: Upload non-sensitive test evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: order-revenue-browser-evidence
+          path: /tmp/idosi-revenue-browser/evidence/
+          retention-days: 7
