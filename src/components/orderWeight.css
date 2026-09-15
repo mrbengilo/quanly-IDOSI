@@ -15,7 +15,7 @@
 .order-weight-conversion > summary span { font-size: 11px; font-weight: 400; margin-left: 5px; }
 .order-weight-conversion > :is(p, small) { display: block; color: #59675f; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .order-weight-conversion__table { min-width: 0; max-width: 100%; margin: 8px 0; }
-.order-weight-conversion__row { display: grid; grid-template-columns: minmax(0, 1fr) 64px; gap: 10px; padding: 6px 3px; border-bottom: 1px solid #e9eeeb; font-size: 13px; line-height: 1.45; }
+.order-weight-conversion__row { display: grid; grid-template-columns: minmax(0, 1fr) 100px; gap: 10px; padding: 6px 3px; border-bottom: 1px solid #e9eeeb; font-size: 13px; line-height: 1.45; }
 .order-weight-conversion__row > span { min-width: 0; font-weight: 400; overflow-wrap: anywhere; text-align: left; }
 .order-weight-conversion__row.is-heading > span { font-weight: 600; }
 @media (max-width: 760px) {
@@ -23,5 +23,5 @@
   .order-weight-summary__total { grid-column: 1 / -1; }
   .order-weight-summary strong { font-size: 14px; }
   .order-weight-conversion { padding: 8px; }
-  .order-weight-conversion__row { gap: 6px; grid-template-columns: minmax(0, 1fr) 55px; }
+  .order-weight-conversion__row { gap: 6px; grid-template-columns: minmax(0, 1fr) 92px; }
 }
