@@ -38,5 +38,6 @@ export function statisticsShiftOptions(definitions = [], groups = []) {
 export const statisticsShiftLabel = (shift) => {
   const start = text(shift.start || shift.startTime)
   const end = text(shift.end || shift.endTime)
-  return `${shift.name || shift.id}${start || end ? ` (${start || '—'}–${end || '—'})` : ''}${shift.recorded ? ` · ${shift.orders} đơn` : ''}`
+  // The order count is already shown in the summary; keep native select labels compact.
+  return `${shift.name || shift.id}${start || end ? ` (${start || '—'}–${end || '—'})` : ''}`
 }

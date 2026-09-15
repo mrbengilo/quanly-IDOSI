@@ -78,8 +78,23 @@ with sync_playwright() as p:
             evening.scroll_into_view_if_needed()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
             expect(evening).to_contain_text('180,000 đ')
+            if width <= 390:
+                label_fit = choice.evaluate('''select => {
+                    const style = getComputedStyle(select);
+                    const canvas = document.createElement('canvas');
+                    const context = canvas.getContext('2d');
+                    context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+                    const label = select.selectedOptions[0].textContent;
+                    return {
+                        label,
+                        required: context.measureText(label).width,
+                        available: select.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
+                    };
+                }''')
+                assert label_fit['label'] == 'Ca tối (17:00–22:00)', label_fit
+                assert label_fit['required'] <= label_fit['available'], (width, label_fit)
             page.screenshot(path=str(out / f'shift-history-{width}.png'), full_page=True, animations='disabled')
-        results.append('PASS: historical shift summary on mobile 320/390 and desktop 1280 without horizontal overflow')
+        results.append('PASS: historical shift summary on mobile 320/390 and desktop 1280; selected shift name/time fits without clipping')
         assert not errors, errors
     except Exception:
         page.screenshot(path=str(out / 'shift-history-failure.png'), full_page=True, animations='disabled')
