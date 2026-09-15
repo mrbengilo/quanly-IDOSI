@@ -1,0 +1,45 @@
+name: Order revenue development verification
+
+on:
+  push:
+    branches: [feat/order-revenue-types-20260915]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: order-revenue-development-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Package tracked source for isolated verification
+        run: git archive --format=tar HEAD | gzip > /tmp/idosi-revenue-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: idosi-revenue-source
+          path: /tmp/idosi-revenue-source.tar.gz
+          retention-days: 1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Package dependencies for offline verification
+        run: tar -czf /tmp/idosi-revenue-dependencies.tar.gz node_modules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: idosi-revenue-dependencies
+          path: /tmp/idosi-revenue-dependencies.tar.gz
+          retention-days: 1
+      - name: Verify revenue feature when available
+        run: |
+          if [ -f src/domain/orderRevenue.test.js ]; then
+            npx vitest run src/domain/orderRevenue.test.js --maxWorkers=1
+          fi
