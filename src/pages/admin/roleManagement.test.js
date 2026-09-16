@@ -537,6 +537,29 @@ describe('Business Support read-only system views', () => {
     expect(screen.queryByRole('button', { name: /Xóa Nhân viên cửa hàng/i })).toBeNull()
   })
 
+  it('shows the canonical employee type for every store employee', () => {
+    mocked.app = {
+      ...baseApp('business_support'),
+      employees: [
+        { id: 'STORE-FT', unit: 'store', storeId: 'CH001', name: 'Nhân viên chính thức', status: 'Đang làm việc', employmentType: 'Full-Time' },
+        { id: 'STORE-PT', unit: 'store', storeId: 'CH001', name: 'Nhân viên bán thời gian', status: 'Đang làm việc', employmentType: 'Part-Time' },
+        { id: 'STORE-TRIAL', unit: 'store', storeId: 'CH001', name: 'Nhân viên thử việc', status: 'Đang làm việc', employmentType: 'Thử Việc' },
+        { id: 'STORE-TRIAL-LEGACY', unit: 'store', storeId: 'CH001', name: 'Nhân viên thử việc cũ', status: 'Đang làm việc', employeeType: 'THU VIEC' },
+      ],
+    }
+
+    render(createElement(SystemEmployees))
+
+    expect(screen.getByText('Nhân viên chính thức').closest('tr').textContent).toContain('Full-Time')
+    expect(screen.getByText('Nhân viên bán thời gian').closest('tr').textContent).toContain('Part-Time')
+    for (const name of ['Nhân viên thử việc', 'Nhân viên thử việc cũ']) {
+      const row = screen.getByText(name).closest('tr')
+      expect(row.textContent).toContain('Thử Việc')
+      expect(row.textContent).toContain('Theo giờ')
+      expect(row.textContent).not.toContain('Full-Time')
+    }
+  })
+
   it('can create and edit Office employees without delete or payroll mutation controls', () => {
     mocked.app = {
       ...baseApp('business_support'),

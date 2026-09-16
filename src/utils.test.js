@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   calculateEmployeeBasePay,
+  getEmployeeType,
   getMonthlySalary,
   getPayBasis,
+  getStoreEmployeeType,
   operationalIdentifierEntry,
   operationalIdentifierRecordMatch,
   operationalIdentifierReferenceKey,
@@ -11,6 +13,24 @@ import {
   salaryBasisLabel,
   usesMonthlyHoursFormula,
 } from './utils'
+
+describe('employee type helpers', () => {
+  it.each([
+    ['Full Time', 'Full-Time'],
+    ['part_time', 'Part-Time'],
+    ['Thử Việc', 'Thử Việc'],
+    ['THU VIEC', 'Thử Việc'],
+    ['probation', 'Thử Việc'],
+    ['trial', 'Thử Việc'],
+  ])('canonicalizes %s as %s', (value, expected) => {
+    expect(getStoreEmployeeType({ employmentType: value })).toBe(expected)
+  })
+
+  it('keeps non-store employee taxonomies intact', () => {
+    expect(getEmployeeType({ employmentType: 'Thực Tập Sinh' })).toBe('Thực Tập Sinh')
+    expect(getEmployeeType({ employmentType: 'Thử việc' })).toBe('Thử việc')
+  })
+})
 
 describe('operational identifier references', () => {
   it('resolves records with exact spelling first and a unique folded fallback', () => {

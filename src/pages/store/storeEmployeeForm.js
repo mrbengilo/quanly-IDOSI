@@ -1,4 +1,9 @@
 import { employeeProfileKey, employeeProfilesShareAccount } from '../../domain/employeeAccountIdentity'
+import {
+  STORE_EMPLOYMENT_TYPE,
+  isHourlyStoreEmploymentType,
+  normalizeStoreEmploymentType as normalizeCanonicalStoreEmploymentType,
+} from '../../domain/storeTieredPayroll'
 
 const PHONE_PATTERN = /^0\d{9}$/
 const CCCD_PATTERN = /^\d{12}$/
@@ -13,20 +18,16 @@ export const formatStoreMoneyInput = (value) => {
   return amount ? new Intl.NumberFormat('en-US').format(amount) : ''
 }
 
-const normalizedEmploymentType = (value) => String(value || '')
-  .trim()
-  .normalize('NFD')
-  .replace(/[\u0300-\u036f]/g, '')
-  .toLowerCase()
-
-export const isPartTimeEmployee = (value) => normalizedEmploymentType(value) === 'part-time'
-export const isTrialEmployee = (value) => normalizedEmploymentType(value) === 'thu viec'
-export const isHourlyStoreEmployee = (value) => isPartTimeEmployee(value) || isTrialEmployee(value)
-export const normalizeStoreEmploymentType = (value) => {
-  if (isPartTimeEmployee(value)) return 'Part-Time'
-  if (isTrialEmployee(value)) return 'Thử Việc'
-  return 'Full-Time'
-}
+export const isPartTimeEmployee = (value) => (
+  normalizeCanonicalStoreEmploymentType(value) === STORE_EMPLOYMENT_TYPE.PART_TIME
+)
+export const isTrialEmployee = (value) => (
+  normalizeCanonicalStoreEmploymentType(value) === STORE_EMPLOYMENT_TYPE.PROBATION
+)
+export const isHourlyStoreEmployee = isHourlyStoreEmploymentType
+export const normalizeStoreEmploymentType = (value) => (
+  normalizeCanonicalStoreEmploymentType(value) || STORE_EMPLOYMENT_TYPE.FULL_TIME
+)
 
 const normalizeStoreKey = (value = '') => String(value)
   .normalize('NFD')
