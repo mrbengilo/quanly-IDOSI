@@ -13794,7 +13794,10 @@ const calculatePayrollSnapshot = async (db, state, requestedStoreId, period) => 
         })
       : null
     const payBasis = String(employee.payBasis || employee.salaryBasis || (
-      normalizeTextKey(employee.employmentType).includes('part') ? 'hourly' : 'monthly'
+      storeEmploymentType === STORE_EMPLOYMENT_TYPE.PART_TIME
+      || (employeeUnit(employee) === 'store' && storeEmploymentType === STORE_EMPLOYMENT_TYPE.PROBATION)
+        ? 'hourly'
+        : 'monthly'
     )).toLowerCase()
     const hourlyRate = Number(employee.hourlyRate ?? (payBasis === 'hourly' ? employee.salary : 0) ?? 0)
     const monthlySalary = Number(employee.monthlySalary ?? (payBasis === 'monthly' ? employee.salary : 0) ?? 0)

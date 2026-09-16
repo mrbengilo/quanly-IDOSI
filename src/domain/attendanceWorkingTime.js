@@ -1,4 +1,5 @@
 import { resolveEffectiveWorkingTime } from './workTimeSchedule'
+import { isHourlyStoreEmploymentType } from './storeTieredPayroll'
 
 const shiftTime = (value) => {
   const match = String(value || '').trim().match(/^(\d{1,2}):(\d{2})$/u)
@@ -19,13 +20,16 @@ const profileShiftId = (value, index) => {
   return safe || `work_${index + 1}`
 }
 
-const partTimeEmployment = (value) => {
+const partTimeEmployment = (value, unit) => {
   const normalized = String(value || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/gu, '')
     .trim()
     .toLocaleLowerCase('vi-VN')
-  return normalized.includes('part') || normalized.includes('thuc tap')
+  const normalizedUnit = String(unit || '').trim().toLocaleLowerCase('en-US')
+  return normalized.includes('part')
+    || normalized.includes('thuc tap')
+    || (normalizedUnit === 'store' && isHourlyStoreEmploymentType(value))
 }
 
 const attendanceProfileShifts = (effective = {}) => {
@@ -52,7 +56,10 @@ const attendanceProfileShifts = (effective = {}) => {
     if (normalized.every(Boolean)) return normalized
   }
 
-  const partTime = partTimeEmployment(effective.employmentType || effective.workTimeType)
+  const partTime = partTimeEmployment(
+    effective.employmentType || effective.workTimeType,
+    effective.unit || effective.unitType,
+  )
   const start = shiftTime(effective.workStart || '08:00')
   const end = shiftTime(effective.workEnd || (partTime ? '12:00' : '17:30'))
   if (!start || !end || end.minuteOfDay <= start.minuteOfDay) return []

@@ -6685,6 +6685,43 @@ describe('IDOSI Worker security primitives', () => {
     })
   })
 
+  it('keeps legacy probation employees on hourly payroll when payBasis is missing', async () => {
+    const env = { DB: new MemoryD1(), BOOTSTRAP_TOKEN: 'bootstrap-trial-legacy-payroll' }
+    const bootstrap = await worker.fetch(jsonRequest('https://idosi.example/api/bootstrap', {
+      username: 'admin', password: 'trial-legacy-payroll-password',
+      initialState: {
+        stores: [{ id: 'DOSII-01', short: 'Dosii NTL', name: 'Dosii NTL', status: 'Đang hoạt động' }],
+        employees: [{
+          id: 'DOSII-TRIAL-01', name: 'Nhân viên thử việc legacy', storeId: 'DOSII-01', unit: 'store',
+          employmentType: 'Thử Việc', salary: 22_000, hourlyRate: 22_000, status: 'Đang làm việc',
+        }],
+        attendance: [{
+          id: 'ATT-TRIAL-LEGACY', employeeId: 'DOSII-TRIAL-01', storeId: 'DOSII-01', workDate: '2026-08-20',
+          checkInAt: '2026-08-20T01:00:00.000Z', checkOutAt: '2026-08-20T09:00:00.000Z', hours: 8,
+        }],
+        payrollPeriods: [], payrollPayments: [], salaryAdjustments: [], salaryAdvances: [],
+        expenseEntries: [], cashTransactions: [], orders: [], storeEmployeeSalaryConfigs: [],
+      },
+    }, { 'x-idosi-bootstrap-token': env.BOOTSTRAP_TOKEN }), env)
+    expect(bootstrap.status).toBe(201)
+    const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'admin', password: 'trial-legacy-payroll-password',
+    }), env)
+    const authorization = { authorization: `Bearer ${(await login.json()).token}` }
+
+    const closed = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'payroll.close', expectedVersion: 1, payload: { storeId: 'DOSII-01', period: '2026-08' },
+    }, { ...authorization, 'idempotency-key': 'trial-legacy-payroll-close-0001' }), env)
+
+    expect(closed.status).toBe(201)
+    expect(await closed.json()).toMatchObject({
+      period: { rows: [expect.objectContaining({
+        employeeId: 'DOSII-TRIAL-01', hours: 8, baseSalary: 176_000,
+        salarySnapshot: expect.objectContaining({ hourlyRate: 22_000 }),
+      })] },
+    })
+  })
+
   it('closes payroll for a departed store employee who worked during the requested period', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-31T17:00:00.000Z'))

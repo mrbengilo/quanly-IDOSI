@@ -119,6 +119,11 @@ export const getEmployeeType = (employee = {}) => {
   return value
 }
 
+export const getStoreEmployeeType = (employee = {}) => {
+  const value = getEmployeeType(employee)
+  return normalizeStoreEmploymentType(value) || value
+}
+
 export const getPayBasis = (employee = {}) => {
   const value = String(employee.payBasis || employee.salaryBasis || employee.salaryType || employee.salaryUnit || '').toLowerCase()
   if (['tiered-hourly', 'tiered_hourly', 'store_full_time_tiered'].includes(value)

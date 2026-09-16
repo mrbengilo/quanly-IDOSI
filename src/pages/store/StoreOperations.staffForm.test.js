@@ -158,6 +158,9 @@ describe('Business Support store employee form', () => {
 
     expect(normalizeStoreEmploymentType('thử việc')).toBe('Thử Việc')
     expect(normalizeStoreEmploymentType('THU VIEC')).toBe('Thử Việc')
+    expect(normalizeStoreEmploymentType('probation')).toBe('Thử Việc')
+    expect(normalizeStoreEmploymentType('trial')).toBe('Thử Việc')
+    expect(normalizeStoreEmploymentType('part time')).toBe('Part-Time')
     expect(validateStoreEmployee(trialForm, [], '', true, { requireIdentityImages: true })).toEqual([])
     expect(buildStoreEmployeePayload(trialForm, { storeId: store.id, store })).toMatchObject({
       employmentType: 'Thử Việc',
