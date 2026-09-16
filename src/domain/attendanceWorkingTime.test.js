@@ -104,6 +104,26 @@ describe('canonical attendance working time', () => {
       workEnd: '12:00',
       workShifts: [{ id: 'work_1', name: 'Ca 1', start: '08:00', end: '12:00' }],
     })
+
+    expect(resolveAttendanceWorkingTime({
+      id: 'STORE-TRIAL-001',
+      unit: 'store',
+      employmentType: 'Thử Việc',
+    }, '2026-08-24')).toMatchObject({
+      workStart: '08:00',
+      workEnd: '12:00',
+      workShifts: [{ id: 'work_1', name: 'Ca 1', start: '08:00', end: '12:00' }],
+    })
+
+    expect(resolveAttendanceWorkingTime({
+      id: 'OFFICE-TRIAL-LEGACY',
+      unit: 'office',
+      employmentType: 'Thử Việc',
+    }, '2026-08-24')).toMatchObject({
+      workStart: '08:00',
+      workEnd: '17:30',
+      workShifts: [{ id: 'full_time', name: 'Giờ hành chính', start: '08:00', end: '17:30' }],
+    })
   })
 
   it('keeps a valid selection, auto-selects one shift, and clears a stale multi-shift selection', () => {
