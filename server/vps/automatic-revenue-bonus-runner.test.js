@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createAutomaticRevenueBonusRunner } from './automatic-revenue-bonus-runner.mjs'
+import { createAutomaticRevenueBonusRunner, resolveAutomaticRevenueBonusEnabled } from './automatic-revenue-bonus-runner.mjs'
 
 const flush = async () => {
   await Promise.resolve()
@@ -7,6 +7,35 @@ const flush = async () => {
 }
 
 describe('automatic revenue bonus runner', () => {
+  it('parses the explicit pause/resume setting without changing legacy defaults', () => {
+    expect(resolveAutomaticRevenueBonusEnabled(undefined)).toBe(true)
+    expect(resolveAutomaticRevenueBonusEnabled('', false)).toBe(false)
+    expect(resolveAutomaticRevenueBonusEnabled(' false ')).toBe(false)
+    expect(resolveAutomaticRevenueBonusEnabled('TRUE', false)).toBe(true)
+    expect(() => resolveAutomaticRevenueBonusEnabled('flase')).toThrow('must be true or false')
+  })
+
+  it('logs a pause and skips both startup catch-up and subsequent daily cutoffs', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-19T15:05:00.000Z'))
+      const finalize = vi.fn()
+      const logger = vi.fn()
+      const runner = createAutomaticRevenueBonusRunner({ env: {}, finalize, enabled: false, logger })
+      runner.start()
+      await vi.advanceTimersByTimeAsync(48 * 60 * 60 * 1_000)
+      await runner.trigger('manual')
+      expect(finalize).not.toHaveBeenCalled()
+      expect(runner.running).toBe(false)
+      expect(logger).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        event: 'idosi.revenue_bonus.finalizer', status: 'paused', reason: 'runtime-configuration',
+      }))
+      await runner.stop()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('waits until 22:00 Vietnam time and runs only once per daily cutoff', async () => {
     vi.useFakeTimers()
     try {

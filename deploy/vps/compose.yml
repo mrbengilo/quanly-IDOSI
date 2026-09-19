@@ -21,6 +21,8 @@ services:
       HOST: 0.0.0.0
       PORT: 3000
       IDOSI_RELEASE_SHA: "${IDOSI_RELEASE_SHA:-unknown}"
+      # Recovery default: resume only after the finalizer has been investigated.
+      IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED: "${IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED:-false}"
     volumes:
       - idosi_data:/app/data
     healthcheck:

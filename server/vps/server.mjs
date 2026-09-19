@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
 import worker, { finalizeAutomaticRevenueBonuses } from '../worker.js'
-import { createAutomaticRevenueBonusRunner } from './automatic-revenue-bonus-runner.mjs'
+import { createAutomaticRevenueBonusRunner, resolveAutomaticRevenueBonusEnabled } from './automatic-revenue-bonus-runner.mjs'
 import { ImageFileR2 } from './image-file-r2.mjs'
 import { createReleaseInfoResponse } from './release-info.mjs'
 import { createSqliteD1, runWithSqliteMetrics } from './sqlite-d1.mjs'
@@ -83,11 +83,13 @@ export const createVpsRuntime = ({
 }
 
 export const createIdosiServer = (options = {}) => {
+  const automaticRevenueBonusEnabled = options.automaticRevenueBonusEnabled
+    ?? resolveAutomaticRevenueBonusEnabled(process.env.IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED, process.env.NODE_ENV !== 'test')
   const runtime = createVpsRuntime(options)
   const automaticRevenueBonusRunner = createAutomaticRevenueBonusRunner({
     env: runtime.env,
     finalize: options.finalizeAutomaticRevenueBonuses || finalizeAutomaticRevenueBonuses,
-    enabled: options.automaticRevenueBonusEnabled ?? (process.env.NODE_ENV !== 'test'),
+    enabled: automaticRevenueBonusEnabled,
     logger: options.automaticRevenueBonusLogger,
   })
   const releaseSha = options.releaseSha ?? process.env.IDOSI_RELEASE_SHA ?? ''

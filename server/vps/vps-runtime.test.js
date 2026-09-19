@@ -48,6 +48,31 @@ afterEach(async () => {
 })
 
 describe('IDOSI VPS automatic revenue finalizer wiring', () => {
+  it('serves health while production automatic finalization is explicitly paused', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED', 'false')
+    const finalize = vi.fn().mockRejectedValue(new Error('must not run'))
+    const logger = vi.fn()
+    let runtime
+    try {
+      runtime = createIdosiServer({
+        databasePath: resolve(await temporaryDirectory(), 'paused.sqlite'),
+        finalizeAutomaticRevenueBonuses: finalize,
+        automaticRevenueBonusLogger: logger,
+        requestLogger: null,
+      })
+      await new Promise(resolveListen => runtime.server.listen(0, '127.0.0.1', resolveListen))
+      const response = await fetch(`http://127.0.0.1:${runtime.server.address().port}/api/health`)
+      expect(response.status).toBe(200)
+      await runtime.automaticRevenueBonusRunner.trigger('startup-after-cutoff')
+      expect(finalize).not.toHaveBeenCalled()
+      expect(logger).toHaveBeenCalledWith(expect.objectContaining({ status: 'paused' }))
+    } finally {
+      if (runtime) await new Promise(resolveClose => runtime.server.close(resolveClose))
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('keeps the background finalizer disabled by default in tests', () => {
     const runtime = createIdosiServer({ automaticRevenueBonusLogger: null })
     expect(runtime.automaticRevenueBonusRunner).toBeTruthy()
@@ -77,6 +102,17 @@ describe('IDOSI VPS runtime', () => {
     expect(compose).toContain('max-size: "10m"')
     expect(compose).toContain('max-file: "5"')
     expect(compose.match(/logging: \*default-logging/gu)).toHaveLength(2)
+  })
+
+  it('deploys with the recovery pause and bounds the unhealthy-app release probe', async () => {
+    const compose = await readFile(resolve('deploy', 'vps', 'compose.yml'), 'utf8')
+    const deploy = await readFile(resolve('deploy', 'vps', 'deploy-release.sh'), 'utf8')
+    expect(compose).toContain('IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED: "${IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED:-false}"')
+    expect(deploy).toContain('timeout --signal=TERM --kill-after=2s 10s docker exec "$APP_CONTAINER_ID"')
+    expect(deploy).toContain('signal:AbortSignal.timeout(5000)')
+    expect(deploy).toContain('PREVIOUS_RELEASE_SHA="$(docker image inspect --format')
+    expect(deploy).not.toContain('PREVIOUS_RELEASE_SHA="$PREVIOUS_GIT_SHA"')
+    expect(deploy).toContain('[[ "$PREVIOUS_RELEASE_SHA" == "$PREVIOUS_GIT_SHA" ]]')
   })
 
   it('pins Caddy static files and the runtime image to the exact release SHA', async () => {
