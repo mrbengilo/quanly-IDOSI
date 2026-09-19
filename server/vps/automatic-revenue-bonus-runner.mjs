@@ -3,6 +3,14 @@ import { AUTOMATIC_REVENUE_BONUS_CUTOFF_HOUR } from '../../src/domain/automaticR
 const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1_000
 const DAY_MS = 24 * 60 * 60 * 1_000
 
+export const resolveAutomaticRevenueBonusEnabled = (value, defaultEnabled = true) => {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (!normalized) return defaultEnabled
+  if (normalized === 'true') return true
+  if (normalized === 'false') return false
+  throw new TypeError('IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED must be true or false.')
+}
+
 const defaultLogger = process.env.NODE_ENV === 'test'
   ? null
   : (entry) => console.info(JSON.stringify(entry))
@@ -78,7 +86,16 @@ export const createAutomaticRevenueBonusRunner = ({
   }
 
   const start = () => {
-    if (!enabled || stopped || timer || inFlight) return
+    if (stopped || timer || inFlight) return
+    if (!enabled) {
+      writeLog({
+        event: 'idosi.revenue_bonus.finalizer',
+        status: 'paused',
+        reason: 'runtime-configuration',
+        timestamp: new Date().toISOString(),
+      })
+      return
+    }
     const nowMs = Date.now()
     if (nowMs >= vietnamCutoffFor(nowMs)) {
       void trigger('startup-after-cutoff').finally(scheduleNextCutoff)

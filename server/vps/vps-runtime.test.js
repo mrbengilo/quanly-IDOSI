@@ -48,6 +48,31 @@ afterEach(async () => {
 })
 
 describe('IDOSI VPS automatic revenue finalizer wiring', () => {
+  it('serves health while production automatic finalization is explicitly paused', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubEnv('IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED', 'false')
+    const finalize = vi.fn().mockRejectedValue(new Error('must not run'))
+    const logger = vi.fn()
+    let runtime
+    try {
+      runtime = createIdosiServer({
+        databasePath: resolve(await temporaryDirectory(), 'paused.sqlite'),
+        finalizeAutomaticRevenueBonuses: finalize,
+        automaticRevenueBonusLogger: logger,
+        requestLogger: null,
+      })
+      await new Promise(resolveListen => runtime.server.listen(0, '127.0.0.1', resolveListen))
+      const response = await fetch(`http://127.0.0.1:${runtime.server.address().port}/api/health`)
+      expect(response.status).toBe(200)
+      await runtime.automaticRevenueBonusRunner.trigger('startup-after-cutoff')
+      expect(finalize).not.toHaveBeenCalled()
+      expect(logger).toHaveBeenCalledWith(expect.objectContaining({ status: 'paused' }))
+    } finally {
+      if (runtime) await new Promise(resolveClose => runtime.server.close(resolveClose))
+      vi.unstubAllEnvs()
+    }
+  })
+
   it('keeps the background finalizer disabled by default in tests', () => {
     const runtime = createIdosiServer({ automaticRevenueBonusLogger: null })
     expect(runtime.automaticRevenueBonusRunner).toBeTruthy()
