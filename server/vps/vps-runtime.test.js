@@ -104,6 +104,17 @@ describe('IDOSI VPS runtime', () => {
     expect(compose.match(/logging: \*default-logging/gu)).toHaveLength(2)
   })
 
+  it('deploys with the recovery pause and bounds the unhealthy-app release probe', async () => {
+    const compose = await readFile(resolve('deploy', 'vps', 'compose.yml'), 'utf8')
+    const deploy = await readFile(resolve('deploy', 'vps', 'deploy-release.sh'), 'utf8')
+    expect(compose).toContain('IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED: "${IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED:-false}"')
+    expect(deploy).toContain('timeout --signal=TERM --kill-after=2s 10s docker exec "$APP_CONTAINER_ID"')
+    expect(deploy).toContain('signal:AbortSignal.timeout(5000)')
+    expect(deploy).toContain('PREVIOUS_RELEASE_SHA="$(docker image inspect --format')
+    expect(deploy).not.toContain('PREVIOUS_RELEASE_SHA="$PREVIOUS_GIT_SHA"')
+    expect(deploy).toContain('[[ "$PREVIOUS_RELEASE_SHA" == "$PREVIOUS_GIT_SHA" ]]')
+  })
+
   it('pins Caddy static files and the runtime image to the exact release SHA', async () => {
     const [compose, caddyfile, dockerfile] = await Promise.all([
       readFile(resolve('deploy', 'vps', 'compose.yml'), 'utf8'),

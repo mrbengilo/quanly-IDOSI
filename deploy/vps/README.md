@@ -23,6 +23,28 @@ không đủ để kết luận production đã nhận release.
 
 ## 1. Cài đặt VPS lần đầu
 
+### Recovery pause: chốt thưởng tự động
+
+Release khôi phục sự cố ngày 2026-09-19 mặc định đặt
+`IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED=false` trong Compose, kể cả khi `.env`
+cũ chưa có biến này. Runtime ghi `idosi.revenue_bonus.finalizer` với
+`status=paused`; không chạy chốt lúc 22:00 hoặc chạy bù khi khởi động sau 22:00.
+Không thay đổi dữ liệu, công thức, trạng thái đã chốt hoặc khóa kỳ lương.
+Đây là biện pháp giảm sự cố, chưa phải xác nhận/sửa nguyên nhân CPU cao.
+
+Sau triển khai phải kiểm tra API health/release, log pause và khả năng đăng nhập.
+Không gọi chốt thủ công toàn hệ thống trong lúc điều tra. Các ngày/ca chưa chốt
+phải được đối soát và chạy bù có giới hạn bằng luồng Admin hiện có, giữ nguyên
+kiểm tra khóa kỳ, quyền truy cập và chống chốt trùng. Chỉ đặt biến thành `true`
+và recreate app sau khi đã kiểm chứng nguyên nhân và kế hoạch chạy bù; restart
+đơn thuần không nạp lại `.env`.
+
+Triển khai từ app bị treo giới hạn probe release cũ ở 10 giây (HTTP 5 giây),
+sau đó đối chiếu OCI revision của image đang chạy với Git HEAD. Không đoán SHA.
+Backup dữ liệu vẫn chỉ thực hiện sau khi app và Caddy dừng. Nếu rollback về
+image trước hỗ trợ cờ pause, cờ không có tác dụng: tác vụ có thể chạy lại và treo;
+không dùng rollback đó như biện pháp khôi phục đã được chứng minh.
+
 ```bash
 sudo apt update
 sudo apt install -y ca-certificates curl git openssh-server

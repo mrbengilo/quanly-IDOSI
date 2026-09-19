@@ -442,10 +442,12 @@ CADDY_CONTAINER_ID="$(compose ps -q --all caddy)"
 [[ -n "$APP_CONTAINER_ID" ]] || die 'Không tìm thấy app container hiện tại; dùng quy trình cài đặt lần đầu.'
 [[ -n "$CADDY_CONTAINER_ID" ]] || die 'Không tìm thấy caddy container hiện tại; dùng quy trình cài đặt lần đầu.'
 
-PREVIOUS_RELEASE_SHA="$(compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/release').then(r=>r.json()).then(v=>process.stdout.write(v?.data?.releaseSha||'')).catch(()=>process.exit(1))" 2>/dev/null || true)"
+PREVIOUS_RELEASE_SHA="$(timeout --signal=TERM --kill-after=2s 10s docker exec "$APP_CONTAINER_ID" node -e "fetch('http://127.0.0.1:3000/api/release',{signal:AbortSignal.timeout(5000)}).then(r=>r.json()).then(v=>process.stdout.write(v?.data?.releaseSha||'')).catch(()=>process.exit(1))" 2>/dev/null || true)"
 if [[ ! "$PREVIOUS_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-  PREVIOUS_RELEASE_SHA="$PREVIOUS_GIT_SHA"
+  log 'App cũ không trả release hợp lệ; đối chiếu revision của image đang chạy.'
+  PREVIOUS_RELEASE_SHA="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$(docker inspect --format '{{.Image}}' "$APP_CONTAINER_ID")")"
 fi
+[[ "$PREVIOUS_RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || die 'Không xác định được exact SHA của app cũ để rollback an toàn.'
 [[ "$PREVIOUS_RELEASE_SHA" == "$PREVIOUS_GIT_SHA" ]] \
   || die 'Git HEAD hiện tại không khớp release SHA đang chạy; dừng trước cutover.'
 
