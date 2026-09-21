@@ -9,7 +9,7 @@ describe('expanded product estimate subtotals', () => {
   it('explains the compact subtotal with known estimates in both piece-sale detail columns', () => {
     const common = { storeId: 'S1', createdAt: '2026-09-15T09:00:00+07:00', amount: 3000 }
     const line = (quantity, revenueType = 'NORMAL', missing = false) => ({
-      productId: 'DRESS', productName: 'Đầm', quantity, revenueType,
+      productId: 'DRESS', productName: missing ? 'Tên lịch sử chưa xác định' : 'Đầm', quantity, revenueType,
       ...(revenueType !== 'NORMAL' ? { unitPrice: 1000 } : {}),
       ...(missing ? { weightConversion: { version: 'IDOSI-2026-09-15-v2', status: 'UNMAPPED', ruleId: null, piecesPerKg: null } } : {}),
     })

@@ -18,6 +18,7 @@ describe('weight conversion UI', () => {
     expect(within(table).getAllByRole('row')).toHaveLength(26)
     expect(within(table).getByRole('row', { name: `${name} 1 cái = 3 kg` })).toBeTruthy()
     expect(within(table).getByRole('row', { name: 'Đầm 3 cái = 1 kg' })).toBeTruthy()
+    expect(within(table).getByRole('row', { name: 'Quần áo nam 3 cái = 1 kg' })).toBeTruthy()
     expect(within(table).queryByText('0,3')).toBeNull()
     expect(weightRuleText({ piecesPerKg: null, kgPerPiece: 3 })).toBe('1 cái = 3 kg')
   })

@@ -2,7 +2,9 @@
 
 ## Quy tắc được duyệt
 
-Bảng hiện hành: `IDOSI-2026-09-15-v2`, gồm 25 mặt hàng. Nguồn dùng chung cho giao diện và backend là `src/domain/orderWeight.js`.
+Bảng hiện hành: `IDOSI-2026-09-21-v3`, gồm 25 mặt hàng theo bảng người dùng duyệt ngày 21/09/2026. Nguồn dùng chung cho giao diện và backend là `src/domain/orderWeight.js`. Người dùng xác nhận áp dụng cho cả đơn hàng và báo cáo lịch sử.
+
+- Tên chuẩn **Quần áo nam: 3 cái = 1 kg**; tên cũ **Đồ nam** được nhận diện là cùng quy tắc, không đổi tên hoặc mã mặt hàng trong đơn đã lưu.
 
 - Bán thường (`NORMAL`) và sale theo cái (`SALE_PIECE`) áp dụng hệ số theo mặt hàng đã được backend đối chiếu với danh mục.
 - 24 mặt hàng giữ hệ số **cái trên một kg**. Ví dụ Đầm: 3 cái = 1 kg, khối lượng = số cái / 3.
@@ -21,7 +23,7 @@ Backend tạo `weightConversion` từ tên mặt hàng đã xác thực; không 
 
 ```json
 {
-  "version": "IDOSI-2026-09-15-v2",
+  "version": "IDOSI-2026-09-21-v3",
   "status": "MAPPED",
   "ruleId": "bedding",
   "piecesPerKg": null,
@@ -29,7 +31,9 @@ Backend tạo `weightConversion` từ tên mặt hàng đã xác thực; không 
 }
 ```
 
-Dòng bán kg không cần snapshot quy đổi. Khi chỉnh số lượng trên đơn đã có snapshot, giữ nguyên snapshot của dòng cũ. Đơn chưa có snapshot được đối chiếu tên mặt hàng đã lưu với bảng v2, không ghi đè lại hàng loạt đơn cũ. Một snapshot v1 được lưu rõ ràng vẫn được đọc theo lịch sử v1; thêm phiên bản mới thay vì âm thầm sửa snapshot. PR này là lần phát hành chức năng quy đổi, không có migration mới.
+Dòng bán kg không cần snapshot quy đổi. Khi chỉnh số lượng trên đơn đã có snapshot, giữ nguyên snapshot của dòng cũ để đối soát. Khi tính khối lượng, snapshot v1/v2 hợp lệ được đối chiếu `ruleId` với bảng v3; hệ số cũ không còn quyết định kết quả báo cáo. Ví dụ chăn v1 từng lưu 0,3 cái/kg nay tính đúng 1 cái = 3 kg. Dòng chưa có snapshot hoặc từng `UNMAPPED` được đối chiếu tên đã lưu (bao gồm alias Đồ nam) với bảng v3. Không ghi đè hàng loạt đơn, không có migration dữ liệu. Snapshot hỏng/không biết phiên bản vẫn báo thiếu dữ liệu, không đoán lại.
+
+Chính sách này áp dụng đồng nhất khi xem đơn, thống kê cửa hàng, nhóm ca/ngày/tháng/nhân viên và cả hai endpoint API kho. Metadata khối lượng trả `tableVersion=IDOSI-2026-09-21-v3`, nguồn dòng quy đổi `CURRENT_TABLE_V3`. Số lượng, giá, doanh thu, thanh toán, kg bán trực tiếp, thưởng và kỳ lương không đổi. Bên kho cần lấy lại các kỳ lịch sử và upsert tổng mới, không cộng dồn vào số đã đồng bộ. Rollback mã nguồn sẽ khôi phục cách tính cũ; không cần khôi phục database vì bản cập nhật không ghi lại đơn lịch sử.
 
 Tên không khớp chính xác sau chuẩn hóa Unicode/khoảng trắng/chữ hoa thường thì `UNMAPPED`. Không tự đoán theo mã hoặc tên gần giống. Snapshot hỏng/không biết phiên bản báo `INVALID`.
 

@@ -71,6 +71,41 @@ const createExamples = async () => {
 }
 
 describe('persisted piece/kg conversion and authenticated reports', () => {
+  it('recalculates saved historical snapshots across store and warehouse reports without rewriting orders', async () => {
+    const saved = await createExamples()
+    const db = runtime.database.database
+    const before = []
+    for (const [index, order] of saved.entries()) {
+      const stored = JSON.parse(db.prepare("SELECT value_json FROM state_entities WHERE collection_key='orders' AND record_id=?").get(order.id).value_json)
+      stored.items[0].productName = index === 0 ? 'Chăn, ga, bao gối, nệm gòn' : 'Quần áo nam'
+      if (index === 0) stored.items[0].weightConversion = {
+        version: 'IDOSI-2026-09-15-v1', status: 'MAPPED', ruleId: 'bedding', piecesPerKg: 0.3,
+      }
+      if (index === 1) stored.items[0].weightConversion = {
+        version: 'IDOSI-2026-09-15-v2', status: 'UNMAPPED', ruleId: null, piecesPerKg: null,
+      }
+      const json = JSON.stringify(stored)
+      db.prepare("UPDATE state_entities SET value_json=?, value_bytes=? WHERE collection_key='orders' AND record_id=?")
+        .run(json, new TextEncoder().encode(json).length, order.id)
+      before.push(json)
+    }
+    // 3 bedding pieces=9 kg; 6 men's pieces=2 kg; actual 5 kg stays 5 kg.
+    for (const filter of [{}, { date }, { date, shiftId: 'AM' }]) {
+      const result = await read(filter)
+      expect(result.status).toBe(200)
+      expect(result.body.totals).toMatchObject({ revenue: 260000, cash: 260000, transfer: 0,
+        weight: { tableVersion: WEIGHT_TABLE_VERSION, estimatedKg: 11, actualKg: 5, totalKg: 16 } })
+      for (const group of ['shift', 'day', 'month']) expect(result.body.groups[group][0].weight.totalKg).toBe(16)
+      for (const endpoint of ['/api/integrations/warehouse/order-statistics', '/api/integrations/warehouse/v1/order-statistics']) {
+        const warehouse = await request(`${endpoint}?${query(filter)}`, { token: warehouseKey })
+        expect(warehouse.status).toBe(200)
+        expect(warehouse.body.totals).toEqual(result.body.totals)
+        expect(warehouse.body.products).toEqual(result.body.products)
+      }
+    }
+    expect(saved.map(order => db.prepare("SELECT value_json FROM state_entities WHERE collection_key='orders' AND record_id=?").get(order.id).value_json)).toEqual(before)
+  })
+
   it('persists 3 dresses=1 kg, 6 sale dresses=2 kg and 5 actual kg; UI/API scopes agree at 8 kg', async () => {
     const saved = await createExamples()
     for (const order of saved) {
