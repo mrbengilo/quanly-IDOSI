@@ -28,6 +28,7 @@ import { cashflowSourceDates, cashflowSourceRowsForDate } from './cashflowSource
 import { apiGetFinanceOverview } from '../../services/idosiApi'
 import { useApp } from '../../state/AppContext'
 import { businessDate, downloadCsv, money, shortDate, today } from '../../utils'
+import AdminSalesOverview from './AdminSalesOverview'
 
 const monthBounds = (period) => ({
   from: `${period}-01`,
@@ -188,10 +189,11 @@ export function AdminOverviewV2() {
         title="TỔNG QUAN HỆ THỐNG"
         subtitle={`Xin chào, ${session?.name || 'Quản trị viên'}. Toàn bộ tài chính dưới đây được tổng hợp trực tiếp từ đơn hàng và các khoản chi đã ghi nhận.`}
         icon={BarChart3}
-        actions={<Input type="month" value={period} onChange={(event) => setPeriod(event.target.value)} />}
+        actions={<Input aria-label="Chọn tháng tổng quan" type="month" value={period} onChange={(event) => { if (event.target.value) setPeriod(event.target.value) }} />}
       />
       <SystemMetrics rows={rows} loading={overviewLoading} />
       {overview.error && <InfoNote tone="orange">{overview.error}</InfoNote>}
+      {session?.role === 'admin' && <AdminSalesOverview period={period} remote={remoteOverviewEnabled} orders={app.orders} />}
       <div className="section-heading">
         <div><h2>Không gian cửa hàng</h2><p>Chọn một cửa hàng để mở lịch làm việc, đơn hàng, chấm công và bảng lương nhân viên.</p></div>
         <div className="section-heading__actions"><Badge tone="green">{activeStores.length} cửa hàng hoạt động</Badge><Button variant="ghost" onClick={() => navigate('/admin/stores')}>Danh sách cửa hàng</Button></div>
