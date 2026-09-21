@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { normalizeOrderItems, resolveOrderItems } from './orderItems.js'
 import { orderRevenueByType } from './orderRevenue.js'
 import { summarizeOrders } from './orderSummary.js'
-import { copyWeightSnapshot, createWeightSnapshot, findWeightRule, itemWeight, summarizeItemWeights, WEIGHT_CONVERSION_RULES, WEIGHT_TABLE_VERSION } from './orderWeight.js'
+import { canonicalProductName, copyWeightSnapshot, createWeightSnapshot, findWeightRule, itemWeight, summarizeItemWeights, WEIGHT_CONVERSION_RULES, WEIGHT_TABLE_VERSION } from './orderWeight.js'
 
 const beddingName = 'Chăn, ga, bao gối, nệm gòn'
 const dress = (quantity, revenueType = 'NORMAL') => ({ productId: 'DRESS', productName: 'Đầm', quantity, ...(revenueType === 'NORMAL' ? {} : { revenueType, unitPrice: 20000 }) })
@@ -16,9 +16,9 @@ const examples = [
   { ...base, id: 'O3', shiftId: 'PM', items: [dress(5, 'SALE_KG')], amount: 100000 },
 ]
 
-describe('user-approved weight conversion table v3', () => {
+describe('user-approved weight conversion table v4', () => {
   it('keeps 24 original factors and represents bedding as exactly 3 kg per piece', () => {
-    expect(WEIGHT_TABLE_VERSION).toBe('IDOSI-2026-09-21-v3')
+    expect(WEIGHT_TABLE_VERSION).toBe('IDOSI-2026-09-21-v4')
     expect(WEIGHT_CONVERSION_RULES).toHaveLength(25)
     expect(Object.fromEntries(WEIGHT_CONVERSION_RULES.filter((rule) => rule.id !== 'bedding').map((rule) => [rule.productName, rule.piecesPerKg]))).toEqual({
       'Đầm': 3, 'Quần Jeans': 2, 'Quần dài nữ': 3, 'Chân váy': 3, 'Quần short': 4,
@@ -30,6 +30,8 @@ describe('user-approved weight conversion table v3', () => {
     expect(findWeightRule(beddingName)).toEqual({ id: 'bedding', productName: beddingName, piecesPerKg: null, kgPerPiece: 3 })
     expect(findWeightRule('Quần Áo Nam')).toEqual({ id: 'men', productName: 'Quần áo nam', piecesPerKg: 3 })
     expect(findWeightRule('Đồ nam')).toEqual({ id: 'men', productName: 'Quần áo nam', piecesPerKg: 3 })
+    expect(findWeightRule('ĐỒ NỮ')).toEqual({ id: 'women-tops', productName: 'Áo nữ', piecesPerKg: 5 })
+    expect(canonicalProductName('  Đồ nữ  ')).toBe('Áo nữ')
     expect(Object.isFrozen(WEIGHT_CONVERSION_RULES)).toBe(true)
     expect(WEIGHT_CONVERSION_RULES.every(Object.isFrozen)).toBe(true)
   })
@@ -61,7 +63,7 @@ describe('user-approved weight conversion table v3', () => {
 })
 
 describe('conversion snapshots and missing data', () => {
-  it('applies v3 to historical men aliases, unmapped snapshots and renamed mapped products without writes', () => {
+  it('applies v4 to historical aliases, unmapped snapshots and renamed mapped products without writes', () => {
     for (const name of ['Đồ nam', 'Quần áo nam', ' QUẦN  ÁO NAM '.normalize('NFD')]) {
       const item = { productName: name, quantity: 6, weightConversion: {
         version: 'IDOSI-2026-09-15-v2', status: 'UNMAPPED', ruleId: null, piecesPerKg: null,
@@ -74,6 +76,11 @@ describe('conversion snapshots and missing data', () => {
       version: 'IDOSI-2026-09-15-v2', status: 'MAPPED', ruleId: 'men', piecesPerKg: 3,
     } })).toMatchObject({ kilograms: 2, tableVersion: WEIGHT_TABLE_VERSION })
     expect(findWeightRule('Đồ nam')).toBe(findWeightRule('Quần áo nam'))
+    const retiredWomen = { productName: 'Đồ nữ', quantity: 10, weightConversion: {
+      version: 'IDOSI-2026-09-15-v2', status: 'UNMAPPED', ruleId: null, piecesPerKg: null,
+    } }
+    expect(itemWeight(retiredWomen)).toMatchObject({ kilograms: 2, ruleId: 'women-tops', tableVersion: WEIGHT_TABLE_VERSION })
+    expect(findWeightRule('Đồ nữ')).toBe(findWeightRule('Áo nữ'))
   })
 
   it('captures the server-resolved product factor and ignores forged names, factors and kg', () => {
@@ -96,11 +103,11 @@ describe('conversion snapshots and missing data', () => {
     expect(itemWeight(edited.items[0]).kilograms).toBe(6)
     expect(saved.items[0].quantity).toBe(1)
   })
-  it('recalculates v1 bedding using v3 while preserving the original stored evidence', () => {
+  it('recalculates v1 bedding using v4 while preserving the original stored evidence', () => {
     const previous = { ...bedding(1), weightConversion: { version: 'IDOSI-2026-09-15-v1', status: 'MAPPED', ruleId: 'bedding', piecesPerKg: 0.3 } }
-    expect(itemWeight(previous)).toMatchObject({ kilograms: 3, tableVersion: WEIGHT_TABLE_VERSION, source: 'CURRENT_TABLE_V3' })
+    expect(itemWeight(previous)).toMatchObject({ kilograms: 3, tableVersion: WEIGHT_TABLE_VERSION, source: 'CURRENT_TABLE_V4' })
     expect(createWeightSnapshot(beddingName, previous)).toEqual(previous.weightConversion)
-    expect(itemWeight(bedding(1))).toMatchObject({ kilograms: 3, source: 'CURRENT_TABLE_V3' })
+    expect(itemWeight(bedding(1))).toMatchObject({ kilograms: 3, source: 'CURRENT_TABLE_V4' })
     for (const bad of [
       { version: WEIGHT_TABLE_VERSION, status: 'MAPPED', ruleId: 'bedding', piecesPerKg: 0.3 },
       { version: WEIGHT_TABLE_VERSION, status: 'MAPPED', ruleId: 'bedding', piecesPerKg: 1 / 3, kgPerPiece: 3 },
@@ -121,7 +128,7 @@ describe('conversion snapshots and missing data', () => {
     const result = resolveOrderItems({ options: [{ ...options[0], label: 'Áo nữ' }], items: [{ productId: 'DRESS', quantity: 6 }], previousItems: previous, allowHistorical: true })
     expect(result.items[0].weightConversion.piecesPerKg).toBe(3)
     expect(previous[0]).not.toHaveProperty('weightConversion')
-    expect(itemWeight(previous[0]).source).toBe('CURRENT_TABLE_V3')
+    expect(itemWeight(previous[0]).source).toBe('CURRENT_TABLE_V4')
   })
   it('keeps unknown or unsupported factors incomplete instead of counting them as zero kg', () => {
     const missing = summarizeItemWeights([dress(3), { productName: 'Mặt hàng chưa cấu hình', quantity: 4 }, dress(5, 'SALE_KG')])
@@ -183,6 +190,16 @@ describe('order, shift, day, month and per-product weight statistics', () => {
     expect(report.products.weightByProduct[0]).toMatchObject({ orders: 1, weight: { totalKg: 8 } })
     expect(report.products.items).toHaveLength(3)
     expect(report.totals.revenueByType).toEqual(orderRevenueByType(mixed))
+  })
+  it('combines retired and current womenswear identities under the current report name', () => {
+    const rows = [
+      { ...base, id: 'W-OLD', amount: 100000, items: [{ productId: 'order-product-004', productCode: 'PRD-004', productName: 'Đồ nữ', quantity: 5 }] },
+      { ...base, id: 'W-CURRENT', amount: 200000, items: [{ productId: 'order-product-003', productCode: 'PRD-003', productName: 'Áo nữ', quantity: 10 }] },
+    ]
+    const report = summarizeOrders(rows, scope)
+    expect(report.products.weightByProduct).toHaveLength(1)
+    expect(report.products.weightByProduct[0]).toMatchObject({ productName: 'Áo nữ', totalQuantity: 15, orders: 2, weight: { totalKg: 3 } })
+    expect(report.products.items).toEqual([expect.objectContaining({ productName: 'Áo nữ', quantity: 15, orders: 2 })])
   })
   it('preserves date, month, shift, employee, payment, deletion and store boundaries', () => {
     const all = [...examples,

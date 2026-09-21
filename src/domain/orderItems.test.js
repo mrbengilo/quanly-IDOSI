@@ -112,4 +112,30 @@ describe('order items', () => {
       },
     }])
   })
+
+  it('shows the current womenswear name in history without rewriting its stored conversion snapshot', () => {
+    expect(normalizeOrderItems([{
+      productId: 'order-product-004',
+      productCode: 'PRD-004',
+      productName: 'Đồ nữ',
+      quantity: 5,
+      weightConversion: {
+        version: 'IDOSI-2026-09-15-v2',
+        status: 'UNMAPPED',
+        ruleId: null,
+        piecesPerKg: null,
+      },
+    }])).toEqual([{
+      productId: 'order-product-004',
+      productCode: 'PRD-004',
+      productName: 'Áo nữ',
+      quantity: 5,
+      weightConversion: {
+        version: 'IDOSI-2026-09-15-v2',
+        status: 'UNMAPPED',
+        ruleId: null,
+        piecesPerKg: null,
+      },
+    }])
+  })
 })

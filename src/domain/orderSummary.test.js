@@ -3,7 +3,7 @@ import { orderBusinessDate, orderGroupKey, parseOrderAmountFilter, summarizeOrde
 
 // Keep exact assertions on the established financial contract while asserting the additive weight separately.
 const financialTotals = ({ weight, ...totals }) => {
-  expect(weight).toMatchObject({ schemaVersion: 1, unit: 'KG', tableVersion: 'IDOSI-2026-09-21-v3' })
+  expect(weight).toMatchObject({ schemaVersion: 1, unit: 'KG', tableVersion: 'IDOSI-2026-09-21-v4' })
   return totals
 }
 

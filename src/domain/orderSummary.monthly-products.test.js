@@ -45,7 +45,7 @@ describe('monthly product quantity and estimated kilograms', () => {
     expect(product(monthly(rows), 'DRESS')).toMatchObject({ totalQuantity: 3, weight: { estimatedKg: 1 } })
     expect(product(monthly(rows), 'BED')).toMatchObject({ totalQuantity: 2, weight: { estimatedKg: 6 } })
   })
-  it('keeps known quantities when a weight mapping is missing, and never merges different product IDs by name', () => {
+  it('keeps known quantities when a weight mapping is missing and does not merge unrelated product IDs', () => {
     const report = monthly([{ ...base, id: 'MISSING', amount: 5000, items: [item('A', 'Mặt hàng mới', 4), item('B', 'Mặt hàng mới', 7)] }])
     expect(report.products.weightByProduct).toHaveLength(2)
     expect(product(report, 'A')).toMatchObject({ totalQuantity: 4, weight: { isComplete: false, totalKg: null } })

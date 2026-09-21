@@ -39,6 +39,6 @@ export function WeightConversionTable() {
         <span role="cell">{rule.productName}</span><span role="cell">{weightRuleText(rule)}</span>
       </div>)}
     </div>
-    <small>Phiên bản {WEIGHT_TABLE_VERSION}. Kg quy đổi là ước tính, không phải kết quả cân; không thay đổi giá bán hoặc doanh thu. Đơn cũ chưa lưu hệ số được tính theo bảng v2 từ tên mặt hàng đã ghi nhận. Đơn đã lưu hệ số giữ phiên bản trên đơn.</small>
+    <small>Phiên bản {WEIGHT_TABLE_VERSION}. Kg quy đổi là ước tính, không phải kết quả cân; không thay đổi giá bán hoặc doanh thu. Đơn cũ được đối chiếu tên mặt hàng với bảng hiện hành; tên cũ hiển thị theo tên đang sử dụng. Snapshot gốc trên đơn vẫn được giữ để đối soát.</small>
   </details>
 }

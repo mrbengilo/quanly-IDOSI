@@ -94,7 +94,15 @@ const shiftMetadata = (order) => {
   const shiftEnd = String(order?.shiftEnd || order?.end || order?.endTime || '').trim()
   return { shiftKey: shiftGroupKey(order), ...(shiftId ? { shiftId } : {}), ...(shiftName ? { shiftName } : {}), ...(shiftStart ? { shiftStart } : {}), ...(shiftEnd ? { shiftEnd } : {}) }
 }
-const productKey = (item) => String(item.productId || item.productCode || item.productName).trim().toLocaleLowerCase('vi-VN')
+const renamedProductNames = new Set(['quần áo nam', 'áo nữ'])
+const productKey = (item) => {
+  const name = String(item.productName || '').trim().toLocaleLowerCase('vi-VN')
+  // Only the two approved aliases cross stable option IDs. Every other item
+  // keeps ID-first grouping so an inconsistent legacy label cannot split a
+  // known product or accidentally merge two unrelated custom products.
+  if (renamedProductNames.has(name)) return `name:${name}`
+  return `id:${String(item.productId || item.productCode || item.productName).trim().toLocaleLowerCase('vi-VN')}`
+}
 const emptyProductSummary = () => ({ totalQuantity: 0, totalWeightKg: 0, productTypes: 0, ordersWithItems: 0, unclassifiedOrders: 0, items: [] })
 const weightAccumulatorFor = (weights, target) => {
   if (!weights.has(target)) weights.set(target, createWeightAccumulator())
