@@ -3,7 +3,7 @@ import { orderBusinessDate, orderGroupKey, parseOrderAmountFilter, summarizeOrde
 
 // Keep exact assertions on the established financial contract while asserting the additive weight separately.
 const financialTotals = ({ weight, ...totals }) => {
-  expect(weight).toMatchObject({ schemaVersion: 1, unit: 'KG', tableVersion: 'IDOSI-2026-09-15-v2' })
+  expect(weight).toMatchObject({ schemaVersion: 1, unit: 'KG', tableVersion: 'IDOSI-2026-09-21-v3' })
   return totals
 }
 
@@ -47,7 +47,7 @@ describe('orderSummary', () => {
     expect(weightByProduct.find((item) => item.productId === 'P1').weight.totalKg).toBe(1.666667)
     expect(weightByProduct.find((item) => item.productId === 'P2').weight.totalKg).toBe(0.333333)
     expect(products).toEqual({ totalQuantity: 6, totalWeightKg: 0, productTypes: 2, ordersWithItems: 2, unclassifiedOrders: 1,
-      items: [expect.objectContaining({ productId: 'P1', productName: 'Đồ nam', quantity: 5, orders: 2 }), expect.objectContaining({ productId: 'P2', productName: 'Đầm', quantity: 1, orders: 1 })] })
+      items: [expect.objectContaining({ productId: 'P1', productName: 'Quần áo nam', quantity: 5, orders: 2 }), expect.objectContaining({ productId: 'P2', productName: 'Đầm', quantity: 1, orders: 1 })] })
   })
 
   it('fails closed on invalid eligible VND amounts', () => {

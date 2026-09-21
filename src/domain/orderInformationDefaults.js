@@ -21,7 +21,7 @@ export const DEFAULT_OCCUPATION_LABELS = Object.freeze([
   'Ca sỉ', 'Lao công', 'Bảo vệ', 'Công nhân', 'Khác',
 ])
 
-export const DEFAULT_PRODUCT_LABELS = Object.freeze(['Đồ nam', 'Đầm', 'Áo nữ', 'Đồ nữ', 'Đồ bộ'])
+export const DEFAULT_PRODUCT_LABELS = Object.freeze(['Quần áo nam', 'Đầm', 'Áo nữ', 'Đồ nữ', 'Đồ bộ'])
 
 const seedOption = (kind, label, index) => {
   const product = kind === ORDER_INFORMATION_KIND.PRODUCT

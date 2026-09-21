@@ -40,7 +40,7 @@ describe('StoreStatisticsPage', () => {
     expect(await screen.findAllByText('2,000,000 đ')).toHaveLength(2)
     await ready()
     const table = within(productsTable())
-    expect(table.getAllByText('Đồ nam')).toHaveLength(2)
+    expect(table.getAllByText('Quần áo nam')).toHaveLength(2)
     for (const quantity of ['2.000 cái', '2.500 cái', '500 cái', '100 cái']) expect(table.getByText(quantity)).toBeTruthy()
     expect(screen.getByText('5.100 cái')).toBeTruthy()
     expect(report.totals).toMatchObject({ orders: 9, cash: 800000, transfer: 1200000, cashOrders: 4, transferOrders: 5 })

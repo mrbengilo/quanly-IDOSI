@@ -17008,7 +17008,7 @@ const DEFAULT_ORDER_OCCUPATION_OPTIONS = DEFAULT_ORDER_OCCUPATION_LABELS.map((la
   deletedBy: null,
 }))
 
-const DEFAULT_ORDER_PRODUCT_LABELS = ['Đồ nam', 'Đầm', 'Áo nữ', 'Đồ nữ', 'Đồ bộ']
+const DEFAULT_ORDER_PRODUCT_LABELS = ['Quần áo nam', 'Đầm', 'Áo nữ', 'Đồ nữ', 'Đồ bộ']
 const DEFAULT_ORDER_PRODUCT_OPTIONS = DEFAULT_ORDER_PRODUCT_LABELS.map((label, index) => ({
   id: `order-product-${String(index + 1).padStart(3, '0')}`,
   kind: ORDER_PRODUCT_KIND,
