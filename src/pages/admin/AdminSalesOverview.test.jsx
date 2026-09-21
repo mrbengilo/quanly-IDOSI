@@ -40,6 +40,17 @@ it('shows errors without false zero totals, then retries and displays the empty 
 
 it('warns when historical orders lack item details', () => {
   render(<AdminSalesOverview period="2026-09" orders={[{ amount: 1000, date: '2026-09-01' }]} />)
-  expect(screen.getByText('Chưa đủ dữ liệu')).toBeTruthy()
+  expect(screen.getByText('0 kg')).toBeTruthy()
+  expect(screen.queryByText('Chưa đủ dữ liệu')).toBeNull()
   expect(screen.getByText(/Có 1 đơn chưa có chi tiết/)).toBeTruthy()
+})
+
+it('displays converted kilograms prominently even when some historical orders lack details', async () => {
+  apiGetSalesOverview.mockResolvedValueOnce({
+    ...data, weight: { isComplete: false, totalKg: null, knownKg: 3156.833 }, unclassifiedOrders: 2771,
+  })
+  render(<AdminSalesOverview remote period="2026-09" />)
+  expect(await screen.findByText('3.156,833 kg')).toBeTruthy()
+  expect(screen.queryByText('Chưa đủ dữ liệu')).toBeNull()
+  expect(screen.getByText(/Có 2.771 đơn chưa có chi tiết/)).toBeTruthy()
 })
