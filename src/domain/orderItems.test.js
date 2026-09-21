@@ -21,11 +21,11 @@ describe('order items', () => {
     })
     expect(result.error).toBe('')
     expect(result.items).toEqual([
-      expect.objectContaining({ productId: products[0].id, productName: 'Đồ nam', quantity: 2 }),
+      expect.objectContaining({ productId: products[0].id, productName: 'Quần áo nam', quantity: 2 }),
       expect.objectContaining({ productId: products[1].id, productName: 'Đầm', quantity: 3 }),
     ])
     expect(totalOrderItemQuantity(result.items)).toBe(5)
-    expect(orderItemsLabel(result.items)).toBe('Đồ nam × 2, Đầm × 3')
+    expect(orderItemsLabel(result.items)).toBe('Quần áo nam × 2, Đầm × 3')
   })
 
   it('rejects missing, duplicate and invalid quantities', () => {
@@ -85,5 +85,31 @@ describe('order items', () => {
       { productId: 'p1', productName: 'Áo nữ', quantity: '4' },
       { productId: 'p2', productName: 'Đầm', quantity: 0 },
     ])).toEqual([{ productId: 'p1', productCode: '', productName: 'Áo nữ', quantity: 4 }])
+  })
+
+  it('shows the current menswear name in history without rewriting its stored conversion snapshot', () => {
+    expect(normalizeOrderItems([{
+      productId: 'p-men',
+      productCode: 'PRD001',
+      productName: 'Đồ nam',
+      quantity: 3,
+      weightConversion: {
+        version: 'IDOSI-2026-09-15-v2',
+        status: 'MAPPED',
+        ruleId: 'men',
+        piecesPerKg: 3,
+      },
+    }])).toEqual([{
+      productId: 'p-men',
+      productCode: 'PRD001',
+      productName: 'Quần áo nam',
+      quantity: 3,
+      weightConversion: {
+        version: 'IDOSI-2026-09-15-v2',
+        status: 'MAPPED',
+        ruleId: 'men',
+        piecesPerKg: 3,
+      },
+    }])
   })
 })

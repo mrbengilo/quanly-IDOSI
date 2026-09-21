@@ -29,7 +29,7 @@ with sync_playwright() as p:
             return page.get_by_role('table', name=f'Thống kê mặt hàng • Tháng {label}', exact=True)
         table = report_table(current)
         expect(table.locator('tbody tr')).to_have_count(1)
-        expect(table.locator('tbody tr td')).to_have_text(['Đồ nam', '15', '≈ 5 kg'])
+        expect(table.locator('tbody tr td')).to_have_text(['Quần áo nam', '15', '≈ 5 kg'])
         expect(table.locator('thead th')).to_have_count(3)
         results.append('PASS: monthly report combines NORMAL and SALE_PIECE into 15 pieces / 5 estimated kg; 2.5 actual kg is not added to either')
 
@@ -49,7 +49,7 @@ with sync_playwright() as p:
         for width in [320, 390, 430, 1280]:
             page.set_viewport_size({'width': width, 'height': 900})
             table.scroll_into_view_if_needed()
-            expect(table.locator('tbody tr td')).to_have_text(['Đồ nam', '15', '≈ 5 kg'])
+            expect(table.locator('tbody tr td')).to_have_text(['Quần áo nam', '15', '≈ 5 kg'])
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
             fits = table.evaluate('''table => {
                 const cells = [...table.querySelectorAll('th, td')];
@@ -66,7 +66,7 @@ with sync_playwright() as p:
 
         month.fill(history)
         older = report_table(history)
-        expect(older.locator('tbody tr td')).to_have_text(['Đồ nam', '5', '≈ 1,667 kg'])
+        expect(older.locator('tbody tr td')).to_have_text(['Quần áo nam', '5', '≈ 1,667 kg'])
         assert not page.locator('.product-quantity-report details').evaluate('node => node.open')
         # The historical fixture has two legacy orders with no items. This used to hide
         # the footer even though all listed product lines had a valid estimate.
@@ -99,7 +99,7 @@ with sync_playwright() as p:
         expect(page.get_by_text('Chưa có mặt hàng bán trong phạm vi đã chọn.', exact=True)).to_be_visible()
         expect(page.locator('.product-quantity-table')).to_have_count(0)
         month.fill(current)
-        expect(table.locator('tbody tr td')).to_have_text(['Đồ nam', '15', '≈ 5 kg'])
+        expect(table.locator('tbody tr td')).to_have_text(['Quần áo nam', '15', '≈ 5 kg'])
         expect(table.locator('tfoot')).not_to_contain_text('Phần đã quy đổi')
         expect(page.locator('.product-quantity-report').get_by_text(re.compile('chưa gồm 2 đơn'))).to_have_count(0)
         results.append('PASS: month switching isolates previous month (5 pieces), empty month, then restores current month (15 pieces); no stale or cumulative totals or partial warning')

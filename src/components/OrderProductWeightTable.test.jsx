@@ -20,7 +20,7 @@ describe('simple monthly product report', () => {
     const summary = within(table())
     expect(summary.getAllByRole('columnheader').map((node) => node.textContent)).toEqual(['Mặt hàng', 'Số lượng đã bán (cái)', 'Khối lượng ước tính (kg)'])
     expect(summary.getAllByRole('row')).toHaveLength(5)
-    expect(summary.getByRole('row', { name: 'Đồ nam 300 ≈ 100 kg' })).toBeTruthy()
+    expect(summary.getByRole('row', { name: 'Quần áo nam 300 ≈ 100 kg' })).toBeTruthy()
     expect(summary.getByRole('row', { name: 'Đầm 400 ≈ 133,333 kg' })).toBeTruthy()
     expect(summary.getByRole('row', { name: 'Chăn, ga, bao gối, nệm gòn 2 ≈ 6 kg' })).toBeTruthy()
     expect(summary.queryByText('200 kg')).toBeNull()

@@ -35,7 +35,7 @@ describe('OrderInformationSettingsPage', () => {
   it('shows and creates configurable products separately from occupations', async () => {
     render(<OrderInformationSettingsPage />)
     fireEvent.change(screen.getByLabelText('Loại danh mục'), { target: { value: 'product' } })
-    expect(screen.getByText('Đồ nam')).toBeTruthy()
+    expect(screen.getByText('Quần áo nam')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'THÊM MẶT HÀNG' }))
     const dialog = screen.getByRole('dialog', { name: 'Thêm mặt hàng' })
     fireEvent.change(within(dialog).getByLabelText(/Tên hiển thị/u), { target: { value: 'Phụ kiện' } })
