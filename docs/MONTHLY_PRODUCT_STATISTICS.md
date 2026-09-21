@@ -5,7 +5,7 @@ Bảng **Thống kê mặt hàng • Tháng MM/YYYY** hiển thị một dòng c
 
 | Mặt hàng | Số lượng đã bán (cái) | Khối lượng ước tính (kg) |
 |---|---:|---:|
-| Đồ nam | 300 | ≈ 100 kg |
+| Quần áo nam | 300 | ≈ 100 kg |
 | Đầm | 400 | ≈ 133,333 kg |
 
 Đây là ví dụ, không phải dữ liệu sản xuất. Đầm giữ hệ số đã chốt 3 cái/kg; 400 cái không phải 200 kg. Chăn, ga, bao gối, nệm gòn giữ 3 kg/cái. Không thay đổi hệ số khi đổi cách hiển thị báo cáo.
@@ -34,4 +34,4 @@ Trong `products.weightByProduct[]`:
 Trường `products.totalQuantity` là tổng số cái cả phạm vi; `products.totalWeightKg` giữ nguyên nghĩa kg bán trực tiếp. Footer dùng `products.weight`, không cộng lại kết quả đã làm tròn. Các trường doanh thu, hợp đồng xác thực và quyền không đổi. Đồng bộ bằng cập nhật bản tổng hợp cùng cửa hàng/tháng, không cộng thêm mỗi lần gọi.
 
 ## Kiểm thử
-Kiểm thử domain/component/API dùng ví dụ 300 cái đồ nam, 400 đầm, nhiều ngày/ca, ranh giới tháng, đơn xóa, cửa hàng khác, kg thực bán và thiếu hệ số. Browser dùng fixture cô lập hiện có: tháng hiện tại có 15 cái Đồ nam = 5 kg ước tính, tháng cũ có 5 cái; đối chiếu API, đổi tháng/rỗng/làm mới và kiểm tra bảng 3 cột ở 320/390/430/1280 px. Không tạo đơn test trên production.
+Kiểm thử domain/component/API dùng ví dụ 300 cái quần áo nam, 400 đầm, nhiều ngày/ca, ranh giới tháng, đơn xóa, cửa hàng khác, kg thực bán và thiếu hệ số. Browser dùng fixture cô lập hiện có: tháng hiện tại có 15 cái Quần áo nam = 5 kg ước tính, tháng cũ có 5 cái; đối chiếu API, đổi tháng/rỗng/làm mới và kiểm tra bảng 3 cột ở 320/390/430/1280 px. Không tạo đơn test trên production.

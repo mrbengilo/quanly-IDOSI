@@ -41,7 +41,7 @@ const choosePaymentMethod = (value = 'Tiền mặt') => {
   fireEvent.change(screen.getByLabelText(/^Hình thức thanh toán/u), { target: { value } })
 }
 
-const chooseProduct = (label = 'Đồ nam') => {
+const chooseProduct = (label = 'Quần áo nam') => {
   fireEvent.click(screen.getByRole('checkbox', { name: new RegExp(label, 'u') }))
 }
 

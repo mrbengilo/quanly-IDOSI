@@ -1353,7 +1353,7 @@ describe('IDOSI Worker security primitives', () => {
         totalQuantity: 6,
         productTypes: 2,
         items: expect.arrayContaining([
-          expect.objectContaining({ productName: 'Đồ nam', quantity: 5, orders: 2 }),
+          expect.objectContaining({ productName: 'Quần áo nam', quantity: 5, orders: 2 }),
           expect.objectContaining({ productName: 'Đầm', quantity: 1, orders: 1 }),
         ]),
       },
@@ -12059,7 +12059,7 @@ describe('IDOSI Worker security primitives', () => {
     expect(order).toMatchObject({
       amount: 500_000,
       items: [
-        { productId: 'order-product-001', productCode: 'PRD-001', productName: 'Đồ nam', quantity: 2 },
+        { productId: 'order-product-001', productCode: 'PRD-001', productName: 'Quần áo nam', quantity: 2 },
         { productId: product.id, productCode: 'PRD-ACCESSORY', productName: 'Phụ kiện', quantity: 3 },
       ],
       customFields: [{
@@ -12123,7 +12123,7 @@ describe('IDOSI Worker security primitives', () => {
         totalQuantity: 5,
         productTypes: 2,
         items: expect.arrayContaining([
-          expect.objectContaining({ productName: 'Đồ nam', quantity: 2 }),
+          expect.objectContaining({ productName: 'Quần áo nam', quantity: 2 }),
           expect.objectContaining({ productName: 'Phụ kiện', quantity: 3 }),
         ]),
       },

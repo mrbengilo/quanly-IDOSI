@@ -216,7 +216,7 @@ export const tasksSeed = [
 
 export const importsSeed = [
   { id: 'NH001', storeId: 'CH001', name: 'Chân váy', category: 'Thời trang nữ', quantity: 15, unit: 'Bao', weight: 120, price: 120000, shipping: 15000, createdAt: '2026-08-10 09:30', creator: 'Nguyễn Minh Anh' },
-  { id: 'NH002', storeId: 'CH001', name: 'Đồ nam', category: 'Thời trang nam', quantity: 20, unit: 'Bao', weight: 210.5, price: 150000, shipping: 20000, createdAt: '2026-08-09 09:25', creator: 'Nguyễn Minh Anh' },
+  { id: 'NH002', storeId: 'CH001', name: 'Quần áo nam', category: 'Thời trang nam', quantity: 20, unit: 'Bao', weight: 210.5, price: 150000, shipping: 20000, createdAt: '2026-08-09 09:25', creator: 'Nguyễn Minh Anh' },
   { id: 'NH003', storeId: 'CH002', name: 'Áo dài', category: 'Thời trang nữ', quantity: 10, unit: 'Bao', weight: 80, price: 200000, shipping: 15000, createdAt: '2026-08-08 16:45', creator: 'Trần Gia Bảo' },
   { id: 'NH004', storeId: 'CH003', name: 'Đồ bộ', category: 'Đồ mặc nhà', quantity: 18, unit: 'Bao', weight: 150.3, price: 130000, shipping: 18000, createdAt: '2026-08-08 16:20', creator: 'Lê Hoàng Chi' },
   { id: 'NH005', storeId: 'CH004', name: 'Phụ kiện', category: 'Phụ kiện', quantity: 25, unit: 'Bao', weight: 45, price: 60000, shipping: 10000, createdAt: '2026-08-07 11:10', creator: 'Phạm Đức Duy' },

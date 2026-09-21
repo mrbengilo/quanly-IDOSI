@@ -43,9 +43,16 @@ const tables = new Map([
   [WEIGHT_TABLE_VERSION, new Map(WEIGHT_CONVERSION_RULES.map((rule) => [rule.id, rule]))],
 ])
 const nameKey = (value) => String(value ?? '').normalize('NFC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('vi-VN')
+const CURRENT_MENS_PRODUCT_NAME = 'Quần áo nam'
+const historicalMensNameKey = nameKey('Đồ nam')
+const currentMensNameKey = nameKey(CURRENT_MENS_PRODUCT_NAME)
+export const canonicalProductName = (value) => {
+  const normalized = String(value ?? '').normalize('NFC').trim().replace(/\s+/gu, ' ')
+  const key = nameKey(normalized)
+  return key === historicalMensNameKey || key === currentMensNameKey ? CURRENT_MENS_PRODUCT_NAME : normalized
+}
 const rulesByName = new Map(WEIGHT_CONVERSION_RULES.map((rule) => [nameKey(rule.productName), rule]))
-rulesByName.set(nameKey('Đồ nam'), rulesByName.get(nameKey('Quần áo nam')))
-export const findWeightRule = (name) => rulesByName.get(nameKey(name)) || null
+export const findWeightRule = (name) => rulesByName.get(nameKey(canonicalProductName(name))) || null
 const hasSnapshot = (item) => Object.prototype.hasOwnProperty.call(item || {}, 'weightConversion')
 const snapshotOf = (version, rule) => ({
   version, status: rule ? 'MAPPED' : 'UNMAPPED', ruleId: rule?.id || null,

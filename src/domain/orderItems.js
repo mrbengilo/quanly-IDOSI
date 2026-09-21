@@ -1,5 +1,5 @@
 import { normalizeRevenueItem, revenueTypeOf, revenueQuantityUnits } from './orderRevenue.js'
-import { copyWeightSnapshot, createWeightSnapshot } from './orderWeight.js'
+import { canonicalProductName, copyWeightSnapshot, createWeightSnapshot } from './orderWeight.js'
 import {
   findProductOption,
   normalizeOrderInformationLabel,
@@ -15,7 +15,7 @@ const cleanText = (value = '') => String(value)
 
 const itemProductId = (item = {}) => cleanText(item.productId || item.id)
 const itemProductCode = (item = {}) => cleanText(item.productCode || item.code).toUpperCase()
-const itemProductName = (item = {}) => cleanText(item.productName || item.name || item.label)
+const itemProductName = (item = {}) => canonicalProductName(cleanText(item.productName || item.name || item.label))
 
 export const normalizeOrderItems = (items = []) => {
   if (!Array.isArray(items)) return []
@@ -82,7 +82,7 @@ export const resolveOrderItems = ({
     const option = findProductOption(options, productId, { includeInactive: true })
     const historical = historicalByKey.get(key)
     if (option?.active) {
-      const productName = cleanText(option.label)
+      const productName = canonicalProductName(cleanText(option.label))
       resolved.push({
         productId: String(option.id),
         productCode: String(option.code || '').trim().toUpperCase(),

@@ -28,6 +28,8 @@ describe('user-approved weight conversion table v3', () => {
       'Hàng thương hiệu': 3, 'Trẻ em SM': 6, 'Khăn lông': 2, 'Đồ nội y mới': 4, 'Gấu bông': 2,
     })
     expect(findWeightRule(beddingName)).toEqual({ id: 'bedding', productName: beddingName, piecesPerKg: null, kgPerPiece: 3 })
+    expect(findWeightRule('Quần Áo Nam')).toEqual({ id: 'men', productName: 'Quần áo nam', piecesPerKg: 3 })
+    expect(findWeightRule('Đồ nam')).toEqual({ id: 'men', productName: 'Quần áo nam', piecesPerKg: 3 })
     expect(Object.isFrozen(WEIGHT_CONVERSION_RULES)).toBe(true)
     expect(WEIGHT_CONVERSION_RULES.every(Object.isFrozen)).toBe(true)
   })
