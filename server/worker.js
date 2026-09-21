@@ -17045,15 +17045,21 @@ const DEFAULT_ORDER_OCCUPATION_OPTIONS = DEFAULT_ORDER_OCCUPATION_LABELS.map((la
   deletedBy: null,
 }))
 
-const DEFAULT_ORDER_PRODUCT_LABELS = ['Quần áo nam', 'Đầm', 'Áo nữ', 'Đồ nữ', 'Đồ bộ']
-const DEFAULT_ORDER_PRODUCT_OPTIONS = DEFAULT_ORDER_PRODUCT_LABELS.map((label, index) => ({
-  id: `order-product-${String(index + 1).padStart(3, '0')}`,
+const DEFAULT_ORDER_PRODUCT_SEEDS = [
+  { label: 'Quần áo nam', sequence: 1 },
+  { label: 'Đầm', sequence: 2 },
+  { label: 'Áo nữ', sequence: 3 },
+  // Sequence 4 is retained by the disabled legacy “Đồ nữ” record.
+  { label: 'Đồ bộ', sequence: 5 },
+]
+const DEFAULT_ORDER_PRODUCT_OPTIONS = DEFAULT_ORDER_PRODUCT_SEEDS.map(({ label, sequence }) => ({
+  id: `order-product-${String(sequence).padStart(3, '0')}`,
   kind: ORDER_PRODUCT_KIND,
-  code: `PRD-${String(index + 1).padStart(3, '0')}`,
+  code: `PRD-${String(sequence).padStart(3, '0')}`,
   label,
   normalizedLabel: normalizeOrderInformationLabel(label),
   active: true,
-  sortOrder: 2000 + (index * 100),
+  sortOrder: 1900 + (sequence * 100),
   system: false,
   createdAt: '2026-09-12T00:00:00+07:00',
   createdBy: 'SYSTEM',

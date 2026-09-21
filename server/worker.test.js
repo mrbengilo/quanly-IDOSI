@@ -1858,13 +1858,19 @@ describe('IDOSI Worker security primitives', () => {
       ORDER BY entity_order, entity_key
     `).all()
     const options = rows.map(({ value_json: valueJson }) => JSON.parse(valueJson))
-    expect(options).toHaveLength(22)
+    expect(options).toHaveLength(21)
     expect(options.filter(({ kind }) => kind === 'occupation')).toHaveLength(15)
     expect(options.filter(({ kind }) => kind === 'payment_method')).toEqual([
       expect.objectContaining({ id: 'order-payment-001', code: 'PAY-001', label: 'Tiền mặt', active: true, system: true }),
       expect.objectContaining({ id: 'order-payment-002', code: 'PAY-002', label: 'Chuyển khoản', active: true, system: true }),
     ])
-    expect(options.filter(({ kind }) => kind === 'product')).toHaveLength(5)
+    expect(options.filter(({ kind }) => kind === 'product')).toHaveLength(4)
+    expect(options.filter(({ kind }) => kind === 'product').map(({ id, label }) => ({ id, label }))).toEqual([
+      { id: 'order-product-001', label: 'Quần áo nam' },
+      { id: 'order-product-002', label: 'Đầm' },
+      { id: 'order-product-003', label: 'Áo nữ' },
+      { id: 'order-product-005', label: 'Đồ bộ' },
+    ])
     expect(rows.every(({ value_json: valueJson, value_bytes: valueBytes }) => Buffer.byteLength(valueJson) === valueBytes)).toBe(true)
     expect(JSON.parse(env.DB.database.prepare("SELECT value_json FROM app_state WHERE scope_key = 'global'").get().value_json))
       .not.toHaveProperty('orderInformationOptions')
@@ -1874,11 +1880,11 @@ describe('IDOSI Worker security primitives', () => {
     `).get()
     expect(JSON.parse(bootstrapAudit.after_json)).toMatchObject({
       initialized: true,
-      orderInformationDefaults: { persisted: true, canonicalSeedCount: 22, occupationSeedCount: 15, paymentMethodSeedCount: 2, productSeedCount: 5 },
+      orderInformationDefaults: { persisted: true, canonicalSeedCount: 21, occupationSeedCount: 15, paymentMethodSeedCount: 2, productSeedCount: 4 },
     })
     expect(JSON.parse(bootstrapAudit.metadata_json)).toMatchObject({
       source: 'bootstrap-api',
-      orderInformationDefaults: { persisted: true, canonicalSeedCount: 22 },
+      orderInformationDefaults: { persisted: true, canonicalSeedCount: 21 },
     })
 
     const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
@@ -10264,12 +10270,12 @@ describe('IDOSI Worker security primitives', () => {
       { actor_id: adminId, idempotency_key: 'reset-all-runtime-0001' },
     ])
     expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM command_receipt_chunks').get()).toEqual({ count: 0 })
-    expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM state_entities').get()).toEqual({ count: 22 })
+    expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM state_entities').get()).toEqual({ count: 21 })
     expect(env.DB.database.prepare(`
       SELECT collection_key, COUNT(*) AS count
       FROM state_entities
       GROUP BY collection_key
-    `).all()).toEqual([{ collection_key: 'orderInformationOptions', count: 22 }])
+    `).all()).toEqual([{ collection_key: 'orderInformationOptions', count: 21 }])
     expect(env.DB.database.prepare('SELECT scope_key FROM app_state ORDER BY scope_key').all()).toEqual([{ scope_key: 'global' }])
     expect(env.DB.database.prepare('SELECT COUNT(*) AS count FROM counters').get()).toEqual({ count: 0 })
     expect(env.DB.database.prepare('SELECT policy_key, version FROM policies ORDER BY policy_key').all()).toEqual(
@@ -10286,7 +10292,7 @@ describe('IDOSI Worker security primitives', () => {
       'stores', 'employees', 'attendance', 'orders', 'orderAudit', 'notifications',
       'expenseEntries', 'payrollPeriods', 'supportTransfers', 'supportWorkAssignments',
     ]) expect(resetState[key]).toEqual([])
-    expect(resetState.orderInformationOptions).toHaveLength(22)
+    expect(resetState.orderInformationOptions).toHaveLength(21)
     expect(resetState.accountSettings[adminId]).toMatchObject({
       name: 'Admin được giữ lại', email: 'admin@idosi.vn',
       avatar: { key: preservedAdminAvatarKey, contentType: 'image/png', version: 1 },

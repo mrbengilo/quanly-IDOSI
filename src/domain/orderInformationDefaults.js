@@ -21,7 +21,14 @@ export const DEFAULT_OCCUPATION_LABELS = Object.freeze([
   'Ca sỉ', 'Lao công', 'Bảo vệ', 'Công nhân', 'Khác',
 ])
 
-export const DEFAULT_PRODUCT_LABELS = Object.freeze(['Quần áo nam', 'Đầm', 'Áo nữ', 'Đồ nữ', 'Đồ bộ'])
+const DEFAULT_PRODUCT_SEEDS = Object.freeze([
+  Object.freeze({ label: 'Quần áo nam', sequence: 1 }),
+  Object.freeze({ label: 'Đầm', sequence: 2 }),
+  Object.freeze({ label: 'Áo nữ', sequence: 3 }),
+  // Sequence 4 belonged to the retired “Đồ nữ” option. Never reuse its ID/code.
+  Object.freeze({ label: 'Đồ bộ', sequence: 5 }),
+])
+export const DEFAULT_PRODUCT_LABELS = Object.freeze(DEFAULT_PRODUCT_SEEDS.map(({ label }) => label))
 
 const seedOption = (kind, label, index) => {
   const product = kind === ORDER_INFORMATION_KIND.PRODUCT
@@ -46,5 +53,5 @@ const seedOption = (kind, label, index) => {
 
 export const DEFAULT_ORDER_INFORMATION_OPTIONS = Object.freeze([
   ...DEFAULT_OCCUPATION_LABELS.map((label, index) => seedOption(ORDER_INFORMATION_KIND.OCCUPATION, label, index)),
-  ...DEFAULT_PRODUCT_LABELS.map((label, index) => seedOption(ORDER_INFORMATION_KIND.PRODUCT, label, index)),
+  ...DEFAULT_PRODUCT_SEEDS.map(({ label, sequence }) => seedOption(ORDER_INFORMATION_KIND.PRODUCT, label, sequence - 1)),
 ])
