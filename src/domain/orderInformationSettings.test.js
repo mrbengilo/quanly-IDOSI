@@ -13,10 +13,14 @@ import {
 
 describe('order information settings', () => {
   it('provides stable production defaults and exactly two payment methods', () => {
-    expect(DEFAULT_ORDER_INFORMATION_OPTIONS).toHaveLength(20)
+    expect(DEFAULT_ORDER_INFORMATION_OPTIONS).toHaveLength(19)
     expect(ORDER_PAYMENT_METHODS).toEqual(['Tiền mặt', 'Chuyển khoản'])
     expect(activeOccupationLabels(undefined)).toContain('Nhân viên VP')
     expect(productOptions(undefined).map((option) => option.label)).toEqual(DEFAULT_PRODUCT_LABELS)
+    expect(productOptions(undefined).map((option) => option.id)).toEqual([
+      'order-product-001', 'order-product-002', 'order-product-003', 'order-product-005',
+    ])
+    expect(DEFAULT_PRODUCT_LABELS).not.toContain('Đồ nữ')
   })
 
   it('hides inactive occupations for new orders while preserving legacy reads', () => {

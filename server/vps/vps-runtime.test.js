@@ -360,18 +360,18 @@ describe('IDOSI VPS runtime', () => {
         WHERE scope_key = 'global' AND collection_key = 'orderInformationOptions'
         ORDER BY entity_order, entity_key
       `).all()).results.map(({ value_json: valueJson }) => JSON.parse(valueJson))
-      expect(persistedDefaults).toHaveLength(22)
+      expect(persistedDefaults).toHaveLength(21)
       expect(persistedDefaults.filter(({ kind }) => kind === 'occupation')).toHaveLength(15)
       expect(persistedDefaults.filter(({ kind }) => kind === 'payment_method')).toEqual([
         expect.objectContaining({ id: 'order-payment-001', label: 'Tiền mặt', system: true }),
         expect.objectContaining({ id: 'order-payment-002', label: 'Chuyển khoản', system: true }),
       ])
-      expect(persistedDefaults.filter(({ kind }) => kind === 'product')).toHaveLength(5)
+      expect(persistedDefaults.filter(({ kind }) => kind === 'product')).toHaveLength(4)
       const bootstrapAudit = await runtime.database.prepare(`
         SELECT metadata_json FROM audit_log WHERE action = 'system.bootstrap'
       `).first()
       expect(JSON.parse(bootstrapAudit.metadata_json)).toMatchObject({
-        orderInformationDefaults: { persisted: true, canonicalSeedCount: 22 },
+        orderInformationDefaults: { persisted: true, canonicalSeedCount: 21 },
       })
 
       const loginResponse = await fetch(`${baseUrl}/api/login`, {
