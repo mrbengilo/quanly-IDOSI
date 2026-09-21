@@ -84,7 +84,7 @@ unset IDOSI_WAREHOUSE_API_KEY
       {
         "productId": "PRODUCT-MEN",
         "productCode": "DO-NAM",
-        "productName": "Đồ nam",
+        "productName": "Quần áo nam",
         "quantity": 7,
         "unit": "PIECE",
         "revenueType": "NORMAL",
