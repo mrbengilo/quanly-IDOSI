@@ -46,7 +46,7 @@ describe('estimated-weight subtotal with incomplete legacy data', () => {
   it('retains positive known estimates within an incomplete product and explains missing factors', () => {
     const report = summary([
       { ...base, id: 'MAPPED', items: [line('DRESS', 'Đầm', 3)] },
-      { ...base, id: 'UNMAPPED', items: [{ ...line('DRESS', 'Đầm', 4), weightConversion: { version: 'IDOSI-2026-09-15-v2', status: 'UNMAPPED', ruleId: null, piecesPerKg: null } }] },
+      { ...base, id: 'UNMAPPED', items: [{ ...line('DRESS', 'Tên lịch sử chưa xác định', 4), weightConversion: { version: 'IDOSI-2026-09-15-v2', status: 'UNMAPPED', ruleId: null, piecesPerKg: null } }] },
     ])
     renderReport(report.products)
     expect(within(table()).getByRole('row', { name: 'Đầm 7 ≈ 1 kg Phần đã quy đổi' })).toBeTruthy()

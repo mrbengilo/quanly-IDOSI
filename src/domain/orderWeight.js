@@ -2,7 +2,7 @@ import { ORDER_REVENUE_TYPES, revenueQuantityUnits, revenueTypeOf } from './orde
 
 // Retain the earlier version for explicit stored snapshots; never rewrite history.
 const PREVIOUS_TABLE_VERSION = 'IDOSI-2026-09-15-v1'
-const BEDDING_TABLE_VERSION = 'IDOSI-2026-09-15-v2'
+const SECOND_TABLE_VERSION = 'IDOSI-2026-09-15-v2'
 export const WEIGHT_TABLE_VERSION = 'IDOSI-2026-09-21-v3'
 const previousRules = Object.freeze([
   ['dress', 'Đầm', 3],
@@ -33,13 +33,13 @@ const previousRules = Object.freeze([
 ].map(([id, productName, piecesPerKg]) => Object.freeze({ id, productName, piecesPerKg })))
 
 // User correction: exactly 1 bedding piece = 3 kg, NOT 0.3 pieces/kg or a rounded 1/3.
-const beddingRules = Object.freeze(previousRules.map((rule) => rule.id === 'bedding'
+const secondRules = Object.freeze(previousRules.map((rule) => rule.id === 'bedding'
   ? Object.freeze({ id: rule.id, productName: rule.productName, piecesPerKg: null, kgPerPiece: 3 }) : rule))
-export const WEIGHT_CONVERSION_RULES = Object.freeze(beddingRules.map((rule) => rule.id === 'men'
+export const WEIGHT_CONVERSION_RULES = Object.freeze(secondRules.map((rule) => rule.id === 'men'
   ? Object.freeze({ ...rule, productName: 'Quần áo nam' }) : rule))
 const tables = new Map([
   [PREVIOUS_TABLE_VERSION, new Map(previousRules.map((rule) => [rule.id, rule]))],
-  [BEDDING_TABLE_VERSION, new Map(beddingRules.map((rule) => [rule.id, rule]))],
+  [SECOND_TABLE_VERSION, new Map(secondRules.map((rule) => [rule.id, rule]))],
   [WEIGHT_TABLE_VERSION, new Map(WEIGHT_CONVERSION_RULES.map((rule) => [rule.id, rule]))],
 ])
 const nameKey = (value) => String(value ?? '').normalize('NFC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase('vi-VN')
@@ -100,8 +100,16 @@ function lineParts(item) {
   const type = revenueTypeOf(item)
   const units = revenueQuantityUnits(item?.quantity, type)
   if (type === 'SALE_KG') return { type, value: fraction(BigInt(units), 1000n), basis: 'ACTUAL_KG', source: 'ORDER_QUANTITY', piecesPerKg: null, kgPerPiece: null, ruleId: null, tableVersion: null }
-  const snapshot = hasSnapshot(item) ? copyWeightSnapshot(item.weightConversion) : createWeightSnapshot(item?.productName || item?.name || item?.label)
-  const source = hasSnapshot(item) ? 'ORDER_SNAPSHOT' : 'LEGACY_TABLE_V3'
+  const stored = hasSnapshot(item) ? copyWeightSnapshot(item.weightConversion) : null
+  // Approved retrospective policy: retain stored evidence, but calculate every
+  // valid historical line with the current table. A valid rule ID survives
+  // product renames; formerly unmapped lines may now match an approved name.
+  // Corrupt/unknown snapshots remain incomplete rather than being guessed.
+  const rule = stored?.status === 'MAPPED'
+    ? tables.get(WEIGHT_TABLE_VERSION).get(stored.ruleId)
+    : findWeightRule(item?.productName || item?.name || item?.label)
+  const snapshot = stored?.status === 'INVALID' ? stored : snapshotOf(WEIGHT_TABLE_VERSION, rule)
+  const source = 'CURRENT_TABLE_V3'
   const metadata = { source, tableVersion: snapshot.version }
   if (snapshot.status !== 'MAPPED') return { type, value: null, basis: 'UNMAPPED', ...metadata, piecesPerKg: null, kgPerPiece: null, ruleId: null, reason: snapshot.status }
   const multiply = snapshot.kgPerPiece !== undefined
