@@ -4364,7 +4364,25 @@ const repairScopedStoreStateIfNeeded = async (db, actor, context, row, storeId, 
   if (typeof db?.readStoreStateSnapshot !== 'function') {
     return persistOpenStoreAttendanceChecklistRepairs(db, actor, context, row)
   }
-  const normalized = normalizeSharedStateForStorage(parseStoredJson(row.value_json, {}))
+  let repairState = parseStoredJson(row.value_json, {})
+  const completeChecklistProjection = ['tasks', 'taskAssignmentHistory', 'workCatalogItems']
+    .every((key) => Array.isArray(repairState[key]))
+  if (!completeChecklistProjection) {
+    // A compact screen intentionally omits checklist tasks/history. Reconciling
+    // it would mistake every sealed checklist for missing persisted rows and
+    // reload the entire system on every overview/attendance/payroll request.
+    // Follow the same repair-version gate as employee/system screen preflights.
+    const employees = Array.isArray(repairState.employees) ? repairState.employees : []
+    const pending = (Array.isArray(repairState.attendance) ? repairState.attendance : []).some((record) => (
+      (Number(record?.checklistSnapshot?.storeChecklistRepairVersion || 0) < STORE_ATTENDANCE_CHECKLIST_REPAIR_VERSION
+        || record?.checklistRepairError != null)
+      && openStoreChecklistRepairContext(record, employees)
+    ))
+    if (!pending) return row
+    const repairRow = await loadStoreState(db, 'global', storeId, actor.employee_id, 'checklist-repair')
+    repairState = parseStoredJson(repairRow?.value_json, {})
+  }
+  const normalized = normalizeSharedStateForStorage(repairState)
   if (reconcileOpenStoreAttendanceChecklists(normalized) === normalized) return row
   await persistOpenStoreAttendanceChecklistRepairs(db, actor, context)
   return loadStoreState(db, 'global', storeId, actor.employee_id, screen, period)
