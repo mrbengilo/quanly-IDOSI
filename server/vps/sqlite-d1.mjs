@@ -525,7 +525,9 @@ const storeStateSnapshotSql = (screen = '') => {
       AND violation.employee_id IS NOT NULL
       AND trim(violation.employee_id) <> ''`
     : ''
-  const sessionFilterSql = normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
+  // The operational overview only renders open shifts (including overdue ones).
+  // Historical checklist snapshots belong to attendance/payroll, not this read.
+  const sessionFilterSql = normalizedScreen === 'overview' || normalizedScreen === 'session' || normalizedScreen === 'initial' || normalizedScreen.startsWith('initial-')
     ? `AND (entity.collection_key <> 'attendance' OR (
         entity.open_flag = 1
         ${sessionOwnHistorySql}

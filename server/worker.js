@@ -2790,7 +2790,10 @@ export const projectSharedState = (
   user,
   { storeId: requestedWorkspaceStoreId = '', screen: requestedWorkspaceScreen = '' } = {},
 ) => {
-  const normalizedState = projectPointRevenueState(normalizeSharedStateForStorage(rawState))
+  const screenState = requestedWorkspaceScreen === 'overview' && rawState && typeof rawState === 'object'
+    ? { ...rawState, attendance: filterArray(rawState, 'attendance', (record) => record && !record.deletedAt && !record.checkOut && !record.checkOutAt) }
+    : rawState
+  const normalizedState = projectPointRevenueState(normalizeSharedStateForStorage(screenState))
   const supportCompensationContext = createSupportCompensationProjectionContext(normalizedState)
   const systemOperatorStoreWorkspace = ['admin', 'business_support'].includes(user.role)
     && Boolean(String(requestedWorkspaceStoreId || '').trim())
