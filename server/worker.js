@@ -1,5 +1,6 @@
 import { normalizeOrderItems as normalizedHistoricalOrderItems, resolveOrderItems as resolveConfiguredOrderItems, totalOrderItemQuantity, totalOrderItemWeightKg } from '../src/domain/orderItems.js'
 import { orderRevenueByType, validateOrderRevenue } from '../src/domain/orderRevenue.js'
+import { salesOverviewFromSummary } from '../src/domain/salesOverview.js'
 import { applyRevenueSnapshotPointPolicy, restorePointBonusRecord, restorePointRevenueSnapshot, storeViolationPointAssessment, violationPointsOf, isActivePointViolation, violationPointPeriod, formatViolationPoints } from '../src/domain/violationPoints.js'
 import { attendanceMatchesWindow, scheduleAssignmentIsUsable, scheduleConflict, scheduleWindows, scheduledCheckInChoices, shiftWindow, supportAllowsScheduling, supportForScheduledWindow } from '../src/domain/supportScheduling.js'
 import {
@@ -5781,6 +5782,21 @@ const summarizeOrderRows = (rows, scope) => {
     if (!(error instanceof TypeError || error instanceof RangeError)) throw error
     throw new ApiError(500, 'ORDER_SUMMARY_INVALID', 'Dữ liệu tổng hợp đơn hàng không hợp lệ.')
   }
+}
+
+const getSalesOverview = async (request, env, context, url) => {
+  const db = getDatabase(env)
+  const user = await requireSession(request, db, context, { resolveOperationalContext: false })
+  if (user.role !== 'admin') throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được xem thống kê bán hàng toàn hệ thống.')
+  const period = asMonth(url.searchParams.get('period'), 'Kỳ thống kê bán hàng')
+  const row = await loadStateCollections(db, 'global', ['stores'])
+  const state = row ? parseStoredJson(row.value_json, {}) : {}
+  const storeIds = [...new Set((state.stores || []).map((store) => String(store.id || '').trim().toLowerCase()).filter(Boolean))]
+  // Reuse store-indexed history reads; never hydrate unrelated payroll/task history.
+  const rows = []
+  for (const storeId of storeIds) rows.push(await readOrderSummaryRows(db, storeId, '', period))
+  const summary = summarizeOrderRows(rows.flat(), { period })
+  return jsonResponse(apiPayload(context, { period, ...salesOverviewFromSummary(summary) }))
 }
 
 const getOrderSummary = async (request, env, context, url) => {
@@ -25769,6 +25785,10 @@ const handleApi = async (request, env, context, url) => {
   if (path === '/api/finance-overview') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])
     return getFinanceOverview(request, env, context, url)
+  }
+  if (path === '/api/sales-overview') {
+    if (request.method !== 'GET') return methodNotAllowed(['GET'])
+    return getSalesOverview(request, env, context, url)
   }
   if (path === '/api/order-summary') {
     if (request.method !== 'GET') return methodNotAllowed(['GET'])

@@ -200,6 +200,10 @@ export const apiGetStateMetadata = (scope = 'global', { restore = false } = {}) 
 export const apiGetFinanceOverview = (period) => stateReadRequest(
   `/api/finance-overview?period=${encodeURIComponent(String(period || ''))}`,
 )
+export const apiGetSalesOverview = (period, options = {}) => stateReadRequest(
+  `/api/sales-overview?period=${encodeURIComponent(String(period || ''))}`,
+  options,
+)
 const appendOrderFilters = (params, filters) => {
   for (const key of ['employeeId', 'date', 'shiftId', 'paymentMethod', 'amount', 'query']) {
     if (filters[key] !== undefined && filters[key] !== null && filters[key] !== '') params.set(key, String(filters[key]))
