@@ -215,6 +215,20 @@ it('bounds disk-cache waiting so blocked IndexedDB cannot stall a menu', async (
   expect(app.remoteProjection.screen).toBe('orders')
 })
 
+it('aborts superseded foreground screen downloads without an error or stale activation', async () => {
+  await signIn(admin)
+  api.system.mockImplementationOnce((_screen, { signal }) => new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+  }))
+  let previous
+  await act(async () => { previous = app.ensureSystemWorkspaceData({ screen: 'reports' }) })
+  const signal = api.system.mock.calls[0][1].signal
+  await act(async () => { await app.ensureSystemWorkspaceData({ screen: 'stores' }); await previous })
+  expect(signal.aborted).toBe(true)
+  expect(app.remoteProjection.screen).toBe('stores')
+  expect(app.apiStatus).toBe('connected')
+})
+
 it('does not let a completed system prefetch undo an explicitly selected store', async () => {
   await signIn(admin)
   await act(async () => { await app.prefetchWorkspaceData('/admin/stores') })

@@ -1746,6 +1746,7 @@ export function AppProvider({ children }) {
     projectionRequestId: 0,
     pendingProjectionKey: '',
     pendingProjectionPromise: null,
+    pendingProjectionController: null,
     projectionCache: new Map(),
     prefetchRequest: null,
     domainReconciliations: 0,
@@ -1918,6 +1919,11 @@ export function AppProvider({ children }) {
     if (remote.pendingProjectionKey === projectionKey && remote.pendingProjectionPromise) {
       return remote.pendingProjectionPromise
     }
+    // A superseded navigation must not keep downloading/retrying a large screen
+    // while the user is waiting for a different destination. Same-key callers
+    // above still share the original request.
+    remote.pendingProjectionController?.abort()
+    remote.pendingProjectionController = null
     if (!force && remote.fullStateReady && Number(remote.hydratedVersion) >= Number(remote.version)
       && remote.projection === normalizedKind
       && String(remote.projectionScreen || '') === normalizedScreen
@@ -1948,18 +1954,21 @@ export function AppProvider({ children }) {
     // cleanup must not abort it or launch an identical second request.
     if (prefetched) prefetched.promoted = true
     const requestId = ++remote.projectionRequestId
+    const controller = new AbortController()
+    remote.pendingProjectionController = controller
     if (blocking && !restoredFromCache) {
       remote.fullStateReady = false
       setRemoteDataReady(false)
     }
     const readProjection = () => normalizedKind === 'store'
       ? apiGetStoreWorkspaceState(normalizedStoreId, {
+          signal: controller.signal,
           ...(normalizedScreen ? { screen: normalizedScreen } : {}),
           ...(normalizedPeriod ? { period: normalizedPeriod } : {}),
         })
       : normalizedScreen
-        ? apiGetSystemScreenState(normalizedScreen)
-        : apiGetState('global')
+        ? apiGetSystemScreenState(normalizedScreen, { signal: controller.signal })
+        : apiGetState('global', { signal: controller.signal })
     const request = (async () => {
       if (!force && !restoredFromCache) {
         const saved = prefetched ? null : await readWorkspaceCacheBriefly(projectionKey)
@@ -1974,7 +1983,7 @@ export function AppProvider({ children }) {
       let payload = prefetched
         ? await prefetched.payloadPromise
         : normalizedKind === 'global' && bootstrap
-          ? await apiBootstrapState('global')
+          ? await apiBootstrapState('global', { signal: controller.signal })
           : await readProjection()
       remote = apiRef.current
       if (!remote.enabled
@@ -2004,11 +2013,15 @@ export function AppProvider({ children }) {
         preferredActiveStoreId || normalizedStoreId || activeStoreIdRef.current,
       )
       return payload
-    })().finally(() => {
+    })().catch((error) => {
+      if (controller.signal.aborted) return null
+      throw error
+    }).finally(() => {
       const current = apiRef.current
       if (current.pendingProjectionPromise === request) {
         current.pendingProjectionKey = ''
         current.pendingProjectionPromise = null
+        current.pendingProjectionController = null
       }
     })
     remote.pendingProjectionKey = projectionKey

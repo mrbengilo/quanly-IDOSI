@@ -147,7 +147,7 @@ describe('remote command active-store preservation', () => {
 
     expect(api.apiGetState).not.toHaveBeenCalled()
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
-    expect(api.apiGetState).toHaveBeenCalledWith('global')
+    expect(api.apiGetState).toHaveBeenCalledWith('global', { signal: expect.any(AbortSignal) })
     expect(screen.getByLabelText('Cửa hàng đang chọn').textContent).toBe('STORE-B')
   })
 
@@ -258,7 +258,7 @@ describe('remote command active-store preservation', () => {
       await appRef.current.ensureSystemWorkspaceData({ screen: 'employees' })
     })
 
-    expect(api.apiGetSystemScreenState).toHaveBeenCalledWith('employees')
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledWith('employees', { signal: expect.any(AbortSignal) })
     expect(api.apiGetState).not.toHaveBeenCalled()
     expect(appRef.current.remoteProjection).toEqual({
       kind: 'global', storeId: '', screen: 'employees', period: '',
@@ -300,7 +300,7 @@ describe('remote command active-store preservation', () => {
       await Promise.resolve()
     })
 
-    expect(api.apiGetSystemScreenState).toHaveBeenCalledWith(expectedScreen)
+    expect(api.apiGetSystemScreenState).toHaveBeenCalledWith(expectedScreen, { signal: expect.any(AbortSignal) })
     expect(api.apiBootstrapState).not.toHaveBeenCalled()
     expect(api.apiGetState).not.toHaveBeenCalled()
     expect(appRef.current.remoteProjection).toEqual({
@@ -350,7 +350,7 @@ describe('remote command active-store preservation', () => {
       await Promise.resolve()
     })
 
-    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-B', { screen: 'payroll' })
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-B', { screen: 'payroll', signal: expect.any(AbortSignal) })
     expect(api.apiBootstrapState).not.toHaveBeenCalled()
     expect(appRef.current.remoteProjection).toEqual({ kind: 'store', storeId: 'STORE-B', screen: 'payroll', period: '' })
     expect(appRef.current.activeStoreId).toBe('STORE-B')
@@ -398,7 +398,7 @@ describe('remote command active-store preservation', () => {
     })
 
     expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledOnce()
-    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'orders' })
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'orders', signal: expect.any(AbortSignal) })
     expect(api.apiGetState).not.toHaveBeenCalled()
     expect(appRef.current.remoteDataReady).toBe(true)
     expect(appRef.current.remoteProjection).toEqual({
@@ -476,7 +476,7 @@ describe('remote command active-store preservation', () => {
     expect(resolveRefresh).toBeUndefined()
     await act(async () => { await vi.advanceTimersByTimeAsync(1_500) })
     expect(resolveRefresh).toBeTypeOf('function')
-    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'orders' })
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'orders', signal: expect.any(AbortSignal) })
     expect(api.apiGetState).not.toHaveBeenCalled()
 
     await act(async () => {
@@ -547,7 +547,7 @@ describe('remote command active-store preservation', () => {
     expect(api.apiSelectSessionRole).toHaveBeenCalledWith(availableRoles[1])
     expect(api.apiBootstrapState).not.toHaveBeenCalled()
     expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledOnce()
-    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'overview' })
+    expect(api.apiGetStoreWorkspaceState).toHaveBeenCalledWith('STORE-A', { screen: 'overview', signal: expect.any(AbortSignal) })
     expect(appRef.current.session).toMatchObject({ role: 'store_manager', employeeId: 'QL-001', storeId: 'STORE-A' })
     expect(appRef.current.remoteDataReady).toBe(false)
 
