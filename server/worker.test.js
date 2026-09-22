@@ -717,7 +717,7 @@ const setupSupportTransferRuntime = async ({
         id: 'HTKD-TRANSFER', name: 'Hỗ trợ vận hành', storeId: 'BUSINESS_SUPPORT',
         unit: 'business_support', status: 'Đang làm việc',
       }, ...extraEmployees],
-      supportTransfers: [transfer],
+      supportTransfers: transfer ? [transfer] : [],
       attendance,
       payrollPeriods,
       schedule,
@@ -19617,4 +19617,155 @@ describe('shared support workflow', () => {
     expect(stale.body.error.code).toBe('SUPPORT_TRANSFER_VERSION_CONFLICT')
   })
 
+})
+
+
+describe('same-day multi-shift scheduling', () => {
+  const date = '2026-09-22'
+  const shift = (id, start, end) => ({ id, storeId: 'S01', name: id, start, end, active: true })
+  const morning = shift('AM', '08:00', '12:00')
+  const afternoon = shift('PM', '12:00', '17:00')
+  const evening = shift('EVENING', '17:00', '21:00')
+  const setup = async (extra = {}) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(`${date}T08:00:00+07:00`))
+    onTestFinished(() => vi.useRealTimers())
+    return setupSupportTransferRuntime({
+      token: `multi-shift-${crypto.randomUUID()}`,
+      shiftDefinitions: [morning, afternoon, evening],
+      ...extra,
+    })
+  }
+  const version = (runtime) => runtime.env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get().version
+  const stored = (runtime) => readHydratedState(runtime.env.DB.database)
+  const command = async (runtime, type, payload, { auth = runtime.adminAuthorization, expectedVersion = version(runtime), key = crypto.randomUUID() } = {}) => {
+    const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type, payload, expectedVersion,
+    }, { ...auth, 'idempotency-key': key }), runtime.env)
+    return { status: response.status, body: await response.json(), replayed: response.headers.get('idempotency-replayed') }
+  }
+  const assign = (runtime, shiftIds, options = {}) => command(runtime, 'schedule.assign', {
+    storeId: 'S01', date, employeeIds: ['E01'], shiftIds,
+  }, options)
+  const location = { latitude: 10.8, longitude: 106.7, accuracy: 10 }
+  const checkIn = (runtime, shiftId) => command(runtime, 'attendance.check_in', { shiftId, location }, { auth: runtime.employeeAuthorization })
+  const checkOut = (runtime, attendanceId) => command(runtime, 'attendance.check_out', {
+    attendanceId, cashRevenue: 0, transferRevenue: 0, location,
+  }, { auth: runtime.employeeAuthorization })
+
+  it('appends several shifts without replacing earlier assignments and deduplicates retries', async () => {
+    const runtime = await setup()
+    expect((await assign(runtime, ['AM'])).status).toBe(200)
+    const original = stored(runtime).schedule[0]
+    const expectedVersion = version(runtime)
+    const options = { key: 'multi-shift-append-replay', expectedVersion }
+    const added = await assign(runtime, ['PM', 'EVENING'], options)
+    expect(added.status, JSON.stringify(added.body)).toBe(200)
+    expect(stored(runtime).schedule).toHaveLength(1)
+    expect(stored(runtime).schedule[0]).toMatchObject({ id: original.id, shiftId: 'AM', shiftIds: ['AM', 'PM', 'EVENING'] })
+    expect(stored(runtime).schedule[0].shiftSnapshots[0]).toEqual(original.shiftSnapshots[0])
+    expect((await assign(runtime, ['PM', 'EVENING'], options)).replayed).toBe('true')
+    expect((await assign(runtime, ['am', 'PM', 'pm'])).status).toBe(200)
+    expect(stored(runtime).schedule[0].shiftIds).toEqual(['AM', 'PM', 'EVENING'])
+    expect(stored(runtime).schedule[0].shiftSnapshots).toHaveLength(3)
+  })
+
+  it.each([false, true])('checks out then assigns and attends the next shift (support history: %s)', async (hasSupportHistory) => {
+    const runtime = await setup({
+      ...(hasSupportHistory ? { transfer: {
+        id: 'TR-LATER', employeeId: 'E01', fromStoreId: 'S01', toStoreId: 'S02',
+        fromDate: '2026-09-23', toDate: '2026-09-23', status: 'Đã duyệt',
+      } } : {}),
+    })
+    expect((await assign(runtime, ['AM'])).status).toBe(200)
+    const first = await checkIn(runtime, 'AM')
+    expect(first.status, JSON.stringify(first.body)).toBe(201)
+    vi.setSystemTime(new Date(`${date}T12:00:00+07:00`))
+    const closed = await checkOut(runtime, first.body.attendance.id)
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200)
+    expect(closed.body.attendance).toMatchObject({ workedSeconds: 14_400, hours: 4 })
+    const settled = stored(runtime).attendance.find((record) => record.id === first.body.attendance.id)
+    const financeBefore = { orders: stored(runtime).orders, cashTransactions: stored(runtime).cashTransactions }
+    const added = await assign(runtime, ['PM'])
+    expect(added.status, JSON.stringify(added.body)).toBe(200)
+    expect(stored(runtime).attendance.find((record) => record.id === first.body.attendance.id)).toEqual(settled)
+    const second = await checkIn(runtime, 'PM')
+    expect(second.status, JSON.stringify(second.body)).toBe(201)
+    expect(second.body.attendance.id).not.toBe(first.body.attendance.id)
+    expect(second.body.attendance).toMatchObject({ employeeId: 'E01', date, shiftId: 'PM', checkOut: null })
+    expect(stored(runtime).attendance).toHaveLength(2)
+    expect(stored(runtime).attendance.filter((record) => !record.checkOut && !record.checkOutAt)).toHaveLength(1)
+    expect(stored(runtime).orders).toEqual(financeBefore.orders)
+    expect(stored(runtime).cashTransactions).toEqual(financeBefore.cashTransactions)
+    const bootstrap = await worker.fetch(new Request('https://idosi.example/api/bootstrap', {
+      headers: runtime.employeeAuthorization,
+    }), runtime.env)
+    expect(bootstrap.status).toBe(200)
+    const refreshed = await bootstrap.json()
+    expect(refreshed.state.schedule[0].shiftIds).toEqual(['AM', 'PM'])
+    expect(refreshed.state.attendance).toHaveLength(2)
+  })
+
+  it('allows scheduling the next shift while the first is open but requires checkout before another check-in', async () => {
+    const runtime = await setup()
+    await assign(runtime, ['AM'])
+    expect((await checkIn(runtime, 'AM')).status).toBe(201)
+    expect((await assign(runtime, ['PM'])).status).toBe(200)
+    const second = await checkIn(runtime, 'PM')
+    expect(second.status).toBe(409)
+    expect(second.body.error.code).toBe('ATTENDANCE_ALREADY_OPEN')
+    expect(stored(runtime).attendance).toHaveLength(1)
+  })
+
+  it('retains legacy single-shift rows, inactive historical snapshots and the existing note', async () => {
+    const runtime = await setup({
+      shiftDefinitions: [{ ...morning, start: '09:00', active: false, deletedAt: `${date}T04:00:00Z` }, afternoon, evening],
+      schedule: [{ id: 'LEGACY', employeeId: 'E01', storeId: 'S01', date, shiftId: 'AM', shiftSnapshots: [morning], note: 'Giữ ghi chú cũ' }],
+      attendance: [{ id: 'CLOSED-AM', employeeId: 'E01', storeId: 'S01', date, shiftId: 'AM', checkIn: '08:00', checkOut: '12:00', hours: 4 }],
+    })
+    const result = await assign(runtime, ['PM'])
+    expect(result.status, JSON.stringify(result.body)).toBe(200)
+    expect(stored(runtime).schedule[0]).toMatchObject({ id: 'LEGACY', shiftId: 'AM', shiftIds: ['AM', 'PM'], note: 'Giữ ghi chú cũ' })
+    expect(stored(runtime).schedule[0].shiftSnapshots[0]).toEqual(morning)
+    expect(stored(runtime).attendance[0]).toMatchObject({ id: 'CLOSED-AM', hours: 4, checkOut: '12:00' })
+    expect((await assign(runtime, ['AM'])).body.error.code).toBe('SHIFT_INVALID')
+  })
+
+  it('rejects overlap with an existing shift atomically instead of silently replacing it', async () => {
+    const overlap = shift('OVERLAP', '11:00', '15:00')
+    const runtime = await setup({ shiftDefinitions: [morning, afternoon, overlap] })
+    await assign(runtime, ['AM'])
+    const before = stored(runtime).schedule
+    const beforeVersion = version(runtime)
+    const result = await assign(runtime, ['OVERLAP'])
+    expect(result.status).toBe(409)
+    expect(result.body.error.code).toBe('SCHEDULE_TIME_OVERLAP')
+    expect(stored(runtime).schedule).toEqual(before)
+    expect(version(runtime)).toBe(beforeVersion)
+  })
+
+  it('keeps replace-day destructive only for unstarted shifts and protects attended shifts', async () => {
+    const runtime = await setup()
+    await assign(runtime, ['AM', 'PM'])
+    const replaced = await command(runtime, 'schedule.replace_day', { storeId: 'S01', date, assignments: [{ employeeId: 'E01', shiftIds: ['AM'] }] })
+    expect(replaced.status).toBe(200)
+    expect(stored(runtime).schedule[0].shiftIds).toEqual(['AM'])
+    await checkIn(runtime, 'AM')
+    expect((await assign(runtime, ['PM'])).status).toBe(200)
+    const removed = await command(runtime, 'schedule.replace_day', { storeId: 'S01', date, assignments: [{ employeeId: 'E01', shiftIds: ['PM'] }] })
+    expect(removed.status).toBe(409)
+    expect(removed.body.error.code).toBe('SCHEDULE_STARTED_IMMUTABLE')
+    expect(stored(runtime).schedule[0].shiftIds).toEqual(['AM', 'PM'])
+  })
+
+  it('rejects stale competing additions and preserves store and employee authorization', async () => {
+    const runtime = await setup()
+    await assign(runtime, ['AM'])
+    const expectedVersion = version(runtime)
+    expect((await assign(runtime, ['PM'], { expectedVersion })).status).toBe(200)
+    expect((await assign(runtime, ['EVENING'], { expectedVersion })).body.error.code).toBe('VERSION_CONFLICT')
+    expect((await assign(runtime, ['EVENING'], { auth: runtime.managerAuthorization })).status).toBe(403)
+    expect((await assign(runtime, ['EVENING'], { auth: runtime.employeeAuthorization })).status).toBe(403)
+    expect(stored(runtime).schedule[0].shiftIds).toEqual(['AM', 'PM'])
+  })
 })
