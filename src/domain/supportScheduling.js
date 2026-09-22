@@ -190,7 +190,8 @@ export const buildLocalScheduleAssignments = (state = {}, {
     const current = index >= 0 ? schedule[index] : {
       id: createId(), employeeId, storeId, date, shiftIds: [], createdAt: now, createdBy: actor,
     }
-    const mergedShiftIds = uniqueScheduleReferences([...(current.shiftIds || []), ...selectedShiftIds])
+    const previousShiftIds = current.shiftIds?.length ? current.shiftIds : [current.shiftId]
+    const mergedShiftIds = uniqueScheduleReferences([...previousShiftIds, ...selectedShiftIds])
     const assignment = {
       ...current,
       id: current.id || createId(),

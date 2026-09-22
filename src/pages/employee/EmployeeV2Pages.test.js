@@ -1,5 +1,5 @@
 import { createElement } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -905,4 +905,40 @@ describe('store employee current-shift orders', () => {
     expect(screen.getAllByText('237,000 đ').length).toBeGreaterThan(0)
     expect(screen.getAllByText('Dosii KVC')).toHaveLength(1)
   })
+})
+
+
+it('offers the next assigned shift after checkout while excluding the completed shift', async () => {
+  vi.useFakeTimers()
+  vi.setSystemTime('2026-09-22T10:00:00.000Z')
+  const employee = { id: 'E1', storeId: 'S1', unit: 'store', name: 'Nhân viên nhiều ca' }
+  const morning = { id: 'AM', storeId: 'S1', name: 'Ca sáng', start: '08:00', end: '12:00' }
+  const evening = { id: 'PM', storeId: 'S1', name: 'Ca tối', start: '17:00', end: '21:00' }
+  const previousGeolocation = Object.getOwnPropertyDescriptor(navigator, 'geolocation')
+  Object.defineProperty(navigator, 'geolocation', { configurable: true, value: {
+    getCurrentPosition: (success) => success({ coords: { latitude: 10.8, longitude: 106.7, accuracy: 5 } }),
+  } })
+  try {
+    mocked.app = {
+      session: { role: 'employee', employeeId: 'E1', storeId: 'S1' }, currentEmployee: employee,
+      employees: [employee], stores: [{ id: 'S1', name: 'Cửa hàng 1' }],
+      shiftDefinitions: [morning, evening],
+      schedule: [{ id: 'SCH-1', employeeId: 'E1', storeId: 'S1', date: '2026-09-22', shiftIds: ['AM', 'PM'], shiftSnapshots: [morning, evening] }],
+      attendance: [{ id: 'CLOSED-AM', employeeId: 'E1', storeId: 'S1', date: '2026-09-22', shiftId: 'AM',
+        checkIn: '08:00', checkOut: '12:00', checkInAt: '2026-09-22T01:00:00Z', checkOutAt: '2026-09-22T05:00:00Z' }],
+      orders: [], supportTransfers: [], policies: {}, checkIn: vi.fn().mockResolvedValue({ ok: true }), notify: vi.fn(),
+    }
+    render(createElement(MemoryRouter, null, createElement(EmployeeAttendancePage)))
+    expect(screen.getByText('1 ca có thể điểm danh')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'ĐIỂM DANH' }).disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'ĐIỂM DANH' }))
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).queryByText(/Ca sáng/u)).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: /Ca tối/u }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(mocked.app.checkIn).toHaveBeenCalledWith(expect.objectContaining({ shiftId: 'PM', scheduleId: 'SCH-1', date: '2026-09-22' }))
+  } finally {
+    if (previousGeolocation) Object.defineProperty(navigator, 'geolocation', previousGeolocation)
+    else delete navigator.geolocation
+  }
 })

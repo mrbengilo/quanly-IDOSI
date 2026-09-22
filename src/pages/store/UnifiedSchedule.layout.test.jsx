@@ -194,6 +194,26 @@ describe('store schedule visual flow', () => {
     expect(within(dialog).getByRole('checkbox', { name: `Chọn nhân viên ${employee.name}` }).disabled).toBe(false)
   })
 
+  it('submits only the added evening shift after the same employee completed an earlier shift', async () => {
+    const evening = { ...shift, id: 'CA-TOI', name: 'Ca tối', start: '17:00', end: '21:00' }
+    mocked.app.shiftDefinitions.push(evening)
+    mocked.app.attendance = [{ id: 'ATT-AM', employeeId: employee.id, storeId: store.id,
+      date: localDate(), shiftId: shift.id, checkIn: '08:00', checkOut: '12:00' }]
+    mocked.app.saveScheduleMultiple.mockResolvedValue({ ok: true })
+    renderSchedule()
+    fireEvent.click(screen.getByRole('button', { name: 'PHÂN CA' }))
+    const dialog = screen.getByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: /Chọn Ca tối/u }))
+    const checkbox = within(dialog).getByRole('checkbox', { name: `Chọn nhân viên ${employee.name}` })
+    expect(checkbox.disabled).toBe(false)
+    fireEvent.click(checkbox)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'LƯU' }))
+    await waitFor(() => expect(mocked.app.saveScheduleMultiple).toHaveBeenCalledWith(
+      [employee.id], ['CA-TOI'], { date: localDate(), note: '', storeId: store.id },
+    ))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
   it('creates a reusable shift without reintroducing a required date', async () => {
     renderSchedule()
     fireEvent.click(screen.getByRole('button', { name: 'Tạo ca làm việc' }))

@@ -10666,8 +10666,8 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
     if (!requestedShiftIds.length || requestedShiftIds.some((shiftId) => !shifts.has(normalizeIdentifierKey(shiftId)))) {
       throw new ApiError(400, 'SHIFT_INVALID', `Ca làm việc của nhân viên ${employeeId} không hợp lệ.`)
     }
-    const shiftIds = requestedShiftIds.map((shiftId) => String(shifts.get(normalizeIdentifierKey(shiftId)).id || shiftId))
-    const mismatchedShift = shiftIds.map((shiftId) => shifts.get(normalizeIdentifierKey(shiftId)))
+    const selectedShiftIds = requestedShiftIds.map((shiftId) => String(shifts.get(normalizeIdentifierKey(shiftId)).id || shiftId))
+    const mismatchedShift = selectedShiftIds.map((shiftId) => shifts.get(normalizeIdentifierKey(shiftId)))
       .find((shift) => shift.date && String(shift.date) !== date)
     if (mismatchedShift) {
       throw new ApiError(400, 'SHIFT_DATE_MISMATCH', `Ca ${mismatchedShift.name || mismatchedShift.id} chỉ áp dụng ngày ${mismatchedShift.date}.`)
@@ -10677,6 +10677,15 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       && String(entry.date || entry.workDate || '') === date
       && sameIdentifier(employeeReference(entry), employeeId)
     ))
+    // Assign is additive; only replace_day may remove an existing shift. Keep
+    // historical IDs/snapshots even when their reusable definition is retired.
+    const previousShiftIds = previousAssignment?.shiftIds?.length
+      ? previousAssignment.shiftIds : [previousAssignment?.shiftId]
+    const shiftIds = [...new Map([
+      ...(body.type === 'schedule.assign' ? previousShiftIds : []),
+      ...selectedShiftIds,
+    ].map((shiftId) => String(shiftId || '').trim()).filter(Boolean)
+      .map((shiftId) => [normalizeIdentifierKey(shiftId), shiftId])).values()]
     const previousSnapshots = new Map((Array.isArray(previousAssignment?.shiftSnapshots) ? previousAssignment.shiftSnapshots : [])
       .filter(isPlainRecord)
       .map((snapshot) => [normalizeIdentifierKey(snapshot.id), snapshot]))
@@ -10684,6 +10693,10 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       const previousSnapshot = previousSnapshots.get(normalizeIdentifierKey(shiftId))
       if (previousSnapshot) return previousSnapshot
       const shift = shifts.get(normalizeIdentifierKey(shiftId))
+        || (state.shiftDefinitions || []).find((definition) => sameIdentifier(definition.id, shiftId)
+          && sameIdentifier(definition.storeId, storeId))
+      // Fail closed through scheduleConflict if legacy timing cannot be resolved.
+      if (!shift) return { id: shiftId }
       return {
         id: shift.id,
         name: shift.name,
@@ -10711,7 +10724,7 @@ const scheduleCommand = async (db, actor, body, commandContext) => {
       shiftId: shiftIds[0],
       shiftSnapshots,
       ...(previousAssignment?.cancelledShifts ? { cancelledShifts: previousAssignment.cancelledShifts } : {}),
-      note: String(assignment.note || '').trim().slice(0, 500),
+      note: String(assignment.note || (body.type === 'schedule.assign' ? previousAssignment?.note : '') || '').trim().slice(0, 500),
       createdAt: previousAssignment?.createdAt || commandContext.now,
       createdBy: previousAssignment?.createdBy || serverActorSnapshot(actor),
       ...(previousAssignment ? { updatedAt: commandContext.now, updatedBy: serverActorSnapshot(actor) } : {}),
