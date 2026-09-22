@@ -68,6 +68,7 @@ import {
   validateSupportSchedulePresets,
 } from '../src/domain/supportWorkSchedule.js'
 import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
+import { productOptions } from '../src/domain/orderInformationSettings.js'
 import { resolveOrderCustomFields as resolveConfiguredOrderCustomFields } from '../src/domain/orderCustomFields.js'
 
 const API_PREFIX = '/api/'
@@ -5810,14 +5811,22 @@ const getSalesOverview = async (request, env, context, url) => {
   const user = await requireSession(request, db, context, { resolveOperationalContext: false })
   if (user.role !== 'admin') throw new ApiError(403, 'ROLE_FORBIDDEN', 'Chỉ Admin được xem thống kê bán hàng toàn hệ thống.')
   const period = asMonth(url.searchParams.get('period'), 'Kỳ thống kê bán hàng')
-  const row = await loadStateCollections(db, 'global', ['stores'])
+  const row = await loadStateCollections(db, 'global', ['stores', 'orderInformationOptions'])
   const state = row ? parseStoredJson(row.value_json, {}) : {}
   const storeIds = [...new Set((state.stores || []).map((store) => String(store.id || '').trim().toLowerCase()).filter(Boolean))]
+  const productCatalog = Array.isArray(state.orderInformationOptions) ? state.orderInformationOptions : []
   // Reuse store-indexed history reads; never hydrate unrelated payroll/task history.
   const rows = []
   for (const storeId of storeIds) rows.push(await readOrderSummaryRows(db, storeId, '', period))
-  const summary = summarizeOrderRows(rows.flat(), { period })
+  const summary = summarizeOrderRows(rows.flat(), { period, productCatalog })
   return jsonResponse(apiPayload(context, { period, ...salesOverviewFromSummary(summary) }))
+}
+
+// Product identity comes from the catalog, never from a hard-coded name list.
+const loadProductCatalog = async (db) => {
+  const row = await loadStateCollections(db, 'global', ['orderInformationOptions'])
+  const state = row ? parseStoredJson(row.value_json, {}) : {}
+  return Array.isArray(state.orderInformationOptions) ? state.orderInformationOptions : []
 }
 
 const getOrderSummary = async (request, env, context, url) => {
@@ -5826,7 +5835,10 @@ const getOrderSummary = async (request, env, context, url) => {
   const period = asMonth(url.searchParams.get('period'), 'Kỳ tổng hợp đơn hàng')
   const filters = orderReadFilters(url)
   const rows = await readOrderSummaryRows(db, storeId, employeeId, period)
-  const summary = summarizeOrderRows(rows, { storeId, period, employeeId, ownOrdersOnly: user.role === 'employee', ...filters })
+  // Every statistics route resolves product identity from the same catalog, so the
+  // in-app tables and the warehouse export can never disagree about a product.
+  const productCatalog = await loadProductCatalog(db)
+  const summary = summarizeOrderRows(rows, { storeId, period, employeeId, productCatalog, ownOrdersOnly: user.role === 'employee', ...filters })
   return jsonResponse(apiPayload(context, { storeId, period, ...summary }))
 }
 
@@ -5919,6 +5931,19 @@ const warehouseStatisticsFilters = (url, period) => {
   return filters
 }
 
+// A stable fingerprint of the product catalog as the warehouse sees it. Renaming,
+// retiring or superseding an option changes it; unrelated edits elsewhere do not.
+const warehouseCatalogVersion = async (options) => {
+  const products = productOptions(options, { includeInactive: true }).map((option) => ({
+    id: String(option.id),
+    code: String(option.code || ''),
+    label: option.label,
+    active: option.active === true,
+    supersededBy: option.supersededBy ? String(option.supersededBy) : null,
+  }))
+  return `products-${(await sha256(JSON.stringify(canonicalize(products)))).slice(0, 22)}`
+}
+
 const getWarehouseOrderStatistics = async (request, env, context, url) => {
   authorizeWarehouseStatisticsRequest(request, env)
   const requestedStoreId = String(url.searchParams.get('storeId') || '').trim()
@@ -5928,8 +5953,9 @@ const getWarehouseOrderStatistics = async (request, env, context, url) => {
   const period = asMonth(url.searchParams.get('period'), 'Kỳ thống kê kho')
   const filters = warehouseStatisticsFilters(url, period)
   const db = getDatabase(env)
-  const storeRow = await loadStateCollections(db, 'global', ['stores'])
+  const storeRow = await loadStateCollections(db, 'global', ['stores', 'orderInformationOptions'])
   const storeState = storeRow ? parseStoredJson(storeRow.value_json, {}) : {}
+  const productCatalog = Array.isArray(storeState.orderInformationOptions) ? storeState.orderInformationOptions : []
   const store = requireActivePhysicalStore(storeState, requestedStoreId)
   const storeId = String(store.id)
   const allowedStores = String(env?.WAREHOUSE_API_STORE_IDS || '').split(',').map((id) => id.trim()).filter(Boolean)
@@ -5937,13 +5963,16 @@ const getWarehouseOrderStatistics = async (request, env, context, url) => {
     throw new ApiError(403, 'WAREHOUSE_STORE_FORBIDDEN', 'Khóa tích hợp không được xem cửa hàng này.')
   }
   const rows = await readOrderSummaryRows(db, storeId, '', period)
-  const summary = summarizeOrderRows(rows, { storeId, period, ...filters })
+  const summary = summarizeOrderRows(rows, { storeId, period, productCatalog, ...filters })
   return jsonResponse(apiPayload(context, {
     apiVersion: 1,
     currency: 'VND',
     timezone: 'Asia/Ho_Chi_Minh',
     generatedAt: context.now,
     revenueBasis: 'ACTIVE_ORDER_AMOUNT',
+    // Consumers group on canonicalProductId. The version changes whenever the
+    // catalog does, so a stale snapshot is detectable instead of silently mixed.
+    catalogVersion: await warehouseCatalogVersion(productCatalog),
     storeId,
     store: { id: storeId, name: String(store.name || store.short || storeId) },
     filters: {
