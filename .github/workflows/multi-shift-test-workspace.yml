@@ -1,0 +1,34 @@
+name: Multi-shift regression workspace
+
+on:
+  push:
+    branches: [fix/multi-shift-attendance-20260922]
+    paths: [.github/workflows/multi-shift-test-workspace.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: npm ci --prefer-offline --no-audit --no-fund
+      - name: Package public source and test dependencies only
+        run: |
+          git archive HEAD -o /tmp/idosi-source.tar
+          tar -czf /tmp/idosi-test-dependencies.tar.gz node_modules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: multi-shift-test-workspace
+          path: |
+            /tmp/idosi-source.tar
+            /tmp/idosi-test-dependencies.tar.gz
+          retention-days: 1
