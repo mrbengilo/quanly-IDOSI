@@ -1,6 +1,7 @@
 import { emptyRevenueByType, orderRevenueByType, revenueQuantityUnits, revenueTypeOf, revenueUnitOf } from './orderRevenue.js'
 import { normalizeOrderItems } from './orderItems.js'
 import { normalizeOrderCustomFields, orderCustomFieldDisplayValue } from './orderCustomFields.js'
+import { productIdentityResolver } from './orderInformationSettings.js'
 import { addItemWeight, addOrderWeight, createWeightAccumulator, finishWeight } from './orderWeight.js'
 
 const VIETNAM_OFFSET_MS = 7 * 60 * 60 * 1_000
@@ -95,11 +96,14 @@ const shiftMetadata = (order) => {
   return { shiftKey: shiftGroupKey(order), ...(shiftId ? { shiftId } : {}), ...(shiftName ? { shiftName } : {}), ...(shiftStart ? { shiftStart } : {}), ...(shiftEnd ? { shiftEnd } : {}) }
 }
 const renamedProductNames = new Set(['quần áo nam', 'áo nữ'])
-const productKey = (item) => {
+// With a catalog, the resolver decides identity from catalog data alone. Without
+// one, fall back to the two approved aliases crossing stable option IDs; every
+// other item keeps ID-first grouping so an inconsistent legacy label cannot split
+// a known product or accidentally merge two unrelated custom products.
+const productKey = (item, resolveIdentity = null) => {
+  const identity = resolveIdentity?.(item)
+  if (identity) return `id:${identity.id.toLocaleLowerCase('vi-VN')}`
   const name = String(item.productName || '').trim().toLocaleLowerCase('vi-VN')
-  // Only the two approved aliases cross stable option IDs. Every other item
-  // keeps ID-first grouping so an inconsistent legacy label cannot split a
-  // known product or accidentally merge two unrelated custom products.
   if (renamedProductNames.has(name)) return `name:${name}`
   return `id:${String(item.productId || item.productCode || item.productName).trim().toLocaleLowerCase('vi-VN')}`
 }
@@ -108,7 +112,12 @@ const weightAccumulatorFor = (weights, target) => {
   if (!weights.has(target)) weights.set(target, createWeightAccumulator())
   return weights.get(target)
 }
-const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) => {
+// `canonicalProduct*` is the entry the catalog uses today and is the only safe key
+// to aggregate on across systems. `product*` stays the snapshot as sold, for audit.
+const canonicalFields = (resolved) => (resolved
+  ? { canonicalProductId: resolved.id, canonicalProductCode: resolved.code }
+  : {})
+const addOrderProducts = (summary, itemMap, order, weights, combinedProducts, resolveIdentity = null) => {
   const items = normalizeOrderItems(order.items)
   if (!items.length) { summary.unclassifiedOrders += 1; return }
   summary.ordersWithItems += 1
@@ -116,11 +125,14 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) =>
   const countedProducts = new Set()
   items.forEach((item) => {
     const type = revenueTypeOf(item)
-    const identity = productKey(item)
+    const resolved = resolveIdentity?.(item) || null
+    const identity = productKey(item, resolveIdentity)
     const key = `${identity}:${type}`
     if (!identity) return
     const existing = itemMap.get(key) || {
-      productId: item.productId, productCode: item.productCode, productName: item.productName || item.productCode || 'Mặt hàng',
+      productId: item.productId, productCode: item.productCode,
+      productName: resolved?.label || item.productName || item.productCode || 'Mặt hàng',
+      ...canonicalFields(resolved),
       quantity: 0, unit: revenueUnitOf(type), revenueType: type, orders: 0,
     }
     const units = revenueQuantityUnits(item.quantity, type)
@@ -135,7 +147,9 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) =>
 
     // A product appears once across all three revenue types; an order is counted once per product.
     const combined = combinedProducts.get(identity) || {
-      productId: item.productId, productCode: item.productCode, productName: existing.productName, orders: 0, totalQuantity: 0,
+      productId: item.productId, productCode: item.productCode, productName: existing.productName,
+      ...canonicalFields(resolved),
+      orders: 0, totalQuantity: 0,
     }
     // Count original pieces from NORMAL + SALE_PIECE only. Actual kg is already in weight.actualKg.
     if (type !== 'SALE_KG') {
@@ -158,7 +172,10 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts) =>
   })
 }
 
-export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', ...filters } = {}) => {
+export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', productCatalog = null, ...filters } = {}) => {
+  // Passing the catalog makes product identity data-driven; leaving it out keeps
+  // the previous behaviour for callers that have no catalog at hand.
+  const resolveIdentity = productCatalog ? productIdentityResolver(productCatalog) : null
   const totals = emptyTotals()
   const groups = { shift: new Map(), day: new Map(), month: new Map(), employee: new Map() }
   const products = emptyProductSummary()
@@ -177,7 +194,7 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
     const amount = checkedAmount(order)
     addOrder(totals, order, amount)
     addOrderWeight(weightAccumulatorFor(weights, totals), order)
-    addOrderProducts(products, productItems, order, weights, combinedProducts)
+    addOrderProducts(products, productItems, order, weights, combinedProducts, resolveIdentity)
     for (const view of Object.keys(groups)) {
       const key = String(orderGroupKey(order, view))
       const groupTotals = groups[view].get(key) || { ...emptyTotals(), ...(view === 'shift' ? shiftMetadata(order) : {}) }
@@ -191,6 +208,6 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
   products.weight = totals.weight
   products.weightByProduct = [...combinedProducts.values()].sort((a, b) => a.productName.localeCompare(b.productName, 'vi-VN'))
   products.items = [...productItems.values()].sort((left, right) => right.quantity - left.quantity || left.productName.localeCompare(right.productName, 'vi-VN'))
-  products.productTypes = new Set(products.items.map(productKey)).size
+  products.productTypes = new Set(products.items.map((item) => productKey(item, resolveIdentity))).size
   return { totals, products, groups: { shift: sortedGroups(groups.shift), day: sortedGroups(groups.day), month: sortedGroups(groups.month), employee: sortedGroups(groups.employee) } }
 }
