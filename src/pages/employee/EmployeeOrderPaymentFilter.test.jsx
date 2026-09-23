@@ -80,7 +80,7 @@ describe('employee order payment filter', () => {
     expect(screen.getByText('2 / 5 đơn trong ca')).toBeTruthy()
     expect(metric('ĐƠN TRONG CA').getByText('5')).toBeTruthy()
     expect(metric('DOANH THU TRONG CA').getByText('420 đ')).toBeTruthy()
-    expect(metric('DOANH THU TRONG CA').getByText('Bán thường + 2 loại sale')).toBeTruthy()
+    expect(metric('DOANH THU TRONG CA').getByText('Bán thường + 2 loại sale + chưa phân loại')).toBeTruthy()
 
     selectPayment('all')
     expect(screen.getByText('UNKNOWN')).toBeTruthy()

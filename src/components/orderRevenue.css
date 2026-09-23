@@ -20,6 +20,10 @@
 .order-item-selector__price { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px; align-items: center; font-size: 11px; }
 .order-item-selector__price .input-wrap { min-width: 0; }
 .order-item-selector__amount { text-align: right; }
+.order-item-selector__classification { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.order-item-selector__classification button { min-height: 36px; border: 1px solid #b7d9c5; border-radius: 8px; background: #fff; color: #195c3a; padding: 6px 10px; font: inherit; cursor: pointer; }
+.order-item-selector__classification button:focus-visible { outline: 3px solid #81c79e; outline-offset: 2px; }
+.order-item-selector__classification button:disabled { cursor: not-allowed; opacity: .6; }
 .order-revenue-details { display: grid; gap: 3px; margin: 6px 0 0; font-size: 10px; min-width: 140px; }
 .order-revenue-details > div { display: flex; gap: 7px; justify-content: space-between; }
 .order-revenue-details dt { color: #667085; }
