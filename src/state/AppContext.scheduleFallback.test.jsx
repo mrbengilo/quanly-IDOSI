@@ -89,6 +89,30 @@ describe('AppContext local schedule fallback', () => {
     vi.clearAllMocks()
   })
 
+  it('keeps the selected work mode in local support schedules and their history', async () => {
+    const initial = fixture()
+    initial.employees.push({ id: 'VP-01', name: 'Nhân viên văn phòng', unit: 'office', employmentType: 'Full-Time' })
+    await renderLocalAdmin(initial)
+
+    let created
+    await act(async () => {
+      created = await appRef.current.saveBusinessSupportSchedule({
+        employeeId: 'VP-01', targetUnit: 'office', date, start: '08:30', end: '17:30', workMode: 'Online',
+      })
+    })
+    expect(created).toMatchObject({ ok: true, schedule: { workMode: 'Online' }, history: { workMode: 'Online' } })
+
+    let updated
+    await act(async () => {
+      updated = await appRef.current.saveBusinessSupportSchedule({
+        scheduleId: created.schedule.id, employeeId: 'VP-01', targetUnit: 'office',
+        date, start: '09:00', end: '17:30', workMode: 'Offline',
+      })
+    })
+    expect(updated).toMatchObject({ ok: true, schedule: { workMode: 'Offline' }, history: { workMode: 'Offline' } })
+    expect(appRef.current.supportWorkSchedules.find((record) => record.id === created.schedule.id)?.workMode).toBe('Offline')
+  })
+
   it('keeps home and host records separate, allows adjacency and rejects overlap/outside-grant', async () => {
     await renderLocalAdmin()
     let adjacent

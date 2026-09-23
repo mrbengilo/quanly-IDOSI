@@ -12325,7 +12325,7 @@ describe('IDOSI Worker security primitives', () => {
         type: 'support_schedule.assign', expectedVersion: 7,
         payload: {
           employeeId: support.id, date: '2026-08-21', shiftName: 'Ca tối',
-          start: '18:00', end: '21:00', note: 'Lịch riêng ngày 21/08',
+          start: '18:00', end: '21:00', workMode: 'Online', note: 'Lịch riêng ngày 21/08',
         },
       }, { ...supportAuthorization, 'idempotency-key': 'support-daily-schedule-0001' }), env)
       expect(dailySchedule.status).toBe(200)
@@ -12333,15 +12333,24 @@ describe('IDOSI Worker security primitives', () => {
         version: 8,
         schedule: {
           employeeId: support.id, targetUnit: 'business_support', date: '2026-08-21', employmentType: 'Part-Time',
-          shiftName: 'Ca tối', start: '18:00', end: '21:00', version: 1,
+          shiftName: 'Ca tối', start: '18:00', end: '21:00', workMode: 'Online', version: 1,
         },
-        history: { action: 'Tạo lịch', recordedBy: { role: 'business_support' } },
+        history: { action: 'Tạo lịch', workMode: 'Online', recordedBy: { role: 'business_support' } },
       })
+      const invalidWorkMode = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'support_schedule.assign', expectedVersion: 8,
+        payload: {
+          employeeId: support.id, date: '2026-08-22', shiftName: 'Ca tối',
+          start: '18:00', end: '21:00', workMode: 'Hybrid',
+        },
+      }, { ...supportAuthorization, 'idempotency-key': 'support-daily-schedule-invalid-mode' }), env)
+      expect(invalidWorkMode.status).toBe(400)
+      expect(await invalidWorkMode.json()).toMatchObject({ error: { code: 'SUPPORT_SCHEDULE_WORK_MODE_INVALID' } })
       const officeDailySchedule = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'support_schedule.assign', expectedVersion: 8,
         payload: {
           targetUnit: 'office', employeeId: office.id, date: '2026-08-21', shiftName: 'Ca văn phòng',
-          start: '08:00', end: '17:30', note: 'Lịch dành cho Khối văn phòng',
+          start: '08:00', end: '17:30', workMode: 'Offline', note: 'Lịch dành cho Khối văn phòng',
         },
       }, { ...supportAuthorization, 'idempotency-key': 'office-daily-schedule-0001' }), env)
       expect(officeDailySchedule.status).toBe(200)
@@ -12349,13 +12358,13 @@ describe('IDOSI Worker security primitives', () => {
         version: 9,
         schedule: {
           employeeId: office.id, targetUnit: 'office', date: '2026-08-21',
-          shiftName: 'Ca văn phòng', start: '08:00', end: '17:30', version: 1,
+          shiftName: 'Ca văn phòng', start: '08:00', end: '17:30', workMode: 'Offline', version: 1,
         },
       })
       const scheduledState = readHydratedState(env.DB.database)
       expect(scheduledState.supportWorkSchedules).toEqual(expect.arrayContaining([
-        expect.objectContaining({ employeeId: support.id, targetUnit: 'business_support', date: '2026-08-21', shiftName: 'Ca tối' }),
-        expect.objectContaining({ employeeId: office.id, targetUnit: 'office', date: '2026-08-21', shiftName: 'Ca văn phòng' }),
+        expect.objectContaining({ employeeId: support.id, targetUnit: 'business_support', date: '2026-08-21', shiftName: 'Ca tối', workMode: 'Online' }),
+        expect.objectContaining({ employeeId: office.id, targetUnit: 'office', date: '2026-08-21', shiftName: 'Ca văn phòng', workMode: 'Offline' }),
       ]))
       expect(scheduledState.notifications).toEqual(expect.arrayContaining([
         expect.objectContaining({ type: 'support-schedule-assigned', targetEmployeeId: support.id }),
@@ -12368,21 +12377,21 @@ describe('IDOSI Worker security primitives', () => {
       const officeState = await worker.fetch(new Request('https://idosi.example/api/state', { headers: officeAuthorization }), env)
       expect(officeState.status).toBe(200)
       expect((await officeState.json()).state.supportWorkSchedules).toEqual([
-        expect.objectContaining({ employeeId: office.id, targetUnit: 'office', date: '2026-08-21' }),
+        expect.objectContaining({ employeeId: office.id, targetUnit: 'office', date: '2026-08-21', workMode: 'Offline' }),
       ])
       const scheduled = readHydratedState(env.DB.database).supportWorkSchedules.find(({ employeeId }) => employeeId === support.id)
       const supportScheduleUpdated = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'support_schedule.assign', expectedVersion: 9,
         payload: {
           scheduleId: scheduled.id, employeeId: support.id, date: '2026-08-22', shiftName: 'Ca tối mới',
-          start: '18:30', end: '21:30', note: 'Hỗ trợ KD sửa lịch',
+          start: '18:30', end: '21:30', workMode: 'Offline', note: 'Hỗ trợ KD sửa lịch',
         },
       }, { ...supportAuthorization, 'idempotency-key': 'support-daily-schedule-update-0001' }), env)
       expect(supportScheduleUpdated.status).toBe(200)
       expect(await supportScheduleUpdated.json()).toMatchObject({
         version: 10,
-        schedule: { id: scheduled.id, date: '2026-08-22', start: '18:30', end: '21:30', version: 2 },
-        history: { action: 'Cập nhật lịch', recordedBy: { role: 'business_support' } },
+        schedule: { id: scheduled.id, date: '2026-08-22', start: '18:30', end: '21:30', workMode: 'Offline', version: 2 },
+        history: { action: 'Cập nhật lịch', workMode: 'Offline', recordedBy: { role: 'business_support' } },
       })
       const supportScheduleDeleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
         type: 'support_schedule.delete', expectedVersion: 10,

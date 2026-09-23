@@ -65,6 +65,7 @@ import {
   canConfigureSupportSchedulePresets,
   normalizeSupportSchedulePresets,
   supportSchedulePresetsEqual,
+  supportScheduleWorkMode,
   validateSupportSchedulePresets,
 } from '../src/domain/supportWorkSchedule.js'
 import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
@@ -18479,6 +18480,12 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     && !record.deletedAt
   ))
   if (targetCollision) throw new ApiError(409, 'SUPPORT_SCHEDULE_EXISTS', 'Nhân viên đã có lịch làm việc trong ngày này.')
+  const workMode = Object.hasOwn(payload, 'workMode')
+    ? supportScheduleWorkMode(payload.workMode)
+    : supportScheduleWorkMode(previous?.workMode)
+  if (Object.hasOwn(payload, 'workMode') && !workMode) {
+    throw new ApiError(400, 'SUPPORT_SCHEDULE_WORK_MODE_INVALID', 'Hình thức làm việc phải là Online hoặc Offline.')
+  }
   const id = previous?.id || `sws_${crypto.randomUUID()}`
   const previousIndex = previous ? schedules.indexOf(previous) : -1
   const version = Number(previous?.version || 0) + 1
@@ -18492,6 +18499,7 @@ const supportScheduleCommand = async (db, actor, body, commandContext) => {
     shiftName: partTime ? shiftName : (shiftName || 'Làm việc Full-Time'),
     start: start.label,
     end: end.label,
+    workMode,
     note: String(payload.note || '').trim().slice(0, 500),
     version,
     createdAt: previous?.createdAt || commandContext.now,

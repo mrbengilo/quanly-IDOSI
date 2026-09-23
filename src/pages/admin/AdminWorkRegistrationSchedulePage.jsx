@@ -6,6 +6,7 @@ import {
   supportScheduleDays,
   supportScheduleEmploymentMode,
   supportScheduleRange,
+  supportScheduleWorkMode,
   supportSchedulesForView,
 } from '../../domain/supportWorkSchedule'
 import { useApp } from '../../state/AppContext'
@@ -80,6 +81,7 @@ function RegistrationGroup({ days, employees, group, records }) {
                   ? <div className="my-work-schedule-shift">
                     <strong>{record.shiftName || 'Làm việc'}</strong>
                     <small>{record.start || '--:--'}–{record.end || '--:--'}</small>
+                    {supportScheduleWorkMode(record.workMode) && <Badge tone={record.workMode === 'Online' ? 'blue' : 'orange'}>{record.workMode}</Badge>}
                     <Badge tone="green">{record.status || 'Đã đăng ký'}</Badge>
                     {record.note && <em>{record.note}</em>}
                     {(record.registeredAt || record.createdAt || record.updatedAt) && <small>Đăng ký: {shortDateTime24(record.registeredAt || record.createdAt || record.updatedAt)}</small>}
