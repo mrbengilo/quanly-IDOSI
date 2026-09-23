@@ -80,6 +80,14 @@ export const orderRevenueByType = (order = {}) => {
   return result
 }
 
+// Older orders and clients did not persist a revenue type for ordinary lines.
+// Keep the legacy NORMAL amount for v1 consumers, but expose its provenance so
+// reports can show it separately until an Admin explicitly classifies the order.
+export const unclassifiedNormalRevenue = (order = {}, normalRevenue = orderRevenueByType(order).NORMAL) => {
+  const items = Array.isArray(order.items) ? order.items : []
+  return !items.length || items.some((item) => item?.revenueType === undefined) ? normalRevenue : 0
+}
+
 export const validateOrderRevenue = ({ amount, normalAmount, items = [] } = {}) => {
   moneyValue(amount, true)
   const revenueByType = orderRevenueByType({ amount, items })

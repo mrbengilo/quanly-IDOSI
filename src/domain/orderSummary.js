@@ -1,4 +1,4 @@
-import { emptyRevenueByType, orderRevenueByType, revenueQuantityUnits, revenueTypeOf, revenueUnitOf } from './orderRevenue.js'
+import { emptyRevenueByType, orderRevenueByType, revenueQuantityUnits, revenueTypeOf, revenueUnitOf, unclassifiedNormalRevenue } from './orderRevenue.js'
 import { normalizeOrderItems } from './orderItems.js'
 import { normalizeOrderCustomFields, orderCustomFieldDisplayValue } from './orderCustomFields.js'
 import { productIdentityResolver } from './orderInformationSettings.js'
@@ -63,7 +63,7 @@ export const orderMatchesFilters = (order, { date = '', shiftId = '', paymentMet
   const haystack = [order.code, order.customerName, order.customerPhone, order.employeeName, productNames, customValues].join(' ').toLocaleLowerCase('vi-VN')
   return !query || haystack.includes(query.trim().toLocaleLowerCase('vi-VN'))
 }
-const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0, revenueByType: emptyRevenueByType() })
+const emptyTotals = () => ({ orders: 0, cash: 0, transfer: 0, revenue: 0, cashOrders: 0, transferOrders: 0, revenueByType: emptyRevenueByType(), unclassifiedRevenue: 0, unclassifiedOrders: 0 })
 const checkedAmount = (order) => {
   const rawAmount = order?.amount
   const amount = typeof rawAmount === 'number' || (typeof rawAmount === 'string' && rawAmount.trim()) ? Number(rawAmount) : Number.NaN
@@ -76,6 +76,10 @@ const addOrder = (target, order, amount) => {
   target.orders += 1
   target.revenue = revenue
   const byType = orderRevenueByType(order)
+  const unclassified = unclassifiedNormalRevenue(order, byType.NORMAL)
+  target.unclassifiedRevenue += unclassified
+  if (!Number.isSafeInteger(target.unclassifiedRevenue)) throw new RangeError('Unclassified revenue summary exceeds the safe integer range.')
+  if (!Array.isArray(order.items) || !order.items.length || order.items.some((item) => item?.revenueType === undefined)) target.unclassifiedOrders += 1
   for (const type of Object.keys(byType)) {
     target.revenueByType[type] += byType[type]
     if (!Number.isSafeInteger(target.revenueByType[type])) throw new RangeError('Revenue type summary exceeds the safe integer range.')
@@ -107,7 +111,7 @@ const productKey = (item, resolveIdentity = null) => {
   if (renamedProductNames.has(name)) return `name:${name}`
   return `id:${String(item.productId || item.productCode || item.productName).trim().toLocaleLowerCase('vi-VN')}`
 }
-const emptyProductSummary = () => ({ totalQuantity: 0, totalWeightKg: 0, productTypes: 0, ordersWithItems: 0, unclassifiedOrders: 0, items: [] })
+const emptyProductSummary = () => ({ totalQuantity: 0, salePieceQuantity: 0, totalWeightKg: 0, productTypes: 0, ordersWithItems: 0, unclassifiedOrders: 0, items: [] })
 const weightAccumulatorFor = (weights, target) => {
   if (!weights.has(target)) weights.set(target, createWeightAccumulator())
   return weights.get(target)
@@ -127,13 +131,14 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts, re
     const type = revenueTypeOf(item)
     const resolved = resolveIdentity?.(item) || null
     const identity = productKey(item, resolveIdentity)
-    const key = `${identity}:${type}`
+    const classification = item.revenueType === undefined ? 'UNCLASSIFIED' : type
+    const key = `${identity}:${classification}`
     if (!identity) return
     const existing = itemMap.get(key) || {
       productId: item.productId, productCode: item.productCode,
       productName: resolved?.label || item.productName || item.productCode || 'Mặt hàng',
       ...canonicalFields(resolved),
-      quantity: 0, unit: revenueUnitOf(type), revenueType: type, orders: 0,
+      quantity: 0, unit: revenueUnitOf(type), revenueType: type, classification, orders: 0,
     }
     const units = revenueQuantityUnits(item.quantity, type)
     const scale = type === 'SALE_KG' ? 1000 : 1
@@ -168,6 +173,10 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts, re
     } else {
       summary.totalQuantity += units
       if (!Number.isSafeInteger(summary.totalQuantity)) throw new RangeError('Order item summary exceeds the safe integer range.')
+      if (type === 'SALE_PIECE') {
+        summary.salePieceQuantity += units
+        if (!Number.isSafeInteger(summary.salePieceQuantity)) throw new RangeError('Sale piece summary exceeds the safe integer range.')
+      }
     }
   })
 }
