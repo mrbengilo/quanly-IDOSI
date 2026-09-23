@@ -3905,6 +3905,7 @@ export function AppProvider({ children }) {
       start,
       end,
       shiftName: partTime ? String(payload.shiftName || '').trim() : (String(payload.shiftName || '').trim() || 'Làm việc Full-Time'),
+      workMode: payload.workMode,
       note: String(payload.note || '').trim(),
     }
     if (partTime && !commandPayload.shiftName) return { ok: false, message: 'Cần nhập tên ca làm việc.' }
@@ -3941,6 +3942,7 @@ export function AppProvider({ children }) {
       targetUnit,
       employmentType,
       ...commandPayload,
+      workMode: commandPayload.workMode || previous?.workMode || '',
       version: Number(previous?.version || 0) + 1,
       createdAt: previous?.createdAt || timestamp,
       updatedAt: timestamp,
