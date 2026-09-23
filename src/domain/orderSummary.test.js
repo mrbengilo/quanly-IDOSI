@@ -8,6 +8,31 @@ const financialTotals = ({ weight, ...totals }) => {
 }
 
 describe('orderSummary', () => {
+  it('keeps missing revenue provenance separate from classified normal and scopes sale measures to one store', () => {
+    const item = (revenueType, quantity, unitPrice) => ({ productId: 'P1', productName: 'Quần áo nam', quantity, ...(revenueType ? { revenueType } : {}), ...(unitPrice ? { unitPrice } : {}) })
+    const rows = [
+      { id: 'OLD', storeId: 'S1', shiftId: 'AM', createdAt: '2026-09-12T02:00:00Z', amount: 100_000 },
+      { id: 'MIXED', storeId: 'S1', shiftId: 'AM', createdAt: '2026-09-12T02:01:00Z', amount: 180_000, items: [item(null, 2), item('SALE_KG', 2.5, 20_000), item('SALE_PIECE', 3, 10_000)] },
+      { id: 'NEW', storeId: 'S1', shiftId: 'PM', createdAt: '2026-09-13T02:00:00Z', amount: 20_000, items: [item('NORMAL', 1)] },
+      { id: 'OTHER-STORE', storeId: 'S2', shiftId: 'AM', createdAt: '2026-09-12T02:00:00Z', amount: 900_000 },
+    ]
+    const report = summarizeOrders(rows, { storeId: 'S1', period: '2026-09' })
+    expect(report.totals).toMatchObject({
+      revenue: 300_000, revenueByType: { NORMAL: 220_000, SALE_KG: 50_000, SALE_PIECE: 30_000 },
+      unclassifiedRevenue: 200_000, unclassifiedOrders: 2,
+    })
+    expect(report.totals.revenueByType.NORMAL - report.totals.unclassifiedRevenue).toBe(20_000)
+    expect(report.products).toMatchObject({ salePieceQuantity: 3, totalWeightKg: 2.5 })
+    expect(report.totals.weight.byRevenueType.SALE_PIECE.estimatedKg).toBe(1)
+    expect(report.totals.weight.byRevenueType.SALE_KG.actualKg).toBe(2.5)
+    expect(report.products.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ classification: 'UNCLASSIFIED', quantity: 2 }),
+      expect.objectContaining({ classification: 'NORMAL', quantity: 1 }),
+    ]))
+    expect(report.groups.day.find((group) => group.key === '2026-09-12')).toMatchObject({ unclassifiedRevenue: 200_000, unclassifiedOrders: 2 })
+    expect(report.groups.shift.find((group) => group.shiftId === 'PM')).toMatchObject({ unclassifiedRevenue: 0, unclassifiedOrders: 0 })
+    expect(summarizeOrders(rows, { storeId: 'S2', period: '2026-09' }).totals.revenue).toBe(900_000)
+  })
   it('uses the Vietnam business date for explicit-zone timestamps only', () => {
     expect(orderBusinessDate({ createdAt: '2026-08-31T18:30:00.000Z' })).toBe('2026-09-01')
     expect(orderBusinessDate({ createdAt: '2026-09-01T00:30:00+07:00' })).toBe('2026-09-01')
@@ -35,7 +60,7 @@ describe('orderSummary', () => {
       { id: 'OPENING', storeId: 'S01', amount: 800_000, source: 'legacy-opening-balance', createdAt: '2026-09-04' },
       { id: 'FOREIGN', storeId: 'S02', amount: 700_000, createdAt: '2026-09-05' },
     ], { storeId: 'S01', period: '2026-09' })
-    expect(financialTotals(result.totals)).toEqual({ orders: 3, cash: 100_000, transfer: 250_000, revenue: 400_000, cashOrders: 1, transferOrders: 1, revenueByType: { NORMAL: 400_000, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(financialTotals(result.totals)).toEqual({ orders: 3, cash: 100_000, transfer: 250_000, revenue: 400_000, cashOrders: 1, transferOrders: 1, revenueByType: { NORMAL: 400_000, SALE_KG: 0, SALE_PIECE: 0 }, unclassifiedRevenue: 400_000, unclassifiedOrders: 3 })
     expect(result.totals.weight).toMatchObject({ actualKg: 0, estimatedKg: 2, knownKg: 2, totalKg: null, isComplete: false, unclassifiedOrders: 1 })
     expect(result.groups.shift).toEqual(expect.arrayContaining([expect.objectContaining({ key: '2026-09-01:morning', shiftId: 'morning', orders: 1 })]))
     expect(result.groups.shift).toHaveLength(3)
@@ -46,7 +71,7 @@ describe('orderSummary', () => {
     expect(weightByProduct).toHaveLength(2)
     expect(weightByProduct.find((item) => item.productId === 'P1').weight.totalKg).toBe(1.666667)
     expect(weightByProduct.find((item) => item.productId === 'P2').weight.totalKg).toBe(0.333333)
-    expect(products).toEqual({ totalQuantity: 6, totalWeightKg: 0, productTypes: 2, ordersWithItems: 2, unclassifiedOrders: 1,
+    expect(products).toEqual({ totalQuantity: 6, salePieceQuantity: 0, totalWeightKg: 0, productTypes: 2, ordersWithItems: 2, unclassifiedOrders: 1,
       items: [expect.objectContaining({ productId: 'P1', productName: 'Quần áo nam', quantity: 5, orders: 2 }), expect.objectContaining({ productId: 'P2', productName: 'Đầm', quantity: 1, orders: 1 })] })
   })
 
@@ -56,7 +81,7 @@ describe('orderSummary', () => {
   })
   it('preserves valid legacy numeric-string VND amounts', () => {
     const result = summarizeOrders([{ id: 'LEGACY', storeId: 'S01', amount: '125000', paymentMethod: 'Tiền mặt', createdAt: '2026-09-01' }], { storeId: 'S01', period: '2026-09' })
-    expect(financialTotals(result.totals)).toEqual({ orders: 1, cash: 125_000, transfer: 0, revenue: 125_000, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 125_000, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(financialTotals(result.totals)).toEqual({ orders: 1, cash: 125_000, transfer: 0, revenue: 125_000, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 125_000, SALE_KG: 0, SALE_PIECE: 0 }, unclassifiedRevenue: 125_000, unclassifiedOrders: 1 })
     expect(result.totals.weight).toMatchObject({ totalKg: null, isComplete: false, unclassifiedOrders: 1 })
   })
   it('keeps an edited legacy order in its original business month', () => {
@@ -69,9 +94,9 @@ describe('orderSummary', () => {
       id: String(index), code: 'ORDER', storeId: 'S01', employeeId: 'E01', shiftId: 'night', createdAt: '2026-08-31T18:00:00Z', amount: index === 2 ? 20_001 : '20000', paymentMethod, customerName: 'Nguyễn Ánh',
     }))
     const scope = { storeId: 's01', employeeId: 'e01', period: '2026-09' }
-    expect(financialTotals(summarizeOrders(rows, scope).totals)).toEqual({ orders: 4, revenue: 80_001, cash: 40_001, transfer: 20_000, cashOrders: 2, transferOrders: 1, revenueByType: { NORMAL: 80_001, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(financialTotals(summarizeOrders(rows, scope).totals)).toEqual({ orders: 4, revenue: 80_001, cash: 40_001, transfer: 20_000, cashOrders: 2, transferOrders: 1, revenueByType: { NORMAL: 80_001, SALE_KG: 0, SALE_PIECE: 0 }, unclassifiedRevenue: 80_001, unclassifiedOrders: 4 })
     const result = summarizeOrders(rows, { ...scope, amount: 20_000, paymentMethod: 'cash', date: '2026-09-01', shiftId: 'night', query: 'ÁNH' })
-    expect(financialTotals(result.totals)).toEqual({ orders: 1, revenue: 20_000, cash: 20_000, transfer: 0, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 20_000, SALE_KG: 0, SALE_PIECE: 0 } })
+    expect(financialTotals(result.totals)).toEqual({ orders: 1, revenue: 20_000, cash: 20_000, transfer: 0, cashOrders: 1, transferOrders: 0, revenueByType: { NORMAL: 20_000, SALE_KG: 0, SALE_PIECE: 0 }, unclassifiedRevenue: 20_000, unclassifiedOrders: 1 })
     expect(result.totals.weight).toMatchObject({ totalKg: null, unclassifiedOrders: 1 })
     expect(result.groups.shift[0]).toMatchObject({ key: '2026-09-01:night', orders: 1, cashOrders: 1 })
     expect(summarizeOrders(rows, { ...scope, amount: 0 }).totals.orders).toBe(0)
