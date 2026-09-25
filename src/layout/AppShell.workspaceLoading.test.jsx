@@ -35,11 +35,11 @@ vi.mock('../domain/notificationSound', () => ({
   unlockNotificationSound: vi.fn(() => Promise.resolve()),
 }))
 
-const renderShell = ({ workspaceStatus = null, element = <div>Dữ liệu trang</div> } = {}) => render(
-  <MemoryRouter initialEntries={['/admin/cashflow']}>
+const renderShell = ({ workspaceStatus = null, element = <div>Dữ liệu trang</div>, path = '/admin/cashflow' } = {}) => render(
+  <MemoryRouter initialEntries={[path]}>
     <Routes>
       <Route element={<AppShell workspaceStatus={workspaceStatus} />}>
-        <Route path="/admin/cashflow" element={element} />
+        <Route path={path} element={element} />
       </Route>
     </Routes>
   </MemoryRouter>,
@@ -50,6 +50,27 @@ describe('AppShell workspace loading states', () => {
     cleanup()
     vi.useRealTimers()
     vi.clearAllMocks()
+    app.session.role = 'admin'
+  })
+
+  it.each([
+    ['admin', '/admin/cashflow'], ['admin', '/store/overview'],
+    ['store_manager', '/store/overview'], ['employee', '/employee/home'],
+    ['business_support', '/support/overview'],
+  ])('adds decorative category colors without changing navigation for %s at %s', (role, path) => {
+    app.session.role = role
+    const { container } = renderShell({ path })
+    const links = [...container.querySelectorAll('.sidebar nav a')]
+    expect(links.length).toBeGreaterThan(4)
+    for (const link of links) {
+      const icon = link.querySelector('.sidebar__nav-icon')
+      expect(icon?.getAttribute('aria-hidden')).toBe('true')
+      expect(icon?.querySelector('svg')).toBeTruthy()
+      expect(link.textContent.trim()).not.toBe('')
+    }
+    const active = container.querySelector(`.sidebar nav a[href="${path}"]`)
+    expect(active?.getAttribute('aria-current')).toBe('page')
+    expect(new Set(links.map((link) => link.querySelector('.sidebar__nav-icon').className)).size).toBeGreaterThan(3)
   })
 
   it('keeps navigation and account controls visible while projection data loads', () => {

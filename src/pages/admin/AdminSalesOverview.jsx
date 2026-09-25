@@ -36,7 +36,7 @@ export default function AdminSalesOverview({ period, remote, orders = EMPTY_ORDE
       {error && <div role="alert"><InfoNote tone="orange">{error} <Button variant="outline" onClick={() => setRetry((value) => value + 1)}>Thử lại thống kê</Button></InfoNote></div>}
       {loading && <p role="status">Đang tải thống kê bán hàng…</p>}
       <div className="admin-sales__metrics">
-        <MetricCard label="TỔNG KHỐI LƯỢNG ĐÃ BÁN" value={!data ? placeholder : weight.isComplete ? `${number(weight.totalKg)} kg` : 'Chưa đủ dữ liệu'} helper={weight && !weight.isComplete ? `Đã xác định: ${number(weight.knownKg)} kg` : 'Kg thực tế + kg quy đổi theo bảng hiện hành'} icon={Scale} tone="blue" compact />
+        <MetricCard label="TỔNG KHỐI LƯỢNG ĐÃ BÁN" value={!data ? placeholder : `${number(weight.totalKg ?? weight.knownKg)} kg`} helper="Khối lượng bán theo kg và quy đổi theo bảng hiện hành" icon={Scale} tone="blue" compact />
         <MetricCard label="TỔNG SỐ LƯỢNG ĐÃ BÁN" value={data ? `${number(data.quantity)} cái` : placeholder} helper="Bán thường + sale theo cái; không cộng kg" icon={Package} tone="green" compact />
         <MetricCard label="MẶT HÀNG BÁN NHIỀU NHẤT" value={data ? productLabel(data.mostSold) : placeholder} icon={TrendingUp} tone="green" compact />
         <MetricCard label="MẶT HÀNG BÁN ÍT NHẤT" value={data ? productLabel(data.leastSold) : placeholder} helper="Chỉ tính mặt hàng có phát sinh bán theo cái" icon={TrendingDown} tone="orange" compact />

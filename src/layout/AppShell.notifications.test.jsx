@@ -208,7 +208,7 @@ describe('AppShell notifications', () => {
     expect(screen.queryByRole('link', { name: /^Vi phạm Khối văn phòng$/i })).toBeNull()
     expect(screen.queryByRole('link', { name: /^Thưởng doanh thu ngày$/i })).toBeNull()
     expect(document.querySelector('.sidebar nav a em')).toBeNull()
-    expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('span')?.textContent)).toEqual([
+    expect(Array.from(document.querySelectorAll('.sidebar nav a')).map((link) => link.querySelector('.sidebar__nav-label')?.textContent)).toEqual([
       'Tổng quan', 'Công việc tính thưởng', 'Công việc được giao', 'Công việc tính thưởng & Vi phạm HTKD',
       'Lịch làm việc của tôi', 'Thu nhập của tôi', 'Vi phạm của tôi', 'Phân lịch làm việc',
       'Nhân viên hỗ trợ KD', 'Khối văn phòng', 'Danh sách cửa hàng',
