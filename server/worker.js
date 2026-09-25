@@ -7199,6 +7199,26 @@ const policyNumber = async (db, key, fallback) => {
   return Number.isFinite(value) ? value : fallback
 }
 
+// Version head only: conflict reporting must not hydrate the whole state.
+const globalStateHeadVersion = async (db) => Number((await first(
+  db,
+  "SELECT version FROM app_state WHERE scope_key = 'global' LIMIT 1",
+))?.version || 0)
+
+// receiptStatements({ enforceSuccess: true }) deliberately inserts NULL into
+// command_receipts.request_hash when the guarded writes did not apply, so the
+// whole batch rolls back. That failure is a lost compare-and-swap.
+const isReceiptSuccessGuardFailure = (error) => /NOT NULL constraint failed: command_receipts\.request_hash/iu
+  .test(String(error?.message || error?.cause?.message || ''))
+
+const logStateCommitFailure = (action, commandContext, error) => {
+  console.error('IDOSI state commit failed', {
+    action: String(action || ''),
+    requestId: commandContext?.requestId || null,
+    error: String(error?.message || error),
+  })
+}
+
 const commitGlobalStateDomainCommand = async (db, actor, current, nextState, options, commandContext) => {
   const currentVersion = Number(current.version)
   const nextVersion = currentVersion + 1
@@ -7276,10 +7296,18 @@ const commitGlobalStateDomainCommand = async (db, actor, current, nextState, opt
         successBindings: ['global', nextVersion, commandContext.requestId],
       }),
     ])
-  } catch {
-    const latest = await loadState(db, 'global')
+  } catch (error) {
+    const latestVersion = await globalStateHeadVersion(db)
+    if (latestVersion === currentVersion) {
+      // Every statement in this batch is guarded by EXISTS clauses, so a lost
+      // compare-and-swap never throws. A thrown error with an unchanged version
+      // is a real failure (disk full, constraint, bug); reporting it as
+      // "data changed" hid it and made clients reload and retry forever.
+      logStateCommitFailure(options.action, commandContext, error)
+      throw error
+    }
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: latestVersion,
     })
   }
   if (changes(results?.[0]) !== 1) {
@@ -7406,10 +7434,14 @@ const commitGlobalStateCounterDomainCommand = async (
         enforceSuccess: true,
       }),
     ])
-  } catch {
-    const latest = await loadState(db, 'global')
+  } catch (error) {
+    const latestVersion = await globalStateHeadVersion(db)
+    if (latestVersion === currentVersion && !isReceiptSuccessGuardFailure(error)) {
+      logStateCommitFailure(options.action, commandContext, error)
+      throw error
+    }
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu hoặc bộ đếm đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: latestVersion,
     })
   }
   const aliasesChanged = counterAliases.every((_, index) => changes(results?.[2 + index]) === 1)
