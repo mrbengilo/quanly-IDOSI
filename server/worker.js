@@ -7790,8 +7790,27 @@ const commandProjectionStoreId = async (db, projection, actor) => {
     || await lookup('employees', projection.employeeId)
 }
 
+// These commands re-validate every rule against the state the server loads
+// (open shift, store scope, counters, payroll locks). The client's version is
+// therefore not a statement about data it edited, and requiring it to match
+// the single global version made one store's order reject another store's
+// check-in or order. They commit against the version they read (still an
+// atomic compare-and-swap) and retry on a concurrent writer.
+export const STALE_VERSION_REBASE_COMMANDS = new Set([
+  'order.create',
+  'attendance.check_in',
+  'attendance.check_out',
+  'shift_expense.create',
+  'task.done',
+  'task.set_done',
+  'notification.mark_read',
+  'notification.mark_all_read',
+])
+const MAX_REBASE_COMMAND_ATTEMPTS = 3
+
 const loadGlobalCommandState = async (db, body, actor = null) => {
   const expectedVersion = commandExpectedVersion(body)
+  const rebaseAllowed = STALE_VERSION_REBASE_COMMANDS.has(String(body?.type || ''))
   const projection = commandStateProjection(body)
   const projectionStoreId = projection
     ? await commandProjectionStoreId(db, projection, actor)
@@ -7810,7 +7829,8 @@ const loadGlobalCommandState = async (db, body, actor = null) => {
         ? await loadStateCollections(db, 'global', projection.collections)
         : await loadState(db, 'global'))
   const currentVersion = Number(current?.version || 0)
-  if (!current || currentVersion !== expectedVersion) {
+  const staleButRebasable = rebaseAllowed && expectedVersion <= currentVersion
+  if (!current || (currentVersion !== expectedVersion && !staleButRebasable)) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
   }
   return {
@@ -25093,7 +25113,10 @@ const executeCommand = async (request, env, context) => {
     }
   }
   const idempotencyKey = validateIdempotencyKey(request, body)
-  const hash = await requestHash({ ...body, idempotencyKey: undefined })
+  // expectedVersion is concurrency metadata, not part of the intent. A client
+  // that lost a response and retried after its known version advanced must get
+  // the original receipt back instead of IDEMPOTENCY_KEY_REUSED.
+  const hash = await requestHash({ ...body, idempotencyKey: undefined, expectedVersion: undefined })
   const existingReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
   const replay = replayReceipt(existingReceipt, hash)
   if (replay) return replay
@@ -25136,135 +25159,154 @@ const executeCommand = async (request, env, context) => {
       })
     }
   }
+  if (STALE_VERSION_REBASE_COMMANDS.has(String(body.type || ''))) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        // A fresh shallow copy drops the non-enumerable preloaded snapshot so a
+        // retry reads the state that the concurrent writer just committed.
+        return await dispatchCommand(db, env, user, attempt === 1 ? body : { ...body }, commandContext)
+      } catch (error) {
+        const racedReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
+        const racedReplay = replayReceipt(racedReceipt, hash)
+        if (racedReplay) return racedReplay
+        if (!(error instanceof ApiError) || error.code !== 'VERSION_CONFLICT'
+          || attempt >= MAX_REBASE_COMMAND_ATTEMPTS) throw error
+      }
+    }
+  }
   try {
-    if (body.type === 'state.replace' || body.type === 'state.merge') {
-      return await stateCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('store.')) {
-      return await storeCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'tasks.assign' || body.type === 'tasks.replace_scope') {
-      return await taskAssignmentCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('employee.')) {
-      return await employeeProfileCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('shift_definition.')) {
-      return await shiftDefinitionCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('schedule.')) {
-      return await scheduleCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('account_settings.')) {
-      return await accountSettingsCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('notification.')) {
-      return await notificationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_transfer.')) {
-      return await supportTransferCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('operational_reset.')) {
-      return await operationalResetCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'operational_identifier.resolve_history_alias') {
-      return await operationalIdentifierHistoryRepairCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'system.reset_all') {
-      return await systemResetAllCommand(db, user, body, commandContext, env)
-    }
-    if (body.type === 'system.reset_demo') {
-      return await systemResetDemoCommand(db, user, body, commandContext, env)
-    }
-    if (body.type === 'policy.set') return await policyCommand(db, user, body, commandContext)
-    if (body.type === 'policies.set') return await policiesCommand(db, user, body, commandContext)
-    if (body.type === 'attendance.update') {
-      return await attendanceUpdateCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'attendance.emergency_close') {
-      return await attendanceEmergencyCloseCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
-      return await attendanceCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('order_information.')) {
-      return await orderInformationCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'order.create') return await orderCreateCommand(db, user, body, commandContext)
-    if (body.type === 'order.update' || body.type === 'order.delete') {
-      return await orderMutationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_work.')) {
-      return await supportWorkCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_schedule.')) {
-      return await supportScheduleCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'task.progress.save') {
-      return await taskProgressCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'task.done' || body.type === 'task.set_done') {
-      return await taskDoneCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'shift_expense.create') {
-      return await shiftExpenseCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('fixed_expense.')
-      || String(body.type || '').startsWith('expense.')) {
-      return await expenseCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('import.')
-      || String(body.type || '').startsWith('import_voucher.')) {
-      return await importVoucherCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('salary_advance.')) {
-      return await salaryAdvanceCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('salary_adjustment.')) {
-      return await salaryAdjustmentCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('store_salary_config.')) {
-      if (body.type === 'store_salary_config.resolve_collision') {
-        return await storeSalaryConfigCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await storeSalaryConfigCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('compensation_entry.')) {
-      return await compensationEntryCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('work_catalog.')) {
-      return await workCatalogCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'work_reward.set' || body.type === 'work_reward.set_batch') {
-      return await workRewardCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('violation.')) {
-      return await violationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('revenue_bonus.')) {
-      if (body.type === 'revenue_bonus.resolve_daily_collision') {
-        return await revenueBonusDailyCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await revenueBonusCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('payroll.')) {
-      if (body.type === 'payroll.resolve_period_collision') {
-        return await payrollPeriodCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await payrollCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'counter.next') return await counterCommand(db, user, body, commandContext)
-    if (body.type === 'user.change_password') {
-      return await changeOwnPasswordCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('user.')) return await userCommand(db, user, body, commandContext)
-    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh không được hỗ trợ.')
+    return await dispatchCommand(db, env, user, body, commandContext)
   } catch (error) {
     const racedReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
     const racedReplay = replayReceipt(racedReceipt, hash)
     if (racedReplay) return racedReplay
     throw error
   }
+}
+
+const dispatchCommand = async (db, env, user, body, commandContext) => {
+  if (body.type === 'state.replace' || body.type === 'state.merge') {
+    return await stateCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('store.')) {
+    return await storeCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'tasks.assign' || body.type === 'tasks.replace_scope') {
+    return await taskAssignmentCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('employee.')) {
+    return await employeeProfileCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('shift_definition.')) {
+    return await shiftDefinitionCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('schedule.')) {
+    return await scheduleCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('account_settings.')) {
+    return await accountSettingsCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('notification.')) {
+    return await notificationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_transfer.')) {
+    return await supportTransferCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('operational_reset.')) {
+    return await operationalResetCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'operational_identifier.resolve_history_alias') {
+    return await operationalIdentifierHistoryRepairCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'system.reset_all') {
+    return await systemResetAllCommand(db, user, body, commandContext, env)
+  }
+  if (body.type === 'system.reset_demo') {
+    return await systemResetDemoCommand(db, user, body, commandContext, env)
+  }
+  if (body.type === 'policy.set') return await policyCommand(db, user, body, commandContext)
+  if (body.type === 'policies.set') return await policiesCommand(db, user, body, commandContext)
+  if (body.type === 'attendance.update') {
+    return await attendanceUpdateCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'attendance.emergency_close') {
+    return await attendanceEmergencyCloseCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
+    return await attendanceCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('order_information.')) {
+    return await orderInformationCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'order.create') return await orderCreateCommand(db, user, body, commandContext)
+  if (body.type === 'order.update' || body.type === 'order.delete') {
+    return await orderMutationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_work.')) {
+    return await supportWorkCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_schedule.')) {
+    return await supportScheduleCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'task.progress.save') {
+    return await taskProgressCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'task.done' || body.type === 'task.set_done') {
+    return await taskDoneCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'shift_expense.create') {
+    return await shiftExpenseCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('fixed_expense.')
+    || String(body.type || '').startsWith('expense.')) {
+    return await expenseCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('import.')
+    || String(body.type || '').startsWith('import_voucher.')) {
+    return await importVoucherCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('salary_advance.')) {
+    return await salaryAdvanceCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('salary_adjustment.')) {
+    return await salaryAdjustmentCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('store_salary_config.')) {
+    if (body.type === 'store_salary_config.resolve_collision') {
+      return await storeSalaryConfigCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await storeSalaryConfigCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('compensation_entry.')) {
+    return await compensationEntryCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('work_catalog.')) {
+    return await workCatalogCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'work_reward.set' || body.type === 'work_reward.set_batch') {
+    return await workRewardCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('violation.')) {
+    return await violationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('revenue_bonus.')) {
+    if (body.type === 'revenue_bonus.resolve_daily_collision') {
+      return await revenueBonusDailyCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await revenueBonusCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('payroll.')) {
+    if (body.type === 'payroll.resolve_period_collision') {
+      return await payrollPeriodCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await payrollCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'counter.next') return await counterCommand(db, user, body, commandContext)
+  if (body.type === 'user.change_password') {
+    return await changeOwnPasswordCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('user.')) return await userCommand(db, user, body, commandContext)
+  throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh không được hỗ trợ.')
 }
 
 const logout = async (request, env, context) => {
