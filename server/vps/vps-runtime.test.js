@@ -134,6 +134,20 @@ describe('IDOSI VPS runtime', () => {
     expect(caddyfile).toContain('handle /.idosi-release-sha')
   })
 
+  it('sends a Content-Security-Policy that only allows first-party scripts and API calls', async () => {
+    const caddyfile = await readFile(resolve('deploy', 'vps', 'Caddyfile'), 'utf8')
+    const policy = caddyfile.match(/Content-Security-Policy "([^"]+)"/u)?.[1] || ''
+    const directives = Object.fromEntries(policy.split(';').map((entry) => entry.trim()).filter(Boolean)
+      .map((entry) => [entry.split(/\s+/u)[0], entry.split(/\s+/u).slice(1)]))
+    expect(directives['default-src']).toEqual(["'self'"])
+    expect(directives['script-src']).toEqual(["'self'"])
+    expect(directives['connect-src']).toEqual(["'self'"])
+    expect(directives['object-src']).toEqual(["'none'"])
+    expect(directives['frame-ancestors']).toEqual(["'none'"])
+    expect(directives['font-src']).toContain('https://fonts.gstatic.com')
+    expect(directives['style-src']).toContain('https://fonts.googleapis.com')
+  })
+
   it('keeps Node upstream sockets alive longer than the Caddy proxy pool', async () => {
     const directory = await temporaryDirectory()
     const { server, runtime } = createIdosiServer({
