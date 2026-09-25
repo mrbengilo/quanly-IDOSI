@@ -94,6 +94,10 @@ export const schema = {
       'revoked_at',
       'user_agent',
       'ip_address',
+      'active_role',
+      'active_store_id',
+      'active_employee_id',
+      'role_selected_at',
     ],
   },
   commandReceipts: {
@@ -118,6 +122,12 @@ export const schema = {
       'value_bytes',
       'created_at',
       'updated_at',
+      'store_id',
+      'employee_id',
+      'occurred_on',
+      'period_key',
+      'record_id',
+      'open_flag',
     ],
   },
   commandReceiptChunks: {
@@ -140,4 +150,8 @@ export const migrations = [
   'drizzle/0009_compensation_foundation.sql',
   'drizzle/0010_store_employee_salary_configs.sql',
   'drizzle/0011_work_catalog.sql',
+  'drizzle/0012_state_entity_query_indexes.sql',
+  'drizzle/0013_store_violation_points.sql',
+  'drizzle/0014_order_product_options.sql',
+  'drizzle/0015_retire_legacy_product_names.sql',
 ] as const
