@@ -5034,7 +5034,7 @@ const bootstrapDatabase = async (request, env, context) => {
       throw new ApiError(400, 'DUPLICATE_ORDER_CODE', 'Dữ liệu ban đầu chứa mã đơn hàng bị trùng.')
     }
     seenOrderCodes.add(orderCode)
-    const suffix = orderCode.match(/-(\d{5})$/u)
+    const suffix = orderCode.match(ORDER_CODE_SEQUENCE_PATTERN)
     if (!suffix) continue
     const value = Number(suffix[1])
     orderCounterValues.set(storeId, Math.max(orderCounterValues.get(storeId) || 0, value))
@@ -17747,6 +17747,12 @@ const orderInformationCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+// Order codes keep the historical 5-digit zero padding (STORE-00001) and
+// simply grow to 6-7 digits after 99,999. The old hard stop at 99,999 would
+// have blocked a busy store from creating orders after a few years.
+const MAX_ORDER_CODE_SEQUENCE = 9_999_999
+const ORDER_CODE_SEQUENCE_PATTERN = /-(\d{5,7})$/u
+
 const orderCreateCommand = async (db, actor, body, commandContext) => {
   if (['business_support', 'store_manager'].includes(actor.role)) {
     throw new ApiError(403, 'ORDER_READ_ONLY', 'Tài khoản quản lý vận hành chỉ được xem danh sách đơn hàng.')
@@ -17863,7 +17869,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   const counterValue = counterRows.reduce((maximum, row) => (
     Math.max(maximum, Number(row.counter_value || 0))
   ), 0)
-  if (!Number.isSafeInteger(counterValue) || counterValue >= 99_999) {
+  if (!Number.isSafeInteger(counterValue) || counterValue >= MAX_ORDER_CODE_SEQUENCE) {
     throw new ApiError(409, 'ORDER_COUNTER_EXHAUSTED', 'Dãy mã đơn hàng của cửa hàng đã hết.')
   }
   const nextCounterValue = counterValue + 1
