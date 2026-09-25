@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto'
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises'
 import { createServer } from 'node:http'
 import { resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
-import worker, { finalizeAutomaticRevenueBonuses } from '../worker.js'
+import worker, { finalizeAutomaticRevenueBonuses, pruneOperationalRecords } from '../worker.js'
 import { createAutomaticRevenueBonusRunner, resolveAutomaticRevenueBonusEnabled } from './automatic-revenue-bonus-runner.mjs'
 import { ImageFileR2 } from './image-file-r2.mjs'
 import { createReleaseInfoResponse } from './release-info.mjs'
@@ -47,6 +48,27 @@ const readBody = (request) => new Promise((resolveBody, rejectBody) => {
   request.on('error', rejectBody)
 })
 
+const normalizeIp = (value) => String(value || '').trim().replace(/^::ffff:/iu, '').slice(0, 64)
+
+// Caddy runs on the private Docker network and, without trusted_proxies,
+// replaces any client-supplied X-Forwarded-For with the real peer address.
+// Only honour the header when the TCP peer itself is a private/loopback
+// address (the proxy); a direct public connection uses its socket address.
+export const isPrivateProxyAddress = (value) => {
+  const ip = normalizeIp(value)
+  return /^(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/u.test(ip)
+    || ip === '::1'
+    || /^f[cd][0-9a-f]{2}:/iu.test(ip)
+}
+
+export const trustedClientIp = (nodeRequest) => {
+  const peer = normalizeIp(nodeRequest.socket?.remoteAddress)
+  if (!isPrivateProxyAddress(peer)) return peer
+  const forwarded = String(nodeRequest.headers?.['x-forwarded-for'] || '').split(',')
+    .map(normalizeIp).filter(Boolean)
+  return forwarded.at(-1) || peer
+}
+
 const publicUrl = (request) => {
   const forwardedProtocol = String(request.headers['x-forwarded-proto'] || '').split(',')[0].trim()
   const protocol = forwardedProtocol || 'http'
@@ -82,6 +104,60 @@ export const createVpsRuntime = ({
   return { database, env }
 }
 
+const OPERATIONAL_PRUNE_FIRST_DELAY_MS = 10 * 60_000
+const OPERATIONAL_PRUNE_INTERVAL_MS = 6 * 60 * 60_000
+
+// Periodically removes expired sessions and old idempotency receipts. Deletes
+// run in small batches and yield between them so API requests keep flowing.
+export const createOperationalPruneRunner = ({
+  env,
+  prune = pruneOperationalRecords,
+  enabled = true,
+  logger = defaultRequestLogger,
+  firstDelayMs = OPERATIONAL_PRUNE_FIRST_DELAY_MS,
+  intervalMs = OPERATIONAL_PRUNE_INTERVAL_MS,
+} = {}) => {
+  let firstTimer = null
+  let interval = null
+  let inFlight = null
+  const runOnce = () => {
+    if (!enabled) return Promise.resolve(null)
+    if (inFlight) return inFlight
+    inFlight = Promise.resolve()
+      .then(() => prune(env, { now: new Date().toISOString(), yieldControl: () => nextEventLoopTurn() }))
+      .then((summary) => {
+        if (typeof logger === 'function') logger({ event: 'idosi.operational_prune', status: 'completed', ...summary })
+        return summary
+      })
+      .catch((error) => {
+        console.error('IDOSI operational prune failed', String(error?.message || error))
+        return null
+      })
+      .finally(() => { inFlight = null })
+    return inFlight
+  }
+  return {
+    runOnce,
+    start() {
+      if (!enabled || firstTimer || interval) return
+      firstTimer = setTimeout(() => {
+        firstTimer = null
+        void runOnce()
+        interval = setInterval(() => void runOnce(), intervalMs)
+        interval.unref?.()
+      }, firstDelayMs)
+      firstTimer.unref?.()
+    },
+    async stop() {
+      if (firstTimer) clearTimeout(firstTimer)
+      if (interval) clearInterval(interval)
+      firstTimer = null
+      interval = null
+      await inFlight
+    },
+  }
+}
+
 export const createIdosiServer = (options = {}) => {
   const automaticRevenueBonusEnabled = options.automaticRevenueBonusEnabled
     ?? resolveAutomaticRevenueBonusEnabled(process.env.IDOSI_AUTOMATIC_REVENUE_BONUS_ENABLED, process.env.NODE_ENV !== 'test')
@@ -91,6 +167,10 @@ export const createIdosiServer = (options = {}) => {
     finalize: options.finalizeAutomaticRevenueBonuses || finalizeAutomaticRevenueBonuses,
     enabled: automaticRevenueBonusEnabled,
     logger: options.automaticRevenueBonusLogger,
+  })
+  const operationalPruneRunner = createOperationalPruneRunner({
+    env: runtime.env,
+    enabled: options.operationalPruneEnabled ?? process.env.NODE_ENV !== 'test',
   })
   const releaseSha = options.releaseSha ?? process.env.IDOSI_RELEASE_SHA ?? ''
   const releaseStartedAt = options.releaseStartedAt ?? new Date().toISOString()
@@ -147,8 +227,12 @@ export const createIdosiServer = (options = {}) => {
         if (Array.isArray(value)) value.forEach((entry) => headers.append(name, entry))
         else if (value !== undefined) headers.set(name, value)
       }
-      const forwardedIp = String(nodeRequest.headers['x-real-ip'] || nodeRequest.socket.remoteAddress || '').trim()
-      if (forwardedIp && !headers.has('cf-connecting-ip')) headers.set('cf-connecting-ip', forwardedIp)
+      // The Worker trusts cf-connecting-ip for audit and rate limits. Never
+      // accept it (or X-Real-IP) from the client; derive it from the socket
+      // or from the X-Forwarded-For value set by the local Caddy proxy.
+      headers.delete('cf-connecting-ip')
+      const clientIp = trustedClientIp(nodeRequest)
+      if (clientIp) headers.set('cf-connecting-ip', clientIp)
       const request = new Request(publicUrl(nodeRequest), {
         method,
         headers,
@@ -198,12 +282,16 @@ export const createIdosiServer = (options = {}) => {
   // Retire proxy connections after Caddy's 30s pool timeout, never before it.
   server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS
   server.headersTimeout = HEADERS_TIMEOUT_MS
-  server.once('listening', () => automaticRevenueBonusRunner.start())
+  server.once('listening', () => {
+    automaticRevenueBonusRunner.start()
+    operationalPruneRunner.start()
+  })
   server.on('close', () => {
     void automaticRevenueBonusRunner.stop()
+    void operationalPruneRunner.stop()
     runtime.database.close()
   })
-  return { server, runtime, automaticRevenueBonusRunner }
+  return { server, runtime, automaticRevenueBonusRunner, operationalPruneRunner }
 }
 
 const isMainModule = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))

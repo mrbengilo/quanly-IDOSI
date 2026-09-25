@@ -68,7 +68,7 @@ import {
   supportScheduleWorkMode,
   validateSupportSchedulePresets,
 } from '../src/domain/supportWorkSchedule.js'
-import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
+import { ORDER_DATA_INVALID, orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
 import { productOptions } from '../src/domain/orderInformationSettings.js'
 import { resolveOrderCustomFields as resolveConfiguredOrderCustomFields } from '../src/domain/orderCustomFields.js'
 
@@ -945,6 +945,13 @@ const ADDRESS_SUGGESTION_RATE_LIMIT = 30
 const ADDRESS_SUGGESTION_RATE_WINDOW_MS = 60_000
 const MAX_LEGACY_ATTENDANCE_AUDITS = 10_000
 const addressSuggestionRateWindows = new Map()
+// Failed-login throttling. Keyed per database binding so each runtime (and each
+// isolated test environment) has its own counters. Failures are counted per
+// (username, client IP) to stop guessing, per username across all IPs to slow
+// distributed guessing, and per IP to stop spraying many usernames.
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60_000
+const LOGIN_FAILURE_LIMITS = Object.freeze({ account: 5, username: 30, ip: 50 })
+const loginFailureStores = new WeakMap()
 
 const DEFAULT_POLICIES = Object.freeze({
   late_tolerance_minutes: 10,
@@ -5027,7 +5034,7 @@ const bootstrapDatabase = async (request, env, context) => {
       throw new ApiError(400, 'DUPLICATE_ORDER_CODE', 'Dữ liệu ban đầu chứa mã đơn hàng bị trùng.')
     }
     seenOrderCodes.add(orderCode)
-    const suffix = orderCode.match(/-(\d{5})$/u)
+    const suffix = orderCode.match(ORDER_CODE_SEQUENCE_PATTERN)
     if (!suffix) continue
     const value = Number(suffix[1])
     orderCounterValues.set(storeId, Math.max(orderCounterValues.get(storeId) || 0, value))
@@ -5093,6 +5100,66 @@ const bootstrapDatabase = async (request, env, context) => {
   }), created ? 201 : 200)
 }
 
+const loginFailureStore = (db) => {
+  let store = loginFailureStores.get(db)
+  if (!store) {
+    store = new Map()
+    loginFailureStores.set(db, store)
+  }
+  return store
+}
+
+const loginThrottleKeys = (request, username) => {
+  const ip = String(request.headers.get('cf-connecting-ip') || '').trim().slice(0, 64)
+  return [
+    ['account', `account:${username}:${ip}`],
+    ['username', `username:${username}`],
+    ...(ip ? [['ip', `ip:${ip}`]] : []),
+  ]
+}
+
+const pruneLoginFailures = (store, now) => {
+  if (store.size <= 5_000) return
+  for (const [key, entry] of store) {
+    if (now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) store.delete(key)
+  }
+}
+
+const assertLoginNotThrottled = (db, request, username, context) => {
+  const now = Date.parse(context.now)
+  const store = loginFailureStore(db)
+  for (const [kind, key] of loginThrottleKeys(request, username)) {
+    const entry = store.get(key)
+    if (!entry) continue
+    if (now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) {
+      store.delete(key)
+      continue
+    }
+    if (entry.failures >= LOGIN_FAILURE_LIMITS[kind]) {
+      throw new ApiError(429, 'LOGIN_RATE_LIMITED', 'Bạn đã nhập sai quá nhiều lần. Vui lòng thử lại sau ít phút.', {
+        retryAfterSeconds: Math.max(1, Math.ceil((entry.startedAt + LOGIN_FAILURE_WINDOW_MS - now) / 1_000)),
+      })
+    }
+  }
+}
+
+const recordLoginFailure = (db, request, username, context) => {
+  const now = Date.parse(context.now)
+  const store = loginFailureStore(db)
+  for (const [, key] of loginThrottleKeys(request, username)) {
+    const entry = store.get(key)
+    if (!entry || now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) store.set(key, { startedAt: now, failures: 1 })
+    else entry.failures += 1
+  }
+  pruneLoginFailures(store, now)
+}
+
+const clearLoginFailures = (db, request, username) => {
+  const store = loginFailureStore(db)
+  const [[, accountKey]] = loginThrottleKeys(request, username)
+  store.delete(accountKey)
+}
+
 const login = async (request, env, context) => {
   const db = getDatabase(env)
   const body = await readJson(request)
@@ -5102,6 +5169,9 @@ const login = async (request, env, context) => {
   if (!/^[A-Za-z0-9._-]{3,80}$/u.test(submittedUsername) || passwordValue.length < 1 || passwordValue.length > 256) {
     throw new ApiError(400, 'CREDENTIALS_INVALID', 'Tên đăng nhập hoặc mật khẩu không hợp lệ.')
   }
+  // Checked before the PBKDF2 work so a throttled client cannot keep the CPU
+  // busy, and applied to unknown usernames too so it reveals nothing.
+  assertLoginNotThrottled(db, request, username, context)
   const user = await first(db, `
     SELECT * FROM users WHERE username_normalized = ? LIMIT 1
   `, username)
@@ -5122,8 +5192,10 @@ const login = async (request, env, context) => {
   // storage, but authentication itself follows the exact username spelling.
   // Password verification is already byte/case sensitive through PBKDF2.
   if (!user || user.username !== submittedUsername || !matches) {
+    recordLoginFailure(db, request, username, context)
     throw new ApiError(401, 'INVALID_CREDENTIALS', 'Tên đăng nhập hoặc mật khẩu chưa đúng.')
   }
+  clearLoginFailures(db, request, username)
   if (!VALID_ACCOUNT_STATUSES.has(user.status) || user.status !== 'active') {
     throw new ApiError(403, 'ACCOUNT_DISABLED', 'Tài khoản hiện không ở trạng thái hoạt động.')
   }
@@ -5802,6 +5874,9 @@ const summarizeOrderRows = (rows, scope) => {
   try {
     return summarizeOrders(scope.ownOrdersOnly ? orders.filter((order) => orderCreatedByEmployee(order, scope.employeeId)) : orders, scope)
   } catch (error) {
+    if (error?.code === ORDER_DATA_INVALID) {
+      throw new ApiError(422, ORDER_DATA_INVALID, `${error.message}. Cần sửa đơn này để báo cáo/thống kê chạy được.`, error.details)
+    }
     if (!(error instanceof TypeError || error instanceof RangeError)) throw error
     throw new ApiError(500, 'ORDER_SUMMARY_INVALID', 'Dữ liệu tổng hợp đơn hàng không hợp lệ.')
   }
@@ -7199,6 +7274,26 @@ const policyNumber = async (db, key, fallback) => {
   return Number.isFinite(value) ? value : fallback
 }
 
+// Version head only: conflict reporting must not hydrate the whole state.
+const globalStateHeadVersion = async (db) => Number((await first(
+  db,
+  "SELECT version FROM app_state WHERE scope_key = 'global' LIMIT 1",
+))?.version || 0)
+
+// receiptStatements({ enforceSuccess: true }) deliberately inserts NULL into
+// command_receipts.request_hash when the guarded writes did not apply, so the
+// whole batch rolls back. That failure is a lost compare-and-swap.
+const isReceiptSuccessGuardFailure = (error) => /NOT NULL constraint failed: command_receipts\.request_hash/iu
+  .test(String(error?.message || error?.cause?.message || ''))
+
+const logStateCommitFailure = (action, commandContext, error) => {
+  console.error('IDOSI state commit failed', {
+    action: String(action || ''),
+    requestId: commandContext?.requestId || null,
+    error: String(error?.message || error),
+  })
+}
+
 const commitGlobalStateDomainCommand = async (db, actor, current, nextState, options, commandContext) => {
   const currentVersion = Number(current.version)
   const nextVersion = currentVersion + 1
@@ -7276,10 +7371,18 @@ const commitGlobalStateDomainCommand = async (db, actor, current, nextState, opt
         successBindings: ['global', nextVersion, commandContext.requestId],
       }),
     ])
-  } catch {
-    const latest = await loadState(db, 'global')
+  } catch (error) {
+    const latestVersion = await globalStateHeadVersion(db)
+    if (latestVersion === currentVersion) {
+      // Every statement in this batch is guarded by EXISTS clauses, so a lost
+      // compare-and-swap never throws. A thrown error with an unchanged version
+      // is a real failure (disk full, constraint, bug); reporting it as
+      // "data changed" hid it and made clients reload and retry forever.
+      logStateCommitFailure(options.action, commandContext, error)
+      throw error
+    }
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: latestVersion,
     })
   }
   if (changes(results?.[0]) !== 1) {
@@ -7406,10 +7509,14 @@ const commitGlobalStateCounterDomainCommand = async (
         enforceSuccess: true,
       }),
     ])
-  } catch {
-    const latest = await loadState(db, 'global')
+  } catch (error) {
+    const latestVersion = await globalStateHeadVersion(db)
+    if (latestVersion === currentVersion && !isReceiptSuccessGuardFailure(error)) {
+      logStateCommitFailure(options.action, commandContext, error)
+      throw error
+    }
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu hoặc bộ đếm đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: latestVersion,
     })
   }
   const aliasesChanged = counterAliases.every((_, index) => changes(results?.[2 + index]) === 1)
@@ -7858,8 +7965,27 @@ const commandProjectionStoreId = async (db, projection, actor) => {
     || await lookup('employees', projection.employeeId)
 }
 
+// These commands re-validate every rule against the state the server loads
+// (open shift, store scope, counters, payroll locks). The client's version is
+// therefore not a statement about data it edited, and requiring it to match
+// the single global version made one store's order reject another store's
+// check-in or order. They commit against the version they read (still an
+// atomic compare-and-swap) and retry on a concurrent writer.
+export const STALE_VERSION_REBASE_COMMANDS = new Set([
+  'order.create',
+  'attendance.check_in',
+  'attendance.check_out',
+  'shift_expense.create',
+  'task.done',
+  'task.set_done',
+  'notification.mark_read',
+  'notification.mark_all_read',
+])
+const MAX_REBASE_COMMAND_ATTEMPTS = 3
+
 const loadGlobalCommandState = async (db, body, actor = null) => {
   const expectedVersion = commandExpectedVersion(body)
+  const rebaseAllowed = STALE_VERSION_REBASE_COMMANDS.has(String(body?.type || ''))
   const projection = commandStateProjection(body)
   const projectionStoreId = projection
     ? await commandProjectionStoreId(db, projection, actor)
@@ -7878,7 +8004,8 @@ const loadGlobalCommandState = async (db, body, actor = null) => {
         ? await loadStateCollections(db, 'global', projection.collections)
         : await loadState(db, 'global'))
   const currentVersion = Number(current?.version || 0)
-  if (!current || currentVersion !== expectedVersion) {
+  const staleButRebasable = rebaseAllowed && expectedVersion <= currentVersion
+  if (!current || (currentVersion !== expectedVersion && !staleButRebasable)) {
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', { currentVersion })
   }
   return {
@@ -17623,6 +17750,12 @@ const orderInformationCommand = async (db, actor, body, commandContext) => {
   }, commandContext)
 }
 
+// Order codes keep the historical 5-digit zero padding (STORE-00001) and
+// simply grow to 6-7 digits after 99,999. The old hard stop at 99,999 would
+// have blocked a busy store from creating orders after a few years.
+const MAX_ORDER_CODE_SEQUENCE = 9_999_999
+const ORDER_CODE_SEQUENCE_PATTERN = /-(\d{5,7})$/u
+
 const orderCreateCommand = async (db, actor, body, commandContext) => {
   if (['business_support', 'store_manager'].includes(actor.role)) {
     throw new ApiError(403, 'ORDER_READ_ONLY', 'Tài khoản quản lý vận hành chỉ được xem danh sách đơn hàng.')
@@ -17739,7 +17872,7 @@ const orderCreateCommand = async (db, actor, body, commandContext) => {
   const counterValue = counterRows.reduce((maximum, row) => (
     Math.max(maximum, Number(row.counter_value || 0))
   ), 0)
-  if (!Number.isSafeInteger(counterValue) || counterValue >= 99_999) {
+  if (!Number.isSafeInteger(counterValue) || counterValue >= MAX_ORDER_CODE_SEQUENCE) {
     throw new ApiError(409, 'ORDER_COUNTER_EXHAUSTED', 'Dãy mã đơn hàng của cửa hàng đã hết.')
   }
   const nextCounterValue = counterValue + 1
@@ -25161,7 +25294,10 @@ const executeCommand = async (request, env, context) => {
     }
   }
   const idempotencyKey = validateIdempotencyKey(request, body)
-  const hash = await requestHash({ ...body, idempotencyKey: undefined })
+  // expectedVersion is concurrency metadata, not part of the intent. A client
+  // that lost a response and retried after its known version advanced must get
+  // the original receipt back instead of IDEMPOTENCY_KEY_REUSED.
+  const hash = await requestHash({ ...body, idempotencyKey: undefined, expectedVersion: undefined })
   const existingReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
   const replay = replayReceipt(existingReceipt, hash)
   if (replay) return replay
@@ -25204,135 +25340,154 @@ const executeCommand = async (request, env, context) => {
       })
     }
   }
+  if (STALE_VERSION_REBASE_COMMANDS.has(String(body.type || ''))) {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        // A fresh shallow copy drops the non-enumerable preloaded snapshot so a
+        // retry reads the state that the concurrent writer just committed.
+        return await dispatchCommand(db, env, user, attempt === 1 ? body : { ...body }, commandContext)
+      } catch (error) {
+        const racedReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
+        const racedReplay = replayReceipt(racedReceipt, hash)
+        if (racedReplay) return racedReplay
+        if (!(error instanceof ApiError) || error.code !== 'VERSION_CONFLICT'
+          || attempt >= MAX_REBASE_COMMAND_ATTEMPTS) throw error
+      }
+    }
+  }
   try {
-    if (body.type === 'state.replace' || body.type === 'state.merge') {
-      return await stateCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('store.')) {
-      return await storeCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'tasks.assign' || body.type === 'tasks.replace_scope') {
-      return await taskAssignmentCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('employee.')) {
-      return await employeeProfileCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('shift_definition.')) {
-      return await shiftDefinitionCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('schedule.')) {
-      return await scheduleCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('account_settings.')) {
-      return await accountSettingsCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('notification.')) {
-      return await notificationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_transfer.')) {
-      return await supportTransferCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('operational_reset.')) {
-      return await operationalResetCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'operational_identifier.resolve_history_alias') {
-      return await operationalIdentifierHistoryRepairCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'system.reset_all') {
-      return await systemResetAllCommand(db, user, body, commandContext, env)
-    }
-    if (body.type === 'system.reset_demo') {
-      return await systemResetDemoCommand(db, user, body, commandContext, env)
-    }
-    if (body.type === 'policy.set') return await policyCommand(db, user, body, commandContext)
-    if (body.type === 'policies.set') return await policiesCommand(db, user, body, commandContext)
-    if (body.type === 'attendance.update') {
-      return await attendanceUpdateCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'attendance.emergency_close') {
-      return await attendanceEmergencyCloseCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
-      return await attendanceCommand(db, user, body, commandContext, env)
-    }
-    if (String(body.type || '').startsWith('order_information.')) {
-      return await orderInformationCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'order.create') return await orderCreateCommand(db, user, body, commandContext)
-    if (body.type === 'order.update' || body.type === 'order.delete') {
-      return await orderMutationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_work.')) {
-      return await supportWorkCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('support_schedule.')) {
-      return await supportScheduleCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'task.progress.save') {
-      return await taskProgressCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'task.done' || body.type === 'task.set_done') {
-      return await taskDoneCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'shift_expense.create') {
-      return await shiftExpenseCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('fixed_expense.')
-      || String(body.type || '').startsWith('expense.')) {
-      return await expenseCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('import.')
-      || String(body.type || '').startsWith('import_voucher.')) {
-      return await importVoucherCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('salary_advance.')) {
-      return await salaryAdvanceCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('salary_adjustment.')) {
-      return await salaryAdjustmentCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('store_salary_config.')) {
-      if (body.type === 'store_salary_config.resolve_collision') {
-        return await storeSalaryConfigCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await storeSalaryConfigCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('compensation_entry.')) {
-      return await compensationEntryCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('work_catalog.')) {
-      return await workCatalogCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'work_reward.set' || body.type === 'work_reward.set_batch') {
-      return await workRewardCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('violation.')) {
-      return await violationCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('revenue_bonus.')) {
-      if (body.type === 'revenue_bonus.resolve_daily_collision') {
-        return await revenueBonusDailyCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await revenueBonusCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('payroll.')) {
-      if (body.type === 'payroll.resolve_period_collision') {
-        return await payrollPeriodCollisionRepairCommand(db, user, body, commandContext)
-      }
-      return await payrollCommand(db, user, body, commandContext)
-    }
-    if (body.type === 'counter.next') return await counterCommand(db, user, body, commandContext)
-    if (body.type === 'user.change_password') {
-      return await changeOwnPasswordCommand(db, user, body, commandContext)
-    }
-    if (String(body.type || '').startsWith('user.')) return await userCommand(db, user, body, commandContext)
-    throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh không được hỗ trợ.')
+    return await dispatchCommand(db, env, user, body, commandContext)
   } catch (error) {
     const racedReceipt = await loadReceipt(db, user.user_id, idempotencyKey)
     const racedReplay = replayReceipt(racedReceipt, hash)
     if (racedReplay) return racedReplay
     throw error
   }
+}
+
+const dispatchCommand = async (db, env, user, body, commandContext) => {
+  if (body.type === 'state.replace' || body.type === 'state.merge') {
+    return await stateCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('store.')) {
+    return await storeCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'tasks.assign' || body.type === 'tasks.replace_scope') {
+    return await taskAssignmentCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('employee.')) {
+    return await employeeProfileCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('shift_definition.')) {
+    return await shiftDefinitionCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('schedule.')) {
+    return await scheduleCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('account_settings.')) {
+    return await accountSettingsCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('notification.')) {
+    return await notificationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_transfer.')) {
+    return await supportTransferCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('operational_reset.')) {
+    return await operationalResetCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'operational_identifier.resolve_history_alias') {
+    return await operationalIdentifierHistoryRepairCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'system.reset_all') {
+    return await systemResetAllCommand(db, user, body, commandContext, env)
+  }
+  if (body.type === 'system.reset_demo') {
+    return await systemResetDemoCommand(db, user, body, commandContext, env)
+  }
+  if (body.type === 'policy.set') return await policyCommand(db, user, body, commandContext)
+  if (body.type === 'policies.set') return await policiesCommand(db, user, body, commandContext)
+  if (body.type === 'attendance.update') {
+    return await attendanceUpdateCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'attendance.emergency_close') {
+    return await attendanceEmergencyCloseCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'attendance.check_in' || body.type === 'attendance.check_out') {
+    return await attendanceCommand(db, user, body, commandContext, env)
+  }
+  if (String(body.type || '').startsWith('order_information.')) {
+    return await orderInformationCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'order.create') return await orderCreateCommand(db, user, body, commandContext)
+  if (body.type === 'order.update' || body.type === 'order.delete') {
+    return await orderMutationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_work.')) {
+    return await supportWorkCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('support_schedule.')) {
+    return await supportScheduleCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'task.progress.save') {
+    return await taskProgressCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'task.done' || body.type === 'task.set_done') {
+    return await taskDoneCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'shift_expense.create') {
+    return await shiftExpenseCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('fixed_expense.')
+    || String(body.type || '').startsWith('expense.')) {
+    return await expenseCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('import.')
+    || String(body.type || '').startsWith('import_voucher.')) {
+    return await importVoucherCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('salary_advance.')) {
+    return await salaryAdvanceCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('salary_adjustment.')) {
+    return await salaryAdjustmentCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('store_salary_config.')) {
+    if (body.type === 'store_salary_config.resolve_collision') {
+      return await storeSalaryConfigCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await storeSalaryConfigCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('compensation_entry.')) {
+    return await compensationEntryCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('work_catalog.')) {
+    return await workCatalogCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'work_reward.set' || body.type === 'work_reward.set_batch') {
+    return await workRewardCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('violation.')) {
+    return await violationCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('revenue_bonus.')) {
+    if (body.type === 'revenue_bonus.resolve_daily_collision') {
+      return await revenueBonusDailyCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await revenueBonusCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('payroll.')) {
+    if (body.type === 'payroll.resolve_period_collision') {
+      return await payrollPeriodCollisionRepairCommand(db, user, body, commandContext)
+    }
+    return await payrollCommand(db, user, body, commandContext)
+  }
+  if (body.type === 'counter.next') return await counterCommand(db, user, body, commandContext)
+  if (body.type === 'user.change_password') {
+    return await changeOwnPasswordCommand(db, user, body, commandContext)
+  }
+  if (String(body.type || '').startsWith('user.')) return await userCommand(db, user, body, commandContext)
+  throw new ApiError(400, 'COMMAND_UNKNOWN', 'Lệnh không được hỗ trợ.')
 }
 
 const logout = async (request, env, context) => {
@@ -25374,6 +25529,62 @@ const visibleUserRowsForActor = async (db, actor) => ['admin', 'business_support
         WHERE role = 'employee' AND LOWER(store_id) = LOWER(?)
         ORDER BY display_name, username
       `, String(actor.store_id || ''))
+
+// Sessions and idempotency receipts are only needed while a session can be
+// used or a client can still retry a request. Without pruning both tables grew
+// forever and inflated every backup. audit_log is business history and is
+// never pruned here.
+const DEFAULT_OPERATIONAL_RETENTION_DAYS = 30
+const OPERATIONAL_PRUNE_BATCH_SIZE = 500
+
+export const pruneOperationalRecords = async (env, {
+  now = new Date().toISOString(),
+  retentionDays = DEFAULT_OPERATIONAL_RETENTION_DAYS,
+  batchSize = OPERATIONAL_PRUNE_BATCH_SIZE,
+  maxBatches = 200,
+  yieldControl = null,
+} = {}) => {
+  const db = getDatabase(env)
+  const nowMs = Date.parse(now)
+  if (!Number.isFinite(nowMs)) throw new TypeError('now must be a valid timestamp.')
+  const days = Math.max(7, Math.trunc(Number(retentionDays) || DEFAULT_OPERATIONAL_RETENTION_DAYS))
+  const limit = Math.max(1, Math.min(5_000, Math.trunc(Number(batchSize) || OPERATIONAL_PRUNE_BATCH_SIZE)))
+  const cutoff = new Date(nowMs - days * 24 * 60 * 60 * 1_000).toISOString()
+  const summary = { cutoff, sessions: 0, receipts: 0, receiptsSkipped: false, complete: true }
+  const pruneInBatches = async (key, statement) => {
+    for (let batch = 0; batch < maxBatches; batch += 1) {
+      if (batch > 0 && typeof yieldControl === 'function') await yieldControl()
+      const removed = changes(await statement())
+      summary[key] += removed
+      if (removed < limit) return
+    }
+    summary.complete = false
+  }
+  await pruneInBatches('sessions', () => run(db, `
+    DELETE FROM sessions
+    WHERE id IN (
+      SELECT id FROM sessions
+      WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)
+      LIMIT ?
+    )
+  `, cutoff, cutoff, limit))
+  // A pending Reset-all finalizer proves completion through its receipt, so
+  // receipts are left untouched until that marker is cleared.
+  if (await loadPendingSystemResetAll(db)) {
+    summary.receiptsSkipped = true
+    return summary
+  }
+  // command_receipt_chunks cascade from command_receipts (foreign key).
+  await pruneInBatches('receipts', () => run(db, `
+    DELETE FROM command_receipts
+    WHERE (actor_id, idempotency_key) IN (
+      SELECT actor_id, idempotency_key FROM command_receipts
+      WHERE created_at < ?
+      LIMIT ?
+    )
+  `, cutoff, limit))
+  return summary
+}
 
 const listUsers = async (request, env, context) => {
   const db = getDatabase(env)
@@ -26042,6 +26253,19 @@ const worker = {
           serverTime: context.now,
           requestId: context.requestId,
         }, error.status, extraHeaders)
+      }
+      if (error?.code === ORDER_DATA_INVALID) {
+        console.error('IDOSI order data invalid', error.details)
+        return jsonResponse({
+          ok: false,
+          error: {
+            code: ORDER_DATA_INVALID,
+            message: `${error.message}. Cần sửa đơn này để báo cáo/thống kê chạy được.`,
+            details: error.details,
+          },
+          serverTime: context.now,
+          requestId: context.requestId,
+        }, 422, extraHeaders)
       }
       console.error('Unhandled IDOSI worker error', error)
       return jsonResponse({
