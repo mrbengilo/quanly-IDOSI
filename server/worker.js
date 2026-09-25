@@ -6123,6 +6123,8 @@ const AUTOMATIC_REVENUE_BONUS_SYSTEM_ACTOR = Object.freeze({
   role: 'system',
 })
 
+const AUTOMATIC_REVENUE_CANDIDATE_COLLECTIONS = Object.freeze(['stores', 'attendance', 'revenueBonusDaily', 'payrollPeriods'])
+
 const automaticRevenueCandidateScopes = (state, {
   now,
   storeId = '',
@@ -6229,6 +6231,13 @@ const baselineAutomaticRevenueRecords = ({ snapshot, finalizedAt, trigger }) => 
   return { daily, allocations, jobRun }
 }
 
+// Conflict reporting only needs the version head; hydrating the whole state
+// here would reintroduce the full-state read this path is meant to avoid.
+const globalStateVersion = async (db) => Number((await first(
+  db,
+  "SELECT version FROM app_state WHERE scope_key = 'global' LIMIT 1",
+))?.version || 0)
+
 const commitAutomaticRevenueBonusState = async (db, current, nextState, {
   daily,
   finalizedAt,
@@ -6278,21 +6287,57 @@ const commitAutomaticRevenueBonusState = async (db, current, nextState, {
       ),
     ])
   } catch (error) {
-    const latest = await loadState(db, 'global')
-    if (Number(latest?.version || 0) !== currentVersion) {
+    const latestVersion = await globalStateVersion(db)
+    if (latestVersion !== currentVersion) {
       throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-        currentVersion: Number(latest?.version || 0),
+        currentVersion: latestVersion,
       })
     }
     throw error
   }
   if (changes(results?.[0]) !== 1) {
-    const latest = await loadState(db, 'global')
     throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.', {
-      currentVersion: Number(latest?.version || 0),
+      currentVersion: await globalStateVersion(db),
     })
   }
   return nextVersion
+}
+
+// The finalizer used to hydrate the complete global state for every
+// (store, day) scope. node:sqlite is synchronous, so a nightly run over a few
+// hundred scopes blocked every API request for minutes. Read the same
+// store/day projection that /api/revenue-bonus/live already uses instead.
+const loadAutomaticRevenueBonusScopeState = async (db, scope) => {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await loadRevenueBonusReadState(db, scope.storeId, scope.businessDate)
+    if (!current) return null
+    if (typeof db?.readRevenueBonusStateSnapshot === 'function') {
+      // Only this store/day's orders, attendance and daily rows are loaded, so
+      // persistence must delete individual unmatched keys and never treat a
+      // projected collection as the complete global collection.
+      Object.defineProperty(current, '_storeEntityProjection', { value: true, enumerable: false })
+    }
+    const payrollRow = await loadStateCollections(db, 'global', ['payrollPeriods'])
+    if (Number(payrollRow?.version || 0) !== Number(current.version || 0)) continue
+    const payrollState = payrollRow ? parseStoredJson(payrollRow.value_json, {}) : {}
+    return {
+      current,
+      state: normalizeSharedStateForStorage(parseStoredJson(current.value_json, {})),
+      payrollPeriods: Array.isArray(payrollState.payrollPeriods) ? payrollState.payrollPeriods : [],
+    }
+  }
+  throw new ApiError(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi trên máy chủ.')
+}
+
+const automaticRevenueScopeIsSettled = (state, scope) => {
+  if (materializedRevenueDailyMatches(state, scope.storeId, scope.businessDate).length === 1) return 'ALREADY_FINALIZED'
+  try {
+    assertPayrollNotPaidOrLocked(state, scope.storeId, scope.businessDate.slice(0, 7))
+  } catch (error) {
+    if (error instanceof ApiError) return 'PAYROLL_LOCKED'
+    throw error
+  }
+  return ''
 }
 
 const finalizeAutomaticRevenueBonusScope = async (db, scope, {
@@ -6301,9 +6346,9 @@ const finalizeAutomaticRevenueBonusScope = async (db, scope, {
   maxAttempts,
 }) => {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const current = await loadState(db, 'global')
-    if (!current) return { status: 'UNINITIALIZED', ...scope }
-    const state = normalizeSharedStateForStorage(parseStoredJson(current.value_json, {}))
+    const loaded = await loadAutomaticRevenueBonusScopeState(db, scope)
+    if (!loaded) return { status: 'UNINITIALIZED', ...scope }
+    const { current, state, payrollPeriods } = loaded
     const existing = materializedRevenueDailyMatches(state, scope.storeId, scope.businessDate)
     if (existing.length > 1) {
       return {
@@ -6315,7 +6360,9 @@ const finalizeAutomaticRevenueBonusScope = async (db, scope, {
     if (existing.length === 1) return { status: 'ALREADY_FINALIZED', ...scope, dailyId: existing[0].id }
     const store = requireActivePhysicalStore(state, scope.storeId)
     try {
-      assertPayrollNotPaidOrLocked(state, store.id, scope.businessDate.slice(0, 7))
+      // Payroll periods are read for the lock check only. They are never part
+      // of nextState, so the scoped commit cannot rewrite payroll rows.
+      assertPayrollNotPaidOrLocked({ ...state, payrollPeriods }, store.id, scope.businessDate.slice(0, 7))
     } catch (error) {
       if (error instanceof ApiError) return { status: 'PAYROLL_LOCKED', ...scope, code: error.code }
       throw error
@@ -6365,34 +6412,55 @@ export const finalizeAutomaticRevenueBonuses = async (env, {
   period = '',
   maxAttempts = 4,
   maxScopes = 500,
+  yieldControl = null,
 } = {}) => {
   const parsedNow = new Date(now)
   if (Number.isNaN(parsedNow.getTime())) throw new TypeError('now must be a valid timestamp.')
   const normalizedNow = parsedNow.toISOString()
   const db = getDatabase(env)
-  const current = await loadState(db, 'global')
+  const requestedStoreId = String(storeId || '').trim()
+  const requestedBusinessDate = String(businessDate || '').trim()
+  const current = await loadStateCollections(db, 'global', AUTOMATIC_REVENUE_CANDIDATE_COLLECTIONS)
   const state = normalizeSharedStateForStorage(parseStoredJson(current?.value_json || '{}', {}))
-  const scopes = automaticRevenueCandidateScopes(state, {
+  const allScopes = automaticRevenueCandidateScopes(state, {
     now: normalizedNow,
-    storeId: String(storeId || '').trim(),
-    businessDate: String(businessDate || '').trim(),
+    storeId: requestedStoreId,
+    businessDate: requestedBusinessDate,
     period: String(period || '').trim(),
-  }).slice(0, Math.max(1, Math.min(Number(maxScopes) || 500, 2_000)))
+  })
+  // A sweep must spend its budget on days that can still change. Without this
+  // filter the oldest, already-finalized days filled the whole budget once the
+  // history grew past maxScopes, so newer days were never finalized. An
+  // explicit single store/day request still reports its status per scope.
+  const explicitScope = Boolean(requestedStoreId && requestedBusinessDate)
+  let settledFinalized = 0
+  let settledPayrollLocked = 0
+  const pendingScopes = explicitScope ? allScopes : allScopes.filter((scope) => {
+    const settled = automaticRevenueScopeIsSettled(state, scope)
+    if (settled === 'ALREADY_FINALIZED') settledFinalized += 1
+    if (settled === 'PAYROLL_LOCKED') settledPayrollLocked += 1
+    return !settled
+  })
+  const scopes = pendingScopes.slice(0, Math.max(1, Math.min(Number(maxScopes) || 500, 2_000)))
   const summary = {
     trigger,
     startedAt: normalizedNow,
     candidateCount: scopes.length,
+    pendingCount: pendingScopes.length,
+    settledSkipped: settledFinalized + settledPayrollLocked,
     finalized: 0,
-    alreadyFinalized: 0,
+    alreadyFinalized: settledFinalized,
     waitingCutoff: 0,
     waitingShiftClose: 0,
     noAttendance: 0,
-    payrollLocked: 0,
+    payrollLocked: settledPayrollLocked,
     duplicates: 0,
     failed: 0,
     results: [],
   }
-  for (const scope of scopes) {
+  for (const [index, scope] of scopes.entries()) {
+    // Let queued API requests run between scopes on the single VPS event loop.
+    if (index > 0 && typeof yieldControl === 'function') await yieldControl()
     try {
       const result = await finalizeAutomaticRevenueBonusScope(db, scope, {
         now: normalizedNow,
