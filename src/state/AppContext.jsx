@@ -4105,11 +4105,12 @@ export function AppProvider({ children }) {
         // the cleanup response is emitted before the mutation executes.
         const remote = apiRef.current
         let result
+        let expectedVersion = remote.version
+        let rebasedOnNewerVersion = false
         for (let versionAttempt = 0; versionAttempt < 2; versionAttempt += 1) {
           // A VERSION_CONFLICT represents a different mutation attempt because
           // expectedVersion is part of the request contract. Cleanup retries,
           // on the other hand, must keep the exact same key and payload.
-          const expectedVersion = remote.version
           const idempotencyKey = `account_settings.update:${crypto.randomUUID()}`
           try {
             for (let cleanupAttempt = 0; cleanupAttempt < 3; cleanupAttempt += 1) {
@@ -4127,8 +4128,12 @@ export function AppProvider({ children }) {
           } catch (error) {
             if (error?.code !== 'VERSION_CONFLICT' || versionAttempt === 1) throw error
             try {
-              const latest = await apiGetState('global')
-              activateRemotePayload(latest, latest.user || remote.user, activeStoreIdRef.current)
+              // Only the current version is needed to retry this person's own
+              // settings. Downloading the whole global state here cost an Admin
+              // tens of MB; the regular metadata poll refreshes other screens.
+              const metadata = await apiGetStateMetadata('global')
+              expectedVersion = Number(metadata.version || 0)
+              rebasedOnNewerVersion = true
             } catch {
               const refreshError = new Error('Dữ liệu tài khoản vừa thay đổi nhưng không thể tải bản mới nhất. Ảnh và thông tin cũ vẫn được giữ nguyên; vui lòng thử lại.')
               refreshError.code = 'VERSION_CONFLICT'
@@ -4137,7 +4142,11 @@ export function AppProvider({ children }) {
           }
         }
         remote.version = Math.max(Number(remote.version || 0), Number(result.version || 0))
-        remote.hydratedVersion = Math.max(Number(remote.hydratedVersion || 0), Number(result.version || 0))
+        // After a rebase other people's intermediate changes are not rendered
+        // yet; keep hydratedVersion behind so the next poll downloads them.
+        if (!rebasedOnNewerVersion) {
+          remote.hydratedVersion = Math.max(Number(remote.hydratedVersion || 0), Number(result.version || 0))
+        }
         const remoteSettings = result.settings || {}
         const avatarMetadata = accountAvatarMetadata(remoteSettings.avatar)
         const avatarWasChanged = payload.avatar !== undefined
@@ -4809,8 +4818,11 @@ export function AppProvider({ children }) {
           })
         } catch (error) {
           if (error.code !== 'VERSION_CONFLICT') throw error
-          const latest = await apiGetState('global')
-          remote.policyVersions = Object.fromEntries((latest.policies || []).map((policy) => [policy.key, Number(policy.version || 0)]))
+          // Policy versions come from the lightweight metadata endpoint; the full
+          // global state is not needed to retry a policy save.
+          const metadata = await apiGetStateMetadata('global')
+          remote.policyVersions = Object.fromEntries(Object.entries(metadata.policyVersions || {})
+            .map(([key, version]) => [key, Number(version || 0)]))
           result = await apiCommand('policies.set', { updates: makeUpdates() }, {
             idempotencyKey: `policies-retry:${crypto.randomUUID()}`,
           })
