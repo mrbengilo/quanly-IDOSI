@@ -30,7 +30,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 22.13.0
+          # Match the production VPS runtime (deploy/vps/Dockerfile: node:24).
+          # node:sqlite and the SQLite build differ between Node majors, so the
+          # suite must run on the same major that serves production.
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
