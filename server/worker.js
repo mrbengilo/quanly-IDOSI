@@ -25521,6 +25521,62 @@ const visibleUserRowsForActor = async (db, actor) => ['admin', 'business_support
         ORDER BY display_name, username
       `, String(actor.store_id || ''))
 
+// Sessions and idempotency receipts are only needed while a session can be
+// used or a client can still retry a request. Without pruning both tables grew
+// forever and inflated every backup. audit_log is business history and is
+// never pruned here.
+const DEFAULT_OPERATIONAL_RETENTION_DAYS = 30
+const OPERATIONAL_PRUNE_BATCH_SIZE = 500
+
+export const pruneOperationalRecords = async (env, {
+  now = new Date().toISOString(),
+  retentionDays = DEFAULT_OPERATIONAL_RETENTION_DAYS,
+  batchSize = OPERATIONAL_PRUNE_BATCH_SIZE,
+  maxBatches = 200,
+  yieldControl = null,
+} = {}) => {
+  const db = getDatabase(env)
+  const nowMs = Date.parse(now)
+  if (!Number.isFinite(nowMs)) throw new TypeError('now must be a valid timestamp.')
+  const days = Math.max(7, Math.trunc(Number(retentionDays) || DEFAULT_OPERATIONAL_RETENTION_DAYS))
+  const limit = Math.max(1, Math.min(5_000, Math.trunc(Number(batchSize) || OPERATIONAL_PRUNE_BATCH_SIZE)))
+  const cutoff = new Date(nowMs - days * 24 * 60 * 60 * 1_000).toISOString()
+  const summary = { cutoff, sessions: 0, receipts: 0, receiptsSkipped: false, complete: true }
+  const pruneInBatches = async (key, statement) => {
+    for (let batch = 0; batch < maxBatches; batch += 1) {
+      if (batch > 0 && typeof yieldControl === 'function') await yieldControl()
+      const removed = changes(await statement())
+      summary[key] += removed
+      if (removed < limit) return
+    }
+    summary.complete = false
+  }
+  await pruneInBatches('sessions', () => run(db, `
+    DELETE FROM sessions
+    WHERE id IN (
+      SELECT id FROM sessions
+      WHERE expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)
+      LIMIT ?
+    )
+  `, cutoff, cutoff, limit))
+  // A pending Reset-all finalizer proves completion through its receipt, so
+  // receipts are left untouched until that marker is cleared.
+  if (await loadPendingSystemResetAll(db)) {
+    summary.receiptsSkipped = true
+    return summary
+  }
+  // command_receipt_chunks cascade from command_receipts (foreign key).
+  await pruneInBatches('receipts', () => run(db, `
+    DELETE FROM command_receipts
+    WHERE (actor_id, idempotency_key) IN (
+      SELECT actor_id, idempotency_key FROM command_receipts
+      WHERE created_at < ?
+      LIMIT ?
+    )
+  `, cutoff, limit))
+  return summary
+}
+
 const listUsers = async (request, env, context) => {
   const db = getDatabase(env)
   const actor = await requireSession(request, db, context, {
