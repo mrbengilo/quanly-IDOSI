@@ -78,6 +78,20 @@ describe('orderSummary', () => {
   it('fails closed on invalid eligible VND amounts', () => {
     expect(() => summarizeOrders([{ id: 'INVALID', storeId: 'S01', amount: 1.5, createdAt: '2026-09-01' }], { storeId: 'S01', period: '2026-09' })).toThrow(/Invalid order amount/u)
     expect(() => summarizeOrders([{ id: 'BLANK', storeId: 'S01', amount: ' ', createdAt: '2026-09-01' }], { storeId: 'S01', period: '2026-09' })).toThrow(/Invalid order amount/u)
+    let invalid = null
+    try {
+      summarizeOrders([
+        { id: 'OK', code: 'S01-00001', storeId: 'S01', amount: 100, createdAt: '2026-09-01' },
+        { id: 'BAD', code: 'S01-00002', storeId: 'S01', amount: 100, items: [{ revenueType: 'normal', quantity: 1 }], createdAt: '2026-09-01' },
+      ], { storeId: 'S01', period: '2026-09' })
+    } catch (error) {
+      invalid = error
+    }
+    expect(invalid).toMatchObject({
+      code: 'ORDER_DATA_INVALID',
+      details: { orderId: 'BAD', orderCode: 'S01-00002', storeId: 'S01', reason: 'ORDER_REVENUE_TYPE_INVALID' },
+    })
+    expect(invalid.message).toContain('S01-00002')
   })
   it('preserves valid legacy numeric-string VND amounts', () => {
     const result = summarizeOrders([{ id: 'LEGACY', storeId: 'S01', amount: '125000', paymentMethod: 'Tiền mặt', createdAt: '2026-09-01' }], { storeId: 'S01', period: '2026-09' })

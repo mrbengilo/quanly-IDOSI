@@ -68,7 +68,7 @@ import {
   supportScheduleWorkMode,
   validateSupportSchedulePresets,
 } from '../src/domain/supportWorkSchedule.js'
-import { orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
+import { ORDER_DATA_INVALID, orderBusinessDate, orderMatchesFilters, parseOrderAmountFilter, paymentChannel, summarizeOrders } from '../src/domain/orderSummary.js'
 import { productOptions } from '../src/domain/orderInformationSettings.js'
 import { resolveOrderCustomFields as resolveConfiguredOrderCustomFields } from '../src/domain/orderCustomFields.js'
 
@@ -5802,6 +5802,9 @@ const summarizeOrderRows = (rows, scope) => {
   try {
     return summarizeOrders(scope.ownOrdersOnly ? orders.filter((order) => orderCreatedByEmployee(order, scope.employeeId)) : orders, scope)
   } catch (error) {
+    if (error?.code === ORDER_DATA_INVALID) {
+      throw new ApiError(422, ORDER_DATA_INVALID, `${error.message}. Cần sửa đơn này để báo cáo/thống kê chạy được.`, error.details)
+    }
     if (!(error instanceof TypeError || error instanceof RangeError)) throw error
     throw new ApiError(500, 'ORDER_SUMMARY_INVALID', 'Dữ liệu tổng hợp đơn hàng không hợp lệ.')
   }
@@ -25974,6 +25977,19 @@ const worker = {
           serverTime: context.now,
           requestId: context.requestId,
         }, error.status, extraHeaders)
+      }
+      if (error?.code === ORDER_DATA_INVALID) {
+        console.error('IDOSI order data invalid', error.details)
+        return jsonResponse({
+          ok: false,
+          error: {
+            code: ORDER_DATA_INVALID,
+            message: `${error.message}. Cần sửa đơn này để báo cáo/thống kê chạy được.`,
+            details: error.details,
+          },
+          serverTime: context.now,
+          requestId: context.requestId,
+        }, 422, extraHeaders)
       }
       console.error('Unhandled IDOSI worker error', error)
       return jsonResponse({

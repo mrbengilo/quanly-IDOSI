@@ -181,6 +181,23 @@ const addOrderProducts = (summary, itemMap, order, weights, combinedProducts, re
   })
 }
 
+// Money must never be silently miscounted, so one malformed order still stops
+// the whole summary. Name the order so an Admin can fix it instead of seeing a
+// generic server error on the report and on the warehouse API.
+export const ORDER_DATA_INVALID = 'ORDER_DATA_INVALID'
+const invalidOrderDataError = (order, cause) => Object.assign(
+  new TypeError(`Đơn hàng ${String(order?.code || order?.id || 'không rõ mã')} có dữ liệu không hợp lệ: ${String(cause?.message || cause)}`),
+  {
+    code: ORDER_DATA_INVALID,
+    details: {
+      orderId: String(order?.id || ''),
+      orderCode: String(order?.code || ''),
+      storeId: String(order?.storeId || ''),
+      reason: String(cause?.code || cause?.name || 'INVALID'),
+    },
+  },
+)
+
 export const summarizeOrders = (orders = [], { storeId = '', period = '', employeeId = '', productCatalog = null, ...filters } = {}) => {
   // Passing the catalog makes product identity data-driven; leaving it out keeps
   // the previous behaviour for callers that have no catalog at hand.
@@ -200,16 +217,21 @@ export const summarizeOrders = (orders = [], { storeId = '', period = '', employ
     if (storeKey && identifierKey(order.storeId) !== storeKey) continue
     if (employeeKey && identifierKey(order.employeeId) !== employeeKey) continue
     if (period && orderBusinessDate(order).slice(0, 7) !== period) continue
-    const amount = checkedAmount(order)
-    addOrder(totals, order, amount)
-    addOrderWeight(weightAccumulatorFor(weights, totals), order)
-    addOrderProducts(products, productItems, order, weights, combinedProducts, resolveIdentity)
-    for (const view of Object.keys(groups)) {
-      const key = String(orderGroupKey(order, view))
-      const groupTotals = groups[view].get(key) || { ...emptyTotals(), ...(view === 'shift' ? shiftMetadata(order) : {}) }
-      addOrder(groupTotals, order, amount)
-      addOrderWeight(weightAccumulatorFor(weights, groupTotals), order)
-      groups[view].set(key, groupTotals)
+    try {
+      const amount = checkedAmount(order)
+      addOrder(totals, order, amount)
+      addOrderWeight(weightAccumulatorFor(weights, totals), order)
+      addOrderProducts(products, productItems, order, weights, combinedProducts, resolveIdentity)
+      for (const view of Object.keys(groups)) {
+        const key = String(orderGroupKey(order, view))
+        const groupTotals = groups[view].get(key) || { ...emptyTotals(), ...(view === 'shift' ? shiftMetadata(order) : {}) }
+        addOrder(groupTotals, order, amount)
+        addOrderWeight(weightAccumulatorFor(weights, groupTotals), order)
+        groups[view].set(key, groupTotals)
+      }
+    } catch (error) {
+      if (error instanceof RangeError) throw error
+      throw invalidOrderDataError(order, error)
     }
   }
   // Serialize only after aggregation; BigInt fractions never enter the API payload.
