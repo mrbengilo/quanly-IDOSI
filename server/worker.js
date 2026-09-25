@@ -945,6 +945,13 @@ const ADDRESS_SUGGESTION_RATE_LIMIT = 30
 const ADDRESS_SUGGESTION_RATE_WINDOW_MS = 60_000
 const MAX_LEGACY_ATTENDANCE_AUDITS = 10_000
 const addressSuggestionRateWindows = new Map()
+// Failed-login throttling. Keyed per database binding so each runtime (and each
+// isolated test environment) has its own counters. Failures are counted per
+// (username, client IP) to stop guessing, per username across all IPs to slow
+// distributed guessing, and per IP to stop spraying many usernames.
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60_000
+const LOGIN_FAILURE_LIMITS = Object.freeze({ account: 5, username: 30, ip: 50 })
+const loginFailureStores = new WeakMap()
 
 const DEFAULT_POLICIES = Object.freeze({
   late_tolerance_minutes: 10,
@@ -5093,6 +5100,66 @@ const bootstrapDatabase = async (request, env, context) => {
   }), created ? 201 : 200)
 }
 
+const loginFailureStore = (db) => {
+  let store = loginFailureStores.get(db)
+  if (!store) {
+    store = new Map()
+    loginFailureStores.set(db, store)
+  }
+  return store
+}
+
+const loginThrottleKeys = (request, username) => {
+  const ip = String(request.headers.get('cf-connecting-ip') || '').trim().slice(0, 64)
+  return [
+    ['account', `account:${username}:${ip}`],
+    ['username', `username:${username}`],
+    ...(ip ? [['ip', `ip:${ip}`]] : []),
+  ]
+}
+
+const pruneLoginFailures = (store, now) => {
+  if (store.size <= 5_000) return
+  for (const [key, entry] of store) {
+    if (now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) store.delete(key)
+  }
+}
+
+const assertLoginNotThrottled = (db, request, username, context) => {
+  const now = Date.parse(context.now)
+  const store = loginFailureStore(db)
+  for (const [kind, key] of loginThrottleKeys(request, username)) {
+    const entry = store.get(key)
+    if (!entry) continue
+    if (now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) {
+      store.delete(key)
+      continue
+    }
+    if (entry.failures >= LOGIN_FAILURE_LIMITS[kind]) {
+      throw new ApiError(429, 'LOGIN_RATE_LIMITED', 'Bạn đã nhập sai quá nhiều lần. Vui lòng thử lại sau ít phút.', {
+        retryAfterSeconds: Math.max(1, Math.ceil((entry.startedAt + LOGIN_FAILURE_WINDOW_MS - now) / 1_000)),
+      })
+    }
+  }
+}
+
+const recordLoginFailure = (db, request, username, context) => {
+  const now = Date.parse(context.now)
+  const store = loginFailureStore(db)
+  for (const [, key] of loginThrottleKeys(request, username)) {
+    const entry = store.get(key)
+    if (!entry || now - entry.startedAt >= LOGIN_FAILURE_WINDOW_MS) store.set(key, { startedAt: now, failures: 1 })
+    else entry.failures += 1
+  }
+  pruneLoginFailures(store, now)
+}
+
+const clearLoginFailures = (db, request, username) => {
+  const store = loginFailureStore(db)
+  const [[, accountKey]] = loginThrottleKeys(request, username)
+  store.delete(accountKey)
+}
+
 const login = async (request, env, context) => {
   const db = getDatabase(env)
   const body = await readJson(request)
@@ -5102,6 +5169,9 @@ const login = async (request, env, context) => {
   if (!/^[A-Za-z0-9._-]{3,80}$/u.test(submittedUsername) || passwordValue.length < 1 || passwordValue.length > 256) {
     throw new ApiError(400, 'CREDENTIALS_INVALID', 'Tên đăng nhập hoặc mật khẩu không hợp lệ.')
   }
+  // Checked before the PBKDF2 work so a throttled client cannot keep the CPU
+  // busy, and applied to unknown usernames too so it reveals nothing.
+  assertLoginNotThrottled(db, request, username, context)
   const user = await first(db, `
     SELECT * FROM users WHERE username_normalized = ? LIMIT 1
   `, username)
@@ -5122,8 +5192,10 @@ const login = async (request, env, context) => {
   // storage, but authentication itself follows the exact username spelling.
   // Password verification is already byte/case sensitive through PBKDF2.
   if (!user || user.username !== submittedUsername || !matches) {
+    recordLoginFailure(db, request, username, context)
     throw new ApiError(401, 'INVALID_CREDENTIALS', 'Tên đăng nhập hoặc mật khẩu chưa đúng.')
   }
+  clearLoginFailures(db, request, username)
   if (!VALID_ACCOUNT_STATUSES.has(user.status) || user.status !== 'active') {
     throw new ApiError(403, 'ACCOUNT_DISABLED', 'Tài khoản hiện không ở trạng thái hoạt động.')
   }

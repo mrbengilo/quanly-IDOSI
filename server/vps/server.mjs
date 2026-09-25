@@ -47,6 +47,27 @@ const readBody = (request) => new Promise((resolveBody, rejectBody) => {
   request.on('error', rejectBody)
 })
 
+const normalizeIp = (value) => String(value || '').trim().replace(/^::ffff:/iu, '').slice(0, 64)
+
+// Caddy runs on the private Docker network and, without trusted_proxies,
+// replaces any client-supplied X-Forwarded-For with the real peer address.
+// Only honour the header when the TCP peer itself is a private/loopback
+// address (the proxy); a direct public connection uses its socket address.
+export const isPrivateProxyAddress = (value) => {
+  const ip = normalizeIp(value)
+  return /^(?:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/u.test(ip)
+    || ip === '::1'
+    || /^f[cd][0-9a-f]{2}:/iu.test(ip)
+}
+
+export const trustedClientIp = (nodeRequest) => {
+  const peer = normalizeIp(nodeRequest.socket?.remoteAddress)
+  if (!isPrivateProxyAddress(peer)) return peer
+  const forwarded = String(nodeRequest.headers?.['x-forwarded-for'] || '').split(',')
+    .map(normalizeIp).filter(Boolean)
+  return forwarded.at(-1) || peer
+}
+
 const publicUrl = (request) => {
   const forwardedProtocol = String(request.headers['x-forwarded-proto'] || '').split(',')[0].trim()
   const protocol = forwardedProtocol || 'http'
@@ -147,8 +168,12 @@ export const createIdosiServer = (options = {}) => {
         if (Array.isArray(value)) value.forEach((entry) => headers.append(name, entry))
         else if (value !== undefined) headers.set(name, value)
       }
-      const forwardedIp = String(nodeRequest.headers['x-real-ip'] || nodeRequest.socket.remoteAddress || '').trim()
-      if (forwardedIp && !headers.has('cf-connecting-ip')) headers.set('cf-connecting-ip', forwardedIp)
+      // The Worker trusts cf-connecting-ip for audit and rate limits. Never
+      // accept it (or X-Real-IP) from the client; derive it from the socket
+      // or from the X-Forwarded-For value set by the local Caddy proxy.
+      headers.delete('cf-connecting-ip')
+      const clientIp = trustedClientIp(nodeRequest)
+      if (clientIp) headers.set('cf-connecting-ip', clientIp)
       const request = new Request(publicUrl(nodeRequest), {
         method,
         headers,
