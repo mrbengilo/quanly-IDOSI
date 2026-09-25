@@ -4,7 +4,6 @@ import {
   BarChart3,
   Box,
   CalendarDays,
-  Check,
   ClipboardCheck,
   Clock3,
   Edit3,
@@ -29,7 +28,6 @@ import {
   Card,
   DateRange,
   Drawer,
-  ExportButton,
   Field,
   InfoNote,
   Input,
@@ -57,7 +55,6 @@ import { ViolationManagementPage } from '../compensation/ViolationManagementPage
 import { workRewardRows } from '../compensation/compensationStatistics'
 import { formatVietnamTransferPeriod, supportTransferMatchesMoment } from '../../domain/supportTransferTime'
 import {
-  downloadCsv,
   getEmployeeType,
   getHourlyRate,
   money,
@@ -94,17 +91,6 @@ const identifierMatch = (records, reference, identifiersOf = (record) => [record
 const employeeIdentifiers = (employee = {}) => [employee.id, employee.code, employee.employeeId]
 const employeeFor = (employees, reference) => identifierMatch(employees, reference, employeeIdentifiers)
 const storeFor = (stores, reference) => identifierMatch(stores, reference, (store) => [store.id])
-const shiftById = (id) => identifierMatch(shifts, id, (shift) => [shift.id])
-const shiftHours = (shift) => {
-  const [startHour, startMinute] = String(shift?.start || '').split(':').map(Number)
-  const [endHour, endMinute] = String(shift?.end || '').split(':').map(Number)
-  if (![startHour, startMinute, endHour, endMinute].every(Number.isFinite)) return 0
-  const start = startHour * 60 + startMinute
-  let end = endHour * 60 + endMinute
-  if (end < start) end += 24 * 60
-  return Math.max(0, end - start) / 60
-}
-
 const EMPLOYEE_STATUSES = ['Đang làm việc', 'Tạm ngưng', 'Đã nghỉ việc']
 const EMPLOYMENT_TYPES = ['Full-Time', 'Part-Time', 'Thử Việc']
 const emptyEmployeeForm = {
@@ -355,114 +341,6 @@ export function StoreOverview() {
           <TableWrap><thead><tr><th>Mặt hàng</th><th>Số lượng</th><th>Khối lượng</th><th>Thành tiền</th></tr></thead><tbody>{imports.slice(0, 5).map((item) => <tr key={item.id}><td><strong>{item.name}</strong></td><td>{item.quantity} {item.unit}</td><td>{item.weight} kg</td><td>{money(item.weight * item.price + item.shipping)}</td></tr>)}</tbody></TableWrap>
           <div className="mini-total"><span>Tổng giá trị nhập</span><strong>{money(importTotal)}</strong></div>
         </Card>
-      </div>
-    </div>
-  )
-}
-
-export function StoreShifts() {
-  const { employees, schedule, saveSchedule, notify } = useStoreScope()
-  const [mode, setMode] = useState('day')
-  const [open, setOpen] = useState(false)
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
-  const [shiftId, setShiftId] = useState('ca1')
-  const [note, setNote] = useState('')
-  const [selected, setSelected] = useState([])
-  const [shiftFilter, setShiftFilter] = useState('all')
-  const [positionFilter, setPositionFilter] = useState('all')
-  const visibleEmployees = employees.filter((employee) => positionFilter === 'all' || employeePosition(employee) === positionFilter)
-  const selectedDate = new Date(`${date}T00:00:00`)
-  const startOfWeek = new Date(selectedDate)
-  startOfWeek.setDate(selectedDate.getDate() - ((selectedDate.getDay() + 6) % 7))
-  const endOfWeek = new Date(startOfWeek)
-  endOfWeek.setDate(startOfWeek.getDate() + 6)
-  const visibleSchedule = schedule.filter((item) => {
-    const itemDate = item.date ? new Date(`${item.date}T00:00:00`) : null
-    const inPeriod = !itemDate || (mode === 'day' ? item.date === date : itemDate >= startOfWeek && itemDate <= endOfWeek)
-    return inPeriod && (shiftFilter === 'all' || item.shiftIds?.some((id) => shiftById(id) === shiftById(shiftFilter)))
-  })
-  const positions = [...new Set(employees.map(employeePosition))]
-  const totalAssignments = visibleSchedule.reduce((sum, item) => sum + (item.shiftIds?.length || 0), 0)
-  const countForShift = (id) => visibleSchedule.filter((item) => item.shiftIds?.some((candidate) => shiftById(candidate) === shiftById(id))).length
-  const save = () => {
-    if (!selected.length) return notify('Vui lòng chọn ít nhất một nhân viên.', 'info')
-    saveSchedule(selected, shiftId, { date, note })
-    setOpen(false)
-    setSelected([])
-    setNote('')
-  }
-  return (
-    <div className="page">
-      <PageHeader title="Ca làm việc" subtitle="Quản lý và phân ca làm việc cho nhân viên" actions={<><Input icon={CalendarDays} type="date" value={date} onChange={(event) => setDate(event.target.value)} /><Button icon={Plus} onClick={() => setOpen(true)}>Tạo lịch ca</Button><ExportButton onClick={() => downloadCsv('ca-lam-viec.csv', visibleSchedule)} /></>} />
-      <div className="shift-summary-grid">
-        {shifts.map((shift) => <Card key={shift.id} className={`shift-summary shift-summary--${shift.id}`}><div style={{ borderColor: shift.color }}><span style={{ color: shift.color }}>{shift.name}</span><strong>{shift.time}</strong><small><Users size={18} /> {countForShift(shift.id)} nhân viên</small></div></Card>)}
-        <Card className="day-overview"><h3>Tổng quan {mode === 'day' ? `ngày ${date.split('-').reverse().join('/')}` : 'tuần đã chọn'}</h3><div><span><Clock3 />Tổng ca <b>{shifts.filter((shift) => countForShift(shift.id) > 0).length}</b></span><span><Users />Tổng nhân viên <b>{new Set(visibleSchedule.map((item) => employeeFor(employees, item.employeeId)?.id).filter(Boolean)).size}</b></span><span><CalendarDays />Tổng lượt ca <b>{totalAssignments}</b></span></div></Card>
-      </div>
-      <Card className="schedule-card">
-        <div className="tabs"><button className={mode === 'day' ? 'active' : ''} onClick={() => setMode('day')}>Lịch theo ngày</button><button className={mode === 'week' ? 'active' : ''} onClick={() => setMode('week')}>Lịch theo tuần</button></div>
-        <div className="card__subheader"><h2>Lịch phân ca {mode === 'day' ? `ngày ${date.split('-').reverse().join('/')}` : 'theo tuần'}</h2><div><Select value={shiftFilter} onChange={(event) => setShiftFilter(event.target.value)}><option value="all">Tất cả ca</option>{shifts.map((shift) => <option value={shift.id} key={shift.id}>{shift.name}</option>)}</Select><Select value={positionFilter} onChange={(event) => setPositionFilter(event.target.value)}><option value="all">Tất cả vị trí</option>{positions.map((position) => <option key={position}>{position}</option>)}</Select><Button variant="outline" icon={Filter} onClick={() => { setShiftFilter('all'); setPositionFilter('all') }}>Đặt lại</Button></div></div>
-        <ScheduleTable employees={visibleEmployees} schedule={visibleSchedule} />
-      </Card>
-      <div className="bottom-info-grid">
-        <Card title="Ghi chú"><ul className="plain-list"><li>Nhân viên có thể làm 1 đến 3 ca trong một ngày.</li><li>Mỗi ca có thể có nhiều nhân viên cùng làm việc.</li><li>Nhấp vào ca để xem chi tiết hoặc chỉnh sửa.</li></ul></Card>
-        <Card title="Thông tin ca làm việc"><div className="shift-info-row">{shifts.map((shift) => <div key={shift.id} style={{ borderColor: shift.color }}><strong style={{ color: shift.color }}>{shift.name}</strong><span>{shift.time}</span><small>5 giờ</small></div>)}</div></Card>
-        <Card title="Thống kê lượt ca trong ngày"><div className="shift-bars">{shifts.map((shift, index) => <p key={shift.id}><span>{shift.name}: {[12, 13, 7][index]} lượt</span><i><b style={{ width: `${[37.5, 40.6, 21.9][index]}%`, background: shift.color }} /></i></p>)}</div></Card>
-      </div>
-      <Modal open={open} onClose={() => setOpen(false)} title="Tạo lịch ca" footer={<><Button variant="outline" onClick={() => setOpen(false)}>Hủy</Button><Button icon={Save} onClick={save} disabled={!selected.length}>Lưu lịch ca</Button></>}>
-        <div className="form-grid"><Field label="Ngày áp dụng"><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field><Field label="Ca làm"><Select value={shiftId} onChange={(event) => setShiftId(event.target.value)}>{shifts.map((shift) => <option key={shift.id} value={shift.id}>{shift.name} • {shift.time}</option>)}</Select></Field><Field label={`Nhân viên • Đã chọn ${selected.length}`} className="span-2"><div className="employee-picker">{employees.map((employee) => <label key={employee.id} className={selected.includes(employee.id) ? 'selected' : ''}><input type="checkbox" checked={selected.includes(employee.id)} onChange={() => setSelected((current) => current.includes(employee.id) ? current.filter((id) => id !== employee.id) : [...current, employee.id])} /><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} /><strong>{employee.name}</strong><small>{employee.shortRole}</small></label>)}</div></Field><Field label="Ghi chú" className="span-2"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Nhập ghi chú..." /></Field></div>
-      </Modal>
-    </div>
-  )
-}
-
-function ScheduleTable({ employees, schedule }) {
-  return (
-    <TableWrap className="schedule-table">
-      <thead><tr><th>Nhân viên</th>{shifts.map((shift) => <th key={shift.id} style={{ color: shift.color }}>{shift.name} <small>({shift.time})</small></th>)}</tr></thead>
-      <tbody>{employees.map((employee) => {
-        const item = schedule.find((row) => employeeFor(employees, row.employeeId) === employee)
-        return <tr key={employee.id}><td><div className="person-cell"><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} /><span><strong>{employee.name}</strong><small>{employee.shortRole}</small></span></div></td>{shifts.map((shift) => <td key={shift.id}>{item?.shiftIds?.some((id) => shiftById(id) === shift) ? <span className={`shift-chip shift-chip--${shift.id}`}><Clock3 />{shift.name} • {shift.time}</span> : '–'}</td>)}</tr>
-      })}</tbody>
-    </TableWrap>
-  )
-}
-
-export function StoreSchedule() {
-  const { employees, schedule, saveSchedule } = useStoreScope()
-  const [open, setOpen] = useState(true)
-  const [shiftId, setShiftId] = useState('ca1')
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
-  const [note, setNote] = useState('')
-  const [employeeQuery, setEmployeeQuery] = useState('')
-  const [selected, setSelected] = useState(() => employees.slice(0, 3).map((employee) => employee.id))
-  const toggle = (id) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
-  const visibleEmployees = employees.filter((employee) => `${employee.id} ${employee.name} ${employee.shortRole}`.toLowerCase().includes(employeeQuery.toLowerCase()))
-  const visibleSchedule = schedule.filter((item) => !item.date || item.date === date)
-  const countForShift = (id) => visibleSchedule.filter((item) => item.shiftIds?.some((candidate) => shiftById(candidate) === shiftById(id))).length
-  const totalScheduledHours = visibleSchedule.reduce((total, item) => total + (item.shiftIds || [])
-    .reduce((hours, id) => hours + shiftHours(shiftById(id)), 0), 0)
-  const save = () => {
-    if (!selected.length) return
-    saveSchedule(selected, shiftId, { date, note })
-    setNote('')
-    setOpen(false)
-  }
-  return (
-    <div className="page">
-      <PageHeader title="Lịch phân ca" subtitle="Tạo và quản lý lịch phân công ca làm việc cho nhân viên" actions={<><Input icon={CalendarDays} type="date" value={date} onChange={(event) => setDate(event.target.value)} /><Button icon={Plus} onClick={() => setOpen(true)}>Tạo ca</Button></>} />
-      <div className="schedule-summary">{shifts.map((shift) => <Card key={shift.id} className={`schedule-summary__item schedule-summary__item--${shift.id}`}><Clock3 style={{ color: shift.color }} /><div><span>{shift.name}</span><strong>{shift.time}</strong><small>{countForShift(shift.id)} nhân viên</small></div></Card>)}<Card className="schedule-day-stats"><h3>Tổng quan ngày {date.split('-').reverse().join('/')}</h3><div><span>Tổng ca<b>{shifts.filter((shift) => countForShift(shift.id) > 0).length}</b></span><span>Nhân viên<b>{new Set(visibleSchedule.map((item) => employeeFor(employees, item.employeeId)?.id).filter(Boolean)).size}</b></span><span>Ca trống<b>{shifts.filter((shift) => countForShift(shift.id) === 0).length}</b></span><span>Tổng giờ<b>{totalScheduledHours.toFixed(2)}</b></span></div></Card></div>
-      <div className={`schedule-builder ${open ? 'schedule-builder--open' : ''}`}>
-        <Card title="Danh sách lịch phân ca" className="schedule-builder__table"><ScheduleTable employees={employees} schedule={visibleSchedule} /><TableFooter shown={employees.length} total={employees.length} /></Card>
-        {open && <Card className="schedule-panel">
-          <div className="card__header"><h2>Tạo lịch phân ca</h2><button onClick={() => setOpen(false)}>×</button></div>
-          <Field label="1. Chọn ngày"><Input type="date" value={date} onChange={(event) => setDate(event.target.value)} /></Field>
-          <Field label="2. Chọn ca & thời gian"><div className="shift-selector">{shifts.map((shift) => <button key={shift.id} className={shiftId === shift.id ? 'active' : ''} style={{ '--shift-color': shift.color }} onClick={() => setShiftId(shift.id)}>{shift.name}{shiftId === shift.id && <Check />}</button>)}</div></Field>
-          <div className="time-row"><Input type="time" value={shiftById(shiftId).start} readOnly /><span>–</span><Input type="time" value={shiftById(shiftId).end} readOnly /></div>
-          <Field label={`3. Chọn nhân viên • Đã chọn: ${selected.length}`}><SearchInput value={employeeQuery} onChange={setEmployeeQuery} placeholder="Tìm kiếm nhân viên..." /></Field>
-          <div className="employee-picker">{visibleEmployees.map((employee) => <label key={employee.id} className={selected.includes(employee.id) ? 'selected' : ''}><input type="checkbox" checked={selected.includes(employee.id)} onChange={() => toggle(employee.id)} /><Avatar name={employee.name} src={employee.avatar} employeeId={employee.id || employee.code} color={employee.color} size={30} /><strong>{employee.name}</strong><small>{employee.shortRole}</small></label>)}</div>
-          <Field label="4. Ghi chú (tùy chọn)"><textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Nhập ghi chú..." /></Field>
-          <div className="panel-actions"><Button variant="outline" onClick={() => setOpen(false)}>Hủy</Button><Button onClick={save} disabled={!date || !selected.length}>Lưu lịch ca</Button></div>
-        </Card>}
       </div>
     </div>
   )
