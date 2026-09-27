@@ -146,7 +146,10 @@ describe('remote command active-store preservation', () => {
     let complete
     api.apiCommand.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
     let pending
-    act(() => { pending = appRef.current.deleteEmployee('TARGET') })
+    await act(async () => {
+      pending = appRef.current.deleteEmployee('TARGET')
+      await vi.waitFor(() => expect(complete).toBeTypeOf('function'))
+    })
     expect(appRef.current.employees.some(({ id }) => id === 'TARGET')).toBe(true)
     expect(api.apiCommand).toHaveBeenCalledWith('employee.delete', { employeeId: 'TARGET' }, expect.objectContaining({ expectedVersion: 1 }))
     await act(async () => {
