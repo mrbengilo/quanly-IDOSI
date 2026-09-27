@@ -66,6 +66,15 @@ describe('personnel deletion interactions', () => {
     expect(screen.queryByRole('button', { name: 'Xóa Nhân sự thử' })).toBeNull()
   })
 
+  it('reserves retired manager deletion for Admin', () => {
+    const retired = { id: 'RETIRED', name: 'Quản lý đã nghỉ', unit: 'store_manager', storeId: 'S01', status: 'Đã nghỉ việc' }
+    setup('store_manager', 'business_support', { storeManagers: [retired], employees: [retired] })
+    expect(screen.queryByRole('button', { name: 'Xóa Quản lý đã nghỉ' })).toBeNull()
+    cleanup()
+    setup('store_manager', 'admin', { storeManagers: [retired], employees: [retired] })
+    expect(screen.getByRole('button', { name: 'Xóa Quản lý đã nghỉ' })).toBeTruthy()
+  })
+
   it.each(['admin', 'manager'])('retains deletion for normalized actor %s', (role) => {
     setup('store', role)
     expect(screen.getByRole('button', { name: 'Xóa Nhân sự thử' })).toBeTruthy()
