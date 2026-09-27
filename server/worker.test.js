@@ -776,6 +776,185 @@ const setupSupportTransferRuntime = async ({
   return { env, adminAuthorization, employeeAuthorization, managerAuthorization, supportAuthorization }
 }
 
+describe('HTKD personnel deletion authorization and lifecycle', () => {
+  it('persists HTKD create/update/delete for both personnel units in two stores', async () => {
+    const { env, supportAuthorization } = await setupSupportTransferRuntime({ token: 'htkd-crud-two-stores' })
+    env.IDENTITY_IMAGES = new MemoryR2()
+    let sequence = 0
+    const command = async (type, payload) => {
+      const expectedVersion = env.DB.database.prepare("SELECT version FROM app_state WHERE scope_key = 'global'").get().version
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type, expectedVersion, payload,
+      }, { ...supportAuthorization, 'idempotency-key': `htkd-crud-${++sequence}` }), env)
+      const body = await response.json()
+      expect(response.status, JSON.stringify(body)).toBe(type === 'employee.create' ? 201 : 200)
+      return body
+    }
+    await command('employee.delete', { employeeId: 'QL02' })
+    for (const storeId of ['S01', 'S02']) {
+      for (const unit of ['store', 'store_manager']) {
+        const username = `crud.${storeId.toLowerCase()}.${unit}`
+        const created = await command('employee.create', {
+          unit, storeId, username, password: 'htkd-crud-test-password', name: 'Nhân sự thử',
+          phone: '0901234567', cccd: '079123456789', address: 'TP. Hồ Chí Minh', startDate: '2026-08-18',
+          employmentType: 'Part-Time', ...(unit === 'store' ? { hourlyRate: 30000 } : {}), identityImages: testIdentityImages(),
+        })
+        const id = created.employee.id
+        await command('employee.update', { employeeId: id, name: 'Nhân sự đã cập nhật' })
+        const login = await worker.fetch(jsonRequest('https://idosi.example/api/login', {
+          username, password: 'htkd-crud-test-password',
+        }), env)
+        expect(login.status).toBe(200)
+        const loginBody = await login.json()
+        expect(loginBody.user.displayName).toBe('Nhân sự đã cập nhật')
+        const loaded = await worker.fetch(new Request('https://idosi.example/api/state', { headers: supportAuthorization }), env)
+        expect((await loaded.json()).state.employees.find((employee) => employee.id === id)).toMatchObject({ name: 'Nhân sự đã cập nhật', unit, storeId })
+        await command('employee.delete', { employeeId: id })
+        expect(readHydratedState(env.DB.database).employees.some((employee) => employee.id === id)).toBe(false)
+        expect((await worker.fetch(new Request('https://idosi.example/api/state', {
+          headers: { authorization: `Bearer ${loginBody.token}` },
+        }), env)).status).toBe(401)
+      }
+    }
+  })
+
+  it('enforces persisted target units, immutable fields, conflicts and denied actor roles without mutation', async () => {
+    const { env, supportAuthorization, managerAuthorization, employeeAuthorization } = await setupSupportTransferRuntime({
+      token: 'htkd-delete-denied',
+      extraEmployees: [
+        { id: 'VP-001', unit: 'office', storeId: 'OFFICE', status: 'Đang làm việc' },
+        { id: 'RETIRED', unit: 'store', storeId: 'S01', status: 'Đã nghỉ việc' },
+        { id: 'BAD-STORE', unit: 'store', storeId: 'MISSING', status: 'Đang làm việc' },
+      ],
+    })
+    const snapshot = () => ({
+      state: readHydratedState(env.DB.database),
+      users: env.DB.database.prepare('SELECT * FROM users ORDER BY id').all(),
+      sessions: env.DB.database.prepare('SELECT id, user_id, revoked_at FROM sessions ORDER BY id').all(),
+      audit: env.DB.database.prepare('SELECT * FROM audit_log ORDER BY id').all(),
+    })
+    const before = snapshot()
+    const cases = [
+      [supportAuthorization, { employeeId: 'VP-001' }, 403, 'BUSINESS_SUPPORT_READ_ONLY'],
+      [supportAuthorization, { employeeId: 'VP-001', unit: 'store', role: 'store_manager', department: 'store', storeId: 'S01' }, 403, 'BUSINESS_SUPPORT_READ_ONLY'],
+      [supportAuthorization, { employeeId: 'HTKD-TRANSFER', unit: 'store' }, 403, 'BUSINESS_SUPPORT_READ_ONLY'],
+      [managerAuthorization, { employeeId: 'E01' }, 403, 'EMPLOYEE_DELETE_FORBIDDEN'],
+      [employeeAuthorization, { employeeId: 'E01' }, 403],
+      [supportAuthorization, { employeeId: 'E01', unit: 'office' }, 400, 'EMPLOYEE_UNIT_IMMUTABLE'],
+      [supportAuthorization, { employeeId: 'E01', storeId: 'S02' }, 400, 'EMPLOYEE_STORE_IMMUTABLE'],
+      [supportAuthorization, { employeeId: 'RETIRED' }, 403, 'EMPLOYEE_REACTIVATE_FORBIDDEN'],
+      [supportAuthorization, { employeeId: 'MISSING' }, 404, 'EMPLOYEE_NOT_FOUND'],
+      [supportAuthorization, { employeeId: 'BAD-STORE' }, 400, 'STORE_INVALID'],
+    ]
+    for (const [index, [authorization, payload, status, code]] of cases.entries()) {
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        type: 'employee.delete', expectedVersion: 1, payload,
+      }, { ...authorization, 'idempotency-key': `htkd-delete-denied-${index}` }), env)
+      const body = await response.json()
+      expect(response.status, JSON.stringify(body)).toBe(status)
+      if (code) expect(body).toMatchObject({ error: { code } })
+      expect(snapshot()).toEqual(before)
+    }
+    const conflict = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.delete', expectedVersion: 999, payload: { employeeId: 'E01' },
+    }, { ...supportAuthorization, 'idempotency-key': 'htkd-delete-version-conflict' }), env)
+    expect(conflict.status).toBe(409)
+    expect(snapshot()).toEqual(before)
+  })
+
+  it('deletes staff and managers across two stores, preserves history and revokes standalone accounts idempotently', async () => {
+    const { env, supportAuthorization, employeeAuthorization, managerAuthorization } = await setupSupportTransferRuntime({
+      token: 'htkd-delete-allowed',
+      extraEmployees: [
+        { id: 'E02', unit: 'store', storeId: 'S02', status: 'Đang làm việc' },
+        { id: 'QL01', unit: 'store_manager', storeId: 'S01', status: 'Đang làm việc' },
+      ],
+      schedule: [{ id: 'SCH', employeeId: 'E01', storeId: 'S01', date: '2026-08-01' }],
+      attendance: [{ id: 'ATT', employeeId: 'E01', storeId: 'S01', date: '2026-08-01', hours: 8 }],
+      orders: [{ id: 'ORD', employeeId: 'E01', storeId: 'S01', amount: 500000, date: '2026-08-01' }],
+      payrollPeriods: [{ id: 'PAY', storeId: 'S01', period: '2026-08', status: 'locked', total: 9000000 }],
+    })
+    const before = readHydratedState(env.DB.database)
+    for (const [index, employeeId] of ['E01', 'QL02', 'E02', 'QL01'].entries()) {
+      const command = { type: 'employee.delete', expectedVersion: index + 1, payload: { employeeId } }
+      const headers = { ...supportAuthorization, 'idempotency-key': `htkd-delete-allowed-${index}` }
+      const response = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, headers), env)
+      expect(response.status, JSON.stringify(await response.clone().json())).toBe(200)
+      const replay = await worker.fetch(jsonRequest('https://idosi.example/api/command', command, headers), env)
+      expect(replay.status).toBe(200)
+      expect(replay.headers.get('idempotency-replayed')).toBe('true')
+      const again = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+        ...command, expectedVersion: index + 2,
+      }, { ...supportAuthorization, 'idempotency-key': `htkd-delete-again-${index}` }), env)
+      expect(again.status).toBe(404)
+    }
+    const after = readHydratedState(env.DB.database)
+    expect(after.employees.map(({ id }) => id)).toEqual(['HTKD-TRANSFER'])
+    expect(after.deletedEmployees).toHaveLength(4)
+    expect(after.deletedEmployees.every((employee) => employee.deletedAt && employee.deletedBy.role === 'business_support')).toBe(true)
+    expect(after.schedule).toEqual([])
+    for (const key of ['attendance', 'orders', 'payrollPeriods', 'salaryAdjustments', 'salaryAdvances', 'payrollPayments']) {
+      expect(after[key], key).toEqual(before[key])
+    }
+    expect(env.DB.database.prepare("SELECT entity_id, actor_role FROM audit_log WHERE action = 'employee.delete'").all()).toHaveLength(4)
+    for (const headers of [employeeAuthorization, managerAuthorization]) {
+      expect((await worker.fetch(new Request('https://idosi.example/api/state', { headers }), env)).status).toBe(401)
+    }
+    for (const [username, password] of [['transfer.employee', 'transfer-employee-password'], ['transfer.manager', 'transfer-manager-password']]) {
+      expect((await worker.fetch(jsonRequest('https://idosi.example/api/login', { username, password }), env)).status).toBe(403)
+    }
+    expect(env.DB.database.prepare('PRAGMA foreign_key_check').all()).toEqual([])
+  })
+
+  it.each([
+    ['store', 'store_manager'], ['business_support', 'store_manager'],
+    ['office', 'store'], ['business_support', 'store'],
+  ])('preserves the %s source account after deleting its linked %s role', async (sourceUnit, targetUnit) => {
+    const sourceStore = sourceUnit === 'office' ? 'OFFICE' : sourceUnit === 'business_support' ? 'BUSINESS_SUPPORT' : 'S01'
+    const sourceRole = sourceUnit === 'business_support' ? 'business_support' : 'employee'
+    const { env, adminAuthorization, supportAuthorization } = await setupSupportTransferRuntime({
+      token: `htkd-linked-${sourceUnit}-${targetUnit}`,
+      extraEmployees: [
+        { id: 'SOURCE', name: 'Nguồn', unit: sourceUnit, storeId: sourceStore, status: 'Đang làm việc' },
+        { id: 'LINKED', name: 'Vai trò liên kết', unit: targetUnit, storeId: 'S01', linkedEmployeeId: 'SOURCE', status: 'Đang làm việc' },
+      ],
+    })
+    const created = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'user.create', payload: {
+        username: 'linked.source', password: 'linked-source-password', displayName: 'Nguồn',
+        role: sourceRole, employeeId: 'SOURCE', storeId: sourceStore,
+      },
+    }, { ...adminAuthorization, 'idempotency-key': 'htkd-linked-source-account' }), env)
+    expect(created.status).toBe(201)
+    const login = async () => worker.fetch(jsonRequest('https://idosi.example/api/login', {
+      username: 'linked.source', password: 'linked-source-password',
+    }), env)
+    const originalLogin = await login()
+    expect(originalLogin.status).toBe(200)
+    const headers = { authorization: `Bearer ${(await originalLogin.json()).token}` }
+    const selected = await worker.fetch(jsonRequest('https://idosi.example/api/session/role', {
+      role: targetUnit === 'store' ? 'employee' : 'store_manager', employeeId: 'LINKED', storeId: 'S01',
+    }, headers), env)
+    expect(selected.status).toBe(200)
+    const before = readHydratedState(env.DB.database).employees.find(({ id }) => id === 'SOURCE')
+    const deleted = await worker.fetch(jsonRequest('https://idosi.example/api/command', {
+      type: 'employee.delete', expectedVersion: 1, payload: { employeeId: 'LINKED' },
+    }, { ...supportAuthorization, 'idempotency-key': 'htkd-linked-delete' }), env)
+    expect(deleted.status, JSON.stringify(await deleted.clone().json())).toBe(200)
+    expect((await worker.fetch(new Request('https://idosi.example/api/state', { headers }), env)).status).toBe(401)
+    expect(readHydratedState(env.DB.database).employees.find(({ id }) => id === 'SOURCE')).toEqual(before)
+    const nextLogin = await login()
+    expect(nextLogin.status).toBe(200)
+    const body = await nextLogin.json()
+    expect(body.user).toMatchObject({ role: sourceRole, employeeId: 'SOURCE', status: 'active' })
+    expect(body.user.availableRoles.some(({ employeeId }) => employeeId === 'LINKED')).toBe(false)
+    const deniedRole = await worker.fetch(jsonRequest('https://idosi.example/api/session/role', {
+      role: targetUnit === 'store' ? 'employee' : 'store_manager', employeeId: 'LINKED', storeId: 'S01',
+    }, { authorization: `Bearer ${body.token}` }), env)
+    expect(deniedRole.status).toBe(400)
+  })
+})
+
 const supportViolationFixture = ({ suffix, assessedAmountVnd }) => {
   const transferId = `TR-SUPPORT-VIOLATION-${suffix}`
   const attendanceId = `ATT-SUPPORT-VIOLATION-${suffix}`
@@ -9661,7 +9840,7 @@ describe('IDOSI Worker security primitives', () => {
         type, expectedVersion: 8,
         payload: type === 'system.reset_demo'
           ? { state: { stores: [], employees: [] } }
-          : { employeeId: 'SM234-001', name: 'Không được sửa' },
+          : { employeeId: 'VP-001', unit: 'store', role: 'store_manager', storeId: 'SM234' },
       }, { ...supportAuthorization, 'idempotency-key': `support-staff-forbidden-${index}-0001` }), env)
       expect(denied.status, type).toBe(403)
       expect(await denied.json(), type).toMatchObject({ error: { code: 'BUSINESS_SUPPORT_READ_ONLY' } })

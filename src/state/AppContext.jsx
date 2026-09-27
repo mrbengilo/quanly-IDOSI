@@ -2182,6 +2182,8 @@ export function AppProvider({ children }) {
           if (type === 'employee.delete' && result.employee) {
             const deletedId = remoteResultRecordId(result.employee)
             next.employees = (current.employees || []).filter((record) => remoteResultRecordId(record) !== deletedId)
+            next.stores = countStoreEmployees(current.stores, next.employees)
+            next.schedule = (current.schedule || []).filter((record) => String(record.employeeId) !== deletedId)
           }
           if (type === 'store.delete' && result.store) {
             const deletedId = remoteResultRecordId(result.store)
@@ -3054,12 +3056,17 @@ export function AppProvider({ children }) {
   }
 
   const deleteEmployee = async (id) => {
-    if (state.session?.role !== 'admin') {
-      notify('Chỉ Admin được xóa nhân viên khỏi hệ thống.', 'info')
-      return false
-    }
     const previous = state.employees.find((employee) => accountKey(employee) === String(id))
-    if (!previous) return false
+    if (!previous || previous.deletedAt) return { ok: false, message: 'Không tìm thấy hồ sơ nhân viên.' }
+    const actorRole = normalizeAuthRole(state.session?.role)
+    if (actorRole !== 'admin' && !(actorRole === 'business_support' && ['store', 'store_manager'].includes(previous.unit))) {
+      const message = 'Hỗ trợ KD chỉ được xóa nhân viên cửa hàng và Quản lý cửa hàng.'
+      notify(message, 'info')
+      return { ok: false, message }
+    }
+    if (actorRole !== 'admin' && ['đã nghỉ việc', 'inactive'].includes(normalizeText(previous.status))) {
+      return { ok: false, message: 'Chỉ Admin được xử lý nhân viên đã nghỉ việc.' }
+    }
     const deletedAuthVersion = previous.authVersion
     if (apiRef.current.enabled) {
       try {
@@ -3085,7 +3092,7 @@ export function AppProvider({ children }) {
       }
     })
     notify('Đã xóa nhân viên.', 'info')
-    return true
+    return { ok: true, employee: previous }
   }
 
   const addBusinessSupport = (payload = {}) => addEmployee({

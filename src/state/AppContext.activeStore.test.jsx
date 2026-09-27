@@ -132,6 +132,55 @@ describe('remote command active-store preservation', () => {
     window.history.replaceState({}, '', '/')
   })
 
+  it.each(['store', 'store_manager'])('waits for HTKD %s deletion, then applies the confirmed delta and keeps history', async (unit) => {
+    vi.useFakeTimers()
+    const employee = { id: 'TARGET', unit, storeId: 'STORE-B', name: 'Hồ sơ thử', status: 'Đang làm việc' }
+    const initial = {
+      ...makeRemoteState(), employees: [...makeRemoteState().employees, employee],
+      schedule: [{ id: 'SCHEDULE', employeeId: 'TARGET' }],
+      attendance: [{ id: 'HISTORY', employeeId: 'TARGET', hours: 8 }],
+    }
+    api.apiBootstrapState.mockResolvedValue({ user: supportUser, state: initial, policies: [], version: 1 })
+    renderProvider()
+    await act(async () => { await appRef.current.login('support-one', 'password') })
+    let complete
+    api.apiCommand.mockImplementationOnce(() => new Promise((resolve) => { complete = resolve }))
+    let pending
+    act(() => { pending = appRef.current.deleteEmployee('TARGET') })
+    expect(appRef.current.employees.some(({ id }) => id === 'TARGET')).toBe(true)
+    expect(api.apiCommand).toHaveBeenCalledWith('employee.delete', { employeeId: 'TARGET' }, expect.objectContaining({ expectedVersion: 1 }))
+    await act(async () => {
+      complete({ version: 2, employee: { ...employee, deletedAt: '2026-09-01T00:00:00Z' } })
+      expect(await pending).toMatchObject({ ok: true, employee: { id: 'TARGET' } })
+    })
+    expect(appRef.current.employees.some(({ id }) => id === 'TARGET')).toBe(false)
+    expect(appRef.current.deletedEmployees.some(({ id }) => id === 'TARGET')).toBe(true)
+    expect(appRef.current.schedule.some(({ employeeId }) => employeeId === 'TARGET')).toBe(false)
+    expect(appRef.current.attendance.some(({ id }) => id === 'HISTORY')).toBe(true)
+  })
+
+  it('keeps personnel intact on API failure and rejects office/support deletion before sending a command', async () => {
+    vi.useFakeTimers()
+    const employees = [
+      ...makeRemoteState().employees,
+      { id: 'TARGET', unit: 'store', storeId: 'STORE-A', status: 'Đang làm việc' },
+      { id: 'OFFICE', unit: 'office', storeId: 'OFFICE', status: 'Đang làm việc' },
+    ]
+    api.apiBootstrapState.mockResolvedValue({ user: supportUser, state: { ...makeRemoteState(), employees }, policies: [], version: 1 })
+    renderProvider()
+    await act(async () => { await appRef.current.login('support-one', 'password') })
+    for (const id of ['OFFICE', 'HTKD-001', 'MISSING']) {
+      await act(async () => { expect(await appRef.current.deleteEmployee(id)).toMatchObject({ ok: false }) })
+    }
+    expect(api.apiCommand).not.toHaveBeenCalled()
+    api.apiCommand.mockRejectedValueOnce(new Error('Máy chủ từ chối'))
+    await act(async () => {
+      expect(await appRef.current.deleteEmployee('TARGET')).toEqual({ ok: false, message: 'Máy chủ từ chối' })
+    })
+    expect(appRef.current.employees.some(({ id }) => id === 'TARGET')).toBe(true)
+    expect(appRef.current.deletedEmployees.some(({ id }) => id === 'TARGET')).toBe(false)
+  })
+
   it('keeps store B selected after a successful command refresh returns global store A', async () => {
     vi.useFakeTimers()
     renderProvider()
